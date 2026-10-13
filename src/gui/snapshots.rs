@@ -216,7 +216,7 @@ fn inbox_with_marks_and_an_expanded_thread() {
     let list = &harness.state().list;
     for uid in [95, 94] {
         assert!(
-            list.marked.contains(&("INBOX".to_string(), uid)),
+            list.marked.contains(&(1, ("INBOX".to_string(), uid))),
             "{uid} not marked"
         );
     }

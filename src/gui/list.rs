@@ -25,6 +25,8 @@ pub(crate) fn search_id() -> egui::Id {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Row {
+    /// Index into `App::accounts`: the account the message lives in.
+    pub account: usize,
     pub count: u32,
     pub date: i64,
     pub flagged: bool,
@@ -44,8 +46,14 @@ impl Row {
         (self.folder.clone(), self.uid)
     }
 
-    pub fn from_message(message: &Message) -> Row {
+    /// The key across accounts: a uid is only unique within one account's folder.
+    pub fn id(&self) -> (usize, RowKey) {
+        (self.account, self.key())
+    }
+
+    pub fn from_message(account: usize, message: &Message) -> Row {
         Row {
+            account,
             count: 1,
             date: message.internaldate,
             flagged: message.is_flagged(),
@@ -60,8 +68,9 @@ impl Row {
         }
     }
 
-    fn from_summary(folder: &str, message: &MessageSummary, member: bool) -> Row {
+    fn from_summary(account: usize, folder: &str, message: &MessageSummary, member: bool) -> Row {
         Row {
+            account,
             count: 1,
             date: message.date,
             flagged: message.is_flagged(),
@@ -80,13 +89,15 @@ impl Row {
 #[derive(Default)]
 pub(crate) struct ListState {
     pub cursor: usize,
-    pub expanded: HashMap<String, Vec<MessageSummary>>,
+    /// Expanded threads by account and thread id: mail sent to two accounts shares its thread id.
+    pub expanded: HashMap<(usize, String), Vec<MessageSummary>>,
     /// Set when a key moved the cursor, so this frame scrolls it into view.
     pub follow_cursor: bool,
     pub hits: Vec<Row>,
-    pub marked: HashSet<RowKey>,
+    pub marked: HashSet<(usize, RowKey)>,
     pub rows: Vec<Row>,
-    pub threads: Vec<ThreadSummary>,
+    /// Each thread with the account it is in.
+    pub threads: Vec<(usize, ThreadSummary)>,
     /// Scroll offset and height of the list from the last frame.
     pub viewport: (f32, f32),
 }
@@ -94,19 +105,23 @@ pub(crate) struct ListState {
 /// One row per thread describing its latest message, followed by its members when expanded.
 pub(crate) fn build_rows(
     folder: &str,
-    threads: &[ThreadSummary],
-    expanded: &HashMap<String, Vec<MessageSummary>>,
+    threads: &[(usize, ThreadSummary)],
+    expanded: &HashMap<(usize, String), Vec<MessageSummary>>,
 ) -> Vec<Row> {
     let mut rows = Vec::with_capacity(threads.len());
-    for thread in threads {
-        let mut row = Row::from_summary(folder, &thread.latest, false);
+    for (account, thread) in threads {
+        let mut row = Row::from_summary(*account, folder, &thread.latest, false);
         row.count = thread.count;
         row.flagged = thread.flagged;
         row.thread_id = Some(thread.thread_id.clone());
         row.unread = thread.unread;
         rows.push(row);
-        if let Some(members) = expanded.get(&thread.thread_id) {
-            rows.extend(members.iter().map(|m| Row::from_summary(folder, m, true)));
+        if let Some(members) = expanded.get(&(*account, thread.thread_id.clone())) {
+            rows.extend(
+                members
+                    .iter()
+                    .map(|m| Row::from_summary(*account, folder, m, true)),
+            );
         }
     }
     rows
@@ -136,17 +151,14 @@ impl Optimistic {
 }
 
 /// Rows of sent actions as they will be: moved rows hidden, read and flag changes shown, a later edit over an earlier.
-pub(crate) fn apply_pending(rows: &mut Vec<Row>, pending: &HashMap<RowKey, Vec<Optimistic>>) {
-    if pending.is_empty() {
+/// `pending[i]` is account i's edits, as `App::accounts` is ordered.
+pub(crate) fn apply_pending(rows: &mut Vec<Row>, pending: &[&HashMap<RowKey, Vec<Optimistic>>]) {
+    if pending.iter().all(|edits| edits.is_empty()) {
         return;
     }
-    rows.retain(|row| {
-        !pending
-            .get(&row.key())
-            .is_some_and(|edits| edits.contains(&Optimistic::Hidden))
-    });
+    rows.retain(|row| !edits_of(pending, row).contains(&Optimistic::Hidden));
     for row in rows {
-        for edit in pending.get(&row.key()).into_iter().flatten() {
+        for edit in edits_of(pending, row) {
             match edit {
                 Optimistic::Flagged(flagged) => row.flagged = *flagged,
                 Optimistic::Seen(seen) => row.unread = !seen,
@@ -154,6 +166,13 @@ pub(crate) fn apply_pending(rows: &mut Vec<Row>, pending: &HashMap<RowKey, Vec<O
             }
         }
     }
+}
+
+fn edits_of<'a>(pending: &[&'a HashMap<RowKey, Vec<Optimistic>>], row: &Row) -> &'a [Optimistic] {
+    pending
+        .get(row.account)
+        .and_then(|edits| edits.get(&row.key()))
+        .map_or(&[][..], Vec::as_slice)
 }
 
 /// "Alice <alice@x>, bob@y" is "Alice"; without a name, the first address.
@@ -444,7 +463,7 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     let output = area.show_rows(ui, LIST_ROW, list.rows.len(), |ui, range| {
         for index in range {
             let row = &list.rows[index];
-            let marked = list.marked.contains(&row.key());
+            let marked = list.marked.contains(&row.id());
             let selected = index == list.cursor || marked;
             let (rect, response) = ui.allocate_exact_size(
                 egui::vec2(ui.available_width(), LIST_ROW),
@@ -564,24 +583,33 @@ mod tests {
     #[test]
     fn build_rows_puts_members_under_an_expanded_thread() {
         let threads = vec![
-            ThreadSummary {
-                thread_id: "t".into(),
-                latest: summary(5, ""),
-                count: 2,
-                unread: true,
-                flagged: false,
-            },
-            ThreadSummary {
-                thread_id: "u".into(),
-                latest: summary(3, "\\Seen \\Flagged"),
-                count: 1,
-                unread: false,
-                flagged: true,
-            },
+            (
+                0,
+                ThreadSummary {
+                    thread_id: "t".into(),
+                    latest: summary(5, ""),
+                    count: 2,
+                    unread: true,
+                    flagged: false,
+                },
+            ),
+            (
+                0,
+                ThreadSummary {
+                    thread_id: "u".into(),
+                    latest: summary(3, "\\Seen \\Flagged"),
+                    count: 1,
+                    unread: false,
+                    flagged: true,
+                },
+            ),
         ];
         let mut expanded = HashMap::new();
         assert_eq!(build_rows("INBOX", &threads, &expanded).len(), 2);
-        expanded.insert("t".to_string(), vec![summary(4, "\\Seen"), summary(5, "")]);
+        expanded.insert(
+            (0, "t".to_string()),
+            vec![summary(4, "\\Seen"), summary(5, "")],
+        );
         let rows = build_rows("INBOX", &threads, &expanded);
         let shape: Vec<(u32, bool, bool, u32)> = rows
             .iter()
@@ -617,7 +645,7 @@ mod tests {
     #[test]
     fn columns_split_markers_sender_subject_and_date() {
         let now = Utc.with_ymd_and_hms(2026, 10, 6, 12, 0, 0).unwrap();
-        let mut row = Row::from_message(&message("INBOX", 1, "Lunch?"));
+        let mut row = Row::from_message(0, &message("INBOX", 1, "Lunch?"));
         row.unread = true;
         row.flagged = true;
         row.count = 3;
@@ -665,6 +693,7 @@ mod tests {
     #[test]
     fn row_text_strips_control_characters_from_headers() {
         let row = Row {
+            account: 0,
             count: 1,
             date: 0,
             flagged: true,
@@ -974,7 +1003,11 @@ mod tests {
             unread: true,
             flagged: false,
         };
-        let threads = vec![thread("a", 1), thread("b", 2), thread("c", 3)];
+        let threads = vec![
+            (0, thread("a", 1)),
+            (0, thread("b", 2)),
+            (0, thread("c", 3)),
+        ];
         let mut rows = build_rows("INBOX", &threads, &HashMap::new());
         let pending = HashMap::from([
             (("INBOX".to_string(), 1), vec![Optimistic::Hidden]),
@@ -988,10 +1021,54 @@ mod tests {
                 ],
             ),
         ]);
-        apply_pending(&mut rows, &pending);
+        apply_pending(&mut rows, &[&pending]);
         let shape: Vec<(u32, bool, bool)> =
             rows.iter().map(|r| (r.uid, r.unread, r.flagged)).collect();
         assert_eq!(shape, [(2, false, false), (3, true, true)]);
+    }
+
+    #[test]
+    fn apply_pending_reads_each_rows_own_account() {
+        let thread = |id: &str| ThreadSummary {
+            thread_id: id.into(),
+            latest: summary(1, ""),
+            count: 1,
+            unread: true,
+            flagged: false,
+        };
+        let mut rows = build_rows(
+            "INBOX",
+            &[(0, thread("a")), (1, thread("b"))],
+            &HashMap::new(),
+        );
+        let home: HashMap<RowKey, Vec<Optimistic>> = HashMap::new();
+        let work = HashMap::from([(("INBOX".to_string(), 1), vec![Optimistic::Hidden])]);
+        apply_pending(&mut rows, &[&home, &work]);
+        let left: Vec<(usize, u32)> = rows.iter().map(|r| (r.account, r.uid)).collect();
+        assert_eq!(left, [(0, 1)]);
+    }
+
+    #[test]
+    fn expanding_a_thread_in_one_account_leaves_the_same_thread_in_another_alone() {
+        let thread = ThreadSummary {
+            thread_id: "t".into(),
+            latest: summary(5, ""),
+            count: 2,
+            unread: true,
+            flagged: false,
+        };
+        let threads = vec![(0, thread.clone()), (1, thread)];
+        let expanded = HashMap::from([(
+            (1, "t".to_string()),
+            vec![summary(4, "\\Seen"), summary(5, "")],
+        )]);
+        let rows = build_rows("INBOX", &threads, &expanded);
+        let shape: Vec<(usize, u32, bool)> =
+            rows.iter().map(|r| (r.account, r.uid, r.member)).collect();
+        assert_eq!(
+            shape,
+            [(0, 5, false), (1, 5, false), (1, 4, true), (1, 5, true)]
+        );
     }
 
     #[test]

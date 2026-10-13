@@ -893,10 +893,10 @@ impl App {
                 self.error = None;
             }
             UiAction::ToggleMark => {
-                if let Some(key) = self.list.rows.get(self.list.cursor).map(list::Row::key)
-                    && !self.list.marked.remove(&key)
+                if let Some(id) = self.list.rows.get(self.list.cursor).map(list::Row::id)
+                    && !self.list.marked.remove(&id)
                 {
-                    self.list.marked.insert(key);
+                    self.list.marked.insert(id);
                 }
             }
             UiAction::ToggleRead => {
@@ -1037,7 +1037,10 @@ impl App {
         };
         if let Some(query) = &self.search {
             self.list.hits = match store.search(query, None, list::SEARCH_LIMIT) {
-                Ok(found) => found.iter().map(Row::from_message).collect(),
+                Ok(found) => found
+                    .iter()
+                    .map(|m| Row::from_message(account, m))
+                    .collect(),
                 Err(e) => {
                     log::warn!("[{}] search failed: {e}", self.accounts[account].name);
                     Vec::new()
@@ -1047,20 +1050,20 @@ impl App {
             return;
         }
         match store.thread_summaries(&folder, THREAD_LIMIT) {
-            Ok(threads) => self.list.threads = threads,
+            Ok(threads) => self.list.threads = threads.into_iter().map(|t| (account, t)).collect(),
             Err(e) => log::warn!(
                 "[{}] {folder}: could not load threads: {e}",
                 self.accounts[account].name
             ),
         }
-        let expanded: Vec<String> = self.list.expanded.keys().cloned().collect();
-        for thread in expanded {
-            match store.thread_members(&folder, &thread) {
+        let expanded: Vec<(usize, String)> = self.list.expanded.keys().cloned().collect();
+        for key in expanded {
+            match store.thread_members(&folder, &key.1) {
                 Ok(members) if members.len() > 1 => {
-                    self.list.expanded.insert(thread, members);
+                    self.list.expanded.insert(key, members);
                 }
                 _ => {
-                    self.list.expanded.remove(&thread);
+                    self.list.expanded.remove(&key);
                 }
             }
         }
@@ -1069,12 +1072,11 @@ impl App {
 
     /// A click on the row already shown opens it; `shown_at` stays, so a message long on screen is read at once.
     fn arm_shown_body(&mut self, index: usize) {
-        let Some(key) = self.list.rows.get(index).map(Row::key) else {
+        let Some((account, key)) = self.list.rows.get(index).map(Row::id) else {
             return;
         };
-        let account = self.view_account();
         if let Some(body) = &mut self.body
-            && Some(body.account) == account
+            && body.account == account
             && body.key == key
         {
             body.armed = true;
@@ -1088,16 +1090,12 @@ impl App {
             return;
         }
         let armed = std::mem::take(&mut self.pending_arm);
-        let current = self
-            .view_account()
-            .zip(self.list.rows.get(self.list.cursor).map(Row::key));
+        let current = self.list.rows.get(self.list.cursor).map(Row::id);
         if current == self.body.as_ref().map(|b| (b.account, b.key.clone())) {
             return;
         }
         self.body = current.map(|(account, key)| self.load_body(account, key, now, armed));
-        if let Some(account) = self.view_account() {
-            self.prefetch_neighbours(account);
-        }
+        self.prefetch_neighbours();
     }
 
     /// The message, its attachments and its HTML as stored now.
@@ -1149,22 +1147,24 @@ impl App {
         }
     }
 
-    /// Asks for the missing bodies of the rows beside the cursor, so stepping to them shows text at once.
-    fn prefetch_neighbours(&mut self, account: usize) {
-        let Ok(store) = &self.accounts[account].store else {
-            return;
-        };
+    /// Asks for the missing bodies of the rows beside the cursor, each from its own account, so stepping to them
+    /// shows text at once.
+    fn prefetch_neighbours(&mut self) {
         let cursor = self.list.cursor;
-        let missing: Vec<RowKey> = [cursor.checked_sub(1), Some(cursor + 1)]
+        let missing: Vec<(usize, RowKey)> = [cursor.checked_sub(1), Some(cursor + 1)]
             .into_iter()
             .flatten()
             .filter_map(|index| self.list.rows.get(index))
-            .map(Row::key)
-            .filter(|(folder, uid)| {
-                matches!(store.message(folder, *uid), Ok(Some(m)) if m.body_text.is_none())
+            .filter(|row| match &self.accounts[row.account].store {
+                Ok(store) => matches!(
+                    store.message(&row.folder, row.uid),
+                    Ok(Some(m)) if m.body_text.is_none()
+                ),
+                Err(_) => false,
             })
+            .map(Row::id)
             .collect();
-        for key in missing {
+        for (account, key) in missing {
             self.request_body(account, &key);
         }
     }
@@ -1444,7 +1444,7 @@ impl App {
     /// Rows from the cached threads, without a store query. The cursor stays on its message; when that row is gone it
     /// keeps its index, so the next row is selected.
     pub(crate) fn rebuild_rows(&mut self) {
-        let View::Folder { account, folder } = &self.view else {
+        let View::Folder { folder, .. } = &self.view else {
             return;
         };
         let current = self.list.rows.get(self.list.cursor).cloned();
@@ -1453,36 +1453,34 @@ impl App {
         } else {
             list::build_rows(folder, &self.list.threads, &self.list.expanded)
         };
-        list::apply_pending(&mut rows, &self.accounts[*account].pending);
+        let pending: Vec<_> = self.accounts.iter().map(|a| &a.pending).collect();
+        list::apply_pending(&mut rows, &pending);
         let kept = current.and_then(|cursor| rows.iter().position(|row| same_row(row, &cursor)));
         self.list.rows = rows;
         self.list.cursor =
             kept.unwrap_or_else(|| self.list.cursor.min(self.list.rows.len().saturating_sub(1)));
     }
 
-    /// Sends `action` for the marked rows, or the cursor row, and shows its effect before the server confirms it.
+    /// Sends `action` for the marked rows, or the cursor row, each to its own account, and shows its effect before the
+    /// server confirms it.
     fn act(&mut self, action: Action) {
-        let Some(account) = self.view_account() else {
-            return;
-        };
         let Some(optimistic) = Optimistic::of(&action) else {
             return;
         };
-        let targets = self.targets(account);
+        let targets = self.targets();
         if targets.is_empty() {
             return;
         }
         if matches!(action, Action::MarkRead | Action::MarkUnread)
             && let Some(body) = &mut self.body
-            && body.account == account
-            && targets
-                .iter()
-                .any(|(folder, uids)| *folder == body.key.0 && uids.contains(&body.key.1))
+            && targets.iter().any(|(account, folder, uids)| {
+                *account == body.account && *folder == body.key.0 && uids.contains(&body.key.1)
+            })
         {
             body.read_sent = true;
         }
         self.pending_arm |= optimistic == Optimistic::Hidden;
-        for (folder, uids) in targets {
+        for (account, folder, uids) in targets {
             self.send_apply(account, folder, uids, action.clone(), optimistic);
         }
         self.list.marked.clear();
@@ -1586,25 +1584,27 @@ impl App {
     }
 
     /// The rows an action covers: the marked rows, or else the cursor row.
-    fn selected_rows(&self) -> Vec<&Row> {
+    pub(crate) fn selected_rows(&self) -> Vec<&Row> {
         if self.list.marked.is_empty() {
             self.list.rows.get(self.list.cursor).into_iter().collect()
         } else {
             self.list
                 .rows
                 .iter()
-                .filter(|row| self.list.marked.contains(&row.key()))
+                .filter(|row| self.list.marked.contains(&row.id()))
                 .collect()
         }
     }
 
-    /// The uids each action covers, per folder: the marked rows or the cursor row, a thread row standing for every
-    /// message of its thread in that folder.
-    fn targets(&self, account: usize) -> Vec<(String, Vec<u32>)> {
-        let mut by_folder: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
+    /// The uids each action covers, per account and folder: the marked rows or the cursor row, a thread row standing
+    /// for every message of its thread in that folder.
+    fn targets(&self) -> Vec<(usize, String, Vec<u32>)> {
+        let mut by_folder: BTreeMap<(usize, String), BTreeSet<u32>> = BTreeMap::new();
         for row in self.selected_rows() {
-            let uids = by_folder.entry(row.folder.clone()).or_default();
-            let members = match (&row.thread_id, &self.accounts[account].store) {
+            let uids = by_folder
+                .entry((row.account, row.folder.clone()))
+                .or_default();
+            let members = match (&row.thread_id, &self.accounts[row.account].store) {
                 (Some(thread), Ok(store)) if row.count > 1 => {
                     store.thread_members(&row.folder, thread).ok()
                 }
@@ -1619,27 +1619,25 @@ impl App {
         }
         by_folder
             .into_iter()
-            .map(|(folder, uids)| (folder, uids.into_iter().collect()))
+            .map(|((account, folder), uids)| (account, folder, uids.into_iter().collect()))
             .collect()
     }
 
     fn expand(&mut self) {
-        let Some(account) = self.view_account() else {
-            return;
-        };
         let Some(row) = self.list.rows.get(self.list.cursor) else {
             return;
         };
         let (Some(thread), folder) = (row.thread_id.clone(), row.folder.clone()) else {
             return;
         };
-        if row.count < 2 || self.list.expanded.contains_key(&thread) {
+        let key = (row.account, thread);
+        if row.count < 2 || self.list.expanded.contains_key(&key) {
             return;
         }
-        if let Ok(store) = &self.accounts[account].store
-            && let Ok(members) = store.thread_members(&folder, &thread)
+        if let Ok(store) = &self.accounts[key.0].store
+            && let Ok(members) = store.thread_members(&folder, &key.1)
         {
-            self.list.expanded.insert(thread, members);
+            self.list.expanded.insert(key, members);
             self.rebuild_rows();
         }
     }
@@ -1657,7 +1655,12 @@ impl App {
         let Some(thread) = rows[parent].thread_id.clone() else {
             return;
         };
-        if self.list.expanded.remove(&thread).is_some() {
+        if self
+            .list
+            .expanded
+            .remove(&(rows[parent].account, thread))
+            .is_some()
+        {
             self.list.cursor = parent;
             self.rebuild_rows();
         }
@@ -1791,7 +1794,7 @@ fn body_text(message: Option<&Message>) -> Option<String> {
 /// A thread row's key is its latest uid, which changes with new mail, so it is matched by thread id. A member and its
 /// thread row share a key, so `member` tells them apart.
 fn same_row(row: &Row, cursor: &Row) -> bool {
-    if row.member != cursor.member {
+    if row.account != cursor.account || row.member != cursor.member {
         return false;
     }
     match (&row.thread_id, &cursor.thread_id) {
@@ -1929,6 +1932,16 @@ mod tests {
         let (mut harness, wires) = fx.harness();
         press(&mut harness, "e");
         assert_eq!(wires.sent(), [apply(&[4, 5], Action::Archive)]);
+    }
+
+    #[test]
+    fn the_same_thread_in_another_account_is_another_row() {
+        let mut home = Row::from_message(0, &message("INBOX", 1, "hi"));
+        home.thread_id = Some("<t@example.com>".into());
+        let mut work = home.clone();
+        work.account = 1;
+        assert!(same_row(&home, &home.clone()));
+        assert!(!same_row(&work, &home));
     }
 
     #[test]
