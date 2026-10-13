@@ -6539,10 +6539,13 @@ dependencies = [
 name = "postvak-gpui-proto"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
+ "chrono",
  "gpui-kit",
  "gpui-pre",
  "gpui-pre-platform",
  "postvak",
+ "tempfile",
 ]
 
 [[package]]
