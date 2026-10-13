@@ -24,7 +24,7 @@ export struct MenuState {
     mark-folder-read: bool,
 }
 
-// The edge between two panes; dragging it sets `size`, the width of the pane on its left.
+// The edge between two panes, over both; dragging it sets `size`, the width of the pane on its left.
 component Splitter inherits TouchArea {
     in-out property <length> size;
     in property <length> min;
@@ -196,7 +196,7 @@ export component MailWindow inherits Window {
     preferred-height: 800px;
     background: Theme.frame.background;
     default-font-family: Theme.text-font;
-    default-font-size: 14px;
+    default-font-size: Theme.text-size;
     forward-focus: keys;
 
     MenuBar {
@@ -368,7 +368,7 @@ export component MailWindow inherits Window {
             }
         }
 
-        HorizontalLayout {
+        panes := HorizontalLayout {
             FolderPane {
                 width: root.folders-width;
                 items: root.folders;
@@ -377,11 +377,6 @@ export component MailWindow inherits Window {
                 caret-clicked(i) => { root.caret-clicked(i); }
                 menu(i, j) => { root.folder-menu(i, j); }
                 pinned-clicked(i) => { root.pinned-clicked(i); }
-            }
-
-            Splitter {
-                size <=> root.folders-width;
-                min: Theme.control;
             }
 
             if root.mail-view: PaneFrame {
@@ -409,11 +404,6 @@ export component MailWindow inherits Window {
                     search-focus(focused) => { root.search-focus(focused); }
                     scrolled => { root.list-scrolled(-self.list-y, self.list-height); }
                 }
-            }
-
-            if root.mail-view: Splitter {
-                size <=> root.list-width;
-                min: root.list-min-width;
             }
 
             if root.mail-view: PaneFrame {
@@ -475,6 +465,21 @@ export component MailWindow inherits Window {
             set-theme(theme) => { root.set-theme(theme); }
             open-update => { root.open-update(); }
         }
+    }
+
+    Splitter {
+        x: Theme.pad + root.folders-width - self.width / 2;
+        y: panes.y;
+        height: panes.height;
+        size <=> root.folders-width;
+        min: Theme.control;
+    }
+    if root.mail-view: Splitter {
+        x: Theme.pad + root.folders-width + root.list-width - self.width / 2;
+        y: panes.y;
+        height: panes.height;
+        size <=> root.list-width;
+        min: root.list-min-width;
     }
 
     if root.history-open: HistoryDialog {

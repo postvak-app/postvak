@@ -28,11 +28,9 @@ component ListRow inherits Rectangle {
     callback clicked();
 
     property <color> ink: data.selected ? Theme.pane.on-accent : Theme.pane.text;
-    property <length> line: Theme.row;
     property <length> indent: data.member ? Theme.inset : 0px;
-    property <length> start: Theme.pad + 12px + 20px + root.indent;
 
-    height: 2 * Theme.row;
+    height: Theme.list-row;
     border-radius: Theme.pad;
     background: data.selected ? Theme.pane.selected : touch.has-hover ? Theme.pane.hover : transparent;
     accessible-role: list-item;
@@ -50,76 +48,72 @@ component ListRow inherits Rectangle {
         background: Theme.pane.border;
     }
 
-    if data.unread: Rectangle {
-        x: Theme.pad;
-        y: root.line / 2 + (root.line - self.height) / 2 - 2px;
-        width: 6px;
-        height: 6px;
-        border-radius: 3px;
-        background: data.selected ? Theme.pane.on-accent : Theme.pane.highlight;
-    }
-
-    Text {
-        accessible-role: none;
-        x: Theme.pad + 12px;
-        y: root.line / 2 - 2px;
-        width: 20px;
-        height: root.line;
-        text: data.marker;
-        font-family: Theme.icon-font;
-        font-size: Theme.icon * 3 / 4;
-        color: data.selected ? Theme.pane.on-accent : Theme.pane.highlight;
-        vertical-alignment: center;
-    }
-
     HorizontalLayout {
-        x: root.start;
-        y: root.line / 2 - 2px;
-        width: date.x - self.x - 12px;
-        height: root.line;
-        spacing: Theme.pad;
-        if data.tag != "": Text {
-            accessible-role: none;
-            max-width: 80px;
-            text: data.tag;
-            font-size: 12px;
-            color: data.selected ? Theme.pane.on-accent : Theme.pane.muted;
-            overflow: elide;
-            vertical-alignment: center;
+        padding: Theme.pad;
+        spacing: Theme.pad / 2;
+
+        // The unread dot, then the mark or flag, on the sender's line.
+        Rectangle {
+            width: 1.5 * Theme.pad;
+            if data.unread: Rectangle {
+                x: 0;
+                y: (Theme.list-row - 2 * Theme.pad) / 4 - self.height / 2;
+                width: 6px;
+                height: 6px;
+                border-radius: 3px;
+                background: data.selected ? Theme.pane.on-accent : Theme.pane.highlight;
+            }
         }
         Text {
             accessible-role: none;
-            horizontal-stretch: 1;
-            text: data.who;
-            font-weight: data.unread ? 600 : 500;
-            color: data.selected || data.unread ? root.ink : Theme.pane.secondary;
-            overflow: elide;
+            width: Theme.icon * 3 / 4;
+            height: (Theme.list-row - 2 * Theme.pad) / 2;
+            text: data.marker;
+            font-family: Theme.icon-font;
+            font-size: Theme.icon * 3 / 4;
+            color: data.selected ? Theme.pane.on-accent : Theme.pane.highlight;
             vertical-alignment: center;
         }
-    }
 
-    date := Text {
-        accessible-role: none;
-        x: parent.width - Theme.pad - self.width;
-        y: root.line / 2 - 2px;
-        height: root.line;
-        text: data.date;
-        font-family: Theme.mono-font;
-        font-size: 13px;
-        color: data.selected ? Theme.pane.on-accent : Theme.pane.muted;
-        vertical-alignment: center;
-    }
-
-    Text {
-        accessible-role: none;
-        x: root.start;
-        y: root.line + root.line / 2 - 2px - Theme.pad;
-        width: parent.width - self.x - Theme.pad;
-        height: root.line;
-        text: data.subject;
-        color: data.selected || data.unread ? root.ink : Theme.pane.muted;
-        overflow: elide;
-        vertical-alignment: center;
+        VerticalLayout {
+            padding-left: root.indent;
+            HorizontalLayout {
+                spacing: Theme.pad;
+                if data.tag != "": Text {
+                    accessible-role: none;
+                    max-width: 80px;
+                    text: data.tag;
+                    font-size: 12px;
+                    color: data.selected ? Theme.pane.on-accent : Theme.pane.muted;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+                Text {
+                    accessible-role: none;
+                    horizontal-stretch: 1;
+                    text: data.who;
+                    font-weight: data.unread ? 600 : 500;
+                    color: data.selected || data.unread ? root.ink : Theme.pane.secondary;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+                Text {
+                    accessible-role: none;
+                    text: data.date;
+                    font-family: Theme.mono-font;
+                    font-size: 12px;
+                    color: data.selected ? Theme.pane.on-accent : Theme.pane.muted;
+                    vertical-alignment: center;
+                }
+            }
+            Text {
+                accessible-role: none;
+                text: data.subject;
+                color: data.selected || data.unread ? root.ink : Theme.pane.muted;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+        }
     }
 }
 
@@ -187,7 +181,7 @@ export component ListPane inherits Rectangle {
             changed content-y => { root.scrolled(); }
             changed visible-height => { root.scrolled(); }
             for row[i] in root.rows: ContextMenuArea {
-                height: 2 * Theme.row;
+                height: Theme.list-row;
                 Menu {
                     for title[j] in row.menu-read: MenuItem {
                         title: title;

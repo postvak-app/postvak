@@ -15,7 +15,7 @@ use super::ui::{
     PageInfo, Pane, ProposalData, Remote, RuleData, Sheet, StatusLine, Theme, ThemePreference,
     ToolButton,
 };
-use super::{body, icons, list, menu, rules, status, toolbar};
+use super::{body, icons, list, menu, rules, status, theme, toolbar};
 use crate::message::clean;
 
 /// What a callback asks the app: the actions it means, in order.
@@ -123,7 +123,7 @@ fn present_list(app: &App, window: &MailWindow) {
     // Until the list has reported its height there is nothing to scroll within.
     if app.list.follow_cursor && app.list.viewport.1 > 0.0 {
         let (offset, height) = app.list.viewport;
-        let offset = list::offset_showing(app.list.cursor, list::LIST_ROW, offset, height);
+        let offset = list::offset_showing(app.list.cursor, theme::LIST_ROW, offset, height);
         window.set_list_y(-offset);
     }
     window.set_move_open(app.move_picker.is_some());

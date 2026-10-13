@@ -123,7 +123,7 @@ Last updated: 2026-10-13. Branch `feat/slint-gui`. Read first: the plan `2026-10
   - `tick` drives the HTML view: `html_width` at `html_size` every tick (no `lay_out_new_html`/`settle_html`), and `paint_visible` asks for missing strips every tick (no `repaint` flag; `html_visible` only records the range).
   - One search-focus flag (`search_focused`; `StartSearch` sets it, the field reports it), `App::typing()`, `App::apply(action)` without the unused clock, `Live::apply` as the one path for callbacks.
   - Menu items are the Slint enum `MenuAction`, matched exhaustively in `bind::menu_item`; `FolderEntry::menu()` returns two groups; `Entry::Account.gap` comes from `folders.rs`.
-  - The palettes live only in `ui/theme.slint`; the contrast tests read them from the `Theme` global, `theme.rs` keeps `CONTROL` and `ROW`, the snapshot geometry tests read the grid from the window.
+  - The palettes live only in `ui/theme.slint`; the contrast tests read them from the `Theme` global, `theme.rs` keeps `CONTROL` and `ROW` (later `CONTROL` and `LIST_ROW`), the snapshot geometry tests read the grid from the window.
   - Removed: `Columns`' unused fields, `sender_width` and its constants, `ListPane.query`, `RowData.flagged`. Shared test helpers: `test_support::{unread, command}`, `Fixture::break_store`.
 - Not applied, as follow-ups if they show up in use:
   - `present` still rebuilds `folders::entries`, compares the list rows in full and builds the sheet's cell models on every call; dirty flags per area (folders, list, body, sheet) on `App` would skip that.
@@ -131,10 +131,20 @@ Last updated: 2026-10-13. Branch `feat/slint-gui`. Read first: the plan `2026-10
   - Search queries SQLite on the UI thread per keystroke, as egui did; debounce or a worker if large stores stutter.
   - Slint reuse: one `Heading` and a link button in `common.slint` for the four serif headings and two hand-made links; `(group, index)` for the row menu instead of a flat index.
 - egui sweep (`docs: mark the egui steps in the plans not yet executed`): no egui code, crate or CI step remains; the rules editor, regex tester, tasks and surface parity plans carry a note that their GUI steps were written for egui; the superseded GPUI migration plan is removed (its results are in the toolkit report).
+- Alignment against main's snapshots (`fix(gui): spacing and alignment as on main`): each PNG laid over main's egui one. Taken from main:
+  - The panes meet: the splitters lie over the pane edges instead of taking a `PAD` column, so the list starts at the folder pane's edge and the list and the body are one surface; the toolbar's wordmark cell is `folders-width - PAD/2 - GLYPH` wide.
+  - Text is 13 px (`Theme.text-size`, egui drew 12.5), list dates 12 px, folder icons at text size.
+  - List rows are `Theme.list-row` (52: two `ROW` lines and `PAD/2`), laid out rather than placed by hand; the unread dot and the mark are fixed columns, and only a thread member's text indents. `theme.rs` has `LIST_ROW`, and the grid test compares it and `CONTROL` with the `Theme` global at run time.
+  - Separators have `PAD/2` above and below; a separator above Rules, Activity and Backups.
+  - Activity, Backups and the rules list are content-sized grids (`GridLayout` with repeated `Row`s) with stripes as wide as the table; fixed column widths had elided "move Receipts". The proposal card is as wide as its TOML.
+  - Pane actions (Open rules.toml, Approve, Reject, Save, Load remote content, Restore) are filled `TextButton { framed: true }`.
+  - The reader's sender and address have `PAD` between them, the status dot `PAD` before its text; "Remote content not loaded." elides, so the narrow reader no longer runs past the pane's edge.
+  - Kept from the branch: the Keys window, links listed under a plain text body (a `TextInput` keeps the text selectable; `StyledText` would colour links inline but cannot select).
+  - Found, not fixed: off macOS the in-window menu bar draws Fluent's light-scheme text (near black) on the oxblood frame, and std widgets (`LineEdit`, `CheckBox`, scroll bars) follow the OS scheme, not `Theme.preference`. `Palette.color-scheme` can be set, but setting it drops the binding `Theme.dark` reads the OS scheme from; needs a choice (a paper strip behind the menu bar, or the OS scheme from Rust).
 
 ## Next steps (in order)
 
-1. The alignment pass (owner, 2026-10-13: "the aligning seems off, not to any raster").
+1. The menu bar and std widget colour scheme above; then any alignment the owner still sees.
 2. Hand checks listed under Task 13: the window on KDE Wayland and macOS (a smoke run needs a short home path, as the socket path is limited to about 100 bytes), a screen reader on the list, an input method in search, the macOS Dock click on a hidden window, X11/Wayland PRIMARY selection after Copy.
 3. CI on PR #134: whether Linux draws the snapshots pixel for pixel as macOS did; if not, regenerate them in CI's image and decide which platform is the reference.
 4. Review and merge.

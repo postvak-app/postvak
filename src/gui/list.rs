@@ -10,7 +10,6 @@ use crate::store::{Message, MessageSummary, ThreadSummary};
 
 use super::folders;
 use super::state::{UiAction, View};
-use super::theme::ROW;
 
 /// Threads loaded per folder. ponytail: older mail is reachable through search; page by date if that is not enough.
 pub const THREAD_LIMIT: u32 = 10_000;
@@ -297,8 +296,6 @@ pub struct Columns {
 
 /// The list pane's narrowest width, so the unread dot and the flag never reach the date.
 pub const MIN_WIDTH: f32 = 220.0;
-/// A row's height: the sender and date, then the subject.
-pub const LIST_ROW: f32 = 2.0 * ROW;
 
 pub fn columns<Tz: TimeZone>(
     row: &Row,

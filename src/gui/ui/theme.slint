@@ -48,12 +48,15 @@ export global Theme {
     out property <length> control: 28px;
     out property <length> top-bar: 40px;
     out property <length> row: 24px;
+    // A message in the list: the sender and date, then the subject.
+    out property <length> list-row: 2 * row + pad / 2;
     out property <length> pad: 8px;
     out property <length> inset: 2 * pad;
     out property <length> icon: 16px;
     out property <length> glyph: (control - icon) / 2;
     out property <length> radius: 10px;
 
+    out property <length> text-size: 13px;
     out property <string> text-font: "Hanken Grotesk";
     out property <string> serif-font: "Newsreader";
     out property <string> mono-font: "Spline Sans Mono";

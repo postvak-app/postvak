@@ -64,7 +64,7 @@ component FolderRow inherits Rectangle {
             width: Theme.icon;
             text: item.icon;
             font-family: Theme.icon-font;
-            font-size: Theme.icon;
+            font-size: Theme.text-size;
             color: root.pill ? Theme.frame.highlight : Theme.frame.text;
             vertical-alignment: center;
         }
@@ -120,9 +120,13 @@ export component FolderPane inherits Rectangle {
                 padding-right: Theme.pad;
                 spacing: Theme.pad / 2;
                 for item[i] in root.items: VerticalLayout {
-                    if item.kind == FolderKind.separator: Rectangle {
-                        height: 1px;
-                        background: Theme.frame.border;
+                    if item.kind == FolderKind.separator: VerticalLayout {
+                        padding-top: Theme.pad / 2;
+                        padding-bottom: Theme.pad / 2;
+                        Rectangle {
+                            height: 1px;
+                            background: Theme.frame.border;
+                        }
                     }
                     if item.kind == FolderKind.account: VerticalLayout {
                         padding-top: item.gap ? Theme.pad : 0px;
@@ -181,6 +185,10 @@ export component FolderPane inherits Rectangle {
         VerticalLayout {
             padding: Theme.pad;
             spacing: Theme.pad / 2;
+            Rectangle {
+                height: 1px;
+                background: Theme.frame.border;
+            }
             for item[i] in root.pinned: FolderRow {
                 item: item;
                 clicked => { root.pinned-clicked(i); }

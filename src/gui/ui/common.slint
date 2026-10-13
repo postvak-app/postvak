@@ -57,11 +57,13 @@ export component TextButton inherits Rectangle {
     in property <Palette> palette: Theme.frame;
     in property <color> text-color: root.selected && root.palette == Theme.pane ? Theme.pane.on-accent : root.palette.text;
     in property <string> text-font: Theme.text-font;
+    // A filled button for an action in a pane, rather than a choice in a bar.
+    in property <bool> framed;
     callback clicked();
 
     height: Theme.row;
     border-radius: Theme.pad / 2;
-    background: root.selected ? root.palette.selected : touch.has-hover && root.enabled ? root.palette.hover : transparent;
+    background: root.selected ? root.palette.selected : touch.has-hover && root.enabled ? root.palette.hover : root.framed ? root.palette.pressed : transparent;
     opacity: root.enabled ? 1 : 0.5;
     accessible-role: button;
     accessible-label: root.text;
@@ -74,8 +76,8 @@ export component TextButton inherits Rectangle {
         }
     }
     HorizontalLayout {
-        padding-left: Theme.pad / 2;
-        padding-right: Theme.pad / 2;
+        padding-left: root.framed ? Theme.pad : Theme.pad / 2;
+        padding-right: root.framed ? Theme.pad : Theme.pad / 2;
         Text {
             accessible-role: none;
             text: root.text;

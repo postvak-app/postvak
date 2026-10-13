@@ -3,8 +3,8 @@
 
 /// Height of buttons and fields, and the width of icon buttons.
 pub(crate) const CONTROL: f32 = 28.0;
-/// Height of rows, text buttons and fields.
-pub(crate) const ROW: f32 = 24.0;
+/// Height of a message in the list: the sender and date, then the subject.
+pub(crate) const LIST_ROW: f32 = 52.0;
 
 #[cfg(test)]
 mod tests {
@@ -49,11 +49,11 @@ mod tests {
 
     #[test]
     fn the_slint_theme_has_the_same_grid() {
-        let slint = include_str!("ui/theme.slint");
-        for (name, value) in [("control", CONTROL), ("row", ROW)] {
-            let line = format!("out property <length> {name}: {value}px;");
-            assert!(slint.contains(&line), "theme.slint lacks {line}");
-        }
+        crate::gui::test_support::headless();
+        let window = StartupWindow::new().unwrap();
+        let theme = window.global::<Theme>();
+        assert_eq!(theme.get_control(), CONTROL);
+        assert_eq!(theme.get_list_row(), LIST_ROW);
     }
 
     /// Regression for #41: bold text in the dark theme was drawn in `on_accent`, near black on the dark panels.

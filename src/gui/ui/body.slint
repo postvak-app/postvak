@@ -70,10 +70,12 @@ component HtmlView inherits VerticalLayout {
         Text {
             text: "Remote content not loaded.";
             color: Theme.pane.muted;
+            overflow: elide;
             vertical-alignment: center;
         }
         TextButton {
             text: "Load remote content";
+            framed: true;
             palette: Theme.pane;
             clicked => { root.load-remote(); }
         }
@@ -287,7 +289,7 @@ export component BodyPane inherits Rectangle {
                 alignment: center;
                 HorizontalLayout {
                     height: Theme.row;
-                    spacing: Theme.pad / 2;
+                    spacing: Theme.pad;
                     Text {
                         text: root.info.name;
                         font-weight: 600;
@@ -334,6 +336,7 @@ export component BodyPane inherits Rectangle {
             }
             TextButton {
                 text: "Save";
+                framed: true;
                 palette: Theme.pane;
                 accessible-label: "Save " + attachment;
                 clicked => { root.save-attachment(i); }
