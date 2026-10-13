@@ -5,6 +5,8 @@ pub const PAD: Pixels = px(8.);
 pub const INSET: Pixels = px(16.);
 /// `list::LIST_ROW`: the sender and date, then the subject.
 pub const LIST_ROW: Pixels = px(48.);
+/// The list pane's width; the body takes the rest.
+pub const LIST_WIDTH: Pixels = px(440.);
 
 pub const TEXT_FONT: &str = "Hanken Grotesk";
 pub const MONO_FONT: &str = "Spline Sans Mono";

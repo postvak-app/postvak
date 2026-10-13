@@ -15,6 +15,9 @@ gpui-kit = "=0.7.3"  # list, input and scroll components with AccessKit
 chrono = "0.4"  # "now" for the list dates, as postvak's list does
 tempfile = "3"  # the fixture home lives in a temp dir
 anyhow = "1"  # errors from fixture setup
+futures = "0.3"  # the render thread wakes the window through an async channel
+image = { version = "0.25", default-features = false }  # GPUI's RenderImage takes image::Frame; the version gpui-pre uses
+smallvec = "1"  # RenderImage::new takes a SmallVec of frames
 
 [dev-dependencies]
 gpui = { package = "gpui-pre", version = "=0.3.9", features = ["test-support"] }  # TestAppContext, VisualTestContext, headless capture

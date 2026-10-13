@@ -53,3 +53,17 @@ On Debian or Ubuntu, building probably needs `libxkbcommon-x11-dev` and `libxcb1
 | Daemon events | not wired: the prototype has no daemon, and the in-memory client's event sender is only held |
 
 Differences from the egui list worth noting: Kit's `ListItem` draws its own hover and selected backgrounds from Kit's theme, so `main.rs` sets those theme colours to Postvak's; the unread dot is a "•" glyph and looks smaller than egui's painted circle.
+
+## Task 4 results: the body pane (2026-10-13)
+
+`body.rs` follows the list's cursor (it observes the Kit list's state), shows the header and the text, or the HTML page through `postvak`'s own render thread: the `Load` → `Laid` → `Paint` → `Strip` protocol of `App::html_width`, `html_visible` and `receive_html`, unchanged. The window draws the list on the left (440 px) and the body beside it.
+
+| Check | Result |
+|---|---|
+| Newsletter (`tests/fixtures/newsletter.html`) | ran on KDE Wayland: laid out by Blitz, painted in strips, drawn as GPUI images; header bar, link colours, table, quote, code block, footer and the `cid:` image all show and are sharp; screenshot checked |
+| Strips as GPUI images | `RenderImage` is BGRA, Blitz paints RGBA: one channel swap per strip on the UI thread. Blitz's pixels are premultiplied; whether GPUI expects straight alpha is unchecked (mail is mostly opaque) |
+| Waking the window | the render thread's wake callback sends on a `futures` channel; a `cx.spawn` task drains it and calls `receive`. No polling per frame |
+| Read after 1 s | `#[gpui::test]`: a message shown at start stays unread; after `j k` it is read one (simulated) second later, not at half a second, and `MarkRead` is sent once. The timers use the executor's clock (`executor.now()`), so the test advances it by hand |
+| HTML in a test | the newsletter paints in a headless test window with the real render thread (`allow_parking`) |
+| Width changes | laid out again once a new width held for `html::SETTLE`, as egui does; not tried by hand |
+| Not done | links (hover, click), text selection, the HTML/text toggle, attachments, remote-content notice, the dark theme; scrolling a long page only checked in code |

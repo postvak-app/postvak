@@ -27,6 +27,8 @@ pub struct Model {
     pub cursor: usize,
     pub marked: HashSet<(usize, RowKey)>,
     pub help: bool,
+    /// Set when the user moved the cursor, so the message it lands on may become read; the body takes it.
+    pub armed: bool,
     client: Client,
     /// The daemon's ends of the in-memory client; held so sends succeed. `commands` is what the prototype sent. No
     /// daemon runs in the prototype, so only tests read them.
@@ -66,6 +68,7 @@ impl Model {
             cursor: 0,
             marked: HashSet::new(),
             help: false,
+            armed: false,
             client,
             commands,
             events,
@@ -119,6 +122,7 @@ impl Model {
     }
 
     pub fn step(&mut self, delta: isize) {
+        self.armed = true;
         self.cursor = self
             .cursor
             .saturating_add_signed(delta)
@@ -127,6 +131,7 @@ impl Model {
 
     pub fn select(&mut self, index: usize) {
         if index < self.rows.len() {
+            self.armed |= index != self.cursor;
             self.cursor = index;
         }
     }
@@ -259,6 +264,49 @@ impl Model {
         }
         self.marked.clear();
         self.rebuild_rows();
+    }
+}
+
+impl Model {
+    /// The account and key of the cursor's row.
+    pub fn shown(&self) -> Option<(usize, RowKey)> {
+        self.rows.get(self.cursor).map(Row::id)
+    }
+
+    /// Whether `key` reads as seen, its last pending edit before the store's flag.
+    pub fn is_seen(&self, account: usize, key: &RowKey) -> bool {
+        let edit = self.accounts[account].pending.get(key).and_then(|edits| {
+            edits.iter().rev().find_map(|edit| match edit {
+                Optimistic::Seen(seen) => Some(*seen),
+                _ => None,
+            })
+        });
+        edit.unwrap_or_else(|| {
+            self.accounts[account]
+                .store
+                .message(&key.0, key.1)
+                .ok()
+                .flatten()
+                .is_none_or(|m| m.is_seen())
+        })
+    }
+
+    /// `mark_read_after_delay`'s send: one message read, shown before the daemon confirms it.
+    pub fn mark_read(&mut self, account: usize, key: RowKey) {
+        let command = Command::Apply {
+            folder: key.0.clone(),
+            uids: vec![key.1],
+            action: Action::MarkRead,
+            by: "gui".into(),
+        };
+        if self.client.send(&self.accounts[account].name, command) {
+            self.accounts[account]
+                .pending
+                .entry(key)
+                .or_default()
+                .push(Optimistic::Seen(true));
+            self.rebuild_rows();
+        }
     }
 }
 
