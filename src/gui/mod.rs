@@ -10,6 +10,7 @@ mod html;
 mod icons;
 mod keys;
 pub mod list;
+mod menu;
 mod numbers;
 mod rows;
 mod rules;
@@ -124,6 +125,15 @@ impl Live {
             window,
         };
         bind::connect(&live.window, on);
+        live.window.on_quit(|| {
+            let _ = slint::quit_event_loop();
+        });
+        let weak = live.window.as_weak();
+        live.window.on_close_window(move || {
+            if let Some(window) = weak.upgrade() {
+                let _ = window.hide();
+            }
+        });
         LIVE.with_borrow_mut(|slot| *slot = Some(live));
         with_live(Live::tick);
     }

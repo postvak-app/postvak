@@ -13,10 +13,10 @@ use super::keys::{self, Key, Named, Press};
 use super::rows::{ListModel, PageModel};
 use super::state::{App, Focus, UiAction, View};
 use super::ui::{
-    BodyInfo, Dot, FolderItem, FolderKind, KeyHelp, MailWindow, MenuChoice, PageInfo, Pane,
-    ProposalData, Remote, RuleData, Sheet, StatusLine, Theme, ThemePreference, ToolButton,
+    BodyInfo, Dot, FolderItem, FolderKind, KeyHelp, MailWindow, MenuChoice, MenuState, PageInfo,
+    Pane, ProposalData, Remote, RuleData, Sheet, StatusLine, Theme, ThemePreference, ToolButton,
 };
-use super::{body, icons, list, rules, status, toolbar};
+use super::{body, icons, list, menu, rules, status, toolbar};
 use crate::message::clean;
 
 /// What a callback asks the app: the actions it means, in order.
@@ -64,6 +64,21 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
     present_list(app, window);
     present_body(app, window);
     present_sheet(app, window);
+
+    let enabled = |item: menu::Item| item.action(app).is_some();
+    window.set_menu(MenuState {
+        save_eml: enabled(menu::Item::SaveEml),
+        view_source: enabled(menu::Item::ViewSource),
+        search: enabled(menu::Item::Search),
+        message: toolbar::enabled(app),
+        text_or_html: enabled(menu::Item::TextOrHtml),
+        mark_folder_read: enabled(menu::Item::MarkFolderRead),
+    });
+    window.set_about_open(app.about_open);
+    window.set_description(env!("CARGO_PKG_DESCRIPTION").into());
+    window.set_license(env!("CARGO_PKG_LICENSE").into());
+    window.set_repository(env!("CARGO_PKG_REPOSITORY").into());
+    window.set_homepage(env!("CARGO_PKG_HOMEPAGE").into());
 
     window.set_help_open(app.help_open);
     let help = keys::HELP.map(|(keys, what)| KeyHelp {
@@ -449,6 +464,9 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     });
     window.on_load_remote(move || {
         act(UiAction::LoadRemote);
+    });
+    window.on_menu_item(move |name| {
+        on(one(move |app| menu::item(&name)?.action(app)));
     });
     window.on_open_rules_file(move || {
         act(UiAction::OpenRulesFile);

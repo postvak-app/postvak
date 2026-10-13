@@ -83,9 +83,17 @@ Last updated: 2026-10-13. Branch `feat/slint-gui`. Read first: the plan `2026-10
   - Polling tests move the window's clock with `Open::advance(5.0)`, which fires the poll timer.
   - Cosmetic gap for Task 12: the std `CheckBox` draws in std-widgets' accent blue, not the theme.
 
+- Task 9 (`feat(gui): menu bar and About`):
+  - `menu.rs`: `Item` and `item(name)`; `Item::action(&App)` is what the item does, or None, which disables it (the message items follow `toolbar::enabled`). Help ▸ Postvak documentation opens `CARGO_PKG_HOMEPAGE`.
+  - `MenuBar` in `ui/window.slint` (File, Edit, Message, View with a Theme submenu of checkable items, Mailbox, Help), items calling `menu-item(name)`; `MenuState` carries what is enabled. Edit ▸ Copy copies the HTML page's selection.
+  - Shortcuts only on Close window (Ctrl+W) and Quit (Ctrl+Q): a menu-bound letter such as `e` would fire while typing in search, and Ctrl+R is the keymap's. The keymap's keys are in the `?` window.
+  - Quit ends the event loop; Close window hides the window (Task 10 decides between hiding and quitting).
+  - `ui/about.slint`: `AboutDialog` (name and version, description and licence from `Cargo.toml`, Project and Documentation links, std-widgets' `AboutSlint`); `UiAction::About` toggles it, Esc closes it after Keys.
+  - On Linux and Windows the menu bar draws inside the window, above the toolbar; snapshots will include it.
+
 ## Next steps (in order)
 
-1. Tasks 9–13 of the plan, one commit each, updating this doc after each.
+1. Tasks 10–13 of the plan, one commit each, updating this doc after each.
 
 ## Notes for whoever resumes
 

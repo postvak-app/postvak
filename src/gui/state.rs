@@ -198,6 +198,8 @@ impl View {
 /// What the window asks for; `App::apply` carries it out.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum UiAction {
+    /// Open or close the About window.
+    About,
     Act(Action),
     ApproveRule(String),
     Collapse,
@@ -295,6 +297,7 @@ pub struct App {
     pub(crate) fetcher: Option<Fetcher>,
     pub(crate) focus: Focus,
     pub(crate) focus_search: bool,
+    pub(crate) about_open: bool,
     pub(crate) help_open: bool,
     /// Numbers HTML layouts, so a reply for an older one is dropped.
     pub(crate) html_generation: u64,
@@ -379,6 +382,7 @@ impl App {
             fetcher: None,
             focus: Focus::List,
             focus_search: false,
+            about_open: false,
             help_open: false,
             html_generation: 0,
             html_size: None,
@@ -744,6 +748,8 @@ impl App {
                     body.source = None;
                 } else if self.help_open {
                     self.help_open = false;
+                } else if self.about_open {
+                    self.about_open = false;
                 } else if self.history_open {
                     self.history_open = false;
                 } else if self.search.is_some() {
@@ -874,6 +880,7 @@ impl App {
                 }
             }
             UiAction::ToggleHelp => self.help_open = !self.help_open,
+            UiAction::About => self.about_open = !self.about_open,
             UiAction::ToggleHtml => {
                 if let Some(body) = self.body.as_mut().filter(|b| b.html.is_some()) {
                     body.show_text = !body.show_text;
