@@ -83,6 +83,8 @@ pub(crate) struct Live {
     /// Seconds on the window's clock; tests move it by hand.
     clock: Box<dyn Fn() -> f64>,
     timer: slint::Timer,
+    /// None in tests, and where the platform has no tray.
+    tray: Option<ui::Tray>,
     pub window: ui::MailWindow,
 }
 
@@ -117,13 +119,35 @@ fn on(ask: bind::Ask) -> bool {
 
 impl Live {
     /// Takes the app and window for this thread and wires the window's callbacks.
-    fn install(app: App, window: ui::MailWindow, clock: Box<dyn Fn() -> f64>) {
+    fn install(
+        app: App,
+        window: ui::MailWindow,
+        tray: Option<ui::Tray>,
+        clock: Box<dyn Fn() -> f64>,
+    ) {
         let live = Live {
             app,
             clock,
             timer: slint::Timer::default(),
+            tray,
             window,
         };
+        if let Some(tray) = &live.tray {
+            let weak = live.window.as_weak();
+            tray.on_open(move || {
+                if let Some(window) = weak.upgrade()
+                    && let Err(e) = window.show()
+                {
+                    log::warn!("could not show the window: {e}");
+                }
+            });
+            tray.on_sync(|| {
+                on(Box::new(|_| vec![state::UiAction::SyncNow]));
+            });
+            tray.on_quit(|| {
+                let _ = slint::quit_event_loop();
+            });
+        }
         bind::connect(&live.window, on);
         live.window.on_quit(|| {
             let _ = slint::quit_event_loop();
@@ -172,6 +196,9 @@ impl Live {
 
     fn present(&mut self) {
         bind::present(&self.app, &self.window);
+        if let Some(tray) = &self.tray {
+            tray.set_hint(status::tray_hint(&self.app).into());
+        }
     }
 
     /// Starts the timer for the tick the app asked for.
@@ -197,12 +224,14 @@ fn open(paths: Paths) -> Result<()> {
     let mut app = App::new(&config, paths, client, events, states);
     app.wake = std::sync::Arc::new(wake);
     window.show().context("could not show the window")?;
+    // Closing the window hides it. The tray keeps the event loop running only while the desktop shows it, so without
+    // one closing the window quits, as it always did.
+    let tray = ui::Tray::new()
+        .inspect_err(|e| log::debug!("no tray icon: {e}"))
+        .ok();
     let started = Instant::now();
-    Live::install(
-        app,
-        window,
-        Box::new(move || started.elapsed().as_secs_f64()),
-    );
+    let clock = Box::new(move || started.elapsed().as_secs_f64());
+    Live::install(app, window, tray, clock);
     let ran = slint::run_event_loop();
     LIVE.with_borrow_mut(Option::take);
     ran.context("the window failed")

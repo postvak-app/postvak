@@ -91,9 +91,16 @@ Last updated: 2026-10-13. Branch `feat/slint-gui`. Read first: the plan `2026-10
   - `ui/about.slint`: `AboutDialog` (name and version, description and licence from `Cargo.toml`, Project and Documentation links, std-widgets' `AboutSlint`); `UiAction::About` toggles it, Esc closes it after Keys.
   - On Linux and Windows the menu bar draws inside the window, above the toolbar; snapshots will include it.
 
+- Task 10 (`feat(gui): tray icon and close to background`):
+  - `ui/tray.slint`: `Tray inherits SystemTrayIcon` with the app icon, `hint` as tooltip, a click or Open Postvak shows the window, Sync now, Quit (`quit_event_loop`).
+  - `status::tray_hint`: "Postvak", or "Postvak · {n} unread" over every INBOX.
+  - Close-to-background needs no code of ours: closing hides the window, and `run_event_loop` keeps running only while something keeps it alive. A tray icon keeps it alive only once its platform icon exists (`i-slint-core` `items/system_tray.rs`: `update_keepalive` after the handle is created; on Linux ksni fails without a StatusNotifierWatcher), so without a tray host closing quits as before. Slint has no public "registered" flag, so the test covers the tooltip only.
+  - `Live.tray` is None in tests (creating one would put an icon in the test machine's menu bar).
+  - Not checked yet: a hidden window on macOS is not shown again by a Dock click (only the tray's Open Postvak); look at it during the hand checks.
+
 ## Next steps (in order)
 
-1. Tasks 10–13 of the plan, one commit each, updating this doc after each.
+1. Tasks 11–13 of the plan, one commit each, updating this doc after each.
 
 ## Notes for whoever resumes
 

@@ -32,6 +32,17 @@ pub(crate) fn lines(app: &App) -> Vec<Line> {
     error.chain(accounts).collect()
 }
 
+/// The tray icon's hover text: the unread mail in every INBOX, as All inboxes counts it.
+pub(crate) fn tray_hint(app: &App) -> String {
+    match super::folders::inbox_unread(&app.accounts) {
+        0 => "Postvak".into(),
+        unread => format!(
+            "Postvak · {} unread",
+            super::numbers::count(u64::from(unread))
+        ),
+    }
+}
+
 /// The history window's lines, newest first.
 pub(crate) fn history(app: &App) -> Vec<String> {
     let lines = app.history.iter().rev();
@@ -403,6 +414,25 @@ mod tests {
         open.with(|live| live.app.update = UpdateCheck::Done(None));
         assert!(open.window().get_update().is_empty());
         assert_eq!(open.find(&format!("v{VERSION}")).len(), 1);
+    }
+
+    #[test]
+    fn the_tray_counts_the_unread_mail_in_every_inbox() {
+        let fx = Fixture::new(&["home", "work"]);
+        fx.folder("work", "Archive", Some("Archive"));
+        let (driver, _wires) = fx.driver();
+        assert_eq!(tray_hint(&driver.app), "Postvak");
+        for (account, folder, uid) in [
+            ("home", "INBOX", 1),
+            ("work", "INBOX", 2),
+            ("work", "Archive", 3),
+        ] {
+            let mut unread = message(folder, uid, "hello");
+            unread.flags = String::new();
+            fx.add(account, unread);
+        }
+        let (driver, _wires) = fx.driver();
+        assert_eq!(tray_hint(&driver.app), "Postvak · 2 unread");
     }
 
     #[test]

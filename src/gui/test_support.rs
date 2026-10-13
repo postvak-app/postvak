@@ -139,7 +139,7 @@ impl Fixture {
         window.show().unwrap();
         let clock = Rc::new(Cell::new(0.0));
         let now = clock.clone();
-        Live::install(app, window, Box::new(move || now.get()));
+        Live::install(app, window, None, Box::new(move || now.get()));
         (Open { clock }, wires)
     }
 }
