@@ -433,7 +433,7 @@ impl MailOps for ImapOps {
                             drop(stop.take());
                             break IdleOutcome::Timeout;
                         },
-                        _ = tokio::time::sleep(Duration::from_millis(500)) => {
+                        _ = tokio::time::sleep(Duration::from_millis(50)) => {
                             if interrupt.load(Ordering::Acquire) {
                                 // Dropping the StopSource makes `wait` resolve with ManualInterrupt.
                                 drop(stop.take());
@@ -461,7 +461,7 @@ fn sleep_until(timeout: Duration, interrupt: &AtomicBool) -> IdleOutcome {
         if left.is_zero() {
             return IdleOutcome::Timeout;
         }
-        std::thread::sleep(left.min(Duration::from_millis(500)));
+        std::thread::sleep(left.min(Duration::from_millis(50)));
     }
 }
 
