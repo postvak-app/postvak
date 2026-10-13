@@ -2,13 +2,15 @@
 use std::io::Read;
 use std::path::Path;
 
-use crate::message::parse_headers;
+use crate::message::{clean, parse_headers};
 use crate::paths::Paths;
 use crate::rules::{self, Rule, RuleFile};
 use crate::store::LogEntry;
 use crate::trash::{Trash, TrashEntry};
 
-use super::state::Account;
+use crate::time::local_time;
+
+use super::state::{Account, App};
 
 /// Entries shown in the Activity view.
 const LOG_LIMIT: u32 = 500;
@@ -47,6 +49,117 @@ pub(crate) fn toml_source(rule: &Rule) -> String {
         rules: vec![rule.clone()],
     })
     .unwrap_or_else(|e| e.to_string())
+}
+
+/// A rule waiting for approval, as the Rules view shows it.
+pub(crate) struct Proposal {
+    pub name: String,
+    /// "codes · proposed by agent".
+    pub title: String,
+    pub toml: String,
+}
+
+/// A rule in the Rules view's list.
+pub(crate) struct RuleLine {
+    pub name: String,
+    pub label: String,
+    pub enabled: bool,
+    /// "work · INBOX", or "every account · INBOX".
+    pub scope: String,
+    /// "proposed by agent", or empty.
+    pub by: String,
+}
+
+/// The line above the Rules view when rules.toml does not load.
+pub(crate) fn banner(state: &RulesState) -> Option<String> {
+    let error = state.error.as_deref()?;
+    Some(format!(
+        "{} — sync keeps the previous rules until this is fixed",
+        clean(error, false)
+    ))
+}
+
+pub(crate) fn proposals(state: &RulesState) -> Vec<Proposal> {
+    let pending = state.rules.iter().filter(|rule| is_pending(rule));
+    pending
+        .map(|rule| {
+            let by = rule.proposed_by.as_deref().unwrap_or_default();
+            Proposal {
+                name: rule.name.clone(),
+                title: format!(
+                    "{} · proposed by {}",
+                    clean(&rule.name, false),
+                    clean(by, false)
+                ),
+                toml: clean(&toml_source(rule), true),
+            }
+        })
+        .collect()
+}
+
+pub(crate) fn rule_lines(state: &RulesState) -> Vec<RuleLine> {
+    let line = |rule: &Rule| {
+        let account = rule
+            .account
+            .as_deref()
+            .map_or("every account".into(), |a| clean(a, false));
+        let folder = rule
+            .folder
+            .as_deref()
+            .map_or("INBOX".into(), |f| clean(f, false));
+        RuleLine {
+            name: rule.name.clone(),
+            label: clean(&rule.name, false),
+            enabled: rule.enabled,
+            scope: format!("{account} · {folder}"),
+            by: rule
+                .proposed_by
+                .as_deref()
+                .map(|by| format!("proposed by {}", clean(by, false)))
+                .unwrap_or_default(),
+        }
+    };
+    state.rules.iter().map(line).collect()
+}
+
+pub(crate) const ACTIVITY_HEADINGS: [&str; 6] =
+    ["Time", "Account", "Rule", "Action", "Folder", "Subject"];
+pub(crate) const NO_ACTIVITY: &str = "No rule or action has run yet.";
+pub(crate) const TRASH_HEADINGS: [&str; 5] = ["Deleted", "Account", "Folder", "From", "Subject"];
+pub(crate) const NO_TRASH: &str =
+    "Trash is empty. Deleted mail is kept here as .eml for the account's retention period.";
+
+/// The Activity view's rows, cell by cell.
+pub(crate) fn activity_cells(app: &App) -> Vec<[String; 6]> {
+    let row = |(account, entry): &(String, LogEntry)| {
+        [
+            local_time(entry.at, "%Y-%m-%d %H:%M"),
+            account.clone(),
+            clean(&entry.rule_name, false),
+            clean(&entry.action, false),
+            clean(&entry.folder, false),
+            entry
+                .subject
+                .as_deref()
+                .map(|subject| clean(subject, false))
+                .unwrap_or_default(),
+        ]
+    };
+    app.activity_log.iter().map(row).collect()
+}
+
+/// The Backups view's rows, cell by cell; each ends with a Restore button.
+pub(crate) fn trash_cells(app: &App) -> Vec<[String; 5]> {
+    let row = |row: &TrashRow| {
+        [
+            local_time(row.entry.saved_at, "%Y-%m-%d %H:%M"),
+            app.accounts[row.account].name.clone(),
+            clean(&row.entry.folder, false),
+            clean(&row.from, false),
+            clean(&row.subject, false),
+        ]
+    };
+    app.trash.iter().map(row).collect()
 }
 
 pub(crate) struct TrashRow {
@@ -105,4 +218,238 @@ fn eml_summary(path: &Path) -> (String, String) {
         parsed.from.unwrap_or_default(),
         parsed.subject.unwrap_or_default(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::time::{Duration, SystemTime};
+
+    use crate::gui::state::View;
+    use crate::gui::test_support::{Fixture, Open, Wires};
+    use crate::store::LogEntry;
+    use crate::sync::{Command, Event};
+    use crate::trash::Trash;
+
+    const RULES: &str = "# keep me\n[[rules]]\nname = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions = [\"archive\"]\n\n[[rules]]\nname = \"codes\"\nenabled = false\nproposed_by = \"agent\"\nmatch.subject = { contains = \"code\" }\nactions = [\"delete\"]\n";
+
+    fn touch(path: &Path) {
+        let file = std::fs::File::options().write(true).open(path).unwrap();
+        file.set_modified(SystemTime::now() + Duration::from_secs(5))
+            .unwrap();
+    }
+
+    fn view(fx: &Fixture, view: View) -> (Open, Wires) {
+        let (open, wires) = fx.window();
+        open.with(|live| live.app.select_view(view));
+        open.tick();
+        (open, wires)
+    }
+
+    fn rules_view(fx: &Fixture) -> (Open, Wires) {
+        std::fs::write(fx.paths.rules_file(), RULES).unwrap();
+        view(fx, View::Rules)
+    }
+
+    fn enabled(fx: &Fixture, name: &str) -> bool {
+        let file = crate::rules::load(&fx.paths.rules_file()).unwrap();
+        file.rules.iter().find(|r| r.name == name).unwrap().enabled
+    }
+
+    #[test]
+    fn a_proposal_shows_its_toml_and_approve_enables_it() {
+        let fx = Fixture::new(&["work"]);
+        // A clock left from when the rule ran before must not let it act on older mail.
+        fx.store("work").restart_rule_clock("codes", 1).unwrap();
+        let (open, wires) = rules_view(&fx);
+        assert_eq!(open.find("codes · proposed by agent").len(), 1);
+        assert_eq!(open.labels_containing("name = \"codes\"").len(), 1);
+        open.click("Approve");
+        assert!(enabled(&fx, "codes"));
+        assert!(fx.store("work").rule_first_seen("codes", "", 0).unwrap() > 1);
+        assert!(
+            std::fs::read_to_string(fx.paths.rules_file())
+                .unwrap()
+                .starts_with("# keep me\n")
+        );
+        assert!(wires.sent().is_empty());
+        assert!(open.find("Approve").is_empty());
+    }
+
+    #[test]
+    fn reject_takes_the_proposal_out() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = rules_view(&fx);
+        open.click("Reject");
+        let file = crate::rules::load(&fx.paths.rules_file()).unwrap();
+        assert!(file.rules.iter().all(|r| r.name != "codes"));
+        assert!(open.find("Proposals").is_empty());
+    }
+
+    #[test]
+    fn the_switch_turns_a_rule_off_and_keeps_comments() {
+        let fx = Fixture::new(&["work"]);
+        let (open, wires) = rules_view(&fx);
+        open.get("newsletters").invoke_accessible_default_action();
+        assert!(!enabled(&fx, "newsletters"));
+        assert!(
+            std::fs::read_to_string(fx.paths.rules_file())
+                .unwrap()
+                .starts_with("# keep me\n")
+        );
+        assert!(wires.sent().is_empty());
+    }
+
+    #[test]
+    fn open_rules_toml_opens_it_in_the_text_editor() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = rules_view(&fx);
+        open.click("Open rules.toml");
+        let path = fx.paths.rules_file().to_string_lossy().into_owned();
+        assert_eq!(crate::gui::test_support::launched(), [path]);
+    }
+
+    #[test]
+    fn an_edit_from_outside_reloads_the_view() {
+        let fx = Fixture::new(&["work"]);
+        let (open, wires) = rules_view(&fx);
+        let more = format!(
+            "{RULES}\n[[rules]]\nname = \"receipts\"\nmatch.subject = {{ contains = \"receipt\" }}\nactions = [{{ move = \"Receipts\" }}]\n"
+        );
+        std::fs::write(fx.paths.rules_file(), more).unwrap();
+        touch(&fx.paths.rules_file());
+        open.advance(5.0);
+        assert_eq!(open.find("receipts").len(), 1);
+        assert!(wires.sent().is_empty());
+    }
+
+    #[test]
+    fn a_parse_error_shows_a_banner_and_keeps_the_rules() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = rules_view(&fx);
+        std::fs::write(fx.paths.rules_file(), "[[rules]\nbroken").unwrap();
+        touch(&fx.paths.rules_file());
+        open.advance(5.0);
+        assert_eq!(
+            open.labels_containing("sync keeps the previous rules")
+                .len(),
+            1
+        );
+        assert_eq!(open.find("newsletters").len(), 1);
+    }
+
+    #[test]
+    fn a_config_change_asks_to_reopen_the_window() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        touch(&fx.paths.config_file());
+        open.advance(5.0);
+        assert_eq!(
+            open.find("config.toml changed — reopen the window to show it")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn the_theme_switch_raises_no_banner() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        open.click("Dark");
+        open.advance(5.0);
+        assert!(open.labels_containing("reopen the window").is_empty());
+    }
+
+    fn logged(fx: &Fixture, account: &str, at: i64, subject: &str) {
+        let entry = LogEntry {
+            id: 0,
+            at,
+            rule_name: "newsletters".into(),
+            folder: "INBOX".into(),
+            uid: 1,
+            message_id: None,
+            subject: Some(subject.into()),
+            action: "archive".into(),
+            trash_file: None,
+        };
+        fx.store(account).log_action(&entry).unwrap();
+    }
+
+    fn backup(fx: &Fixture) -> std::path::PathBuf {
+        let dir = fx.paths.trash_dir("work");
+        std::fs::create_dir_all(&dir).unwrap();
+        let raw = b"From: Shop <shop@example.com>\r\nSubject: your receipt\r\n\r\nthanks\r\n";
+        Trash::new(dir)
+            .save("INBOX", 7, raw, 1_790_000_000)
+            .unwrap()
+    }
+
+    #[test]
+    fn activity_merges_every_account_newest_first() {
+        let fx = Fixture::new(&["home", "work"]);
+        logged(&fx, "work", 100, "work old");
+        logged(&fx, "home", 200, "home new");
+        logged(&fx, "work", 300, "work newest");
+        let (open, _wires) = view(&fx, View::Activity);
+        let order: Vec<(String, Option<String>)> = open.with(|live| {
+            live.app
+                .activity_log
+                .iter()
+                .map(|(account, e)| (account.clone(), e.subject.clone()))
+                .collect()
+        });
+        let expected = [
+            ("work", "work newest"),
+            ("home", "home new"),
+            ("work", "work old"),
+        ];
+        let expected: Vec<(String, Option<String>)> = expected
+            .iter()
+            .map(|(a, s)| (a.to_string(), Some(s.to_string())))
+            .collect();
+        assert_eq!(order, expected);
+        assert_eq!(open.find("work newest").len(), 1);
+        assert_eq!(open.find("Subject").len(), 1);
+    }
+
+    #[test]
+    fn empty_activity_and_backups_say_so() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = view(&fx, View::Activity);
+        assert_eq!(open.find(super::NO_ACTIVITY).len(), 1);
+        open.with(|live| live.app.select_view(View::Trash));
+        open.tick();
+        assert_eq!(open.find(super::NO_TRASH).len(), 1);
+    }
+
+    #[test]
+    fn trash_lists_backups_and_restore_sends_the_command() {
+        let fx = Fixture::new(&["work"]);
+        let file = backup(&fx);
+        let (open, wires) = view(&fx, View::Trash);
+        assert_eq!(open.find("your receipt").len(), 1);
+        assert_eq!(open.find("Shop <shop@example.com>").len(), 1);
+        open.click("Restore");
+        assert_eq!(
+            wires.sent(),
+            [("work".to_string(), Command::Restore { file: file.clone() })]
+        );
+        assert!(open.find("your receipt").is_empty());
+        std::fs::remove_file(&file).unwrap();
+        let restored = Event::Restored {
+            account: "work".into(),
+            folder: "INBOX".into(),
+            request: 0,
+        };
+        wires.events.send(restored).unwrap();
+        open.tick();
+        assert!(open.find("your receipt").is_empty());
+        let history = open.with(|live| {
+            live.app
+                .history
+                .iter()
+                .any(|line| line.text == "work: restored to INBOX")
+        });
+        assert!(history);
+    }
 }

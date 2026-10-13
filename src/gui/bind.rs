@@ -11,12 +11,12 @@ use super::folders::{self, Entry, FolderEntry};
 use super::html::{self, HtmlState};
 use super::keys::{self, Key, Named, Press};
 use super::rows::{ListModel, PageModel};
-use super::state::{App, Focus, UiAction};
+use super::state::{App, Focus, UiAction, View};
 use super::ui::{
-    BodyInfo, Dot, FolderItem, FolderKind, KeyHelp, MailWindow, MenuChoice, PageInfo, Pane, Remote,
-    StatusLine, Theme, ThemePreference, ToolButton,
+    BodyInfo, Dot, FolderItem, FolderKind, KeyHelp, MailWindow, MenuChoice, PageInfo, Pane,
+    ProposalData, Remote, RuleData, Sheet, StatusLine, Theme, ThemePreference, ToolButton,
 };
-use super::{body, icons, list, status, toolbar};
+use super::{body, icons, list, rules, status, toolbar};
 use crate::message::clean;
 
 /// What a callback asks the app: the actions it means, in order.
@@ -63,6 +63,7 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
 
     present_list(app, window);
     present_body(app, window);
+    present_sheet(app, window);
 
     window.set_help_open(app.help_open);
     let help = keys::HELP.map(|(keys, what)| KeyHelp {
@@ -196,6 +197,56 @@ fn present_page(app: &App, window: &MailWindow) {
             model.update(view);
             window.set_strips(ModelRc::new(model));
         }
+    }
+}
+
+fn present_sheet(app: &App, window: &MailWindow) {
+    let strings = |items: &[&str]| model(items.iter().map(|s| SharedString::from(*s)));
+    let cells = |rows: Vec<Vec<String>>| {
+        model(
+            rows.into_iter()
+                .map(|row| model(row.into_iter().map(SharedString::from))),
+        )
+    };
+    match app.view {
+        View::Rules => {
+            window.set_sheet(Sheet::Rules);
+            window.set_rules_banner(rules::banner(&app.rules).unwrap_or_default().into());
+            let proposals = rules::proposals(&app.rules)
+                .into_iter()
+                .map(|p| ProposalData {
+                    title: p.title.into(),
+                    toml: p.toml.into(),
+                });
+            window.set_proposals(model(proposals));
+            let lines = rules::rule_lines(&app.rules).into_iter().map(|r| RuleData {
+                label: r.label.into(),
+                enabled: r.enabled,
+                scope: r.scope.into(),
+                by: r.by.into(),
+            });
+            window.set_rules(model(lines));
+        }
+        View::Activity => {
+            window.set_sheet(Sheet::Activity);
+            window.set_sheet_headings(strings(&rules::ACTIVITY_HEADINGS));
+            window.set_sheet_cells(cells(
+                rules::activity_cells(app)
+                    .into_iter()
+                    .map(Vec::from)
+                    .collect(),
+            ));
+            window.set_sheet_empty(rules::NO_ACTIVITY.into());
+        }
+        View::Trash => {
+            window.set_sheet(Sheet::Backups);
+            window.set_sheet_headings(strings(&rules::TRASH_HEADINGS));
+            window.set_sheet_cells(cells(
+                rules::trash_cells(app).into_iter().map(Vec::from).collect(),
+            ));
+            window.set_sheet_empty(rules::NO_TRASH.into());
+        }
+        View::AllInboxes | View::Folder { .. } => {}
     }
 }
 
@@ -398,6 +449,39 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     });
     window.on_load_remote(move || {
         act(UiAction::LoadRemote);
+    });
+    window.on_open_rules_file(move || {
+        act(UiAction::OpenRulesFile);
+    });
+    window.on_approve_rule(move |i| {
+        on(one(move |app| {
+            let proposal = rules::proposals(&app.rules)
+                .into_iter()
+                .nth(usize::try_from(i).ok()?)?;
+            Some(UiAction::ApproveRule(proposal.name))
+        }));
+    });
+    window.on_reject_rule(move |i| {
+        on(one(move |app| {
+            let proposal = rules::proposals(&app.rules)
+                .into_iter()
+                .nth(usize::try_from(i).ok()?)?;
+            Some(UiAction::RejectRule(proposal.name))
+        }));
+    });
+    window.on_set_enabled(move |i, enabled| {
+        on(one(move |app| {
+            let rule = rules::rule_lines(&app.rules)
+                .into_iter()
+                .nth(usize::try_from(i).ok()?)?;
+            Some(UiAction::SetRuleEnabled(rule.name, enabled))
+        }));
+    });
+    window.on_restore(move |i| {
+        on(one(move |app| {
+            let row = app.trash.get(usize::try_from(i).ok()?)?;
+            Some(UiAction::Restore(row.account, row.entry.path.clone()))
+        }));
     });
     window.on_open_update(move || {
         on(one(|app| {

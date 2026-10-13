@@ -5,6 +5,7 @@ import { ToolButton, Toolbar } from "toolbar.slint";
 import { StatusBar, StatusLine } from "status.slint";
 import { HistoryDialog, KeyHelp, KeysDialog, MoveDialog, SourceDialog } from "dialogs.slint";
 import { BodyInfo, BodyPane, PageInfo, StripData } from "body.slint";
+import { ProposalData, RuleData, RulesPane, Sheet } from "rules.slint";
 import { ListPane, RowData } from "list.slint";
 
 export enum Pane { body, folders, list }
@@ -83,6 +84,13 @@ export component MailWindow inherits Window {
     in property <[StripData]> strips;
     // The HTML page's selected text, which Ctrl/Cmd+C copies.
     in property <string> page-selection;
+    in property <Sheet> sheet;
+    in property <string> rules-banner;
+    in property <[ProposalData]> proposals;
+    in property <[RuleData]> rules;
+    in property <[string]> sheet-headings;
+    in property <[[string]]> sheet-cells;
+    in property <string> sheet-empty;
     in property <bool> source-open;
     in property <[string]> source-rows;
     in property <string> source-text;
@@ -125,6 +133,11 @@ export component MailWindow inherits Window {
     callback page-clicked(length, length);
     callback load-remote();
     callback page-open-link();
+    callback open-rules-file();
+    callback approve-rule(int);
+    callback reject-rule(int);
+    callback set-enabled(int, bool);
+    callback restore(int);
 
     // Puts `text` on the clipboard: Slint copies only from a text field.
     public function copy-text(text: string) {
@@ -276,6 +289,20 @@ export component MailWindow inherits Window {
             if !root.mail-view: PaneFrame {
                 focused: root.focused-pane != Pane.folders;
                 border-radius: Theme.radius;
+                RulesPane {
+                    sheet: root.sheet;
+                    banner: root.rules-banner;
+                    proposals: root.proposals;
+                    rules: root.rules;
+                    headings: root.sheet-headings;
+                    cells: root.sheet-cells;
+                    empty: root.sheet-empty;
+                    open-rules-file => { root.open-rules-file(); }
+                    approve(i) => { root.approve-rule(i); }
+                    reject(i) => { root.reject-rule(i); }
+                    set-enabled(i, enabled) => { root.set-enabled(i, enabled); }
+                    restore(i) => { root.restore(i); }
+                }
             }
         }
 

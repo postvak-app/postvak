@@ -75,9 +75,17 @@ Last updated: 2026-10-13. Branch `feat/slint-gui`. Read first: the plan `2026-10
   - `Open::tick` visits the elements and runs `mock_elapsed_time(0)`, so conditional elements are built and `changed` handlers run as in the event loop.
   - `html::view_tests` holds the ported view tests (fake renderer and fetcher), plus `a_new_layout_asks_for_the_strips_on_screen`. The drag test checks the selection the window would copy; the text cursor is not readable through the testing API.
 
+- Fix after Task 7: Linux CI failed to build `fontique` 0.11 (Slint's), which links fontconfig, next to Blitz's 0.12, which loads it at runtime through the same `yeslogic-fontconfig-sys`. `i-slint-common` with `fontconfig-dlopen` is now a Linux dependency of the `gui` feature (in machete's ignore list).
+- Task 8 (`feat(gui): rules, activity and backups views`):
+  - Toolkit-free in `rules.rs`: `banner`, `proposals`, `rule_lines`, `activity_cells`, `trash_cells`, the headings and empty texts.
+  - `ui/rules.slint`: `RulesPane` with `Sheet` (rules, activity, backups); the rules view (banner, Open rules.toml, Proposals with Approve/Reject, Rules with a std `CheckBox` per rule), and a striped `Table` with fixed column widths for Activity and Backups (Restore per row).
+  - The window's callbacks are `approve-rule`/`reject-rule`: a callback named `reject` shadows the `reject` keyword in a `key-pressed` handler.
+  - Polling tests move the window's clock with `Open::advance(5.0)`, which fires the poll timer.
+  - Cosmetic gap for Task 12: the std `CheckBox` draws in std-widgets' accent blue, not the theme.
+
 ## Next steps (in order)
 
-1. Tasks 8–13 of the plan, one commit each, updating this doc after each.
+1. Tasks 9–13 of the plan, one commit each, updating this doc after each.
 
 ## Notes for whoever resumes
 
