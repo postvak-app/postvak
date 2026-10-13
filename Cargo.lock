@@ -4734,6 +4734,7 @@ dependencies = [
  "html5ever",
  "humantime",
  "i-slint-backend-testing",
+ "i-slint-common",
  "include_dir",
  "keyring-core",
  "log",
