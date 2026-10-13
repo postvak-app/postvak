@@ -633,6 +633,14 @@ impl Store {
             |r| r.get(0),
         )?)
     }
+
+    pub fn unread_uids(&self, folder: &str) -> Result<Vec<u32>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT uid FROM messages WHERE folder = ?1 AND instr(flags, '\\Seen') = 0 ORDER BY uid",
+        )?;
+        let uids = stmt.query_map(params![folder], |r| r.get(0))?;
+        Ok(uids.collect::<Result<_, _>>()?)
+    }
 }
 
 /// Every whitespace-separated word as an FTS5 string, which FTS5 always parses.
@@ -948,6 +956,7 @@ mod tests {
         s.insert_message(&msg("INBOX", 2, 20)).unwrap();
         s.update_flags("INBOX", 2, "\\Seen").unwrap();
         assert_eq!(s.unread_count("INBOX").unwrap(), 1);
+        assert_eq!(s.unread_uids("INBOX").unwrap(), [1]);
         assert_eq!(s.message_count("INBOX").unwrap(), 2);
         assert_eq!(s.message_count("Other").unwrap(), 0);
     }
