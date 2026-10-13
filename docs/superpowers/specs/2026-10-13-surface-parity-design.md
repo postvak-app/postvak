@@ -19,7 +19,7 @@ One rule violation: `postvak account add` opens its own IMAP connection to test 
 
 ## Decisions
 
-- **Account add saves first and syncs through the daemon.** No login probe before saving. The daemon watches `config.toml`, starts the new account's thread, and the front end requests one sync and reports its result. A wrong password surfaces as that sync's error; running add again with the same name replaces the account. The CLI's "Testing login..." line goes.
+- **Account add saves first and syncs through the daemon.** No login probe before saving. The daemon watches `config.toml`, starts the new account's thread; the CLI and MCP wait for it to list the account and request one sync, while the GUI shows the sync the daemon starts on its own. A wrong password surfaces as that sync's error; running add again with the same name replaces the account. The CLI's "Testing login..." line goes.
 - **Over MCP, account add takes a password command only.** A plain password would pass through the agent host's context and logs. Keyring passwords stay CLI and GUI.
 - **Account add gets its own scope, `accounts:write`.** Adding an account is neither mail nor rules, and a host should be able to grant everything else without it. It is not in the default scope set.
 - **`attachment_save` is `read:bodies`.** The agent already sees the content; writing it to a directory it names adds little.
