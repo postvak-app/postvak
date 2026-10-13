@@ -69,7 +69,7 @@ pub(crate) fn enabled(app: &App) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::gui::state::{UiAction, View};
-    use crate::gui::test_support::{Fixture, Open, message};
+    use crate::gui::test_support::{Fixture, Open, command, message};
     use crate::rules::Action;
     use crate::sync::Command;
 
@@ -78,13 +78,7 @@ mod tests {
     }
 
     fn apply(folder: &str, action: Action) -> (String, Command) {
-        let apply = Command::Apply {
-            folder: folder.into(),
-            uids: vec![1],
-            action,
-            by: "gui".into(),
-        };
-        ("work".into(), apply)
+        command("work", folder, &[1], action)
     }
 
     #[test]
@@ -102,7 +96,7 @@ mod tests {
         ] {
             assert!(enabled(&open, name), "{name}");
         }
-        open.with(|live| live.app.apply(UiAction::SelectView(View::Rules), 0.0));
+        open.with(|live| live.app.apply(UiAction::SelectView(View::Rules)));
         for name in [
             "Archive message",
             "Move message",

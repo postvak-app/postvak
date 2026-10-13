@@ -5,7 +5,6 @@ import { Theme } from "theme.slint";
 
 export struct RowData {
     unread: bool,
-    flagged: bool,
     // The mark's or flag's glyph, or empty.
     marker: string,
     member: bool,
@@ -128,7 +127,6 @@ export component ListPane inherits Rectangle {
     in property <string> title;
     in property <string> counts;
     in property <bool> searching;
-    in property <string> query;
     in property <string> search-hint;
     in property <string> results;
     in property <[RowData]> rows;
@@ -168,7 +166,6 @@ export component ListPane inherits Rectangle {
             spacing: Theme.pad / 2;
             LineEdit {
                 height: Theme.control;
-                text: root.query;
                 placeholder-text: root.search-hint;
                 accessible-label: root.search-hint;
                 init => { self.focus(); }

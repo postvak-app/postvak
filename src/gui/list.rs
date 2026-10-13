@@ -290,34 +290,19 @@ where
 /// One list row split into what each column draws, cleaned of control characters.
 pub struct Columns {
     pub account: Option<String>,
-    pub unread: bool,
-    pub flagged: bool,
-    pub marked: bool,
     pub who: String,
     pub subject: String,
     pub date: String,
-    pub member: bool,
 }
 
-/// The unread dot's cell, then the flag's or mark's, before the sender.
-const DOT: f32 = 12.0;
-const MARKER: f32 = 20.0;
-const MARKERS: f32 = DOT + MARKER;
-const GAP: f32 = 12.0;
 /// The list pane's narrowest width, so the unread dot and the flag never reach the date.
 pub const MIN_WIDTH: f32 = 220.0;
 /// A row's height: the sender and date, then the subject.
 pub const LIST_ROW: f32 = 2.0 * ROW;
 
-/// The sender's width in a row of `total` px whose date needs `date` px; the subject below has the full width.
-pub fn sender_width(total: f32, date: f32) -> f32 {
-    (total - MARKERS - date - GAP).max(0.0)
-}
-
 pub fn columns<Tz: TimeZone>(
     row: &Row,
     account: Option<&str>,
-    marked: bool,
     recipient: bool,
     in_search: bool,
     now: &DateTime<Tz>,
@@ -336,13 +321,9 @@ where
     }
     Columns {
         account: account.map(|name| clean(name, false)),
-        unread: row.unread,
-        flagged: row.flagged,
-        marked,
         who: clean(&who, false),
         subject: clean(&subject, false),
         date: list_date(row.date, now),
-        member: row.member,
     }
 }
 
@@ -545,8 +526,7 @@ mod tests {
             .with_ymd_and_hms(2026, 10, 6, 9, 13, 0)
             .unwrap()
             .timestamp();
-        let c = columns(&row, None, false, false, true, &now);
-        assert!(c.unread && c.flagged && !c.marked);
+        let c = columns(&row, None, false, true, &now);
         assert_eq!(c.who, "Linus Example");
         assert_eq!(c.subject, "[Inbox] Lunch? (3)");
         assert_eq!(c.date, "09:13");
@@ -560,18 +540,12 @@ mod tests {
         assert!(text.starts_with("   work · Sender 1 — hello"), "{text}");
         assert!(row_text(&row, None, false, false, &now).starts_with("   Sender 1 — hello"));
         assert_eq!(
-            columns(&row, Some("work"), false, false, false, &now)
+            columns(&row, Some("work"), false, false, &now)
                 .account
                 .as_deref(),
             Some("work")
         );
-        assert_eq!(columns(&row, None, false, false, false, &now).account, None);
-    }
-
-    #[test]
-    fn the_sender_keeps_clear_of_the_date_and_never_goes_negative() {
-        assert_eq!(sender_width(600.0, 80.0), 600.0 - 32.0 - 80.0 - 12.0);
-        assert_eq!(sender_width(100.0, 80.0), 0.0);
+        assert_eq!(columns(&row, None, false, false, &now).account, None);
     }
 
     #[test]
@@ -700,7 +674,7 @@ mod tests {
     }
 
     use crate::gui::state::Focus;
-    use crate::gui::test_support::Fixture;
+    use crate::gui::test_support::{Fixture, command, unread};
     use crate::rules::Action;
     use crate::sync::Command;
 
@@ -709,13 +683,7 @@ mod tests {
     }
 
     fn apply(folder: &str, uids: &[u32], action: Action) -> (String, Command) {
-        let apply = Command::Apply {
-            folder: folder.into(),
-            uids: uids.to_vec(),
-            action,
-            by: "gui".into(),
-        };
-        ("work".into(), apply)
+        command("work", folder, uids, action)
     }
 
     #[test]
@@ -797,8 +765,7 @@ mod tests {
     fn the_list_is_titled_with_the_folder_and_its_counts() {
         let fx = Fixture::new(&["work"]);
         fx.add("work", message("INBOX", 1, "read"));
-        let mut unread = message("INBOX", 2, "new");
-        unread.flags = String::new();
+        let unread = unread("INBOX", 2, "new");
         fx.add("work", unread);
         let (open, _wires) = fx.window();
         assert_eq!(
@@ -869,9 +836,7 @@ mod tests {
     #[test]
     fn keys_on_an_account_without_a_store_do_nothing() {
         let fx = Fixture::new(&["work"]);
-        let db = fx.paths.mail_db("work");
-        std::fs::remove_file(&db).unwrap();
-        std::fs::create_dir_all(&db).unwrap();
+        fx.break_store("work");
         let (open, _wires) = fx.window();
         open.press("j k x right left");
         assert!(uids(&open).is_empty());

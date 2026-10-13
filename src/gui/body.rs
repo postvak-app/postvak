@@ -38,6 +38,20 @@ pub(crate) struct Pane {
     pub links: Vec<String>,
 }
 
+/// The links in `text` that open, in order, once each.
+pub(crate) fn links(text: Option<&str>) -> Vec<String> {
+    let mut links: Vec<String> = Vec::new();
+    for segment in text.iter().flat_map(|text| segments(text)) {
+        if let Segment::Link(url) = segment
+            && has_target(url)
+            && !links.iter().any(|l| l == url)
+        {
+            links.push(url.to_string());
+        }
+    }
+    links
+}
+
 /// What the body pane shows for `app`.
 pub(crate) fn pane(app: &App) -> Pane {
     let Some(body) = &app.body else {
@@ -68,15 +82,6 @@ pub(crate) fn pane(app: &App) -> Pane {
             format!("{name} ({})", size(attachment.size))
         })
         .collect();
-    let mut links: Vec<String> = Vec::new();
-    for segment in body.text.iter().flat_map(|text| segments(text)) {
-        if let Segment::Link(url) = segment
-            && has_target(url)
-            && !links.iter().any(|l| l == url)
-        {
-            links.push(url.to_string());
-        }
-    }
     Pane {
         empty: None,
         subject: header(&message.subject),
@@ -94,7 +99,7 @@ pub(crate) fn pane(app: &App) -> Pane {
         text_note: body.text_note,
         attachments,
         saved: body.saved.as_deref().map(|s| clean(s, false)),
-        links,
+        links: body.links.clone(),
     }
 }
 
@@ -255,7 +260,7 @@ mod tests {
     use slint::ComponentHandle;
 
     use crate::gui::state::{UiAction, View};
-    use crate::gui::test_support::{Driver, Fixture, Wires, launched, message};
+    use crate::gui::test_support::{Driver, Fixture, Wires, command, launched, message, unread};
     use crate::rules::Action;
     use crate::store::Message;
     use crate::sync::{Command, Event};
@@ -375,25 +380,13 @@ mod tests {
         assert_eq!(lengths, [SOURCE_ROW, SOURCE_ROW, 500]);
     }
 
-    fn unread(uid: u32, subject: &str) -> Message {
-        let mut m = message("INBOX", uid, subject);
-        m.flags = String::new();
-        m
-    }
-
     fn not_downloaded(mut m: Message) -> Message {
         m.body_text = None;
         m
     }
 
     fn apply(uid: u32, action: Action) -> (String, Command) {
-        let command = Command::Apply {
-            folder: "INBOX".into(),
-            uids: vec![uid],
-            action,
-            by: "gui".into(),
-        };
-        ("work".to_string(), command)
+        command("work", "INBOX", &[uid], action)
     }
 
     fn read(uid: u32) -> (String, Command) {
@@ -558,7 +551,7 @@ mod tests {
     #[test]
     fn a_fetched_body_keeps_the_read_timer_and_the_hand_marks() {
         let fx = Fixture::new(&["work"]);
-        fx.add("work", not_downloaded(unread(1, "later")));
+        fx.add("work", not_downloaded(unread("INBOX", 1, "later")));
         let (mut driver, wires) = fx.driver();
         driver.press("u u");
         downloaded(&fx, 1, "Fetched");
@@ -575,7 +568,7 @@ mod tests {
     fn marking_another_row_does_not_stop_the_shown_message_being_read() {
         let fx = Fixture::new(&["work"]);
         fx.add("work", message("INBOX", 1, "old"));
-        fx.add("work", unread(2, "new"));
+        fx.add("work", unread("INBOX", 2, "new"));
         let (mut driver, wires) = fx.driver();
         driver.at(10.0);
         driver.press("j x k u");
@@ -608,7 +601,7 @@ mod tests {
     #[test]
     fn a_message_is_marked_read_after_one_second_on_screen() {
         let fx = Fixture::new(&["work"]);
-        fx.add("work", unread(1, "new"));
+        fx.add("work", unread("INBOX", 1, "new"));
         fx.add("work", message("INBOX", 2, "old"));
         let (mut driver, wires) = fx.driver();
         driver.at(10.0);
@@ -624,7 +617,7 @@ mod tests {
     #[test]
     fn the_read_timer_wakes_the_window_without_input() {
         let fx = Fixture::new(&["work"]);
-        fx.add("work", unread(1, "new"));
+        fx.add("work", unread("INBOX", 1, "new"));
         fx.add("work", message("INBOX", 2, "old"));
         let (open, wires) = fx.window();
         open.press("j");
@@ -670,7 +663,7 @@ mod tests {
         let fx = Fixture::new(&["work"]);
         fx.add("work", message("INBOX", 1, "old"));
         let (mut driver, wires) = fx.driver();
-        fx.add("work", unread(2, "new"));
+        fx.add("work", unread("INBOX", 2, "new"));
         wires.events.send(synced()).unwrap();
         driver.at(10.0);
         driver.at(12.0);
@@ -683,7 +676,7 @@ mod tests {
     #[test]
     fn the_message_shown_at_startup_is_not_marked_read() {
         let fx = Fixture::new(&["work"]);
-        fx.add("work", unread(1, "new"));
+        fx.add("work", unread("INBOX", 1, "new"));
         let (mut driver, wires) = fx.driver();
         driver.at(10.0);
         driver.at(12.0);
@@ -711,7 +704,7 @@ mod tests {
     fn an_opened_message_is_marked_read_a_second_after_its_body_arrives() {
         let fx = Fixture::new(&["work"]);
         fx.add("work", message("INBOX", 2, "old"));
-        fx.add("work", not_downloaded(unread(1, "later")));
+        fx.add("work", not_downloaded(unread("INBOX", 1, "later")));
         let (mut driver, wires) = fx.driver();
         driver.at(10.0);
         driver.press("j");
@@ -728,7 +721,7 @@ mod tests {
     #[test]
     fn the_row_after_an_archive_is_marked_read_after_a_second() {
         let fx = Fixture::new(&["work"]);
-        fx.add("work", unread(1, "next"));
+        fx.add("work", unread("INBOX", 1, "next"));
         fx.add("work", message("INBOX", 2, "done"));
         let (mut driver, wires) = fx.driver();
         driver.at(10.0);
@@ -740,7 +733,7 @@ mod tests {
     #[test]
     fn a_search_hit_is_not_opened_while_the_query_is_typed() {
         let fx = Fixture::new(&["work"]);
-        fx.add("work", not_downloaded(unread(1, "invoice")));
+        fx.add("work", not_downloaded(unread("INBOX", 1, "invoice")));
         fx.add("work", message("INBOX", 2, "lunch"));
         let (mut driver, wires) = fx.driver();
         // The hit sits beside the cursor, so its body was prefetched before the search.
@@ -756,7 +749,7 @@ mod tests {
     #[test]
     fn clicking_the_message_already_shown_opens_it() {
         let fx = Fixture::new(&["work"]);
-        fx.add("work", unread(1, "new"));
+        fx.add("work", unread("INBOX", 1, "new"));
         let (mut driver, wires) = fx.driver();
         driver.at(2.0);
         assert!(wires.sent().is_empty());
@@ -796,7 +789,7 @@ mod tests {
     fn the_read_delay_starts_when_the_body_text_appears() {
         let fx = Fixture::new(&["work"]);
         fx.add("work", message("INBOX", 2, "old"));
-        fx.add("work", not_downloaded(unread(1, "later")));
+        fx.add("work", not_downloaded(unread("INBOX", 1, "later")));
         let (mut driver, wires) = fx.driver();
         driver.at(10.0);
         driver.press("j");

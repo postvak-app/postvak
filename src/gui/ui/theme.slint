@@ -1,4 +1,5 @@
-// Ossenbloed: the palettes and grid of `theme.rs` (a test keeps the two equal) and the bundled fonts.
+// Ossenbloed: per mode a pane palette and an oxblood chrome palette (toolbar, folders, status bar) around it, the
+// grid every size comes from (`theme.rs` has the sizes Rust needs; a test keeps them equal), and the bundled fonts.
 import "../../../assets/fonts/HankenGrotesk-Medium.ttf";
 import "../../../assets/fonts/HankenGrotesk-SemiBold.ttf";
 import "../../../assets/fonts/Newsreader-Medium.ttf";
@@ -15,15 +16,21 @@ export struct Palette {
     border: color,
     error: color,
     faint: color,
+    // The reader's subject.
     heading: color,
     highlight: color,
     hover: color,
     muted: color,
+    // Text on `selected`.
     on-accent: color,
     panel: color,
+    // Behind a widget while it is pressed or dragged; `strong` is drawn on it.
     pressed: color,
     secondary: color,
+    // Behind the selected row, folder and text.
     selected: color,
+    // Bold text, such as account headings and header labels: more contrast than `text`, and it must also read on
+    // `pressed`.
     strong: color,
     text: color,
     warning: color,

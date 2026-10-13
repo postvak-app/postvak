@@ -18,6 +18,46 @@ use super::list::{self, Row, RowKey};
 use super::state::{App, View};
 use super::ui::{RowData, StripData};
 
+/// A model of `items`, for the window's small lists.
+pub(crate) fn model<T: Clone + 'static>(items: impl IntoIterator<Item = T>) -> ModelRc<T> {
+    ModelRc::from(Rc::new(VecModel::from(
+        items.into_iter().collect::<Vec<T>>(),
+    )))
+}
+
+/// `current` with `items` put into it in place, changing only the rows that differ, so Slint keeps the elements of
+/// the others (and their hover and open menus); a new model when `current` is not one of ours yet.
+pub(crate) fn synced<T: Clone + PartialEq + 'static>(
+    current: ModelRc<T>,
+    items: Vec<T>,
+) -> ModelRc<T> {
+    let Some(shown) = current.as_any().downcast_ref::<VecModel<T>>() else {
+        return model(items);
+    };
+    if shown.row_count() != items.len() {
+        shown.set_vec(items);
+    } else {
+        for (index, item) in items.into_iter().enumerate() {
+            if shown.row_data(index).as_ref() != Some(&item) {
+                shown.set_row_data(index, item);
+            }
+        }
+    }
+    current
+}
+
+/// Puts `items` into the window's model `current` (see `synced`); `set` installs it when it is new.
+pub(crate) fn sync<T: Clone + PartialEq + 'static>(
+    current: ModelRc<T>,
+    items: Vec<T>,
+    set: impl FnOnce(ModelRc<T>),
+) {
+    let updated = synced(current.clone(), items);
+    if updated != current {
+        set(updated);
+    }
+}
+
 /// What the rows are drawn from.
 #[derive(Default, PartialEq)]
 struct Shown {
@@ -63,20 +103,20 @@ impl ListModel {
         }
         let changed: Vec<usize> = {
             let shown = self.shown.borrow();
-            let was = |i: usize, row: &Row| i == shown.cursor || shown.marked.contains(&row.id());
-            let is =
-                |i: usize, row: &Row| i == app.list.cursor || app.list.marked.contains(&row.id());
-            let marked = |row: &Row, set: &HashSet<_>| set.contains(&row.id());
-            shown
-                .rows
-                .iter()
-                .enumerate()
-                .filter(|(i, row)| {
-                    was(*i, row) != is(*i, row)
-                        || marked(row, &shown.marked) != marked(row, &app.list.marked)
-                })
-                .map(|(i, _)| i)
-                .collect()
+            if shown.cursor == app.list.cursor && shown.marked == app.list.marked {
+                return;
+            }
+            // A row is drawn from whether it has the cursor and whether it is marked.
+            let state = |i: usize, cursor: usize, marked: &HashSet<_>, row: &Row| {
+                (i == cursor, marked.contains(&row.id()))
+            };
+            let rows = shown.rows.iter().enumerate();
+            rows.filter(|(i, row)| {
+                state(*i, shown.cursor, &shown.marked, row)
+                    != state(*i, app.list.cursor, &app.list.marked, row)
+            })
+            .map(|(i, _)| i)
+            .collect()
         };
         {
             let mut shown = self.shown.borrow_mut();
@@ -106,7 +146,7 @@ impl Model for ListModel {
             .map(String::as_str);
         let marked = shown.marked.contains(&row.id());
         let now = Local::now();
-        let columns = list::columns(row, account, marked, shown.recipient, shown.search, &now);
+        let columns = list::columns(row, account, shown.recipient, shown.search, &now);
         let mut name = list::row_text(row, account, shown.recipient, shown.search, &now);
         if marked {
             name = format!("✔ {name}");
@@ -128,7 +168,6 @@ impl Model for ListModel {
             menu_move: moves,
             menu_file: file,
             unread: row.unread,
-            flagged: row.flagged,
             marker: marker.into(),
             member: row.member,
             tag: columns.account.unwrap_or_default().into(),

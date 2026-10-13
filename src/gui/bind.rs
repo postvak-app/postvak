@@ -1,20 +1,19 @@
 //! State into the window and the window's callbacks back into `UiAction`s. `present` sets the window's properties and
 //! models from `&App`; `connect` hands each callback to `super::on`, which asks the app what it means and applies it.
 //! Nothing here changes state.
-use std::rc::Rc;
-
-use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString};
 
 use crate::config;
 
 use super::folders::{self, Entry, FolderEntry};
 use super::html::{self, HtmlState};
 use super::keys::{self, Key, Named, Press};
-use super::rows::{ListModel, PageModel};
+use super::rows::{ListModel, PageModel, model, sync, synced};
 use super::state::{App, Focus, UiAction, View};
 use super::ui::{
-    BodyInfo, Dot, FolderItem, FolderKind, KeyHelp, MailWindow, MenuChoice, MenuState, PageInfo,
-    Pane, ProposalData, Remote, RuleData, Sheet, StatusLine, Theme, ThemePreference, ToolButton,
+    BodyInfo, Dot, FolderItem, FolderKind, KeyHelp, MailWindow, MenuAction, MenuChoice, MenuState,
+    PageInfo, Pane, ProposalData, Remote, RuleData, Sheet, StatusLine, Theme, ThemePreference,
+    ToolButton,
 };
 use super::{body, icons, list, menu, rules, status, toolbar};
 use crate::message::clean;
@@ -27,7 +26,29 @@ fn one(f: impl FnOnce(&App) -> Option<UiAction> + 'static) -> Ask {
     Box::new(move |app| f(app).into_iter().collect())
 }
 
-/// Shows `app` in `window`.
+/// What never changes while the window is open.
+pub(crate) fn init(window: &MailWindow) {
+    window.set_list_min_width(list::MIN_WIDTH);
+    window.set_close_icon(icons::CLOSE.into());
+    window.set_search_icon(icons::SEARCH.into());
+    window.set_sync_icon(icons::SYNC.into());
+    window.set_save_icon(icons::SAVE.into());
+    window.set_source_icon(icons::SOURCE.into());
+    window.set_search_hint(toolbar::SEARCH_HINT.into());
+    window.set_sync_hint(status::sync_key().into());
+    window.set_version(format!("v{}", status::VERSION).into());
+    window.set_description(env!("CARGO_PKG_DESCRIPTION").into());
+    window.set_license(env!("CARGO_PKG_LICENSE").into());
+    window.set_repository(env!("CARGO_PKG_REPOSITORY").into());
+    window.set_homepage(env!("CARGO_PKG_HOMEPAGE").into());
+    let help = keys::HELP.map(|(keys, what)| KeyHelp {
+        keys: keys.into(),
+        what: what.into(),
+    });
+    window.set_keys(model(help));
+}
+
+/// Shows `app` in `window`. It runs after every callback and tick, so the models are updated in place.
 pub(crate) fn present(app: &App, window: &MailWindow) {
     window
         .global::<Theme>()
@@ -35,36 +56,25 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
     window.set_config_changed(app.config_changed);
     window.set_focused_pane(pane(app.focus));
     window.set_mail_view(app.view.lists_mail());
-    window.set_list_min_width(list::MIN_WIDTH);
-    window.set_close_icon(icons::CLOSE.into());
-    window.set_search_icon(icons::SEARCH.into());
-    window.set_sync_icon(icons::SYNC.into());
-
     let buttons = toolbar::buttons(app).map(|b| ToolButton {
         icon: b.icon.into(),
         name: b.name.into(),
         hint: b.hint.into(),
     });
-    window.set_tool_buttons(model(buttons));
-    window.set_tool_buttons_enabled(toolbar::enabled(app));
-    window.set_search_hint(toolbar::SEARCH_HINT.into());
-
-    let mut accounts = 0;
-    let entries = folders::entries(app);
-    let items = entries.iter().map(|entry| {
-        let mut item = folder_item(entry);
-        if let Entry::Account { .. } = entry {
-            item.gap = accounts > 0;
-            accounts += 1;
-        }
-        item
+    sync(window.get_tool_buttons(), buttons.into(), |m| {
+        window.set_tool_buttons(m)
     });
-    window.set_folders(model(items.collect::<Vec<_>>()));
-    window.set_pinned(model(folders::pinned(app).iter().map(folder_row)));
+    window.set_tool_buttons_enabled(toolbar::enabled(app));
 
-    window.set_status_lines(model(status::lines(app).into_iter().map(status_line)));
-    window.set_sync_hint(status::sync_key().into());
-    window.set_version(format!("v{}", status::VERSION).into());
+    let folders = folders::entries(app).iter().map(folder_item).collect();
+    sync(window.get_folders(), folders, |m| window.set_folders(m));
+    let pinned = folders::pinned(app).iter().map(folder_row).collect();
+    sync(window.get_pinned(), pinned, |m| window.set_pinned(m));
+
+    let lines = status::lines(app).into_iter().map(status_line).collect();
+    sync(window.get_status_lines(), lines, |m| {
+        window.set_status_lines(m)
+    });
     let update = app
         .newer_release()
         .map(status::update_text)
@@ -85,21 +95,14 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
         mark_folder_read: enabled(menu::Item::MarkFolderRead),
     });
     window.set_about_open(app.about_open);
-    window.set_description(env!("CARGO_PKG_DESCRIPTION").into());
-    window.set_license(env!("CARGO_PKG_LICENSE").into());
-    window.set_repository(env!("CARGO_PKG_REPOSITORY").into());
-    window.set_homepage(env!("CARGO_PKG_HOMEPAGE").into());
 
     window.set_help_open(app.help_open);
-    let help = keys::HELP.map(|(keys, what)| KeyHelp {
-        keys: keys.into(),
-        what: what.into(),
-    });
-    window.set_keys(model(help));
     window.set_history_open(app.history_open);
-    window.set_history(model(
-        status::history(app).into_iter().map(SharedString::from),
-    ));
+    let history = status::history(app)
+        .into_iter()
+        .map(SharedString::from)
+        .collect();
+    sync(window.get_history(), history, |m| window.set_history(m));
 }
 
 fn present_list(app: &App, window: &MailWindow) {
@@ -128,13 +131,19 @@ fn present_list(app: &App, window: &MailWindow) {
         .move_targets()
         .into_iter()
         .map(|name| SharedString::from(clean(name, false)));
-    window.set_move_targets(model(targets));
+    sync(window.get_move_targets(), targets.collect(), |m| {
+        window.set_move_targets(m)
+    });
 }
 
 fn present_body(app: &App, window: &MailWindow) {
     let pane = body::pane(app);
     let text = |value: Option<String>| SharedString::from(value.unwrap_or_default());
-    window.set_body_info(BodyInfo {
+    let shown = window.get_body_info();
+    let strings = |current, items: Vec<String>| {
+        synced(current, items.into_iter().map(SharedString::from).collect())
+    };
+    let info = BodyInfo {
         empty: pane.empty.unwrap_or_default().into(),
         subject: text(pane.subject),
         initials: pane.initials.into(),
@@ -149,12 +158,13 @@ fn present_body(app: &App, window: &MailWindow) {
         has_html: pane.has_html,
         shows_html: pane.shows_html,
         text_note: pane.text_note.unwrap_or_default().into(),
-        attachments: model(pane.attachments.into_iter().map(SharedString::from)),
+        attachments: strings(shown.attachments.clone(), pane.attachments),
         saved: text(pane.saved),
-        links: model(pane.links.into_iter().map(SharedString::from)),
-    });
-    window.set_save_icon(icons::SAVE.into());
-    window.set_source_icon(icons::SOURCE.into());
+        links: strings(shown.links.clone(), pane.links),
+    };
+    if info != shown {
+        window.set_body_info(info);
+    }
     // Messages can be megabytes: set the text only when it changed.
     let body_text = app
         .body
@@ -244,14 +254,16 @@ fn present_sheet(app: &App, window: &MailWindow) {
                     title: p.title.into(),
                     toml: p.toml.into(),
                 });
-            window.set_proposals(model(proposals));
+            sync(window.get_proposals(), proposals.collect(), |m| {
+                window.set_proposals(m)
+            });
             let lines = rules::rule_lines(&app.rules).into_iter().map(|r| RuleData {
                 label: r.label.into(),
                 enabled: r.enabled,
                 scope: r.scope.into(),
                 by: r.by.into(),
             });
-            window.set_rules(model(lines));
+            sync(window.get_rules(), lines.collect(), |m| window.set_rules(m));
         }
         View::Activity => {
             window.set_sheet(Sheet::Activity);
@@ -282,16 +294,13 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     window.on_key(move |text, command, alt| {
         let press = press(&text, command, alt);
         on(one(move |app| {
-            let typing = app.search_focused || app.move_picker.is_some();
-            keys::action(&press?, app.focus, typing)
+            keys::action(&press?, app.focus, app.typing())
         }))
     });
     window.on_tool(move |i| {
         on(one(move |app| {
             let enabled = toolbar::enabled(app);
-            let button = toolbar::buttons(app)
-                .into_iter()
-                .nth(usize::try_from(i).ok()?)?;
+            let button = nth(toolbar::buttons(app), i)?;
             enabled.then_some(button.action)
         }));
     });
@@ -312,18 +321,13 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     });
     window.on_folder_menu(move |i, j| {
         on(one(move |app| {
-            let (_, enabled, action) = folder_at(app, i)?
-                .menu()
-                .into_iter()
-                .nth(usize::try_from(j).ok()?)?;
+            let (_, enabled, action) = nth(folder_at(app, i)?.menu().into_iter().flatten(), j)?;
             enabled.then_some(action)
         }));
     });
     window.on_pinned_clicked(move |i| {
         on(one(move |app| {
-            let pinned = folders::pinned(app)
-                .into_iter()
-                .nth(usize::try_from(i).ok()?)?;
+            let pinned = nth(folders::pinned(app), i)?;
             Some(UiAction::SelectView(pinned.view?))
         }));
     });
@@ -383,10 +387,7 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     });
     window.on_move_chosen(move |i| {
         on(one(move |app| {
-            let target = app
-                .move_targets()
-                .into_iter()
-                .nth(usize::try_from(i).ok()?)?;
+            let target = nth(app.move_targets(), i)?;
             Some(UiAction::MoveTo(target.to_string()))
         }));
     });
@@ -405,7 +406,7 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     window.on_save_attachment(move |i| {
         on(one(move |app| {
             let body = app.body.as_ref()?;
-            let attachment = body.attachments.get(usize::try_from(i).ok()?)?;
+            let attachment = nth(&body.attachments, i)?;
             Some(UiAction::SaveAttachment(attachment.index))
         }));
     });
@@ -476,39 +477,31 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     window.on_load_remote(move || {
         act(UiAction::LoadRemote);
     });
-    window.on_menu_item(move |name| {
-        on(one(move |app| menu::item(&name)?.action(app)));
+    window.on_menu_item(move |action| {
+        on(one(move |app| menu_item(action).action(app)));
     });
     window.on_open_rules_file(move || {
         act(UiAction::OpenRulesFile);
     });
     window.on_approve_rule(move |i| {
         on(one(move |app| {
-            let proposal = rules::proposals(&app.rules)
-                .into_iter()
-                .nth(usize::try_from(i).ok()?)?;
-            Some(UiAction::ApproveRule(proposal.name))
+            Some(UiAction::ApproveRule(proposal(app, i)?))
         }));
     });
     window.on_reject_rule(move |i| {
         on(one(move |app| {
-            let proposal = rules::proposals(&app.rules)
-                .into_iter()
-                .nth(usize::try_from(i).ok()?)?;
-            Some(UiAction::RejectRule(proposal.name))
+            Some(UiAction::RejectRule(proposal(app, i)?))
         }));
     });
     window.on_set_enabled(move |i, enabled| {
         on(one(move |app| {
-            let rule = rules::rule_lines(&app.rules)
-                .into_iter()
-                .nth(usize::try_from(i).ok()?)?;
+            let rule = nth(rules::rule_lines(&app.rules), i)?;
             Some(UiAction::SetRuleEnabled(rule.name, enabled))
         }));
     });
     window.on_restore(move |i| {
         on(one(move |app| {
-            let row = app.trash.get(usize::try_from(i).ok()?)?;
+            let row = nth(&app.trash, i)?;
             Some(UiAction::Restore(row.account, row.entry.path.clone()))
         }));
     });
@@ -520,10 +513,39 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     });
 }
 
-fn model<T: Clone + 'static>(items: impl IntoIterator<Item = T>) -> ModelRc<T> {
-    ModelRc::from(Rc::new(VecModel::from(
-        items.into_iter().collect::<Vec<T>>(),
-    )))
+/// The `index`th of `items`, as the window's callbacks number them.
+fn nth<T>(items: impl IntoIterator<Item = T>, index: i32) -> Option<T> {
+    items.into_iter().nth(usize::try_from(index).ok()?)
+}
+
+/// The name of the proposal the Rules view shows at `index`.
+fn proposal(app: &App, index: i32) -> Option<String> {
+    Some(nth(rules::proposals(&app.rules), index)?.name)
+}
+
+fn menu_item(action: MenuAction) -> menu::Item {
+    use menu::Item;
+    match action {
+        MenuAction::About => Item::About,
+        MenuAction::AddToSelection => Item::AddToSelection,
+        MenuAction::Archive => Item::Archive,
+        MenuAction::Delete => Item::Delete,
+        MenuAction::Documentation => Item::Documentation,
+        MenuAction::Flag => Item::Flag,
+        MenuAction::History => Item::History,
+        MenuAction::Keys => Item::Keys,
+        MenuAction::MarkFolderRead => Item::MarkFolderRead,
+        MenuAction::Move => Item::Move,
+        MenuAction::ReadOrUnread => Item::ReadOrUnread,
+        MenuAction::SaveEml => Item::SaveEml,
+        MenuAction::Search => Item::Search,
+        MenuAction::SyncNow => Item::SyncNow,
+        MenuAction::TextOrHtml => Item::TextOrHtml,
+        MenuAction::ThemeDark => Item::Theme(config::Theme::Dark),
+        MenuAction::ThemeLight => Item::Theme(config::Theme::Light),
+        MenuAction::ThemeSystem => Item::Theme(config::Theme::System),
+        MenuAction::ViewSource => Item::ViewSource,
+    }
 }
 
 /// The shown message's HTML view.
@@ -533,10 +555,7 @@ fn html_view(app: &App) -> Option<&HtmlState> {
 
 /// The folder entry the pane shows at `index`.
 fn folder_at(app: &App, index: i32) -> Option<FolderEntry> {
-    match folders::entries(app)
-        .into_iter()
-        .nth(usize::try_from(index).ok()?)?
-    {
+    match nth(folders::entries(app), index)? {
         Entry::Folder(folder) => Some(folder),
         _ => None,
     }
@@ -545,10 +564,16 @@ fn folder_at(app: &App, index: i32) -> Option<FolderEntry> {
 fn folder_item(entry: &Entry) -> FolderItem {
     match entry {
         Entry::Folder(folder) => folder_row(folder),
-        Entry::Account { name, busy, error } => FolderItem {
+        Entry::Account {
+            name,
+            busy,
+            error,
+            gap,
+        } => FolderItem {
             kind: FolderKind::Account,
             label: name.into(),
             busy: *busy,
+            gap: *gap,
             error: error.as_deref().unwrap_or_default().into(),
             ..FolderItem::default()
         },
@@ -560,14 +585,7 @@ fn folder_item(entry: &Entry) -> FolderItem {
 }
 
 fn folder_row(folder: &FolderEntry) -> FolderItem {
-    let menu = folder.menu();
-    // Open and Collapse or Expand above the separator; marking read and syncing below it.
-    let head = menu
-        .iter()
-        .take_while(|(_, _, action)| {
-            matches!(action, UiAction::SelectView(_) | UiAction::ToggleFolder(..))
-        })
-        .count();
+    let [head, tail] = folder.menu();
     let choices = |items: &[(String, bool, UiAction)]| {
         model(items.iter().map(|(title, enabled, _)| MenuChoice {
             title: title.into(),
@@ -584,8 +602,8 @@ fn folder_row(folder: &FolderEntry) -> FolderItem {
         selected: folder.selected,
         heading: folder.view == Some(View::AllInboxes),
         caret_name: folder.caret_name().unwrap_or_default().into(),
-        menu_head: choices(&menu[..head]),
-        menu_tail: choices(&menu[head..]),
+        menu_head: choices(&head),
+        menu_tail: choices(&tail),
         ..FolderItem::default()
     }
 }

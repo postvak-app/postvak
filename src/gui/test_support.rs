@@ -75,6 +75,13 @@ impl Fixture {
         self.home.folder(account, name, special_use).unwrap();
     }
 
+    /// Puts a directory where the account's store should be, so it fails to open.
+    pub fn break_store(&self, account: &str) {
+        let db = self.paths.mail_db(account);
+        std::fs::remove_file(&db).unwrap();
+        std::fs::create_dir_all(&db).unwrap();
+    }
+
     pub fn add(&self, account: &str, message: Message) {
         self.home.add(account, message).unwrap();
     }
@@ -258,7 +265,8 @@ impl Open {
     }
 }
 
-/// Each element once: the query visits the rows of a `ListView` several times over.
+/// Each element once: the query visits the rows of a `ListView` several times over. Two elements with the same label
+/// at the same spot count as one too, so `get` cannot tell those apart.
 fn once(elements: Vec<ElementHandle>) -> Vec<ElementHandle> {
     let mut seen = Vec::new();
     let mut unique = Vec::new();
@@ -298,12 +306,8 @@ impl Driver {
     }
 
     pub fn apply(&mut self, action: UiAction) {
-        self.app.apply(action, self.now);
+        self.app.apply(action);
         self.tick();
-        // The window focuses the search field when asked to.
-        if self.app.focus_search && self.app.search.is_some() {
-            self.app.apply(UiAction::SearchFocused(true), self.now);
-        }
     }
 
     /// Presses each space-separated key in the focused pane: "down", "up", "left", "right", "tab", "escape",
@@ -311,7 +315,7 @@ impl Driver {
     /// the keyboard, text goes there and Enter does what it does there.
     pub fn press(&mut self, keys: &str) {
         for key in keys.split(' ') {
-            if self.app.move_picker.is_some() || self.app.search_focused {
+            if self.app.typing() {
                 match key {
                     "enter" => {
                         self.enter();
@@ -339,8 +343,7 @@ impl Driver {
                 },
                 text => Press::text(text),
             };
-            let typing = self.app.search_focused || self.app.move_picker.is_some();
-            if let Some(action) = keys::action(&press, self.app.focus, typing) {
+            if let Some(action) = keys::action(&press, self.app.focus, self.app.typing()) {
                 self.apply(action);
             }
         }
@@ -397,6 +400,29 @@ impl Driver {
 }
 
 pub(crate) use super::fixture::message;
+
+/// A message that has not been read.
+pub(crate) fn unread(folder: &str, uid: u32, subject: &str) -> Message {
+    let mut message = message(folder, uid, subject);
+    message.flags = String::new();
+    message
+}
+
+/// What the window sends to the daemon for `action` on `uids` of `folder` in `account`.
+pub(crate) fn command(
+    account: &str,
+    folder: &str,
+    uids: &[u32],
+    action: crate::rules::Action,
+) -> (String, Command) {
+    let apply = Command::Apply {
+        folder: folder.into(),
+        uids: uids.to_vec(),
+        action,
+        by: "gui".into(),
+    };
+    (account.into(), apply)
+}
 
 /// A 1×1 PNG, for the `cid:` image.
 const DOT: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";

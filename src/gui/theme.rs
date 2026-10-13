@@ -1,181 +1,34 @@
-//! Ossenbloed: per mode a pane palette and an oxblood chrome palette (toolbar, folders, status bar) around it, and the
-//! grid every size comes from. The window draws from `ui/theme.slint`; these are the reference its tests check it and
-//! the contrast against, and the sizes the Rust side needs.
-// Most of it is read by the tests only.
-#![cfg_attr(not(test), allow(dead_code))]
-
-/// A colour as 0xRRGGBB.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Colour(pub u32);
-
-impl Colour {
-    pub(crate) fn rgb(self) -> [u8; 3] {
-        let [_, red, green, blue] = self.0.to_be_bytes();
-        [red, green, blue]
-    }
-}
-
-pub(crate) struct Palette {
-    pub accent: Colour,
-    pub background: Colour,
-    pub border: Colour,
-    pub error: Colour,
-    pub faint: Colour,
-    /// The reader's subject.
-    pub heading: Colour,
-    pub highlight: Colour,
-    pub hover: Colour,
-    pub muted: Colour,
-    /// Text on `selected`.
-    pub on_accent: Colour,
-    pub panel: Colour,
-    /// Behind a widget while it is pressed or dragged; `strong` is drawn on it.
-    pub pressed: Colour,
-    pub secondary: Colour,
-    /// Behind the selected row, folder and text.
-    pub selected: Colour,
-    /// Bold text, such as account headings and header labels: more contrast than `text`, and it must also read on
-    /// `pressed`.
-    pub strong: Colour,
-    pub text: Colour,
-    pub warning: Colour,
-}
+//! The sizes the Rust side needs from the grid; the grid and the palettes are `Theme` in `ui/theme.slint`. The tests
+//! here keep the two equal and check the palettes' contrast.
 
 /// Height of buttons and fields, and the width of icon buttons.
 pub(crate) const CONTROL: f32 = 28.0;
-/// Height of the toolbar.
-pub(crate) const TOP_BAR: f32 = 40.0;
 /// Height of rows, text buttons and fields.
 pub(crate) const ROW: f32 = 24.0;
-/// Space between a row's edge and its content; a pane's edge and its rows are 8 px apart too, so content sits 16 px in.
-pub(crate) const PAD: f32 = 8.0;
-/// Space between a pane's edge and content that is not in a row.
-pub(crate) const INSET: f32 = 2.0 * PAD;
-/// Size of the icons on icon buttons.
-pub(crate) const ICON: f32 = 16.0;
-/// Space between an icon button's edge and its glyph.
-pub(crate) const GLYPH: f32 = (CONTROL - ICON) / 2.0;
-/// Corner radius of the panes where they meet the frame.
-pub(crate) const RADIUS: f32 = 10.0;
-
-/// Light panes.
-pub(crate) const PAPER: Palette = Palette {
-    accent: Colour(0x9a4a1c),
-    background: Colour(0xfbf8f3),
-    border: Colour(0xe3d8cb),
-    error: Colour(0xa8202e),
-    faint: Colour(0xfffdfa),
-    heading: Colour(0x3b1418),
-    highlight: Colour(0x8c6720),
-    hover: Colour(0xeadfd0),
-    muted: Colour(0x6e5958),
-    on_accent: Colour(0xf1e4d8),
-    panel: Colour(0xf3ece2),
-    pressed: Colour(0xe3d8cb),
-    secondary: Colour(0x5e4a4b),
-    selected: Colour(0x3b1418),
-    strong: Colour(0x140b0c),
-    text: Colour(0x2b1a1c),
-    warning: Colour(0x8a5a00),
-};
-
-/// Dark panes.
-pub(crate) const NIGHT: Palette = Palette {
-    accent: Colour(0xe9c9b0),
-    background: Colour(0x231919),
-    border: Colour(0x3a2b2c),
-    error: Colour(0xf08a8a),
-    faint: Colour(0x140e0f),
-    heading: Colour(0xe9c9b0),
-    highlight: Colour(0xc99a3e),
-    hover: Colour(0x2e2223),
-    muted: Colour(0xb09a93),
-    on_accent: Colour(0xf1e4d8),
-    panel: Colour(0x1a1213),
-    pressed: Colour(0x3a2b2c),
-    secondary: Colour(0xcdb8af),
-    selected: Colour(0x5a1f25),
-    strong: Colour(0xffffff),
-    text: Colour(0xefe3d6),
-    warning: Colour(0xe6b85c),
-};
-
-/// The oxblood chrome around the light panes.
-pub(crate) const FRAME: Palette = Palette {
-    accent: Colour(0xd9b36a),
-    background: Colour(0x3b1418),
-    border: Colour(0x5a2a2f),
-    error: Colour(0xffb4a8),
-    faint: Colour(0x4e2629),
-    heading: Colour(0xf1e4d8),
-    highlight: Colour(0xd9b36a),
-    hover: Colour(0x4a1d22),
-    muted: Colour(0xc29a92),
-    on_accent: Colour(0xffffff),
-    panel: Colour(0x3b1418),
-    pressed: Colour(0x5e2a30),
-    secondary: Colour(0xe0cbbe),
-    selected: Colour(0x552a2b),
-    strong: Colour(0xffffff),
-    text: Colour(0xf1e4d8),
-    warning: Colour(0xf2cc7a),
-};
-
-/// The chrome around the dark panes.
-pub(crate) const FRAME_NIGHT: Palette = Palette {
-    accent: Colour(0xd9b36a),
-    background: Colour(0x2a0e11),
-    border: Colour(0x4a2226),
-    error: Colour(0xffb4a8),
-    faint: Colour(0x3b1d20),
-    heading: Colour(0xf1e4d8),
-    highlight: Colour(0xd9b36a),
-    hover: Colour(0x3a171b),
-    muted: Colour(0xc29a92),
-    on_accent: Colour(0xffffff),
-    panel: Colour(0x2a0e11),
-    pressed: Colour(0x4c2227),
-    secondary: Colour(0xe0cbbe),
-    selected: Colour(0x44262a),
-    strong: Colour(0xffffff),
-    text: Colour(0xf1e4d8),
-    warning: Colour(0xf2cc7a),
-};
-
-impl Palette {
-    /// Every colour with its field name, as `ui/theme.slint` names it.
-    pub(crate) fn named(&self) -> [(&'static str, Colour); 17] {
-        [
-            ("accent", self.accent),
-            ("background", self.background),
-            ("border", self.border),
-            ("error", self.error),
-            ("faint", self.faint),
-            ("heading", self.heading),
-            ("highlight", self.highlight),
-            ("hover", self.hover),
-            ("muted", self.muted),
-            ("on-accent", self.on_accent),
-            ("panel", self.panel),
-            ("pressed", self.pressed),
-            ("secondary", self.secondary),
-            ("selected", self.selected),
-            ("strong", self.strong),
-            ("text", self.text),
-            ("warning", self.warning),
-        ]
-    }
-}
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use slint::{Color, ComponentHandle};
 
-    const ALL: [&Palette; 4] = [&PAPER, &NIGHT, &FRAME, &FRAME_NIGHT];
+    use super::*;
+    use crate::gui::ui::{Palette, StartupWindow, Theme};
+
+    /// The four palettes as the window has them: the panes light and dark, the frame light and dark.
+    fn palettes() -> [Palette; 4] {
+        crate::gui::test_support::headless();
+        let window = StartupWindow::new().unwrap();
+        let theme = window.global::<Theme>();
+        [
+            theme.get_paper(),
+            theme.get_night(),
+            theme.get_frame_day(),
+            theme.get_frame_night(),
+        ]
+    }
 
     /// WCAG contrast ratio between two opaque colours, 1 to 21.
-    fn contrast(a: Colour, b: Colour) -> f32 {
-        let luminance = |c: Colour| {
+    fn contrast(a: Color, b: Color) -> f32 {
+        let luminance = |c: Color| {
             let channel = |v: u8| {
                 let v = f32::from(v) / 255.0;
                 if v <= 0.040_45 {
@@ -184,7 +37,7 @@ mod tests {
                     ((v + 0.055) / 1.055).powf(2.4)
                 }
             };
-            let [r, g, b] = c.rgb();
+            let (r, g, b) = (c.red(), c.green(), c.blue());
             0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
         };
         let (light, dark) = (
@@ -197,41 +50,16 @@ mod tests {
     #[test]
     fn the_slint_theme_has_the_same_grid() {
         let slint = include_str!("ui/theme.slint");
-        for (name, value) in [
-            ("control", CONTROL),
-            ("icon", ICON),
-            ("pad", PAD),
-            ("radius", RADIUS),
-            ("row", ROW),
-            ("top-bar", TOP_BAR),
-        ] {
+        for (name, value) in [("control", CONTROL), ("row", ROW)] {
             let line = format!("out property <length> {name}: {value}px;");
             assert!(slint.contains(&line), "theme.slint lacks {line}");
-        }
-    }
-
-    #[test]
-    fn the_slint_theme_has_the_same_colours() {
-        let slint = include_str!("ui/theme.slint");
-        for (name, palette) in [
-            ("paper", &PAPER),
-            ("night", &NIGHT),
-            ("frame-day", &FRAME),
-            ("frame-night", &FRAME_NIGHT),
-        ] {
-            let start = slint.find(&format!("<Palette> {name}: {{")).unwrap();
-            let block = &slint[start..start + slint[start..].find("};").unwrap()];
-            for (field, colour) in palette.named() {
-                let line = format!("{field}: #{:06x},", colour.0);
-                assert!(block.contains(&line), "{name} lacks {line}");
-            }
         }
     }
 
     /// Regression for #41: bold text in the dark theme was drawn in `on_accent`, near black on the dark panels.
     #[test]
     fn strong_text_stands_out_from_normal_text_in_every_palette() {
-        for p in ALL {
+        for p in palettes() {
             for background in [p.panel, p.background] {
                 let normal = contrast(p.text, background);
                 let bold = contrast(p.strong, background);
@@ -253,7 +81,7 @@ mod tests {
 
     #[test]
     fn text_on_the_selection_links_and_status_text_pass_aa_in_every_palette() {
-        for p in ALL {
+        for p in palettes() {
             let name = p.panel;
             let selected = contrast(p.on_accent, p.selected);
             assert!(
@@ -276,7 +104,7 @@ mod tests {
     /// Regression: light links were oxblood, which next to the near-black ink read as plain text.
     #[test]
     fn links_stand_apart_from_text_in_every_palette() {
-        for p in ALL {
+        for p in palettes() {
             let apart = contrast(p.accent, p.text);
             assert!(apart >= 1.2, "{:?}: link against text {apart}", p.panel);
         }
@@ -285,7 +113,7 @@ mod tests {
     /// Selected text in a field is drawn in `on_accent` on `selected`.
     #[test]
     fn selected_text_in_text_fields_is_readable_in_every_palette() {
-        for p in ALL {
+        for p in palettes() {
             let ratio = contrast(p.on_accent, p.selected);
             assert!(
                 ratio >= 4.5,

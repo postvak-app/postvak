@@ -140,6 +140,7 @@ impl Live {
                 let _ = slint::quit_event_loop();
             });
         }
+        bind::init(&live.window);
         bind::connect(&live.window, on);
         live.window.on_quit(|| {
             let _ = slint::quit_event_loop();
@@ -154,16 +155,20 @@ impl Live {
         with_live(Live::tick);
     }
 
-    /// Applies what `ask` names, then shows the result.
+    /// Applies what `ask` names, then shows the result; whether it named anything.
     fn answer(&mut self, ask: bind::Ask) -> bool {
-        let actions = ask(&self.app);
-        let now = (self.clock)();
-        let any = !actions.is_empty();
-        for action in actions {
-            self.app.apply(action, now);
-        }
+        let answered = self.apply(ask);
         self.tick();
-        any
+        answered
+    }
+
+    fn apply(&mut self, ask: bind::Ask) -> bool {
+        let actions = ask(&self.app);
+        let answered = !actions.is_empty();
+        for action in actions {
+            self.app.apply(action);
+        }
+        answered
     }
 
     /// Time moves the app on, the window shows it, and callbacks that came in meanwhile are answered.
@@ -178,10 +183,7 @@ impl Live {
                 return;
             }
             for ask in asks {
-                let now = (self.clock)();
-                for action in ask(&self.app) {
-                    self.app.apply(action, now);
-                }
+                self.apply(ask);
             }
         }
     }
@@ -434,7 +436,7 @@ mod tests {
         assert!(window.global::<Theme>().get_dark());
         assert!(window.get_mail_view());
         assert_eq!(window.get_focused_pane(), Pane::List);
-        open.with(|live| live.app.apply(UiAction::SelectView(View::Rules), 0.0));
+        open.with(|live| live.app.apply(UiAction::SelectView(View::Rules)));
         assert!(!window.get_mail_view());
     }
 

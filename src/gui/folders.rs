@@ -15,6 +15,8 @@ pub(crate) enum Entry {
         name: String,
         busy: bool,
         error: Option<String>,
+        /// After the first account, with space above it.
+        gap: bool,
     },
     Folder(FolderEntry),
     Separator,
@@ -61,8 +63,9 @@ impl FolderEntry {
         Some(format!("{verb} {}", self.label))
     }
 
-    /// What the right-click menu offers, as (title, enabled, action).
-    pub(crate) fn menu(&self) -> Vec<(String, bool, UiAction)> {
+    /// What the right-click menu offers, as (title, enabled, action): Open and Collapse or Expand, then, below a
+    /// separator, marking read and syncing.
+    pub(crate) fn menu(&self) -> [Vec<(String, bool, UiAction)>; 2] {
         let mut items = Vec::new();
         let folder = match &self.view {
             Some(View::Folder { account, folder }) => Some((*account, folder.clone())),
@@ -79,12 +82,13 @@ impl FolderEntry {
                 UiAction::ToggleFolder(*account, path.clone()),
             ));
         }
+        let mut below = Vec::new();
         if let Some((account, folder)) = folder {
             let mark = UiAction::MarkFolderRead(account, folder);
-            items.push(("Mark all as read".to_string(), self.unread > 0, mark));
+            below.push(("Mark all as read".to_string(), self.unread > 0, mark));
         }
-        items.push((status::sync_key().to_string(), true, UiAction::SyncNow));
-        items
+        below.push((status::sync_key().to_string(), true, UiAction::SyncNow));
+        [items, below]
     }
 }
 
@@ -109,6 +113,7 @@ pub(crate) fn entries(app: &App) -> Vec<Entry> {
             name: account.name.clone(),
             busy: account.busy(),
             error: account.store.as_ref().err().map(|e| clean(e, false)),
+            gap: index > 0,
         });
         entries.extend(account_entries(app, index, account));
     }
@@ -361,8 +366,8 @@ fn rank(name: &str, special_use: Option<&str>) -> usize {
 mod tests {
     use super::*;
     use crate::gui::state::{Focus, FolderRow};
-    use crate::gui::test_support::{Fixture, message};
-    use crate::store::{Folder, Message};
+    use crate::gui::test_support::{Fixture, message, unread};
+    use crate::store::Folder;
 
     fn stored(name: &str) -> Folder {
         Folder {
@@ -372,12 +377,6 @@ mod tests {
             special_use: None,
             delimiter: Some("/".into()),
         }
-    }
-
-    fn unread(folder: &str, uid: u32) -> Message {
-        let mut m = message(folder, uid, "hello");
-        m.flags = String::new();
-        m
     }
 
     fn work(name: &str) -> View {
@@ -399,10 +398,10 @@ mod tests {
     fn all_inboxes_sits_on_top_with_every_inbox_unread_count_and_opens_on_click() {
         let fx = Fixture::new(&["home", "work"]);
         fx.folder("work", "Archive", Some("Archive"));
-        fx.add("home", unread("INBOX", 1));
-        fx.add("work", unread("INBOX", 2));
-        fx.add("work", unread("INBOX", 3));
-        fx.add("work", unread("Archive", 4));
+        fx.add("home", unread("INBOX", 1, "hello"));
+        fx.add("work", unread("INBOX", 2, "hello"));
+        fx.add("work", unread("INBOX", 3, "hello"));
+        fx.add("work", unread("Archive", 4, "hello"));
         let (open, _wires) = fx.window();
         assert!(open.span("All inboxes (3)").1 < open.span("home").0);
         open.click("All inboxes (3)");
@@ -439,7 +438,7 @@ mod tests {
                 if uid == 2 {
                     message("INBOX", 2, "hi")
                 } else {
-                    unread("INBOX", uid)
+                    unread("INBOX", uid, "hello")
                 },
             );
         }
@@ -456,6 +455,7 @@ mod tests {
             let item = inbox
                 .menu()
                 .iter()
+                .flatten()
                 .position(|(title, ..)| title == "Mark all as read")
                 .unwrap();
             (row, item)
@@ -487,6 +487,7 @@ mod tests {
             folder
                 .menu()
                 .into_iter()
+                .flatten()
                 .map(|(title, enabled, _)| (title, enabled))
                 .collect()
         };
@@ -561,7 +562,7 @@ mod tests {
     fn tree_shows_folders_with_unread_counts_and_selects_on_click() {
         let fx = Fixture::new(&["work"]);
         fx.folder("work", "Archive", Some("Archive"));
-        fx.add("work", unread("INBOX", 1));
+        fx.add("work", unread("INBOX", 1, "hello"));
         fx.add("work", message("INBOX", 2, "read already"));
         let (open, _wires) = fx.window();
         assert_eq!(open.find("Inbox (1)").len(), 1);
@@ -587,9 +588,7 @@ mod tests {
     #[test]
     fn a_store_that_fails_to_open_shows_its_error_and_other_accounts_still_work() {
         let fx = Fixture::new(&["broken", "work"]);
-        let db = fx.paths.mail_db("broken");
-        std::fs::remove_file(&db).unwrap();
-        std::fs::create_dir_all(&db).unwrap();
+        fx.break_store("broken");
         let (app, _wires) = fx.app();
         let errors: Vec<String> = entries(&app)
             .into_iter()

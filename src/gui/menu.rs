@@ -9,7 +9,7 @@ use super::toolbar;
 /// Where Help ▸ Postvak documentation goes.
 pub(crate) const DOCS: &str = env!("CARGO_PKG_HOMEPAGE");
 
-/// The menu bar's items that act on the app, by the name the window gives them.
+/// The menu bar's items that act on the app.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Item {
     About,
@@ -79,66 +79,17 @@ fn mark_folder_read(app: &App) -> Option<UiAction> {
     (unread > 0).then(|| UiAction::MarkFolderRead(*account, folder.clone()))
 }
 
-/// The item the window names `name`.
-pub(crate) fn item(name: &str) -> Option<Item> {
-    let item = match name {
-        "about" => Item::About,
-        "add-to-selection" => Item::AddToSelection,
-        "archive" => Item::Archive,
-        "delete" => Item::Delete,
-        "documentation" => Item::Documentation,
-        "flag" => Item::Flag,
-        "history" => Item::History,
-        "keys" => Item::Keys,
-        "mark-folder-read" => Item::MarkFolderRead,
-        "move" => Item::Move,
-        "read-or-unread" => Item::ReadOrUnread,
-        "save-eml" => Item::SaveEml,
-        "search" => Item::Search,
-        "sync-now" => Item::SyncNow,
-        "text-or-html" => Item::TextOrHtml,
-        "theme-dark" => Item::Theme(Theme::Dark),
-        "theme-light" => Item::Theme(Theme::Light),
-        "theme-system" => Item::Theme(Theme::System),
-        "view-source" => Item::ViewSource,
-        _ => return None,
-    };
-    Some(item)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gui::test_support::{Fixture, launched, message};
+    use crate::gui::test_support::{Fixture, launched, message, unread};
+    use crate::gui::ui::MenuAction;
     use crate::sync::Command;
-
-    const NAMES: [&str; 19] = [
-        "about",
-        "add-to-selection",
-        "archive",
-        "delete",
-        "documentation",
-        "flag",
-        "history",
-        "keys",
-        "mark-folder-read",
-        "move",
-        "read-or-unread",
-        "save-eml",
-        "search",
-        "sync-now",
-        "text-or-html",
-        "theme-dark",
-        "theme-light",
-        "theme-system",
-        "view-source",
-    ];
 
     #[test]
     fn every_menu_item_has_its_action_on_a_downloaded_unread_message() {
         let fx = Fixture::new(&["work"]);
-        let mut unread = message("INBOX", 1, "hello");
-        unread.flags = String::new();
+        let unread = unread("INBOX", 1, "hello");
         fx.add("work", unread);
         crate::gui::test_support::add_html(&fx, 2, "<p>rich</p>", "rich");
         let (mut driver, _wires) = fx.driver();
@@ -165,11 +116,32 @@ mod tests {
             Some(UiAction::SetTheme(Theme::System)),
             Some(UiAction::OpenSource),
         ];
-        for (name, expected) in NAMES.into_iter().zip(expected) {
-            assert_eq!(item(name).unwrap().action(&driver.app), expected, "{name}");
+        let items = [
+            Item::About,
+            Item::AddToSelection,
+            Item::Archive,
+            Item::Delete,
+            Item::Documentation,
+            Item::Flag,
+            Item::History,
+            Item::Keys,
+            Item::MarkFolderRead,
+            Item::Move,
+            Item::ReadOrUnread,
+            Item::SaveEml,
+            Item::Search,
+            Item::SyncNow,
+            Item::TextOrHtml,
+            Item::Theme(Theme::Dark),
+            Item::Theme(Theme::Light),
+            Item::Theme(Theme::System),
+            Item::ViewSource,
+        ];
+        for (item, expected) in items.into_iter().zip(expected) {
+            assert_eq!(item.action(&driver.app), expected, "{item:?}");
         }
         driver.press("k");
-        let html = item("text-or-html").unwrap().action(&driver.app);
+        let html = Item::TextOrHtml.action(&driver.app);
         assert_eq!(
             html,
             Some(UiAction::ToggleHtml),
@@ -183,22 +155,19 @@ mod tests {
         fx.add("work", message("INBOX", 1, "hello"));
         let (mut driver, _wires) = fx.driver();
         driver.apply(UiAction::SelectView(View::Rules));
-        for name in [
-            "archive",
-            "delete",
-            "flag",
-            "move",
-            "read-or-unread",
-            "add-to-selection",
-            "search",
-            "mark-folder-read",
+        for item in [
+            Item::Archive,
+            Item::Delete,
+            Item::Flag,
+            Item::Move,
+            Item::ReadOrUnread,
+            Item::AddToSelection,
+            Item::Search,
+            Item::MarkFolderRead,
         ] {
-            assert_eq!(item(name).unwrap().action(&driver.app), None, "{name}");
+            assert_eq!(item.action(&driver.app), None, "{item:?}");
         }
-        assert_eq!(
-            item("sync-now").unwrap().action(&driver.app),
-            Some(UiAction::SyncNow)
-        );
+        assert_eq!(Item::SyncNow.action(&driver.app), Some(UiAction::SyncNow));
     }
 
     #[test]
@@ -206,7 +175,7 @@ mod tests {
         let fx = Fixture::new(&["work"]);
         fx.add("work", message("INBOX", 1, "hello"));
         let (open, wires) = fx.window();
-        open.window().invoke_menu_item("archive".into());
+        open.window().invoke_menu_item(MenuAction::Archive);
         let archive = Command::Apply {
             folder: "INBOX".into(),
             uids: vec![1],
@@ -214,7 +183,7 @@ mod tests {
             by: "gui".into(),
         };
         assert_eq!(wires.sent(), [("work".to_string(), archive)]);
-        open.window().invoke_menu_item("documentation".into());
+        open.window().invoke_menu_item(MenuAction::Documentation);
         assert_eq!(launched(), [DOCS]);
     }
 
@@ -222,7 +191,7 @@ mod tests {
     fn about_shows_the_version_and_the_slint_attribution() {
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = fx.window();
-        open.window().invoke_menu_item("about".into());
+        open.window().invoke_menu_item(MenuAction::About);
         assert_eq!(open.find("About Postvak").len(), 1);
         assert_eq!(
             open.find(&format!("Postvak v{}", crate::gui::status::VERSION))

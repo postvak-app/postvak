@@ -10,7 +10,6 @@ use std::path::PathBuf;
 use super::fixture::AT;
 use super::state::{Focus, View};
 use super::test_support::{Fixture, Open, Wires, message};
-use super::theme::{GLYPH, INSET, PAD, ROW};
 use crate::store::LogEntry;
 use crate::sync::{Activity, Event};
 use crate::trash::Trash;
@@ -287,6 +286,18 @@ fn html_narrow() {
     snapshot(&open, "gui_html_narrow");
 }
 
+/// The window's grid: (glyph, inset, pad, row).
+fn grid(open: &Open) -> (f32, f32, f32, f32) {
+    let window = open.window();
+    let theme = slint::ComponentHandle::global::<super::ui::Theme>(&window);
+    (
+        theme.get_glyph(),
+        theme.get_inset(),
+        theme.get_pad(),
+        theme.get_row(),
+    )
+}
+
 /// The left edge and vertical centre of the one element labelled `label`, or of the one containing it.
 fn edge(open: &Open, label: &str) -> (f32, f32) {
     let label = open
@@ -302,6 +313,7 @@ fn edge(open: &Open, label: &str) -> (f32, f32) {
 #[test]
 fn the_inbox_lines_up_on_the_grid() {
     let (_fx, open, _wires) = inbox("light");
+    let (glyph, _, pad, row_height) = grid(&open);
     let archive = edge(&open, "Archive message");
     let title = open
         .find("Inbox")
@@ -310,12 +322,12 @@ fn the_inbox_lines_up_on_the_grid() {
         .fold(0.0, f32::max);
     let row = edge(&open, "Your receipt for order 1042");
     assert_eq!(
-        archive.0 + GLYPH,
+        archive.0 + glyph,
         title,
         "the toolbar glyph lines up with the list title"
     );
     assert_eq!(
-        row.0 + PAD,
+        row.0 + pad,
         title,
         "the list title lines up with the rows' content"
     );
@@ -326,13 +338,13 @@ fn the_inbox_lines_up_on_the_grid() {
     );
     let (rules, activity) = (open.get("Rules"), open.get("Activity"));
     assert_eq!(
-        edge(&open, "Sync now").0 + GLYPH,
-        rules.absolute_position().x + PAD,
+        edge(&open, "Sync now").0 + glyph,
+        rules.absolute_position().x + pad,
         "status glyph"
     );
-    assert_eq!(rules.size().height, ROW, "folder row");
+    assert_eq!(rules.size().height, row_height, "folder row");
     let pitch = activity.absolute_position().y - rules.absolute_position().y;
-    assert_eq!(pitch, ROW + PAD / 2.0, "folder row pitch");
+    assert_eq!(pitch, row_height + pad / 2.0, "folder row pitch");
     open.with(|live| live.app.focus = Focus::Body);
     assert_eq!(
         edge(&open, "Your receipt for order 1042"),
@@ -356,9 +368,10 @@ fn the_list_title_the_readers_actions_and_all_inboxes_share_a_line() {
 #[test]
 fn the_keys_window_content_sits_inset() {
     let (_fx, open, _wires) = inbox("light");
+    let (_, inset, _, _) = grid(&open);
     open.press("?");
     let window = open.get("Keys").absolute_position().x;
-    assert_eq!(edge(&open, "j / k, Down / Up").0, window + INSET);
+    assert_eq!(edge(&open, "j / k, Down / Up").0, window + inset);
 }
 
 #[test]

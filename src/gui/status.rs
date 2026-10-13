@@ -188,7 +188,7 @@ mod tests {
     }
 
     use crate::gui::state::{UiAction, UpdateCheck};
-    use crate::gui::test_support::{Fixture, Open, Wires, launched, message};
+    use crate::gui::test_support::{Fixture, Open, Wires, launched, message, unread};
     use crate::sync::Event;
     use crate::time::clock;
 
@@ -266,7 +266,7 @@ mod tests {
     fn an_empty_history_says_so() {
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = fx.window();
-        open.with(|live| live.app.apply(UiAction::ToggleHistory, 0.0));
+        open.with(|live| live.app.apply(UiAction::ToggleHistory));
         assert_eq!(open.find("Nothing has happened yet.").len(), 1);
         open.click("Close");
         assert!(!open.with(|live| live.app.history_open));
@@ -276,8 +276,7 @@ mod tests {
     fn synced_reloads_the_shown_folder_and_its_unread_count() {
         let fx = Fixture::new(&["work"]);
         let (open, wires) = fx.window();
-        let mut unread = message("INBOX", 9, "late arrival");
-        unread.flags = String::new();
+        let unread = unread("INBOX", 9, "late arrival");
         fx.add("work", unread);
         assert!(open.with(|live| live.app.list.rows.is_empty()));
         let synced = Event::Synced {
@@ -427,8 +426,7 @@ mod tests {
             ("work", "INBOX", 2),
             ("work", "Archive", 3),
         ] {
-            let mut unread = message(folder, uid, "hello");
-            unread.flags = String::new();
+            let unread = unread(folder, uid, "hello");
             fx.add(account, unread);
         }
         let (driver, _wires) = fx.driver();

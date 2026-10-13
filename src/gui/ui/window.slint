@@ -11,6 +11,9 @@ import { ListPane, RowData } from "list.slint";
 
 export enum Pane { body, folders, list }
 
+// The menu items that act on the app; `menu.rs` says what each does.
+export enum MenuAction { about, add-to-selection, archive, delete, documentation, flag, history, keys, mark-folder-read, move, read-or-unread, save-eml, search, sync-now, text-or-html, theme-dark, theme-light, theme-system, view-source }
+
 // Which menu items would do something now; the others are disabled.
 export struct MenuState {
     save-eml: bool,
@@ -150,8 +153,7 @@ export component MailWindow inherits Window {
     callback page-clicked(length, length);
     callback load-remote();
     callback page-open-link();
-    // A menu item by name, as `menu.rs` knows it.
-    callback menu-item(string);
+    callback menu-item(MenuAction);
     callback close-window();
     callback quit();
     callback open-rules-file();
@@ -203,12 +205,12 @@ export component MailWindow inherits Window {
             MenuItem {
                 title: "Save .eml";
                 enabled: root.menu.save-eml;
-                activated => { root.menu-item("save-eml"); }
+                activated => { root.menu-item(MenuAction.save-eml); }
             }
             MenuItem {
                 title: "View source";
                 enabled: root.menu.view-source;
-                activated => { root.menu-item("view-source"); }
+                activated => { root.menu-item(MenuAction.view-source); }
             }
             MenuSeparator { }
             MenuItem {
@@ -232,7 +234,7 @@ export component MailWindow inherits Window {
             MenuItem {
                 title: "Search";
                 enabled: root.menu.search;
-                activated => { root.menu-item("search"); }
+                activated => { root.menu-item(MenuAction.search); }
             }
         }
         Menu {
@@ -240,32 +242,32 @@ export component MailWindow inherits Window {
             MenuItem {
                 title: "Archive";
                 enabled: root.menu.message;
-                activated => { root.menu-item("archive"); }
+                activated => { root.menu-item(MenuAction.archive); }
             }
             MenuItem {
                 title: "Move…";
                 enabled: root.menu.message;
-                activated => { root.menu-item("move"); }
+                activated => { root.menu-item(MenuAction.move); }
             }
             MenuItem {
                 title: "Delete";
                 enabled: root.menu.message;
-                activated => { root.menu-item("delete"); }
+                activated => { root.menu-item(MenuAction.delete); }
             }
             MenuItem {
                 title: "Flag";
                 enabled: root.menu.message;
-                activated => { root.menu-item("flag"); }
+                activated => { root.menu-item(MenuAction.flag); }
             }
             MenuItem {
                 title: "Read or unread";
                 enabled: root.menu.message;
-                activated => { root.menu-item("read-or-unread"); }
+                activated => { root.menu-item(MenuAction.read-or-unread); }
             }
             MenuItem {
                 title: "Add to selection";
                 enabled: root.menu.message;
-                activated => { root.menu-item("add-to-selection"); }
+                activated => { root.menu-item(MenuAction.add-to-selection); }
             }
         }
         Menu {
@@ -273,7 +275,7 @@ export component MailWindow inherits Window {
             MenuItem {
                 title: "Text or HTML";
                 enabled: root.menu.text-or-html;
-                activated => { root.menu-item("text-or-html"); }
+                activated => { root.menu-item(MenuAction.text-or-html); }
             }
             Menu {
                 title: "Theme";
@@ -281,52 +283,52 @@ export component MailWindow inherits Window {
                     title: "System";
                     checkable: true;
                     checked: Theme.preference == ThemePreference.system;
-                    activated => { root.menu-item("theme-system"); }
+                    activated => { root.menu-item(MenuAction.theme-system); }
                 }
                 MenuItem {
                     title: "Light";
                     checkable: true;
                     checked: Theme.preference == ThemePreference.light;
-                    activated => { root.menu-item("theme-light"); }
+                    activated => { root.menu-item(MenuAction.theme-light); }
                 }
                 MenuItem {
                     title: "Dark";
                     checkable: true;
                     checked: Theme.preference == ThemePreference.dark;
-                    activated => { root.menu-item("theme-dark"); }
+                    activated => { root.menu-item(MenuAction.theme-dark); }
                 }
             }
             MenuSeparator { }
             MenuItem {
                 title: "History";
-                activated => { root.menu-item("history"); }
+                activated => { root.menu-item(MenuAction.history); }
             }
             MenuItem {
                 title: "Keys";
-                activated => { root.menu-item("keys"); }
+                activated => { root.menu-item(MenuAction.keys); }
             }
         }
         Menu {
             title: "Mailbox";
             MenuItem {
                 title: "Sync now";
-                activated => { root.menu-item("sync-now"); }
+                activated => { root.menu-item(MenuAction.sync-now); }
             }
             MenuItem {
                 title: "Mark folder read";
                 enabled: root.menu.mark-folder-read;
-                activated => { root.menu-item("mark-folder-read"); }
+                activated => { root.menu-item(MenuAction.mark-folder-read); }
             }
         }
         Menu {
             title: "Help";
             MenuItem {
                 title: "Postvak documentation";
-                activated => { root.menu-item("documentation"); }
+                activated => { root.menu-item(MenuAction.documentation); }
             }
             MenuItem {
                 title: "About Postvak";
-                activated => { root.menu-item("about"); }
+                activated => { root.menu-item(MenuAction.about); }
             }
         }
     }
@@ -513,7 +515,7 @@ export component MailWindow inherits Window {
         repository: root.repository;
         homepage: root.homepage;
         close-icon: root.close-icon;
-        close => { root.menu-item("about"); }
+        close => { root.menu-item(MenuAction.about); }
         open-url(url) => { root.open-link(url); }
     }
 

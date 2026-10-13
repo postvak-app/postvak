@@ -87,6 +87,8 @@ pub(crate) struct BodyState {
     pub text_note: Option<&'static str>,
     /// The body text cleaned once on load, since the panel draws it every frame.
     pub text: Option<String>,
+    /// The links in `text` that open, found once with it.
+    pub links: Vec<String>,
 }
 
 impl BodyState {
@@ -295,7 +297,6 @@ pub struct App {
     /// Downloads remote content for HTML mail, started the first time the user asks.
     pub(crate) fetcher: Option<Fetcher>,
     pub(crate) focus: Focus,
-    pub(crate) focus_search: bool,
     pub(crate) about_open: bool,
     pub(crate) help_open: bool,
     /// Numbers HTML layouts, so a reply for an older one is dropped.
@@ -380,7 +381,6 @@ impl App {
             fetch_release: update::fetch,
             fetcher: None,
             focus: Focus::List,
-            focus_search: false,
             about_open: false,
             help_open: false,
             html_generation: 0,
@@ -427,16 +427,20 @@ impl App {
         self.receive(now);
         self.receive_html();
         self.receive_remote();
-        self.settle_html(now);
         self.keep_daemon(now);
         self.check_release();
         if std::mem::take(&mut self.view_dirty) {
             self.reload_view();
         }
         self.poll_files(now);
-        let typing_search = self.focus_search || self.search_focused;
+        let typing_search = self.search_focused;
         self.sync_body(now, typing_search);
-        self.lay_out_new_html(now);
+        // The window reports the HTML view's width only when it changes; laying out at the last one starts a newly
+        // shown message, and lays out again once a new width has held still.
+        if let Some((scale, width)) = self.html_size {
+            self.html_width(scale, width, now);
+        }
+        self.paint_visible();
         self.mark_read_after_delay(now);
         self.request_tick(self.last_poll + POLL);
         if self.daemon_lost {
@@ -716,7 +720,7 @@ impl App {
         }
     }
 
-    pub fn apply(&mut self, action: UiAction, now: f64) {
+    pub fn apply(&mut self, action: UiAction) {
         match action {
             UiAction::Act(action) => self.act(action),
             UiAction::ApproveRule(name) => {
@@ -730,10 +734,7 @@ impl App {
             UiAction::HtmlHover(at) => self.html_hover(at),
             UiAction::HtmlSelect { from, to } => self.html_select(from, to),
             UiAction::HtmlVisible { top, bottom } => self.html_visible(top, bottom),
-            UiAction::HtmlWidth { scale, width } => {
-                self.html_size = Some((scale, width));
-                self.html_width(scale, width, now);
-            }
+            UiAction::HtmlWidth { scale, width } => self.html_size = Some((scale, width)),
             UiAction::LoadRemote => self.load_remote(),
             UiAction::Escape => {
                 if self.move_picker.is_some() {
@@ -807,12 +808,7 @@ impl App {
             }
             UiAction::SaveAttachment(index) => self.save_attachment(index),
             UiAction::SaveEml => self.save_eml(),
-            UiAction::SearchFocused(focused) => {
-                self.search_focused = focused;
-                if focused {
-                    self.focus_search = false;
-                }
-            }
+            UiAction::SearchFocused(focused) => self.search_focused = focused,
             UiAction::SearchFor(query) => {
                 self.search = Some(query);
                 self.list.cursor = 0;
@@ -841,7 +837,8 @@ impl App {
             UiAction::StartSearch => {
                 if self.view.lists_mail() {
                     self.search = Some(String::new());
-                    self.focus_search = true;
+                    // The field takes the keyboard as it appears.
+                    self.search_focused = true;
                     self.list = ListState::default();
                     self.reload_view();
                 }
@@ -901,6 +898,11 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Whether a text field has the keyboard, so letters are text rather than keys.
+    pub(crate) fn typing(&self) -> bool {
+        self.search_focused || self.move_picker.is_some()
     }
 
     /// The `m` picker's folders: those of the selected rows' account that match the filter, without the folder the
@@ -1105,6 +1107,7 @@ impl App {
             if body.text.is_none() && text.is_some() {
                 body.shown_at = now;
             }
+            body.links = body::links(text.as_deref());
             body.text = text;
             body.message = message;
             body.attachments = attachments;
@@ -1167,6 +1170,7 @@ impl App {
             show_text: false,
             shown_at: now,
             source: None,
+            links: body::links(text.as_deref()),
             text,
         }
     }
@@ -1254,8 +1258,6 @@ impl App {
         let Some(renderer) = &self.renderer else {
             return;
         };
-        // A new layout or selection drops the strips; the part on screen is asked for again once the replies are in.
-        let mut repaint = false;
         for reply in renderer.replies() {
             let Some(body) = self.body.as_mut() else {
                 continue;
@@ -1297,51 +1299,17 @@ impl App {
                     view.hovered_at = None;
                     view.selected_at = None;
                     view.selection = None;
-                    repaint = true;
                 }
                 Reply::Link { href, .. } => view.hover = href,
                 Reply::Selected { text, .. } => {
                     view.selection = text;
                     // Paint the strips again with the highlight; the old ones stay on screen until then.
                     view.requested.clear();
-                    repaint = true;
                 }
                 Reply::Strip { image, strip, .. } => {
                     view.strips.insert(strip, Arc::new(image));
                 }
             }
-        }
-        let visible = self
-            .body
-            .as_ref()
-            .and_then(|b| b.html_view.as_ref())
-            .map(|v| v.visible);
-        if let Some((top, bottom)) = visible.filter(|_| repaint) {
-            self.html_visible(top, bottom);
-        }
-    }
-
-    /// A message that shows HTML and has no layout yet gets one at the view's last width; the window reports the width
-    /// only when it changes.
-    fn lay_out_new_html(&mut self, now: f64) {
-        let waiting = self
-            .body
-            .as_ref()
-            .is_some_and(|b| b.shows_html() && b.html_view.is_none());
-        if let (true, Some((scale, width))) = (waiting, self.html_size) {
-            self.html_width(scale, width, now);
-        }
-    }
-
-    /// Lays out at the width the view settled on, once it has held still for `html::SETTLE`.
-    fn settle_html(&mut self, now: f64) {
-        let wanted = self
-            .body
-            .as_ref()
-            .and_then(|b| b.html_view.as_ref())
-            .and_then(|v| v.wanted);
-        if let Some(((scale, width), _)) = wanted {
-            self.html_width(scale, width, now);
         }
     }
 
@@ -1455,15 +1423,24 @@ impl App {
         }
     }
 
-    /// Asks for the strips around what is on screen and lets go of those far from it.
+    /// Records the part of the page on screen, and asks for its strips.
     fn html_visible(&mut self, top: f32, bottom: f32) {
+        if let Some(view) = self.body.as_mut().and_then(|b| b.html_view.as_mut()) {
+            view.visible = (top, bottom);
+        }
+        self.paint_visible();
+    }
+
+    /// Asks for the strips around what is on screen that are neither painted nor asked for, and lets go of those far
+    /// from it. A new layout or selection empties `requested`, so they are asked for again.
+    fn paint_visible(&mut self) {
         let (Some(view), Some(renderer)) = (
             self.body.as_mut().and_then(|b| b.html_view.as_mut()),
             self.renderer.as_mut(),
         ) else {
             return;
         };
-        view.visible = (top, bottom);
+        let (top, bottom) = view.visible;
         let Some(page) = view.page else { return };
         let scale = view.sent.0;
         for strip in html::wanted_strips(top, bottom, page.1, scale) {
@@ -1865,7 +1842,7 @@ mod tests {
     use super::*;
     use crate::daemon::Client;
     use crate::daemon::wire::AccountStatus;
-    use crate::gui::test_support::{Driver, Fixture, Wires, message};
+    use crate::gui::test_support::{Driver, Fixture, Wires, command, message, unread};
     use crate::rules::Action;
     use crate::sync::{Command, Event};
 
@@ -1873,22 +1850,6 @@ mod tests {
         for &uid in uids {
             fx.add("work", message("INBOX", uid, &format!("subject {uid}")));
         }
-    }
-
-    fn unread(folder: &str, uid: u32, subject: &str) -> Message {
-        let mut message = message(folder, uid, subject);
-        message.flags = String::new();
-        message
-    }
-
-    fn command(account: &str, folder: &str, uids: &[u32], action: Action) -> (String, Command) {
-        let apply = Command::Apply {
-            folder: folder.into(),
-            uids: uids.to_vec(),
-            action,
-            by: "gui".into(),
-        };
-        (account.into(), apply)
     }
 
     fn apply(uids: &[u32], action: Action) -> (String, Command) {
@@ -1954,9 +1915,7 @@ mod tests {
     fn all_inboxes_lists_the_other_accounts_when_one_store_is_broken() {
         let fx = Fixture::new(&["broken", "work"]);
         fx.add("work", message("INBOX", 1, "still here"));
-        let db = fx.paths.mail_db("broken");
-        std::fs::remove_file(&db).unwrap();
-        std::fs::create_dir_all(&db).unwrap();
+        fx.break_store("broken");
         let (mut driver, _wires) = fx.driver();
         assert!(driver.app.shows_all_inboxes());
         driver.apply(UiAction::SelectView(View::AllInboxes));
