@@ -1,5 +1,9 @@
 // The mail window. It draws what `bind.rs` gives it and hands every key and click back as a callback.
-import { Theme } from "theme.slint";
+import { Theme, ThemePreference } from "theme.slint";
+import { FolderItem, FolderPane } from "folders.slint";
+import { ToolButton, Toolbar } from "toolbar.slint";
+import { StatusBar, StatusLine } from "status.slint";
+import { HistoryDialog, KeyHelp, KeysDialog } from "dialogs.slint";
 
 export enum Pane { body, folders, list }
 
@@ -36,6 +40,42 @@ export component MailWindow inherits Window {
     // A folder or All inboxes: a list and the body; else Rules, Activity or Backups, one pane.
     in property <bool> mail-view: true;
     in property <bool> config-changed;
+    // Phosphor glyphs from `icons.rs`.
+    in property <string> close-icon;
+    in property <string> search-icon;
+    in property <string> sync-icon;
+
+    in property <[ToolButton]> tool-buttons;
+    in property <bool> tool-buttons-enabled;
+    in property <string> search-hint;
+
+    in property <[FolderItem]> folders;
+    in property <[FolderItem]> pinned;
+
+    in property <[StatusLine]> status-lines;
+    in property <string> sync-hint;
+    in property <string> version;
+    in property <string> update;
+
+    in property <bool> help-open;
+    in property <[KeyHelp]> keys;
+    in property <bool> history-open;
+    in property <[string]> history;
+
+    // A key the focused text field did not take: its text, and whether Ctrl (Cmd on macOS) or Alt was held. True
+    // when it did something.
+    callback key(string, bool, bool) -> bool;
+    callback tool(int);
+    callback search();
+    callback folder-clicked(int);
+    callback caret-clicked(int);
+    callback folder-menu(int, int);
+    callback pinned-clicked(int);
+    callback sync();
+    callback toggle-history();
+    callback toggle-help();
+    callback set-theme(ThemePreference);
+    callback open-update();
 
     title: "Postvak";
     icon: @image-url("../../../assets/icon.png");
@@ -44,10 +84,29 @@ export component MailWindow inherits Window {
     background: Theme.frame.background;
     default-font-family: Theme.text-font;
     default-font-size: 14px;
+    forward-focus: keys;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (root.key(event.text, event.modifiers.control, event.modifiers.alt)) {
+                return accept;
+            }
+            return reject;
+        }
+    }
 
     VerticalLayout {
-        toolbar := Rectangle {
-            height: Theme.top-bar;
+        padding-left: Theme.pad;
+        padding-right: Theme.pad;
+        Toolbar {
+            folders-width: root.folders-width;
+            buttons: root.tool-buttons;
+            buttons-enabled: root.tool-buttons-enabled;
+            search-enabled: root.mail-view;
+            search-icon: root.search-icon;
+            search-hint: root.search-hint;
+            action(i) => { root.tool(i); }
+            search => { root.search(); }
         }
 
         if root.config-changed: HorizontalLayout {
@@ -60,9 +119,14 @@ export component MailWindow inherits Window {
         }
 
         HorizontalLayout {
-            padding-right: Theme.pad;
-            folders := Rectangle {
+            FolderPane {
                 width: root.folders-width;
+                items: root.folders;
+                pinned: root.pinned;
+                clicked(i) => { root.folder-clicked(i); }
+                caret-clicked(i) => { root.caret-clicked(i); }
+                menu(i, j) => { root.folder-menu(i, j); }
+                pinned-clicked(i) => { root.pinned-clicked(i); }
             }
 
             Splitter {
@@ -72,6 +136,7 @@ export component MailWindow inherits Window {
 
             if root.mail-view: list := PaneFrame {
                 width: root.list-width;
+                background: Theme.pane.panel;
                 focused: root.focused-pane == Pane.list;
                 border-top-left-radius: Theme.radius;
                 border-bottom-left-radius: Theme.radius;
@@ -94,8 +159,32 @@ export component MailWindow inherits Window {
             }
         }
 
-        status := Rectangle {
-            height: Theme.control + Theme.pad;
+        StatusBar {
+            lines: root.status-lines;
+            sync-icon: root.sync-icon;
+            sync-hint: root.sync-hint;
+            version: root.version;
+            update: root.update;
+            sync => { root.sync(); }
+            toggle-history => { root.toggle-history(); }
+            set-theme(theme) => { root.set-theme(theme); }
+            open-update => { root.open-update(); }
         }
+    }
+
+    if root.history-open: HistoryDialog {
+        x: Theme.inset;
+        y: root.height - self.height - Theme.top-bar - Theme.pad;
+        lines: root.history;
+        close-icon: root.close-icon;
+        close => { root.toggle-history(); }
+    }
+
+    if root.help-open: KeysDialog {
+        x: (root.width - self.width) / 2;
+        y: Theme.top-bar + Theme.inset;
+        keys: root.keys;
+        close-icon: root.close-icon;
+        close => { root.toggle-help(); }
     }
 }

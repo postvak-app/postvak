@@ -1,10 +1,191 @@
 //! The folder pane without a toolkit: the tree of custom folders, the order of special ones, labels and unread counts.
 //! The window draws All inboxes, each account's folders and the Rules, Activity and Backups entries from it.
 
+use crate::message::clean;
 use crate::store::Folder;
 
-use super::state::{Account, FolderRow};
-use super::{list, numbers};
+use super::state::{Account, App, FolderRow, UiAction, View};
+use super::{icons, list, numbers, status};
+
+/// How far each tree level is indented, in points.
+pub(crate) const INDENT: f32 = 16.0;
+
+/// A line of the folder pane's scrolling part, top to bottom.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Entry {
+    /// An account's name, with a spinner while it syncs and its store error.
+    Account {
+        name: String,
+        busy: bool,
+        error: Option<String>,
+    },
+    Folder(FolderEntry),
+    Separator,
+}
+
+/// A row that opens a view: All inboxes, a folder, or one of the views pinned at the bottom.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct FolderEntry {
+    pub icon: &'static str,
+    pub label: String,
+    /// The unread count shown on the right, grouped.
+    pub count: Option<String>,
+    /// The accessible name: the label, with the count in brackets.
+    pub name: String,
+    pub depth: usize,
+    pub selected: bool,
+    /// What a click opens; None for a parent the server does not list.
+    pub view: Option<View>,
+    /// For a parent row: whether it is expanded, its account and path.
+    pub branch: Option<(bool, usize, String)>,
+    pub unread: u32,
+}
+
+impl FolderEntry {
+    fn new(icon: &'static str, label: String, unread: u32, view: View, app: &App) -> FolderEntry {
+        let (count, name) = count_and_name(&label, unread);
+        FolderEntry {
+            icon,
+            label,
+            count,
+            name,
+            depth: 0,
+            selected: app.view == view,
+            view: Some(view),
+            branch: None,
+            unread,
+        }
+    }
+
+    /// The caret's accessible name on a parent row.
+    pub(crate) fn caret_name(&self) -> Option<String> {
+        let (expanded, ..) = self.branch.as_ref()?;
+        let verb = if *expanded { "Collapse" } else { "Expand" };
+        Some(format!("{verb} {}", self.label))
+    }
+
+    /// What the right-click menu offers, as (title, enabled, action).
+    pub(crate) fn menu(&self) -> Vec<(String, bool, UiAction)> {
+        let mut items = Vec::new();
+        let folder = match &self.view {
+            Some(View::Folder { account, folder }) => Some((*account, folder.clone())),
+            _ => None,
+        };
+        if let Some(view) = &self.view {
+            items.push(("Open".to_string(), true, UiAction::SelectView(view.clone())));
+        }
+        if let Some((expanded, account, path)) = &self.branch {
+            let title = if *expanded { "Collapse" } else { "Expand" };
+            items.push((
+                title.to_string(),
+                true,
+                UiAction::ToggleFolder(*account, path.clone()),
+            ));
+        }
+        if let Some((account, folder)) = folder {
+            let mark = UiAction::MarkFolderRead(account, folder);
+            items.push(("Mark all as read".to_string(), self.unread > 0, mark));
+        }
+        items.push((status::sync_key().to_string(), true, UiAction::SyncNow));
+        items
+    }
+}
+
+/// The scrolling part of the folder pane: All inboxes when there is more than one account, then per account its
+/// name, its special folders, a separator and its custom folders as a tree.
+pub(crate) fn entries(app: &App) -> Vec<Entry> {
+    let mut entries = Vec::new();
+    if app.shows_all_inboxes() {
+        let unread = inbox_unread(&app.accounts);
+        let all = FolderEntry::new(
+            icons::ALL_INBOXES,
+            "All inboxes".into(),
+            unread,
+            View::AllInboxes,
+            app,
+        );
+        entries.push(Entry::Folder(all));
+        entries.push(Entry::Separator);
+    }
+    for (index, account) in app.accounts.iter().enumerate() {
+        entries.push(Entry::Account {
+            name: account.name.clone(),
+            busy: account.busy(),
+            error: account.store.as_ref().err().map(|e| clean(e, false)),
+        });
+        entries.extend(account_entries(app, index, account));
+    }
+    entries
+}
+
+fn account_entries(app: &App, index: usize, account: &Account) -> Vec<Entry> {
+    let open = |name: &str| View::Folder {
+        account: index,
+        folder: name.to_string(),
+    };
+    let (special, custom): (Vec<&FolderRow>, Vec<&FolderRow>) = account
+        .folders
+        .iter()
+        .partition(|f| is_special(&f.name, f.special_use.as_deref()));
+    let mut entries: Vec<Entry> = special
+        .iter()
+        .map(|folder| {
+            let icon = icons::for_special_use(folder.special_use.as_deref(), &folder.name);
+            let label = clean(label(&folder.name), false);
+            Entry::Folder(FolderEntry::new(
+                icon,
+                label,
+                folder.unread,
+                open(&folder.name),
+                app,
+            ))
+        })
+        .collect();
+    if !special.is_empty() && !custom.is_empty() {
+        entries.push(Entry::Separator);
+    }
+    let rows = tree(&account.folders);
+    let is_collapsed = |path: &str| app.collapsed.contains(&(index, path.to_string()));
+    for row in visible(&rows, is_collapsed) {
+        let unread = row
+            .folder
+            .as_ref()
+            .and_then(|name| account.folders.iter().find(|f| &f.name == name))
+            .map_or(0, |f| f.unread);
+        let expanded = !is_collapsed(&row.path);
+        let icon = match (row.has_children, expanded) {
+            (false, _) => icons::FOLDER,
+            (true, true) => icons::CARET_DOWN,
+            (true, false) => icons::CARET_RIGHT,
+        };
+        let label = clean(&row.label, false);
+        let (count, name) = count_and_name(&label, unread);
+        let view = row.folder.as_deref().map(open);
+        entries.push(Entry::Folder(FolderEntry {
+            icon,
+            label,
+            count,
+            name,
+            depth: row.depth,
+            selected: view.as_ref() == Some(&app.view),
+            view,
+            branch: row
+                .has_children
+                .then(|| (expanded, index, row.path.clone())),
+            unread,
+        }));
+    }
+    entries
+}
+
+/// Rules, Activity and Backups, pinned at the bottom of the pane.
+pub(crate) fn pinned(app: &App) -> [FolderEntry; 3] {
+    [
+        FolderEntry::new(icons::RULES, "Rules".into(), 0, View::Rules, app),
+        FolderEntry::new(icons::ACTIVITY, "Activity".into(), 0, View::Activity, app),
+        FolderEntry::new(icons::BACKUPS, "Backups".into(), 0, View::Trash, app),
+    ]
+}
 
 /// Unread mail in every account's INBOX, for the All inboxes count.
 pub(crate) fn inbox_unread(accounts: &[Account]) -> u32 {
@@ -182,8 +363,254 @@ fn rank(name: &str, special_use: Option<&str>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gui::state::FolderRow;
-    use crate::store::Folder;
+    use crate::gui::state::{Focus, FolderRow};
+    use crate::gui::test_support::{Fixture, message};
+    use crate::store::{Folder, Message};
+
+    fn stored(name: &str) -> Folder {
+        Folder {
+            name: name.into(),
+            uidvalidity: 1,
+            last_uid: 0,
+            special_use: None,
+            delimiter: Some("/".into()),
+        }
+    }
+
+    fn unread(folder: &str, uid: u32) -> Message {
+        let mut m = message(folder, uid, "hello");
+        m.flags = String::new();
+        m
+    }
+
+    fn work(name: &str) -> View {
+        View::Folder {
+            account: 0,
+            folder: name.into(),
+        }
+    }
+
+    /// Projects/Postvak, Projects/Website and Zeta in account `account`.
+    fn projects(fx: &Fixture, account: &str) {
+        let store = fx.store(account);
+        for name in ["Projects/Postvak", "Projects/Website", "Zeta"] {
+            store.upsert_folder(&stored(name)).unwrap();
+        }
+    }
+
+    #[test]
+    fn all_inboxes_sits_on_top_with_every_inbox_unread_count_and_opens_on_click() {
+        let fx = Fixture::new(&["home", "work"]);
+        fx.folder("work", "Archive", Some("Archive"));
+        fx.add("home", unread("INBOX", 1));
+        fx.add("work", unread("INBOX", 2));
+        fx.add("work", unread("INBOX", 3));
+        fx.add("work", unread("Archive", 4));
+        let (open, _wires) = fx.window();
+        assert!(open.span("All inboxes (3)").1 < open.span("home").0);
+        open.click("All inboxes (3)");
+        assert_eq!(open.with(|live| live.app.view.clone()), View::AllInboxes);
+    }
+
+    #[test]
+    fn one_account_has_no_all_inboxes_entry() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        let labels = open.with(|live| entries(&live.app));
+        assert!(
+            !labels
+                .iter()
+                .any(|e| matches!(e, Entry::Folder(f) if f.view == Some(View::AllInboxes)))
+        );
+        assert!(open.find("All inboxes").is_empty());
+    }
+
+    #[test]
+    fn k_in_the_folder_pane_steps_up_from_the_first_inbox_to_all_inboxes() {
+        let fx = Fixture::new(&["home", "work"]);
+        let (open, _wires) = fx.window();
+        open.press("tab tab k");
+        assert_eq!(open.with(|live| live.app.view.clone()), View::AllInboxes);
+    }
+
+    #[test]
+    fn a_folder_menu_marks_all_its_unread_mail_read() {
+        let fx = Fixture::new(&["work"]);
+        for uid in 1..=3 {
+            fx.add(
+                "work",
+                if uid == 2 {
+                    message("INBOX", 2, "hi")
+                } else {
+                    unread("INBOX", uid)
+                },
+            );
+        }
+        let (open, wires) = fx.window();
+        let (row, item) = open.with(|live| {
+            let entries = entries(&live.app);
+            let row = entries
+                .iter()
+                .position(|e| matches!(e, Entry::Folder(f) if f.name == "Inbox (2)"))
+                .unwrap();
+            let Entry::Folder(inbox) = &entries[row] else {
+                unreachable!()
+            };
+            let item = inbox
+                .menu()
+                .iter()
+                .position(|(title, ..)| title == "Mark all as read")
+                .unwrap();
+            (row, item)
+        });
+        open.window().invoke_folder_menu(row as i32, item as i32);
+        let read = crate::sync::Command::Apply {
+            folder: "INBOX".into(),
+            uids: vec![1, 3],
+            action: crate::rules::Action::MarkRead,
+            by: "gui".into(),
+        };
+        assert_eq!(wires.sent(), [("work".to_string(), read)]);
+    }
+
+    #[test]
+    fn the_folder_menu_offers_open_collapse_mark_read_and_sync() {
+        let fx = Fixture::new(&["work"]);
+        projects(&fx, "work");
+        let (app, _wires) = fx.app();
+        let entries = entries(&app);
+        let titles = |label: &str| -> Vec<(String, bool)> {
+            let folder = entries
+                .iter()
+                .find_map(|e| match e {
+                    Entry::Folder(f) if f.label == label => Some(f),
+                    _ => None,
+                })
+                .unwrap();
+            folder
+                .menu()
+                .into_iter()
+                .map(|(title, enabled, _)| (title, enabled))
+                .collect()
+        };
+        let sync = (status::sync_key().to_string(), true);
+        assert_eq!(
+            titles("Projects"),
+            [("Collapse".to_string(), true), sync.clone()]
+        );
+        assert_eq!(
+            titles("Inbox"),
+            [
+                ("Open".to_string(), true),
+                ("Mark all as read".to_string(), false),
+                sync
+            ]
+        );
+    }
+
+    #[test]
+    fn stepping_from_a_folder_in_a_collapsed_branch_stays_in_its_account() {
+        let fx = Fixture::new(&["home", "work"]);
+        projects(&fx, "work");
+        let (open, _wires) = fx.window();
+        let work = |name: &str| View::Folder {
+            account: 1,
+            folder: name.into(),
+        };
+        open.with(|live| live.app.select_view(work("Projects/Postvak")));
+        open.click("Collapse Projects");
+        open.with(|live| live.app.focus = Focus::Folders);
+        open.press("down");
+        assert_eq!(open.with(|live| live.app.view.clone()), work("Zeta"));
+    }
+
+    #[test]
+    fn clicking_a_caret_collapses_its_folder() {
+        let fx = Fixture::new(&["work"]);
+        projects(&fx, "work");
+        let (open, _wires) = fx.window();
+        assert_eq!(open.find("Website").len(), 1);
+        open.click("Collapse Projects");
+        assert!(open.find("Website").is_empty());
+        assert_eq!(open.find("Expand Projects").len(), 1);
+        let collapsed = open.with(|live| live.app.collapsed.contains(&(0, "Projects".to_string())));
+        assert!(collapsed);
+    }
+
+    #[test]
+    fn arrow_keys_follow_the_tree_and_skip_collapsed_folders() {
+        let fx = Fixture::new(&["work"]);
+        projects(&fx, "work");
+        let (open, _wires) = fx.window();
+        open.with(|live| {
+            live.app.select_view(work("Projects/Postvak"));
+            live.app.focus = Focus::Folders;
+        });
+        open.press("down");
+        assert_eq!(
+            open.with(|live| live.app.view.clone()),
+            work("Projects/Website")
+        );
+        open.click("Collapse Projects");
+        open.with(|live| {
+            live.app.select_view(work("INBOX"));
+            live.app.focus = Focus::Folders;
+        });
+        open.press("down");
+        assert_eq!(open.with(|live| live.app.view.clone()), work("Zeta"));
+    }
+
+    #[test]
+    fn tree_shows_folders_with_unread_counts_and_selects_on_click() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Archive", Some("Archive"));
+        fx.add("work", unread("INBOX", 1));
+        fx.add("work", message("INBOX", 2, "read already"));
+        let (open, _wires) = fx.window();
+        assert_eq!(open.find("Inbox (1)").len(), 1);
+        open.click("Archive");
+        assert_eq!(open.with(|live| live.app.view.clone()), work("Archive"));
+        open.click("Rules");
+        assert_eq!(open.with(|live| live.app.view.clone()), View::Rules);
+    }
+
+    #[test]
+    fn the_backup_view_is_labelled_backups_and_sits_at_the_bottom() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        let (_, bottom) = open.span("Backups");
+        assert!(
+            bottom > 700.0,
+            "pinned to the bottom of an 800 px window, at {bottom}"
+        );
+        open.click("Backups");
+        assert_eq!(open.with(|live| live.app.view.clone()), View::Trash);
+    }
+
+    #[test]
+    fn a_store_that_fails_to_open_shows_its_error_and_other_accounts_still_work() {
+        let fx = Fixture::new(&["broken", "work"]);
+        let db = fx.paths.mail_db("broken");
+        std::fs::remove_file(&db).unwrap();
+        std::fs::create_dir_all(&db).unwrap();
+        let (app, _wires) = fx.app();
+        let errors: Vec<String> = entries(&app)
+            .into_iter()
+            .filter_map(|e| match e {
+                Entry::Account { error, .. } => error,
+                _ => None,
+            })
+            .collect();
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0].starts_with("could not open the store"),
+            "{errors:?}"
+        );
+        drop(app);
+        let (open, _wires) = fx.window();
+        assert_eq!(open.find(&errors[0]).len(), 1);
+        assert_eq!(open.find("Inbox").len(), 1, "the other account's inbox");
+    }
 
     fn folder(name: &str, special_use: Option<&str>) -> Folder {
         Folder {
@@ -201,16 +628,6 @@ mod tests {
             special_use: None,
             unread: 0,
             delimiter: Some(delimiter.into()),
-        }
-    }
-
-    fn stored(name: &str) -> Folder {
-        Folder {
-            name: name.into(),
-            uidvalidity: 1,
-            last_uid: 0,
-            special_use: None,
-            delimiter: Some("/".into()),
         }
     }
 

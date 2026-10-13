@@ -1,0 +1,183 @@
+// The folder pane on the frame: All inboxes, each account with its folders, and Rules, Activity and Backups pinned at
+// the bottom. `folders.rs` decides what is in it.
+import { ScrollView, Spinner } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+export enum FolderKind { folder, account, separator }
+
+export struct MenuChoice {
+    title: string,
+    enabled: bool,
+}
+
+export struct FolderItem {
+    kind: FolderKind,
+    icon: string,
+    label: string,
+    // The grouped unread count, or empty.
+    count: string,
+    // The accessible name: "Inbox (2)".
+    name: string,
+    depth: int,
+    selected: bool,
+    // "Collapse Projects" on a parent row, else empty.
+    caret-name: string,
+    // An account heading: syncing, and its store error.
+    busy: bool,
+    error: string,
+    // The right-click menu: the items above the separator, then those below.
+    menu-head: [MenuChoice],
+    menu-tail: [MenuChoice],
+}
+
+// A row that opens a view: indent, icon, label, and the count on the right; the selected row's count is a brass pill.
+component FolderRow inherits Rectangle {
+    in property <FolderItem> item;
+    callback clicked();
+    callback caret-clicked();
+
+    property <bool> pill: item.selected && item.count != "";
+    property <length> indent: item.depth * 16px;
+
+    height: Theme.row;
+    border-radius: Theme.pad / 2;
+    background: item.selected ? Theme.frame.selected : touch.has-hover ? Theme.frame.hover : transparent;
+    accessible-role: list-item;
+    accessible-label: item.name;
+    accessible-item-selected: item.selected;
+    accessible-action-default => { root.clicked(); }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.pad + root.indent;
+        padding-right: Theme.pad;
+        spacing: Theme.pad;
+        Text {
+            accessible-role: none;
+            width: Theme.icon;
+            text: item.icon;
+            font-family: Theme.icon-font;
+            font-size: Theme.icon;
+            color: root.pill ? Theme.frame.highlight : Theme.frame.text;
+            vertical-alignment: center;
+        }
+        Text {
+            accessible-role: none;
+            horizontal-stretch: 1;
+            text: item.label;
+            color: Theme.frame.text;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        if item.count != "": Rectangle {
+            y: (parent.height - self.height) / 2;
+            width: count.preferred-width + (root.pill ? 1.5 * Theme.pad : 0);
+            height: Theme.row - Theme.pad / 2;
+            border-radius: self.height / 2;
+            background: root.pill ? Theme.frame.highlight : transparent;
+            count := Text {
+                accessible-role: none;
+                text: item.count;
+                color: root.pill ? Theme.frame.background : Theme.frame.muted;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+            }
+        }
+    }
+
+    if item.caret-name != "": TouchArea {
+        x: 0;
+        width: root.indent + 2 * Theme.pad + Theme.icon;
+        accessible-role: button;
+        accessible-label: item.caret-name;
+        accessible-action-default => { root.caret-clicked(); }
+        clicked => { root.caret-clicked(); }
+    }
+}
+
+export component FolderPane inherits Rectangle {
+    in property <[FolderItem]> items;
+    in property <[FolderItem]> pinned;
+    callback clicked(int);
+    callback caret-clicked(int);
+    callback menu(int, int);
+    callback pinned-clicked(int);
+
+    VerticalLayout {
+        ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                alignment: start;
+                padding-left: Theme.pad;
+                padding-right: Theme.pad;
+                spacing: Theme.pad / 2;
+                for item[i] in root.items: VerticalLayout {
+                    if item.kind == FolderKind.separator: Rectangle {
+                        height: 1px;
+                        background: Theme.frame.border;
+                    }
+                    if item.kind == FolderKind.account: VerticalLayout {
+                        padding-top: Theme.pad;
+                        HorizontalLayout {
+                            height: Theme.row;
+                            padding-left: Theme.pad;
+                            spacing: Theme.pad;
+                            Text {
+                                text: item.label;
+                                color: Theme.frame.muted;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+                            if item.busy: Spinner {
+                                width: Theme.icon * 3 / 4;
+                                height: Theme.icon * 3 / 4;
+                                y: (parent.height - self.height) / 2;
+                                indeterminate: true;
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                        if item.error != "": Text {
+                            x: Theme.pad;
+                            text: item.error;
+                            color: Theme.frame.error;
+                            wrap: word-wrap;
+                        }
+                    }
+                    if item.kind == FolderKind.folder: ContextMenuArea {
+                        height: Theme.row;
+                        Menu {
+                            for choice[j] in item.menu-head: MenuItem {
+                                title: choice.title;
+                                enabled: choice.enabled;
+                                activated => { root.menu(i, j); }
+                            }
+                            MenuSeparator { }
+                            for choice[j] in item.menu-tail: MenuItem {
+                                title: choice.title;
+                                enabled: choice.enabled;
+                                activated => { root.menu(i, item.menu-head.length + j); }
+                            }
+                        }
+                        FolderRow {
+                            item: item;
+                            clicked => { root.clicked(i); }
+                            caret-clicked => { root.caret-clicked(i); }
+                        }
+                    }
+                }
+            }
+        }
+
+        VerticalLayout {
+            padding: Theme.pad;
+            spacing: Theme.pad / 2;
+            for item[i] in root.pinned: FolderRow {
+                item: item;
+                clicked => { root.pinned-clicked(i); }
+            }
+        }
+    }
+}

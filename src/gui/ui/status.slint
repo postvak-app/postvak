@@ -1,0 +1,117 @@
+// The status bar: the sync button, a line per account (and the window's error), the theme switch, the version and the
+// update link. `status.rs` words the lines.
+import { ProgressIndicator } from "std-widgets.slint";
+import { Theme, ThemePreference } from "theme.slint";
+import { IconButton, TextButton } from "common.slint";
+
+export enum Dot { none, failed, up-to-date, offline }
+
+export struct StatusLine {
+    text: string,
+    dot: Dot,
+    failed: bool,
+    // 0 to 1 while headers or bodies are fetched, else below 0.
+    progress: float,
+}
+
+export component StatusBar inherits Rectangle {
+    in property <[StatusLine]> lines;
+    in property <string> sync-icon;
+    in property <string> sync-hint;
+    in property <string> version;
+    // "↑ v1.2.3 available", or empty.
+    in property <string> update;
+    callback sync();
+    callback toggle-history();
+    callback set-theme(ThemePreference);
+    callback open-update();
+
+    HorizontalLayout {
+        padding-left: Theme.inset - Theme.glyph;
+        padding-right: Theme.inset;
+        padding-top: Theme.pad / 2;
+        padding-bottom: Theme.pad;
+        spacing: Theme.pad;
+
+        VerticalLayout {
+            alignment: start;
+            IconButton {
+                icon: root.sync-icon;
+                name: "Sync now";
+                hint: root.sync-hint;
+                clicked => { root.sync(); }
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            for line in root.lines: TouchArea {
+                height: 20px;
+                clicked => { root.toggle-history(); }
+                accessible-role: button;
+                accessible-label: line.text;
+                accessible-action-default => { root.toggle-history(); }
+                HorizontalLayout {
+                    spacing: Theme.pad / 2;
+                    Rectangle {
+                        width: Theme.pad;
+                        height: Theme.pad;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: Theme.pad / 2 - 1px;
+                        border-width: line.dot == Dot.failed || line.dot == Dot.offline ? 1.5px : 0px;
+                        border-color: line.dot == Dot.failed ? Theme.frame.error : Theme.frame.highlight;
+                        background: line.dot == Dot.up-to-date ? Theme.frame.highlight : transparent;
+                    }
+                    Text {
+                        accessible-role: none;
+                        text: line.text;
+                        color: line.failed ? Theme.frame.error : Theme.frame.text;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    if line.progress >= 0: ProgressIndicator {
+                        width: 160px;
+                        height: Theme.pad / 2;
+                        y: (parent.height - self.height) / 2;
+                        progress: line.progress;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+            }
+        }
+
+        Rectangle { horizontal-stretch: 1; }
+
+        HorizontalLayout {
+            alignment: end;
+            spacing: Theme.pad / 2;
+            for choice[i] in [
+                { label: "System", theme: ThemePreference.system },
+                { label: "Light", theme: ThemePreference.light },
+                { label: "Dark", theme: ThemePreference.dark },
+            ]: VerticalLayout {
+                alignment: center;
+                TextButton {
+                    text: choice.label;
+                    selected: Theme.preference == choice.theme;
+                    clicked => { root.set-theme(choice.theme); }
+                }
+            }
+            Text {
+                text: root.version;
+                font-family: Theme.mono-font;
+                color: Theme.frame.muted;
+                vertical-alignment: center;
+            }
+            if root.update != "": VerticalLayout {
+                alignment: center;
+                TextButton {
+                    text: root.update;
+                    text-color: Theme.frame.highlight;
+                    text-font: Theme.mono-font;
+                    clicked => { root.open-update(); }
+                }
+            }
+        }
+    }
+}

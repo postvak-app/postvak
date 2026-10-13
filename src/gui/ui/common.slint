@@ -1,0 +1,74 @@
+// Small pieces the panes share.
+import { Theme, Palette } from "theme.slint";
+
+// A frameless square button with a Phosphor glyph, named for screen readers and tests, with its hint on hover.
+export component IconButton inherits Rectangle {
+    in property <string> icon;
+    in property <string> name;
+    in property <string> hint;
+    in property <bool> enabled: true;
+    in property <Palette> palette: Theme.frame;
+    callback clicked();
+
+    width: Theme.control;
+    height: Theme.control;
+    border-radius: Theme.pad / 2;
+    background: !root.enabled ? transparent : touch.pressed ? root.palette.pressed : touch.has-hover ? root.palette.hover : transparent;
+    accessible-role: button;
+    accessible-label: root.name;
+    accessible-description: root.hint;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if (root.enabled) {
+            root.clicked();
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+        Tooltip { text: @markdown("\{root.hint}"); }
+    }
+
+    Text {
+        accessible-role: none;
+        text: root.icon;
+        font-family: Theme.icon-font;
+        font-size: Theme.icon;
+        color: root.palette.text;
+        opacity: root.enabled ? 1 : 0.4;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// Text that acts as a button: the theme switch, the update link.
+export component TextButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected;
+    in property <color> text-color: Theme.frame.text;
+    in property <string> text-font: Theme.text-font;
+    callback clicked();
+
+    height: Theme.row;
+    border-radius: Theme.pad / 2;
+    background: root.selected ? Theme.frame.selected : touch.has-hover ? Theme.frame.hover : transparent;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-item-selected: root.selected;
+    accessible-action-default => { root.clicked(); }
+    HorizontalLayout {
+        padding-left: Theme.pad / 2;
+        padding-right: Theme.pad / 2;
+        Text {
+            accessible-role: none;
+            text: root.text;
+            color: root.text-color;
+            font-family: root.text-font;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}

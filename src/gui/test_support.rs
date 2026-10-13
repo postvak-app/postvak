@@ -88,6 +88,10 @@ impl Fixture {
         let mut app = App::new(&config, self.paths.clone(), client, received, states);
         app.reconnect = |_, _| Err(anyhow::anyhow!("no daemon in tests"));
         app.fetch_release = || Err(anyhow::anyhow!("no network in tests"));
+        app.launch = |target, _| {
+            LAUNCHED.with_borrow_mut(|launched| launched.push(target.to_string_lossy().into()));
+            Ok(())
+        };
         app.downloads = self.paths.cache_dir.join("downloads");
         std::fs::create_dir_all(&app.downloads).unwrap();
         (app, Wires { commands, events })
@@ -100,6 +104,15 @@ impl Fixture {
         driver.tick();
         (driver, wires)
     }
+}
+
+thread_local! {
+    static LAUNCHED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The files and URLs the app opened on this test thread, since the last call.
+pub(crate) fn launched() -> Vec<String> {
+    LAUNCHED.with_borrow_mut(std::mem::take)
 }
 
 /// This test thread's headless Slint: mock time and the software renderer, so text has real metrics from the bundled
@@ -144,6 +157,11 @@ impl Open {
         result
     }
 
+    /// Takes what the daemon sent, as when the window is woken.
+    pub fn tick(&self) {
+        with_live(Live::tick).unwrap();
+    }
+
     pub fn window(&self) -> ui::MailWindow {
         with_live(|live| live.window.clone_strong()).unwrap()
     }
@@ -154,9 +172,66 @@ impl Open {
         i_slint_backend_testing::mock_elapsed_time(Duration::from_secs_f64(seconds));
     }
 
+    /// The window drawn by the software renderer, as a PNG.
+    pub fn png(&self) -> Vec<u8> {
+        let shot = self.window().window().take_snapshot().unwrap();
+        let mut png = Vec::new();
+        let mut encoder = png::Encoder::new(&mut png, shot.width(), shot.height());
+        encoder.set_color(png::ColorType::Rgba);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(shot.as_bytes()).unwrap();
+        writer.finish().unwrap();
+        png
+    }
+
     /// The elements whose accessible label is `label`.
     pub fn find(&self, label: &str) -> Vec<ElementHandle> {
         ElementHandle::find_by_accessible_label(&self.window(), label).collect()
+    }
+
+    /// The one element labelled `label`.
+    pub fn get(&self, label: &str) -> ElementHandle {
+        let mut found = self.find(label);
+        assert_eq!(found.len(), 1, "elements labelled {label:?}");
+        found.remove(0)
+    }
+
+    /// Clicks the one element labelled `label`, as a screen reader would.
+    pub fn click(&self, label: &str) {
+        self.get(label).invoke_accessible_default_action();
+    }
+
+    /// The top and bottom of the one element labelled `label`, in window coordinates.
+    pub fn span(&self, label: &str) -> (f32, f32) {
+        let element = self.get(label);
+        let top = element.absolute_position().y;
+        (top, top + element.size().height)
+    }
+
+    /// Presses each space-separated key, as `Driver::press` spells them, on the window.
+    pub fn press(&self, keys: &str) {
+        use slint::platform::{Key, WindowEvent};
+        let window = self.window();
+        for key in keys.split(' ') {
+            let text: slint::SharedString = match key {
+                "down" => Key::DownArrow.into(),
+                "up" => Key::UpArrow.into(),
+                "left" => Key::LeftArrow.into(),
+                "right" => Key::RightArrow.into(),
+                "tab" => Key::Tab.into(),
+                "escape" => Key::Escape.into(),
+                "delete" => Key::Delete.into(),
+                "backspace" => Key::Backspace.into(),
+                "enter" => Key::Return.into(),
+                text => text.into(),
+            };
+            window
+                .window()
+                .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+            window
+                .window()
+                .dispatch_event(WindowEvent::KeyReleased { text });
+        }
     }
 }
 

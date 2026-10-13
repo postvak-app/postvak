@@ -36,9 +36,20 @@ Last updated: 2026-10-13. Branch `feat/slint-gui`. Read first: the plan `2026-10
   - Tests: the four startup window tests, theme and view, config banner.
   - Not run by hand yet: the window has only been run under the testing backend.
 
+- Task 4 (`feat(gui): folders, toolbar and status bar`):
+  - Toolkit-free: `folders::{entries, pinned, Entry, FolderEntry}` (with `menu()` and `caret_name()`), `toolbar.rs` (`buttons`, `enabled`, `SEARCH_HINT`), `status::{lines, history, Line}`.
+  - `ui/common.slint` (`IconButton` with a Slint `Tooltip` for the hint, `TextButton`), `ui/folders.slint` (`FolderPane`, `FolderItem`, `MenuChoice`; `ContextMenuArea` per row with head items, a `MenuSeparator`, tail items), `ui/toolbar.slint`, `ui/status.slint` (`StatusBar`, `StatusLine`, `Dot`), `ui/dialogs.slint` (`Dialog`, `KeysDialog`, `HistoryDialog`; composed, not inherited, because elements of an inherited base are not found by accessible label).
+  - Keys: one root `FocusScope` in `MailWindow` calls `key(text, control, alt)`; `bind::press` turns Slint key text into `keys::Press`. Slint's `control` modifier is Cmd on macOS.
+  - `bind::connect` wires every callback through `mod.rs::on(Ask)`: the closure reads `&App` and names the `UiAction`; indexes are resolved against `folders::entries`/`toolbar::buttons` at click time.
+  - `UiAction::OpenUrl(String)` and `App::launch` (a `fn`, so tests record into `test_support::launched()` instead of spawning `open`/`xdg-open`; rules.toml opens through it too).
+  - Labelled containers mark their inner `Text`s `accessible-role: none`, so a label matches one element.
+  - `Open::{tick, get, click, span, press, png}` in `test_support`.
+  - Context menus cannot show shortcuts in Slint 1.18 (only `MenuBar` can), so "Sync now · Cmd+R" is the item's title.
+  - Deferred to Task 12 (geometry and snapshots): `rows_are_full_width_and_keep_the_count_in_their_name`, `a_long_name_truncates_before_its_count`, `the_selected_folder_has_a_brass_icon_and_count_badge`, `account_names_are_muted_and_semibold`, `a_row_without_a_count_keeps_its_label_on_the_left`, `an_indented_row_starts_later_and_ends_at_the_same_edge`, `a_separator_divides_special_from_custom_folders`, `action_icons_are_drawn_at_the_icon_size`, `the_wordmark_lines_up_with_the_action_buttons`. A software-rendered look at the window (`Open::png`) matched the egui snapshot's layout closely; the list title row, the status bar's top gap and the folder pane's top padding still differ by a few pixels.
+
 ## Next steps (in order)
 
-1. Tasks 4–13 of the plan, one commit each, updating this doc after each.
+1. Tasks 5–13 of the plan, one commit each, updating this doc after each.
 
 ## Notes for whoever resumes
 

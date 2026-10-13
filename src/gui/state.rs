@@ -233,6 +233,8 @@ pub(crate) enum UiAction {
     MoveTo(String),
     NextFocus,
     OpenMovePicker,
+    /// Open a web page in the browser.
+    OpenUrl(String),
     OpenRulesFile,
     OpenSource,
     RejectRule(String),
@@ -298,6 +300,8 @@ pub struct App {
     pub(crate) html_generation: u64,
     pub(crate) history: VecDeque<HistoryLine>,
     pub(crate) history_open: bool,
+    /// Opens a file or URL with the desktop's app; tests record instead.
+    pub(crate) launch: fn(&std::ffi::OsStr, bool) -> std::io::Result<()>,
     pub(crate) last_poll: f64,
     pub(crate) last_reconnect: f64,
     pub(crate) list: ListState,
@@ -377,6 +381,7 @@ impl App {
             html_generation: 0,
             history: VecDeque::new(),
             history_open: false,
+            launch,
             last_poll: 0.0,
             last_reconnect: 0.0,
             list: ListState::default(),
@@ -775,6 +780,11 @@ impl App {
                 _ => self.note_error(None, MOVE_ONE_ACCOUNT.into()),
             },
             UiAction::OpenSource => self.open_source(),
+            UiAction::OpenUrl(url) => {
+                if let Err(e) = (self.launch)(url.as_ref(), false) {
+                    self.note_error(None, format!("could not open the link: {e}"));
+                }
+            }
             UiAction::OpenRulesFile => self.open_rules_file(),
             UiAction::RejectRule(name) => {
                 self.edit_rules(|path| rule_file::edit::reject(path, &name));
@@ -1599,7 +1609,7 @@ impl App {
             if !path.exists() {
                 crate::paths::write_atomic(&path, b"")?;
             }
-            launch(path.as_os_str(), true)
+            (self.launch)(path.as_os_str(), true)
         })();
         if let Err(e) = opened {
             self.note_error(None, format!("could not open rules.toml: {e}"));
