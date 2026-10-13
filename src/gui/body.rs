@@ -17,12 +17,12 @@ use super::toolbar::icon_button;
 
 /// The reader's Date: weekday, day, month, year, time with seconds, and the UTC offset. chrono has no portable zone
 /// abbreviation ("CEST"), so the offset stands in for it.
-pub(crate) const HEADER_DATE: &str = "%A %-d %B %Y, %H:%M:%S (UTC%:z)";
+pub const HEADER_DATE: &str = "%A %-d %B %Y, %H:%M:%S (UTC%:z)";
 /// The date beside the sender; `HEADER_DATE` shows on hover.
 const SHORT_DATE: &str = "%a %-d %b %Y, %H:%M";
 
 #[derive(Debug, PartialEq)]
-pub(crate) enum Segment<'a> {
+pub enum Segment<'a> {
     Link(&'a str),
     Text(&'a str),
 }
@@ -32,7 +32,7 @@ const SCHEMES: [&str; 3] = ["http://", "https://", "mailto:"];
 
 /// Splits a line into text and links. A link starts at a word start and ends at whitespace, a quote or an angle
 /// bracket, minus trailing punctuation.
-pub(crate) fn segments(text: &str) -> Vec<Segment<'_>> {
+pub fn segments(text: &str) -> Vec<Segment<'_>> {
     let mut parts = Vec::new();
     let (mut text_start, mut scan) = (0, 0);
     while let Some(offset) = next_link(&text[scan..]) {
@@ -58,7 +58,7 @@ pub(crate) fn segments(text: &str) -> Vec<Segment<'_>> {
     parts
 }
 
-pub(crate) fn has_target(link: &str) -> bool {
+pub fn has_target(link: &str) -> bool {
     SCHEMES.iter().any(|scheme| {
         link.strip_prefix(scheme)
             .is_some_and(|target| !target.is_empty())
@@ -84,7 +84,7 @@ fn next_link(text: &str) -> Option<usize> {
         .min()
 }
 
-pub(crate) fn size(bytes: usize) -> String {
+pub fn size(bytes: usize) -> String {
     match bytes {
         b if b < 1024 => format!("{b} B"),
         b if b < 1024 * 1024 => format!("{} KB", b / 1024),

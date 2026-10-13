@@ -19,33 +19,78 @@ use super::app::UiAction;
 use super::body;
 
 /// Strip height in physical pixels.
-pub(crate) const STRIP: u32 = 512;
+pub const STRIP: u32 = 512;
 
 /// Layout width in points never goes below this; narrower panels scroll sideways.
-pub(crate) const MIN_WIDTH: f32 = 320.0;
+pub const MIN_WIDTH: f32 = 320.0;
 
 /// HTML larger than this shows as text.
-pub(crate) const MAX_HTML: usize = 2 * 1024 * 1024;
+pub const MAX_HTML: usize = 2 * 1024 * 1024;
 
 /// A laid-out page taller than this, in points, shows as text.
-pub(crate) const MAX_HEIGHT: f32 = 200_000.0;
+pub const MAX_HEIGHT: f32 = 200_000.0;
 
 /// Seconds the panel width must hold still before the page is laid out again.
-pub(crate) const SETTLE: f64 = 0.1;
+pub const SETTLE: f64 = 0.1;
 
-pub(crate) const TOO_LARGE: &str = "Too large to render; showing text.";
-pub(crate) const FAILED: &str = "Could not render HTML; showing text.";
+pub const TOO_LARGE: &str = "Too large to render; showing text.";
+pub const FAILED: &str = "Could not render HTML; showing text.";
 
 #[cfg(feature = "html")]
-pub(crate) use render::Renderer;
+pub use render::Renderer;
+
+/// Asks the window to draw again; the render thread calls it after each reply.
+pub type Wake = std::sync::Arc<dyn Fn() + Send + Sync>;
+
+/// A painted strip: `width` × `height` premultiplied RGBA pixels, row by row.
+pub struct Pixels {
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
+}
+
+// Without the `html` feature nothing paints strips.
+#[cfg_attr(not(feature = "html"), allow(dead_code))]
+impl Pixels {
+    /// `None` unless `rgba` holds exactly `width` × `height` pixels.
+    pub fn new(width: u32, height: u32, rgba: Vec<u8>) -> Option<Pixels> {
+        let len = u64::from(width)
+            .checked_mul(u64::from(height))?
+            .checked_mul(4)?;
+        let len = usize::try_from(len).ok()?;
+        (rgba.len() == len).then_some(Pixels {
+            width,
+            height,
+            rgba,
+        })
+    }
+
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    pub fn rgba(&self) -> &[u8] {
+        &self.rgba
+    }
+
+    pub fn to_egui(&self) -> egui::ColorImage {
+        // `new` checked the length, and a u32 fits in usize on every platform eframe runs on.
+        let size = [self.width as usize, self.height as usize];
+        egui::ColorImage::from_rgba_premultiplied(size, &self.rgba)
+    }
+}
 
 /// Without the `html` feature nothing renders: messages never have an HTML body, so this is never sent to.
 #[cfg(not(feature = "html"))]
-pub(crate) struct Renderer;
+pub struct Renderer;
 
 #[cfg(not(feature = "html"))]
 impl Renderer {
-    pub fn start(_ctx: egui::Context) -> Renderer {
+    pub fn start(_wake: Wake) -> Renderer {
         Renderer
     }
 
@@ -57,7 +102,7 @@ impl Renderer {
 }
 
 /// The HTML body of a raw message when this build renders HTML.
-pub(crate) fn html_of(raw: &[u8]) -> Option<HtmlBody> {
+pub fn html_of(raw: &[u8]) -> Option<HtmlBody> {
     if cfg!(feature = "html") {
         crate::message::html_body(raw)
     } else {
@@ -67,7 +112,7 @@ pub(crate) fn html_of(raw: &[u8]) -> Option<HtmlBody> {
 
 // Without the `html` feature there is no render thread to read or build these.
 #[cfg_attr(not(feature = "html"), allow(dead_code))]
-pub(crate) struct Load {
+pub struct Load {
     pub generation: u64,
     pub html: String,
     pub inline: Vec<InlinePart>,
@@ -78,7 +123,7 @@ pub(crate) struct Load {
 
 // Without the `html` feature there is no render thread to read or build these.
 #[cfg_attr(not(feature = "html"), allow(dead_code))]
-pub(crate) enum Request {
+pub enum Request {
     Load(Load),
     Paint {
         generation: u64,
@@ -93,8 +138,8 @@ pub(crate) enum Request {
     /// The text between two points in the page, in points; the same point twice clears the selection.
     Select {
         generation: u64,
-        from: egui::Pos2,
-        to: egui::Pos2,
+        from: [f32; 2],
+        to: [f32; 2],
     },
 }
 
@@ -113,7 +158,7 @@ impl Request {
 
 // Without the `html` feature there is no render thread to read or build these.
 #[cfg_attr(not(feature = "html"), allow(dead_code))]
-pub(crate) enum Reply {
+pub enum Reply {
     Failed {
         generation: u64,
     },
@@ -135,7 +180,7 @@ pub(crate) enum Reply {
     },
     Strip {
         generation: u64,
-        image: egui::ColorImage,
+        image: Pixels,
         strip: u32,
     },
 }
@@ -192,7 +237,7 @@ impl HtmlState {
 }
 
 /// The strips covering `top..bottom` (points) plus one screen either side, within a page `height` points tall.
-pub(crate) fn wanted_strips(top: f32, bottom: f32, height: f32, scale: f32) -> Range<u32> {
+pub fn wanted_strips(top: f32, bottom: f32, height: f32, scale: f32) -> Range<u32> {
     let screen = (bottom - top).max(1.0);
     let points = STRIP as f32 / scale.max(0.5);
     let first = ((top - screen).max(0.0) / points).floor() as u32;
@@ -201,7 +246,7 @@ pub(crate) fn wanted_strips(top: f32, bottom: f32, height: f32, scale: f32) -> R
 }
 
 /// Strips more than three screens from `top..bottom` (points), whose textures can go.
-pub(crate) fn far_strips(
+pub fn far_strips(
     painted: impl Iterator<Item = u32>,
     top: f32,
     bottom: f32,
@@ -218,7 +263,7 @@ pub(crate) fn far_strips(
 }
 
 /// A link the HTML view may open: absolute, with one of the text view's schemes.
-pub(crate) fn openable(href: &str) -> Option<&str> {
+pub fn openable(href: &str) -> Option<&str> {
     let href = href.trim();
     body::has_target(href).then_some(href)
 }
@@ -318,6 +363,18 @@ fn select(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pixels_hold_exactly_width_times_height() {
+        let pixels = Pixels::new(2, 3, vec![0; 24]).unwrap();
+        assert_eq!(
+            (pixels.width(), pixels.height(), pixels.rgba().len()),
+            (2, 3, 24)
+        );
+        assert_eq!(pixels.to_egui().size, [2, 3]);
+        assert!(Pixels::new(2, 3, vec![0; 23]).is_none());
+        assert!(Pixels::new(u32::MAX, u32::MAX, Vec::new()).is_none());
+    }
 
     #[test]
     fn wanted_strips_cover_the_view_and_a_screen_either_side() {

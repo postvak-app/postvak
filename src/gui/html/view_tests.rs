@@ -204,7 +204,7 @@ struct Faked {
 
 fn faked(fx: &Fixture) -> Faked {
     let (mut harness, wires) = fx.harness();
-    let (renderer, jobs, replies) = Renderer::fake(egui::Context::default());
+    let (renderer, jobs, replies) = Renderer::fake(std::sync::Arc::new(|| {}));
     // Building the harness drew a first frame with a real renderer; start the view again on the fake one.
     let app = harness.state_mut();
     app.renderer = Some(renderer);

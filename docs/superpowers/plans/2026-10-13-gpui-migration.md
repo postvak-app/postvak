@@ -106,10 +106,11 @@ fn main() -> anyhow::Result<()> {
 - Modify: `src/gui/test_support.rs`, `src/gui/snapshots.rs` (move `mail` and `mailbox` out), `src/daemon/client.rs` (`Client::in_memory` from `#[cfg(test)]` to `#[cfg(any(test, feature = "testing"))]`, and `pub`), `src/gui/mod.rs` (`pub mod` for what the prototype reads), `src/gui/html/render.rs`, `src/gui/html/mod.rs`, `src/gui/app.rs` (callers of the changed renderer)
 
 **Interfaces produced:**
-- `postvak::gui::fixture::{Fixture, mail, mailbox, generated(n: usize)}` under `testing`; `Fixture` keeps its egui `harness()` behind `cfg(test)`. `generated(20_000)` adds threads with 1–8 members, deterministic from the index.
+- `postvak::gui::fixture::{Home, AT, message, mail, mailbox(root, theme), generated(root, count)}` under `testing`, all fallible and under a directory the caller owns (`tempfile` stays a dev-dependency). The tests' `test_support::Fixture` wraps a `Home` in a `TempDir`, derefs to it and keeps its infallible methods and egui `harness()`. `generated(root, 20_000)` adds threads with 1–8 members, deterministic from the uid, in one transaction.
 - `postvak::daemon::Client::in_memory(&[&str]) -> (Client, Receiver<(String, Command)>, Sender<Event>)` under `testing`; `test_support::Wires` moves with the fixture.
 - `postvak::gui::list::{Row, RowKey, build_rows, apply_pending, Optimistic, row_text, list_date, display_name}` made `pub` (no code change).
-- `html::Renderer::start(wake: Box<dyn Fn() + Send>)` instead of `start(ctx: egui::Context)`; `Reply::Strip { generation, strip, image }` carries `image: Pixels { width: u32, height: u32, rgba: Vec<u8> }` (premultiplied RGBA) instead of `egui::ColorImage`; the non-`html` stub `Renderer::start` changes the same way; `Request::Select` and `Request::Hit` take `[f32; 2]`. `App::receive_html` builds the `egui::ColorImage` itself.
+- `html::Renderer::start(wake: html::Wake)` (`Arc<dyn Fn() + Send + Sync>`) instead of `start(ctx: egui::Context)`; `Reply::Strip { generation, strip, image }` carries `image: Pixels` (premultiplied RGBA; `Pixels::new` checks the length, `width()`, `height()`, `rgba()`, `to_egui()`) instead of `egui::ColorImage`; the non-`html` stub `Renderer::start` changes the same way; `Request::Select` takes `[f32; 2]` (`Hit` already took `x`, `y`). `App::receive_html` calls `to_egui()`.
+- `gui::{body, html, list}` are `pub mod`, with the items above `pub`.
 
 - [ ] **Step 1:** A failing test in `render.rs`: `a_strip_is_plain_premultiplied_rgba`, which paints the existing `HELLO WORLD` fixture and checks `rgba.len() == width * height * 4` and a non-zero alpha somewhere.
 - [ ] **Step 2:** Make the renderer changes; the egui app calls `Renderer::start(Box::new(move || ctx.request_repaint()))`.
