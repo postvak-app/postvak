@@ -440,6 +440,13 @@ pub(crate) fn offset_showing(cursor: usize, row_height: f32, offset: f32, height
 /// The folder All inboxes shows from each account; sync stores and queries it by this exact name.
 pub(crate) const INBOX: &str = "INBOX";
 
+/// Search hits of several accounts, newest first, at most `limit`; each account's own order is kept on equal dates.
+pub(crate) fn merge_hits(mut hits: Vec<Row>, limit: u32) -> Vec<Row> {
+    hits.sort_by_key(|row| std::cmp::Reverse(row.date));
+    hits.truncate(limit as usize);
+    hits
+}
+
 /// Threads of several accounts in one list, the most recently active first, at most `limit`. The sort is stable, so
 /// each account keeps its own order and equal dates keep account order.
 pub(crate) fn merge_threads(
@@ -473,7 +480,11 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
             ui.add(
                 egui::TextEdit::singleline(&mut text)
                     .id(search_id())
-                    .hint_text("Search this account")
+                    .hint_text(if app.view == View::AllInboxes {
+                        "Search every account"
+                    } else {
+                        "Search this account"
+                    })
                     .desired_width(f32::INFINITY),
             )
         });
@@ -606,6 +617,14 @@ mod tests {
     use crate::gui::app::{Focus, View};
     use crate::gui::test_support::{Fixture, message};
     use crate::store::{MessageSummary, ThreadSummary};
+
+    #[test]
+    fn merge_hits_is_newest_first_and_capped() {
+        let hit = |account, uid| Row::from_message(account, &message("INBOX", uid, "hit"));
+        let merged = merge_hits(vec![hit(0, 3), hit(0, 1), hit(1, 4), hit(1, 2)], 3);
+        let shape: Vec<(usize, u32)> = merged.iter().map(|r| (r.account, r.uid)).collect();
+        assert_eq!(shape, [(1, 4), (0, 3), (1, 2)]);
+    }
 
     #[test]
     fn merge_threads_is_newest_first_across_accounts_and_capped() {

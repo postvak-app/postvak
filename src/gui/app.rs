@@ -874,7 +874,7 @@ impl App {
                 }
             }
             UiAction::StartSearch => {
-                if self.view_account().is_some() {
+                if self.view.lists_mail() {
                     self.search = Some(String::new());
                     self.focus_search = true;
                     self.list = ListState::default();
@@ -1090,7 +1090,7 @@ impl App {
                     Err(e) => log::warn!("[{}] search failed: {e}", self.accounts[account].name),
                 }
             }
-            self.list.hits = hits;
+            self.list.hits = list::merge_hits(hits, list::SEARCH_LIMIT);
         } else {
             let mut found = Vec::new();
             for &(account, store) in &stores {
@@ -1985,6 +1985,51 @@ mod tests {
         for &uid in uids {
             fx.add("work", message("INBOX", uid, &format!("subject {uid}")));
         }
+    }
+
+    #[test]
+    fn slash_in_all_inboxes_searches_every_account_newest_first() {
+        use egui_kittest::kittest::Queryable;
+        let fx = Fixture::new(&["home", "work"]);
+        fx.folder("home", "Archive", Some("Archive"));
+        fx.add("home", message("INBOX", 1, "invoice march"));
+        fx.add("work", message("INBOX", 2, "lunch"));
+        fx.add("home", message("Archive", 3, "invoice april"));
+        fx.add("work", message("INBOX", 4, "invoice may"));
+        let (mut harness, _wires) = fx.harness();
+        harness.state_mut().select_view(View::AllInboxes);
+        harness.run();
+        press(&mut harness, "/");
+        assert!(
+            harness
+                .query_by(|node| node.placeholder() == Some("Search every account"))
+                .is_some()
+        );
+        press(&mut harness, "invoice");
+        let found: Vec<(usize, String, u32)> = harness
+            .state()
+            .list
+            .rows
+            .iter()
+            .map(|r| (r.account, r.folder.clone(), r.uid))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (1, "INBOX".to_string(), 4),
+                (0, "Archive".to_string(), 3),
+                (0, "INBOX".to_string(), 1)
+            ]
+        );
+        assert!(
+            harness
+                .query_by_label_contains("home · [Archive] Sender 3")
+                .is_some()
+        );
+        harness.key_press(egui::Key::Escape);
+        harness.run();
+        assert_eq!(harness.state().view, View::AllInboxes);
+        assert_eq!(ids(&harness), [(1, 4), (1, 2), (0, 1)]);
     }
 
     fn press(harness: &mut egui_kittest::Harness<'_, App>, text: &str) {

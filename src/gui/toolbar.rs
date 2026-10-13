@@ -4,7 +4,7 @@ use eframe::egui::containers::panel::PanelState;
 
 use crate::rules::Action;
 
-use super::app::{App, FOLDERS, FOLDERS_WIDTH, UiAction, View};
+use super::app::{App, FOLDERS, FOLDERS_WIDTH, UiAction};
 use super::icons;
 use super::theme::{self, CONTROL, ICON, INSET, PAD};
 
@@ -35,7 +35,7 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
                 );
             });
         });
-        let in_folder = matches!(app.view, View::Folder { .. });
+        let can_search = app.view.lists_mail();
         // Closed picker only: an action would move the cursor, and the picker would then move a different message.
         let has_row =
             app.view.lists_mail() && !app.list.rows.is_empty() && app.move_picker.is_none();
@@ -79,7 +79,7 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
             }
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if search_field(ui, in_folder).clicked() {
+            if search_field(ui, can_search).clicked() {
                 actions.push(UiAction::StartSearch);
             }
         });

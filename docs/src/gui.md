@@ -21,7 +21,7 @@ The window remembers its size, its position and the width of its columns in `win
 | `u` | mark read or unread |
 | `s` | flag or unflag |
 | `v` | show HTML mail as text, or as HTML again |
-| `/` | search this account; mail whose body is not downloaded yet matches on sender, recipients and subject only |
+| `/` | search this account, or every account from All inboxes; mail whose body is not downloaded yet matches on sender, recipients and subject only |
 | Esc | close a popup, leave search, clear the selection |
 | Tab | next pane: folders, list, body |
 | Ctrl+R (Cmd+R on macOS) | sync every account now |

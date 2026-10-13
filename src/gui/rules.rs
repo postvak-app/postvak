@@ -500,7 +500,11 @@ mod tests {
         harness.event(egui::Event::Text("?".into()));
         harness.run();
         assert!(harness.state().help_open);
-        assert!(harness.query_by_label("search this account").is_some());
+        assert!(
+            harness
+                .query_by_label_contains("search this account")
+                .is_some()
+        );
         harness.key_press(egui::Key::Escape);
         harness.run();
         assert!(!harness.state().help_open);
