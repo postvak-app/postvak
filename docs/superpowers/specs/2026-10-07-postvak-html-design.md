@@ -30,6 +30,12 @@ Out of scope, recorded in §9: loading remote images, text selection inside the 
 
 Measured on one newsletter fixture at 700 px, Linux x86_64, 4 cores, release build: first document 24 ms parse, style and layout, later ones 15 ms, paint 5 ms. A standalone renderer binary is 22 MB over 288 crates. Ran on Linux; not yet on macOS.
 
+`wry` on Wayland, rechecked 2026-10-13: still out. `build_as_child` and `WebView::new_as_child` are documented as X11-only. wry's Wayland route, `build_gtk` or `new_gtk` inside a `gtk::Fixed`, needs a GTK-owned window and GTK's main loop; eframe's window is winit's. The open GTK4 port (wry#1767, last updated 2026-08-07) adds a `wayland` feature that embeds only into GTK4-owned windows, found by matching `wl_surface`. The workarounds each lose more than Blitz costs:
+- Forcing eframe onto X11 under XWayland: blurry fractional scaling and an X11 server at runtime, and the other objections above still hold.
+- A separate GTK popup: Wayland clients cannot position their own toplevels, so it cannot sit in the body panel.
+- A GTK main window: replaces eframe.
+- Offscreen WebKitGTK snapshots: not exposed by wry, and the result is still a static image.
+
 ## 3. Packaging
 
 - Cargo feature `html = ["gui", "dep:blitz-dom", "dep:blitz-html", "dep:blitz-paint", "dep:blitz-traits", "dep:anyrender", "dep:anyrender_vello_cpu", "dep:data-url", "dep:fontique"]`, in `default`. `data-url` decodes `data:` URIs; it is already in the tree through `usvg`. `fontique` is named only to turn on its `fontconfig-dlopen` feature, so fontconfig is loaded at runtime rather than linked, as eframe does for X11 and Wayland. Without it the body panel is the text view of GUI §6, unchanged.
