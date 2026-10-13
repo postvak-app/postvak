@@ -212,6 +212,7 @@ pub(crate) enum UiAction {
         offset: f32,
         height: f32,
     },
+    MarkFolderRead(usize, String),
     MoveCursor(isize),
     MoveFilter(String),
     MoveTo(String),
@@ -792,6 +793,7 @@ impl App {
                 self.list.viewport = (offset, height);
                 self.list.follow_cursor = false;
             }
+            UiAction::MarkFolderRead(account, folder) => self.mark_folder_read(account, folder),
             UiAction::MoveCursor(delta) => {
                 self.list.cursor = step(self.list.cursor, delta, self.list.rows.len());
                 self.list.follow_cursor = true;
@@ -1495,6 +1497,27 @@ impl App {
         }
         self.list.marked.clear();
         self.rebuild_rows();
+    }
+
+    fn mark_folder_read(&mut self, account: usize, folder: String) {
+        let uids = match &self.accounts[account].store {
+            Ok(store) => store.unread_uids(&folder),
+            Err(_) => return,
+        };
+        match uids {
+            Ok(uids) if uids.is_empty() => {}
+            Ok(uids) => {
+                self.send_apply(
+                    account,
+                    folder,
+                    uids,
+                    Action::MarkRead,
+                    Optimistic::Seen(true),
+                );
+                self.rebuild_rows();
+            }
+            Err(e) => self.note_error(Some(account), e.to_string()),
+        }
     }
 
     /// Sends one `Apply` and records its optimistic edit, which the matching `ActionDone` clears.

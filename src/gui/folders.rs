@@ -66,9 +66,19 @@ fn account_folders(app: &App, index: usize, account: &Account, ui: &mut egui::Ui
         let (count, accessible) = count_and_name(&name, folder.unread);
         let icon = icons::for_special_use(folder.special_use.as_deref(), &folder.name);
         let view = open(&folder.name);
-        if folder_row(ui, app.view == view, icon, &name, 0.0, count, &accessible).clicked() {
-            actions.push(UiAction::SelectView(view));
+        let response = folder_row(ui, app.view == view, icon, &name, 0.0, count, &accessible);
+        if response.clicked() {
+            actions.push(UiAction::SelectView(view.clone()));
         }
+        response.context_menu(|ui| {
+            actions.extend(folder_menu(
+                ui,
+                index,
+                Some(&folder.name),
+                folder.unread,
+                None,
+            ));
+        });
     }
     if !special.is_empty() && !custom.is_empty() {
         ui.separator();
@@ -103,6 +113,59 @@ fn account_folders(app: &App, index: usize, account: &Account, ui: &mut egui::Ui
         {
             actions.push(UiAction::SelectView(open(name)));
         }
+        let branch = row.has_children.then_some((expanded, &row.path));
+        response.context_menu(|ui| {
+            actions.extend(folder_menu(
+                ui,
+                index,
+                row.folder.as_deref(),
+                unread,
+                branch,
+            ));
+        });
+    }
+    actions
+}
+
+/// The right-click menu of a folder row; `branch` is whether a parent row is expanded, and its path.
+fn folder_menu(
+    ui: &mut egui::Ui,
+    account: usize,
+    folder: Option<&str>,
+    unread: u32,
+    branch: Option<(bool, &String)>,
+) -> Vec<UiAction> {
+    let mut actions = Vec::new();
+    if let Some(name) = folder
+        && ui.button("Open").clicked()
+    {
+        actions.push(UiAction::SelectView(View::Folder {
+            account,
+            folder: name.to_string(),
+        }));
+    }
+    if let Some((expanded, path)) = branch
+        && ui
+            .button(if expanded { "Collapse" } else { "Expand" })
+            .clicked()
+    {
+        actions.push(UiAction::ToggleFolder(account, path.clone()));
+    }
+    ui.separator();
+    if let Some(name) = folder
+        && ui
+            .add_enabled(unread > 0, egui::Button::new("Mark all as read"))
+            .clicked()
+    {
+        actions.push(UiAction::MarkFolderRead(account, name.to_string()));
+    }
+    let sync = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::R);
+    let sync = ui.ctx().format_shortcut(&sync);
+    if ui
+        .add(egui::Button::new("Sync now").shortcut_text(sync))
+        .clicked()
+    {
+        actions.push(UiAction::SyncNow);
     }
     actions
 }
@@ -390,6 +453,30 @@ mod tests {
         rows.iter()
             .map(|r| (r.depth, r.label.as_str(), r.folder.is_some()))
             .collect()
+    }
+
+    #[test]
+    fn a_folder_menu_marks_all_its_unread_mail_read() {
+        let fx = Fixture::new(&["work"]);
+        for uid in 1..=3 {
+            let mut m = message("INBOX", uid, "hi");
+            if uid != 2 {
+                m.flags = String::new();
+            }
+            fx.add("work", m);
+        }
+        let (mut harness, wires) = fx.harness();
+        harness.get_by_label("Inbox (2)").click_secondary();
+        harness.run();
+        harness.get_by_label("Mark all as read").click();
+        harness.run();
+        let read = crate::sync::Command::Apply {
+            folder: "INBOX".into(),
+            uids: vec![1, 3],
+            action: crate::rules::Action::MarkRead,
+            by: "gui".into(),
+        };
+        assert_eq!(wires.sent(), [("work".to_string(), read)]);
     }
 
     #[test]

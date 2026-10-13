@@ -458,15 +458,63 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
             response.widget_info(|| {
                 egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &name)
             });
-            if response.clicked() {
+            // A right click acts on the row under the pointer, unless it is one of the marked rows.
+            if response.clicked() || (response.secondary_clicked() && !marked) {
                 actions.push(UiAction::SelectRow(index));
             }
+            response.context_menu(|ui| actions.extend(mail_menu(ui, row)));
         }
     });
     actions.push(UiAction::ListViewport {
         offset: output.state.offset.y,
         height: output.inner_rect.height(),
     });
+    actions
+}
+
+/// The right-click menu of a message row; its items act like the toolbar, on the marked rows or this one.
+fn mail_menu(ui: &mut egui::Ui, row: &Row) -> Vec<UiAction> {
+    let (read, read_label) = if row.unread {
+        (Action::MarkRead, "Mark as read")
+    } else {
+        (Action::MarkUnread, "Mark as unread")
+    };
+    let (flag, flag_label) = if row.flagged {
+        (Action::Unflag, "Unflag")
+    } else {
+        (Action::Flag, "Flag")
+    };
+    let groups = [
+        vec![
+            (read_label, Some("u"), UiAction::Act(read)),
+            (flag_label, Some("s"), UiAction::Act(flag)),
+        ],
+        vec![
+            ("Archive", Some("e"), UiAction::Act(Action::Archive)),
+            ("Move to…", Some("m"), UiAction::OpenMovePicker),
+            ("Delete", Some("#"), UiAction::Act(Action::Trash)),
+        ],
+        vec![
+            ("View source", None, UiAction::OpenSource),
+            ("Save .eml", None, UiAction::SaveEml),
+        ],
+    ];
+    let mut actions = Vec::new();
+    for (index, group) in groups.into_iter().enumerate() {
+        if index > 0 {
+            ui.separator();
+        }
+        for (label, shortcut, action) in group {
+            let button = egui::Button::new(label);
+            let button = match shortcut {
+                Some(key) => button.shortcut_text(key),
+                None => button,
+            };
+            if ui.add(button).clicked() {
+                actions.push(action);
+            }
+        }
+    }
     actions
 }
 
@@ -880,6 +928,27 @@ mod tests {
         let (harness, _wires) = fx.harness();
         assert!(harness.query_by_label("Inbox").is_some());
         assert!(harness.query_by_label("2 threads, 1 unread").is_some());
+    }
+
+    #[test]
+    fn right_clicking_a_row_selects_it_and_its_menu_archives_it() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "older"));
+        fx.add("work", message("INBOX", 2, "newer"));
+        let (mut harness, wires) = fx.harness();
+        harness.get_by_label_contains("older").click_secondary();
+        harness.run();
+        assert_eq!(harness.state().list.cursor, 1);
+        harness.get_by_label("Archive e").click();
+        harness.run();
+        let archive = crate::sync::Command::Apply {
+            folder: "INBOX".into(),
+            uids: vec![1],
+            action: Action::Archive,
+            by: "gui".into(),
+        };
+        assert_eq!(wires.sent(), [("work".to_string(), archive)]);
+        assert!(harness.query_by_label("Archive e").is_none());
     }
 
     #[test]
