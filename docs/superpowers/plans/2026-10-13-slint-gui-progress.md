@@ -26,9 +26,19 @@ Last updated: 2026-10-13. Branch `feat/slint-gui`. Read first: the plan `2026-10
 
 - Merged `main` after #133 (newsletter HTML, Load remote content): `html/fetch.rs` wakes through `Wake`; `state.rs` has `fetcher`, `UiAction::LoadRemote`, `lay_out`, `load_remote`, `receive_remote`; `html` is a private module now. Its three view tests are listed in the parity checklist for Task 7. The `tests/snapshots/gui_html_*.png` from `main` are egui's and get replaced in Task 12.
 
+- Task 3 (`feat(gui): Slint window shell, theme and startup window`):
+  - `ui/theme.slint`: `Theme.preference` (`ThemePreference` system/light/dark; System follows std-widgets' `Palette.color-scheme`), `Theme.dark`, `Theme.pane`/`Theme.frame` palettes, grid, font family names. Icon codepoints stay in `icons.rs`; `bind.rs` passes the glyphs as text.
+  - `ui/window.slint`: `MailWindow` with toolbar, folder, list and body slots (empty), `Splitter`s for `folders-width`/`list-width` (min `list::MIN_WIDTH`), `PaneFrame` with the 1 px accent outline for `focused-pane` (`Pane` enum), one pane for Rules/Activity/Backups, the config banner, a status bar slot.
+  - `bind.rs`: `present(&App, &MailWindow)`.
+  - `mod.rs`: `Live { app, clock, timer, window }` in the `LIVE` thread local; `with_live`, `dispatch(action)` (queued in `QUEUE` while `LIVE` is busy, drained after), `Live::install`. `startup_window(problem, open_docs)` takes the opener so tests see it.
+  - Renderer fallback: nothing to write. Slint's winit backend already tries the next renderer (software included) when one cannot create the window (`allow_fallback`, `i-slint-backend-winit` `try_create_window_with_fallback_renderer`); `SLINT_BACKEND` still overrides.
+  - `test_support`: `headless()` (testing backend, mock time, software renderer), `Fixture::window() -> (Open, Wires)`, `Open::{with, window, advance, find}`.
+  - Tests: the four startup window tests, theme and view, config banner.
+  - Not run by hand yet: the window has only been run under the testing backend.
+
 ## Next steps (in order)
 
-1. Tasks 3–13 of the plan, one commit each, updating this doc after each.
+1. Tasks 4–13 of the plan, one commit each, updating this doc after each.
 
 ## Notes for whoever resumes
 

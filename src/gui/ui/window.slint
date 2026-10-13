@@ -1,11 +1,101 @@
 // The mail window. It draws what `bind.rs` gives it and hands every key and click back as a callback.
 import { Theme } from "theme.slint";
 
+export enum Pane { body, folders, list }
+
+// The edge between two panes; dragging it sets `size`, the width of the pane on its left.
+component Splitter inherits TouchArea {
+    in-out property <length> size;
+    in property <length> min;
+    width: Theme.pad;
+    mouse-cursor: col-resize;
+    moved => {
+        if (self.pressed) {
+            root.size = max(root.min, root.size + self.mouse-x - self.pressed-x);
+        }
+    }
+}
+
+// A paper pane in the frame, with an accent outline while it has the keyboard; the outline is drawn inside, so
+// nothing moves.
+component PaneFrame inherits Rectangle {
+    in property <bool> focused;
+    background: Theme.pane.background;
+    border-width: focused ? 1px : 0px;
+    border-color: Theme.pane.accent;
+    clip: true;
+}
+
 export component MailWindow inherits Window {
+    // Saved with the window (Task 11) and dragged by the splitters.
+    in-out property <length> folders-width: 220px;
+    in-out property <length> list-width: 480px;
+    in property <length> list-min-width: 220px;
+    // The pane with the keyboard.
+    in property <Pane> focused-pane: Pane.list;
+    // A folder or All inboxes: a list and the body; else Rules, Activity or Backups, one pane.
+    in property <bool> mail-view: true;
+    in property <bool> config-changed;
+
     title: "Postvak";
     icon: @image-url("../../../assets/icon.png");
     preferred-width: 1280px;
     preferred-height: 800px;
     background: Theme.frame.background;
     default-font-family: Theme.text-font;
+    default-font-size: 14px;
+
+    VerticalLayout {
+        toolbar := Rectangle {
+            height: Theme.top-bar;
+        }
+
+        if root.config-changed: HorizontalLayout {
+            padding-left: Theme.inset;
+            padding-bottom: Theme.pad;
+            Text {
+                text: "config.toml changed — reopen the window to show it";
+                color: Theme.frame.warning;
+            }
+        }
+
+        HorizontalLayout {
+            padding-right: Theme.pad;
+            folders := Rectangle {
+                width: root.folders-width;
+            }
+
+            Splitter {
+                size <=> root.folders-width;
+                min: Theme.control;
+            }
+
+            if root.mail-view: list := PaneFrame {
+                width: root.list-width;
+                focused: root.focused-pane == Pane.list;
+                border-top-left-radius: Theme.radius;
+                border-bottom-left-radius: Theme.radius;
+            }
+
+            if root.mail-view: Splitter {
+                size <=> root.list-width;
+                min: root.list-min-width;
+            }
+
+            if root.mail-view: body := PaneFrame {
+                focused: root.focused-pane == Pane.body;
+                border-top-right-radius: Theme.radius;
+                border-bottom-right-radius: Theme.radius;
+            }
+
+            if !root.mail-view: PaneFrame {
+                focused: root.focused-pane != Pane.folders;
+                border-radius: Theme.radius;
+            }
+        }
+
+        status := Rectangle {
+            height: Theme.control + Theme.pad;
+        }
+    }
 }

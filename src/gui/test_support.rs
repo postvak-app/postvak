@@ -1,6 +1,12 @@
 //! A temp Postvak home with stores and an in-memory daemon client, for the GUI tests; and `Driver`, which works the app
 //! as the window would: keys through the keymap, actions, ticks, and a clock the test moves.
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
+use std::time::Duration;
+
+use i_slint_backend_testing::ElementHandle;
+use slint::ComponentHandle;
 
 use tempfile::TempDir;
 
@@ -12,6 +18,7 @@ use crate::sync::{Command, Event};
 use super::fixture::{self, Home};
 use super::keys::{self, Named, Press};
 use super::state::{App, UiAction, session};
+use super::{LIVE, Live, ui, with_live};
 
 pub(crate) struct Fixture {
     home: Home,
@@ -92,6 +99,70 @@ impl Fixture {
         let mut driver = Driver { app, now: 0.0 };
         driver.tick();
         (driver, wires)
+    }
+}
+
+/// This test thread's headless Slint: mock time and the software renderer, so text has real metrics from the bundled
+/// fonts and snapshots draw. Each test runs on its own thread, so each sets it once.
+pub(crate) fn headless() {
+    use i_slint_backend_testing::{TestingBackend, TestingBackendOptions};
+    let backend = TestingBackend::new(TestingBackendOptions {
+        mock_time: true,
+        threading: false,
+        renderer_name: Some("software".into()),
+    });
+    let _ = slint::platform::set_platform(Box::new(backend));
+}
+
+impl Fixture {
+    /// The real window over this home, 1280×800 under the headless backend, with the clock at 0.
+    pub fn window(&self) -> (Open, Wires) {
+        headless();
+        let (app, wires) = self.app();
+        let window = ui::MailWindow::new().unwrap();
+        window
+            .window()
+            .set_size(slint::LogicalSize::new(1280.0, 800.0));
+        window.show().unwrap();
+        let clock = Rc::new(Cell::new(0.0));
+        let now = clock.clone();
+        Live::install(app, window, Box::new(move || now.get()));
+        (Open { clock }, wires)
+    }
+}
+
+/// The window opened by `Fixture::window`, until it is dropped.
+pub(crate) struct Open {
+    clock: Rc<Cell<f64>>,
+}
+
+impl Open {
+    /// Reads or changes the app and window; the window is shown again afterwards, as after any callback.
+    pub fn with<R>(&self, f: impl FnOnce(&mut Live) -> R) -> R {
+        let result = with_live(f).unwrap();
+        with_live(Live::tick).unwrap();
+        result
+    }
+
+    pub fn window(&self) -> ui::MailWindow {
+        with_live(|live| live.window.clone_strong()).unwrap()
+    }
+
+    /// Moves the window's clock and Slint's timers on by `seconds`.
+    pub fn advance(&self, seconds: f64) {
+        self.clock.set(self.clock.get() + seconds);
+        i_slint_backend_testing::mock_elapsed_time(Duration::from_secs_f64(seconds));
+    }
+
+    /// The elements whose accessible label is `label`.
+    pub fn find(&self, label: &str) -> Vec<ElementHandle> {
+        ElementHandle::find_by_accessible_label(&self.window(), label).collect()
+    }
+}
+
+impl Drop for Open {
+    fn drop(&mut self) {
+        LIVE.with_borrow_mut(Option::take);
     }
 }
 

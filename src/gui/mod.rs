@@ -1,6 +1,7 @@
 //! The mail window: folders, threads and the message body over the local store, as a client of the daemon that syncs.
 // The state and text functions wait for the views that use them; removed once every view is drawn.
 #![allow(dead_code)]
+mod bind;
 pub mod body;
 #[cfg(any(test, feature = "testing"))]
 pub mod fixture;
@@ -41,7 +42,7 @@ use slint::ComponentHandle;
 use crate::config::Config;
 use crate::paths::Paths;
 
-use state::App;
+use state::{App, UiAction};
 
 /// The window icon: `assets/icon.svg` rendered to PNG by `packaging/icons.sh`.
 pub(crate) const ICON: &[u8] = include_bytes!("../../assets/icon.png");
@@ -72,41 +73,76 @@ pub fn run(paths: Result<Paths>) -> Result<()> {
     Err(error)
 }
 
-/// The window and the app behind it, owned by the event loop's thread; daemon events and timers reach it through
-/// `wake`.
-struct Live {
-    app: App,
-    clock: Instant,
+/// The window and the app behind it, owned by the event loop's thread. Daemon events and timers reach it through
+/// `wake`, the window's callbacks through `dispatch`.
+pub(crate) struct Live {
+    pub app: App,
+    /// Seconds on the window's clock; tests move it by hand.
+    clock: Box<dyn Fn() -> f64>,
     timer: slint::Timer,
-    window: ui::MailWindow,
+    pub window: ui::MailWindow,
 }
 
 thread_local! {
     static LIVE: RefCell<Option<Live>> = const { RefCell::new(None) };
+    /// Actions from callbacks that ran while `LIVE` was busy, such as during `present`.
+    static QUEUE: RefCell<Vec<UiAction>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Ticks the app on the event loop's thread; daemon threads call it from anywhere.
 fn wake() {
     let _ = slint::invoke_from_event_loop(|| {
-        LIVE.with_borrow_mut(|live| {
-            if let Some(live) = live {
-                live.tick();
-            }
-        })
+        with_live(Live::tick);
     });
 }
 
+/// Runs `f` on the live window, unless there is none or it is already in use.
+pub(crate) fn with_live<R>(f: impl FnOnce(&mut Live) -> R) -> Option<R> {
+    LIVE.with(|live| live.try_borrow_mut().ok()?.as_mut().map(f))
+}
+
+/// Applies what a callback asked for, now or, when the window is busy, once it is done.
+fn dispatch(action: UiAction) {
+    QUEUE.with_borrow_mut(|queue| queue.push(action));
+    with_live(|live| live.drain());
+}
+
 impl Live {
+    /// Takes the app and window for this thread and wires the window's callbacks.
+    fn install(app: App, window: ui::MailWindow, clock: Box<dyn Fn() -> f64>) {
+        let live = Live {
+            app,
+            clock,
+            timer: slint::Timer::default(),
+            window,
+        };
+        LIVE.with_borrow_mut(|slot| *slot = Some(live));
+        with_live(Live::tick);
+    }
+
     fn tick(&mut self) {
-        let now = self.clock.elapsed().as_secs_f64();
+        let now = (self.clock)();
         self.app.tick(now);
         self.present();
         self.schedule(now);
     }
 
-    /// Pushes the app's state into the window.
+    fn drain(&mut self) {
+        loop {
+            let actions = QUEUE.with_borrow_mut(std::mem::take);
+            if actions.is_empty() {
+                return;
+            }
+            let now = (self.clock)();
+            for action in actions {
+                self.app.apply(action, now);
+            }
+            self.tick();
+        }
+    }
+
     fn present(&mut self) {
-        let _ = &self.window;
+        bind::present(&self.app, &self.window);
     }
 
     /// Starts the timer for the tick the app asked for.
@@ -129,15 +165,12 @@ fn open(paths: Paths) -> Result<()> {
     let mut app = App::new(&config, paths, client, events, states);
     app.wake = std::sync::Arc::new(wake);
     window.show().context("could not show the window")?;
-    LIVE.with_borrow_mut(|live| {
-        *live = Some(Live {
-            app,
-            clock: Instant::now(),
-            timer: slint::Timer::default(),
-            window,
-        })
-    });
-    wake();
+    let started = Instant::now();
+    Live::install(
+        app,
+        window,
+        Box::new(move || started.elapsed().as_secs_f64()),
+    );
     let ran = slint::run_event_loop();
     LIVE.with_borrow_mut(Option::take);
     ran.context("the window failed")
@@ -147,14 +180,22 @@ fn open(paths: Paths) -> Result<()> {
 /// exit code. Without a display there is no window, and stderr is all there is. The window remembers nothing.
 fn explain(error: anyhow::Error, log: Option<&Path>) -> anyhow::Error {
     let problem = startup::Problem::of(&error, log);
-    let shown = startup_window(&problem).and_then(|window| window.run());
+    let open_docs = |url: &str| {
+        if let Err(e) = state::launch(url.as_ref(), false) {
+            log::warn!("could not open the docs: {e}");
+        }
+    };
+    let shown = startup_window(&problem, open_docs).and_then(|window| window.run());
     if let Err(e) = shown {
         log::debug!("could not show the startup error in a window: {e}");
     }
     error
 }
 
-fn startup_window(problem: &startup::Problem) -> Result<ui::StartupWindow, slint::PlatformError> {
+fn startup_window(
+    problem: &startup::Problem,
+    open_docs: impl Fn(&str) + 'static,
+) -> Result<ui::StartupWindow, slint::PlatformError> {
     let window = ui::StartupWindow::new()?;
     window.set_summary(problem.summary.as_str().into());
     window.set_fix(problem.fix.as_str().into());
@@ -162,11 +203,7 @@ fn startup_window(problem: &startup::Problem) -> Result<ui::StartupWindow, slint
     let (label, url) = problem.link.unwrap_or_default();
     window.set_link_label(label.into());
     window.set_link_url(url.into());
-    window.on_open_url(|url| {
-        if let Err(e) = state::launch(url.as_str().as_ref(), false) {
-            log::warn!("could not open the docs: {e}");
-        }
-    });
+    window.on_open_url(move |url| open_docs(&url));
     let weak = window.as_weak();
     window.on_close_clicked(move || {
         if let Some(window) = weak.upgrade() {
@@ -208,6 +245,109 @@ mod tests {
                 "the Dock icon needs Apple's transparent margin"
             );
         }
+    }
+
+    use std::cell::RefCell;
+    use std::path::Path;
+    use std::rc::Rc;
+
+    use i_slint_backend_testing::ElementHandle;
+    use slint::ComponentHandle;
+
+    use super::startup::{ACCOUNTS_DOCS, NoAccounts, Problem};
+    use super::test_support::{Fixture, headless};
+    use super::ui::{Pane, Theme, ThemePreference};
+    use super::{UiAction, startup_window};
+    use crate::gui::state::View;
+
+    /// The startup window for `error`, shown headless, and the URLs it asked to open.
+    fn startup(
+        error: anyhow::Error,
+        log: Option<&Path>,
+    ) -> (super::ui::StartupWindow, Rc<RefCell<Vec<String>>>) {
+        headless();
+        let opened = Rc::new(RefCell::new(Vec::new()));
+        let record = opened.clone();
+        let problem = Problem::of(&error, log);
+        let window =
+            startup_window(&problem, move |url| record.borrow_mut().push(url.into())).unwrap();
+        window.show().unwrap();
+        (window, opened)
+    }
+
+    fn labelled(
+        window: &impl i_slint_backend_testing::ElementRoot,
+        label: &str,
+    ) -> Vec<ElementHandle> {
+        ElementHandle::find_by_accessible_label(window, label).collect()
+    }
+
+    #[test]
+    fn the_window_states_the_missing_account() {
+        let (window, _) = startup(anyhow::Error::new(NoAccounts), None);
+        assert_eq!(
+            labelled(&window, "Postvak has no mail account set up yet.").len(),
+            1
+        );
+        let fix = "Run `postvak account add` in a terminal, then open Postvak again.";
+        assert_eq!(labelled(&window, fix).len(), 1);
+    }
+
+    #[test]
+    fn the_docs_link_opens_the_account_setup_page() {
+        let (window, opened) = startup(anyhow::Error::new(NoAccounts), None);
+        labelled(&window, "Setting up an account")[0].invoke_accessible_default_action();
+        assert_eq!(*opened.borrow(), [ACCOUNTS_DOCS]);
+    }
+
+    #[test]
+    fn the_window_shows_the_error_and_the_daemon_log() {
+        let error = anyhow::anyhow!("socket refused").context("could not start the daemon");
+        let (window, _) = startup(error, Some(Path::new("/state/daemon.log")));
+        assert_eq!(labelled(&window, "Postvak could not start.").len(), 1);
+        assert_eq!(
+            labelled(&window, "The background sync logs to /state/daemon.log").len(),
+            1
+        );
+        assert_eq!(
+            labelled(&window, "could not start the daemon: socket refused").len(),
+            1
+        );
+    }
+
+    #[test]
+    fn close_asks_the_window_to_close() {
+        let (window, _) = startup(anyhow::anyhow!("no display"), None);
+        assert!(window.window().is_visible());
+        labelled(&window, "Close")[0].invoke_accessible_default_action();
+        assert!(!window.window().is_visible());
+    }
+
+    #[test]
+    fn the_window_follows_the_theme_and_the_view() {
+        let fx = Fixture::new(&["work"]);
+        fx.append_config("[ui]\ntheme = \"dark\"\n");
+        let (open, _wires) = fx.window();
+        let window = open.window();
+        assert_eq!(
+            window.global::<Theme>().get_preference(),
+            ThemePreference::Dark
+        );
+        assert!(window.global::<Theme>().get_dark());
+        assert!(window.get_mail_view());
+        assert_eq!(window.get_focused_pane(), Pane::List);
+        open.with(|live| live.app.apply(UiAction::SelectView(View::Rules), 0.0));
+        assert!(!window.get_mail_view());
+    }
+
+    #[test]
+    fn an_outside_config_edit_shows_the_banner() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        let banner = "config.toml changed — reopen the window to show it";
+        assert!(open.find(banner).is_empty());
+        open.with(|live| live.app.config_changed = true);
+        assert_eq!(open.find(banner).len(), 1);
     }
 
     #[test]

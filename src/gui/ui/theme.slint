@@ -5,6 +5,10 @@ import "../../../assets/fonts/Newsreader-Medium.ttf";
 import "../../../assets/fonts/Phosphor.ttf";
 import "../../../assets/fonts/SplineSansMono-Medium.ttf";
 
+import { Palette as StdPalette } from "std-widgets.slint";
+
+export enum ThemePreference { system, light, dark }
+
 export struct Palette {
     accent: color,
     background: color,
@@ -26,8 +30,9 @@ export struct Palette {
 }
 
 export global Theme {
-    // Set from the theme preference or the system's colour scheme.
-    in property <bool> dark;
+    // The user's choice; System follows the desktop's colour scheme.
+    in property <ThemePreference> preference;
+    out property <bool> dark: preference == ThemePreference.dark || (preference == ThemePreference.system && StdPalette.color-scheme == ColorScheme.dark);
     // The panes.
     out property <Palette> pane: dark ? night : paper;
     // The oxblood chrome around them: toolbar, folders, status bar.
