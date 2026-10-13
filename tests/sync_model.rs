@@ -1109,3 +1109,40 @@ fn sync_and_rules_keep_their_invariants() {
         panic!("{e}");
     }
 }
+
+// ---- shrunk failures --------------------------------------------------------------------------------------------
+
+/// A rule marks a message read, then another client clears `\Seen` before the next sync: the fake must give that
+/// clear a modseq above the one the store holds, as a real server does for every STORE.
+#[test]
+fn seen_cleared_on_the_server_after_a_rule_marked_it_read() {
+    let quiet = Step::Pass {
+        full: false,
+        failure: None,
+        mid: None,
+    };
+    let arrive = |sender, age_min| ServerEvent::Arrive {
+        sender,
+        folder: 0,
+        age_min,
+        seen: false,
+    };
+    let initial = vec![arrive(Sender::News, 60); 3];
+    let steps = [
+        Step::Server(ServerEvent::Delete { pick: 0 }),
+        quiet.clone(),
+        Step::Server(ServerEvent::Delete { pick: 0 }),
+        Step::Tick { minutes: 3 },
+        Step::Server(arrive(Sender::News, 4)),
+        Step::Server(arrive(Sender::Bot, 0)),
+        quiet,
+        Step::Server(arrive(Sender::News, 0)),
+        Step::Server(arrive(Sender::News, 0)),
+        Step::Server(ServerEvent::SetFlag {
+            pick: 12,
+            flag: Flag::Seen,
+            on: false,
+        }),
+    ];
+    run_model(&initial, &steps);
+}
