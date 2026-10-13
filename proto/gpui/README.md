@@ -79,3 +79,15 @@ Differences from the egui list worth noting: Kit's `ListItem` draws its own hove
 - The temp home and the command receiver are owned by `main`, no longer leaked; `init` is shared by `main` and the tests.
 
 Skipped: sharing `same_row`, `targets`, the parent-row search, the pending-Seen fold and the theme constants from `src/gui` (changes to the egui code beyond this branch's seams); a GPUI Kit theme file instead of four colours set by hand; trimming `pub` in a binary crate.
+
+## Task 5 results: search (2026-10-13)
+
+GPUI Kit's `Input` above the list. Typing searches every folder of the shown accounts through `store.search`, as `App::reload_view` does, and the hits replace the threads (`list::merge_hits`).
+
+| Check | Result |
+|---|---|
+| `/` focuses the field; typing searches | `#[gpui::test]`: `/ o f f s i t e` finds the two offsite messages, unthreaded |
+| `j` while the field has focus | types a `j`. The list keys are bound in Kit's `List` context, active only while the list has focus; bound one level up (the list pane) they would fire inside the field too |
+| Esc in the field | Kit's input handles Esc first (IME composition, extra cursors) and passes its own `input::Escape` on; the list pane takes that one, empties and closes the search and focuses the list. Test: `j` moves the cursor again afterwards |
+| Look | ran on KDE Wayland: the field draws in GPUI Kit's default input style (white, rounded), not Postvak's; screenshot checked |
+| IME (日本語 through fcitx5 or IBus on Wayland, the macOS Japanese input method) | not run: needs a person at the keyboard. Kit's input implements GPUI's `EntityInputHandler`, which is where IME composition comes in |

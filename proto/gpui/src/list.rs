@@ -1,11 +1,12 @@
-//! The message list: GPUI Kit's virtual `List` over the model's rows, with Postvak's single keys as GPUI actions in
-//! the `MessageList` key context.
+//! The message list: a search field over GPUI Kit's virtual `List` of the model's rows, with Postvak's single keys
+//! as GPUI actions in the Kit list's `List` key context.
 use chrono::{DateTime, Local};
 use gpui::{
     App, Context, Entity, Focusable, FontWeight, IntoElement, KeyBinding, ParentElement, Render,
-    ScrollStrategy, Styled, Window, actions, div, prelude::*,
+    ScrollStrategy, Styled, Subscription, Window, actions, div, prelude::*,
 };
 use gpui_kit::component::IndexPath;
+use gpui_kit::component::input::{self, Input, InputEvent, InputState};
 use gpui_kit::component::list::{List, ListDelegate, ListItem, ListState};
 use postvak::gui::list::columns;
 use postvak::rules::Action;
@@ -16,17 +17,23 @@ use crate::theme;
 actions!(
     postvak,
     [
-        Next, Prev, Expand, Collapse, ToggleMark, Archive, ToggleHelp, Escape
+        Next,
+        Prev,
+        Expand,
+        Collapse,
+        ToggleMark,
+        Archive,
+        ToggleHelp,
+        Escape,
+        StartSearch
     ]
 );
 
-const CONTEXT: &str = "MessageList";
-
-/// The keys of `App::keys` for the list pane. Up and Down are GPUI Kit's own list bindings, which reach the same model
-/// through the delegate. Esc is bound in the Kit list's own context, after Kit's, so it replaces Kit's Cancel there,
-/// which would clear the selection.
+/// The keys of `App::keys` for the list pane, in the Kit list's own context: they act while the list has focus, so
+/// the search field takes `j` as text. Up and Down are Kit's own list bindings, which reach the same model through
+/// the delegate. Esc is bound after Kit's, so it replaces Kit's Cancel, which would clear the selection.
 pub fn bindings() -> Vec<KeyBinding> {
-    let context = Some(CONTEXT);
+    let context = Some("List");
     vec![
         KeyBinding::new("j", Next, context),
         KeyBinding::new("k", Prev, context),
@@ -36,12 +43,13 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("e", Archive, context),
         KeyBinding::new("?", ToggleHelp, context),
         KeyBinding::new("shift-/", ToggleHelp, context),
-        KeyBinding::new("escape", Escape, Some("List")),
+        KeyBinding::new("escape", Escape, context),
+        KeyBinding::new("/", StartSearch, context),
     ]
 }
 
 /// What each action does, for the help table; its keys come from the keymap.
-const HELP: [(&str, &dyn gpui::Action); 8] = [
+const HELP: [(&str, &dyn gpui::Action); 9] = [
     ("Next message", &Next),
     ("Previous message", &Prev),
     ("Open thread", &Expand),
@@ -50,6 +58,7 @@ const HELP: [(&str, &dyn gpui::Action); 8] = [
     ("Archive", &Archive),
     ("Keys", &ToggleHelp),
     ("Close, clear marks", &Escape),
+    ("Search", &StartSearch),
 ];
 
 pub struct Rows {
@@ -175,6 +184,8 @@ impl ListDelegate for Rows {
 pub struct MessageList {
     model: Entity<Model>,
     list: Entity<ListState<Rows>>,
+    search: Entity<InputState>,
+    _search: Subscription,
 }
 
 impl MessageList {
@@ -184,7 +195,19 @@ impl MessageList {
             now: Local::now(),
         };
         let list = cx.new(|cx| ListState::new(rows, window, cx));
-        let mut this = MessageList { model, list };
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search"));
+        let _search = cx.subscribe_in(&search, window, |this, search, event, window, cx| {
+            if matches!(event, InputEvent::Change) {
+                let query = search.read(cx).value().to_string();
+                this.change(window, cx, |m| m.set_search(Some(query)));
+            }
+        });
+        let mut this = MessageList {
+            model,
+            list,
+            search,
+            _search,
+        };
         this.change(window, cx, |_| {});
         this
     }
@@ -243,6 +266,20 @@ impl MessageList {
         cx.notify();
     }
 
+    fn start_search(&mut self, _: &StartSearch, window: &mut Window, cx: &mut Context<Self>) {
+        self.search
+            .update(cx, |search, cx| search.focus(window, cx));
+    }
+
+    /// Esc in the search field, after Kit's own handling (IME, selections) passed it on: empties and closes the search
+    /// and gives the list its keys back.
+    fn end_search(&mut self, _: &input::Escape, window: &mut Window, cx: &mut Context<Self>) {
+        self.search
+            .update(cx, |search, cx| search.set_value("", window, cx));
+        self.change(window, cx, |m| m.set_search(None));
+        self.list.update(cx, |list, cx| list.focus(window, cx));
+    }
+
     /// The keys that run `action` while the list has focus, from the keymap.
     fn keys(&self, action: &dyn gpui::Action, window: &Window, cx: &App) -> String {
         let focus = self.list.read(cx).focus_handle(cx);
@@ -293,7 +330,6 @@ impl Render for MessageList {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let help = self.model.read(cx).help;
         div()
-            .key_context(CONTEXT)
             .on_action(cx.listener(Self::next))
             .on_action(cx.listener(Self::prev))
             .on_action(cx.listener(Self::expand))
@@ -302,11 +338,22 @@ impl Render for MessageList {
             .on_action(cx.listener(Self::archive))
             .on_action(cx.listener(Self::toggle_help))
             .on_action(cx.listener(Self::escape))
+            .on_action(cx.listener(Self::start_search))
+            .on_action(cx.listener(Self::end_search))
             .relative()
             .size_full()
             .bg(theme::background())
             .font_family(theme::TEXT_FONT)
-            .child(List::new(&self.list))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .p(theme::PAD)
+                    .border_b_1()
+                    .border_color(theme::border())
+                    .child(Input::new(&self.search).aria_label("Search")),
+            )
+            .child(div().flex_1().child(List::new(&self.list)))
             .when(help, |d| d.child(self.help(window, cx)))
     }
 }
@@ -377,5 +424,28 @@ mod tests {
             (0, 2),
             "the cursor stays"
         );
+    }
+
+    #[gpui::test]
+    fn the_search_field_takes_letters_and_esc_gives_the_keys_back(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (_dir, model, _) = test_model(false);
+        let (mail, cx) = cx.add_window_view(|window, cx| Mail::new(model, window, cx));
+        let model = mail.read_with(cx, |mail, _| mail.model.clone());
+        let state = |cx: &mut VisualTestContext| {
+            model.read_with(cx, |m, _| (m.search.clone(), m.rows.len(), m.cursor))
+        };
+        cx.simulate_keystrokes("/ o f f s i t e");
+        assert_eq!(
+            state(cx),
+            (Some("offsite".into()), 2, 0),
+            "j-like letters typed, not moved"
+        );
+        cx.simulate_keystrokes("j");
+        assert_eq!(state(cx).0.as_deref(), Some("offsitej"));
+        cx.simulate_keystrokes("escape");
+        assert_eq!(state(cx), (None, 5, 0));
+        cx.simulate_keystrokes("j");
+        assert_eq!(state(cx).2, 1, "the list has its keys back");
     }
 }

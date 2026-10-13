@@ -23,6 +23,9 @@ pub struct Model {
     pub shown: Vec<usize>,
     pub folder: String,
     pub threads: Vec<(usize, ThreadSummary)>,
+    /// The search query while the search field is open; its hits replace the threads.
+    pub search: Option<String>,
+    pub hits: Vec<Row>,
     pub expanded: HashMap<(usize, String), Vec<MessageSummary>>,
     pub rows: Vec<Row>,
     pub cursor: usize,
@@ -56,6 +59,8 @@ impl Model {
             shown,
             folder: list::INBOX.into(),
             threads: Vec::new(),
+            search: None,
+            hits: Vec::new(),
             expanded: HashMap::new(),
             rows: Vec::new(),
             cursor: 0,
@@ -68,8 +73,24 @@ impl Model {
         Ok(model)
     }
 
-    /// `App::reload_view` for a folder view: threads from each shown store, expanded threads reloaded.
+    /// `App::reload_view` for a folder view: the search's hits in every folder of the shown stores, or the folder's
+    /// threads with the expanded ones reloaded.
     fn reload(&mut self) {
+        if let Some(query) = &self.search {
+            let mut hits = Vec::new();
+            for &account in &self.shown {
+                match self.accounts[account]
+                    .store
+                    .search(query, None, list::SEARCH_LIMIT)
+                {
+                    Ok(found) => hits.extend(found.iter().map(|m| Row::from_message(account, m))),
+                    Err(e) => eprintln!("[{}] search failed: {e}", self.accounts[account].name),
+                }
+            }
+            self.hits = list::merge_hits(hits, list::SEARCH_LIMIT);
+            self.rebuild_rows();
+            return;
+        }
         let mut found = Vec::new();
         for &account in &self.shown {
             match self.accounts[account]
@@ -104,12 +125,24 @@ impl Model {
     /// `App::rebuild_rows`: the cursor stays on its row when that row is still there.
     fn rebuild_rows(&mut self) {
         let current = self.rows.get(self.cursor).cloned();
-        let mut rows = list::build_rows(&self.folder, &self.threads, &self.expanded);
+        let mut rows = if self.search.is_some() {
+            self.hits.clone()
+        } else {
+            list::build_rows(&self.folder, &self.threads, &self.expanded)
+        };
         let pending: Vec<_> = self.accounts.iter().map(|a| &a.pending).collect();
         list::apply_pending(&mut rows, &pending);
         let kept = current.and_then(|cursor| rows.iter().position(|row| same_row(row, &cursor)));
         self.rows = rows;
         self.cursor = kept.unwrap_or_else(|| self.cursor.min(self.rows.len().saturating_sub(1)));
+    }
+
+    /// Opens, changes or (with `None`) closes the search.
+    pub fn set_search(&mut self, query: Option<String>) {
+        if self.search != query {
+            self.search = query;
+            self.reload();
+        }
     }
 
     /// The account and key of the cursor's row.
@@ -384,6 +417,23 @@ mod tests {
             &[93, 94],
             "only the marked row, not the cursor"
         );
+    }
+
+    #[test]
+    fn a_search_shows_hits_from_every_folder_and_closing_it_shows_the_threads() {
+        let (_dir, mut model, _) = test_model(false);
+        model.set_search(Some("offsite".into()));
+        let subjects: Vec<&str> = model.rows.iter().map(|r| r.subject.as_str()).collect();
+        assert_eq!(
+            subjects.len(),
+            2,
+            "both messages of the thread, unthreaded: {subjects:?}"
+        );
+        assert!(subjects.iter().all(|s| s.contains("offsite")));
+        model.set_search(Some(String::new()));
+        assert!(model.rows.is_empty(), "an empty query finds nothing");
+        model.set_search(None);
+        assert_eq!(model.rows.len(), 5);
     }
 
     #[test]
