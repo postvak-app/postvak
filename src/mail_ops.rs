@@ -182,6 +182,7 @@ mod recording {
         }
 
         /// Gives every message whose flags changed since last looked at a new modseq; returns the folder's highest.
+        /// The fake's own stores call it at once, so a later edit of `mail` that reverts one still gets a new modseq.
         fn refresh_modseqs(&mut self, folder: &str) -> u64 {
             let highest = self.highest_modseq.entry(folder.into()).or_insert(1);
             for env in self.mail.get(folder).into_iter().flatten() {
@@ -343,6 +344,7 @@ mod recording {
                     env.flags.push(f.to_string());
                 }
             }
+            self.refresh_modseqs(&self.selected.clone());
             Ok(())
         }
 
@@ -354,6 +356,7 @@ mod recording {
             ));
             let env = self.envelope_mut(uid)?;
             env.flags.retain(|f| !flags.contains(&f.as_str()));
+            self.refresh_modseqs(&self.selected.clone());
             Ok(())
         }
 
