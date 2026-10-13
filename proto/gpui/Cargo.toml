@@ -1,0 +1,22 @@
+[package]
+name = "postvak-gpui-proto"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Its own workspace, so it never joins postvak's build, lock file or CI.
+[workspace]
+
+[dependencies]
+postvak = { path = "../..", default-features = false, features = ["html", "testing"] }  # the store, rules, list and HTML code under test
+gpui = { package = "gpui-pre", version = "=0.3.9" }  # GPUI, crates.io snapshot of zed@93d7456; the version GPUI Kit pins
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }  # platform backend; runtime_shaders for Xcode 26 without the Metal toolchain
+gpui-kit = "=0.7.3"  # list, input and scroll components with AccessKit
+anyhow = "1"  # errors from main
+
+[dev-dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.9", features = ["test-support"] }  # TestAppContext, VisualTestContext, headless capture
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
