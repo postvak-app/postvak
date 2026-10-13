@@ -8,10 +8,13 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use anyrender::ImageRenderer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
-use blitz_dom::{DEFAULT_CSS, DocumentConfig, FontContext, QualName, local_name, ns};
-use blitz_html::HtmlDocument;
+use blitz_dom::{BaseDocument, DEFAULT_CSS, DocumentConfig, FontContext, QualName, local_name, ns};
+use blitz_html::DocumentHtmlParser;
 use blitz_traits::shell::{ColorScheme, Viewport};
 use eframe::egui;
+use fontique::{Blob, Collection, CollectionOptions, FallbackKey, Script, SourceCache};
+use html5ever::tendril::TendrilSink;
+use html5ever::tree_builder::TreeBuilderOpts;
 
 use super::net;
 use super::{Load, Reply, Request, STRIP};
@@ -69,7 +72,7 @@ impl Renderer {
 
 /// The document being shown, laid out at one width and scale.
 struct Current {
-    doc: HtmlDocument,
+    doc: BaseDocument,
     generation: u64,
     height: u32,
     raster: VelloCpuImageRenderer,
@@ -180,7 +183,7 @@ fn layout(load: Load) -> (Current, Reply) {
         font_ctx: fonts(),
         ..Default::default()
     };
-    let mut doc = HtmlDocument::from_html(&load.html, config);
+    let mut doc = parse(&load.html, config);
     font_colours(&mut doc);
     // The provider answered every request synchronously; take its answers before the layout.
     doc.handle_messages();
@@ -231,9 +234,27 @@ fn paint(current: &mut Current, strip: u32) -> Option<egui::ColorImage> {
         .then(|| egui::ColorImage::from_rgba_premultiplied(size, &rgba))
 }
 
+/// Mail is HTML whatever it declares: Blitz's own entry point sniffs `xmlns="…xhtml"` and parses as XML, where a void
+/// `<img>` swallows the rest of the page.
+fn parse(html: &str, config: DocumentConfig) -> BaseDocument {
+    let mut doc = BaseDocument::new(config);
+    let mut mutator = doc.mutate();
+    let opts = html5ever::ParseOpts {
+        // No script runs, so `<noscript>` content shows, as Blitz's own HTML path does.
+        tree_builder: TreeBuilderOpts {
+            scripting_enabled: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    html5ever::parse_document(DocumentHtmlParser::new(&mut mutator), opts).one(html);
+    drop(mutator);
+    doc
+}
+
 /// Selects the text from `from` to `to` (CSS pixels) and returns it. A `to` off any text keeps the selection as it
 /// was, so a drag past the end of a paragraph does not drop it.
-fn select(doc: &mut HtmlDocument, from: egui::Pos2, to: egui::Pos2) -> Option<String> {
+fn select(doc: &mut BaseDocument, from: egui::Pos2, to: egui::Pos2) -> Option<String> {
     if from == to {
         doc.clear_text_selection();
         return None;
@@ -247,7 +268,7 @@ fn select(doc: &mut HtmlDocument, from: egui::Pos2, to: egui::Pos2) -> Option<St
 }
 
 /// Blitz maps `bgcolor` but not `<font color>`, which mail still uses for coloured text: copy it into the style.
-fn font_colours(doc: &mut HtmlDocument) {
+fn font_colours(doc: &mut BaseDocument) {
     let Ok(fonts) = doc.query_selector_all("font[color]") else {
         return;
     };
@@ -272,7 +293,7 @@ fn font_colours(doc: &mut HtmlDocument) {
 }
 
 /// The `href` of the link under a point in CSS pixels, from the innermost `<a>` around the hit node.
-fn link_at(doc: &HtmlDocument, x: f32, y: f32) -> Option<String> {
+fn link_at(doc: &BaseDocument, x: f32, y: f32) -> Option<String> {
     let hit = doc.hit(x, y)?;
     let mut node = doc.get_node(hit.node_id);
     while let Some(n) = node {
@@ -300,7 +321,49 @@ fn fonts() -> Option<FontContext> {
             .map(|data| blitz_dom::build_single_font_ctx(&data.font))
     }
     #[cfg(not(test))]
-    None
+    Some(system_fonts())
+}
+
+/// The system fonts as Blitz would load them, plus symbol fonts for glyphs like `⟶` that the mail's fonts and the
+/// script's fallback both lack.
+// Tests render with the one bundled font instead.
+#[cfg_attr(test, allow(dead_code))]
+fn system_fonts() -> FontContext {
+    let mut ctx = FontContext {
+        source_cache: SourceCache::new_shared(),
+        collection: Collection::new(CollectionOptions {
+            shared: false,
+            system_fonts: true,
+        }),
+    };
+    // Blitz registers this only when it builds the context itself; list markers need it.
+    ctx.collection
+        .register_fonts(Blob::new(Arc::new(blitz_dom::BULLET_FONT) as _), None);
+    append_fallbacks(&mut ctx.collection, SYMBOL_FONTS);
+    ctx
+}
+
+/// Fonts with arrows, dingbats and maths symbols on macOS, Linux and Windows; whichever are installed are used.
+#[cfg_attr(test, allow(dead_code))]
+const SYMBOL_FONTS: &[&str] = &[
+    "Apple Symbols",
+    "DejaVu Sans",
+    "Noto Sans Math",
+    "Noto Sans Symbols 2",
+    "Segoe UI Symbol",
+];
+
+/// Adds the installed `families` to the fallbacks every text run consults, whatever its script and language:
+/// Parley adds the Han list to each query (linebender/parley#597), so they go after the system's own Han fonts.
+fn append_fallbacks(collection: &mut Collection, families: &[&str]) {
+    let han = FallbackKey::new(Script::from_bytes(*b"Hani"), None);
+    let mut ids: Vec<_> = collection.fallback_families(han).collect();
+    ids.extend(
+        families
+            .iter()
+            .filter_map(|name| collection.family_id(name)),
+    );
+    collection.set_fallbacks(han, ids.into_iter());
 }
 
 /// Blitz panics on some input, and its messages can quote the mail; a panic on the render thread logs only that it
@@ -546,6 +609,34 @@ mod tests {
         let html = "<img src=\"logo.png\"><a href=\"/x\">x</a><link rel=stylesheet href=\"s.css\"><iframe src=\"f.html\"></iframe>";
         let got = replies(vec![load(1, html, 400.0), load(2, "", 400.0)], handle);
         assert!(matches!(got[..], [Reply::Laid { generation: 2, .. }]));
+    }
+
+    #[test]
+    fn mail_declaring_the_xhtml_namespace_is_parsed_as_html() {
+        // Parsed as XML, the void `<img>` would swallow the table, and its `display: none` the whole page.
+        let html = r#"<html xmlns="http://www.w3.org/1999/xhtml"><body><img src="cid:x" style="display:none"><table><tr><td style="height:300px">Hi</td></tr></table></body></html>"#;
+        let mut current = None;
+        let Some(Reply::Laid { height, .. }) = handle(&mut current, load(1, html, 400.0)) else {
+            panic!("no layout");
+        };
+        assert!(height >= 300.0, "height {height}");
+    }
+
+    #[test]
+    fn installed_symbol_fonts_join_the_fallbacks_of_every_script() {
+        let mut collection = Collection::new(CollectionOptions {
+            shared: false,
+            system_fonts: false,
+        });
+        let fonts = egui::FontDefinitions::default();
+        let data = fonts.font_data.get("Ubuntu-Light").unwrap();
+        let registered =
+            collection.register_fonts(Blob::new(Arc::new(data.font.to_vec()) as _), None);
+        let id = registered[0].0;
+        let name = collection.family_name(id).unwrap().to_string();
+        append_fallbacks(&mut collection, &["Not Installed", &name]);
+        let han = FallbackKey::new(Script::from_bytes(*b"Hani"), None);
+        assert_eq!(collection.fallback_families(han).collect::<Vec<_>>(), [id]);
     }
 
     #[test]
