@@ -287,15 +287,12 @@ fn physical(points: f32, scale: f32) -> u32 {
     (points * scale).ceil() as u32
 }
 
-/// System fonts, except in tests: there the font egui bundles, so a render looks the same on every machine.
+/// System fonts, except in tests: there the bundled Hanken Grotesk alone, so a render looks the same on every machine.
 fn fonts() -> Option<FontContext> {
     #[cfg(test)]
     {
-        let fonts = eframe::egui::FontDefinitions::default();
-        fonts
-            .font_data
-            .get("Ubuntu-Light")
-            .map(|data| blitz_dom::build_single_font_ctx(&data.font))
+        let font = include_bytes!("../../../assets/fonts/HankenGrotesk-Medium.ttf");
+        Some(blitz_dom::build_single_font_ctx(font))
     }
     #[cfg(not(test))]
     None
@@ -335,9 +332,47 @@ impl Renderer {
 
 #[cfg(test)]
 mod tests {
-    use eframe::egui;
 
     use super::*;
+
+    /// A pixel of a painted strip, premultiplied RGBA, for asserting on colours.
+    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+    struct Colour([u8; 4]);
+
+    impl Colour {
+        fn r(self) -> u8 {
+            self.0[0]
+        }
+
+        fn g(self) -> u8 {
+            self.0[1]
+        }
+
+        fn b(self) -> u8 {
+            self.0[2]
+        }
+
+        fn to_array(self) -> [u8; 4] {
+            self.0
+        }
+    }
+
+    /// A strip's size and its pixels as colours, row by row.
+    struct Strip {
+        size: [usize; 2],
+        pixels: Vec<Colour>,
+    }
+
+    fn colours(pixels: &Pixels) -> Strip {
+        Strip {
+            size: [pixels.width() as usize, pixels.height() as usize],
+            pixels: pixels
+                .rgba()
+                .chunks_exact(4)
+                .map(|p| Colour([p[0], p[1], p[2], p[3]]))
+                .collect(),
+        }
+    }
 
     const NEWSLETTER: &str = include_str!("../../../tests/fixtures/newsletter.html");
 
@@ -391,7 +426,7 @@ mod tests {
         ) else {
             panic!("no strip");
         };
-        let image = image.to_egui();
+        let image = colours(&image);
         assert_eq!(image.size, [700, 512]);
         // The header bar is dark blue, the page around it light grey.
         let at = |x: usize, y: usize| image.pixels[y * 700 + x];
@@ -407,7 +442,7 @@ mod tests {
         ) else {
             panic!("no second strip");
         };
-        let image = image.to_egui();
+        let image = colours(&image);
         let colours: std::collections::HashSet<_> = image.pixels.iter().collect();
         assert!(colours.len() > 20, "{} colours", colours.len());
         // A stale generation gets no answer; a point over the button finds its link.
@@ -445,8 +480,8 @@ mod tests {
         let Some(Reply::Strip { image, .. }) = handle(&mut current, paint) else {
             panic!("no strip");
         };
-        let image = image.to_egui();
-        let red = |p: &&egui::Color32| p.r() > 150 && p.g() < 80 && p.b() < 80;
+        let image = colours(&image);
+        let red = |p: &&Colour| p.r() > 150 && p.g() < 80 && p.b() < 80;
         image.pixels.iter().filter(red).count()
     }
 
@@ -514,7 +549,7 @@ mod tests {
             strip: 0,
         };
         let plain = match handle(&mut current, paint) {
-            Some(Reply::Strip { image, .. }) => image.to_egui(),
+            Some(Reply::Strip { image, .. }) => colours(&image),
             _ => panic!("no strip"),
         };
         let _ = select(&mut current, (10.0, 20.0), (590.0, 20.0));
@@ -525,7 +560,7 @@ mod tests {
         let Some(Reply::Strip { image, .. }) = handle(&mut current, paint) else {
             panic!("no strip");
         };
-        let image = image.to_egui();
+        let image = colours(&image);
         assert_ne!(image.pixels, plain.pixels, "the selection is not painted");
     }
 
@@ -628,8 +663,8 @@ mod tests {
         ) else {
             panic!("no strip");
         };
-        let image = image.to_egui();
-        let red = egui::Color32::from_rgb(255, 0, 0);
+        let image = colours(&image);
+        let red = Colour([255, 0, 0, 255]);
         assert!(image.pixels.contains(&red));
     }
 

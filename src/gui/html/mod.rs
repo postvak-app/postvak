@@ -1,21 +1,16 @@
-//! The HTML view of a message: the page drawn from strips the render thread paints, with link hover and click.
-//! `app.rs` owns `HtmlState` and talks to the render thread; this module draws and returns `UiAction`s.
+//! The HTML view of a message, without a toolkit: the render thread's protocol, the strips it paints as plain pixels,
+//! and which strips to ask for. `state.rs` owns `HtmlState` and talks to the render thread; the window draws it.
 #[cfg(feature = "html")]
 mod net;
 #[cfg(feature = "html")]
 mod render;
-#[cfg(feature = "html")]
-#[cfg(test)]
-pub(crate) mod view_tests;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
-
-use eframe::egui;
+use std::sync::Arc;
 
 use crate::message::{HtmlBody, InlinePart};
 
-use super::app::UiAction;
 use super::body;
 
 /// Strip height in physical pixels.
@@ -75,12 +70,6 @@ impl Pixels {
 
     pub fn rgba(&self) -> &[u8] {
         &self.rgba
-    }
-
-    pub fn to_egui(&self) -> egui::ColorImage {
-        // `new` checked the length, and a u32 fits in usize on every platform eframe runs on.
-        let size = [self.width as usize, self.height as usize];
-        egui::ColorImage::from_rgba_premultiplied(size, &self.rgba)
     }
 }
 
@@ -203,17 +192,18 @@ pub(crate) struct HtmlState {
     pub generation: u64,
     pub hover: Option<String>,
     /// The last point sent as a hit test, so a still pointer sends nothing.
-    pub hovered_at: Option<egui::Pos2>,
-    /// Set once the current generation is laid out: the page size in points.
-    pub page: Option<egui::Vec2>,
+    pub hovered_at: Option<[f32; 2]>,
+    /// Set once the current generation is laid out: the page width and height in points.
+    pub page: Option<(f32, f32)>,
     pub remote: bool,
     pub requested: BTreeSet<u32>,
     /// The two points of the last `Select`, so a still drag sends nothing.
-    pub selected_at: Option<(egui::Pos2, egui::Pos2)>,
+    pub selected_at: Option<([f32; 2], [f32; 2])>,
     pub selection: Option<String>,
     /// The scale and width (points) of the last `Load`.
     pub sent: (f32, f32),
-    pub strips: BTreeMap<u32, egui::TextureHandle>,
+    /// The painted strips by number; shared, so the window can show them without copying.
+    pub strips: BTreeMap<u32, Arc<Pixels>>,
     /// A different width or scale than `sent`, and when it was first seen.
     pub wanted: Option<((f32, f32), f64)>,
 }
@@ -268,98 +258,6 @@ pub fn openable(href: &str) -> Option<&str> {
     body::has_target(href).then_some(href)
 }
 
-/// The page `width` points wide, its note, and what the pointer does over it; "Rendering…" until it is laid out.
-pub(crate) fn show(state: Option<&HtmlState>, width: f32, ui: &mut egui::Ui) -> Vec<UiAction> {
-    let mut actions = Vec::new();
-    let width = width.max(MIN_WIDTH);
-    let scale = ui.ctx().pixels_per_point();
-    actions.push(UiAction::HtmlWidth { scale, width });
-    let Some((state, page)) = state.and_then(|s| Some((s, s.page?))) else {
-        ui.weak("Rendering…");
-        return actions;
-    };
-    if state.remote {
-        ui.weak("Remote content not loaded.");
-    }
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(page.x.max(width), page.y),
-        egui::Sense::click_and_drag(),
-    );
-    let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 0.0, egui::Color32::WHITE);
-    let points = STRIP as f32 / scale;
-    for (&strip, texture) in &state.strips {
-        let size = texture.size_vec2() / scale;
-        let min = rect.min + egui::vec2(0.0, strip as f32 * points);
-        painter.image(
-            texture.id(),
-            egui::Rect::from_min_size(min, size),
-            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-            egui::Color32::WHITE,
-        );
-    }
-    painter.rect_stroke(
-        rect,
-        0.0,
-        ui.visuals().widgets.noninteractive.bg_stroke,
-        egui::StrokeKind::Inside,
-    );
-    let visible = ui.clip_rect().intersect(rect);
-    if visible.is_positive() {
-        actions.push(UiAction::HtmlVisible {
-            top: visible.min.y - rect.min.y,
-            bottom: visible.max.y - rect.min.y,
-        });
-    }
-    let in_page = |pos: egui::Pos2| (pos - rect.min).to_pos2();
-    let pointer = response.hover_pos().map(in_page);
-    if pointer != state.hovered_at {
-        actions.push(UiAction::HtmlHover(pointer));
-    }
-    actions.extend(select(state, &response, in_page, ui));
-    let link = state.hover.as_deref().filter(|_| pointer.is_some());
-    if let Some(href) = link {
-        let response = response.on_hover_text_at_pointer(crate::message::clean(href, false));
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        if response.clicked()
-            && let Some(url) = openable(href)
-        {
-            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
-        }
-    } else if pointer.is_some() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
-    }
-    actions
-}
-
-/// A drag selects the page's text, a click clears it, and Copy copies it unless a widget has the keyboard.
-fn select(
-    state: &HtmlState,
-    response: &egui::Response,
-    in_page: impl Fn(egui::Pos2) -> egui::Pos2,
-    ui: &egui::Ui,
-) -> Option<UiAction> {
-    let copy = ui.input(|input| input.events.contains(&egui::Event::Copy));
-    if let Some(text) = &state.selection
-        && copy
-        && ui.memory(|memory| memory.focused().is_none())
-    {
-        ui.ctx().copy_text(text.clone());
-    }
-    let origin = ui.input(|input| input.pointer.press_origin());
-    let at = match (origin, response.interact_pointer_pos()) {
-        (Some(from), Some(to)) if response.dragged() => (in_page(from), in_page(to)),
-        (_, Some(to)) if response.clicked() && state.selection.is_some() => {
-            (in_page(to), in_page(to))
-        }
-        _ => return None,
-    };
-    (state.selected_at != Some(at)).then_some(UiAction::HtmlSelect {
-        from: at.0,
-        to: at.1,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,7 +269,6 @@ mod tests {
             (pixels.width(), pixels.height(), pixels.rgba().len()),
             (2, 3, 24)
         );
-        assert_eq!(pixels.to_egui().size, [2, 3]);
         assert!(Pixels::new(2, 3, vec![0; 23]).is_none());
         assert!(Pixels::new(u32::MAX, u32::MAX, Vec::new()).is_none());
     }

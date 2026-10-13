@@ -1,8 +1,7 @@
-//! A temp Postvak home with stores and an in-memory daemon client, for the GUI tests.
+//! A temp Postvak home with stores and an in-memory daemon client, for the GUI tests; and `Driver`, which works the app
+//! as the window would: keys through the keymap, actions, ticks, and a clock the test moves.
 use std::sync::mpsc::{Receiver, Sender};
 
-use eframe::egui;
-use egui_kittest::Harness;
 use tempfile::TempDir;
 
 use crate::config::Config;
@@ -10,9 +9,9 @@ use crate::daemon::Client;
 use crate::store::{Message, Store};
 use crate::sync::{Command, Event};
 
-use super::App;
-use super::app::session;
 use super::fixture::{self, Home};
+use super::keys::{self, Named, Press};
+use super::state::{App, UiAction, session};
 
 pub(crate) struct Fixture {
     home: Home,
@@ -73,8 +72,8 @@ impl Fixture {
         self.home.add(account, message).unwrap();
     }
 
-    /// The app over this home, drawn headless at 1280×800; each frame advances input time by 10 ms.
-    pub fn harness(&self) -> (Harness<'static, App>, Wires) {
+    /// The app over this home with no daemon behind it: what it sends shows on `Wires`, events are injected there.
+    pub fn app(&self) -> (App, Wires) {
         let config = Config::load(&self.paths.config_file()).unwrap();
         let names: Vec<&str> = self.accounts.iter().map(String::as_str).collect();
         let (client, commands, events) = Client::in_memory(&names);
@@ -84,11 +83,77 @@ impl Fixture {
         app.fetch_release = || Err(anyhow::anyhow!("no network in tests"));
         app.downloads = self.paths.cache_dir.join("downloads");
         std::fs::create_dir_all(&app.downloads).unwrap();
-        let harness = Harness::builder()
-            .with_size(egui::vec2(1280.0, 800.0))
-            .with_step_dt(0.01)
-            .build_ui_state(|ui, app: &mut App| app.show(ui), app);
-        (harness, Wires { commands, events })
+        (app, Wires { commands, events })
+    }
+
+    /// The app over this home, worked as the window works it, with the clock at 0.
+    pub fn driver(&self) -> (Driver, Wires) {
+        let (app, wires) = self.app();
+        let mut driver = Driver { app, now: 0.0 };
+        driver.tick();
+        (driver, wires)
+    }
+}
+
+/// The app as the window drives it, without a window: keys go through the keymap, every action is followed by a tick,
+/// and time moves only when the test says so.
+pub(crate) struct Driver {
+    pub app: App,
+    /// Seconds on the window's clock.
+    pub now: f64,
+}
+
+impl Driver {
+    /// Events in, timers, reloads and the shown body, as when the window is woken.
+    pub fn tick(&mut self) {
+        self.app.tick(self.now);
+    }
+
+    pub fn apply(&mut self, action: UiAction) {
+        self.app.apply(action, self.now);
+        self.tick();
+    }
+
+    /// Presses each space-separated key in the focused pane: "down", "up", "left", "right", "tab", "escape",
+    /// "delete", "backspace", "ctrl+r", or the text it types.
+    pub fn press(&mut self, keys: &str) {
+        for key in keys.split(' ') {
+            let press = match key {
+                "down" => Press::named(Named::Down),
+                "up" => Press::named(Named::Up),
+                "left" => Press::named(Named::Left),
+                "right" => Press::named(Named::Right),
+                "tab" => Press::named(Named::Tab),
+                "escape" => Press::named(Named::Escape),
+                "delete" => Press::named(Named::Delete),
+                "backspace" => Press::named(Named::Backspace),
+                "ctrl+r" => Press {
+                    command: true,
+                    ..Press::text("r")
+                },
+                text => Press::text(text),
+            };
+            let typing = self.app.search_focused || self.app.move_picker.is_some();
+            if let Some(action) = keys::action(&press, self.app.focus, typing) {
+                self.apply(action);
+            }
+        }
+    }
+
+    /// Moves the clock to `at` seconds and ticks.
+    pub fn at(&mut self, at: f64) {
+        self.now = at;
+        self.tick();
+    }
+
+    /// The rows' (account, uid), top to bottom.
+    pub fn ids(&self) -> Vec<(usize, u32)> {
+        self.app.list.rows.iter().map(|r| (r.account, r.uid)).collect()
+    }
+
+    /// The rows' uids, top to bottom.
+    pub fn uids(&self) -> Vec<u32> {
+        self.app.list.rows.iter().map(|r| r.uid).collect()
     }
 }
 

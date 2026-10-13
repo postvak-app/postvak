@@ -1,10 +1,10 @@
-//! App state, the frame loop, and the only code that changes state: `handle` for events, `apply` for UI actions.
+//! App state and the only code that changes it: `handle` for daemon events, `apply` for what the window asks, `tick`
+//! for time. No toolkit here: `bind.rs` shows this state in the Slint window and turns its callbacks into `UiAction`s.
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::time::{Duration, SystemTime};
-
-use eframe::egui;
+use std::time::SystemTime;
 
 use crate::config::{self, Config, Theme};
 use crate::daemon::Client;
@@ -19,12 +19,9 @@ use crate::update;
 
 use super::body;
 use super::folders;
-use super::html::{self, HtmlState, Renderer, Reply};
+use super::html::{self, HtmlState, Renderer, Reply, Wake};
 use super::list::{self, ListState, Optimistic, Row, RowKey, THREAD_LIMIT};
 use super::rules::{self, RulesState, TrashRow};
-use super::status;
-use super::theme;
-use super::toolbar;
 
 /// The status line when `m` is pressed with marked rows from more than one account.
 pub(crate) const MOVE_ONE_ACCOUNT: &str =
@@ -40,10 +37,10 @@ const NEWER_DAEMON: &str = "the daemon is version ";
 const HISTORY: usize = 50;
 
 /// Seconds between checks of rules.toml and config.toml for outside edits.
-const POLL: f64 = 2.0;
+pub(crate) const POLL: f64 = 2.0;
 
 /// How long a message stays on screen before it is marked read.
-const READ_DELAY: f64 = 1.0;
+pub(crate) const READ_DELAY: f64 = 1.0;
 
 /// Seconds between attempts to reach the daemon again.
 const RECONNECT: f64 = 5.0;
@@ -198,7 +195,7 @@ impl View {
     }
 }
 
-/// What a view asks for; `App::apply` carries it out after the frame.
+/// What the window asks for; `App::apply` carries it out.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum UiAction {
     Act(Action),
@@ -208,11 +205,11 @@ pub(crate) enum UiAction {
     Escape,
     Expand,
     /// The pointer over the HTML page, in page points, or `None` once it left.
-    HtmlHover(Option<egui::Pos2>),
+    HtmlHover(Option<[f32; 2]>),
     /// Select the HTML page's text between two points, in page points.
     HtmlSelect {
-        from: egui::Pos2,
-        to: egui::Pos2,
+        from: [f32; 2],
+        to: [f32; 2],
     },
     /// The part of the HTML page on screen, in page points.
     HtmlVisible {
@@ -245,7 +242,7 @@ pub(crate) enum UiAction {
     SelectRow(usize),
     SelectView(View),
     SetRuleEnabled(String, bool),
-    SetTheme(egui::ThemePreference),
+    SetTheme(Theme),
     StartSearch,
     StepFolder(isize),
     SyncNow,
@@ -292,8 +289,6 @@ pub struct App {
     pub(crate) focus: Focus,
     pub(crate) focus_search: bool,
     pub(crate) help_open: bool,
-    /// The app icon drawn in the toolbar, loaded on the first frame.
-    pub(crate) logo: Option<egui::TextureHandle>,
     /// Numbers HTML layouts, so a reply for an older one is dropped.
     pub(crate) html_generation: u64,
     pub(crate) history: VecDeque<HistoryLine>,
@@ -314,8 +309,14 @@ pub struct App {
     pub(crate) rules: RulesState,
     pub(crate) rules_mtime: Option<SystemTime>,
     pub(crate) search: Option<String>,
-    pub(crate) theme: egui::ThemePreference,
-    pub(crate) theme_applied: bool,
+    /// Set by the window while the search field has the keyboard, so the list is not opened while a query is typed.
+    pub(crate) search_focused: bool,
+    /// The earliest time something here wants `tick` again (the read delay, a settling width, polling); the window
+    /// sets a timer for it.
+    pub(crate) next_tick: Option<f64>,
+    /// Wakes the window from another thread (a reconnect, the release check, the HTML renderer).
+    pub(crate) wake: Wake,
+    pub(crate) theme: Theme,
     pub(crate) trash: Vec<TrashRow>,
     pub(crate) update: UpdateCheck,
     pub(crate) view: View,
@@ -367,7 +368,6 @@ impl App {
             focus: Focus::List,
             focus_search: false,
             help_open: false,
-            logo: None,
             html_generation: 0,
             history: VecDeque::new(),
             history_open: false,
@@ -384,8 +384,10 @@ impl App {
             rules,
             rules_mtime,
             search: None,
-            theme: preference(config.ui.theme),
-            theme_applied: false,
+            search_focused: false,
+            next_tick: None,
+            wake: Arc::new(|| {}),
+            theme: config.ui.theme,
             trash: Vec::new(),
             update: if config.ui.check_updates {
                 UpdateCheck::Waiting
@@ -402,109 +404,34 @@ impl App {
         app
     }
 
-    /// One frame: events in, keys applied, panels drawn, then what the panels asked for.
-    pub fn show(&mut self, ui: &mut egui::Ui) {
-        let ctx = ui.ctx().clone();
-        if !self.theme_applied {
-            theme::install(&ctx);
-            ctx.set_theme(self.theme);
-            self.theme_applied = true;
-            // Fonts load at the start of the next pass, and drawing in the serif family before then panics.
-            ctx.request_repaint();
-            return;
-        }
-        let now = ui.input(|input| input.time);
+    /// Everything that happens with time: daemon events and render replies in, reconnects, the release check, reloads,
+    /// file polling, the shown body and its read delay. The window calls it when woken, on its timer and after input.
+    pub fn tick(&mut self, now: f64) {
         self.receive(now);
-        self.receive_html(&ctx);
-        self.keep_daemon(&ctx, now);
-        self.check_release(&ctx);
+        self.receive_html();
+        self.keep_daemon(now);
+        self.check_release();
         if std::mem::take(&mut self.view_dirty) {
             self.reload_view();
         }
         self.poll_files(now);
-        for action in self.keys(&ctx) {
-            self.apply(&ctx, action);
-        }
-        // egui moves widget focus on Tab and arrows itself, and Space or Enter would then click the focused row.
-        if !ctx.text_edit_focused() {
-            ctx.memory_mut(|memory| {
-                if let Some(id) = memory.focused() {
-                    memory.surrender_focus(id);
-                }
-            });
-        }
-        let typing_search =
-            self.focus_search || ctx.memory(|memory| memory.has_focus(list::search_id()));
+        let typing_search = self.focus_search || self.search_focused;
         self.sync_body(now, typing_search);
-        self.mark_read_after_delay(now, &ctx);
-        let mut actions = Vec::new();
-        if self.logo.is_none()
-            && let Ok(icon) = eframe::icon_data::from_png_bytes(super::ICON)
-        {
-            let size = [icon.width as usize, icon.height as usize];
-            let image = egui::ColorImage::from_rgba_unmultiplied(size, &icon.rgba);
-            self.logo = Some(ctx.load_texture("logo", image, egui::TextureOptions::LINEAR));
+        self.mark_read_after_delay(now);
+        self.request_tick(self.last_poll + POLL);
+        if self.daemon_lost {
+            self.request_tick(self.last_reconnect + RECONNECT);
         }
-        let bar = theme::chrome_frame(ui);
-        // The status bar starts with an icon button, so its margin is a glyph inset short of INSET to line the glyph
-        // up with the folders' content; the toolbar ends with the search field, flush with the panes' edge.
-        egui::Panel::top("toolbar")
-            .frame(bar.inner_margin(margin(
-                theme::INSET,
-                theme::PAD,
-                (theme::TOP_BAR - theme::CONTROL) / 2.0,
-            )))
-            .exact_size(theme::TOP_BAR)
-            .show(ui, |ui| {
-                theme::chrome(ui);
-                actions.extend(toolbar::show(self, ui));
-            });
-        if self.config_changed {
-            egui::Panel::top("banner").show(ui, |ui| {
-                ui.colored_label(
-                    ui.visuals().warn_fg_color,
-                    "config.toml changed — reopen the window to show it",
-                );
-            });
-        }
-        egui::Panel::bottom("status")
-            .frame(bar.inner_margin(margin(
-                theme::INSET - theme::GLYPH,
-                theme::INSET,
-                theme::PAD,
-            )))
-            .show(ui, |ui| {
-                theme::chrome(ui);
-                actions.extend(status::show(self, ui));
-            });
-        let chrome = theme::chrome_frame(ui);
-        egui::Panel::left(FOLDERS)
-            .frame(theme::pane(
-                chrome.inner_margin(theme::PAD),
-                ui,
-                self.focus == Focus::Folders,
-            ))
-            .resizable(true)
-            .default_size(FOLDERS_WIDTH)
-            .show(ui, |ui| {
-                theme::chrome(ui);
-                actions.extend(folders::show(self, ui));
-            });
-        // The panes sit in the frame like mail in a letterbox: rounded where they meet it.
-        let frame_around_panes = chrome.inner_margin(egui::Margin {
-            right: theme::PAD as i8,
-            ..egui::Margin::ZERO
-        });
-        egui::CentralPanel::default()
-            .frame(frame_around_panes)
-            .show(ui, |ui| self.show_panes(ui, &mut actions));
-        actions.extend(list::show_move_picker(self, &ctx));
-        actions.extend(body::show_source(self, &ctx));
-        actions.extend(status::show_help(self, &ctx));
-        for action in actions {
-            self.apply(&ctx, action);
-        }
-        ctx.request_repaint_after(Duration::from_secs_f64(POLL));
+    }
+
+    /// Asks for `tick` at `at` (seconds on the window's clock) at the latest.
+    pub(crate) fn request_tick(&mut self, at: f64) {
+        self.next_tick = Some(self.next_tick.map_or(at, |next| next.min(at)));
+    }
+
+    /// When the window should call `tick` next; it takes the time and the request starts over.
+    pub fn take_next_tick(&mut self) -> Option<f64> {
+        self.next_tick.take()
     }
 
     fn receive(&mut self, now: f64) {
@@ -522,14 +449,14 @@ impl App {
     }
 
     /// While the daemon is gone: takes the result of the attempt in flight, or starts one every 5 s.
-    fn keep_daemon(&mut self, ctx: &egui::Context, now: f64) {
+    fn keep_daemon(&mut self, now: f64) {
         if !self.daemon_lost {
             return;
         }
         let Some(attempt) = &self.reconnecting else {
             if now - self.last_reconnect >= RECONNECT {
                 self.last_reconnect = now;
-                self.reconnecting = Some(self.start_reconnect(ctx));
+                self.reconnecting = Some(self.start_reconnect());
             }
             return;
         };
@@ -553,27 +480,27 @@ impl App {
         }
     }
 
-    /// Connects on a background thread so the frame never waits; a repaint follows the result.
-    fn start_reconnect(&self, ctx: &egui::Context) -> Receiver<anyhow::Result<Connection>> {
+    /// Connects on a background thread so the window never waits; the window is woken with the result.
+    fn start_reconnect(&self) -> Receiver<anyhow::Result<Connection>> {
         let (done, attempt) = mpsc::channel();
-        let (reconnect, paths, ctx) = (self.reconnect, self.paths.clone(), ctx.clone());
+        let (reconnect, paths, wake) = (self.reconnect, self.paths.clone(), self.wake.clone());
         std::thread::spawn(move || {
-            let waker = ctx.clone();
-            let connection = reconnect(&paths, Box::new(move || waker.request_repaint()));
+            let events_wake = wake.clone();
+            let connection = reconnect(&paths, Box::new(move || events_wake()));
             let _ = done.send(connection);
-            ctx.request_repaint();
+            wake();
         });
         attempt
     }
 
-    /// Starts the release check at the first frame, after the test fixture has swapped `fetch_release`, then takes its
+    /// Starts the release check at the first tick, after the test fixture has swapped `fetch_release`, then takes its
     /// answer.
-    fn check_release(&mut self, ctx: &egui::Context) {
+    fn check_release(&mut self) {
         let next = match &self.update {
             UpdateCheck::Waiting => {
                 let (done, answer) = mpsc::channel();
-                let (cache, fetch, ctx) =
-                    (self.paths.update_check(), self.fetch_release, ctx.clone());
+                let (cache, fetch, wake) =
+                    (self.paths.update_check(), self.fetch_release, self.wake.clone());
                 std::thread::spawn(move || {
                     let _ = done.send(update::check(
                         &cache,
@@ -581,7 +508,7 @@ impl App {
                         env!("CARGO_PKG_VERSION"),
                         fetch,
                     ));
-                    ctx.request_repaint();
+                    wake();
                 });
                 Some(UpdateCheck::Running(answer))
             }
@@ -766,7 +693,7 @@ impl App {
         }
     }
 
-    fn apply(&mut self, ctx: &egui::Context, action: UiAction) {
+    pub fn apply(&mut self, action: UiAction, now: f64) {
         match action {
             UiAction::Act(action) => self.act(action),
             UiAction::ApproveRule(name) => {
@@ -785,10 +712,7 @@ impl App {
             UiAction::HtmlHover(at) => self.html_hover(at),
             UiAction::HtmlSelect { from, to } => self.html_select(from, to),
             UiAction::HtmlVisible { top, bottom } => self.html_visible(top, bottom),
-            UiAction::HtmlWidth { scale, width } => {
-                let now = ctx.input(|input| input.time);
-                self.html_width(ctx, scale, width, now);
-            }
+            UiAction::HtmlWidth { scale, width } => self.html_width(scale, width, now),
             UiAction::Escape => {
                 if self.move_picker.is_some() {
                     self.move_picker = None;
@@ -870,11 +794,10 @@ impl App {
             UiAction::SetRuleEnabled(name, enabled) => {
                 self.edit_rules(|path| rule_file::edit::set_enabled(path, &name, enabled));
             }
-            UiAction::SetTheme(preference) => {
-                ctx.set_theme(preference);
-                self.theme = preference;
+            UiAction::SetTheme(theme) => {
+                self.theme = theme;
                 let path = self.paths.config_file();
-                match config::save_theme(&path, theme_of(preference)) {
+                match config::save_theme(&path, theme) {
                     Ok(()) => self.config_mtime = mtime(&path),
                     Err(e) => self.note_error(None, format!("could not save the theme: {e}")),
                 }
@@ -941,86 +864,6 @@ impl App {
                 }
             }
         }
-    }
-
-    /// Shortcut keys for the focused pane. While a text field has focus only Esc counts, so typed letters stay text.
-    fn keys(&self, ctx: &egui::Context) -> Vec<UiAction> {
-        let typing = ctx.text_edit_focused();
-        let mut actions = Vec::new();
-        ctx.input_mut(|input| {
-            let none = egui::Modifiers::NONE;
-            if input.consume_key(none, egui::Key::Escape) {
-                actions.push(UiAction::Escape);
-            }
-            if input.consume_key(egui::Modifiers::COMMAND, egui::Key::R) {
-                actions.push(UiAction::SyncNow);
-            }
-            if typing {
-                return;
-            }
-            if input.consume_key(none, egui::Key::Tab) {
-                actions.push(UiAction::NextFocus);
-            }
-            if typed(input, "?") {
-                actions.push(UiAction::ToggleHelp);
-            }
-            if typed(input, "/") {
-                actions.push(UiAction::StartSearch);
-            }
-            let down = typed(input, "j") || input.consume_key(none, egui::Key::ArrowDown);
-            let up = typed(input, "k") || input.consume_key(none, egui::Key::ArrowUp);
-            match self.focus {
-                Focus::Folders => {
-                    if down {
-                        actions.push(UiAction::StepFolder(1));
-                    }
-                    if up {
-                        actions.push(UiAction::StepFolder(-1));
-                    }
-                }
-                Focus::Body | Focus::List => {
-                    if down {
-                        actions.push(UiAction::MoveCursor(1));
-                    }
-                    if up {
-                        actions.push(UiAction::MoveCursor(-1));
-                    }
-                    if input.consume_key(none, egui::Key::ArrowRight) {
-                        actions.push(UiAction::Expand);
-                    }
-                    if input.consume_key(none, egui::Key::ArrowLeft) {
-                        actions.push(UiAction::Collapse);
-                    }
-                    if typed(input, "x") {
-                        actions.push(UiAction::ToggleMark);
-                    }
-                    if typed(input, "e") {
-                        actions.push(UiAction::Act(Action::Archive));
-                    }
-                    let delete = typed(input, "#")
-                        || input.consume_key(none, egui::Key::Delete)
-                        // macOS keyboards label Backspace "delete".
-                        || (cfg!(target_os = "macos")
-                            && input.consume_key(none, egui::Key::Backspace));
-                    if delete {
-                        actions.push(UiAction::Act(Action::Trash));
-                    }
-                    if typed(input, "m") {
-                        actions.push(UiAction::OpenMovePicker);
-                    }
-                    if typed(input, "s") {
-                        actions.push(UiAction::ToggleFlag);
-                    }
-                    if typed(input, "u") {
-                        actions.push(UiAction::ToggleRead);
-                    }
-                    if typed(input, "v") {
-                        actions.push(UiAction::ToggleHtml);
-                    }
-                }
-            }
-        });
-        actions
     }
 
     pub(crate) fn select_view(&mut self, view: View) {
@@ -1271,7 +1114,7 @@ impl App {
     }
 
     /// Marks the shown message read once the user opened it and its text has been on screen for `READ_DELAY`.
-    fn mark_read_after_delay(&mut self, now: f64, ctx: &egui::Context) {
+    fn mark_read_after_delay(&mut self, now: f64) {
         let Some(body) = &mut self.body else { return };
         if !body.armed {
             return;
@@ -1293,7 +1136,8 @@ impl App {
         }
         let waited = now - body.shown_at;
         if waited < READ_DELAY {
-            ctx.request_repaint_after(Duration::from_secs_f64(READ_DELAY - waited));
+            let at = body.shown_at + READ_DELAY;
+            self.request_tick(at);
             return;
         }
         let (index, (folder, uid)) = (body.account, body.key.clone());
@@ -1348,7 +1192,7 @@ impl App {
     }
 
     /// Takes the render thread's replies for the shown layout; replies for an older one are dropped.
-    fn receive_html(&mut self, ctx: &egui::Context) {
+    fn receive_html(&mut self) {
         let Some(renderer) = &self.renderer else {
             return;
         };
@@ -1379,7 +1223,7 @@ impl App {
                         body.html_view = None;
                         continue;
                     }
-                    view.page = Some(egui::vec2(width, height));
+                    view.page = Some((width, height));
                     view.remote = remote;
                     view.strips.clear();
                     view.requested.clear();
@@ -1394,15 +1238,8 @@ impl App {
                     // Paint the strips again with the highlight; the old ones stay on screen until then.
                     view.requested.clear();
                 }
-                Reply::Strip {
-                    generation,
-                    image,
-                    strip,
-                } => {
-                    let name = format!("html-{generation}-{strip}");
-                    let texture =
-                        ctx.load_texture(name, image.to_egui(), egui::TextureOptions::LINEAR);
-                    view.strips.insert(strip, texture);
+                Reply::Strip { image, strip, .. } => {
+                    view.strips.insert(strip, Arc::new(image));
                 }
             }
         }
@@ -1410,10 +1247,11 @@ impl App {
 
     /// Starts the HTML layout of the shown message, or a new one once the panel width or scale held still for
     /// `html::SETTLE`; until then the old layout stays on screen.
-    fn html_width(&mut self, ctx: &egui::Context, scale: f32, width: f32, now: f64) {
+    fn html_width(&mut self, scale: f32, width: f32, now: f64) {
         let Some(body) = self.body.as_mut().filter(|b| b.shows_html()) else {
             return;
         };
+        let mut settle_at = None;
         let fresh = match &mut body.html_view {
             None => true,
             Some(view) if view.sent == (scale, width) => {
@@ -1423,18 +1261,21 @@ impl App {
             Some(view) => match view.wanted {
                 Some((wanted, since)) if wanted == (scale, width) => {
                     if now - since < html::SETTLE {
-                        ctx.request_repaint_after(Duration::from_secs_f64(html::SETTLE));
+                        settle_at = Some(since + html::SETTLE);
                     }
                     now - since >= html::SETTLE
                 }
                 _ => {
                     view.wanted = Some(((scale, width), now));
-                    ctx.request_repaint_after(Duration::from_secs_f64(html::SETTLE));
+                    settle_at = Some(now + html::SETTLE);
                     false
                 }
             },
         };
         let Some(source) = body.html.as_ref().filter(|_| fresh) else {
+            if let Some(at) = settle_at {
+                self.request_tick(at);
+            }
             return;
         };
         self.html_generation += 1;
@@ -1455,10 +1296,7 @@ impl App {
             None => body.html_view = Some(HtmlState::new(generation, scale, width)),
         }
         self.renderer
-            .get_or_insert_with(|| {
-                let ctx = ctx.clone();
-                Renderer::start(std::sync::Arc::new(move || ctx.request_repaint()))
-            })
+            .get_or_insert_with(|| Renderer::start(self.wake.clone()))
             .send(html::Request::Load(load));
     }
 
@@ -1472,7 +1310,7 @@ impl App {
         };
         let Some(page) = view.page else { return };
         let scale = view.sent.0;
-        for strip in html::wanted_strips(top, bottom, page.y, scale) {
+        for strip in html::wanted_strips(top, bottom, page.1, scale) {
             if view.requested.insert(strip) {
                 renderer.send(html::Request::Paint {
                     generation: view.generation,
@@ -1487,7 +1325,7 @@ impl App {
     }
 
     /// Asks which link is under the pointer; the answer arrives as `Reply::Link`.
-    fn html_hover(&mut self, at: Option<egui::Pos2>) {
+    fn html_hover(&mut self, at: Option<[f32; 2]>) {
         let (Some(view), Some(renderer)) = (
             self.body.as_mut().and_then(|b| b.html_view.as_mut()),
             self.renderer.as_mut(),
@@ -1498,15 +1336,15 @@ impl App {
         match at {
             Some(at) => renderer.send(html::Request::Hit {
                 generation: view.generation,
-                x: at.x,
-                y: at.y,
+                x: at[0],
+                y: at[1],
             }),
             None => view.hover = None,
         }
     }
 
     /// Selects the page's text between two points; the answer arrives as `Reply::Selected`.
-    fn html_select(&mut self, from: egui::Pos2, to: egui::Pos2) {
+    fn html_select(&mut self, from: [f32; 2], to: [f32; 2]) {
         let (Some(view), Some(renderer)) = (
             self.body.as_mut().and_then(|b| b.html_view.as_mut()),
             self.renderer.as_mut(),
@@ -1516,8 +1354,8 @@ impl App {
         view.selected_at = Some((from, to));
         renderer.send(html::Request::Select {
             generation: view.generation,
-            from: [from.x, from.y],
-            to: [to.x, to.y],
+            from,
+            to,
         });
     }
 
@@ -1805,81 +1643,6 @@ impl App {
         entries
     }
 
-    /// The list and body, or the one pane of Rules, Activity and Trash, which stands for both.
-    fn show_panes(&self, ui: &mut egui::Ui, actions: &mut Vec<UiAction>) {
-        let radius = theme::RADIUS;
-        let left = egui::CornerRadius {
-            nw: radius,
-            sw: radius,
-            ..egui::CornerRadius::ZERO
-        };
-        let right = egui::CornerRadius {
-            ne: radius,
-            se: radius,
-            ..egui::CornerRadius::ZERO
-        };
-        let only = egui::CornerRadius::same(radius);
-        let pane = |ui: &egui::Ui, corners, focused| {
-            let frame = body_frame(ui).corner_radius(corners);
-            egui::CentralPanel::default().frame(theme::pane(frame, ui, focused))
-        };
-        let others_focused = self.focus != Focus::Folders;
-        match &self.view {
-            View::AllInboxes | View::Folder { .. } => {
-                let side = egui::Frame::side_top_panel(ui.style())
-                    .inner_margin(theme::PAD)
-                    .corner_radius(left);
-                egui::Panel::left("list")
-                    .frame(theme::pane(side, ui, self.focus == Focus::List))
-                    .resizable(true)
-                    .default_size(480.0)
-                    .min_size(list::MIN_WIDTH)
-                    .show(ui, |ui| actions.extend(list::show(self, ui)));
-                pane(ui, right, self.focus == Focus::Body)
-                    .show(ui, |ui| actions.extend(body::show(self, ui)));
-            }
-            View::Rules => {
-                pane(ui, only, others_focused)
-                    .show(ui, |ui| actions.extend(rules::show_rules(self, ui)));
-            }
-            View::Activity => {
-                pane(ui, only, others_focused)
-                    .show(ui, |ui| actions.extend(rules::show_activity(self, ui)));
-            }
-            View::Trash => {
-                pane(ui, only, others_focused)
-                    .show(ui, |ui| actions.extend(rules::show_trash(self, ui)));
-            }
-        }
-    }
-}
-
-/// The central panel on the base colour; side panels and the status bar keep the darker panel colour.
-pub(crate) fn central_panel(ui: &egui::Ui, focused: bool) -> egui::CentralPanel {
-    egui::CentralPanel::default().frame(theme::pane(body_frame(ui), ui, focused))
-}
-
-fn body_frame(ui: &egui::Ui) -> egui::Frame {
-    egui::Frame::central_panel(ui.style())
-        .fill(ui.visuals().window_fill)
-        .inner_margin(margin(theme::INSET, theme::INSET, theme::PAD))
-}
-
-/// The folder pane's id, which the toolbar reads its width from.
-pub(crate) const FOLDERS: &str = "folders";
-pub(crate) const FOLDERS_WIDTH: f32 = 220.0;
-
-fn margin(left: f32, right: f32, vertical: f32) -> egui::Margin {
-    #[allow(clippy::cast_possible_truncation, reason = "margins are a few points")]
-    let (left, right, vertical) = (left as i8, right as i8, vertical as i8);
-    egui::Margin {
-        left,
-        right,
-        top: vertical,
-        bottom: vertical,
-    }
-}
-
 /// A stored message, its attachments and its HTML.
 type Stored = (Option<Message>, Vec<Attachment>, Option<HtmlBody>);
 
@@ -1914,14 +1677,6 @@ fn same_row(row: &Row, cursor: &Row) -> bool {
     }
 }
 
-/// A printable shortcut, matched on the typed text so it follows the keyboard layout.
-pub(crate) fn typed(input: &egui::InputState, text: &str) -> bool {
-    input
-        .events
-        .iter()
-        .any(|event| matches!(event, egui::Event::Text(t) if t == text))
-}
-
 /// Where Save puts attachments: the Downloads folder, else home.
 fn downloads_dir() -> PathBuf {
     directories::UserDirs::new()
@@ -1929,888 +1684,12 @@ fn downloads_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-fn step(index: usize, delta: isize, len: usize) -> usize {
+pub(crate) fn step(index: usize, delta: isize, len: usize) -> usize {
     index
         .saturating_add_signed(delta)
         .min(len.saturating_sub(1))
 }
 
-impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.show(ui);
-    }
-}
-
 fn mtime(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
-}
-
-pub(crate) fn preference(theme: Theme) -> egui::ThemePreference {
-    match theme {
-        Theme::Dark => egui::ThemePreference::Dark,
-        Theme::Light => egui::ThemePreference::Light,
-        Theme::System => egui::ThemePreference::System,
-    }
-}
-
-pub(crate) fn theme_of(preference: egui::ThemePreference) -> Theme {
-    match preference {
-        egui::ThemePreference::Dark => Theme::Dark,
-        egui::ThemePreference::Light => Theme::Light,
-        egui::ThemePreference::System => Theme::System,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Mutex;
-    use std::time::{Duration, Instant};
-
-    use egui_kittest::kittest::Queryable;
-
-    use super::*;
-    use crate::daemon::Client;
-    use crate::daemon::wire::AccountStatus;
-    use crate::gui::test_support::{Fixture, message};
-    use crate::rules::Action;
-    use crate::sync::{Command, Event};
-
-    fn ids(harness: &egui_kittest::Harness<'_, App>) -> Vec<(usize, u32)> {
-        harness
-            .state()
-            .list
-            .rows
-            .iter()
-            .map(|r| (r.account, r.uid))
-            .collect()
-    }
-
-    #[test]
-    fn all_inboxes_lists_every_accounts_inbox_newest_first() {
-        let fx = Fixture::new(&["home", "work"]);
-        fx.add("home", message("INBOX", 1, "oldest"));
-        fx.add("work", message("INBOX", 2, "middle"));
-        fx.add("home", message("INBOX", 3, "newest"));
-        fx.folder("work", "Archive", Some("Archive"));
-        fx.add("work", message("Archive", 4, "not an inbox"));
-        let (mut harness, _wires) = fx.harness();
-        harness.state_mut().select_view(View::AllInboxes);
-        harness.run();
-        assert_eq!(ids(&harness), [(0, 3), (1, 2), (0, 1)]);
-        assert!(harness.query_by_label("3 threads, 0 unread").is_some());
-    }
-
-    #[test]
-    fn all_inboxes_lists_the_other_accounts_when_one_store_is_broken() {
-        let fx = Fixture::new(&["broken", "work"]);
-        fx.add("work", message("INBOX", 1, "still here"));
-        let db = fx.paths.mail_db("broken");
-        std::fs::remove_file(&db).unwrap();
-        std::fs::create_dir_all(&db).unwrap();
-        let (mut harness, _wires) = fx.harness();
-        harness.state_mut().select_view(View::AllInboxes);
-        harness.run();
-        assert_eq!(ids(&harness), [(1, 1)]);
-        assert_eq!(
-            harness.query_all_by_label("All inboxes").count(),
-            2,
-            "the folder pane entry and the list's title"
-        );
-    }
-
-    #[test]
-    fn a_failed_thread_load_keeps_the_rows_already_listed() {
-        let fx = Fixture::new(&["work"]);
-        fx.add("work", message("INBOX", 1, "still here"));
-        let (mut harness, _wires) = fx.harness();
-        harness.run();
-        assert_eq!(ids(&harness), [(0, 1)]);
-        let db = rusqlite::Connection::open(fx.paths.mail_db("work")).unwrap();
-        db.execute_batch("ALTER TABLE messages RENAME TO messages_gone")
-            .unwrap();
-        harness.state_mut().reload_view();
-        harness.run();
-        assert_eq!(ids(&harness), [(0, 1)]);
-    }
-
-    #[test]
-    fn theme_starts_from_config() {
-        let fx = Fixture::new(&["work"]);
-        let (harness, _wires) = fx.harness();
-        assert_eq!(
-            harness.ctx.options(|o| o.theme_preference),
-            egui::ThemePreference::System
-        );
-        let fx = Fixture::new(&["work"]);
-        fx.append_config("[ui]\ntheme = \"dark\"\n");
-        let (harness, _wires) = fx.harness();
-        assert_eq!(
-            harness.ctx.options(|o| o.theme_preference),
-            egui::ThemePreference::Dark
-        );
-    }
-
-    fn inbox(fx: &Fixture, uids: &[u32]) {
-        for &uid in uids {
-            fx.add("work", message("INBOX", uid, &format!("subject {uid}")));
-        }
-    }
-
-    #[test]
-    fn slash_in_all_inboxes_searches_every_account_newest_first() {
-        use egui_kittest::kittest::Queryable;
-        let fx = Fixture::new(&["home", "work"]);
-        fx.folder("home", "Archive", Some("Archive"));
-        fx.add("home", message("INBOX", 1, "invoice march"));
-        fx.add("work", message("INBOX", 2, "lunch"));
-        fx.add("home", message("Archive", 3, "invoice april"));
-        fx.add("work", message("INBOX", 4, "invoice may"));
-        let (mut harness, _wires) = fx.harness();
-        harness.state_mut().select_view(View::AllInboxes);
-        harness.run();
-        press(&mut harness, "/");
-        assert!(
-            harness
-                .query_by(|node| node.placeholder() == Some("Search every account"))
-                .is_some()
-        );
-        press(&mut harness, "invoice");
-        let found: Vec<(usize, String, u32)> = harness
-            .state()
-            .list
-            .rows
-            .iter()
-            .map(|r| (r.account, r.folder.clone(), r.uid))
-            .collect();
-        assert_eq!(
-            found,
-            [
-                (1, "INBOX".to_string(), 4),
-                (0, "Archive".to_string(), 3),
-                (0, "INBOX".to_string(), 1)
-            ]
-        );
-        assert!(
-            harness
-                .query_by_label_contains("home · [Archive] Sender 3")
-                .is_some()
-        );
-        harness.key_press(egui::Key::Escape);
-        harness.run();
-        assert_eq!(harness.state().view, View::AllInboxes);
-        assert_eq!(ids(&harness), [(1, 4), (1, 2), (0, 1)]);
-    }
-
-    fn press(harness: &mut egui_kittest::Harness<'_, App>, text: &str) {
-        harness.event(egui::Event::Text(text.into()));
-        harness.run();
-    }
-
-    fn apply(uids: &[u32], action: Action) -> (String, Command) {
-        let command = Command::Apply {
-            folder: "INBOX".into(),
-            uids: uids.to_vec(),
-            action,
-            by: "gui".into(),
-        };
-        ("work".into(), command)
-    }
-
-    fn uids(harness: &egui_kittest::Harness<'_, App>) -> Vec<u32> {
-        harness.state().list.rows.iter().map(|r| r.uid).collect()
-    }
-
-    #[test]
-    fn archive_sends_the_cursor_row_hides_it_and_selects_the_next() {
-        let fx = Fixture::new(&["work"]);
-        inbox(&fx, &[1, 2, 3]);
-        let (mut harness, wires) = fx.harness();
-        press(&mut harness, "e");
-        assert_eq!(wires.sent(), [apply(&[3], Action::Archive)]);
-        assert_eq!(uids(&harness), [2, 1]);
-        assert_eq!(
-            harness.state().list.rows[harness.state().list.cursor].uid,
-            2
-        );
-        assert!(harness.query_by_label_contains("· 1 queued").is_some());
-    }
-
-    #[test]
-    fn archive_on_a_thread_row_sends_every_member() {
-        let fx = Fixture::new(&["work"]);
-        for uid in [4, 5] {
-            let mut m = message("INBOX", uid, "thread");
-            m.thread_id = "<t@example.com>".into();
-            fx.add("work", m);
-        }
-        let (mut harness, wires) = fx.harness();
-        press(&mut harness, "e");
-        assert_eq!(wires.sent(), [apply(&[4, 5], Action::Archive)]);
-    }
-
-    #[test]
-    fn the_same_thread_in_another_account_is_another_row() {
-        let mut home = Row::from_message(0, &message("INBOX", 1, "hi"));
-        home.thread_id = Some("<t@example.com>".into());
-        let mut work = home.clone();
-        work.account = 1;
-        assert!(same_row(&home, &home.clone()));
-        assert!(!same_row(&work, &home));
-    }
-
-    #[test]
-    fn marked_rows_are_deleted_together() {
-        let fx = Fixture::new(&["work"]);
-        inbox(&fx, &[1, 2, 3]);
-        let (mut harness, wires) = fx.harness();
-        for key in ["x", "j", "x", "#"] {
-            press(&mut harness, key);
-        }
-        assert_eq!(wires.sent(), [apply(&[2, 3], Action::Trash)]);
-        assert_eq!(uids(&harness), [1]);
-        assert!(harness.state().list.marked.is_empty());
-    }
-
-    #[test]
-    fn a_failed_action_puts_the_row_back_and_says_why() {
-        let fx = Fixture::new(&["work"]);
-        inbox(&fx, &[1, 2, 3]);
-        let (mut harness, wires) = fx.harness();
-        press(&mut harness, "e");
-        let results = vec![(3, Err("NO [SERVERBUG] try later".to_string()))];
-        wires
-            .events
-            .send(Event::ActionDone {
-                account: "work".into(),
-                folder: "INBOX".into(),
-                results,
-                request: 0,
-            })
-            .unwrap();
-        harness.run();
-        assert_eq!(uids(&harness), [3, 2, 1]);
-        assert!(
-            harness
-                .query_by_label("work: 1 of 1 messages failed: NO [SERVERBUG] try later")
-                .is_some()
-        );
-        assert_eq!(harness.state().accounts[0].queued, 0);
-    }
-
-    #[test]
-    fn a_sync_before_the_action_finishes_keeps_the_row_hidden() {
-        let fx = Fixture::new(&["work"]);
-        inbox(&fx, &[1, 2, 3]);
-        let (mut harness, wires) = fx.harness();
-        press(&mut harness, "e");
-        wires
-            .events
-            .send(Event::Synced {
-                account: "work".into(),
-                new_messages: 0,
-                actions: 0,
-                requests: vec![],
-                errors: vec![],
-            })
-            .unwrap();
-        harness.run();
-        assert_eq!(uids(&harness), [2, 1]);
-        fx.store("work").remove_message("INBOX", 3).unwrap();
-        let results = vec![(3, Ok(1))];
-        wires
-            .events
-            .send(Event::ActionDone {
-                account: "work".into(),
-                folder: "INBOX".into(),
-                results,
-                request: 0,
-            })
-            .unwrap();
-        harness.run();
-        assert_eq!(uids(&harness), [2, 1]);
-    }
-
-    #[test]
-    fn acting_on_an_empty_folder_sends_nothing() {
-        let fx = Fixture::new(&["work"]);
-        inbox(&fx, &[1]);
-        let (mut harness, wires) = fx.harness();
-        press(&mut harness, "e");
-        assert_eq!(wires.sent().len(), 1);
-        for key in ["e", "#", "u", "s", "x", "j"] {
-            press(&mut harness, key);
-        }
-        assert!(wires.sent().is_empty());
-        assert_eq!(harness.state().list.cursor, 0);
-    }
-
-    #[test]
-    fn a_second_edit_on_a_row_stacks_and_the_first_done_keeps_it() {
-        let fx = Fixture::new(&["work"]);
-        let mut unread = message("INBOX", 1, "hello");
-        unread.flags = String::new();
-        fx.add("work", unread);
-        let (mut harness, wires) = fx.harness();
-        press(&mut harness, "u");
-        press(&mut harness, "s");
-        let row = &harness.state().list.rows[0];
-        assert!(!row.unread && row.flagged);
-        wires
-            .events
-            .send(Event::ActionDone {
-                account: "work".into(),
-                folder: "INBOX".into(),
-                results: vec![(1, Ok(1))],
-                request: 0,
-            })
-            .unwrap();
-        harness.run();
-        assert!(harness.state().list.rows[0].flagged);
-        assert_eq!(harness.state().accounts[0].queued, 1);
-    }
-
-    #[test]
-    fn switching_views_closes_the_move_picker() {
-        let fx = Fixture::new(&["work"]);
-        fx.folder("work", "Archive", Some("Archive"));
-        inbox(&fx, &[1]);
-        let (mut harness, _wires) = fx.harness();
-        press(&mut harness, "m");
-        assert!(harness.state().move_picker.is_some());
-        harness.state_mut().select_view(View::Rules);
-        assert!(harness.state().move_picker.is_none());
-    }
-
-    #[test]
-    fn the_unread_count_follows_sent_actions_before_the_daemon_answers() {
-        let fx = Fixture::new(&["work"]);
-        for uid in [1, 2] {
-            let mut unread = message("INBOX", uid, "hello");
-            unread.flags = String::new();
-            fx.add("work", unread);
-        }
-        let (mut harness, _wires) = fx.harness();
-        let inbox_unread = |harness: &egui_kittest::Harness<'_, App>| {
-            let folders = &harness.state().accounts[0].folders;
-            folders.iter().find(|f| f.name == "INBOX").map(|f| f.unread)
-        };
-        assert_eq!(inbox_unread(&harness), Some(2));
-        press(&mut harness, "u");
-        assert_eq!(inbox_unread(&harness), Some(1));
-        press(&mut harness, "j");
-        press(&mut harness, "e");
-        assert_eq!(inbox_unread(&harness), Some(0));
-    }
-
-    #[test]
-    fn the_next_rows_body_is_fetched_before_the_cursor_reaches_it() {
-        let fx = Fixture::new(&["work"]);
-        inbox(&fx, &[1, 3]);
-        let mut later = message("INBOX", 2, "later");
-        later.body_text = None;
-        fx.add("work", later);
-        let (mut harness, wires) = fx.harness();
-        let fetch = (
-            "work".to_string(),
-            Command::FetchBody {
-                folder: "INBOX".into(),
-                uid: 2,
-            },
-        );
-        assert_eq!(wires.sent(), [fetch]);
-        press(&mut harness, "j");
-        assert!(wires.sent().is_empty());
-    }
-
-    #[test]
-    fn u_marks_read_and_s_flags() {
-        let fx = Fixture::new(&["work"]);
-        let mut unread = message("INBOX", 1, "hello");
-        unread.flags = String::new();
-        fx.add("work", unread);
-        let (mut harness, wires) = fx.harness();
-        press(&mut harness, "u");
-        assert!(!harness.state().list.rows[0].unread);
-        press(&mut harness, "s");
-        assert_eq!(
-            wires.sent(),
-            [apply(&[1], Action::MarkRead), apply(&[1], Action::Flag)]
-        );
-        assert!(harness.state().list.rows[0].flagged);
-    }
-
-    #[test]
-    fn m_filters_the_folders_and_enter_moves() {
-        let fx = Fixture::new(&["work"]);
-        fx.folder("work", "Archive", Some("Archive"));
-        fx.folder("work", "Receipts", None);
-        inbox(&fx, &[1]);
-        let (mut harness, wires) = fx.harness();
-        press(&mut harness, "m");
-        assert!(harness.state().move_picker.is_some());
-        press(&mut harness, "rec");
-        harness.key_press(egui::Key::Enter);
-        harness.run();
-        assert_eq!(wires.sent(), [apply(&[1], Action::Move("Receipts".into()))]);
-        assert!(harness.state().move_picker.is_none());
-    }
-
-    #[test]
-    fn command_r_syncs_every_running_account() {
-        let fx = Fixture::new(&["home", "work"]);
-        let (mut harness, wires) = fx.harness();
-        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::R);
-        harness.run();
-        let sent = wires.sent();
-        assert_eq!(
-            sent,
-            [
-                ("home".to_string(), Command::SyncNow),
-                ("work".to_string(), Command::SyncNow)
-            ]
-        );
-    }
-
-    #[test]
-    fn backspace_deletes_on_macos_only() {
-        let fx = Fixture::new(&["work"]);
-        inbox(&fx, &[1]);
-        let (mut harness, wires) = fx.harness();
-        harness.key_press(egui::Key::Backspace);
-        harness.run();
-        let expected = if cfg!(target_os = "macos") {
-            vec![apply(&[1], Action::Trash)]
-        } else {
-            Vec::new()
-        };
-        assert_eq!(wires.sent(), expected);
-    }
-
-    #[test]
-    fn closing_the_event_stream_shows_the_reconnect_line() {
-        let fx = Fixture::new(&["work"]);
-        let (mut harness, wires) = fx.harness();
-        drop(wires.events);
-        harness.run();
-        assert!(harness.state().daemon_lost);
-        assert!(
-            harness
-                .query_by_label("background sync stopped — reconnecting")
-                .is_some()
-        );
-    }
-
-    /// The daemon end of the client a reconnect hands over; one per test binary, as `reconnect` is a plain `fn`.
-    static RECONNECTED: Mutex<Option<Receiver<(String, Command)>>> = Mutex::new(None);
-
-    fn idle(name: &str) -> AccountStatus {
-        AccountStatus {
-            name: name.into(),
-            activity: Some(Activity::Idle {
-                since: 1_790_000_000,
-            }),
-        }
-    }
-
-    /// Steps frames past the 5 s retry until the reconnect landed.
-    fn reconnect(harness: &mut egui_kittest::Harness<'_, App>) {
-        harness.input_mut().time = Some(10.0);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while harness.state().daemon_lost && Instant::now() < deadline {
-            harness.step();
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        harness.run();
-        assert!(!harness.state().daemon_lost);
-    }
-
-    #[test]
-    fn a_reconnect_replaces_the_client_and_refreshes_the_accounts() {
-        let fx = Fixture::new(&["work"]);
-        inbox(&fx, &[1]);
-        let (mut harness, wires) = fx.harness();
-        harness.state_mut().reconnect = |_, _| {
-            let (client, commands, events) = Client::in_memory(&["work"]);
-            *RECONNECTED.lock().unwrap() = Some(commands);
-            // A dropped sender would read as another loss.
-            std::mem::forget(events);
-            let (client, events, _) = session(client, Box::new(|| {}))?;
-            Ok((client, events, vec![idle("work")]))
-        };
-        drop(wires);
-        harness.run();
-        press(&mut harness, "e");
-        assert!(
-            harness
-                .query_by_label(&format!("work: {DAEMON_LOST}"))
-                .is_some()
-        );
-        let mut unread = message("INBOX", 2, "while away");
-        unread.flags = String::new();
-        fx.add("work", unread);
-        reconnect(&mut harness);
-        assert!(harness.query_by_label_contains(DAEMON_LOST).is_none());
-        let line = format!("work: up to date · {}", crate::time::clock(1_790_000_000));
-        assert!(harness.query_by_label(&line).is_some());
-        assert!(harness.query_by_label("Inbox (1)").is_some());
-        press(&mut harness, "e");
-        let sent: Vec<_> = RECONNECTED
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .try_iter()
-            .collect();
-        assert_eq!(sent, [apply(&[1], Action::Archive)]);
-    }
-
-    #[test]
-    fn a_newer_daemon_is_named_on_the_status_line_and_retried() {
-        let fx = Fixture::new(&["work"]);
-        let (mut harness, wires) = fx.harness();
-        harness.state_mut().reconnect = |_, _| {
-            Err(crate::daemon::client::NewerDaemon {
-                theirs: "9.0.0".into(),
-                ours: "0.1.0".into(),
-            }
-            .into())
-        };
-        drop(wires);
-        harness.run();
-        let newer =
-            "the daemon is version 9.0.0, newer than this postvak (0.1.0); restart this program";
-        let deadline = Instant::now() + Duration::from_secs(5);
-        harness.input_mut().time = Some(10.0);
-        while harness.query_by_label(newer).is_none() && Instant::now() < deadline {
-            harness.step();
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(harness.query_by_label(newer).is_some());
-        assert!(harness.state().daemon_lost);
-        harness.input_mut().time = Some(20.0);
-        harness.step();
-        assert!(
-            harness.state().reconnecting.is_some(),
-            "it tries again 5 s later"
-        );
-    }
-
-    #[test]
-    fn the_window_opens_with_the_daemons_activity() {
-        let fx = Fixture::new(&["work"]);
-        let config = Config::load(&fx.paths.config_file()).unwrap();
-        let (client, _commands, _events) = Client::in_memory(&["work"]);
-        let events = client.subscribe().unwrap();
-        let app = App::new(
-            &config,
-            fx.paths.clone(),
-            client,
-            events,
-            vec![idle("work")],
-        );
-        assert_eq!(
-            app.accounts[0].activity,
-            Some(Activity::Idle {
-                since: 1_790_000_000
-            })
-        );
-    }
-
-    #[test]
-    fn a_refused_command_shows_its_reason() {
-        let fx = Fixture::new(&["work"]);
-        let (mut harness, wires) = fx.harness();
-        let message = "work is offline (x); retrying at 10:00".to_string();
-        wires
-            .events
-            .send(Event::CommandFailed {
-                account: "work".into(),
-                request: 0,
-                message,
-            })
-            .unwrap();
-        harness.run();
-        assert!(
-            harness
-                .query_by_label("work: work is offline (x); retrying at 10:00")
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn another_clients_outcomes_leave_this_windows_edits_alone() {
-        let fx = Fixture::new(&["work"]);
-        inbox(&fx, &[1, 2, 3]);
-        let (mut harness, wires) = fx.harness();
-        press(&mut harness, "e");
-        let foreign = [
-            Event::ActionDone {
-                account: "work".into(),
-                folder: "INBOX".into(),
-                results: vec![(3, Ok(1))],
-                request: 7,
-            },
-            Event::CommandFailed {
-                account: "work".into(),
-                request: 8,
-                message: "no rule named 'x'".into(),
-            },
-        ];
-        for event in foreign {
-            wires.events.send(event).unwrap();
-        }
-        harness.run();
-        assert_eq!(uids(&harness), [2, 1]);
-        assert_eq!(harness.state().accounts[0].queued, 1);
-        assert!(harness.query_by_label_contains("no rule named").is_none());
-    }
-
-    #[test]
-    fn a_refused_action_puts_the_row_back_and_clears_the_queue() {
-        let fx = Fixture::new(&["work"]);
-        inbox(&fx, &[1, 2, 3]);
-        let (mut harness, wires) = fx.harness();
-        press(&mut harness, "e");
-        assert_eq!(uids(&harness), [2, 1]);
-        wires
-            .events
-            .send(Event::CommandFailed {
-                account: "work".into(),
-                request: 0,
-                message: "work is offline (x); retrying at 10:00".into(),
-            })
-            .unwrap();
-        harness.run();
-        assert_eq!(uids(&harness), [3, 2, 1]);
-        assert_eq!(harness.state().accounts[0].queued, 0);
-        assert!(harness.query_by_label_contains("queued").is_none());
-    }
-
-    /// Steps frames until the background release check has answered.
-    fn finish_update_check(harness: &mut egui_kittest::Harness<'_, App>) {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !matches!(harness.state().update, UpdateCheck::Done(_)) && Instant::now() < deadline {
-            harness.step();
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(matches!(harness.state().update, UpdateCheck::Done(_)));
-    }
-
-    #[test]
-    fn a_cached_newer_release_reaches_the_window() {
-        let fx = Fixture::new(&["work"]);
-        fx.append_config("[ui]\ncheck_updates = true\n");
-        let cached = update::Cached {
-            checked_at: crate::time::now(),
-            latest: Some("999.0.0".into()),
-        };
-        update::save(&fx.paths.update_check(), &cached).unwrap();
-        let (mut harness, _wires) = fx.harness();
-        finish_update_check(&mut harness);
-        assert_eq!(harness.state().newer_release(), Some("999.0.0"));
-    }
-
-    #[test]
-    fn a_failed_check_shows_nothing_and_is_remembered() {
-        let fx = Fixture::new(&["work"]);
-        fx.append_config("[ui]\ncheck_updates = true\n");
-        let (mut harness, _wires) = fx.harness();
-        finish_update_check(&mut harness);
-        assert_eq!(harness.state().newer_release(), None);
-        assert!(update::load(&fx.paths.update_check()).is_some());
-    }
-
-    #[test]
-    fn by_default_no_check_starts() {
-        let fx = Fixture::new(&["work"]);
-        let (mut harness, _wires) = fx.harness();
-        harness.run();
-        assert!(matches!(harness.state().update, UpdateCheck::Off));
-        assert!(!fx.paths.update_check().exists());
-    }
-
-    fn command(account: &str, folder: &str, uids: &[u32], action: Action) -> (String, Command) {
-        let apply = Command::Apply {
-            folder: folder.into(),
-            uids: uids.to_vec(),
-            action,
-            by: "gui".into(),
-        };
-        (account.into(), apply)
-    }
-
-    /// home INBOX uid 1, work INBOX uids 1 and 2: rows (work 2), (home 1), (work 1), equal dates in account order.
-    fn all_inboxes(
-        fx: &Fixture,
-    ) -> (
-        egui_kittest::Harness<'static, App>,
-        crate::gui::test_support::Wires,
-    ) {
-        fx.add("home", message("INBOX", 1, "home mail"));
-        fx.add("work", message("INBOX", 1, "work mail"));
-        fx.add("work", message("INBOX", 2, "newer work mail"));
-        let (mut harness, wires) = fx.harness();
-        harness.state_mut().select_view(View::AllInboxes);
-        harness.run();
-        assert_eq!(ids(&harness), [(1, 2), (0, 1), (1, 1)]);
-        (harness, wires)
-    }
-
-    #[test]
-    fn all_inboxes_sends_each_action_to_the_rows_own_account() {
-        let fx = Fixture::new(&["home", "work"]);
-        let (mut harness, wires) = all_inboxes(&fx);
-        press(&mut harness, "j");
-        press(&mut harness, "e");
-        assert_eq!(
-            wires.sent(),
-            [command("home", "INBOX", &[1], Action::Archive)]
-        );
-        assert_eq!(
-            ids(&harness),
-            [(1, 2), (1, 1)],
-            "work's uid 1 is another message and stays"
-        );
-        press(&mut harness, "s");
-        press(&mut harness, "u");
-        assert_eq!(
-            wires.sent(),
-            [
-                command("work", "INBOX", &[1], Action::Flag),
-                command("work", "INBOX", &[1], Action::MarkUnread)
-            ]
-        );
-    }
-
-    #[test]
-    fn marking_in_all_inboxes_marks_only_that_accounts_message() {
-        let fx = Fixture::new(&["home", "work"]);
-        let (mut harness, wires) = all_inboxes(&fx);
-        press(&mut harness, "j");
-        press(&mut harness, "x");
-        assert_eq!(
-            harness.state().list.marked,
-            HashSet::from([(0, ("INBOX".to_string(), 1))])
-        );
-        press(&mut harness, "j");
-        press(&mut harness, "x");
-        press(&mut harness, "#");
-        assert_eq!(
-            wires.sent(),
-            [
-                command("home", "INBOX", &[1], Action::Trash),
-                command("work", "INBOX", &[1], Action::Trash)
-            ]
-        );
-        assert_eq!(ids(&harness), [(1, 2)]);
-    }
-
-    #[test]
-    fn the_reader_opens_and_marks_read_in_the_rows_own_account() {
-        let fx = Fixture::new(&["home", "work"]);
-        let mut unread = message("INBOX", 1, "home mail");
-        unread.flags = String::new();
-        fx.add("home", unread);
-        fx.add("work", message("INBOX", 2, "work mail"));
-        let (mut harness, wires) = fx.harness();
-        harness.state_mut().select_view(View::AllInboxes);
-        harness.run();
-        harness.input_mut().time = Some(10.0);
-        harness.event(egui::Event::Text("j".into()));
-        harness.step();
-        assert_eq!(
-            harness.state().body.as_ref().map(|body| body.account),
-            Some(0)
-        );
-        assert!(harness.query_by_label("Body of 1").is_some());
-        harness.input_mut().time = Some(11.1);
-        harness.step();
-        assert_eq!(
-            wires.sent(),
-            [command("home", "INBOX", &[1], Action::MarkRead)]
-        );
-    }
-
-    #[test]
-    fn the_move_picker_offers_the_rows_own_account_folders() {
-        let fx = Fixture::new(&["home", "work"]);
-        fx.folder("home", "Receipts", None);
-        fx.folder("work", "Archive", Some("Archive"));
-        let (mut harness, wires) = all_inboxes(&fx);
-        press(&mut harness, "j");
-        press(&mut harness, "m");
-        harness.key_press(egui::Key::Enter);
-        harness.run();
-        assert_eq!(
-            wires.sent(),
-            [command(
-                "home",
-                "INBOX",
-                &[1],
-                Action::Move("Receipts".into())
-            )]
-        );
-    }
-
-    #[test]
-    fn moving_marked_rows_from_two_accounts_is_refused() {
-        let fx = Fixture::new(&["home", "work"]);
-        let (mut harness, wires) = all_inboxes(&fx);
-        for key in ["x", "j", "x", "m"] {
-            press(&mut harness, key);
-        }
-        assert!(harness.state().move_picker.is_none());
-        assert!(harness.query_by_label(MOVE_ONE_ACCOUNT).is_some());
-        assert!(wires.sent().is_empty());
-        assert_eq!(
-            harness.state().list.marked.len(),
-            2,
-            "the marks stay for the user to narrow"
-        );
-    }
-
-    #[test]
-    fn a_refusal_for_one_account_puts_back_only_its_rows() {
-        let fx = Fixture::new(&["home", "work"]);
-        let (mut harness, wires) = all_inboxes(&fx);
-        for key in ["x", "j", "x", "e"] {
-            press(&mut harness, key);
-        }
-        assert_eq!(wires.sent().len(), 2);
-        assert_eq!(ids(&harness), [(1, 1)]);
-        wires
-            .events
-            .send(Event::CommandFailed {
-                account: "home".into(),
-                request: 0,
-                message: "home is offline (x); retrying at 10:00".into(),
-            })
-            .unwrap();
-        harness.run();
-        assert_eq!(ids(&harness), [(0, 1), (1, 1)]);
-        assert_eq!(harness.state().accounts[1].queued, 1);
-    }
-
-    #[test]
-    fn a_move_is_refused_when_the_selection_grew_to_two_accounts_under_the_open_picker() {
-        let fx = Fixture::new(&["home", "work"]);
-        fx.folder("home", "Receipts", None);
-        let (mut harness, wires) = all_inboxes(&fx);
-        press(&mut harness, "j");
-        press(&mut harness, "m");
-        assert!(harness.state().move_picker.is_some());
-        harness
-            .state_mut()
-            .list
-            .marked
-            .extend([(0, ("INBOX".to_string(), 1)), (1, ("INBOX".to_string(), 1))]);
-        let ctx = harness.ctx.clone();
-        harness
-            .state_mut()
-            .apply(&ctx, UiAction::MoveTo("Receipts".into()));
-        harness.run();
-        assert!(wires.sent().is_empty());
-        assert!(harness.state().move_picker.is_none());
-        assert!(harness.query_by_label(MOVE_ONE_ACCOUNT).is_some());
-    }
 }
