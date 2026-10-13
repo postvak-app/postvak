@@ -77,6 +77,11 @@ impl Pixels {
         &self.rgba
     }
 
+    /// The pixels, for a front end that converts them in place.
+    pub fn into_rgba(self) -> Vec<u8> {
+        self.rgba
+    }
+
     pub fn to_egui(&self) -> egui::ColorImage {
         // `new` checked the length, and a u32 fits in usize on every platform eframe runs on.
         let size = [self.width as usize, self.height as usize];
@@ -372,6 +377,7 @@ mod tests {
             (2, 3, 24)
         );
         assert_eq!(pixels.to_egui().size, [2, 3]);
+        assert_eq!(pixels.into_rgba().len(), 24);
         assert!(Pixels::new(2, 3, vec![0; 23]).is_none());
         assert!(Pixels::new(u32::MAX, u32::MAX, Vec::new()).is_none());
     }

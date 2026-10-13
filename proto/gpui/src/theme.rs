@@ -3,10 +3,13 @@ use gpui::{Hsla, Pixels, px, rgb};
 
 pub const PAD: Pixels = px(8.);
 pub const INSET: Pixels = px(16.);
-/// `list::LIST_ROW`: the sender and date, then the subject.
-pub const LIST_ROW: Pixels = px(48.);
+/// A row: the sender and date, then the subject; the egui list's own height.
+pub const LIST_ROW: Pixels = px(postvak::gui::list::LIST_ROW);
 /// The list pane's width; the body takes the rest.
 pub const LIST_WIDTH: Pixels = px(440.);
+/// The unread dot's cell, then the flag's or mark's, before the sender (`list.rs`'s `DOT` and `MARKER`).
+pub const DOT: Pixels = px(12.);
+pub const MARKER: Pixels = px(20.);
 
 pub const TEXT_FONT: &str = "Hanken Grotesk";
 pub const MONO_FONT: &str = "Spline Sans Mono";

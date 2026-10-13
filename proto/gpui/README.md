@@ -47,8 +47,9 @@ On Debian or Ubuntu, building probably needs `libxkbcommon-x11-dev` and `libxcb1
 | Snapshot mailbox, `work` INBOX | ran on KDE Wayland: five thread rows newest first, "(2)" on the offsite thread, unread dots, flag, Hanken Grotesk with SemiBold for unread senders, dates in Spline Sans Mono, the cursor row selected; screenshot checked |
 | Generated INBOX, 20 000 messages | ran on KDE Wayland: 4 446 thread rows, opens and draws; not timed yet (Task 7) |
 | `j`, `k`, Right, Left, `x`, `e`, `?`, Esc | `#[gpui::test]` with simulated keystrokes: cursor moves, a thread opens and closes, `e` sends one `Apply` for both thread members and hides the row, `?` opens the key table and Esc closes it |
-| Up, Down, Esc | GPUI Kit's own `List` bindings (`SelectUp`, `SelectDown`, `Cancel`); they win over ours because the Kit list's key context is deeper. They reach the model through the `ListDelegate` |
-| Key table from the keymap | works (`window.bindings_for_action`), but shows only `j` for "Next message": Down is Kit's `SelectDown`, a different action. A port would bind Down to our own action, or list both |
+| Up, Down | GPUI Kit's own `List` bindings (`SelectUp`, `SelectDown`); they win over ours because the Kit list's key context is deeper. They reach the model through the `ListDelegate` |
+| Esc | Kit binds it to `Cancel`, which clears the Kit list's selection, and the switch that stops that is crate-private. Postvak binds `escape` to its own `Escape` action in Kit's `List` context, after Kit, which replaces Kit's binding |
+| Key table from the keymap | works with `window.bindings_for_action_in(action, list focus handle)`; plain `bindings_for_action` reads the context stack left from the last drawn element and came back empty once the window had two panes. Shows only `j` for "Next message": Down is Kit's `SelectDown`, a different action. A port would bind Down to our own action, or list both |
 | Kit in tests | `gpui_kit::init` runs inside `TestAppContext`; no window `Root` needed for the list |
 | Daemon events | not wired: the prototype has no daemon, and the in-memory client's event sender is only held |
 
@@ -67,3 +68,14 @@ Differences from the egui list worth noting: Kit's `ListItem` draws its own hove
 | HTML in a test | the newsletter paints in a headless test window with the real render thread (`allow_parking`) |
 | Width changes | laid out again once a new width held for `html::SETTLE`, as egui does; not tried by hand |
 | Not done | links (hover, click), text selection, the HTML/text toggle, attachments, remote-content notice, the dark theme; scrolling a long page only checked in code |
+
+## /simplify pass (2026-10-13)
+
+- The model is one `Entity<Model>` shared by the list's delegate and the body, instead of living inside GPUI Kit's delegate. The body observes the model, not the Kit list.
+- `armed_for` (the row the user moved to) replaces a one-shot flag the body took; the read timer is a `Task` in the shown message, so moving on cancels it.
+- Strips: converted in place (`Pixels::into_rgba`) with GPUI's `swap_rgba_pa_to_bgra`, which also un-premultiplies; a plain channel swap drew semi-transparent edges too dark.
+- The body is laid out at its scroll area's real width, not the window width minus the list's; the header text is computed once per message.
+- One `send_apply` for archive and mark-read, as `App` has; the settle timer is replaced instead of piling up; the window is drawn only when a render reply changed something.
+- The temp home and the command receiver are owned by `main`, no longer leaked; `init` is shared by `main` and the tests.
+
+Skipped: sharing `same_row`, `targets`, the parent-row search, the pending-Seen fold and the theme constants from `src/gui` (changes to the egui code beyond this branch's seams); a GPUI Kit theme file instead of four colours set by hand; trimming `pub` in a binary crate.

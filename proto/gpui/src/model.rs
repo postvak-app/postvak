@@ -1,13 +1,14 @@
 //! The list's state and behaviour, copied from `src/gui/app.rs` without egui: rows from the store through
 //! `list::build_rows` and `apply_pending`, the cursor, marks, threads, and actions sent through the daemon client.
+//! One `Entity<Model>` is shared by the list and the body.
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::mpsc::{Receiver, Sender};
 
 use postvak::daemon::Client;
+use postvak::gui::fixture::Home;
 use postvak::gui::list::{self, Optimistic, Row, RowKey};
 use postvak::rules::Action;
 use postvak::store::{MessageSummary, Store, ThreadSummary};
-use postvak::sync::{Command, Event};
+use postvak::sync::Command;
 
 pub struct Account {
     pub name: String,
@@ -27,22 +28,14 @@ pub struct Model {
     pub cursor: usize,
     pub marked: HashSet<(usize, RowKey)>,
     pub help: bool,
-    /// Set when the user moved the cursor, so the message it lands on may become read; the body takes it.
-    pub armed: bool,
+    /// The row the user last moved the cursor to; once shown, that message may become read.
+    pub armed_for: Option<(usize, RowKey)>,
     client: Client,
-    /// The daemon's ends of the in-memory client; held so sends succeed. `commands` is what the prototype sent. No
-    /// daemon runs in the prototype, so only tests read them.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub commands: Receiver<(String, Command)>,
-    #[allow(dead_code)]
-    pub events: Sender<Event>,
 }
 
 impl Model {
-    /// Every account in `home`, showing `shown`'s INBOX.
-    pub fn open(home: &postvak::gui::fixture::Home, shown: Vec<usize>) -> anyhow::Result<Model> {
-        let names: Vec<&str> = home.accounts.iter().map(String::as_str).collect();
-        let (client, commands, events) = Client::in_memory(&names);
+    /// Every account in `home`, showing `shown`'s INBOX, sending through `client`.
+    pub fn open(home: &Home, shown: Vec<usize>, client: Client) -> anyhow::Result<Model> {
         let mut accounts = Vec::new();
         for name in &home.accounts {
             let store = home.store(name)?;
@@ -68,17 +61,15 @@ impl Model {
             cursor: 0,
             marked: HashSet::new(),
             help: false,
-            armed: false,
+            armed_for: None,
             client,
-            commands,
-            events,
         };
         model.reload();
         Ok(model)
     }
 
     /// `App::reload_view` for a folder view: threads from each shown store, expanded threads reloaded.
-    pub fn reload(&mut self) {
+    fn reload(&mut self) {
         let mut found = Vec::new();
         for &account in &self.shown {
             match self.accounts[account]
@@ -111,7 +102,7 @@ impl Model {
     }
 
     /// `App::rebuild_rows`: the cursor stays on its row when that row is still there.
-    pub fn rebuild_rows(&mut self) {
+    fn rebuild_rows(&mut self) {
         let current = self.rows.get(self.cursor).cloned();
         let mut rows = list::build_rows(&self.folder, &self.threads, &self.expanded);
         let pending: Vec<_> = self.accounts.iter().map(|a| &a.pending).collect();
@@ -121,23 +112,28 @@ impl Model {
         self.cursor = kept.unwrap_or_else(|| self.cursor.min(self.rows.len().saturating_sub(1)));
     }
 
+    /// The account and key of the cursor's row.
+    pub fn cursor_row(&self) -> Option<(usize, RowKey)> {
+        self.rows.get(self.cursor).map(Row::id)
+    }
+
     pub fn step(&mut self, delta: isize) {
-        self.armed = true;
         self.cursor = self
             .cursor
             .saturating_add_signed(delta)
             .min(self.rows.len().saturating_sub(1));
+        self.armed_for = self.cursor_row();
     }
 
     pub fn select(&mut self, index: usize) {
-        if index < self.rows.len() {
-            self.armed |= index != self.cursor;
+        if index < self.rows.len() && index != self.cursor {
             self.cursor = index;
+            self.armed_for = self.cursor_row();
         }
     }
 
     pub fn toggle_mark(&mut self) {
-        if let Some(id) = self.rows.get(self.cursor).map(Row::id)
+        if let Some(id) = self.cursor_row()
             && !self.marked.remove(&id)
         {
             self.marked.insert(id);
@@ -175,14 +171,10 @@ impl Model {
 
     /// Collapses the thread the cursor is in and puts the cursor on its thread row.
     pub fn collapse(&mut self) {
-        if self.rows.is_empty() {
-            return;
-        }
-        let from = self.cursor.min(self.rows.len() - 1);
-        let Some(parent) = (0..=from).rev().find(|&i| self.rows[i].thread_id.is_some()) else {
-            return;
-        };
-        let Some(thread) = self.rows[parent].thread_id.clone() else {
+        let parent = (0..self.rows.len().min(self.cursor + 1))
+            .rev()
+            .find_map(|i| Some((i, self.rows[i].thread_id.clone()?)));
+        let Some((parent, thread)) = parent else {
             return;
         };
         if self
@@ -245,35 +237,37 @@ impl Model {
                 }
                 _ => action.clone(),
             };
-            let keys: Vec<RowKey> = uids.iter().map(|&uid| (folder.clone(), uid)).collect();
-            let command = Command::Apply {
-                folder,
-                uids,
-                action,
-                by: "gui".into(),
-            };
-            if self.client.send(&self.accounts[account].name, command) {
-                for key in keys {
-                    self.accounts[account]
-                        .pending
-                        .entry(key)
-                        .or_default()
-                        .push(optimistic);
-                }
-            }
+            self.send_apply(account, folder, uids, action, optimistic);
         }
         self.marked.clear();
         self.rebuild_rows();
     }
-}
 
-impl Model {
-    /// The account and key of the cursor's row.
-    pub fn shown(&self) -> Option<(usize, RowKey)> {
-        self.rows.get(self.cursor).map(Row::id)
+    /// `App::send_apply`: one `Apply`, and its edit shown until the daemon confirms it.
+    fn send_apply(
+        &mut self,
+        account: usize,
+        folder: String,
+        uids: Vec<u32>,
+        action: Action,
+        optimistic: Optimistic,
+    ) {
+        let keys: Vec<RowKey> = uids.iter().map(|&uid| (folder.clone(), uid)).collect();
+        let command = Command::Apply {
+            folder,
+            uids,
+            action,
+            by: "gui".into(),
+        };
+        if self.client.send(&self.accounts[account].name, command) {
+            let pending = &mut self.accounts[account].pending;
+            for key in keys {
+                pending.entry(key).or_default().push(optimistic);
+            }
+        }
     }
 
-    /// Whether `key` reads as seen, its last pending edit before the store's flag.
+    /// Whether `key` reads as seen: its last pending edit, else the store's flag.
     pub fn is_seen(&self, account: usize, key: &RowKey) -> bool {
         let edit = self.accounts[account].pending.get(key).and_then(|edits| {
             edits.iter().rev().find_map(|edit| match edit {
@@ -291,22 +285,11 @@ impl Model {
         })
     }
 
-    /// `mark_read_after_delay`'s send: one message read, shown before the daemon confirms it.
-    pub fn mark_read(&mut self, account: usize, key: RowKey) {
-        let command = Command::Apply {
-            folder: key.0.clone(),
-            uids: vec![key.1],
-            action: Action::MarkRead,
-            by: "gui".into(),
-        };
-        if self.client.send(&self.accounts[account].name, command) {
-            self.accounts[account]
-                .pending
-                .entry(key)
-                .or_default()
-                .push(Optimistic::Seen(true));
-            self.rebuild_rows();
-        }
+    /// `mark_read_after_delay`'s send: one message read.
+    pub fn mark_read(&mut self, account: usize, (folder, uid): RowKey) {
+        let read = Optimistic::Seen(true);
+        self.send_apply(account, folder, vec![uid], Action::MarkRead, read);
+        self.rebuild_rows();
     }
 }
 
@@ -325,18 +308,13 @@ fn same_row(row: &Row, cursor: &Row) -> bool {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use super::*;
+    use crate::test_model;
 
-    fn work_inbox() -> (tempfile::TempDir, Model) {
-        let dir = tempfile::tempdir().unwrap();
-        let home = postvak::gui::fixture::mailbox(dir.path(), "light").unwrap();
-        let model = Model::open(&home, vec![1]).unwrap();
-        (dir, model)
-    }
+    use super::*;
 
     #[test]
     fn the_snapshot_inbox_has_one_row_per_thread_newest_first() {
-        let (_dir, model) = work_inbox();
+        let (_dir, model, _) = test_model(false);
         let subjects: Vec<&str> = model.rows.iter().map(|r| r.subject.as_str()).collect();
         assert_eq!(subjects[0], "Lunch on Friday?");
         // 93 and 94 share a thread: five rows for six messages.
@@ -346,7 +324,7 @@ mod tests {
 
     #[test]
     fn right_expands_a_thread_and_left_returns_to_it() {
-        let (_dir, mut model) = work_inbox();
+        let (_dir, mut model, _) = test_model(false);
         let thread = model.rows.iter().position(|r| r.count == 2).unwrap();
         model.select(thread);
         model.expand();
@@ -359,23 +337,24 @@ mod tests {
 
     #[test]
     fn archive_sends_the_whole_thread_and_hides_its_row() {
-        let (_dir, mut model) = work_inbox();
+        let (_dir, mut model, commands) = test_model(false);
         let thread = model.rows.iter().position(|r| r.count == 2).unwrap();
         model.select(thread);
         model.act(Action::Archive);
-        let sent: Vec<_> = model.commands.try_iter().collect();
-        assert_eq!(sent.len(), 1);
-        let (
-            account,
-            Command::Apply {
-                folder,
-                uids,
-                action,
-                ..
-            },
-        ) = &sent[0]
+        let sent: Vec<_> = commands.try_iter().collect();
+        let [
+            (
+                account,
+                Command::Apply {
+                    folder,
+                    uids,
+                    action,
+                    ..
+                },
+            ),
+        ] = sent.as_slice()
         else {
-            panic!("not an Apply: {sent:?}");
+            panic!("expected one Apply: {sent:?}");
         };
         assert_eq!((account.as_str(), folder.as_str()), ("work", "INBOX"));
         assert_eq!((uids.as_slice(), action), (&[93, 94][..], &Action::Archive));
@@ -385,7 +364,7 @@ mod tests {
 
     #[test]
     fn marks_choose_the_targets_and_escape_clears_them() {
-        let (_dir, mut model) = work_inbox();
+        let (_dir, mut model, commands) = test_model(false);
         model.toggle_mark();
         model.step(1);
         model.toggle_mark();
@@ -395,7 +374,7 @@ mod tests {
         model.toggle_mark();
         model.step(-1);
         model.act(Action::MarkRead);
-        let sent: Vec<_> = model.commands.try_iter().collect();
+        let sent: Vec<_> = commands.try_iter().collect();
         let (_, Command::Apply { uids, .. }) = &sent[0] else {
             panic!("not an Apply");
         };
@@ -404,6 +383,20 @@ mod tests {
             uids.as_slice(),
             &[93, 94],
             "only the marked row, not the cursor"
+        );
+    }
+
+    #[test]
+    fn moving_the_cursor_arms_the_row_it_lands_on() {
+        let (_dir, mut model, _) = test_model(false);
+        assert_eq!(model.armed_for, None, "the first row is shown, not chosen");
+        model.step(1);
+        assert_eq!(model.armed_for, model.cursor_row());
+        model.select(1);
+        assert_eq!(
+            model.armed_for,
+            model.cursor_row(),
+            "selecting the shown row changes nothing"
         );
     }
 }

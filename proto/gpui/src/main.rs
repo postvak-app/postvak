@@ -7,13 +7,17 @@ mod model;
 mod theme;
 
 use std::borrow::Cow;
+use std::path::Path;
+use std::sync::mpsc::Receiver;
 
 use gpui::{
     App, AppContext, Bounds, Context, Entity, IntoElement, ParentElement, Render, Styled, Window,
     WindowBounds, WindowOptions, div, px, size,
 };
 use gpui_kit::component::Theme;
+use postvak::daemon::Client;
 use postvak::gui::fixture::{self, Home};
+use postvak::sync::Command;
 
 use body::BodyPane;
 use list::MessageList;
@@ -58,7 +62,7 @@ fn newsletter_raw() -> String {
 }
 
 /// Adds the newsletter to work's INBOX as its newest message, unread.
-pub fn add_newsletter(home: &Home) -> anyhow::Result<()> {
+fn add_newsletter(home: &Home) -> anyhow::Result<()> {
     let text = "This week in the reading room";
     let mut m = fixture::mail(97, "The Weekly Reader <news@example.org>", text, "", text);
     m.date = Some(fixture::AT);
@@ -69,25 +73,47 @@ pub fn add_newsletter(home: &Home) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The snapshot mailbox's `work` INBOX with the newsletter, or a generated one; in a temp home that lives as long as
-/// the process.
-fn open_fixture() -> anyhow::Result<Model> {
-    let dir = Box::leak(Box::new(tempfile::tempdir()?));
-    match std::env::var("POSTVAK_PROTO_COUNT")
-        .ok()
-        .and_then(|n| n.parse().ok())
-    {
-        Some(count) => Model::open(&fixture::generated(dir.path(), count)?, vec![0]),
+/// The snapshot mailbox's `work` INBOX with the newsletter, or with `count` a generated one, in a new home under
+/// `dir`; and the indices of the accounts the list shows.
+fn open_home(dir: &Path, count: Option<u32>) -> anyhow::Result<(Home, Vec<usize>)> {
+    Ok(match count {
+        Some(count) => (fixture::generated(dir, count)?, vec![0]),
         None => {
-            let home = fixture::mailbox(dir.path(), "light")?;
+            let home = fixture::mailbox(dir, "light")?;
             add_newsletter(&home)?;
-            Model::open(&home, vec![1])
+            (home, vec![1])
         }
+    })
+}
+
+/// A model over a client with no daemon behind it, and the receiver of what it sends; dropping the receiver makes
+/// every send fail.
+fn open_model(
+    home: &Home,
+    shown: Vec<usize>,
+) -> anyhow::Result<(Model, Receiver<(String, Command)>)> {
+    let names: Vec<&str> = home.accounts.iter().map(String::as_str).collect();
+    let (client, commands, _) = Client::in_memory(&names);
+    Ok((Model::open(home, shown, client)?, commands))
+}
+
+/// The snapshot inbox, with or without the newsletter, for tests.
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+pub fn test_model(newsletter: bool) -> (tempfile::TempDir, Model, Receiver<(String, Command)>) {
+    let dir = tempfile::tempdir().unwrap();
+    let home = fixture::mailbox(dir.path(), "light").unwrap();
+    if newsletter {
+        add_newsletter(&home).unwrap();
     }
+    let (model, commands) = open_model(&home, vec![1]).unwrap();
+    (dir, model, commands)
 }
 
 /// The window: the list, then the body.
 pub struct Mail {
+    #[cfg(test)]
+    pub model: Entity<Model>,
     pub list: Entity<MessageList>,
     pub body: Entity<BodyPane>,
 }
@@ -95,11 +121,16 @@ pub struct Mail {
 impl Mail {
     /// The list over `model`, focused, and the body that follows its cursor.
     pub fn new(model: Model, window: &mut Window, cx: &mut App) -> Mail {
-        let list = cx.new(|cx| MessageList::new(model, window, cx));
-        let rows = list.read(cx).list.clone();
-        rows.update(cx, |rows, cx| rows.focus(window, cx));
-        let body = cx.new(|cx| BodyPane::new(&list, cx));
-        Mail { list, body }
+        let model = cx.new(|_| model);
+        let list = cx.new(|cx| MessageList::new(model.clone(), window, cx));
+        MessageList::focus(&list, window, cx);
+        let body = cx.new(|cx| BodyPane::new(model.clone(), cx));
+        Mail {
+            #[cfg(test)]
+            model,
+            list,
+            body,
+        }
     }
 }
 
@@ -120,25 +151,31 @@ impl Render for Mail {
     }
 }
 
-/// GPUI Kit's list colours as Postvak's light panes.
-fn style(cx: &mut App) {
+/// GPUI Kit with its list in Postvak's light colours, the keys, and the bundled fonts.
+pub fn init(cx: &mut App) {
+    gpui_kit::init(cx);
     let kit = Theme::global_mut(cx);
     kit.list_active = theme::selected();
     kit.list_active_border = theme::selected();
     kit.list_hover = theme::hover();
     kit.tokens.list_hover = theme::hover().into();
+    cx.bind_keys(list::bindings());
+    let fonts = FONTS.iter().map(|bytes| Cow::Borrowed(*bytes)).collect();
+    if let Err(e) = cx.text_system().add_fonts(fonts) {
+        eprintln!("could not load the bundled fonts: {e}");
+    }
 }
 
 fn main() -> anyhow::Result<()> {
-    let model = open_fixture()?;
+    // Both outlive the window: the home's stores, and the receiver that lets sends succeed.
+    let dir = tempfile::tempdir()?;
+    let count = std::env::var("POSTVAK_PROTO_COUNT")
+        .ok()
+        .and_then(|n| n.parse().ok());
+    let (home, shown) = open_home(dir.path(), count)?;
+    let (model, _commands) = open_model(&home, shown)?;
     gpui_kit::application().run(move |cx: &mut App| {
-        gpui_kit::init(cx);
-        style(cx);
-        cx.bind_keys(list::bindings());
-        let fonts = FONTS.iter().map(|bytes| Cow::Borrowed(*bytes)).collect();
-        if let Err(e) = cx.text_system().add_fonts(fonts) {
-            eprintln!("could not load the bundled fonts: {e}");
-        }
+        init(cx);
         let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
