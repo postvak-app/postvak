@@ -25,6 +25,8 @@ pub(crate) fn search_id() -> egui::Id {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Row {
+    /// Index into `App::accounts`: the account the message lives in.
+    pub account: usize,
     pub count: u32,
     pub date: i64,
     pub flagged: bool,
@@ -44,8 +46,14 @@ impl Row {
         (self.folder.clone(), self.uid)
     }
 
-    pub fn from_message(message: &Message) -> Row {
+    /// The key across accounts: a uid is only unique within one account's folder.
+    pub fn id(&self) -> (usize, RowKey) {
+        (self.account, self.key())
+    }
+
+    pub fn from_message(account: usize, message: &Message) -> Row {
         Row {
+            account,
             count: 1,
             date: message.internaldate,
             flagged: message.is_flagged(),
@@ -60,8 +68,9 @@ impl Row {
         }
     }
 
-    fn from_summary(folder: &str, message: &MessageSummary, member: bool) -> Row {
+    fn from_summary(account: usize, folder: &str, message: &MessageSummary, member: bool) -> Row {
         Row {
+            account,
             count: 1,
             date: message.date,
             flagged: message.is_flagged(),
@@ -80,13 +89,15 @@ impl Row {
 #[derive(Default)]
 pub(crate) struct ListState {
     pub cursor: usize,
-    pub expanded: HashMap<String, Vec<MessageSummary>>,
+    /// Expanded threads by account and thread id: mail sent to two accounts shares its thread id.
+    pub expanded: HashMap<(usize, String), Vec<MessageSummary>>,
     /// Set when a key moved the cursor, so this frame scrolls it into view.
     pub follow_cursor: bool,
     pub hits: Vec<Row>,
-    pub marked: HashSet<RowKey>,
+    pub marked: HashSet<(usize, RowKey)>,
     pub rows: Vec<Row>,
-    pub threads: Vec<ThreadSummary>,
+    /// Each thread with the account it is in.
+    pub threads: Vec<(usize, ThreadSummary)>,
     /// Scroll offset and height of the list from the last frame.
     pub viewport: (f32, f32),
 }
@@ -94,19 +105,23 @@ pub(crate) struct ListState {
 /// One row per thread describing its latest message, followed by its members when expanded.
 pub(crate) fn build_rows(
     folder: &str,
-    threads: &[ThreadSummary],
-    expanded: &HashMap<String, Vec<MessageSummary>>,
+    threads: &[(usize, ThreadSummary)],
+    expanded: &HashMap<(usize, String), Vec<MessageSummary>>,
 ) -> Vec<Row> {
     let mut rows = Vec::with_capacity(threads.len());
-    for thread in threads {
-        let mut row = Row::from_summary(folder, &thread.latest, false);
+    for (account, thread) in threads {
+        let mut row = Row::from_summary(*account, folder, &thread.latest, false);
         row.count = thread.count;
         row.flagged = thread.flagged;
         row.thread_id = Some(thread.thread_id.clone());
         row.unread = thread.unread;
         rows.push(row);
-        if let Some(members) = expanded.get(&thread.thread_id) {
-            rows.extend(members.iter().map(|m| Row::from_summary(folder, m, true)));
+        if let Some(members) = expanded.get(&(*account, thread.thread_id.clone())) {
+            rows.extend(
+                members
+                    .iter()
+                    .map(|m| Row::from_summary(*account, folder, m, true)),
+            );
         }
     }
     rows
@@ -136,17 +151,14 @@ impl Optimistic {
 }
 
 /// Rows of sent actions as they will be: moved rows hidden, read and flag changes shown, a later edit over an earlier.
-pub(crate) fn apply_pending(rows: &mut Vec<Row>, pending: &HashMap<RowKey, Vec<Optimistic>>) {
-    if pending.is_empty() {
+/// `pending[i]` is account i's edits, as `App::accounts` is ordered.
+pub(crate) fn apply_pending(rows: &mut Vec<Row>, pending: &[&HashMap<RowKey, Vec<Optimistic>>]) {
+    if pending.iter().all(|edits| edits.is_empty()) {
         return;
     }
-    rows.retain(|row| {
-        !pending
-            .get(&row.key())
-            .is_some_and(|edits| edits.contains(&Optimistic::Hidden))
-    });
+    rows.retain(|row| !edits_of(pending, row).contains(&Optimistic::Hidden));
     for row in rows {
-        for edit in pending.get(&row.key()).into_iter().flatten() {
+        for edit in edits_of(pending, row) {
             match edit {
                 Optimistic::Flagged(flagged) => row.flagged = *flagged,
                 Optimistic::Seen(seen) => row.unread = !seen,
@@ -154,6 +166,13 @@ pub(crate) fn apply_pending(rows: &mut Vec<Row>, pending: &HashMap<RowKey, Vec<O
             }
         }
     }
+}
+
+fn edits_of<'a>(pending: &[&'a HashMap<RowKey, Vec<Optimistic>>], row: &Row) -> &'a [Optimistic] {
+    pending
+        .get(row.account)
+        .and_then(|edits| edits.get(&row.key()))
+        .map_or(&[][..], Vec::as_slice)
 }
 
 /// "Alice <alice@x>, bob@y" is "Alice"; without a name, the first address.
@@ -202,6 +221,7 @@ where
 
 /// One list row split into what each column draws, cleaned of control characters.
 pub(crate) struct Columns {
+    pub account: Option<String>,
     pub unread: bool,
     pub flagged: bool,
     pub marked: bool,
@@ -222,6 +242,8 @@ const MIN_TEXT: f32 = 16.0;
 pub(crate) const MIN_WIDTH: f32 = 220.0;
 /// How much further a thread member's sender is indented than its thread row's: a level, as in the folder tree.
 const MEMBER_INDENT: f32 = theme::INSET;
+/// The account tag's widest, so a long account name leaves room for the sender.
+const TAG: f32 = 80.0;
 /// A row's height: the sender and date, then the subject.
 pub(crate) const LIST_ROW: f32 = 2.0 * ROW;
 
@@ -232,6 +254,7 @@ pub(crate) fn sender_width(total: f32, date: f32) -> f32 {
 
 pub(crate) fn columns<Tz: TimeZone>(
     row: &Row,
+    account: Option<&str>,
     marked: bool,
     recipient: bool,
     in_search: bool,
@@ -250,6 +273,7 @@ where
         subject.push_str(&format!(" ({})", row.count));
     }
     Columns {
+        account: account.map(|name| clean(name, false)),
         unread: row.unread,
         flagged: row.flagged,
         marked,
@@ -263,6 +287,7 @@ where
 /// Unread dot, flag, sender (recipient in Sent and Drafts), subject, thread count and date, on one line.
 pub(crate) fn row_text<Tz: TimeZone>(
     row: &Row,
+    account: Option<&str>,
     recipient: bool,
     in_search: bool,
     now: &DateTime<Tz>,
@@ -277,6 +302,9 @@ where
     }
     if row.member {
         text.push_str("      ");
+    }
+    if let Some(account) = account {
+        text.push_str(&format!("{account} · "));
     }
     if in_search {
         text.push_str(&format!("[{}] ", folders::label(&row.folder)));
@@ -361,15 +389,26 @@ fn draw_row(
     };
     let indent = if c.member { MEMBER_INDENT } else { 0.0 };
     let x = x + indent;
-    if sender_width - indent >= MIN_TEXT {
-        let sender = truncated(
-            &c.who,
-            &sender_font,
-            sender_width - indent,
-            ink(sender_color),
-        );
+    let mut sender_x = x;
+    let tag_width = TAG.min(sender_width - indent);
+    if let Some(account) = &c.account
+        && tag_width >= MIN_TEXT
+    {
+        let small = egui::FontId::new(font.size - 2.0, font.family.clone());
+        let tag = truncated(account, &small, tag_width, ink(palette.muted));
+        let width = tag.size().x;
         painter.galley(
-            egui::pos2(x, first - sender.size().y / 2.0),
+            egui::pos2(x, first - tag.size().y / 2.0),
+            tag,
+            ink(palette.muted),
+        );
+        sender_x += width + PAD;
+    }
+    let sender_room = sender_width - indent - (sender_x - x);
+    if sender_room >= MIN_TEXT {
+        let sender = truncated(&c.who, &sender_font, sender_room, ink(sender_color));
+        painter.galley(
+            egui::pos2(sender_x, first - sender.size().y / 2.0),
             sender,
             ink(sender_color),
         );
@@ -398,15 +437,42 @@ pub(crate) fn offset_showing(cursor: usize, row_height: f32, offset: f32, height
     }
 }
 
+/// The folder All inboxes shows from each account; sync stores and queries it by this exact name.
+pub(crate) const INBOX: &str = "INBOX";
+
+/// Search hits of several accounts, newest first, at most `limit`; each account's own order is kept on equal dates.
+pub(crate) fn merge_hits(mut hits: Vec<Row>, limit: u32) -> Vec<Row> {
+    hits.sort_by_key(|row| std::cmp::Reverse(row.date));
+    hits.truncate(limit as usize);
+    hits
+}
+
+/// Threads of several accounts in one list, the most recently active first, at most `limit`. The sort is stable, so
+/// each account keeps its own order and equal dates keep account order.
+pub(crate) fn merge_threads(
+    per_account: Vec<(usize, Vec<ThreadSummary>)>,
+    limit: u32,
+) -> Vec<(usize, ThreadSummary)> {
+    let mut threads: Vec<(usize, ThreadSummary)> = per_account
+        .into_iter()
+        .flat_map(|(account, found)| found.into_iter().map(move |thread| (account, thread)))
+        .collect();
+    threads.sort_by_key(|(_, thread)| std::cmp::Reverse(thread.latest.date));
+    threads.truncate(limit as usize);
+    threads
+}
+
 pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     let mut actions = Vec::new();
     let list = &app.list;
     let recipient = app.shows_recipient();
     let now = Local::now();
-    if app.search.is_none()
-        && let View::Folder { folder, .. } = &app.view
-    {
-        title(ui, folders::label(folder), &list.rows);
+    if app.search.is_none() {
+        match &app.view {
+            View::AllInboxes => title(ui, "All inboxes", &list.rows),
+            View::Folder { folder, .. } => title(ui, folders::label(folder), &list.rows),
+            _ => {}
+        }
     }
     if let Some(query) = &app.search {
         let mut text = query.clone();
@@ -414,7 +480,11 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
             ui,
             egui::TextEdit::singleline(&mut text)
                 .id(search_id())
-                .hint_text("Search this account")
+                .hint_text(if app.view == View::AllInboxes {
+                    "Search every account"
+                } else {
+                    "Search this account"
+                })
                 .desired_width(f32::INFINITY),
         );
         if app.focus_search {
@@ -443,15 +513,17 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     let output = area.show_rows(ui, LIST_ROW, list.rows.len(), |ui, range| {
         for index in range {
             let row = &list.rows[index];
-            let marked = list.marked.contains(&row.key());
+            let marked = list.marked.contains(&row.id());
             let selected = index == list.cursor || marked;
             let (rect, response) = ui.allocate_exact_size(
                 egui::vec2(ui.available_width(), LIST_ROW),
                 egui::Sense::click(),
             );
-            let c = columns(row, marked, recipient, app.search.is_some(), &now);
+            let account =
+                (app.view == View::AllInboxes).then(|| app.accounts[row.account].name.as_str());
+            let c = columns(row, account, marked, recipient, app.search.is_some(), &now);
             draw_row(ui, rect, &c, selected, response.hovered(), palette, &font);
-            let mut name = row_text(row, recipient, app.search.is_some(), &now);
+            let mut name = row_text(row, account, recipient, app.search.is_some(), &now);
             if marked {
                 name = format!("✔ {name}");
             }
@@ -539,20 +611,20 @@ fn title(ui: &mut egui::Ui, name: &str, rows: &[Row]) {
     });
 }
 
-/// The `m` popup: type to filter the account's folders, Enter or a click moves. It leaves out the folder the cursor
-/// message is in: the view's, or in search the hit's own.
+/// The `m` popup: type to filter the folders of the selected rows' account, Enter or a click moves. It leaves out the
+/// folder the cursor message is in.
 pub(crate) fn show_move_picker(app: &App, ctx: &egui::Context) -> Vec<UiAction> {
     let mut actions = Vec::new();
-    let (Some(filter), View::Folder { account, folder }) = (&app.move_picker, &app.view) else {
+    let (Some(filter), Some(row)) = (&app.move_picker, app.selected_rows().first().copied()) else {
         return actions;
     };
     let folder = app
         .list
         .rows
         .get(app.list.cursor)
-        .map_or(folder, |row| &row.folder);
+        .map_or(&row.folder, |cursor| &cursor.folder);
     let needle = filter.to_lowercase();
-    let names: Vec<&str> = app.accounts[*account]
+    let names: Vec<&str> = app.accounts[row.account]
         .folders
         .iter()
         .map(|f| f.name.as_str())
@@ -596,6 +668,41 @@ mod tests {
     use crate::gui::test_support::{Fixture, message};
     use crate::store::{MessageSummary, ThreadSummary};
 
+    #[test]
+    fn merge_hits_is_newest_first_and_capped() {
+        let hit = |account, uid| Row::from_message(account, &message("INBOX", uid, "hit"));
+        let merged = merge_hits(vec![hit(0, 3), hit(0, 1), hit(1, 4), hit(1, 2)], 3);
+        let shape: Vec<(usize, u32)> = merged.iter().map(|r| (r.account, r.uid)).collect();
+        assert_eq!(shape, [(1, 4), (0, 3), (1, 2)]);
+    }
+
+    #[test]
+    fn merge_threads_is_newest_first_across_accounts_and_capped() {
+        let thread = |uid: u32| ThreadSummary {
+            thread_id: format!("t{uid}"),
+            latest: summary(uid, ""),
+            count: 1,
+            unread: false,
+            flagged: false,
+        };
+        let merged = merge_threads(
+            vec![
+                (0, vec![thread(5), thread(1)]),
+                (1, vec![thread(3), thread(1)]),
+            ],
+            3,
+        );
+        let shape: Vec<(usize, u32)> = merged
+            .iter()
+            .map(|(account, t)| (*account, t.latest.uid))
+            .collect();
+        assert_eq!(
+            shape,
+            [(0, 5), (1, 3), (0, 1)],
+            "equal dates keep account order; the cap drops the rest"
+        );
+    }
+
     fn summary(uid: u32, flags: &str) -> MessageSummary {
         MessageSummary {
             uid,
@@ -614,24 +721,33 @@ mod tests {
     #[test]
     fn build_rows_puts_members_under_an_expanded_thread() {
         let threads = vec![
-            ThreadSummary {
-                thread_id: "t".into(),
-                latest: summary(5, ""),
-                count: 2,
-                unread: true,
-                flagged: false,
-            },
-            ThreadSummary {
-                thread_id: "u".into(),
-                latest: summary(3, "\\Seen \\Flagged"),
-                count: 1,
-                unread: false,
-                flagged: true,
-            },
+            (
+                0,
+                ThreadSummary {
+                    thread_id: "t".into(),
+                    latest: summary(5, ""),
+                    count: 2,
+                    unread: true,
+                    flagged: false,
+                },
+            ),
+            (
+                0,
+                ThreadSummary {
+                    thread_id: "u".into(),
+                    latest: summary(3, "\\Seen \\Flagged"),
+                    count: 1,
+                    unread: false,
+                    flagged: true,
+                },
+            ),
         ];
         let mut expanded = HashMap::new();
         assert_eq!(build_rows("INBOX", &threads, &expanded).len(), 2);
-        expanded.insert("t".to_string(), vec![summary(4, "\\Seen"), summary(5, "")]);
+        expanded.insert(
+            (0, "t".to_string()),
+            vec![summary(4, "\\Seen"), summary(5, "")],
+        );
         let rows = build_rows("INBOX", &threads, &expanded);
         let shape: Vec<(u32, bool, bool, u32)> = rows
             .iter()
@@ -667,7 +783,7 @@ mod tests {
     #[test]
     fn columns_split_markers_sender_subject_and_date() {
         let now = Utc.with_ymd_and_hms(2026, 10, 6, 12, 0, 0).unwrap();
-        let mut row = Row::from_message(&message("INBOX", 1, "Lunch?"));
+        let mut row = Row::from_message(0, &message("INBOX", 1, "Lunch?"));
         row.unread = true;
         row.flagged = true;
         row.count = 3;
@@ -676,11 +792,47 @@ mod tests {
             .with_ymd_and_hms(2026, 10, 6, 9, 13, 0)
             .unwrap()
             .timestamp();
-        let c = columns(&row, false, false, true, &now);
+        let c = columns(&row, None, false, false, true, &now);
         assert!(c.unread && c.flagged && !c.marked);
         assert_eq!(c.who, "Linus Example");
         assert_eq!(c.subject, "[Inbox] Lunch? (3)");
         assert_eq!(c.date, "09:13");
+    }
+
+    #[test]
+    fn the_account_tag_comes_before_the_sender() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 6, 12, 0, 0).unwrap();
+        let row = Row::from_message(1, &message("INBOX", 1, "hello"));
+        let text = row_text(&row, Some("work"), false, false, &now);
+        assert!(text.starts_with("   work · Sender 1 — hello"), "{text}");
+        assert!(row_text(&row, None, false, false, &now).starts_with("   Sender 1 — hello"));
+        assert_eq!(
+            columns(&row, Some("work"), false, false, false, &now)
+                .account
+                .as_deref(),
+            Some("work")
+        );
+        assert_eq!(columns(&row, None, false, false, false, &now).account, None);
+    }
+
+    #[test]
+    fn rows_name_their_account_in_all_inboxes_only() {
+        let fx = Fixture::new(&["home", "work"]);
+        fx.add("home", message("INBOX", 1, "from home"));
+        let (mut harness, _wires) = fx.harness();
+        assert!(
+            harness
+                .query_by_label_contains("Sender 1 — from home")
+                .is_some()
+        );
+        assert!(harness.query_by_label_contains("home · Sender 1").is_none());
+        harness.state_mut().select_view(View::AllInboxes);
+        harness.run();
+        assert!(
+            harness
+                .query_by_label_contains("home · Sender 1 — from home")
+                .is_some()
+        );
     }
 
     #[test]
@@ -715,6 +867,7 @@ mod tests {
     #[test]
     fn row_text_strips_control_characters_from_headers() {
         let row = Row {
+            account: 0,
             count: 1,
             date: 0,
             flagged: true,
@@ -728,7 +881,7 @@ mod tests {
             unread: true,
         };
         let now = Utc.with_ymd_and_hms(2026, 10, 6, 12, 0, 0).unwrap();
-        let text = row_text(&row, false, false, &now);
+        let text = row_text(&row, None, false, false, &now);
         assert!(!text.chars().any(char::is_control), "{text:?}");
         assert!(
             text.contains("[31mred alert") && text.starts_with("• ⚑ "),
@@ -820,6 +973,7 @@ mod tests {
                     let (rect, _) =
                         ui.allocate_exact_size(egui::vec2(width, LIST_ROW), egui::Sense::hover());
                     let c = Columns {
+                        account: Some("work".into()),
                         unread: true,
                         flagged: true,
                         marked: false,
@@ -881,6 +1035,7 @@ mod tests {
                 let (rect, _) =
                     ui.allocate_exact_size(egui::vec2(400.0, LIST_ROW), egui::Sense::hover());
                 let c = Columns {
+                    account: None,
                     unread: true,
                     flagged: false,
                     marked: false,
@@ -1045,7 +1200,11 @@ mod tests {
             unread: true,
             flagged: false,
         };
-        let threads = vec![thread("a", 1), thread("b", 2), thread("c", 3)];
+        let threads = vec![
+            (0, thread("a", 1)),
+            (0, thread("b", 2)),
+            (0, thread("c", 3)),
+        ];
         let mut rows = build_rows("INBOX", &threads, &HashMap::new());
         let pending = HashMap::from([
             (("INBOX".to_string(), 1), vec![Optimistic::Hidden]),
@@ -1059,10 +1218,54 @@ mod tests {
                 ],
             ),
         ]);
-        apply_pending(&mut rows, &pending);
+        apply_pending(&mut rows, &[&pending]);
         let shape: Vec<(u32, bool, bool)> =
             rows.iter().map(|r| (r.uid, r.unread, r.flagged)).collect();
         assert_eq!(shape, [(2, false, false), (3, true, true)]);
+    }
+
+    #[test]
+    fn apply_pending_reads_each_rows_own_account() {
+        let thread = |id: &str| ThreadSummary {
+            thread_id: id.into(),
+            latest: summary(1, ""),
+            count: 1,
+            unread: true,
+            flagged: false,
+        };
+        let mut rows = build_rows(
+            "INBOX",
+            &[(0, thread("a")), (1, thread("b"))],
+            &HashMap::new(),
+        );
+        let home: HashMap<RowKey, Vec<Optimistic>> = HashMap::new();
+        let work = HashMap::from([(("INBOX".to_string(), 1), vec![Optimistic::Hidden])]);
+        apply_pending(&mut rows, &[&home, &work]);
+        let left: Vec<(usize, u32)> = rows.iter().map(|r| (r.account, r.uid)).collect();
+        assert_eq!(left, [(0, 1)]);
+    }
+
+    #[test]
+    fn expanding_a_thread_in_one_account_leaves_the_same_thread_in_another_alone() {
+        let thread = ThreadSummary {
+            thread_id: "t".into(),
+            latest: summary(5, ""),
+            count: 2,
+            unread: true,
+            flagged: false,
+        };
+        let threads = vec![(0, thread.clone()), (1, thread)];
+        let expanded = HashMap::from([(
+            (1, "t".to_string()),
+            vec![summary(4, "\\Seen"), summary(5, "")],
+        )]);
+        let rows = build_rows("INBOX", &threads, &expanded);
+        let shape: Vec<(usize, u32, bool)> =
+            rows.iter().map(|r| (r.account, r.uid, r.member)).collect();
+        assert_eq!(
+            shape,
+            [(0, 5, false), (1, 5, false), (1, 4, true), (1, 5, true)]
+        );
     }
 
     #[test]

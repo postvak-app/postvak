@@ -26,6 +26,10 @@ use super::status;
 use super::theme;
 use super::toolbar;
 
+/// The status line when `m` is pressed with marked rows from more than one account.
+pub(crate) const MOVE_ONE_ACCOUNT: &str =
+    "move works on one account at a time; mark messages from one account";
+
 /// The status line while the daemon is gone.
 pub(crate) const DAEMON_LOST: &str = "background sync stopped — reconnecting";
 
@@ -177,9 +181,21 @@ pub(crate) struct FolderRow {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum View {
     Activity,
-    Folder { account: usize, folder: String },
+    /// Every account's INBOX in one list.
+    AllInboxes,
+    Folder {
+        account: usize,
+        folder: String,
+    },
     Rules,
     Trash,
+}
+
+impl View {
+    /// The views with a message list and a reader.
+    pub(crate) fn lists_mail(&self) -> bool {
+        matches!(self, View::AllInboxes | View::Folder { .. })
+    }
 }
 
 /// What a view asks for; `App::apply` carries it out after the frame.
@@ -712,7 +728,9 @@ impl App {
     /// The account's mail changed: reload its unread counts, and the shown rows at the start of the next frame.
     pub(crate) fn refresh(&mut self, index: usize) {
         self.accounts[index].reload_folders();
-        if self.view_account() == Some(index) || matches!(self.view, View::Activity | View::Trash) {
+        if self.view_account() == Some(index)
+            || matches!(self.view, View::AllInboxes | View::Activity | View::Trash)
+        {
             self.view_dirty = true;
         }
     }
@@ -802,7 +820,11 @@ impl App {
             UiAction::MoveFilter(filter) => self.move_picker = Some(filter),
             UiAction::MoveTo(folder) => {
                 self.move_picker = None;
-                self.act(Action::Move(folder));
+                if self.selected_account_count() > 1 {
+                    self.note_error(None, MOVE_ONE_ACCOUNT.into());
+                } else {
+                    self.act(Action::Move(folder));
+                }
             }
             UiAction::NextFocus => {
                 self.focus = match self.focus {
@@ -811,11 +833,11 @@ impl App {
                     Focus::List => Focus::Body,
                 }
             }
-            UiAction::OpenMovePicker => {
-                if self.view_account().is_some() && !self.list.rows.is_empty() {
-                    self.move_picker = Some(String::new());
-                }
-            }
+            UiAction::OpenMovePicker => match self.selected_account_count() {
+                0 => {}
+                1 => self.move_picker = Some(String::new()),
+                _ => self.note_error(None, MOVE_ONE_ACCOUNT.into()),
+            },
             UiAction::OpenSource => self.open_source(),
             UiAction::OpenRulesFile => self.open_rules_file(),
             UiAction::RejectRule(name) => {
@@ -858,7 +880,7 @@ impl App {
                 }
             }
             UiAction::StartSearch => {
-                if self.view_account().is_some() {
+                if self.view.lists_mail() {
                     self.search = Some(String::new());
                     self.focus_search = true;
                     self.list = ListState::default();
@@ -903,10 +925,10 @@ impl App {
                 self.error = None;
             }
             UiAction::ToggleMark => {
-                if let Some(key) = self.list.rows.get(self.list.cursor).map(list::Row::key)
-                    && !self.list.marked.remove(&key)
+                if let Some(id) = self.list.rows.get(self.list.cursor).map(list::Row::id)
+                    && !self.list.marked.remove(&id)
                 {
-                    self.list.marked.insert(key);
+                    self.list.marked.insert(id);
                 }
             }
             UiAction::ToggleRead => {
@@ -1026,6 +1048,20 @@ impl App {
         })
     }
 
+    /// With one account, All inboxes would only repeat its INBOX.
+    pub(crate) fn shows_all_inboxes(&self) -> bool {
+        self.accounts.len() > 1
+    }
+
+    /// The folder the list shows: the view's own, or INBOX in every account.
+    fn list_folder(&self) -> Option<&str> {
+        match &self.view {
+            View::AllInboxes => Some(list::INBOX),
+            View::Folder { folder, .. } => Some(folder.as_str()),
+            _ => None,
+        }
+    }
+
     /// Whether `folder` is the account's Archive folder, where archiving moves a message back to the inbox.
     pub(crate) fn is_archive(&self, account: usize, folder: &str) -> bool {
         self.accounts[account]
@@ -1037,7 +1073,7 @@ impl App {
     /// Loads the shown view's rows from the store. Runs on view changes and when events mark the view dirty, never
     /// per frame: `thread_summaries` scans the folder.
     pub(crate) fn reload_view(&mut self) {
-        let View::Folder { account, folder } = &self.view else {
+        let Some(folder) = self.list_folder().map(str::to_string) else {
             match self.view {
                 View::Activity => self.activity_log = rules::activity_log(&self.accounts),
                 View::Trash => self.trash = rules::trash_rows(&self.accounts, &self.paths),
@@ -1045,40 +1081,65 @@ impl App {
             }
             return;
         };
-        let (account, folder) = (*account, folder.clone());
-        let Ok(store) = &self.accounts[account].store else {
-            self.list.threads.clear();
-            self.list.expanded.clear();
-            self.list.hits.clear();
-            self.rebuild_rows();
-            return;
+        let covered: Vec<usize> = match self.view {
+            View::Folder { account, .. } => vec![account],
+            _ => (0..self.accounts.len()).collect(),
         };
+        // A store that failed to open shows its error in the folder pane and adds no rows.
+        let stores: Vec<(usize, &Store)> = covered
+            .into_iter()
+            .filter_map(|index| {
+                self.accounts[index]
+                    .store
+                    .as_ref()
+                    .ok()
+                    .map(|store| (index, store))
+            })
+            .collect();
         if let Some(query) = &self.search {
-            self.list.hits = match store.search(query, None, list::SEARCH_LIMIT) {
-                Ok(found) => found.iter().map(Row::from_message).collect(),
-                Err(e) => {
-                    log::warn!("[{}] search failed: {e}", self.accounts[account].name);
-                    Vec::new()
+            let mut hits = Vec::new();
+            for &(account, store) in &stores {
+                match store.search(query, None, list::SEARCH_LIMIT) {
+                    Ok(found) => hits.extend(found.iter().map(|m| Row::from_message(account, m))),
+                    Err(e) => log::warn!("[{}] search failed: {e}", self.accounts[account].name),
                 }
-            };
-            self.rebuild_rows();
-            return;
-        }
-        match store.thread_summaries(&folder, THREAD_LIMIT) {
-            Ok(threads) => self.list.threads = threads,
-            Err(e) => log::warn!(
-                "[{}] {folder}: could not load threads: {e}",
-                self.accounts[account].name
-            ),
-        }
-        let expanded: Vec<String> = self.list.expanded.keys().cloned().collect();
-        for thread in expanded {
-            match store.thread_members(&folder, &thread) {
-                Ok(members) if members.len() > 1 => {
-                    self.list.expanded.insert(thread, members);
+            }
+            self.list.hits = list::merge_hits(hits, list::SEARCH_LIMIT);
+        } else {
+            let mut found = Vec::new();
+            for &(account, store) in &stores {
+                match store.thread_summaries(&folder, THREAD_LIMIT) {
+                    Ok(threads) => found.push((account, threads)),
+                    Err(e) => {
+                        log::warn!(
+                            "[{}] {folder}: could not load threads: {e}",
+                            self.accounts[account].name
+                        );
+                        let previous = self
+                            .list
+                            .threads
+                            .iter()
+                            .filter(|(owner, _)| *owner == account)
+                            .map(|(_, thread)| thread.clone())
+                            .collect();
+                        found.push((account, previous));
+                    }
                 }
-                _ => {
-                    self.list.expanded.remove(&thread);
+            }
+            self.list.threads = list::merge_threads(found, THREAD_LIMIT);
+            let expanded: Vec<(usize, String)> = self.list.expanded.keys().cloned().collect();
+            for key in expanded {
+                let members = stores
+                    .iter()
+                    .find(|(account, _)| *account == key.0)
+                    .and_then(|(_, store)| store.thread_members(&folder, &key.1).ok());
+                match members {
+                    Some(members) if members.len() > 1 => {
+                        self.list.expanded.insert(key, members);
+                    }
+                    _ => {
+                        self.list.expanded.remove(&key);
+                    }
                 }
             }
         }
@@ -1087,12 +1148,11 @@ impl App {
 
     /// A click on the row already shown opens it; `shown_at` stays, so a message long on screen is read at once.
     fn arm_shown_body(&mut self, index: usize) {
-        let Some(key) = self.list.rows.get(index).map(Row::key) else {
+        let Some((account, key)) = self.list.rows.get(index).map(Row::id) else {
             return;
         };
-        let account = self.view_account();
         if let Some(body) = &mut self.body
-            && Some(body.account) == account
+            && body.account == account
             && body.key == key
         {
             body.armed = true;
@@ -1106,16 +1166,12 @@ impl App {
             return;
         }
         let armed = std::mem::take(&mut self.pending_arm);
-        let current = self
-            .view_account()
-            .zip(self.list.rows.get(self.list.cursor).map(Row::key));
+        let current = self.list.rows.get(self.list.cursor).map(Row::id);
         if current == self.body.as_ref().map(|b| (b.account, b.key.clone())) {
             return;
         }
         self.body = current.map(|(account, key)| self.load_body(account, key, now, armed));
-        if let Some(account) = self.view_account() {
-            self.prefetch_neighbours(account);
-        }
+        self.prefetch_neighbours();
     }
 
     /// The message, its attachments and its HTML as stored now.
@@ -1167,22 +1223,24 @@ impl App {
         }
     }
 
-    /// Asks for the missing bodies of the rows beside the cursor, so stepping to them shows text at once.
-    fn prefetch_neighbours(&mut self, account: usize) {
-        let Ok(store) = &self.accounts[account].store else {
-            return;
-        };
+    /// Asks for the missing bodies of the rows beside the cursor, each from its own account, so stepping to them
+    /// shows text at once.
+    fn prefetch_neighbours(&mut self) {
         let cursor = self.list.cursor;
-        let missing: Vec<RowKey> = [cursor.checked_sub(1), Some(cursor + 1)]
+        let missing: Vec<(usize, RowKey)> = [cursor.checked_sub(1), Some(cursor + 1)]
             .into_iter()
             .flatten()
             .filter_map(|index| self.list.rows.get(index))
-            .map(Row::key)
-            .filter(|(folder, uid)| {
-                matches!(store.message(folder, *uid), Ok(Some(m)) if m.body_text.is_none())
+            .filter(|row| match &self.accounts[row.account].store {
+                Ok(store) => matches!(
+                    store.message(&row.folder, row.uid),
+                    Ok(Some(m)) if m.body_text.is_none()
+                ),
+                Err(_) => false,
             })
+            .map(Row::id)
             .collect();
-        for key in missing {
+        for (account, key) in missing {
             self.request_body(account, &key);
         }
     }
@@ -1462,45 +1520,43 @@ impl App {
     /// Rows from the cached threads, without a store query. The cursor stays on its message; when that row is gone it
     /// keeps its index, so the next row is selected.
     pub(crate) fn rebuild_rows(&mut self) {
-        let View::Folder { account, folder } = &self.view else {
+        let Some(folder) = self.list_folder().map(str::to_string) else {
             return;
         };
         let current = self.list.rows.get(self.list.cursor).cloned();
         let mut rows = if self.search.is_some() {
             self.list.hits.clone()
         } else {
-            list::build_rows(folder, &self.list.threads, &self.list.expanded)
+            list::build_rows(&folder, &self.list.threads, &self.list.expanded)
         };
-        list::apply_pending(&mut rows, &self.accounts[*account].pending);
+        let pending: Vec<_> = self.accounts.iter().map(|a| &a.pending).collect();
+        list::apply_pending(&mut rows, &pending);
         let kept = current.and_then(|cursor| rows.iter().position(|row| same_row(row, &cursor)));
         self.list.rows = rows;
         self.list.cursor =
             kept.unwrap_or_else(|| self.list.cursor.min(self.list.rows.len().saturating_sub(1)));
     }
 
-    /// Sends `action` for the marked rows, or the cursor row, and shows its effect before the server confirms it.
+    /// Sends `action` for the marked rows, or the cursor row, each to its own account, and shows its effect before the
+    /// server confirms it.
     fn act(&mut self, action: Action) {
-        let Some(account) = self.view_account() else {
-            return;
-        };
         let Some(optimistic) = Optimistic::of(&action) else {
             return;
         };
-        let targets = self.targets(account);
+        let targets = self.targets();
         if targets.is_empty() {
             return;
         }
         if matches!(action, Action::MarkRead | Action::MarkUnread)
             && let Some(body) = &mut self.body
-            && body.account == account
-            && targets
-                .iter()
-                .any(|(folder, uids)| *folder == body.key.0 && uids.contains(&body.key.1))
+            && targets.iter().any(|(account, folder, uids)| {
+                *account == body.account && *folder == body.key.0 && uids.contains(&body.key.1)
+            })
         {
             body.read_sent = true;
         }
         self.pending_arm |= optimistic == Optimistic::Hidden;
-        for (folder, uids) in targets {
+        for (account, folder, uids) in targets {
             let action = if matches!(action, Action::Archive) && self.is_archive(account, &folder) {
                 Action::Move("INBOX".into())
             } else {
@@ -1629,26 +1685,34 @@ impl App {
         }
     }
 
+    fn selected_account_count(&self) -> usize {
+        let accounts: BTreeSet<usize> =
+            self.selected_rows().iter().map(|row| row.account).collect();
+        accounts.len()
+    }
+
     /// The rows an action covers: the marked rows, or else the cursor row.
-    fn selected_rows(&self) -> Vec<&Row> {
+    pub(crate) fn selected_rows(&self) -> Vec<&Row> {
         if self.list.marked.is_empty() {
             self.list.rows.get(self.list.cursor).into_iter().collect()
         } else {
             self.list
                 .rows
                 .iter()
-                .filter(|row| self.list.marked.contains(&row.key()))
+                .filter(|row| self.list.marked.contains(&row.id()))
                 .collect()
         }
     }
 
-    /// The uids each action covers, per folder: the marked rows or the cursor row, a thread row standing for every
-    /// message of its thread in that folder.
-    fn targets(&self, account: usize) -> Vec<(String, Vec<u32>)> {
-        let mut by_folder: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
+    /// The uids each action covers, per account and folder: the marked rows or the cursor row, a thread row standing
+    /// for every message of its thread in that folder.
+    fn targets(&self) -> Vec<(usize, String, Vec<u32>)> {
+        let mut by_folder: BTreeMap<(usize, String), BTreeSet<u32>> = BTreeMap::new();
         for row in self.selected_rows() {
-            let uids = by_folder.entry(row.folder.clone()).or_default();
-            let members = match (&row.thread_id, &self.accounts[account].store) {
+            let uids = by_folder
+                .entry((row.account, row.folder.clone()))
+                .or_default();
+            let members = match (&row.thread_id, &self.accounts[row.account].store) {
                 (Some(thread), Ok(store)) if row.count > 1 => {
                     store.thread_members(&row.folder, thread).ok()
                 }
@@ -1663,27 +1727,25 @@ impl App {
         }
         by_folder
             .into_iter()
-            .map(|(folder, uids)| (folder, uids.into_iter().collect()))
+            .map(|((account, folder), uids)| (account, folder, uids.into_iter().collect()))
             .collect()
     }
 
     fn expand(&mut self) {
-        let Some(account) = self.view_account() else {
-            return;
-        };
         let Some(row) = self.list.rows.get(self.list.cursor) else {
             return;
         };
         let (Some(thread), folder) = (row.thread_id.clone(), row.folder.clone()) else {
             return;
         };
-        if row.count < 2 || self.list.expanded.contains_key(&thread) {
+        let key = (row.account, thread);
+        if row.count < 2 || self.list.expanded.contains_key(&key) {
             return;
         }
-        if let Ok(store) = &self.accounts[account].store
-            && let Ok(members) = store.thread_members(&folder, &thread)
+        if let Ok(store) = &self.accounts[key.0].store
+            && let Ok(members) = store.thread_members(&folder, &key.1)
         {
-            self.list.expanded.insert(thread, members);
+            self.list.expanded.insert(key, members);
             self.rebuild_rows();
         }
     }
@@ -1701,13 +1763,17 @@ impl App {
         let Some(thread) = rows[parent].thread_id.clone() else {
             return;
         };
-        if self.list.expanded.remove(&thread).is_some() {
+        if self
+            .list
+            .expanded
+            .remove(&(rows[parent].account, thread))
+            .is_some()
+        {
             self.list.cursor = parent;
             self.rebuild_rows();
         }
     }
 
-    /// Every folder of every account, then Rules, Activity and Trash, in tree order.
     /// Where a hidden view (in a folded branch) sits in `shown`: at the nearest shown entry above it.
     fn nearest_shown_above(&self, shown: &[View]) -> Option<usize> {
         let all = self.tree_entries(false);
@@ -1718,19 +1784,19 @@ impl App {
             .find_map(|view| shown.iter().position(|v| v == view))
     }
 
+    /// All inboxes when shown, every folder of every account, then Rules, Activity and Trash, in tree order.
     fn tree_entries(&self, skip_collapsed: bool) -> Vec<View> {
-        let mut entries: Vec<View> = self
-            .accounts
-            .iter()
-            .enumerate()
-            .flat_map(|(account, a)| {
-                folders::shown(a, |path| {
-                    skip_collapsed && self.collapsed.contains(&(account, path.to_string()))
-                })
-                .into_iter()
-                .map(move |folder| View::Folder { account, folder })
+        let mut entries: Vec<View> = Vec::new();
+        if self.shows_all_inboxes() {
+            entries.push(View::AllInboxes);
+        }
+        entries.extend(self.accounts.iter().enumerate().flat_map(|(account, a)| {
+            folders::shown(a, |path| {
+                skip_collapsed && self.collapsed.contains(&(account, path.to_string()))
             })
-            .collect();
+            .into_iter()
+            .map(move |folder| View::Folder { account, folder })
+        }));
         entries.extend([View::Rules, View::Activity, View::Trash]);
         entries
     }
@@ -1755,7 +1821,7 @@ impl App {
         };
         let others_focused = self.focus != Focus::Folders;
         match &self.view {
-            View::Folder { .. } => {
+            View::AllInboxes | View::Folder { .. } => {
                 let side = egui::Frame::side_top_panel(ui.style())
                     .inner_margin(theme::PAD)
                     .corner_radius(left);
@@ -1835,7 +1901,7 @@ fn body_text(message: Option<&Message>) -> Option<String> {
 /// A thread row's key is its latest uid, which changes with new mail, so it is matched by thread id. A member and its
 /// thread row share a key, so `member` tells them apart.
 fn same_row(row: &Row, cursor: &Row) -> bool {
-    if row.member != cursor.member {
+    if row.account != cursor.account || row.member != cursor.member {
         return false;
     }
     match (&row.thread_id, &cursor.thread_id) {
@@ -1905,6 +1971,64 @@ mod tests {
     use crate::rules::Action;
     use crate::sync::{Command, Event};
 
+    fn ids(harness: &egui_kittest::Harness<'_, App>) -> Vec<(usize, u32)> {
+        harness
+            .state()
+            .list
+            .rows
+            .iter()
+            .map(|r| (r.account, r.uid))
+            .collect()
+    }
+
+    #[test]
+    fn all_inboxes_lists_every_accounts_inbox_newest_first() {
+        let fx = Fixture::new(&["home", "work"]);
+        fx.add("home", message("INBOX", 1, "oldest"));
+        fx.add("work", message("INBOX", 2, "middle"));
+        fx.add("home", message("INBOX", 3, "newest"));
+        fx.folder("work", "Archive", Some("Archive"));
+        fx.add("work", message("Archive", 4, "not an inbox"));
+        let (mut harness, _wires) = fx.harness();
+        harness.state_mut().select_view(View::AllInboxes);
+        harness.run();
+        assert_eq!(ids(&harness), [(0, 3), (1, 2), (0, 1)]);
+        assert!(harness.query_by_label("3 threads, 0 unread").is_some());
+    }
+
+    #[test]
+    fn all_inboxes_lists_the_other_accounts_when_one_store_is_broken() {
+        let fx = Fixture::new(&["broken", "work"]);
+        fx.add("work", message("INBOX", 1, "still here"));
+        let db = fx.paths.mail_db("broken");
+        std::fs::remove_file(&db).unwrap();
+        std::fs::create_dir_all(&db).unwrap();
+        let (mut harness, _wires) = fx.harness();
+        harness.state_mut().select_view(View::AllInboxes);
+        harness.run();
+        assert_eq!(ids(&harness), [(1, 1)]);
+        assert_eq!(
+            harness.query_all_by_label("All inboxes").count(),
+            2,
+            "the folder pane entry and the list's title"
+        );
+    }
+
+    #[test]
+    fn a_failed_thread_load_keeps_the_rows_already_listed() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "still here"));
+        let (mut harness, _wires) = fx.harness();
+        harness.run();
+        assert_eq!(ids(&harness), [(0, 1)]);
+        let db = rusqlite::Connection::open(fx.paths.mail_db("work")).unwrap();
+        db.execute_batch("ALTER TABLE messages RENAME TO messages_gone")
+            .unwrap();
+        harness.state_mut().reload_view();
+        harness.run();
+        assert_eq!(ids(&harness), [(0, 1)]);
+    }
+
     #[test]
     fn theme_starts_from_config() {
         let fx = Fixture::new(&["work"]);
@@ -1926,6 +2050,51 @@ mod tests {
         for &uid in uids {
             fx.add("work", message("INBOX", uid, &format!("subject {uid}")));
         }
+    }
+
+    #[test]
+    fn slash_in_all_inboxes_searches_every_account_newest_first() {
+        use egui_kittest::kittest::Queryable;
+        let fx = Fixture::new(&["home", "work"]);
+        fx.folder("home", "Archive", Some("Archive"));
+        fx.add("home", message("INBOX", 1, "invoice march"));
+        fx.add("work", message("INBOX", 2, "lunch"));
+        fx.add("home", message("Archive", 3, "invoice april"));
+        fx.add("work", message("INBOX", 4, "invoice may"));
+        let (mut harness, _wires) = fx.harness();
+        harness.state_mut().select_view(View::AllInboxes);
+        harness.run();
+        press(&mut harness, "/");
+        assert!(
+            harness
+                .query_by(|node| node.placeholder() == Some("Search every account"))
+                .is_some()
+        );
+        press(&mut harness, "invoice");
+        let found: Vec<(usize, String, u32)> = harness
+            .state()
+            .list
+            .rows
+            .iter()
+            .map(|r| (r.account, r.folder.clone(), r.uid))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (1, "INBOX".to_string(), 4),
+                (0, "Archive".to_string(), 3),
+                (0, "INBOX".to_string(), 1)
+            ]
+        );
+        assert!(
+            harness
+                .query_by_label_contains("home · [Archive] Sender 3")
+                .is_some()
+        );
+        harness.key_press(egui::Key::Escape);
+        harness.run();
+        assert_eq!(harness.state().view, View::AllInboxes);
+        assert_eq!(ids(&harness), [(1, 4), (1, 2), (0, 1)]);
     }
 
     fn press(harness: &mut egui_kittest::Harness<'_, App>, text: &str) {
@@ -1973,6 +2142,16 @@ mod tests {
         let (mut harness, wires) = fx.harness();
         press(&mut harness, "e");
         assert_eq!(wires.sent(), [apply(&[4, 5], Action::Archive)]);
+    }
+
+    #[test]
+    fn the_same_thread_in_another_account_is_another_row() {
+        let mut home = Row::from_message(0, &message("INBOX", 1, "hi"));
+        home.thread_id = Some("<t@example.com>".into());
+        let mut work = home.clone();
+        work.account = 1;
+        assert!(same_row(&home, &home.clone()));
+        assert!(!same_row(&work, &home));
     }
 
     #[test]
@@ -2444,5 +2623,190 @@ mod tests {
         harness.run();
         assert!(matches!(harness.state().update, UpdateCheck::Off));
         assert!(!fx.paths.update_check().exists());
+    }
+
+    fn command(account: &str, folder: &str, uids: &[u32], action: Action) -> (String, Command) {
+        let apply = Command::Apply {
+            folder: folder.into(),
+            uids: uids.to_vec(),
+            action,
+            by: "gui".into(),
+        };
+        (account.into(), apply)
+    }
+
+    /// home INBOX uid 1, work INBOX uids 1 and 2: rows (work 2), (home 1), (work 1), equal dates in account order.
+    fn all_inboxes(
+        fx: &Fixture,
+    ) -> (
+        egui_kittest::Harness<'static, App>,
+        crate::gui::test_support::Wires,
+    ) {
+        fx.add("home", message("INBOX", 1, "home mail"));
+        fx.add("work", message("INBOX", 1, "work mail"));
+        fx.add("work", message("INBOX", 2, "newer work mail"));
+        let (mut harness, wires) = fx.harness();
+        harness.state_mut().select_view(View::AllInboxes);
+        harness.run();
+        assert_eq!(ids(&harness), [(1, 2), (0, 1), (1, 1)]);
+        (harness, wires)
+    }
+
+    #[test]
+    fn all_inboxes_sends_each_action_to_the_rows_own_account() {
+        let fx = Fixture::new(&["home", "work"]);
+        let (mut harness, wires) = all_inboxes(&fx);
+        press(&mut harness, "j");
+        press(&mut harness, "e");
+        assert_eq!(
+            wires.sent(),
+            [command("home", "INBOX", &[1], Action::Archive)]
+        );
+        assert_eq!(
+            ids(&harness),
+            [(1, 2), (1, 1)],
+            "work's uid 1 is another message and stays"
+        );
+        press(&mut harness, "s");
+        press(&mut harness, "u");
+        assert_eq!(
+            wires.sent(),
+            [
+                command("work", "INBOX", &[1], Action::Flag),
+                command("work", "INBOX", &[1], Action::MarkUnread)
+            ]
+        );
+    }
+
+    #[test]
+    fn marking_in_all_inboxes_marks_only_that_accounts_message() {
+        let fx = Fixture::new(&["home", "work"]);
+        let (mut harness, wires) = all_inboxes(&fx);
+        press(&mut harness, "j");
+        press(&mut harness, "x");
+        assert_eq!(
+            harness.state().list.marked,
+            HashSet::from([(0, ("INBOX".to_string(), 1))])
+        );
+        press(&mut harness, "j");
+        press(&mut harness, "x");
+        press(&mut harness, "#");
+        assert_eq!(
+            wires.sent(),
+            [
+                command("home", "INBOX", &[1], Action::Trash),
+                command("work", "INBOX", &[1], Action::Trash)
+            ]
+        );
+        assert_eq!(ids(&harness), [(1, 2)]);
+    }
+
+    #[test]
+    fn the_reader_opens_and_marks_read_in_the_rows_own_account() {
+        let fx = Fixture::new(&["home", "work"]);
+        let mut unread = message("INBOX", 1, "home mail");
+        unread.flags = String::new();
+        fx.add("home", unread);
+        fx.add("work", message("INBOX", 2, "work mail"));
+        let (mut harness, wires) = fx.harness();
+        harness.state_mut().select_view(View::AllInboxes);
+        harness.run();
+        harness.input_mut().time = Some(10.0);
+        harness.event(egui::Event::Text("j".into()));
+        harness.step();
+        assert_eq!(
+            harness.state().body.as_ref().map(|body| body.account),
+            Some(0)
+        );
+        assert!(harness.query_by_label("Body of 1").is_some());
+        harness.input_mut().time = Some(11.1);
+        harness.step();
+        assert_eq!(
+            wires.sent(),
+            [command("home", "INBOX", &[1], Action::MarkRead)]
+        );
+    }
+
+    #[test]
+    fn the_move_picker_offers_the_rows_own_account_folders() {
+        let fx = Fixture::new(&["home", "work"]);
+        fx.folder("home", "Receipts", None);
+        fx.folder("work", "Archive", Some("Archive"));
+        let (mut harness, wires) = all_inboxes(&fx);
+        press(&mut harness, "j");
+        press(&mut harness, "m");
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        assert_eq!(
+            wires.sent(),
+            [command(
+                "home",
+                "INBOX",
+                &[1],
+                Action::Move("Receipts".into())
+            )]
+        );
+    }
+
+    #[test]
+    fn moving_marked_rows_from_two_accounts_is_refused() {
+        let fx = Fixture::new(&["home", "work"]);
+        let (mut harness, wires) = all_inboxes(&fx);
+        for key in ["x", "j", "x", "m"] {
+            press(&mut harness, key);
+        }
+        assert!(harness.state().move_picker.is_none());
+        assert!(harness.query_by_label(MOVE_ONE_ACCOUNT).is_some());
+        assert!(wires.sent().is_empty());
+        assert_eq!(
+            harness.state().list.marked.len(),
+            2,
+            "the marks stay for the user to narrow"
+        );
+    }
+
+    #[test]
+    fn a_refusal_for_one_account_puts_back_only_its_rows() {
+        let fx = Fixture::new(&["home", "work"]);
+        let (mut harness, wires) = all_inboxes(&fx);
+        for key in ["x", "j", "x", "e"] {
+            press(&mut harness, key);
+        }
+        assert_eq!(wires.sent().len(), 2);
+        assert_eq!(ids(&harness), [(1, 1)]);
+        wires
+            .events
+            .send(Event::CommandFailed {
+                account: "home".into(),
+                request: 0,
+                message: "home is offline (x); retrying at 10:00".into(),
+            })
+            .unwrap();
+        harness.run();
+        assert_eq!(ids(&harness), [(0, 1), (1, 1)]);
+        assert_eq!(harness.state().accounts[1].queued, 1);
+    }
+
+    #[test]
+    fn a_move_is_refused_when_the_selection_grew_to_two_accounts_under_the_open_picker() {
+        let fx = Fixture::new(&["home", "work"]);
+        fx.folder("home", "Receipts", None);
+        let (mut harness, wires) = all_inboxes(&fx);
+        press(&mut harness, "j");
+        press(&mut harness, "m");
+        assert!(harness.state().move_picker.is_some());
+        harness
+            .state_mut()
+            .list
+            .marked
+            .extend([(0, ("INBOX".to_string(), 1)), (1, ("INBOX".to_string(), 1))]);
+        let ctx = harness.ctx.clone();
+        harness
+            .state_mut()
+            .apply(&ctx, UiAction::MoveTo("Receipts".into()));
+        harness.run();
+        assert!(wires.sent().is_empty());
+        assert!(harness.state().move_picker.is_none());
+        assert!(harness.query_by_label(MOVE_ONE_ACCOUNT).is_some());
     }
 }

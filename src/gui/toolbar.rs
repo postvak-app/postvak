@@ -35,7 +35,7 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
                 );
             });
         });
-        let in_folder = matches!(app.view, View::Folder { .. });
+        let lists_mail = app.view.lists_mail();
         let in_archive = matches!(&app.view, View::Folder { account, folder } if app.is_archive(*account, folder));
         let archive = if in_archive {
             (icons::INBOX, "Unarchive message", "Move to inbox · e")
@@ -43,7 +43,7 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
             (icons::ARCHIVE, "Archive message", "Archive · e")
         };
         // Closed picker only: an action would move the cursor, and the picker would then move a different message.
-        let has_row = in_folder && !app.list.rows.is_empty() && app.move_picker.is_none();
+        let has_row = lists_mail && !app.list.rows.is_empty() && app.move_picker.is_none();
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.x = PAD / 2.0;
             for (icon, name, hint, action) in [
@@ -79,7 +79,7 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
             }
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if search_field(ui, in_folder).clicked() {
+            if search_field(ui, lists_mail).clicked() {
                 actions.push(UiAction::StartSearch);
             }
         });
