@@ -182,7 +182,6 @@ mod recording {
         }
 
         /// Gives every message whose flags changed since last looked at a new modseq; returns the folder's highest.
-        /// The fake's own stores call it at once, so a later edit of `mail` that reverts one still gets a new modseq.
         fn refresh_modseqs(&mut self, folder: &str) -> u64 {
             let highest = self.highest_modseq.entry(folder.into()).or_insert(1);
             for env in self.mail.get(folder).into_iter().flatten() {
@@ -344,7 +343,9 @@ mod recording {
                     env.flags.push(f.to_string());
                 }
             }
-            self.refresh_modseqs(&self.selected.clone());
+            // A server bumps the modseq on every STORE, so a later edit that restores the old flags still shows.
+            let folder = self.selected.clone();
+            self.refresh_modseqs(&folder);
             Ok(())
         }
 
@@ -356,7 +357,8 @@ mod recording {
             ));
             let env = self.envelope_mut(uid)?;
             env.flags.retain(|f| !flags.contains(&f.as_str()));
-            self.refresh_modseqs(&self.selected.clone());
+            let folder = self.selected.clone();
+            self.refresh_modseqs(&folder);
             Ok(())
         }
 
@@ -508,6 +510,23 @@ mod tests {
         assert!(ops.mail["INBOX"].is_empty());
         assert_eq!(ops.raw.get(&("Archive".into(), 1)).unwrap(), b"raw");
         assert_eq!(ops.calls.last().unwrap(), "move INBOX 1 -> Archive");
+    }
+
+    #[test]
+    fn fake_store_bumps_the_modseq_even_when_a_later_edit_restores_the_flags() {
+        let mut ops = RecordingOps::new().with_folder("INBOX", None);
+        ops.add_mail("INBOX", 1, 10, "Subject: a\r\n\r\n", None);
+        let before = ops.select("INBOX").unwrap().highest_modseq.unwrap();
+        ops.add_flags(1, &["\\Seen"]).unwrap();
+        ops.mail.get_mut("INBOX").unwrap()[0].flags.clear();
+        ops.select("INBOX").unwrap();
+        let changed: Vec<u32> = ops
+            .fetch_flags(1, Some(before))
+            .unwrap()
+            .iter()
+            .map(|u| u.uid)
+            .collect();
+        assert_eq!(changed, [1]);
     }
 
     #[test]
