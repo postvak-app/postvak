@@ -205,6 +205,21 @@ fn inbox_dark() {
 }
 
 #[test]
+fn all_inboxes() {
+    let fx = mailbox("dark");
+    let (mut harness, _wires) = open(&fx);
+    harness.state_mut().select_view(View::AllInboxes);
+    harness.run();
+    assert!(harness.query_by_label_contains("home · Mum").is_some());
+    assert!(
+        harness
+            .query_by_label_contains("work · Linus Example")
+            .is_some()
+    );
+    snapshot(&mut harness, "gui_all_inboxes");
+}
+
+#[test]
 fn inbox_with_marks_and_an_expanded_thread() {
     let (_fx, mut harness, _wires) = inbox("light");
     for key in ["x", "j", "x"] {

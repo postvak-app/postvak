@@ -221,6 +221,7 @@ where
 
 /// One list row split into what each column draws, cleaned of control characters.
 pub(crate) struct Columns {
+    pub account: Option<String>,
     pub unread: bool,
     pub flagged: bool,
     pub marked: bool,
@@ -241,6 +242,8 @@ const MIN_TEXT: f32 = 16.0;
 pub(crate) const MIN_WIDTH: f32 = 220.0;
 /// How much further a thread member's sender is indented than its thread row's.
 const MEMBER_INDENT: f32 = 12.0;
+/// The account tag's widest, so a long account name leaves room for the sender.
+const TAG: f32 = 80.0;
 /// A row's height: the sender and date, then the subject.
 pub(crate) const LIST_ROW: f32 = 2.0 * ROW;
 
@@ -251,6 +254,7 @@ pub(crate) fn sender_width(total: f32, date: f32) -> f32 {
 
 pub(crate) fn columns<Tz: TimeZone>(
     row: &Row,
+    account: Option<&str>,
     marked: bool,
     recipient: bool,
     in_search: bool,
@@ -269,6 +273,7 @@ where
         subject.push_str(&format!(" ({})", row.count));
     }
     Columns {
+        account: account.map(|name| clean(name, false)),
         unread: row.unread,
         flagged: row.flagged,
         marked,
@@ -282,6 +287,7 @@ where
 /// Unread dot, flag, sender (recipient in Sent and Drafts), subject, thread count and date, on one line.
 pub(crate) fn row_text<Tz: TimeZone>(
     row: &Row,
+    account: Option<&str>,
     recipient: bool,
     in_search: bool,
     now: &DateTime<Tz>,
@@ -296,6 +302,9 @@ where
     }
     if row.member {
         text.push_str("      ");
+    }
+    if let Some(account) = account {
+        text.push_str(&format!("{account} · "));
     }
     if in_search {
         text.push_str(&format!("[{}] ", folders::label(&row.folder)));
@@ -380,15 +389,26 @@ fn draw_row(
     };
     let indent = if c.member { MEMBER_INDENT } else { 0.0 };
     let x = x + indent;
-    if sender_width - indent >= MIN_TEXT {
-        let sender = truncated(
-            &c.who,
-            &sender_font,
-            sender_width - indent,
-            ink(sender_color),
-        );
+    let mut sender_x = x;
+    let tag_width = TAG.min(sender_width - indent);
+    if let Some(account) = &c.account
+        && tag_width >= MIN_TEXT
+    {
+        let small = egui::FontId::new(font.size - 2.0, font.family.clone());
+        let tag = truncated(account, &small, tag_width, ink(palette.muted));
+        let width = tag.size().x;
         painter.galley(
-            egui::pos2(x, first - sender.size().y / 2.0),
+            egui::pos2(x, first - tag.size().y / 2.0),
+            tag,
+            ink(palette.muted),
+        );
+        sender_x += width + PAD;
+    }
+    let sender_room = sender_width - indent - (sender_x - x);
+    if sender_room >= MIN_TEXT {
+        let sender = truncated(&c.who, &sender_font, sender_room, ink(sender_color));
+        painter.galley(
+            egui::pos2(sender_x, first - sender.size().y / 2.0),
             sender,
             ink(sender_color),
         );
@@ -489,9 +509,11 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
                 egui::vec2(ui.available_width(), LIST_ROW),
                 egui::Sense::click(),
             );
-            let c = columns(row, marked, recipient, app.search.is_some(), &now);
+            let account =
+                (app.view == View::AllInboxes).then(|| app.accounts[row.account].name.as_str());
+            let c = columns(row, account, marked, recipient, app.search.is_some(), &now);
             draw_row(ui, rect, &c, selected, response.hovered(), palette, &font);
-            let mut name = row_text(row, recipient, app.search.is_some(), &now);
+            let mut name = row_text(row, account, recipient, app.search.is_some(), &now);
             if marked {
                 name = format!("✔ {name}");
             }
@@ -701,11 +723,47 @@ mod tests {
             .with_ymd_and_hms(2026, 10, 6, 9, 13, 0)
             .unwrap()
             .timestamp();
-        let c = columns(&row, false, false, true, &now);
+        let c = columns(&row, None, false, false, true, &now);
         assert!(c.unread && c.flagged && !c.marked);
         assert_eq!(c.who, "Linus Example");
         assert_eq!(c.subject, "[Inbox] Lunch? (3)");
         assert_eq!(c.date, "09:13");
+    }
+
+    #[test]
+    fn the_account_tag_comes_before_the_sender() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 6, 12, 0, 0).unwrap();
+        let row = Row::from_message(1, &message("INBOX", 1, "hello"));
+        let text = row_text(&row, Some("work"), false, false, &now);
+        assert!(text.starts_with("   work · Sender 1 — hello"), "{text}");
+        assert!(row_text(&row, None, false, false, &now).starts_with("   Sender 1 — hello"));
+        assert_eq!(
+            columns(&row, Some("work"), false, false, false, &now)
+                .account
+                .as_deref(),
+            Some("work")
+        );
+        assert_eq!(columns(&row, None, false, false, false, &now).account, None);
+    }
+
+    #[test]
+    fn rows_name_their_account_in_all_inboxes_only() {
+        let fx = Fixture::new(&["home", "work"]);
+        fx.add("home", message("INBOX", 1, "from home"));
+        let (mut harness, _wires) = fx.harness();
+        assert!(
+            harness
+                .query_by_label_contains("Sender 1 — from home")
+                .is_some()
+        );
+        assert!(harness.query_by_label_contains("home · Sender 1").is_none());
+        harness.state_mut().select_view(View::AllInboxes);
+        harness.run();
+        assert!(
+            harness
+                .query_by_label_contains("home · Sender 1 — from home")
+                .is_some()
+        );
     }
 
     #[test]
@@ -754,7 +812,7 @@ mod tests {
             unread: true,
         };
         let now = Utc.with_ymd_and_hms(2026, 10, 6, 12, 0, 0).unwrap();
-        let text = row_text(&row, false, false, &now);
+        let text = row_text(&row, None, false, false, &now);
         assert!(!text.chars().any(char::is_control), "{text:?}");
         assert!(
             text.contains("[31mred alert") && text.starts_with("• ⚑ "),
@@ -846,6 +904,7 @@ mod tests {
                     let (rect, _) =
                         ui.allocate_exact_size(egui::vec2(width, LIST_ROW), egui::Sense::hover());
                     let c = Columns {
+                        account: Some("work".into()),
                         unread: true,
                         flagged: true,
                         marked: false,
@@ -907,6 +966,7 @@ mod tests {
                 let (rect, _) =
                     ui.allocate_exact_size(egui::vec2(400.0, LIST_ROW), egui::Sense::hover());
                 let c = Columns {
+                    account: None,
                     unread: true,
                     flagged: false,
                     marked: false,
