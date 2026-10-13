@@ -80,23 +80,25 @@ pub(crate) fn show_rules(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
                 ui.heading("Proposals");
             }
             for rule in pending {
-                ui.group(|ui| {
-                    let by = rule.proposed_by.as_deref().unwrap_or_default();
-                    ui.strong(format!(
-                        "{} · proposed by {}",
-                        clean(&rule.name, false),
-                        clean(by, false)
-                    ));
-                    ui.label(egui::RichText::new(clean(&toml_source(rule), true)).monospace());
-                    ui.horizontal(|ui| {
-                        if ui.button("Approve").clicked() {
-                            actions.push(UiAction::ApproveRule(rule.name.clone()));
-                        }
-                        if ui.button("Reject").clicked() {
-                            actions.push(UiAction::RejectRule(rule.name.clone()));
-                        }
+                egui::Frame::group(ui.style())
+                    .inner_margin(theme::PAD)
+                    .show(ui, |ui| {
+                        let by = rule.proposed_by.as_deref().unwrap_or_default();
+                        ui.strong(format!(
+                            "{} · proposed by {}",
+                            clean(&rule.name, false),
+                            clean(by, false)
+                        ));
+                        ui.label(egui::RichText::new(clean(&toml_source(rule), true)).monospace());
+                        ui.horizontal(|ui| {
+                            if ui.button("Approve").clicked() {
+                                actions.push(UiAction::ApproveRule(rule.name.clone()));
+                            }
+                            if ui.button("Reject").clicked() {
+                                actions.push(UiAction::RejectRule(rule.name.clone()));
+                            }
+                        });
                     });
-                });
             }
             ui.heading("Rules");
             if app.rules.rules.is_empty() {

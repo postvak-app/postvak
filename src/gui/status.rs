@@ -97,6 +97,9 @@ fn paint_dot(ui: &mut egui::Ui, dot: Option<Dot>) {
 }
 
 /// The sync button's hover text, with the platform's shortcut.
+/// Pitch of the status lines.
+const LINE: f32 = 20.0;
+
 pub(crate) fn sync_key() -> &'static str {
     if cfg!(target_os = "macos") {
         "Sync now · Cmd+R"
@@ -113,8 +116,10 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
             actions.push(UiAction::SyncNow);
         }
         ui.vertical(|ui| {
-            // Text lines, not rows of controls, though each line can be clicked.
-            ui.spacing_mut().interact_size.y = 0.0;
+            // Text lines, not rows of controls, though each line can be clicked; a pitch of LINE keeps the bar's
+            // height on the grid for any number of accounts.
+            ui.spacing_mut().interact_size.y = LINE;
+            ui.spacing_mut().item_spacing.y = 0.0;
             if let Some(error) = &app.error
                 && ui
                     .add(
