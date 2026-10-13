@@ -112,9 +112,17 @@ Last updated: 2026-10-13. Branch `feat/slint-gui`. Read first: the plan `2026-10
   - Not ported as separate tests, as the snapshots show them: the row-drawing and folder-row geometry tests listed under Tasks 4 and 5, the avatar centring and the search field's height (the std `LineEdit` is `CONTROL` tall, not `ROW`).
 - Follow-up (owner, 2026-10-13): the alignment looks off, not on any raster. A pass over spacing and alignment against the grid comes after Task 13.
 
+- Task 13 (`docs: the Slint GUI`):
+  - `#![allow(dead_code)]` is gone from `gui/mod.rs`; leftovers removed (`UiAction::CloseSource`, `icons::NEWER`, `folders::INDENT`, the Rust copies of the icon bytes, which only the icon tests read now). `theme.rs` is the tests' reference (`cfg_attr(not(test), allow(dead_code))`, with a reason); a new test keeps `theme.slint`'s grid equal to it. The window icon picks the Dock variant on macOS through `Platform.os`.
+  - `tests/architecture.rs` already holds the rule for `bind.rs` and `rows.rs` (every gui file except `mod.rs`, `state.rs` and `test_support.rs`); the rules.toml exception names `state.rs`.
+  - Docs: `docs/src/gui.md` (tray and close-to-background, `window.json`, menu bar, context menus, About), the Slint attribution in `docs/src/index.md` and `README.md`, AGENTS.md's `gui` notes and snapshot step, a note on the egui GUI and HTML specs.
+  - Not done here, needs the owner or CI: the AppImage binary's `NEEDED` list and the macOS DMG (CI builds them only on a tag); by hand: the window on KDE Wayland and macOS, a screen reader on the list, an input method in search, and the macOS Dock click on a hidden window. A local smoke run reached only the startup window, because the scratchpad home's socket path is too long for a Unix socket.
+
 ## Next steps (in order)
 
-1. Task 13 of the plan, one commit each, updating this doc after each.
+1. `/simplify` over the branch (asked by the owner).
+2. The alignment pass (owner, 2026-10-13: "the aligning seems off, not to any raster").
+3. Hand checks listed under Task 13, then review and merge. of the plan, one commit each, updating this doc after each.
 
 ## Notes for whoever resumes
 

@@ -7,9 +7,7 @@
 //! reference.
 use std::path::PathBuf;
 
-use slint::ComponentHandle;
-
-use super::fixture::{AT, mail};
+use super::fixture::AT;
 use super::state::{Focus, View};
 use super::test_support::{Fixture, Open, Wires, message};
 use super::theme::{GLYPH, INSET, PAD, ROW};
@@ -223,6 +221,10 @@ fn trash() {
 #[cfg(feature = "html")]
 fn newsletter(theme: &str, width: f32) -> (Fixture, Open, Wires) {
     use std::time::{Duration, Instant};
+
+    use slint::ComponentHandle;
+
+    use super::fixture::mail;
     let fx = Fixture::mailbox(theme);
     let news = mail(
         99,

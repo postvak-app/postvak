@@ -203,7 +203,6 @@ pub(crate) enum UiAction {
     Act(Action),
     ApproveRule(String),
     Collapse,
-    CloseSource,
     Escape,
     Expand,
     /// The pointer over the HTML page, in page points, or `None` once it left.
@@ -726,11 +725,6 @@ impl App {
                 self.edit_rules(|_| {
                     rule_file::edit::approve_from_now(&paths, &accounts, &name, crate::time::now())
                 });
-            }
-            UiAction::CloseSource => {
-                if let Some(body) = &mut self.body {
-                    body.source = None;
-                }
             }
             UiAction::Collapse => self.collapse(),
             UiAction::HtmlHover(at) => self.html_hover(at),

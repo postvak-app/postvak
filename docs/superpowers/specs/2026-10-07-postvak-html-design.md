@@ -2,6 +2,9 @@
 
 Date: 2026-10-07. Status: draft for review. Builds on `2026-10-06-postvak-gui-design.md` §6 (body panel) and replaces its §11 entry "HTML bodies through `wry`". Core §17's constraints (no bodies in logs, no `unwrap` outside tests) apply.
 
+
+> **Toolkit (2026-10-13):** the window is now built with Slint and egui is gone; see `2026-10-13-postvak-slint-gui-design.md`. The behaviour here is still the target; the egui details are history.
+
 ## 1. Purpose and scope
 
 HTML-only and multipart mail render as their author laid them out, inside the egui body panel, with no remote content and no scripts.

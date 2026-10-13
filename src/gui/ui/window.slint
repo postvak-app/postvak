@@ -188,7 +188,8 @@ export component MailWindow inherits Window {
     }
 
     title: "Postvak";
-    icon: @image-url("../../../assets/icon.png");
+    // macOS shows it in the Dock, which expects Apple's margin.
+    icon: Platform.os == OperatingSystemType.macos ? @image-url("../../../assets/macos.iconset/icon_512x512@2x.png") : @image-url("../../../assets/icon.png");
     preferred-width: 1280px;
     preferred-height: 800px;
     background: Theme.frame.background;

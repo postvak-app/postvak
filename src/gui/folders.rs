@@ -7,9 +7,6 @@ use crate::store::Folder;
 use super::state::{Account, App, FolderRow, UiAction, View};
 use super::{icons, list, numbers, status};
 
-/// How far each tree level is indented, in points.
-pub(crate) const INDENT: f32 = 16.0;
-
 /// A line of the folder pane's scrolling part, top to bottom.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Entry {

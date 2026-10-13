@@ -45,4 +45,4 @@ Deleted mail is kept as `.eml` for 30 days: `postvak trash list` and `postvak tr
 - Agents over MCP get only the scopes you grant, so it stays privacy-friendly: by default they see headers but no message bodies, and propose rules instead of acting on mail.
 - Passwords stay in the macOS Keychain or the Secret Service, or come from a command such as `pass`.
 
-Postvak is licensed under MIT or Apache-2.0, at your option. The mail window's HTML view includes Stylo, the CSS engine from Servo and Firefox, which is under MPL-2.0.
+Postvak is licensed under MIT or Apache-2.0, at your option. The mail window's HTML view includes Stylo, the CSS engine from Servo and Firefox, which is under MPL-2.0. The mail window is made with [Slint](https://slint.dev/) under its royalty-free licence; Help ▸ About Postvak shows its attribution.

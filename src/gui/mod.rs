@@ -1,6 +1,4 @@
 //! The mail window: folders, threads and the message body over the local store, as a client of the daemon that syncs.
-// The state and text functions wait for the views that use them; removed once every view is drawn.
-#![allow(dead_code)]
 mod bind;
 pub mod body;
 #[cfg(any(test, feature = "testing"))]
@@ -49,15 +47,6 @@ use crate::config::Config;
 use crate::paths::Paths;
 
 use state::App;
-
-/// The window icon: `assets/icon.svg` rendered to PNG by `packaging/icons.sh`.
-pub(crate) const ICON: &[u8] = include_bytes!("../../assets/icon.png");
-
-/// macOS shows the window icon in the Dock, which expects Apple's grid: the tile at 824/1024 of the canvas.
-#[cfg(target_os = "macos")]
-const WINDOW_ICON: &[u8] = include_bytes!("../../assets/macos.iconset/icon_512x512@2x.png");
-#[cfg(not(target_os = "macos"))]
-const WINDOW_ICON: &[u8] = ICON;
 
 /// The Wayland app id and X11 WM class; the Linux desktop entry and icons are named after it, so the compositor can
 /// match the window to them.
@@ -318,6 +307,13 @@ fn startup_window(
 
 #[cfg(test)]
 mod tests {
+    /// The window and tray icon (`window.slint`, `tray.slint`): `assets/icon.svg` rendered to PNG by
+    /// `packaging/icons.sh`.
+    const ICON: &[u8] = include_bytes!("../../assets/icon.png");
+
+    /// The window icon on macOS, where the Dock expects Apple's grid: the tile at 824/1024 of the canvas.
+    const MACOS_ICON: &[u8] = include_bytes!("../../assets/macos.iconset/icon_512x512@2x.png");
+
     /// The image's width, height and RGBA pixels.
     fn decode(bytes: &[u8]) -> (u32, u32, Vec<u8>) {
         let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
@@ -331,23 +327,21 @@ mod tests {
 
     #[test]
     fn the_icon_is_a_square_png_with_transparent_corners() {
-        let (width, height, rgba) = decode(super::ICON);
+        let (width, height, rgba) = decode(ICON);
         assert_eq!((width, height), (512, 512));
         assert_eq!(rgba[3], 0, "the top-left pixel must be transparent");
     }
 
     #[test]
-    fn the_window_icon_is_a_valid_png() {
-        let (width, height, rgba) = decode(super::WINDOW_ICON);
+    fn the_macos_window_icon_has_apples_margin() {
+        let (width, height, rgba) = decode(MACOS_ICON);
         assert_eq!(width, height);
-        if cfg!(target_os = "macos") {
-            let left_middle = (height / 2 * width + width / 20) as usize * 4;
-            assert_eq!(
-                rgba[left_middle + 3],
-                0,
-                "the Dock icon needs Apple's transparent margin"
-            );
-        }
+        let left_middle = (height / 2 * width + width / 20) as usize * 4;
+        assert_eq!(
+            rgba[left_middle + 3],
+            0,
+            "the Dock icon needs Apple's transparent margin"
+        );
     }
 
     use std::cell::RefCell;

@@ -34,6 +34,7 @@ pub(crate) struct Press {
 }
 
 impl Press {
+    #[cfg(test)]
     pub(crate) fn text(text: &str) -> Press {
         Press {
             key: Key::Text(text.into()),
@@ -42,6 +43,7 @@ impl Press {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn named(named: Named) -> Press {
         Press {
             key: Key::Named(named),

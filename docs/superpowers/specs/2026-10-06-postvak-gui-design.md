@@ -2,6 +2,9 @@
 
 Date: 2026-10-06. Status: draft for review. Phase 2 of `2026-10-06-postvak-core-design.md`; that spec's §17 constraints apply and are restated where this design builds on them.
 
+
+> **Toolkit (2026-10-13):** the window is now built with Slint and egui is gone; see `2026-10-13-postvak-slint-gui-design.md`. The behaviour here is still the target; the egui details are history.
+
 ## 1. Purpose and scope
 
 A daily mail reader: keyboard-driven triage of the local store, with the sync loop running inside the GUI process. Rule management is secondary and minimal. Sending stays in another client until phase 4.

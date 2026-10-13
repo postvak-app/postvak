@@ -1,5 +1,8 @@
 //! Ossenbloed: per mode a pane palette and an oxblood chrome palette (toolbar, folders, status bar) around it, and the
-//! grid every size comes from. `ui/theme.slint` holds the same values for the window; a test keeps the two equal.
+//! grid every size comes from. The window draws from `ui/theme.slint`; these are the reference its tests check it and
+//! the contrast against, and the sizes the Rust side needs.
+// Most of it is read by the tests only.
+#![cfg_attr(not(test), allow(dead_code))]
 
 /// A colour as 0xRRGGBB.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -189,6 +192,22 @@ mod tests {
             luminance(a).min(luminance(b)),
         );
         (light + 0.05) / (dark + 0.05)
+    }
+
+    #[test]
+    fn the_slint_theme_has_the_same_grid() {
+        let slint = include_str!("ui/theme.slint");
+        for (name, value) in [
+            ("control", CONTROL),
+            ("icon", ICON),
+            ("pad", PAD),
+            ("radius", RADIUS),
+            ("row", ROW),
+            ("top-bar", TOP_BAR),
+        ] {
+            let line = format!("out property <length> {name}: {value}px;");
+            assert!(slint.contains(&line), "theme.slint lacks {line}");
+        }
     }
 
     #[test]

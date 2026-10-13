@@ -255,7 +255,7 @@ mod tests {
     use slint::ComponentHandle;
 
     use crate::gui::state::{UiAction, View};
-    use crate::gui::test_support::{Driver, Fixture, Open, Wires, launched, message};
+    use crate::gui::test_support::{Driver, Fixture, Wires, launched, message};
     use crate::rules::Action;
     use crate::store::Message;
     use crate::sync::{Command, Event};
@@ -444,7 +444,8 @@ mod tests {
         driver.app.body.as_ref().and_then(|b| b.text.clone())
     }
 
-    fn shows_html(open: &Open) -> bool {
+    #[cfg(feature = "html")]
+    fn shows_html(open: &crate::gui::test_support::Open) -> bool {
         open.with(|live| live.app.body.as_ref().is_some_and(|b| b.shows_html()))
     }
 

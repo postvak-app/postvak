@@ -41,7 +41,7 @@ component FolderRow inherits Rectangle {
     callback caret-clicked();
 
     property <bool> pill: item.selected && item.count != "";
-    property <length> indent: item.depth * 16px;
+    property <length> indent: item.depth * Theme.inset;
 
     height: Theme.row;
     border-radius: Theme.pad / 2;
