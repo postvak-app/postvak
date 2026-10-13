@@ -12,6 +12,7 @@ mod keys;
 pub mod list;
 mod menu;
 mod numbers;
+mod persist;
 mod rows;
 mod rules;
 mod startup;
@@ -221,6 +222,8 @@ fn open(paths: Paths) -> Result<()> {
     }
     let (client, events, states) = state::connect(&paths, Box::new(wake))?;
     let window = ui::MailWindow::new().context("could not open the window")?;
+    let layout = persist::path(&paths);
+    restore(&window, persist::load(&layout));
     let mut app = App::new(&config, paths, client, events, states);
     app.wake = std::sync::Arc::new(wake);
     window.show().context("could not show the window")?;
@@ -233,8 +236,45 @@ fn open(paths: Paths) -> Result<()> {
     let clock = Box::new(move || started.elapsed().as_secs_f64());
     Live::install(app, window, tray, clock);
     let ran = slint::run_event_loop();
-    LIVE.with_borrow_mut(Option::take);
+    if let Some(live) = LIVE.with_borrow_mut(Option::take)
+        && let Err(e) = persist::save(&layout, &remember(&live.window))
+    {
+        log::warn!("could not save the window's layout: {e:#}");
+    }
     ran.context("the window failed")
+}
+
+/// Sizes the window and its panes as they were last time.
+fn restore(window: &ui::MailWindow, layout: Option<persist::Layout>) {
+    let Some(layout) = layout else { return };
+    // Small enough for any screen, large enough to use.
+    let (width, height) = (layout.width.max(400.0), layout.height.max(300.0));
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(width, height));
+    if let Some((x, y)) = layout.position {
+        window
+            .window()
+            .set_position(slint::PhysicalPosition::new(x, y));
+    }
+    window.set_folders_width(layout.folders_width.max(theme::CONTROL));
+    window.set_list_width(layout.list_width.max(list::MIN_WIDTH));
+}
+
+/// The window's layout, to be restored next time.
+fn remember(window: &ui::MailWindow) -> persist::Layout {
+    let size = window
+        .window()
+        .size()
+        .to_logical(window.window().scale_factor());
+    let position = window.window().position();
+    persist::Layout {
+        width: size.width,
+        height: size.height,
+        position: (position.x != 0 || position.y != 0).then_some((position.x, position.y)),
+        folders_width: window.get_folders_width(),
+        list_width: window.get_list_width(),
+    }
 }
 
 /// Shows why the mail window could not start until the user closes it, then hands the error back for stderr and the
@@ -424,6 +464,41 @@ mod tests {
         assert_eq!(window.get_focused_pane(), Pane::Folders);
         open.press("tab");
         assert_eq!(window.get_focused_pane(), Pane::List);
+    }
+
+    #[test]
+    fn the_window_comes_back_as_it_was_left() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        let window = open.window();
+        window
+            .window()
+            .set_size(slint::LogicalSize::new(1100.0, 700.0));
+        window.set_folders_width(260.0);
+        window.set_list_width(420.0);
+        let layout = super::remember(&window);
+        assert_eq!(
+            (
+                layout.width,
+                layout.height,
+                layout.folders_width,
+                layout.list_width
+            ),
+            (1100.0, 700.0, 260.0, 420.0)
+        );
+        drop(open);
+        let (open, _wires) = fx.window();
+        let window = open.window();
+        super::restore(&window, Some(layout));
+        assert_eq!(
+            (window.get_folders_width(), window.get_list_width()),
+            (260.0, 420.0)
+        );
+        let size = window
+            .window()
+            .size()
+            .to_logical(window.window().scale_factor());
+        assert_eq!((size.width, size.height), (1100.0, 700.0));
     }
 
     #[test]

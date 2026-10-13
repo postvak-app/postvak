@@ -98,9 +98,15 @@ Last updated: 2026-10-13. Branch `feat/slint-gui`. Read first: the plan `2026-10
   - `Live.tray` is None in tests (creating one would put an icon in the test machine's menu bar).
   - Not checked yet: a hidden window on macOS is not shown again by a Dock click (only the tray's Open Postvak); look at it during the hand checks.
 
+- Fix: `cargo check --no-default-features --all-targets` failed on Linux CI, because the testing backend (a dev-dependency) builds Slint's fontique without the `gui` feature, and it then linked fontconfig. `i-slint-common` with `fontconfig-dlopen` is a Linux dev-dependency too.
+- Task 11 (`feat(gui): remember window and pane sizes`):
+  - `persist.rs`: `Layout { width, height, position, folders_width, list_width }` as `state_dir/window.json`; `load` ignores a missing or unreadable file (logging why), `save` writes atomically.
+  - `mod.rs`: `restore` before the window shows (sizes clamped to at least 400×300, the list to `list::MIN_WIDTH`), `remember` after the event loop ends, so also after Quit with the window hidden. The position is kept only when the platform reports one (Wayland reports none). The startup error window keeps nothing.
+  - `docs/src/gui.md` still names `window.ron`; Task 13 updates it.
+
 ## Next steps (in order)
 
-1. Tasks 11–13 of the plan, one commit each, updating this doc after each.
+1. Tasks 12–13 of the plan, one commit each, updating this doc after each.
 
 ## Notes for whoever resumes
 
