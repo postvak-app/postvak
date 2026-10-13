@@ -26,6 +26,10 @@ use super::status;
 use super::theme;
 use super::toolbar;
 
+/// The status line when `m` is pressed with marked rows from more than one account.
+pub(crate) const MOVE_ONE_ACCOUNT: &str =
+    "move works on one account at a time; mark messages from one account";
+
 /// The status line while the daemon is gone.
 pub(crate) const DAEMON_LOST: &str = "background sync stopped — reconnecting";
 
@@ -816,8 +820,12 @@ impl App {
                 }
             }
             UiAction::OpenMovePicker => {
-                if self.view_account().is_some() && !self.list.rows.is_empty() {
-                    self.move_picker = Some(String::new());
+                let accounts: BTreeSet<usize> =
+                    self.selected_rows().iter().map(|row| row.account).collect();
+                match accounts.len() {
+                    0 => {}
+                    1 => self.move_picker = Some(String::new()),
+                    _ => self.note_error(None, MOVE_ONE_ACCOUNT.into()),
                 }
             }
             UiAction::OpenSource => self.open_source(),
@@ -2495,5 +2503,167 @@ mod tests {
         harness.run();
         assert!(matches!(harness.state().update, UpdateCheck::Off));
         assert!(!fx.paths.update_check().exists());
+    }
+
+    fn command(account: &str, folder: &str, uids: &[u32], action: Action) -> (String, Command) {
+        let apply = Command::Apply {
+            folder: folder.into(),
+            uids: uids.to_vec(),
+            action,
+            by: "gui".into(),
+        };
+        (account.into(), apply)
+    }
+
+    /// home INBOX uid 1, work INBOX uids 1 and 2: rows (work 2), (home 1), (work 1), equal dates in account order.
+    fn all_inboxes(
+        fx: &Fixture,
+    ) -> (
+        egui_kittest::Harness<'static, App>,
+        crate::gui::test_support::Wires,
+    ) {
+        fx.add("home", message("INBOX", 1, "home mail"));
+        fx.add("work", message("INBOX", 1, "work mail"));
+        fx.add("work", message("INBOX", 2, "newer work mail"));
+        let (mut harness, wires) = fx.harness();
+        harness.state_mut().select_view(View::AllInboxes);
+        harness.run();
+        assert_eq!(ids(&harness), [(1, 2), (0, 1), (1, 1)]);
+        (harness, wires)
+    }
+
+    #[test]
+    fn all_inboxes_sends_each_action_to_the_rows_own_account() {
+        let fx = Fixture::new(&["home", "work"]);
+        let (mut harness, wires) = all_inboxes(&fx);
+        press(&mut harness, "j");
+        press(&mut harness, "e");
+        assert_eq!(
+            wires.sent(),
+            [command("home", "INBOX", &[1], Action::Archive)]
+        );
+        assert_eq!(
+            ids(&harness),
+            [(1, 2), (1, 1)],
+            "work's uid 1 is another message and stays"
+        );
+        press(&mut harness, "s");
+        press(&mut harness, "u");
+        assert_eq!(
+            wires.sent(),
+            [
+                command("work", "INBOX", &[1], Action::Flag),
+                command("work", "INBOX", &[1], Action::MarkUnread)
+            ]
+        );
+    }
+
+    #[test]
+    fn marking_in_all_inboxes_marks_only_that_accounts_message() {
+        let fx = Fixture::new(&["home", "work"]);
+        let (mut harness, wires) = all_inboxes(&fx);
+        press(&mut harness, "j");
+        press(&mut harness, "x");
+        assert_eq!(
+            harness.state().list.marked,
+            HashSet::from([(0, ("INBOX".to_string(), 1))])
+        );
+        press(&mut harness, "j");
+        press(&mut harness, "x");
+        press(&mut harness, "#");
+        assert_eq!(
+            wires.sent(),
+            [
+                command("home", "INBOX", &[1], Action::Trash),
+                command("work", "INBOX", &[1], Action::Trash)
+            ]
+        );
+        assert_eq!(ids(&harness), [(1, 2)]);
+    }
+
+    #[test]
+    fn the_reader_opens_and_marks_read_in_the_rows_own_account() {
+        let fx = Fixture::new(&["home", "work"]);
+        let mut unread = message("INBOX", 1, "home mail");
+        unread.flags = String::new();
+        fx.add("home", unread);
+        fx.add("work", message("INBOX", 2, "work mail"));
+        let (mut harness, wires) = fx.harness();
+        harness.state_mut().select_view(View::AllInboxes);
+        harness.run();
+        harness.input_mut().time = Some(10.0);
+        harness.event(egui::Event::Text("j".into()));
+        harness.step();
+        assert_eq!(
+            harness.state().body.as_ref().map(|body| body.account),
+            Some(0)
+        );
+        assert!(harness.query_by_label("Body of 1").is_some());
+        harness.input_mut().time = Some(11.1);
+        harness.step();
+        assert_eq!(
+            wires.sent(),
+            [command("home", "INBOX", &[1], Action::MarkRead)]
+        );
+    }
+
+    #[test]
+    fn the_move_picker_offers_the_rows_own_account_folders() {
+        let fx = Fixture::new(&["home", "work"]);
+        fx.folder("home", "Receipts", None);
+        fx.folder("work", "Archive", Some("Archive"));
+        let (mut harness, wires) = all_inboxes(&fx);
+        press(&mut harness, "j");
+        press(&mut harness, "m");
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        assert_eq!(
+            wires.sent(),
+            [command(
+                "home",
+                "INBOX",
+                &[1],
+                Action::Move("Receipts".into())
+            )]
+        );
+    }
+
+    #[test]
+    fn moving_marked_rows_from_two_accounts_is_refused() {
+        let fx = Fixture::new(&["home", "work"]);
+        let (mut harness, wires) = all_inboxes(&fx);
+        for key in ["x", "j", "x", "m"] {
+            press(&mut harness, key);
+        }
+        assert!(harness.state().move_picker.is_none());
+        assert!(harness.query_by_label(MOVE_ONE_ACCOUNT).is_some());
+        assert!(wires.sent().is_empty());
+        assert_eq!(
+            harness.state().list.marked.len(),
+            2,
+            "the marks stay for the user to narrow"
+        );
+    }
+
+    #[test]
+    fn a_refusal_for_one_account_puts_back_only_its_rows() {
+        let fx = Fixture::new(&["home", "work"]);
+        let (mut harness, wires) = all_inboxes(&fx);
+        for key in ["x", "j", "x", "e"] {
+            press(&mut harness, key);
+        }
+        assert_eq!(wires.sent().len(), 2);
+        assert_eq!(ids(&harness), [(1, 1)]);
+        wires
+            .events
+            .send(Event::CommandFailed {
+                account: "home".into(),
+                request: 0,
+                message: "home is offline (x); retrying at 10:00".into(),
+            })
+            .unwrap();
+        harness.run();
+        assert_eq!(ids(&harness), [(0, 1), (1, 1)]);
+        assert_eq!(harness.state().accounts[1].queued, 1);
     }
 }

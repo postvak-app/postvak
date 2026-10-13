@@ -31,6 +31,8 @@ Each attachment of the open message has a Save button, which saves it to your Do
 
 Actions apply to the selection when there is one, else to the current row; on a thread row they apply to the whole thread in that folder. A message you open, with the keys or a click, is marked read after its text has been on screen for a second; the one a folder opens on stays unread.
 
+In All inboxes each action goes to the message's own account. `m` offers the folders of that account; marked messages from more than one account cannot be moved together.
+
 ## Folders
 
 With two or more accounts, **All inboxes** at the top of the folder pane lists the INBOX of every account in one list, newest first; its count is the unread mail in all of them. Actions, the reader and `m` work on each message in its own account.

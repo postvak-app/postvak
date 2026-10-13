@@ -555,16 +555,16 @@ fn title(ui: &mut egui::Ui, name: &str, rows: &[Row]) {
 /// message is in: the view's, or in search the hit's own.
 pub(crate) fn show_move_picker(app: &App, ctx: &egui::Context) -> Vec<UiAction> {
     let mut actions = Vec::new();
-    let (Some(filter), View::Folder { account, folder }) = (&app.move_picker, &app.view) else {
+    let (Some(filter), Some(row)) = (&app.move_picker, app.selected_rows().first().copied()) else {
         return actions;
     };
     let folder = app
         .list
         .rows
         .get(app.list.cursor)
-        .map_or(folder, |row| &row.folder);
+        .map_or(&row.folder, |cursor| &cursor.folder);
     let needle = filter.to_lowercase();
-    let names: Vec<&str> = app.accounts[*account]
+    let names: Vec<&str> = app.accounts[row.account]
         .folders
         .iter()
         .map(|f| f.name.as_str())
