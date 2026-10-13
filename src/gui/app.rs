@@ -177,9 +177,21 @@ pub(crate) struct FolderRow {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum View {
     Activity,
-    Folder { account: usize, folder: String },
+    /// Every account's INBOX in one list.
+    AllInboxes,
+    Folder {
+        account: usize,
+        folder: String,
+    },
     Rules,
     Trash,
+}
+
+impl View {
+    /// The views with a message list and a reader.
+    pub(crate) fn lists_mail(&self) -> bool {
+        matches!(self, View::AllInboxes | View::Folder { .. })
+    }
 }
 
 /// What a view asks for; `App::apply` carries it out after the frame.
@@ -703,7 +715,9 @@ impl App {
     /// The account's mail changed: reload its unread counts, and the shown rows at the start of the next frame.
     pub(crate) fn refresh(&mut self, index: usize) {
         self.accounts[index].reload_folders();
-        if self.view_account() == Some(index) || matches!(self.view, View::Activity | View::Trash) {
+        if self.view_account() == Some(index)
+            || matches!(self.view, View::AllInboxes | View::Activity | View::Trash)
+        {
             self.view_dirty = true;
         }
     }
@@ -1016,10 +1030,24 @@ impl App {
         })
     }
 
+    /// With one account, All inboxes would only repeat its INBOX.
+    pub(crate) fn shows_all_inboxes(&self) -> bool {
+        self.accounts.len() > 1
+    }
+
+    /// The folder the list shows: the view's own, or INBOX in every account.
+    fn list_folder(&self) -> Option<&str> {
+        match &self.view {
+            View::AllInboxes => Some(list::INBOX),
+            View::Folder { folder, .. } => Some(folder.as_str()),
+            _ => None,
+        }
+    }
+
     /// Loads the shown view's rows from the store. Runs on view changes and when events mark the view dirty, never
     /// per frame: `thread_summaries` scans the folder.
     pub(crate) fn reload_view(&mut self) {
-        let View::Folder { account, folder } = &self.view else {
+        let Some(folder) = self.list_folder().map(str::to_string) else {
             match self.view {
                 View::Activity => self.activity_log = rules::activity_log(&self.accounts),
                 View::Trash => self.trash = rules::trash_rows(&self.accounts, &self.paths),
@@ -1027,43 +1055,55 @@ impl App {
             }
             return;
         };
-        let (account, folder) = (*account, folder.clone());
-        let Ok(store) = &self.accounts[account].store else {
-            self.list.threads.clear();
-            self.list.expanded.clear();
-            self.list.hits.clear();
-            self.rebuild_rows();
-            return;
+        let covered: Vec<usize> = match self.view {
+            View::Folder { account, .. } => vec![account],
+            _ => (0..self.accounts.len()).collect(),
         };
+        // A store that failed to open shows its error in the folder pane and adds no rows.
+        let stores: Vec<(usize, &Store)> = covered
+            .into_iter()
+            .filter_map(|index| {
+                self.accounts[index]
+                    .store
+                    .as_ref()
+                    .ok()
+                    .map(|store| (index, store))
+            })
+            .collect();
         if let Some(query) = &self.search {
-            self.list.hits = match store.search(query, None, list::SEARCH_LIMIT) {
-                Ok(found) => found
+            let mut hits = Vec::new();
+            for &(account, store) in &stores {
+                match store.search(query, None, list::SEARCH_LIMIT) {
+                    Ok(found) => hits.extend(found.iter().map(|m| Row::from_message(account, m))),
+                    Err(e) => log::warn!("[{}] search failed: {e}", self.accounts[account].name),
+                }
+            }
+            self.list.hits = hits;
+        } else {
+            let mut found = Vec::new();
+            for &(account, store) in &stores {
+                match store.thread_summaries(&folder, THREAD_LIMIT) {
+                    Ok(threads) => found.push((account, threads)),
+                    Err(e) => log::warn!(
+                        "[{}] {folder}: could not load threads: {e}",
+                        self.accounts[account].name
+                    ),
+                }
+            }
+            self.list.threads = list::merge_threads(found, THREAD_LIMIT);
+            let expanded: Vec<(usize, String)> = self.list.expanded.keys().cloned().collect();
+            for key in expanded {
+                let members = stores
                     .iter()
-                    .map(|m| Row::from_message(account, m))
-                    .collect(),
-                Err(e) => {
-                    log::warn!("[{}] search failed: {e}", self.accounts[account].name);
-                    Vec::new()
-                }
-            };
-            self.rebuild_rows();
-            return;
-        }
-        match store.thread_summaries(&folder, THREAD_LIMIT) {
-            Ok(threads) => self.list.threads = threads.into_iter().map(|t| (account, t)).collect(),
-            Err(e) => log::warn!(
-                "[{}] {folder}: could not load threads: {e}",
-                self.accounts[account].name
-            ),
-        }
-        let expanded: Vec<(usize, String)> = self.list.expanded.keys().cloned().collect();
-        for key in expanded {
-            match store.thread_members(&folder, &key.1) {
-                Ok(members) if members.len() > 1 => {
-                    self.list.expanded.insert(key, members);
-                }
-                _ => {
-                    self.list.expanded.remove(&key);
+                    .find(|(account, _)| *account == key.0)
+                    .and_then(|(_, store)| store.thread_members(&folder, &key.1).ok());
+                match members {
+                    Some(members) if members.len() > 1 => {
+                        self.list.expanded.insert(key, members);
+                    }
+                    _ => {
+                        self.list.expanded.remove(&key);
+                    }
                 }
             }
         }
@@ -1444,14 +1484,14 @@ impl App {
     /// Rows from the cached threads, without a store query. The cursor stays on its message; when that row is gone it
     /// keeps its index, so the next row is selected.
     pub(crate) fn rebuild_rows(&mut self) {
-        let View::Folder { folder, .. } = &self.view else {
+        let Some(folder) = self.list_folder().map(str::to_string) else {
             return;
         };
         let current = self.list.rows.get(self.list.cursor).cloned();
         let mut rows = if self.search.is_some() {
             self.list.hits.clone()
         } else {
-            list::build_rows(folder, &self.list.threads, &self.list.expanded)
+            list::build_rows(&folder, &self.list.threads, &self.list.expanded)
         };
         let pending: Vec<_> = self.accounts.iter().map(|a| &a.pending).collect();
         list::apply_pending(&mut rows, &pending);
@@ -1666,7 +1706,6 @@ impl App {
         }
     }
 
-    /// Every folder of every account, then Rules, Activity and Trash, in tree order.
     /// Where a hidden view (in a folded branch) sits in `shown`: at the nearest shown entry above it.
     fn nearest_shown_above(&self, shown: &[View]) -> Option<usize> {
         let all = self.tree_entries(false);
@@ -1677,19 +1716,19 @@ impl App {
             .find_map(|view| shown.iter().position(|v| v == view))
     }
 
+    /// All inboxes when shown, every folder of every account, then Rules, Activity and Trash, in tree order.
     fn tree_entries(&self, skip_collapsed: bool) -> Vec<View> {
-        let mut entries: Vec<View> = self
-            .accounts
-            .iter()
-            .enumerate()
-            .flat_map(|(account, a)| {
-                folders::shown(a, |path| {
-                    skip_collapsed && self.collapsed.contains(&(account, path.to_string()))
-                })
-                .into_iter()
-                .map(move |folder| View::Folder { account, folder })
+        let mut entries: Vec<View> = Vec::new();
+        if self.shows_all_inboxes() {
+            entries.push(View::AllInboxes);
+        }
+        entries.extend(self.accounts.iter().enumerate().flat_map(|(account, a)| {
+            folders::shown(a, |path| {
+                skip_collapsed && self.collapsed.contains(&(account, path.to_string()))
             })
-            .collect();
+            .into_iter()
+            .map(move |folder| View::Folder { account, folder })
+        }));
         entries.extend([View::Rules, View::Activity, View::Trash]);
         entries
     }
@@ -1714,7 +1753,7 @@ impl App {
         };
         let others_focused = self.focus != Focus::Folders;
         match &self.view {
-            View::Folder { .. } => {
+            View::AllInboxes | View::Folder { .. } => {
                 let side = egui::Frame::side_top_panel(ui.style())
                     .inner_margin(theme::PAD)
                     .corner_radius(left);
@@ -1863,6 +1902,49 @@ mod tests {
     use crate::gui::test_support::{Fixture, message};
     use crate::rules::Action;
     use crate::sync::{Command, Event};
+
+    fn ids(harness: &egui_kittest::Harness<'_, App>) -> Vec<(usize, u32)> {
+        harness
+            .state()
+            .list
+            .rows
+            .iter()
+            .map(|r| (r.account, r.uid))
+            .collect()
+    }
+
+    #[test]
+    fn all_inboxes_lists_every_accounts_inbox_newest_first() {
+        let fx = Fixture::new(&["home", "work"]);
+        fx.add("home", message("INBOX", 1, "oldest"));
+        fx.add("work", message("INBOX", 2, "middle"));
+        fx.add("home", message("INBOX", 3, "newest"));
+        fx.folder("work", "Archive", Some("Archive"));
+        fx.add("work", message("Archive", 4, "not an inbox"));
+        let (mut harness, _wires) = fx.harness();
+        harness.state_mut().select_view(View::AllInboxes);
+        harness.run();
+        assert_eq!(ids(&harness), [(0, 3), (1, 2), (0, 1)]);
+        assert!(harness.query_by_label("3 threads, 0 unread").is_some());
+    }
+
+    #[test]
+    fn all_inboxes_lists_the_other_accounts_when_one_store_is_broken() {
+        let fx = Fixture::new(&["broken", "work"]);
+        fx.add("work", message("INBOX", 1, "still here"));
+        let db = fx.paths.mail_db("broken");
+        std::fs::remove_file(&db).unwrap();
+        std::fs::create_dir_all(&db).unwrap();
+        let (mut harness, _wires) = fx.harness();
+        harness.state_mut().select_view(View::AllInboxes);
+        harness.run();
+        assert_eq!(ids(&harness), [(1, 1)]);
+        assert_eq!(
+            harness.query_all_by_label("All inboxes").count(),
+            2,
+            "the folder pane entry and the list's title"
+        );
+    }
 
     #[test]
     fn theme_starts_from_config() {

@@ -2,6 +2,7 @@
 use egui_phosphor::regular as ph;
 
 pub(crate) const ACTIVITY: &str = ph::PULSE;
+pub(crate) const ALL_INBOXES: &str = ph::STACK;
 pub(crate) const ARCHIVE: &str = ph::ARCHIVE;
 pub(crate) const BACKUPS: &str = ph::CLOCK_COUNTER_CLOCKWISE;
 pub(crate) const CARET_DOWN: &str = ph::CARET_DOWN;

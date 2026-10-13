@@ -33,6 +33,8 @@ Actions apply to the selection when there is one, else to the current row; on a 
 
 ## Folders
 
+With two or more accounts, **All inboxes** at the top of the folder pane lists the INBOX of every account in one list, newest first; its count is the unread mail in all of them. Actions, the reader and `m` work on each message in its own account.
+
 Each account lists its INBOX and special folders (Archive, Drafts, Sent, Junk, Trash) first, then your own folders as a tree that follows the server's hierarchy. Click the caret in front of a parent to fold or unfold its branch; folding lasts until you close the window. A parent the server does not list as a folder is shown but cannot be opened.
 
 ## Toolbar and status bar

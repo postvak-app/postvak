@@ -37,7 +37,8 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
         });
         let in_folder = matches!(app.view, View::Folder { .. });
         // Closed picker only: an action would move the cursor, and the picker would then move a different message.
-        let has_row = in_folder && !app.list.rows.is_empty() && app.move_picker.is_none();
+        let has_row =
+            app.view.lists_mail() && !app.list.rows.is_empty() && app.move_picker.is_none();
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.x = PAD / 2.0;
             for (icon, name, hint, action) in [

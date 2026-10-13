@@ -417,15 +417,35 @@ pub(crate) fn offset_showing(cursor: usize, row_height: f32, offset: f32, height
     }
 }
 
+/// The folder All inboxes shows from each account; sync stores and queries it by this exact name.
+pub(crate) const INBOX: &str = "INBOX";
+
+/// Threads of several accounts in one list, the most recently active first, at most `limit`. The sort is stable, so
+/// each account keeps its own order and equal dates keep account order.
+pub(crate) fn merge_threads(
+    per_account: Vec<(usize, Vec<ThreadSummary>)>,
+    limit: u32,
+) -> Vec<(usize, ThreadSummary)> {
+    let mut threads: Vec<(usize, ThreadSummary)> = per_account
+        .into_iter()
+        .flat_map(|(account, found)| found.into_iter().map(move |thread| (account, thread)))
+        .collect();
+    threads.sort_by_key(|(_, thread)| std::cmp::Reverse(thread.latest.date));
+    threads.truncate(limit as usize);
+    threads
+}
+
 pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     let mut actions = Vec::new();
     let list = &app.list;
     let recipient = app.shows_recipient();
     let now = Local::now();
-    if app.search.is_none()
-        && let View::Folder { folder, .. } = &app.view
-    {
-        title(ui, folders::label(folder), &list.rows);
+    if app.search.is_none() {
+        match &app.view {
+            View::AllInboxes => title(ui, "All inboxes", &list.rows),
+            View::Folder { folder, .. } => title(ui, folders::label(folder), &list.rows),
+            _ => {}
+        }
     }
     if let Some(query) = &app.search {
         let mut text = query.clone();
@@ -564,6 +584,33 @@ mod tests {
     use crate::gui::app::{Focus, View};
     use crate::gui::test_support::{Fixture, message};
     use crate::store::{MessageSummary, ThreadSummary};
+
+    #[test]
+    fn merge_threads_is_newest_first_across_accounts_and_capped() {
+        let thread = |uid: u32| ThreadSummary {
+            thread_id: format!("t{uid}"),
+            latest: summary(uid, ""),
+            count: 1,
+            unread: false,
+            flagged: false,
+        };
+        let merged = merge_threads(
+            vec![
+                (0, vec![thread(5), thread(1)]),
+                (1, vec![thread(3), thread(1)]),
+            ],
+            3,
+        );
+        let shape: Vec<(usize, u32)> = merged
+            .iter()
+            .map(|(account, t)| (*account, t.latest.uid))
+            .collect();
+        assert_eq!(
+            shape,
+            [(0, 5), (1, 3), (0, 1)],
+            "equal dates keep account order; the cap drops the rest"
+        );
+    }
 
     fn summary(uid: u32, flags: &str) -> MessageSummary {
         MessageSummary {
