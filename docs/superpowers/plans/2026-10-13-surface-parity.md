@@ -1,5 +1,7 @@
 # Surface Parity Implementation Plan
 
+> **GUI toolkit (2026-10-13):** the GUI steps below were written for egui, which the Slint rewrite (`2026-10-13-slint-gui.md`, design `../specs/2026-10-13-postvak-slint-gui-design.md`) replaces. Redo them against `gui/state.rs`, `bind.rs` and `ui/*.slint` before executing; the non-GUI steps stand.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Every feature the CLI has is also on MCP and in the GUI, with account add going through one library function and the daemon instead of its own IMAP connection.

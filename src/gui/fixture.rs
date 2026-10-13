@@ -1,5 +1,5 @@
-//! Mail homes for the GUI tests and the GPUI prototype: a config and SQLite stores under a directory the caller owns.
-//! Built with `testing` as well as in tests, so the prototype draws the same mailbox as the egui snapshots.
+//! Mail homes for the GUI tests: a config and SQLite stores under a directory the caller owns. Built with `testing` as
+//! well as in tests, so a prototype outside the crate can draw the same mailbox as the snapshots.
 use std::path::Path;
 
 use anyhow::Result;
