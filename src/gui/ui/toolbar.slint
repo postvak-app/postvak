@@ -28,8 +28,10 @@ export component Toolbar inherits Rectangle {
         padding-bottom: (Theme.top-bar - Theme.control) / 2;
         spacing: Theme.pad / 2;
 
+        // As wide as the folder pane and the splitter, less the gap before the first button and that button's glyph
+        // inset, so the glyph lines up with the list's content.
         HorizontalLayout {
-            width: max(0px, root.folders-width - Theme.glyph);
+            width: max(0px, root.folders-width + Theme.pad / 2 - Theme.glyph);
             spacing: Theme.pad;
             Image {
                 width: 20px;

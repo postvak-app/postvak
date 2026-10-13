@@ -22,6 +22,10 @@ export struct FolderItem {
     selected: bool,
     // "Collapse Projects" on a parent row, else empty.
     caret-name: string,
+    // On the line of the list's title: All inboxes, or an account's name, as a heading row.
+    heading: bool,
+    // An account after the first, with space above it.
+    gap: bool,
     // An account heading: syncing, and its store error.
     busy: bool,
     error: string,
@@ -111,6 +115,7 @@ export component FolderPane inherits Rectangle {
             vertical-stretch: 1;
             VerticalLayout {
                 alignment: start;
+                padding-top: Theme.pad;
                 padding-left: Theme.pad;
                 padding-right: Theme.pad;
                 spacing: Theme.pad / 2;
@@ -120,9 +125,9 @@ export component FolderPane inherits Rectangle {
                         background: Theme.frame.border;
                     }
                     if item.kind == FolderKind.account: VerticalLayout {
-                        padding-top: Theme.pad;
+                        padding-top: item.gap ? Theme.pad : 0px;
                         HorizontalLayout {
-                            height: Theme.row;
+                            height: Theme.control;
                             padding-left: Theme.pad;
                             spacing: Theme.pad;
                             Text {
@@ -147,7 +152,7 @@ export component FolderPane inherits Rectangle {
                         }
                     }
                     if item.kind == FolderKind.folder: ContextMenuArea {
-                        height: Theme.row;
+                        height: item.heading ? Theme.control : Theme.row;
                         Menu {
                             for choice[j] in item.menu-head: MenuItem {
                                 title: choice.title;
@@ -162,6 +167,8 @@ export component FolderPane inherits Rectangle {
                             }
                         }
                         FolderRow {
+                            y: (parent.height - self.height) / 2;
+                            width: parent.width;
                             item: item;
                             clicked => { root.clicked(i); }
                             caret-clicked => { root.caret-clicked(i); }

@@ -104,9 +104,17 @@ Last updated: 2026-10-13. Branch `feat/slint-gui`. Read first: the plan `2026-10
   - `mod.rs`: `restore` before the window shows (sizes clamped to at least 400×300, the list to `list::MIN_WIDTH`), `remember` after the event loop ends, so also after Quit with the window hidden. The position is kept only when the platform reports one (Wayland reports none). The startup error window keeps nothing.
   - `docs/src/gui.md` still names `window.ron`; Task 13 updates it.
 
+- Task 12 (`test(gui): snapshots from the software renderer`):
+  - `snapshots.rs`: the 11 PNGs (inbox light/dark, all inboxes, marks and an expanded thread, keys, rules, activity, backups, HTML light/dark/narrow) from `Open::png`, compared by decoded pixels. They run in every `cargo test`; with a local offset other than zero the pixels are not compared (a line on stderr says so). `TZ=UTC UPDATE_SNAPSHOTS=1 cargo test gui::snapshots` rewrites them; a mismatch writes `{name}.new.png` beside the reference. Generated on macOS; whether Linux draws the same pixels is what the first CI run says.
+  - Geometry tests through element positions: the toolbar glyph, the list title and the rows' content share an edge; the toolbar's buttons a line; the status glyph lines up with the pinned rows; folder row height and pitch; the focus outline moves nothing; the list title, the reader's actions and All inboxes share a line; the Keys window's content sits `INSET` in; with one account the first folder and the first message share a line.
+  - Layout fixes the tests found: the toolbar's wordmark cell is `folders-width + PAD/2 - GLYPH` wide; the folder pane's first line (All inboxes, or an account's name) is a `CONTROL`-tall heading row on the list title's line, accounts after the first have `PAD` above them (`FolderItem.heading`, `gap`); the list scrolls to the cursor only once it has reported its height (the thread snapshot showed it scrolled two rows).
+  - CI: `TZ=UTC` on both OSes, no mesa, no `POSTVAK_SNAPSHOTS`; `*.new.png` uploaded per OS on failure.
+  - Not ported as separate tests, as the snapshots show them: the row-drawing and folder-row geometry tests listed under Tasks 4 and 5, the avatar centring and the search field's height (the std `LineEdit` is `CONTROL` tall, not `ROW`).
+- Follow-up (owner, 2026-10-13): the alignment looks off, not on any raster. A pass over spacing and alignment against the grid comes after Task 13.
+
 ## Next steps (in order)
 
-1. Tasks 12–13 of the plan, one commit each, updating this doc after each.
+1. Task 13 of the plan, one commit each, updating this doc after each.
 
 ## Notes for whoever resumes
 

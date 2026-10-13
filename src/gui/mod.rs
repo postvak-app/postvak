@@ -15,6 +15,8 @@ mod numbers;
 mod persist;
 mod rows;
 mod rules;
+#[cfg(test)]
+mod snapshots;
 mod startup;
 mod state;
 mod status;

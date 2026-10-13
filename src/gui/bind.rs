@@ -49,7 +49,17 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
     window.set_tool_buttons_enabled(toolbar::enabled(app));
     window.set_search_hint(toolbar::SEARCH_HINT.into());
 
-    window.set_folders(model(folders::entries(app).iter().map(folder_item)));
+    let mut accounts = 0;
+    let entries = folders::entries(app);
+    let items = entries.iter().map(|entry| {
+        let mut item = folder_item(entry);
+        if let Entry::Account { .. } = entry {
+            item.gap = accounts > 0;
+            accounts += 1;
+        }
+        item
+    });
+    window.set_folders(model(items.collect::<Vec<_>>()));
     window.set_pinned(model(folders::pinned(app).iter().map(folder_row)));
 
     window.set_status_lines(model(status::lines(app).into_iter().map(status_line)));
@@ -107,7 +117,8 @@ fn present_list(app: &App, window: &MailWindow) {
             window.set_rows(ModelRc::new(model));
         }
     }
-    if app.list.follow_cursor {
+    // Until the list has reported its height there is nothing to scroll within.
+    if app.list.follow_cursor && app.list.viewport.1 > 0.0 {
         let (offset, height) = app.list.viewport;
         let offset = list::offset_showing(app.list.cursor, list::LIST_ROW, offset, height);
         window.set_list_y(-offset);
@@ -571,6 +582,7 @@ fn folder_row(folder: &FolderEntry) -> FolderItem {
         name: folder.name.as_str().into(),
         depth: i32::try_from(folder.depth).unwrap_or(i32::MAX),
         selected: folder.selected,
+        heading: folder.view == Some(View::AllInboxes),
         caret_name: folder.caret_name().unwrap_or_default().into(),
         menu_head: choices(&menu[..head]),
         menu_tail: choices(&menu[head..]),

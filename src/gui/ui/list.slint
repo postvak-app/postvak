@@ -186,6 +186,7 @@ export component ListPane inherits Rectangle {
         list := ListView {
             vertical-stretch: 1;
             content-y <=> root.list-y;
+            init => { root.scrolled(); }
             changed content-y => { root.scrolled(); }
             changed visible-height => { root.scrolled(); }
             for row[i] in root.rows: ContextMenuArea {
