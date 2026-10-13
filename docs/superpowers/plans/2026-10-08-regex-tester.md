@@ -8,11 +8,11 @@
 
 **Tech Stack:** Rust 2024, eframe/egui 0.36.2, egui_kittest 0.36.2 (kittest 0.4.0), regex 1.13 (already a dependency; the same crate and syntax rules use), egui-phosphor 0.14. No new dependencies.
 
-**Spec:** design canvas https://claude.ai/artifact/B5W17bKLqpKUw9z3bCw65Q (Rules · Latte and Regex tester boards) + docs/src/rules.md + docs/superpowers/specs/2026-10-06-postbode-core-design.md.
+**Spec:** design canvas https://claude.ai/artifact/B5W17bKLqpKUw9z3bCw65Q (Rules and Regex tester boards; private to the repo owner; take layout and copy from it, colours from `src/gui/theme.rs`) + docs/src/rules.md + docs/superpowers/specs/2026-10-06-postvak-core-design.md + docs/superpowers/specs/2026-10-06-postvak-gui-design.md.
 
 ## Scope
 
-One PR off `origin/main`, after `docs/superpowers/plans/2026-10-08-rules-editor.md` has merged (it provides the Rules view header, `Draft`, `Condition`, `Field`, `Op`, `Fixture::rules_view` and the editor's value fields). One commit per task.
+One PR off `origin/main`, after `docs/superpowers/plans/2026-10-08-rules-editor.md` has merged (it provides the Rules view header, `Draft`, `Condition`, `Field`, `Op`, `Fixture::rules_view`, the editor's value fields and the palette's `success`). One commit per task.
 
 | # | Task | Design item 5 |
 |---|---|---|
@@ -28,7 +28,7 @@ One PR off `origin/main`, after `docs/superpowers/plans/2026-10-08-rules-editor.
 - Matching is `regex::Regex` as in `rules::Matcher::Regex`: case-sensitive unless the pattern starts with `(?i)`. A pattern that is empty after trimming is not valid, as `rules::compile` refuses it.
 - Body covers only messages whose body is downloaded, and the count line says so.
 - Copy, verbatim: "Regex tester", "Pattern", "valid", "invalid", "empty", "Copy", "Rust regex syntax. Start with (?i) to ignore case.", "Test on", "Subject", "From", "To", "Body", "Own text", "Your text", "6 of 214 cached subjects match", "Show non-matching", "Runs on mail already on this device; nothing is sent.", "Close", "Use in rule", "Enter a pattern.".
-- Colours from `theme::Palette`: a match is `on_accent` on `accent`; valid `success`, invalid `error`.
+- Colours from `theme::Palette`: a match is drawn like selected text, `on_accent` on `selected` (`on_accent` on `accent` is too faint in `NIGHT`, 1.25:1; the selection pair is tested at 4.5:1 in every palette); valid `success` (added by the rules-editor plan), invalid `error`. Sizes inside rows follow the grid in `theme.rs` (`ROW`, `CONTROL`, `PAD`, `INSET`).
 - Agent and mail text is passed through `message::clean` before it is drawn; highlight ranges are computed on the raw text and each piece is cleaned separately.
 - Prose changes go in `docs/src/gui.md`.
 - After GUI changes, regenerate snapshots on Linux with lavapipe: `TZ=UTC UPDATE_SNAPSHOTS=1 cargo test gui::snapshots`, and look at every changed PNG.
@@ -99,7 +99,7 @@ mod tests {
     use crate::gui::app::View;
     use crate::gui::draft::Draft;
     use crate::gui::test_support::{Fixture, Wires, message};
-    use crate::gui::theme::MOCHA;
+    use crate::gui::theme::NIGHT;
 
     type Harness = egui_kittest::Harness<'static, crate::gui::App>;
 
@@ -204,8 +204,8 @@ mod tests {
     }
 
     #[test]
-    fn highlighted_puts_matches_on_the_accent() {
-        let job = highlighted("Your code 1234", &[5..9], &MOCHA, egui::FontId::monospace(12.0));
+    fn highlighted_draws_matches_like_selected_text() {
+        let job = highlighted("Your code 1234", &[5..9], &NIGHT, egui::FontId::monospace(12.0));
         let parts: Vec<(&str, egui::Color32)> = job
             .sections
             .iter()
@@ -215,7 +215,7 @@ mod tests {
             parts,
             [
                 ("Your ", egui::Color32::TRANSPARENT),
-                ("code", MOCHA.accent),
+                ("code", NIGHT.selected),
                 (" 1234", egui::Color32::TRANSPARENT)
             ]
         );
@@ -490,7 +490,7 @@ pub(crate) fn summary(source: Source, found: &[Option<Vec<Range<usize>>>]) -> St
     format!("{matched} of {} {} match{note}", found.len(), source.noun())
 }
 
-/// `line` with `ranges` drawn on the accent. Ranges come from the raw text, so each piece is cleaned on its own.
+/// `line` with `ranges` drawn like selected text. Ranges come from the raw text, so each piece is cleaned on its own.
 pub(crate) fn highlighted(
     line: &str,
     ranges: &[Range<usize>],
@@ -505,7 +505,7 @@ pub(crate) fn highlighted(
     let hit = egui::TextFormat {
         font_id: font,
         color: palette.on_accent,
-        background: palette.accent,
+        background: palette.selected,
         ..Default::default()
     };
     let mut job = egui::text::LayoutJob::default();
@@ -794,7 +794,7 @@ git commit -m "feat(gui): add a regex tester to the Rules view"
 - Consumes: everything from Task 1; `Draft`, `Condition`, `Field`, `Op` and `rule_editor::value_field` (rules-editor plan).
 - Produces: `Draft.selected: Option<usize>` (the condition whose value field was focused last; cleared when a condition is removed), `UiAction::UseRegex`.
 
-"Use in rule" puts the pattern into the selected condition when it is a text condition (operator becomes regex), else into the draft's condition on the tested field, else adds a regex condition on that field (Own text counts as Subject). With no rule open it starts a new draft. The tester then closes. When the tester opens on a selected regex condition, it starts from that pattern and field.
+"Use in rule" puts the pattern into the selected condition when it is a text condition (operator becomes regex), else into the draft's condition on the tested field, else adds a regex condition on that field (Own text counts as Subject). With no rule open it starts a new draft. The tester then closes. When the tester opens on a selected regex condition, it starts from that pattern and field. Conditions in `Draft.kept` (`any`, `none`, value lists) are never targets: when the tested field is only there, the new row makes Save refuse with "… appears twice", which the editor shows.
 
 - [ ] **Step 1: Write the failing tests** in the `tests` module of `src/gui/regex_tester.rs`
 
