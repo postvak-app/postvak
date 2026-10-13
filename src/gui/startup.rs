@@ -5,7 +5,6 @@ use std::path::Path;
 
 use crate::message::clean;
 
-
 /// Where the docs explain `postvak account add` and config.toml.
 pub(crate) const ACCOUNTS_DOCS: &str = "https://postvak.pataar.nl/accounts.html";
 
@@ -60,7 +59,6 @@ impl Problem {
 mod tests {
     use std::path::Path;
 
-
     use super::*;
 
     #[test]
@@ -98,5 +96,4 @@ mod tests {
         assert_eq!(problem.detail.as_deref(), Some("no home directory found"));
         assert_eq!(problem.link, None);
     }
-
 }

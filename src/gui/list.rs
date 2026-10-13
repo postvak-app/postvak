@@ -170,6 +170,22 @@ fn edits_of<'a>(pending: &[&'a HashMap<RowKey, Vec<Optimistic>>], row: &Row) -> 
         .map_or(&[][..], Vec::as_slice)
 }
 
+/// The counts beside the list's title: "3 threads, 1 unread".
+pub(crate) fn counts(rows: &[Row]) -> String {
+    let threads: Vec<&Row> = rows.iter().filter(|row| !row.member).collect();
+    let unread = threads.iter().filter(|row| row.unread).count();
+    let noun = if threads.len() == 1 {
+        "thread"
+    } else {
+        "threads"
+    };
+    format!(
+        "{} {noun}, {} unread",
+        super::numbers::count(threads.len() as u64),
+        super::numbers::count(unread as u64)
+    )
+}
+
 /// "Alice <alice@x>, bob@y" is "Alice"; without a name, the first address.
 pub fn display_name(field: &str) -> String {
     let field = field.trim();
@@ -349,7 +365,7 @@ mod tests {
     use chrono::{TimeZone, Utc};
 
     use super::*;
-    use crate::gui::test_support::{Fixture, message};
+    use crate::gui::test_support::message;
     use crate::store::{MessageSummary, ThreadSummary};
 
     #[test]
@@ -625,5 +641,4 @@ mod tests {
             [(0, 5, false), (1, 5, false), (1, 4, true), (1, 5, true)]
         );
     }
-
 }

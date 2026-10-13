@@ -83,7 +83,7 @@ name = "imap_live"
 required-features = ["testing"]                      # drives sync::run_once and sync_all against Dovecot
 
 [lints.rust]
-unsafe_code = "forbid"                               # no unsafe in this crate; keep it that way
+unsafe_code = "deny"                                 # no unsafe in this crate; only Slint's generated `gui::ui` allows it
 
 [package.metadata.cargo-machete]
 ignored = ["fontique"]                               # only sets a feature of the fontique Blitz uses

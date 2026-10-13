@@ -194,10 +194,7 @@ mod tests {
         let typing = |press| action(&press, Focus::List, true);
         assert_eq!(typing(Press::text("e")), None);
         assert_eq!(typing(Press::named(Named::Down)), None);
-        assert_eq!(
-            typing(Press::named(Named::Escape)),
-            Some(UiAction::Escape)
-        );
+        assert_eq!(typing(Press::named(Named::Escape)), Some(UiAction::Escape));
         let sync = Press {
             command: true,
             ..Press::text("r")

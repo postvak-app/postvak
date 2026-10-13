@@ -2,11 +2,10 @@
 use std::io::Read;
 use std::path::Path;
 
-use crate::message::{clean, parse_headers};
+use crate::message::parse_headers;
 use crate::paths::Paths;
 use crate::rules::{self, Rule, RuleFile};
 use crate::store::LogEntry;
-use crate::time::local_time;
 use crate::trash::{Trash, TrashEntry};
 
 use super::state::Account;

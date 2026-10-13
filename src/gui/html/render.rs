@@ -368,8 +368,10 @@ mod tests {
             size: [pixels.width() as usize, pixels.height() as usize],
             pixels: pixels
                 .rgba()
-                .chunks_exact(4)
-                .map(|p| Colour([p[0], p[1], p[2], p[3]]))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|&p| Colour(p))
                 .collect(),
         }
     }
@@ -431,7 +433,12 @@ mod tests {
         // The header bar is dark blue, the page around it light grey.
         let at = |x: usize, y: usize| image.pixels[y * 700 + x];
         assert_eq!(at(10, 10).to_array()[..3], [0xf2, 0xf4, 0xf6]);
-        assert!(at(100, 60).b() > at(100, 60).r() + 20, "{:?}", at(100, 60));
+        // Right of the title, so the bundled font's glyphs never land on it.
+        let header = at(600, 40);
+        assert!(
+            u16::from(header.b()) > u16::from(header.r()) + 20,
+            "{header:?}"
+        );
         // The second strip holds the quote, the code block and the footer, not blank page.
         let Some(Reply::Strip { image, .. }) = handle(
             &mut current,

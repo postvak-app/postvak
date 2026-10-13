@@ -1,0 +1,11 @@
+// The mail window. It draws what `bind.rs` gives it and hands every key and click back as a callback.
+import { Theme } from "theme.slint";
+
+export component MailWindow inherits Window {
+    title: "Postvak";
+    icon: @image-url("../../../assets/icon.png");
+    preferred-width: 1280px;
+    preferred-height: 800px;
+    background: Theme.frame.background;
+    default-font-family: Theme.text-font;
+}

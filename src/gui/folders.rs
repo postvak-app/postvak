@@ -1,7 +1,6 @@
 //! The folder pane without a toolkit: the tree of custom folders, the order of special ones, labels and unread counts.
 //! The window draws All inboxes, each account's folders and the Rules, Activity and Backups entries from it.
 
-use crate::message::clean;
 use crate::store::Folder;
 
 use super::state::{Account, FolderRow};
@@ -182,10 +181,8 @@ fn rank(name: &str, special_use: Option<&str>) -> usize {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
-    use crate::gui::state::{Focus, FolderRow, View};
-    use crate::gui::test_support::{Fixture, message};
+    use crate::gui::state::FolderRow;
     use crate::store::Folder;
 
     fn folder(name: &str, special_use: Option<&str>) -> Folder {
@@ -337,5 +334,4 @@ mod tests {
             ]
         );
     }
-
 }

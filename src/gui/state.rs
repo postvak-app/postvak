@@ -237,7 +237,8 @@ pub(crate) enum UiAction {
     Restore(usize, PathBuf),
     SaveAttachment(usize),
     SaveEml,
-    SearchFocused,
+    /// The search field took (true) or lost (false) the keyboard.
+    SearchFocused(bool),
     SearchFor(String),
     SelectRow(usize),
     SelectView(View),
@@ -499,8 +500,11 @@ impl App {
         let next = match &self.update {
             UpdateCheck::Waiting => {
                 let (done, answer) = mpsc::channel();
-                let (cache, fetch, wake) =
-                    (self.paths.update_check(), self.fetch_release, self.wake.clone());
+                let (cache, fetch, wake) = (
+                    self.paths.update_check(),
+                    self.fetch_release,
+                    self.wake.clone(),
+                );
                 std::thread::spawn(move || {
                     let _ = done.send(update::check(
                         &cache,
@@ -724,6 +728,7 @@ impl App {
                     self.history_open = false;
                 } else if self.search.is_some() {
                     self.search = None;
+                    self.search_focused = false;
                     self.list = ListState::default();
                     self.reload_view();
                 } else {
@@ -777,7 +782,12 @@ impl App {
             }
             UiAction::SaveAttachment(index) => self.save_attachment(index),
             UiAction::SaveEml => self.save_eml(),
-            UiAction::SearchFocused => self.focus_search = false,
+            UiAction::SearchFocused(focused) => {
+                self.search_focused = focused;
+                if focused {
+                    self.focus_search = false;
+                }
+            }
             UiAction::SearchFor(query) => {
                 self.search = Some(query);
                 self.list.cursor = 0;
@@ -786,6 +796,7 @@ impl App {
             }
             UiAction::SelectRow(index) => {
                 self.list.cursor = index;
+                self.search_focused = false;
                 self.focus = Focus::List;
                 self.pending_arm = true;
                 self.arm_shown_body(index);
@@ -864,6 +875,27 @@ impl App {
                 }
             }
         }
+    }
+
+    /// The `m` picker's folders: those of the selected rows' account that match the filter, without the folder the
+    /// cursor message is in.
+    pub(crate) fn move_targets(&self) -> Vec<&str> {
+        let (Some(filter), Some(row)) = (&self.move_picker, self.selected_rows().first().copied())
+        else {
+            return Vec::new();
+        };
+        let folder = self
+            .list
+            .rows
+            .get(self.list.cursor)
+            .map_or(&row.folder, |cursor| &cursor.folder);
+        let needle = filter.to_lowercase();
+        self.accounts[row.account]
+            .folders
+            .iter()
+            .map(|f| f.name.as_str())
+            .filter(|name| name != folder && name.to_lowercase().contains(&needle))
+            .collect()
     }
 
     pub(crate) fn select_view(&mut self, view: View) {
@@ -1499,22 +1531,7 @@ impl App {
             if !path.exists() {
                 crate::paths::write_atomic(&path, b"")?;
             }
-            // `open -t` uses the default text editor, so a missing `.toml` association still opens one.
-            let (opener, flags): (&str, &[&str]) = if cfg!(target_os = "macos") {
-                ("open", &["-t"])
-            } else {
-                ("xdg-open", &[])
-            };
-            let mut child = std::process::Command::new(opener)
-                .args(flags)
-                .arg(&path)
-                .spawn()?;
-            std::thread::spawn(move || match child.wait() {
-                Ok(status) if !status.success() => log::warn!("{opener} rules.toml: {status}"),
-                Ok(_) => {}
-                Err(e) => log::warn!("{opener} rules.toml: {e}"),
-            });
-            Ok(())
+            launch(path.as_os_str(), true)
         })();
         if let Err(e) = opened {
             self.note_error(None, format!("could not open rules.toml: {e}"));
@@ -1642,6 +1659,7 @@ impl App {
         entries.extend([View::Rules, View::Activity, View::Trash]);
         entries
     }
+}
 
 /// A stored message, its attachments and its HTML.
 type Stored = (Option<Message>, Vec<Attachment>, Option<HtmlBody>);
@@ -1677,6 +1695,27 @@ fn same_row(row: &Row, cursor: &Row) -> bool {
     }
 }
 
+/// Opens a file or URL with the desktop's default app; `text` asks for the text editor where the platform can.
+pub(crate) fn launch(target: &std::ffi::OsStr, text: bool) -> std::io::Result<()> {
+    // `open -t` uses the default text editor, so a missing `.toml` association still opens one.
+    let (opener, flags): (&str, &[&str]) = match (cfg!(target_os = "macos"), text) {
+        (true, true) => ("open", &["-t"]),
+        (true, false) => ("open", &[]),
+        (false, _) => ("xdg-open", &[]),
+    };
+    let mut child = std::process::Command::new(opener)
+        .args(flags)
+        .arg(target)
+        .spawn()?;
+    // The target is not logged: a link from a message can carry a token.
+    std::thread::spawn(move || match child.wait() {
+        Ok(status) if !status.success() => log::warn!("{opener}: {status}"),
+        Ok(_) => {}
+        Err(e) => log::warn!("{opener}: {e}"),
+    });
+    Ok(())
+}
+
 /// Where Save puts attachments: the Downloads folder, else home.
 fn downloads_dir() -> PathBuf {
     directories::UserDirs::new()
@@ -1692,4 +1731,696 @@ pub(crate) fn step(index: usize, delta: isize, len: usize) -> usize {
 
 fn mtime(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    use super::*;
+    use crate::daemon::Client;
+    use crate::daemon::wire::AccountStatus;
+    use crate::gui::test_support::{Driver, Fixture, Wires, message};
+    use crate::rules::Action;
+    use crate::sync::{Command, Event};
+
+    fn inbox(fx: &Fixture, uids: &[u32]) {
+        for &uid in uids {
+            fx.add("work", message("INBOX", uid, &format!("subject {uid}")));
+        }
+    }
+
+    fn unread(folder: &str, uid: u32, subject: &str) -> Message {
+        let mut message = message(folder, uid, subject);
+        message.flags = String::new();
+        message
+    }
+
+    fn command(account: &str, folder: &str, uids: &[u32], action: Action) -> (String, Command) {
+        let apply = Command::Apply {
+            folder: folder.into(),
+            uids: uids.to_vec(),
+            action,
+            by: "gui".into(),
+        };
+        (account.into(), apply)
+    }
+
+    fn apply(uids: &[u32], action: Action) -> (String, Command) {
+        command("work", "INBOX", uids, action)
+    }
+
+    fn done(account: &str, results: Vec<(u32, Result<usize, String>)>, request: u64) -> Event {
+        Event::ActionDone {
+            account: account.into(),
+            folder: "INBOX".into(),
+            results,
+            request,
+        }
+    }
+
+    fn refused(account: &str, request: u64, message: &str) -> Event {
+        Event::CommandFailed {
+            account: account.into(),
+            request,
+            message: message.into(),
+        }
+    }
+
+    /// Sends the daemon's events and ticks so the app takes them.
+    fn receive(driver: &mut Driver, wires: &Wires, events: impl IntoIterator<Item = Event>) {
+        for event in events {
+            wires.events.send(event).unwrap();
+        }
+        driver.tick();
+    }
+
+    /// Ticks, with the clock at `at`, until `done` holds or 5 s of real time passed; for answers from other threads.
+    fn tick_until(driver: &mut Driver, at: f64, done: impl Fn(&App) -> bool) {
+        driver.at(at);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !done(&driver.app) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+            driver.tick();
+        }
+        assert!(done(&driver.app), "timed out");
+    }
+
+    fn inbox_unread(driver: &Driver) -> Option<u32> {
+        let folders = &driver.app.accounts[0].folders;
+        folders.iter().find(|f| f.name == "INBOX").map(|f| f.unread)
+    }
+
+    #[test]
+    fn all_inboxes_lists_every_accounts_inbox_newest_first() {
+        let fx = Fixture::new(&["home", "work"]);
+        fx.add("home", message("INBOX", 1, "oldest"));
+        fx.add("work", message("INBOX", 2, "middle"));
+        fx.add("home", message("INBOX", 3, "newest"));
+        fx.folder("work", "Archive", Some("Archive"));
+        fx.add("work", message("Archive", 4, "not an inbox"));
+        let (mut driver, _wires) = fx.driver();
+        driver.apply(UiAction::SelectView(View::AllInboxes));
+        assert_eq!(driver.ids(), [(0, 3), (1, 2), (0, 1)]);
+        assert_eq!(list::counts(&driver.app.list.rows), "3 threads, 0 unread");
+    }
+
+    #[test]
+    fn all_inboxes_lists_the_other_accounts_when_one_store_is_broken() {
+        let fx = Fixture::new(&["broken", "work"]);
+        fx.add("work", message("INBOX", 1, "still here"));
+        let db = fx.paths.mail_db("broken");
+        std::fs::remove_file(&db).unwrap();
+        std::fs::create_dir_all(&db).unwrap();
+        let (mut driver, _wires) = fx.driver();
+        assert!(driver.app.shows_all_inboxes());
+        driver.apply(UiAction::SelectView(View::AllInboxes));
+        assert_eq!(driver.ids(), [(1, 1)]);
+    }
+
+    #[test]
+    fn a_failed_thread_load_keeps_the_rows_already_listed() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "still here"));
+        let (mut driver, _wires) = fx.driver();
+        assert_eq!(driver.ids(), [(0, 1)]);
+        let db = rusqlite::Connection::open(fx.paths.mail_db("work")).unwrap();
+        db.execute_batch("ALTER TABLE messages RENAME TO messages_gone")
+            .unwrap();
+        driver.app.reload_view();
+        driver.tick();
+        assert_eq!(driver.ids(), [(0, 1)]);
+    }
+
+    #[test]
+    fn theme_starts_from_config() {
+        let fx = Fixture::new(&["work"]);
+        assert_eq!(fx.app().0.theme, Theme::System);
+        fx.append_config("[ui]\ntheme = \"dark\"\n");
+        assert_eq!(fx.app().0.theme, Theme::Dark);
+    }
+
+    #[test]
+    fn slash_in_all_inboxes_searches_every_account_newest_first() {
+        let fx = Fixture::new(&["home", "work"]);
+        fx.folder("home", "Archive", Some("Archive"));
+        fx.add("home", message("INBOX", 1, "invoice march"));
+        fx.add("work", message("INBOX", 2, "lunch"));
+        fx.add("home", message("Archive", 3, "invoice april"));
+        fx.add("work", message("INBOX", 4, "invoice may"));
+        let (mut driver, _wires) = fx.driver();
+        driver.apply(UiAction::SelectView(View::AllInboxes));
+        driver.press("/");
+        assert_eq!(driver.app.search.as_deref(), Some(""));
+        assert!(driver.app.search_focused);
+        driver.press("invoice");
+        let found: Vec<(usize, &str, u32)> = driver
+            .app
+            .list
+            .rows
+            .iter()
+            .map(|r| (r.account, r.folder.as_str(), r.uid))
+            .collect();
+        assert_eq!(found, [(1, "INBOX", 4), (0, "Archive", 3), (0, "INBOX", 1)]);
+        driver.press("escape");
+        assert_eq!(driver.app.view, View::AllInboxes);
+        assert_eq!(driver.ids(), [(1, 4), (1, 2), (0, 1)]);
+    }
+
+    #[test]
+    fn archive_sends_the_cursor_row_hides_it_and_selects_the_next() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2, 3]);
+        let (mut driver, wires) = fx.driver();
+        driver.press("e");
+        assert_eq!(wires.sent(), [apply(&[3], Action::Archive)]);
+        assert_eq!(driver.uids(), [2, 1]);
+        assert_eq!(driver.app.list.rows[driver.app.list.cursor].uid, 2);
+        assert!(driver.status()[0].ends_with(" · 1 queued"));
+    }
+
+    #[test]
+    fn archive_on_a_thread_row_sends_every_member() {
+        let fx = Fixture::new(&["work"]);
+        for uid in [4, 5] {
+            let mut m = message("INBOX", uid, "thread");
+            m.thread_id = "<t@example.com>".into();
+            fx.add("work", m);
+        }
+        let (mut driver, wires) = fx.driver();
+        driver.press("e");
+        assert_eq!(wires.sent(), [apply(&[4, 5], Action::Archive)]);
+    }
+
+    #[test]
+    fn the_same_thread_in_another_account_is_another_row() {
+        let mut home = Row::from_message(0, &message("INBOX", 1, "hi"));
+        home.thread_id = Some("<t@example.com>".into());
+        let mut work = home.clone();
+        work.account = 1;
+        assert!(same_row(&home, &home.clone()));
+        assert!(!same_row(&work, &home));
+    }
+
+    #[test]
+    fn marked_rows_are_deleted_together() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2, 3]);
+        let (mut driver, wires) = fx.driver();
+        driver.press("x j x #");
+        assert_eq!(wires.sent(), [apply(&[2, 3], Action::Trash)]);
+        assert_eq!(driver.uids(), [1]);
+        assert!(driver.app.list.marked.is_empty());
+    }
+
+    #[test]
+    fn a_failed_action_puts_the_row_back_and_says_why() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2, 3]);
+        let (mut driver, wires) = fx.driver();
+        driver.press("e");
+        let failed = done("work", vec![(3, Err("NO [SERVERBUG] try later".into()))], 0);
+        receive(&mut driver, &wires, [failed]);
+        assert_eq!(driver.uids(), [3, 2, 1]);
+        assert_eq!(
+            driver.status()[0],
+            "work: 1 of 1 messages failed: NO [SERVERBUG] try later"
+        );
+        assert_eq!(driver.app.accounts[0].queued, 0);
+    }
+
+    #[test]
+    fn a_sync_before_the_action_finishes_keeps_the_row_hidden() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2, 3]);
+        let (mut driver, wires) = fx.driver();
+        driver.press("e");
+        let synced = Event::Synced {
+            account: "work".into(),
+            new_messages: 0,
+            actions: 0,
+            requests: vec![],
+            errors: vec![],
+        };
+        receive(&mut driver, &wires, [synced]);
+        assert_eq!(driver.uids(), [2, 1]);
+        fx.store("work").remove_message("INBOX", 3).unwrap();
+        receive(&mut driver, &wires, [done("work", vec![(3, Ok(1))], 0)]);
+        assert_eq!(driver.uids(), [2, 1]);
+    }
+
+    #[test]
+    fn acting_on_an_empty_folder_sends_nothing() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1]);
+        let (mut driver, wires) = fx.driver();
+        driver.press("e");
+        assert_eq!(wires.sent().len(), 1);
+        driver.press("e # u s x j");
+        assert!(wires.sent().is_empty());
+        assert_eq!(driver.app.list.cursor, 0);
+    }
+
+    #[test]
+    fn a_second_edit_on_a_row_stacks_and_the_first_done_keeps_it() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", unread("INBOX", 1, "hello"));
+        let (mut driver, wires) = fx.driver();
+        driver.press("u s");
+        let row = &driver.app.list.rows[0];
+        assert!(!row.unread && row.flagged);
+        receive(&mut driver, &wires, [done("work", vec![(1, Ok(1))], 0)]);
+        assert!(driver.app.list.rows[0].flagged);
+        assert_eq!(driver.app.accounts[0].queued, 1);
+    }
+
+    #[test]
+    fn switching_views_closes_the_move_picker() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Archive", Some("Archive"));
+        inbox(&fx, &[1]);
+        let (mut driver, _wires) = fx.driver();
+        driver.press("m");
+        assert!(driver.app.move_picker.is_some());
+        driver.apply(UiAction::SelectView(View::Rules));
+        assert!(driver.app.move_picker.is_none());
+    }
+
+    #[test]
+    fn the_unread_count_follows_sent_actions_before_the_daemon_answers() {
+        let fx = Fixture::new(&["work"]);
+        for uid in [1, 2] {
+            fx.add("work", unread("INBOX", uid, "hello"));
+        }
+        let (mut driver, _wires) = fx.driver();
+        assert_eq!(inbox_unread(&driver), Some(2));
+        driver.press("u");
+        assert_eq!(inbox_unread(&driver), Some(1));
+        driver.press("j e");
+        assert_eq!(inbox_unread(&driver), Some(0));
+    }
+
+    #[test]
+    fn the_next_rows_body_is_fetched_before_the_cursor_reaches_it() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 3]);
+        let mut later = message("INBOX", 2, "later");
+        later.body_text = None;
+        fx.add("work", later);
+        let (mut driver, wires) = fx.driver();
+        let fetch = Command::FetchBody {
+            folder: "INBOX".into(),
+            uid: 2,
+        };
+        assert_eq!(wires.sent(), [("work".to_string(), fetch)]);
+        driver.press("j");
+        assert!(wires.sent().is_empty());
+    }
+
+    #[test]
+    fn u_marks_read_and_s_flags() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", unread("INBOX", 1, "hello"));
+        let (mut driver, wires) = fx.driver();
+        driver.press("u");
+        assert!(!driver.app.list.rows[0].unread);
+        driver.press("s");
+        assert_eq!(
+            wires.sent(),
+            [apply(&[1], Action::MarkRead), apply(&[1], Action::Flag)]
+        );
+        assert!(driver.app.list.rows[0].flagged);
+    }
+
+    #[test]
+    fn m_filters_the_folders_and_enter_moves() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Archive", Some("Archive"));
+        fx.folder("work", "Receipts", None);
+        inbox(&fx, &[1]);
+        let (mut driver, wires) = fx.driver();
+        driver.press("m");
+        assert_eq!(driver.app.move_targets(), ["Archive", "Receipts"]);
+        driver.press("rec");
+        assert_eq!(driver.app.move_targets(), ["Receipts"]);
+        driver.press("enter");
+        assert_eq!(wires.sent(), [apply(&[1], Action::Move("Receipts".into()))]);
+        assert!(driver.app.move_picker.is_none());
+    }
+
+    #[test]
+    fn command_r_syncs_every_running_account() {
+        let fx = Fixture::new(&["home", "work"]);
+        let (mut driver, wires) = fx.driver();
+        driver.press("ctrl+r");
+        assert_eq!(
+            wires.sent(),
+            [
+                ("home".to_string(), Command::SyncNow),
+                ("work".to_string(), Command::SyncNow)
+            ]
+        );
+    }
+
+    #[test]
+    fn backspace_deletes_on_macos_only() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1]);
+        let (mut driver, wires) = fx.driver();
+        driver.press("backspace");
+        let expected = if cfg!(target_os = "macos") {
+            vec![apply(&[1], Action::Trash)]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(wires.sent(), expected);
+    }
+
+    #[test]
+    fn closing_the_event_stream_shows_the_reconnect_line() {
+        let fx = Fixture::new(&["work"]);
+        let (mut driver, wires) = fx.driver();
+        drop(wires.events);
+        driver.tick();
+        assert!(driver.app.daemon_lost);
+        assert_eq!(driver.status().last().unwrap(), DAEMON_LOST);
+    }
+
+    /// The daemon end of the client a reconnect hands over; one per test binary, as `reconnect` is a plain `fn`.
+    static RECONNECTED: Mutex<Option<Receiver<(String, Command)>>> = Mutex::new(None);
+
+    fn idle(name: &str) -> AccountStatus {
+        AccountStatus {
+            name: name.into(),
+            activity: Some(Activity::Idle {
+                since: 1_790_000_000,
+            }),
+        }
+    }
+
+    #[test]
+    fn a_reconnect_replaces_the_client_and_refreshes_the_accounts() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1]);
+        let (mut driver, wires) = fx.driver();
+        driver.app.reconnect = |_, _| {
+            let (client, commands, events) = Client::in_memory(&["work"]);
+            *RECONNECTED.lock().unwrap() = Some(commands);
+            // A dropped sender would read as another loss.
+            std::mem::forget(events);
+            let (client, events, _) = session(client, Box::new(|| {}))?;
+            Ok((client, events, vec![idle("work")]))
+        };
+        drop(wires);
+        driver.tick();
+        driver.press("e");
+        assert_eq!(driver.status()[0], format!("work: {DAEMON_LOST}"));
+        fx.add("work", unread("INBOX", 2, "while away"));
+        tick_until(&mut driver, 10.0, |app| !app.daemon_lost);
+        driver.tick();
+        assert!(
+            driver
+                .status()
+                .iter()
+                .all(|line| !line.contains(DAEMON_LOST))
+        );
+        let line = format!("work: up to date · {}", crate::time::clock(1_790_000_000));
+        assert_eq!(driver.status(), [line]);
+        assert_eq!(inbox_unread(&driver), Some(1));
+        driver.press("e");
+        let sent: Vec<_> = RECONNECTED
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .try_iter()
+            .collect();
+        assert_eq!(sent, [apply(&[1], Action::Archive)]);
+    }
+
+    #[test]
+    fn a_newer_daemon_is_named_on_the_status_line_and_retried() {
+        let fx = Fixture::new(&["work"]);
+        let (mut driver, wires) = fx.driver();
+        driver.app.reconnect = |_, _| {
+            Err(crate::daemon::client::NewerDaemon {
+                theirs: "9.0.0".into(),
+                ours: "0.1.0".into(),
+            }
+            .into())
+        };
+        drop(wires);
+        driver.tick();
+        let newer =
+            "the daemon is version 9.0.0, newer than this postvak (0.1.0); restart this program";
+        tick_until(&mut driver, 10.0, |app| app.error.as_deref() == Some(newer));
+        assert!(driver.app.daemon_lost);
+        driver.at(20.0);
+        assert!(
+            driver.app.reconnecting.is_some(),
+            "it tries again 5 s later"
+        );
+    }
+
+    #[test]
+    fn the_window_opens_with_the_daemons_activity() {
+        let fx = Fixture::new(&["work"]);
+        let config = Config::load(&fx.paths.config_file()).unwrap();
+        let (client, _commands, _events) = Client::in_memory(&["work"]);
+        let events = client.subscribe().unwrap();
+        let app = App::new(
+            &config,
+            fx.paths.clone(),
+            client,
+            events,
+            vec![idle("work")],
+        );
+        assert_eq!(
+            app.accounts[0].activity,
+            Some(Activity::Idle {
+                since: 1_790_000_000
+            })
+        );
+    }
+
+    #[test]
+    fn a_refused_command_shows_its_reason() {
+        let fx = Fixture::new(&["work"]);
+        let (mut driver, wires) = fx.driver();
+        let reason = "work is offline (x); retrying at 10:00";
+        receive(&mut driver, &wires, [refused("work", 0, reason)]);
+        assert_eq!(driver.status()[0], format!("work: {reason}"));
+    }
+
+    #[test]
+    fn another_clients_outcomes_leave_this_windows_edits_alone() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2, 3]);
+        let (mut driver, wires) = fx.driver();
+        driver.press("e");
+        let foreign = [
+            done("work", vec![(3, Ok(1))], 7),
+            refused("work", 8, "no rule named 'x'"),
+        ];
+        receive(&mut driver, &wires, foreign);
+        assert_eq!(driver.uids(), [2, 1]);
+        assert_eq!(driver.app.accounts[0].queued, 1);
+        assert!(
+            driver
+                .status()
+                .iter()
+                .all(|line| !line.contains("no rule named"))
+        );
+    }
+
+    #[test]
+    fn a_refused_action_puts_the_row_back_and_clears_the_queue() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2, 3]);
+        let (mut driver, wires) = fx.driver();
+        driver.press("e");
+        assert_eq!(driver.uids(), [2, 1]);
+        let reason = "work is offline (x); retrying at 10:00";
+        receive(&mut driver, &wires, [refused("work", 0, reason)]);
+        assert_eq!(driver.uids(), [3, 2, 1]);
+        assert_eq!(driver.app.accounts[0].queued, 0);
+        assert!(driver.status().iter().all(|line| !line.contains("queued")));
+    }
+
+    fn update_done(app: &App) -> bool {
+        matches!(app.update, UpdateCheck::Done(_))
+    }
+
+    #[test]
+    fn a_cached_newer_release_reaches_the_window() {
+        let fx = Fixture::new(&["work"]);
+        fx.append_config("[ui]\ncheck_updates = true\n");
+        let cached = update::Cached {
+            checked_at: crate::time::now(),
+            latest: Some("999.0.0".into()),
+        };
+        update::save(&fx.paths.update_check(), &cached).unwrap();
+        let (mut driver, _wires) = fx.driver();
+        tick_until(&mut driver, 0.0, update_done);
+        assert_eq!(driver.app.newer_release(), Some("999.0.0"));
+    }
+
+    #[test]
+    fn a_failed_check_shows_nothing_and_is_remembered() {
+        let fx = Fixture::new(&["work"]);
+        fx.append_config("[ui]\ncheck_updates = true\n");
+        let (mut driver, _wires) = fx.driver();
+        tick_until(&mut driver, 0.0, update_done);
+        assert_eq!(driver.app.newer_release(), None);
+        assert!(update::load(&fx.paths.update_check()).is_some());
+    }
+
+    #[test]
+    fn by_default_no_check_starts() {
+        let fx = Fixture::new(&["work"]);
+        let (mut driver, _wires) = fx.driver();
+        driver.tick();
+        assert!(matches!(driver.app.update, UpdateCheck::Off));
+        assert!(!fx.paths.update_check().exists());
+    }
+
+    /// home INBOX uid 1, work INBOX uids 1 and 2: rows (work 2), (home 1), (work 1), equal dates in account order.
+    fn all_inboxes(fx: &Fixture) -> (Driver, Wires) {
+        fx.add("home", message("INBOX", 1, "home mail"));
+        fx.add("work", message("INBOX", 1, "work mail"));
+        fx.add("work", message("INBOX", 2, "newer work mail"));
+        let (mut driver, wires) = fx.driver();
+        driver.apply(UiAction::SelectView(View::AllInboxes));
+        assert_eq!(driver.ids(), [(1, 2), (0, 1), (1, 1)]);
+        wires.sent();
+        (driver, wires)
+    }
+
+    #[test]
+    fn all_inboxes_sends_each_action_to_the_rows_own_account() {
+        let fx = Fixture::new(&["home", "work"]);
+        let (mut driver, wires) = all_inboxes(&fx);
+        driver.press("j e");
+        assert_eq!(
+            wires.sent(),
+            [command("home", "INBOX", &[1], Action::Archive)]
+        );
+        assert_eq!(
+            driver.ids(),
+            [(1, 2), (1, 1)],
+            "work's uid 1 is another message and stays"
+        );
+        driver.press("s u");
+        assert_eq!(
+            wires.sent(),
+            [
+                command("work", "INBOX", &[1], Action::Flag),
+                command("work", "INBOX", &[1], Action::MarkUnread)
+            ]
+        );
+    }
+
+    #[test]
+    fn marking_in_all_inboxes_marks_only_that_accounts_message() {
+        let fx = Fixture::new(&["home", "work"]);
+        let (mut driver, wires) = all_inboxes(&fx);
+        driver.press("j x");
+        assert_eq!(
+            driver.app.list.marked,
+            HashSet::from([(0, ("INBOX".to_string(), 1))])
+        );
+        driver.press("j x #");
+        assert_eq!(
+            wires.sent(),
+            [
+                command("home", "INBOX", &[1], Action::Trash),
+                command("work", "INBOX", &[1], Action::Trash)
+            ]
+        );
+        assert_eq!(driver.ids(), [(1, 2)]);
+    }
+
+    #[test]
+    fn the_reader_opens_and_marks_read_in_the_rows_own_account() {
+        let fx = Fixture::new(&["home", "work"]);
+        fx.add("home", unread("INBOX", 1, "home mail"));
+        fx.add("work", message("INBOX", 2, "work mail"));
+        let (mut driver, wires) = fx.driver();
+        driver.apply(UiAction::SelectView(View::AllInboxes));
+        driver.at(10.0);
+        driver.press("j");
+        let body = driver.app.body.as_ref().unwrap();
+        assert_eq!(body.account, 0);
+        assert_eq!(body.text.as_deref(), Some("Body of 1"));
+        driver.at(11.1);
+        assert_eq!(
+            wires.sent(),
+            [command("home", "INBOX", &[1], Action::MarkRead)]
+        );
+    }
+
+    #[test]
+    fn the_move_picker_offers_the_rows_own_account_folders() {
+        let fx = Fixture::new(&["home", "work"]);
+        fx.folder("home", "Receipts", None);
+        fx.folder("work", "Archive", Some("Archive"));
+        let (mut driver, wires) = all_inboxes(&fx);
+        driver.press("j m enter");
+        assert_eq!(
+            wires.sent(),
+            [command(
+                "home",
+                "INBOX",
+                &[1],
+                Action::Move("Receipts".into())
+            )]
+        );
+    }
+
+    #[test]
+    fn moving_marked_rows_from_two_accounts_is_refused() {
+        let fx = Fixture::new(&["home", "work"]);
+        let (mut driver, wires) = all_inboxes(&fx);
+        driver.press("x j x m");
+        assert!(driver.app.move_picker.is_none());
+        assert_eq!(driver.app.error.as_deref(), Some(MOVE_ONE_ACCOUNT));
+        assert!(wires.sent().is_empty());
+        assert_eq!(
+            driver.app.list.marked.len(),
+            2,
+            "the marks stay for the user to narrow"
+        );
+    }
+
+    #[test]
+    fn a_refusal_for_one_account_puts_back_only_its_rows() {
+        let fx = Fixture::new(&["home", "work"]);
+        let (mut driver, wires) = all_inboxes(&fx);
+        driver.press("x j x e");
+        assert_eq!(wires.sent().len(), 2);
+        assert_eq!(driver.ids(), [(1, 1)]);
+        let reason = "home is offline (x); retrying at 10:00";
+        receive(&mut driver, &wires, [refused("home", 0, reason)]);
+        assert_eq!(driver.ids(), [(0, 1), (1, 1)]);
+        assert_eq!(driver.app.accounts[1].queued, 1);
+    }
+
+    #[test]
+    fn a_move_is_refused_when_the_selection_grew_to_two_accounts_under_the_open_picker() {
+        let fx = Fixture::new(&["home", "work"]);
+        fx.folder("home", "Receipts", None);
+        let (mut driver, wires) = all_inboxes(&fx);
+        driver.press("j m");
+        assert!(driver.app.move_picker.is_some());
+        driver
+            .app
+            .list
+            .marked
+            .extend([(0, ("INBOX".to_string(), 1)), (1, ("INBOX".to_string(), 1))]);
+        driver.apply(UiAction::MoveTo("Receipts".into()));
+        assert!(wires.sent().is_empty());
+        assert!(driver.app.move_picker.is_none());
+        assert_eq!(driver.app.error.as_deref(), Some(MOVE_ONE_ACCOUNT));
+    }
 }

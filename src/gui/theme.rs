@@ -191,6 +191,24 @@ mod tests {
         (light + 0.05) / (dark + 0.05)
     }
 
+    #[test]
+    fn the_slint_theme_has_the_same_colours() {
+        let slint = include_str!("ui/theme.slint");
+        for (name, palette) in [
+            ("paper", &PAPER),
+            ("night", &NIGHT),
+            ("frame-day", &FRAME),
+            ("frame-night", &FRAME_NIGHT),
+        ] {
+            let start = slint.find(&format!("<Palette> {name}: {{")).unwrap();
+            let block = &slint[start..start + slint[start..].find("};").unwrap()];
+            for (field, colour) in palette.named() {
+                let line = format!("{field}: #{:06x},", colour.0);
+                assert!(block.contains(&line), "{name} lacks {line}");
+            }
+        }
+    }
+
     /// Regression for #41: bold text in the dark theme was drawn in `on_accent`, near black on the dark panels.
     #[test]
     fn strong_text_stands_out_from_normal_text_in_every_palette() {
@@ -199,10 +217,18 @@ mod tests {
                 let normal = contrast(p.text, background);
                 let bold = contrast(p.strong, background);
                 assert!(bold >= 7.0, "{:?}: strong text contrast {bold}", p.panel);
-                assert!(bold > normal, "{:?}: strong {bold} <= normal {normal}", p.panel);
+                assert!(
+                    bold > normal,
+                    "{:?}: strong {bold} <= normal {normal}",
+                    p.panel
+                );
             }
             let pressed = contrast(p.strong, p.pressed);
-            assert!(pressed >= 4.5, "{:?}: pressed widget contrast {pressed}", p.panel);
+            assert!(
+                pressed >= 4.5,
+                "{:?}: pressed widget contrast {pressed}",
+                p.panel
+            );
         }
     }
 
@@ -211,7 +237,10 @@ mod tests {
         for p in ALL {
             let name = p.panel;
             let selected = contrast(p.on_accent, p.selected);
-            assert!(selected >= 4.5, "{name:?}: text on the selection {selected}");
+            assert!(
+                selected >= 4.5,
+                "{name:?}: text on the selection {selected}"
+            );
             let heading = contrast(p.heading, p.background);
             assert!(heading >= 4.5, "{name:?}: heading {heading}");
             let link = contrast(p.accent, p.background);
@@ -239,7 +268,11 @@ mod tests {
     fn selected_text_in_text_fields_is_readable_in_every_palette() {
         for p in ALL {
             let ratio = contrast(p.on_accent, p.selected);
-            assert!(ratio >= 4.5, "{:?}: selected text contrast {ratio}", p.panel);
+            assert!(
+                ratio >= 4.5,
+                "{:?}: selected text contrast {ratio}",
+                p.panel
+            );
         }
     }
 }

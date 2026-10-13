@@ -3,9 +3,7 @@
 use std::ops::Range;
 
 use crate::message::clean;
-use crate::store::Message;
 use crate::sync::Activity;
-use crate::time::local_time;
 
 use super::list::display_name;
 use super::state::Account;
@@ -162,12 +160,7 @@ pub(crate) fn source_rows(text: &str) -> Vec<Range<usize>> {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
-    use crate::gui::state::View;
-    use crate::gui::test_support::{Fixture, message};
-    use crate::rules::Action;
-    use crate::sync::{Command, Event};
 
     const WITH_ATTACHMENT: &str = "From: a@example.com\r\nSubject: report\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nSee attached\r\n--b\r\nContent-Type: text/plain\r\nContent-Disposition: attachment; filename=\"report.txt\"\r\n\r\nquarterly numbers\r\n--b--\r\n";
 
@@ -283,5 +276,4 @@ mod tests {
             .collect();
         assert_eq!(lengths, [SOURCE_ROW, SOURCE_ROW, 500]);
     }
-
 }

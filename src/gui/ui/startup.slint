@@ -1,0 +1,68 @@
+// The small window shown in place of the mail window when that cannot start (`startup.rs` words it).
+import { Button, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+export component StartupWindow inherits Window {
+    in property <string> summary;
+    in property <string> fix;
+    in property <string> detail;
+    in property <string> link-label;
+    in property <string> link-url;
+    callback open-url(string);
+    callback close-clicked();
+
+    title: "Postvak";
+    icon: @image-url("../../../assets/icon.png");
+    preferred-width: 520px;
+    preferred-height: 260px;
+    background: Theme.pane.background;
+    default-font-family: Theme.text-font;
+
+    VerticalLayout {
+        padding: Theme.inset;
+        spacing: Theme.pad;
+        Text {
+            text: root.summary;
+            font-family: Theme.serif-font;
+            font-size: 20px;
+            color: Theme.pane.heading;
+            wrap: word-wrap;
+        }
+        Text {
+            text: root.fix;
+            color: Theme.pane.text;
+            wrap: word-wrap;
+        }
+        if root.link-url != "": TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.open-url(root.link-url); }
+            accessible-role: button;
+            accessible-label: root.link-label;
+            accessible-action-default => { root.open-url(root.link-url); }
+            HorizontalLayout {
+                alignment: start;
+                Text {
+                    text: root.link-label;
+                    color: Theme.pane.accent;
+                }
+            }
+        }
+        if root.detail != "": ScrollView {
+            vertical-stretch: 1;
+            Text {
+                width: parent.visible-width;
+                text: root.detail;
+                color: Theme.pane.error;
+                wrap: word-wrap;
+            }
+        }
+        if root.detail == "": Rectangle { vertical-stretch: 1; }
+        HorizontalLayout {
+            alignment: start;
+            Button {
+                text: "Close";
+                clicked => { root.close-clicked(); }
+            }
+        }
+    }
+}

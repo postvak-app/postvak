@@ -112,12 +112,30 @@ impl Driver {
     pub fn apply(&mut self, action: UiAction) {
         self.app.apply(action, self.now);
         self.tick();
+        // The window focuses the search field when asked to.
+        if self.app.focus_search && self.app.search.is_some() {
+            self.app.apply(UiAction::SearchFocused(true), self.now);
+        }
     }
 
     /// Presses each space-separated key in the focused pane: "down", "up", "left", "right", "tab", "escape",
-    /// "delete", "backspace", "ctrl+r", or the text it types.
+    /// "delete", "backspace", "enter", "ctrl+r", or the text it types. While the search field or the move picker has
+    /// the keyboard, text goes there and Enter does what it does there.
     pub fn press(&mut self, keys: &str) {
         for key in keys.split(' ') {
+            if self.app.move_picker.is_some() || self.app.search_focused {
+                match key {
+                    "enter" => {
+                        self.enter();
+                        continue;
+                    }
+                    "escape" | "ctrl+r" => {}
+                    text => {
+                        self.type_text(text);
+                        continue;
+                    }
+                }
+            }
             let press = match key {
                 "down" => Press::named(Named::Down),
                 "up" => Press::named(Named::Up),
@@ -140,6 +158,34 @@ impl Driver {
         }
     }
 
+    /// Text typed into the move picker's filter or the search field, as their `edited` callbacks send it.
+    fn type_text(&mut self, text: &str) {
+        if let Some(filter) = &self.app.move_picker {
+            let filter = format!("{filter}{text}");
+            self.apply(UiAction::MoveFilter(filter));
+        } else if let Some(query) = &self.app.search {
+            let query = format!("{query}{text}");
+            self.apply(UiAction::SearchFor(query));
+        }
+    }
+
+    /// Enter in the move picker moves to the first folder shown; in the search field it opens the first hit.
+    fn enter(&mut self) {
+        if self.app.move_picker.is_some() {
+            if let Some(first) = self.app.move_targets().first() {
+                self.apply(UiAction::MoveTo(first.to_string()));
+            }
+        } else {
+            self.apply(UiAction::SelectRow(0));
+        }
+    }
+
+    /// The status bar's lines: one per account, then the window's own error.
+    pub fn status(&self) -> Vec<String> {
+        let accounts = self.app.accounts.iter().map(super::status::account_line);
+        accounts.chain(self.app.error.clone()).collect()
+    }
+
     /// Moves the clock to `at` seconds and ticks.
     pub fn at(&mut self, at: f64) {
         self.now = at;
@@ -148,7 +194,12 @@ impl Driver {
 
     /// The rows' (account, uid), top to bottom.
     pub fn ids(&self) -> Vec<(usize, u32)> {
-        self.app.list.rows.iter().map(|r| (r.account, r.uid)).collect()
+        self.app
+            .list
+            .rows
+            .iter()
+            .map(|r| (r.account, r.uid))
+            .collect()
     }
 
     /// The rows' uids, top to bottom.
