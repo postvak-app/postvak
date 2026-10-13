@@ -205,6 +205,21 @@ fn inbox_dark() {
 }
 
 #[test]
+fn all_inboxes() {
+    let fx = mailbox("dark");
+    let (mut harness, _wires) = open(&fx);
+    harness.state_mut().select_view(View::AllInboxes);
+    harness.run();
+    assert!(harness.query_by_label_contains("home · Mum").is_some());
+    assert!(
+        harness
+            .query_by_label_contains("work · Linus Example")
+            .is_some()
+    );
+    snapshot(&mut harness, "gui_all_inboxes");
+}
+
+#[test]
 fn inbox_with_marks_and_an_expanded_thread() {
     let (_fx, mut harness, _wires) = inbox("light");
     for key in ["x", "j", "x"] {
@@ -216,7 +231,7 @@ fn inbox_with_marks_and_an_expanded_thread() {
     let list = &harness.state().list;
     for uid in [95, 94] {
         assert!(
-            list.marked.contains(&("INBOX".to_string(), uid)),
+            list.marked.contains(&(1, ("INBOX".to_string(), uid))),
             "{uid} not marked"
         );
     }
@@ -423,16 +438,10 @@ fn headers_fields_and_popups_line_up_on_the_grid() {
         source.center().y,
         "list title and reader actions share a line"
     );
-    let first_folder = harness.get_by_label("Inbox (1)").rect();
-    let first_row = harness
-        .query_all_by_label_contains("Lunch on Friday?")
-        .map(|node| node.rect())
-        .find(|rect| rect.right() < list.right())
-        .unwrap();
     assert_eq!(
-        first_folder.top(),
-        first_row.top(),
-        "first folder and first message share a line"
+        harness.get_by_label("All inboxes (3)").rect().center().y,
+        title.center().y,
+        "All inboxes and the list title share a line"
     );
     let avatar = harness
         .output()
@@ -484,4 +493,26 @@ fn headers_fields_and_popups_line_up_on_the_grid() {
         .unwrap();
     assert_eq!(field.height(), ROW, "text field height");
     assert_eq!(hint.left(), field.left() + PAD, "text field content");
+}
+
+#[test]
+fn with_one_account_the_first_folder_and_first_message_share_a_line() {
+    use egui::containers::panel::PanelState;
+    let fx = Fixture::new(&["work"]);
+    fx.add("work", message("INBOX", 1, "hello"));
+    let (harness, _wires) = fx.harness();
+    let list = PanelState::load(&harness.ctx, egui::Id::new("list"))
+        .unwrap()
+        .outer_rect;
+    let first_folder = harness
+        .query_all_by_label("Inbox")
+        .map(|node| node.rect())
+        .find(|rect| rect.right() < list.left())
+        .unwrap();
+    let first_row = harness
+        .query_all_by_label_contains("hello")
+        .map(|node| node.rect())
+        .find(|rect| rect.right() < list.right())
+        .unwrap();
+    assert_eq!(first_folder.top(), first_row.top());
 }

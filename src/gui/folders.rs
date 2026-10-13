@@ -1,11 +1,11 @@
-//! The left column: special folders, then custom folders as a tree, per account, then the Rules, Activity and Backups entries, pinned to the bottom.
+//! The left column: All inboxes when there are several accounts, then special folders, then custom folders as a tree, per account, then the Rules, Activity and Backups entries, pinned to the bottom.
 use eframe::egui::{self, AtomExt as _};
 
 use crate::message::clean;
 use crate::store::Folder;
 
 use super::app::{Account, App, FolderRow, UiAction, View};
-use super::{icons, numbers, theme};
+use super::{icons, list, numbers, theme};
 
 pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     let mut actions = Vec::new();
@@ -23,6 +23,27 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
             }
         });
     egui::ScrollArea::vertical().show(ui, |ui| {
+        if app.shows_all_inboxes() {
+            let label = "All inboxes";
+            let (count, accessible) = count_and_name(label, inbox_unread(&app.accounts));
+            let selected = app.view == View::AllInboxes;
+            // On the line of the list's title and the reader's actions, as an account's heading is without it.
+            let entry = theme::heading_row(ui, |ui| {
+                folder_row(
+                    ui,
+                    selected,
+                    icons::ALL_INBOXES,
+                    label,
+                    0.0,
+                    count,
+                    &accessible,
+                )
+            });
+            if entry.clicked() {
+                actions.push(UiAction::SelectView(View::AllInboxes));
+            }
+            ui.separator();
+        }
         for (index, account) in app.accounts.iter().enumerate() {
             // Indented like the rows' icons, which sit a button padding inside the row.
             theme::heading_row(ui, |ui| {
@@ -190,6 +211,16 @@ fn caret(
     let name = format!("{} {label}", if expanded { "Collapse" } else { "Expand" });
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
     response
+}
+
+/// Unread mail in every account's INBOX, for the All inboxes count.
+fn inbox_unread(accounts: &[Account]) -> u32 {
+    accounts
+        .iter()
+        .flat_map(|account| &account.folders)
+        .filter(|folder| folder.name == list::INBOX)
+        .map(|folder| folder.unread)
+        .sum()
 }
 
 fn count_and_name(name: &str, unread: u32) -> (Option<String>, String) {
@@ -453,6 +484,48 @@ mod tests {
         rows.iter()
             .map(|r| (r.depth, r.label.as_str(), r.folder.is_some()))
             .collect()
+    }
+
+    #[test]
+    fn all_inboxes_sits_on_top_with_every_inbox_unread_count_and_opens_on_click() {
+        let fx = Fixture::new(&["home", "work"]);
+        fx.folder("work", "Archive", Some("Archive"));
+        for (account, folder, uid) in [
+            ("home", "INBOX", 1),
+            ("work", "INBOX", 2),
+            ("work", "INBOX", 3),
+            ("work", "Archive", 4),
+        ] {
+            let mut unread = message(folder, uid, "hello");
+            unread.flags = String::new();
+            fx.add(account, unread);
+        }
+        let (mut harness, _wires) = fx.harness();
+        let entry = harness.get_by_label("All inboxes (3)").rect();
+        assert!(entry.bottom() < harness.get_by_label("home").rect().top());
+        harness.get_by_label("All inboxes (3)").click();
+        harness.run();
+        assert_eq!(harness.state().view, View::AllInboxes);
+    }
+
+    #[test]
+    fn one_account_has_no_all_inboxes_entry() {
+        let fx = Fixture::new(&["work"]);
+        let (harness, _wires) = fx.harness();
+        assert!(harness.query_by_label_contains("All inboxes").is_none());
+    }
+
+    #[test]
+    fn k_in_the_folder_pane_steps_up_from_the_first_inbox_to_all_inboxes() {
+        let fx = Fixture::new(&["home", "work"]);
+        let (mut harness, _wires) = fx.harness();
+        for _ in 0..2 {
+            harness.key_press(egui::Key::Tab);
+            harness.run();
+        }
+        harness.event(egui::Event::Text("k".into()));
+        harness.run();
+        assert_eq!(harness.state().view, View::AllInboxes);
     }
 
     #[test]

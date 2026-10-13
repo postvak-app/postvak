@@ -220,7 +220,7 @@ pub(crate) const KEYS: [(&str, &str); 14] = [
     ("u", "mark read or unread"),
     ("s", "flag or unflag"),
     ("v", "show HTML mail as text, or as HTML again"),
-    ("/", "search this account"),
+    ("/", "search this account; in All inboxes, every account"),
     ("Esc", "close a popup, leave search, clear the selection"),
     ("Tab", "next pane: folders, list, body"),
     ("Ctrl+R (Cmd+R on macOS)", "sync every account now"),

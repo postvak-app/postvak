@@ -14,7 +14,7 @@ In scope:
 - Rules view (proposals, enable switch, open in editor), activity log, trash with restore.
 - A single-instance lock per account.
 
-Out of scope, recorded in §11: compose and send, HTML rendering, unified inbox, account setup in the GUI, live reload of `config.toml`, applying a rule to existing mail from the GUI, undo, app bundle and tray.
+Out of scope, recorded in §11: compose and send, HTML rendering, account setup in the GUI, live reload of `config.toml`, applying a rule to existing mail from the GUI, undo, app bundle and tray.
 
 ## 2. Decisions log
 
@@ -24,7 +24,7 @@ Out of scope, recorded in §11: compose and send, HTML rendering, unified inbox,
 | SQLCipher | No. Stores stay 0600 in the state dir; full-disk encryption covers data at rest | Encrypt now; defer |
 | Layout | Three columns: folders, list, body | List over body; list then body |
 | List | Collapsed threads, expand in place | Flat; per-folder toggle |
-| Accounts | One tree per account | Unified inbox |
+| Accounts | One tree per account, plus All inboxes with two or more accounts | Unified inbox instead of per-account trees |
 | Rules UI | Proposals, enable switch, open in editor, log, trash | Rule-from-message form; full form editor |
 | UI to IMAP | Commands into the existing account thread; IDLE woken by a flag | Second action connection per account; connection per action |
 | Packaging | `gui` cargo feature, on by default; `postvak gui` | Separate binary; workspace |
@@ -308,4 +308,4 @@ Not automated: pixels, real windowing, notifications. Reported as ran on macOS, 
 - Apply a rule to existing mail from the GUI, with a dry-run count and confirmation.
 - Account setup in the GUI; live reload of `config.toml`.
 - Font size and other appearance settings beyond the theme.
-- Unified inbox; undo; remembered window and pane sizes; tray and close-to-background; native macOS menu bar (`muda`).
+- Undo; remembered window and pane sizes; tray and close-to-background; native macOS menu bar (`muda`).

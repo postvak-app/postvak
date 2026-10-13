@@ -21,7 +21,7 @@ The window remembers its size, its position and the width of its columns in `win
 | `u` | mark read or unread |
 | `s` | flag or unflag |
 | `v` | show HTML mail as text, or as HTML again |
-| `/` | search this account; mail whose body is not downloaded yet matches on sender, recipients and subject only |
+| `/` | search this account, or every account from All inboxes; mail whose body is not downloaded yet matches on sender, recipients and subject only |
 | Esc | close a popup, leave search, clear the selection |
 | Tab | next pane: folders, list, body |
 | Ctrl+R (Cmd+R on macOS) | sync every account now |
@@ -31,7 +31,11 @@ Each attachment of the open message has a Save button, which saves it to your Do
 
 Actions apply to the selection when there is one, else to the current row; on a thread row they apply to the whole thread in that folder. A message you open, with the keys or a click, is marked read after its text has been on screen for a second; the one a folder opens on stays unread.
 
+In All inboxes each action goes to the message's own account. `m` offers the folders of that account; marked messages from more than one account cannot be moved together.
+
 ## Folders
+
+With two or more accounts, **All inboxes** at the top of the folder pane lists the INBOX of every account in one list, newest first; its count is the unread mail in all of them.
 
 Each account lists its INBOX and special folders (Archive, Drafts, Sent, Junk, Trash) first, then your own folders as a tree that follows the server's hierarchy. Click the caret in front of a parent to fold or unfold its branch; folding lasts until you close the window. A parent the server does not list as a folder is shown but cannot be opened.
 

@@ -26,6 +26,10 @@ Spec: `docs/superpowers/specs/2026-10-06-postvak-core-design.md`. Read it before
 
 `tests/architecture.rs` checks the ownership rules above for `mcp`, `rules` (rules.toml writes), `gui` views and `cli`; allowed exceptions live there with a reason.
 
+## Surfaces
+- A feature ships on the CLI, MCP and GUI together unless its spec names the exception; `help` and `output` are shared so the texts and JSON rows stay identical
+- Logic lives in a library module. Anything that touches IMAP goes through the daemon as a `Command`. Front ends only call library code and `daemon::Client`
+
 ## Definition of done
 - `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, `cargo machete` and `cargo audit` all pass
 - New logic has a test; a bug fix has a regression test
