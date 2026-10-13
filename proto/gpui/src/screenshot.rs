@@ -77,3 +77,63 @@ fn the_window_renders_offscreen_and_the_same_twice() {
         panic!("two renders differ in {differ} pixels; see target/screenshots");
     }
 }
+
+/// p50, p95 and max of `times`, in milliseconds; the same report as `src/gui/bench.rs`.
+fn report(name: &str, times: &mut [Duration]) {
+    times.sort();
+    let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+    let at = |q: f64| times[((times.len() - 1) as f64 * q) as usize];
+    println!(
+        "{name}: {} frames, p50 {:.2} ms, p95 {:.2} ms, max {:.2} ms",
+        times.len(),
+        ms(at(0.5)),
+        ms(at(0.95)),
+        ms(at(1.0))
+    );
+}
+
+/// The GPUI side of `src/gui/bench.rs`: holding `j` on 20 000 messages, each frame drawn offscreen and read back.
+#[test]
+#[ignore = "benchmark, run by hand: cargo test --release hold_j -- --ignored --nocapture"]
+fn hold_j_on_20000_messages() {
+    let text = Arc::new(gpui_wgpu::CosmicTextSystem::new_without_system_fonts(
+        "Hanken Grotesk",
+    ));
+    let mut cx = HeadlessAppContext::with_platform(
+        text,
+        Arc::new(()),
+        gpui_platform::current_headless_renderer,
+    );
+    cx.update(crate::init);
+    let dir = tempfile::tempdir().unwrap();
+    let (home, shown) = crate::open_home(dir.path(), Some(20_000)).unwrap();
+    let (model, _commands) = crate::open_model(&home, shown).unwrap();
+    let window = cx
+        .open_window(size(px(1280.), px(800.)), |window, cx| {
+            let mail = Mail::new(model, window, cx);
+            cx.new(|_| mail)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.capture_screenshot(window.into()).unwrap();
+    let mut times = Vec::new();
+    for _ in 0..300 {
+        let start = std::time::Instant::now();
+        window
+            .update(&mut cx, |_, window, cx| {
+                window.dispatch_action(Box::new(crate::list::Next), cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.capture_screenshot(window.into()).unwrap();
+        times.push(start.elapsed());
+    }
+    let cursor = window
+        .update(&mut cx, |mail, _, cx| mail.model.read(cx).cursor)
+        .unwrap();
+    assert_eq!(cursor, 300);
+    report(
+        "GPUI, key to frame read back, 1280×800 at scale 2",
+        &mut times,
+    );
+}

@@ -26,6 +26,12 @@ image = { version = "0.25", default-features = false, features = ["png"] }  # wr
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.9" }  # CosmicTextSystem, the Linux text system, for the headless screenshot
 
+# postvak's own release profile, so binary sizes compare like with like.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
 [lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"

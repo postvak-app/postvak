@@ -78,6 +78,14 @@ fn add_newsletter(home: &Home) -> anyhow::Result<()> {
 /// The snapshot mailbox's `work` INBOX with the newsletter, or with `count` a generated one, in a new home under
 /// `dir`; and the indices of the accounts the list shows.
 fn open_home(dir: &Path, count: Option<u32>) -> anyhow::Result<(Home, Vec<usize>)> {
+    // A home made by an earlier run with `--home`: open it as it is.
+    let paths = postvak::paths::Paths::under(dir);
+    if paths.config_file().exists() {
+        let config = postvak::config::Config::load(&paths.config_file())?;
+        let accounts: Vec<String> = config.accounts.into_iter().map(|a| a.name).collect();
+        let shown = vec![accounts.iter().position(|a| a == "work").unwrap_or(0)];
+        return Ok((Home { accounts, paths }, shown));
+    }
     Ok(match count {
         Some(count) => (fixture::generated(dir, count)?, vec![0]),
         None => {
@@ -169,12 +177,21 @@ pub fn init(cx: &mut App) {
 }
 
 fn main() -> anyhow::Result<()> {
-    // Both outlive the window: the home's stores, and the receiver that lets sends succeed.
-    let dir = tempfile::tempdir()?;
+    // `--home DIR` makes the home in DIR on first use and keeps it, so the egui build can open the same mailbox;
+    // without it the home is a temp dir. Both outlive the window, as does the receiver that lets sends succeed.
+    let args: Vec<String> = std::env::args().collect();
+    let kept = match args.as_slice() {
+        [_, flag, dir] if flag == "--home" => Some(std::path::PathBuf::from(dir)),
+        [_] => None,
+        _ => anyhow::bail!("usage: postvak-gpui-proto [--home DIR]"),
+    };
+    let temp = tempfile::tempdir()?;
+    let dir = kept.as_deref().unwrap_or(temp.path());
+    std::fs::create_dir_all(dir)?;
     let count = std::env::var("POSTVAK_PROTO_COUNT")
         .ok()
         .and_then(|n| n.parse().ok());
-    let (home, shown) = open_home(dir.path(), count)?;
+    let (home, shown) = open_home(dir, count)?;
     let (model, _commands) = open_model(&home, shown)?;
     gpui_kit::application().run(move |cx: &mut App| {
         init(cx);

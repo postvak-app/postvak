@@ -45,9 +45,11 @@ jobs:
           sudo apt-get install -y mesa-vulkan-drivers vulkan-tools libxkbcommon-x11-dev libx11-xcb-dev libwayland-dev libfontconfig-dev
           vulkaninfo --summary | grep -E "deviceName|deviceType" || true
       - run: cargo test --release
-      - name: Libraries the binary links
+      - name: Libraries the binary needs
         if: runner.os == 'Linux'
-        run: ldd target/release/postvak-gpui-proto
+        run: |
+          cargo build --release
+          readelf -d target/release/postvak-gpui-proto | grep NEEDED
       - uses: actions/upload-artifact@v7
         if: always()
         with:

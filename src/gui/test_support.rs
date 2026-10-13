@@ -51,6 +51,11 @@ impl Fixture {
         Fixture::build(|root| fixture::mailbox(root, theme))
     }
 
+    /// One account, `work`, with `count` messages in its INBOX, for timing.
+    pub fn generated(count: u32) -> Fixture {
+        Fixture::build(|root| fixture::generated(root, count))
+    }
+
     fn build(home: impl FnOnce(&std::path::Path) -> anyhow::Result<Home>) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let home = home(dir.path()).unwrap();

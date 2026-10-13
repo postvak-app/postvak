@@ -385,6 +385,26 @@ mod tests {
 
     use super::*;
 
+    /// What GPUI adds per strip over egui: the RGBA to straight BGRA conversion, on a full-width strip at scale 2.
+    #[test]
+    #[ignore = "benchmark, run by hand: cargo test --release strip_conversion -- --ignored --nocapture"]
+    fn strip_conversion_cost() {
+        let (width, height) = (2520, STRIP);
+        let mut times = Vec::new();
+        for _ in 0..50 {
+            let rgba = vec![128u8; (width * height * 4) as usize];
+            let pixels = Pixels::new(width, height, rgba).unwrap();
+            let start = Instant::now();
+            strip_image(pixels).unwrap();
+            times.push(start.elapsed());
+        }
+        times.sort();
+        println!(
+            "strip {width}×{height} to a GPUI image: p50 {:?}, max {:?}",
+            times[25], times[49]
+        );
+    }
+
     fn painted(mail: &Entity<Mail>, cx: &mut VisualTestContext) -> Option<(usize, i32, i32)> {
         mail.read_with(cx, |mail, cx| {
             let view = mail.body.read(cx).shown.as_ref()?.view.as_ref()?;
