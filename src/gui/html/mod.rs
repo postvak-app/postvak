@@ -668,6 +668,50 @@ mod view_tests {
     }
 
     #[test]
+    fn ctrl_c_copies_the_page_selection() {
+        use slint::platform::{Key, WindowEvent};
+        let fx = Fixture::new(&["work"]);
+        let words = "word ".repeat(200);
+        add_html(
+            &fx,
+            1,
+            &format!("<p style=\"font-size:40px\">{words}</p>"),
+            "words",
+        );
+        let (open, _wires) = fx.window();
+        wait_for(&open, painted);
+        open.window().invoke_page_select(20.0, 70.0, 220.0, 70.0);
+        wait_for(&open, |app| {
+            let view = app.body.as_ref().and_then(|b| b.html_view.as_ref());
+            view.is_some_and(|v| v.selection.is_some())
+        });
+        let chord = |key: char| {
+            let window = open.window();
+            let control: slint::SharedString = Key::Control.into();
+            for event in [
+                WindowEvent::KeyPressed {
+                    text: control.clone(),
+                },
+                WindowEvent::KeyPressed { text: key.into() },
+                WindowEvent::KeyReleased { text: key.into() },
+                WindowEvent::KeyReleased { text: control },
+            ] {
+                window.window().dispatch_event(event);
+            }
+        };
+        let selected = open.window().get_page_selection();
+        assert!(selected.contains("word"), "{selected:?}");
+        chord('c');
+        // The search field pastes what Ctrl+C put on the clipboard.
+        open.press("/");
+        open.tick();
+        chord('v');
+        open.tick();
+        let query = open.with(|live| live.app.search.clone()).unwrap();
+        assert_eq!(query, selected.as_str());
+    }
+
+    #[test]
     fn loading_remote_content_fetches_what_the_page_asked_for_and_lays_it_out_again() {
         let fx = Fixture::new(&["work"]);
         add_html(&fx, 1, "<p>x</p>", "text");

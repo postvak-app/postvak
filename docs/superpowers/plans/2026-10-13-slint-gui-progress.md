@@ -141,6 +141,17 @@ Last updated: 2026-10-13. Branch `feat/slint-gui`. Read first: the plan `2026-10
   - The reader's sender and address have `PAD` between them, the status dot `PAD` before its text; "Remote content not loaded." elides, so the narrow reader no longer runs past the pane's edge.
   - Kept from the branch: the Keys window, links listed under a plain text body (a `TextInput` keeps the text selectable; `StyledText` would colour links inline but cannot select).
   - Found, not fixed: off macOS the in-window menu bar draws Fluent's light-scheme text (near black) on the oxblood frame, and std widgets (`LineEdit`, `CheckBox`, scroll bars) follow the OS scheme, not `Theme.preference`. `Palette.color-scheme` can be set, but setting it drops the binding `Theme.dark` reads the OS scheme from; needs a choice (a paper strip behind the menu bar, or the OS scheme from Rust).
+- Slint features audit (what we build by hand that Slint 1.18 has):
+  - Applied: Ctrl+C copies the HTML selection through a `KeyBinding` (enabled while there is a selection) instead of matching the key in `key-pressed`; a test pastes it into search. `GridLayout` with repeated `Row`s for the tables (above).
+  - Already on Slint: `MenuBar`, `ContextMenuArea`, `Tooltip` with `@markdown`, `SystemTrayIcon`, `AboutSlint`, `ListView`, `LineEdit`, `CheckBox`, `Spinner`, `ProgressIndicator`, `@children` in `Dialog`, `Platform.os`, the renderer fallback.
+  - Hand-made with reason: the splitter (no Slint element), `IconButton`/`TextButton` (std `Button` draws Fluent, not the Ossenbloed palette), the theme switch (no segmented control), `rows::ListModel` (rows made on demand plus a per-row cursor diff that `MapModel` cannot express), `rows::synced` (`VecModel` has no diffing set), the hidden `TextInput` for the clipboard (Slint has no public clipboard API), state-driven overlays instead of `PopupWindow` (shown imperatively, outside `App`), the Rust `slint::Timer` driven by `tick`'s deadline.
+  - Options for the owner, each with a cost:
+    - `StandardTableView` for Activity and Backups: sortable headers, keyboard rows, virtualised; but Fluent-styled cells, and Restore would act on the selected row instead of a button per row.
+    - `StyledText` for the plain-text body: links coloured inline and clickable (as egui drew them), but no text selection; today's `TextInput` plus a link list keeps selection.
+    - `TextEdit { read-only: true }` for the plain-text body: its own scrolling and selection, replacing `ScrollView` + `TextInput` + `width: scroll.visible-width`; but a Fluent frame around the text.
+    - `KeyBinding` for Ctrl+R and the other shortcuts: declarative, but `keys.rs` is shared with the `Driver` tests and the Keys help, so moving them splits one table in two.
+    - `animate background` on hover and selection for polish; main had none.
+    - `Palette.color-scheme` following `Theme.preference` (see the menu bar finding above).
 
 ## Next steps (in order)
 

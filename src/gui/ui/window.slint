@@ -335,14 +335,15 @@ export component MailWindow inherits Window {
 
     keys := FocusScope {
         key-pressed(event) => {
-            if (event.text == "c" && event.modifiers.control && root.page-selection != "") {
-                root.copy-text(root.page-selection);
-                return accept;
-            }
             if (root.key(event.text, event.modifiers.control, event.modifiers.alt)) {
                 return accept;
             }
             return reject;
+        }
+        KeyBinding {
+            keys: @keys(Control + C);
+            enabled: root.page-selection != "";
+            activated => { root.copy-text(root.page-selection); }
         }
 
     VerticalLayout {
