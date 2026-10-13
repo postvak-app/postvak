@@ -1,23 +1,27 @@
-//! Resources for an HTML body: `cid:` parts of the message and `data:` URIs. Nothing else is fetched.
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+//! Resources for an HTML body: `cid:` parts of the message, `data:` URIs, and remote content the user chose to load,
+//! all from memory. Nothing is fetched here.
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use blitz_traits::net::{Bytes, NetHandler, NetProvider, Request};
 
+use super::Fetched;
 use crate::message::InlinePart;
 
 /// Answers every request at once, from memory. A refused request gets empty bytes, so a stylesheet in `<head>` does not
 /// hold up painting and an image simply fails to decode.
 pub(crate) struct Inline {
+    fetched: Fetched,
     parts: Vec<InlinePart>,
-    refused: Arc<AtomicBool>,
+    refused: Arc<Mutex<BTreeSet<String>>>,
 }
 
 impl Inline {
-    /// The provider, and a flag it sets when it refused a request for remote content.
-    pub fn new(parts: Vec<InlinePart>) -> (Inline, Arc<AtomicBool>) {
-        let refused = Arc::new(AtomicBool::new(false));
+    /// The provider, and the remote URLs it was asked for that are not in `fetched`.
+    pub fn new(parts: Vec<InlinePart>, fetched: Fetched) -> (Inline, Arc<Mutex<BTreeSet<String>>>) {
+        let refused = Arc::new(Mutex::new(BTreeSet::new()));
         let provider = Inline {
+            fetched,
             parts,
             refused: refused.clone(),
         };
@@ -39,8 +43,14 @@ impl Inline {
                 data.decode_to_vec().ok().map(|(bytes, _)| bytes)
             }
             "http" | "https" => {
-                self.refused.store(true, Ordering::Relaxed);
-                None
+                let bytes = self.fetched.get(url.as_str()).cloned();
+                if bytes.is_none() {
+                    self.refused
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .insert(url.to_string());
+                }
+                bytes
             }
             _ => None,
         }
@@ -84,6 +94,8 @@ mod tests {
 
     use blitz_traits::net::Url;
 
+    use std::collections::BTreeMap;
+
     use super::*;
 
     struct Capture(Arc<Mutex<Option<Bytes>>>);
@@ -104,11 +116,16 @@ mod tests {
             .to_vec()
     }
 
-    fn provider() -> (Inline, Arc<AtomicBool>) {
-        Inline::new(vec![InlinePart {
+    fn provider() -> (Inline, Arc<Mutex<BTreeSet<String>>>) {
+        let fetched = BTreeMap::from([(
+            "https://cdn.example.com/hero.png".to_string(),
+            b"HERO".to_vec(),
+        )]);
+        let parts = vec![InlinePart {
             cid: "logo@example.com".into(),
             bytes: b"PNG".to_vec(),
-        }])
+        }];
+        Inline::new(parts, Arc::new(fetched))
     }
 
     #[test]
@@ -118,7 +135,8 @@ mod tests {
         assert_eq!(fetch(&inline, "cid:logo%40example.com"), b"PNG");
         assert_eq!(fetch(&inline, "data:text/plain;base64,aGk="), b"hi");
         assert_eq!(fetch(&inline, "data:,a%20b"), b"a b");
-        assert!(!refused.load(Ordering::Relaxed));
+        assert_eq!(fetch(&inline, "https://cdn.example.com/hero.png"), b"HERO");
+        assert!(refused.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -127,9 +145,12 @@ mod tests {
         assert!(fetch(&inline, "cid:unknown").is_empty());
         assert!(fetch(&inline, "file:///etc/passwd").is_empty());
         assert!(fetch(&inline, "postvak://mail/relative.png").is_empty());
-        assert!(!refused.load(Ordering::Relaxed));
+        assert!(refused.lock().unwrap().is_empty());
         assert!(fetch(&inline, "https://tracker.example.com/p.gif").is_empty());
-        assert!(refused.load(Ordering::Relaxed));
+        assert_eq!(
+            *refused.lock().unwrap(),
+            BTreeSet::from(["https://tracker.example.com/p.gif".to_string()])
+        );
     }
 
     #[test]

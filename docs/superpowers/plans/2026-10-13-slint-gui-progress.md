@@ -10,6 +10,8 @@ Last updated: 2026-10-13. Branch `feat/slint-gui`. Read first: the plan `2026-10
 
 ## Done
 
+- Draft PR: postvak-app/postvak#134.
+
 - Task 1: seams cherry-picked (`html::Pixels`, `html::Wake`, `Request::Select([f32;2])`, `gui::fixture`, `Client::in_memory` under `testing`).
 - Docs commit: design, parity checklist, plan.
 - Task 2 (`refactor(gui): state without egui`):
@@ -22,10 +24,11 @@ Last updated: 2026-10-13. Branch `feat/slint-gui`. Read first: the plan `2026-10
   - `tests/architecture.rs`: the gui rule and the rules.toml exception name `state.rs` (Task 13 adds `bind.rs`/`rows.rs` checks).
   - Deferred to their view tasks: the harness-based view tests of `list.rs`, `folders.rs`, `body.rs`, `rules.rs`, `status.rs`, `toolbar.rs`, `html/view_tests.rs`, `startup.rs` window tests and `snapshots.rs` (parity checklist lists them; old code on `origin/main`).
 
+- Merged `main` after #133 (newsletter HTML, Load remote content): `html/fetch.rs` wakes through `Wake`; `state.rs` has `fetcher`, `UiAction::LoadRemote`, `lay_out`, `load_remote`, `receive_remote`; `html` is a private module now. Its three view tests are listed in the parity checklist for Task 7. The `tests/snapshots/gui_html_*.png` from `main` are egui's and get replaced in Task 12.
+
 ## Next steps (in order)
 
-1. Open a draft PR for `feat/slint-gui` so CI runs (CI still installs mesa for snapshots until Task 12).
-2. Tasks 3–13 of the plan, one commit each, updating this doc after each.
+1. Tasks 3–13 of the plan, one commit each, updating this doc after each.
 
 ## Notes for whoever resumes
 

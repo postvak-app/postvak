@@ -5,7 +5,7 @@ pub mod body;
 #[cfg(any(test, feature = "testing"))]
 pub mod fixture;
 mod folders;
-pub mod html;
+mod html;
 mod icons;
 mod keys;
 pub mod list;

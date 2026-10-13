@@ -948,6 +948,10 @@ Legend: **[free]** means toolkit-free and reusable as is. **[free\*]** means too
   - Nothing is sent when the pair equals `selected_at`.
   - The Copy event copies `state.selection`, but only when no widget has keyboard focus.
 
+**Remote content** (added on `main` by #133, after this checklist was first written):
+- Over the page: `"Loading remote content…"` while a download runs; otherwise, when the last layout asked for remote URLs, `"Remote content not loaded."` with a `"Load remote content"` button that sends `UiAction::LoadRemote`.
+- Tests to port from `origin/main:src/gui/html/view_tests.rs`: `loading_remote_content_fetches_what_the_page_asked_for_and_lays_it_out_again`, `after_loading_what_the_loaded_content_asks_for_follows_without_asking`, `a_download_for_a_message_no_longer_shown_is_dropped` (they use `Fetcher::fake`).
+
 ### 10. App-side HTML state machine (`app.rs:1352-1520`)
 
 - **Replies:** any reply whose generation differs from `html_view.generation` is dropped (test `a_reply_for_an_older_layout_is_dropped`).
