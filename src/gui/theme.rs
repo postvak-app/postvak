@@ -45,6 +45,8 @@ pub(crate) const PAD: f32 = 8.0;
 pub(crate) const INSET: f32 = 2.0 * PAD;
 /// Size of the icons on icon buttons.
 pub(crate) const ICON: f32 = 16.0;
+/// Space between an icon button's edge and its glyph.
+pub(crate) const GLYPH: f32 = (CONTROL - ICON) / 2.0;
 /// Corner radius of the panes where they meet the frame.
 pub(crate) const RADIUS: u8 = 10;
 
@@ -249,11 +251,14 @@ pub(crate) fn install(ctx: &egui::Context) {
     ctx.set_visuals_of(egui::Theme::Dark, NIGHT.visuals(true));
     ctx.set_visuals_of(egui::Theme::Light, PAPER.visuals(false));
     ctx.all_styles_mut(|style| {
-        style.spacing.button_padding = egui::vec2(PAD, 4.0);
+        // Under half of ROW less the text height, so `interact_size` makes text buttons exactly ROW tall.
+        style.spacing.button_padding = egui::vec2(PAD, 3.0);
         style.spacing.interact_size.y = ROW;
+        style.spacing.item_spacing.y = PAD / 2.0;
         #[allow(clippy::cast_possible_truncation, reason = "a margin of a few points")]
         let inset = INSET as i8;
-        style.spacing.window_margin = egui::Margin::same(inset);
+        // Less the window's 1 px outline, which egui lays content out inside, so content sits INSET from its edge.
+        style.spacing.window_margin = egui::Margin::same(inset - 1);
         if let Some(heading) = style.text_styles.get_mut(&egui::TextStyle::Heading) {
             heading.family = egui::FontFamily::Name(SERIF.into());
         }
@@ -290,29 +295,48 @@ pub(crate) fn chrome(ui: &mut egui::Ui) {
     *ui.visuals_mut() = chrome_of(palette(ui)).visuals(true);
 }
 
+/// A row as tall as an icon button, so a pane's heading shares a line with the actions at the top of the next pane.
+pub(crate) fn heading_row<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let size = egui::vec2(ui.available_width(), CONTROL);
+    let layout = egui::Layout::left_to_right(egui::Align::Center);
+    ui.allocate_ui_with_layout(size, layout, |ui| {
+        ui.set_min_height(CONTROL);
+        add(ui)
+    })
+    .inner
+}
+
 /// A grid whose columns are an inset apart, so neighbouring cells never read as one.
 pub(crate) fn grid(id: &str, ui: &egui::Ui) -> egui::Grid {
     egui::Grid::new(id).spacing(egui::vec2(INSET, ui.spacing().item_spacing.y))
 }
 
-/// `frame` with an accent outline when its pane has the keyboard focus.
+/// `frame` with an accent outline when its pane has the keyboard focus. egui lays content out inside the outline,
+/// so the margin gives its width back and the content holds still.
 pub(crate) fn pane(frame: egui::Frame, ui: &egui::Ui, focused: bool) -> egui::Frame {
     if focused {
-        frame.stroke(Stroke::new(1.0, palette(ui).accent))
+        let inner_margin = frame.inner_margin - 1;
+        frame
+            .stroke(Stroke::new(1.0, palette(ui).accent))
+            .inner_margin(inner_margin)
     } else {
         frame
     }
 }
 
-/// Adds a text field through `add` and draws its focus ring in the accent.
+/// Adds `field` a row tall with its text a padding in, and draws its focus ring in the accent.
 ///
 /// egui paints that ring and the selected text both in `selection.stroke`, which stays `on_accent` so selected text
 /// stays readable on the selection; the accent ring is painted over egui's.
-pub(crate) fn text_field(
-    ui: &mut egui::Ui,
-    add: impl FnOnce(&mut egui::Ui) -> egui::Response,
-) -> egui::Response {
-    let response = add(ui);
+pub(crate) fn text_field(ui: &mut egui::Ui, field: egui::TextEdit<'_>) -> egui::Response {
+    #[allow(clippy::cast_possible_truncation, reason = "a padding of a few points")]
+    let pad = PAD as i8;
+    let response = ui.add(
+        field
+            .margin(egui::Margin::symmetric(pad, 0))
+            .min_size(egui::vec2(0.0, ROW))
+            .vertical_align(egui::Align::Center),
+    );
     if response.has_focus() {
         let visuals = ui.style().interact(&response);
         ui.painter().rect_stroke(
@@ -519,11 +543,9 @@ mod tests {
         for (dark, palette) in ALL {
             let mut harness = egui_kittest::Harness::new_ui(move |ui| {
                 *ui.visuals_mut() = palette.visuals(dark);
-                let mut selection = ui.visuals().selection;
-                text_field(ui, |ui| {
-                    selection = ui.visuals().selection;
-                    ui.label("")
-                });
+                let mut text = String::new();
+                text_field(ui, egui::TextEdit::singleline(&mut text));
+                let selection = ui.visuals().selection;
                 let ratio = contrast(selection.stroke.color, selection.bg_fill);
                 assert!(ratio >= 4.5, "dark={dark}: selected text contrast {ratio}");
             });
@@ -537,11 +559,7 @@ mod tests {
             let mut harness = egui_kittest::Harness::new_ui(move |ui| {
                 *ui.visuals_mut() = palette.visuals(dark);
                 let mut text = String::from("hello");
-                text_field(ui, |ui| {
-                    let response = ui.text_edit_singleline(&mut text);
-                    response.request_focus();
-                    response
-                });
+                text_field(ui, egui::TextEdit::singleline(&mut text)).request_focus();
             });
             harness.run();
             let rings: Vec<_> = harness

@@ -6,18 +6,18 @@ use crate::rules::Action;
 
 use super::app::{App, FOLDERS, FOLDERS_WIDTH, UiAction, View};
 use super::icons;
-use super::theme::{self, CONTROL, ICON, INSET, PAD};
+use super::theme::{self, CONTROL, GLYPH, ICON, PAD};
 
 /// Width of the search field.
 const SEARCH_WIDTH: f32 = 260.0;
 
 pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     let mut actions = Vec::new();
-    // As wide as the folder pane (last frame's, so it follows a resize), less the toolbar's margin, so the first
-    // action's glyph lines up with the list's content.
+    // As wide as the folder pane (last frame's, so it follows a resize), less the gap and glyph inset after it, so
+    // the first action's glyph lines up with the list's content: the toolbar's margin and the list's content are both INSET in.
     let folders = PanelState::load(ui.ctx(), egui::Id::new(FOLDERS))
         .map_or(FOLDERS_WIDTH, |state| state.outer_rect.width());
-    let logo_cell = folders - INSET;
+    let logo_cell = folders - ui.spacing().item_spacing.x - GLYPH;
     ui.horizontal(|ui| {
         // As tall as the action buttons, so the row centres it on the same line as them.
         ui.allocate_ui(egui::vec2(logo_cell, CONTROL), |ui| {

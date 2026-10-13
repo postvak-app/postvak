@@ -347,3 +347,141 @@ fn html_narrow() {
     let (_fx, mut harness, _wires) = newsletter("light", 1060.0);
     snapshot(&mut harness, "gui_html_narrow");
 }
+
+/// Where `text` was painted.
+fn painted(harness: &Harness<'static, App>, text: &str) -> egui::Rect {
+    harness
+        .output()
+        .shapes
+        .iter()
+        .find_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(shape) if shape.galley.text() == text => {
+                Some(shape.galley.rect.translate(shape.pos.to_vec2()))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{text:?} not painted"))
+}
+
+#[test]
+fn the_inbox_lines_up_on_the_grid() {
+    use super::theme::{CONTROL, ICON, INSET, PAD, ROW};
+    use egui::containers::panel::PanelState;
+    let (_fx, mut harness, _wires) = inbox("light");
+    let panel = |id: &str| {
+        PanelState::load(&harness.ctx, egui::Id::new(id))
+            .unwrap()
+            .outer_rect
+    };
+    let glyph = (CONTROL - ICON) / 2.0;
+    let list_content = panel("list").left() + INSET;
+    let archive = harness.get_by_label("Archive message").rect();
+    assert_eq!(archive.left() + glyph, list_content, "toolbar glyph");
+    assert_eq!(
+        painted(&harness, "Inbox").left(),
+        list_content,
+        "list title"
+    );
+    assert_eq!(
+        archive.center().y,
+        panel("toolbar").center().y,
+        "toolbar centred"
+    );
+    let rules = harness.get_by_label("Rules").rect();
+    let sync = harness.get_by_label("Sync now").rect();
+    assert_eq!(sync.left() + glyph, rules.left() + PAD, "status glyph");
+    let activity = harness.get_by_label("Activity").rect();
+    assert_eq!(rules.height(), ROW, "folder row");
+    assert_eq!(
+        activity.top() - rules.top(),
+        ROW + PAD / 2.0,
+        "folder row pitch"
+    );
+    let row = harness
+        .get_by_label_contains("Your receipt for order 1042")
+        .rect();
+    harness.state_mut().focus = super::app::Focus::Body;
+    harness.run();
+    let unfocused = harness
+        .get_by_label_contains("Your receipt for order 1042")
+        .rect();
+    assert_eq!(row, unfocused, "the focus outline moves no content");
+}
+
+#[test]
+fn headers_fields_and_popups_line_up_on_the_grid() {
+    use super::theme::{INSET, PAD, ROW};
+    use egui::containers::panel::PanelState;
+    let (_fx, mut harness, _wires) = inbox("light");
+    let list = PanelState::load(&harness.ctx, egui::Id::new("list"))
+        .unwrap()
+        .outer_rect;
+    let title = painted(&harness, "Inbox");
+    let source = harness.get_by_label("View source").rect();
+    assert_eq!(
+        title.center().y,
+        source.center().y,
+        "list title and reader actions share a line"
+    );
+    let first_folder = harness.get_by_label("Inbox (1)").rect();
+    let first_row = harness
+        .query_all_by_label_contains("Lunch on Friday?")
+        .map(|node| node.rect())
+        .find(|rect| rect.right() < list.right())
+        .unwrap();
+    assert_eq!(
+        first_folder.top(),
+        first_row.top(),
+        "first folder and first message share a line"
+    );
+    let avatar = harness
+        .output()
+        .shapes
+        .iter()
+        .find_map(|clipped| match &clipped.shape {
+            egui::Shape::Circle(circle) if circle.radius == INSET => Some(circle.center.y),
+            _ => None,
+        })
+        .unwrap();
+    let lines = (painted(&harness, "to").center().y - ROW - PAD / 2.0
+        + painted(&harness, "to").center().y)
+        / 2.0;
+    assert_eq!(
+        avatar, lines,
+        "avatar centred on the sender and recipient lines"
+    );
+    press(&mut harness, "?");
+    let keys = painted(&harness, "j / k, Down / Up").left();
+    let window = harness
+        .output()
+        .shapes
+        .iter()
+        .find_map(|clipped| match &clipped.shape {
+            egui::Shape::Rect(rect)
+                if rect.stroke.width > 0.0 && rect.rect.left() < list.left() =>
+            {
+                Some(rect.rect)
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(keys, window.left() + INSET, "window content");
+    harness.key_press(egui::Key::Escape);
+    press(&mut harness, "/");
+    let hint = painted(&harness, "Search this account");
+    let field = harness
+        .output()
+        .shapes
+        .iter()
+        .find_map(|clipped| match &clipped.shape {
+            egui::Shape::Rect(rect)
+                if rect.fill == super::theme::PAPER.faint && rect.rect.contains(hint.center()) =>
+            {
+                Some(rect.rect)
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(field.height(), ROW, "text field height");
+    assert_eq!(hint.left(), field.left() + PAD, "text field content");
+}

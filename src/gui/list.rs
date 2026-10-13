@@ -220,8 +220,8 @@ const GAP: f32 = 12.0;
 const MIN_TEXT: f32 = 16.0;
 /// The list pane's narrowest width, so the unread dot and the flag never reach the date.
 pub(crate) const MIN_WIDTH: f32 = 220.0;
-/// How much further a thread member's sender is indented than its thread row's.
-const MEMBER_INDENT: f32 = 12.0;
+/// How much further a thread member's sender is indented than its thread row's: a level, as in the folder tree.
+const MEMBER_INDENT: f32 = theme::INSET;
 /// A row's height: the sender and date, then the subject.
 pub(crate) const LIST_ROW: f32 = 2.0 * ROW;
 
@@ -410,14 +410,13 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     }
     if let Some(query) = &app.search {
         let mut text = query.clone();
-        let response = theme::text_field(ui, |ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut text)
-                    .id(search_id())
-                    .hint_text("Search this account")
-                    .desired_width(f32::INFINITY),
-            )
-        });
+        let response = theme::text_field(
+            ui,
+            egui::TextEdit::singleline(&mut text)
+                .id(search_id())
+                .hint_text("Search this account")
+                .desired_width(f32::INFINITY),
+        );
         if app.focus_search {
             response.request_focus();
             actions.push(UiAction::SearchFocused);
@@ -480,7 +479,9 @@ fn title(ui: &mut egui::Ui, name: &str, rows: &[Row]) {
     } else {
         "threads"
     };
-    ui.horizontal(|ui| {
+    theme::heading_row(ui, |ui| {
+        // In line with the rows' content, which sits a padding inside each row.
+        ui.add_space(PAD);
         ui.heading(clean(name, false));
         ui.weak(format!(
             "{} {noun}, {} unread",
@@ -514,9 +515,10 @@ pub(crate) fn show_move_picker(app: &App, ctx: &egui::Context) -> Vec<UiAction> 
         .resizable(false)
         .show(ctx, |ui| {
             let mut text = filter.clone();
-            let response = theme::text_field(ui, |ui| {
-                ui.add(egui::TextEdit::singleline(&mut text).hint_text("Folder"))
-            });
+            let response = theme::text_field(
+                ui,
+                egui::TextEdit::singleline(&mut text).hint_text("Folder"),
+            );
             response.request_focus();
             if response.changed() {
                 actions.push(UiAction::MoveFilter(text));

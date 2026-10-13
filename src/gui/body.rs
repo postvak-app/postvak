@@ -163,9 +163,22 @@ fn header(message: &Message, (short_date, full_date): &(String, String), ui: &mu
         ui.add(egui::Label::new(text).wrap());
     }
     let from = message.from_addr.as_deref().unwrap_or_default();
-    ui.horizontal(|ui| {
-        avatar(ui, &initials(from), palette);
+    let recipients = [("to", &message.to_addr), ("cc", &message.cc_addr)];
+    let lines = 1 + recipients
+        .iter()
+        .filter(|(_, value)| value.is_some())
+        .count();
+    #[allow(clippy::cast_precision_loss, reason = "at most three lines")]
+    let lines_height =
+        lines as f32 * (theme::ROW + ui.spacing().item_spacing.y) - ui.spacing().item_spacing.y;
+    // Top-aligned, then the shorter side is pushed down, so the avatar centres on the lines beside it.
+    ui.horizontal_top(|ui| {
         ui.vertical(|ui| {
+            ui.add_space(((lines_height - AVATAR) / 2.0).max(0.0));
+            avatar(ui, &initials(from), palette);
+        });
+        ui.vertical(|ui| {
+            ui.add_space(((AVATAR - lines_height) / 2.0).max(0.0));
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let date = egui::RichText::new(short_date)
@@ -189,7 +202,7 @@ fn header(message: &Message, (short_date, full_date): &(String, String), ui: &mu
                     });
                 });
             });
-            for (name, value) in [("to", &message.to_addr), ("cc", &message.cc_addr)] {
+            for (name, value) in recipients {
                 if let Some(value) = value {
                     ui.horizontal(|ui| {
                         ui.weak(name);
