@@ -823,15 +823,11 @@ impl App {
                     Focus::List => Focus::Body,
                 }
             }
-            UiAction::OpenMovePicker => {
-                let accounts: BTreeSet<usize> =
-                    self.selected_rows().iter().map(|row| row.account).collect();
-                match accounts.len() {
-                    0 => {}
-                    1 => self.move_picker = Some(String::new()),
-                    _ => self.note_error(None, MOVE_ONE_ACCOUNT.into()),
-                }
-            }
+            UiAction::OpenMovePicker => match self.selected_account_count() {
+                0 => {}
+                1 => self.move_picker = Some(String::new()),
+                _ => self.note_error(None, MOVE_ONE_ACCOUNT.into()),
+            },
             UiAction::OpenSource => self.open_source(),
             UiAction::OpenRulesFile => self.open_rules_file(),
             UiAction::RejectRule(name) => {
@@ -1096,10 +1092,20 @@ impl App {
             for &(account, store) in &stores {
                 match store.thread_summaries(&folder, THREAD_LIMIT) {
                     Ok(threads) => found.push((account, threads)),
-                    Err(e) => log::warn!(
-                        "[{}] {folder}: could not load threads: {e}",
-                        self.accounts[account].name
-                    ),
+                    Err(e) => {
+                        log::warn!(
+                            "[{}] {folder}: could not load threads: {e}",
+                            self.accounts[account].name
+                        );
+                        let previous = self
+                            .list
+                            .threads
+                            .iter()
+                            .filter(|(owner, _)| *owner == account)
+                            .map(|(_, thread)| thread.clone())
+                            .collect();
+                        found.push((account, previous));
+                    }
                 }
             }
             self.list.threads = list::merge_threads(found, THREAD_LIMIT);
@@ -1962,6 +1968,21 @@ mod tests {
             2,
             "the folder pane entry and the list's title"
         );
+    }
+
+    #[test]
+    fn a_failed_thread_load_keeps_the_rows_already_listed() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "still here"));
+        let (mut harness, _wires) = fx.harness();
+        harness.run();
+        assert_eq!(ids(&harness), [(0, 1)]);
+        let db = rusqlite::Connection::open(fx.paths.mail_db("work")).unwrap();
+        db.execute_batch("ALTER TABLE messages RENAME TO messages_gone")
+            .unwrap();
+        harness.state_mut().reload_view();
+        harness.run();
+        assert_eq!(ids(&harness), [(0, 1)]);
     }
 
     #[test]
