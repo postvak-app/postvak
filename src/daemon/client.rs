@@ -73,7 +73,7 @@ pub struct Client {
 
 enum Transport {
     Socket(Mutex<UnixStream>),
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     Memory {
         accounts: Vec<String>,
         commands: Sender<(String, Command)>,
@@ -86,7 +86,7 @@ impl Transport {
     fn socket(&self) -> Option<&Mutex<UnixStream>> {
         match self {
             Transport::Socket(stream) => Some(stream),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "testing"))]
             Transport::Memory { .. } => None,
         }
     }
@@ -410,7 +410,7 @@ impl Client {
 
     /// Sends without waiting; a refusal arrives as `Event::CommandFailed` on the subscription.
     pub fn send(&self, account: &str, command: Command) -> bool {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "testing"))]
         if let Transport::Memory { commands, .. } = &self.transport {
             return commands.send((account.into(), command)).is_ok();
         }
@@ -458,7 +458,7 @@ impl Client {
         &self,
         wake: impl Fn() + Send + 'static,
     ) -> anyhow::Result<Receiver<Event>> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "testing"))]
         if let Transport::Memory { events, .. } = &self.transport {
             return lock(events)
                 .take()
@@ -483,7 +483,7 @@ impl Client {
     }
 
     pub fn status(&self) -> anyhow::Result<Status> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "testing"))]
         if let Transport::Memory { accounts, .. } = &self.transport {
             return Ok(memory_status(accounts));
         }
@@ -513,10 +513,8 @@ impl Client {
     }
 
     /// A client with no daemon behind it: commands appear on the returned receiver, events are injected by the test.
-    #[cfg(test)]
-    pub(crate) fn in_memory(
-        accounts: &[&str],
-    ) -> (Client, Receiver<(String, Command)>, Sender<Event>) {
+    #[cfg(any(test, feature = "testing"))]
+    pub fn in_memory(accounts: &[&str]) -> (Client, Receiver<(String, Command)>, Sender<Event>) {
         let (commands, sent) = mpsc::channel();
         let (inject, events) = mpsc::channel();
         let client = Client {
@@ -601,7 +599,7 @@ fn encode_failure(error: &io::Error) -> String {
     format!("could not encode the request: {error}")
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 fn memory_status(accounts: &[String]) -> Status {
     use super::wire::AccountStatus;
     Status {

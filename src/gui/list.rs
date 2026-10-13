@@ -13,18 +13,18 @@ use super::theme::{self, PAD, Palette, ROW};
 use super::{folders, icons, numbers};
 
 /// Threads loaded per folder. ponytail: older mail is reachable through search; page by date if that is not enough.
-pub(crate) const THREAD_LIMIT: u32 = 10_000;
+pub const THREAD_LIMIT: u32 = 10_000;
 /// Results shown for one search.
-pub(crate) const SEARCH_LIMIT: u32 = 500;
+pub const SEARCH_LIMIT: u32 = 500;
 
-pub(crate) type RowKey = (String, u32);
+pub type RowKey = (String, u32);
 
 pub(crate) fn search_id() -> egui::Id {
     egui::Id::new("search")
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Row {
+pub struct Row {
     /// Index into `App::accounts`: the account the message lives in.
     pub account: usize,
     pub count: u32,
@@ -103,7 +103,7 @@ pub(crate) struct ListState {
 }
 
 /// One row per thread describing its latest message, followed by its members when expanded.
-pub(crate) fn build_rows(
+pub fn build_rows(
     folder: &str,
     threads: &[(usize, ThreadSummary)],
     expanded: &HashMap<(usize, String), Vec<MessageSummary>>,
@@ -129,7 +129,7 @@ pub(crate) fn build_rows(
 
 /// What a sent action will do to a row, shown until its `ActionDone` arrives.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Optimistic {
+pub enum Optimistic {
     Flagged(bool),
     Hidden,
     Seen(bool),
@@ -152,7 +152,7 @@ impl Optimistic {
 
 /// Rows of sent actions as they will be: moved rows hidden, read and flag changes shown, a later edit over an earlier.
 /// `pending[i]` is account i's edits, as `App::accounts` is ordered.
-pub(crate) fn apply_pending(rows: &mut Vec<Row>, pending: &[&HashMap<RowKey, Vec<Optimistic>>]) {
+pub fn apply_pending(rows: &mut Vec<Row>, pending: &[&HashMap<RowKey, Vec<Optimistic>>]) {
     if pending.iter().all(|edits| edits.is_empty()) {
         return;
     }
@@ -176,7 +176,7 @@ fn edits_of<'a>(pending: &[&'a HashMap<RowKey, Vec<Optimistic>>], row: &Row) -> 
 }
 
 /// "Alice <alice@x>, bob@y" is "Alice"; without a name, the first address.
-pub(crate) fn display_name(field: &str) -> String {
+pub fn display_name(field: &str) -> String {
     let field = field.trim();
     if let Some(rest) = field.strip_prefix('"')
         && let Some((name, _)) = rest.split_once('"')
@@ -199,7 +199,7 @@ pub(crate) fn display_name(field: &str) -> String {
 }
 
 /// The time today, weekday and time within the past week, day and month this year, else day, month and year.
-pub(crate) fn list_date<Tz: TimeZone>(ts: i64, now: &DateTime<Tz>) -> String
+pub fn list_date<Tz: TimeZone>(ts: i64, now: &DateTime<Tz>) -> String
 where
     Tz::Offset: std::fmt::Display,
 {
@@ -220,7 +220,7 @@ where
 }
 
 /// One list row split into what each column draws, cleaned of control characters.
-pub(crate) struct Columns {
+pub struct Columns {
     pub account: Option<String>,
     pub unread: bool,
     pub flagged: bool,
@@ -239,20 +239,20 @@ const GAP: f32 = 12.0;
 /// Narrower than this, a column is left out: truncating would still draw its "…", over the date.
 const MIN_TEXT: f32 = 16.0;
 /// The list pane's narrowest width, so the unread dot and the flag never reach the date.
-pub(crate) const MIN_WIDTH: f32 = 220.0;
+pub const MIN_WIDTH: f32 = 220.0;
 /// How much further a thread member's sender is indented than its thread row's: a level, as in the folder tree.
 const MEMBER_INDENT: f32 = theme::INSET;
 /// The account tag's widest, so a long account name leaves room for the sender.
 const TAG: f32 = 80.0;
 /// A row's height: the sender and date, then the subject.
-pub(crate) const LIST_ROW: f32 = 2.0 * ROW;
+pub const LIST_ROW: f32 = 2.0 * ROW;
 
 /// The sender's width in a row of `total` px whose date needs `date` px; the subject below has the full width.
-pub(crate) fn sender_width(total: f32, date: f32) -> f32 {
+pub fn sender_width(total: f32, date: f32) -> f32 {
     (total - MARKERS - date - GAP).max(0.0)
 }
 
-pub(crate) fn columns<Tz: TimeZone>(
+pub fn columns<Tz: TimeZone>(
     row: &Row,
     account: Option<&str>,
     marked: bool,
@@ -285,7 +285,7 @@ where
 }
 
 /// Unread dot, flag, sender (recipient in Sent and Drafts), subject, thread count and date, on one line.
-pub(crate) fn row_text<Tz: TimeZone>(
+pub fn row_text<Tz: TimeZone>(
     row: &Row,
     account: Option<&str>,
     recipient: bool,
@@ -425,7 +425,7 @@ fn draw_row(
 }
 
 /// The scroll offset that shows the cursor row, moving the view as little as possible.
-pub(crate) fn offset_showing(cursor: usize, row_height: f32, offset: f32, height: f32) -> f32 {
+pub fn offset_showing(cursor: usize, row_height: f32, offset: f32, height: f32) -> f32 {
     let top = cursor as f32 * row_height;
     let bottom = top + row_height;
     if top < offset {
@@ -438,10 +438,10 @@ pub(crate) fn offset_showing(cursor: usize, row_height: f32, offset: f32, height
 }
 
 /// The folder All inboxes shows from each account; sync stores and queries it by this exact name.
-pub(crate) const INBOX: &str = "INBOX";
+pub const INBOX: &str = "INBOX";
 
 /// Search hits of several accounts, newest first, at most `limit`; each account's own order is kept on equal dates.
-pub(crate) fn merge_hits(mut hits: Vec<Row>, limit: u32) -> Vec<Row> {
+pub fn merge_hits(mut hits: Vec<Row>, limit: u32) -> Vec<Row> {
     hits.sort_by_key(|row| std::cmp::Reverse(row.date));
     hits.truncate(limit as usize);
     hits
@@ -449,7 +449,7 @@ pub(crate) fn merge_hits(mut hits: Vec<Row>, limit: u32) -> Vec<Row> {
 
 /// Threads of several accounts in one list, the most recently active first, at most `limit`. The sort is stable, so
 /// each account keeps its own order and equal dates keep account order.
-pub(crate) fn merge_threads(
+pub fn merge_threads(
     per_account: Vec<(usize, Vec<ThreadSummary>)>,
     limit: u32,
 ) -> Vec<(usize, ThreadSummary)> {

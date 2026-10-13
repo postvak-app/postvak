@@ -1400,7 +1400,8 @@ impl App {
                     strip,
                 } => {
                     let name = format!("html-{generation}-{strip}");
-                    let texture = ctx.load_texture(name, image, egui::TextureOptions::LINEAR);
+                    let texture =
+                        ctx.load_texture(name, image.to_egui(), egui::TextureOptions::LINEAR);
                     view.strips.insert(strip, texture);
                 }
             }
@@ -1454,7 +1455,10 @@ impl App {
             None => body.html_view = Some(HtmlState::new(generation, scale, width)),
         }
         self.renderer
-            .get_or_insert_with(|| Renderer::start(ctx.clone()))
+            .get_or_insert_with(|| {
+                let ctx = ctx.clone();
+                Renderer::start(std::sync::Arc::new(move || ctx.request_repaint()))
+            })
             .send(html::Request::Load(load));
     }
 
@@ -1512,8 +1516,8 @@ impl App {
         view.selected_at = Some((from, to));
         renderer.send(html::Request::Select {
             generation: view.generation,
-            from,
-            to,
+            from: [from.x, from.y],
+            to: [to.x, to.y],
         });
     }
 
