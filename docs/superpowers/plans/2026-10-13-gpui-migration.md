@@ -1,5 +1,7 @@
 # GPUI Migration Plan
 
+> **Superseded 2026-10-13.** Phase 1 and 2 ran (prototype and gate); the owner then dropped GPUI for Slint. Results and the decision: `docs/superpowers/specs/2026-10-13-postvak-gui-toolkit-report.md`. Phase 3 below will not run; kept as the record of what was tried.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Move the GUI from egui to GPUI for the long term, without shipping anything that is not ready: first a throwaway prototype that measures GPUI against the egui build on the same mailbox, then a go/no-go review, then the port on a long-lived branch that merges only when every GPUI dependency comes from crates.io.

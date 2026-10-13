@@ -1,6 +1,6 @@
 # GUI toolkit prototypes — report
 
-Date: 2026-10-13. Status: gate answered below for GPUI (§2) and Slint (§6); owner decision in §7. Phase 1 and 2 of `docs/superpowers/plans/2026-10-13-gpui-migration.md`, against the questions of `2026-10-13-postvak-gpui-evaluation.md`.
+Date: 2026-10-13. Status: decided 2026-10-13 (§7): GPUI dropped, Slint under its royalty-free licence. Phase 1 and 2 of `docs/superpowers/plans/2026-10-13-gpui-migration.md`, against the questions of `2026-10-13-postvak-gpui-evaluation.md`.
 
 The prototype is the throwaway crate `proto/gpui` on branch `proto/gpui`, draft PR postvak-app/postvak#130, never merged; its last commit is `5bdfc44`, and the PR's `refs/pull/130/head` keeps it after the branch is deleted. Its `README.md` has the per-task notes and `MEASUREMENTS.md` the numbers and their method.
 
@@ -75,4 +75,4 @@ Against the gate (§2), Slint answers questions 3 and 5 better (snapshots withou
 
 Recommendation: **Slint over GPUI**, if the owner accepts its royalty-free licence (an `AboutSlint` widget in an About dialog, or the badge on the download page). It keeps one binary, needs no GPU for snapshot tests, and does not depend on a one-person snapshot crate. If the licence is not acceptable: GPUI, with the conditions of §5 (screen reader and input method first, a separate GUI binary, strip conversion off the UI thread).
 
-Owner decision: _pending_.
+Owner decision, 2026-10-13: **GPUI is dropped. Slint is the long-term toolkit, under its royalty-free licence** (Postvak shows the `AboutSlint` widget in its About dialog, or the badge on its download page). egui keeps shipping until a Slint port merges. Next: a detailed Slint port plan, whose first steps are a screen reader on the list and an input method in the search field. The GPUI prototype's draft PR postvak-app/postvak#130 is closed and its branch deleted; its commits stay reachable through `refs/pull/130/head`.
