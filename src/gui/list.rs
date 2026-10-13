@@ -1092,13 +1092,13 @@ mod tests {
         harness.run();
         harness.event(egui::Event::Text("e".into()));
         harness.run();
-        let archive = crate::sync::Command::Apply {
+        let unarchive = crate::sync::Command::Apply {
             folder: "Archive".into(),
             uids: vec![3],
-            action: crate::rules::Action::Archive,
+            action: crate::rules::Action::Move("INBOX".into()),
             by: "gui".into(),
         };
-        assert_eq!(wires.sent(), [("work".to_string(), archive)]);
+        assert_eq!(wires.sent(), [("work".to_string(), unarchive)]);
         harness.key_press(egui::Key::Escape);
         harness.run();
         assert!(harness.state().search.is_none());
