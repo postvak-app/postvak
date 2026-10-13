@@ -810,7 +810,11 @@ impl App {
             UiAction::MoveFilter(filter) => self.move_picker = Some(filter),
             UiAction::MoveTo(folder) => {
                 self.move_picker = None;
-                self.act(Action::Move(folder));
+                if self.selected_account_count() > 1 {
+                    self.note_error(None, MOVE_ONE_ACCOUNT.into());
+                } else {
+                    self.act(Action::Move(folder));
+                }
             }
             UiAction::NextFocus => {
                 self.focus = match self.focus {
@@ -1629,6 +1633,12 @@ impl App {
         for index in 0..self.accounts.len() {
             self.send(index, Command::SyncNow);
         }
+    }
+
+    fn selected_account_count(&self) -> usize {
+        let accounts: BTreeSet<usize> =
+            self.selected_rows().iter().map(|row| row.account).collect();
+        accounts.len()
     }
 
     /// The rows an action covers: the marked rows, or else the cursor row.
@@ -2665,5 +2675,28 @@ mod tests {
         harness.run();
         assert_eq!(ids(&harness), [(0, 1), (1, 1)]);
         assert_eq!(harness.state().accounts[1].queued, 1);
+    }
+
+    #[test]
+    fn a_move_is_refused_when_the_selection_grew_to_two_accounts_under_the_open_picker() {
+        let fx = Fixture::new(&["home", "work"]);
+        fx.folder("home", "Receipts", None);
+        let (mut harness, wires) = all_inboxes(&fx);
+        press(&mut harness, "j");
+        press(&mut harness, "m");
+        assert!(harness.state().move_picker.is_some());
+        harness
+            .state_mut()
+            .list
+            .marked
+            .extend([(0, ("INBOX".to_string(), 1)), (1, ("INBOX".to_string(), 1))]);
+        let ctx = harness.ctx.clone();
+        harness
+            .state_mut()
+            .apply(&ctx, UiAction::MoveTo("Receipts".into()));
+        harness.run();
+        assert!(wires.sent().is_empty());
+        assert!(harness.state().move_picker.is_none());
+        assert!(harness.query_by_label(MOVE_ONE_ACCOUNT).is_some());
     }
 }

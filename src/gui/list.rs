@@ -551,8 +551,8 @@ fn title(ui: &mut egui::Ui, name: &str, rows: &[Row]) {
     });
 }
 
-/// The `m` popup: type to filter the account's folders, Enter or a click moves. It leaves out the folder the cursor
-/// message is in: the view's, or in search the hit's own.
+/// The `m` popup: type to filter the folders of the selected rows' account, Enter or a click moves. It leaves out the
+/// folder the cursor message is in.
 pub(crate) fn show_move_picker(app: &App, ctx: &egui::Context) -> Vec<UiAction> {
     let mut actions = Vec::new();
     let (Some(filter), Some(row)) = (&app.move_picker, app.selected_rows().first().copied()) else {
