@@ -445,10 +445,14 @@ impl App {
             self.logo = Some(ctx.load_texture("logo", image, egui::TextureOptions::LINEAR));
         }
         let bar = theme::chrome_frame(ui);
-        // The toolbar's and status bar's first and last items are icon buttons on one side, whose glyphs sit a
-        // padding inside them, so that side gets one padding less to line the glyphs up with the panes' content.
+        // The status bar starts with an icon button, so its margin is a glyph inset short of INSET to line the glyph
+        // up with the folders' content; the toolbar ends with the search field, flush with the panes' edge.
         egui::Panel::top("toolbar")
-            .frame(bar.inner_margin(margin(theme::INSET, theme::PAD, 2.0)))
+            .frame(bar.inner_margin(margin(
+                theme::INSET,
+                theme::PAD,
+                (theme::TOP_BAR - theme::CONTROL) / 2.0,
+            )))
             .exact_size(theme::TOP_BAR)
             .show(ui, |ui| {
                 theme::chrome(ui);
@@ -463,7 +467,11 @@ impl App {
             });
         }
         egui::Panel::bottom("status")
-            .frame(bar.inner_margin(margin(theme::PAD, theme::INSET, theme::PAD)))
+            .frame(bar.inner_margin(margin(
+                theme::INSET - theme::GLYPH,
+                theme::INSET,
+                theme::PAD,
+            )))
             .show(ui, |ui| {
                 theme::chrome(ui);
                 actions.extend(status::show(self, ui));

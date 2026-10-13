@@ -27,24 +27,26 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
             let label = "All inboxes";
             let (count, accessible) = count_and_name(label, inbox_unread(&app.accounts));
             let selected = app.view == View::AllInboxes;
-            if folder_row(
-                ui,
-                selected,
-                icons::ALL_INBOXES,
-                label,
-                0.0,
-                count,
-                &accessible,
-            )
-            .clicked()
-            {
+            // On the line of the list's title and the reader's actions, as an account's heading is without it.
+            let entry = theme::heading_row(ui, |ui| {
+                folder_row(
+                    ui,
+                    selected,
+                    icons::ALL_INBOXES,
+                    label,
+                    0.0,
+                    count,
+                    &accessible,
+                )
+            });
+            if entry.clicked() {
                 actions.push(UiAction::SelectView(View::AllInboxes));
             }
             ui.separator();
         }
         for (index, account) in app.accounts.iter().enumerate() {
             // Indented like the rows' icons, which sit a button padding inside the row.
-            ui.horizontal(|ui| {
+            theme::heading_row(ui, |ui| {
                 ui.add_space(ui.spacing().button_padding.x);
                 let name = egui::RichText::new(&account.name)
                     .family(theme::named(theme::BOLD))
@@ -63,7 +65,7 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
                 ui.colored_label(ui.visuals().error_fg_color, clean(e, false));
             }
             actions.extend(account_folders(app, index, account, ui));
-            ui.add_space(8.0);
+            ui.add_space(theme::PAD);
         }
     });
     actions
