@@ -289,10 +289,20 @@ pub struct Job {
     pub command: Command,
 }
 
+/// The pass a command needs after it; when several ask, the larger wins.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum NextPass {
+    #[default]
+    None,
+    /// Syncs INBOX and runs the rules, e.g. on mail a move put in a folder it already synced.
+    Inbox,
+    Full,
+}
+
 #[derive(Debug, Default, PartialEq)]
 pub struct CommandsRun {
     pub used_connection: bool,
-    pub wants_full_pass: bool,
+    pub next: NextPass,
 }
 
 /// Called between steps of a pass with what is happening; may run queued commands on the connection.
@@ -522,6 +532,8 @@ pub fn sync_all_with(
         )
     });
     special_use_by_name(&mut folders);
+    // New mail shows up before the rest of a first sync, which can take minutes.
+    folders.sort_by_key(|f| !f.name.eq_ignore_ascii_case("INBOX"));
     let of = folders.len();
     let mut new = Vec::new();
     let mut errors = Vec::new();
@@ -615,7 +627,7 @@ pub fn run_rules(
         identity,
         mode,
         now,
-        &mut |_| {},
+        &mut |_, _| Ok(false),
     )
 }
 
@@ -629,7 +641,7 @@ pub fn run_rules_with(
     identity: &Identity,
     mode: Mode,
     now: i64,
-    report: &mut dyn FnMut(Activity),
+    checkpoint: &mut Checkpoint<'_>,
 ) -> Result<RulesRun, SyncError> {
     let ctx = Context {
         account: &account.name,
@@ -648,7 +660,14 @@ pub fn run_rules_with(
     folders.dedup();
 
     let mut run = RulesRun::default();
-    for folder in folders.iter().cloned() {
+    'folders: for folder in folders.iter().cloned() {
+        // Before the select, so a command run here leaves nothing to select again.
+        checkpoint(
+            ops,
+            Activity::RunningRules {
+                folder: folder.clone(),
+            },
+        )?;
         let Some(stored) = store.folder(&folder)? else {
             continue;
         };
@@ -676,9 +695,6 @@ pub fn run_rules_with(
             continue;
         }
         let needs_body = folder_needs_body(rules, &account.name, &folder);
-        report(Activity::RunningRules {
-            folder: folder.clone(),
-        });
         let (rules_uid, notified_uid) = (store.rules_uid(&folder)?, store.notified_uid(&folder)?);
         let unseen = unseen_by_rules(store, &stored)?;
         let fresh = |uid: u32| mode == Mode::Normal && unseen(uid);
@@ -693,20 +709,40 @@ pub fn run_rules_with(
             0
         };
         let mut bodies_done = 0;
+        // Set once a command used the connection; from then on each row is read again, as it may have moved or changed.
+        let mut commands_ran = false;
         for mut msg in messages {
             let is_fresh = fresh(msg.uid);
             // Mail found by a first sync or resync already sat on the server; fetching it would download the whole folder.
+            if needs_body && msg.body_text.is_none() && is_fresh {
+                let progress = Activity::FetchingBodies {
+                    folder: folder.clone(),
+                    done: bodies_done,
+                    total: bodies_total,
+                };
+                if checkpoint(ops, progress)? {
+                    commands_ran = true;
+                    if ops.select(&folder)?.uidvalidity != info.uidvalidity {
+                        let message = format!(
+                            "{folder}: folder changed on server; resync needed, skipping its rules"
+                        );
+                        run.events.push(account_error(account, message));
+                        continue 'folders;
+                    }
+                }
+            }
+            if commands_ran {
+                match store.message(&folder, msg.uid)? {
+                    Some(current) => msg = current,
+                    None => continue,
+                }
+            }
             if needs_body && msg.body_text.is_none() && is_fresh {
                 match ensure_raw(&msg, ops, store) {
                     Ok(raw) => msg.body_text = Some(body_text(&raw)),
                     Err(e) => log::warn!("{}/{}: body fetch failed: {e}", msg.folder, msg.uid),
                 }
                 bodies_done += 1;
-                report(Activity::FetchingBodies {
-                    folder: folder.clone(),
-                    done: bodies_done,
-                    total: bodies_total,
-                });
             }
             let plan = evaluate(rules, &msg, &ctx);
             run.evaluated += 1;
@@ -793,7 +829,7 @@ fn run_commands(
     let mut run = CommandsRun::default();
     while let Ok(Job { request, command }) = commands.try_recv() {
         if command == Command::SyncNow {
-            run.wants_full_pass = true;
+            run.next = NextPass::Full;
             carried.sync_requests.push(request);
             continue;
         }
@@ -804,12 +840,13 @@ fn run_commands(
         carried.running = None;
         let ran = ran?;
         run.used_connection |= ran.used_connection;
-        run.wants_full_pass |= ran.wants_full_pass;
+        run.next = run.next.max(ran.next);
     }
     Ok(run)
 }
 
-/// Syncs `folder` now so front ends see a change at once; a failure is left to the next full pass.
+/// Syncs `folder` now so front ends see a change at once, and the rules pass after it finds the mail; a failure is
+/// left to the next full pass.
 fn sync_now(ops: &mut dyn MailOps, store: &Store, folder: &str) {
     let stored = store.folder(folder).ok().flatten();
     let remote = RemoteFolder {
@@ -869,16 +906,18 @@ fn run_command(
                 ),
             };
             /* A move only drops the source row, so the target is synced before `ActionDone` makes the GUI reload. The
-            full pass after it runs the target folder's rules. */
+            rules pass after it runs the target folder's rules. */
             if results.iter().any(|(_, result)| result.is_ok()) {
                 let target = crate::rules::apply::move_target(store, &folder, &action);
                 if let Ok(Some(target)) = target {
                     sync_now(ops, store, &target);
                 }
-                run.wants_full_pass = matches!(
+                if matches!(
                     action,
                     Action::Archive | Action::Delete | Action::Move(_) | Action::Trash
-                );
+                ) {
+                    run.next = NextPass::Inbox;
+                }
             }
             let _ = events.send(Event::ActionDone {
                 account: name(),
@@ -977,7 +1016,7 @@ fn run_command(
             match trash.restore(ops, &file) {
                 Ok(folder) => {
                     sync_now(ops, store, &folder);
-                    run.wants_full_pass = true;
+                    run.next = NextPass::Inbox;
                     let _ = events.send(Event::Restored {
                         account: name(),
                         folder,
@@ -1173,7 +1212,7 @@ impl LoadedRules {
         trash: &Trash,
         account: &AccountConfig,
         identity: &Identity,
-        report: &mut dyn FnMut(Activity),
+        checkpoint: &mut Checkpoint<'_>,
     ) -> Result<RulesRun, SyncError> {
         let Some(rules) = &self.last_good else {
             return Ok(RulesRun {
@@ -1190,7 +1229,7 @@ impl LoadedRules {
             identity,
             Mode::Normal,
             now(),
-            report,
+            checkpoint,
         )
     }
 }
@@ -1252,7 +1291,7 @@ impl<'a> AccountSync<'a> {
 
     /// Reloads the rules, syncs every folder (`full`) or only INBOX, runs the rules and sends the events. A full pass
     /// answers the `SyncNow` requests in `carried` when it starts; ones drained at its checkpoints are kept there for
-    /// the next. Queued commands run at the checkpoints; true when one of them wants a full pass next.
+    /// the next. Queued commands run at the checkpoints; returns the pass they want next.
     fn pass(
         &mut self,
         ops: &mut dyn MailOps,
@@ -1261,10 +1300,29 @@ impl<'a> AccountSync<'a> {
         events: &Sender<Event>,
         commands: &Receiver<Job>,
         shutdown: &AtomicBool,
-    ) -> Result<bool, SyncError> {
+    ) -> Result<NextPass, SyncError> {
         carried
             .rules
             .reload(&self.store, &self.rules_path, self.account, events);
+        // The checkpoint holds `carried` for the whole pass, so the rules stay outside it until the pass ends.
+        let rules = std::mem::take(&mut carried.rules);
+        let result =
+            self.sync_and_run_rules(ops, full, &rules, carried, events, commands, shutdown);
+        carried.rules = rules;
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn sync_and_run_rules(
+        &self,
+        ops: &mut dyn MailOps,
+        full: bool,
+        rules: &LoadedRules,
+        carried: &mut Carried,
+        events: &Sender<Event>,
+        commands: &Receiver<Job>,
+        shutdown: &AtomicBool,
+    ) -> Result<NextPass, SyncError> {
         let answering = if full { carried.sync_requests.len() } else { 0 };
         let (account, store, trash) = (self.account, &self.store, &self.trash);
         let (identity, rules_path) = (&self.identity, self.rules_path.as_path());
@@ -1272,7 +1330,7 @@ impl<'a> AccountSync<'a> {
             account: account.name.clone(),
             activity,
         };
-        let mut pending_full = false;
+        let mut next = NextPass::None;
         // After a command hits a lost connection nothing else may touch it this pass.
         let mut lost = None;
         let mut checkpoint = |ops: &mut dyn MailOps, step: Activity| {
@@ -1287,7 +1345,7 @@ impl<'a> AccountSync<'a> {
                 ops, store, trash, account, identity, rules_path, commands, carried, events,
             ) {
                 Ok(run) => {
-                    pending_full |= run.wants_full_pass;
+                    next = next.max(run.next);
                     Ok(run.used_connection)
                 }
                 Err(e) => {
@@ -1301,24 +1359,18 @@ impl<'a> AccountSync<'a> {
         } else {
             sync_inbox_with(ops, store, &mut checkpoint).map(|new| (new, Vec::new()))
         };
+        let ran = synced.and_then(|(new, errors)| {
+            for message in &errors {
+                let _ = events.send(account_error(account, message.clone()));
+            }
+            let run = rules.run(ops, store, trash, account, identity, &mut checkpoint)?;
+            Ok((new, errors, run))
+        });
         if let Some(e) = lost {
             return Err(e);
         }
-        let (new, mut errors) = synced?;
-        for message in &errors {
-            let _ = events.send(account_error(account, message.clone()));
-        }
-        errors.extend(carried.rules.error.clone());
-        let run = carried.rules.run(
-            ops,
-            &self.store,
-            &self.trash,
-            self.account,
-            &self.identity,
-            &mut |step| {
-                let _ = events.send(activity(step));
-            },
-        )?;
+        let (new, mut errors, run) = ran?;
+        errors.extend(rules.error.clone());
         for event in run.events {
             if let Event::Error { message, .. } = &event {
                 errors.push(message.clone());
@@ -1326,13 +1378,13 @@ impl<'a> AccountSync<'a> {
             let _ = events.send(event);
         }
         let _ = events.send(Event::Synced {
-            account: self.account.name.clone(),
+            account: account.name.clone(),
             new_messages: new.len(),
             actions: run.actions,
             requests: carried.sync_requests.drain(..answering).collect(),
             errors,
         });
-        Ok(pending_full)
+        Ok(next)
     }
 }
 
@@ -1509,11 +1561,11 @@ fn run_session(
     let mut last_purge = 0i64;
     let mut full = true;
     let mut pass = true;
-    let mut pending_full = false;
+    let mut next = NextPass::None;
 
     while !shutdown.load(Ordering::Acquire) {
         if pass {
-            pending_full = state.pass(ops.as_mut(), full, carried, events, commands, shutdown)?;
+            next = state.pass(ops.as_mut(), full, carried, events, commands, shutdown)?;
             if now() - last_purge > 3600 {
                 match state
                     .trash
@@ -1537,8 +1589,9 @@ fn run_session(
             carried,
             events,
         )?;
-        if drained.wants_full_pass || std::mem::take(&mut pending_full) {
-            (full, pass) = (true, true);
+        let wanted = drained.next.max(std::mem::take(&mut next));
+        if wanted != NextPass::None {
+            (full, pass) = (wanted == NextPass::Full, true);
             continue;
         }
         let _ = events.send(Event::Activity {

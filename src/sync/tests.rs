@@ -1478,7 +1478,10 @@ fn rules_report_running_and_body_progress() {
         &identity,
         Mode::Normal,
         13 * H,
-        &mut |a| seen.push(a),
+        &mut |_, a| {
+            seen.push(a);
+            Ok(false)
+        },
     )
     .unwrap();
     assert!(seen.contains(&Activity::RunningRules {
@@ -1486,9 +1489,98 @@ fn rules_report_running_and_body_progress() {
     }));
     assert!(seen.contains(&Activity::FetchingBodies {
         folder: "INBOX".into(),
-        done: 1,
+        done: 0,
         total: 1
     }));
+}
+
+#[test]
+fn rules_let_commands_run_between_body_fetches_and_skip_mail_they_moved() {
+    let (mut ops, store, dir) = synced();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let acc = account();
+    let identity = acc.identity().unwrap();
+    for uid in [3, 4] {
+        let body = format!("From: bob@x\r\n\r\nyour code {uid}");
+        let id = format!("m{uid}@x");
+        ops.add_mail(
+            "INBOX",
+            uid,
+            12 * H,
+            &headers("bob@x", "code", &id),
+            Some(&body),
+        );
+    }
+    sync_all(&mut ops, &store).unwrap();
+    let rules = rules_from(
+        "[[rules]]\nname = \"codes\"\nmatch.body = { contains = \"code\" }\nactions = [\"flag\"]\n",
+        &store,
+        0,
+    );
+    let mut commands_ran = 0;
+    let run = run_rules_with(
+        &mut ops,
+        &store,
+        &trash,
+        &rules,
+        &acc,
+        &identity,
+        Mode::Normal,
+        13 * H,
+        &mut |ops, activity| {
+            if !matches!(activity, Activity::FetchingBodies { .. }) || commands_ran > 0 {
+                return Ok(false);
+            }
+            commands_ran += 1;
+            let trashed = actions::run(
+                ops,
+                &store,
+                &trash,
+                "INBOX",
+                &[4],
+                &Action::Trash,
+                "test",
+                0,
+            )?;
+            assert!(trashed[0].1.is_ok());
+            ops.select("Trash")?;
+            Ok(true)
+        },
+    )
+    .unwrap();
+    assert_eq!(commands_ran, 1);
+    assert!(
+        !run.events.iter().any(|e| matches!(e, Event::Error { .. })),
+        "{:?}",
+        run.events
+    );
+    assert!(
+        ops.calls
+            .contains(&"add_flags INBOX 3 \\Flagged".to_string()),
+        "{:?}",
+        ops.calls
+    );
+    assert!(
+        !ops.calls.contains(&"fetch_raw INBOX 4".to_string()),
+        "{:?}",
+        ops.calls
+    );
+}
+
+#[test]
+fn a_full_pass_syncs_inbox_first() {
+    let mut ops = RecordingOps::new()
+        .with_folder("Archive", Some("Archive"))
+        .with_folder("INBOX", None);
+    let store = Store::open_in_memory().unwrap();
+    sync_all(&mut ops, &store).unwrap();
+    let selects: Vec<&str> = ops
+        .calls
+        .iter()
+        .filter(|call| call.starts_with("select"))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(selects, ["select INBOX", "select Archive"]);
 }
 
 #[test]
@@ -2197,7 +2289,7 @@ fn apply_reports_a_result_per_uid_and_keeps_going() {
         run.unwrap(),
         CommandsRun {
             used_connection: true,
-            wants_full_pass: true,
+            next: NextPass::Full,
         }
     );
     let done = events
@@ -2222,7 +2314,7 @@ fn apply_reports_a_result_per_uid_and_keeps_going() {
 }
 
 #[test]
-fn a_move_syncs_the_target_folder_before_it_reports_done_then_asks_for_a_pass() {
+fn a_move_syncs_the_target_folder_before_it_reports_done_then_asks_for_a_rules_pass() {
     let (mut ops, store, dir) = synced();
     let trash = Trash::new(dir.path().to_path_buf());
     let apply = Command::Apply {
@@ -2232,7 +2324,7 @@ fn a_move_syncs_the_target_folder_before_it_reports_done_then_asks_for_a_pass() 
         by: "test".into(),
     };
     let (run, _) = drain(&mut ops, &store, &trash, vec![apply]);
-    assert!(run.unwrap().wants_full_pass);
+    assert_eq!(run.unwrap().next, NextPass::Inbox);
     assert_eq!(store.messages_in_folder("Done").unwrap().len(), 1);
 }
 
@@ -2247,7 +2339,7 @@ fn a_trash_syncs_the_trash_folder_before_it_reports_done() {
         by: "test".into(),
     };
     let (run, _) = drain(&mut ops, &store, &trash, vec![apply]);
-    assert!(run.unwrap().wants_full_pass);
+    assert_eq!(run.unwrap().next, NextPass::Inbox);
     assert_eq!(store.messages_in_folder("Trash").unwrap().len(), 1);
 }
 
@@ -2262,7 +2354,7 @@ fn a_failed_move_syncs_nothing() {
         by: "test".into(),
     };
     let (run, _) = drain(&mut ops, &store, &trash, vec![apply]);
-    assert!(!run.unwrap().wants_full_pass);
+    assert_eq!(run.unwrap().next, NextPass::None);
     assert!(!ops.calls.iter().any(|call| call == "select Done"));
 }
 
@@ -2290,7 +2382,7 @@ fn fetch_body_stores_the_body_and_reports_it() {
 }
 
 #[test]
-fn restore_appends_the_backup_syncs_its_folder_and_asks_for_a_full_pass() {
+fn restore_appends_the_backup_syncs_its_folder_and_asks_for_a_rules_pass() {
     let (mut ops, store, dir) = synced();
     let trash = Trash::new(dir.path().to_path_buf());
     let file = trash
@@ -2298,7 +2390,7 @@ fn restore_appends_the_backup_syncs_its_folder_and_asks_for_a_full_pass() {
         .unwrap();
     let restore = Command::Restore { file: file.clone() };
     let (run, events) = drain(&mut ops, &store, &trash, vec![restore]);
-    assert!(run.unwrap().wants_full_pass);
+    assert_eq!(run.unwrap().next, NextPass::Inbox);
     assert_eq!(store.messages_in_folder("INBOX").unwrap().len(), 3);
     assert!(!file.exists());
     assert!(ops.calls.iter().any(|c| c.starts_with("append INBOX")));

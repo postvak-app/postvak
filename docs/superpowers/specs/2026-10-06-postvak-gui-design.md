@@ -85,13 +85,14 @@ pub enum Command {
 - `Apply` runs `actions::run`, so a delete writes its `.eml` backup first, exactly like a rule delete or `postvak delete`.
 - `FetchBody` downloads the raw message, stores it and indexes `body_text`, as `ensure_raw` does for rules.
 - `Restore` runs `Trash::restore(ops, file) -> folder`: APPEND with the restored keyword, then remove the file. This logic moves from `cli/mod.rs` into `trash.rs`, and `postvak trash restore` calls it too.
-- `SyncNow` makes the next pass a full one.
+- `SyncNow` makes the next pass a full one. A successful move, archive, trash, delete or restore makes it an INBOX pass, which runs the rules on the folder it synced at once.
 
-`run_loop` takes a `Receiver<Command>` and a per-account `Arc<AtomicBool>` wake flag. The flag is the `interrupt` passed to `MailOps::idle`, so a command ends IDLE within 500 ms. `Engine::stop` sets the shared shutdown flag and every wake flag; the loop tells the two apart by checking shutdown.
+`run_loop` takes a `Receiver<Command>` and a per-account `Arc<AtomicBool>` wake flag. The flag is the `interrupt` passed to `MailOps::idle`, so a command ends IDLE within 50 ms. `Engine::stop` sets the shared shutdown flag and every wake flag; the loop tells the two apart by checking shutdown.
 
 Commands are drained, in arrival order:
 - before every pass and after IDLE returns;
-- between folders of a full pass;
+- between folders of a full pass, which syncs INBOX first;
+- before each folder the rules run on, and before each body they fetch; after a command ran, they read each row again and skip one that is gone;
 - between header chunks (below). After draining, the chunk loop selects its folder again and stops that folder's pass if UIDVALIDITY changed.
 
 While an account is offline, commands wait in the channel and run after reconnecting. A failed command produces an `Error` event; the session continues unless the error is a connection error.
