@@ -609,7 +609,8 @@ mod tests {
         drop(app);
         let (open, _wires) = fx.window();
         assert_eq!(open.find(&errors[0]).len(), 1);
-        assert_eq!(open.find("Inbox").len(), 1, "the other account's inbox");
+        // The other account's Inbox row, and the list's title above that Inbox.
+        assert_eq!(open.find("Inbox").len(), 2);
     }
 
     fn folder(name: &str, special_use: Option<&str>) -> Folder {

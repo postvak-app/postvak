@@ -3,21 +3,28 @@
 //! Nothing here changes state.
 use std::rc::Rc;
 
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use crate::config;
 
 use super::folders::{self, Entry, FolderEntry};
 use super::keys::{self, Key, Named, Press};
+use super::rows::ListModel;
 use super::state::{App, Focus, UiAction};
 use super::ui::{
     Dot, FolderItem, FolderKind, KeyHelp, MailWindow, MenuChoice, Pane, StatusLine, Theme,
     ThemePreference, ToolButton,
 };
 use super::{icons, list, status, toolbar};
+use crate::message::clean;
 
-/// What a callback asks the app: the action it means, if any.
-pub(crate) type Ask = Box<dyn FnOnce(&App) -> Option<UiAction>>;
+/// What a callback asks the app: the actions it means, in order.
+pub(crate) type Ask = Box<dyn FnOnce(&App) -> Vec<UiAction>>;
+
+/// An `Ask` for at most one action.
+fn one(f: impl FnOnce(&App) -> Option<UiAction> + 'static) -> Ask {
+    Box::new(move |app| f(app).into_iter().collect())
+}
 
 /// Shows `app` in `window`.
 pub(crate) fn present(app: &App, window: &MailWindow) {
@@ -53,6 +60,8 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
         .unwrap_or_default();
     window.set_update(update.into());
 
+    present_list(app, window);
+
     window.set_help_open(app.help_open);
     let help = keys::HELP.map(|(keys, what)| KeyHelp {
         keys: keys.into(),
@@ -65,18 +74,46 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
     ));
 }
 
+fn present_list(app: &App, window: &MailWindow) {
+    window.set_list_title(list::title(&app.view).unwrap_or_default().into());
+    window.set_list_counts(list::counts(&app.list.rows).into());
+    window.set_searching(app.search.is_some());
+    window.set_search_hint_text(list::search_hint(&app.view).into());
+    window.set_results(list::results(app.list.rows.len()).into());
+    let rows = window.get_rows();
+    match rows.as_any().downcast_ref::<ListModel>() {
+        Some(model) => model.update(app),
+        None => {
+            let model = ListModel::default();
+            model.update(app);
+            window.set_rows(ModelRc::new(model));
+        }
+    }
+    if app.list.follow_cursor {
+        let (offset, height) = app.list.viewport;
+        let offset = list::offset_showing(app.list.cursor, list::LIST_ROW, offset, height);
+        window.set_list_y(-offset);
+    }
+    window.set_move_open(app.move_picker.is_some());
+    let targets = app
+        .move_targets()
+        .into_iter()
+        .map(|name| SharedString::from(clean(name, false)));
+    window.set_move_targets(model(targets));
+}
+
 /// Hands the window's callbacks to `on`, which runs a function of the app and applies the action it returns.
 pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
-    let act = move |action: UiAction| on(Box::new(move |_| Some(action)));
+    let act = move |action: UiAction| on(Box::new(move |_| vec![action]));
     window.on_key(move |text, command, alt| {
         let press = press(&text, command, alt);
-        on(Box::new(move |app| {
+        on(one(move |app| {
             let typing = app.search_focused || app.move_picker.is_some();
             keys::action(&press?, app.focus, typing)
         }))
     });
     window.on_tool(move |i| {
-        on(Box::new(move |app| {
+        on(one(move |app| {
             let enabled = toolbar::enabled(app);
             let button = toolbar::buttons(app)
                 .into_iter()
@@ -88,19 +125,19 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
         act(UiAction::StartSearch);
     });
     window.on_folder_clicked(move |i| {
-        on(Box::new(move |app| {
+        on(one(move |app| {
             let view = folder_at(app, i)?.view?;
             Some(UiAction::SelectView(view))
         }));
     });
     window.on_caret_clicked(move |i| {
-        on(Box::new(move |app| {
+        on(one(move |app| {
             let (_, account, path) = folder_at(app, i)?.branch?;
             Some(UiAction::ToggleFolder(account, path))
         }));
     });
     window.on_folder_menu(move |i, j| {
-        on(Box::new(move |app| {
+        on(one(move |app| {
             let (_, enabled, action) = folder_at(app, i)?
                 .menu()
                 .into_iter()
@@ -109,7 +146,7 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
         }));
     });
     window.on_pinned_clicked(move |i| {
-        on(Box::new(move |app| {
+        on(one(move |app| {
             let pinned = folders::pinned(app)
                 .into_iter()
                 .nth(usize::try_from(i).ok()?)?;
@@ -128,8 +165,62 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     window.on_set_theme(move |theme| {
         act(UiAction::SetTheme(theme_of(theme)));
     });
+    window.on_row_clicked(move |i| {
+        act(UiAction::SelectRow(usize::try_from(i).unwrap_or_default()));
+    });
+    window.on_row_menu(move |i, j| {
+        on(Box::new(move |app| {
+            let (Ok(i), Ok(j)) = (usize::try_from(i), usize::try_from(j)) else {
+                return Vec::new();
+            };
+            let Some(row) = app.list.rows.get(i) else {
+                return Vec::new();
+            };
+            let Some((_, action)) = list::menu(row).into_iter().flatten().nth(j) else {
+                return Vec::new();
+            };
+            // The menu acts on the marked rows when it was opened on one of them, else on its own row.
+            if app.list.marked.contains(&row.id()) {
+                vec![action]
+            } else {
+                vec![UiAction::SelectRow(i), action]
+            }
+        }));
+    });
+    window.on_search_edited(move |text| {
+        act(UiAction::SearchFor(text.into()));
+    });
+    window.on_search_accepted(move || {
+        act(UiAction::SelectRow(0));
+    });
+    window.on_search_focus(move |focused| {
+        act(UiAction::SearchFocused(focused));
+    });
+    window.on_list_scrolled(move |offset, height| {
+        act(UiAction::ListViewport { offset, height });
+    });
+    window.on_move_filter(move |text| {
+        act(UiAction::MoveFilter(text.into()));
+    });
+    window.on_move_accepted(move || {
+        on(one(|app| {
+            Some(UiAction::MoveTo(app.move_targets().first()?.to_string()))
+        }));
+    });
+    window.on_move_chosen(move |i| {
+        on(one(move |app| {
+            let target = app
+                .move_targets()
+                .into_iter()
+                .nth(usize::try_from(i).ok()?)?;
+            Some(UiAction::MoveTo(target.to_string()))
+        }));
+    });
+    window.on_escape(move || {
+        act(UiAction::Escape);
+    });
     window.on_open_update(move || {
-        on(Box::new(|app| {
+        on(one(|app| {
             let version = app.newer_release()?;
             Some(UiAction::OpenUrl(crate::update::release_url(version)))
         }));

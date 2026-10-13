@@ -1,5 +1,5 @@
 // The small windows over the panes: Keys and History. Esc closes them through the app, the X here.
-import { ScrollView } from "std-widgets.slint";
+import { LineEdit, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { IconButton } from "common.slint";
 
@@ -99,6 +99,53 @@ export component HistoryDialog {
                     text: line;
                     color: Theme.pane.text;
                     wrap: word-wrap;
+                }
+            }
+        }
+    }
+}
+
+// The `m` picker: type to filter the folders, Enter or a click moves.
+export component MoveDialog {
+    in property <[string]> targets;
+    in property <string> close-icon;
+    callback filter-edited(string);
+    callback accepted();
+    callback chosen(int);
+    callback close();
+    width: 320px;
+    Dialog {
+        title: "Move to";
+        close-icon: root.close-icon;
+        close => { root.close(); }
+        LineEdit {
+            height: Theme.control;
+            placeholder-text: "Folder";
+            accessible-label: "Folder";
+            init => { self.focus(); }
+            edited(text) => { root.filter-edited(text); }
+            accepted => { root.accepted(); }
+        }
+        ScrollView {
+            height: min(320px, names.preferred-height);
+            names := VerticalLayout {
+                for target[i] in root.targets: TouchArea {
+                    height: Theme.row;
+                    accessible-role: button;
+                    accessible-label: target;
+                    accessible-action-default => { root.chosen(i); }
+                    clicked => { root.chosen(i); }
+                    Rectangle {
+                        border-radius: Theme.pad / 2;
+                        background: parent.has-hover ? Theme.pane.hover : transparent;
+                    }
+                    Text {
+                        accessible-role: none;
+                        x: Theme.pad;
+                        text: target;
+                        color: Theme.pane.text;
+                        vertical-alignment: center;
+                    }
                 }
             }
         }

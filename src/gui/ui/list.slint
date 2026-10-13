@@ -1,0 +1,216 @@
+// The message list: its title and counts or the search field, then a row per thread. `rows.rs` makes the rows'
+// texts; this file only places them.
+import { LineEdit, ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+export struct RowData {
+    unread: bool,
+    flagged: bool,
+    // The mark's or flag's glyph, or empty.
+    marker: string,
+    member: bool,
+    // The account, in All inboxes.
+    tag: string,
+    who: string,
+    subject: string,
+    date: string,
+    // The cursor row, or a marked one.
+    selected: bool,
+    // The accessible name, from `list::row_text`.
+    name: string,
+    // The right-click menu's three groups, from `list::menu`.
+    menu-read: [string],
+    menu-move: [string],
+    menu-file: [string],
+}
+
+component ListRow inherits Rectangle {
+    in property <RowData> data;
+    callback clicked();
+
+    property <color> ink: data.selected ? Theme.pane.on-accent : Theme.pane.text;
+    property <length> line: Theme.row;
+    property <length> indent: data.member ? Theme.inset : 0px;
+    property <length> start: Theme.pad + 12px + 20px + root.indent;
+
+    height: 2 * Theme.row;
+    border-radius: Theme.pad;
+    background: data.selected ? Theme.pane.selected : touch.has-hover ? Theme.pane.hover : transparent;
+    accessible-role: list-item;
+    accessible-label: data.name;
+    accessible-item-selected: data.selected;
+    accessible-action-default => { root.clicked(); }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    if !data.selected && !touch.has-hover: Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.pane.border;
+    }
+
+    if data.unread: Rectangle {
+        x: Theme.pad;
+        y: root.line / 2 + (root.line - self.height) / 2 - 2px;
+        width: 6px;
+        height: 6px;
+        border-radius: 3px;
+        background: data.selected ? Theme.pane.on-accent : Theme.pane.highlight;
+    }
+
+    Text {
+        accessible-role: none;
+        x: Theme.pad + 12px;
+        y: root.line / 2 - 2px;
+        width: 20px;
+        height: root.line;
+        text: data.marker;
+        font-family: Theme.icon-font;
+        font-size: Theme.icon * 3 / 4;
+        color: data.selected ? Theme.pane.on-accent : Theme.pane.highlight;
+        vertical-alignment: center;
+    }
+
+    HorizontalLayout {
+        x: root.start;
+        y: root.line / 2 - 2px;
+        width: date.x - self.x - 12px;
+        height: root.line;
+        spacing: Theme.pad;
+        if data.tag != "": Text {
+            accessible-role: none;
+            max-width: 80px;
+            text: data.tag;
+            font-size: 12px;
+            color: data.selected ? Theme.pane.on-accent : Theme.pane.muted;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        Text {
+            accessible-role: none;
+            horizontal-stretch: 1;
+            text: data.who;
+            font-weight: data.unread ? 600 : 500;
+            color: data.selected || data.unread ? root.ink : Theme.pane.secondary;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+    }
+
+    date := Text {
+        accessible-role: none;
+        x: parent.width - Theme.pad - self.width;
+        y: root.line / 2 - 2px;
+        height: root.line;
+        text: data.date;
+        font-family: Theme.mono-font;
+        font-size: 13px;
+        color: data.selected ? Theme.pane.on-accent : Theme.pane.muted;
+        vertical-alignment: center;
+    }
+
+    Text {
+        accessible-role: none;
+        x: root.start;
+        y: root.line + root.line / 2 - 2px - Theme.pad;
+        width: parent.width - self.x - Theme.pad;
+        height: root.line;
+        text: data.subject;
+        color: data.selected || data.unread ? root.ink : Theme.pane.muted;
+        overflow: elide;
+        vertical-alignment: center;
+    }
+}
+
+export component ListPane inherits Rectangle {
+    in property <string> title;
+    in property <string> counts;
+    in property <bool> searching;
+    in property <string> query;
+    in property <string> search-hint;
+    in property <string> results;
+    in property <[RowData]> rows;
+    in-out property <length> list-y;
+    out property <length> list-height: list.visible-height;
+    callback row-clicked(int);
+    callback row-menu(int, int);
+    callback search-edited(string);
+    callback search-accepted();
+    callback search-focus(bool);
+    callback scrolled();
+
+    VerticalLayout {
+        padding: Theme.pad;
+        spacing: Theme.pad / 2;
+
+        if !root.searching && root.title != "": HorizontalLayout {
+            height: Theme.control;
+            padding-left: Theme.pad;
+            spacing: Theme.pad;
+            Text {
+                text: root.title;
+                font-family: Theme.serif-font;
+                font-size: 19px;
+                color: Theme.pane.heading;
+                vertical-alignment: center;
+            }
+            Text {
+                text: root.counts;
+                color: Theme.pane.muted;
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        if root.searching: VerticalLayout {
+            spacing: Theme.pad / 2;
+            LineEdit {
+                height: Theme.control;
+                text: root.query;
+                placeholder-text: root.search-hint;
+                accessible-label: root.search-hint;
+                init => { self.focus(); }
+                edited(text) => { root.search-edited(text); }
+                accepted => { root.search-accepted(); }
+                changed has-focus => { root.search-focus(self.has-focus); }
+            }
+            Text {
+                text: root.results;
+                color: Theme.pane.muted;
+                wrap: word-wrap;
+            }
+        }
+
+        list := ListView {
+            vertical-stretch: 1;
+            content-y <=> root.list-y;
+            changed content-y => { root.scrolled(); }
+            changed visible-height => { root.scrolled(); }
+            for row[i] in root.rows: ContextMenuArea {
+                height: 2 * Theme.row;
+                Menu {
+                    for title[j] in row.menu-read: MenuItem {
+                        title: title;
+                        activated => { root.row-menu(i, j); }
+                    }
+                    MenuSeparator { }
+                    for title[j] in row.menu-move: MenuItem {
+                        title: title;
+                        activated => { root.row-menu(i, row.menu-read.length + j); }
+                    }
+                    MenuSeparator { }
+                    for title[j] in row.menu-file: MenuItem {
+                        title: title;
+                        activated => { root.row-menu(i, row.menu-read.length + row.menu-move.length + j); }
+                    }
+                }
+                ListRow {
+                    data: row;
+                    clicked => { root.row-clicked(i); }
+                }
+            }
+        }
+    }
+}

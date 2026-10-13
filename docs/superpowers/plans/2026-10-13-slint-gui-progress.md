@@ -47,9 +47,18 @@ Last updated: 2026-10-13. Branch `feat/slint-gui`. Read first: the plan `2026-10
   - Context menus cannot show shortcuts in Slint 1.18 (only `MenuBar` can), so "Sync now · Cmd+R" is the item's title.
   - Deferred to Task 12 (geometry and snapshots): `rows_are_full_width_and_keep_the_count_in_their_name`, `a_long_name_truncates_before_its_count`, `the_selected_folder_has_a_brass_icon_and_count_badge`, `account_names_are_muted_and_semibold`, `a_row_without_a_count_keeps_its_label_on_the_left`, `an_indented_row_starts_later_and_ends_at_the_same_edge`, `a_separator_divides_special_from_custom_folders`, `action_icons_are_drawn_at_the_icon_size`, `the_wordmark_lines_up_with_the_action_buttons`. A software-rendered look at the window (`Open::png`) matched the egui snapshot's layout closely; the list title row, the status bar's top gap and the folder pane's top padding still differ by a few pixels.
 
+- Task 5 (`feat(gui): message list, search and move picker`):
+  - `rows.rs`: `ListModel`, a Slint `Model` holding the app's rows; `row_data` makes a row's texts (`list::columns`, `row_text`, the menu titles) only when the `ListView` asks. A new list resets it; a moved cursor or mark notifies only the rows it changed. `bind::present_list` finds it again with `as_any().downcast_ref`.
+  - Toolkit-free: `list::{title, search_hint, results, menu}`.
+  - `ui/list.slint` (`ListPane`, `ListRow`, `RowData`), `MoveDialog` in `ui/dialogs.slint`. The search field and the move filter focus themselves on `init`; the window's `FocusScope` now wraps the whole window, so Esc and Ctrl/Cmd+R bubble up from text fields, and it takes the keyboard back when search or the picker closes and after Enter in search.
+  - Scrolling: the `ListView`'s `content-y` reports `ListViewport` through `list-scrolled`; while `follow_cursor` is set, `present_list` sets it from `list::offset_showing`.
+  - The row menu (three groups from `list::menu`) selects its row on activation unless the row is marked, then acts; egui selected on the right click itself. No shortcut text in the menu (Slint 1.18 shows shortcuts only in a `MenuBar`).
+  - Test helpers de-duplicate elements: `ElementQuery` visits each `ListView` row several times (11 in a 1280×800 window).
+  - Deferred to Task 12: `in_a_narrow_row_nothing_is_drawn_over_the_date_or_past_the_edge`, `unread_senders_are_semibold_dates_monospace_and_rows_ruled`.
+
 ## Next steps (in order)
 
-1. Tasks 5–13 of the plan, one commit each, updating this doc after each.
+1. Tasks 6–13 of the plan, one commit each, updating this doc after each.
 
 ## Notes for whoever resumes
 

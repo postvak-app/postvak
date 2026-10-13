@@ -9,6 +9,7 @@ use crate::rules::Action;
 use crate::store::{Message, MessageSummary, ThreadSummary};
 
 use super::folders;
+use super::state::{UiAction, View};
 use super::theme::ROW;
 
 /// Threads loaded per folder. ponytail: older mail is reachable through search; page by date if that is not enough.
@@ -168,6 +169,62 @@ fn edits_of<'a>(pending: &[&'a HashMap<RowKey, Vec<Optimistic>>], row: &Row) -> 
         .get(row.account)
         .and_then(|edits| edits.get(&row.key()))
         .map_or(&[][..], Vec::as_slice)
+}
+
+/// The list's heading: the folder's name, or All inboxes; none in the rules views.
+pub(crate) fn title(view: &View) -> Option<&str> {
+    match view {
+        View::AllInboxes => Some("All inboxes"),
+        View::Folder { folder, .. } => Some(folders::label(folder)),
+        _ => None,
+    }
+}
+
+/// The search field's hint.
+pub(crate) fn search_hint(view: &View) -> &'static str {
+    if *view == View::AllInboxes {
+        "Search every account"
+    } else {
+        "Search this account"
+    }
+}
+
+/// The line under the search field.
+pub(crate) fn results(count: usize) -> String {
+    format!(
+        "{} results · mail whose body is not downloaded matches on sender, recipients and subject only",
+        super::numbers::count(count as u64)
+    )
+}
+
+/// The right-click menu of a message row, in three groups; its items act like the toolbar, on the marked rows or this
+/// one.
+pub(crate) fn menu(row: &Row) -> [Vec<(&'static str, UiAction)>; 3] {
+    let (read, read_label) = if row.unread {
+        (Action::MarkRead, "Mark as read")
+    } else {
+        (Action::MarkUnread, "Mark as unread")
+    };
+    let (flag, flag_label) = if row.flagged {
+        (Action::Unflag, "Unflag")
+    } else {
+        (Action::Flag, "Flag")
+    };
+    [
+        vec![
+            (read_label, UiAction::Act(read)),
+            (flag_label, UiAction::Act(flag)),
+        ],
+        vec![
+            ("Archive", UiAction::Act(Action::Archive)),
+            ("Move to…", UiAction::OpenMovePicker),
+            ("Delete", UiAction::Act(Action::Trash)),
+        ],
+        vec![
+            ("View source", UiAction::OpenSource),
+            ("Save .eml", UiAction::SaveEml),
+        ],
+    ]
 }
 
 /// The counts beside the list's title: "3 threads, 1 unread".
@@ -640,5 +697,292 @@ mod tests {
             shape,
             [(0, 5, false), (1, 5, false), (1, 4, true), (1, 5, true)]
         );
+    }
+
+    use crate::gui::state::Focus;
+    use crate::gui::test_support::Fixture;
+    use crate::rules::Action;
+    use crate::sync::Command;
+
+    fn uids(open: &crate::gui::test_support::Open) -> Vec<u32> {
+        open.with(|live| live.app.list.rows.iter().map(|r| r.uid).collect())
+    }
+
+    fn apply(folder: &str, uids: &[u32], action: Action) -> (String, Command) {
+        let apply = Command::Apply {
+            folder: folder.into(),
+            uids: uids.to_vec(),
+            action,
+            by: "gui".into(),
+        };
+        ("work".into(), apply)
+    }
+
+    #[test]
+    fn rows_name_their_account_in_all_inboxes_only() {
+        let fx = Fixture::new(&["home", "work"]);
+        fx.add("home", message("INBOX", 1, "from home"));
+        let (open, _wires) = fx.window();
+        assert_eq!(open.labels_containing("Sender 1 — from home").len(), 1);
+        assert!(open.labels_containing("home · Sender 1").is_empty());
+        open.with(|live| live.app.select_view(View::AllInboxes));
+        assert_eq!(
+            open.labels_containing("home · Sender 1 — from home").len(),
+            1
+        );
+    }
+
+    #[test]
+    fn j_and_k_move_through_rows_newest_first() {
+        let fx = Fixture::new(&["work"]);
+        for uid in 1..=3 {
+            fx.add("work", message("INBOX", uid, &format!("subject {uid}")));
+        }
+        let (open, _wires) = fx.window();
+        assert_eq!(open.labels_containing("Sender 3 — subject 3").len(), 1);
+        assert_eq!(uids(&open), [3, 2, 1]);
+        open.press("j down");
+        assert_eq!(open.with(|live| live.app.list.cursor), 2);
+        open.press("j");
+        assert_eq!(
+            open.with(|live| live.app.list.cursor),
+            2,
+            "the cursor stops at the last row"
+        );
+        open.press("k");
+        assert_eq!(open.with(|live| live.app.list.cursor), 1);
+    }
+
+    #[test]
+    fn right_expands_a_thread_and_left_collapses_it_from_a_member() {
+        let fx = Fixture::new(&["work"]);
+        for uid in [4, 5] {
+            let mut m = message("INBOX", uid, "thread");
+            m.thread_id = "<t@example.com>".into();
+            fx.add("work", m);
+        }
+        fx.add("work", message("INBOX", 1, "alone"));
+        let (open, _wires) = fx.window();
+        assert_eq!(uids(&open).len(), 2);
+        assert_eq!(open.labels_containing("thread (2)").len(), 1);
+        open.press("right");
+        assert_eq!(uids(&open).len(), 4);
+        open.press("down");
+        assert!(open.with(|live| live.app.list.rows[1].member));
+        open.press("left");
+        assert_eq!(
+            open.with(|live| (live.app.list.rows.len(), live.app.list.cursor)),
+            (2, 0)
+        );
+        assert!(uids(&open).contains(&1));
+    }
+
+    #[test]
+    fn a_marked_row_says_so_in_its_name() {
+        let fx = Fixture::new(&["work"]);
+        for uid in 1..=2 {
+            fx.add("work", message("INBOX", uid, "hi"));
+        }
+        let (open, _wires) = fx.window();
+        open.press("x");
+        let marked: Vec<String> = open
+            .labels_containing("Sender")
+            .into_iter()
+            .filter(|l| l.starts_with("✔ "))
+            .collect();
+        assert_eq!(marked.len(), 1, "{marked:?}");
+    }
+
+    #[test]
+    fn the_list_is_titled_with_the_folder_and_its_counts() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "read"));
+        let mut unread = message("INBOX", 2, "new");
+        unread.flags = String::new();
+        fx.add("work", unread);
+        let (open, _wires) = fx.window();
+        assert_eq!(
+            open.find("Inbox").len(),
+            1,
+            "the title; the folder row says Inbox (1)"
+        );
+        assert_eq!(open.find("2 threads, 1 unread").len(), 1);
+    }
+
+    #[test]
+    fn a_rows_menu_acts_on_that_row() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "older"));
+        fx.add("work", message("INBOX", 2, "newer"));
+        let (open, wires) = fx.window();
+        let archive = menu(&open.with(|live| live.app.list.rows[1].clone()))
+            .into_iter()
+            .flatten()
+            .position(|(title, _)| title == "Archive")
+            .unwrap();
+        open.window().invoke_row_menu(1, archive as i32);
+        assert_eq!(wires.sent(), [apply("INBOX", &[1], Action::Archive)]);
+    }
+
+    #[test]
+    fn a_menu_on_a_marked_row_acts_on_every_marked_row() {
+        let fx = Fixture::new(&["work"]);
+        for uid in 1..=3 {
+            fx.add("work", message("INBOX", uid, "hi"));
+        }
+        let (open, wires) = fx.window();
+        open.press("x j x");
+        open.window().invoke_row_menu(0, 4);
+        assert_eq!(wires.sent(), [apply("INBOX", &[2, 3], Action::Trash)]);
+    }
+
+    #[test]
+    fn x_marks_rows_and_escape_clears_them() {
+        let fx = Fixture::new(&["work"]);
+        for uid in 1..=2 {
+            fx.add("work", message("INBOX", uid, "hi"));
+        }
+        let (open, _wires) = fx.window();
+        open.press("x j x");
+        assert_eq!(open.with(|live| live.app.list.marked.len()), 2);
+        open.press("escape");
+        assert!(open.with(|live| live.app.list.marked.is_empty()));
+    }
+
+    #[test]
+    fn tab_cycles_focus_and_j_in_the_folder_pane_opens_the_next_folder() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Archive", Some("Archive"));
+        fx.add("work", message("Archive", 7, "archived"));
+        let (open, _wires) = fx.window();
+        open.press("tab");
+        assert_eq!(open.with(|live| live.app.focus), Focus::Body);
+        open.press("tab j");
+        let archive = View::Folder {
+            account: 0,
+            folder: "Archive".into(),
+        };
+        assert_eq!(open.with(|live| live.app.view.clone()), archive);
+        assert_eq!(uids(&open), [7]);
+    }
+
+    #[test]
+    fn keys_on_an_account_without_a_store_do_nothing() {
+        let fx = Fixture::new(&["work"]);
+        let db = fx.paths.mail_db("work");
+        std::fs::remove_file(&db).unwrap();
+        std::fs::create_dir_all(&db).unwrap();
+        let (open, _wires) = fx.window();
+        open.press("j k x right left");
+        assert!(uids(&open).is_empty());
+        assert!(open.with(|live| live.app.list.marked.is_empty() && live.app.list.cursor == 0));
+    }
+
+    #[test]
+    fn space_and_enter_never_click_a_row_or_a_folder() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Archive", Some("Archive"));
+        for uid in 1..=3 {
+            fx.add("work", message("INBOX", uid, "hi"));
+        }
+        let (open, _wires) = fx.window();
+        let view = open.with(|live| live.app.view.clone());
+        open.press("tab   enter");
+        assert_eq!(open.with(|live| live.app.view.clone()), view);
+        assert_eq!(open.with(|live| live.app.list.cursor), 0);
+        open.press("down  ");
+        assert_eq!(open.with(|live| live.app.list.cursor), 1);
+    }
+
+    #[test]
+    fn slash_searches_the_account_and_escape_returns_to_the_folder() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Archive", Some("Archive"));
+        fx.add("work", message("INBOX", 1, "invoice march"));
+        fx.add("work", message("INBOX", 2, "lunch"));
+        fx.add("work", message("Archive", 3, "invoice april"));
+        let (open, wires) = fx.window();
+        open.press("/");
+        assert_eq!(open.find("Search this account").len(), 1);
+        open.press("invoice");
+        let found: Vec<RowKey> =
+            open.with(|live| live.app.list.rows.iter().map(Row::key).collect());
+        assert_eq!(
+            found,
+            [("Archive".to_string(), 3), ("INBOX".to_string(), 1)]
+        );
+        assert_eq!(open.labels_containing("[Archive] Sender 3").len(), 1);
+        assert_eq!(open.labels_containing("2 results").len(), 1);
+        open.press("enter e");
+        assert_eq!(
+            wires.sent(),
+            [apply("Archive", &[3], Action::Move("INBOX".into()))]
+        );
+        open.press("escape");
+        assert!(open.with(|live| live.app.search.is_none()));
+        assert_eq!(uids(&open), [2, 1]);
+        open.press("j");
+        assert_eq!(open.with(|live| live.app.list.cursor), 1);
+    }
+
+    #[test]
+    fn shortcut_letters_typed_into_search_stay_text() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "hello"));
+        let (open, wires) = fx.window();
+        open.press("/ e # u s");
+        assert!(wires.sent().is_empty());
+        assert_eq!(
+            open.with(|live| live.app.search.clone()).as_deref(),
+            Some("e#us")
+        );
+    }
+
+    #[test]
+    fn the_move_picker_in_search_offers_the_inbox_for_an_archived_hit() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Archive", Some("Archive"));
+        fx.add("work", message("Archive", 3, "invoice april"));
+        let (open, wires) = fx.window();
+        open.press("/ invoice enter m");
+        assert_eq!(open.find("Move to").len(), 1);
+        open.press("enter");
+        assert_eq!(
+            wires.sent(),
+            [apply("Archive", &[3], Action::Move("INBOX".into()))]
+        );
+        assert!(open.find("Move to").is_empty());
+    }
+
+    #[test]
+    fn the_move_picker_moves_to_a_clicked_folder_and_escape_closes_it() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Receipts", None);
+        fx.folder("work", "Travel", None);
+        fx.add("work", message("INBOX", 1, "hello"));
+        let (open, wires) = fx.window();
+        open.press("m escape");
+        assert!(open.with(|live| live.app.move_picker.is_none()));
+        open.press("m");
+        let picker = open
+            .find("Travel")
+            .into_iter()
+            .find(|e| e.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::Button));
+        picker.unwrap().invoke_accessible_default_action();
+        assert_eq!(
+            wires.sent(),
+            [apply("INBOX", &[1], Action::Move("Travel".into()))]
+        );
+    }
+
+    #[test]
+    fn clicking_a_row_selects_it() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "older"));
+        fx.add("work", message("INBOX", 2, "newer"));
+        let (open, _wires) = fx.window();
+        let older = open.labels_containing("older").remove(0);
+        open.click(&older);
+        assert_eq!(open.with(|live| live.app.list.cursor), 1);
     }
 }

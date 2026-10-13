@@ -11,6 +11,7 @@ mod icons;
 mod keys;
 pub mod list;
 mod numbers;
+mod rows;
 mod rules;
 mod startup;
 mod state;
@@ -105,13 +106,12 @@ pub(crate) fn with_live<R>(f: impl FnOnce(&mut Live) -> R) -> Option<R> {
 /// What a window callback does: `f` reads the app and names the action, which is then applied. True when there was
 /// one.
 fn on(f: bind::Ask) -> bool {
-    match with_live(|live| f(&live.app)).flatten() {
-        Some(action) => {
-            dispatch(action);
-            true
-        }
-        None => false,
+    let actions = with_live(|live| f(&live.app)).unwrap_or_default();
+    let any = !actions.is_empty();
+    for action in actions {
+        dispatch(action);
     }
+    any
 }
 
 /// Applies what a callback asked for, now or, when the window is busy, once it is done.

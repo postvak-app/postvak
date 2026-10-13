@@ -186,7 +186,25 @@ impl Open {
 
     /// The elements whose accessible label is `label`.
     pub fn find(&self, label: &str) -> Vec<ElementHandle> {
-        ElementHandle::find_by_accessible_label(&self.window(), label).collect()
+        once(ElementHandle::find_by_accessible_label(&self.window(), label).collect())
+    }
+
+    /// The labels that contain `text`.
+    pub fn labels_containing(&self, text: &str) -> Vec<String> {
+        let text = text.to_string();
+        let found = i_slint_backend_testing::ElementQuery::from_root(&self.window())
+            .match_descendants()
+            .match_predicate(move |e| {
+                let shown = e
+                    .accessible_role()
+                    .is_some_and(|role| role != i_slint_backend_testing::AccessibleRole::None);
+                shown && e.accessible_label().is_some_and(|l| l.contains(&text))
+            })
+            .find_all();
+        once(found)
+            .into_iter()
+            .filter_map(|e| e.accessible_label().map(String::from))
+            .collect()
     }
 
     /// The one element labelled `label`.
@@ -233,6 +251,25 @@ impl Open {
                 .dispatch_event(WindowEvent::KeyReleased { text });
         }
     }
+}
+
+/// Each element once: the query visits the rows of a `ListView` several times over.
+fn once(elements: Vec<ElementHandle>) -> Vec<ElementHandle> {
+    let mut seen = Vec::new();
+    let mut unique = Vec::new();
+    for element in elements {
+        let position = element.absolute_position();
+        let key = (
+            element.accessible_label(),
+            position.x.to_bits(),
+            position.y.to_bits(),
+        );
+        if !seen.contains(&key) {
+            seen.push(key);
+            unique.push(element);
+        }
+    }
+    unique
 }
 
 impl Drop for Open {
