@@ -36,17 +36,18 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
             });
         });
         let in_folder = matches!(app.view, View::Folder { .. });
+        let in_archive = matches!(&app.view, View::Folder { account, folder } if app.is_archive(*account, folder));
+        let archive = if in_archive {
+            (icons::INBOX, "Unarchive message", "Move to inbox · e")
+        } else {
+            (icons::ARCHIVE, "Archive message", "Archive · e")
+        };
         // Closed picker only: an action would move the cursor, and the picker would then move a different message.
         let has_row = in_folder && !app.list.rows.is_empty() && app.move_picker.is_none();
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.x = PAD / 2.0;
             for (icon, name, hint, action) in [
-                (
-                    icons::ARCHIVE,
-                    "Archive message",
-                    "Archive · e",
-                    UiAction::Act(Action::Archive),
-                ),
+                (archive.0, archive.1, archive.2, UiAction::Act(Action::Archive)),
                 (
                     icons::MOVE,
                     "Move message",
@@ -238,6 +239,27 @@ mod tests {
                 if account == "work" && folder == "INBOX" && uids == &[1]
         ));
         assert!(harness.state().list.rows.is_empty());
+    }
+
+    #[test]
+    fn in_the_archive_the_archive_button_moves_the_row_back_to_the_inbox() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Archive", Some("Archive"));
+        fx.add("work", message("Archive", 7, "archived"));
+        let (mut harness, wires) = fx.harness();
+        harness.state_mut().select_view(View::Folder {
+            account: 0,
+            folder: "Archive".into(),
+        });
+        harness.run();
+        assert!(harness.query_by_label("Archive message").is_none());
+        harness.get_by_label("Unarchive message").click();
+        harness.run();
+        assert!(matches!(
+            &wires.sent()[..],
+            [(_, Command::Apply { folder, uids, action: Action::Move(target), .. })]
+                if folder == "Archive" && uids == &[7] && target == "INBOX"
+        ));
     }
 
     #[test]

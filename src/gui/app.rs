@@ -1024,6 +1024,14 @@ impl App {
         })
     }
 
+    /// Whether `folder` is the account's Archive folder, where archiving moves a message back to the inbox.
+    pub(crate) fn is_archive(&self, account: usize, folder: &str) -> bool {
+        self.accounts[account]
+            .folders
+            .iter()
+            .any(|f| f.name == folder && f.special_use.as_deref() == Some("Archive"))
+    }
+
     /// Loads the shown view's rows from the store. Runs on view changes and when events mark the view dirty, never
     /// per frame: `thread_summaries` scans the folder.
     pub(crate) fn reload_view(&mut self) {
@@ -1491,7 +1499,12 @@ impl App {
         }
         self.pending_arm |= optimistic == Optimistic::Hidden;
         for (folder, uids) in targets {
-            self.send_apply(account, folder, uids, action.clone(), optimistic);
+            let action = if matches!(action, Action::Archive) && self.is_archive(account, &folder) {
+                Action::Move("INBOX".into())
+            } else {
+                action.clone()
+            };
+            self.send_apply(account, folder, uids, action, optimistic);
         }
         self.list.marked.clear();
         self.rebuild_rows();
