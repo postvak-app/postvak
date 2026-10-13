@@ -66,9 +66,18 @@ Last updated: 2026-10-13. Branch `feat/slint-gui`. Read first: the plan `2026-10
   - The read-timer and fetch tests run on `Driver` (a clock the test sets); `the_read_timer_wakes_the_window_without_input` checks the real window's timer with mock time.
   - The Copy test checks the text Copy copies (`source-text`); reading the clipboard back is not possible under the testing backend.
 
+- Task 7 (`feat(gui): HTML view`):
+  - `ui/body.slint`: `HtmlView` (remote line with Load remote content, "Rendering…", a non-interactive `Flickable` of strip `Image`s on a white page, a `TouchArea` for hover (`changed mouse-x/y`), drag selection and clicks, a `Tooltip` with the link, pointer or text cursor, and a link menu: Open link, Copy link). `PageInfo`, `Remote`, `StripData`.
+  - `rows::PageModel`: strips as images (`Image::from_rgba8_premultiplied`), each converted once and kept while its `Arc<Pixels>` stays.
+  - Copy: `MailWindow::copy-text(text)` puts text on the clipboard through a hidden read-only `TextInput`; Ctrl/Cmd+C copies the page selection (`page-selection`).
+  - State: `HtmlState::visible` (the last reported range) is asked for again after a new layout or selection; `settle_html` lays out a width that held still on a tick; `App::html_size` with `lay_out_new_html` lays out a newly shown HTML message at the last width, as Slint reports the width only when it changes (egui sent it every frame).
+  - `mod.rs`: `on(Ask)` queues callbacks that arrive while the app is borrowed (an element's `init` during `present`) in `ASKS`; `Live::tick` answers them after presenting. `dispatch`/`QUEUE` are gone.
+  - `Open::tick` visits the elements and runs `mock_elapsed_time(0)`, so conditional elements are built and `changed` handlers run as in the event loop.
+  - `html::view_tests` holds the ported view tests (fake renderer and fetcher), plus `a_new_layout_asks_for_the_strips_on_screen`. The drag test checks the selection the window would copy; the text cursor is not readable through the testing API.
+
 ## Next steps (in order)
 
-1. Tasks 7–13 of the plan, one commit each, updating this doc after each.
+1. Tasks 8–13 of the plan, one commit each, updating this doc after each.
 
 ## Notes for whoever resumes
 

@@ -298,6 +298,8 @@ pub struct App {
     pub(crate) help_open: bool,
     /// Numbers HTML layouts, so a reply for an older one is dropped.
     pub(crate) html_generation: u64,
+    /// The scale and width the window last gave the HTML view, so the next HTML message lays out at once.
+    pub(crate) html_size: Option<(f32, f32)>,
     pub(crate) history: VecDeque<HistoryLine>,
     pub(crate) history_open: bool,
     /// Opens a file or URL with the desktop's app; tests record instead.
@@ -379,6 +381,7 @@ impl App {
             focus_search: false,
             help_open: false,
             html_generation: 0,
+            html_size: None,
             history: VecDeque::new(),
             history_open: false,
             launch,
@@ -421,6 +424,7 @@ impl App {
         self.receive(now);
         self.receive_html();
         self.receive_remote();
+        self.settle_html(now);
         self.keep_daemon(now);
         self.check_release();
         if std::mem::take(&mut self.view_dirty) {
@@ -429,6 +433,7 @@ impl App {
         self.poll_files(now);
         let typing_search = self.focus_search || self.search_focused;
         self.sync_body(now, typing_search);
+        self.lay_out_new_html(now);
         self.mark_read_after_delay(now);
         self.request_tick(self.last_poll + POLL);
         if self.daemon_lost {
@@ -727,7 +732,10 @@ impl App {
             UiAction::HtmlHover(at) => self.html_hover(at),
             UiAction::HtmlSelect { from, to } => self.html_select(from, to),
             UiAction::HtmlVisible { top, bottom } => self.html_visible(top, bottom),
-            UiAction::HtmlWidth { scale, width } => self.html_width(scale, width, now),
+            UiAction::HtmlWidth { scale, width } => {
+                self.html_size = Some((scale, width));
+                self.html_width(scale, width, now);
+            }
             UiAction::LoadRemote => self.load_remote(),
             UiAction::Escape => {
                 if self.move_picker.is_some() {
@@ -1245,6 +1253,8 @@ impl App {
         let Some(renderer) = &self.renderer else {
             return;
         };
+        // A new layout or selection drops the strips; the part on screen is asked for again once the replies are in.
+        let mut repaint = false;
         for reply in renderer.replies() {
             let Some(body) = self.body.as_mut() else {
                 continue;
@@ -1286,17 +1296,51 @@ impl App {
                     view.hovered_at = None;
                     view.selected_at = None;
                     view.selection = None;
+                    repaint = true;
                 }
                 Reply::Link { href, .. } => view.hover = href,
                 Reply::Selected { text, .. } => {
                     view.selection = text;
                     // Paint the strips again with the highlight; the old ones stay on screen until then.
                     view.requested.clear();
+                    repaint = true;
                 }
                 Reply::Strip { image, strip, .. } => {
                     view.strips.insert(strip, Arc::new(image));
                 }
             }
+        }
+        let visible = self
+            .body
+            .as_ref()
+            .and_then(|b| b.html_view.as_ref())
+            .map(|v| v.visible);
+        if let Some((top, bottom)) = visible.filter(|_| repaint) {
+            self.html_visible(top, bottom);
+        }
+    }
+
+    /// A message that shows HTML and has no layout yet gets one at the view's last width; the window reports the width
+    /// only when it changes.
+    fn lay_out_new_html(&mut self, now: f64) {
+        let waiting = self
+            .body
+            .as_ref()
+            .is_some_and(|b| b.shows_html() && b.html_view.is_none());
+        if let (true, Some((scale, width))) = (waiting, self.html_size) {
+            self.html_width(scale, width, now);
+        }
+    }
+
+    /// Lays out at the width the view settled on, once it has held still for `html::SETTLE`.
+    fn settle_html(&mut self, now: f64) {
+        let wanted = self
+            .body
+            .as_ref()
+            .and_then(|b| b.html_view.as_ref())
+            .and_then(|v| v.wanted);
+        if let Some(((scale, width), _)) = wanted {
+            self.html_width(scale, width, now);
         }
     }
 
@@ -1418,6 +1462,7 @@ impl App {
         ) else {
             return;
         };
+        view.visible = (top, bottom);
         let Some(page) = view.page else { return };
         let scale = view.sent.0;
         for strip in html::wanted_strips(top, bottom, page.1, scale) {

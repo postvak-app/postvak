@@ -8,12 +8,13 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use crate::config;
 
 use super::folders::{self, Entry, FolderEntry};
+use super::html::{self, HtmlState};
 use super::keys::{self, Key, Named, Press};
-use super::rows::ListModel;
+use super::rows::{ListModel, PageModel};
 use super::state::{App, Focus, UiAction};
 use super::ui::{
-    BodyInfo, Dot, FolderItem, FolderKind, KeyHelp, MailWindow, MenuChoice, Pane, StatusLine,
-    Theme, ThemePreference, ToolButton,
+    BodyInfo, Dot, FolderItem, FolderKind, KeyHelp, MailWindow, MenuChoice, PageInfo, Pane, Remote,
+    StatusLine, Theme, ThemePreference, ToolButton,
 };
 use super::{body, icons, list, status, toolbar};
 use crate::message::clean;
@@ -136,6 +137,7 @@ fn present_body(app: &App, window: &MailWindow) {
     if window.get_body_text() != body_text {
         window.set_body_text(body_text.into());
     }
+    present_page(app, window);
     let source = app.body.as_ref().and_then(|b| b.source.as_ref());
     window.set_source_open(source.is_some());
     let source_text = source.map_or("", |s| s.text.as_str());
@@ -157,6 +159,43 @@ fn present_body(app: &App, window: &MailWindow) {
             reason = "a row is at most SOURCE_ROW characters"
         )]
         window.set_source_widest(widest.unwrap_or(0) as f32 * 8.5);
+    }
+}
+
+fn present_page(app: &App, window: &MailWindow) {
+    let view = app
+        .body
+        .as_ref()
+        .filter(|b| b.shows_html())
+        .and_then(|b| b.html_view.as_ref());
+    let remote = match view {
+        Some(v) if v.fetching.is_some() => Remote::Loading,
+        Some(v) if !v.remote.is_empty() => Remote::NotLoaded,
+        _ => Remote::None,
+    };
+    let (width, height) = view.and_then(|v| v.page).unwrap_or_default();
+    let link = view
+        .and_then(|v| v.hover.as_deref())
+        .map(|href| clean(href, false));
+    window.set_page(PageInfo {
+        ready: view.is_some_and(|v| v.page.is_some()),
+        width,
+        height,
+        remote,
+        link: link.unwrap_or_default().into(),
+    });
+    let selection = view
+        .and_then(|v| v.selection.as_deref())
+        .unwrap_or_default();
+    window.set_page_selection(selection.into());
+    let strips = window.get_strips();
+    match strips.as_any().downcast_ref::<PageModel>() {
+        Some(model) => model.update(view),
+        None => {
+            let model = PageModel::default();
+            model.update(view);
+            window.set_strips(ModelRc::new(model));
+        }
     }
 }
 
@@ -298,6 +337,68 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
             body::has_target(&url).then(|| UiAction::OpenUrl(url.into()))
         }));
     });
+    let weak = window.as_weak();
+    window.on_page_width(move |width| {
+        let scale = weak.upgrade().map_or(1.0, |w| w.window().scale_factor());
+        act(UiAction::HtmlWidth {
+            scale,
+            width: width.max(html::MIN_WIDTH),
+        });
+    });
+    window.on_page_visible(move |top, bottom| {
+        act(UiAction::HtmlVisible { top, bottom });
+    });
+    window.on_page_hover(move |x, y| {
+        on(one(move |app| {
+            let at = Some([x, y]);
+            (html_view(app)?.hovered_at != at).then_some(UiAction::HtmlHover(at))
+        }));
+    });
+    window.on_page_leave(move || {
+        on(one(|app| {
+            html_view(app)?
+                .hovered_at
+                .is_some()
+                .then_some(UiAction::HtmlHover(None))
+        }));
+    });
+    window.on_page_select(move |from_x, from_y, to_x, to_y| {
+        on(one(move |app| {
+            let at = ([from_x, from_y], [to_x, to_y]);
+            (html_view(app)?.selected_at != Some(at)).then_some(UiAction::HtmlSelect {
+                from: at.0,
+                to: at.1,
+            })
+        }));
+    });
+    window.on_page_clicked(move |x, y| {
+        on(Box::new(move |app| {
+            let Some(view) = html_view(app) else {
+                return Vec::new();
+            };
+            let mut actions = Vec::new();
+            // A click clears the selection.
+            if view.selection.is_some() {
+                actions.push(UiAction::HtmlSelect {
+                    from: [x, y],
+                    to: [x, y],
+                });
+            }
+            if let Some(url) = view.hover.as_deref().and_then(html::openable) {
+                actions.push(UiAction::OpenUrl(url.to_string()));
+            }
+            actions
+        }));
+    });
+    window.on_page_open_link(move || {
+        on(one(|app| {
+            let url = html::openable(html_view(app)?.hover.as_deref()?)?;
+            Some(UiAction::OpenUrl(url.to_string()))
+        }));
+    });
+    window.on_load_remote(move || {
+        act(UiAction::LoadRemote);
+    });
     window.on_open_update(move || {
         on(one(|app| {
             let version = app.newer_release()?;
@@ -310,6 +411,11 @@ fn model<T: Clone + 'static>(items: impl IntoIterator<Item = T>) -> ModelRc<T> {
     ModelRc::from(Rc::new(VecModel::from(
         items.into_iter().collect::<Vec<T>>(),
     )))
+}
+
+/// The shown message's HTML view.
+fn html_view(app: &App) -> Option<&HtmlState> {
+    app.body.as_ref()?.html_view.as_ref()
 }
 
 /// The folder entry the pane shows at `index`.

@@ -1,17 +1,22 @@
-//! The message list as a Slint model. It keeps the rows the app lists and makes a row's texts only when the window
+//! The message list and the HTML page's strips as Slint models. It keeps the rows the app lists and makes a row's texts only when the window
 //! shows that row, so a folder of thousands of threads costs only the rows on screen.
 use std::cell::RefCell;
 use std::collections::HashSet;
 
 use chrono::Local;
 use std::rc::Rc;
+use std::sync::Arc;
 
-use slint::{Model, ModelNotify, ModelRc, ModelTracker, SharedString, VecModel};
+use slint::{
+    Image, Model, ModelNotify, ModelRc, ModelTracker, Rgba8Pixel, SharedPixelBuffer, SharedString,
+    VecModel,
+};
 
+use super::html::{self, HtmlState, Pixels};
 use super::icons;
 use super::list::{self, Row, RowKey};
 use super::state::{App, View};
-use super::ui::RowData;
+use super::ui::{RowData, StripData};
 
 /// What the rows are drawn from.
 #[derive(Default, PartialEq)]
@@ -133,6 +138,91 @@ impl Model for ListModel {
             selected: index == shown.cursor || marked,
             name: name.into(),
         })
+    }
+
+    fn model_tracker(&self) -> &dyn ModelTracker {
+        &self.notify
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// The painted strips of the HTML page as images, each converted once: a strip keeps its image until the render
+/// thread replaces it.
+#[derive(Default)]
+pub(crate) struct PageModel {
+    strips: RefCell<Vec<(u32, Arc<Pixels>, StripData)>>,
+    notify: ModelNotify,
+}
+
+impl PageModel {
+    pub(crate) fn update(&self, view: Option<&HtmlState>) {
+        let scale = view.map_or(1.0, |v| v.sent.0.max(0.5));
+        let strips = view.map(|v| &v.strips);
+        let same = {
+            let shown = self.strips.borrow();
+            let wanted: Vec<_> = strips.into_iter().flatten().collect();
+            shown.len() == wanted.len()
+                && shown
+                    .iter()
+                    .zip(&wanted)
+                    .all(|((n, a, _), (m, b))| n == *m && Arc::ptr_eq(a, b))
+        };
+        if same {
+            return;
+        }
+        let old = std::mem::take(&mut *self.strips.borrow_mut());
+        let new = strips
+            .into_iter()
+            .flatten()
+            .map(|(&strip, pixels)| {
+                let kept = old
+                    .iter()
+                    .find(|(n, p, _)| *n == strip && Arc::ptr_eq(p, pixels));
+                let data = kept.map_or_else(
+                    || strip_data(strip, pixels, scale),
+                    |(_, _, data)| data.clone(),
+                );
+                (strip, pixels.clone(), data)
+            })
+            .collect();
+        *self.strips.borrow_mut() = new;
+        self.notify.reset();
+    }
+}
+
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "strip sizes are far below f32's exact range"
+)]
+fn strip_data(strip: u32, pixels: &Pixels, scale: f32) -> StripData {
+    let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
+        pixels.rgba(),
+        pixels.width(),
+        pixels.height(),
+    );
+    StripData {
+        image: Image::from_rgba8_premultiplied(buffer),
+        y: strip as f32 * html::STRIP as f32 / scale,
+        width: pixels.width() as f32 / scale,
+        height: pixels.height() as f32 / scale,
+    }
+}
+
+impl Model for PageModel {
+    type Data = StripData;
+
+    fn row_count(&self) -> usize {
+        self.strips.borrow().len()
+    }
+
+    fn row_data(&self, index: usize) -> Option<StripData> {
+        self.strips
+            .borrow()
+            .get(index)
+            .map(|(_, _, data)| data.clone())
     }
 
     fn model_tracker(&self) -> &dyn ModelTracker {

@@ -44,7 +44,7 @@ use slint::ComponentHandle;
 use crate::config::Config;
 use crate::paths::Paths;
 
-use state::{App, UiAction};
+use state::App;
 
 /// The window icon: `assets/icon.svg` rendered to PNG by `packaging/icons.sh`.
 pub(crate) const ICON: &[u8] = include_bytes!("../../assets/icon.png");
@@ -87,8 +87,8 @@ pub(crate) struct Live {
 
 thread_local! {
     static LIVE: RefCell<Option<Live>> = const { RefCell::new(None) };
-    /// Actions from callbacks that ran while `LIVE` was busy, such as during `present`.
-    static QUEUE: RefCell<Vec<UiAction>> = const { RefCell::new(Vec::new()) };
+    /// Callbacks that ran while `LIVE` was busy, such as an element's `init` during `present`; answered right after.
+    static ASKS: RefCell<Vec<bind::Ask>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Ticks the app on the event loop's thread; daemon threads call it from anywhere.
@@ -103,21 +103,15 @@ pub(crate) fn with_live<R>(f: impl FnOnce(&mut Live) -> R) -> Option<R> {
     LIVE.with(|live| live.try_borrow_mut().ok()?.as_mut().map(f))
 }
 
-/// What a window callback does: `f` reads the app and names the action, which is then applied. True when there was
-/// one.
-fn on(f: bind::Ask) -> bool {
-    let actions = with_live(|live| f(&live.app)).unwrap_or_default();
-    let any = !actions.is_empty();
-    for action in actions {
-        dispatch(action);
+/// What a window callback does: `ask` reads the app and names the actions, which are then applied. True when there
+/// were any; a callback while the window is busy is answered once it is free, and counts as none.
+fn on(ask: bind::Ask) -> bool {
+    let mut ask = Some(ask);
+    let answered = with_live(|live| ask.take().map(|ask| live.answer(ask)));
+    if let Some(ask) = ask {
+        ASKS.with_borrow_mut(|asks| asks.push(ask));
     }
-    any
-}
-
-/// Applies what a callback asked for, now or, when the window is busy, once it is done.
-fn dispatch(action: UiAction) {
-    QUEUE.with_borrow_mut(|queue| queue.push(action));
-    with_live(|live| live.drain());
+    answered.flatten().unwrap_or(false)
 }
 
 impl Live {
@@ -134,24 +128,35 @@ impl Live {
         with_live(Live::tick);
     }
 
-    fn tick(&mut self) {
+    /// Applies what `ask` names, then shows the result.
+    fn answer(&mut self, ask: bind::Ask) -> bool {
+        let actions = ask(&self.app);
         let now = (self.clock)();
-        self.app.tick(now);
-        self.present();
-        self.schedule(now);
+        let any = !actions.is_empty();
+        for action in actions {
+            self.app.apply(action, now);
+        }
+        self.tick();
+        any
     }
 
-    fn drain(&mut self) {
+    /// Time moves the app on, the window shows it, and callbacks that came in meanwhile are answered.
+    fn tick(&mut self) {
         loop {
-            let actions = QUEUE.with_borrow_mut(std::mem::take);
-            if actions.is_empty() {
+            let now = (self.clock)();
+            self.app.tick(now);
+            self.present();
+            let asks = ASKS.with_borrow_mut(std::mem::take);
+            if asks.is_empty() {
+                self.schedule(now);
                 return;
             }
-            let now = (self.clock)();
-            for action in actions {
-                self.app.apply(action, now);
+            for ask in asks {
+                let now = (self.clock)();
+                for action in ask(&self.app) {
+                    self.app.apply(action, now);
+                }
             }
-            self.tick();
         }
     }
 
@@ -272,9 +277,10 @@ mod tests {
     use slint::ComponentHandle;
 
     use super::startup::{ACCOUNTS_DOCS, NoAccounts, Problem};
+    use super::startup_window;
     use super::test_support::{Fixture, headless};
     use super::ui::{Pane, Theme, ThemePreference};
-    use super::{UiAction, startup_window};
+    use crate::gui::state::UiAction;
     use crate::gui::state::View;
 
     /// The startup window for `error`, shown headless, and the URLs it asked to open.

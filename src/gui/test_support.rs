@@ -157,8 +157,13 @@ impl Open {
         result
     }
 
-    /// Takes what the daemon sent, as when the window is woken.
+    /// Takes what the daemon sent, as when the window is woken. Visiting the elements then makes Slint build what the
+    /// new state shows, as drawing does in the running window; their `init` callbacks are answered on the next tick.
     pub fn tick(&self) {
+        with_live(Live::tick).unwrap();
+        let _ = ElementHandle::find_by_element_id(&self.window(), "none");
+        // Runs `changed` handlers, as the event loop does.
+        i_slint_backend_testing::mock_elapsed_time(Duration::ZERO);
         with_live(Live::tick).unwrap();
     }
 

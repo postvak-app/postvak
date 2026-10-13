@@ -255,6 +255,8 @@ pub(crate) struct HtmlState {
     pub strips: BTreeMap<u32, Arc<Pixels>>,
     /// A different width or scale than `sent`, and when it was first seen.
     pub wanted: Option<((f32, f32), f64)>,
+    /// The part of the page on screen, in points, as the window last reported it.
+    pub visible: (f32, f32),
 }
 
 impl HtmlState {
@@ -273,6 +275,7 @@ impl HtmlState {
             sent: (scale, width),
             strips: BTreeMap::new(),
             wanted: None,
+            visible: (0.0, 0.0),
         }
     }
 }
@@ -359,5 +362,389 @@ mod tests {
         ] {
             assert_eq!(openable(refused), None, "{refused}");
         }
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "html")]
+mod view_tests {
+    //! The HTML view in the running window: toggling to text, links, notes, remote content, and the render thread's
+    //! failures.
+    use std::collections::BTreeMap;
+    use std::sync::mpsc::{Receiver, Sender};
+    use std::time::{Duration, Instant};
+
+    use slint::ComponentHandle;
+
+    use super::{
+        FAILED, FetchDone, Fetcher, Load, MAX_HEIGHT, MAX_HTML, Renderer, Reply, Request, TOO_LARGE,
+    };
+    use crate::gui::state::App;
+    use crate::gui::test_support::{Fixture, Open, Wires, add_html, launched, message};
+
+    const NEWSLETTER: &str = include_str!("../../../tests/fixtures/newsletter.html");
+
+    /// Ticks the window until `done` holds; the render thread answers in real time.
+    fn wait_for(open: &Open, done: impl Fn(&App) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !open.with(|live| done(&live.app)) {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for the renderer"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+            open.tick();
+        }
+    }
+
+    /// True once the shown message is laid out and every strip it asked for is painted.
+    fn painted(app: &App) -> bool {
+        app.body
+            .as_ref()
+            .and_then(|b| b.html_view.as_ref())
+            .is_some_and(|v| {
+                v.page.is_some()
+                    && !v.requested.is_empty()
+                    && v.requested.iter().all(|s| v.strips.contains_key(s))
+            })
+    }
+
+    fn view<R>(open: &Open, f: impl FnOnce(&super::HtmlState) -> R) -> Option<R> {
+        open.with(|live| live.app.body.as_ref()?.html_view.as_ref().map(f))
+    }
+
+    /// Moves the pointer onto the page, waits for the link answer, and clicks; the link the page reported.
+    fn click_page(open: &Open) -> Option<String> {
+        let window = open.window();
+        window.invoke_page_hover(200.0, 200.0);
+        wait_for(open, |app| {
+            app.body
+                .as_ref()
+                .and_then(|b| b.html_view.as_ref())
+                .is_some_and(|v| v.hovered_at.is_some() && v.hover.is_some())
+        });
+        let hover = view(open, |v| v.hover.clone()).flatten();
+        window.invoke_page_clicked(200.0, 200.0);
+        hover
+    }
+
+    /// A link filling the page, so any point on it is over the link.
+    fn page_link(href: &str) -> String {
+        format!("<a href=\"{href}\" style=\"display:block;height:3000px\">link</a>")
+    }
+
+    #[test]
+    fn html_mail_shows_as_html_and_v_switches_that_message_to_text() {
+        let fx = Fixture::new(&["work"]);
+        add_html(&fx, 1, "<p>older</p>", "older as text");
+        add_html(&fx, 2, NEWSLETTER, "newer as text");
+        let (open, _wires) = fx.window();
+        wait_for(&open, painted);
+        assert!(open.find("Message text").is_empty());
+        assert_eq!(open.find("Remote content not loaded.").len(), 1);
+        open.press("v");
+        assert_eq!(open.window().get_body_text(), "newer as text");
+        assert_eq!(open.find("Message text").len(), 1);
+        open.press("v");
+        assert!(open.find("Message text").is_empty());
+        open.press("v j");
+        wait_for(&open, painted);
+        assert!(open.find("Message text").is_empty());
+        assert!(open.find("Remote content not loaded.").is_empty());
+    }
+
+    #[test]
+    fn v_on_plain_text_mail_changes_nothing() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "plain"));
+        let (open, _wires) = fx.window();
+        open.press("v");
+        assert!(!open.with(|live| live.app.body.as_ref().unwrap().show_text));
+        assert_eq!(open.window().get_body_text(), "Body of 1");
+        assert!(open.with(|live| live.app.renderer.is_none()));
+    }
+
+    #[test]
+    fn an_https_link_opens_and_shows_its_target() {
+        let fx = Fixture::new(&["work"]);
+        add_html(&fx, 1, &page_link("https://example.com/x"), "link");
+        let (open, _wires) = fx.window();
+        wait_for(&open, painted);
+        assert_eq!(click_page(&open).as_deref(), Some("https://example.com/x"));
+        assert_eq!(open.window().get_page().link, "https://example.com/x");
+        assert_eq!(launched(), ["https://example.com/x"]);
+    }
+
+    #[test]
+    fn a_javascript_link_does_nothing() {
+        let fx = Fixture::new(&["work"]);
+        add_html(&fx, 1, &page_link("javascript:alert(1)"), "link");
+        let (open, _wires) = fx.window();
+        wait_for(&open, painted);
+        assert_eq!(click_page(&open).as_deref(), Some("javascript:alert(1)"));
+        assert!(launched().is_empty());
+        open.window().invoke_page_open_link();
+        assert!(launched().is_empty());
+    }
+
+    #[test]
+    fn html_over_the_limit_shows_text_with_a_note() {
+        let fx = Fixture::new(&["work"]);
+        let huge = format!("<p>{}</p>", "x".repeat(MAX_HTML));
+        add_html(&fx, 1, &huge, "the text");
+        let (open, _wires) = fx.window();
+        assert_eq!(open.find(TOO_LARGE).len(), 1);
+        assert_eq!(open.window().get_body_text(), "the text");
+        assert!(open.with(|live| live.app.renderer.is_none()));
+    }
+
+    /// The window with a fake renderer, and the generation of the first layout it asked for.
+    struct Faked {
+        open: Open,
+        jobs: Receiver<Request>,
+        replies: Sender<Reply>,
+        generation: u64,
+        _wires: Wires,
+    }
+
+    fn faked(fx: &Fixture) -> Faked {
+        let (open, wires) = fx.window();
+        let (renderer, jobs, replies) = Renderer::fake(std::sync::Arc::new(|| {}));
+        // Opening the window laid out with a real renderer; start the view again on the fake one.
+        open.with(|live| {
+            live.app.renderer = Some(renderer);
+            if let Some(body) = live.app.body.as_mut() {
+                body.html_view = None;
+            }
+        });
+        open.tick();
+        let generation = loads(&jobs)
+            .first()
+            .map(|load| load.generation)
+            .expect("a layout was asked for");
+        Faked {
+            open,
+            jobs,
+            replies,
+            generation,
+            _wires: wires,
+        }
+    }
+
+    /// The `Load` jobs the app sent since the last call.
+    fn loads(jobs: &Receiver<Request>) -> Vec<Load> {
+        jobs.try_iter()
+            .filter_map(|job| match job {
+                Request::Load(load) => Some(load),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn laid(generation: u64, height: f32, remote: &[&str]) -> Reply {
+        Reply::Laid {
+            generation,
+            height,
+            remote: remote.iter().map(|url| url.to_string()).collect(),
+            width: 400.0,
+        }
+    }
+
+    fn reply(faked: &Faked, reply: Reply) {
+        faked.replies.send(reply).unwrap();
+        faked.open.tick();
+    }
+
+    #[test]
+    fn a_render_failure_shows_text_with_a_note() {
+        let fx = Fixture::new(&["work"]);
+        add_html(&fx, 1, "<p>x</p>", "fallback text");
+        let faked = faked(&fx);
+        reply(
+            &faked,
+            Reply::Failed {
+                generation: faked.generation,
+            },
+        );
+        assert_eq!(faked.open.find(FAILED).len(), 1);
+        assert_eq!(faked.open.window().get_body_text(), "fallback text");
+    }
+
+    #[test]
+    fn a_reply_for_an_older_layout_is_dropped() {
+        let fx = Fixture::new(&["work"]);
+        add_html(&fx, 1, "<p>x</p>", "text");
+        let faked = faked(&fx);
+        reply(&faked, laid(faked.generation - 1, 900.0, &[]));
+        assert_eq!(view(&faked.open, |v| v.page).flatten(), None);
+        reply(&faked, laid(faked.generation, 300.0, &[]));
+        assert_eq!(
+            view(&faked.open, |v| v.page).flatten(),
+            Some((400.0, 300.0))
+        );
+        let page = faked.open.window().get_page();
+        assert!(page.ready);
+        assert_eq!((page.width, page.height), (400.0, 300.0));
+    }
+
+    #[test]
+    fn a_new_layout_asks_for_the_strips_on_screen() {
+        let fx = Fixture::new(&["work"]);
+        add_html(&fx, 1, "<p>x</p>", "text");
+        let faked = faked(&fx);
+        reply(&faked, laid(faked.generation, 300.0, &[]));
+        let paints: Vec<u32> = faked
+            .jobs
+            .try_iter()
+            .filter_map(|job| match job {
+                Request::Paint { strip, .. } => Some(strip),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(paints, [0]);
+    }
+
+    #[test]
+    fn a_page_over_the_height_limit_shows_text_with_a_note() {
+        let fx = Fixture::new(&["work"]);
+        add_html(&fx, 1, "<p>x</p>", "tall text");
+        let faked = faked(&fx);
+        reply(&faked, laid(faked.generation, MAX_HEIGHT + 1.0, &[]));
+        assert_eq!(faked.open.find(TOO_LARGE).len(), 1);
+        assert_eq!(faked.open.window().get_body_text(), "tall text");
+    }
+
+    #[test]
+    fn a_new_width_lays_out_again_once_it_held_still() {
+        let fx = Fixture::new(&["work"]);
+        add_html(&fx, 1, "<p>x</p>", "text");
+        let faked = faked(&fx);
+        let first = faked.generation;
+        faked
+            .open
+            .window()
+            .window()
+            .set_size(slint::LogicalSize::new(1180.0, 800.0));
+        faked.open.tick();
+        assert!(loads(&faked.jobs).is_empty());
+        assert!(
+            view(&faked.open, |v| v.wanted.is_some()).unwrap(),
+            "the new width is waiting to settle"
+        );
+        faked.open.advance(0.2);
+        let generations: Vec<u64> = loads(&faked.jobs)
+            .iter()
+            .map(|load| load.generation)
+            .collect();
+        assert_eq!(generations, [first + 1]);
+    }
+
+    #[test]
+    fn a_drag_selects_page_text_for_copying() {
+        let fx = Fixture::new(&["work"]);
+        let words = "word ".repeat(2000);
+        add_html(
+            &fx,
+            1,
+            &format!("<p style=\"font-size:40px\">{words}</p>"),
+            "words",
+        );
+        let (open, _wires) = fx.window();
+        wait_for(&open, painted);
+        open.window().invoke_page_select(20.0, 70.0, 220.0, 70.0);
+        let selection = |app: &App| {
+            app.body
+                .as_ref()
+                .and_then(|b| b.html_view.as_ref())
+                .and_then(|v| v.selection.clone())
+        };
+        wait_for(&open, |app| selection(app).is_some());
+        let selected = open.with(|live| selection(&live.app)).unwrap();
+        assert!(selected.contains("word"), "{selected:?}");
+        assert_eq!(open.window().get_page_selection(), selected.as_str());
+        open.window().invoke_page_clicked(20.0, 70.0);
+        wait_for(&open, |app| selection(app).is_none());
+        assert_eq!(open.window().get_page_selection(), "");
+    }
+
+    #[test]
+    fn loading_remote_content_fetches_what_the_page_asked_for_and_lays_it_out_again() {
+        let fx = Fixture::new(&["work"]);
+        add_html(&fx, 1, "<p>x</p>", "text");
+        let faked = faked(&fx);
+        let (fetcher, fetch_jobs, fetched) = Fetcher::fake();
+        faked.open.with(|live| live.app.fetcher = Some(fetcher));
+        let hero = "https://cdn.example.com/hero.png";
+        reply(&faked, laid(faked.generation, 300.0, &[hero]));
+        assert_eq!(faked.open.find("Remote content not loaded.").len(), 1);
+        faked.open.click("Load remote content");
+        assert_eq!(faked.open.find("Loading remote content…").len(), 1);
+        let job = fetch_jobs.try_recv().unwrap();
+        assert_eq!(job.urls, [hero]);
+        let bytes = BTreeMap::from([(hero.to_string(), b"PNG".to_vec())]);
+        fetched
+            .send(FetchDone {
+                tag: job.tag,
+                fetched: bytes,
+            })
+            .unwrap();
+        faked.open.tick();
+        let load = loads(&faked.jobs).pop().unwrap();
+        assert_eq!(load.fetched[hero], b"PNG");
+        reply(&faked, laid(load.generation, 300.0, &[]));
+        assert!(faked.open.find("Remote content not loaded.").is_empty());
+        assert!(faked.open.find("Loading remote content…").is_empty());
+    }
+
+    #[test]
+    fn after_loading_what_the_loaded_content_asks_for_follows_without_asking() {
+        let fx = Fixture::new(&["work"]);
+        add_html(&fx, 1, "<p>x</p>", "text");
+        let faked = faked(&fx);
+        let (fetcher, fetch_jobs, fetched) = Fetcher::fake();
+        faked.open.with(|live| live.app.fetcher = Some(fetcher));
+        let css = "https://cdn.example.com/style.css";
+        reply(&faked, laid(faked.generation, 300.0, &[css]));
+        faked.open.click("Load remote content");
+        let job = fetch_jobs.try_recv().unwrap();
+        let bytes = BTreeMap::from([(css.to_string(), b"body{}".to_vec())]);
+        fetched
+            .send(FetchDone {
+                tag: job.tag,
+                fetched: bytes,
+            })
+            .unwrap();
+        faked.open.tick();
+        let load = loads(&faked.jobs).pop().unwrap();
+        let background = "https://cdn.example.com/background.png";
+        reply(&faked, laid(load.generation, 300.0, &[background]));
+        assert_eq!(fetch_jobs.try_recv().unwrap().urls, [background]);
+    }
+
+    #[test]
+    fn a_download_for_a_message_no_longer_shown_is_dropped() {
+        let fx = Fixture::new(&["work"]);
+        add_html(&fx, 1, "<p>one</p>", "one");
+        add_html(&fx, 2, "<p>two</p>", "two");
+        let faked = faked(&fx);
+        let (fetcher, fetch_jobs, fetched) = Fetcher::fake();
+        faked.open.with(|live| live.app.fetcher = Some(fetcher));
+        reply(
+            &faked,
+            laid(faked.generation, 300.0, &["https://example.com/a.png"]),
+        );
+        faked.open.click("Load remote content");
+        let job = fetch_jobs.try_recv().unwrap();
+        faked.open.press("j");
+        let _ = loads(&faked.jobs);
+        fetched
+            .send(FetchDone {
+                tag: job.tag,
+                fetched: BTreeMap::new(),
+            })
+            .unwrap();
+        faked.open.tick();
+        assert!(loads(&faked.jobs).is_empty());
+        assert!(view(&faked.open, |v| v.fetched.is_empty()).unwrap());
     }
 }

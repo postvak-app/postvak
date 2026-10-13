@@ -4,7 +4,7 @@ import { FolderItem, FolderPane } from "folders.slint";
 import { ToolButton, Toolbar } from "toolbar.slint";
 import { StatusBar, StatusLine } from "status.slint";
 import { HistoryDialog, KeyHelp, KeysDialog, MoveDialog, SourceDialog } from "dialogs.slint";
-import { BodyInfo, BodyPane } from "body.slint";
+import { BodyInfo, BodyPane, PageInfo, StripData } from "body.slint";
 import { ListPane, RowData } from "list.slint";
 
 export enum Pane { body, folders, list }
@@ -79,6 +79,10 @@ export component MailWindow inherits Window {
     in property <string> body-text;
     in property <string> save-icon;
     in property <string> source-icon;
+    in property <PageInfo> page;
+    in property <[StripData]> strips;
+    // The HTML page's selected text, which Ctrl/Cmd+C copies.
+    in property <string> page-selection;
     in property <bool> source-open;
     in property <[string]> source-rows;
     in property <string> source-text;
@@ -113,6 +117,29 @@ export component MailWindow inherits Window {
     callback open-source();
     callback save-attachment(int);
     callback open-link(string);
+    callback page-width(length);
+    callback page-visible(length, length);
+    callback page-hover(length, length);
+    callback page-leave();
+    callback page-select(length, length, length, length);
+    callback page-clicked(length, length);
+    callback load-remote();
+    callback page-open-link();
+
+    // Puts `text` on the clipboard: Slint copies only from a text field.
+    public function copy-text(text: string) {
+        clipboard.text = text;
+        clipboard.select-all();
+        clipboard.copy();
+    }
+
+    clipboard := TextInput {
+        visible: false;
+        width: 0;
+        height: 0;
+        read-only: true;
+        accessible-role: none;
+    }
 
     // A text field that closes leaves the keyboard with the panes.
     changed searching => {
@@ -137,6 +164,10 @@ export component MailWindow inherits Window {
 
     keys := FocusScope {
         key-pressed(event) => {
+            if (event.text == "c" && event.modifiers.control && root.page-selection != "") {
+                root.copy-text(root.page-selection);
+                return accept;
+            }
             if (root.key(event.text, event.modifiers.control, event.modifiers.alt)) {
                 return accept;
             }
@@ -228,6 +259,17 @@ export component MailWindow inherits Window {
                     open-source => { root.open-source(); }
                     save-attachment(i) => { root.save-attachment(i); }
                     open-link(url) => { root.open-link(url); }
+                    page: root.page;
+                    strips: root.strips;
+                    page-width(width) => { root.page-width(width); }
+                    page-visible(top, bottom) => { root.page-visible(top, bottom); }
+                    page-hover(x, y) => { root.page-hover(x, y); }
+                    page-leave => { root.page-leave(); }
+                    page-select(fx, fy, tx, ty) => { root.page-select(fx, fy, tx, ty); }
+                    page-clicked(x, y) => { root.page-clicked(x, y); }
+                    load-remote => { root.load-remote(); }
+                    page-open-link => { root.page-open-link(); }
+                    page-copy-link => { root.copy-text(root.page.link); }
                 }
             }
 
