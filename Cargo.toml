@@ -67,6 +67,9 @@ fontique = { version = "0.12", optional = true, features = ["fontconfig-dlopen"]
 i-slint-common = { version = "=1.18.1", optional = true, features = ["fontconfig-dlopen"] }  # Slint's own fontique loads fontconfig at runtime too; one linked and one loaded copy do not build together
 zbus-secret-service-keyring-store = { version = "1", features = ["rt-tokio-crypto-rust"] }  # Secret Service backend for keyring-core
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+i-slint-common = { version = "=1.18.1", features = ["fontconfig-dlopen"] }  # the same for the GUI tests, which build Slint without the `gui` feature too
+
 [build-dependencies]
 slint-build = { version = "=1.18.1", optional = true }  # compiles src/gui/ui/*.slint into Rust for the `gui` feature
 
