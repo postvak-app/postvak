@@ -13,8 +13,8 @@ use postvak::message::{HtmlBody, clean};
 use postvak::rules::Action;
 use slint::platform::Key;
 use slint::{
-    ComponentHandle, Image, ModelNotify, ModelRc, ModelTracker, Rgba8Pixel,
-    SharedPixelBuffer, SharedString, Timer, VecModel,
+    ComponentHandle, Image, ModelNotify, ModelRc, ModelTracker, Rgba8Pixel, SharedPixelBuffer,
+    SharedString, Timer, VecModel,
 };
 
 use crate::model::Model;
@@ -124,7 +124,14 @@ impl slint::Model for Rows {
         let model = self.model.borrow();
         let row = model.rows.get(index)?;
         let account = (model.shown.len() > 1).then(|| model.accounts[row.account].name.as_str());
-        let c = columns(row, account, model.marked.contains(&row.id()), false, false, &self.now);
+        let c = columns(
+            row,
+            account,
+            model.marked.contains(&row.id()),
+            false,
+            false,
+            &self.now,
+        );
         let label = format!(
             "{}{}{}, {}, {}",
             if c.unread { "Unread, " } else { "" },
@@ -241,7 +248,9 @@ impl App {
         });
         let weak = Rc::downgrade(&app);
         ui.on_search_edited(move |query| {
-            with(&weak, |app| app.change(|m| m.set_search(Some(query.to_string()))));
+            with(&weak, |app| {
+                app.change(|m| m.set_search(Some(query.to_string())))
+            });
         });
         let weak = Rc::downgrade(&app);
         ui.on_body_scrolled(move || {
@@ -331,7 +340,10 @@ impl App {
         let (current, armed) = {
             let model = self.model.borrow();
             let current = model.cursor_row();
-            (current.clone(), current.is_some() && model.armed_for == current)
+            (
+                current.clone(),
+                current.is_some() && model.armed_for == current,
+            )
         };
         let shown = self.shown.as_ref().map(|s| (s.account, s.key.clone()));
         if current != shown {
@@ -367,8 +379,13 @@ impl App {
         let m = message.as_ref();
         if let Some(ui) = self.ui() {
             let subject = m.and_then(|m| m.subject.as_deref()).unwrap_or_default();
-            let from = m.and_then(|m| m.from_addr.as_deref()).map(display_name).unwrap_or_default();
-            let text = m.and_then(|m| m.body_text.as_deref()).map(|t| clean(t, true));
+            let from = m
+                .and_then(|m| m.from_addr.as_deref())
+                .map(display_name)
+                .unwrap_or_default();
+            let text = m
+                .and_then(|m| m.body_text.as_deref())
+                .map(|t| clean(t, true));
             ui.set_subject(clean(subject, false).into());
             ui.set_from(clean(&from, false).into());
             ui.set_text(text.unwrap_or_else(|| "Loading…".into()).into());
@@ -387,7 +404,11 @@ impl App {
     /// The page or the text, whichever the shown message has laid out.
     fn show_body(&self) {
         let Some(ui) = self.ui() else { return };
-        let page = self.shown.as_ref().and_then(|s| s.view.as_ref()).and_then(|v| v.page);
+        let page = self
+            .shown
+            .as_ref()
+            .and_then(|s| s.view.as_ref())
+            .and_then(|v| v.page);
         ui.set_show_page(page.is_some());
         if let Some((width, height)) = page {
             ui.set_page_width(width);
@@ -446,10 +467,18 @@ impl App {
         let Some(ui) = self.ui() else { return };
         let scale = ui.window().scale_factor();
         let width = (ui.get_body_width() - 32.0).max(html::MIN_WIDTH);
-        let Some(shown) = self.shown.as_mut().filter(|s| s.html.is_some() && s.note.is_none()) else {
+        let Some(shown) = self
+            .shown
+            .as_mut()
+            .filter(|s| s.html.is_some() && s.note.is_none())
+        else {
             return;
         };
-        if shown.view.as_ref().is_some_and(|v| v.sent == (scale, width)) {
+        if shown
+            .view
+            .as_ref()
+            .is_some_and(|v| v.sent == (scale, width))
+        {
             return;
         }
         let Some(source) = &shown.html else { return };
@@ -504,7 +533,9 @@ impl App {
     pub fn receive(&mut self) {
         let mut changed = false;
         for reply in self.renderer.replies() {
-            let Some(shown) = self.shown.as_mut() else { continue };
+            let Some(shown) = self.shown.as_mut() else {
+                continue;
+            };
             let Some(view) = shown
                 .view
                 .as_mut()

@@ -41,10 +41,13 @@ fn open(newsletter: bool, scale: f32) -> Open {
     init();
     let (dir, model, commands) = test_model(newsletter);
     let ui = MailWindow::new().unwrap();
-    ui.window()
-        .dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: scale });
-    ui.window()
-        .set_size(PhysicalSize::new((1280.0 * scale) as u32, (800.0 * scale) as u32));
+    ui.window().dispatch_event(WindowEvent::ScaleFactorChanged {
+        scale_factor: scale,
+    });
+    ui.window().set_size(PhysicalSize::new(
+        (1280.0 * scale) as u32,
+        (800.0 * scale) as u32,
+    ));
     ui.show().unwrap();
     let app = App::new(&ui, model);
     ui.invoke_focus_list();
@@ -70,7 +73,8 @@ fn press(ui: &MailWindow, keys: &str) {
         };
         ui.window()
             .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
-        ui.window().dispatch_event(WindowEvent::KeyReleased { text });
+        ui.window()
+            .dispatch_event(WindowEvent::KeyReleased { text });
     }
     i_slint_backend_testing::mock_elapsed_time(Duration::ZERO);
 }
@@ -78,7 +82,11 @@ fn press(ui: &MailWindow, keys: &str) {
 fn state(app: &Rc<RefCell<App>>) -> (usize, usize, Option<u32>) {
     let app = app.borrow();
     let m = app.model.borrow();
-    (m.cursor, m.rows.len(), m.rows.get(m.cursor).map(|r| r.count))
+    (
+        m.cursor,
+        m.rows.len(),
+        m.rows.get(m.cursor).map(|r| r.count),
+    )
 }
 
 #[test]
@@ -104,11 +112,21 @@ fn keys_move_the_cursor_open_a_thread_and_archive_it() {
     assert_eq!(state(&app).0, 2);
     press(&ui, "?");
     assert!(ui.get_help(), "? opens the key table");
-    let next = key_help().into_iter().find(|k| k.what == "Next message").unwrap();
-    assert_eq!(next.keys, "j, DownArrow", "the table reads its keys from the keymap");
+    let next = key_help()
+        .into_iter()
+        .find(|k| k.what == "Next message")
+        .unwrap();
+    assert_eq!(
+        next.keys, "j, DownArrow",
+        "the table reads its keys from the keymap"
+    );
     press(&ui, "x escape");
     assert!(!ui.get_help());
-    assert_eq!(app.borrow().model.borrow().marked.len(), 1, "Esc closed the help first");
+    assert_eq!(
+        app.borrow().model.borrow().marked.len(),
+        1,
+        "Esc closed the help first"
+    );
     press(&ui, "escape");
     let m = (app.borrow().model.borrow().marked.len(), state(&app).0);
     assert_eq!(m, (0, 2), "the cursor stays");
@@ -117,11 +135,20 @@ fn keys_move_the_cursor_open_a_thread_and_archive_it() {
 #[test]
 fn rows_and_the_search_field_carry_accessible_labels() {
     let Open { ui, .. } = open(false, 1.0);
-    assert_eq!(ElementHandle::find_by_accessible_label(&ui, "Search").count(), 1);
+    assert_eq!(
+        ElementHandle::find_by_accessible_label(&ui, "Search").count(),
+        1
+    );
     let label = ui.get_rows().row_data(0).unwrap().label;
-    assert!(label.starts_with("Unread, Linus Example, Lunch on Friday?"), "{label}");
+    assert!(
+        label.starts_with("Unread, Linus Example, Lunch on Friday?"),
+        "{label}"
+    );
     let rows = ElementHandle::find_by_accessible_label(&ui, &label).count();
-    assert_eq!(rows, 1, "the row is in the accessibility tree under its label");
+    assert_eq!(
+        rows, 1,
+        "the row is in the accessibility tree under its label"
+    );
 }
 
 #[test]
@@ -250,9 +277,12 @@ fn strip_conversion_cost() {
     let (width, height) = (2520, postvak::gui::html::STRIP);
     let mut times = Vec::new();
     for _ in 0..50 {
-        let pixels =
-            postvak::gui::html::Pixels::new(width, height, vec![128u8; (width * height * 4) as usize])
-                .unwrap();
+        let pixels = postvak::gui::html::Pixels::new(
+            width,
+            height,
+            vec![128u8; (width * height * 4) as usize],
+        )
+        .unwrap();
         let start = Instant::now();
         crate::app::strip_image(&pixels);
         times.push(start.elapsed());

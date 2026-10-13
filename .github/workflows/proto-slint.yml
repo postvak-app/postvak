@@ -1,0 +1,52 @@
+# The throwaway Slint prototype (proto/slint, branch proto/slint only; never merged). Builds it and runs its tests,
+# including the software-rendered snapshot, which needs no GPU and no display. No extra Linux packages are installed,
+# to find out whether it needs any.
+name: Slint prototype
+
+on:
+  pull_request:
+    paths:
+      - "proto/slint/**"
+      - "src/**"
+      - ".github/workflows/proto-slint.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: proto/slint
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: proto/slint
+          save-if: false
+      - run: cargo test --release
+      - name: Libraries the binary needs
+        if: runner.os == 'Linux'
+        run: |
+          POSTVAK_PROTO_NO_DEBUG_INFO=1 cargo build --release
+          readelf -d target/release/postvak-slint-proto | grep NEEDED
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: slint-screenshot-${{ matrix.os }}
+          path: proto/slint/target/screenshots/
