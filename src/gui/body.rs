@@ -4,9 +4,99 @@ use std::ops::Range;
 
 use crate::message::clean;
 use crate::sync::Activity;
+use crate::time::local_time;
 
 use super::list::display_name;
-use super::state::Account;
+use super::state::{Account, App};
+
+/// The body pane for the shown message, in words.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct Pane {
+    /// Instead of a message: "No message selected." or that it left the store.
+    pub empty: Option<&'static str>,
+    pub subject: Option<String>,
+    pub initials: String,
+    pub name: String,
+    pub address: Option<String>,
+    pub short_date: String,
+    pub full_date: String,
+    pub to: Option<String>,
+    pub cc: Option<String>,
+    /// The raw message is here, so Save .eml and View source work.
+    pub downloaded: bool,
+    /// Why the body is not shown yet, and the hint on the disabled buttons.
+    pub missing: String,
+    /// The message has an HTML part: the Text | HTML switch shows.
+    pub has_html: bool,
+    pub shows_html: bool,
+    /// Why HTML shows as text, which disables the switch's HTML side.
+    pub text_note: Option<&'static str>,
+    /// "report.txt (2 KB)" per attachment.
+    pub attachments: Vec<String>,
+    pub saved: Option<String>,
+    /// The links in the text that open, in order, once each.
+    pub links: Vec<String>,
+}
+
+/// What the body pane shows for `app`.
+pub(crate) fn pane(app: &App) -> Pane {
+    let Some(body) = &app.body else {
+        return Pane {
+            empty: Some("No message selected."),
+            ..Pane::default()
+        };
+    };
+    let Some(message) = &body.message else {
+        return Pane {
+            empty: Some("This message is no longer in the local store."),
+            ..Pane::default()
+        };
+    };
+    let at = message.date.unwrap_or(message.internaldate);
+    let from = message.from_addr.as_deref().unwrap_or_default();
+    let (name, address) = name_and_address(from);
+    let header = |value: &Option<String>| value.as_deref().map(|v| clean(v, false));
+    let attachments = body
+        .attachments
+        .iter()
+        .map(|attachment| {
+            let name = attachment
+                .name
+                .as_deref()
+                .map(|name| clean(name, false))
+                .unwrap_or_else(|| format!("attachment {}", attachment.index));
+            format!("{name} ({})", size(attachment.size))
+        })
+        .collect();
+    let mut links: Vec<String> = Vec::new();
+    for segment in body.text.iter().flat_map(|text| segments(text)) {
+        if let Segment::Link(url) = segment
+            && has_target(url)
+            && !links.iter().any(|l| l == url)
+        {
+            links.push(url.to_string());
+        }
+    }
+    Pane {
+        empty: None,
+        subject: header(&message.subject),
+        initials: initials(from),
+        name: clean(&name, false),
+        address: address.map(|a| clean(&a, false)),
+        short_date: local_time(at, SHORT_DATE),
+        full_date: local_time(at, HEADER_DATE),
+        to: header(&message.to_addr),
+        cc: header(&message.cc_addr),
+        downloaded: message.body_text.is_some(),
+        missing: missing_text(&app.accounts[body.account]),
+        has_html: body.html.is_some(),
+        shows_html: body.shows_html(),
+        text_note: body.text_note,
+        attachments,
+        saved: body.saved.as_deref().map(|s| clean(s, false)),
+        links,
+    }
+}
 
 /// The reader's Date: weekday, day, month, year, time with seconds, and the UTC offset. chrono has no portable zone
 /// abbreviation ("CEST"), so the offset stands in for it.
@@ -162,6 +252,14 @@ pub(crate) fn source_rows(text: &str) -> Vec<Range<usize>> {
 mod tests {
     use super::*;
 
+    use slint::ComponentHandle;
+
+    use crate::gui::state::{UiAction, View};
+    use crate::gui::test_support::{Driver, Fixture, Open, Wires, launched, message};
+    use crate::rules::Action;
+    use crate::store::Message;
+    use crate::sync::{Command, Event};
+
     const WITH_ATTACHMENT: &str = "From: a@example.com\r\nSubject: report\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nSee attached\r\n--b\r\nContent-Type: text/plain\r\nContent-Disposition: attachment; filename=\"report.txt\"\r\n\r\nquarterly numbers\r\n--b--\r\n";
 
     #[test]
@@ -275,5 +373,575 @@ mod tests {
             .map(|r| long[r.clone()].chars().count())
             .collect();
         assert_eq!(lengths, [SOURCE_ROW, SOURCE_ROW, 500]);
+    }
+
+    fn unread(uid: u32, subject: &str) -> Message {
+        let mut m = message("INBOX", uid, subject);
+        m.flags = String::new();
+        m
+    }
+
+    fn not_downloaded(mut m: Message) -> Message {
+        m.body_text = None;
+        m
+    }
+
+    fn apply(uid: u32, action: Action) -> (String, Command) {
+        let command = Command::Apply {
+            folder: "INBOX".into(),
+            uids: vec![uid],
+            action,
+            by: "gui".into(),
+        };
+        ("work".to_string(), command)
+    }
+
+    fn read(uid: u32) -> (String, Command) {
+        apply(uid, Action::MarkRead)
+    }
+
+    fn fetch(uid: u32) -> (String, Command) {
+        let command = Command::FetchBody {
+            folder: "INBOX".into(),
+            uid,
+        };
+        ("work".to_string(), command)
+    }
+
+    fn ready(uid: u32) -> Event {
+        Event::BodyReady {
+            account: "work".into(),
+            folder: "INBOX".into(),
+            uid,
+            request: 0,
+        }
+    }
+
+    fn synced() -> Event {
+        Event::Synced {
+            account: "work".into(),
+            new_messages: 1,
+            actions: 0,
+            requests: vec![],
+            errors: vec![],
+        }
+    }
+
+    /// Stores the fetched raw message for uid `uid` with `text` as its body.
+    fn downloaded(fx: &Fixture, uid: u32, text: &str) {
+        let raw = format!("Subject: later\r\n\r\n{text}\r\n");
+        fx.store("work")
+            .set_raw("INBOX", uid, raw.as_bytes(), text)
+            .unwrap();
+    }
+
+    fn send(driver: &mut Driver, wires: &Wires, event: Event) {
+        wires.events.send(event).unwrap();
+        driver.tick();
+    }
+
+    fn body_text(driver: &Driver) -> Option<String> {
+        driver.app.body.as_ref().and_then(|b| b.text.clone())
+    }
+
+    fn shows_html(open: &Open) -> bool {
+        open.with(|live| live.app.body.as_ref().is_some_and(|b| b.shows_html()))
+    }
+
+    #[test]
+    fn the_message_text_is_larger_than_the_interface() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "hello there"));
+        let (open, _wires) = fx.window();
+        let text = open.get("Message text");
+        let input = open.window().get_body_text();
+        assert_eq!(input, "Body of 1");
+        assert!(text.size().height >= 15.0, "{:?}", text.size());
+    }
+
+    #[test]
+    fn the_subject_is_a_heading_above_the_sender() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "hello there"));
+        let (open, _wires) = fx.window();
+        let sender = open.span("Sender 1");
+        // The list row says "hello there" too; the heading is the one beside the sender.
+        let heading = open
+            .find("hello there")
+            .into_iter()
+            .filter(|e| e.absolute_position().x > 700.0)
+            .map(|e| e.absolute_position().y + e.size().height)
+            .next()
+            .unwrap();
+        assert!(heading <= sender.0, "{heading} vs {sender:?}");
+        assert!(open.find("Subject").is_empty());
+    }
+
+    #[test]
+    fn the_cursor_message_shows_headers_and_text() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "hello there"));
+        let (open, _wires) = fx.window();
+        assert_eq!(open.window().get_body_text(), "Body of 1");
+        assert_eq!(open.find("Sender 1").len(), 1);
+        assert_eq!(open.find("sender1@example.com").len(), 1);
+    }
+
+    /// Regression: a long header widened the reader past the window, clipping the headers and the HTML view.
+    #[test]
+    fn long_headers_truncate_in_a_narrow_reader() {
+        let fx = Fixture::new(&["work"]);
+        let mut long = message("INBOX", 1, "hello there");
+        long.from_addr = Some(format!(
+            "{} <long@example.com>",
+            "Very Long Name ".repeat(10)
+        ));
+        fx.add("work", long);
+        let (open, _wires) = fx.window();
+        open.window()
+            .window()
+            .set_size(slint::LogicalSize::new(900.0, 800.0));
+        open.tick();
+        for label in open.labels_containing("Very Long Name") {
+            for element in open.find(&label) {
+                let right = element.absolute_position().x + element.size().width;
+                assert!(right <= 900.0, "{label}: {right}");
+            }
+        }
+        let text = open.get("Message text");
+        assert!(text.absolute_position().x + text.size().width <= 900.0);
+    }
+
+    #[test]
+    fn an_https_link_opens_in_the_browser() {
+        let fx = Fixture::new(&["work"]);
+        let mut m = message("INBOX", 1, "links");
+        m.body_text = Some("Visit https://example.com/a. Not javascript:alert(1)".into());
+        fx.add("work", m);
+        let (open, _wires) = fx.window();
+        assert!(open.find("javascript:alert(1)").is_empty());
+        open.click("https://example.com/a");
+        assert_eq!(launched(), ["https://example.com/a"]);
+    }
+
+    #[test]
+    fn a_missing_body_is_fetched_once_and_shown_when_ready() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", not_downloaded(message("INBOX", 1, "later")));
+        let (open, wires) = fx.window();
+        assert_eq!(wires.sent(), [fetch(1)]);
+        assert_eq!(open.find("Loading…").len(), 1);
+        downloaded(&fx, 1, "Fetched text");
+        wires.events.send(ready(1)).unwrap();
+        open.tick();
+        assert_eq!(open.window().get_body_text(), "Fetched text");
+        assert!(wires.sent().is_empty());
+    }
+
+    #[test]
+    fn a_failed_body_fetch_is_retried_when_the_message_is_shown_again() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", not_downloaded(message("INBOX", 2, "later")));
+        fx.add("work", message("INBOX", 1, "other"));
+        let (mut driver, wires) = fx.driver();
+        assert_eq!(wires.sent().len(), 1);
+        let error = Event::Error {
+            account: "work".into(),
+            message: "boom".into(),
+        };
+        send(&mut driver, &wires, error);
+        driver.press("j k");
+        assert_eq!(wires.sent(), [fetch(2)]);
+    }
+
+    #[test]
+    fn a_fetched_body_keeps_the_read_timer_and_the_hand_marks() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", not_downloaded(unread(1, "later")));
+        let (mut driver, wires) = fx.driver();
+        driver.press("u u");
+        downloaded(&fx, 1, "Fetched");
+        send(&mut driver, &wires, ready(1));
+        assert_eq!(body_text(&driver).as_deref(), Some("Fetched"));
+        driver.at(100.0);
+        assert_eq!(
+            wires.sent(),
+            [fetch(1), read(1), apply(1, Action::MarkUnread)]
+        );
+    }
+
+    #[test]
+    fn marking_another_row_does_not_stop_the_shown_message_being_read() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "old"));
+        fx.add("work", unread(2, "new"));
+        let (mut driver, wires) = fx.driver();
+        driver.at(10.0);
+        driver.press("j x k u");
+        driver.at(12.0);
+        assert_eq!(wires.sent(), [apply(1, Action::MarkUnread), read(2)]);
+    }
+
+    #[test]
+    fn offline_says_when_the_body_will_load() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", not_downloaded(message("INBOX", 1, "later")));
+        let (open, wires) = fx.window();
+        let offline = Activity::Offline {
+            reason: "timeout".into(),
+            retry_at: 1_790_000_300,
+        };
+        let event = Event::Activity {
+            account: "work".into(),
+            activity: offline,
+        };
+        wires.events.send(event).unwrap();
+        open.tick();
+        assert_eq!(
+            open.find("Not downloaded; loads when work reconnects.")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_message_is_marked_read_after_one_second_on_screen() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", unread(1, "new"));
+        fx.add("work", message("INBOX", 2, "old"));
+        let (mut driver, wires) = fx.driver();
+        driver.at(10.0);
+        driver.press("j");
+        driver.at(10.9);
+        assert!(wires.sent().is_empty());
+        driver.at(11.1);
+        assert_eq!(wires.sent(), [read(1)]);
+        driver.at(13.0);
+        assert!(wires.sent().is_empty());
+    }
+
+    #[test]
+    fn the_read_timer_wakes_the_window_without_input() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", unread(1, "new"));
+        fx.add("work", message("INBOX", 2, "old"));
+        let (open, wires) = fx.window();
+        open.press("j");
+        open.advance(0.9);
+        assert!(wires.sent().is_empty());
+        open.advance(0.2);
+        assert_eq!(wires.sent(), [read(1)]);
+    }
+
+    #[test]
+    fn marking_unread_by_hand_is_not_undone_by_the_delay() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "read"));
+        let (mut driver, wires) = fx.driver();
+        driver.press("u");
+        driver.at(30.0);
+        assert_eq!(wires.sent(), [apply(1, Action::MarkUnread)]);
+    }
+
+    const WITH_ATTACHMENT_RAW: &[u8] = WITH_ATTACHMENT.as_bytes();
+
+    #[test]
+    fn save_writes_the_attachment_to_downloads() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "report"));
+        fx.store("work")
+            .set_raw("INBOX", 1, WITH_ATTACHMENT_RAW, "See attached")
+            .unwrap();
+        let (open, _wires) = fx.window();
+        let label = open.labels_containing("report.txt (").remove(0);
+        assert!(label.starts_with("report.txt ("), "{label}");
+        open.click(&format!("Save {label}"));
+        let saved = fx.paths.cache_dir.join("downloads").join("report.txt");
+        assert_eq!(
+            std::fs::read_to_string(&saved).unwrap().trim_end(),
+            "quarterly numbers"
+        );
+        assert_eq!(open.labels_containing("Saved to").len(), 1);
+    }
+
+    #[test]
+    fn a_sync_that_adds_newer_mail_keeps_the_cursor_on_its_message() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "old"));
+        let (mut driver, wires) = fx.driver();
+        fx.add("work", unread(2, "new"));
+        wires.events.send(synced()).unwrap();
+        driver.at(10.0);
+        driver.at(12.0);
+        assert!(wires.sent().is_empty());
+        let list = &driver.app.list;
+        assert_eq!(list.rows.len(), 2);
+        assert_eq!(list.rows[list.cursor].uid, 1);
+    }
+
+    #[test]
+    fn the_message_shown_at_startup_is_not_marked_read() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", unread(1, "new"));
+        let (mut driver, wires) = fx.driver();
+        driver.at(10.0);
+        driver.at(12.0);
+        assert!(wires.sent().is_empty());
+    }
+
+    #[test]
+    fn the_message_shown_after_switching_folders_is_not_marked_read() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Archive", Some("Archive"));
+        let mut archived = message("Archive", 7, "archived");
+        archived.flags = String::new();
+        fx.add("work", archived);
+        let (mut driver, wires) = fx.driver();
+        driver.apply(UiAction::SelectView(View::Folder {
+            account: 0,
+            folder: "Archive".into(),
+        }));
+        driver.at(10.0);
+        driver.at(12.0);
+        assert!(wires.sent().is_empty());
+    }
+
+    #[test]
+    fn an_opened_message_is_marked_read_a_second_after_its_body_arrives() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 2, "old"));
+        fx.add("work", not_downloaded(unread(1, "later")));
+        let (mut driver, wires) = fx.driver();
+        driver.at(10.0);
+        driver.press("j");
+        driver.at(12.0);
+        assert_eq!(wires.sent(), [fetch(1)]);
+        downloaded(&fx, 1, "Fetched");
+        wires.events.send(ready(1)).unwrap();
+        driver.at(12.5);
+        assert!(wires.sent().is_empty());
+        driver.at(13.6);
+        assert_eq!(wires.sent(), [read(1)]);
+    }
+
+    #[test]
+    fn the_row_after_an_archive_is_marked_read_after_a_second() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", unread(1, "next"));
+        fx.add("work", message("INBOX", 2, "done"));
+        let (mut driver, wires) = fx.driver();
+        driver.at(10.0);
+        driver.press("e");
+        driver.at(12.0);
+        assert_eq!(wires.sent(), [apply(2, Action::Archive), read(1)]);
+    }
+
+    #[test]
+    fn a_search_hit_is_not_opened_while_the_query_is_typed() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", not_downloaded(unread(1, "invoice")));
+        fx.add("work", message("INBOX", 2, "lunch"));
+        let (mut driver, wires) = fx.driver();
+        // The hit sits beside the cursor, so its body was prefetched before the search.
+        wires.sent();
+        driver.at(10.0);
+        driver.press("/ invoice");
+        driver.at(12.0);
+        assert_eq!(driver.app.list.rows.len(), 1);
+        assert!(wires.sent().is_empty());
+        assert!(driver.app.body.is_none());
+    }
+
+    #[test]
+    fn clicking_the_message_already_shown_opens_it() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", unread(1, "new"));
+        let (mut driver, wires) = fx.driver();
+        driver.at(2.0);
+        assert!(wires.sent().is_empty());
+        driver.at(10.0);
+        driver.apply(UiAction::SelectRow(0));
+        driver.at(10.5);
+        driver.at(11.1);
+        assert_eq!(wires.sent(), [read(1)]);
+    }
+
+    #[test]
+    fn a_reply_in_the_cursor_thread_keeps_the_cursor_on_that_thread() {
+        let fx = Fixture::new(&["work"]);
+        for (uid, subject) in [(1, "c"), (2, "b"), (3, "a")] {
+            fx.add("work", message("INBOX", uid, subject));
+        }
+        let (mut driver, wires) = fx.driver();
+        driver.press("j");
+        let thread_b = "<2@example.com>";
+        let mut reply = message("INBOX", 4, "Re: b");
+        reply.thread_id = thread_b.into();
+        fx.add("work", reply);
+        send(&mut driver, &wires, synced());
+        let list = &driver.app.list;
+        assert_eq!(list.rows[list.cursor].thread_id.as_deref(), Some(thread_b));
+        driver.press("e");
+        let archive = Command::Apply {
+            folder: "INBOX".into(),
+            uids: vec![2, 4],
+            action: Action::Archive,
+            by: "gui".into(),
+        };
+        assert_eq!(wires.sent(), [("work".to_string(), archive)]);
+    }
+
+    #[test]
+    fn the_read_delay_starts_when_the_body_text_appears() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 2, "old"));
+        fx.add("work", not_downloaded(unread(1, "later")));
+        let (mut driver, wires) = fx.driver();
+        driver.at(10.0);
+        driver.press("j");
+        assert_eq!(wires.sent(), [fetch(1)]);
+        downloaded(&fx, 1, "Fetched");
+        wires.events.send(ready(1)).unwrap();
+        driver.at(20.0);
+        driver.at(20.5);
+        assert!(wires.sent().is_empty());
+        driver.at(21.1);
+        assert_eq!(wires.sent(), [read(1)]);
+    }
+
+    #[test]
+    fn save_eml_writes_the_raw_message_to_downloads() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "Re: lunch"));
+        fx.store("work")
+            .set_raw("INBOX", 1, WITH_ATTACHMENT_RAW, "See attached")
+            .unwrap();
+        let (open, _wires) = fx.window();
+        open.click("Save .eml");
+        let saved = fx.paths.cache_dir.join("downloads").join("Re- lunch.eml");
+        assert_eq!(std::fs::read(&saved).unwrap(), WITH_ATTACHMENT_RAW);
+        assert_eq!(open.labels_containing("Saved to").len(), 1);
+    }
+
+    #[test]
+    fn reader_actions_wait_for_the_download_and_never_fetch_on_their_own() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", not_downloaded(message("INBOX", 1, "later")));
+        let (open, wires) = fx.window();
+        assert_eq!(wires.sent(), [fetch(1)]);
+        for name in ["Save .eml", "View source"] {
+            let button = open.get(name);
+            assert_eq!(button.accessible_enabled(), Some(false), "{name}");
+            button.invoke_accessible_default_action();
+        }
+        assert!(wires.sent().is_empty());
+        let downloads = fx.paths.cache_dir.join("downloads");
+        assert_eq!(std::fs::read_dir(downloads).unwrap().count(), 0);
+        assert!(open.with(|live| live.app.body.as_ref().is_some_and(|b| b.source.is_none())));
+    }
+
+    #[test]
+    fn the_source_window_shows_the_raw_message_cleaned_for_copying() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "report"));
+        fx.store("work")
+            .set_raw("INBOX", 1, HOSTILE, "line one")
+            .unwrap();
+        let (open, _wires) = fx.window();
+        open.click("View source");
+        assert_eq!(open.find("Subject: ]0;pwnedreport").len(), 1);
+        assert_eq!(open.find("Copy").len(), 1);
+        let copied = open.window().get_source_text();
+        assert_eq!(
+            copied,
+            "From: a@example.com\nSubject: ]0;pwnedreport\n\nline one\n"
+        );
+        open.press("escape");
+        assert!(open.find("Subject: ]0;pwnedreport").is_empty());
+    }
+
+    #[test]
+    fn a_megabyte_line_opens_as_short_rows() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "minified"));
+        let raw = format!("Subject: minified\r\n\r\n{}\r\n", "x".repeat(1 << 20));
+        fx.store("work")
+            .set_raw("INBOX", 1, raw.as_bytes(), "x")
+            .unwrap();
+        let (open, _wires) = fx.window();
+        open.click("View source");
+        let (rows, short) = open.with(|live| {
+            let source = live.app.body.as_ref().unwrap().source.as_ref().unwrap();
+            let short = source
+                .rows
+                .iter()
+                .all(|r| source.text[r.clone()].chars().count() <= SOURCE_ROW);
+            (source.rows.len(), short)
+        });
+        assert!(rows > (1 << 20) / SOURCE_ROW);
+        assert!(short);
+        assert_eq!(open.find("Subject: minified").len(), 1);
+    }
+
+    #[test]
+    fn moving_to_another_message_closes_the_source() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "older"));
+        fx.add("work", message("INBOX", 2, "report"));
+        fx.store("work")
+            .set_raw("INBOX", 2, HOSTILE, "line one")
+            .unwrap();
+        let (open, _wires) = fx.window();
+        open.click("View source");
+        assert_eq!(open.find("Subject: ]0;pwnedreport").len(), 1);
+        open.press("j");
+        assert!(open.with(|live| live.app.body.as_ref().is_some_and(|b| b.source.is_none())));
+        assert!(open.find("Subject: ]0;pwnedreport").is_empty());
+    }
+
+    #[cfg(feature = "html")]
+    #[test]
+    fn the_text_html_switch_toggles_like_v_and_hides_without_html() {
+        use crate::gui::test_support::add_html;
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "plain"));
+        add_html(&fx, 2, "<p>rich words</p>", "plain words");
+        let (open, _wires) = fx.window();
+        assert!(shows_html(&open));
+        open.click("Text");
+        assert!(!shows_html(&open));
+        assert_eq!(open.window().get_body_text(), "plain words");
+        open.click("HTML");
+        assert!(shows_html(&open));
+        open.press("j");
+        assert!(open.find("HTML").is_empty());
+        assert!(open.find("Text").is_empty());
+    }
+
+    #[cfg(feature = "html")]
+    #[test]
+    fn html_too_large_to_render_disables_the_html_side() {
+        use crate::gui::html::MAX_HTML;
+        use crate::gui::test_support::add_html;
+        let fx = Fixture::new(&["work"]);
+        add_html(&fx, 1, &"x".repeat(MAX_HTML + 1), "plain words");
+        let (open, _wires) = fx.window();
+        assert_eq!(open.get("HTML").accessible_enabled(), Some(false));
+        assert_eq!(open.get("Text").accessible_enabled(), Some(true));
+    }
+
+    #[cfg(feature = "html")]
+    #[test]
+    fn the_source_window_shows_the_raw_message_in_either_view() {
+        use crate::gui::test_support::add_html;
+        let fx = Fixture::new(&["work"]);
+        add_html(&fx, 1, "<p>rich words</p>", "plain words");
+        let (open, _wires) = fx.window();
+        open.click("View source");
+        let part = "Content-Type: text/html; charset=utf-8";
+        assert_eq!(open.find(part).len(), 1);
+        open.press("v");
+        assert!(!shows_html(&open));
+        assert_eq!(open.find(part).len(), 1);
     }
 }

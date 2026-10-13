@@ -56,9 +56,19 @@ Last updated: 2026-10-13. Branch `feat/slint-gui`. Read first: the plan `2026-10
   - Test helpers de-duplicate elements: `ElementQuery` visits each `ListView` row several times (11 in a 1280×800 window).
   - Deferred to Task 12: `in_a_narrow_row_nothing_is_drawn_over_the_date_or_past_the_edge`, `unread_senders_are_semibold_dates_monospace_and_rows_ruled`.
 
+- Task 6 (`feat(gui): body pane`):
+  - Toolkit-free `body::pane(&App) -> Pane`: empty states, header strings, downloaded, missing text, the switch, attachments, saved note, and the text's openable links (once each).
+  - `ui/body.slint` (`BodyPane`, `BodyInfo`): the toolbar (Text | HTML, Save .eml, View source; disabled buttons show the missing text on hover), the subject, avatar and header lines (the short date has the full date as a `Tooltip`), attachments with Save (accessible label "Save {attachment}"), the saved note, then a read-only `TextInput` (15 px, selectable, accessible label "Message text") and the links under it. HTML shows "Rendering…" until Task 7.
+  - `SourceDialog` in `ui/dialogs.slint`: rows in a `ListView` (wider content than the view scrolls sideways), and Copy, which selects a hidden read-only `TextInput` holding the cleaned text and copies it, as Slint has no clipboard API in Rust.
+  - `TextButton` and `IconButton` take a palette and a `disabled-hint`.
+  - The tick timer calls `Live::tick` directly: its callback already runs on the window's thread, and `invoke_from_event_loop` never runs under the headless backend.
+  - `test_support::{raw, add_html}` (from the old `view_tests.rs`).
+  - The read-timer and fetch tests run on `Driver` (a clock the test sets); `the_read_timer_wakes_the_window_without_input` checks the real window's timer with mock time.
+  - The Copy test checks the text Copy copies (`source-text`); reading the clipboard back is not possible under the testing backend.
+
 ## Next steps (in order)
 
-1. Tasks 6–13 of the plan, one commit each, updating this doc after each.
+1. Tasks 7–13 of the plan, one commit each, updating this doc after each.
 
 ## Notes for whoever resumes
 

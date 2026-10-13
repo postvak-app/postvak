@@ -1,0 +1,267 @@
+// The body pane: the message's actions, its header, attachments, and the text with its links. `body.rs` words it.
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { IconButton, TextButton } from "common.slint";
+
+export struct BodyInfo {
+    // Instead of a message, when set.
+    empty: string,
+    subject: string,
+    initials: string,
+    name: string,
+    address: string,
+    short-date: string,
+    full-date: string,
+    to: string,
+    cc: string,
+    downloaded: bool,
+    missing: string,
+    has-html: bool,
+    shows-html: bool,
+    text-note: string,
+    attachments: [string],
+    saved: string,
+    links: [string],
+}
+
+// A header line: a muted label, then the value.
+component HeaderLine inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+    height: Theme.row;
+    spacing: Theme.pad / 2;
+    Text {
+        text: root.label;
+        color: Theme.pane.muted;
+        vertical-alignment: center;
+    }
+    Text {
+        horizontal-stretch: 1;
+        text: root.value;
+        color: Theme.pane.text;
+        overflow: elide;
+        vertical-alignment: center;
+    }
+}
+
+export component BodyPane inherits Rectangle {
+    in property <BodyInfo> info;
+    // The cleaned text, or empty while it is missing.
+    in property <string> text;
+    in property <string> save-icon;
+    in property <string> source-icon;
+    callback toggle-html();
+    callback save-eml();
+    callback open-source();
+    callback save-attachment(int);
+    callback open-link(string);
+
+    property <length> avatar: 2 * Theme.inset;
+
+    if root.info.empty != "": Text {
+        x: Theme.inset;
+        y: Theme.inset;
+        text: root.info.empty;
+        color: Theme.pane.muted;
+    }
+
+    if root.info.empty == "": VerticalLayout {
+        padding-left: Theme.inset;
+        padding-right: Theme.inset;
+        padding-top: Theme.pad;
+        padding-bottom: Theme.pad;
+        spacing: Theme.pad / 2;
+
+        HorizontalLayout {
+            alignment: end;
+            spacing: Theme.pad / 2;
+            if root.info.has-html: HorizontalLayout {
+                TextButton {
+                    text: "Text";
+                    palette: Theme.pane;
+                    selected: !root.info.shows-html;
+                    clicked => {
+                        if (root.info.shows-html) {
+                            root.toggle-html();
+                        }
+                    }
+                }
+                TextButton {
+                    text: "HTML";
+                    palette: Theme.pane;
+                    selected: root.info.shows-html;
+                    enabled: root.info.text-note == "";
+                    disabled-hint: root.info.text-note;
+                    clicked => {
+                        if (!root.info.shows-html) {
+                            root.toggle-html();
+                        }
+                    }
+                }
+            }
+            IconButton {
+                icon: root.save-icon;
+                name: "Save .eml";
+                hint: "Save .eml";
+                disabled-hint: root.info.missing;
+                enabled: root.info.downloaded;
+                palette: Theme.pane;
+                clicked => { root.save-eml(); }
+            }
+            IconButton {
+                icon: root.source-icon;
+                name: "View source";
+                hint: "View source";
+                disabled-hint: root.info.missing;
+                enabled: root.info.downloaded;
+                palette: Theme.pane;
+                clicked => { root.open-source(); }
+            }
+        }
+
+        if root.info.subject != "": Text {
+            text: root.info.subject;
+            font-family: Theme.serif-font;
+            font-size: 26px;
+            color: Theme.pane.heading;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            spacing: Theme.pad;
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: root.avatar;
+                    height: root.avatar;
+                    border-radius: root.avatar / 2;
+                    background: Theme.pane.hover;
+                    Text {
+                        text: root.info.initials;
+                        font-size: root.avatar * 0.4;
+                        color: Theme.pane.heading;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                HorizontalLayout {
+                    height: Theme.row;
+                    spacing: Theme.pad / 2;
+                    Text {
+                        text: root.info.name;
+                        font-weight: 600;
+                        color: Theme.pane.strong;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                    if root.info.address != "": Text {
+                        text: root.info.address;
+                        color: Theme.pane.muted;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    TouchArea {
+                        width: date.preferred-width;
+                        accessible-role: none;
+                        Tooltip { text: @markdown("\{root.info.full-date}"); }
+                        date := Text {
+                            text: root.info.short-date;
+                            font-family: Theme.mono-font;
+                            color: Theme.pane.muted;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+                if root.info.to != "": HeaderLine {
+                    label: "to";
+                    value: root.info.to;
+                }
+                if root.info.cc != "": HeaderLine {
+                    label: "cc";
+                    value: root.info.cc;
+                }
+            }
+        }
+
+        for attachment[i] in root.info.attachments: HorizontalLayout {
+            spacing: Theme.pad;
+            Text {
+                text: attachment;
+                color: Theme.pane.text;
+                vertical-alignment: center;
+            }
+            TextButton {
+                text: "Save";
+                palette: Theme.pane;
+                accessible-label: "Save " + attachment;
+                clicked => { root.save-attachment(i); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        if root.info.saved != "": Text {
+            text: root.info.saved;
+            color: Theme.pane.text;
+            wrap: word-wrap;
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Theme.pane.border;
+        }
+
+        if root.info.shows-html: Text {
+            vertical-stretch: 1;
+            text: "Rendering…";
+            color: Theme.pane.muted;
+        }
+
+        if !root.info.shows-html && root.info.text-note != "": Text {
+            text: root.info.text-note;
+            color: Theme.pane.muted;
+        }
+
+        if !root.info.shows-html: scroll := ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                width: scroll.visible-width;
+                alignment: start;
+                spacing: Theme.pad;
+                if root.text == "": Text {
+                    text: root.info.missing;
+                    color: Theme.pane.muted;
+                }
+                if root.text != "": TextInput {
+                    text: root.text;
+                    read-only: true;
+                    single-line: false;
+                    wrap: word-wrap;
+                    font-size: 15px;
+                    color: Theme.pane.text;
+                    selection-background-color: Theme.pane.selected;
+                    selection-foreground-color: Theme.pane.on-accent;
+                    accessible-label: "Message text";
+                }
+                for link in root.info.links: TouchArea {
+                    height: Theme.row;
+                    mouse-cursor: pointer;
+                    accessible-role: button;
+                    accessible-label: link;
+                    accessible-action-default => { root.open-link(link); }
+                    clicked => { root.open-link(link); }
+                    Text {
+                        accessible-role: none;
+                        x: 0;
+                        text: link;
+                        color: Theme.pane.accent;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,5 +1,5 @@
 // The small windows over the panes: Keys and History. Esc closes them through the app, the X here.
-import { LineEdit, ScrollView } from "std-widgets.slint";
+import { Button, LineEdit, ListView, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { IconButton } from "common.slint";
 
@@ -147,6 +147,51 @@ export component MoveDialog {
                         vertical-alignment: center;
                     }
                 }
+            }
+        }
+    }
+}
+
+// The raw message, a row per line, with Copy.
+export component SourceDialog {
+    in property <[string]> rows;
+    // The whole cleaned text, for Copy.
+    in property <string> text;
+    in property <length> widest;
+    in property <string> close-icon;
+    callback close();
+    width: 720px;
+    height: 480px;
+    Dialog {
+        title: "Message source";
+        close-icon: root.close-icon;
+        close => { root.close(); }
+        HorizontalLayout {
+            Button {
+                text: "Copy";
+                clicked => {
+                    buffer.select-all();
+                    buffer.copy();
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        buffer := TextInput {
+            visible: false;
+            height: 0;
+            read-only: true;
+            text: root.text;
+            accessible-role: none;
+        }
+        ListView {
+            vertical-stretch: 1;
+            content-width: max(self.visible-width, root.widest);
+            for row in root.rows: Text {
+                height: Theme.row;
+                text: row;
+                font-family: Theme.mono-font;
+                color: Theme.pane.text;
+                vertical-alignment: center;
             }
         }
     }

@@ -12,10 +12,10 @@ use super::keys::{self, Key, Named, Press};
 use super::rows::ListModel;
 use super::state::{App, Focus, UiAction};
 use super::ui::{
-    Dot, FolderItem, FolderKind, KeyHelp, MailWindow, MenuChoice, Pane, StatusLine, Theme,
-    ThemePreference, ToolButton,
+    BodyInfo, Dot, FolderItem, FolderKind, KeyHelp, MailWindow, MenuChoice, Pane, StatusLine,
+    Theme, ThemePreference, ToolButton,
 };
-use super::{icons, list, status, toolbar};
+use super::{body, icons, list, status, toolbar};
 use crate::message::clean;
 
 /// What a callback asks the app: the actions it means, in order.
@@ -61,6 +61,7 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
     window.set_update(update.into());
 
     present_list(app, window);
+    present_body(app, window);
 
     window.set_help_open(app.help_open);
     let help = keys::HELP.map(|(keys, what)| KeyHelp {
@@ -100,6 +101,63 @@ fn present_list(app: &App, window: &MailWindow) {
         .into_iter()
         .map(|name| SharedString::from(clean(name, false)));
     window.set_move_targets(model(targets));
+}
+
+fn present_body(app: &App, window: &MailWindow) {
+    let pane = body::pane(app);
+    let text = |value: Option<String>| SharedString::from(value.unwrap_or_default());
+    window.set_body_info(BodyInfo {
+        empty: pane.empty.unwrap_or_default().into(),
+        subject: text(pane.subject),
+        initials: pane.initials.into(),
+        name: pane.name.into(),
+        address: text(pane.address),
+        short_date: pane.short_date.into(),
+        full_date: pane.full_date.into(),
+        to: text(pane.to),
+        cc: text(pane.cc),
+        downloaded: pane.downloaded,
+        missing: pane.missing.into(),
+        has_html: pane.has_html,
+        shows_html: pane.shows_html,
+        text_note: pane.text_note.unwrap_or_default().into(),
+        attachments: model(pane.attachments.into_iter().map(SharedString::from)),
+        saved: text(pane.saved),
+        links: model(pane.links.into_iter().map(SharedString::from)),
+    });
+    window.set_save_icon(icons::SAVE.into());
+    window.set_source_icon(icons::SOURCE.into());
+    // Messages can be megabytes: set the text only when it changed.
+    let body_text = app
+        .body
+        .as_ref()
+        .and_then(|b| b.text.as_deref())
+        .unwrap_or_default();
+    if window.get_body_text() != body_text {
+        window.set_body_text(body_text.into());
+    }
+    let source = app.body.as_ref().and_then(|b| b.source.as_ref());
+    window.set_source_open(source.is_some());
+    let source_text = source.map_or("", |s| s.text.as_str());
+    if window.get_source_text() != source_text {
+        window.set_source_text(source_text.into());
+        let rows = source.map(|s| {
+            s.rows
+                .iter()
+                .map(|r| SharedString::from(&s.text[r.clone()]))
+        });
+        window.set_source_rows(model(rows.into_iter().flatten()));
+        // Monospace: a row is as wide as its characters, at about 0.6 em each.
+        let widest = source
+            .into_iter()
+            .flat_map(|s| s.rows.iter().map(|r| s.text[r.clone()].chars().count()))
+            .max();
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a row is at most SOURCE_ROW characters"
+        )]
+        window.set_source_widest(widest.unwrap_or(0) as f32 * 8.5);
+    }
 }
 
 /// Hands the window's callbacks to `on`, which runs a function of the app and applies the action it returns.
@@ -218,6 +276,27 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     });
     window.on_escape(move || {
         act(UiAction::Escape);
+    });
+    window.on_toggle_html(move || {
+        act(UiAction::ToggleHtml);
+    });
+    window.on_save_eml(move || {
+        act(UiAction::SaveEml);
+    });
+    window.on_open_source(move || {
+        act(UiAction::OpenSource);
+    });
+    window.on_save_attachment(move |i| {
+        on(one(move |app| {
+            let body = app.body.as_ref()?;
+            let attachment = body.attachments.get(usize::try_from(i).ok()?)?;
+            Some(UiAction::SaveAttachment(attachment.index))
+        }));
+    });
+    window.on_open_link(move |url| {
+        on(one(move |_| {
+            body::has_target(&url).then(|| UiAction::OpenUrl(url.into()))
+        }));
     });
     window.on_open_update(move || {
         on(one(|app| {

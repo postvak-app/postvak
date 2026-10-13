@@ -163,7 +163,10 @@ impl Live {
     fn schedule(&mut self, now: f64) {
         if let Some(at) = self.app.take_next_tick() {
             let delay = Duration::from_secs_f64((at - now).max(0.0));
-            self.timer.start(slint::TimerMode::SingleShot, delay, wake);
+            // Timers fire on the window's thread, so they tick directly.
+            self.timer.start(slint::TimerMode::SingleShot, delay, || {
+                with_live(Live::tick);
+            });
         }
     }
 }

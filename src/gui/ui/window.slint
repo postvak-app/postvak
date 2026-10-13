@@ -3,7 +3,8 @@ import { Theme, ThemePreference } from "theme.slint";
 import { FolderItem, FolderPane } from "folders.slint";
 import { ToolButton, Toolbar } from "toolbar.slint";
 import { StatusBar, StatusLine } from "status.slint";
-import { HistoryDialog, KeyHelp, KeysDialog, MoveDialog } from "dialogs.slint";
+import { HistoryDialog, KeyHelp, KeysDialog, MoveDialog, SourceDialog } from "dialogs.slint";
+import { BodyInfo, BodyPane } from "body.slint";
 import { ListPane, RowData } from "list.slint";
 
 export enum Pane { body, folders, list }
@@ -74,6 +75,15 @@ export component MailWindow inherits Window {
     in property <bool> move-open;
     in property <[string]> move-targets;
 
+    in property <BodyInfo> body-info;
+    in property <string> body-text;
+    in property <string> save-icon;
+    in property <string> source-icon;
+    in property <bool> source-open;
+    in property <[string]> source-rows;
+    in property <string> source-text;
+    in property <length> source-widest;
+
     // A key the focused text field did not take: its text, and whether Ctrl (Cmd on macOS) or Alt was held. True
     // when it did something.
     callback key(string, bool, bool) -> bool;
@@ -98,6 +108,11 @@ export component MailWindow inherits Window {
     callback move-accepted();
     callback move-chosen(int);
     callback escape();
+    callback toggle-html();
+    callback save-eml();
+    callback open-source();
+    callback save-attachment(int);
+    callback open-link(string);
 
     // A text field that closes leaves the keyboard with the panes.
     changed searching => {
@@ -199,10 +214,21 @@ export component MailWindow inherits Window {
                 min: root.list-min-width;
             }
 
-            if root.mail-view: body := PaneFrame {
+            if root.mail-view: PaneFrame {
                 focused: root.focused-pane == Pane.body;
                 border-top-right-radius: Theme.radius;
                 border-bottom-right-radius: Theme.radius;
+                BodyPane {
+                    info: root.body-info;
+                    text: root.body-text;
+                    save-icon: root.save-icon;
+                    source-icon: root.source-icon;
+                    toggle-html => { root.toggle-html(); }
+                    save-eml => { root.save-eml(); }
+                    open-source => { root.open-source(); }
+                    save-attachment(i) => { root.save-attachment(i); }
+                    open-link(url) => { root.open-link(url); }
+                }
             }
 
             if !root.mail-view: PaneFrame {
@@ -240,6 +266,16 @@ export component MailWindow inherits Window {
         filter-edited(text) => { root.move-filter(text); }
         accepted => { root.move-accepted(); }
         chosen(i) => { root.move-chosen(i); }
+        close => { root.escape(); }
+    }
+
+    if root.source-open: SourceDialog {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        rows: root.source-rows;
+        text: root.source-text;
+        widest: root.source-widest;
+        close-icon: root.close-icon;
         close => { root.escape(); }
     }
 

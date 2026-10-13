@@ -6,6 +6,8 @@ export component IconButton inherits Rectangle {
     in property <string> icon;
     in property <string> name;
     in property <string> hint;
+    // Shown instead of `hint` while disabled, when set.
+    in property <string> disabled-hint;
     in property <bool> enabled: true;
     in property <Palette> palette: Theme.frame;
     callback clicked();
@@ -25,9 +27,12 @@ export component IconButton inherits Rectangle {
     }
 
     touch := TouchArea {
-        enabled: root.enabled;
-        clicked => { root.clicked(); }
-        Tooltip { text: @markdown("\{root.hint}"); }
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+        Tooltip { text: @markdown("\{!root.enabled && root.disabled-hint != "" ? root.disabled-hint : root.hint}"); }
     }
 
     Text {
@@ -46,17 +51,28 @@ export component IconButton inherits Rectangle {
 export component TextButton inherits Rectangle {
     in property <string> text;
     in property <bool> selected;
-    in property <color> text-color: Theme.frame.text;
+    in property <bool> enabled: true;
+    // The hover hint, shown only while the button is disabled: why it is.
+    in property <string> disabled-hint;
+    in property <Palette> palette: Theme.frame;
+    in property <color> text-color: root.selected && root.palette == Theme.pane ? Theme.pane.on-accent : root.palette.text;
     in property <string> text-font: Theme.text-font;
     callback clicked();
 
     height: Theme.row;
     border-radius: Theme.pad / 2;
-    background: root.selected ? Theme.frame.selected : touch.has-hover ? Theme.frame.hover : transparent;
+    background: root.selected ? root.palette.selected : touch.has-hover && root.enabled ? root.palette.hover : transparent;
+    opacity: root.enabled ? 1 : 0.5;
     accessible-role: button;
     accessible-label: root.text;
     accessible-item-selected: root.selected;
-    accessible-action-default => { root.clicked(); }
+    accessible-enabled: root.enabled;
+    accessible-description: root.enabled ? "" : root.disabled-hint;
+    accessible-action-default => {
+        if (root.enabled) {
+            root.clicked();
+        }
+    }
     HorizontalLayout {
         padding-left: Theme.pad / 2;
         padding-right: Theme.pad / 2;
@@ -69,6 +85,11 @@ export component TextButton inherits Rectangle {
         }
     }
     touch := TouchArea {
-        clicked => { root.clicked(); }
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+        if !root.enabled && root.disabled-hint != "": Tooltip { text: @markdown("\{root.disabled-hint}"); }
     }
 }

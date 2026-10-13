@@ -392,3 +392,27 @@ impl Driver {
 }
 
 pub(crate) use super::fixture::message;
+
+/// A 1×1 PNG, for the `cid:` image.
+const DOT: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
+
+/// A raw message whose HTML is `html`, with a `cid:dot@example.com` image beside it.
+pub(crate) fn raw(html: &str) -> Vec<u8> {
+    format!(
+        "From: news@example.org\r\nSubject: news\r\nMIME-Version: 1.0\r\n\
+Content-Type: multipart/related; boundary=\"b\"\r\n\r\n\
+--b\r\nContent-Type: text/html; charset=utf-8\r\n\r\n{html}\r\n\
+--b\r\nContent-Type: image/png\r\nContent-ID: <dot@example.com>\r\nContent-Transfer-Encoding: base64\r\n\r\n{DOT}\r\n--b--\r\n"
+    )
+    .into_bytes()
+}
+
+/// Adds message `uid` to work's INBOX with `html` as its body and `text` as its extracted text.
+pub(crate) fn add_html(fx: &Fixture, uid: u32, html: &str, text: &str) {
+    let mut m = message("INBOX", uid, &format!("news {uid}"));
+    m.body_text = Some(text.into());
+    fx.add("work", m);
+    fx.store("work")
+        .set_raw("INBOX", uid, &raw(html), text)
+        .unwrap();
+}
