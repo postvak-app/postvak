@@ -14,7 +14,7 @@ Out of scope: other toolkits (Iced, Xilem), and any change to the daemon, the CL
 
 | Decision | Choice | Rejected |
 |---|---|---|
-| Long-term toolkit | Slint, royalty-free licence (owner, 2026-10-13, after both prototypes); egui keeps shipping until a port merges | GPUI (chosen first, then dropped: a snapshot crate, a separate GUI binary for its linked libraries, snapshot tests needing lavapipe); stay on egui indefinitely |
+| Long-term toolkit | Slint, royalty-free licence (owner, 2026-10-13, after both prototypes): a full rewrite that replaces egui | GPUI (chosen first, then dropped: a snapshot crate, a separate GUI binary for its linked libraries, snapshot tests needing lavapipe); stay on egui indefinitely |
 | Next step | The §7 prototype now, on `gpui-pre` and GPUI Kit from crates.io, then a go/no-go review | Wait for the §6 triggers first; prototype against a Zed git revision (cannot be mixed with GPUI Kit, cannot ship) |
 | Port | A long-lived branch that merges only when every GPUI dependency is on crates.io and the review says go | Port now on `main` |
 | Slint | Prototyped the same way after the GPUI prototype, at the owner's request; compared in the toolkit report §6 | Decide on GPUI alone |
