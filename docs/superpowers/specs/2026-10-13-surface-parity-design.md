@@ -50,7 +50,7 @@ No wire changes. `Status`, `SyncNow` and `ApplyRule` are already there.
 
 ## Output and help
 
-`output` gains `status(&Status) -> Value`, `planned(&Planned) -> Value` for `actions::planned` rows and `rule_applied(account, evaluated, actions, errors) -> Value`. `help` gains one text per new tool, used by both the CLI and the MCP descriptions: `ACCOUNT_ADD`, `ACCOUNT_LIST`, `STATUS`, `ATTACHMENT_SAVE`, `TRASH_PURGE`, `RULES_APPLY_EXISTING`.
+`output` gains `status(&Status) -> serde_json::Result<Value>`, `planned_row(account, &Planned) -> Value` for `actions::planned` rows and `rule_applied(account, evaluated, actions, errors) -> Value`. `help` gains one text per new tool, used by both the CLI and the MCP descriptions: `ACCOUNT_ADD`, `ACCOUNT_LIST`, `STATUS`, `ATTACHMENT_SAVE`, `TRASH_PURGE`, `RULES_APPLY_EXISTING`.
 
 ## MCP
 
@@ -65,13 +65,13 @@ Six tools. Arguments mirror the CLI flags.
 | `trash_purge` | `mail:modify` | `account` (optional, all when absent) | per account the removed count |
 | `rules_apply_existing` | `mail:modify` | `name`, `account` (optional), `dry_run` | dry run: planned rows; otherwise per account evaluated, actions and errors |
 
-`Scope::AccountsWrite` is added to `Scope::ALL`, `parse_scopes`, the two `--scopes` help strings and the scope table in `docs/src/mcp.md`. `backend.rs` stays the only MCP code touching store, rules or the daemon. `account_add` calls `account::add` and then requests `SyncNow`, the same as the CLI.
+`Scope::AccountsWrite` is added to `Scope::ALL`, `parse_scopes`, the two `--scopes` help strings and the scope table in `docs/src/mcp.md`. `backend.rs` stays the only MCP code touching store, rules or the daemon. `account_add` calls `account::add`, waits for the daemon to list the account, then requests `SyncNow`, the same as the CLI.
 
 ## GUI
 
 Three additions. Each is a `UiAction` carried out in `app.rs`; the view modules only draw.
 
-- **Account form.** Fields: name, host, port, username, password, address. The first-run screen in `startup.rs` shows it instead of pointing at the terminal, and a toolbar button opens the same form when accounts exist. Save runs `account::add` with a keyring secret on a worker thread, then sends `SyncNow` for the new account; the status row shows the sync's result. Esc closes the form.
+- **Account form.** Fields: name, host, port, username, password, address. The first-run screen in `startup.rs` shows it instead of pointing at the terminal, and a toolbar button opens the same form when accounts exist. Save runs `account::add` with a keyring secret on a worker thread, since the OS keyring may prompt. The daemon starts the new account from the saved config and syncs it itself, so the window only adds the account to its list and shows the sync on its status line. Esc closes the form.
 - **Purge.** A "Purge" button in the Trash view with the retention days in its hover text. It runs `Trash::purge` for every account and shows the total removed in the status row.
 - **Apply to existing mail.** A button per enabled rule in the Rules view. It sends `ApplyRule` for each account the rule applies to and shows evaluated and action counts in the status row. No dry run in the GUI; the row text is the result.
 
