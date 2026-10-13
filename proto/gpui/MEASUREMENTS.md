@@ -81,3 +81,20 @@ Found on the way: without system fonts the flag (⚑) on a flagged row draws as 
 - Accessibility: GPUI builds its AccessKit tree only once a real assistive technology activates it (the test platform never does), and nothing ran a screen reader; left for later on request.
 - IME: needs a person at the keyboard.
 - Startup time; on-screen frame time; egui idle CPU and memory; macOS on screen.
+
+## How herdr-gpui handles the same problems
+
+[herdr-gpui](https://github.com/penso/herdr-gpui) (Apache-2.0, started 2026-09-20, ~1 200 stars, ~347 000 lines of Rust) is a shipping GPUI client for a local daemon, a shape close to Postvak's. Read from a shallow clone of its `main` on 2026-10-13; nothing of it was built or run here.
+
+| Problem found here | What herdr-gpui does |
+|---|---|
+| Shipping on a snapshot crate | `gpui = { package = "gpui-pre", version = "=0.3.6" }`, exact, three snapshots behind 0.3.9. Dependabot ignores `gpui`: upgrades are "a manual, tested change". Releases daily for macOS (universal, signed DMG), Linux (x86_64 and aarch64) and Windows. No GPUI Kit: its own components |
+| Linked xkbcommon and friends | The GUI is its own binary (`herdr-gpui`), a client of the `herdr` daemon. Linux ships as `.deb`, `.rpm` and Arch packages that declare `libxkbcommon0`, `libxkbcommon-x11-0`, `libxcb1`, `libfreetype6`, `libfontconfig1`, `libwayland-client0`, `libvulkan1` (and ALSA) as dependencies, plus a tarball; a smoke test installs each package in a container and runs `ldd` and `--help` (which exits before GPUI starts, so no display). No AppImage. CI installs `libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libfreetype6-dev libfontconfig1-dev fonts-dejavu-core` |
+| Accessibility | On, not switched off: the terminal is an AccessKit node with `Role::Terminal` whose rows become text runs (`a11y_synthetic_children`), built only while `window.is_a11y_active()`, so it costs nothing without a screen reader; macOS selection tools read `AXSelectedText` |
+| Tests and screenshots | 372 files use `#[gpui::test]`/`TestAppContext`. Screenshots come from `Window::render_to_image` only in a development-only `--mockup --capture` mode for design review; no pixel comparison in CI. Their notes say headless layout tests do not prove native glyph or OS input correctness; native window tests are opt-in and need a desktop |
+| IME | Their own text inputs implementing `EntityInputHandler` (`input.rs`, `search_input.rs`, ~1 100 lines), with one rule: paint, hit-test and IME placement share one geometry |
+| Glyphs missing from bundled fonts (our ⚑) | Icons are 97 SVGs served through their own `AssetSource`, not font glyphs |
+| UI-thread work (our strip conversion, store reads) | A rule: no blocking socket or disk I/O, sleeps or expensive computation on the UI thread; worker threads or the background executor, results applied through a context update |
+| Toolkit-free logic | A rule: the protocol and client crates must not depend on GPUI; the UI crate holds presentation only |
+
+What this changes for the gate: shipping a real app on `gpui-pre`, pinned exactly with manual upgrades, works on all three platforms. The linked libraries are handled by a separate GUI binary and distro packages, which for Postvak means a `postvak-gui` binary and dropping or reworking the AppImage. Accessibility is usable in practice, but someone still has to try Postvak's list with a screen reader. Neither herdr nor this prototype compares screenshots in CI; a port would keep a tolerance-based comparison (2 per channel held between NVIDIA and lavapipe here) or move to layout tests.
