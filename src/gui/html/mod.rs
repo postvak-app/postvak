@@ -1,6 +1,8 @@
 //! The HTML view of a message: the page drawn from strips the render thread paints, with link hover and click.
 //! `app.rs` owns `HtmlState` and talks to the render thread; this module draws and returns `UiAction`s.
 #[cfg(feature = "html")]
+mod fetch;
+#[cfg(feature = "html")]
 mod net;
 #[cfg(feature = "html")]
 mod render;
@@ -10,6 +12,7 @@ pub(crate) mod view_tests;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
+use std::sync::Arc;
 
 use eframe::egui;
 
@@ -37,7 +40,26 @@ pub(crate) const TOO_LARGE: &str = "Too large to render; showing text.";
 pub(crate) const FAILED: &str = "Could not render HTML; showing text.";
 
 #[cfg(feature = "html")]
+pub(crate) use fetch::Fetcher;
+#[cfg(feature = "html")]
 pub(crate) use render::Renderer;
+
+/// Without the `html` feature nothing renders, so nothing asks for remote content.
+#[cfg(not(feature = "html"))]
+pub(crate) struct Fetcher;
+
+#[cfg(not(feature = "html"))]
+impl Fetcher {
+    pub fn start(_ctx: egui::Context) -> Fetcher {
+        Fetcher
+    }
+
+    pub fn send(&self, _job: FetchJob) {}
+
+    pub fn done(&self) -> Vec<FetchDone> {
+        Vec::new()
+    }
+}
 
 /// Without the `html` feature nothing renders: messages never have an HTML body, so this is never sent to.
 #[cfg(not(feature = "html"))]
@@ -65,9 +87,32 @@ pub(crate) fn html_of(raw: &[u8]) -> Option<HtmlBody> {
     }
 }
 
+/// Remote content the user chose to load, by URL; a failed download is there with no bytes.
+pub(crate) type Fetched = Arc<BTreeMap<String, Vec<u8>>>;
+
+/// A message asking for more remote resources than this gets the first ones only.
+pub(crate) const MAX_REMOTE: usize = 200;
+
+/// Remote URLs to download, tagged so the answer for a message no longer shown can be dropped.
+// Without the `html` feature there is no fetch thread to read or build these.
+#[cfg_attr(not(feature = "html"), allow(dead_code))]
+pub(crate) struct FetchJob {
+    pub tag: u64,
+    pub urls: Vec<String>,
+}
+
+/// Every URL of a `FetchJob`, with its bytes, or none when the download failed or the host was refused.
+// Without the `html` feature there is no fetch thread to read or build these.
+#[cfg_attr(not(feature = "html"), allow(dead_code))]
+pub(crate) struct FetchDone {
+    pub tag: u64,
+    pub fetched: BTreeMap<String, Vec<u8>>,
+}
+
 // Without the `html` feature there is no render thread to read or build these.
 #[cfg_attr(not(feature = "html"), allow(dead_code))]
 pub(crate) struct Load {
+    pub fetched: Fetched,
     pub generation: u64,
     pub html: String,
     pub inline: Vec<InlinePart>,
@@ -117,11 +162,11 @@ pub(crate) enum Reply {
     Failed {
         generation: u64,
     },
-    /// The page size in points; `remote` is set when it asked for remote content.
+    /// The page size in points, and the remote URLs it asked for that `Load::fetched` lacks.
     Laid {
         generation: u64,
         height: f32,
-        remote: bool,
+        remote: BTreeSet<String>,
         width: f32,
     },
     Link {
@@ -159,9 +204,14 @@ pub(crate) struct HtmlState {
     pub hover: Option<String>,
     /// The last point sent as a hit test, so a still pointer sends nothing.
     pub hovered_at: Option<egui::Pos2>,
+    /// Remote content downloaded for this message, which every later layout uses.
+    pub fetched: Fetched,
+    /// The tag of the download in flight.
+    pub fetching: Option<u64>,
     /// Set once the current generation is laid out: the page size in points.
     pub page: Option<egui::Vec2>,
-    pub remote: bool,
+    /// Remote URLs the last layout asked for and `fetched` lacks.
+    pub remote: BTreeSet<String>,
     pub requested: BTreeSet<u32>,
     /// The two points of the last `Select`, so a still drag sends nothing.
     pub selected_at: Option<(egui::Pos2, egui::Pos2)>,
@@ -179,8 +229,10 @@ impl HtmlState {
             generation,
             hover: None,
             hovered_at: None,
+            fetched: Fetched::default(),
+            fetching: None,
             page: None,
-            remote: false,
+            remote: BTreeSet::new(),
             requested: BTreeSet::new(),
             selected_at: None,
             selection: None,
@@ -233,8 +285,15 @@ pub(crate) fn show(state: Option<&HtmlState>, width: f32, ui: &mut egui::Ui) -> 
         ui.weak("Rendering…");
         return actions;
     };
-    if state.remote {
-        ui.weak("Remote content not loaded.");
+    if state.fetching.is_some() {
+        ui.weak("Loading remote content…");
+    } else if !state.remote.is_empty() {
+        ui.horizontal(|ui| {
+            ui.weak("Remote content not loaded.");
+            if ui.button("Load remote content").clicked() {
+                actions.push(UiAction::LoadRemote);
+            }
+        });
     }
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(page.x.max(width), page.y),

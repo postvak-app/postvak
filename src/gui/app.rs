@@ -19,7 +19,7 @@ use crate::update;
 
 use super::body;
 use super::folders;
-use super::html::{self, HtmlState, Renderer, Reply};
+use super::html::{self, Fetcher, HtmlState, Renderer, Reply};
 use super::list::{self, ListState, Optimistic, Row, RowKey, THREAD_LIMIT};
 use super::rules::{self, RulesState, TrashRow};
 use super::status;
@@ -208,6 +208,8 @@ pub(crate) enum UiAction {
         scale: f32,
         width: f32,
     },
+    /// Download the remote content the shown HTML page asked for, and lay it out again with it.
+    LoadRemote,
     ListViewport {
         offset: f32,
         height: f32,
@@ -273,6 +275,8 @@ pub struct App {
     pub(crate) error: Option<String>,
     pub(crate) events: Receiver<Event>,
     pub(crate) fetch_release: fn() -> anyhow::Result<String>,
+    /// Downloads remote content for HTML mail, started the first time the user asks.
+    pub(crate) fetcher: Option<Fetcher>,
     pub(crate) focus: Focus,
     pub(crate) focus_search: bool,
     pub(crate) help_open: bool,
@@ -348,6 +352,7 @@ impl App {
             error: None,
             events,
             fetch_release: update::fetch,
+            fetcher: None,
             focus: Focus::List,
             focus_search: false,
             help_open: false,
@@ -400,6 +405,7 @@ impl App {
         let now = ui.input(|input| input.time);
         self.receive(now);
         self.receive_html(&ctx);
+        self.receive_remote(&ctx);
         self.keep_daemon(&ctx, now);
         self.check_release(&ctx);
         if std::mem::take(&mut self.view_dirty) {
@@ -771,6 +777,7 @@ impl App {
                 let now = ctx.input(|input| input.time);
                 self.html_width(ctx, scale, width, now);
             }
+            UiAction::LoadRemote => self.load_remote(ctx),
             UiAction::Escape => {
                 if self.move_picker.is_some() {
                     self.move_picker = None;
@@ -1322,7 +1329,13 @@ impl App {
                         continue;
                     }
                     view.page = Some(egui::vec2(width, height));
+                    // Once the user loaded remote content, what it asks for in turn (images in a stylesheet) follows.
+                    let follow = !view.fetched.is_empty() && view.fetched.len() < html::MAX_REMOTE;
                     view.remote = remote;
+                    if follow && !view.remote.is_empty() && view.fetching.is_none() {
+                        self.load_remote(ctx);
+                        continue;
+                    }
                     view.strips.clear();
                     view.requested.clear();
                     view.hover = None;
@@ -1375,12 +1388,28 @@ impl App {
                 }
             },
         };
-        let Some(source) = body.html.as_ref().filter(|_| fresh) else {
+        if fresh {
+            self.lay_out(ctx, scale, width);
+        }
+    }
+
+    /// Sends the shown message's HTML to the render thread, at `width` points and `scale`.
+    fn lay_out(&mut self, ctx: &egui::Context, scale: f32, width: f32) {
+        let Some(body) = self.body.as_mut() else {
+            return;
+        };
+        let Some(source) = body.html.as_ref() else {
             return;
         };
         self.html_generation += 1;
         let generation = self.html_generation;
+        let fetched = body
+            .html_view
+            .as_ref()
+            .map(|view| view.fetched.clone())
+            .unwrap_or_default();
         let load = html::Load {
+            fetched,
             generation,
             html: source.html.clone(),
             inline: source.inline.clone(),
@@ -1398,6 +1427,46 @@ impl App {
         self.renderer
             .get_or_insert_with(|| Renderer::start(ctx.clone()))
             .send(html::Request::Load(load));
+    }
+
+    /// Starts downloading what the shown page asked for; the tag is a fresh layout number, unique to this request.
+    fn load_remote(&mut self, ctx: &egui::Context) {
+        let Some(view) = self.body.as_mut().and_then(|b| b.html_view.as_mut()) else {
+            return;
+        };
+        if view.remote.is_empty() || view.fetching.is_some() {
+            return;
+        }
+        self.html_generation += 1;
+        let tag = self.html_generation;
+        view.fetching = Some(tag);
+        let room = html::MAX_REMOTE.saturating_sub(view.fetched.len());
+        let urls = std::mem::take(&mut view.remote)
+            .into_iter()
+            .take(room)
+            .collect();
+        self.fetcher
+            .get_or_insert_with(|| Fetcher::start(ctx.clone()))
+            .send(html::FetchJob { tag, urls });
+    }
+
+    /// Takes finished downloads for the shown message and lays it out again with them.
+    fn receive_remote(&mut self, ctx: &egui::Context) {
+        let Some(fetcher) = &self.fetcher else {
+            return;
+        };
+        for done in fetcher.done() {
+            let Some(view) = self.body.as_mut().and_then(|b| b.html_view.as_mut()) else {
+                continue;
+            };
+            if view.fetching != Some(done.tag) {
+                continue;
+            }
+            view.fetching = None;
+            std::sync::Arc::make_mut(&mut view.fetched).extend(done.fetched);
+            let (scale, width) = view.sent;
+            self.lay_out(ctx, scale, width);
+        }
     }
 
     /// Asks for the strips around what is on screen and lets go of those far from it.

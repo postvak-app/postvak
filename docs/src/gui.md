@@ -61,7 +61,7 @@ The daemon applies changes to `config.toml` by itself; the window's account list
 
 ![An HTML message rendered in the reader](https://raw.githubusercontent.com/postvak-app/postvak/main/tests/snapshots/gui_html_light.png)
 
-Mail with an HTML part shows as its sender laid it out, on a white page in both themes; `v` switches that message to its text and back. Nothing is fetched over the network: images and stylesheets from the web are not loaded, and the line "Remote content not loaded." says when a message asked for some. Images sent inside the message show. No scripts run and forms do nothing. Hover over a link to see where it goes; in HTML and in text, only `http`, `https` and `mailto` links open, in your browser or mail app.
+Mail with an HTML part shows as its sender laid it out, on a white page in both themes; `v` switches that message to its text and back. Images sent inside the message show. Images and stylesheets from the web are not loaded until you ask: when a message wants some, the line "Remote content not loaded." has a **Load remote content** button, which downloads it for that message only. Loading tells the sender's servers your IP address and that you opened the message, so leave it off for mail you don't trust. Postvak never loads content from your own machine or local network. No scripts run and forms do nothing. Hover over a link to see where it goes; in HTML and in text, only `http`, `https` and `mailto` links open, in your browser or mail app.
 
 HTML over 2 MB, or a page too tall or too broken to lay out, shows as text with a note saying why. Sending mail comes later.
 

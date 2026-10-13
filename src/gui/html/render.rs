@@ -2,9 +2,9 @@
 //! Blitz documents are not `Send`, so every one is made, used and dropped here.
 use std::collections::HashSet;
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, PoisonError};
 
 use anyrender::ImageRenderer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
@@ -169,7 +169,7 @@ fn handle(current: &mut Option<Current>, request: Request) -> Option<Reply> {
 fn layout(load: Load) -> (Current, Reply) {
     let scale = load.scale.max(0.5);
     let width = physical(load.width, scale).max(1);
-    let (provider, remote) = net::Inline::new(load.inline);
+    let (provider, remote) = net::Inline::new(load.inline, load.fetched);
     let config = DocumentConfig {
         viewport: Some(Viewport::new(
             width,
@@ -203,7 +203,7 @@ fn layout(load: Load) -> (Current, Reply) {
     let reply = Reply::Laid {
         generation: load.generation,
         height,
-        remote: remote.load(Ordering::Relaxed),
+        remote: std::mem::take(&mut *remote.lock().unwrap_or_else(PoisonError::into_inner)),
         width: laid_width,
     };
     (current, reply)
@@ -400,12 +400,14 @@ impl Renderer {
 
 #[cfg(test)]
 mod tests {
+    use super::super::Fetched;
     use super::*;
 
     const NEWSLETTER: &str = include_str!("../../../tests/fixtures/newsletter.html");
 
     fn load(generation: u64, html: &str, width: f32) -> Request {
         Request::Load(Load {
+            fetched: Fetched::default(),
             generation,
             html: html.into(),
             inline: Vec::new(),
@@ -443,7 +445,11 @@ mod tests {
         };
         assert!((700.0..800.0).contains(&width), "width {width}");
         assert!(height > 500.0, "height {height}");
-        assert!(remote, "the tracking pixel and stylesheet were asked for");
+        assert_eq!(
+            remote.len(),
+            2,
+            "the tracking pixel and stylesheet were asked for"
+        );
         let Some(Reply::Strip { image, .. }) = handle(
             &mut current,
             Request::Paint {
@@ -698,6 +704,7 @@ mod tests {
         panic::catch_unwind(|| {
             let mut current = None;
             let load = Request::Load(Load {
+                fetched: Fetched::default(),
                 generation: 1,
                 html: html.into(),
                 inline: Vec::new(),
@@ -805,6 +812,7 @@ mod tests {
         #[test]
         fn hostile_html_never_panics(html in hostile_html(), width in 1.0f32..2000.0, scale in 0.5f32..3.0) {
             let mut requests = vec![Request::Load(Load {
+                fetched: Fetched::default(),
                 generation: 1,
                 html,
                 inline: Vec::new(),
