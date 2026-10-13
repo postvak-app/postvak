@@ -4,11 +4,11 @@
 
 **Goal:** Turn the Rules view into a list of proposals and rules on the left and an editor for the selected rule on the right, with plain-language summaries, a highlighted TOML preview of each proposal, a preview on cached mail, and "Rule" buttons in the reader that start a draft.
 
-**Architecture:** `rules::edit` gains `save_rule` (add, or replace by name in place) and `remove_rule`, both keeping the file's comments; it stays the only writer of rules.toml. A new pure module `gui/draft.rs` turns a `Rule` into rows of conditions and back and writes the summary and preview lines; the views (`rules.rs`, a new `rule_editor.rs`, `body.rs`) draw from `&App` and return `UiAction`s, and `app.rs` holds the one draft (`App.rule_draft`) and is the only code that changes it, saves it, or previews it through `actions::planned`.
+**Architecture:** `rules::edit` gains `save_rule` (add, or replace by name in place) and `remove_rule`, both keeping the file's comments; it stays the only writer of rules.toml. A new pure module `gui/draft.rs` writes the summary and preview lines and turns a `Rule` into rows of conditions and back; conditions the form cannot show (`any`, `none`, value lists, header lists) ride along in `Draft.kept` and are saved unchanged. The views (`rules.rs`, a new `rule_editor.rs`, `body.rs`) draw from `&App` and return `UiAction`s, and `app.rs` holds the one draft (`App.rule_draft`) and is the only code that changes it, saves it, or previews it through `actions::planned`.
 
-**Tech Stack:** Rust 2024, eframe/egui 0.36.2, egui_kittest 0.36.2 (kittest 0.4.0), toml 1.1.6, toml_edit 0.25.15, egui-phosphor 0.14 (added by the GUI redesign plan). No new dependencies.
+**Tech Stack:** Rust 2024, eframe/egui 0.36.2, egui_kittest 0.36.2 (kittest 0.4.0), toml 1.1.6, toml_edit 0.25.15, egui-phosphor 0.14. No new dependencies.
 
-**Spec:** design canvas https://claude.ai/artifact/B5W17bKLqpKUw9z3bCw65Q (Rules · Latte and Regex tester boards) + docs/src/rules.md + docs/superpowers/specs/2026-10-06-postbode-core-design.md. The regex tester is the sibling plan `docs/superpowers/plans/2026-10-08-regex-tester.md`, which builds on this one.
+**Spec:** design canvas https://claude.ai/artifact/B5W17bKLqpKUw9z3bCw65Q (Rules and Regex tester boards; private to the repo owner; take layout and copy from it, colours from `src/gui/theme.rs`) + docs/src/rules.md + docs/superpowers/specs/2026-10-06-postvak-core-design.md + docs/superpowers/specs/2026-10-06-postvak-gui-design.md. The regex tester is the sibling plan `docs/superpowers/plans/2026-10-08-regex-tester.md`, which builds on this one.
 
 ## Scope
 
@@ -21,9 +21,9 @@ One PR off `origin/main`, one commit per task. Task order matters: each task add
 | 3 | Rule editor | 1 ("New rule"), 4 |
 | 4 | "Rule" buttons in the reader | 6 |
 
-Prerequisites on `main`: Task 1 (Latte contrast) and Task 2 (icon font, `src/gui/icons.rs`) of `docs/superpowers/plans/2026-10-08-gui-redesign.md`. This plan's colour tests assume Latte `accent = #10757a`, `on_accent = #ffffff`, `success = #276b19`.
+Prerequisites on `main`, all met: the Ossenbloed palette and layout grid in `src/gui/theme.rs` (`PAPER`, `NIGHT`, `FRAME`, `FRAME_NIGHT`; `ROW`, `CONTROL`, `PAD`, `INSET`), the icon font in `src/gui/icons.rs` and `toolbar::icon_button` (GUI redesign Tasks 2 and 8), the reader toolbar and header in `src/gui/body.rs`, and condition lists, `any`, `none` and `tag` in `src/rules/mod.rs`. `rules::edit` has no `save_rule` or `remove_rule` yet.
 
-Not in this plan: the regex tester (sibling plan); editing a pending proposal in the editor (proposals are approved, rejected or previewed from their card).
+Not in this plan: the regex tester (sibling plan); editing a pending proposal in the editor (proposals are approved, rejected or previewed from their card); editing `any`, `none`, value lists or header lists in the form (they show read-only and are saved unchanged; edit them in rules.toml).
 
 ## Global Constraints
 
@@ -32,12 +32,13 @@ Not in this plan: the regex tester (sibling plan); editing a pending proposal in
 - Only `src/rules/edit.rs` writes rules.toml. GUI views draw from `&App` and return `UiAction`s; only `app.rs` changes state (`tests/architecture.rs` checks both).
 - Nothing is written until Save: a new rule, and a draft from the reader's Rule buttons, live only in `App.rule_draft`.
 - Test and "Preview on cached mail" are read-only: `actions::planned` over the local stores, no daemon command, no store write.
-- Renaming a rule makes it a new rule and restarts its clock; the editor says so before Save: "Renaming makes this a new rule: it acts only on mail that arrives after you save."
+- Saving a changed rule restarts its clock (`Rule::definition`, migration 007): it acts only on mail that arrives after the save. Renaming makes it a new rule; the editor says so before Save: "Renaming makes this a new rule: it acts only on mail that arrives after you save." The footer says it for every save: "Saving a change restarts the rule: it acts only on mail that arrives after you save."
 - Rules act only on mail that arrives after they are enabled; nothing in this plan runs `apply-existing`.
-- Copy, verbatim: "Rules", "1 rule · 2 proposals", "Open rules.toml", "New rule", "proposed by {who}", "Adds to rules.toml", "Approve", "Reject", "Preview on cached mail", "Name", "Enabled", "Watches", "Every account", "When all of these match", "+ Add condition", "Then", "+ Add action", "keeps a .eml backup", "Test", "Remove rule", "Remove from rules.toml", "Cancel", "Save", "This rule has unsaved changes.", "Discard", "would delete 4 cached messages", "matches no cached message".
-- The rule list is 460 px wide.
-- Colours come from `theme::Palette`: proposal chip `agent` on `agent_bg` (Latte #a34106 on #fde6d6); TOML block on `added` with section headers `agent`, keys `accent`, strings `success`, booleans `error`, "+" gutter `success`. No blue or purple. Every text colour on its background passes WCAG AA (4.5:1) in both themes.
-- egui's proportional font has no "→" (checked: Ubuntu-Light lacks U+2192, Hack has it), so every line holding "→" is drawn monospace.
+- Conditions the form cannot edit (`any`, `none`, a list of values, a list of headers, or a text condition without exactly one of contains, equals, regex) are kept in `Draft.kept`, shown read-only, and written back as they were.
+- Copy, verbatim: "Rules", "1 rule · 2 proposals", "Open rules.toml", "New rule", "proposed by {who}", "Adds to rules.toml", "Approve", "Reject", "Preview on cached mail", "Name", "Enabled", "Watches", "Every account", "When all of these match", "Edit these in rules.toml; Save keeps them as they are.", "+ Add condition", "Then", "+ Add action", "keeps a .eml backup", "Test", "Remove rule", "Remove from rules.toml", "Cancel", "Save", "This rule has unsaved changes.", "Discard", "would delete 4 cached messages", "matches no cached message".
+- The rule list is 460 px wide. Other sizes come from the grid in `theme.rs`: `ROW` (24) rows, `CONTROL` (28) icon buttons, `INSET` (16) from a pane's edge, `PAD` (8) inside a row.
+- Colours come from `theme::Palette`, which gains `added`, `agent`, `agent_bg` and `success` (Task 2): proposal chip `agent` on `agent_bg` (light #7a5410 on #f3e6c4, brass); TOML block on `added` with section headers `agent`, keys `accent`, strings `success`, booleans `error`, "+" gutter `success`. No blue or purple. Every text colour on its background passes WCAG AA (4.5:1) in `PAPER` and `NIGHT`; the switch's knob is 3:1 against its track.
+- Every line holding "→" is drawn monospace: `theme::fonts` puts Hack behind Spline Sans Mono for the arrows; the proportional font (Hanken Grotesk) is not checked for U+2192.
 - Agent text is untrusted: everything from rules.toml is passed through `message::clean` before it is drawn.
 - Prose changes go in `docs/src/gui.md`.
 - After GUI changes, regenerate snapshots on Linux with lavapipe: `TZ=UTC UPDATE_SNAPSHOTS=1 cargo test gui::snapshots`, and look at every changed PNG in `tests/snapshots/`.
@@ -45,16 +46,17 @@ Not in this plan: the regex tester (sibling plan); editing a pending proposal in
 
 ## Verification notes
 
-Checked against source in `~/.cargo/registry/src`: every egui call below (egui 0.36.2: `Sides`, `Panel::left(..).exact_size(..).show(ui, ..)`, `CentralPanel::no_frame`, `ComboBox::from_id_salt/selected_text/show_ui`, `Ui::selectable_value/selectable_label/menu_button/close/small/allocate_exact_size/is_rect_visible`, `Context::animate_bool_responsive`, `Painter::rect/circle`, `Frame::new/group/fill/stroke/corner_radius/inner_margin`, `Margin::symmetric/same`, `CollapsingHeader::id_salt/default_open`, `text::LayoutJob::append`, `TextFormat { background, .. }`, `LayoutSection::byte_range: Range<ByteIndex>`, `Response::labelled_by/widget_info/gained_focus`, `WidgetInfo::selected/labeled`, `Button::small/fill/stroke/frame`, `Modal::new(..).show(ctx, ..)`, `ModalResponse::should_close`), kittest 0.4.0 (`get_by_role_and_label`, `get_all_by_role`, `get_all_by_label` as a `DoubleEndedIterator`, `Node::value`), egui-phosphor 0.14.0 (`ROBOT`, `X`), and toml_edit 0.25.15. The `rules::edit` merge and append code was run in a scratch crate against toml 1.1.6 and toml_edit 0.25.15; its outputs are the expected strings in Task 1. Not run: the GUI code as a whole, and in particular whether kittest opens the "+ Add action" `menu_button` popup with one `click` + `run` (Task 3, Step 1, last test), whether `widget_info` after `ui.add(Button)` replaces the button's accessible name (Task 4), and whether the unsaved-changes modal's "Save" comes after the editor's own "Save" in the accesskit tree (Task 3); if any fails, the step says what to do.
+Checked against source in `~/.cargo/registry/src`: every egui call below (egui 0.36.2: `Sides` with `shrink_left/wrap/truncate`, `Panel::left(..).exact_size(..).show(ui, ..)`, `CentralPanel::no_frame`, `ComboBox::from_id_salt/selected_text/show_ui`, `Ui::selectable_value/selectable_label/menu_button/close/small/allocate_exact_size/is_rect_visible`, `Context::animate_bool_responsive`, `Painter::rect/circle`, `Frame::new/group/fill/stroke/corner_radius/inner_margin`, `Margin: From<f32> + From<Vec2>`, `CornerRadius: From<f32>`, `CollapsingHeader::id_salt/default_open`, `text::LayoutJob::append`, `TextFormat { background, .. }`, `LayoutSection::byte_range: Range<ByteIndex>`, `Response::labelled_by/widget_info/gained_focus`, `WidgetInfo::selected/labeled`, `Button::small/fill/stroke/frame`, `Modal::new(..).show(ctx, ..)`, `ModalResponse::should_close`), kittest 0.4.0 (`get_by_role_and_label`, `get_all_by_role`, `get_all_by_label` as a `DoubleEndedIterator`, `Node::value`), egui-phosphor 0.14.0 (`ROBOT`, `X`), and toml_edit 0.25.15. The `rules::edit` merge and append code was run in a scratch crate against toml 1.1.6 and toml_edit 0.25.15; its outputs are the expected strings in Task 1 (a single condition value serializes as before, since `OneOrMany` is untagged). The palette contrasts in Task 2 were computed with the WCAG formula the theme tests use. Not run: the GUI code as a whole; the Task 1 test that keeps `[[rules.match.any]]` tables as written; whether kittest opens the "+ Add action" `menu_button` popup with one `click` + `run` (Task 3, Step 1); whether the unsaved-changes modal's "Save" comes after the editor's own "Save" in the accesskit tree (Task 3); and whether `widget_info` after `ui.add(Button)` replaces the reader Rule buttons' accessible name (Task 4; `toolbar::icon_button` relies on the same call, which suggests it does). Where one fails, the step says what to do.
 
 ## Review Focus
 
-1. **A hand-written rules.toml** (a comment block above a rule, comments at line ends, `[rules.match]` header tables, a file holding only comments): Save changes only the edited rule's changed values; every other byte stays. Tests in Task 1.
+1. **A hand-written rules.toml** (a comment block above a rule, comments at line ends, `[rules.match]` header tables, `[[rules.match.any]]` tables, a file holding only comments): Save changes only the edited rule's changed values; every other byte stays. Tests in Task 1.
 2. **Saving or renaming onto another rule's name**: refused, the file unchanged, the reason shown in the editor. Tests in Task 1 and Task 3.
 3. **The open rule vanished from the file** (rejected with the CLI, renamed in a text editor) before Save: Save reports "no such rule" and does not add it back. Tests in Task 1 and Task 3.
 4. **A proposal carrying control characters** (an ANSI escape in a condition value or in `proposed_by`): drawn without them in the card's summary, chip and TOML. Test in Task 2.
 5. **The list switch flipped while that rule is open in the editor**: a later Save keeps the new on/off state, not the editor's stale one. Test in Task 3.
 6. **Leaving an edited draft** (another rule, "New rule", a reader Rule button): asks Save / Discard / Cancel; a failed Save stays on the draft; an unchanged draft leaves without asking. Tests in Tasks 3 and 4.
+7. **A rule with `any`, `none` or value lists**: the form shows them read-only and Save writes them back unchanged. Tests in Tasks 2 and 3.
 
 ---
 
@@ -133,6 +135,19 @@ A new rule is written in the docs' style: `match.subject = { contains = "x" }` d
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             headers.replace("seen = true", "seen = false")
+        );
+    }
+
+    #[test]
+    fn save_rule_keeps_any_tables_and_value_lists_as_written() {
+        let grouped = "[[rules]]\nname = \"codes\"\nactions = [\"delete\"]\n\n[rules.match]\nseen = true\nsubject = { contains = [\"code\", \"pin\"] }\n\n[[rules.match.any]]\nfrom = { contains = \"a\" }\n\n[[rules.match.any]]\nto_me = false\n";
+        let (_dir, path) = rules_file(grouped);
+        let mut changed = load(&path).unwrap().rules.remove(0);
+        changed.matches.seen = Some(false);
+        save_rule(&path, Some("codes"), &changed).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            grouped.replace("seen = true", "seen = false")
         );
     }
 
@@ -407,32 +422,23 @@ git commit -m "feat(rules): save or remove one rule in rules.toml, keeping comme
 ### Task 2: Rules list and proposal cards
 
 **Files:**
-- Create: `src/gui/draft.rs` (conditions as rows, summaries, preview line), `src/gui/widgets.rs` (switch, chip)
-- Modify: `src/gui/mod.rs` (`mod draft; mod widgets;`), `src/gui/theme.rs` (`added`, `agent`, `agent_bg`), `src/gui/icons.rs` (`PROPOSAL`), `src/gui/rules.rs` (`show_rules`, TOML highlighting, tests), `src/gui/app.rs` (`config`, `previews`, `UiAction::PreviewRule`, `preview`), `src/gui/test_support.rs` (`Fixture::rules_view`), `src/gui/snapshots.rs` (none new; `gui_rules` regenerates), `docs/src/gui.md`
+- Create: `src/gui/draft.rs` (summaries, preview line), `src/gui/widgets.rs` (switch, chip)
+- Modify: `src/gui/mod.rs` (`mod draft; mod widgets;`), `src/gui/theme.rs` (`added`, `agent`, `agent_bg`, `success`), `src/gui/icons.rs` (`PROPOSAL`), `src/gui/rules.rs` (`show_rules`, TOML highlighting, tests), `src/gui/app.rs` (`config`, `previews`, `UiAction::PreviewRule`, `preview`), `src/gui/test_support.rs` (`Fixture::rules_view`), `src/gui/snapshots.rs` (none new; `gui_rules` regenerates), `docs/src/gui.md`
 
 **Interfaces:**
-- Consumes: `icons` module (GUI redesign Task 2); Latte colours (GUI redesign Task 1).
+- Consumes: `icons` module; `theme::{palette, Palette, PAD, INSET, ROW}`; `rules::{Match, OneOrMany, Action, Rule}`; `CompiledRule::needs_body`.
 - Produces:
 
 ```rust
 // draft.rs
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Field { From, To, Cc, Subject, Body, Header, OlderThan, Seen, ToMe, Alias }
-impl Field { pub fn label(self) -> &'static str; pub fn is_text(self) -> bool; }
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Op { Contains, Equals, Regex }
-impl Op { pub fn label(self) -> &'static str; }
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Condition { pub field: Field, pub header: String, pub op: Op, pub value: String }
-pub(crate) fn conditions(m: &Match) -> Vec<Condition>;
-pub(crate) fn condition_label(condition: &Condition) -> String;
+pub(crate) fn match_labels(m: &Match) -> Vec<String>;  // one per condition, in the docs' order; any/none grouped
 pub(crate) fn action_label(action: &Action) -> String;
 pub(crate) fn summary(rule: &Rule) -> String;          // `subject contains "code" → delete`, cleaned
-pub(crate) fn preview_text(rule: &Rule, matched: usize) -> String;
+pub(crate) fn preview_text(rule: &Rule, matched: usize, needs_body: bool) -> String;
 // widgets.rs
 pub(crate) fn switch(ui: &mut egui::Ui, on: bool, label: &str) -> egui::Response;
 pub(crate) fn chip(fill: egui::Color32, stroke: egui::Color32) -> egui::Frame;
-// theme.rs: Palette gains `added`, `agent`, `agent_bg`
+// theme.rs: Palette gains `added`, `agent`, `agent_bg`, `success`
 // icons.rs
 pub(crate) const PROPOSAL: &str;                      // ph::ROBOT
 // rules.rs
@@ -473,34 +479,24 @@ match.older_than = "1h"
 match.seen = true
 match.to_me = false
 match.alias = "*@shop.example.com"
-actions = [{ move = "Codes" }, "mark_read", "flag", "silent"]
+match.tag = "$label1"
+actions = [{ move = "Codes" }, { tag = "$label2" }, "mark_read", "flag", "silent"]
+"#;
+
+    /// What the form cannot edit: value lists, a header list, `any` and `none`.
+    const GROUPED: &str = r#"
+[[rules]]
+name = "grouped"
+match.subject = { contains = ["receipt", "invoice"] }
+match.from = { contains = "shop" }
+match.header = [{ name = "List-Id", contains = "a" }, { name = "X-Kind", equals = "b" }]
+match.any = [{ seen = true }, { to_me = false, alias = "x@example.com" }]
+match.none = [{ tag = "$label1" }]
+actions = ["flag"]
 "#;
 
     fn rule(text: &str) -> Rule {
         parse(text).unwrap().rules.remove(0)
-    }
-
-    #[test]
-    fn every_condition_becomes_a_row_in_docs_order() {
-        let rows = conditions(&rule(ALL_FIELDS).matches);
-        let fields: Vec<Field> = rows.iter().map(|c| c.field).collect();
-        assert_eq!(
-            fields,
-            [
-                Field::From,
-                Field::To,
-                Field::Cc,
-                Field::Subject,
-                Field::Body,
-                Field::Header,
-                Field::OlderThan,
-                Field::Seen,
-                Field::ToMe,
-                Field::Alias
-            ]
-        );
-        assert_eq!((rows[0].op, rows[0].value.as_str()), (Op::Equals, "a@example.com"));
-        assert_eq!((rows[5].header.as_str(), rows[5].op), ("List-Id", Op::Contains));
     }
 
     #[test]
@@ -515,7 +511,18 @@ actions = [{ move = "Codes" }, "mark_read", "flag", "silent"]
             summary(&rule(ALL_FIELDS)),
             "from equals \"a@example.com\", to contains \"team\", cc matches regex \"(?i)boss\", \
              subject contains \"code\", body matches regex \"\\d{6}\", header List-Id contains \"github.com\", \
-             older than 1h, read, not to me, alias *@shop.example.com → move to Codes, mark read, flag, silent"
+             older than 1h, read, not to me, alias *@shop.example.com, tag $label1 \
+             → move to Codes, tag $label2, mark read, flag, silent"
+        );
+    }
+
+    #[test]
+    fn the_summary_reads_lists_and_groups() {
+        assert_eq!(
+            summary(&rule(GROUPED)),
+            "from contains \"shop\", subject contains \"receipt\" or \"invoice\", header List-Id contains \"a\", \
+             header X-Kind equals \"b\", any of (read; not to me and alias x@example.com), none of (tag $label1) \
+             → flag"
         );
     }
 
@@ -528,16 +535,16 @@ actions = [{ move = "Codes" }, "mark_read", "flag", "silent"]
     #[test]
     fn the_preview_line_counts_messages_and_names_the_actions() {
         let delete = rule("[[rules]]\nname = \"x\"\nmatch.seen = true\nactions = [\"delete\"]\n");
-        assert_eq!(preview_text(&delete, 4), "would delete 4 cached messages");
-        assert_eq!(preview_text(&delete, 1), "would delete 1 cached message");
-        assert_eq!(preview_text(&delete, 0), "matches no cached message");
+        assert_eq!(preview_text(&delete, 4, false), "would delete 4 cached messages");
+        assert_eq!(preview_text(&delete, 1, false), "would delete 1 cached message");
+        assert_eq!(preview_text(&delete, 0, false), "matches no cached message");
         let filed = rule(
             "[[rules]]\nname = \"x\"\nmatch.seen = true\nactions = [{ move = \"Lists/GitHub\" }, \"mark_read\"]\n",
         );
-        assert_eq!(preview_text(&filed, 3), "would move and mark read 3 cached messages to Lists/GitHub");
-        let body = rule("[[rules]]\nname = \"x\"\nmatch.body = { contains = \"code\" }\nactions = [\"flag\"]\n");
+        assert_eq!(preview_text(&filed, 3, false), "would move and mark read 3 cached messages to Lists/GitHub");
+        let flag = rule("[[rules]]\nname = \"x\"\nmatch.seen = true\nactions = [\"flag\"]\n");
         assert_eq!(
-            preview_text(&body, 2),
+            preview_text(&flag, 2, true),
             "would flag 2 cached messages; only mail whose body is downloaded is checked"
         );
     }
@@ -578,8 +585,8 @@ mod tests {
 
 ```rust
     #[test]
-    fn proposal_chip_toml_block_and_delete_chip_pass_aa_in_both_themes() {
-        for (name, p) in [("mocha", &MOCHA), ("latte", &LATTE)] {
+    fn proposal_chip_toml_block_delete_chip_and_switch_read_in_both_panes() {
+        for (name, p) in [("paper", &PAPER), ("night", &NIGHT)] {
             let chip = contrast(p.agent, p.agent_bg);
             assert!(chip >= 4.5, "{name}: proposed-by chip {chip}");
             for (what, colour) in [
@@ -592,13 +599,18 @@ mod tests {
                 let ratio = contrast(colour, p.added);
                 assert!(ratio >= 4.5, "{name}: TOML {what} {ratio}");
             }
-            let delete = contrast(p.error, p.background);
-            assert!(delete >= 4.5, "{name}: delete chip {delete}");
+            for (what, colour) in [("delete chip", p.error), ("success", p.success)] {
+                let ratio = contrast(colour, p.background);
+                assert!(ratio >= 4.5, "{name}: {what} {ratio}");
+            }
+            // Non-text contrast: the knob against its track.
+            let (on, off) = (contrast(p.background, p.accent), contrast(p.muted, p.border));
+            assert!(on >= 3.0 && off >= 3.0, "{name}: switch knob {on} on, {off} off");
         }
     }
 ```
 
-`src/gui/rules.rs` tests: replace the private `rules_view` helper with `fx.rules_view(RULES)` everywhere. The test module's imports gain `use super::*;` and `use crate::gui::theme::MOCHA;`, and `use crate::gui::test_support::Fixture;` becomes `use crate::gui::test_support::{Fixture, message};`. Then change the first two tests and add the rest:
+`src/gui/rules.rs` tests: replace the private `rules_view` helper with `fx.rules_view(RULES)` everywhere. The test module's imports gain `use super::*;` and `use crate::gui::theme::NIGHT;`, and `use crate::gui::test_support::Fixture;` becomes `use crate::gui::test_support::{Fixture, message};`. Then change the first two tests and add the rest:
 
 ```rust
     #[test]
@@ -613,7 +625,7 @@ mod tests {
         harness.get_by_label("Approve").click();
         harness.run();
         assert!(enabled(&fx, "codes"));
-        assert!(fx.store("work").rule_first_seen("codes", 0).unwrap() > 1);
+        assert!(fx.store("work").rule_first_seen("codes", "", 0).unwrap() > 1);
         assert!(std::fs::read_to_string(fx.paths.rules_file()).unwrap().starts_with("# keep me\n"));
         assert!(wires.sent().is_empty());
         assert!(harness.query_by_label("Approve").is_none());
@@ -706,7 +718,7 @@ mod tests {
     fn every_line_of_the_added_block_has_a_plus_gutter_and_toml_colours() {
         let job = toml_job(
             "[[rules]]\nname = \"codes\"\n\n[rules.match]\nseen = true\n",
-            &MOCHA,
+            &NIGHT,
             egui::FontId::monospace(12.0),
         );
         assert!(job.text.lines().all(|line| line.starts_with("+ ")), "{}", job.text);
@@ -716,10 +728,10 @@ mod tests {
                 .find(|s| &job.text[s.byte_range.start.0..s.byte_range.end.0] == needle)
                 .map(|s| s.format.color)
         };
-        assert_eq!(colour_of("[[rules]]"), Some(MOCHA.agent));
-        assert_eq!(colour_of("name"), Some(MOCHA.accent));
-        assert_eq!(colour_of("\"codes\""), Some(MOCHA.success));
-        assert_eq!(colour_of("true"), Some(MOCHA.error));
+        assert_eq!(colour_of("[[rules]]"), Some(NIGHT.agent));
+        assert_eq!(colour_of("name"), Some(NIGHT.accent));
+        assert_eq!(colour_of("\"codes\""), Some(NIGHT.success));
+        assert_eq!(colour_of("true"), Some(NIGHT.error));
     }
 ```
 
@@ -741,140 +753,64 @@ with `use super::app::{View, session};`.
 - [ ] **Step 2: Run them**
 
 Run: `cargo test --lib gui::`
-Expected: FAIL to compile (`conditions`, `summary`, `switch`, `agent`, `toml_tokens`, `counts`, … not found).
+Expected: FAIL to compile (`summary`, `preview_text`, `switch`, `agent`, `toml_tokens`, `counts`, … not found).
 
 - [ ] **Step 3: Implement `draft.rs`** above its tests
 
 ```rust
-//! Rules as rows of conditions, and the plain-language lines the Rules view shows for them.
+//! Rules in plain language: the one-line summary the Rules view shows for a rule, and what a preview found.
 use crate::message::clean;
-use crate::rules::{Action, Match, Rule};
+use crate::rules::{Action, Match, OneOrMany, Rule};
 
-/// A condition's key in rules.toml.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Field {
-    From,
-    To,
-    Cc,
-    Subject,
-    Body,
-    Header,
-    OlderThan,
-    Seen,
-    ToMe,
-    Alias,
-}
-
-impl Field {
-    pub fn label(self) -> &'static str {
-        match self {
-            Field::Alias => "alias",
-            Field::Body => "body",
-            Field::Cc => "cc",
-            Field::From => "from",
-            Field::Header => "header",
-            Field::OlderThan => "older than",
-            Field::Seen => "seen",
-            Field::Subject => "subject",
-            Field::To => "to",
-            Field::ToMe => "to me",
-        }
-    }
-
-    /// Fields that take contains, equals or regex.
-    pub fn is_text(self) -> bool {
-        matches!(
-            self,
-            Field::Body | Field::Cc | Field::From | Field::Header | Field::Subject | Field::To
-        )
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Op {
-    Contains,
-    Equals,
-    Regex,
-}
-
-impl Op {
-    pub fn label(self) -> &'static str {
-        match self {
-            Op::Contains => "contains",
-            Op::Equals => "equals",
-            Op::Regex => "matches regex",
-        }
-    }
-}
-
-/// One row of a rule's conditions.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Condition {
-    pub field: Field,
-    /// The header's name; used by `Field::Header` only.
-    pub header: String,
-    /// Used by text fields only.
-    pub op: Op,
-    /// The text, duration or alias; "true" or "false" for seen and to me.
-    pub value: String,
-}
-
-/// A rule's conditions, in the order of the rules docs. A text condition with more than one operator (which does not
-/// compile) shows the first.
-pub(crate) fn conditions(m: &Match) -> Vec<Condition> {
-    let text = |field, header: &str, contains: &Option<String>, equals: &Option<String>, regex: &Option<String>| {
-        let (op, value) = match (contains, equals, regex) {
-            (Some(value), _, _) => (Op::Contains, value.clone()),
-            (None, Some(value), _) => (Op::Equals, value.clone()),
-            (None, None, value) => (Op::Regex, value.clone().unwrap_or_default()),
-        };
-        Condition {
-            field,
-            header: header.to_string(),
-            op,
-            value,
-        }
+/// `subject contains "a" or "b"`: a text condition, whose list matches any of its values.
+fn text_label(
+    field: &str,
+    contains: Option<&OneOrMany<String>>,
+    equals: Option<&OneOrMany<String>>,
+    regex: Option<&String>,
+) -> String {
+    let quoted = |values: &OneOrMany<String>| {
+        let quoted: Vec<String> = values.as_slice().iter().map(|v| format!("\"{v}\"")).collect();
+        quoted.join(" or ")
     };
-    let plain = |field, value: String| Condition {
-        field,
-        header: String::new(),
-        op: Op::Contains,
-        value,
-    };
-    let mut rows = Vec::new();
+    match (contains, equals) {
+        (Some(values), _) => format!("{field} contains {}", quoted(values)),
+        (None, Some(values)) => format!("{field} equals {}", quoted(values)),
+        (None, None) => format!("{field} matches regex \"{}\"", regex.map_or("", String::as_str)),
+    }
+}
+
+/// Each condition of `m` in words, in the order of the rules docs; `any` and `none` list their entries, each entry's
+/// conditions joined by "and".
+pub(crate) fn match_labels(m: &Match) -> Vec<String> {
+    let mut labels = Vec::new();
     for (field, condition) in [
-        (Field::From, &m.from),
-        (Field::To, &m.to),
-        (Field::Cc, &m.cc),
-        (Field::Subject, &m.subject),
-        (Field::Body, &m.body),
+        ("from", &m.from),
+        ("to", &m.to),
+        ("cc", &m.cc),
+        ("subject", &m.subject),
+        ("body", &m.body),
     ] {
-        if let Some(c) = condition {
-            rows.push(text(field, "", &c.contains, &c.equals, &c.regex));
+        if let Some(t) = condition {
+            labels.push(text_label(field, t.contains.as_ref(), t.equals.as_ref(), t.regex.as_ref()));
         }
     }
-    if let Some(h) = &m.header {
-        rows.push(text(Field::Header, &h.name, &h.contains, &h.equals, &h.regex));
+    for h in m.header.as_ref().map(OneOrMany::as_slice).unwrap_or_default() {
+        let field = format!("header {}", h.name);
+        labels.push(text_label(&field, h.contains.as_ref(), h.equals.as_ref(), h.regex.as_ref()));
     }
-    rows.extend(m.older_than.clone().map(|v| plain(Field::OlderThan, v)));
-    rows.extend(m.seen.map(|v| plain(Field::Seen, v.to_string())));
-    rows.extend(m.to_me.map(|v| plain(Field::ToMe, v.to_string())));
-    rows.extend(m.alias.clone().map(|v| plain(Field::Alias, v)));
-    rows
-}
-
-pub(crate) fn condition_label(c: &Condition) -> String {
-    let no = c.value == "false";
-    match c.field {
-        Field::Alias => format!("alias {}", c.value),
-        Field::Header => format!("header {} {} \"{}\"", c.header, c.op.label(), c.value),
-        Field::OlderThan => format!("older than {}", c.value),
-        Field::Seen => (if no { "unread" } else { "read" }).into(),
-        Field::ToMe => (if no { "not to me" } else { "to me" }).into(),
-        Field::Body | Field::Cc | Field::From | Field::Subject | Field::To => {
-            format!("{} {} \"{}\"", c.field.label(), c.op.label(), c.value)
+    labels.extend(m.older_than.as_ref().map(|v| format!("older than {v}")));
+    labels.extend(m.seen.map(|read| if read { "read" } else { "unread" }.to_string()));
+    labels.extend(m.to_me.map(|to_me| if to_me { "to me" } else { "not to me" }.to_string()));
+    labels.extend(m.alias.as_ref().map(|v| format!("alias {v}")));
+    labels.extend(m.tag.as_ref().map(|v| format!("tag {v}")));
+    for (word, entries) in [("any", &m.any), ("none", &m.none)] {
+        if let Some(entries) = entries {
+            let entries: Vec<String> = entries.iter().map(|e| match_labels(e).join(" and ")).collect();
+            labels.push(format!("{word} of ({})", entries.join("; ")));
         }
     }
+    labels
 }
 
 pub(crate) fn action_label(action: &Action) -> String {
@@ -886,21 +822,25 @@ pub(crate) fn action_label(action: &Action) -> String {
         Action::Move(folder) => format!("move to {folder}"),
         Action::Notify => "notify".into(),
         Action::Silent => "silent".into(),
+        Action::Tag(keyword) => format!("tag {keyword}"),
         // The CLI-only actions never parse from rules.toml.
         other => other.label(),
     }
 }
 
 /// `subject contains "code" → delete`: what a rule matches and what it does, one line, without control characters.
-/// Draw it monospace: the proportional font has no "→".
+/// Draw it monospace: the monospace fonts have "→".
 pub(crate) fn summary(rule: &Rule) -> String {
-    let conditions: Vec<String> = conditions(&rule.matches).iter().map(condition_label).collect();
     let actions: Vec<String> = rule.actions.iter().map(action_label).collect();
-    clean(&format!("{} → {}", conditions.join(", "), actions.join(", ")), false)
+    clean(
+        &format!("{} → {}", match_labels(&rule.matches).join(", "), actions.join(", ")),
+        false,
+    )
 }
 
-/// "would delete 4 cached messages": what a preview on cached mail found.
-pub(crate) fn preview_text(rule: &Rule, matched: usize) -> String {
+/// "would delete 4 cached messages": what a preview on cached mail found. `needs_body` is
+/// `CompiledRule::needs_body`, which also looks inside `any` and `none`.
+pub(crate) fn preview_text(rule: &Rule, matched: usize, needs_body: bool) -> String {
     if matched == 0 {
         return "matches no cached message".into();
     }
@@ -911,6 +851,7 @@ pub(crate) fn preview_text(rule: &Rule, matched: usize) -> String {
             Action::Move(_) => "move".into(),
             Action::Notify => "notify about".into(),
             Action::Silent => "silence".into(),
+            Action::Tag(_) => "tag".into(),
             other => action_label(other),
         })
         .collect();
@@ -923,7 +864,7 @@ pub(crate) fn preview_text(rule: &Rule, matched: usize) -> String {
         })
         .unwrap_or_default();
     let noun = if matched == 1 { "message" } else { "messages" };
-    let body = if rule.matches.body.is_some() {
+    let body = if needs_body {
         "; only mail whose body is downloaded is checked"
     } else {
         ""
@@ -947,7 +888,7 @@ use super::theme;
 
 /// An on/off switch; `label` names it for screen readers and tests. Returns the response; the caller acts on a click.
 pub(crate) fn switch(ui: &mut egui::Ui, on: bool, label: &str) -> egui::Response {
-    let size = ui.spacing().interact_size.y * egui::vec2(1.8, 0.9);
+    let size = egui::vec2(1.5, 0.75) * theme::ROW;
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), on, label)
@@ -956,11 +897,15 @@ pub(crate) fn switch(ui: &mut egui::Ui, on: bool, label: &str) -> egui::Response
         let palette = theme::palette(ui);
         let how_on = ui.ctx().animate_bool_responsive(response.id, on);
         let radius = 0.5 * rect.height();
-        let track = if on { palette.accent } else { palette.border };
+        // `on_accent` on `accent` is too faint in the dark pane, so the knob takes the pane's colour.
+        let (track, knob) = if on {
+            (palette.accent, palette.background)
+        } else {
+            (palette.border, palette.muted)
+        };
         ui.painter()
             .rect(rect, radius, track, egui::Stroke::NONE, egui::StrokeKind::Inside);
         let x = egui::lerp((rect.left() + radius)..=(rect.right() - radius), how_on);
-        let knob = if on { palette.on_accent } else { palette.background };
         ui.painter()
             .circle(egui::pos2(x, rect.center().y), 0.75 * radius, knob, egui::Stroke::NONE);
     }
@@ -972,22 +917,35 @@ pub(crate) fn chip(fill: Color32, stroke: Color32) -> egui::Frame {
     egui::Frame::new()
         .fill(fill)
         .stroke(egui::Stroke::new(1.0, stroke))
-        .corner_radius(8)
-        .inner_margin(egui::Margin::symmetric(6, 1))
+        .corner_radius(theme::PAD)
+        .inner_margin(egui::vec2(theme::PAD / 2.0, 1.0))
 }
 ```
 
-`src/gui/theme.rs`: add to `Palette` (keeping the fields alphabetical)
+`src/gui/theme.rs`: add to `Palette`, keeping the fields alphabetical (`added`, `agent`, `agent_bg` after `accent`; `success` after `strong`):
 
 ```rust
     /// Behind a TOML block that would be added to rules.toml.
     pub added: Color32,
-    /// Text of the "proposed by" chip and TOML section headers: a dark peach on light, peach on dark.
+    /// Text of the "proposed by" chip and TOML section headers: brass.
     pub agent: Color32,
+    /// Behind the "proposed by" chip.
     pub agent_bg: Color32,
 ```
 
-with `added: hex(0x1f3324), agent: hex(0xfab387), agent_bg: hex(0x3e2e2c)` in `MOCHA` and `added: hex(0xeaf6e6), agent: hex(0xa34106), agent_bg: hex(0xfde6d6)` in `LATTE`.
+```rust
+    /// TOML strings and the "+" gutter of an added block.
+    pub success: Color32,
+```
+
+Values (a sage green for "added" fits the warm paper; no blue or purple):
+
+| Palette | `added` | `agent` | `agent_bg` | `success` |
+|---|---|---|---|---|
+| `PAPER` | `hex(0xedf1e1)` | `hex(0x7a5410)` | `hex(0xf3e6c4)` | `hex(0x3d6420)` |
+| `NIGHT`, `FRAME`, `FRAME_NIGHT` | `hex(0x1d2318)` | `hex(0xd9b36a)` | `hex(0x3a2d17)` | `hex(0xa9c98a)` |
+
+The frames never draw these; they take `NIGHT`'s because both are built with dark visuals. Computed contrasts, light then dark: chip 5.5 and 6.8; TOML colours on `added` at least 5.4 and 6.7; `error` and `success` on `background` at least 6.5 and 7.1; switch knob 5.9 on / 4.6 off and 11.0 / 5.1.
 
 `src/gui/icons.rs`: `pub(crate) const PROPOSAL: &str = ph::ROBOT;` (alphabetical among the constants).
 
@@ -995,7 +953,7 @@ with `added: hex(0x1f3324), agent: hex(0xfab387), agent_bg: hex(0x3e2e2c)` in `M
 
 - [ ] **Step 5: Implement the view** in `src/gui/rules.rs`
 
-Imports:
+Imports (in place of `use super::theme;`):
 
 ```rust
 use super::app::{Account, App, UiAction};
@@ -1125,7 +1083,7 @@ fn proposal_card(app: &App, rule: &Rule, ui: &mut egui::Ui) -> Vec<UiAction> {
                 let font = egui::TextStyle::Monospace.resolve(ui.style());
                 egui::Frame::new()
                     .fill(palette.added)
-                    .inner_margin(egui::Margin::same(6))
+                    .inner_margin(theme::PAD)
                     .show(ui, |ui| ui.label(toml_job(&clean(&toml_source(rule), true), palette, font)));
             });
         ui.horizontal(|ui| {
@@ -1143,7 +1101,7 @@ fn proposal_card(app: &App, rule: &Rule, ui: &mut egui::Ui) -> Vec<UiAction> {
             ui.label(clean(preview, false));
         }
     });
-    ui.add_space(6.0);
+    ui.add_space(theme::PAD);
     actions
 }
 
@@ -1263,7 +1221,7 @@ Fields (alphabetical): `pub(crate) config: Config,` (in `App::new`: `config: con
 `rules_changed` ends with `self.previews.clear();`. Beside `edit_rules`:
 
 ```rust
-    /// What `rule` would do to every account's cached mail if it were enabled, as `postbode rules test` shows it. Reads
+    /// What `rule` would do to every account's cached mail if it were enabled, as `postvak rules test` shows it. Reads
     /// the stores only. ponytail: scans every cached message on the UI thread; move to a thread if large stores stall
     /// the window.
     fn preview(&self, mut rule: Rule) -> String {
@@ -1296,7 +1254,8 @@ Fields (alphabetical): `pub(crate) config: Config,` (in `App::new`: `config: con
                 Err(e) => return format!("{}: {e}", account.name),
             }
         }
-        draft::preview_text(&rule, matched.len())
+        let needs_body = compiled.iter().any(|compiled| compiled.needs_body());
+        draft::preview_text(&rule, matched.len(), needs_body)
     }
 ```
 
@@ -1305,7 +1264,7 @@ Fields (alphabetical): `pub(crate) config: Config,` (in `App::new`: `config: con
 Run: `cargo test --lib gui:: && cargo test --test architecture`
 Expected: PASS. `an_edit_from_outside_reloads_the_view` and `a_parse_error_shows_a_banner_and_keeps_the_rules` still find their labels ("receipts", "newsletters") as row names.
 
-- [ ] **Step 8: Docs** — in `docs/src/gui.md`, replace the sentence that starts with "**Rules** lists proposals" with:
+- [ ] **Step 8: Docs** — in `docs/src/gui.md`, replace the first two sentences of the paragraph that starts with "**Rules** lists proposals" (up to "for new mail."; the Activity and Backups sentences stay) with:
 
 ```markdown
 **Rules** lists proposals first, each with who proposed it, what it does in one line, the TOML it adds to `rules.toml`, and Approve, Reject and Preview on cached mail; then every rule with a switch, the account and folder it watches, and what it does. Changes to `rules.toml`, from the window or from your editor, take effect within about two seconds for new mail.
@@ -1324,23 +1283,31 @@ git commit -m "feat(gui): rules list with summaries, and proposal cards with the
 
 **Files:**
 - Create: `src/gui/rule_editor.rs`
-- Modify: `src/gui/draft.rs` (`Draft`, `Field::ALL`, `is_flag`, `Op::ALL`, `Condition::new`, `with_field`, `action_name`), `src/gui/widgets.rs` (`icon_button`), `src/gui/icons.rs` (`REMOVE`), `src/gui/rules.rs` ("New rule", selectable rows, editor in place of the placeholder), `src/gui/app.rs` (`rule_draft`, `rule_draft_opened`, `leave_draft`, actions, the unsaved-changes prompt), `src/gui/mod.rs` (`mod rule_editor;`), `src/gui/snapshots.rs` (`rule_editor`), `docs/src/gui.md`
+- Modify: `src/rules/mod.rs` (derive `PartialEq` on `Match`, `OneOrMany`, `TextMatch` and `HeaderMatch`, so `Draft` can hold a `Match`), `src/gui/draft.rs` (`Field`, `Op`, `Condition`, `conditions`, `action_name`, `Draft`), `src/gui/icons.rs` (`REMOVE`), `src/gui/rules.rs` ("New rule", selectable rows, editor in place of the placeholder), `src/gui/app.rs` (`rule_draft`, `rule_draft_opened`, `leave_draft`, actions, the unsaved-changes prompt), `src/gui/mod.rs` (`mod rule_editor;`), `src/gui/snapshots.rs` (`rule_editor`), `docs/src/gui.md`
 
 **Interfaces:**
-- Consumes: `rules::edit::{save_rule, remove_rule}` (Task 1); `draft::{conditions, Condition, Field, Op, action_label}`, `widgets::{switch, chip}`, `App::preview` (Task 2).
+- Consumes: `rules::edit::{save_rule, remove_rule}` (Task 1); `draft::{action_label, match_labels}`, `widgets::{switch, chip}`, `App::preview` (Task 2); `toolbar::icon_button(ui, enabled, icon, name, hint)` (on `main`).
 - Produces:
 
 ```rust
 // draft.rs
-impl Field { pub const ALL: [Field; 10]; pub fn is_flag(self) -> bool; }
-impl Op { pub const ALL: [Op; 3]; }
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Field { From, To, Cc, Subject, Body, Header, OlderThan, Seen, ToMe, Alias, Tag }
+impl Field { pub const ALL: [Field; 11]; pub fn label(self) -> &'static str; pub fn is_text(self) -> bool; pub fn is_flag(self) -> bool; }
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Op { Contains, Equals, Regex }
+impl Op { pub const ALL: [Op; 3]; pub fn label(self) -> &'static str; }
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Condition { pub field: Field, pub header: String, pub op: Op, pub value: String }
 impl Condition { pub fn new(field: Field) -> Condition; pub fn with_field(&self, field: Field) -> Condition; }
-pub(crate) fn action_name(action: &Action) -> &'static str;   // "Delete", "Mark read", …, "Move to"
+pub(crate) fn conditions(m: &Match) -> (Vec<Condition>, Match);  // the form's rows, and what it keeps as written
+pub(crate) fn action_name(action: &Action) -> &'static str;   // "Delete", "Mark read", …, "Move to", "Tag"
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Draft {
     pub account: Option<String>, pub actions: Vec<Action>, pub conditions: Vec<Condition>,
     pub confirm_remove: bool, pub enabled: bool, pub error: Option<String>, pub folder: Option<String>,
-    pub name: String, pub original: Option<String>, pub proposed_by: Option<String>, pub tested: Option<String>,
+    pub kept: Match, pub name: String, pub original: Option<String>, pub proposed_by: Option<String>,
+    pub tested: Option<String>,
 }
 impl Draft {
     pub fn new() -> Draft;                         // enabled, nothing else
@@ -1349,8 +1316,6 @@ impl Draft {
     pub fn renames(&self) -> bool;
     pub fn edited(&self, opened: &Draft) -> bool;  // Test results, errors and the remove prompt do not count
 }
-// widgets.rs
-pub(crate) fn icon_button(ui: &mut egui::Ui, icon: &str, name: &str) -> egui::Response;
 // icons.rs
 pub(crate) const REMOVE: &str;                     // ph::X
 // rule_editor.rs
@@ -1363,13 +1328,33 @@ App.leave_draft: Option<UiAction>;                 // EditRule or NewRule waitin
 UiAction::{EditDraft(Draft), EditRule(String), NewRule, RemoveRule, SaveDraft, TestDraft, UnsavedCancel, UnsavedDiscard, UnsavedSave};
 ```
 
-The editor edits a clone of `App.rule_draft` and returns `UiAction::EditDraft(changed)` when anything differs; `app.rs` stores it and clears `error` and `tested`. Save sends the draft through `Draft::to_rule` and `rules::edit::save_rule(path, draft.original, rule)`; on success `original` becomes the saved name. "Remove rule" on a saved rule asks first ("Remove from rules.toml" / "Cancel"); on an unsaved draft it just closes it. Leaving a draft that `Draft::edited` says differs from `rule_draft_opened` (another rule, "New rule") holds that action in `App.leave_draft` and shows a modal, "This rule has unsaved changes." with "Save", "Discard" and "Cancel": Save runs the Save button's path and then the held action, unless saving failed (the draft stays, with its error); Discard drops the draft and runs it; Cancel drops it. If GUI redesign Task 8 already added `toolbar::icon_button`, move that function into `widgets.rs` instead of adding a second one.
+The form edits one row per condition with a single value: a text condition with exactly one of contains, equals or regex and one value, one header, `older_than`, `seen`, `to_me`, `alias`, `tag`. Everything else in `match` (`any`, `none`, a value list, a header list, a text condition the file got wrong) goes into `Draft.kept`, shows read-only above the rows through `match_labels`, and `to_rule` writes it back unchanged. A row on a field `kept` already holds makes `to_rule` refuse with "… appears twice".
+
+The editor edits a clone of `App.rule_draft` and returns `UiAction::EditDraft(changed)` when anything differs; `app.rs` stores it and clears `error` and `tested`. Save sends the draft through `Draft::to_rule` and `rules::edit::save_rule(path, draft.original, rule)`; on success `original` becomes the saved name. "Remove rule" on a saved rule asks first ("Remove from rules.toml" / "Cancel"); on an unsaved draft it just closes it. Leaving a draft that `Draft::edited` says differs from `rule_draft_opened` (another rule, "New rule") holds that action in `App.leave_draft` and shows a modal, "This rule has unsaved changes." with "Save", "Discard" and "Cancel": Save runs the Save button's path and then the held action, unless saving failed (the draft stays, with its error); Discard drops the draft and runs it; Cancel drops it. The remove buttons on condition rows and action chips are `toolbar::icon_button`, the one the toolbar and reader use.
 
 - [ ] **Step 1: Write the failing tests**
 
 `src/gui/draft.rs` tests:
 
 ```rust
+    #[test]
+    fn every_single_value_condition_becomes_a_row_in_docs_order() {
+        let (rows, kept) = conditions(&rule(ALL_FIELDS).matches);
+        let fields: Vec<Field> = rows.iter().map(|c| c.field).collect();
+        assert_eq!(fields, Field::ALL);
+        assert_eq!((rows[0].op, rows[0].value.as_str()), (Op::Equals, "a@example.com"));
+        assert_eq!((rows[5].header.as_str(), rows[5].op), ("List-Id", Op::Contains));
+        assert_eq!(kept, Match::default());
+    }
+
+    #[test]
+    fn lists_any_and_none_are_kept_out_of_the_rows() {
+        let (rows, kept) = conditions(&rule(GROUPED).matches);
+        assert_eq!(rows.iter().map(|c| c.field).collect::<Vec<_>>(), [Field::From]);
+        assert!(kept.subject.is_some() && kept.header.is_some() && kept.any.is_some() && kept.none.is_some());
+        assert!(kept.from.is_none());
+    }
+
     #[test]
     fn a_rule_survives_the_round_trip_through_the_form() {
         let original = rule(&ALL_FIELDS.replace(
@@ -1378,6 +1363,19 @@ The editor edits a clone of `App.rule_draft` and returns `UiAction::EditDraft(ch
         ));
         let back = Draft::from_rule(&original).to_rule().unwrap();
         assert_eq!(toml::to_string(&back).unwrap(), toml::to_string(&original).unwrap());
+        let grouped = rule(GROUPED);
+        let back = Draft::from_rule(&grouped).to_rule().unwrap();
+        assert_eq!(toml::to_string(&back).unwrap(), toml::to_string(&grouped).unwrap());
+    }
+
+    #[test]
+    fn a_row_on_a_kept_field_is_refused() {
+        let mut draft = Draft::from_rule(&rule(GROUPED));
+        draft.conditions.push(Condition::new(Field::Subject));
+        assert_eq!(
+            draft.to_rule().unwrap_err(),
+            "subject appears twice; a rule has one condition per field"
+        );
     }
 
     #[test]
@@ -1515,6 +1513,23 @@ mod tests {
         harness.run();
         click(&mut harness, "Save");
         assert_eq!(file(&fx), RULES.replace("news@", "letters@"));
+    }
+
+    #[test]
+    fn conditions_the_form_cannot_edit_are_shown_and_saved_unchanged() {
+        let grouped = RULES.replace(
+            "actions = [\"archive\"]",
+            "match.subject = { contains = [\"weekly\", \"digest\"] }\nactions = [\"archive\"]",
+        );
+        let fx = Fixture::new(&["work"]);
+        let (mut harness, _wires) = fx.rules_view(&grouped);
+        click(&mut harness, "newsletters");
+        assert!(harness.query_by_label("subject contains \"weekly\" or \"digest\"").is_some());
+        assert!(harness.query_by_label("Edit these in rules.toml; Save keeps them as they are.").is_some());
+        harness.state_mut().rule_draft.as_mut().unwrap().conditions[0].value = "letters@".into();
+        harness.run();
+        click(&mut harness, "Save");
+        assert_eq!(file(&fx), grouped.replace("news@", "letters@"));
     }
 
     #[test]
@@ -1688,16 +1703,32 @@ fn rule_editor() {
 - [ ] **Step 2: Run them**
 
 Run: `cargo test --lib gui::`
-Expected: FAIL to compile (`Draft`, `rule_draft`, `Condition::new` … not found).
+Expected: FAIL to compile (`Draft`, `conditions`, `Field`, `rule_draft` … not found).
 
 - [ ] **Step 3: Extend `draft.rs`**
 
-Imports become `use crate::rules::{Action, HeaderMatch, Match, Rule, TextMatch};`. Add:
+Module doc: "Rules in plain language, and rules as the editor's rows of conditions." Imports become `use crate::rules::{Action, HeaderMatch, Match, OneOrMany, Rule, TextMatch};`. Add:
 
 ```rust
+/// A condition's key in rules.toml.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Field {
+    From,
+    To,
+    Cc,
+    Subject,
+    Body,
+    Header,
+    OlderThan,
+    Seen,
+    ToMe,
+    Alias,
+    Tag,
+}
+
 impl Field {
     /// In the order the rules docs list them.
-    pub const ALL: [Field; 10] = [
+    pub const ALL: [Field; 11] = [
         Field::From,
         Field::To,
         Field::Cc,
@@ -1708,7 +1739,32 @@ impl Field {
         Field::Seen,
         Field::ToMe,
         Field::Alias,
+        Field::Tag,
     ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Field::Alias => "alias",
+            Field::Body => "body",
+            Field::Cc => "cc",
+            Field::From => "from",
+            Field::Header => "header",
+            Field::OlderThan => "older than",
+            Field::Seen => "seen",
+            Field::Subject => "subject",
+            Field::Tag => "tag",
+            Field::To => "to",
+            Field::ToMe => "to me",
+        }
+    }
+
+    /// Fields that take contains, equals or regex.
+    pub fn is_text(self) -> bool {
+        matches!(
+            self,
+            Field::Body | Field::Cc | Field::From | Field::Header | Field::Subject | Field::To
+        )
+    }
 
     /// Fields whose value is yes or no.
     pub fn is_flag(self) -> bool {
@@ -1716,8 +1772,35 @@ impl Field {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Op {
+    Contains,
+    Equals,
+    Regex,
+}
+
 impl Op {
     pub const ALL: [Op; 3] = [Op::Contains, Op::Equals, Op::Regex];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Op::Contains => "contains",
+            Op::Equals => "equals",
+            Op::Regex => "matches regex",
+        }
+    }
+}
+
+/// One row of a rule's conditions.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Condition {
+    pub field: Field,
+    /// The header's name; used by `Field::Header` only.
+    pub header: String,
+    /// Used by text fields only.
+    pub op: Op,
+    /// The text, duration, alias or tag; "true" or "false" for seen and to me.
+    pub value: String,
 }
 
 impl Condition {
@@ -1742,6 +1825,72 @@ impl Condition {
     }
 }
 
+/// A text condition with one operator and one value as a row; `None` for anything else, which the form keeps.
+fn row(
+    field: Field,
+    header: &str,
+    contains: Option<&OneOrMany<String>>,
+    equals: Option<&OneOrMany<String>>,
+    regex: Option<&String>,
+) -> Option<Condition> {
+    let (op, value) = match (contains, equals, regex) {
+        (Some(OneOrMany::One(value)), None, None) => (Op::Contains, value.clone()),
+        (None, Some(OneOrMany::One(value)), None) => (Op::Equals, value.clone()),
+        (None, None, Some(value)) => (Op::Regex, value.clone()),
+        _ => return None,
+    };
+    Some(Condition {
+        field,
+        header: header.to_string(),
+        op,
+        value,
+    })
+}
+
+/// A rule's conditions as the form's rows, in the order of the rules docs, and the rest of `m` (`any`, `none`, value
+/// and header lists), which the form shows read-only and saves as it was.
+pub(crate) fn conditions(m: &Match) -> (Vec<Condition>, Match) {
+    let mut kept = Match {
+        any: m.any.clone(),
+        none: m.none.clone(),
+        ..Match::default()
+    };
+    let mut rows = Vec::new();
+    for (field, condition, slot) in [
+        (Field::From, &m.from, &mut kept.from),
+        (Field::To, &m.to, &mut kept.to),
+        (Field::Cc, &m.cc, &mut kept.cc),
+        (Field::Subject, &m.subject, &mut kept.subject),
+        (Field::Body, &m.body, &mut kept.body),
+    ] {
+        let Some(t) = condition else { continue };
+        match row(field, "", t.contains.as_ref(), t.equals.as_ref(), t.regex.as_ref()) {
+            Some(condition) => rows.push(condition),
+            None => *slot = Some(t.clone()),
+        }
+    }
+    let header = match &m.header {
+        Some(OneOrMany::One(h)) => {
+            row(Field::Header, &h.name, h.contains.as_ref(), h.equals.as_ref(), h.regex.as_ref())
+        }
+        _ => None,
+    };
+    match header {
+        Some(condition) => rows.push(condition),
+        None => kept.header = m.header.clone(),
+    }
+    let plain = |field, value: String| Condition {
+        value,
+        ..Condition::new(field)
+    };
+    rows.extend(m.older_than.clone().map(|v| plain(Field::OlderThan, v)));
+    rows.extend(m.seen.map(|v| plain(Field::Seen, v.to_string())));
+    rows.extend(m.to_me.map(|v| plain(Field::ToMe, v.to_string())));
+    rows.extend(m.alias.clone().map(|v| plain(Field::Alias, v)));
+    rows.extend(m.tag.clone().map(|v| plain(Field::Tag, v)));
+    (rows, kept)
+}
+
 /// An action as a chip or menu entry names it.
 pub(crate) fn action_name(action: &Action) -> &'static str {
     match action {
@@ -1752,6 +1901,7 @@ pub(crate) fn action_name(action: &Action) -> &'static str {
         Action::Move(_) => "Move to",
         Action::Notify => "Notify",
         Action::Silent => "Silent",
+        Action::Tag(_) => "Tag",
         _ => "",
     }
 }
@@ -1768,6 +1918,8 @@ pub(crate) struct Draft {
     /// Why the last save or removal failed; cleared by any edit.
     pub error: Option<String>,
     pub folder: Option<String>,
+    /// The conditions the form cannot edit, saved as they were.
+    pub kept: Match,
     pub name: String,
     /// The rule's name in rules.toml; None until the draft is first saved.
     pub original: Option<String>,
@@ -1785,12 +1937,14 @@ impl Draft {
     }
 
     pub fn from_rule(rule: &Rule) -> Draft {
+        let (conditions, kept) = conditions(&rule.matches);
         Draft {
             account: rule.account.clone(),
             actions: rule.actions.clone(),
-            conditions: conditions(&rule.matches),
+            conditions,
             enabled: rule.enabled,
             folder: rule.folder.clone(),
+            kept,
             name: rule.name.clone(),
             original: Some(rule.name.clone()),
             proposed_by: rule.proposed_by.clone(),
@@ -1814,10 +1968,10 @@ impl Draft {
         form(self) != form(opened)
     }
 
-    /// The rule this draft saves as. `rules::compile` checks the values when the file is saved; this only refuses what
-    /// one rule cannot hold.
+    /// The rule this draft saves as: the kept conditions plus the rows. `rules::compile` checks the values when the
+    /// file is saved; this only refuses what one rule cannot hold.
     pub fn to_rule(&self) -> Result<Rule, String> {
-        let mut m = Match::default();
+        let mut m = self.kept.clone();
         for c in &self.conditions {
             let twice = match c.field {
                 Field::Alias => m.alias.replace(c.value.clone()).is_some(),
@@ -1832,11 +1986,12 @@ impl Draft {
                         equals: t.equals,
                         regex: t.regex,
                     };
-                    m.header.replace(header).is_some()
+                    m.header.replace(OneOrMany::One(header)).is_some()
                 }
                 Field::OlderThan => m.older_than.replace(c.value.clone()).is_some(),
                 Field::Seen => m.seen.replace(flag(c)?).is_some(),
                 Field::Subject => m.subject.replace(text_match(c)).is_some(),
+                Field::Tag => m.tag.replace(c.value.clone()).is_some(),
                 Field::To => m.to.replace(text_match(c)).is_some(),
                 Field::ToMe => m.to_me.replace(flag(c)?).is_some(),
             };
@@ -1860,18 +2015,18 @@ impl Draft {
 }
 
 fn text_match(c: &Condition) -> TextMatch {
-    let value = Some(c.value.clone());
+    let one = || Some(OneOrMany::One(c.value.clone()));
     match c.op {
         Op::Contains => TextMatch {
-            contains: value,
+            contains: one(),
             ..TextMatch::default()
         },
         Op::Equals => TextMatch {
-            equals: value,
+            equals: one(),
             ..TextMatch::default()
         },
         Op::Regex => TextMatch {
-            regex: value,
+            regex: Some(c.value.clone()),
             ..TextMatch::default()
         },
     }
@@ -1884,20 +2039,11 @@ fn flag(c: &Condition) -> Result<bool, String> {
 }
 ```
 
-- [ ] **Step 4: `icon_button` and `REMOVE`**
-
-`src/gui/widgets.rs`:
-
-```rust
-/// A frameless icon button; `name` is what screen readers, tests and the hover text call it.
-pub(crate) fn icon_button(ui: &mut egui::Ui, icon: &str, name: &str) -> egui::Response {
-    let response = ui.add(egui::Button::new(icon).frame(false)).on_hover_text(name);
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
-    response
-}
-```
+- [ ] **Step 4: `REMOVE` and the derives**
 
 `src/gui/icons.rs`: `pub(crate) const REMOVE: &str = ph::X;`.
+
+`src/rules/mod.rs`: add `PartialEq` to the derives of `Match`, `OneOrMany`, `TextMatch` and `HeaderMatch`, so `Draft` (and `UiAction::EditDraft`) can compare a `Match`.
 
 - [ ] **Step 5: Implement `rule_editor.rs`** above its tests
 
@@ -1910,16 +2056,18 @@ use crate::message::clean;
 use crate::rules::Action;
 
 use super::app::{App, UiAction};
-use super::draft::{Condition, Draft, Field, Op, action_label, action_name};
-use super::{icons, theme, widgets};
+use super::draft::{Condition, Draft, Field, Op, action_label, action_name, match_labels};
+use super::{icons, theme, toolbar, widgets};
 
-/// The actions "+ Add action" offers, in the docs' order; a move asks for its folder in its chip.
-const ACTIONS: [Action; 7] = [
+/// The actions "+ Add action" offers, in the docs' order; a move asks for its folder and a tag for its keyword in
+/// their chips.
+const ACTIONS: [Action; 8] = [
     Action::Delete,
     Action::MarkRead,
     Action::Flag,
     Action::Archive,
     Action::Move(String::new()),
+    Action::Tag(String::new()),
     Action::Notify,
     Action::Silent,
 ];
@@ -1933,11 +2081,11 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     let mut actions = Vec::new();
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         name_row(ui, &mut draft);
-        ui.add_space(8.0);
+        ui.add_space(theme::PAD);
         watches(app, ui, &mut draft);
-        ui.add_space(8.0);
+        ui.add_space(theme::PAD);
         conditions(ui, &mut draft);
-        ui.add_space(8.0);
+        ui.add_space(theme::PAD);
         then(ui, &mut draft);
         ui.separator();
         actions.extend(footer(ui, &mut draft));
@@ -1955,7 +2103,7 @@ fn name_row(ui: &mut egui::Ui, draft: &mut Draft) {
             ui.add(egui::TextEdit::singleline(&mut draft.name).desired_width(320.0))
         })
         .labelled_by(label.id);
-        ui.add_space(12.0);
+        ui.add_space(theme::INSET);
         let label = ui.label("Enabled");
         if widgets::switch(ui, draft.enabled, "Enabled")
             .labelled_by(label.id)
@@ -2017,6 +2165,13 @@ fn folder_names(app: &App, account: Option<&str>) -> Vec<String> {
 
 fn conditions(ui: &mut egui::Ui, draft: &mut Draft) {
     ui.strong("When all of these match");
+    let kept = match_labels(&draft.kept);
+    for line in &kept {
+        ui.label(egui::RichText::new(clean(line, false)).monospace());
+    }
+    if !kept.is_empty() {
+        ui.weak("Edit these in rules.toml; Save keeps them as they are.");
+    }
     let used: Vec<Field> = draft.conditions.iter().map(|c| c.field).collect();
     let mut remove = None;
     for (index, condition) in draft.conditions.iter_mut().enumerate() {
@@ -2051,7 +2206,8 @@ fn conditions(ui: &mut egui::Ui, draft: &mut Draft) {
                     });
             }
             value_field(ui, condition, index);
-            if widgets::icon_button(ui, icons::REMOVE, &format!("Remove condition {}", index + 1)).clicked() {
+            let name = format!("Remove condition {}", index + 1);
+            if toolbar::icon_button(ui, true, icons::REMOVE, &name, &name).clicked() {
                 remove = Some(index);
             }
         });
@@ -2081,6 +2237,7 @@ fn value_field(ui: &mut egui::Ui, condition: &mut Condition, index: usize) -> eg
     let hint = match condition.field {
         Field::Alias => "*@shop.example.com",
         Field::OlderThan => "1h, 30m, 2days",
+        Field::Tag => "$label1",
         _ => "text",
     };
     theme::text_field(ui, |ui| {
@@ -2115,15 +2272,16 @@ fn then(ui: &mut egui::Ui, draft: &mut Draft) {
             widgets::chip(palette.background, stroke).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(action_name(action)).color(colour));
-                    if let Action::Move(folder) = action {
-                        theme::text_field(ui, |ui| {
-                            ui.add(egui::TextEdit::singleline(folder).hint_text("Folder").desired_width(120.0))
-                        });
+                    match action {
+                        Action::Move(folder) => chip_field(ui, folder, "Folder"),
+                        Action::Tag(keyword) => chip_field(ui, keyword, "$label1"),
+                        _ => {}
                     }
                     if delete {
                         ui.label(egui::RichText::new("keeps a .eml backup").small().color(colour));
                     }
-                    if widgets::icon_button(ui, icons::REMOVE, &format!("Remove {label}")).clicked() {
+                    let name = format!("Remove {label}");
+                    if toolbar::icon_button(ui, true, icons::REMOVE, &name, &name).clicked() {
                         remove = Some(index);
                     }
                 });
@@ -2141,6 +2299,13 @@ fn then(ui: &mut egui::Ui, draft: &mut Draft) {
     if let Some(index) = remove {
         draft.actions.remove(index);
     }
+}
+
+/// The folder of a move, or the keyword of a tag, inside its chip.
+fn chip_field(ui: &mut egui::Ui, text: &mut String, hint: &str) {
+    theme::text_field(ui, |ui| {
+        ui.add(egui::TextEdit::singleline(text).hint_text(hint).desired_width(120.0))
+    });
 }
 
 fn footer(ui: &mut egui::Ui, draft: &mut Draft) -> Vec<UiAction> {
@@ -2185,7 +2350,7 @@ fn footer(ui: &mut egui::Ui, draft: &mut Draft) -> Vec<UiAction> {
     if test {
         actions.push(UiAction::TestDraft);
     }
-    ui.weak("Test runs on mail already on this device. A saved rule acts only on mail that arrives after it is enabled.");
+    ui.weak("Test runs on mail already on this device. Saving a change restarts the rule: it acts only on mail that arrives after you save.");
     actions
 }
 
@@ -2394,7 +2559,7 @@ Expected: PASS. `rule_editor.rs` is a view: `show` and `show_unsaved` take `&App
 - [ ] **Step 9: Docs** — in `docs/src/gui.md`, after the Rules sentence from Task 2:
 
 ```markdown
-Select a rule, or press New rule, to edit it on the right: its name, whether it is on, the account and folder it watches, its conditions and its actions. Test shows what it would do to the mail already on this device without doing it. Save writes the rule to `rules.toml` and keeps the file's comments; Remove rule asks before it deletes. Opening another rule while this one has unsaved changes asks first: Save, Discard or Cancel. Renaming a rule makes it a new rule, which acts only on mail that arrives after you save.
+Select a rule, or press New rule, to edit it on the right: its name, whether it is on, the account and folder it watches, its conditions and its actions. Conditions the form cannot edit, such as `any`, `none` and lists of values, are shown above the others and saved as they are; change them in `rules.toml`. Test shows what the rule would do to the mail already on this device without doing it. Save writes the rule to `rules.toml` and keeps the file's comments; Remove rule asks before it deletes. Opening another rule while this one has unsaved changes asks first: Save, Discard or Cancel. Saving a change restarts the rule, so it acts only on mail that arrives after you save; renaming makes it a new rule.
 ```
 
 - [ ] **Step 10: Snapshots on Linux** (`gui_rules` changes, `gui_rule_editor` is new), then commit
@@ -2409,10 +2574,10 @@ git commit -m "feat(gui): edit, test, save and remove rules in the Rules view"
 ### Task 4: "Rule" buttons in the reader
 
 **Files:**
-- Modify: `src/gui/body.rs` (header rows, `rule_button`, tests), `src/gui/draft.rs` (`RuleSeed`, `Draft::from_seed`), `src/gui/app.rs` (`UiAction::RuleFrom`, which asks before leaving an edited draft), `docs/src/gui.md`
+- Modify: `src/gui/body.rs` (`header`, `rule_button`, tests), `src/gui/draft.rs` (`RuleSeed`, `Draft::from_seed`), `src/gui/app.rs` (`UiAction::RuleFrom`, which asks before leaving an edited draft), `docs/src/gui.md`
 
 **Interfaces:**
-- Consumes: `Draft`, `Condition`, `Field`, `Op` (Tasks 2–3); `icons::RULES` (GUI redesign Task 2).
+- Consumes: `Draft`, `Condition`, `Field`, `Op` (Task 3); `icons::RULES`; the reader's `header` in `body.rs` (subject heading above the sender row with its date on the right).
 - Produces:
 
 ```rust
@@ -2424,7 +2589,7 @@ impl Draft { pub fn from_seed(seed: &RuleSeed, account: &str, folder: &str) -> D
 UiAction::RuleFrom(RuleSeed);
 ```
 
-The reader's header rows become `egui::Sides` rows: name and value on the left (the value truncates with "…" and shows in full on hover), and on the From and Subject rows a small outlined "Rule" button with the funnel icon at the right edge. The button opens the Rules view with an unsaved draft: from equals the sender's first bare address, or subject contains the subject; it watches the message's account and folder and has no actions yet, so Save explains what is missing until one is added.
+The reader's header gains a small outlined "Rule" button with the funnel icon at the right edge of the subject heading and of the sender row (right of the date). The button opens the Rules view with an unsaved draft: from equals the sender's first bare address, or subject contains the subject; it watches the message's account and folder and has no actions yet, so Save explains what is missing until one is added.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2582,53 +2747,43 @@ impl Draft {
 }
 ```
 
-- [ ] **Step 4: Implement the header rows** in `body.rs`
+- [ ] **Step 4: Add the buttons to the reader's header** in `body.rs`
 
-Imports: `use super::draft::RuleSeed;` and `use super::{icons, theme};`. Constant:
+Imports: `use super::draft::RuleSeed;` (`icons` and `theme` are imported already). `header` returns what was clicked: its signature becomes `fn header(message: &Message, (short_date, full_date): &(String, String), ui: &mut egui::Ui) -> Vec<UiAction>`, and `show` calls `actions.extend(header(message, &date, ui));`.
 
-```rust
-/// Width of the header names, so the values line up.
-const HEADER_NAME_WIDTH: f32 = 64.0;
-```
-
-Replace the `egui::Grid::new("headers")` block in `show`:
+In `header`, the subject sits in a `Sides` row with its button on the right, still wrapping:
 
 ```rust
-    let headers = [
-        (
-            "From",
-            message.from_addr.as_deref(),
-            message.from_addr.clone().map(RuleSeed::From),
-            "New rule for mail from this sender",
-        ),
-        ("To", message.to_addr.as_deref(), None, ""),
-        ("Cc", message.cc_addr.as_deref(), None, ""),
-        ("Date", Some(date.as_str()), None, ""),
-        (
-            "Subject",
-            message.subject.as_deref(),
-            message.subject.clone().map(RuleSeed::Subject),
-            "New rule for mail with this subject",
-        ),
-    ];
-    for (name, value, seed, hint) in headers {
-        let Some(value) = value else { continue };
-        let (_, clicked) = egui::Sides::new().shrink_left().truncate().show(
+    let mut actions = Vec::new();
+    if let Some(subject) = &message.subject {
+        let text = egui::RichText::new(clean(subject, false))
+            .family(theme::named(theme::SERIF))
+            .size(SUBJECT)
+            .color(palette.heading);
+        let (_, clicked) = egui::Sides::new().shrink_left().wrap().show(
             ui,
-            |ui| {
-                let label = ui.strong(name);
-                ui.add_space((HEADER_NAME_WIDTH - label.rect.width()).max(0.0));
-                ui.label(clean(value, false));
-            },
-            |ui| seed.is_some() && rule_button(ui, hint).clicked(),
+            |ui| ui.add(egui::Label::new(text).wrap()),
+            |ui| rule_button(ui, "New rule for mail with this subject").clicked(),
         );
-        if clicked && let Some(seed) = seed {
-            actions.push(UiAction::RuleFrom(seed));
+        if clicked {
+            actions.push(UiAction::RuleFrom(RuleSeed::Subject(subject.clone())));
         }
     }
 ```
 
-and below `show`:
+and in the sender row's `right_to_left` layout, the button goes in before the date, so it is rightmost:
+
+```rust
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if !from.is_empty()
+                        && rule_button(ui, "New rule for mail from this sender").clicked()
+                    {
+                        actions.push(UiAction::RuleFrom(RuleSeed::From(from.to_string())));
+                    }
+                    let date = egui::RichText::new(short_date)
+```
+
+`header` ends with `actions`. Below it:
 
 ```rust
 /// A small outlined "Rule" button with the funnel icon; `name` is what screen readers, tests and the hover text call it.
@@ -2644,7 +2799,7 @@ fn rule_button(ui: &mut egui::Ui, name: &str) -> egui::Response {
 }
 ```
 
-If kittest still finds the button only by its text (`get_by_label_contains("Rule")` finds two), `widget_info` did not replace the name: give the buttons `labelled_by` a hidden label instead, or match with `get_all_by_label_contains("Rule")` in the tests and take the first (From) and second (Subject).
+If kittest still finds the buttons only by their text (`get_by_label_contains("Rule")` finds two), `widget_info` did not replace the name: give the buttons `labelled_by` a hidden label instead, or match with `get_all_by_label_contains("Rule")` in the tests and take the first (Subject) and second (From).
 
 - [ ] **Step 5: Wire the action** in `app.rs`
 
@@ -2671,15 +2826,15 @@ and the first arm of `apply` from Task 3 holds it too, so an edited draft asks b
 - [ ] **Step 6: Run the GUI tests**
 
 Run: `cargo test --lib gui::`
-Expected: PASS, including `the_cursor_message_shows_headers_and_text` (the sender is still one label).
+Expected: PASS, including `the_subject_is_a_heading_above_the_sender`, `the_cursor_message_shows_headers_and_text` and `long_headers_truncate_in_a_narrow_reader`.
 
-- [ ] **Step 7: Docs** — in `docs/src/gui.md`, in the paragraph about the message pane:
+- [ ] **Step 7: Docs** — in `docs/src/gui.md`, after the Rules paragraphs from Tasks 2 and 3:
 
 ```markdown
-The Rule buttons beside From and Subject start a new rule for mail like this one: from that address, or with that subject. It opens in the Rules view and is not written to `rules.toml` until you add an action and save it.
+The Rule buttons beside the reader's subject and sender start a new rule for mail like this one: with that subject, or from that address. It opens in the Rules view and is not written to `rules.toml` until you add an action and save it.
 ```
 
-- [ ] **Step 8: Snapshots on Linux** (the inbox snapshots change), then commit
+- [ ] **Step 8: Snapshots on Linux** (the inbox and HTML snapshots change), then commit
 
 ```bash
 git add src/gui/ docs/src/gui.md tests/snapshots/
@@ -2691,6 +2846,6 @@ git commit -m "feat(gui): start a rule from the reader's From and Subject"
 ## Finish
 
 - [ ] Full gate: `cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test && cargo machete && cargo audit`
-- [ ] `POSTBODE_BLESS=1 cargo test` changes nothing (no CLI flag or rule type changed).
-- [ ] Snapshots regenerated on Linux with lavapipe, and every changed PNG looked at: `gui_rules`, `gui_rule_editor`, the inbox snapshots.
+- [ ] `POSTVAK_BLESS=1 cargo test` changes nothing (no CLI flag or rule type changed).
+- [ ] Snapshots regenerated on Linux with lavapipe, and every changed PNG looked at: `gui_rules`, `gui_rule_editor`, the inbox and HTML snapshots.
 - [ ] Report which platforms the PR was compiled on and ran on.
