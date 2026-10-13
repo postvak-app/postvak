@@ -1,6 +1,6 @@
 # GPUI evaluation — design
 
-Date: 2026-10-13. Status: decided: GPUI dropped in favour of Slint (§2 and the toolkit report §7); plan in `docs/superpowers/plans/2026-10-13-gpui-migration.md`; prototype results for GPUI and Slint in `2026-10-13-postvak-gui-toolkit-report.md`. Compares Zed's GPUI with the GUI as built from `2026-10-06-postvak-gui-design.md` and `2026-10-07-postvak-html-design.md`. Decides nothing in code; it records what a switch would buy, what it would cost, and when to look again.
+Date: 2026-10-13. Status: decided: GPUI dropped in favour of Slint (§2 and the toolkit report §7); its migration plan was removed once superseded (in git history); prototype results for GPUI and Slint in `2026-10-13-postvak-gui-toolkit-report.md`. Compares Zed's GPUI with the GUI as built from `2026-10-06-postvak-gui-design.md` and `2026-10-07-postvak-html-design.md`. Decides nothing in code; it records what a switch would buy, what it would cost, and when to look again.
 
 ## 1. Purpose and scope
 

@@ -118,11 +118,26 @@ Last updated: 2026-10-13. Branch `feat/slint-gui`. Read first: the plan `2026-10
   - Docs: `docs/src/gui.md` (tray and close-to-background, `window.json`, menu bar, context menus, About), the Slint attribution in `docs/src/index.md` and `README.md`, AGENTS.md's `gui` notes and snapshot step, a note on the egui GUI and HTML specs.
   - Not done here, needs the owner or CI: the AppImage binary's `NEEDED` list and the macOS DMG (CI builds them only on a tag); by hand: the window on KDE Wayland and macOS, a screen reader on the list, an input method in search, and the macOS Dock click on a hidden window. A local smoke run reached only the startup window, because the scratchpad home's socket path is too long for a Unix socket.
 
+- `/simplify` over the branch (`refactor(gui): simplify after review`): four reviews (reuse, simplification, efficiency, altitude). Applied:
+  - `bind::present` runs after every callback (pointer moves over HTML included), so the small models are updated in place (`rows::synced`/`sync`: only changed rows, Slint keeps the other elements), constants are set once in `bind::init`, `BodyInfo` is set only when it changed, and a message's links are found once in `BodyState::links`.
+  - `tick` drives the HTML view: `html_width` at `html_size` every tick (no `lay_out_new_html`/`settle_html`), and `paint_visible` asks for missing strips every tick (no `repaint` flag; `html_visible` only records the range).
+  - One search-focus flag (`search_focused`; `StartSearch` sets it, the field reports it), `App::typing()`, `App::apply(action)` without the unused clock, `Live::apply` as the one path for callbacks.
+  - Menu items are the Slint enum `MenuAction`, matched exhaustively in `bind::menu_item`; `FolderEntry::menu()` returns two groups; `Entry::Account.gap` comes from `folders.rs`.
+  - The palettes live only in `ui/theme.slint`; the contrast tests read them from the `Theme` global, `theme.rs` keeps `CONTROL` and `ROW`, the snapshot geometry tests read the grid from the window.
+  - Removed: `Columns`' unused fields, `sender_width` and its constants, `ListPane.query`, `RowData.flagged`. Shared test helpers: `test_support::{unread, command}`, `Fixture::break_store`.
+- Not applied, as follow-ups if they show up in use:
+  - `present` still rebuilds `folders::entries`, compares the list rows in full and builds the sheet's cell models on every call; dirty flags per area (folders, list, body, sheet) on `App` would skip that.
+  - `follow_cursor` scrolls only after `MoveCursor`; making state own the list offset (set it whenever the cursor moved) would cover search, collapse and clicks too.
+  - Search queries SQLite on the UI thread per keystroke, as egui did; debounce or a worker if large stores stutter.
+  - Slint reuse: one `Heading` and a link button in `common.slint` for the four serif headings and two hand-made links; `(group, index)` for the row menu instead of a flat index.
+- egui sweep (`docs: mark the egui steps in the plans not yet executed`): no egui code, crate or CI step remains; the rules editor, regex tester, tasks and surface parity plans carry a note that their GUI steps were written for egui; the superseded GPUI migration plan is removed (its results are in the toolkit report).
+
 ## Next steps (in order)
 
-1. `/simplify` over the branch (asked by the owner).
-2. The alignment pass (owner, 2026-10-13: "the aligning seems off, not to any raster").
-3. Hand checks listed under Task 13, then review and merge. of the plan, one commit each, updating this doc after each.
+1. The alignment pass (owner, 2026-10-13: "the aligning seems off, not to any raster").
+2. Hand checks listed under Task 13: the window on KDE Wayland and macOS (a smoke run needs a short home path, as the socket path is limited to about 100 bytes), a screen reader on the list, an input method in search, the macOS Dock click on a hidden window, X11/Wayland PRIMARY selection after Copy.
+3. CI on PR #134: whether Linux draws the snapshots pixel for pixel as macOS did; if not, regenerate them in CI's image and decide which platform is the reference.
+4. Review and merge.
 
 ## Notes for whoever resumes
 

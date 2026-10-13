@@ -1,6 +1,6 @@
 # GUI toolkit prototypes — report
 
-Date: 2026-10-13. Status: decided 2026-10-13 (§7): GPUI dropped, Slint under its royalty-free licence. Phase 1 and 2 of `docs/superpowers/plans/2026-10-13-gpui-migration.md`, against the questions of `2026-10-13-postvak-gpui-evaluation.md`.
+Date: 2026-10-13. Status: decided 2026-10-13 (§7): GPUI dropped, Slint under its royalty-free licence. Phase 1 and 2 of the GPUI migration plan (removed once superseded; in git history), against the questions of `2026-10-13-postvak-gpui-evaluation.md`.
 
 The prototype is the throwaway crate `proto/gpui` on branch `proto/gpui`, draft PR postvak-app/postvak#130, never merged; its last commit is `5bdfc44`, and the PR's `refs/pull/130/head` keeps it after the branch is deleted. Its `README.md` has the per-task notes and `MEASUREMENTS.md` the numbers and their method.
 
