@@ -1,5 +1,5 @@
 /target
-/proto/gpui/target
+/proto/*/target
 *.db
 *.db-wal
 *.db-shm

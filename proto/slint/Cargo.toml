@@ -1,0 +1,32 @@
+[package]
+name = "postvak-slint-proto"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Its own workspace, so it never joins postvak's build, lock file or CI.
+[workspace]
+
+[dependencies]
+postvak = { path = "../..", default-features = false, features = ["html", "testing"] }  # the store, rules, list and HTML code under test
+slint = "=1.18.1"  # the toolkit under test; royalty-free licence for desktop applications (attribution required)
+chrono = "0.4"  # "now" for the list dates, as postvak's list does
+tempfile = "3"  # the fixture home lives in a temp dir
+anyhow = "1"  # errors from fixture setup
+
+[build-dependencies]
+slint-build = "=1.18.1"  # compiles ui/*.slint into Rust
+
+[dev-dependencies]
+i-slint-backend-testing = { version = "=1.18.1", features = ["renderer-software"] }  # Slint's headless test backend: key events, mock time, element queries, software-rendered snapshots
+image = { version = "0.25", default-features = false, features = ["png"] }  # writes the snapshot
+
+# postvak's own release profile, so binary sizes compare like with like.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"

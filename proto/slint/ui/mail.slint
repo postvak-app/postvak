@@ -1,0 +1,299 @@
+// The Postvak mail window in Slint (throwaway prototype): search and the message list on the left, the message on the
+// right. All state and every decision live in Rust (src/app.rs); this file only lays out and draws what it is given,
+// and hands keys, clicks, typing and scrolling back as callbacks.
+import { LineEdit, ListView } from "std-widgets.slint";
+
+// The fonts the egui GUI bundles, so all three builds draw the same glyphs.
+import "../../../assets/fonts/HankenGrotesk-Medium.ttf";
+import "../../../assets/fonts/HankenGrotesk-SemiBold.ttf";
+import "../../../assets/fonts/Newsreader-Medium.ttf";
+import "../../../assets/fonts/SplineSansMono-Medium.ttf";
+
+// `src/gui/theme.rs`'s PAPER palette and grid.
+global Theme {
+    out property <color> accent: #9a4a1c;
+    out property <color> background: #fbf8f3;
+    out property <color> border: #e3d8cb;
+    out property <color> heading: #3b1418;
+    out property <color> hover: #eadfd0;
+    out property <color> muted: #6e5958;
+    out property <color> on-accent: #f1e4d8;
+    out property <color> selected: #3b1418;
+    out property <color> text: #2b1a1c;
+    out property <length> pad: 8px;
+    out property <length> inset: 16px;
+    out property <length> list-row: 48px;
+    out property <length> dot: 12px;
+    out property <length> marker: 20px;
+}
+
+export struct RowData {
+    who: string,
+    subject: string,
+    date: string,
+    unread: bool,
+    flagged: bool,
+    marked: bool,
+    member: bool,
+    label: string,
+}
+
+export struct StripData {
+    image: image,
+    y: length,
+    width: length,
+    height: length,
+}
+
+export struct KeyHelp {
+    keys: string,
+    what: string,
+}
+
+export component MailWindow inherits Window {
+    title: "Postvak (Slint prototype)";
+    preferred-width: 1280px;
+    preferred-height: 800px;
+    background: Theme.background;
+    default-font-family: "Hanken Grotesk";
+    default-font-size: 14px;
+    forward-focus: keys;
+
+    // The list.
+    in property <[RowData]> rows;
+    in property <int> cursor;
+    in-out property <length> list-y;
+    out property <length> list-height: list.visible-height;
+    in-out property <string> query;
+    out property <bool> search-focused: search.has-focus;
+    // The key table.
+    in property <bool> help;
+    in property <[KeyHelp]> key-help;
+    // The message.
+    in property <string> subject;
+    in property <string> from;
+    in property <string> text;
+    in property <bool> show-page;
+    in property <length> page-width;
+    in property <length> page-height;
+    in property <[StripData]> strips;
+    in-out property <length> body-y;
+    out property <length> body-width: body.width;
+    out property <length> body-height: body.height;
+
+    // A key no text field took; true when Rust used it.
+    callback key(string) -> bool;
+    callback select(int);
+    callback search-edited(string);
+    callback body-scrolled();
+    callback body-resized();
+
+    public function focus-list() {
+        keys.focus();
+    }
+    public function focus-search() {
+        search.focus();
+    }
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (root.key(event.text)) {
+                return accept;
+            }
+            return reject;
+        }
+
+        HorizontalLayout {
+            VerticalLayout {
+                width: 440px;
+                Rectangle {
+                    height: 48px;
+                    search := LineEdit {
+                        x: Theme.pad;
+                        y: Theme.pad;
+                        width: parent.width - 2 * Theme.pad;
+                        height: parent.height - 2 * Theme.pad;
+                        placeholder-text: "Search";
+                        accessible-label: "Search";
+                        text <=> root.query;
+                        edited(text) => {
+                            root.search-edited(text);
+                        }
+                    }
+                    Rectangle {
+                        y: parent.height - 1px;
+                        height: 1px;
+                        background: Theme.border;
+                    }
+                }
+
+                list := ListView {
+                    content-y <=> root.list-y;
+                    for row[i] in root.rows: Rectangle {
+                        property <bool> chosen: i == root.cursor;
+                        property <color> fg: chosen ? Theme.on-accent : Theme.text;
+                        property <color> soft: chosen ? Theme.on-accent : Theme.muted;
+                        property <length> sender-x: Theme.inset + Theme.dot + Theme.marker + 2 * Theme.pad;
+                        height: Theme.list-row;
+                        background: chosen ? Theme.selected : touch.has-hover ? Theme.hover : transparent;
+                        accessible-role: list-item;
+                        accessible-label: row.label;
+                        touch := TouchArea {
+                            clicked => {
+                                root.select(i);
+                            }
+                        }
+
+                        Text {
+                            x: Theme.inset;
+                            y: 4px;
+                            width: Theme.dot;
+                            text: row.unread ? "•" : "";
+                            color: Theme.accent;
+                        }
+
+                        Text {
+                            x: Theme.inset + Theme.dot + Theme.pad;
+                            y: 4px;
+                            width: Theme.marker;
+                            text: row.marked ? "✓" : row.flagged ? "⚑" : "";
+                            color: Theme.accent;
+                        }
+
+                        Text {
+                            x: parent.sender-x + (row.member ? Theme.inset : 0px);
+                            y: 4px;
+                            width: date.x - self.x - Theme.pad;
+                            text: row.who;
+                            color: parent.fg;
+                            font-weight: row.unread ? 600 : 500;
+                            overflow: elide;
+                        }
+
+                        date := Text {
+                            x: parent.width - Theme.inset - self.width;
+                            y: 6px;
+                            text: row.date;
+                            color: parent.soft;
+                            font-family: "Spline Sans Mono";
+                            font-size: 12px;
+                        }
+
+                        Text {
+                            x: parent.sender-x;
+                            y: 25px;
+                            width: parent.width - self.x - Theme.inset;
+                            text: row.subject;
+                            color: parent.soft;
+                            overflow: elide;
+                        }
+
+                        Rectangle {
+                            y: parent.height - 1px;
+                            height: 1px;
+                            background: Theme.border;
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                width: 1px;
+                background: Theme.border;
+            }
+
+            VerticalLayout {
+                Rectangle {
+                    height: 88px;
+                    Text {
+                        x: Theme.inset;
+                        y: Theme.inset;
+                        width: parent.width - 2 * Theme.inset;
+                        text: root.subject;
+                        color: Theme.heading;
+                        font-family: "Newsreader";
+                        font-size: 24px;
+                        overflow: elide;
+                    }
+
+                    Text {
+                        x: Theme.inset;
+                        y: 56px;
+                        text: root.from;
+                        color: Theme.muted;
+                    }
+
+                    Rectangle {
+                        y: parent.height - 1px;
+                        height: 1px;
+                        background: Theme.border;
+                    }
+                }
+
+                body := Flickable {
+                    content-y <=> root.body-y;
+                    content-height: root.show-page ? root.page-height + Theme.inset : body-text.preferred-height + 2 * Theme.inset;
+                    changed content-y => {
+                        root.body-scrolled();
+                    }
+                    changed width => {
+                        root.body-resized();
+                    }
+                    if root.show-page: Rectangle {
+                        x: Theme.inset;
+                        width: root.page-width;
+                        height: root.page-height;
+                        for strip in root.strips: Image {
+                            source: strip.image;
+                            y: strip.y;
+                            width: strip.width;
+                            height: strip.height;
+                        }
+                    }
+                    body-text := Text {
+                        x: Theme.inset;
+                        y: Theme.inset;
+                        width: body.width - 2 * Theme.inset;
+                        visible: !root.show-page;
+                        text: root.text;
+                        color: Theme.text;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+
+        if root.help: Rectangle {
+            x: 440px - 360px - Theme.inset;
+            y: 48px + Theme.inset;
+            width: 360px;
+            height: help-layout.preferred-height;
+            background: Theme.background;
+            border-color: Theme.border;
+            border-width: 1px;
+            help-layout := VerticalLayout {
+                padding: Theme.inset;
+                spacing: 4px;
+                Text {
+                    text: "Keys";
+                    color: Theme.heading;
+                    font-family: "Newsreader";
+                    font-size: 18px;
+                }
+                for k in root.key-help: HorizontalLayout {
+                    spacing: Theme.inset;
+                    Text {
+                        width: 140px;
+                        text: k.keys;
+                        font-family: "Spline Sans Mono";
+                        color: Theme.text;
+                    }
+                    Text {
+                        text: k.what;
+                        color: Theme.text;
+                    }
+                }
+            }
+        }
+    }
+}
