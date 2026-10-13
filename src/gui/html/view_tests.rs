@@ -1,4 +1,5 @@
 //! The HTML view in the running app: toggling to text, links, notes, and the render thread's failures.
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
@@ -6,7 +7,7 @@ use eframe::egui;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 
-use super::{FAILED, MAX_HTML, Renderer, Reply, Request, TOO_LARGE};
+use super::{FAILED, FetchDone, Fetcher, MAX_HTML, Renderer, Reply, Request, TOO_LARGE};
 use crate::gui::App;
 use crate::gui::test_support::{Fixture, Wires, message};
 
@@ -261,7 +262,7 @@ fn a_reply_for_an_older_layout_is_dropped() {
     let laid = |generation, height| Reply::Laid {
         generation,
         height,
-        remote: false,
+        remote: BTreeSet::new(),
         width: 400.0,
     };
     replies.send(laid(generation - 1, 900.0)).unwrap();
@@ -285,7 +286,7 @@ fn a_page_over_the_height_limit_shows_text_with_a_note() {
     let laid = Reply::Laid {
         generation,
         height: super::MAX_HEIGHT + 1.0,
-        remote: false,
+        remote: BTreeSet::new(),
         width: 400.0,
     };
     replies.send(laid).unwrap();
@@ -383,4 +384,145 @@ fn a_drag_selects_page_text_and_copy_copies_it() {
         })
         .collect();
     assert_eq!(copied, [selected]);
+}
+
+/// The `Load` jobs the app sent since the last call.
+fn loads(jobs: &Receiver<Request>) -> Vec<super::Load> {
+    jobs.try_iter()
+        .filter_map(|job| match job {
+            Request::Load(load) => Some(load),
+            _ => None,
+        })
+        .collect()
+}
+
+fn laid(generation: u64, remote: &[&str]) -> Reply {
+    Reply::Laid {
+        generation,
+        height: 300.0,
+        remote: remote.iter().map(|url| url.to_string()).collect(),
+        width: 400.0,
+    }
+}
+
+#[test]
+fn loading_remote_content_fetches_what_the_page_asked_for_and_lays_it_out_again() {
+    let fx = Fixture::new(&["work"]);
+    add_html(&fx, 1, "<p>x</p>", "text");
+    let Faked {
+        mut harness,
+        jobs,
+        replies,
+        generation,
+        ..
+    } = faked(&fx);
+    let (fetcher, fetch_jobs, fetched) = Fetcher::fake();
+    harness.state_mut().fetcher = Some(fetcher);
+    let hero = "https://cdn.example.com/hero.png";
+    replies.send(laid(generation, &[hero])).unwrap();
+    harness.run();
+    assert!(
+        harness
+            .query_by_label("Remote content not loaded.")
+            .is_some()
+    );
+    harness.get_by_label("Load remote content").click();
+    harness.run();
+    assert!(harness.query_by_label("Loading remote content…").is_some());
+    let job = fetch_jobs.try_recv().unwrap();
+    assert_eq!(job.urls, [hero]);
+    let bytes = BTreeMap::from([(hero.to_string(), b"PNG".to_vec())]);
+    fetched
+        .send(FetchDone {
+            tag: job.tag,
+            fetched: bytes,
+        })
+        .unwrap();
+    harness.run();
+    let load = loads(&jobs).pop().unwrap();
+    assert_eq!(load.fetched[hero], b"PNG");
+    replies.send(laid(load.generation, &[])).unwrap();
+    harness.run();
+    assert!(
+        harness
+            .query_by_label("Remote content not loaded.")
+            .is_none()
+    );
+    assert!(harness.query_by_label("Loading remote content…").is_none());
+}
+
+#[test]
+fn after_loading_what_the_loaded_content_asks_for_follows_without_asking() {
+    let fx = Fixture::new(&["work"]);
+    add_html(&fx, 1, "<p>x</p>", "text");
+    let Faked {
+        mut harness,
+        jobs,
+        replies,
+        generation,
+        ..
+    } = faked(&fx);
+    let (fetcher, fetch_jobs, fetched) = Fetcher::fake();
+    harness.state_mut().fetcher = Some(fetcher);
+    let css = "https://cdn.example.com/style.css";
+    replies.send(laid(generation, &[css])).unwrap();
+    harness.run();
+    harness.get_by_label("Load remote content").click();
+    harness.run();
+    let job = fetch_jobs.try_recv().unwrap();
+    let bytes = BTreeMap::from([(css.to_string(), b"body{}".to_vec())]);
+    fetched
+        .send(FetchDone {
+            tag: job.tag,
+            fetched: bytes,
+        })
+        .unwrap();
+    harness.run();
+    let load = loads(&jobs).pop().unwrap();
+    let background = "https://cdn.example.com/background.png";
+    replies.send(laid(load.generation, &[background])).unwrap();
+    harness.run();
+    assert_eq!(fetch_jobs.try_recv().unwrap().urls, [background]);
+}
+
+#[test]
+fn a_download_for_a_message_no_longer_shown_is_dropped() {
+    let fx = Fixture::new(&["work"]);
+    add_html(&fx, 1, "<p>one</p>", "one");
+    add_html(&fx, 2, "<p>two</p>", "two");
+    let Faked {
+        mut harness,
+        jobs,
+        replies,
+        generation,
+        ..
+    } = faked(&fx);
+    let (fetcher, fetch_jobs, fetched) = Fetcher::fake();
+    harness.state_mut().fetcher = Some(fetcher);
+    replies
+        .send(laid(generation, &["https://example.com/a.png"]))
+        .unwrap();
+    harness.run();
+    harness.get_by_label("Load remote content").click();
+    harness.run();
+    let job = fetch_jobs.try_recv().unwrap();
+    press(&mut harness, "j");
+    let _ = loads(&jobs);
+    fetched
+        .send(FetchDone {
+            tag: job.tag,
+            fetched: BTreeMap::new(),
+        })
+        .unwrap();
+    harness.run();
+    assert!(loads(&jobs).is_empty());
+    let view = harness
+        .state()
+        .body
+        .as_ref()
+        .unwrap()
+        .html_view
+        .as_ref()
+        .unwrap();
+    assert!(view.fetched.is_empty());
 }
