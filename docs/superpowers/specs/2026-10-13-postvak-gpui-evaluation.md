@@ -1,6 +1,6 @@
 # GPUI evaluation — design
 
-Date: 2026-10-13. Status: draft for review. Compares Zed's GPUI with the GUI as built from `2026-10-06-postvak-gui-design.md` and `2026-10-07-postvak-html-design.md`. Decides nothing in code; it records what a switch would buy, what it would cost, and when to look again.
+Date: 2026-10-13. Status: owner decision recorded in §2; plan in `docs/superpowers/plans/2026-10-13-gpui-migration.md`; prototype results in `2026-10-13-postvak-gpui-prototype-report.md`. Compares Zed's GPUI with the GUI as built from `2026-10-06-postvak-gui-design.md` and `2026-10-07-postvak-html-design.md`. Decides nothing in code; it records what a switch would buy, what it would cost, and when to look again.
 
 ## 1. Purpose and scope
 
@@ -14,17 +14,18 @@ Out of scope: other toolkits (Iced, Slint, Xilem), and any change to the daemon,
 
 | Decision | Choice | Rejected |
 |---|---|---|
-| Toolkit now | Stay on egui | Port to GPUI now (most of the gains below exist only on GPUI's main branch, unreleased; see §5) |
-| Next step | Revisit when the triggers in §6 hold, then a throwaway prototype of the list and body panes | Prototype now against a git revision (would measure code we could not ship) |
+| Long-term toolkit | GPUI (owner, 2026-10-13); egui keeps shipping until the port merges | Stay on egui indefinitely |
+| Next step | The §7 prototype now, on `gpui-pre` and GPUI Kit from crates.io, then a go/no-go review | Wait for the §6 triggers first; prototype against a Zed git revision (cannot be mixed with GPUI Kit, cannot ship) |
+| Port | A long-lived branch that merges only when every GPUI dependency is on crates.io and the review says go | Port now on `main` |
 | Text gaps meanwhile | Load system fonts as egui fallbacks at startup, as GUI §11 already plans | Wait for a toolkit change to fix CJK |
 
 ## 3. State of GPUI on 2026-10-13
 
 - **Releases.** The last crates.io release is `gpui` 0.2.2, 2025-10-22. Main still carries 0.2.2 as its version and has changed a great deal since. The README warns of frequent breaking changes; there is no changelog.
-- **Governance.** Developed inside the Zed monorepo; Zed reportedly paused community-facing GPUI work in February 2026. Snapshot and fork crates fill the gap: `gpui-pre`, `fc-gpui`, `gpui-ce`.
+- **Governance.** Developed inside the Zed monorepo; Zed reportedly paused community-facing GPUI work in February 2026. Snapshot and fork crates fill the gap: `gpui-pre`, `fc-gpui`, `gpui-ce`. `gpui-pre` (Longbridge) publishes a crates.io snapshot of Zed main about weekly, 0.3.9 on 2026-10-12 (zed@93d7456), with the wgpu renderer, headless rendering and AccessKit; GPUI Kit 0.7.3 pins it exactly.
 - **Licence.** `gpui` and the `gpui_*` platform crates are Apache-2.0. Zed's own components (`ui`, `ui_input`) are GPL-3.0-or-later and not usable here; GPUI Kit (formerly `gpui-component`, Longbridge) is Apache-2.0.
 - **Linux renderer.** Blade was replaced by wgpu on main, 2026-02-13 (zed#46758), fixing freezes on NVIDIA and Wayland. 0.2.2 still uses blade.
-- **Headless rendering.** `gpui_wgpu` renders offscreen on Linux with RGBA readback since 2026-09-25 (zed#64718). Software adapters are refused unless a test-only constructor is used; no CI job is known to run screenshot tests with it.
+- **Headless rendering.** `gpui_wgpu` renders offscreen on Linux with RGBA readback since 2026-09-25 (zed#64718). `gpui-pre` 0.3.9 accepts CPU adapters for offscreen rendering (only on-screen windows can refuse them): the prototype rendered its whole window under lavapipe on a GPU-less CI runner, identical across two renders, and within 2 per channel of the same window on an NVIDIA GPU.
 - **Accessibility.** AccessKit plumbing landed on main 2026-05-27 (zed#56065), deliberately minimal; Zed opts out with `Application::inaccessible()` after nightly panics. Not in any release. GPUI Kit states AccessKit roles, names, states and actions on its components.
 
 ## 4. Benefits
@@ -71,7 +72,7 @@ Each item names the part of Postvak it would change.
 ### 4.8 Testing
 
 - `#[gpui::test]` gives deterministic async tests with simulated input, a fit for the daemon-event and read-timer tests that `egui_kittest` drives today.
-- With headless wgpu rendering (§3) the snapshot PNGs in `tests/snapshots/` could carry over, once a software adapter is allowed in CI.
+- With headless wgpu rendering (§3) the snapshot PNGs in `tests/snapshots/` could carry over; lavapipe works (prototype report).
 - Finding widgets by label, as `test_support::Fixture` does, needs AccessKit on the components.
 
 ### 4.9 Platforms
@@ -80,7 +81,8 @@ Each item names the part of Postvak it would change.
 
 ## 5. Costs
 
-- **Nothing shippable.** Every gain in §3 except the platform text systems is on main only. `cargo publish` rejects git dependencies, so a port would depend on a snapshot crate, against the exact-pin-with-reason rule in `AGENTS.md`.
+- **Nothing shippable from Zed itself.** Every gain in §3 except the platform text systems is on main only, and `cargo publish` rejects git dependencies. A port would pin a snapshot crate (`gpui-pre`) exactly, with its reason, and depend on its maintainer.
+- **Linked GUI libraries.** With postvak's release profile the prototype binary needs libxkbcommon and libxkbcommon-x11 at load time (without LTO also libxcb and its friends), where eframe loads X11, Wayland and fontconfig at runtime; a single binary would then need them even for `postvak run`, so a port means a separate GUI binary.
 - **Accessibility.** egui exposes AccessKit today; released GPUI does not, and main's support is switched off in Zed itself.
 - **Tests.** `test_support::Fixture`, every `egui_kittest` test and the lavapipe snapshot workflow are rewritten. The `gui` view rules in `tests/architecture.rs` are restated for entities.
 - **Rewrite.** About 11k lines. The `UiAction` pattern (views return actions, `app` alone changes state) becomes entities updated through `cx`; the rule survives but its enforcement changes.
