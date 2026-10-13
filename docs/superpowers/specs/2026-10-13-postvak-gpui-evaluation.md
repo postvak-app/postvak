@@ -1,6 +1,6 @@
 # GPUI evaluation — design
 
-Date: 2026-10-13. Status: owner decision recorded in §2; plan in `docs/superpowers/plans/2026-10-13-gpui-migration.md`; prototype results in `2026-10-13-postvak-gpui-prototype-report.md`. Compares Zed's GPUI with the GUI as built from `2026-10-06-postvak-gui-design.md` and `2026-10-07-postvak-html-design.md`. Decides nothing in code; it records what a switch would buy, what it would cost, and when to look again.
+Date: 2026-10-13. Status: owner decision recorded in §2; plan in `docs/superpowers/plans/2026-10-13-gpui-migration.md`; prototype results for GPUI and Slint in `2026-10-13-postvak-gui-toolkit-report.md`. Compares Zed's GPUI with the GUI as built from `2026-10-06-postvak-gui-design.md` and `2026-10-07-postvak-html-design.md`. Decides nothing in code; it records what a switch would buy, what it would cost, and when to look again.
 
 ## 1. Purpose and scope
 
@@ -8,7 +8,7 @@ The GUI is eframe/egui 0.36 on wgpu, tested with `egui_kittest` (AccessKit queri
 
 In scope: the benefits GPUI would bring to this GUI, the costs of moving, a recommendation, and the conditions that would reopen the question.
 
-Out of scope: other toolkits (Iced, Slint, Xilem), and any change to the daemon, the CLI or MCP, which a GUI toolkit does not touch.
+Out of scope: other toolkits (Iced, Xilem), and any change to the daemon, the CLI or MCP, which a GUI toolkit does not touch.
 
 ## 2. Decisions log
 
@@ -17,6 +17,7 @@ Out of scope: other toolkits (Iced, Slint, Xilem), and any change to the daemon,
 | Long-term toolkit | GPUI (owner, 2026-10-13); egui keeps shipping until the port merges | Stay on egui indefinitely |
 | Next step | The §7 prototype now, on `gpui-pre` and GPUI Kit from crates.io, then a go/no-go review | Wait for the §6 triggers first; prototype against a Zed git revision (cannot be mixed with GPUI Kit, cannot ship) |
 | Port | A long-lived branch that merges only when every GPUI dependency is on crates.io and the review says go | Port now on `main` |
+| Slint | Prototyped the same way after the GPUI prototype, at the owner's request; compared in the toolkit report §6 | Decide on GPUI alone |
 | Text gaps meanwhile | Load system fonts as egui fallbacks at startup, as GUI §11 already plans | Wait for a toolkit change to fix CJK |
 
 ## 3. State of GPUI on 2026-10-13

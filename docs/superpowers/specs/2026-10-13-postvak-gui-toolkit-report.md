@@ -1,6 +1,6 @@
-# GPUI prototype — report
+# GUI toolkit prototypes — report
 
-Date: 2026-10-13. Status: gate answered below; owner decision in §6. Phase 1 and 2 of `docs/superpowers/plans/2026-10-13-gpui-migration.md`, against the questions of `2026-10-13-postvak-gpui-evaluation.md`.
+Date: 2026-10-13. Status: gate answered below for GPUI (§2) and Slint (§6); owner decision in §7. Phase 1 and 2 of `docs/superpowers/plans/2026-10-13-gpui-migration.md`, against the questions of `2026-10-13-postvak-gpui-evaluation.md`.
 
 The prototype is the throwaway crate `proto/gpui` on branch `proto/gpui`, draft PR postvak-app/postvak#130, never merged; its last commit is `5bdfc44`, and the PR's `refs/pull/130/head` keeps it after the branch is deleted. Its `README.md` has the per-task notes and `MEASUREMENTS.md` the numbers and their method.
 
@@ -48,8 +48,31 @@ From the egui GUI's 11 200 lines, about 2 000 carry over unchanged (the Blitz re
 
 Before any of that, two checks the prototype could not do: a screen reader on the list (macOS and Linux) and an input method in the search field.
 
-## 6. Decision
+## 6. Slint, the same prototype
 
-Recommendation: **go, with conditions.** Nothing found blocks a port: the snapshot crate is shippable (herdr), headless tests work under lavapipe, and the cost in frame time is real but small. The conditions are the two manual checks in §5 as the first steps of Phase 3, a separate GUI binary from the start, and strip conversion off the UI thread.
+Before deciding, the owner asked for Slint to be tried the same way. `proto/slint` on branch `proto/slint` (draft PR postvak-app/postvak#131, never merged) builds the same list, body and search on `slint =1.18.1`, over the same seams, fixture and model (`model.rs` copied unchanged: it has no toolkit in it). About 1 300 lines, of which 280 are Slint markup. Its `README.md` has the details.
+
+| | egui (today) | GPUI prototype | Slint prototype |
+|---|---|---|---|
+| Release line | crates.io, stable | `gpui-pre`, a weekly snapshot, one maintainer | crates.io 1.x, a release about every two months |
+| Licence | MIT OR Apache-2.0 | Apache-2.0 | GPL-3.0, or royalty-free with attribution (`AboutSlint` in an About dialog, or the badge on the download page), or commercial |
+| Libraries needed to start | libc only | + libxkbcommon, libxkbcommon-x11: a separate GUI binary | libc only: one binary still works |
+| Snapshots without a GPU | lavapipe | lavapipe; within 2 per channel across GPUs | Slint's software renderer in the test itself; byte-identical, no GPU or Vulkan at all |
+| Accessibility in tests | AccessKit queries in `egui_kittest` | tree built only with a live screen reader; none in tests | elements found by accessible label in tests |
+| Idle, 20 000 messages | not measured | 0.13 % of a core, 200 MiB | 0.00 %, 133 MiB |
+| Holding `j`, 20 000 messages | 5.1 ms p50 (offscreen, GPU, read back) | 6.8 ms p50 (same method) | 0.9 ms p50 frame on screen (CPU side; a different method); 17.3 ms with the software renderer at 2560×1600 |
+| HTML strip to an image | — | 3.6 ms (format conversion) | 1.8 ms (one copy) |
+| Binary, clean build | 45 MB for the whole app | 52 MB, 201 s | 38 MB, 241 s (upper bound) |
+| Crates over postvak's core | +285 | +450 | +324 |
+| Keymap | by hand in `app.rs` | GPUI actions and key contexts; GPUI Kit's list binds its own keys | by hand: a Rust table, the help read from it |
+| Code | Rust | Rust | Slint markup for layout, Rust for state |
+
+The frame-time rows are not one method: no offscreen GPU path was used for Slint, and no on-screen measurement for egui and GPUI. All three are far inside a 16.7 ms frame.
+
+Against the gate (§2), Slint answers questions 3 and 5 better (snapshots without any GPU; one binary), question 4 better (a stable release line, no snapshot crate), question 1 at least as well where it was measured (idle CPU and memory), and question 6 the same way egui does. Question 2 (a screen reader) is as untested as for GPUI, but its accessibility labels are testable today. Its costs: the licence attribution or GPL, a second language for the UI, and a keymap written by hand (as egui's is).
+
+## 7. Decision
+
+Recommendation: **Slint over GPUI**, if the owner accepts its royalty-free licence (an `AboutSlint` widget in an About dialog, or the badge on the download page). It keeps one binary, needs no GPU for snapshot tests, and does not depend on a one-person snapshot crate. If the licence is not acceptable: GPUI, with the conditions of §5 (screen reader and input method first, a separate GUI binary, strip conversion off the UI thread).
 
 Owner decision: _pending_.
