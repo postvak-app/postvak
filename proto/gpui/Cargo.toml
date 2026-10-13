@@ -20,6 +20,11 @@ smallvec = "1"  # RenderImage::new takes a SmallVec of frames
 
 [dev-dependencies]
 gpui = { package = "gpui-pre", version = "=0.3.9", features = ["test-support"] }  # TestAppContext, VisualTestContext, headless capture
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", features = ["test-support"] }  # current_headless_renderer: offscreen wgpu on Linux, Metal on macOS
+image = { version = "0.25", default-features = false, features = ["png"] }  # writes the headless screenshot
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.9" }  # CosmicTextSystem, the Linux text system, for the headless screenshot
 
 [lints.clippy]
 unwrap_used = "deny"

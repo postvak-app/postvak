@@ -4,6 +4,8 @@
 mod body;
 mod list;
 mod model;
+#[cfg(all(test, target_os = "linux"))]
+mod screenshot;
 mod theme;
 
 use std::borrow::Cow;

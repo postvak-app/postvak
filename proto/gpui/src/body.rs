@@ -138,6 +138,13 @@ impl BodyPane {
     }
 
     /// `mark_read_after_delay`'s send, run by the read timer once the text has been on screen.
+    /// How many strips of the shown page are painted, for tests that wait for them.
+    #[cfg(test)]
+    pub fn painted_strips(&self) -> usize {
+        let view = self.shown.as_ref().and_then(|s| s.view.as_ref());
+        view.map_or(0, |v| v.strips.len())
+    }
+
     fn mark_read(&mut self, cx: &mut Context<Self>) {
         let Some(shown) = self.shown.as_ref().filter(|s| s.text.is_some()) else {
             return;

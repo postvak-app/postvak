@@ -1,0 +1,55 @@
+# The throwaway GPUI prototype (proto/gpui, branch proto/gpui only; never merged). Builds it and runs its tests,
+# including the offscreen screenshot: on Linux under lavapipe with no GPU, on macOS through Metal.
+name: GPUI prototype
+
+on:
+  pull_request:
+    paths:
+      - "proto/gpui/**"
+      - "src/**"
+      - ".github/workflows/proto-gpui.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: proto/gpui
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: proto/gpui
+          save-if: false
+      - name: Linux libraries (Zed's build list) and lavapipe
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools libxkbcommon-x11-dev libx11-xcb-dev libwayland-dev libfontconfig-dev
+          vulkaninfo --summary | grep -E "deviceName|deviceType" || true
+      - run: cargo test --release
+      - name: Libraries the binary links
+        if: runner.os == 'Linux'
+        run: ldd target/release/postvak-gpui-proto
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: screenshot-${{ matrix.os }}
+          path: proto/gpui/target/screenshots/
