@@ -6544,7 +6544,6 @@ dependencies = [
  "futures",
  "gpui-kit",
  "gpui-pre",
- "gpui-pre-platform",
  "image",
  "postvak",
  "smallvec",
