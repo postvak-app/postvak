@@ -21,7 +21,7 @@ use super::body;
 use super::folders;
 use super::html::{self, Fetcher, HtmlState, Renderer, Reply, Wake};
 use super::list::{self, ListState, Optimistic, Row, RowKey, THREAD_LIMIT};
-use super::rules::{self, RulesState, TrashRow};
+use super::rules::{self, RulesState, SheetSort, TrashRow};
 
 /// The status line when `m` is pressed with marked rows from more than one account.
 pub(crate) const MOVE_ONE_ACCOUNT: &str =
@@ -250,6 +250,7 @@ pub(crate) enum UiAction {
     SelectRow(usize),
     SelectView(View),
     SetRuleEnabled(String, bool),
+    SortSheet(SheetSort),
     SetTheme(Theme),
     StartSearch,
     StepFolder(isize),
@@ -332,6 +333,8 @@ pub struct App {
     pub(crate) wake: Wake,
     pub(crate) theme: Theme,
     pub(crate) trash: Vec<TrashRow>,
+    /// How Activity or Backups is sorted; their own order, newest first, until a heading is clicked.
+    pub(crate) sheet_sort: Option<SheetSort>,
     pub(crate) update: UpdateCheck,
     pub(crate) view: View,
     pub(crate) view_dirty: bool,
@@ -406,6 +409,7 @@ impl App {
             wake: Arc::new(|| {}),
             theme: config.ui.theme,
             trash: Vec::new(),
+            sheet_sort: None,
             update: if config.ui.check_updates {
                 UpdateCheck::Waiting
             } else {
@@ -823,6 +827,7 @@ impl App {
                 self.arm_shown_body(index);
             }
             UiAction::SelectView(view) => self.select_view(view),
+            UiAction::SortSheet(sort) => self.sheet_sort = Some(sort),
             UiAction::SetRuleEnabled(name, enabled) => {
                 self.edit_rules(|path| rule_file::edit::set_enabled(path, &name, enabled));
             }
@@ -928,6 +933,7 @@ impl App {
 
     pub(crate) fn select_view(&mut self, view: View) {
         self.view = view;
+        self.sheet_sort = None;
         self.move_picker = None;
         self.search = None;
         self.list = ListState::default();

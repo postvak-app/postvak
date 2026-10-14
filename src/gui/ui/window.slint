@@ -102,8 +102,9 @@ export component MailWindow inherits Window {
     in property <string> rules-banner;
     in property <[ProposalData]> proposals;
     in property <[RuleData]> rules;
-    in property <[string]> sheet-headings;
-    in property <[[string]]> sheet-cells;
+    in property <[TableColumn]> sheet-columns;
+    in property <[[StandardListViewItem]]> sheet-cells;
+    in-out property <int> sheet-row: -1;
     in property <string> sheet-empty;
     in property <MenuState> menu;
     in property <bool> about-open;
@@ -162,6 +163,7 @@ export component MailWindow inherits Window {
     callback reject-rule(int);
     callback set-enabled(int, bool);
     callback restore(int);
+    callback sort-sheet(int, bool);
 
     // Puts `text` on the clipboard: Slint copies only from a text field.
     public function copy-text(text: string) {
@@ -447,14 +449,16 @@ export component MailWindow inherits Window {
                     banner: root.rules-banner;
                     proposals: root.proposals;
                     rules: root.rules;
-                    headings: root.sheet-headings;
+                    columns: root.sheet-columns;
                     cells: root.sheet-cells;
+                    current-row <=> root.sheet-row;
                     empty: root.sheet-empty;
                     open-rules-file => { root.open-rules-file(); }
                     approve(i) => { root.approve-rule(i); }
                     reject(i) => { root.reject-rule(i); }
                     set-enabled(i, enabled) => { root.set-enabled(i, enabled); }
                     restore(i) => { root.restore(i); }
+                    sort(column, ascending) => { root.sort-sheet(column, ascending); }
                 }
             }
         }

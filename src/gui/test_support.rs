@@ -231,6 +231,27 @@ impl Open {
         self.get(label).invoke_accessible_default_action();
     }
 
+    /// Clicks the middle of the one element labelled `label` with the mouse, for elements without an accessible action.
+    pub fn tap(&self, label: &str) {
+        use slint::platform::{PointerEventButton, WindowEvent};
+        let element = self.get(label);
+        let (at, size) = (element.absolute_position(), element.size());
+        let position =
+            slint::LogicalPosition::new(at.x + size.width / 2.0, at.y + size.height / 2.0);
+        let window = self.window();
+        let button = PointerEventButton::Left;
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerMoved { position });
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerPressed { position, button });
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerReleased { position, button });
+        self.tick();
+    }
+
     /// The top and bottom of the one element labelled `label`, in window coordinates.
     pub fn span(&self, label: &str) -> (f32, f32) {
         let element = self.get(label);

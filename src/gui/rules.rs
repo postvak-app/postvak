@@ -122,12 +122,50 @@ pub(crate) fn rule_lines(state: &RulesState) -> Vec<RuleLine> {
     state.rules.iter().map(line).collect()
 }
 
-pub(crate) const ACTIVITY_HEADINGS: [&str; 6] =
-    ["Time", "Account", "Rule", "Action", "Folder", "Subject"];
+/// A table column: its heading, its narrowest width, and its share of the room left over.
+pub(crate) type Column = (&'static str, f32, f32);
+
+pub(crate) const ACTIVITY_COLUMNS: [Column; 6] = [
+    ("Time", 130.0, 0.0),
+    ("Account", 90.0, 0.0),
+    ("Rule", 110.0, 0.0),
+    ("Action", 130.0, 0.0),
+    ("Folder", 90.0, 0.0),
+    ("Subject", 200.0, 1.0),
+];
 pub(crate) const NO_ACTIVITY: &str = "No rule or action has run yet.";
-pub(crate) const TRASH_HEADINGS: [&str; 5] = ["Deleted", "Account", "Folder", "From", "Subject"];
+pub(crate) const TRASH_COLUMNS: [Column; 5] = [
+    ("Deleted", 130.0, 0.0),
+    ("Account", 90.0, 0.0),
+    ("Folder", 90.0, 0.0),
+    ("From", 200.0, 1.0),
+    ("Subject", 200.0, 1.0),
+];
 pub(crate) const NO_TRASH: &str =
     "Trash is empty. Deleted mail is kept here as .eml for the account's retention period.";
+
+/// How the Activity or Backups table is sorted: by one column's text, up or down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SheetSort {
+    pub column: usize,
+    pub ascending: bool,
+}
+
+/// The order a table shows `rows` in, as indices into them: their own order (newest first), or by `sort`'s column.
+/// The sort is stable, so rows with equal cells keep their own order.
+pub(crate) fn sheet_order<const N: usize>(
+    rows: &[[String; N]],
+    sort: Option<SheetSort>,
+) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..rows.len()).collect();
+    if let Some(SheetSort { column, ascending }) = sort.filter(|sort| sort.column < N) {
+        order.sort_by(|&a, &b| {
+            let by = rows[a][column].cmp(&rows[b][column]);
+            if ascending { by } else { by.reverse() }
+        });
+    }
+    order
+}
 
 /// The Activity view's rows, cell by cell.
 pub(crate) fn activity_cells(app: &App) -> Vec<[String; 6]> {
@@ -148,7 +186,7 @@ pub(crate) fn activity_cells(app: &App) -> Vec<[String; 6]> {
     app.activity_log.iter().map(row).collect()
 }
 
-/// The Backups view's rows, cell by cell; each ends with a Restore button.
+/// The Backups view's rows, cell by cell.
 pub(crate) fn trash_cells(app: &App) -> Vec<[String; 5]> {
     let row = |row: &TrashRow| {
         [
@@ -230,6 +268,8 @@ mod tests {
     use crate::store::LogEntry;
     use crate::sync::{Command, Event};
     use crate::trash::Trash;
+    use slint::language::StandardListViewItem;
+    use slint::{Model, ModelRc};
 
     const RULES: &str = "# keep me\n[[rules]]\nname = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions = [\"archive\"]\n\n[[rules]]\nname = \"codes\"\nenabled = false\nproposed_by = \"agent\"\nmatch.subject = { contains = \"code\" }\nactions = [\"delete\"]\n";
 
@@ -413,6 +453,53 @@ mod tests {
     }
 
     #[test]
+    fn a_click_on_a_heading_sorts_the_table_and_a_second_click_reverses_it() {
+        let fx = Fixture::new(&["home", "work"]);
+        logged(&fx, "work", 100, "b old");
+        logged(&fx, "home", 200, "c new");
+        logged(&fx, "work", 300, "a newest");
+        let (open, _wires) = view(&fx, View::Activity);
+        let subjects = || -> Vec<String> {
+            let cells = open.window().get_sheet_cells();
+            let row = |r: ModelRc<StandardListViewItem>| r.row_data(5).unwrap().text.to_string();
+            cells.iter().map(row).collect()
+        };
+        assert_eq!(subjects(), ["a newest", "c new", "b old"]);
+        open.tap("Subject");
+        assert_eq!(subjects(), ["a newest", "b old", "c new"]);
+        open.tap("Subject");
+        assert_eq!(subjects(), ["c new", "b old", "a newest"]);
+        open.with(|live| live.app.select_view(View::Activity));
+        open.tick();
+        assert_eq!(
+            subjects(),
+            ["a newest", "c new", "b old"],
+            "a view opens unsorted"
+        );
+    }
+
+    #[test]
+    fn a_sorted_table_orders_by_the_column_and_keeps_ties_in_their_own_order() {
+        let rows = [["b", "1"], ["a", "2"], ["b", "3"]].map(|row| row.map(String::from));
+        assert_eq!(super::sheet_order(&rows, None), [0, 1, 2]);
+        let up = super::SheetSort {
+            column: 0,
+            ascending: true,
+        };
+        assert_eq!(super::sheet_order(&rows, Some(up)), [1, 0, 2]);
+        let down = super::SheetSort {
+            ascending: false,
+            ..up
+        };
+        assert_eq!(super::sheet_order(&rows, Some(down)), [0, 2, 1]);
+        let missing = super::SheetSort {
+            column: 9,
+            ascending: true,
+        };
+        assert_eq!(super::sheet_order(&rows, Some(missing)), [0, 1, 2]);
+    }
+
+    #[test]
     fn empty_activity_and_backups_say_so() {
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = view(&fx, View::Activity);
@@ -423,12 +510,31 @@ mod tests {
     }
 
     #[test]
+    fn down_chooses_a_backup_from_the_keyboard() {
+        let fx = Fixture::new(&["work"]);
+        let file = backup(&fx);
+        let (open, wires) = view(&fx, View::Trash);
+        open.press("down");
+        open.click("Restore");
+        assert_eq!(
+            wires.sent(),
+            [("work".to_string(), Command::Restore { file })]
+        );
+    }
+
+    #[test]
     fn trash_lists_backups_and_restore_sends_the_command() {
         let fx = Fixture::new(&["work"]);
         let file = backup(&fx);
         let (open, wires) = view(&fx, View::Trash);
         assert_eq!(open.find("your receipt").len(), 1);
         assert_eq!(open.find("Shop <shop@example.com>").len(), 1);
+        open.click("Restore");
+        assert!(
+            wires.sent().is_empty(),
+            "Restore does nothing before a backup is chosen"
+        );
+        open.tap("your receipt");
         open.click("Restore");
         assert_eq!(
             wires.sent(),

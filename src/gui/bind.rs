@@ -1,6 +1,7 @@
 //! State into the window and the window's callbacks back into `UiAction`s. `present` sets the window's properties and
 //! models from `&App`; `connect` hands each callback to `super::on`, which asks the app what it means and applies it.
 //! Nothing here changes state.
+use slint::language::{SortOrder, StandardListViewItem, TableColumn};
 use slint::{ComponentHandle, Model, ModelRc, SharedString};
 
 use crate::config;
@@ -9,6 +10,7 @@ use super::folders::{self, Entry, FolderEntry};
 use super::html::{self, HtmlState};
 use super::keys::{self, Key, Named, Press};
 use super::rows::{ListModel, PageModel, model, sync, synced};
+use super::rules::SheetSort;
 use super::state::{App, Focus, UiAction, View};
 use super::ui::{
     BodyInfo, Dot, FolderItem, FolderKind, KeyHelp, MailWindow, MenuAction, MenuChoice, MenuState,
@@ -237,13 +239,6 @@ fn present_page(app: &App, window: &MailWindow) {
 }
 
 fn present_sheet(app: &App, window: &MailWindow) {
-    let strings = |items: &[&str]| model(items.iter().map(|s| SharedString::from(*s)));
-    let cells = |rows: Vec<Vec<String>>| {
-        model(
-            rows.into_iter()
-                .map(|row| model(row.into_iter().map(SharedString::from))),
-        )
-    };
     match app.view {
         View::Rules => {
             window.set_sheet(Sheet::Rules);
@@ -267,24 +262,79 @@ fn present_sheet(app: &App, window: &MailWindow) {
         }
         View::Activity => {
             window.set_sheet(Sheet::Activity);
-            window.set_sheet_headings(strings(&rules::ACTIVITY_HEADINGS));
-            window.set_sheet_cells(cells(
-                rules::activity_cells(app)
-                    .into_iter()
-                    .map(Vec::from)
-                    .collect(),
-            ));
+            let rows = rules::activity_cells(app);
+            present_table(window, &rules::ACTIVITY_COLUMNS, &rows, app.sheet_sort);
             window.set_sheet_empty(rules::NO_ACTIVITY.into());
         }
         View::Trash => {
             window.set_sheet(Sheet::Backups);
-            window.set_sheet_headings(strings(&rules::TRASH_HEADINGS));
-            window.set_sheet_cells(cells(
-                rules::trash_cells(app).into_iter().map(Vec::from).collect(),
-            ));
+            let rows = rules::trash_cells(app);
+            present_table(window, &rules::TRASH_COLUMNS, &rows, app.sheet_sort);
             window.set_sheet_empty(rules::NO_TRASH.into());
         }
         View::AllInboxes | View::Folder { .. } => {}
+    }
+}
+
+/// Puts a table's columns and rows, in `sort`'s order, into the window. Unchanged rows keep the chosen row, and
+/// unchanged sorting keeps the widths the user dragged the columns to.
+fn present_table<const N: usize>(
+    window: &MailWindow,
+    columns: &[rules::Column; N],
+    rows: &[[String; N]],
+    sort: Option<SheetSort>,
+) {
+    let sort_order = |column: usize| match sort {
+        Some(SheetSort {
+            column: c,
+            ascending,
+        }) if c == column => {
+            if ascending {
+                SortOrder::Ascending
+            } else {
+                SortOrder::Descending
+            }
+        }
+        _ => SortOrder::Unsorted,
+    };
+    let shown = window.get_sheet_columns();
+    let same_columns = shown.row_count() == N
+        && shown
+            .iter()
+            .zip(columns)
+            .enumerate()
+            .all(|(i, (shown, (title, ..)))| {
+                shown.title == *title && shown.sort_order == sort_order(i)
+            });
+    if !same_columns {
+        let columns = columns
+            .iter()
+            .enumerate()
+            .map(|(i, &(title, min_width, stretch))| {
+                let mut column = TableColumn::default();
+                column.title = title.into();
+                column.min_width = min_width;
+                column.horizontal_stretch = stretch;
+                column.sort_order = sort_order(i);
+                column
+            });
+        window.set_sheet_columns(model(columns));
+    }
+    let order = rules::sheet_order(rows, sort);
+    let cells = window.get_sheet_cells();
+    let same_rows = cells.row_count() == order.len()
+        && cells.iter().zip(&order).all(|(shown, &i)| {
+            shown
+                .iter()
+                .map(|item| item.text)
+                .eq(rows[i].iter().map(SharedString::from))
+        });
+    if !same_rows {
+        let item = |text: &String| StandardListViewItem::from(text.as_str());
+        window.set_sheet_cells(model(
+            order.iter().map(|&i| model(rows[i].iter().map(item))),
+        ));
+        window.set_sheet_row(-1);
     }
 }
 
@@ -501,9 +551,15 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     });
     window.on_restore(move |i| {
         on(one(move |app| {
-            let row = nth(&app.trash, i)?;
+            let order = rules::sheet_order(&rules::trash_cells(app), app.sheet_sort);
+            let row = &app.trash[*nth(&order, i)?];
             Some(UiAction::Restore(row.account, row.entry.path.clone()))
         }));
+    });
+    window.on_sort_sheet(move |column, ascending| {
+        if let Ok(column) = usize::try_from(column) {
+            act(UiAction::SortSheet(SheetSort { column, ascending }));
+        }
     });
     window.on_open_update(move || {
         on(one(|app| {

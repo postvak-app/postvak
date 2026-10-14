@@ -1,5 +1,5 @@
 // The Rules, Activity and Backups views, in place of the list and the body. `rules.rs` words them.
-import { CheckBox, ScrollView } from "std-widgets.slint";
+import { CheckBox, ScrollView, StandardTableView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { TextButton } from "common.slint";
 
@@ -23,71 +23,17 @@ component Heading inherits Text {
     color: Theme.pane.heading;
 }
 
-// Every other row of a table, `top` below the table's top and as wide as the table.
+// Every other row of the rules list, as wide as the list.
 component Stripes {
     in property <int> rows;
-    in property <length> top;
     for r in root.rows: Rectangle {
         x: 0;
-        y: root.top + r * Theme.control;
+        y: r * Theme.control;
         width: root.width;
         height: Theme.control;
         border-radius: Theme.pad / 2;
         background: mod(r, 2) == 0 ? Theme.pane.panel : transparent;
     }
-}
-
-// Rows of cells in columns as wide as their widest cell, striped, with a heading row; `button` adds a button at the
-// end of each row.
-component Table inherits HorizontalLayout {
-    in property <[string]> headings;
-    in property <[[string]]> rows;
-    in property <string> button;
-    callback pressed(int);
-
-    Rectangle {
-        width: grid.preferred-width;
-        Stripes {
-            x: 0;
-            y: 0;
-            width: parent.width;
-            height: parent.height;
-            rows: root.rows.length;
-            top: Theme.row;
-        }
-        grid := GridLayout {
-            spacing-horizontal: Theme.inset;
-            padding-left: Theme.pad;
-            padding-right: Theme.pad;
-            Row {
-                for heading in root.headings: Text {
-                    height: Theme.row;
-                    text: heading;
-                    font-weight: 600;
-                    color: Theme.pane.strong;
-                    vertical-alignment: center;
-                }
-            }
-            for row[r] in root.rows: Row {
-                for cell in row: Text {
-                    height: Theme.control;
-                    text: cell;
-                    color: Theme.pane.text;
-                    vertical-alignment: center;
-                }
-                if root.button != "": VerticalLayout {
-                    alignment: center;
-                    TextButton {
-                        text: root.button;
-                        framed: true;
-                        palette: Theme.pane;
-                        clicked => { root.pressed(r); }
-                    }
-                }
-            }
-        }
-    }
-    Rectangle { horizontal-stretch: 1; }
 }
 
 export component RulesPane inherits Rectangle {
@@ -97,14 +43,17 @@ export component RulesPane inherits Rectangle {
     in property <[ProposalData]> proposals;
     in property <[RuleData]> rules;
     // Activity and Backups.
-    in property <[string]> headings;
-    in property <[[string]]> cells;
+    in property <[TableColumn]> columns;
+    in property <[[StandardListViewItem]]> cells;
     in property <string> empty;
+    // The chosen row of Backups, or -1.
+    in-out property <int> current-row: -1;
     callback open-rules-file();
     callback approve(int);
     callback reject(int);
     callback set-enabled(int, bool);
     callback restore(int);
+    callback sort(int, bool);
 
     VerticalLayout {
         padding: Theme.inset;
@@ -131,14 +80,35 @@ export component RulesPane inherits Rectangle {
             wrap: word-wrap;
         }
 
-        ScrollView {
+        if root.sheet == Sheet.backups && root.cells.length > 0: HorizontalLayout {
+            TextButton {
+                text: "Restore";
+                framed: true;
+                palette: Theme.pane;
+                enabled: root.current-row >= 0;
+                disabled-hint: "Choose a backup first";
+                clicked => { root.restore(root.current-row); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        // It takes the keyboard, so Up and Down choose a backup to restore; other keys reach the window.
+        if root.sheet != Sheet.rules && root.cells.length > 0: StandardTableView {
+            init => { self.focus(); }
+            columns: root.columns;
+            rows: root.cells;
+            current-row <=> root.current-row;
+            sort-ascending(column) => { root.sort(column, true); }
+            sort-descending(column) => { root.sort(column, false); }
+        }
+
+        if root.sheet == Sheet.rules: ScrollView {
             vertical-stretch: 1;
             VerticalLayout {
                 alignment: start;
                 spacing: Theme.pad;
 
-                if root.sheet == Sheet.rules && root.proposals.length > 0: Heading { text: "Proposals"; }
-                for proposal[i] in root.sheet == Sheet.rules ? root.proposals : []: HorizontalLayout {
+                if root.proposals.length > 0: Heading { text: "Proposals"; }
+                for proposal[i] in root.proposals: HorizontalLayout {
                     Rectangle {
                         border-width: 1px;
                         border-color: Theme.pane.border;
@@ -177,12 +147,12 @@ export component RulesPane inherits Rectangle {
                     Rectangle { horizontal-stretch: 1; }
                 }
 
-                if root.sheet == Sheet.rules: Heading { text: "Rules"; }
-                if root.sheet == Sheet.rules && root.rules.length == 0: Text {
+                Heading { text: "Rules"; }
+                if root.rules.length == 0: Text {
                     text: "rules.toml has no rules yet.";
                     color: Theme.pane.muted;
                 }
-                if root.sheet == Sheet.rules && root.rules.length > 0: HorizontalLayout {
+                if root.rules.length > 0: HorizontalLayout {
                     Rectangle {
                         width: rule-grid.preferred-width;
                         Stripes {
@@ -220,17 +190,6 @@ export component RulesPane inherits Rectangle {
                         }
                     }
                     Rectangle { horizontal-stretch: 1; }
-                }
-
-                if root.sheet == Sheet.activity && root.cells.length > 0: Table {
-                    headings: root.headings;
-                    rows: root.cells;
-                }
-                if root.sheet == Sheet.backups && root.cells.length > 0: Table {
-                    headings: root.headings;
-                    rows: root.cells;
-                    button: "Restore";
-                    pressed(r) => { root.restore(r); }
                 }
             }
         }
