@@ -2,7 +2,7 @@
 import { AboutSlint } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Dialog } from "dialogs.slint";
-import { TextButton } from "common.slint";
+import { Heading, TextButton } from "common.slint";
 
 export component AboutDialog {
     in property <string> version;
@@ -18,12 +18,7 @@ export component AboutDialog {
         title: "About Postvak";
         close-icon: root.close-icon;
         close => { root.close(); }
-        Text {
-            text: "Postvak " + root.version;
-            font-family: Theme.serif-font;
-            font-size: 19px;
-            color: Theme.pane.heading;
-        }
+        Heading { text: "Postvak " + root.version; }
         Text {
             text: root.description + ".\nLicence: " + root.license;
             color: Theme.pane.text;

@@ -198,7 +198,16 @@ impl Open {
 
     /// The elements whose accessible label is `label`.
     pub fn find(&self, label: &str) -> Vec<ElementHandle> {
-        once(ElementHandle::find_by_accessible_label(&self.window(), label).collect())
+        // What a screen reader sees: an element hidden from it can still carry the label, as a component that inherits
+        // `Text` with `accessible-role: none` does.
+        let shown = |e: &ElementHandle| {
+            e.accessible_role() != Some(i_slint_backend_testing::AccessibleRole::None)
+        };
+        once(
+            ElementHandle::find_by_accessible_label(&self.window(), label)
+                .filter(shown)
+                .collect(),
+        )
     }
 
     /// The labels that contain `text`.

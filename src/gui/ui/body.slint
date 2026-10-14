@@ -1,7 +1,7 @@
 // The body pane: the message's actions, its header, attachments, and the text with its links. `body.rs` words it.
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { IconButton, TextButton } from "common.slint";
+import { Heading, IconButton, Link, TextButton } from "common.slint";
 
 export struct BodyInfo {
     // Instead of a message, when set.
@@ -259,11 +259,9 @@ export component BodyPane inherits Rectangle {
             }
         }
 
-        if root.info.subject != "": Text {
+        if root.info.subject != "": Heading {
             text: root.info.subject;
-            font-family: Theme.serif-font;
             font-size: 26px;
-            color: Theme.pane.heading;
             wrap: word-wrap;
         }
 
@@ -395,21 +393,10 @@ export component BodyPane inherits Rectangle {
                     selection-foreground-color: Theme.pane.on-accent;
                     accessible-label: "Message text";
                 }
-                for link in root.info.links: TouchArea {
+                for link in root.info.links: Link {
                     height: Theme.row;
-                    mouse-cursor: pointer;
-                    accessible-role: button;
-                    accessible-label: link;
-                    accessible-action-default => { root.open-link(link); }
+                    text: link;
                     clicked => { root.open-link(link); }
-                    Text {
-                        accessible-role: none;
-                        x: 0;
-                        text: link;
-                        color: Theme.pane.accent;
-                        overflow: elide;
-                        vertical-alignment: center;
-                    }
                 }
             }
         }

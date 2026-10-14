@@ -1,6 +1,6 @@
 // The toolbar: the wordmark over the folder pane, the message actions over the list, the search button on the right.
 import { Theme } from "theme.slint";
-import { IconButton } from "common.slint";
+import { Heading, IconButton } from "common.slint";
 
 export struct ToolButton {
     icon: string,
@@ -39,10 +39,8 @@ export component Toolbar inherits Rectangle {
                 y: (parent.height - self.height) / 2;
                 source: @image-url("../../../assets/icon.png");
             }
-            Text {
+            Heading {
                 text: "Postvak";
-                font-family: Theme.serif-font;
-                font-size: 19px;
                 color: Theme.frame.strong;
                 vertical-alignment: center;
             }

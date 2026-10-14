@@ -95,3 +95,29 @@ export component TextButton inherits Rectangle {
         if !root.enabled && root.disabled-hint != "": Tooltip { text: @markdown("\{root.disabled-hint}"); }
     }
 }
+
+// A serif heading in the pane's palette.
+export component Heading inherits Text {
+    font-family: Theme.serif-font;
+    font-size: 19px;
+    color: Theme.pane.heading;
+}
+
+// Accent text that acts as a link; a button for screen readers.
+export component Link inherits TouchArea {
+    in property <string> text;
+    mouse-cursor: pointer;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => { root.clicked(); }
+    HorizontalLayout {
+        alignment: start;
+        Text {
+            accessible-role: none;
+            text: root.text;
+            color: Theme.pane.accent;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+    }
+}

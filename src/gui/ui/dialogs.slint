@@ -1,7 +1,7 @@
 // The small windows over the panes: Keys and History. Esc closes them through the app, the X here.
 import { Button, LineEdit, ListView, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { IconButton } from "common.slint";
+import { Heading, IconButton } from "common.slint";
 
 export struct KeyHelp {
     keys: string,
@@ -30,12 +30,9 @@ export component Dialog inherits Rectangle {
         padding: Theme.inset;
         spacing: Theme.pad;
         HorizontalLayout {
-            Text {
+            Heading {
                 accessible-role: none;
                 text: root.title;
-                font-family: Theme.serif-font;
-                font-size: 18px;
-                color: Theme.pane.heading;
                 vertical-alignment: center;
             }
             Rectangle { horizontal-stretch: 1; }

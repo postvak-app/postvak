@@ -2,6 +2,7 @@
 // texts; this file only places them.
 import { LineEdit, ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
+import { Heading } from "common.slint";
 
 export struct RowData {
     unread: bool,
@@ -141,11 +142,8 @@ export component ListPane inherits Rectangle {
             height: Theme.control;
             padding-left: Theme.pad;
             spacing: Theme.pad;
-            Text {
+            Heading {
                 text: root.title;
-                font-family: Theme.serif-font;
-                font-size: 19px;
-                color: Theme.pane.heading;
                 vertical-alignment: center;
             }
             Text {

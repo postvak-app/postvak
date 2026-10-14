@@ -1,6 +1,7 @@
 // The small window shown in place of the mail window when that cannot start (`startup.rs` words it).
 import { Button, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
+import { Heading, Link } from "common.slint";
 
 export component StartupWindow inherits Window {
     in property <string> summary;
@@ -22,11 +23,9 @@ export component StartupWindow inherits Window {
     VerticalLayout {
         padding: Theme.inset;
         spacing: Theme.pad;
-        Text {
+        Heading {
             text: root.summary;
-            font-family: Theme.serif-font;
             font-size: 20px;
-            color: Theme.pane.heading;
             wrap: word-wrap;
         }
         Text {
@@ -34,19 +33,9 @@ export component StartupWindow inherits Window {
             color: Theme.pane.text;
             wrap: word-wrap;
         }
-        if root.link-url != "": TouchArea {
-            mouse-cursor: pointer;
+        if root.link-url != "": Link {
+            text: root.link-label;
             clicked => { root.open-url(root.link-url); }
-            accessible-role: button;
-            accessible-label: root.link-label;
-            accessible-action-default => { root.open-url(root.link-url); }
-            HorizontalLayout {
-                alignment: start;
-                Text {
-                    text: root.link-label;
-                    color: Theme.pane.accent;
-                }
-            }
         }
         if root.detail != "": ScrollView {
             vertical-stretch: 1;

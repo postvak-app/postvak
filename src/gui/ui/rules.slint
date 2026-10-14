@@ -1,7 +1,7 @@
 // The Rules, Activity and Backups views, in place of the list and the body. `rules.rs` words them.
 import { CheckBox, ScrollView, StandardTableView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { TextButton } from "common.slint";
+import { Heading, TextButton } from "common.slint";
 
 export enum Sheet { rules, activity, backups }
 
@@ -15,12 +15,6 @@ export struct RuleData {
     enabled: bool,
     scope: string,
     by: string,
-}
-
-component Heading inherits Text {
-    font-family: Theme.serif-font;
-    font-size: 19px;
-    color: Theme.pane.heading;
 }
 
 // Every other row of the rules list, as wide as the list.
