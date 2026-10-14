@@ -779,12 +779,11 @@ mod tests {
         fx.add("work", message("INBOX", 1, "older"));
         fx.add("work", message("INBOX", 2, "newer"));
         let (open, wires) = fx.window();
-        let archive = menu(&open.with(|live| live.app.list.rows[1].clone()))
-            .into_iter()
-            .flatten()
-            .position(|(title, _)| title == "Archive")
+        let archive = menu(&open.with(|live| live.app.list.rows[1].clone()))[1]
+            .iter()
+            .position(|(title, _)| *title == "Archive")
             .unwrap();
-        open.window().invoke_row_menu(1, archive as i32);
+        open.window().invoke_row_menu(1, 1, archive as i32);
         assert_eq!(wires.sent(), [apply("INBOX", &[1], Action::Archive)]);
     }
 
@@ -796,7 +795,7 @@ mod tests {
         }
         let (open, wires) = fx.window();
         open.press("x j x");
-        open.window().invoke_row_menu(0, 4);
+        open.window().invoke_row_menu(0, 1, 2);
         assert_eq!(wires.sent(), [apply("INBOX", &[2, 3], Action::Trash)]);
     }
 

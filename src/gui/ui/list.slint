@@ -128,7 +128,8 @@ export component ListPane inherits Rectangle {
     in-out property <length> list-y;
     out property <length> list-height: list.visible-height;
     callback row-clicked(int);
-    callback row-menu(int, int);
+    // A row's menu item: the row, the item's group, its place in the group.
+    callback row-menu(int, int, int);
     callback search-edited(string);
     callback search-accepted();
     callback search-focus(bool);
@@ -183,17 +184,17 @@ export component ListPane inherits Rectangle {
                 Menu {
                     for title[j] in row.menu-read: MenuItem {
                         title: title;
-                        activated => { root.row-menu(i, j); }
+                        activated => { root.row-menu(i, 0, j); }
                     }
                     MenuSeparator { }
                     for title[j] in row.menu-move: MenuItem {
                         title: title;
-                        activated => { root.row-menu(i, row.menu-read.length + j); }
+                        activated => { root.row-menu(i, 1, j); }
                     }
                     MenuSeparator { }
                     for title[j] in row.menu-file: MenuItem {
                         title: title;
-                        activated => { root.row-menu(i, row.menu-read.length + row.menu-move.length + j); }
+                        activated => { root.row-menu(i, 2, j); }
                     }
                 }
                 ListRow {

@@ -107,7 +107,8 @@ export component FolderPane inherits Rectangle {
     in property <[FolderItem]> pinned;
     callback clicked(int);
     callback caret-clicked(int);
-    callback menu(int, int);
+    // A folder's menu item: the folder, the item's group, its place in the group.
+    callback menu(int, int, int);
     callback pinned-clicked(int);
 
     VerticalLayout {
@@ -161,13 +162,13 @@ export component FolderPane inherits Rectangle {
                             for choice[j] in item.menu-head: MenuItem {
                                 title: choice.title;
                                 enabled: choice.enabled;
-                                activated => { root.menu(i, j); }
+                                activated => { root.menu(i, 0, j); }
                             }
                             MenuSeparator { }
                             for choice[j] in item.menu-tail: MenuItem {
                                 title: choice.title;
                                 enabled: choice.enabled;
-                                activated => { root.menu(i, item.menu-head.length + j); }
+                                activated => { root.menu(i, 1, j); }
                             }
                         }
                         FolderRow {

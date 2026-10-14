@@ -369,9 +369,9 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
             Some(UiAction::ToggleFolder(account, path))
         }));
     });
-    window.on_folder_menu(move |i, j| {
+    window.on_folder_menu(move |i, group, j| {
         on(one(move |app| {
-            let (_, enabled, action) = nth(folder_at(app, i)?.menu().into_iter().flatten(), j)?;
+            let (_, enabled, action) = nth(nth(folder_at(app, i)?.menu(), group)?, j)?;
             enabled.then_some(action)
         }));
     });
@@ -396,15 +396,15 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     window.on_row_clicked(move |i| {
         act(UiAction::SelectRow(usize::try_from(i).unwrap_or_default()));
     });
-    window.on_row_menu(move |i, j| {
+    window.on_row_menu(move |i, group, j| {
         on(Box::new(move |app| {
-            let (Ok(i), Ok(j)) = (usize::try_from(i), usize::try_from(j)) else {
+            let Some((i, row)) = usize::try_from(i)
+                .ok()
+                .and_then(|i| Some((i, app.list.rows.get(i)?)))
+            else {
                 return Vec::new();
             };
-            let Some(row) = app.list.rows.get(i) else {
-                return Vec::new();
-            };
-            let Some((_, action)) = list::menu(row).into_iter().flatten().nth(j) else {
+            let Some((_, action)) = nth(nth(list::menu(row), group).unwrap_or_default(), j) else {
                 return Vec::new();
             };
             // The menu acts on the marked rows when it was opened on one of them, else on its own row.

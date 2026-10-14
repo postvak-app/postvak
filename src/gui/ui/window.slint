@@ -125,7 +125,7 @@ export component MailWindow inherits Window {
     callback search();
     callback folder-clicked(int);
     callback caret-clicked(int);
-    callback folder-menu(int, int);
+    callback folder-menu(int, int, int);
     callback pinned-clicked(int);
     callback sync();
     callback toggle-history();
@@ -133,7 +133,7 @@ export component MailWindow inherits Window {
     callback set-theme(ThemePreference);
     callback open-update();
     callback row-clicked(int);
-    callback row-menu(int, int);
+    callback row-menu(int, int, int);
     callback search-edited(string);
     callback search-accepted();
     callback search-focus(bool);
@@ -387,7 +387,7 @@ export component MailWindow inherits Window {
                 pinned: root.pinned;
                 clicked(i) => { root.folder-clicked(i); }
                 caret-clicked(i) => { root.caret-clicked(i); }
-                menu(i, j) => { root.folder-menu(i, j); }
+                menu(i, group, j) => { root.folder-menu(i, group, j); }
                 pinned-clicked(i) => { root.pinned-clicked(i); }
             }
 
@@ -406,7 +406,7 @@ export component MailWindow inherits Window {
                     rows: root.rows;
                     list-y <=> root.list-y;
                     row-clicked(i) => { root.row-clicked(i); }
-                    row-menu(i, j) => { root.row-menu(i, j); }
+                    row-menu(i, group, j) => { root.row-menu(i, group, j); }
                     search-edited(text) => { root.search-edited(text); }
                     // Enter opens the first hit and hands the keyboard to the list.
                     search-accepted => {

@@ -452,15 +452,13 @@ mod tests {
             let Entry::Folder(inbox) = &entries[row] else {
                 unreachable!()
             };
-            let item = inbox
-                .menu()
+            let item = inbox.menu()[1]
                 .iter()
-                .flatten()
                 .position(|(title, ..)| title == "Mark all as read")
                 .unwrap();
             (row, item)
         });
-        open.window().invoke_folder_menu(row as i32, item as i32);
+        open.window().invoke_folder_menu(row as i32, 1, item as i32);
         let read = crate::sync::Command::Apply {
             folder: "INBOX".into(),
             uids: vec![1, 3],
