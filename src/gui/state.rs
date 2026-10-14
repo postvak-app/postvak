@@ -724,7 +724,16 @@ impl App {
         }
     }
 
+    /// Applies `action`; when it moved the cursor, by key, click, search or collapse, the list scrolls to it.
     pub fn apply(&mut self, action: UiAction) {
+        let cursor = self.list.cursor;
+        self.apply_action(action);
+        if self.list.cursor != cursor && !self.list.cursor_shown() {
+            self.list.follow_cursor = true;
+        }
+    }
+
+    fn apply_action(&mut self, action: UiAction) {
         match action {
             UiAction::Act(action) => self.act(action),
             UiAction::ApproveRule(name) => {
@@ -763,12 +772,14 @@ impl App {
             UiAction::Expand => self.expand(),
             UiAction::ListViewport { offset, height } => {
                 self.list.viewport = (offset, height);
-                self.list.follow_cursor = false;
+                // The list can stop short of the cursor while it still estimates its rows; then it is asked again.
+                if self.list.cursor_shown() {
+                    self.list.follow_cursor = false;
+                }
             }
             UiAction::MarkFolderRead(account, folder) => self.mark_folder_read(account, folder),
             UiAction::MoveCursor(delta) => {
                 self.list.cursor = step(self.list.cursor, delta, self.list.rows.len());
-                self.list.follow_cursor = true;
                 self.pending_arm = true;
             }
             UiAction::MoveFilter(filter) => self.move_picker = Some(filter),

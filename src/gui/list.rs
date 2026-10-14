@@ -10,6 +10,7 @@ use crate::store::{Message, MessageSummary, ThreadSummary};
 
 use super::folders;
 use super::state::{UiAction, View};
+use super::theme::LIST_ROW;
 
 /// Threads loaded per folder. ponytail: older mail is reachable through search; page by date if that is not enough.
 pub const THREAD_LIMIT: u32 = 10_000;
@@ -86,7 +87,7 @@ pub(crate) struct ListState {
     pub cursor: usize,
     /// Expanded threads by account and thread id: mail sent to two accounts shares its thread id.
     pub expanded: HashMap<(usize, String), Vec<MessageSummary>>,
-    /// Set when a key moved the cursor, so this frame scrolls it into view.
+    /// Set when the cursor moved, so the list scrolls it into view; cleared once the list reports where it scrolled.
     pub follow_cursor: bool,
     pub hits: Vec<Row>,
     pub marked: HashSet<(usize, RowKey)>,
@@ -95,6 +96,17 @@ pub(crate) struct ListState {
     pub threads: Vec<(usize, ThreadSummary)>,
     /// Scroll offset and height of the list from the last frame.
     pub viewport: (f32, f32),
+}
+
+impl ListState {
+    /// Whether the cursor's row is in view, or as much of it as a list lower than a row shows; not before the list
+    /// has reported its height.
+    pub fn cursor_shown(&self) -> bool {
+        let (offset, height) = self.viewport;
+        height > 0.0
+            && (height < LIST_ROW
+                || offset_showing(self.cursor, LIST_ROW, offset, height) == offset)
+    }
 }
 
 /// One row per thread describing its latest message, followed by its members when expanded.
@@ -771,6 +783,29 @@ mod tests {
             "the title; the folder row says Inbox (1)"
         );
         assert_eq!(open.find("2 threads, 1 unread").len(), 1);
+    }
+
+    #[test]
+    fn the_list_scrolls_to_the_cursor_however_it_moved() {
+        let fx = Fixture::new(&["work"]);
+        for uid in 1..=40 {
+            fx.add("work", message("INBOX", uid, "hi"));
+        }
+        let (open, _wires) = fx.window();
+        open.tick();
+        let shown = |open: &crate::gui::test_support::Open| {
+            let top = -open.window().get_list_y();
+            (top, top + open.with(|live| live.app.list.viewport.1))
+        };
+        assert_eq!(shown(&open).0, 0.0);
+        open.with(|live| live.app.apply(crate::gui::state::UiAction::SelectRow(30)));
+        open.tick();
+        let (top, bottom) = shown(&open);
+        let row = 30.0 * crate::gui::theme::LIST_ROW;
+        assert!(
+            top <= row && row + crate::gui::theme::LIST_ROW <= bottom,
+            "{top}..{bottom} hides row 30"
+        );
     }
 
     #[test]
