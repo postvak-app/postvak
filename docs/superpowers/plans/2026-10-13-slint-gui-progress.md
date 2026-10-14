@@ -156,10 +156,9 @@ Last updated: 2026-10-13. Branch `feat/slint-gui`. Read first: the plan `2026-10
 
 ## Next steps (in order)
 
-1. Hand checks listed under Task 13 (below).
-2. The same hand checks: the window on KDE Wayland and macOS (a smoke run needs a short home path, as the socket path is limited to about 100 bytes), a screen reader on the list, an input method in search, the macOS Dock click on a hidden window, X11/Wayland PRIMARY selection after Copy.
-3. CI on PR #134: whether Linux draws the snapshots pixel for pixel as macOS did; if not, regenerate them in CI's image and decide which platform is the reference.
-4. Review and merge.
+1. `/simplify` follow-ups (owner asked, 2026-10-14): dirty flags per area in `present`, state owning the list offset, search off the UI thread, one `Heading` and link button in `common.slint`, `(group, index)` for the row menu.
+2. Hand checks: the window on KDE Wayland and macOS (a smoke run needs a short home path, as the socket path is limited to about 100 bytes), a screen reader on the list, an input method in search, the macOS Dock click on a hidden window, X11/Wayland PRIMARY selection after Copy.
+3. Review and merge. CI on Linux drew the snapshots as macOS did (2026-10-14), so one set of PNGs serves both.
 
 ## Notes for whoever resumes
 
