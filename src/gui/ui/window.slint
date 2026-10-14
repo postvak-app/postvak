@@ -180,6 +180,11 @@ export component MailWindow inherits Window {
         accessible-role: none;
     }
 
+    // std-widgets (fields, check boxes, scroll bars, the menu bar) in the theme's scheme rather than the desktop's.
+    property <bool> dark: Theme.dark;
+    init => { StdPalette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light; }
+    changed dark => { StdPalette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light; }
+
     // A text field that closes leaves the keyboard with the panes.
     changed searching => {
         if (!root.searching) {
@@ -197,9 +202,9 @@ export component MailWindow inherits Window {
     icon: Platform.os == OperatingSystemType.macos ? @image-url("../../../assets/macos.iconset/icon_512x512@2x.png") : @image-url("../../../assets/icon.png");
     preferred-width: 1280px;
     preferred-height: 800px;
-    // Behind the menu bar where the window draws it (not macOS): the std style's own background, so its text, which
-    // follows the style's colour scheme, always reads on it.
-    background: StdPalette.background;
+    // Behind the menu bar where the window draws it (not macOS). Its text follows std-widgets' scheme, which follows
+    // the theme: light text on the frame when dark, dark text on paper when light.
+    background: Theme.dark ? Theme.frame.background : Theme.pane.panel;
     default-font-family: Theme.text-font;
     default-font-size: Theme.text-size;
     forward-focus: keys;

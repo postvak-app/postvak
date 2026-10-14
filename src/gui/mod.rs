@@ -215,6 +215,7 @@ fn open(paths: Paths) -> Result<()> {
     }
     let (client, events, states) = state::connect(&paths, Box::new(wake))?;
     let window = ui::MailWindow::new().context("could not open the window")?;
+    let _scheme = follow_desktop_scheme(&window)?;
     let layout = persist::path(&paths);
     restore(&window, persist::load(&layout));
     let mut app = App::new(&config, paths, client, events, states);
@@ -235,6 +236,22 @@ fn open(paths: Paths) -> Result<()> {
         log::warn!("could not save the window's layout: {e:#}");
     }
     ran.context("the window failed")
+}
+
+/// Tells the window whether the desktop is dark, now and whenever that changes, for the System theme. The probe
+/// must live as long as the window.
+fn follow_desktop_scheme(window: &ui::MailWindow) -> Result<ui::SchemeProbe> {
+    let probe = ui::SchemeProbe::new().context("could not open the window")?;
+    window
+        .global::<ui::Theme>()
+        .set_desktop_dark(probe.get_dark());
+    let weak = window.as_weak();
+    probe.on_dark_changed(move |dark| {
+        if let Some(window) = weak.upgrade() {
+            window.global::<ui::Theme>().set_desktop_dark(dark);
+        }
+    });
+    Ok(probe)
 }
 
 /// Sizes the window and its panes as they were last time.

@@ -56,6 +56,24 @@ mod tests {
         assert_eq!(theme.get_list_row(), LIST_ROW);
     }
 
+    #[test]
+    fn the_system_theme_follows_the_desktop_and_a_choice_overrides_it() {
+        use crate::gui::ui::{MailWindow, ThemePreference};
+        crate::gui::test_support::headless();
+        let window = MailWindow::new().unwrap();
+        let theme = window.global::<Theme>();
+        theme.set_preference(ThemePreference::System);
+        theme.set_desktop_dark(true);
+        assert!(theme.get_dark());
+        theme.set_desktop_dark(false);
+        assert!(!theme.get_dark());
+        theme.set_preference(ThemePreference::Dark);
+        assert!(theme.get_dark());
+        theme.set_desktop_dark(true);
+        theme.set_preference(ThemePreference::Light);
+        assert!(!theme.get_dark());
+    }
+
     /// Regression for #41: bold text in the dark theme was drawn in `on_accent`, near black on the dark panels.
     #[test]
     fn strong_text_stands_out_from_normal_text_in_every_palette() {

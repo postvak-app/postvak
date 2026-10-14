@@ -141,6 +141,7 @@ Last updated: 2026-10-13. Branch `feat/slint-gui`. Read first: the plan `2026-10
   - The reader's sender and address have `PAD` between them, the status dot `PAD` before its text; "Remote content not loaded." elides, so the narrow reader no longer runs past the pane's edge.
   - Kept from the branch: the Keys window, links listed under a plain text body (a `TextInput` keeps the text selectable; `StyledText` would colour links inline but cannot select).
   - Found, not fixed: off macOS the in-window menu bar draws Fluent's light-scheme text (near black) on the oxblood frame, and std widgets (`LineEdit`, `CheckBox`, scroll bars) follow the OS scheme, not `Theme.preference`. `Palette.color-scheme` can be set, but setting it drops the binding `Theme.dark` reads the OS scheme from; needs a choice (a paper strip behind the menu bar, or the OS scheme from Rust).
+- Colour scheme (`fix(gui): std widgets and the menu bar follow the theme`): the mail window sets std-widgets' `Palette.color-scheme` from `Theme.dark`, so fields, check boxes, scroll bars, the tables and the menu bar draw in the theme's scheme; `Theme.desktop-dark` comes from a never-shown `SchemeProbe` window, whose scheme still follows the desktop, for the System theme. Behind the menu bar off macOS: the frame when dark, the pane's paper when light, since std-widgets draw the light scheme's menu text dark.
 - Slint features audit (what we build by hand that Slint 1.18 has):
   - Applied: Ctrl+C copies the HTML selection through a `KeyBinding` (enabled while there is a selection) instead of matching the key in `key-pressed`; a test pastes it into search. `GridLayout` with repeated `Row`s for the tables (above).
   - Already on Slint: `MenuBar`, `ContextMenuArea`, `Tooltip` with `@markdown`, `SystemTrayIcon`, `AboutSlint`, `ListView`, `LineEdit`, `CheckBox`, `Spinner`, `ProgressIndicator`, `@children` in `Dialog`, `Platform.os`, the renderer fallback.
@@ -155,8 +156,8 @@ Last updated: 2026-10-13. Branch `feat/slint-gui`. Read first: the plan `2026-10
 
 ## Next steps (in order)
 
-1. Std widgets (`LineEdit`, `CheckBox`, scroll bars, the menu bar strip) follow the OS colour scheme, not `Theme.preference`; following it needs the OS scheme from Rust (winit's window theme). The menu bar itself is fixed: the window's background behind it is `Palette.background` (`fix(gui): a readable menu bar off macOS`).
-2. Hand checks listed under Task 13: the window on KDE Wayland and macOS (a smoke run needs a short home path, as the socket path is limited to about 100 bytes), a screen reader on the list, an input method in search, the macOS Dock click on a hidden window, X11/Wayland PRIMARY selection after Copy.
+1. Hand checks listed under Task 13 (below).
+2. The same hand checks: the window on KDE Wayland and macOS (a smoke run needs a short home path, as the socket path is limited to about 100 bytes), a screen reader on the list, an input method in search, the macOS Dock click on a hidden window, X11/Wayland PRIMARY selection after Copy.
 3. CI on PR #134: whether Linux draws the snapshots pixel for pixel as macOS did; if not, regenerate them in CI's image and decide which platform is the reference.
 4. Review and merge.
 
