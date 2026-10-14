@@ -6,9 +6,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
-use eframe::egui;
-
-use super::{FetchDone, FetchJob, MAX_REMOTE};
+use super::{FetchDone, FetchJob, MAX_REMOTE, Wake};
 
 /// A larger response counts as failed.
 const MAX_BYTES: u64 = 5 * 1024 * 1024;
@@ -23,7 +21,7 @@ pub(crate) struct Fetcher {
 }
 
 impl Fetcher {
-    pub fn start(ctx: egui::Context) -> Fetcher {
+    pub fn start(wake: Wake) -> Fetcher {
         let (jobs, todo) = mpsc::channel::<FetchJob>();
         let (send, done) = mpsc::channel();
         let spawned = std::thread::Builder::new()
@@ -40,7 +38,7 @@ impl Fetcher {
                     {
                         return;
                     }
-                    ctx.request_repaint();
+                    wake();
                 }
             });
         if let Err(e) = spawned {

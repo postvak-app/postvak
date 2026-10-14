@@ -1,0 +1,45 @@
+// About Postvak: name, version, licence, links, and the Slint attribution its royalty-free licence asks for.
+import { AboutSlint } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Dialog } from "dialogs.slint";
+import { Heading, TextButton } from "common.slint";
+
+export component AboutDialog {
+    in property <string> version;
+    in property <string> description;
+    in property <string> license;
+    in property <string> repository;
+    in property <string> homepage;
+    in property <string> close-icon;
+    callback close();
+    callback open-url(string);
+    width: 420px;
+    Dialog {
+        title: "About Postvak";
+        close-icon: root.close-icon;
+        close => { root.close(); }
+        Heading { text: "Postvak " + root.version; }
+        Text {
+            text: root.description + ".\nLicence: " + root.license;
+            color: Theme.pane.text;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            spacing: Theme.pad / 2;
+            TextButton {
+                text: "Project";
+                palette: Theme.pane;
+                clicked => { root.open-url(root.repository); }
+            }
+            TextButton {
+                text: "Documentation";
+                palette: Theme.pane;
+                clicked => { root.open-url(root.homepage); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        AboutSlint {
+            preferred-height: 120px;
+        }
+    }
+}

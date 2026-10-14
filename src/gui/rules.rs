@@ -2,17 +2,15 @@
 use std::io::Read;
 use std::path::Path;
 
-use eframe::egui;
-
 use crate::message::{clean, parse_headers};
 use crate::paths::Paths;
 use crate::rules::{self, Rule, RuleFile};
 use crate::store::LogEntry;
-use crate::time::local_time;
 use crate::trash::{Trash, TrashEntry};
 
-use super::app::{Account, App, UiAction};
-use super::theme;
+use crate::time::local_time;
+
+use super::state::{Account, App};
 
 /// Entries shown in the Activity view.
 const LOG_LIMIT: u32 = 500;
@@ -42,100 +40,164 @@ impl RulesState {
     }
 }
 
-fn is_pending(rule: &Rule) -> bool {
+pub(crate) fn is_pending(rule: &Rule) -> bool {
     !rule.enabled && rule.proposed_by.is_some()
 }
 
-fn toml_source(rule: &Rule) -> String {
+pub(crate) fn toml_source(rule: &Rule) -> String {
     toml::to_string(&RuleFile {
         rules: vec![rule.clone()],
     })
     .unwrap_or_else(|e| e.to_string())
 }
 
-pub(crate) fn show_rules(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
-    let mut actions = Vec::new();
-    if let Some(error) = &app.rules.error {
-        ui.colored_label(
-            ui.visuals().error_fg_color,
-            format!(
-                "{} — sync keeps the previous rules until this is fixed",
-                clean(error, false)
-            ),
-        );
-    }
-    if ui.button("Open rules.toml").clicked() {
-        actions.push(UiAction::OpenRulesFile);
-    }
-    egui::ScrollArea::vertical()
-        .auto_shrink(false)
-        .show(ui, |ui| {
-            let pending: Vec<&Rule> = app
-                .rules
-                .rules
-                .iter()
-                .filter(|rule| is_pending(rule))
-                .collect();
-            if !pending.is_empty() {
-                ui.heading("Proposals");
+/// A rule waiting for approval, as the Rules view shows it.
+pub(crate) struct Proposal {
+    pub name: String,
+    /// "codes · proposed by agent".
+    pub title: String,
+    pub toml: String,
+}
+
+/// A rule in the Rules view's list.
+pub(crate) struct RuleLine {
+    pub name: String,
+    pub label: String,
+    pub enabled: bool,
+    /// "work · INBOX", or "every account · INBOX".
+    pub scope: String,
+    /// "proposed by agent", or empty.
+    pub by: String,
+}
+
+/// The line above the Rules view when rules.toml does not load.
+pub(crate) fn banner(state: &RulesState) -> Option<String> {
+    let error = state.error.as_deref()?;
+    Some(format!(
+        "{} — sync keeps the previous rules until this is fixed",
+        clean(error, false)
+    ))
+}
+
+pub(crate) fn proposals(state: &RulesState) -> Vec<Proposal> {
+    let pending = state.rules.iter().filter(|rule| is_pending(rule));
+    pending
+        .map(|rule| {
+            let by = rule.proposed_by.as_deref().unwrap_or_default();
+            Proposal {
+                name: rule.name.clone(),
+                title: format!(
+                    "{} · proposed by {}",
+                    clean(&rule.name, false),
+                    clean(by, false)
+                ),
+                toml: clean(&toml_source(rule), true),
             }
-            for rule in pending {
-                egui::Frame::group(ui.style())
-                    .inner_margin(theme::PAD)
-                    .show(ui, |ui| {
-                        let by = rule.proposed_by.as_deref().unwrap_or_default();
-                        ui.strong(format!(
-                            "{} · proposed by {}",
-                            clean(&rule.name, false),
-                            clean(by, false)
-                        ));
-                        ui.label(egui::RichText::new(clean(&toml_source(rule), true)).monospace());
-                        ui.horizontal(|ui| {
-                            if ui.button("Approve").clicked() {
-                                actions.push(UiAction::ApproveRule(rule.name.clone()));
-                            }
-                            if ui.button("Reject").clicked() {
-                                actions.push(UiAction::RejectRule(rule.name.clone()));
-                            }
-                        });
-                    });
-            }
-            ui.heading("Rules");
-            if app.rules.rules.is_empty() {
-                ui.weak("rules.toml has no rules yet.");
-            }
-            theme::grid("rules", ui)
-                .striped(true)
-                .num_columns(3)
-                .show(ui, |ui| {
-                    for rule in &app.rules.rules {
-                        let mut enabled = rule.enabled;
-                        if ui
-                            .checkbox(&mut enabled, clean(&rule.name, false))
-                            .changed()
-                        {
-                            actions.push(UiAction::SetRuleEnabled(rule.name.clone(), enabled));
-                        }
-                        let account = rule
-                            .account
-                            .as_deref()
-                            .map_or("every account".into(), |a| clean(a, false));
-                        let folder = rule
-                            .folder
-                            .as_deref()
-                            .map_or("INBOX".into(), |f| clean(f, false));
-                        ui.label(format!("{account} · {folder}"));
-                        ui.label(
-                            rule.proposed_by
-                                .as_deref()
-                                .map(|by| format!("proposed by {}", clean(by, false)))
-                                .unwrap_or_default(),
-                        );
-                        ui.end_row();
-                    }
-                });
+        })
+        .collect()
+}
+
+pub(crate) fn rule_lines(state: &RulesState) -> Vec<RuleLine> {
+    let line = |rule: &Rule| {
+        let account = rule
+            .account
+            .as_deref()
+            .map_or("every account".into(), |a| clean(a, false));
+        let folder = rule
+            .folder
+            .as_deref()
+            .map_or("INBOX".into(), |f| clean(f, false));
+        RuleLine {
+            name: rule.name.clone(),
+            label: clean(&rule.name, false),
+            enabled: rule.enabled,
+            scope: format!("{account} · {folder}"),
+            by: rule
+                .proposed_by
+                .as_deref()
+                .map(|by| format!("proposed by {}", clean(by, false)))
+                .unwrap_or_default(),
+        }
+    };
+    state.rules.iter().map(line).collect()
+}
+
+/// A table column: its heading, its narrowest width, and its share of the room left over.
+pub(crate) type Column = (&'static str, f32, f32);
+
+pub(crate) const ACTIVITY_COLUMNS: [Column; 6] = [
+    ("Time", 130.0, 0.0),
+    ("Account", 90.0, 0.0),
+    ("Rule", 110.0, 0.0),
+    ("Action", 130.0, 0.0),
+    ("Folder", 90.0, 0.0),
+    ("Subject", 200.0, 1.0),
+];
+pub(crate) const NO_ACTIVITY: &str = "No rule or action has run yet.";
+pub(crate) const TRASH_COLUMNS: [Column; 5] = [
+    ("Deleted", 130.0, 0.0),
+    ("Account", 90.0, 0.0),
+    ("Folder", 90.0, 0.0),
+    ("From", 200.0, 1.0),
+    ("Subject", 200.0, 1.0),
+];
+pub(crate) const NO_TRASH: &str =
+    "Trash is empty. Deleted mail is kept here as .eml for the account's retention period.";
+
+/// How the Activity or Backups table is sorted: by one column's text, up or down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SheetSort {
+    pub column: usize,
+    pub ascending: bool,
+}
+
+/// The order a table shows `rows` in, as indices into them: their own order (newest first), or by `sort`'s column.
+/// The sort is stable, so rows with equal cells keep their own order.
+pub(crate) fn sheet_order<const N: usize>(
+    rows: &[[String; N]],
+    sort: Option<SheetSort>,
+) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..rows.len()).collect();
+    if let Some(SheetSort { column, ascending }) = sort.filter(|sort| sort.column < N) {
+        order.sort_by(|&a, &b| {
+            let by = rows[a][column].cmp(&rows[b][column]);
+            if ascending { by } else { by.reverse() }
         });
-    actions
+    }
+    order
+}
+
+/// The Activity view's rows, cell by cell.
+pub(crate) fn activity_cells(app: &App) -> Vec<[String; 6]> {
+    let row = |(account, entry): &(String, LogEntry)| {
+        [
+            local_time(entry.at, "%Y-%m-%d %H:%M"),
+            account.clone(),
+            clean(&entry.rule_name, false),
+            clean(&entry.action, false),
+            clean(&entry.folder, false),
+            entry
+                .subject
+                .as_deref()
+                .map(|subject| clean(subject, false))
+                .unwrap_or_default(),
+        ]
+    };
+    app.activity_log.iter().map(row).collect()
+}
+
+/// The Backups view's rows, cell by cell.
+pub(crate) fn trash_cells(app: &App) -> Vec<[String; 5]> {
+    let row = |row: &TrashRow| {
+        [
+            local_time(row.entry.saved_at, "%Y-%m-%d %H:%M"),
+            app.accounts[row.account].name.clone(),
+            clean(&row.entry.folder, false),
+            clean(&row.from, false),
+            clean(&row.subject, false),
+        ]
+    };
+    app.trash.iter().map(row).collect()
 }
 
 pub(crate) struct TrashRow {
@@ -196,86 +258,18 @@ fn eml_summary(path: &Path) -> (String, String) {
     )
 }
 
-pub(crate) fn show_activity(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
-    if app.activity_log.is_empty() {
-        ui.weak("No rule or action has run yet.");
-        return Vec::new();
-    }
-    egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
-        theme::grid("log", ui)
-            .striped(true)
-            .num_columns(6)
-            .show(ui, |ui| {
-                for heading in ["Time", "Account", "Rule", "Action", "Folder", "Subject"] {
-                    ui.strong(heading);
-                }
-                ui.end_row();
-                for (account, entry) in &app.activity_log {
-                    ui.label(local_time(entry.at, "%Y-%m-%d %H:%M"));
-                    ui.label(account);
-                    ui.label(clean(&entry.rule_name, false));
-                    ui.label(clean(&entry.action, false));
-                    ui.label(clean(&entry.folder, false));
-                    ui.label(
-                        entry
-                            .subject
-                            .as_deref()
-                            .map(|subject| clean(subject, false))
-                            .unwrap_or_default(),
-                    );
-                    ui.end_row();
-                }
-            });
-    });
-    Vec::new()
-}
-
-pub(crate) fn show_trash(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
-    let mut actions = Vec::new();
-    if app.trash.is_empty() {
-        ui.weak(
-            "Trash is empty. Deleted mail is kept here as .eml for the account's retention period.",
-        );
-        return actions;
-    }
-    egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
-        theme::grid("trash", ui)
-            .striped(true)
-            .num_columns(6)
-            .show(ui, |ui| {
-                for heading in ["Deleted", "Account", "Folder", "From", "Subject", ""] {
-                    ui.strong(heading);
-                }
-                ui.end_row();
-                for row in &app.trash {
-                    ui.label(local_time(row.entry.saved_at, "%Y-%m-%d %H:%M"));
-                    ui.label(&app.accounts[row.account].name);
-                    ui.label(clean(&row.entry.folder, false));
-                    ui.label(clean(&row.from, false));
-                    ui.label(clean(&row.subject, false));
-                    if ui.button("Restore").clicked() {
-                        actions.push(UiAction::Restore(row.account, row.entry.path.clone()));
-                    }
-                    ui.end_row();
-                }
-            });
-    });
-    actions
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::Path;
     use std::time::{Duration, SystemTime};
 
-    use eframe::egui;
-    use egui_kittest::kittest::Queryable;
-
-    use crate::gui::app::View;
-    use crate::gui::test_support::Fixture;
+    use crate::gui::state::View;
+    use crate::gui::test_support::{Fixture, Open, Wires};
     use crate::store::LogEntry;
     use crate::sync::{Command, Event};
     use crate::trash::Trash;
+    use slint::language::StandardListViewItem;
+    use slint::{Model, ModelRc};
 
     const RULES: &str = "# keep me\n[[rules]]\nname = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions = [\"archive\"]\n\n[[rules]]\nname = \"codes\"\nenabled = false\nproposed_by = \"agent\"\nmatch.subject = { contains = \"code\" }\nactions = [\"delete\"]\n";
 
@@ -285,23 +279,16 @@ mod tests {
             .unwrap();
     }
 
-    fn rules_view(
-        fx: &Fixture,
-    ) -> (
-        egui_kittest::Harness<'static, crate::gui::App>,
-        crate::gui::test_support::Wires,
-    ) {
-        std::fs::write(fx.paths.rules_file(), RULES).unwrap();
-        let (mut harness, wires) = fx.harness();
-        harness.state_mut().select_view(View::Rules);
-        harness.run();
-        (harness, wires)
+    fn view(fx: &Fixture, view: View) -> (Open, Wires) {
+        let (open, wires) = fx.window();
+        open.with(|live| live.app.select_view(view));
+        open.tick();
+        (open, wires)
     }
 
-    fn poll(harness: &mut egui_kittest::Harness<'static, crate::gui::App>) {
-        harness.input_mut().time = Some(5.0);
-        harness.step();
-        harness.run();
+    fn rules_view(fx: &Fixture) -> (Open, Wires) {
+        std::fs::write(fx.paths.rules_file(), RULES).unwrap();
+        view(fx, View::Rules)
     }
 
     fn enabled(fx: &Fixture, name: &str) -> bool {
@@ -314,19 +301,10 @@ mod tests {
         let fx = Fixture::new(&["work"]);
         // A clock left from when the rule ran before must not let it act on older mail.
         fx.store("work").restart_rule_clock("codes", 1).unwrap();
-        let (mut harness, wires) = rules_view(&fx);
-        assert!(
-            harness
-                .query_by_label_contains("codes · proposed by agent")
-                .is_some()
-        );
-        assert!(
-            harness
-                .query_by_label_contains("name = \"codes\"")
-                .is_some()
-        );
-        harness.get_by_label("Approve").click();
-        harness.run();
+        let (open, wires) = rules_view(&fx);
+        assert_eq!(open.find("codes · proposed by agent").len(), 1);
+        assert_eq!(open.labels_containing("name = \"codes\"").len(), 1);
+        open.click("Approve");
         assert!(enabled(&fx, "codes"));
         assert!(fx.store("work").rule_first_seen("codes", "", 0).unwrap() > 1);
         assert!(
@@ -335,15 +313,24 @@ mod tests {
                 .starts_with("# keep me\n")
         );
         assert!(wires.sent().is_empty());
-        assert!(harness.query_by_label("Approve").is_none());
+        assert!(open.find("Approve").is_empty());
+    }
+
+    #[test]
+    fn reject_takes_the_proposal_out() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = rules_view(&fx);
+        open.click("Reject");
+        let file = crate::rules::load(&fx.paths.rules_file()).unwrap();
+        assert!(file.rules.iter().all(|r| r.name != "codes"));
+        assert!(open.find("Proposals").is_empty());
     }
 
     #[test]
     fn the_switch_turns_a_rule_off_and_keeps_comments() {
         let fx = Fixture::new(&["work"]);
-        let (mut harness, wires) = rules_view(&fx);
-        harness.get_by_label("newsletters").click();
-        harness.run();
+        let (open, wires) = rules_view(&fx);
+        open.get("newsletters").invoke_accessible_default_action();
         assert!(!enabled(&fx, "newsletters"));
         assert!(
             std::fs::read_to_string(fx.paths.rules_file())
@@ -354,59 +341,63 @@ mod tests {
     }
 
     #[test]
+    fn open_rules_toml_opens_it_in_the_text_editor() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = rules_view(&fx);
+        open.click("Open rules.toml");
+        let path = fx.paths.rules_file().to_string_lossy().into_owned();
+        assert_eq!(crate::gui::test_support::launched(), [path]);
+    }
+
+    #[test]
     fn an_edit_from_outside_reloads_the_view() {
         let fx = Fixture::new(&["work"]);
-        let (mut harness, wires) = rules_view(&fx);
+        let (open, wires) = rules_view(&fx);
         let more = format!(
             "{RULES}\n[[rules]]\nname = \"receipts\"\nmatch.subject = {{ contains = \"receipt\" }}\nactions = [{{ move = \"Receipts\" }}]\n"
         );
         std::fs::write(fx.paths.rules_file(), more).unwrap();
         touch(&fx.paths.rules_file());
-        poll(&mut harness);
-        assert!(harness.query_by_label("receipts").is_some());
+        open.advance(5.0);
+        assert_eq!(open.find("receipts").len(), 1);
         assert!(wires.sent().is_empty());
     }
 
     #[test]
     fn a_parse_error_shows_a_banner_and_keeps_the_rules() {
         let fx = Fixture::new(&["work"]);
-        let (mut harness, _wires) = rules_view(&fx);
+        let (open, _wires) = rules_view(&fx);
         std::fs::write(fx.paths.rules_file(), "[[rules]\nbroken").unwrap();
         touch(&fx.paths.rules_file());
-        poll(&mut harness);
-        assert!(
-            harness
-                .query_by_label_contains("sync keeps the previous rules")
-                .is_some()
+        open.advance(5.0);
+        assert_eq!(
+            open.labels_containing("sync keeps the previous rules")
+                .len(),
+            1
         );
-        assert!(harness.query_by_label("newsletters").is_some());
+        assert_eq!(open.find("newsletters").len(), 1);
     }
 
     #[test]
     fn a_config_change_asks_to_reopen_the_window() {
         let fx = Fixture::new(&["work"]);
-        let (mut harness, _wires) = fx.harness();
+        let (open, _wires) = fx.window();
         touch(&fx.paths.config_file());
-        poll(&mut harness);
-        assert!(
-            harness
-                .query_by_label("config.toml changed — reopen the window to show it")
-                .is_some()
+        open.advance(5.0);
+        assert_eq!(
+            open.find("config.toml changed — reopen the window to show it")
+                .len(),
+            1
         );
     }
 
     #[test]
     fn the_theme_switch_raises_no_banner() {
         let fx = Fixture::new(&["work"]);
-        let (mut harness, _wires) = fx.harness();
-        harness.get_by_label("Dark").click();
-        harness.run();
-        poll(&mut harness);
-        assert!(
-            harness
-                .query_by_label_contains("reopen the window")
-                .is_none()
-        );
+        let (open, _wires) = fx.window();
+        open.click("Dark");
+        open.advance(5.0);
+        assert!(open.labels_containing("reopen the window").is_empty());
     }
 
     fn logged(fx: &Fixture, account: &str, at: i64, subject: &str) {
@@ -439,76 +430,132 @@ mod tests {
         logged(&fx, "work", 100, "work old");
         logged(&fx, "home", 200, "home new");
         logged(&fx, "work", 300, "work newest");
-        let (mut harness, _wires) = fx.harness();
-        harness.state_mut().select_view(View::Activity);
-        harness.run();
-        let order: Vec<(&str, Option<&str>)> = harness
-            .state()
-            .activity_log
+        let (open, _wires) = view(&fx, View::Activity);
+        let order: Vec<(String, Option<String>)> = open.with(|live| {
+            live.app
+                .activity_log
+                .iter()
+                .map(|(account, e)| (account.clone(), e.subject.clone()))
+                .collect()
+        });
+        let expected = [
+            ("work", "work newest"),
+            ("home", "home new"),
+            ("work", "work old"),
+        ];
+        let expected: Vec<(String, Option<String>)> = expected
             .iter()
-            .map(|(account, e)| (account.as_str(), e.subject.as_deref()))
+            .map(|(a, s)| (a.to_string(), Some(s.to_string())))
             .collect();
+        assert_eq!(order, expected);
+        assert_eq!(open.find("work newest").len(), 1);
+        assert_eq!(open.find("Subject").len(), 1);
+    }
+
+    #[test]
+    fn a_click_on_a_heading_sorts_the_table_and_a_second_click_reverses_it() {
+        let fx = Fixture::new(&["home", "work"]);
+        logged(&fx, "work", 100, "b old");
+        logged(&fx, "home", 200, "c new");
+        logged(&fx, "work", 300, "a newest");
+        let (open, _wires) = view(&fx, View::Activity);
+        let subjects = || -> Vec<String> {
+            let cells = open.window().get_sheet_cells();
+            let row = |r: ModelRc<StandardListViewItem>| r.row_data(5).unwrap().text.to_string();
+            cells.iter().map(row).collect()
+        };
+        assert_eq!(subjects(), ["a newest", "c new", "b old"]);
+        open.tap("Subject");
+        assert_eq!(subjects(), ["a newest", "b old", "c new"]);
+        open.tap("Subject");
+        assert_eq!(subjects(), ["c new", "b old", "a newest"]);
+        open.with(|live| live.app.select_view(View::Activity));
+        open.tick();
         assert_eq!(
-            order,
-            [
-                ("work", Some("work newest")),
-                ("home", Some("home new")),
-                ("work", Some("work old"))
-            ]
+            subjects(),
+            ["a newest", "c new", "b old"],
+            "a view opens unsorted"
         );
-        assert!(harness.query_by_label("work newest").is_some());
+    }
+
+    #[test]
+    fn a_sorted_table_orders_by_the_column_and_keeps_ties_in_their_own_order() {
+        let rows = [["b", "1"], ["a", "2"], ["b", "3"]].map(|row| row.map(String::from));
+        assert_eq!(super::sheet_order(&rows, None), [0, 1, 2]);
+        let up = super::SheetSort {
+            column: 0,
+            ascending: true,
+        };
+        assert_eq!(super::sheet_order(&rows, Some(up)), [1, 0, 2]);
+        let down = super::SheetSort {
+            ascending: false,
+            ..up
+        };
+        assert_eq!(super::sheet_order(&rows, Some(down)), [0, 2, 1]);
+        let missing = super::SheetSort {
+            column: 9,
+            ascending: true,
+        };
+        assert_eq!(super::sheet_order(&rows, Some(missing)), [0, 1, 2]);
+    }
+
+    #[test]
+    fn empty_activity_and_backups_say_so() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = view(&fx, View::Activity);
+        assert_eq!(open.find(super::NO_ACTIVITY).len(), 1);
+        open.with(|live| live.app.select_view(View::Trash));
+        open.tick();
+        assert_eq!(open.find(super::NO_TRASH).len(), 1);
+    }
+
+    #[test]
+    fn down_chooses_a_backup_from_the_keyboard() {
+        let fx = Fixture::new(&["work"]);
+        let file = backup(&fx);
+        let (open, wires) = view(&fx, View::Trash);
+        open.press("down");
+        open.click("Restore");
+        assert_eq!(
+            wires.sent(),
+            [("work".to_string(), Command::Restore { file })]
+        );
     }
 
     #[test]
     fn trash_lists_backups_and_restore_sends_the_command() {
         let fx = Fixture::new(&["work"]);
         let file = backup(&fx);
-        let (mut harness, wires) = fx.harness();
-        harness.state_mut().select_view(View::Trash);
-        harness.run();
-        assert!(harness.query_by_label("your receipt").is_some());
-        assert!(harness.query_by_label("Shop <shop@example.com>").is_some());
-        harness.get_by_label("Restore").click();
-        harness.run();
+        let (open, wires) = view(&fx, View::Trash);
+        assert_eq!(open.find("your receipt").len(), 1);
+        assert_eq!(open.find("Shop <shop@example.com>").len(), 1);
+        open.click("Restore");
+        assert!(
+            wires.sent().is_empty(),
+            "Restore does nothing before a backup is chosen"
+        );
+        open.tap("your receipt");
+        open.click("Restore");
         assert_eq!(
             wires.sent(),
             [("work".to_string(), Command::Restore { file: file.clone() })]
         );
-        assert!(harness.query_by_label("your receipt").is_none());
+        assert!(open.find("your receipt").is_empty());
         std::fs::remove_file(&file).unwrap();
-        wires
-            .events
-            .send(Event::Restored {
-                account: "work".into(),
-                folder: "INBOX".into(),
-                request: 0,
-            })
-            .unwrap();
-        harness.run();
-        assert!(harness.query_by_label("your receipt").is_none());
-        assert!(
-            harness
-                .state()
+        let restored = Event::Restored {
+            account: "work".into(),
+            folder: "INBOX".into(),
+            request: 0,
+        };
+        wires.events.send(restored).unwrap();
+        open.tick();
+        assert!(open.find("your receipt").is_empty());
+        let history = open.with(|live| {
+            live.app
                 .history
                 .iter()
                 .any(|line| line.text == "work: restored to INBOX")
-        );
-    }
-
-    #[test]
-    fn question_mark_shows_the_keys_and_escape_closes_them() {
-        let fx = Fixture::new(&["work"]);
-        let (mut harness, _wires) = fx.harness();
-        harness.event(egui::Event::Text("?".into()));
-        harness.run();
-        assert!(harness.state().help_open);
-        assert!(
-            harness
-                .query_by_label_contains("search this account")
-                .is_some()
-        );
-        harness.key_press(egui::Key::Escape);
-        harness.run();
-        assert!(!harness.state().help_open);
+        });
+        assert!(history);
     }
 }

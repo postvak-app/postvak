@@ -1,0 +1,195 @@
+// The small windows over the panes: Keys and History. Esc closes them through the app, the X here.
+import { Button, LineEdit, ListView, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Heading, IconButton } from "common.slint";
+
+export struct KeyHelp {
+    keys: string,
+    what: string,
+}
+
+// A titled box with a close button; its content goes under the title.
+export component Dialog inherits Rectangle {
+    in property <string> title;
+    in property <string> close-icon;
+    callback close();
+
+    background: Theme.pane.background;
+    border-color: Theme.pane.border;
+    border-width: 1px;
+    border-radius: Theme.pad;
+    drop-shadow-blur: Theme.pad;
+    drop-shadow-color: #0004;
+    accessible-role: groupbox;
+    accessible-label: root.title;
+
+    // Clicks stay in the dialog.
+    TouchArea { }
+
+    VerticalLayout {
+        padding: Theme.inset;
+        spacing: Theme.pad;
+        HorizontalLayout {
+            Heading {
+                accessible-role: none;
+                text: root.title;
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            IconButton {
+                icon: root.close-icon;
+                name: "Close";
+                hint: "Close · Esc";
+                palette: Theme.pane;
+                clicked => { root.close(); }
+            }
+        }
+        @children
+    }
+}
+
+export component KeysDialog {
+    in property <[KeyHelp]> keys;
+    in property <string> close-icon;
+    callback close();
+    width: 560px;
+    Dialog {
+        title: "Keys";
+        close-icon: root.close-icon;
+        close => { root.close(); }
+        for key in root.keys: HorizontalLayout {
+            spacing: Theme.inset;
+            Text {
+                width: 200px;
+                text: key.keys;
+                font-weight: 600;
+                color: Theme.pane.strong;
+                wrap: word-wrap;
+            }
+            Text {
+                horizontal-stretch: 1;
+                text: key.what;
+                color: Theme.pane.text;
+                wrap: word-wrap;
+            }
+        }
+    }
+}
+
+export component HistoryDialog {
+    in property <[string]> lines;
+    in property <string> close-icon;
+    callback close();
+    width: 520px;
+    Dialog {
+        title: "History";
+        close-icon: root.close-icon;
+        close => { root.close(); }
+        if root.lines.length == 0: Text {
+            text: "Nothing has happened yet.";
+            color: Theme.pane.muted;
+        }
+        ScrollView {
+            height: min(360px, history.preferred-height);
+            history := VerticalLayout {
+                for line in root.lines: Text {
+                    text: line;
+                    color: Theme.pane.text;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+}
+
+// The `m` picker: type to filter the folders, Enter or a click moves.
+export component MoveDialog {
+    in property <[string]> targets;
+    in property <string> close-icon;
+    callback filter-edited(string);
+    callback accepted();
+    callback chosen(int);
+    callback close();
+    width: 320px;
+    Dialog {
+        title: "Move to";
+        close-icon: root.close-icon;
+        close => { root.close(); }
+        LineEdit {
+            height: Theme.control;
+            placeholder-text: "Folder";
+            accessible-label: "Folder";
+            init => { self.focus(); }
+            edited(text) => { root.filter-edited(text); }
+            accepted => { root.accepted(); }
+        }
+        ScrollView {
+            height: min(320px, names.preferred-height);
+            names := VerticalLayout {
+                for target[i] in root.targets: TouchArea {
+                    height: Theme.row;
+                    accessible-role: button;
+                    accessible-label: target;
+                    accessible-action-default => { root.chosen(i); }
+                    clicked => { root.chosen(i); }
+                    Rectangle {
+                        border-radius: Theme.pad / 2;
+                        background: parent.has-hover ? Theme.pane.hover : transparent;
+                    }
+                    Text {
+                        accessible-role: none;
+                        x: Theme.pad;
+                        text: target;
+                        color: Theme.pane.text;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The raw message, a row per line, with Copy.
+export component SourceDialog {
+    in property <[string]> rows;
+    // The whole cleaned text, for Copy.
+    in property <string> text;
+    in property <length> widest;
+    in property <string> close-icon;
+    callback close();
+    width: 720px;
+    height: 480px;
+    Dialog {
+        title: "Message source";
+        close-icon: root.close-icon;
+        close => { root.close(); }
+        HorizontalLayout {
+            Button {
+                text: "Copy";
+                clicked => {
+                    buffer.select-all();
+                    buffer.copy();
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        buffer := TextInput {
+            visible: false;
+            height: 0;
+            read-only: true;
+            text: root.text;
+            accessible-role: none;
+        }
+        ListView {
+            vertical-stretch: 1;
+            content-width: max(self.visible-width, root.widest);
+            for row in root.rows: Text {
+                height: Theme.row;
+                text: row;
+                font-family: Theme.mono-font;
+                color: Theme.pane.text;
+                vertical-alignment: center;
+            }
+        }
+    }
+}

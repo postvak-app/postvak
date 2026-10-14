@@ -3,12 +3,7 @@
 use std::fmt;
 use std::path::Path;
 
-use eframe::egui;
-
 use crate::message::clean;
-
-use super::app::central_panel;
-use super::theme;
 
 /// Where the docs explain `postvak account add` and config.toml.
 pub(crate) const ACCOUNTS_DOCS: &str = "https://postvak.pataar.nl/accounts.html";
@@ -60,49 +55,11 @@ impl Problem {
     }
 }
 
-/// Draws the problem; true when the user asked to close the window.
-pub(crate) fn show(problem: &Problem, ui: &mut egui::Ui) -> bool {
-    let mut close = false;
-    central_panel(ui, false).show(ui, |ui| {
-        ui.heading(&problem.summary);
-        ui.add_space(8.0);
-        ui.label(&problem.fix);
-        if let Some((label, url)) = problem.link {
-            ui.hyperlink_to(label, url);
-        }
-        if let Some(detail) = &problem.detail {
-            ui.add_space(8.0);
-            egui::ScrollArea::vertical()
-                .max_height(ui.available_height() - 40.0)
-                .show(ui, |ui| {
-                    ui.colored_label(theme::palette(ui).error, detail);
-                });
-        }
-        ui.add_space(12.0);
-        close = ui.button("Close").clicked();
-    });
-    close
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
-    use eframe::egui;
-    use egui_kittest::Harness;
-    use egui_kittest::kittest::Queryable;
-
     use super::*;
-    use crate::gui::Explain;
-
-    fn harness(problem: Problem) -> Harness<'static, Explain> {
-        Harness::builder()
-            .with_size(egui::vec2(520.0, 260.0))
-            .build_ui_state(
-                |ui, explain: &mut Explain| explain.show(ui),
-                Explain(problem),
-            )
-    }
 
     #[test]
     fn no_accounts_points_to_account_add_and_the_docs() {
@@ -138,58 +95,5 @@ mod tests {
         assert_eq!(problem.fix, "Run `postvak gui` in a terminal to see more.");
         assert_eq!(problem.detail.as_deref(), Some("no home directory found"));
         assert_eq!(problem.link, None);
-    }
-
-    #[test]
-    fn the_window_states_the_missing_account() {
-        let mut harness = harness(Problem::of(&anyhow::Error::new(NoAccounts), None));
-        harness.run();
-        harness.get_by_label("Postvak has no mail account set up yet.");
-        harness.get_by_label_contains("Run `postvak account add` in a terminal");
-        harness.get_by_label("Close");
-    }
-
-    #[test]
-    fn the_docs_link_opens_the_account_setup_page() {
-        let mut harness = harness(Problem::of(&anyhow::Error::new(NoAccounts), None));
-        harness.run();
-        harness.get_by_label("Setting up an account").click();
-        harness.step();
-        let opened: Vec<_> = harness
-            .output()
-            .platform_output
-            .commands
-            .iter()
-            .filter_map(|command| match command {
-                egui::OutputCommand::OpenUrl(open) => Some(open.url.clone()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(opened, [ACCOUNTS_DOCS]);
-    }
-
-    #[test]
-    fn the_window_shows_the_error_and_the_daemon_log() {
-        let error = anyhow::anyhow!("could not start the daemon");
-        let mut harness = harness(Problem::of(&error, Some(Path::new("/state/daemon.log"))));
-        harness.run();
-        harness.get_by_label("Postvak could not start.");
-        harness.get_by_label("could not start the daemon");
-        harness.get_by_label("The background sync logs to /state/daemon.log");
-    }
-
-    #[test]
-    fn close_asks_the_window_to_close() {
-        let mut harness = harness(Problem::of(&anyhow::Error::new(NoAccounts), None));
-        harness.run();
-        let closes = |harness: &Harness<'_, Explain>| {
-            harness.output().viewport_output[&egui::ViewportId::ROOT]
-                .commands
-                .contains(&egui::ViewportCommand::Close)
-        };
-        assert!(!closes(&harness));
-        harness.get_by_label("Close").click();
-        harness.step();
-        assert!(closes(&harness));
     }
 }

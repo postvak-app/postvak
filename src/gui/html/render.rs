@@ -11,13 +11,12 @@ use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz_dom::{BaseDocument, DEFAULT_CSS, DocumentConfig, FontContext, QualName, local_name, ns};
 use blitz_html::DocumentHtmlParser;
 use blitz_traits::shell::{ColorScheme, Viewport};
-use eframe::egui;
 use fontique::{Blob, Collection, CollectionOptions, FallbackKey, Script, SourceCache};
 use html5ever::tendril::TendrilSink;
 use html5ever::tree_builder::TreeBuilderOpts;
 
 use super::net;
-use super::{Load, Reply, Request, STRIP};
+use super::{Load, Pixels, Reply, Request, STRIP, Wake};
 
 /// The thread's name, which the panic hook uses to keep Blitz's panic messages, which can quote the mail, off stderr.
 const THREAD: &str = "html-render";
@@ -30,18 +29,19 @@ const BASE: &str = "postvak://mail/";
 const MAIL_CSS: &str = "img { max-width: 100%; height: auto; } body { overflow-wrap: anywhere; }";
 
 /// The render thread and its two channels. Dropping it ends the thread once it finishes its current job.
-pub(crate) struct Renderer {
-    ctx: egui::Context,
+pub struct Renderer {
+    wake: Wake,
     replies: Receiver<Reply>,
     requests: Sender<Request>,
 }
 
 impl Renderer {
-    pub fn start(ctx: egui::Context) -> Renderer {
+    /// Starts the thread; `wake` runs after each reply, so the window draws it.
+    pub fn start(wake: Wake) -> Renderer {
         quiet_panics();
         let (requests, jobs) = mpsc::channel();
         let (done, replies) = mpsc::channel();
-        let waker = ctx.clone();
+        let waker = wake.clone();
         let spawned = std::thread::Builder::new()
             .name(THREAD.into())
             .spawn(move || run(&jobs, &done, &waker, handle));
@@ -49,7 +49,7 @@ impl Renderer {
             log::warn!("could not start the HTML renderer: {e}");
         }
         Renderer {
-            ctx,
+            wake,
             replies,
             requests,
         }
@@ -60,7 +60,7 @@ impl Renderer {
         if let Err(mpsc::SendError(request)) = self.requests.send(request)
             && matches!(request, Request::Load(_))
         {
-            *self = Renderer::start(self.ctx.clone());
+            *self = Renderer::start(self.wake.clone());
             let _ = self.requests.send(request);
         }
     }
@@ -84,7 +84,7 @@ struct Current {
 fn run(
     jobs: &Receiver<Request>,
     done: &Sender<Reply>,
-    ctx: &egui::Context,
+    wake: &Wake,
     mut handle: impl FnMut(&mut Option<Current>, Request) -> Option<Reply>,
 ) {
     let mut current: Option<Current> = None;
@@ -114,7 +114,7 @@ fn run(
                 if done.send(reply).is_err() {
                     return;
                 }
-                ctx.request_repaint();
+                wake();
             }
         }
     }
@@ -209,7 +209,7 @@ fn layout(load: Load) -> (Current, Reply) {
     (current, reply)
 }
 
-fn paint(current: &mut Current, strip: u32) -> Option<egui::ColorImage> {
+fn paint(current: &mut Current, strip: u32) -> Option<Pixels> {
     let top = strip.checked_mul(STRIP)?;
     let height = current.height.checked_sub(top)?.min(STRIP);
     if height == 0 {
@@ -229,9 +229,7 @@ fn paint(current: &mut Current, strip: u32) -> Option<egui::ColorImage> {
         |scene| blitz_paint::paint_scene(scene, doc, scale, width, height, 0, 0),
         &mut rgba,
     );
-    let size = [usize::try_from(width).ok()?, usize::try_from(height).ok()?];
-    (rgba.len() == size[0] * size[1] * 4)
-        .then(|| egui::ColorImage::from_rgba_premultiplied(size, &rgba))
+    Pixels::new(width, height, rgba)
 }
 
 /// Mail is HTML whatever it declares: Blitz's own entry point sniffs `xmlns="…xhtml"` and parses as XML, where a void
@@ -254,13 +252,13 @@ fn parse(html: &str, config: DocumentConfig) -> BaseDocument {
 
 /// Selects the text from `from` to `to` (CSS pixels) and returns it. A `to` off any text keeps the selection as it
 /// was, so a drag past the end of a paragraph does not drop it.
-fn select(doc: &mut BaseDocument, from: egui::Pos2, to: egui::Pos2) -> Option<String> {
+fn select(doc: &mut BaseDocument, from: [f32; 2], to: [f32; 2]) -> Option<String> {
     if from == to {
         doc.clear_text_selection();
         return None;
     }
-    if let Some((anchor, anchor_offset)) = doc.find_text_position(from.x, from.y)
-        && let Some((focus, focus_offset)) = doc.find_text_position(to.x, to.y)
+    if let Some((anchor, anchor_offset)) = doc.find_text_position(from[0], from[1])
+        && let Some((focus, focus_offset)) = doc.find_text_position(to[0], to[1])
     {
         doc.set_text_selection(anchor, anchor_offset, focus, focus_offset);
     }
@@ -310,15 +308,12 @@ fn physical(points: f32, scale: f32) -> u32 {
     (points * scale).ceil() as u32
 }
 
-/// System fonts, except in tests: there the font egui bundles, so a render looks the same on every machine.
+/// System fonts, except in tests: there the bundled Hanken Grotesk alone, so a render looks the same on every machine.
 fn fonts() -> Option<FontContext> {
     #[cfg(test)]
     {
-        let fonts = egui::FontDefinitions::default();
-        fonts
-            .font_data
-            .get("Ubuntu-Light")
-            .map(|data| blitz_dom::build_single_font_ctx(&data.font))
+        let font = include_bytes!("../../../assets/fonts/HankenGrotesk-Medium.ttf");
+        Some(blitz_dom::build_single_font_ctx(font))
     }
     #[cfg(not(test))]
     Some(system_fonts())
@@ -386,11 +381,11 @@ fn quiet_panics() {
 #[cfg(test)]
 impl Renderer {
     /// A renderer with no thread: the test reads what the app sent and answers in its place.
-    pub fn fake(ctx: egui::Context) -> (Renderer, Receiver<Request>, Sender<Reply>) {
+    pub fn fake(wake: Wake) -> (Renderer, Receiver<Request>, Sender<Reply>) {
         let (requests, jobs) = mpsc::channel();
         let (done, replies) = mpsc::channel();
         let renderer = Renderer {
-            ctx,
+            wake,
             replies,
             requests,
         };
@@ -402,6 +397,47 @@ impl Renderer {
 mod tests {
     use super::super::Fetched;
     use super::*;
+
+    /// A pixel of a painted strip, premultiplied RGBA, for asserting on colours.
+    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+    struct Colour([u8; 4]);
+
+    impl Colour {
+        fn r(self) -> u8 {
+            self.0[0]
+        }
+
+        fn g(self) -> u8 {
+            self.0[1]
+        }
+
+        fn b(self) -> u8 {
+            self.0[2]
+        }
+
+        fn to_array(self) -> [u8; 4] {
+            self.0
+        }
+    }
+
+    /// A strip's size and its pixels as colours, row by row.
+    struct Strip {
+        size: [usize; 2],
+        pixels: Vec<Colour>,
+    }
+
+    fn colours(pixels: &Pixels) -> Strip {
+        Strip {
+            size: [pixels.width() as usize, pixels.height() as usize],
+            pixels: pixels
+                .rgba()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|&p| Colour(p))
+                .collect(),
+        }
+    }
 
     const NEWSLETTER: &str = include_str!("../../../tests/fixtures/newsletter.html");
 
@@ -427,7 +463,8 @@ mod tests {
         }
         drop(send);
         let (done, replies) = mpsc::channel();
-        run(&jobs, &done, &egui::Context::default(), handler);
+        let wake: Wake = Arc::new(|| {});
+        run(&jobs, &done, &wake, handler);
         replies.try_iter().collect()
     }
 
@@ -459,11 +496,17 @@ mod tests {
         ) else {
             panic!("no strip");
         };
+        let image = colours(&image);
         assert_eq!(image.size, [700, 512]);
         // The header bar is dark blue, the page around it light grey.
         let at = |x: usize, y: usize| image.pixels[y * 700 + x];
         assert_eq!(at(10, 10).to_array()[..3], [0xf2, 0xf4, 0xf6]);
-        assert!(at(100, 60).b() > at(100, 60).r() + 20, "{:?}", at(100, 60));
+        // Right of the title, so the bundled font's glyphs never land on it.
+        let header = at(600, 40);
+        assert!(
+            u16::from(header.b()) > u16::from(header.r()) + 20,
+            "{header:?}"
+        );
         // The second strip holds the quote, the code block and the footer, not blank page.
         let Some(Reply::Strip { image, .. }) = handle(
             &mut current,
@@ -474,6 +517,7 @@ mod tests {
         ) else {
             panic!("no second strip");
         };
+        let image = colours(&image);
         let colours: std::collections::HashSet<_> = image.pixels.iter().collect();
         assert!(colours.len() > 20, "{} colours", colours.len());
         // A stale generation gets no answer; a point over the button finds its link.
@@ -511,7 +555,8 @@ mod tests {
         let Some(Reply::Strip { image, .. }) = handle(&mut current, paint) else {
             panic!("no strip");
         };
-        let red = |p: &&egui::Color32| p.r() > 150 && p.g() < 80 && p.b() < 80;
+        let image = colours(&image);
+        let red = |p: &&Colour| p.r() > 150 && p.g() < 80 && p.b() < 80;
         image.pixels.iter().filter(red).count()
     }
 
@@ -524,6 +569,31 @@ mod tests {
     }
 
     #[test]
+    fn a_strip_is_plain_premultiplied_rgba() {
+        let html = "<p style=\"font-size:40px;margin:0\">HELLO WORLD</p>";
+        let mut current = None;
+        handle(&mut current, load(1, html, 600.0));
+        let paint = Request::Paint {
+            generation: 1,
+            strip: 0,
+        };
+        let Some(Reply::Strip { image, .. }) = handle(&mut current, paint) else {
+            panic!("no strip");
+        };
+        assert_eq!(image.width(), 600);
+        let len = usize::try_from(image.width() * image.height() * 4).unwrap();
+        assert_eq!(image.rgba().len(), len);
+        // Premultiplied: no channel exceeds its pixel's alpha.
+        assert!(
+            image
+                .rgba()
+                .chunks(4)
+                .all(|p| p[..3].iter().all(|&c| c <= p[3]))
+        );
+        assert!(image.rgba().chunks(4).any(|p| p[3] > 0), "nothing painted");
+    }
+
+    #[test]
     fn a_drag_selects_text_and_paints_the_highlight() {
         let html = "<p style=\"font-size:40px;margin:0\">HELLO WORLD</p>";
         let mut current = None;
@@ -532,8 +602,8 @@ mod tests {
             current,
             Request::Select {
                 generation: 1,
-                from: egui::pos2(from.0, from.1),
-                to: egui::pos2(to.0, to.1),
+                from: [from.0, from.1],
+                to: [to.0, to.1],
             },
         ) {
             Some(Reply::Selected { text, .. }) => text,
@@ -554,7 +624,7 @@ mod tests {
             strip: 0,
         };
         let plain = match handle(&mut current, paint) {
-            Some(Reply::Strip { image, .. }) => image,
+            Some(Reply::Strip { image, .. }) => colours(&image),
             _ => panic!("no strip"),
         };
         let _ = select(&mut current, (10.0, 20.0), (590.0, 20.0));
@@ -565,6 +635,7 @@ mod tests {
         let Some(Reply::Strip { image, .. }) = handle(&mut current, paint) else {
             panic!("no strip");
         };
+        let image = colours(&image);
         assert_ne!(image.pixels, plain.pixels, "the selection is not painted");
     }
 
@@ -572,8 +643,8 @@ mod tests {
     fn a_batch_keeps_only_the_newest_selection_paint_and_hit() {
         let select = |x| Request::Select {
             generation: 1,
-            from: egui::pos2(0.0, 0.0),
-            to: egui::pos2(x, 0.0),
+            from: [0.0, 0.0],
+            to: [x, 0.0],
         };
         let paint = |strip| Request::Paint {
             generation: 1,
@@ -590,7 +661,7 @@ mod tests {
         replies(requests, |_, request| {
             seen.push(match request {
                 Request::Load(_) => "load".to_string(),
-                Request::Select { to, .. } => format!("select {}", to.x),
+                Request::Select { to, .. } => format!("select {}", to[0]),
                 Request::Paint { strip, .. } => format!("paint {strip}"),
                 Request::Hit { .. } => "hit".to_string(),
             });
@@ -634,10 +705,8 @@ mod tests {
             shared: false,
             system_fonts: false,
         });
-        let fonts = egui::FontDefinitions::default();
-        let data = fonts.font_data.get("Ubuntu-Light").unwrap();
-        let registered =
-            collection.register_fonts(Blob::new(Arc::new(data.font.to_vec()) as _), None);
+        let data = include_bytes!("../../../assets/fonts/HankenGrotesk-Medium.ttf");
+        let registered = collection.register_fonts(Blob::new(Arc::new(data.to_vec()) as _), None);
         let id = registered[0].0;
         let name = collection.family_name(id).unwrap().to_string();
         append_fallbacks(&mut collection, &["Not Installed", &name]);
@@ -695,7 +764,8 @@ mod tests {
         ) else {
             panic!("no strip");
         };
-        let red = egui::Color32::from_rgb(255, 0, 0);
+        let image = colours(&image);
+        let red = Colour([255, 0, 0, 255]);
         assert!(image.pixels.contains(&red));
     }
 

@@ -1,0 +1,404 @@
+// The body pane: the message's actions, its header, attachments, and the text with its links. `body.rs` words it.
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Heading, IconButton, Link, TextButton } from "common.slint";
+
+export struct BodyInfo {
+    // Instead of a message, when set.
+    empty: string,
+    subject: string,
+    initials: string,
+    name: string,
+    address: string,
+    short-date: string,
+    full-date: string,
+    to: string,
+    cc: string,
+    downloaded: bool,
+    missing: string,
+    has-html: bool,
+    shows-html: bool,
+    text-note: string,
+    attachments: [string],
+    saved: string,
+    links: [string],
+}
+
+export struct StripData {
+    image: image,
+    y: length,
+    width: length,
+    height: length,
+}
+
+// What the HTML page says about remote content.
+export enum Remote { none, not-loaded, loading }
+
+export struct PageInfo {
+    // Laid out: the page and its strips can show.
+    ready: bool,
+    width: length,
+    height: length,
+    remote: Remote,
+    // The link under the pointer, or empty.
+    link: string,
+}
+
+// The laid-out HTML page as painted strips. Hover asks which link is under the pointer, a drag selects text, a click
+// opens a link; every position is in page points.
+component HtmlView inherits VerticalLayout {
+    in property <PageInfo> page;
+    in property <[StripData]> strips;
+    callback width-changed(length);
+    callback shown(length, length);
+    callback hover(length, length);
+    callback leave();
+    callback select(length, length, length, length);
+    callback clicked(length, length);
+    callback load-remote();
+    callback open-link();
+    callback copy-link();
+
+    spacing: Theme.pad / 2;
+
+    if root.page.remote == Remote.loading: Text {
+        text: "Loading remote content…";
+        color: Theme.pane.muted;
+    }
+    if root.page.remote == Remote.not-loaded: HorizontalLayout {
+        spacing: Theme.pad;
+        Text {
+            text: "Remote content not loaded.";
+            color: Theme.pane.muted;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        TextButton {
+            text: "Load remote content";
+            framed: true;
+            palette: Theme.pane;
+            clicked => { root.load-remote(); }
+        }
+        Rectangle { horizontal-stretch: 1; }
+    }
+    if !root.page.ready: Text {
+        text: "Rendering…";
+        color: Theme.pane.muted;
+    }
+
+    flick := Flickable {
+        vertical-stretch: 1;
+        // A drag selects text; the wheel and the scroll bars move the page.
+        interactive: false;
+        content-width: max(root.page.width, self.width);
+        content-height: root.page.height;
+        init => {
+            root.width-changed(self.width);
+            root.shown(-self.content-y, -self.content-y + self.height);
+        }
+        changed width => { root.width-changed(self.width); }
+        changed height => { root.shown(-self.content-y, -self.content-y + self.height); }
+        changed content-y => { root.shown(-self.content-y, -self.content-y + self.height); }
+
+        if root.page.ready: Rectangle {
+            width: max(root.page.width, flick.width);
+            height: root.page.height;
+            background: white;
+            border-width: 1px;
+            border-color: Theme.pane.border;
+        }
+        for strip in root.strips: Image {
+            x: 0;
+            y: strip.y;
+            width: strip.width;
+            height: strip.height;
+            source: strip.image;
+        }
+        ContextMenuArea {
+            width: max(root.page.width, flick.width);
+            height: root.page.height;
+            Menu {
+                MenuItem {
+                    title: "Open link";
+                    enabled: root.page.link != "";
+                    activated => { root.open-link(); }
+                }
+                MenuItem {
+                    title: "Copy link";
+                    enabled: root.page.link != "";
+                    activated => { root.copy-link(); }
+                }
+            }
+            touch := TouchArea {
+                mouse-cursor: root.page.link != "" ? pointer : text;
+                accessible-role: none;
+                changed mouse-x => { self.track(); }
+                changed mouse-y => { self.track(); }
+                changed has-hover => {
+                    if (!self.has-hover) {
+                        root.leave();
+                    }
+                }
+                clicked => { root.clicked(self.mouse-x, self.mouse-y); }
+                function track() {
+                    if (self.pressed) {
+                        root.select(self.pressed-x, self.pressed-y, self.mouse-x, self.mouse-y);
+                    } else if (self.has-hover) {
+                        root.hover(self.mouse-x, self.mouse-y);
+                    }
+                }
+                if root.page.link != "": Tooltip { text: @markdown("\{root.page.link}"); }
+            }
+        }
+    }
+}
+
+// A header line: a muted label, then the value.
+component HeaderLine inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+    height: Theme.row;
+    spacing: Theme.pad / 2;
+    Text {
+        text: root.label;
+        color: Theme.pane.muted;
+        vertical-alignment: center;
+    }
+    Text {
+        horizontal-stretch: 1;
+        text: root.value;
+        color: Theme.pane.text;
+        overflow: elide;
+        vertical-alignment: center;
+    }
+}
+
+export component BodyPane inherits Rectangle {
+    in property <BodyInfo> info;
+    // The cleaned text, or empty while it is missing.
+    in property <string> text;
+    in property <string> save-icon;
+    in property <string> source-icon;
+    callback toggle-html();
+    callback save-eml();
+    callback open-source();
+    callback save-attachment(int);
+    callback open-link(string);
+    in property <PageInfo> page;
+    in property <[StripData]> strips;
+    callback page-width(length);
+    callback page-visible(length, length);
+    callback page-hover(length, length);
+    callback page-leave();
+    callback page-select(length, length, length, length);
+    callback page-clicked(length, length);
+    callback load-remote();
+    callback page-open-link();
+    callback page-copy-link();
+
+    property <length> avatar: 2 * Theme.inset;
+
+    if root.info.empty != "": Text {
+        x: Theme.inset;
+        y: Theme.inset;
+        text: root.info.empty;
+        color: Theme.pane.muted;
+    }
+
+    if root.info.empty == "": VerticalLayout {
+        padding-left: Theme.inset;
+        padding-right: Theme.inset;
+        padding-top: Theme.pad;
+        padding-bottom: Theme.pad;
+        spacing: Theme.pad / 2;
+
+        HorizontalLayout {
+            alignment: end;
+            spacing: Theme.pad / 2;
+            if root.info.has-html: HorizontalLayout {
+                TextButton {
+                    text: "Text";
+                    palette: Theme.pane;
+                    selected: !root.info.shows-html;
+                    clicked => {
+                        if (root.info.shows-html) {
+                            root.toggle-html();
+                        }
+                    }
+                }
+                TextButton {
+                    text: "HTML";
+                    palette: Theme.pane;
+                    selected: root.info.shows-html;
+                    enabled: root.info.text-note == "";
+                    disabled-hint: root.info.text-note;
+                    clicked => {
+                        if (!root.info.shows-html) {
+                            root.toggle-html();
+                        }
+                    }
+                }
+            }
+            IconButton {
+                icon: root.save-icon;
+                name: "Save .eml";
+                hint: "Save .eml";
+                disabled-hint: root.info.missing;
+                enabled: root.info.downloaded;
+                palette: Theme.pane;
+                clicked => { root.save-eml(); }
+            }
+            IconButton {
+                icon: root.source-icon;
+                name: "View source";
+                hint: "View source";
+                disabled-hint: root.info.missing;
+                enabled: root.info.downloaded;
+                palette: Theme.pane;
+                clicked => { root.open-source(); }
+            }
+        }
+
+        if root.info.subject != "": Heading {
+            text: root.info.subject;
+            font-size: 26px;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            spacing: Theme.pad;
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: root.avatar;
+                    height: root.avatar;
+                    border-radius: root.avatar / 2;
+                    background: Theme.pane.hover;
+                    Text {
+                        text: root.info.initials;
+                        font-size: root.avatar * 0.4;
+                        color: Theme.pane.heading;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                HorizontalLayout {
+                    height: Theme.row;
+                    spacing: Theme.pad;
+                    Text {
+                        text: root.info.name;
+                        font-weight: 600;
+                        color: Theme.pane.strong;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                    if root.info.address != "": Text {
+                        text: root.info.address;
+                        color: Theme.pane.muted;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    TouchArea {
+                        width: date.preferred-width;
+                        accessible-role: none;
+                        Tooltip { text: @markdown("\{root.info.full-date}"); }
+                        date := Text {
+                            text: root.info.short-date;
+                            font-family: Theme.mono-font;
+                            color: Theme.pane.muted;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+                if root.info.to != "": HeaderLine {
+                    label: "to";
+                    value: root.info.to;
+                }
+                if root.info.cc != "": HeaderLine {
+                    label: "cc";
+                    value: root.info.cc;
+                }
+            }
+        }
+
+        for attachment[i] in root.info.attachments: HorizontalLayout {
+            spacing: Theme.pad;
+            Text {
+                text: attachment;
+                color: Theme.pane.text;
+                vertical-alignment: center;
+            }
+            TextButton {
+                text: "Save";
+                framed: true;
+                palette: Theme.pane;
+                accessible-label: "Save " + attachment;
+                clicked => { root.save-attachment(i); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        if root.info.saved != "": Text {
+            text: root.info.saved;
+            color: Theme.pane.text;
+            wrap: word-wrap;
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Theme.pane.border;
+        }
+
+        if root.info.shows-html: HtmlView {
+            vertical-stretch: 1;
+            page: root.page;
+            strips: root.strips;
+            width-changed(width) => { root.page-width(width); }
+            shown(top, bottom) => { root.page-visible(top, bottom); }
+            hover(x, y) => { root.page-hover(x, y); }
+            leave => { root.page-leave(); }
+            select(fx, fy, tx, ty) => { root.page-select(fx, fy, tx, ty); }
+            clicked(x, y) => { root.page-clicked(x, y); }
+            load-remote => { root.load-remote(); }
+            open-link => { root.page-open-link(); }
+            copy-link => { root.page-copy-link(); }
+        }
+
+        if !root.info.shows-html && root.info.text-note != "": Text {
+            text: root.info.text-note;
+            color: Theme.pane.muted;
+        }
+
+        if !root.info.shows-html: scroll := ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                width: scroll.visible-width;
+                alignment: start;
+                spacing: Theme.pad;
+                if root.text == "": Text {
+                    text: root.info.missing;
+                    color: Theme.pane.muted;
+                }
+                if root.text != "": TextInput {
+                    text: root.text;
+                    read-only: true;
+                    single-line: false;
+                    wrap: word-wrap;
+                    font-size: 15px;
+                    color: Theme.pane.text;
+                    selection-background-color: Theme.pane.selected;
+                    selection-foreground-color: Theme.pane.on-accent;
+                    accessible-label: "Message text";
+                }
+                for link in root.info.links: Link {
+                    height: Theme.row;
+                    text: link;
+                    clicked => { root.open-link(link); }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,123 @@
+// Small pieces the panes share.
+import { Theme, Palette } from "theme.slint";
+
+// A frameless square button with a Phosphor glyph, named for screen readers and tests, with its hint on hover.
+export component IconButton inherits Rectangle {
+    in property <string> icon;
+    in property <string> name;
+    in property <string> hint;
+    // Shown instead of `hint` while disabled, when set.
+    in property <string> disabled-hint;
+    in property <bool> enabled: true;
+    in property <Palette> palette: Theme.frame;
+    callback clicked();
+
+    width: Theme.control;
+    height: Theme.control;
+    border-radius: Theme.pad / 2;
+    background: !root.enabled ? transparent : touch.pressed ? root.palette.pressed : touch.has-hover ? root.palette.hover : transparent;
+    accessible-role: button;
+    accessible-label: root.name;
+    accessible-description: root.hint;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if (root.enabled) {
+            root.clicked();
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+        Tooltip { text: @markdown("\{!root.enabled && root.disabled-hint != "" ? root.disabled-hint : root.hint}"); }
+    }
+
+    Text {
+        accessible-role: none;
+        text: root.icon;
+        font-family: Theme.icon-font;
+        font-size: Theme.icon;
+        color: root.palette.text;
+        opacity: root.enabled ? 1 : 0.4;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// Text that acts as a button: the theme switch, the update link.
+export component TextButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected;
+    in property <bool> enabled: true;
+    // The hover hint, shown only while the button is disabled: why it is.
+    in property <string> disabled-hint;
+    in property <Palette> palette: Theme.frame;
+    in property <color> text-color: root.selected && root.palette == Theme.pane ? Theme.pane.on-accent : root.palette.text;
+    in property <string> text-font: Theme.text-font;
+    // A filled button for an action in a pane, rather than a choice in a bar.
+    in property <bool> framed;
+    callback clicked();
+
+    height: Theme.row;
+    border-radius: Theme.pad / 2;
+    background: root.selected ? root.palette.selected : touch.has-hover && root.enabled ? root.palette.hover : root.framed ? root.palette.pressed : transparent;
+    opacity: root.enabled ? 1 : 0.5;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-item-selected: root.selected;
+    accessible-enabled: root.enabled;
+    accessible-description: root.enabled ? "" : root.disabled-hint;
+    accessible-action-default => {
+        if (root.enabled) {
+            root.clicked();
+        }
+    }
+    HorizontalLayout {
+        padding-left: root.framed ? Theme.pad : Theme.pad / 2;
+        padding-right: root.framed ? Theme.pad : Theme.pad / 2;
+        Text {
+            accessible-role: none;
+            text: root.text;
+            color: root.text-color;
+            font-family: root.text-font;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+        if !root.enabled && root.disabled-hint != "": Tooltip { text: @markdown("\{root.disabled-hint}"); }
+    }
+}
+
+// A serif heading in the pane's palette.
+export component Heading inherits Text {
+    font-family: Theme.serif-font;
+    font-size: 19px;
+    color: Theme.pane.heading;
+}
+
+// Accent text that acts as a link; a button for screen readers.
+export component Link inherits TouchArea {
+    in property <string> text;
+    mouse-cursor: pointer;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => { root.clicked(); }
+    HorizontalLayout {
+        alignment: start;
+        Text {
+            accessible-role: none;
+            text: root.text;
+            color: Theme.pane.accent;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+    }
+}
