@@ -141,6 +141,9 @@ Last updated: 2026-10-13. Branch `feat/slint-gui`. Read first: the plan `2026-10
   - The reader's sender and address have `PAD` between them, the status dot `PAD` before its text; "Remote content not loaded." elides, so the narrow reader no longer runs past the pane's edge.
   - Kept from the branch: the Keys window, links listed under a plain text body (a `TextInput` keeps the text selectable; `StyledText` would colour links inline but cannot select).
   - Found, not fixed: off macOS the in-window menu bar draws Fluent's light-scheme text (near black) on the oxblood frame, and std widgets (`LineEdit`, `CheckBox`, scroll bars) follow the OS scheme, not `Theme.preference`. `Palette.color-scheme` can be set, but setting it drops the binding `Theme.dark` reads the OS scheme from; needs a choice (a paper strip behind the menu bar, or the OS scheme from Rust).
+- `/simplify` follow-ups (owner asked, 2026-10-14):
+  - Done: one `Heading` and one `Link` in `common.slint` (`Open::find` now skips elements hidden from screen readers, as a component inheriting `Text` keeps its label); menu items by `(group, place)`; the list follows the cursor whenever it moves out of view, by key, click, search or collapse, and asks again while `ListView` still stops short of it (`ListState::cursor_shown`).
+  - Measured and skipped (release build, 2026-10-14): `present` with 5000 threads costs about 0.2 ms including a tick, so dirty flags per area would save nothing noticeable; search per keystroke on 20000 messages costs 0.06 to 1 ms for narrow queries and about 22 ms for a word in every message (500 hits, the limit), so a worker thread waits until a store large enough to stutter shows up.
 - Colour scheme (`fix(gui): std widgets and the menu bar follow the theme`): the mail window sets std-widgets' `Palette.color-scheme` from `Theme.dark`, so fields, check boxes, scroll bars, the tables and the menu bar draw in the theme's scheme; `Theme.desktop-dark` comes from a never-shown `SchemeProbe` window, whose scheme still follows the desktop, for the System theme. Behind the menu bar off macOS: the frame when dark, the pane's paper when light, since std-widgets draw the light scheme's menu text dark.
 - Slint features audit (what we build by hand that Slint 1.18 has):
   - Applied: Ctrl+C copies the HTML selection through a `KeyBinding` (enabled while there is a selection) instead of matching the key in `key-pressed`; a test pastes it into search. `GridLayout` with repeated `Row`s for the tables (above).
@@ -156,9 +159,8 @@ Last updated: 2026-10-13. Branch `feat/slint-gui`. Read first: the plan `2026-10
 
 ## Next steps (in order)
 
-1. `/simplify` follow-ups (owner asked, 2026-10-14): dirty flags per area in `present`, state owning the list offset, search off the UI thread, one `Heading` and link button in `common.slint`, `(group, index)` for the row menu.
-2. Hand checks: the window on KDE Wayland and macOS (a smoke run needs a short home path, as the socket path is limited to about 100 bytes), a screen reader on the list, an input method in search, the macOS Dock click on a hidden window, X11/Wayland PRIMARY selection after Copy.
-3. Review and merge. CI on Linux drew the snapshots as macOS did (2026-10-14), so one set of PNGs serves both.
+1. Hand checks: the window on KDE Wayland and macOS (a smoke run needs a short home path, as the socket path is limited to about 100 bytes), a screen reader on the list, an input method in search, the macOS Dock click on a hidden window, X11/Wayland PRIMARY selection after Copy.
+2. Review and merge. CI on Linux drew the snapshots as macOS did (2026-10-14), so one set of PNGs serves both.
 
 ## Notes for whoever resumes
 
