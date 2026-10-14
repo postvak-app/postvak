@@ -1,4 +1,5 @@
 // The mail window. It draws what `bind.rs` gives it and hands every key and click back as a callback.
+import { Palette as StdPalette } from "std-widgets.slint";
 import { Theme, ThemePreference } from "theme.slint";
 import { FolderItem, FolderPane } from "folders.slint";
 import { ToolButton, Toolbar } from "toolbar.slint";
@@ -194,7 +195,9 @@ export component MailWindow inherits Window {
     icon: Platform.os == OperatingSystemType.macos ? @image-url("../../../assets/macos.iconset/icon_512x512@2x.png") : @image-url("../../../assets/icon.png");
     preferred-width: 1280px;
     preferred-height: 800px;
-    background: Theme.frame.background;
+    // Behind the menu bar where the window draws it (not macOS): the std style's own background, so its text, which
+    // follows the style's colour scheme, always reads on it.
+    background: StdPalette.background;
     default-font-family: Theme.text-font;
     default-font-size: Theme.text-size;
     forward-focus: keys;
@@ -334,6 +337,7 @@ export component MailWindow inherits Window {
     }
 
     keys := FocusScope {
+        Rectangle { background: Theme.frame.background; }
         key-pressed(event) => {
             if (root.key(event.text, event.modifiers.control, event.modifiers.alt)) {
                 return accept;

@@ -155,7 +155,7 @@ Last updated: 2026-10-13. Branch `feat/slint-gui`. Read first: the plan `2026-10
 
 ## Next steps (in order)
 
-1. The menu bar and std widget colour scheme above; then any alignment the owner still sees.
+1. Std widgets (`LineEdit`, `CheckBox`, scroll bars, the menu bar strip) follow the OS colour scheme, not `Theme.preference`; following it needs the OS scheme from Rust (winit's window theme). The menu bar itself is fixed: the window's background behind it is `Palette.background` (`fix(gui): a readable menu bar off macOS`).
 2. Hand checks listed under Task 13: the window on KDE Wayland and macOS (a smoke run needs a short home path, as the socket path is limited to about 100 bytes), a screen reader on the list, an input method in search, the macOS Dock click on a hidden window, X11/Wayland PRIMARY selection after Copy.
 3. CI on PR #134: whether Linux draws the snapshots pixel for pixel as macOS did; if not, regenerate them in CI's image and decide which platform is the reference.
 4. Review and merge.
