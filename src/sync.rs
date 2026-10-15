@@ -273,9 +273,11 @@ enum ActionDef {
     Archive,
     Delete,
     Flag,
+    Junk,
     MarkRead,
     MarkUnread,
     Move(String),
+    NotJunk,
     Notify,
     Silent,
     Tag(String),
@@ -914,7 +916,12 @@ fn run_command(
                 }
                 if matches!(
                     action,
-                    Action::Archive | Action::Delete | Action::Move(_) | Action::Trash
+                    Action::Archive
+                        | Action::Delete
+                        | Action::Junk
+                        | Action::Move(_)
+                        | Action::NotJunk
+                        | Action::Trash
                 ) {
                     run.next = NextPass::Inbox;
                 }
@@ -1119,6 +1126,8 @@ fn describe(action: &Action, count: usize) -> String {
         Action::Archive => "archiving",
         Action::Delete | Action::Trash => "deleting",
         Action::Flag => "flagging",
+        Action::Junk => "marking junk",
+        Action::NotJunk => "marking not junk",
         Action::MarkRead => "marking read",
         Action::MarkUnread => "marking unread",
         Action::Move(_) => "moving",

@@ -3,6 +3,7 @@ pub const ARCHIVE: &str = "Move messages to the Archive folder";
 pub const ATTACHMENT_LIST: &str = "Index, type, size and name of each attachment";
 pub const DELETE: &str =
     "Move messages to Trash; inside Trash, or without one, delete them keeping a local .eml backup";
+pub const JUNK: &str = "Report messages as junk: tag them $Junk, which trains server spam filters, and move them to the Junk folder; --not tags them $NotJunk and moves them to INBOX";
 pub const FOLDERS: &str = "List folders with message and unread counts";
 pub const LIST: &str = "List recent messages, newest first";
 pub const LOG: &str = "Show what rules did, newest first";

@@ -56,7 +56,7 @@ The install also prints a hint with the granted scopes and how to widen them. It
 | `read:bodies` | Message bodies and attachment names, search over stored bodies, and with `read` previews of rules that match on the body. | `attachments`, `show` |
 | `rules:propose` | Proposing a rule. It is stored disabled until you approve it. | `rules_propose` |
 | `rules:write` | Approving and rejecting rules, and turning them on or off. | `rules_approve`, `rules_reject`, `rules_set_enabled` |
-| `mail:modify` | Acting on mail and restoring from the trash. | `archive`, `delete`, `mark`, `move`, `trash_restore` |
+| `mail:modify` | Acting on mail and restoring from the trash. | `archive`, `delete`, `junk`, `mark`, `move`, `trash_restore` |
 
 The default is `read,rules:propose`. Three example grants:
 
@@ -102,7 +102,7 @@ The names follow the CLI commands. A tool that lists things returns the CLI's `-
 
 `mail:modify`:
 
-- `archive`, `delete`, `mark` and `move` act on uids in a folder. `log` shows them under the rule name `mcp:<client name>`, or `mcp`.
+- `archive`, `delete`, `junk`, `mark` and `move` act on uids in a folder. `log` shows them under the rule name `mcp:<client name>`, or `mcp`.
 - `trash_restore` restores a backup, given as the bare file name `trash_list` returns.
 
 With more than one visible account, every tool that acts on one message needs `account`.

@@ -226,6 +226,24 @@ struct MarkArgs {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct JunkArgs {
+    /// Message uids in `folder`, as `list` returns them
+    uids: Vec<u32>,
+    /// Required when several accounts are visible
+    account: Option<String>,
+    /// Folder name as `folders` lists it; default INBOX
+    #[serde(default = "inbox")]
+    folder: String,
+    /// Not junk after all: tag $NotJunk and move to INBOX
+    #[serde(default)]
+    not: bool,
+    /// Report what would happen from the local store, without touching the server
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct MoveArgs {
     /// The destination folder; created if needed
     to: String,
@@ -277,6 +295,7 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
         ),
         ToolDef::new::<AccountArgs>("folders", Scope::Read, Effect::ReadOnly, help::FOLDERS),
         ToolDef::new::<ListArgs>("list", Scope::Read, Effect::ReadOnly, help::LIST),
+        ToolDef::new::<JunkArgs>("junk", Scope::MailModify, Effect::Changes, help::JUNK),
         ToolDef::new::<LogArgs>("log", Scope::Read, Effect::ReadOnly, help::LOG),
         ToolDef::new::<MarkArgs>("mark", Scope::MailModify, Effect::Changes, help::MARK),
         ToolDef::new::<MoveArgs>("move", Scope::MailModify, Effect::Changes, help::MOVE),
@@ -378,6 +397,18 @@ fn dispatch(
         "attachments" => {
             let a: MessageArgs = args(arguments)?;
             rows(backend.attachments(a.account.as_deref(), &a.folder, a.uid)?)
+        }
+        "junk" => {
+            let a: JunkArgs = args(arguments)?;
+            let action = if a.not { Action::NotJunk } else { Action::Junk };
+            backend.act(
+                a.account.as_deref(),
+                &a.folder,
+                &a.uids,
+                action,
+                a.dry_run,
+                &by,
+            )
         }
         "delete" => {
             let a: SelectionArgs = args(arguments)?;

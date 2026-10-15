@@ -13,7 +13,7 @@ import { ListPane, RowData } from "list.slint";
 export enum Pane { body, folders, list }
 
 // The menu items that act on the app; `menu.rs` says what each does.
-export enum MenuAction { about, add-to-selection, archive, delete, documentation, flag, history, keys, mark-folder-read, move, read-or-unread, save-eml, search, sync-now, text-or-html, theme-dark, theme-light, theme-system, view-source }
+export enum MenuAction { about, add-to-selection, archive, delete, documentation, flag, history, junk, keys, mark-folder-read, move, read-or-unread, save-eml, search, sync-now, text-or-html, theme-dark, theme-light, theme-system, view-source }
 
 // Which menu items would do something now; the others are disabled.
 export struct MenuState {
@@ -273,6 +273,11 @@ export component MailWindow inherits Window {
                 title: "Delete";
                 enabled: root.menu.message;
                 activated => { root.menu-item(MenuAction.delete); }
+            }
+            MenuItem {
+                title: "Junk or not junk";
+                enabled: root.menu.message;
+                activated => { root.menu-item(MenuAction.junk); }
             }
             MenuItem {
                 title: "Flag";

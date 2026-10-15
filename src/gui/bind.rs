@@ -417,7 +417,10 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
             else {
                 return Vec::new();
             };
-            let Some((_, action)) = nth(nth(list::menu(row), group).unwrap_or_default(), j) else {
+            let Some((_, action)) = nth(
+                nth(list::menu(row, app.shows_junk()), group).unwrap_or_default(),
+                j,
+            ) else {
                 return Vec::new();
             };
             vec![UiAction::TargetRow(i), action]
@@ -624,6 +627,7 @@ fn menu_item(action: MenuAction) -> menu::Item {
         MenuAction::Documentation => Item::Documentation,
         MenuAction::Flag => Item::Flag,
         MenuAction::History => Item::History,
+        MenuAction::Junk => Item::Junk,
         MenuAction::Keys => Item::Keys,
         MenuAction::MarkFolderRead => Item::MarkFolderRead,
         MenuAction::Move => Item::Move,
