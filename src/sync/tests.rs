@@ -1921,6 +1921,9 @@ impl MailOps for QueuesCommandsOnSelect {
         }
         self.inner.select(folder)
     }
+    fn search_text(&mut self, words: &[String]) -> crate::mail_ops::MailResult<Vec<u32>> {
+        self.inner.search_text(words)
+    }
     fn search_uids(&mut self, from_uid: u32) -> crate::mail_ops::MailResult<Vec<u32>> {
         self.inner.search_uids(from_uid)
     }
@@ -2807,6 +2810,35 @@ fn fetch_bodies_without_a_folder_covers_every_stored_folder() {
 }
 
 #[test]
+fn search_server_reports_the_hits_of_every_synced_folder() {
+    let (mut ops, store, dir) = synced();
+    ops.add_mail(
+        "Trash",
+        1,
+        10 * H,
+        &headers("carol@x", "old", "t1@x"),
+        Some("From: carol@x\r\n\r\ncode 99"),
+    );
+    sync_all(&mut ops, &store).unwrap();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let search = Command::SearchServer {
+        folder: None,
+        query: "CODE".into(),
+    };
+    let (run, events) = drain(&mut ops, &store, &trash, vec![search]);
+    assert!(run.unwrap().used_connection);
+    assert!(
+        events.contains(&Event::ServerSearchDone {
+            account: "work".into(),
+            request: 1,
+            query: "CODE".into(),
+            hits: vec![("INBOX".into(), 2), ("Trash".into(), 1)],
+        }),
+        "{events:?}"
+    );
+}
+
+#[test]
 fn events_and_commands_round_trip_as_json() {
     for event in [
         Event::Synced {
@@ -2820,6 +2852,12 @@ fn events_and_commands_round_trip_as_json() {
             account: "a".into(),
             request: 9,
             message: "x".into(),
+        },
+        Event::ServerSearchDone {
+            account: "a".into(),
+            request: 3,
+            query: "q".into(),
+            hits: vec![("INBOX".into(), 1)],
         },
         Event::ActionDone {
             account: "a".into(),

@@ -455,7 +455,7 @@ impl Driver {
                 self.apply(UiAction::MoveTo(first.to_string()));
             }
         } else {
-            self.apply(UiAction::SelectRow(0));
+            self.apply(UiAction::SearchAccepted);
         }
     }
 

@@ -397,6 +397,7 @@ Full-text search (FTS5 syntax) over subject, addresses and fetched bodies, newes
 * `--account <ACCOUNT>`
 * `--folder <FOLDER>`
 * `--bodies` — Fetch and index missing bodies first; slow on a large folder
+* `--server` — Ask the server too, which searches bodies not downloaded yet; each folder costs a round trip
 * `--limit <LIMIT>`
 
   Default value: `50`

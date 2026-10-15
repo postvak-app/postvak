@@ -794,6 +794,10 @@ impl MailOps for Harness<'_> {
         self.run_selected(|ops| ops.search_uids(from_uid))
     }
 
+    fn search_text(&mut self, words: &[String]) -> MailResult<Vec<u32>> {
+        self.run_selected(|ops| ops.search_text(words))
+    }
+
     fn fetch_envelopes(&mut self, first: u32, last: u32) -> MailResult<Vec<Envelope>> {
         let envelopes = self.run_selected(|ops| ops.fetch_envelopes(first, last))?;
         let folder = self.selected.clone().unwrap();

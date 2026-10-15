@@ -118,7 +118,7 @@ fn present_list(app: &App, window: &MailWindow) {
     );
     window.set_searching(app.search.is_some());
     window.set_search_hint_text(list::search_hint(&app.view).into());
-    window.set_results(list::results(app.list.rows.len()).into());
+    window.set_results(list::results(app).into());
     let empty = if app.list.rows.is_empty() {
         list::empty(&app.view, app.search.as_deref(), app.filter)
     } else {
@@ -457,7 +457,7 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
         act(UiAction::SearchFor(text.into()));
     });
     window.on_search_accepted(move || {
-        act(UiAction::SelectRow(0));
+        act(UiAction::SearchAccepted);
     });
     window.on_search_focus(move |focused| {
         act(UiAction::SearchFocused(focused));

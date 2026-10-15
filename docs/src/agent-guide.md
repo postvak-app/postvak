@@ -23,7 +23,7 @@ postvak attachment list 42 --folder INBOX
 - UIDs are per folder. Always pass the `--folder` you listed with.
 - `list`, `search` and `folders` cover every account and print the account. With more than one account, `show`, `attachment` and the direct actions need `--account`.
 - `search` uses SQLite FTS5 syntax over `subject`, `from_addr`, `to_addr` and `body_text`, newest first. A query FTS5 cannot parse, such as a bare address, is searched as plain words instead.
-- Only bodies Postvak already fetched are searched. `--bodies` fetches the missing ones first, which can take minutes on a large folder.
+- Only bodies Postvak already fetched are searched. `--server` also asks the mail server, which searches every body in a round trip per folder; `--bodies` instead fetches the missing ones first, which can take minutes on a large folder.
 
 ## Writing a rule
 
