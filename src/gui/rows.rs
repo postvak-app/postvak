@@ -77,56 +77,59 @@ pub(crate) struct ListModel {
 }
 
 impl ListModel {
-    /// Takes the app's rows: a new list resets the model, a moved cursor or mark only changes the rows it touched.
+    /// Takes the app's rows. A list of another length or kind resets the model; otherwise only the rows that look
+    /// different change, so Slint keeps the elements of the others and a row turning read can fade.
     pub(crate) fn update(&self, app: &App) {
         let tags = (app.view == View::AllInboxes)
             .then(|| app.accounts.iter().map(|a| a.name.clone()).collect());
         let (recipient, search) = (app.shows_recipient(), app.search.is_some());
-        let same_list = {
+        let changed: Option<Vec<usize>> = {
             let shown = self.shown.borrow();
-            shown.rows == app.list.rows
+            let same_kind = shown.rows.len() == app.list.rows.len()
                 && shown.tags == tags
                 && shown.recipient == recipient
-                && shown.search == search
+                && shown.search == search;
+            same_kind.then(|| {
+                (0..shown.rows.len())
+                    .filter(|&i| {
+                        shown.drawn(i)
+                            != drawn(&app.list.rows[i], i, app.list.cursor, &app.list.marked)
+                    })
+                    .collect()
+            })
         };
-        if !same_list {
-            *self.shown.borrow_mut() = Shown {
-                rows: app.list.rows.clone(),
-                tags,
-                recipient,
-                search,
-                cursor: app.list.cursor,
-                marked: app.list.marked.clone(),
-            };
-            self.notify.reset();
+        if changed.as_ref().is_some_and(Vec::is_empty) {
             return;
         }
-        let changed: Vec<usize> = {
-            let shown = self.shown.borrow();
-            if shown.cursor == app.list.cursor && shown.marked == app.list.marked {
-                return;
-            }
-            // A row is drawn from whether it has the cursor and whether it is marked.
-            let state = |i: usize, cursor: usize, marked: &HashSet<_>, row: &Row| {
-                (i == cursor, marked.contains(&row.id()))
-            };
-            let rows = shown.rows.iter().enumerate();
-            rows.filter(|(i, row)| {
-                state(*i, shown.cursor, &shown.marked, row)
-                    != state(*i, app.list.cursor, &app.list.marked, row)
-            })
-            .map(|(i, _)| i)
-            .collect()
+        *self.shown.borrow_mut() = Shown {
+            rows: app.list.rows.clone(),
+            tags,
+            recipient,
+            search,
+            cursor: app.list.cursor,
+            marked: app.list.marked.clone(),
         };
-        {
-            let mut shown = self.shown.borrow_mut();
-            shown.cursor = app.list.cursor;
-            shown.marked.clone_from(&app.list.marked);
-        }
-        for i in changed {
-            self.notify.row_changed(i);
+        match changed {
+            Some(rows) => rows.into_iter().for_each(|i| self.notify.row_changed(i)),
+            None => self.notify.reset(),
         }
     }
+}
+
+impl Shown {
+    fn drawn(&self, index: usize) -> (&Row, bool, bool) {
+        drawn(&self.rows[index], index, self.cursor, &self.marked)
+    }
+}
+
+/// What row `index` is drawn from: the row, whether it has the cursor and whether it is marked.
+fn drawn<'a>(
+    row: &'a Row,
+    index: usize,
+    cursor: usize,
+    marked: &HashSet<(usize, RowKey)>,
+) -> (&'a Row, bool, bool) {
+    (row, index == cursor, marked.contains(&row.id()))
 }
 
 impl Model for ListModel {

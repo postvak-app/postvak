@@ -60,12 +60,20 @@ export component StatusBar inherits Rectangle {
                         border-radius: Theme.pad / 2 - 1px;
                         border-width: line.dot == Dot.failed || line.dot == Dot.offline ? 1.5px : 0px;
                         border-color: line.dot == Dot.failed ? Theme.frame.error : Theme.frame.highlight;
-                        background: line.dot == Dot.up-to-date ? Theme.frame.highlight : transparent;
+                        background: line.dot == Dot.up-to-date ? Theme.frame.highlight : Theme.frame.highlight.transparentize(100%);
+                        animate background, border-color, border-width {
+                            duration: Theme.state-fade;
+                            easing: ease-out;
+                        }
                     }
                     Text {
                         accessible-role: none;
                         text: line.text;
                         color: line.failed ? Theme.frame.error : Theme.frame.text;
+                        animate color {
+                            duration: Theme.state-fade;
+                            easing: ease-out;
+                        }
                         vertical-alignment: center;
                         overflow: elide;
                     }
