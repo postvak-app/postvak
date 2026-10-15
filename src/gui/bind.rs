@@ -404,9 +404,6 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     window.on_toggle_help(move || {
         act(UiAction::ToggleHelp);
     });
-    window.on_set_theme(move |theme| {
-        act(UiAction::SetTheme(theme_of(theme)));
-    });
     window.on_row_clicked(move |i, extend, toggle| {
         let row = usize::try_from(i).unwrap_or_default();
         act(match (extend, toggle) {
@@ -774,14 +771,6 @@ fn preference(theme: config::Theme) -> ThemePreference {
         config::Theme::Dark => ThemePreference::Dark,
         config::Theme::Light => ThemePreference::Light,
         config::Theme::System => ThemePreference::System,
-    }
-}
-
-fn theme_of(preference: ThemePreference) -> config::Theme {
-    match preference {
-        ThemePreference::Dark => config::Theme::Dark,
-        ThemePreference::Light => config::Theme::Light,
-        ThemePreference::System => config::Theme::System,
     }
 }
 

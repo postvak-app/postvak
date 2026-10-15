@@ -51,7 +51,7 @@ Each account lists its INBOX and special folders (Archive, Drafts, Sent, Junk, T
 
 ## Toolbar and status bar
 
-The toolbar above the panes has buttons for Archive, Move, Delete, Junk, Flag and Read or unread; hover one to see its key. They act on the selection or the current row, like the keys. The search field on the right starts a search, like `/`. The status bar starts with a sync button (Ctrl+R, Cmd+R on macOS) and ends with Postvak's version.
+The toolbar above the panes has buttons for Archive, Move, Delete, Junk, Flag and Read or unread; hover one to see its key. They act on the selection or the current row, like the keys. The search field on the right starts a search, like `/`. The status bar starts with a sync button (Ctrl+R, Cmd+R on macOS).
 
 ## Message list
 
@@ -61,7 +61,7 @@ The switch above the list shows All, Unread, Flagged or Attachments: a thread st
 
 ## Status bar
 
-One line per account says what its sync is doing: connecting, which folder, how many headers or bodies of how many, up to date, or offline and when it retries. Click it for the last 50 lines. The switch on the right picks the System, Light or Dark theme and saves it as `[ui] theme` in `config.toml`. Both themes put the panes in an oxblood frame: warm paper in light mode, dark brown in dark mode. Next to the version, a link appears when a newer release is out; it opens that release's notes on GitHub. Postvak does not update itself, and the daily check runs only with `[ui] check_updates = true` in `config.toml` (see [Accounts](accounts.md#appearance)).
+One line per account says what its sync is doing: connecting, which folder, how many headers or bodies of how many, up to date, or offline and when it retries. Click it for the last 50 lines. View ▸ Theme picks the System, Light or Dark theme and saves it as `[ui] theme` in `config.toml`. Both themes put the panes in an oxblood frame: warm paper in light mode, dark brown in dark mode. On the right, a link appears when a newer release is out; it opens that release's notes on GitHub. Postvak does not update itself, and the daily check runs only with `[ui] check_updates = true` in `config.toml` (see [Accounts](accounts.md#appearance)).
 
 ## Rules, Activity and Backups
 

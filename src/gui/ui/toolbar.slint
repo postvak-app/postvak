@@ -13,7 +13,8 @@ export component Toolbar inherits Rectangle {
     in property <length> folders-width;
     in property <[ToolButton]> buttons;
     in property <bool> buttons-enabled;
-    in property <bool> search-enabled;
+    // Off on Rules, Activity and Backups, which have no messages to act on or search: the actions and search go.
+    in property <bool> mail-view;
     in property <string> search-icon;
     in property <string> search-hint;
     callback action(int);
@@ -34,8 +35,8 @@ export component Toolbar inherits Rectangle {
             width: max(0px, root.folders-width - Theme.pad / 2 - Theme.glyph);
             spacing: Theme.pad;
             Image {
-                width: 20px;
-                height: 20px;
+                width: Theme.icon + Theme.pad / 2;
+                height: self.width;
                 y: (parent.height - self.height) / 2;
                 source: @image-url("../../../assets/icon.png");
             }
@@ -47,32 +48,29 @@ export component Toolbar inherits Rectangle {
             Rectangle { horizontal-stretch: 1; }
         }
 
-        for button[i] in root.buttons: IconButton {
-            icon: button.icon;
-            name: button.name;
-            hint: button.hint;
-            enabled: root.buttons-enabled;
-            clicked => { root.action(i); }
+        // Archive, Move, Delete and Junk dispose of a message; a gap sets Flag and Read apart.
+        for button[i] in root.mail-view ? root.buttons : []: HorizontalLayout {
+            padding-left: i == 4 ? Theme.pad : 0px;
+            IconButton {
+                icon: button.icon;
+                name: button.name;
+                hint: button.hint;
+                enabled: root.buttons-enabled;
+                clicked => { root.action(i); }
+            }
         }
 
         Rectangle { horizontal-stretch: 1; }
 
-        Rectangle {
+        if root.mail-view: Rectangle {
             width: 260px;
-            border-radius: Theme.pad;
-            background: touch.has-hover && root.search-enabled ? Theme.frame.pressed : Theme.frame.faint;
-            opacity: root.search-enabled ? 1 : 0.4;
+            border-radius: Theme.radius;
+            background: touch.has-hover ? Theme.frame.pressed : Theme.frame.faint;
             accessible-role: button;
             accessible-label: "Search";
             accessible-description: root.search-hint;
-            accessible-enabled: root.search-enabled;
-            accessible-action-default => {
-                if (root.search-enabled) {
-                    root.search();
-                }
-            }
+            accessible-action-default => { root.search(); }
             touch := TouchArea {
-                enabled: root.search-enabled;
                 clicked => { root.search(); }
                 Tooltip { text: @markdown("\{root.search-hint}"); }
             }

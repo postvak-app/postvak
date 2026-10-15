@@ -1,7 +1,7 @@
 // The small windows over the panes: Keys and History. Esc closes them through the app, the X here.
-import { Button, LineEdit, ListView, ScrollView } from "std-widgets.slint";
+import { LineEdit, ListView, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Heading, HoverFill, IconButton } from "common.slint";
+import { Heading, HoverFill, IconButton, TextButton } from "common.slint";
 
 export struct KeyHelp {
     keys: string,
@@ -17,7 +17,7 @@ export component Dialog inherits Rectangle {
     background: Theme.pane.background;
     border-color: Theme.pane.border;
     border-width: 1px;
-    border-radius: Theme.pad;
+    border-radius: Theme.radius;
     drop-shadow-blur: Theme.pad;
     drop-shadow-color: #0004;
     accessible-role: groupbox;
@@ -51,27 +51,36 @@ export component Dialog inherits Rectangle {
 export component KeysDialog {
     in property <[KeyHelp]> keys;
     in property <string> close-icon;
+    // The most height the window has room for; the keys scroll beyond it.
+    in property <length> room;
     callback close();
     width: 560px;
     Dialog {
         title: "Keys";
         close-icon: root.close-icon;
         close => { root.close(); }
-        for key in root.keys: HorizontalLayout {
-            spacing: Theme.inset;
-            Text {
-                width: 200px;
-                text: key.keys;
-                font-weight: 600;
-                color: Theme.pane.strong;
-                wrap: word-wrap;
-            }
-            Text {
-                // An explicit width, so the dialog's height counts the wrapped lines.
-                width: root.width - 3 * Theme.inset - 200px;
-                text: key.what;
-                color: Theme.pane.text;
-                wrap: word-wrap;
+        scroll := ScrollView {
+            height: min(rows.preferred-height, root.room - 2 * Theme.inset - Theme.control - Theme.pad);
+            rows := VerticalLayout {
+                width: scroll.visible-width;
+                spacing: Theme.pad / 2;
+                for key in root.keys: HorizontalLayout {
+                    spacing: Theme.inset;
+                    Text {
+                        width: 200px;
+                        text: key.keys;
+                        font-weight: 600;
+                        color: Theme.pane.strong;
+                        wrap: word-wrap;
+                    }
+                    // A definite width, so the wrapped lines count in the row's height.
+                    Text {
+                        width: scroll.visible-width - 200px - Theme.inset;
+                        text: key.what;
+                        color: Theme.pane.text;
+                        wrap: word-wrap;
+                    }
+                }
             }
         }
     }
@@ -90,7 +99,7 @@ export component HistoryDialog {
             text: "Nothing has happened yet.";
             color: Theme.pane.muted;
         }
-        ScrollView {
+        if root.lines.length > 0: ScrollView {
             height: min(360px, history.preferred-height);
             history := VerticalLayout {
                 for line in root.lines: Text {
@@ -165,8 +174,10 @@ export component SourceDialog {
         close-icon: root.close-icon;
         close => { root.close(); }
         HorizontalLayout {
-            Button {
+            TextButton {
                 text: "Copy";
+                framed: true;
+                palette: Theme.pane;
                 clicked => {
                     buffer.select-all();
                     buffer.copy();

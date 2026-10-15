@@ -98,7 +98,7 @@ mod tests {
     }
 
     #[test]
-    fn the_actions_are_enabled_on_a_row_and_disabled_outside_a_folder() {
+    fn the_actions_are_enabled_on_a_row_and_gone_outside_a_folder() {
         let fx = Fixture::new(&["work"]);
         fx.add("work", message("INBOX", 1, "hello"));
         let (open, _wires) = fx.window();
@@ -108,10 +108,10 @@ mod tests {
             "Delete message",
             "Flag message",
             "Mark read or unread",
-            "Search",
         ] {
             assert!(enabled(&open, name), "{name}");
         }
+        assert_eq!(open.find("Search").len(), 1);
         open.with(|live| live.app.apply(UiAction::SelectView(View::Rules)));
         for name in [
             "Archive message",
@@ -121,7 +121,7 @@ mod tests {
             "Mark read or unread",
             "Search",
         ] {
-            assert!(!enabled(&open, name), "{name}");
+            assert!(open.find(name).is_empty(), "{name}");
         }
     }
 

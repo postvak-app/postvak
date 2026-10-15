@@ -210,7 +210,7 @@ impl Model for ListModel {
             who: columns.who.into(),
             subject: columns.subject.into(),
             date: columns.date.into(),
-            selected: index == shown.cursor || marked,
+            selected: index == shown.cursor,
             marked,
             arrived,
             name: name.into(),

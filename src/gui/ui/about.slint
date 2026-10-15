@@ -28,11 +28,13 @@ export component AboutDialog {
             spacing: Theme.pad / 2;
             TextButton {
                 text: "Project";
+                framed: true;
                 palette: Theme.pane;
                 clicked => { root.open-url(root.repository); }
             }
             TextButton {
                 text: "Documentation";
+                framed: true;
                 palette: Theme.pane;
                 clicked => { root.open-url(root.homepage); }
             }

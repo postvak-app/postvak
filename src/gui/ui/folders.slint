@@ -37,7 +37,7 @@ export struct FolderItem {
     menu-tail: [MenuChoice],
 }
 
-// A row that opens a view: indent, icon, label, and the count on the right; the selected row's count is a brass pill.
+// A row that opens a view: indent, icon, label, and the count on the right.
 component FolderRow inherits Rectangle {
     in property <FolderItem> item;
     callback clicked();
@@ -46,7 +46,6 @@ component FolderRow inherits Rectangle {
     pure callback dragged-row(data-transfer) -> int;
     callback dropped(int);
 
-    property <bool> pill: item.selected && item.count != "";
     property <length> indent: item.depth * Theme.inset;
 
     height: Theme.row;
@@ -97,7 +96,7 @@ component FolderRow inherits Rectangle {
             text: item.icon;
             font-family: Theme.icon-font;
             font-size: Theme.text-size;
-            color: root.pill ? Theme.frame.highlight : Theme.frame.text;
+            color: item.selected ? Theme.frame.highlight : Theme.frame.text;
             vertical-alignment: center;
         }
         Text {
@@ -108,19 +107,11 @@ component FolderRow inherits Rectangle {
             overflow: elide;
             vertical-alignment: center;
         }
-        if item.count != "": Rectangle {
-            y: (parent.height - self.height) / 2;
-            width: count.preferred-width + (root.pill ? 1.5 * Theme.pad : 0);
-            height: Theme.row - Theme.pad / 2;
-            border-radius: self.height / 2;
-            background: root.pill ? Theme.frame.highlight : transparent;
-            count := Text {
-                accessible-role: none;
-                text: item.count;
-                color: root.pill ? Theme.frame.background : Theme.frame.muted;
-                vertical-alignment: center;
-                horizontal-alignment: center;
-            }
+        if item.count != "": Text {
+            accessible-role: none;
+            text: item.count;
+            color: item.selected ? Theme.frame.text : Theme.frame.muted;
+            vertical-alignment: center;
         }
     }
 
@@ -156,16 +147,10 @@ export component FolderPane inherits Rectangle {
                 padding-right: Theme.pad;
                 spacing: Theme.pad / 2;
                 for item[i] in root.items: VerticalLayout {
-                    if item.kind == FolderKind.separator: VerticalLayout {
-                        padding-top: Theme.pad / 2;
-                        padding-bottom: Theme.pad / 2;
-                        Rectangle {
-                            height: 1px;
-                            background: Theme.frame.border;
-                        }
-                    }
+                    // Space, not a line: the account headings already group the folders.
+                    if item.kind == FolderKind.separator: Rectangle { height: Theme.pad; }
                     if item.kind == FolderKind.account: VerticalLayout {
-                        padding-top: item.gap ? Theme.pad : 0px;
+                        padding-top: item.gap ? Theme.row - Theme.pad / 2 : 0px;
                         HorizontalLayout {
                             height: Theme.control;
                             padding-left: Theme.pad;
@@ -173,7 +158,6 @@ export component FolderPane inherits Rectangle {
                             Text {
                                 text: item.label;
                                 color: Theme.frame.muted;
-                                font-weight: 600;
                                 vertical-alignment: center;
                             }
                             if item.busy: Spinner {
@@ -184,11 +168,14 @@ export component FolderPane inherits Rectangle {
                             }
                             Rectangle { horizontal-stretch: 1; }
                         }
-                        if item.error != "": Text {
-                            x: Theme.pad;
-                            text: item.error;
-                            color: Theme.frame.error;
-                            wrap: word-wrap;
+                        if item.error != "": HorizontalLayout {
+                            padding-left: Theme.pad;
+                            padding-right: Theme.pad;
+                            Text {
+                                text: item.error;
+                                color: Theme.frame.error;
+                                wrap: word-wrap;
+                            }
                         }
                     }
                     // The menu sits above the row: a TouchArea takes every button's press before its parent sees it.
@@ -226,9 +213,12 @@ export component FolderPane inherits Rectangle {
         VerticalLayout {
             padding: Theme.pad;
             spacing: Theme.pad / 2;
-            Rectangle {
-                height: 1px;
-                background: Theme.frame.border;
+            VerticalLayout {
+                padding-bottom: Theme.pad / 2;
+                Rectangle {
+                    height: 1px;
+                    background: Theme.frame.border;
+                }
             }
             for item[i] in root.pinned: FolderRow {
                 item: item;

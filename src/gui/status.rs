@@ -1,6 +1,5 @@
 //! The status bar without a toolkit: a line per account from its error or latest activity, its progress, the mark
-//! before it, the sync button's hint and the version. The window draws the bar, the history window and the theme
-//! switch.
+//! before it, the sync button's hint and the version About shows. The window draws the bar and the history window.
 use crate::sync::Activity;
 
 use super::state::{Account, App};
@@ -101,7 +100,7 @@ pub(crate) enum Dot {
     Offline,
 }
 
-/// A ring in the error colour for an error, a brass ring while offline, a brass dot once up to date, none while it
+/// A ring in the error colour for an error, a muted dot while offline, a brass dot once up to date, none while it
 /// syncs.
 pub(crate) fn dot(account: &Account) -> Option<Dot> {
     if failed(account) {
@@ -322,7 +321,8 @@ mod tests {
     fn choosing_dark_applies_it_and_writes_it_keeping_comments() {
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = fx.window();
-        open.click("Dark");
+        open.window()
+            .invoke_menu_item(crate::gui::ui::MenuAction::ThemeDark);
         let window = open.window();
         let theme = slint::ComponentHandle::global::<crate::gui::ui::Theme>(&window);
         assert_eq!(
@@ -387,14 +387,6 @@ mod tests {
     }
 
     #[test]
-    fn theme_buttons_read_system_light_dark_from_left_to_right() {
-        let fx = Fixture::new(&["work"]);
-        let (open, _wires) = fx.window();
-        let left = |label| open.get(label).absolute_position().x;
-        assert!(left("System") < left("Light") && left("Light") < left("Dark"));
-    }
-
-    #[test]
     fn a_newer_release_links_to_its_notes() {
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = fx.window();
@@ -407,12 +399,11 @@ mod tests {
     }
 
     #[test]
-    fn no_newer_release_shows_only_the_version() {
+    fn no_newer_release_shows_no_link() {
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = fx.window();
         open.with(|live| live.app.update = UpdateCheck::Done(None));
         assert!(open.window().get_update().is_empty());
-        assert_eq!(open.find(&format!("v{VERSION}")).len(), 1);
     }
 
     #[test]
