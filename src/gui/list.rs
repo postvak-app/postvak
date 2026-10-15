@@ -145,9 +145,12 @@ pub enum Optimistic {
 impl Optimistic {
     pub fn of(action: &Action) -> Option<Optimistic> {
         match action {
-            Action::Archive | Action::Delete | Action::Move(_) | Action::Trash => {
-                Some(Optimistic::Hidden)
-            }
+            Action::Archive
+            | Action::Delete
+            | Action::Junk
+            | Action::Move(_)
+            | Action::NotJunk
+            | Action::Trash => Some(Optimistic::Hidden),
             Action::Flag => Some(Optimistic::Flagged(true)),
             Action::MarkRead => Some(Optimistic::Seen(true)),
             Action::MarkUnread => Some(Optimistic::Seen(false)),
@@ -222,7 +225,7 @@ pub(crate) fn drag_label(marked: usize, subject: &str) -> String {
 
 /// The right-click menu of a message row, in three groups; its items act like the toolbar, on the marked rows or this
 /// one.
-pub(crate) fn menu(row: &Row) -> [Vec<(&'static str, UiAction)>; 3] {
+pub(crate) fn menu(row: &Row, in_junk: bool) -> [Vec<(&'static str, UiAction)>; 3] {
     let (read, read_label) = if row.unread {
         (Action::MarkRead, "Mark as read")
     } else {
@@ -242,6 +245,10 @@ pub(crate) fn menu(row: &Row) -> [Vec<(&'static str, UiAction)>; 3] {
             ("Archive", UiAction::Act(Action::Archive)),
             ("Move to…", UiAction::OpenMovePicker),
             ("Delete", UiAction::Act(Action::Trash)),
+            (
+                if in_junk { "Not junk" } else { "Junk" },
+                UiAction::Act(Action::Junk),
+            ),
         ],
         vec![
             ("View source", UiAction::OpenSource),
@@ -826,7 +833,7 @@ mod tests {
         fx.add("work", message("INBOX", 1, "older"));
         fx.add("work", message("INBOX", 2, "newer"));
         let (open, wires) = fx.window();
-        let archive = menu(&open.with(|live| live.app.list.rows[1].clone()))[1]
+        let archive = menu(&open.with(|live| live.app.list.rows[1].clone()), false)[1]
             .iter()
             .position(|(title, _)| *title == "Archive")
             .unwrap();

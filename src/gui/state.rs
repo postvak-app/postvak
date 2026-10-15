@@ -1019,10 +1019,23 @@ impl App {
 
     /// Whether `folder` is the account's Archive folder, where archiving moves a message back to the inbox.
     pub(crate) fn is_archive(&self, account: usize, folder: &str) -> bool {
+        self.has_role(account, folder, "Archive")
+    }
+
+    pub(crate) fn is_junk(&self, account: usize, folder: &str) -> bool {
+        self.has_role(account, folder, "Junk")
+    }
+
+    /// Whether the shown folder is a Junk folder, where the junk action means not junk.
+    pub(crate) fn shows_junk(&self) -> bool {
+        matches!(&self.view, View::Folder { account, folder } if self.is_junk(*account, folder))
+    }
+
+    fn has_role(&self, account: usize, folder: &str, role: &str) -> bool {
         self.accounts[account]
             .folders
             .iter()
-            .any(|f| f.name == folder && f.special_use.as_deref() == Some("Archive"))
+            .any(|f| f.name == folder && f.special_use.as_deref() == Some(role))
     }
 
     /// Loads the shown view's rows from the store. Runs on view changes and when events mark the view dirty, never
@@ -1584,10 +1597,12 @@ impl App {
         }
         self.pending_arm |= optimistic == Optimistic::Hidden;
         for (account, folder, uids) in targets {
-            let action = if matches!(action, Action::Archive) && self.is_archive(account, &folder) {
-                Action::Move("INBOX".into())
-            } else {
-                action.clone()
+            let action = match action {
+                Action::Archive if self.is_archive(account, &folder) => {
+                    Action::Move("INBOX".into())
+                }
+                Action::Junk if self.is_junk(account, &folder) => Action::NotJunk,
+                _ => action.clone(),
             };
             self.send_apply(account, folder, uids, action, optimistic);
         }
@@ -2033,6 +2048,28 @@ mod tests {
         assert_eq!(driver.uids(), [2, 1]);
         assert_eq!(driver.app.list.rows[driver.app.list.cursor].uid, 2);
         assert!(driver.status()[0].ends_with(" · 1 queued"));
+    }
+
+    #[test]
+    fn bang_reports_junk_and_in_the_junk_folder_not_junk() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Junk", Some("Junk"));
+        inbox(&fx, &[1]);
+        fx.add("work", message("Junk", 2, "offer"));
+        let (mut driver, wires) = fx.driver();
+        driver.press("!");
+        driver.apply(UiAction::SelectView(View::Folder {
+            account: 0,
+            folder: "Junk".into(),
+        }));
+        driver.press("!");
+        assert_eq!(
+            wires.sent(),
+            [
+                apply(&[1], Action::Junk),
+                command("work", "Junk", &[2], Action::NotJunk)
+            ]
+        );
     }
 
     #[test]

@@ -10,9 +10,9 @@ The window remembers its size, its position (where the platform reports one; Way
 
 ## Menu bar
 
-The menu bar (in the window, or at the top of the screen on macOS) has the window's actions in one place: File (Save .eml, View source, Close window with Ctrl+W, Quit with Ctrl+Q; Cmd on macOS), Edit (Copy, Search), Message (Archive, Move…, Delete, Flag, Read or unread, Add to selection), View (Text or HTML, Theme, History, Keys), Mailbox (Sync now, Mark folder read) and Help (Postvak documentation, About Postvak). An item is greyed out when it would do nothing, as the toolbar's buttons are. About Postvak shows the version, the licence and the Slint attribution.
+The menu bar (in the window, or at the top of the screen on macOS) has the window's actions in one place: File (Save .eml, View source, Close window with Ctrl+W, Quit with Ctrl+Q; Cmd on macOS), Edit (Copy, Search), Message (Archive, Move…, Delete, Junk or not junk, Flag, Read or unread, Add to selection), View (Text or HTML, Theme, History, Keys), Mailbox (Sync now, Mark folder read) and Help (Postvak documentation, About Postvak). An item is greyed out when it would do nothing, as the toolbar's buttons are. About Postvak shows the version, the licence and the Slint attribution.
 
-Drag a message onto a folder of its account to move it there; drag a marked message to move every marked one. Right-click a message for read, flag, archive, move, delete, View source and Save .eml; a folder for Open, Collapse or Expand, Mark all as read and Sync now; a link in an HTML message to open or copy it.
+Drag a message onto a folder of its account to move it there; drag a marked message to move every marked one. Right-click a message for read, flag, archive, move, delete, junk, View source and Save .eml; a folder for Open, Collapse or Expand, Mark all as read and Sync now; a link in an HTML message to open or copy it.
 
 ## Keys
 
@@ -23,6 +23,7 @@ Drag a message onto a folder of its account to move it there; drag a marked mess
 | `x` | add the row to the selection, or take it out |
 | `e` | archive |
 | `#`, Delete (Backspace on macOS) | delete: move to Trash; from Trash, or with no Trash folder, delete for good after saving an `.eml` backup |
+| `!` | junk: tag `$Junk`, which trains the server's spam filter, and move to the Junk folder; in the Junk folder, not junk: tag `$NotJunk` and move to INBOX |
 | `m` | move: type to filter the folders, Enter |
 | `u` | mark read or unread |
 | `s` | flag or unflag |
@@ -47,7 +48,7 @@ Each account lists its INBOX and special folders (Archive, Drafts, Sent, Junk, T
 
 ## Toolbar and status bar
 
-The toolbar above the panes has buttons for Archive, Move, Delete, Flag and Read or unread; hover one to see its key. They act on the selection or the current row, like the keys. The search field on the right starts a search, like `/`. The status bar starts with a sync button (Ctrl+R, Cmd+R on macOS) and ends with Postvak's version.
+The toolbar above the panes has buttons for Archive, Move, Delete, Junk, Flag and Read or unread; hover one to see its key. They act on the selection or the current row, like the keys. The search field on the right starts a search, like `/`. The status bar starts with a sync button (Ctrl+R, Cmd+R on macOS) and ends with Postvak's version.
 
 ## Message list
 

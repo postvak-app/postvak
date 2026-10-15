@@ -66,6 +66,7 @@ struct Shown {
     tags: Option<Vec<String>>,
     recipient: bool,
     search: bool,
+    junk: bool,
     cursor: usize,
     marked: HashSet<(usize, RowKey)>,
 }
@@ -82,13 +83,18 @@ impl ListModel {
     pub(crate) fn update(&self, app: &App) {
         let tags = (app.view == View::AllInboxes)
             .then(|| app.accounts.iter().map(|a| a.name.clone()).collect());
-        let (recipient, search) = (app.shows_recipient(), app.search.is_some());
+        let (recipient, search, junk) = (
+            app.shows_recipient(),
+            app.search.is_some(),
+            app.shows_junk(),
+        );
         let changed: Option<Vec<usize>> = {
             let shown = self.shown.borrow();
             let same_kind = shown.rows.len() == app.list.rows.len()
                 && shown.tags == tags
                 && shown.recipient == recipient
-                && shown.search == search;
+                && shown.search == search
+                && shown.junk == junk;
             same_kind.then(|| {
                 (0..shown.rows.len())
                     .filter(|&i| {
@@ -106,6 +112,7 @@ impl ListModel {
             tags,
             recipient,
             search,
+            junk,
             cursor: app.list.cursor,
             marked: app.list.marked.clone(),
         };
@@ -161,7 +168,7 @@ impl Model for ListModel {
         } else {
             ""
         };
-        let [read, moves, file] = list::menu(row).map(|group| {
+        let [read, moves, file] = list::menu(row, shown.junk).map(|group| {
             let titles: Vec<SharedString> =
                 group.into_iter().map(|(title, _)| title.into()).collect();
             ModelRc::from(Rc::new(VecModel::from(titles)))

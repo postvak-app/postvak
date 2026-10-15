@@ -161,6 +161,14 @@ enum Command {
         #[command(flatten)]
         selection: Selection,
     },
+    #[command(about = postvak::help::JUNK)]
+    Junk {
+        #[command(flatten)]
+        selection: Selection,
+        /// Not junk after all
+        #[arg(long)]
+        not: bool,
+    },
     #[command(about = postvak::help::LOG)]
     Log {
         #[arg(long)]
@@ -500,6 +508,10 @@ pub fn run() -> Result<()> {
         }
         Command::Archive { selection } => cmd_act(&config, &paths, selection, Action::Archive),
         Command::Delete { selection } => cmd_act(&config, &paths, selection, Action::Trash),
+        Command::Junk { selection, not } => {
+            let action = if not { Action::NotJunk } else { Action::Junk };
+            cmd_act(&config, &paths, selection, action)
+        }
         Command::Log {
             account,
             limit,
