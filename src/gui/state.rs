@@ -212,6 +212,8 @@ pub(crate) enum UiAction {
     DropOn(View),
     Escape,
     Expand,
+    /// Shift-click: mark the rows from the cursor to this one, and move the cursor there.
+    ExtendSelection(usize),
     /// The pointer over the HTML page, in page points, or `None` once it left.
     HtmlHover(Option<[f32; 2]>),
     /// Select the HTML page's text between two points, in page points.
@@ -252,6 +254,8 @@ pub(crate) enum UiAction {
     /// The search field took (true) or lost (false) the keyboard.
     SearchFocused(bool),
     SearchFor(String),
+    /// Mark every row in the list.
+    SelectAll,
     SelectRow(usize),
     SelectView(View),
     SetRuleEnabled(String, bool),
@@ -269,6 +273,8 @@ pub(crate) enum UiAction {
     ToggleHtml,
     ToggleMark,
     ToggleRead,
+    /// Cmd-click (Ctrl-click off macOS): add this row to the selection, which starts from the cursor row, or take it out.
+    ToggleRowMark(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -837,6 +843,32 @@ impl App {
                 self.list.cursor = 0;
                 self.list.rows.clear();
                 self.reload_view();
+            }
+            UiAction::ExtendSelection(index) if index < self.list.rows.len() => {
+                let (low, high) = (self.list.cursor.min(index), self.list.cursor.max(index));
+                let ids: Vec<_> = self.list.rows[low..=high]
+                    .iter()
+                    .map(list::Row::id)
+                    .collect();
+                self.list.marked.extend(ids);
+                self.apply_action(UiAction::SelectRow(index));
+            }
+            UiAction::ExtendSelection(_) => {}
+            UiAction::SelectAll => {
+                let ids: Vec<_> = self.list.rows.iter().map(list::Row::id).collect();
+                self.list.marked.extend(ids);
+            }
+            UiAction::ToggleRowMark(index) => {
+                if self.list.marked.is_empty()
+                    && let Some(cursor) = self.list.rows.get(self.list.cursor).map(list::Row::id)
+                {
+                    self.list.marked.insert(cursor);
+                }
+                if let Some(id) = self.list.rows.get(index).map(list::Row::id)
+                    && !self.list.marked.remove(&id)
+                {
+                    self.list.marked.insert(id);
+                }
             }
             UiAction::SelectRow(index) => {
                 self.list.cursor = index;
@@ -2067,6 +2099,41 @@ mod tests {
         assert_eq!(wires.sent(), [apply(&[2, 3], Action::Trash)]);
         assert_eq!(driver.uids(), [1]);
         assert!(driver.app.list.marked.is_empty());
+    }
+
+    #[test]
+    fn shift_click_marks_the_rows_from_the_cursor_to_the_clicked_one() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2, 3, 4, 5]);
+        let (mut driver, wires) = fx.driver();
+        driver.press("j");
+        driver.apply(UiAction::ExtendSelection(3));
+        assert_eq!(driver.app.list.cursor, 3);
+        driver.press("#");
+        assert_eq!(wires.sent(), [apply(&[2, 3, 4], Action::Trash)]);
+    }
+
+    #[test]
+    fn command_click_adds_the_cursor_row_and_the_clicked_one_or_takes_it_out() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2, 3]);
+        let (mut driver, wires) = fx.driver();
+        driver.apply(UiAction::ToggleRowMark(2));
+        assert_eq!(driver.app.list.marked.len(), 2);
+        assert_eq!(driver.app.list.cursor, 0, "the cursor stays");
+        driver.apply(UiAction::ToggleRowMark(1));
+        driver.apply(UiAction::ToggleRowMark(1));
+        driver.press("e");
+        assert_eq!(wires.sent(), [apply(&[1, 3], Action::Archive)]);
+    }
+
+    #[test]
+    fn command_a_marks_every_row() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2, 3]);
+        let (mut driver, wires) = fx.driver();
+        driver.press("ctrl+a e");
+        assert_eq!(wires.sent(), [apply(&[1, 2, 3], Action::Archive)]);
     }
 
     #[test]
