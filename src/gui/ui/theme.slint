@@ -47,6 +47,9 @@ export global Theme {
     out property <Palette> pane: dark ? night : paper;
     // The oxblood chrome around them: toolbar, folders, status bar.
     out property <Palette> frame: dark ? frame-night : frame-day;
+    // The OS blurs the desktop behind the window (`[ui] blur`), so the frame lets it through and the window is clear.
+    in property <bool> blur;
+    out property <brush> frame-fill: blur ? frame.background.transparentize(25%) : frame.background;
 
     out property <length> control: 28px;
     out property <length> top-bar: 40px;

@@ -57,6 +57,9 @@ pub enum PasswordSource {
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UiConfig {
+    /// Show the desktop blurred through the frame (macOS; elsewhere the frame stays opaque).
+    #[serde(default)]
+    pub blur: bool,
     /// Ask GitHub once a day whether a newer release is out.
     #[serde(default)]
     pub check_updates: bool,
@@ -415,6 +418,13 @@ notify = false
         let path = dir.path().join("config.toml");
         Config::parse(SAMPLE).unwrap().save(&path).unwrap();
         assert!(!std::fs::read_to_string(&path).unwrap().contains("[ui]"));
+    }
+
+    #[test]
+    fn blur_is_off_unless_turned_on() {
+        assert!(!Config::parse(SAMPLE).unwrap().ui.blur);
+        let on = format!("{SAMPLE}\n[ui]\nblur = true\n");
+        assert!(Config::parse(&on).unwrap().ui.blur);
     }
 
     #[test]

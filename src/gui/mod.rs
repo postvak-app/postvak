@@ -235,9 +235,17 @@ fn open(paths: Paths) -> Result<()> {
     let _scheme = follow_desktop_scheme(&window)?;
     let layout = persist::path(&paths);
     restore(&window, persist::load(&layout));
+    // Before `show`: the native window is made transparent only if the Window's background is clear when it is created.
+    window
+        .global::<ui::Theme>()
+        .set_blur(config.ui.blur && cfg!(target_os = "macos"));
     let mut app = App::new(&config, paths, client, events, states);
     app.wake = std::sync::Arc::new(wake);
     window.show().context("could not show the window")?;
+    #[cfg(target_os = "macos")]
+    if config.ui.blur {
+        add_blur(&window);
+    }
     // Closing the window hides it. The tray keeps the event loop running only while the desktop shows it, so without
     // one closing the window quits, as it always did.
     let tray = ui::Tray::new()
@@ -253,6 +261,18 @@ fn open(paths: Paths) -> Result<()> {
         log::warn!("could not save the window's layout: {e:#}");
     }
     ran.context("the window failed")
+}
+
+/// Puts the OS blur behind the window, which `Theme.blur` lets show through the frame.
+#[cfg(target_os = "macos")]
+fn add_blur(window: &ui::MailWindow) {
+    use window_vibrancy::{NSVisualEffectMaterial, NSVisualEffectState, apply_vibrancy};
+    window.window().with_winit_window(|native| {
+        let state = Some(NSVisualEffectState::FollowsWindowActiveState);
+        if let Err(e) = apply_vibrancy(native, NSVisualEffectMaterial::Sidebar, state, None) {
+            log::warn!("could not blur the window: {e}");
+        }
+    });
 }
 
 /// Tells the window whether the desktop is dark, now and whenever that changes, for the System theme. The probe

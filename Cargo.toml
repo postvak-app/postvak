@@ -61,6 +61,7 @@ zeroize = "1"                                        # wipe secrets on drop
 
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1", features = ["keychain"] }  # macOS Keychain backend for keyring-core
+window-vibrancy = { version = "0.8", optional = true }  # `[ui] blur`: puts an NSVisualEffectView behind the window, the blur Slint cannot draw
 
 [target.'cfg(target_os = "linux")'.dependencies]
 fontique = { version = "0.12", optional = true, features = ["fontconfig-dlopen"] }  # HTML mail: load fontconfig at runtime, as the window loads X11 and Wayland, instead of linking it
@@ -105,7 +106,7 @@ dbg_macro = "warn"                                   # debug output stays out of
 
 [features]
 default = ["gui", "html", "mcp"]
-gui = ["dep:i-slint-common", "dep:slint", "dep:slint-build", "dep:sys-locale"]             # `postvak gui`; off builds the CLI alone
+gui = ["dep:i-slint-common", "dep:slint", "dep:slint-build", "dep:sys-locale", "dep:window-vibrancy"]             # `postvak gui`; off builds the CLI alone
 html = ["gui", "dep:blitz-dom", "dep:blitz-html", "dep:blitz-paint", "dep:blitz-traits", "dep:html5ever", "dep:anyrender", "dep:anyrender_vello_cpu", "dep:data-url", "dep:fontique", "dep:ureq"]  # HTML mail rendered in the body panel; off shows text
 mcp = ["dep:rmcp"]                                   # `postvak mcp`; off builds without the MCP server
 testing = []                                         # exposes RecordingOps and the one-shot sync steps to integration tests

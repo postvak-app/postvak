@@ -38,11 +38,14 @@ notify = true
 
 ```toml
 [ui]
+blur = false
 check_updates = false
 theme = "system"
 ```
 
 `theme` is `"system"` (follow the OS, the default), `"light"` or `"dark"`. The mail window's theme switch writes it.
+
+`blur` (off by default) shows the desktop blurred and tinted through the oxblood frame, as other macOS apps do in their sidebars; the panes stay opaque. It is read when the window opens, and does nothing on Linux or Windows.
 
 `check_updates` (off by default) lets the mail window ask GitHub at most once a day whether a newer release is out, and link to its release notes in the status bar. The request is a plain HTTPS request to `api.github.com` with the user agent `postvak/<version>`: it carries nothing about your accounts or mail, though GitHub sees your IP address as with any request. Postvak never updates itself; upgrade the way you installed it (`brew upgrade postvak`, `cargo install postvak`, a new AppImage). Set `check_updates = true` to turn the check on.
 

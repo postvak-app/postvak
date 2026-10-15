@@ -214,7 +214,7 @@ export component MailWindow inherits Window {
     preferred-height: 800px;
     // Behind the menu bar where the window draws it (not macOS). Its text follows std-widgets' scheme, which follows
     // the theme: light text on the frame when dark, dark text on paper when light.
-    background: Theme.dark ? Theme.frame.background : Theme.pane.panel;
+    background: Theme.blur ? transparent : Theme.dark ? Theme.frame.background : Theme.pane.panel;
     default-font-family: Theme.text-font;
     default-font-size: Theme.text-size;
     forward-focus: keys;
@@ -359,7 +359,7 @@ export component MailWindow inherits Window {
     }
 
     keys := FocusScope {
-        Rectangle { background: Theme.frame.background; }
+        Rectangle { background: Theme.frame-fill; }
         key-pressed(event) => {
             if (root.key(event.text, event.modifiers.control, event.modifiers.alt)) {
                 return accept;
