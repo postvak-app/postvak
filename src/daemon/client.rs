@@ -1,6 +1,5 @@
 //! A connection to the daemon: requests with replies, fire-and-forget sends, and the event subscription.
 use std::collections::{HashMap, HashSet};
-use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::Shutdown;
@@ -34,35 +33,17 @@ const START_WAIT: Duration = Duration::from_secs(5);
 const STOP_WAIT: Duration = Duration::from_secs(5);
 
 /// The error of a request that lost its daemon; a caller holding the client should reconnect.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
 pub struct Stopped(String);
 
-impl fmt::Display for Stopped {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for Stopped {}
-
 /// A daemon of a newer postvak than this one: this program has to restart, and the daemon keeps running.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("the daemon is version {theirs}, newer than this postvak ({ours}); restart this program")]
 pub struct NewerDaemon {
     pub theirs: String,
     pub ours: String,
 }
-
-impl fmt::Display for NewerDaemon {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "the daemon is version {}, newer than this postvak ({}); restart this program",
-            self.theirs, self.ours
-        )
-    }
-}
-
-impl std::error::Error for NewerDaemon {}
 
 pub struct Client {
     transport: Transport,
@@ -73,7 +54,7 @@ pub struct Client {
 
 enum Transport {
     Socket(Mutex<UnixStream>),
-    #[cfg(any(test, feature = "testing"))]
+    #[cfg(test)]
     Memory {
         accounts: Vec<String>,
         commands: Sender<(String, Command)>,
@@ -86,7 +67,7 @@ impl Transport {
     fn socket(&self) -> Option<&Mutex<UnixStream>> {
         match self {
             Transport::Socket(stream) => Some(stream),
-            #[cfg(any(test, feature = "testing"))]
+            #[cfg(test)]
             Transport::Memory { .. } => None,
         }
     }
@@ -176,31 +157,19 @@ impl Inbox {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
 pub(super) enum ConnectError {
     /// Nothing answered, or the connection closed before the daemon's hello.
+    #[error("no daemon answered: {0}")]
     Down(io::Error),
     /// The daemon speaks another protocol or is another version; `connection` is the one that saw its hello.
+    #[error("{reason}")]
     Mismatch {
         reason: String,
         /// The daemon's version, when its hello was understood.
         theirs: Option<String>,
         connection: BufReader<UnixStream>,
     },
-}
-
-impl fmt::Display for ConnectError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ConnectError::Down(e) => write!(f, "no daemon answered: {e}"),
-            ConnectError::Mismatch { reason, .. } => f.write_str(reason),
-        }
-    }
-}
-
-impl From<ConnectError> for anyhow::Error {
-    fn from(error: ConnectError) -> anyhow::Error {
-        anyhow!("{error}")
-    }
 }
 
 /// The daemon connection a CLI command or the MCP server makes on first use, and again once its daemon hung up.
@@ -381,17 +350,7 @@ impl Client {
         self.request_until(account, command, timeout)
     }
 
-    #[cfg(test)]
-    pub(crate) fn request_within(
-        &self,
-        account: &str,
-        command: Command,
-        timeout: Duration,
-    ) -> anyhow::Result<Event> {
-        self.request_until(account, command, Some(timeout))
-    }
-
-    fn request_until(
+    pub(super) fn request_until(
         &self,
         account: &str,
         command: Command,
@@ -410,7 +369,7 @@ impl Client {
 
     /// Sends without waiting; a refusal arrives as `Event::CommandFailed` on the subscription.
     pub fn send(&self, account: &str, command: Command) -> bool {
-        #[cfg(any(test, feature = "testing"))]
+        #[cfg(test)]
         if let Transport::Memory { commands, .. } = &self.transport {
             return commands.send((account.into(), command)).is_ok();
         }
@@ -458,7 +417,7 @@ impl Client {
         &self,
         wake: impl Fn() + Send + 'static,
     ) -> anyhow::Result<Receiver<Event>> {
-        #[cfg(any(test, feature = "testing"))]
+        #[cfg(test)]
         if let Transport::Memory { events, .. } = &self.transport {
             return lock(events)
                 .take()
@@ -483,7 +442,7 @@ impl Client {
     }
 
     pub fn status(&self) -> anyhow::Result<Status> {
-        #[cfg(any(test, feature = "testing"))]
+        #[cfg(test)]
         if let Transport::Memory { accounts, .. } = &self.transport {
             return Ok(memory_status(accounts));
         }
@@ -513,7 +472,7 @@ impl Client {
     }
 
     /// A client with no daemon behind it: commands appear on the returned receiver, events are injected by the test.
-    #[cfg(any(test, feature = "testing"))]
+    #[cfg(test)]
     pub fn in_memory(accounts: &[&str]) -> (Client, Receiver<(String, Command)>, Sender<Event>) {
         let (commands, sent) = mpsc::channel();
         let (inject, events) = mpsc::channel();
@@ -599,7 +558,7 @@ fn encode_failure(error: &io::Error) -> String {
     format!("could not encode the request: {error}")
 }
 
-#[cfg(any(test, feature = "testing"))]
+#[cfg(test)]
 fn memory_status(accounts: &[String]) -> Status {
     use super::wire::AccountStatus;
     Status {

@@ -17,7 +17,7 @@ fn headers(from: &str, subject: &str, id: &str) -> String {
 }
 
 fn ops_with_inbox() -> RecordingOps {
-    let mut ops = RecordingOps::new()
+    let mut ops = RecordingOps::default()
         .with_folder("INBOX", None)
         .with_folder("Trash", Some("Trash"));
     ops.add_mail(
@@ -48,12 +48,12 @@ fn rules_from(toml: &str, store: &Store, now: i64) -> Vec<CompiledRule> {
 }
 
 #[test]
-fn thousands_groups_digits() {
-    assert_eq!(thousands(0), "0");
-    assert_eq!(thousands(999), "999");
-    assert_eq!(thousands(1_000), "1,000");
-    assert_eq!(thousands(48_213), "48,213");
-    assert_eq!(thousands(1_234_567), "1,234,567");
+fn group_digits_puts_the_separator_between_thousands() {
+    assert_eq!(group_digits(0, ','), "0");
+    assert_eq!(group_digits(999, ','), "999");
+    assert_eq!(group_digits(1_000, ','), "1,000");
+    assert_eq!(group_digits(48_213, ','), "48,213");
+    assert_eq!(group_digits(1_234_567, '.'), "1.234.567");
 }
 
 #[test]
@@ -173,7 +173,7 @@ fn first_sync_does_not_notify() {
 
 #[test]
 fn first_mail_into_empty_tracked_folder_notifies() {
-    let mut ops = RecordingOps::new().with_folder("INBOX", None);
+    let mut ops = RecordingOps::default().with_folder("INBOX", None);
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open_in_memory().unwrap();
     let trash = Trash::new(dir.path().to_path_buf());
@@ -356,7 +356,7 @@ fn unlisted_rule_move_placeholder_survives_a_pass() {
 
 #[test]
 fn rules_run_deletes_old_seen_code_and_notifies_untouched_new_mail() {
-    let mut ops = RecordingOps::new()
+    let mut ops = RecordingOps::default()
         .with_folder("INBOX", None)
         .with_folder("Trash", Some("Trash"));
     ops.add_mail(
@@ -448,7 +448,7 @@ fn resync_after_uidvalidity_change_does_not_notify() {
 
 #[test]
 fn body_rule_fetches_bodies_for_new_messages() {
-    let mut ops = RecordingOps::new()
+    let mut ops = RecordingOps::default()
         .with_folder("INBOX", None)
         .with_folder("Trash", Some("Trash"));
     let dir = tempfile::tempdir().unwrap();
@@ -487,7 +487,7 @@ fn body_rule_fetches_bodies_for_new_messages() {
 
 #[test]
 fn a_body_rule_added_later_skips_mail_its_folder_already_had() {
-    let mut ops = RecordingOps::new()
+    let mut ops = RecordingOps::default()
         .with_folder("INBOX", None)
         .with_folder("Lists", None);
     let dir = tempfile::tempdir().unwrap();
@@ -947,7 +947,7 @@ fn the_last_good_rules_survive_a_reconnect() {
 
 #[test]
 fn failed_apply_skips_message_and_continues() {
-    let mut ops = RecordingOps::new().with_folder("INBOX", None);
+    let mut ops = RecordingOps::default().with_folder("INBOX", None);
     ops.add_mail(
         "INBOX",
         1,
@@ -1083,7 +1083,7 @@ fn rules_run_selects_each_folder_once() {
 
 #[test]
 fn special_use_falls_back_to_folder_name() {
-    let mut ops = RecordingOps::new()
+    let mut ops = RecordingOps::default()
         .with_folder("INBOX", None)
         .with_folder("archive", None)
         .with_folder("Deleted Items", Some("Trash"))
@@ -1120,7 +1120,7 @@ fn special_use_falls_back_to_folder_name() {
 
 #[test]
 fn flag_rule_acts_and_logs_once_across_passes() {
-    let mut ops = RecordingOps::new().with_folder("INBOX", None);
+    let mut ops = RecordingOps::default().with_folder("INBOX", None);
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open_in_memory().unwrap();
     let trash = Trash::new(dir.path().to_path_buf());
@@ -1217,7 +1217,7 @@ fn a_lost_connection_ends_a_full_pass_instead_of_skipping_every_folder() {
 
 #[test]
 fn interrupted_first_sync_stays_initial_on_retry() {
-    let mut ops = RecordingOps::new().with_folder("INBOX", None);
+    let mut ops = RecordingOps::default().with_folder("INBOX", None);
     for uid in 1..=3 {
         ops.add_mail(
             "INBOX",
@@ -1286,7 +1286,7 @@ fn inbox() -> RemoteFolder {
 
 #[test]
 fn sparse_uids_are_fetched_in_chunks_of_500_messages() {
-    let mut ops = RecordingOps::new().with_folder("INBOX", None);
+    let mut ops = RecordingOps::default().with_folder("INBOX", None);
     for i in 1..=1200u32 {
         ops.add_mail(
             "INBOX",
@@ -1317,7 +1317,7 @@ fn sparse_uids_are_fetched_in_chunks_of_500_messages() {
 
 #[test]
 fn interrupted_chunked_first_sync_resumes_and_stays_silent() {
-    let mut ops = RecordingOps::new().with_folder("INBOX", None);
+    let mut ops = RecordingOps::default().with_folder("INBOX", None);
     for uid in 1..=1200 {
         ops.add_mail(
             "INBOX",
@@ -1343,7 +1343,7 @@ fn interrupted_chunked_first_sync_resumes_and_stays_silent() {
 
 #[test]
 fn a_folder_that_starts_empty_notifies_its_first_mail() {
-    let mut ops = RecordingOps::new().with_folder("INBOX", None);
+    let mut ops = RecordingOps::default().with_folder("INBOX", None);
     let store = Store::open_in_memory().unwrap();
     assert!(sync_folder(&mut ops, &store, &inbox()).unwrap().is_empty());
     assert_eq!(store.initial_uid_next("INBOX").unwrap(), 0);
@@ -1406,7 +1406,7 @@ fn a_checkpoint_that_used_the_connection_makes_the_chunk_loop_reselect() {
 
 #[test]
 fn a_uidvalidity_change_between_chunks_stops_the_folder_until_the_next_pass_resets_it() {
-    let mut ops = RecordingOps::new().with_folder("INBOX", None);
+    let mut ops = RecordingOps::default().with_folder("INBOX", None);
     for uid in 1..=600 {
         let id = format!("o{uid}@x");
         ops.add_mail("INBOX", uid, 10 * H, &headers("a@x", "old", &id), None);
@@ -1569,7 +1569,7 @@ fn rules_let_commands_run_between_body_fetches_and_skip_mail_they_moved() {
 
 #[test]
 fn a_full_pass_syncs_inbox_first() {
-    let mut ops = RecordingOps::new()
+    let mut ops = RecordingOps::default()
         .with_folder("Archive", Some("Archive"))
         .with_folder("INBOX", None);
     let store = Store::open_in_memory().unwrap();
@@ -1585,7 +1585,7 @@ fn a_full_pass_syncs_inbox_first() {
 
 #[test]
 fn changed_uidvalidity_blocks_rules_on_stale_rows() {
-    let mut ops = RecordingOps::new()
+    let mut ops = RecordingOps::default()
         .with_folder("INBOX", None)
         .with_folder("Codes", None);
     let dir = tempfile::tempdir().unwrap();
@@ -1668,10 +1668,10 @@ fn backoff_grows_caps_and_resets_after_a_full_cycle() {
             match connects {
                 1..=8 => Err(SyncError::Mail(MailError::Connect("refused".into()))),
                 // No folders: the pass completes, then selecting INBOX before IDLE fails.
-                9 => Ok(Box::new(RecordingOps::new()) as Box<dyn MailOps>),
+                9 => Ok(Box::new(RecordingOps::default()) as Box<dyn MailOps>),
                 // INBOX is selectable but not listed, so the full pass completes; after an IDLE wake the INBOX-only pass fails.
                 _ => {
-                    let mut ops = RecordingOps::new().with_folder("INBOX", None);
+                    let mut ops = RecordingOps::default().with_folder("INBOX", None);
                     ops.folders.clear();
                     ops.add_mail("INBOX", 1, 0, "Subject: a\r\n\r\n", None);
                     ops.fail_fetch_after = Some(0);
@@ -2123,7 +2123,7 @@ fn mail_committed_before_a_failed_chunk_notifies_exactly_once() {
     let paths = Paths::under(dir.path());
     let acct = account();
     let mut state = AccountSync::open(&acct, &paths).unwrap();
-    let mut ops = RecordingOps::new().with_folder("INBOX", None);
+    let mut ops = RecordingOps::default().with_folder("INBOX", None);
     let commands = std::sync::mpsc::channel::<Job>().1;
     let stop = AtomicBool::new(false);
     let (tx, rx) = std::sync::mpsc::channel();
@@ -2421,7 +2421,6 @@ fn restore_refuses_a_file_outside_the_trash() {
     ));
 }
 
-#[cfg(unix)]
 #[test]
 fn restore_refuses_a_symlink_in_the_trash_pointing_outside() {
     let (mut ops, store, dir) = synced();
@@ -3190,7 +3189,7 @@ fn an_expunge_is_found_by_the_message_count_without_fetching_flags() {
 #[test]
 fn without_condstore_all_flags_are_fetched_only_once_the_interval_passed() {
     let mut ops = ops_with_inbox();
-    ops.condstore = false;
+    ops.no_condstore = true;
     let store = Store::open_in_memory().unwrap();
     let set_seen = |ops: &mut RecordingOps| {
         ops.mail.get_mut("INBOX").unwrap()[0]

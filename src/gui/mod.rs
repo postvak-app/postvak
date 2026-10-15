@@ -1,13 +1,13 @@
 //! The mail window: folders, threads and the message body over the local store, as a client of the daemon that syncs.
 mod bind;
-pub mod body;
-#[cfg(any(test, feature = "testing"))]
-pub mod fixture;
+mod body;
+#[cfg(test)]
+mod fixture;
 mod folders;
 mod html;
 mod icons;
 mod keys;
-pub mod list;
+mod list;
 mod menu;
 mod numbers;
 mod persist;

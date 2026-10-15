@@ -1,17 +1,14 @@
 //! The HTML view of a message, without a toolkit: the render thread's protocol, the strips it paints as plain pixels,
 //! and which strips to ask for. `state.rs` owns `HtmlState` and talks to the render thread; the window draws it.
-#[cfg(feature = "html")]
 mod fetch;
-#[cfg(feature = "html")]
 mod net;
-#[cfg(feature = "html")]
 mod render;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::sync::Arc;
 
-use crate::message::{HtmlBody, InlinePart};
+use crate::message::InlinePart;
 
 use super::body;
 
@@ -33,9 +30,7 @@ pub const SETTLE: f64 = 0.1;
 pub const TOO_LARGE: &str = "Too large to render; showing text.";
 pub const FAILED: &str = "Could not render HTML; showing text.";
 
-#[cfg(feature = "html")]
 pub(crate) use fetch::Fetcher;
-#[cfg(feature = "html")]
 pub use render::Renderer;
 
 /// Asks the window to draw again; the render thread calls it after each reply.
@@ -48,8 +43,6 @@ pub struct Pixels {
     rgba: Vec<u8>,
 }
 
-// Without the `html` feature nothing paints strips.
-#[cfg_attr(not(feature = "html"), allow(dead_code))]
 impl Pixels {
     /// `None` unless `rgba` holds exactly `width` × `height` pixels.
     pub fn new(width: u32, height: u32, rgba: Vec<u8>) -> Option<Pixels> {
@@ -77,49 +70,6 @@ impl Pixels {
     }
 }
 
-/// Without the `html` feature nothing renders, so nothing asks for remote content.
-#[cfg(not(feature = "html"))]
-pub(crate) struct Fetcher;
-
-#[cfg(not(feature = "html"))]
-impl Fetcher {
-    pub fn start(_wake: Wake) -> Fetcher {
-        Fetcher
-    }
-
-    pub fn send(&self, _job: FetchJob) {}
-
-    pub fn done(&self) -> Vec<FetchDone> {
-        Vec::new()
-    }
-}
-
-/// Without the `html` feature nothing renders: messages never have an HTML body, so this is never sent to.
-#[cfg(not(feature = "html"))]
-pub struct Renderer;
-
-#[cfg(not(feature = "html"))]
-impl Renderer {
-    pub fn start(_wake: Wake) -> Renderer {
-        Renderer
-    }
-
-    pub fn send(&mut self, _request: Request) {}
-
-    pub fn replies(&self) -> Vec<Reply> {
-        Vec::new()
-    }
-}
-
-/// The HTML body of a raw message when this build renders HTML.
-pub fn html_of(raw: &[u8]) -> Option<HtmlBody> {
-    if cfg!(feature = "html") {
-        crate::message::html_body(raw)
-    } else {
-        None
-    }
-}
-
 /// Remote content the user chose to load, by URL; a failed download is there with no bytes.
 pub(crate) type Fetched = Arc<BTreeMap<String, Vec<u8>>>;
 
@@ -127,23 +77,17 @@ pub(crate) type Fetched = Arc<BTreeMap<String, Vec<u8>>>;
 pub(crate) const MAX_REMOTE: usize = 200;
 
 /// Remote URLs to download, tagged so the answer for a message no longer shown can be dropped.
-// Without the `html` feature there is no fetch thread to read or build these.
-#[cfg_attr(not(feature = "html"), allow(dead_code))]
 pub(crate) struct FetchJob {
     pub tag: u64,
     pub urls: Vec<String>,
 }
 
 /// Every URL of a `FetchJob`, with its bytes, or none when the download failed or the host was refused.
-// Without the `html` feature there is no fetch thread to read or build these.
-#[cfg_attr(not(feature = "html"), allow(dead_code))]
 pub(crate) struct FetchDone {
     pub tag: u64,
     pub fetched: BTreeMap<String, Vec<u8>>,
 }
 
-// Without the `html` feature there is no render thread to read or build these.
-#[cfg_attr(not(feature = "html"), allow(dead_code))]
 pub(crate) struct Load {
     pub fetched: Fetched,
     pub generation: u64,
@@ -154,8 +98,6 @@ pub(crate) struct Load {
     pub width: f32,
 }
 
-// Without the `html` feature there is no render thread to read or build these.
-#[cfg_attr(not(feature = "html"), allow(dead_code))]
 pub enum Request {
     Load(Load),
     Paint {
@@ -176,8 +118,6 @@ pub enum Request {
     },
 }
 
-// Without the `html` feature there is no render thread to read or build these.
-#[cfg_attr(not(feature = "html"), allow(dead_code))]
 impl Request {
     pub fn generation(&self) -> u64 {
         match self {
@@ -189,8 +129,6 @@ impl Request {
     }
 }
 
-// Without the `html` feature there is no render thread to read or build these.
-#[cfg_attr(not(feature = "html"), allow(dead_code))]
 pub enum Reply {
     Failed {
         generation: u64,
@@ -366,7 +304,6 @@ mod tests {
 }
 
 #[cfg(test)]
-#[cfg(feature = "html")]
 mod view_tests {
     //! The HTML view in the running window: toggling to text, links, notes, remote content, and the render thread's
     //! failures.

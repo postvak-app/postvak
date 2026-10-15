@@ -4,14 +4,13 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::time::SystemTime;
 
 use crate::config::{self, Config, Theme};
 use crate::daemon::Client;
 use crate::daemon::client::NewerDaemon;
 use crate::daemon::wire::AccountStatus;
 use crate::message::{self, Attachment, HtmlBody, clean};
-use crate::paths::Paths;
+use crate::paths::{FileWatch, Paths};
 use crate::rules::{self as rule_file, Action, RulesError};
 use crate::store::{Filter, LogEntry, Message, Store, StoreError, has_flag};
 use crate::sync::{Activity, Command, Event};
@@ -72,7 +71,7 @@ pub(crate) struct BodyState {
     /// become read.
     pub armed: bool,
     pub attachments: Vec<Attachment>,
-    /// The message's HTML, when it has some and this build renders it.
+    /// The message's HTML, when it has some.
     pub html: Option<HtmlBody>,
     /// The HTML view, once the panel asked for a layout; `None` while the text view shows.
     pub html_view: Option<HtmlState>,
@@ -296,7 +295,7 @@ pub struct App {
     /// Folder tree branches folded shut, by account index and path; kept for the window's lifetime.
     pub(crate) collapsed: HashSet<(usize, String)>,
     pub(crate) config_changed: bool,
-    pub(crate) config_mtime: Option<SystemTime>,
+    pub(crate) config_watch: FileWatch,
     /// Set when the event stream ended; cleared once a reconnect succeeds.
     pub(crate) daemon_lost: bool,
     pub(crate) downloads: PathBuf,
@@ -330,7 +329,7 @@ pub struct App {
     pub(crate) reconnecting: Option<Receiver<anyhow::Result<Connection>>>,
     pub(crate) requested: HashSet<(usize, RowKey)>,
     pub(crate) rules: RulesState,
-    pub(crate) rules_mtime: Option<SystemTime>,
+    pub(crate) rules_watch: FileWatch,
     pub(crate) search: Option<String>,
     /// Which rows a folder's list keeps; search results ignore it.
     pub(crate) filter: Filter,
@@ -378,7 +377,6 @@ impl App {
             .collect();
         let rules_path = paths.rules_file();
         let rules = RulesState::load(&rules_path, Vec::new());
-        let (config_mtime, rules_mtime) = (mtime(&paths.config_file()), mtime(&rules_path));
         let mut app = App {
             accounts,
             activity_log: Vec::new(),
@@ -386,7 +384,7 @@ impl App {
             client,
             collapsed: HashSet::new(),
             config_changed: false,
-            config_mtime,
+            config_watch: FileWatch::new(paths.config_file()),
             daemon_lost: false,
             downloads: downloads_dir(),
             error: None,
@@ -412,7 +410,7 @@ impl App {
             reconnecting: None,
             requested: HashSet::new(),
             rules,
-            rules_mtime,
+            rules_watch: FileWatch::new(rules_path),
             search: None,
             filter: Filter::default(),
             search_focused: false,
@@ -862,7 +860,10 @@ impl App {
                 self.theme = theme;
                 let path = self.paths.config_file();
                 match config::save_theme(&path, theme) {
-                    Ok(()) => self.config_mtime = mtime(&path),
+                    // Absorbs this write, so the poll does not take it for an outside edit.
+                    Ok(()) => {
+                        self.config_watch.changed();
+                    }
                     Err(e) => self.note_error(None, format!("could not save the theme: {e}")),
                 }
             }
@@ -1157,7 +1158,7 @@ impl App {
         };
         let raw = store.raw(&key.0, key.1).ok().flatten();
         let attachments = raw.as_deref().map(message::attachments).unwrap_or_default();
-        let html = raw.as_deref().and_then(html::html_of);
+        let html = raw.as_deref().and_then(crate::message::html_body);
         (
             store.message(&key.0, key.1).ok().flatten(),
             attachments,
@@ -1679,19 +1680,21 @@ impl App {
             return;
         }
         self.last_poll = now;
-        if mtime(&self.paths.rules_file()) != self.rules_mtime {
+        if self.rules_watch.changed() {
             self.rules_changed();
         }
-        if mtime(&self.paths.config_file()) != self.config_mtime {
+        if self.config_watch.changed() {
             self.config_changed = true;
         }
     }
 
     /// Reloads the rules view; the daemon notices the change itself and syncs every account.
     fn rules_changed(&mut self) {
-        let path = self.paths.rules_file();
-        self.rules_mtime = mtime(&path);
-        self.rules = RulesState::load(&path, std::mem::take(&mut self.rules.rules));
+        self.rules_watch.changed();
+        self.rules = RulesState::load(
+            &self.paths.rules_file(),
+            std::mem::take(&mut self.rules.rules),
+        );
     }
 
     fn edit_rules(&mut self, edit: impl FnOnce(&Path) -> Result<(), RulesError>) {
@@ -1903,10 +1906,6 @@ pub(crate) fn step(index: usize, delta: isize, len: usize) -> usize {
     index
         .saturating_add_signed(delta)
         .min(len.saturating_sub(1))
-}
-
-fn mtime(path: &Path) -> Option<SystemTime> {
-    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 #[cfg(test)]

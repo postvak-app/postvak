@@ -1,9 +1,7 @@
 //! Whether a newer Postvak release is out: GitHub's latest release, asked at most once a day. Postvak never updates
 //! itself; the window only links to the release notes.
-use std::io::{self, Read, Write};
-use std::net::TcpStream;
+use std::io;
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -11,8 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::paths::write_atomic;
 
 const DAY: i64 = 24 * 60 * 60;
-const HOST: &str = "api.github.com";
-const LATEST: &str = "/repos/postvak-app/postvak/releases/latest";
+const LATEST: &str = "https://api.github.com/repos/postvak-app/postvak/releases/latest";
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The last check: when it ran, and the newest stable version it saw as `X.Y.Z`.
@@ -101,45 +98,18 @@ pub fn check(
     latest.filter(|latest| newer(latest, current))
 }
 
-/// Asks GitHub for the latest release over HTTP/1.0, which rules out a chunked reply.
+/// Asks GitHub for the latest release; any status but 2xx is an error.
 pub fn fetch() -> anyhow::Result<String> {
-    let tcp = TcpStream::connect((HOST, 443))?;
-    tcp.set_read_timeout(Some(TIMEOUT))?;
-    tcp.set_write_timeout(Some(TIMEOUT))?;
-    let mut roots = rustls::RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let config = rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    let name = rustls::pki_types::ServerName::try_from(HOST)?;
-    let mut tls =
-        rustls::StreamOwned::new(rustls::ClientConnection::new(Arc::new(config), name)?, tcp);
-    let request = format!(
-        "GET {LATEST} HTTP/1.0\r\nHost: {HOST}\r\nUser-Agent: postvak/{}\r\nAccept: application/vnd.github+json\r\n\r\n",
-        env!("CARGO_PKG_VERSION")
-    );
-    tls.write_all(request.as_bytes())?;
-    let mut response = Vec::new();
-    match tls.read_to_end(&mut response) {
-        Ok(_) => {}
-        // A server that closes without TLS close_notify; a cut-off body then fails to parse as JSON.
-        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof && !response.is_empty() => {}
-        Err(e) => return Err(e.into()),
-    }
-    Ok(body_of(&String::from_utf8(response)?)?.to_string())
-}
-
-/// The body of a 200 reply; any other status is an error.
-pub fn body_of(response: &str) -> anyhow::Result<&str> {
-    let (head, body) = response
-        .split_once("\r\n\r\n")
-        .ok_or_else(|| anyhow::anyhow!("no end of headers"))?;
-    let status = head.lines().next().unwrap_or_default();
-    anyhow::ensure!(
-        status.split(' ').nth(1) == Some("200"),
-        "GitHub answered {status}"
-    );
-    Ok(body)
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(TIMEOUT))
+        .build()
+        .into();
+    let mut response = agent
+        .get(LATEST)
+        .header("User-Agent", concat!("postvak/", env!("CARGO_PKG_VERSION")))
+        .header("Accept", "application/vnd.github+json")
+        .call()?;
+    Ok(response.body_mut().read_to_string()?)
 }
 
 #[cfg(test)]
@@ -347,16 +317,5 @@ mod tests {
             check(&cache, NOW, "0.2.0", release_0_3_0).as_deref(),
             Some("0.3.0")
         );
-    }
-
-    #[test]
-    fn body_of_takes_a_200_body_and_rejects_other_statuses() {
-        let ok = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nconnection: close\r\n\r\n{\"tag_name\":\"v0.3.0\"}";
-        assert_eq!(body_of(ok).unwrap(), "{\"tag_name\":\"v0.3.0\"}");
-        let limited =
-            "HTTP/1.1 403 rate limit exceeded\r\n\r\n{\"message\":\"API rate limit exceeded\"}";
-        assert!(body_of(limited).unwrap_err().to_string().contains("403"));
-        assert!(body_of("HTTP/1.1 200 OK\r\nContent-Type: application/json").is_err());
-        assert!(body_of("").is_err());
     }
 }

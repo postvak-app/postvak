@@ -10,7 +10,6 @@ use postvak::config::{AccountConfig, Config, Identity, PasswordSource};
 use postvak::credentials::{self, Secret};
 use postvak::daemon::Client;
 use postvak::daemon::client::LazyClient;
-use postvak::daemon::wire::{AccountStatus, Status};
 use postvak::mail_ops::MailOps;
 use postvak::message::clean;
 use postvak::paths::Paths;
@@ -727,11 +726,30 @@ fn cmd_daemon(command: DaemonCommand, paths: &Paths) -> Result<()> {
     };
     match command {
         DaemonCommand::Status => {
-            print_status(&client.status()?);
-            Ok(())
+            let status = client.status()?;
+            let minutes = status.uptime_secs / 60;
+            println!(
+                "pid {}, version {}, up {}h {}m, {} clients",
+                status.pid,
+                status.version,
+                minutes / 60,
+                minutes % 60,
+                status.clients
+            );
+            for account in &status.accounts {
+                let activity = account
+                    .activity
+                    .as_ref()
+                    .map_or("starting".into(), ToString::to_string);
+                println!("{}  {activity}", account.name);
+            }
         }
-        DaemonCommand::Stop => stop_daemon(&client, paths),
+        DaemonCommand::Stop => {
+            let pid = client.stop_and_wait(paths)?;
+            println!("stopped the daemon (pid {pid})");
+        }
     }
+    Ok(())
 }
 
 fn cmd_service(command: ServiceCommand, paths: &Paths) -> Result<()> {
@@ -741,35 +759,6 @@ fn cmd_service(command: ServiceCommand, paths: &Paths) -> Result<()> {
     };
     println!("{text}");
     Ok(())
-}
-
-fn stop_daemon(client: &Client, paths: &Paths) -> Result<()> {
-    let pid = client.stop_and_wait(paths)?;
-    println!("stopped the daemon (pid {pid})");
-    Ok(())
-}
-
-fn print_status(status: &Status) {
-    let minutes = status.uptime_secs / 60;
-    println!(
-        "pid {}, version {}, up {}h {}m, {} clients",
-        status.pid,
-        status.version,
-        minutes / 60,
-        minutes % 60,
-        status.clients
-    );
-    for account in &status.accounts {
-        println!("{}", account_line(account));
-    }
-}
-
-fn account_line(account: &AccountStatus) -> String {
-    let name = &account.name;
-    match &account.activity {
-        Some(activity) => format!("{name}  {activity}"),
-        None => format!("{name}  starting"),
-    }
 }
 
 fn cmd_attachment(command: AttachmentCommand, config: &Config, paths: &Paths) -> Result<()> {

@@ -184,7 +184,7 @@ mod tests {
 
     fn setup() -> (RecordingOps, Store, Trash, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let mut ops = RecordingOps::new().with_folder("INBOX", None);
+        let mut ops = RecordingOps::default().with_folder("INBOX", None);
         ops.add_mail(
             "INBOX",
             5,

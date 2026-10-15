@@ -241,7 +241,7 @@ struct Harness<'a> {
 
 impl<'a> Harness<'a> {
     fn new(store: &'a Store, trash_dir: PathBuf) -> Harness<'a> {
-        let ops = RecordingOps::new()
+        let ops = RecordingOps::default()
             .with_folder("INBOX", None)
             .with_folder("Lists", None)
             .with_folder("Archive", Some("Archive"));
