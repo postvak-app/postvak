@@ -1226,6 +1226,40 @@ mod tests {
     }
 
     #[test]
+    fn shift_click_and_command_click_in_the_window_mark_rows() {
+        use slint::platform::{Key, WindowEvent};
+        use slint::{ComponentHandle, Model};
+        let fx = Fixture::new(&["work"]);
+        for uid in [1, 2, 3, 4] {
+            fx.add("work", message("INBOX", uid, &format!("hello {uid}")));
+        }
+        let (open, _wires) = fx.window();
+        let label = |i: usize| {
+            open.window()
+                .get_rows()
+                .row_data(i)
+                .unwrap()
+                .name
+                .to_string()
+        };
+        let held = |key: Key, tap: &str| {
+            let window = open.window();
+            window
+                .window()
+                .dispatch_event(WindowEvent::KeyPressed { text: key.into() });
+            open.tap(tap);
+            window
+                .window()
+                .dispatch_event(WindowEvent::KeyReleased { text: key.into() });
+        };
+        held(Key::Shift, &label(2));
+        assert_eq!(open.with(|live| live.app.list.marked.len()), 3);
+        held(Key::Control, &label(3));
+        assert_eq!(open.with(|live| live.app.list.marked.len()), 4);
+        assert_eq!(open.with(|live| live.app.list.cursor), 2);
+    }
+
+    #[test]
     fn the_filter_switch_narrows_the_list_and_all_shows_every_row_again() {
         let fx = Fixture::new(&["work"]);
         fx.add("work", message("INBOX", 1, "read"));

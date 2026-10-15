@@ -13,7 +13,7 @@ import { ListPane, RowData } from "list.slint";
 export enum Pane { body, folders, list }
 
 // The menu items that act on the app; `menu.rs` says what each does.
-export enum MenuAction { about, add-to-selection, archive, delete, documentation, flag, history, junk, keys, mark-folder-read, move, read-or-unread, save-eml, search, sync-now, text-or-html, theme-dark, theme-light, theme-system, view-source }
+export enum MenuAction { about, add-to-selection, archive, delete, documentation, flag, history, junk, keys, mark-folder-read, move, read-or-unread, save-eml, search, select-all, sync-now, text-or-html, theme-dark, theme-light, theme-system, view-source }
 
 // Which menu items would do something now; the others are disabled.
 export struct MenuState {
@@ -141,7 +141,7 @@ export component MailWindow inherits Window {
     callback toggle-help();
     callback set-theme(ThemePreference);
     callback open-update();
-    callback row-clicked(int);
+    callback row-clicked(int, bool, bool);
     callback row-menu(int, int, int);
     callback list-filter-clicked(int);
     callback search-edited(string);
@@ -294,6 +294,11 @@ export component MailWindow inherits Window {
                 enabled: root.menu.message;
                 activated => { root.menu-item(MenuAction.add-to-selection); }
             }
+            MenuItem {
+                title: "Select all";
+                enabled: root.menu.message;
+                activated => { root.menu-item(MenuAction.select-all); }
+            }
         }
         Menu {
             title: "View";
@@ -425,7 +430,7 @@ export component MailWindow inherits Window {
                     empty: root.list-empty;
                     rows: root.rows;
                     list-y <=> root.list-y;
-                    row-clicked(i) => { root.row-clicked(i); }
+                    row-clicked(i, extend, toggle) => { root.row-clicked(i, extend, toggle); }
                     row-menu(i, group, j) => { root.row-menu(i, group, j); }
                     drag-data(i) => { root.drag-data(i) }
                     drag-image(count, subject, fill, ink) => { root.drag-image(count, subject, fill, ink) }

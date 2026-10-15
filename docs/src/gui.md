@@ -10,7 +10,7 @@ The window remembers its size, its position (where the platform reports one; Way
 
 ## Menu bar
 
-The menu bar (in the window, or at the top of the screen on macOS) has the window's actions in one place: File (Save .eml, View source, Close window with Ctrl+W, Quit with Ctrl+Q; Cmd on macOS), Edit (Copy, Search), Message (Archive, Move…, Delete, Junk or not junk, Flag, Read or unread, Add to selection), View (Text or HTML, Theme, History, Keys), Mailbox (Sync now, Mark folder read) and Help (Postvak documentation, About Postvak). An item is greyed out when it would do nothing, as the toolbar's buttons are. About Postvak shows the version, the licence and the Slint attribution.
+The menu bar (in the window, or at the top of the screen on macOS) has the window's actions in one place: File (Save .eml, View source, Close window with Ctrl+W, Quit with Ctrl+Q; Cmd on macOS), Edit (Copy, Search), Message (Archive, Move…, Delete, Junk or not junk, Flag, Read or unread, Add to selection, Select all), View (Text or HTML, Theme, History, Keys), Mailbox (Sync now, Mark folder read) and Help (Postvak documentation, About Postvak). An item is greyed out when it would do nothing, as the toolbar's buttons are. About Postvak shows the version, the licence and the Slint attribution.
 
 Drag a message onto a folder of its account to move it there; drag a marked message to move every marked one. Right-click a message for read, flag, archive, move, delete, junk, View source and Save .eml; a folder for Open, Collapse or Expand, Mark all as read and Sync now; a link in an HTML message to open or copy it.
 
@@ -21,6 +21,7 @@ Drag a message onto a folder of its account to move it there; drag a marked mess
 | `j` / `k`, Down / Up | next or previous row |
 | Right / Left | expand or collapse a thread |
 | `x` | add the row to the selection, or take it out |
+| Ctrl+A (Cmd+A on macOS) | add every row in the list to the selection |
 | `e` | archive |
 | `#`, Delete (Backspace on macOS) | delete: move to Trash; from Trash, or with no Trash folder, delete for good after saving an `.eml` backup |
 | `!` | junk: tag `$Junk`, which trains the server's spam filter, and move to the Junk folder; in the Junk folder, not junk: tag `$NotJunk` and move to INBOX |
@@ -35,6 +36,8 @@ Drag a message onto a folder of its account to move it there; drag a marked mess
 | `?` | show these keys |
 
 Each attachment of the open message has a Save button, which saves it to your Downloads folder, or to your home folder when there is none.
+
+With the mouse, Shift-click selects every row from the current one to the one you click, and Ctrl-click (Cmd-click on macOS) adds a row to the selection or takes it out; the first one also selects the current row.
 
 Actions apply to the selection when there is one, else to the current row; on a thread row they apply to the whole thread in that folder. A message you open, with the keys or a click, is marked read after its text has been on screen for a second; the one a folder opens on stays unread.
 
