@@ -84,6 +84,7 @@ export component MailWindow inherits Window {
     in property <bool> searching;
     in property <string> search-hint-text;
     in property <string> results;
+    in property <string> list-empty;
     in property <[RowData]> rows;
     in property <int> marked-count;
     in-out property <length> list-y;
@@ -417,6 +418,7 @@ export component MailWindow inherits Window {
                     searching: root.searching;
                     search-hint: root.search-hint-text;
                     results: root.results;
+                    empty: root.list-empty;
                     rows: root.rows;
                     list-y <=> root.list-y;
                     row-clicked(i) => { root.row-clicked(i); }

@@ -113,6 +113,12 @@ fn present_list(app: &App, window: &MailWindow) {
     window.set_searching(app.search.is_some());
     window.set_search_hint_text(list::search_hint(&app.view).into());
     window.set_results(list::results(app.list.rows.len()).into());
+    let empty = if app.list.rows.is_empty() {
+        list::empty(&app.view, app.search.as_deref())
+    } else {
+        ""
+    };
+    window.set_list_empty(empty.into());
     window.set_marked_count(i32::try_from(app.list.marked.len()).unwrap_or(i32::MAX));
     let rows = window.get_rows();
     match rows.as_any().downcast_ref::<ListModel>() {

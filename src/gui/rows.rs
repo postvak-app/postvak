@@ -69,6 +69,10 @@ struct Shown {
     junk: bool,
     cursor: usize,
     marked: HashSet<(usize, RowKey)>,
+    /// None until the first list is shown, so the rows shown at start do not count as new mail.
+    view: Option<View>,
+    /// The rows that came in with the last change, which fade in.
+    arrived: HashSet<(usize, RowKey)>,
 }
 
 #[derive(Default)]
@@ -107,6 +111,10 @@ impl ListModel {
         if changed.as_ref().is_some_and(Vec::is_empty) {
             return;
         }
+        let arrived = self
+            .shown
+            .borrow()
+            .arrived(&app.view, search, &app.list.rows);
         *self.shown.borrow_mut() = Shown {
             rows: app.list.rows.clone(),
             tags,
@@ -115,6 +123,8 @@ impl ListModel {
             junk,
             cursor: app.list.cursor,
             marked: app.list.marked.clone(),
+            view: Some(app.view.clone()),
+            arrived,
         };
         match changed {
             Some(rows) => rows.into_iter().for_each(|i| self.notify.row_changed(i)),
@@ -124,6 +134,19 @@ impl ListModel {
 }
 
 impl Shown {
+    /// The rows of `rows` that were not shown before in the same view: new mail. Search results and the members of a
+    /// thread opened with Right come from the user's input, so they are not.
+    fn arrived(&self, view: &View, search: bool, rows: &[Row]) -> HashSet<(usize, RowKey)> {
+        if self.view.as_ref() != Some(view) || self.search || search || self.rows == rows {
+            return HashSet::new();
+        }
+        let before: HashSet<_> = self.rows.iter().map(Row::id).collect();
+        rows.iter()
+            .filter(|row| !row.member && !before.contains(&row.id()))
+            .map(Row::id)
+            .collect()
+    }
+
     fn drawn(&self, index: usize) -> (&Row, bool, bool) {
         drawn(&self.rows[index], index, self.cursor, &self.marked)
     }
@@ -155,6 +178,7 @@ impl Model for ListModel {
             .and_then(|tags| tags.get(row.account))
             .map(String::as_str);
         let marked = shown.marked.contains(&row.id());
+        let arrived = shown.arrived.contains(&row.id());
         let now = Local::now();
         let columns = list::columns(row, account, shown.recipient, shown.search, &now);
         let mut name = list::row_text(row, account, shown.recipient, shown.search, &now);
@@ -186,6 +210,7 @@ impl Model for ListModel {
             date: columns.date.into(),
             selected: index == shown.cursor || marked,
             marked,
+            arrived,
             name: name.into(),
         })
     }

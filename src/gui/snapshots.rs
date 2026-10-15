@@ -7,7 +7,7 @@
 //! reference.
 use std::path::PathBuf;
 
-use super::fixture::AT;
+use super::fixture::{AT, mail};
 use super::state::{Focus, View};
 use super::test_support::{Fixture, Open, Wires, message};
 use crate::store::LogEntry;
@@ -128,6 +128,21 @@ fn all_inboxes() {
     assert_eq!(open.labels_containing("home · Mum").len(), 1);
     assert_eq!(open.labels_containing("work · Linus Example").len(), 1);
     snapshot(&open, "gui_all_inboxes");
+}
+
+#[test]
+fn an_empty_folder() {
+    let fx = Fixture::mailbox("light");
+    let (open, _wires) = open(&fx);
+    open.with(|live| {
+        live.app.select_view(View::Folder {
+            account: 1,
+            folder: "Sent".into(),
+        })
+    });
+    open.tick();
+    assert_eq!(open.find("No mail in this folder.").len(), 1);
+    snapshot(&open, "gui_empty_folder");
 }
 
 #[test]
@@ -489,19 +504,9 @@ fn mail_that_moves_the_rows_down_shows_their_dots_at_once() {
     // One in, one out: the list keeps its length, so each row's element now shows the message above it.
     fx.add("work", message("INBOX", 96, "Fresh news"));
     fx.store("work").remove_message("INBOX", 90).unwrap();
-    wires
-        .events
-        .send(Event::Synced {
-            account: "work".into(),
-            new_messages: 1,
-            actions: 0,
-            requests: vec![],
-            errors: vec![],
-        })
-        .unwrap();
+    synced(&wires, "work", 1);
     open.tick();
     let rows = [
-        "Fresh news",
         "Lunch on Friday?",
         "This week: ten things about tea",
         "Your receipt for order 1042",
@@ -513,4 +518,55 @@ fn mail_that_moves_the_rows_down_shows_their_dots_at_once() {
         rows.each_ref().map(|label| unread_dot(&open, label)),
         at_once
     );
+}
+
+/// Tells the window that `account` synced `new_messages`.
+fn synced(wires: &Wires, account: &str, new_messages: usize) {
+    let event = Event::Synced {
+        account: account.into(),
+        new_messages,
+        actions: 0,
+        requests: vec![],
+        errors: vec![],
+    };
+    wires.events.send(event).unwrap();
+}
+
+#[test]
+fn mail_that_arrives_fades_in() {
+    let (fx, open, wires) = inbox("light");
+    let tea = row(&open, "This week: ten things about tea");
+    let dot = unread_dot(&open, &tea);
+    let resting = row_fill(&open, &tea);
+
+    fx.add(
+        "work",
+        mail(96, "Sender <sender@example.com>", "Fresh news", "", ""),
+    );
+    synced(&wires, "work", 1);
+    open.tick();
+    let fresh = row(&open, "Fresh news");
+    assert_eq!(
+        unread_dot(&open, &fresh),
+        resting,
+        "the new row starts transparent"
+    );
+    open.advance(1.0);
+    assert_eq!(unread_dot(&open, &fresh), dot, "and ends opaque");
+}
+
+#[test]
+fn switching_views_shows_the_rows_at_once() {
+    let (_fx, open, _wires) = inbox("light");
+    open.with(|live| {
+        live.app.select_view(View::Folder {
+            account: 0,
+            folder: "INBOX".into(),
+        });
+    });
+    open.tick();
+    let photos = row(&open, "Photos from the weekend");
+    let at_once = unread_dot(&open, &photos);
+    open.advance(1.0);
+    assert_eq!(unread_dot(&open, &photos), at_once);
 }
