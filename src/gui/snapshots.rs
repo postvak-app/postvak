@@ -145,6 +145,14 @@ fn inbox_with_marks_and_an_expanded_thread() {
 }
 
 #[test]
+fn dragging_a_row_over_a_folder() {
+    let (_fx, open, _wires) = inbox("light");
+    let row = open.labels_containing("Linus Example").remove(0);
+    open.drag_over(&row, "Receipts");
+    snapshot(&open, "gui_drag");
+}
+
+#[test]
 fn keys_help() {
     let (_fx, open, _wires) = inbox("light");
     open.press("?");

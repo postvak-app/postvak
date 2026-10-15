@@ -284,6 +284,19 @@ impl Open {
 
     /// Drags the one element labelled `from` with the mouse and drops it on the one labelled `to`.
     pub fn drag(&self, from: &str, to: &str) {
+        let to = self.drag_over(from, to);
+        self.window()
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerReleased {
+                position: to,
+                button: slint::platform::PointerEventButton::Left,
+            });
+        self.tick();
+    }
+
+    /// Drags the one element labelled `from` with the mouse over the one labelled `to`, and holds it there; returns
+    /// where the pointer is.
+    pub fn drag_over(&self, from: &str, to: &str) -> slint::LogicalPosition {
         use slint::platform::{PointerEventButton, WindowEvent};
         let middle = |label: &str| {
             let element = self.get(label);
@@ -302,11 +315,8 @@ impl Open {
         // The first move starts the drag, the second hovers the target.
         send(WindowEvent::PointerMoved { position: to });
         send(WindowEvent::PointerMoved { position: to });
-        send(WindowEvent::PointerReleased {
-            position: to,
-            button,
-        });
         self.tick();
+        to
     }
 
     /// The top and bottom of the one element labelled `label`, in window coordinates.
