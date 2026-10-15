@@ -208,6 +208,16 @@ pub(crate) fn results(count: usize) -> String {
     )
 }
 
+/// What an empty list says instead of rows; nothing before a search query is typed.
+pub(crate) fn empty(view: &View, search: Option<&str>) -> &'static str {
+    match search {
+        Some("") => "",
+        Some(_) => "No mail matches.",
+        None if *view == View::AllInboxes => "No mail in any inbox.",
+        None => "No mail in this folder.",
+    }
+}
+
 /// The text beside the pointer while rows are dragged: how many marked rows move, else the row's subject, shortened.
 pub(crate) fn drag_label(marked: usize, subject: &str) -> String {
     const LONGEST: usize = 40;
@@ -795,6 +805,29 @@ mod tests {
             "the title; the folder row says Inbox (1)"
         );
         assert_eq!(open.find("2 threads, 1 unread").len(), 1);
+    }
+
+    #[test]
+    fn an_empty_list_says_so() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        assert_eq!(open.find("No mail in this folder.").len(), 1);
+        open.press("/");
+        assert_eq!(
+            open.find("No mail in this folder.").len(),
+            0,
+            "no query yet"
+        );
+        open.press("zzz");
+        assert_eq!(open.find("No mail matches.").len(), 1);
+    }
+
+    #[test]
+    fn a_list_with_mail_shows_no_placeholder() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "hi"));
+        let (open, _wires) = fx.window();
+        assert_eq!(open.find("No mail in this folder.").len(), 0);
     }
 
     #[test]

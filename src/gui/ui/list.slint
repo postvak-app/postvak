@@ -152,6 +152,8 @@ export component ListPane inherits Rectangle {
     in property <bool> searching;
     in property <string> search-hint;
     in property <string> results;
+    // Shown instead of rows, or empty.
+    in property <string> empty;
     in property <[RowData]> rows;
     in property <int> marked-count;
     in-out property <length> list-y;
@@ -248,5 +250,14 @@ export component ListPane inherits Rectangle {
                 }
             }
         }
+    }
+
+    if root.empty != "": Text {
+        x: Theme.inset;
+        y: list.y + Theme.pad;
+        width: root.width - 2 * Theme.inset;
+        text: root.empty;
+        color: Theme.pane.muted;
+        wrap: word-wrap;
     }
 }
