@@ -250,12 +250,25 @@ impl Open {
         self.press_on(label, slint::platform::PointerEventButton::Right);
     }
 
-    fn press_on(&self, label: &str, button: slint::platform::PointerEventButton) {
-        use slint::platform::WindowEvent;
+    /// Moves the mouse over the middle of the one element labelled `label`, without clicking.
+    pub fn hover(&self, label: &str) {
+        self.window()
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerMoved {
+                position: self.middle(label),
+            });
+        self.tick();
+    }
+
+    fn middle(&self, label: &str) -> slint::LogicalPosition {
         let element = self.get(label);
         let (at, size) = (element.absolute_position(), element.size());
-        let position =
-            slint::LogicalPosition::new(at.x + size.width / 2.0, at.y + size.height / 2.0);
+        slint::LogicalPosition::new(at.x + size.width / 2.0, at.y + size.height / 2.0)
+    }
+
+    fn press_on(&self, label: &str, button: slint::platform::PointerEventButton) {
+        use slint::platform::WindowEvent;
+        let position = self.middle(label);
         let window = self.window();
         window
             .window()

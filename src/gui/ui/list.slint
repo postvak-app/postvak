@@ -2,7 +2,7 @@
 // texts; this file only places them.
 import { LineEdit, ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Heading } from "common.slint";
+import { Heading, HoverFill } from "common.slint";
 
 export struct RowData {
     unread: bool,
@@ -33,11 +33,18 @@ component ListRow inherits Rectangle {
 
     height: Theme.list-row;
     border-radius: Theme.pad;
-    background: data.selected ? Theme.pane.selected : touch.has-hover ? Theme.pane.hover : transparent;
+    background: data.selected ? Theme.pane.selected : transparent;
     accessible-role: list-item;
     accessible-label: data.name;
     accessible-item-selected: data.selected;
     accessible-action-default => { root.clicked(); }
+
+    HoverFill {
+        visible: !data.selected;
+        border-radius: Theme.pad;
+        hovered: touch.has-hover;
+        fill: Theme.pane.hover;
+    }
 
     touch := TouchArea {
         clicked => { root.clicked(); }

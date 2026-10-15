@@ -2,6 +2,7 @@
 // the bottom. `folders.rs` decides what is in it.
 import { ScrollView, Spinner } from "std-widgets.slint";
 import { Theme } from "theme.slint";
+import { HoverFill } from "common.slint";
 
 export enum FolderKind { folder, account, separator }
 
@@ -50,11 +51,17 @@ component FolderRow inherits Rectangle {
 
     height: Theme.row;
     border-radius: Theme.pad / 2;
-    background: item.selected || drop.has-drag ? Theme.frame.selected : touch.has-hover ? Theme.frame.hover : transparent;
+    background: item.selected || drop.has-drag ? Theme.frame.selected : transparent;
     accessible-role: list-item;
     accessible-label: item.name;
     accessible-item-selected: item.selected;
     accessible-action-default => { root.clicked(); }
+
+    HoverFill {
+        visible: !item.selected;
+        hovered: touch.has-hover;
+        fill: Theme.frame.hover;
+    }
 
     touch := TouchArea {
         clicked => { root.clicked(); }

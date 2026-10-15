@@ -1,7 +1,7 @@
 // The small windows over the panes: Keys and History. Esc closes them through the app, the X here.
 import { Button, LineEdit, ListView, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Heading, IconButton } from "common.slint";
+import { Heading, HoverFill, IconButton } from "common.slint";
 
 export struct KeyHelp {
     keys: string,
@@ -132,9 +132,9 @@ export component MoveDialog {
                     accessible-label: target;
                     accessible-action-default => { root.chosen(i); }
                     clicked => { root.chosen(i); }
-                    Rectangle {
-                        border-radius: Theme.pad / 2;
-                        background: parent.has-hover ? Theme.pane.hover : transparent;
+                    HoverFill {
+                        hovered: parent.has-hover;
+                        fill: Theme.pane.hover;
                     }
                     Text {
                         accessible-role: none;

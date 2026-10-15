@@ -1,6 +1,22 @@
 // Small pieces the panes share.
 import { Theme, Palette } from "theme.slint";
 
+/* The hover background, which fades in and out; put it first, under the content.
+
+Hide it while the widget draws another state (selected, pressed) so that state shows at once rather than after a fade. */
+export component HoverFill inherits Rectangle {
+    in property <bool> hovered;
+    in property <color> fill;
+
+    border-radius: Theme.pad / 2;
+    // Fading to the same colour made transparent, so it does not pass through grey.
+    background: root.hovered ? root.fill : root.fill.transparentize(100%);
+    animate background {
+        duration: Theme.hover-fade;
+        easing: ease-out;
+    }
+}
+
 // A frameless square button with a Phosphor glyph, named for screen readers and tests, with its hint on hover.
 export component IconButton inherits Rectangle {
     in property <string> icon;
@@ -15,7 +31,7 @@ export component IconButton inherits Rectangle {
     width: Theme.control;
     height: Theme.control;
     border-radius: Theme.pad / 2;
-    background: !root.enabled ? transparent : touch.pressed ? root.palette.pressed : touch.has-hover ? root.palette.hover : transparent;
+    background: root.enabled && touch.pressed ? root.palette.pressed : transparent;
     accessible-role: button;
     accessible-label: root.name;
     accessible-description: root.hint;
@@ -24,6 +40,12 @@ export component IconButton inherits Rectangle {
         if (root.enabled) {
             root.clicked();
         }
+    }
+
+    HoverFill {
+        visible: root.enabled && !touch.pressed;
+        hovered: touch.has-hover;
+        fill: root.palette.hover;
     }
 
     touch := TouchArea {
@@ -63,7 +85,7 @@ export component TextButton inherits Rectangle {
 
     height: Theme.row;
     border-radius: Theme.pad / 2;
-    background: root.selected ? root.palette.selected : touch.has-hover && root.enabled ? root.palette.hover : root.framed ? root.palette.pressed : transparent;
+    background: root.selected ? root.palette.selected : root.framed ? root.palette.pressed : transparent;
     opacity: root.enabled ? 1 : 0.5;
     accessible-role: button;
     accessible-label: root.text;
@@ -74,6 +96,11 @@ export component TextButton inherits Rectangle {
         if (root.enabled) {
             root.clicked();
         }
+    }
+    HoverFill {
+        visible: root.enabled && !root.selected;
+        hovered: touch.has-hover;
+        fill: root.palette.hover;
     }
     HorizontalLayout {
         padding-left: root.framed ? Theme.pad : Theme.pad / 2;
