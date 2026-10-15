@@ -109,6 +109,11 @@ pub(crate) fn action(press: &Press, focus: Focus, typing: bool) -> Option<UiActi
             if delete {
                 return Some(UiAction::Act(Action::Trash));
             }
+            let lower_a = matches!(&press.key, Key::Text(t) if t.eq_ignore_ascii_case("a"));
+            // In the body, Cmd+A is left for selecting text.
+            if press.command && !press.alt && lower_a && focus == Focus::List {
+                return Some(UiAction::SelectAll);
+            }
             let action = match &press.key {
                 Key::Named(Named::Right) => UiAction::Expand,
                 Key::Named(Named::Left) => UiAction::Collapse,
@@ -127,10 +132,14 @@ pub(crate) fn action(press: &Press, focus: Focus, typing: bool) -> Option<UiActi
 }
 
 /// The `?` window. Keys are spelled out, so every glyph is in the bundled fonts.
-pub(crate) const HELP: [(&str, &str); 15] = [
+pub(crate) const HELP: [(&str, &str); 16] = [
     ("j / k, Down / Up", "next or previous row"),
     ("Right / Left", "expand or collapse a thread"),
     ("x", "add the row to the selection, or take it out"),
+    (
+        "Ctrl+A (Cmd+A on macOS)",
+        "add every row to the selection; Shift-click and Ctrl-click (Cmd-click) select with the mouse",
+    ),
     ("e", "archive"),
     (
         "#, Delete (Backspace on macOS)",

@@ -343,7 +343,7 @@ pub(crate) struct Conditions {
     pub(crate) older_than: Option<Duration>,
     pub(crate) seen: Option<bool>,
     pub(crate) to_me: Option<bool>,
-    pub(crate) alias: Option<globset::GlobMatcher>,
+    pub(crate) alias: Option<regex::Regex>,
     pub(crate) tag: Option<String>,
     pub(crate) none: Vec<Conditions>,
     pub(crate) any: Vec<Conditions>,
@@ -534,10 +534,7 @@ fn compile_match(
         .alias
         .as_ref()
         .map(|pattern| {
-            globset::GlobBuilder::new(pattern)
-                .case_insensitive(true)
-                .build()
-                .map(|g| g.compile_matcher())
+            regex::Regex::new(&crate::config::alias_regex(pattern))
                 .map_err(|e| invalid(format!("{path}.alias: {e}")))
         })
         .transpose()?;

@@ -171,7 +171,7 @@ pub struct LogEntry {
     pub trash_file: Option<String>,
 }
 
-/// serde's `Vec<u8>` only accepts sequences; rusqlite offers BLOBs as bytes. Accept both.
+/// serde's `Vec<u8>` only accepts sequences; rusqlite offers BLOBs as bytes.
 fn deserialize_blob<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
     struct BlobVisitor;
     impl<'de> serde::de::Visitor<'de> for BlobVisitor {
@@ -184,13 +184,6 @@ fn deserialize_blob<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<u8>, D
         }
         fn visit_byte_buf<E: serde::de::Error>(self, v: Vec<u8>) -> Result<Vec<u8>, E> {
             Ok(v)
-        }
-        fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<u8>, A::Error> {
-            let mut out = Vec::new();
-            while let Some(b) = seq.next_element::<u8>()? {
-                out.push(b);
-            }
-            Ok(out)
         }
     }
     d.deserialize_byte_buf(BlobVisitor)

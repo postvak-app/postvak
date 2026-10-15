@@ -67,7 +67,8 @@ export component KeysDialog {
                 wrap: word-wrap;
             }
             Text {
-                horizontal-stretch: 1;
+                // An explicit width, so the dialog's height counts the wrapped lines.
+                width: root.width - 3 * Theme.inset - 200px;
                 text: key.what;
                 color: Theme.pane.text;
                 wrap: word-wrap;

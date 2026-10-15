@@ -433,6 +433,10 @@ impl Driver {
                     command: true,
                     ..Press::text("r")
                 },
+                "ctrl+a" => Press {
+                    command: true,
+                    ..Press::text("a")
+                },
                 text => Press::text(text),
             };
             if let Some(action) = keys::action(&press, self.app.focus, self.app.typing()) {

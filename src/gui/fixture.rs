@@ -1,5 +1,4 @@
-//! Mail homes for the GUI tests: a config and SQLite stores under a directory the caller owns. Built with `testing` as
-//! well as in tests, so a prototype outside the crate can draw the same mailbox as the snapshots.
+//! Mail homes for the GUI tests: a config and SQLite stores under a directory the caller owns.
 use std::path::Path;
 
 use anyhow::Result;
@@ -185,62 +184,4 @@ pub fn mailbox(root: &Path, theme: &str) -> Result<Home> {
     );
     fx.add("home", photos)?;
     Ok(fx)
-}
-
-/// One account, `work`, whose INBOX holds `count` messages in threads of one to eight, a third of them unread and a
-/// tenth flagged; the same `count` always gives the same mailbox. For timing the list on a large folder.
-pub fn generated(root: &Path, count: u32) -> Result<Home> {
-    let home = Home::new(root, &["work"])?;
-    let store = home.store("work")?;
-    store.transaction(|| -> Result<()> {
-        let mut uid = 1;
-        let mut thread = 0;
-        while uid <= count {
-            let members = thread % 8 + 1;
-            for _ in 0..members.min(count - uid + 1) {
-                let mut m = message("INBOX", uid, &format!("Thread {thread}: weekly update"));
-                m.thread_id = format!("<thread-{thread}@example.com>");
-                let sender = uid % 97;
-                m.from_addr = Some(format!("Sender {sender} <sender{sender}@example.com>"));
-                m.flags = match (uid % 3, uid % 10) {
-                    (0, 0) => "\\Flagged",
-                    (0, _) => "",
-                    (_, 0) => "\\Seen \\Flagged",
-                    _ => "\\Seen",
-                }
-                .into();
-                store.insert_message(&m)?;
-                uid += 1;
-            }
-            thread += 1;
-        }
-        Ok(())
-    })?;
-    Ok(home)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_generated_inbox_is_threaded_and_always_the_same() {
-        let dir = tempfile::tempdir().unwrap();
-        let home = generated(dir.path(), 100).unwrap();
-        let threads = home
-            .store("work")
-            .unwrap()
-            .thread_summaries("INBOX", 1000, crate::store::Filter::default())
-            .unwrap();
-        assert_eq!(threads.iter().map(|t| t.count).sum::<u32>(), 100);
-        assert!(threads.iter().any(|t| t.count == 8));
-        let again = tempfile::tempdir().unwrap();
-        let again = generated(again.path(), 100).unwrap();
-        let again = again.store("work").unwrap().thread_summaries(
-            "INBOX",
-            1000,
-            crate::store::Filter::default(),
-        );
-        assert_eq!(again.unwrap(), threads);
-    }
 }
