@@ -282,6 +282,33 @@ impl Open {
         self.tick();
     }
 
+    /// Drags the one element labelled `from` with the mouse and drops it on the one labelled `to`.
+    pub fn drag(&self, from: &str, to: &str) {
+        use slint::platform::{PointerEventButton, WindowEvent};
+        let middle = |label: &str| {
+            let element = self.get(label);
+            let (at, size) = (element.absolute_position(), element.size());
+            slint::LogicalPosition::new(at.x + size.width / 2.0, at.y + size.height / 2.0)
+        };
+        let (from, to) = (middle(from), middle(to));
+        let button = PointerEventButton::Left;
+        let window = self.window();
+        let send = |event| window.window().dispatch_event(event);
+        send(WindowEvent::PointerMoved { position: from });
+        send(WindowEvent::PointerPressed {
+            position: from,
+            button,
+        });
+        // The first move starts the drag, the second hovers the target.
+        send(WindowEvent::PointerMoved { position: to });
+        send(WindowEvent::PointerMoved { position: to });
+        send(WindowEvent::PointerReleased {
+            position: to,
+            button,
+        });
+        self.tick();
+    }
+
     /// The top and bottom of the one element labelled `label`, in window coordinates.
     pub fn span(&self, label: &str) -> (f32, f32) {
         let element = self.get(label);

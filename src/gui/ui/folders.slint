@@ -23,6 +23,8 @@ export struct FolderItem {
     selected: bool,
     // "Collapse Projects" on a parent row, else empty.
     caret-name: string,
+    // A folder rows can be dropped on.
+    droppable: bool,
     // On the line of the list's title: All inboxes, or an account's name, as a heading row.
     heading: bool,
     // An account after the first, with space above it.
@@ -40,13 +42,16 @@ component FolderRow inherits Rectangle {
     in property <FolderItem> item;
     callback clicked();
     callback caret-clicked();
+    // The row a drag carries, or -1 for anything else.
+    pure callback dragged-row(data-transfer) -> int;
+    callback dropped(int);
 
     property <bool> pill: item.selected && item.count != "";
     property <length> indent: item.depth * Theme.inset;
 
     height: Theme.row;
     border-radius: Theme.pad / 2;
-    background: item.selected ? Theme.frame.selected : transparent;
+    background: item.selected || drop.has-drag ? Theme.frame.selected : transparent;
     accessible-role: list-item;
     accessible-label: item.name;
     accessible-item-selected: item.selected;
@@ -60,6 +65,18 @@ component FolderRow inherits Rectangle {
 
     touch := TouchArea {
         clicked => { root.clicked(); }
+    }
+
+    // The open folder holds the rows already.
+    drop := DropArea {
+        enabled: item.droppable && !item.selected;
+        can-drop(event) => {
+            root.dragged-row(event.data) >= 0 ? DragAction.move : DragAction.none
+        }
+        dropped(event) => {
+            root.dropped(root.dragged-row(event.data));
+            event.proposed-action
+        }
     }
 
     HorizontalLayout {
@@ -114,6 +131,9 @@ export component FolderPane inherits Rectangle {
     in property <[FolderItem]> pinned;
     callback clicked(int);
     callback caret-clicked(int);
+    pure callback dragged-row(data-transfer) -> int;
+    // A list row dropped on a folder: the folder, the row.
+    callback dropped(int, int);
     // A folder's menu item: the folder, the item's group, its place in the group.
     callback menu(int, int, int);
     callback pinned-clicked(int);
@@ -172,6 +192,8 @@ export component FolderPane inherits Rectangle {
                             item: item;
                             clicked => { root.clicked(i); }
                             caret-clicked => { root.caret-clicked(i); }
+                            dragged-row(data) => { root.dragged-row(data) }
+                            dropped(row) => { root.dropped(i, row); }
                         }
                         ContextMenuArea {
                             Menu {

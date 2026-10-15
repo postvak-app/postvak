@@ -848,6 +848,107 @@ mod tests {
     }
 
     #[test]
+    fn a_menu_on_an_unmarked_row_acts_on_that_row_alone() {
+        let fx = Fixture::new(&["work"]);
+        for uid in 1..=3 {
+            fx.add("work", message("INBOX", uid, "hi"));
+        }
+        let (open, wires) = fx.window();
+        open.press("x");
+        open.window().invoke_row_menu(2, 1, 2);
+        assert_eq!(wires.sent(), [apply("INBOX", &[1], Action::Trash)]);
+    }
+
+    /// The label of the row of message `uid`.
+    fn row_of(open: &crate::gui::test_support::Open, uid: u32) -> String {
+        open.labels_containing(&format!("Sender {uid} ")).remove(0)
+    }
+
+    #[test]
+    fn dragging_a_row_onto_a_folder_moves_it() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Travel", None);
+        fx.add("work", message("INBOX", 1, "hi"));
+        let (open, wires) = fx.window();
+        open.drag(&row_of(&open, 1), "Travel");
+        assert_eq!(
+            wires.sent(),
+            [apply("INBOX", &[1], Action::Move("Travel".into()))]
+        );
+    }
+
+    #[test]
+    fn dragging_a_marked_row_moves_every_marked_row() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Travel", None);
+        for uid in 1..=3 {
+            fx.add("work", message("INBOX", uid, "hi"));
+        }
+        let (open, wires) = fx.window();
+        open.press("x j x");
+        open.drag(&row_of(&open, 2), "Travel");
+        assert_eq!(
+            wires.sent(),
+            [apply("INBOX", &[2, 3], Action::Move("Travel".into()))]
+        );
+    }
+
+    #[test]
+    fn dragging_an_unmarked_row_moves_it_alone() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Travel", None);
+        for uid in 1..=3 {
+            fx.add("work", message("INBOX", uid, "hi"));
+        }
+        let (open, wires) = fx.window();
+        open.press("x");
+        open.drag(&row_of(&open, 1), "Travel");
+        assert_eq!(
+            wires.sent(),
+            [apply("INBOX", &[1], Action::Move("Travel".into()))]
+        );
+    }
+
+    #[test]
+    fn a_row_dropped_on_its_own_folder_stays() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Travel", None);
+        fx.add("work", message("Travel", 1, "hi"));
+        let (open, wires) = fx.window();
+        let travel = View::Folder {
+            account: 0,
+            folder: "Travel".into(),
+        };
+        let row = open.with(|live| {
+            live.app.select_view(travel.clone());
+            folders::entries(&live.app)
+                .iter()
+                .position(
+                    |e| matches!(e, folders::Entry::Folder(f) if f.view.as_ref() == Some(&travel)),
+                )
+                .unwrap()
+        });
+        // The list's title is "Travel" too, so the drop is invoked rather than dragged.
+        open.window().invoke_folder_dropped(row as i32, 0);
+        assert!(wires.sent().is_empty());
+    }
+
+    #[test]
+    fn a_row_dropped_on_another_accounts_folder_is_refused() {
+        let fx = Fixture::new(&["home", "work"]);
+        fx.folder("work", "Travel", None);
+        fx.add("home", message("INBOX", 1, "hi"));
+        let (open, wires) = fx.window();
+        open.with(|live| live.app.select_view(View::AllInboxes));
+        open.drag(&row_of(&open, 1), "Travel");
+        assert!(wires.sent().is_empty());
+        assert_eq!(
+            open.with(|live| live.app.error.clone()).as_deref(),
+            Some(crate::gui::state::MOVE_OWN_ACCOUNT)
+        );
+    }
+
+    #[test]
     fn x_marks_rows_and_escape_clears_them() {
         let fx = Fixture::new(&["work"]);
         for uid in 1..=2 {

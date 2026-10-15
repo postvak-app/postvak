@@ -407,12 +407,24 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
             let Some((_, action)) = nth(nth(list::menu(row), group).unwrap_or_default(), j) else {
                 return Vec::new();
             };
-            // The menu acts on the marked rows when it was opened on one of them, else on its own row.
-            if app.list.marked.contains(&row.id()) {
-                vec![action]
-            } else {
-                vec![UiAction::SelectRow(i), action]
-            }
+            vec![UiAction::TargetRow(i), action]
+        }));
+    });
+    window.on_drag_data(|row| slint::DataTransfer::from(SharedString::from(row.to_string())));
+    window.on_dragged_row(|data| {
+        data.plain_text()
+            .ok()
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(-1)
+    });
+    window.on_folder_dropped(move |i, row| {
+        on(Box::new(move |app| {
+            let (Ok(row), Some(view)) =
+                (usize::try_from(row), folder_at(app, i).and_then(|f| f.view))
+            else {
+                return Vec::new();
+            };
+            vec![UiAction::TargetRow(row), UiAction::DropOn(view)]
         }));
     });
     window.on_search_edited(move |text| {
@@ -658,6 +670,7 @@ fn folder_row(folder: &FolderEntry) -> FolderItem {
         selected: folder.selected,
         heading: folder.view == Some(View::AllInboxes),
         caret_name: folder.caret_name().unwrap_or_default().into(),
+        droppable: matches!(folder.view, Some(View::Folder { .. })),
         menu_head: choices(&head),
         menu_tail: choices(&tail),
         ..FolderItem::default()
