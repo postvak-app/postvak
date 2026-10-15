@@ -51,7 +51,7 @@ component FolderRow inherits Rectangle {
 
     height: Theme.row;
     border-radius: Theme.pad / 2;
-    background: item.selected || drop.has-drag ? Theme.frame.selected : transparent;
+    background: item.selected ? Theme.frame.selected : transparent;
     accessible-role: list-item;
     accessible-label: item.name;
     accessible-item-selected: item.selected;
@@ -61,6 +61,14 @@ component FolderRow inherits Rectangle {
         visible: !item.selected;
         hovered: touch.has-hover;
         fill: Theme.frame.hover;
+    }
+
+    // The folder a drop would move the rows to: outlined in brass, so it does not read as the selection.
+    if drop.has-drag: Rectangle {
+        border-radius: root.border-radius;
+        border-width: 2px;
+        border-color: Theme.frame.highlight;
+        background: Theme.frame.highlight.transparentize(80%);
     }
 
     touch := TouchArea {

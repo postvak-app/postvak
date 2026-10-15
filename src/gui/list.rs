@@ -208,6 +208,18 @@ pub(crate) fn results(count: usize) -> String {
     )
 }
 
+/// The text beside the pointer while rows are dragged: how many marked rows move, else the row's subject, shortened.
+pub(crate) fn drag_label(marked: usize, subject: &str) -> String {
+    const LONGEST: usize = 40;
+    if marked > 1 {
+        format!("{} messages", super::numbers::count(marked as u64))
+    } else if subject.chars().count() > LONGEST {
+        format!("{}…", subject.chars().take(LONGEST - 1).collect::<String>())
+    } else {
+        subject.to_string()
+    }
+}
+
 /// The right-click menu of a message row, in three groups; its items act like the toolbar, on the marked rows or this
 /// one.
 pub(crate) fn menu(row: &Row) -> [Vec<(&'static str, UiAction)>; 3] {
@@ -862,6 +874,14 @@ mod tests {
     /// The label of the row of message `uid`.
     fn row_of(open: &crate::gui::test_support::Open, uid: u32) -> String {
         open.labels_containing(&format!("Sender {uid} ")).remove(0)
+    }
+
+    #[test]
+    fn a_dragged_row_shows_its_subject_or_how_many_marked_rows_move() {
+        assert_eq!(drag_label(1, "Lunch on Friday?"), "Lunch on Friday?");
+        assert_eq!(drag_label(3, "Lunch on Friday?"), "3 messages");
+        let long = "a".repeat(50);
+        assert_eq!(drag_label(1, &long), format!("{}…", "a".repeat(39)));
     }
 
     #[test]

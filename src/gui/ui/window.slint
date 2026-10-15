@@ -85,6 +85,7 @@ export component MailWindow inherits Window {
     in property <string> search-hint-text;
     in property <string> results;
     in property <[RowData]> rows;
+    in property <int> marked-count;
     in-out property <length> list-y;
 
     in property <bool> move-open;
@@ -130,6 +131,7 @@ export component MailWindow inherits Window {
     callback folder-dropped(int, int);
     // A dragged list row's payload, and the row back from it, or -1.
     pure callback drag-data(int) -> data-transfer;
+    pure callback drag-image(int, string, color, color) -> image;
     pure callback dragged-row(data-transfer) -> int;
     callback pinned-clicked(int);
     callback sync();
@@ -415,6 +417,8 @@ export component MailWindow inherits Window {
                     row-clicked(i) => { root.row-clicked(i); }
                     row-menu(i, group, j) => { root.row-menu(i, group, j); }
                     drag-data(i) => { root.drag-data(i) }
+                    drag-image(count, subject, fill, ink) => { root.drag-image(count, subject, fill, ink) }
+                    marked-count: root.marked-count;
                     search-edited(text) => { root.search-edited(text); }
                     // Enter opens the first hit and hands the keyboard to the list.
                     search-accepted => {
