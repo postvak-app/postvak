@@ -53,7 +53,7 @@ The install also prints a hint with the granted scopes and how to widen them. It
 | Scope | What it grants | Tools |
 |---|---|---|
 | `read` | Folders, message headers, the activity log, rules and trash listings, previews of rules that do not match on the body, and a sync. No body text. | `folders`, `list`, `log`, `rules_check`, `rules_list`, `rules_schema`, `rules_test`, `search`, `sync`, `trash_list` |
-| `read:bodies` | Message bodies and attachment names, search over stored bodies, and with `read` previews of rules that match on the body. | `attachments`, `show` |
+| `read:bodies` | Message bodies and attachment names, search over stored bodies and on the server (`search` with `server`), and with `read` previews of rules that match on the body. | `attachments`, `show` |
 | `rules:propose` | Proposing a rule. It is stored disabled until you approve it. | `rules_propose` |
 | `rules:write` | Approving and rejecting rules, and turning them on or off. | `rules_approve`, `rules_reject`, `rules_set_enabled` |
 | `mail:modify` | Acting on mail and restoring from the trash. | `archive`, `delete`, `junk`, `mark`, `move`, `trash_restore`, `unsubscribe` |

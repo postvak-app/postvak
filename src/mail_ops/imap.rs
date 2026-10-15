@@ -260,6 +260,16 @@ impl MailOps for ImapOps {
         })
     }
 
+    fn search_text(&mut self, words: &[String]) -> MailResult<Vec<u32>> {
+        let (rt, session) = self.parts()?;
+        rt.block_on(async {
+            let found = session.uid_search(text_query(words)).await.map_err(proto)?;
+            let mut uids: Vec<u32> = found.into_iter().collect();
+            uids.sort_unstable();
+            Ok(uids)
+        })
+    }
+
     fn fetch_envelopes(&mut self, first: u32, last: u32) -> MailResult<Vec<Envelope>> {
         let (rt, session) = self.parts()?;
         rt.block_on(async {
@@ -480,10 +490,40 @@ fn store_flags(ops: &mut ImapOps, uid: u32, sign: char, flags: &[&str]) -> MailR
     })
 }
 
+/// `UID SEARCH` criteria that every word must match, as quoted strings.
+///
+/// ponytail: non-ASCII goes in a quoted string, which Dovecot, Gmail and Fastmail accept; a strict RFC 3501 server wants a
+/// literal, which async-imap's `uid_search` cannot send.
+fn text_query(words: &[String]) -> String {
+    let criteria: Vec<String> = words
+        .iter()
+        .map(|word| {
+            format!(
+                "TEXT \"{}\"",
+                word.replace('\\', "\\\\").replace('"', "\\\"")
+            )
+        })
+        .collect();
+    format!("CHARSET UTF-8 {}", criteria.join(" "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::PasswordSource;
+
+    #[test]
+    fn text_query_quotes_each_word() {
+        let words = [
+            "plain".to_string(),
+            r#"a"b\c"#.to_string(),
+            "café".to_string(),
+        ];
+        assert_eq!(
+            text_query(&words),
+            r#"CHARSET UTF-8 TEXT "plain" TEXT "a\"b\\c" TEXT "café""#
+        );
+    }
 
     #[test]
     fn sleep_until_times_out_or_stops_on_interrupt() {
