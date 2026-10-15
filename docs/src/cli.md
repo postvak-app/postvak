@@ -374,6 +374,9 @@ List recent messages, newest first
   Default value: `50`
 * `--json`
 * `--threads` — Group by conversation, the most recently active thread first
+* `--unread` — Only unread messages; with --threads, threads with an unread message
+* `--flagged` — Only flagged messages; with --threads, threads with a flagged message
+* `--attachments` — Only messages with attachments, guessed from the headers; with --threads, threads with one
 
 
 

@@ -13,7 +13,7 @@ use crate::daemon::wire::AccountStatus;
 use crate::message::{self, Attachment, HtmlBody, clean};
 use crate::paths::Paths;
 use crate::rules::{self as rule_file, Action, RulesError};
-use crate::store::{LogEntry, Message, Store, StoreError, has_flag};
+use crate::store::{Filter, LogEntry, Message, Store, StoreError, has_flag};
 use crate::sync::{Activity, Command, Event};
 use crate::update;
 
@@ -212,6 +212,7 @@ pub(crate) enum UiAction {
     DropOn(View),
     Escape,
     Expand,
+    SetFilter(Filter),
     /// The pointer over the HTML page, in page points, or `None` once it left.
     HtmlHover(Option<[f32; 2]>),
     /// Select the HTML page's text between two points, in page points.
@@ -331,6 +332,8 @@ pub struct App {
     pub(crate) rules: RulesState,
     pub(crate) rules_mtime: Option<SystemTime>,
     pub(crate) search: Option<String>,
+    /// Which rows a folder's list keeps; search results ignore it.
+    pub(crate) filter: Filter,
     /// Set by the window while the search field has the keyboard, so the list is not opened while a query is typed.
     pub(crate) search_focused: bool,
     /// The earliest time something here wants `tick` again (the read delay, a settling width, polling); the window
@@ -411,6 +414,7 @@ impl App {
             rules,
             rules_mtime,
             search: None,
+            filter: Filter::default(),
             search_focused: false,
             next_tick: None,
             wake: Arc::new(|| {}),
@@ -832,6 +836,10 @@ impl App {
             UiAction::SaveAttachment(index) => self.save_attachment(index),
             UiAction::SaveEml => self.save_eml(),
             UiAction::SearchFocused(focused) => self.search_focused = focused,
+            UiAction::SetFilter(filter) => {
+                self.filter = filter;
+                self.reload_view();
+            }
             UiAction::SearchFor(query) => {
                 self.search = Some(query);
                 self.list.cursor = 0;
@@ -1063,7 +1071,7 @@ impl App {
         } else {
             let mut found = Vec::new();
             for &(account, store) in &stores {
-                match store.thread_summaries(&folder, THREAD_LIMIT) {
+                match store.thread_summaries(&folder, THREAD_LIMIT, self.filter) {
                     Ok(threads) => found.push((account, threads)),
                     Err(e) => {
                         log::warn!(
