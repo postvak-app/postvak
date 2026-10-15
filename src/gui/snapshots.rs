@@ -131,6 +131,21 @@ fn all_inboxes() {
 }
 
 #[test]
+fn an_empty_folder() {
+    let fx = Fixture::mailbox("light");
+    let (open, _wires) = open(&fx);
+    open.with(|live| {
+        live.app.select_view(View::Folder {
+            account: 1,
+            folder: "Sent".into(),
+        })
+    });
+    open.tick();
+    assert_eq!(open.find("No mail in this folder.").len(), 1);
+    snapshot(&open, "gui_empty_folder");
+}
+
+#[test]
 fn inbox_with_marks_and_an_expanded_thread() {
     let (_fx, open, _wires) = inbox("light");
     open.press("x j x right");
