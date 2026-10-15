@@ -30,6 +30,13 @@ component Stripes {
     }
 }
 
+// Names a part of the sheet under its title.
+component SectionLabel inherits Text {
+    font-size: Theme.small-size;
+    font-weight: 600;
+    color: Theme.pane.muted;
+}
+
 export component RulesPane inherits Rectangle {
     in property <Sheet> sheet;
     // Rules.
@@ -49,8 +56,10 @@ export component RulesPane inherits Rectangle {
     callback restore(int);
     callback sort(int, bool);
 
+    // The title row starts where the list's and the reader's do.
     VerticalLayout {
         padding: Theme.inset;
+        padding-top: Theme.pad;
         spacing: Theme.pad;
 
         if root.sheet == Sheet.rules && root.banner != "": Text {
@@ -58,14 +67,34 @@ export component RulesPane inherits Rectangle {
             color: Theme.pane.error;
             wrap: word-wrap;
         }
-        if root.sheet == Sheet.rules: HorizontalLayout {
-            TextButton {
-                text: "Open rules.toml";
-                framed: true;
-                palette: Theme.pane;
-                clicked => { root.open-rules-file(); }
+        // The sheet's title, with its action at the end.
+        HorizontalLayout {
+            height: Theme.control;
+            Heading {
+                text: root.sheet == Sheet.rules ? "Rules" : root.sheet == Sheet.activity ? "Activity" : "Backups";
+                vertical-alignment: center;
             }
             Rectangle { horizontal-stretch: 1; }
+            if root.sheet == Sheet.rules: VerticalLayout {
+                alignment: center;
+                TextButton {
+                    text: "Open rules.toml";
+                    framed: true;
+                    palette: Theme.pane;
+                    clicked => { root.open-rules-file(); }
+                }
+            }
+            if root.sheet == Sheet.backups && root.cells.length > 0: VerticalLayout {
+                alignment: center;
+                TextButton {
+                    text: "Restore";
+                    framed: true;
+                    palette: Theme.pane;
+                    enabled: root.current-row >= 0;
+                    disabled-hint: "Choose a backup first";
+                    clicked => { root.restore(root.current-row); }
+                }
+            }
         }
 
         if root.sheet != Sheet.rules && root.cells.length == 0: Text {
@@ -74,17 +103,6 @@ export component RulesPane inherits Rectangle {
             wrap: word-wrap;
         }
 
-        if root.sheet == Sheet.backups && root.cells.length > 0: HorizontalLayout {
-            TextButton {
-                text: "Restore";
-                framed: true;
-                palette: Theme.pane;
-                enabled: root.current-row >= 0;
-                disabled-hint: "Choose a backup first";
-                clicked => { root.restore(root.current-row); }
-            }
-            Rectangle { horizontal-stretch: 1; }
-        }
         // It takes the keyboard, so Up and Down choose a backup to restore; other keys reach the window.
         if root.sheet != Sheet.rules && root.cells.length > 0: StandardTableView {
             init => { self.focus(); }
@@ -101,12 +119,12 @@ export component RulesPane inherits Rectangle {
                 alignment: start;
                 spacing: Theme.pad;
 
-                if root.proposals.length > 0: Heading { text: "Proposals"; }
+                if root.proposals.length > 0: SectionLabel { text: "Proposals"; }
                 for proposal[i] in root.proposals: HorizontalLayout {
                     Rectangle {
                         border-width: 1px;
                         border-color: Theme.pane.border;
-                        border-radius: Theme.pad / 2;
+                        border-radius: Theme.pad;
                         VerticalLayout {
                             padding: Theme.pad;
                             spacing: Theme.pad / 2;
@@ -141,14 +159,15 @@ export component RulesPane inherits Rectangle {
                     Rectangle { horizontal-stretch: 1; }
                 }
 
-                Heading { text: "Rules"; }
+                // The title above already says Rules; this only parts them from the proposals.
+                if root.proposals.length > 0: SectionLabel { text: "Your rules"; }
                 if root.rules.length == 0: Text {
                     text: "rules.toml has no rules yet.";
                     color: Theme.pane.muted;
                 }
-                if root.rules.length > 0: HorizontalLayout {
-                    Rectangle {
-                        width: rule-grid.preferred-width;
+                // The stripes run the pane's width, as the tables' rows do; the columns keep their own widths.
+                if root.rules.length > 0: Rectangle {
+                    height: rule-grid.preferred-height;
                         Stripes {
                             x: 0;
                             y: 0;
@@ -157,6 +176,8 @@ export component RulesPane inherits Rectangle {
                             rows: root.rules.length;
                         }
                         rule-grid := GridLayout {
+                            x: 0;
+                            width: self.preferred-width;
                             spacing-horizontal: Theme.inset;
                             padding-left: Theme.pad;
                             padding-right: Theme.pad;
@@ -182,8 +203,6 @@ export component RulesPane inherits Rectangle {
                                 }
                             }
                         }
-                    }
-                    Rectangle { horizontal-stretch: 1; }
                 }
             }
         }

@@ -77,7 +77,7 @@ export component TextButton inherits Rectangle {
     // The hover hint, shown only while the button is disabled: why it is.
     in property <string> disabled-hint;
     in property <Palette> palette: Theme.frame;
-    in property <color> text-color: root.selected && root.palette == Theme.pane ? Theme.pane.on-accent : root.palette.text;
+    in property <color> text-color: root.selected ? root.palette.strong : root.palette.text;
     in property <string> text-font: Theme.text-font;
     // A filled button for an action in a pane, rather than a choice in a bar.
     in property <bool> framed;
@@ -85,7 +85,8 @@ export component TextButton inherits Rectangle {
 
     height: Theme.row;
     border-radius: Theme.pad / 2;
-    background: root.selected ? root.palette.selected : root.framed ? root.palette.pressed : transparent;
+    // A chosen option is pressed in, so the selection fill stays for the list row and folder alone.
+    background: root.selected ? root.palette.pressed : root.framed ? root.palette.hover : transparent;
     opacity: root.enabled ? 1 : 0.5;
     accessible-role: button;
     accessible-label: root.text;
@@ -100,7 +101,7 @@ export component TextButton inherits Rectangle {
     HoverFill {
         visible: root.enabled && !root.selected;
         hovered: touch.has-hover;
-        fill: root.palette.hover;
+        fill: root.framed ? root.palette.pressed : root.palette.hover;
     }
     HorizontalLayout {
         padding-left: root.framed ? Theme.pad : Theme.pad / 2;
@@ -110,6 +111,7 @@ export component TextButton inherits Rectangle {
             text: root.text;
             color: root.text-color;
             font-family: root.text-font;
+            font-weight: root.selected ? 600 : 500;
             vertical-alignment: center;
         }
     }
@@ -126,7 +128,7 @@ export component TextButton inherits Rectangle {
 // A serif heading in the pane's palette.
 export component Heading inherits Text {
     font-family: Theme.serif-font;
-    font-size: 19px;
+    font-size: Theme.heading-size;
     color: Theme.pane.heading;
 }
 

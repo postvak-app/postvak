@@ -91,7 +91,7 @@ pub(crate) fn proposals(state: &RulesState) -> Vec<Proposal> {
                     clean(&rule.name, false),
                     clean(by, false)
                 ),
-                toml: clean(&toml_source(rule), true),
+                toml: clean(&toml_source(rule), true).trim_end().to_owned(),
             }
         })
         .collect()
@@ -395,7 +395,8 @@ mod tests {
     fn the_theme_switch_raises_no_banner() {
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = fx.window();
-        open.click("Dark");
+        open.window()
+            .invoke_menu_item(crate::gui::ui::MenuAction::ThemeDark);
         open.advance(5.0);
         assert!(open.labels_containing("reopen the window").is_empty());
     }
