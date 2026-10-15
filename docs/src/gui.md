@@ -12,7 +12,7 @@ The window remembers its size, its position (where the platform reports one; Way
 
 The menu bar (in the window, or at the top of the screen on macOS) has the window's actions in one place: File (Save .eml, View source, Close window with Ctrl+W, Quit with Ctrl+Q; Cmd on macOS), Edit (Copy, Search), Message (Archive, Move…, Delete, Flag, Read or unread, Add to selection), View (Text or HTML, Theme, History, Keys), Mailbox (Sync now, Mark folder read) and Help (Postvak documentation, About Postvak). An item is greyed out when it would do nothing, as the toolbar's buttons are. About Postvak shows the version, the licence and the Slint attribution.
 
-Right-click a message for read, flag, archive, move, delete, View source and Save .eml; a folder for Open, Collapse or Expand, Mark all as read and Sync now; a link in an HTML message to open or copy it.
+Drag a message onto a folder of its account to move it there; drag a marked message to move every marked one. Right-click a message for read, flag, archive, move, delete, View source and Save .eml; a folder for Open, Collapse or Expand, Mark all as read and Sync now; a link in an HTML message to open or copy it.
 
 ## Keys
 

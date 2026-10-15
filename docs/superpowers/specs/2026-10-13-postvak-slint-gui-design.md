@@ -75,6 +75,7 @@ The same layout as today (GUI spec §5–7, parity checklist §1.3): toolbar (`T
 - **Accessible labels** carry today's widget names (`"Inbox (2)"`, `"Collapse Projects"`, row names from `row_text`, `"✔ "` for marked rows, button names), so tests find the same things.
 - **Menu bar.** File: Save .eml, View source, Close window, Quit. Edit: Copy, Search. Message: Archive, Move…, Delete, Flag, Read or unread, Add to selection. View: Text or HTML, Theme ▸ System / Light / Dark, History, Keys. Mailbox: Sync now, Mark folder read. Help: Postvak documentation, About Postvak. Items are enabled when their action would do something, as the toolbar buttons are.
 - **Context menus.** List row: today's `mail_menu` (three groups). Folder row: today's `folder_menu`. Body: Copy, Save .eml, View source. HTML link: Open link, Copy link.
+- **Drag to a folder.** A list row dragged onto a folder of its own account moves there: the marked rows when the row is marked, else that row alone, as a row's context menu acts. GUI-only: it is a gesture for the move the CLI and MCP already have.
 - **Dialogs** (Slint `PopupWindow`s): move picker, source, keys, history, About. Esc closes them in today's order.
 - **About.** Name, version, licence (MIT OR Apache-2.0), project and docs links, and `AboutSlint`.
 

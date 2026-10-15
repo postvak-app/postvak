@@ -27,6 +27,9 @@ use super::rules::{self, RulesState, SheetSort, TrashRow};
 pub(crate) const MOVE_ONE_ACCOUNT: &str =
     "move works on one account at a time; mark messages from one account";
 
+/// The status line when messages are dropped on a folder of another account.
+pub(crate) const MOVE_OWN_ACCOUNT: &str = "messages move only to folders of their own account";
+
 /// The status line while the daemon is gone.
 pub(crate) const DAEMON_LOST: &str = "background sync stopped — reconnecting";
 
@@ -205,6 +208,8 @@ pub(crate) enum UiAction {
     Act(Action),
     ApproveRule(String),
     Collapse,
+    /// Move the targeted rows into a folder dropped on.
+    DropOn(View),
     Escape,
     Expand,
     /// The pointer over the HTML page, in page points, or `None` once it left.
@@ -255,6 +260,8 @@ pub(crate) enum UiAction {
     StartSearch,
     StepFolder(isize),
     SyncNow,
+    /// Aim the next action at the marked rows when `row` is one of them, else at `row` alone.
+    TargetRow(usize),
     ToggleFlag,
     ToggleFolder(usize, String),
     ToggleHelp,
@@ -744,6 +751,7 @@ impl App {
                 });
             }
             UiAction::Collapse => self.collapse(),
+            UiAction::DropOn(view) => self.drop_on(view),
             UiAction::HtmlHover(at) => self.html_hover(at),
             UiAction::HtmlSelect { from, to } => self.html_select(from, to),
             UiAction::HtmlVisible { top, bottom } => self.html_visible(top, bottom),
@@ -872,6 +880,14 @@ impl App {
                 }
             }
             UiAction::SyncNow => self.sync_all(),
+            UiAction::TargetRow(row) => {
+                if let Some(id) = self.list.rows.get(row).map(list::Row::id)
+                    && !self.list.marked.contains(&id)
+                {
+                    self.list.marked.clear();
+                    self.apply_action(UiAction::SelectRow(row));
+                }
+            }
             UiAction::ToggleFolder(account, path) => {
                 if !self.collapsed.remove(&(account, path.clone())) {
                     self.collapsed.insert((account, path));
@@ -940,6 +956,25 @@ impl App {
             .map(|f| f.name.as_str())
             .filter(|name| name != folder && name.to_lowercase().contains(&needle))
             .collect()
+    }
+
+    /// Moves the selected rows into a folder of their own account; rows dropped on the folder they are in stay.
+    fn drop_on(&mut self, view: View) {
+        let View::Folder { account, folder } = view else {
+            return;
+        };
+        let rows = self.selected_rows();
+        if rows
+            .iter()
+            .all(|row| row.account == account && row.folder == folder)
+        {
+            return;
+        }
+        if rows.iter().any(|row| row.account != account) {
+            self.note_error(None, MOVE_OWN_ACCOUNT.into());
+            return;
+        }
+        self.apply_action(UiAction::MoveTo(folder));
     }
 
     pub(crate) fn select_view(&mut self, view: View) {

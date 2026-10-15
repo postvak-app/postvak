@@ -126,6 +126,11 @@ export component MailWindow inherits Window {
     callback folder-clicked(int);
     callback caret-clicked(int);
     callback folder-menu(int, int, int);
+    // A list row dropped on a folder: the folder, the row.
+    callback folder-dropped(int, int);
+    // A dragged list row's payload, and the row back from it, or -1.
+    pure callback drag-data(int) -> data-transfer;
+    pure callback dragged-row(data-transfer) -> int;
     callback pinned-clicked(int);
     callback sync();
     callback toggle-history();
@@ -389,6 +394,8 @@ export component MailWindow inherits Window {
                 caret-clicked(i) => { root.caret-clicked(i); }
                 menu(i, group, j) => { root.folder-menu(i, group, j); }
                 pinned-clicked(i) => { root.pinned-clicked(i); }
+                dragged-row(data) => { root.dragged-row(data) }
+                dropped(i, row) => { root.folder-dropped(i, row); }
             }
 
             if root.mail-view: PaneFrame {
@@ -407,6 +414,7 @@ export component MailWindow inherits Window {
                     list-y <=> root.list-y;
                     row-clicked(i) => { root.row-clicked(i); }
                     row-menu(i, group, j) => { root.row-menu(i, group, j); }
+                    drag-data(i) => { root.drag-data(i) }
                     search-edited(text) => { root.search-edited(text); }
                     // Enter opens the first hit and hands the keyboard to the list.
                     search-accepted => {

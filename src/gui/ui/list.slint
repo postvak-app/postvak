@@ -128,6 +128,8 @@ export component ListPane inherits Rectangle {
     in-out property <length> list-y;
     out property <length> list-height: list.visible-height;
     callback row-clicked(int);
+    // The payload a dragged row carries.
+    pure callback drag-data(int) -> data-transfer;
     // A row's menu item: the row, the item's group, its place in the group.
     callback row-menu(int, int, int);
     callback search-edited(string);
@@ -182,9 +184,14 @@ export component ListPane inherits Rectangle {
             // The menu sits above the row: a TouchArea takes every button's press before its parent sees it.
             for row[i] in root.rows: Rectangle {
                 height: Theme.list-row;
-                ListRow {
-                    data: row;
-                    clicked => { root.row-clicked(i); }
+                // Dragging onto a folder moves the row; a click still reaches it.
+                DragArea {
+                    allow-move: true;
+                    data: root.drag-data(i);
+                    ListRow {
+                        data: row;
+                        clicked => { root.row-clicked(i); }
+                    }
                 }
                 ContextMenuArea {
                     Menu {
