@@ -392,3 +392,49 @@ fn with_one_account_the_first_folder_and_first_message_share_a_line() {
     let row = open.get(&open.labels_containing("hello").remove(0));
     assert_eq!(folder.absolute_position().y, row.absolute_position().y);
 }
+
+/// The colour drawn just inside the left edge of the row labelled `label`.
+fn row_fill(open: &Open, label: &str) -> slint::Color {
+    let row = open.get(label);
+    let at = row.absolute_position();
+    let shot = slint::ComponentHandle::window(&open.window())
+        .take_snapshot()
+        .unwrap();
+    let (x, y) = (
+        (at.x + 2.0) as usize,
+        (at.y + row.size().height / 2.0) as usize,
+    );
+    let pixel = shot.as_slice()[y * shot.width() as usize + x];
+    slint::Color::from_argb_u8(pixel.a, pixel.r, pixel.g, pixel.b)
+}
+
+#[test]
+fn hovering_a_row_fades_in_and_selecting_it_shows_at_once() {
+    let (_fx, open, _wires) = inbox("light");
+    let pane = slint::ComponentHandle::global::<super::ui::Theme>(&open.window()).get_pane();
+    let row = &open
+        .labels_containing("Your receipt for order 1042")
+        .remove(0);
+    let resting = row_fill(&open, row);
+    assert_ne!(resting, pane.hover);
+
+    open.hover(row);
+    assert_eq!(
+        row_fill(&open, row),
+        resting,
+        "the fade starts from nothing"
+    );
+    open.advance(1.0);
+    assert_eq!(
+        row_fill(&open, row),
+        pane.hover,
+        "and ends on the hover colour"
+    );
+
+    open.tap(row);
+    assert_eq!(
+        row_fill(&open, row),
+        pane.selected,
+        "selection does not wait for a fade"
+    );
+}
