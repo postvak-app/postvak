@@ -179,27 +179,30 @@ export component ListPane inherits Rectangle {
             init => { root.scrolled(); }
             changed content-y => { root.scrolled(); }
             changed visible-height => { root.scrolled(); }
-            for row[i] in root.rows: ContextMenuArea {
+            // The menu sits above the row: a TouchArea takes every button's press before its parent sees it.
+            for row[i] in root.rows: Rectangle {
                 height: Theme.list-row;
-                Menu {
-                    for title[j] in row.menu-read: MenuItem {
-                        title: title;
-                        activated => { root.row-menu(i, 0, j); }
-                    }
-                    MenuSeparator { }
-                    for title[j] in row.menu-move: MenuItem {
-                        title: title;
-                        activated => { root.row-menu(i, 1, j); }
-                    }
-                    MenuSeparator { }
-                    for title[j] in row.menu-file: MenuItem {
-                        title: title;
-                        activated => { root.row-menu(i, 2, j); }
-                    }
-                }
                 ListRow {
                     data: row;
                     clicked => { root.row-clicked(i); }
+                }
+                ContextMenuArea {
+                    Menu {
+                        for title[j] in row.menu-read: MenuItem {
+                            title: title;
+                            activated => { root.row-menu(i, 0, j); }
+                        }
+                        MenuSeparator { }
+                        for title[j] in row.menu-move: MenuItem {
+                            title: title;
+                            activated => { root.row-menu(i, 1, j); }
+                        }
+                        MenuSeparator { }
+                        for title[j] in row.menu-file: MenuItem {
+                            title: title;
+                            activated => { root.row-menu(i, 2, j); }
+                        }
+                    }
                 }
             }
         }

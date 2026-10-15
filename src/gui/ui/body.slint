@@ -114,6 +114,29 @@ component HtmlView inherits VerticalLayout {
             height: strip.height;
             source: strip.image;
         }
+        touch := TouchArea {
+            width: max(root.page.width, flick.width);
+            height: root.page.height;
+            mouse-cursor: root.page.link != "" ? pointer : text;
+            accessible-role: none;
+            changed mouse-x => { self.track(); }
+            changed mouse-y => { self.track(); }
+            changed has-hover => {
+                if (!self.has-hover) {
+                    root.leave();
+                }
+            }
+            clicked => { root.clicked(self.mouse-x, self.mouse-y); }
+            function track() {
+                if (self.pressed) {
+                    root.select(self.pressed-x, self.pressed-y, self.mouse-x, self.mouse-y);
+                } else if (self.has-hover) {
+                    root.hover(self.mouse-x, self.mouse-y);
+                }
+            }
+            if root.page.link != "": Tooltip { text: @markdown("\{root.page.link}"); }
+        }
+        // Above the TouchArea, which takes every button's press before its parent sees it.
         ContextMenuArea {
             width: max(root.page.width, flick.width);
             height: root.page.height;
@@ -128,26 +151,6 @@ component HtmlView inherits VerticalLayout {
                     enabled: root.page.link != "";
                     activated => { root.copy-link(); }
                 }
-            }
-            touch := TouchArea {
-                mouse-cursor: root.page.link != "" ? pointer : text;
-                accessible-role: none;
-                changed mouse-x => { self.track(); }
-                changed mouse-y => { self.track(); }
-                changed has-hover => {
-                    if (!self.has-hover) {
-                        root.leave();
-                    }
-                }
-                clicked => { root.clicked(self.mouse-x, self.mouse-y); }
-                function track() {
-                    if (self.pressed) {
-                        root.select(self.pressed-x, self.pressed-y, self.mouse-x, self.mouse-y);
-                    } else if (self.has-hover) {
-                        root.hover(self.mouse-x, self.mouse-y);
-                    }
-                }
-                if root.page.link != "": Tooltip { text: @markdown("\{root.page.link}"); }
             }
         }
     }
