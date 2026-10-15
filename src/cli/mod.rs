@@ -15,7 +15,7 @@ use postvak::mail_ops::MailOps;
 use postvak::message::clean;
 use postvak::paths::Paths;
 use postvak::rules::{Action, CompiledRule, Rule, RuleFile};
-use postvak::store::{Message, Store};
+use postvak::store::{Filter, Message, Store};
 use postvak::sync::{self, Event};
 use postvak::time;
 use postvak::trash::Trash;
@@ -108,6 +108,15 @@ enum Command {
         /// Group by conversation, the most recently active thread first
         #[arg(long)]
         threads: bool,
+        /// Only unread messages; with --threads, threads with an unread message
+        #[arg(long)]
+        unread: bool,
+        /// Only flagged messages; with --threads, threads with a flagged message
+        #[arg(long)]
+        flagged: bool,
+        /// Only messages with attachments, guessed from the headers; with --threads, threads with one
+        #[arg(long)]
+        attachments: bool,
     },
     #[command(about = postvak::help::SEARCH)]
     Search {
@@ -399,11 +408,19 @@ pub fn run() -> Result<()> {
             limit,
             json,
             threads,
+            unread,
+            flagged,
+            attachments,
         } => {
+            let filter = Filter {
+                unread,
+                flagged,
+                attachments,
+            };
             for acc in select_accounts(&config, account.as_deref())? {
                 let store = Store::open_account(&paths, &acc.name)?;
                 if threads {
-                    for thread in store.threads(&folder, limit)? {
+                    for thread in store.threads(&folder, limit, filter)? {
                         for (m, depth) in thread.iter().zip(postvak::output::depths(&thread)) {
                             if json {
                                 let mut value = serde_json::to_value(m)?;
@@ -416,7 +433,7 @@ pub fn run() -> Result<()> {
                     }
                     continue;
                 }
-                for m in store.messages(&folder, limit)? {
+                for m in store.messages(&folder, limit, filter)? {
                     if json {
                         println!("{}", postvak::output::with_account(&acc.name, &m)?);
                     } else {
