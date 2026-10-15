@@ -175,6 +175,7 @@ fn present_body(app: &App, window: &MailWindow) {
         text_note: pane.text_note.unwrap_or_default().into(),
         attachments: strings(shown.attachments.clone(), pane.attachments),
         saved: text(pane.saved),
+        unsubscribe: pane.unsubscribe,
         links: strings(shown.links.clone(), pane.links),
     };
     if info != shown {
@@ -492,6 +493,9 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     });
     window.on_save_eml(move || {
         act(UiAction::SaveEml);
+    });
+    window.on_unsubscribe(move || {
+        act(UiAction::Unsubscribe);
     });
     window.on_open_source(move || {
         act(UiAction::OpenSource);

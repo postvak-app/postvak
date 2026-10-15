@@ -30,6 +30,7 @@ This document contains the help content for the `postvak` command-line program.
 * [`postvak list`↴](#postvak-list)
 * [`postvak search`↴](#postvak-search)
 * [`postvak show`↴](#postvak-show)
+* [`postvak unsubscribe`↴](#postvak-unsubscribe)
 * [`postvak mark`↴](#postvak-mark)
 * [`postvak move`↴](#postvak-move)
 * [`postvak archive`↴](#postvak-archive)
@@ -66,6 +67,7 @@ A fast, simple mail client with automatic mailbox rules
 * `list` — List recent messages, newest first
 * `search` — Full-text search (FTS5 syntax) over subject, addresses and fetched bodies, newest first
 * `show` — Show one message
+* `unsubscribe` — Leave a message's mailing list: by one-click POST when the sender offers it (RFC 8058), else print the page or address from its List-Unsubscribe header to open
 * `mark` — Mark messages read or unread, flagged or unflagged
 * `move` — Move messages to another folder, creating it if needed
 * `archive` — Move messages to the Archive folder
@@ -422,6 +424,27 @@ Show one message
 
   Default value: `INBOX`
 * `--raw` — Print the raw RFC 5322 message instead of the text body
+* `--json`
+
+
+
+## `postvak unsubscribe`
+
+Leave a message's mailing list: by one-click POST when the sender offers it (RFC 8058), else print the page or address from its List-Unsubscribe header to open
+
+**Usage:** `postvak unsubscribe [OPTIONS] <UID>`
+
+###### **Arguments:**
+
+* `<UID>`
+
+###### **Options:**
+
+* `--account <ACCOUNT>`
+* `--folder <FOLDER>`
+
+  Default value: `INBOX`
+* `--dry-run` — Print what would happen without contacting the sender
 * `--json`
 
 

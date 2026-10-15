@@ -95,6 +95,10 @@ impl Fixture {
         let mut app = App::new(&config, self.paths.clone(), client, received, states);
         app.reconnect = |_, _| Err(anyhow::anyhow!("no daemon in tests"));
         app.fetch_release = || Err(anyhow::anyhow!("no network in tests"));
+        app.post_unsubscribe = |url| match url.contains("refuse") {
+            true => Err("HTTP 500".into()),
+            false => Ok(()),
+        };
         app.launch = |target, _| {
             LAUNCHED.with_borrow_mut(|launched| launched.push(target.to_string_lossy().into()));
             Ok(())

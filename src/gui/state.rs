@@ -14,6 +14,7 @@ use crate::paths::{FileWatch, Paths};
 use crate::rules::{self as rule_file, Action, RulesError};
 use crate::store::{Filter, LogEntry, Message, Store, StoreError, has_flag};
 use crate::sync::{Activity, Command, Event};
+use crate::unsubscribe::{self, Method};
 use crate::update;
 
 use super::body;
@@ -63,6 +64,13 @@ pub(crate) fn session(client: Client, wake: Waker) -> anyhow::Result<Connection>
     let events = client.subscribe_waking(wake)?;
     let states = client.status()?.accounts;
     Ok((client, events, states))
+}
+
+/// The one-click unsubscribe in flight, for the message it came from.
+pub(crate) struct Unsubscribing {
+    account: usize,
+    key: RowKey,
+    answer: Receiver<Result<(), String>>,
 }
 
 pub(crate) struct BodyState {
@@ -251,6 +259,8 @@ pub(crate) enum UiAction {
     Restore(usize, PathBuf),
     SaveAttachment(usize),
     SaveEml,
+    /// Leave the shown message's mailing list: by one click, or by opening its page or address.
+    Unsubscribe,
     /// Enter in the search field: ask the servers too, and open the first hit.
     SearchAccepted,
     /// The search field took (true) or lost (false) the keyboard.
@@ -310,6 +320,9 @@ pub struct App {
     pub(crate) error: Option<String>,
     pub(crate) events: Receiver<Event>,
     pub(crate) fetch_release: fn() -> anyhow::Result<String>,
+    /// Sends a one-click unsubscribe; tests swap it so nothing leaves the machine.
+    pub(crate) post_unsubscribe: fn(&str) -> Result<(), String>,
+    pub(crate) unsubscribing: Option<Unsubscribing>,
     /// Downloads remote content for HTML mail, started the first time the user asks.
     pub(crate) fetcher: Option<Fetcher>,
     pub(crate) focus: Focus,
@@ -398,6 +411,8 @@ impl App {
             error: None,
             events,
             fetch_release: update::fetch,
+            post_unsubscribe: |url| unsubscribe::one_click(url).map_err(|e| e.to_string()),
+            unsubscribing: None,
             fetcher: None,
             focus: Focus::List,
             about_open: false,
@@ -450,6 +465,7 @@ impl App {
         self.receive_remote();
         self.keep_daemon(now);
         self.check_release();
+        self.receive_unsubscribe();
         if std::mem::take(&mut self.view_dirty) {
             self.reload_view();
         }
@@ -853,6 +869,7 @@ impl App {
             }
             UiAction::SaveAttachment(index) => self.save_attachment(index),
             UiAction::SaveEml => self.save_eml(),
+            UiAction::Unsubscribe => self.unsubscribe(),
             UiAction::SearchFocused(focused) => self.search_focused = focused,
             UiAction::SearchAccepted => {
                 self.search_server();
@@ -1381,6 +1398,62 @@ impl App {
             Some(saved_note(raw.map(|raw| {
                 message::save_eml(&raw, subject, &self.downloads)
             })));
+    }
+
+    fn unsubscribe(&mut self) {
+        let Some(body) = &mut self.body else { return };
+        let method = body
+            .message
+            .as_ref()
+            .and_then(|m| unsubscribe::method(&m.headers));
+        match method {
+            Some(Method::OneClick(url)) => {
+                let (done, answer) = mpsc::channel();
+                let (post, wake) = (self.post_unsubscribe, self.wake.clone());
+                std::thread::spawn(move || {
+                    let _ = done.send(post(&url));
+                    wake();
+                });
+                body.saved = Some("Unsubscribing…".into());
+                self.unsubscribing = Some(Unsubscribing {
+                    account: body.account,
+                    key: body.key.clone(),
+                    answer,
+                });
+            }
+            Some(Method::Link(url) | Method::Mail(url)) => {
+                self.apply_action(UiAction::OpenUrl(url))
+            }
+            None => {}
+        }
+    }
+
+    /// Takes the answer to a one-click unsubscribe; the note goes on its message while that still shows.
+    fn receive_unsubscribe(&mut self) {
+        let Some(Unsubscribing {
+            account,
+            key,
+            answer,
+        }) = &self.unsubscribing
+        else {
+            return;
+        };
+        let note = match answer.try_recv() {
+            Err(TryRecvError::Empty) => return,
+            Ok(Ok(())) => "Unsubscribed: the sender's server accepted it.".to_string(),
+            Ok(Err(e)) => format!("Could not unsubscribe: {e}"),
+            Err(TryRecvError::Disconnected) => {
+                "Could not unsubscribe: the request stopped".to_string()
+            }
+        };
+        if let Some(body) = &mut self.body
+            && body.account == *account
+            && body.key == *key
+        {
+            body.saved = Some(note.clone());
+        }
+        self.push_history(note);
+        self.unsubscribing = None;
     }
 
     fn open_source(&mut self) {
