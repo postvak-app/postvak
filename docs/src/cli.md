@@ -34,6 +34,7 @@ This document contains the help content for the `postvak` command-line program.
 * [`postvak move`↴](#postvak-move)
 * [`postvak archive`↴](#postvak-archive)
 * [`postvak delete`↴](#postvak-delete)
+* [`postvak junk`↴](#postvak-junk)
 * [`postvak log`↴](#postvak-log)
 * [`postvak trash`↴](#postvak-trash)
 * [`postvak trash list`↴](#postvak-trash-list)
@@ -69,6 +70,7 @@ A fast, simple mail client with automatic mailbox rules
 * `move` — Move messages to another folder, creating it if needed
 * `archive` — Move messages to the Archive folder
 * `delete` — Move messages to Trash; inside Trash, or without one, delete them keeping a local .eml backup
+* `junk` — Report messages as junk: tag them $Junk, which trains server spam filters, and move them to the Junk folder; --not tags them $NotJunk and moves them to INBOX
 * `log` — Show what rules did, newest first
 * `trash` — Deleted mail kept for the retention period
 * `account` — Manage accounts
@@ -374,6 +376,9 @@ List recent messages, newest first
   Default value: `50`
 * `--json`
 * `--threads` — Group by conversation, the most recently active thread first
+* `--unread` — Only unread messages; with --threads, threads with an unread message
+* `--flagged` — Only flagged messages; with --threads, threads with a flagged message
+* `--attachments` — Only messages with attachments, guessed from the headers; with --threads, threads with one
 
 
 
@@ -502,6 +507,27 @@ Move messages to Trash; inside Trash, or without one, delete them keeping a loca
 
   Default value: `INBOX`
 * `--dry-run` — Print what would happen without touching the server
+
+
+
+## `postvak junk`
+
+Report messages as junk: tag them $Junk, which trains server spam filters, and move them to the Junk folder; --not tags them $NotJunk and moves them to INBOX
+
+**Usage:** `postvak junk [OPTIONS] <UIDS>...`
+
+###### **Arguments:**
+
+* `<UIDS>` — Message uids in --folder, as `list` prints them
+
+###### **Options:**
+
+* `--account <ACCOUNT>`
+* `--folder <FOLDER>`
+
+  Default value: `INBOX`
+* `--dry-run` — Print what would happen without touching the server
+* `--not` — Not junk after all
 
 
 

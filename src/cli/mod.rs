@@ -15,7 +15,7 @@ use postvak::mail_ops::MailOps;
 use postvak::message::clean;
 use postvak::paths::Paths;
 use postvak::rules::{Action, CompiledRule, Rule, RuleFile};
-use postvak::store::{Message, Store};
+use postvak::store::{Filter, Message, Store};
 use postvak::sync::{self, Event};
 use postvak::time;
 use postvak::trash::Trash;
@@ -108,6 +108,15 @@ enum Command {
         /// Group by conversation, the most recently active thread first
         #[arg(long)]
         threads: bool,
+        /// Only unread messages; with --threads, threads with an unread message
+        #[arg(long)]
+        unread: bool,
+        /// Only flagged messages; with --threads, threads with a flagged message
+        #[arg(long)]
+        flagged: bool,
+        /// Only messages with attachments, guessed from the headers; with --threads, threads with one
+        #[arg(long)]
+        attachments: bool,
     },
     #[command(about = postvak::help::SEARCH)]
     Search {
@@ -160,6 +169,14 @@ enum Command {
     Delete {
         #[command(flatten)]
         selection: Selection,
+    },
+    #[command(about = postvak::help::JUNK)]
+    Junk {
+        #[command(flatten)]
+        selection: Selection,
+        /// Not junk after all
+        #[arg(long)]
+        not: bool,
     },
     #[command(about = postvak::help::LOG)]
     Log {
@@ -391,11 +408,19 @@ pub fn run() -> Result<()> {
             limit,
             json,
             threads,
+            unread,
+            flagged,
+            attachments,
         } => {
+            let filter = Filter {
+                unread,
+                flagged,
+                attachments,
+            };
             for acc in select_accounts(&config, account.as_deref())? {
                 let store = Store::open_account(&paths, &acc.name)?;
                 if threads {
-                    for thread in store.threads(&folder, limit)? {
+                    for thread in store.threads(&folder, limit, filter)? {
                         for (m, depth) in thread.iter().zip(postvak::output::depths(&thread)) {
                             if json {
                                 let mut value = serde_json::to_value(m)?;
@@ -408,7 +433,7 @@ pub fn run() -> Result<()> {
                     }
                     continue;
                 }
-                for m in store.messages(&folder, limit)? {
+                for m in store.messages(&folder, limit, filter)? {
                     if json {
                         println!("{}", postvak::output::with_account(&acc.name, &m)?);
                     } else {
@@ -500,6 +525,10 @@ pub fn run() -> Result<()> {
         }
         Command::Archive { selection } => cmd_act(&config, &paths, selection, Action::Archive),
         Command::Delete { selection } => cmd_act(&config, &paths, selection, Action::Trash),
+        Command::Junk { selection, not } => {
+            let action = if not { Action::NotJunk } else { Action::Junk };
+            cmd_act(&config, &paths, selection, action)
+        }
         Command::Log {
             account,
             limit,

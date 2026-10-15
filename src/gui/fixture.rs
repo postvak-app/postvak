@@ -230,13 +230,17 @@ mod tests {
         let threads = home
             .store("work")
             .unwrap()
-            .thread_summaries("INBOX", 1000)
+            .thread_summaries("INBOX", 1000, crate::store::Filter::default())
             .unwrap();
         assert_eq!(threads.iter().map(|t| t.count).sum::<u32>(), 100);
         assert!(threads.iter().any(|t| t.count == 8));
         let again = tempfile::tempdir().unwrap();
         let again = generated(again.path(), 100).unwrap();
-        let again = again.store("work").unwrap().thread_summaries("INBOX", 1000);
+        let again = again.store("work").unwrap().thread_summaries(
+            "INBOX",
+            1000,
+            crate::store::Filter::default(),
+        );
         assert_eq!(again.unwrap(), threads);
     }
 }

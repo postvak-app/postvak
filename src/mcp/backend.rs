@@ -10,6 +10,8 @@ use crate::message;
 use crate::output;
 use crate::paths::Paths;
 use crate::rules::{self, Action, Rule, RuleFile};
+/// The `list` filter, a plain value, so the tools need not name the store.
+pub(crate) use crate::store::Filter;
 use crate::store::{Message, Store};
 use crate::sync::{Command, Event};
 use crate::time;
@@ -128,13 +130,14 @@ impl Backend {
         folder: &str,
         limit: u32,
         threads: bool,
+        filter: Filter,
     ) -> Result<Vec<Value>> {
         let limit = limit.min(MAX_LIMIT);
         let mut rows = Vec::new();
         for acc in self.select(account)? {
             let store = self.store(acc)?;
             if threads {
-                for thread in store.threads(folder, limit)? {
+                for thread in store.threads(folder, limit, filter)? {
                     for (m, depth) in thread.iter().zip(output::depths(&thread)) {
                         let mut row = message_row(&acc.name, m)?;
                         row["depth"] = depth.into();
@@ -142,7 +145,7 @@ impl Backend {
                     }
                 }
             } else {
-                for m in store.messages(folder, limit)? {
+                for m in store.messages(folder, limit, filter)? {
                     rows.push(message_row(&acc.name, &m)?);
                 }
             }
