@@ -14,7 +14,7 @@ export struct RowData {
     who: string,
     subject: string,
     date: string,
-    // The cursor row, or a marked one.
+    // The cursor row.
     selected: bool,
     marked: bool,
     // New mail, in the list since its last change: the row fades in.
@@ -29,7 +29,9 @@ export struct RowData {
 
 component ListRow inherits Rectangle {
     in property <RowData> data;
-    callback clicked();
+    // `extend` with Shift held, `toggle` with Cmd on macOS or Ctrl elsewhere.
+    callback clicked(/* extend */ bool, /* toggle */ bool);
+    property <KeyboardModifiers> held;
 
     property <color> ink: data.selected ? Theme.pane.on-accent : Theme.pane.text;
     property <length> indent: data.member ? Theme.inset : 0px;
@@ -68,24 +70,30 @@ component ListRow inherits Rectangle {
 
     height: Theme.list-row;
     border-radius: Theme.pad;
-    background: data.selected ? Theme.pane.selected : transparent;
+    // A marked row is a lighter shade of the cursor's, apart from the hover fill.
+    background: data.selected ? Theme.pane.selected : data.marked ? Theme.pane.selected.mix(Theme.pane.panel, 60%) : transparent;
     accessible-role: list-item;
     accessible-label: data.name;
     accessible-item-selected: data.selected;
-    accessible-action-default => { root.clicked(); }
+    accessible-action-default => { root.clicked(false, false); }
 
     HoverFill {
-        visible: !data.selected;
+        visible: !data.selected && !data.marked;
         border-radius: Theme.pad;
         hovered: touch.has-hover;
         fill: Theme.pane.hover;
     }
 
     touch := TouchArea {
-        clicked => { root.clicked(); }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                root.held = event.modifiers;
+            }
+        }
+        clicked => { root.clicked(root.held.shift, root.held.control); }
     }
 
-    if !data.selected && !touch.has-hover: Rectangle {
+    if !data.selected && !data.marked && !touch.has-hover: Rectangle {
         y: parent.height - 1px;
         height: 1px;
         background: Theme.pane.border;
@@ -102,10 +110,10 @@ component ListRow inherits Rectangle {
                 opacity: root.unread-level;
                 x: 0;
                 y: (Theme.list-row - 2 * Theme.pad) / 4 - self.height / 2;
-                width: 6px;
-                height: 6px;
-                border-radius: 3px;
-                background: data.selected ? Theme.pane.on-accent : Theme.pane.highlight;
+                width: Theme.pad * 3 / 4;
+                height: self.width;
+                border-radius: self.width / 2;
+                background: Theme.pane.highlight;
             }
         }
         Text {
@@ -115,7 +123,7 @@ component ListRow inherits Rectangle {
             text: data.marker;
             font-family: Theme.icon-font;
             font-size: Theme.icon * 3 / 4;
-            color: data.selected ? Theme.pane.on-accent : Theme.pane.highlight;
+            color: Theme.pane.highlight;
             vertical-alignment: center;
         }
 
@@ -127,8 +135,8 @@ component ListRow inherits Rectangle {
                     accessible-role: none;
                     max-width: 80px;
                     text: data.tag;
-                    font-size: 12px;
-                    color: data.selected ? Theme.pane.on-accent : Theme.pane.muted;
+                    font-size: Theme.small-size;
+                    color: data.selected ? Theme.pane.secondary : Theme.pane.muted;
                     overflow: elide;
                     vertical-alignment: center;
                 }
@@ -144,9 +152,8 @@ component ListRow inherits Rectangle {
                 Text {
                     accessible-role: none;
                     text: data.date;
-                    font-family: Theme.mono-font;
-                    font-size: 12px;
-                    color: data.selected ? Theme.pane.on-accent : Theme.pane.muted;
+                    font-size: Theme.small-size;
+                    color: data.selected ? Theme.pane.secondary : Theme.pane.muted;
                     vertical-alignment: center;
                 }
             }
@@ -175,7 +182,7 @@ export component ListPane inherits Rectangle {
     in property <int> marked-count;
     in-out property <length> list-y;
     out property <length> list-height: list.visible-height;
-    callback row-clicked(int);
+    callback row-clicked(int, bool, bool);
     callback filter-clicked(int);
     // The payload a dragged row carries.
     pure callback drag-data(int) -> data-transfer;
@@ -195,13 +202,15 @@ export component ListPane inherits Rectangle {
         if !root.searching && root.title != "": HorizontalLayout {
             height: Theme.control;
             padding-left: Theme.pad;
+            padding-right: Theme.pad;
             spacing: Theme.pad;
             Heading {
                 text: root.title;
                 vertical-alignment: center;
             }
+            // The empty text says it already.
             Text {
-                text: root.counts;
+                text: root.empty != "" ? "" : root.counts;
                 color: Theme.pane.muted;
                 vertical-alignment: center;
                 overflow: elide;
@@ -258,7 +267,7 @@ export component ListPane inherits Rectangle {
                     ListRow {
                         opacity: (drag.dragging ? 0.4 : 1) * self.appear;
                         data: row;
-                        clicked => { root.row-clicked(i); }
+                        clicked(extend, toggle) => { root.row-clicked(i, extend, toggle); }
                     }
                 }
                 ContextMenuArea {
@@ -285,10 +294,11 @@ export component ListPane inherits Rectangle {
 
     if root.empty != "": Text {
         x: Theme.inset;
-        y: list.y + Theme.pad;
+        y: (root.height - self.height) / 2;
         width: root.width - 2 * Theme.inset;
         text: root.empty;
         color: Theme.pane.muted;
+        horizontal-alignment: center;
         wrap: word-wrap;
     }
 }

@@ -1,6 +1,7 @@
 //! The only code that writes rules.toml. Each edit is validated as a whole file before it replaces the old one.
 use std::fs::{File, OpenOptions};
 use std::io;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Value};
@@ -38,7 +39,7 @@ pub fn set_enabled(path: &Path, name: &str, enabled: bool) -> Result<(), RulesEr
     })
 }
 
-pub fn approve(path: &Path, name: &str) -> Result<(), RulesError> {
+fn approve(path: &Path, name: &str) -> Result<(), RulesError> {
     edit(path, name, |rules, index| {
         let table = rules
             .get_mut(index)
@@ -148,11 +149,7 @@ fn lock(path: &Path) -> Result<File, RulesError> {
         .truncate(false)
         .write(true)
         .open(dir.join(".rules.lock"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     file.lock()?;
     Ok(file)
 }
@@ -338,10 +335,8 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn lock_file_is_private() {
-        use std::os::unix::fs::PermissionsExt;
         let (_dir, path) = rules_file("");
         let lock_path = path.parent().unwrap().join(".rules.lock");
         std::fs::write(&lock_path, "").unwrap();

@@ -68,7 +68,12 @@ export global Theme {
     // How long a message that arrives while the window is open takes to fade in.
     out property <duration> arrive-fade: 150ms;
 
+    // Type sizes: secondary labels, the interface, the message text, pane headings, the reader's subject.
+    out property <length> small-size: 12px;
     out property <length> text-size: 13px;
+    out property <length> reading-size: 15px;
+    out property <length> heading-size: 19px;
+    out property <length> title-size: 22px;
     out property <string> text-font: "Hanken Grotesk";
     out property <string> serif-font: "Newsreader";
     out property <string> mono-font: "Spline Sans Mono";
@@ -84,11 +89,11 @@ export global Theme {
         highlight: #8c6720,
         hover: #eadfd0,
         muted: #6e5958,
-        on-accent: #f1e4d8,
+        on-accent: #2b1a1c,
         panel: #f3ece2,
         pressed: #e3d8cb,
         secondary: #5e4a4b,
-        selected: #3b1418,
+        selected: #e6cfc2,
         strong: #140b0c,
         text: #2b1a1c,
         warning: #8a5a00,

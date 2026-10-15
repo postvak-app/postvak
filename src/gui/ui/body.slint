@@ -21,6 +21,7 @@ export struct BodyInfo {
     text-note: string,
     attachments: [string],
     saved: string,
+    unsubscribe: bool,
     links: [string],
 }
 
@@ -59,7 +60,7 @@ component HtmlView inherits VerticalLayout {
     callback open-link();
     callback copy-link();
 
-    spacing: Theme.pad / 2;
+    spacing: Theme.pad;
 
     if root.page.remote == Remote.loading: Text {
         text: "Loading remote content…";
@@ -185,6 +186,7 @@ export component BodyPane inherits Rectangle {
     callback toggle-html();
     callback save-eml();
     callback open-source();
+    callback unsubscribe();
     callback save-attachment(int);
     callback open-link(string);
     in property <PageInfo> page;
@@ -203,69 +205,92 @@ export component BodyPane inherits Rectangle {
 
     if root.info.empty != "": Text {
         x: Theme.inset;
-        y: Theme.inset;
+        y: (root.height - self.height) / 2;
+        width: root.width - 2 * Theme.inset;
         text: root.info.empty;
         color: Theme.pane.muted;
+        horizontal-alignment: center;
+        wrap: word-wrap;
     }
 
     if root.info.empty == "": VerticalLayout {
         padding-left: Theme.inset;
         padding-right: Theme.inset;
         padding-top: Theme.pad;
-        padding-bottom: Theme.pad;
-        spacing: Theme.pad / 2;
+        padding-bottom: Theme.inset;
+        spacing: Theme.pad;
 
+        // The subject, with the view's choices and actions at the end of its first line.
         HorizontalLayout {
-            alignment: end;
-            spacing: Theme.pad / 2;
-            if root.info.has-html: HorizontalLayout {
-                TextButton {
-                    text: "Text";
-                    palette: Theme.pane;
-                    selected: !root.info.shows-html;
-                    clicked => {
-                        if (root.info.shows-html) {
-                            root.toggle-html();
+            spacing: Theme.pad;
+            Heading {
+                horizontal-stretch: 1;
+                text: root.info.subject;
+                font-size: Theme.title-size;
+                wrap: word-wrap;
+            }
+            VerticalLayout {
+                alignment: start;
+                HorizontalLayout {
+                    alignment: end;
+                    height: Theme.control;
+                    spacing: Theme.pad / 2;
+                    if root.info.unsubscribe: VerticalLayout {
+                        alignment: center;
+                        TextButton {
+                            text: "Unsubscribe";
+                            palette: Theme.pane;
+                            framed: true;
+                            clicked => { root.unsubscribe(); }
                         }
                     }
-                }
-                TextButton {
-                    text: "HTML";
-                    palette: Theme.pane;
-                    selected: root.info.shows-html;
-                    enabled: root.info.text-note == "";
-                    disabled-hint: root.info.text-note;
-                    clicked => {
-                        if (!root.info.shows-html) {
-                            root.toggle-html();
+                    if root.info.has-html: VerticalLayout {
+                        alignment: center;
+                        HorizontalLayout {
+                            TextButton {
+                                text: "Text";
+                                palette: Theme.pane;
+                                selected: !root.info.shows-html;
+                                clicked => {
+                                    if (root.info.shows-html) {
+                                        root.toggle-html();
+                                    }
+                                }
+                            }
+                            TextButton {
+                                text: "HTML";
+                                palette: Theme.pane;
+                                selected: root.info.shows-html;
+                                enabled: root.info.text-note == "";
+                                disabled-hint: root.info.text-note;
+                                clicked => {
+                                    if (!root.info.shows-html) {
+                                        root.toggle-html();
+                                    }
+                                }
+                            }
                         }
+                    }
+                    IconButton {
+                        icon: root.save-icon;
+                        name: "Save .eml";
+                        hint: "Save .eml";
+                        disabled-hint: root.info.missing;
+                        enabled: root.info.downloaded;
+                        palette: Theme.pane;
+                        clicked => { root.save-eml(); }
+                    }
+                    IconButton {
+                        icon: root.source-icon;
+                        name: "View source";
+                        hint: "View source";
+                        disabled-hint: root.info.missing;
+                        enabled: root.info.downloaded;
+                        palette: Theme.pane;
+                        clicked => { root.open-source(); }
                     }
                 }
             }
-            IconButton {
-                icon: root.save-icon;
-                name: "Save .eml";
-                hint: "Save .eml";
-                disabled-hint: root.info.missing;
-                enabled: root.info.downloaded;
-                palette: Theme.pane;
-                clicked => { root.save-eml(); }
-            }
-            IconButton {
-                icon: root.source-icon;
-                name: "View source";
-                hint: "View source";
-                disabled-hint: root.info.missing;
-                enabled: root.info.downloaded;
-                palette: Theme.pane;
-                clicked => { root.open-source(); }
-            }
-        }
-
-        if root.info.subject != "": Heading {
-            text: root.info.subject;
-            font-size: 26px;
-            wrap: word-wrap;
         }
 
         HorizontalLayout {
@@ -291,10 +316,11 @@ export component BodyPane inherits Rectangle {
                 HorizontalLayout {
                     height: Theme.row;
                     spacing: Theme.pad;
+                    // The address gives way first in a narrow pane.
                     Text {
+                        min-width: min(self.preferred-width, 4 * Theme.inset);
                         text: root.info.name;
-                        font-weight: 600;
-                        color: Theme.pane.strong;
+                        color: Theme.pane.text;
                         overflow: elide;
                         vertical-alignment: center;
                     }
@@ -311,7 +337,6 @@ export component BodyPane inherits Rectangle {
                         Tooltip { text: @markdown("\{root.info.full-date}"); }
                         date := Text {
                             text: root.info.short-date;
-                            font-family: Theme.mono-font;
                             color: Theme.pane.muted;
                             vertical-alignment: center;
                         }
@@ -350,9 +375,13 @@ export component BodyPane inherits Rectangle {
             wrap: word-wrap;
         }
 
-        Rectangle {
-            height: 1px;
-            background: Theme.pane.border;
+        // More room under the headers' hairline than between them.
+        VerticalLayout {
+            padding-bottom: Theme.pad;
+            Rectangle {
+                height: 1px;
+                background: Theme.pane.border;
+            }
         }
 
         if root.info.shows-html: HtmlView {
@@ -390,7 +419,7 @@ export component BodyPane inherits Rectangle {
                     read-only: true;
                     single-line: false;
                     wrap: word-wrap;
-                    font-size: 15px;
+                    font-size: Theme.reading-size;
                     color: Theme.pane.text;
                     selection-background-color: Theme.pane.selected;
                     selection-foreground-color: Theme.pane.on-accent;

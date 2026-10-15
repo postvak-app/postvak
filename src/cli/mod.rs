@@ -10,7 +10,6 @@ use postvak::config::{AccountConfig, Config, Identity, PasswordSource};
 use postvak::credentials::{self, Secret};
 use postvak::daemon::Client;
 use postvak::daemon::client::LazyClient;
-use postvak::daemon::wire::{AccountStatus, Status};
 use postvak::mail_ops::MailOps;
 use postvak::message::clean;
 use postvak::paths::Paths;
@@ -146,6 +145,19 @@ enum Command {
         /// Print the raw RFC 5322 message instead of the text body
         #[arg(long)]
         raw: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = postvak::help::UNSUBSCRIBE)]
+    Unsubscribe {
+        uid: u32,
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long, default_value = "INBOX")]
+        folder: String,
+        /// Print what would happen without contacting the sender
+        #[arg(long)]
+        dry_run: bool,
         #[arg(long)]
         json: bool,
     },
@@ -494,6 +506,26 @@ pub fn run() -> Result<()> {
             }
             Ok(())
         }
+        Command::Unsubscribe {
+            uid,
+            account,
+            folder,
+            dry_run,
+            json,
+        } => {
+            let acc = single_account(&config, account.as_deref())?;
+            let store = Store::open_account(&paths, &acc.name)?;
+            let msg = store
+                .message(&folder, uid)?
+                .with_context(|| format!("no message {folder}/{uid}"))?;
+            let report = postvak::unsubscribe::unsubscribe(&msg.headers, dry_run)?;
+            if json {
+                println!("{}", postvak::output::with_account(&acc.name, &report)?);
+            } else {
+                println!("{}", unsubscribe_line(&report));
+            }
+            Ok(())
+        }
         Command::Show {
             uid,
             account,
@@ -673,6 +705,16 @@ fn lacks_bodies(store: &Store, folder: Option<&str>) -> Result<bool> {
 }
 
 /// Asks the daemon to fetch the missing bodies.
+fn unsubscribe_line(report: &postvak::unsubscribe::Report) -> String {
+    let url = clean(&report.url, false);
+    match (report.method, report.done) {
+        (_, true) => "unsubscribed: the sender's server accepted it".to_string(),
+        ("one_click", false) => format!("would unsubscribe by one-click POST to {url}"),
+        ("mail", false) => format!("send a mail to unsubscribe: {url}"),
+        _ => format!("open this page to unsubscribe: {url}"),
+    }
+}
+
 fn fetch_bodies(daemon: &LazyClient, account: &str, folder: Option<&str>) -> Result<()> {
     let fetch = sync::Command::FetchBodies {
         folder: folder.map(str::to_string),
@@ -744,11 +786,30 @@ fn cmd_daemon(command: DaemonCommand, paths: &Paths) -> Result<()> {
     };
     match command {
         DaemonCommand::Status => {
-            print_status(&client.status()?);
-            Ok(())
+            let status = client.status()?;
+            let minutes = status.uptime_secs / 60;
+            println!(
+                "pid {}, version {}, up {}h {}m, {} clients",
+                status.pid,
+                status.version,
+                minutes / 60,
+                minutes % 60,
+                status.clients
+            );
+            for account in &status.accounts {
+                let activity = account
+                    .activity
+                    .as_ref()
+                    .map_or("starting".into(), ToString::to_string);
+                println!("{}  {activity}", account.name);
+            }
         }
-        DaemonCommand::Stop => stop_daemon(&client, paths),
+        DaemonCommand::Stop => {
+            let pid = client.stop_and_wait(paths)?;
+            println!("stopped the daemon (pid {pid})");
+        }
     }
+    Ok(())
 }
 
 fn cmd_service(command: ServiceCommand, paths: &Paths) -> Result<()> {
@@ -758,35 +819,6 @@ fn cmd_service(command: ServiceCommand, paths: &Paths) -> Result<()> {
     };
     println!("{text}");
     Ok(())
-}
-
-fn stop_daemon(client: &Client, paths: &Paths) -> Result<()> {
-    let pid = client.stop_and_wait(paths)?;
-    println!("stopped the daemon (pid {pid})");
-    Ok(())
-}
-
-fn print_status(status: &Status) {
-    let minutes = status.uptime_secs / 60;
-    println!(
-        "pid {}, version {}, up {}h {}m, {} clients",
-        status.pid,
-        status.version,
-        minutes / 60,
-        minutes % 60,
-        status.clients
-    );
-    for account in &status.accounts {
-        println!("{}", account_line(account));
-    }
-}
-
-fn account_line(account: &AccountStatus) -> String {
-    let name = &account.name;
-    match &account.activity {
-        Some(activity) => format!("{name}  {activity}"),
-        None => format!("{name}  starting"),
-    }
 }
 
 fn cmd_attachment(command: AttachmentCommand, config: &Config, paths: &Paths) -> Result<()> {
@@ -1244,5 +1276,30 @@ mod tests {
             generated,
             "docs/src/cli.md is stale; run POSTVAK_BLESS=1 cargo test"
         );
+    }
+
+    #[test]
+    fn unsubscribe_line_says_what_happened_or_what_to_open() {
+        use postvak::unsubscribe::Report;
+        let line = |method, done| {
+            unsubscribe_line(&Report {
+                method,
+                url: "https://list.example/u".into(),
+                done,
+            })
+        };
+        assert_eq!(
+            line("one_click", true),
+            "unsubscribed: the sender's server accepted it"
+        );
+        assert_eq!(
+            line("one_click", false),
+            "would unsubscribe by one-click POST to https://list.example/u"
+        );
+        assert_eq!(
+            line("link", false),
+            "open this page to unsubscribe: https://list.example/u"
+        );
+        assert!(line("mail", false).starts_with("send a mail to unsubscribe: "));
     }
 }

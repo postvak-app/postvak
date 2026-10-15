@@ -132,7 +132,8 @@ fn account_entries(app: &App, index: usize, account: &Account) -> Vec<Entry> {
     let mut entries: Vec<Entry> = special
         .iter()
         .map(|folder| {
-            let icon = icons::for_special_use(folder.special_use.as_deref(), &folder.name);
+            let icon = special_folder(&folder.name, folder.special_use.as_deref())
+                .map_or(icons::FOLDER, |(_, icon)| icon);
             let label = clean(label(&folder.name), false);
             Entry::Folder(FolderEntry::new(
                 icon,
@@ -335,31 +336,42 @@ pub(crate) fn label(name: &str) -> &str {
 
 /// INBOX and the special-use folders, which sort above the rest.
 pub(crate) fn is_special(name: &str, special_use: Option<&str>) -> bool {
-    rank(name, special_use) < 6
+    special_folder(name, special_use).is_some()
 }
 
 /// INBOX first, then the special-use folders in a fixed order, then the rest alphabetically.
 pub(crate) fn sort(folders: &mut [Folder]) {
     folders.sort_by_key(|f| {
         (
-            rank(&f.name, f.special_use.as_deref()),
+            special_folder(&f.name, f.special_use.as_deref())
+                .map_or(SPECIAL.len(), |(rank, _)| rank),
             f.name.to_lowercase(),
         )
     });
 }
 
-fn rank(name: &str, special_use: Option<&str>) -> usize {
-    if name.eq_ignore_ascii_case("INBOX") {
-        return 0;
-    }
-    match special_use {
-        Some("Archive") => 1,
-        Some("Drafts") => 2,
-        Some("Sent") => 3,
-        Some("Junk") => 4,
-        Some("Trash") => 5,
-        _ => 6,
-    }
+/// INBOX by name, then the special uses, in the order they sort, with their icons.
+const SPECIAL: [(&str, &str); 6] = [
+    ("INBOX", icons::INBOX),
+    ("Archive", icons::ARCHIVE),
+    ("Drafts", icons::DRAFTS),
+    ("Sent", icons::SENT),
+    ("Junk", icons::JUNK),
+    ("Trash", icons::TRASH),
+];
+
+/// A special folder's rank and icon; `None` for the rest.
+fn special_folder(name: &str, special_use: Option<&str>) -> Option<(usize, &'static str)> {
+    let key = if name.eq_ignore_ascii_case("INBOX") {
+        "INBOX"
+    } else {
+        special_use?
+    };
+    SPECIAL
+        .iter()
+        .enumerate()
+        .find(|(_, (special, _))| *special == key)
+        .map(|(rank, (_, icon))| (rank, *icon))
 }
 
 #[cfg(test)]
@@ -392,6 +404,20 @@ mod tests {
         for name in ["Projects/Postvak", "Projects/Website", "Zeta"] {
             store.upsert_folder(&stored(name)).unwrap();
         }
+    }
+
+    #[test]
+    fn special_folders_get_their_icon_and_others_a_folder() {
+        assert_eq!(special_folder("inbox", None), Some((0, icons::INBOX)));
+        assert_eq!(
+            special_folder("Archief", Some("Archive")),
+            Some((1, icons::ARCHIVE))
+        );
+        assert_eq!(
+            special_folder("Sent Items", Some("Sent")),
+            Some((3, icons::SENT))
+        );
+        assert_eq!(special_folder("Receipts", None), None);
     }
 
     #[test]

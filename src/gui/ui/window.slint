@@ -13,7 +13,7 @@ import { ListPane, RowData } from "list.slint";
 export enum Pane { body, folders, list }
 
 // The menu items that act on the app; `menu.rs` says what each does.
-export enum MenuAction { about, add-to-selection, archive, delete, documentation, flag, history, junk, keys, mark-folder-read, move, read-or-unread, save-eml, search, sync-now, text-or-html, theme-dark, theme-light, theme-system, view-source }
+export enum MenuAction { about, add-to-selection, archive, delete, documentation, flag, history, junk, keys, mark-folder-read, move, read-or-unread, save-eml, search, select-all, sync-now, text-or-html, theme-dark, theme-light, theme-system, view-source }
 
 // Which menu items would do something now; the others are disabled.
 export struct MenuState {
@@ -38,13 +38,13 @@ component Splitter inherits TouchArea {
     }
 }
 
-// A paper pane in the frame, with an accent outline while it has the keyboard; the outline is drawn inside, so
+// A paper pane in the frame, with a soft accent outline while it has the keyboard; the outline is drawn inside, so
 // nothing moves.
 component PaneFrame inherits Rectangle {
     in property <bool> focused;
     background: Theme.pane.background;
     border-width: focused ? 1px : 0px;
-    border-color: Theme.pane.accent;
+    border-color: Theme.pane.border.mix(Theme.pane.accent, 65%);
     clip: true;
 }
 
@@ -139,9 +139,8 @@ export component MailWindow inherits Window {
     callback sync();
     callback toggle-history();
     callback toggle-help();
-    callback set-theme(ThemePreference);
     callback open-update();
-    callback row-clicked(int);
+    callback row-clicked(int, bool, bool);
     callback row-menu(int, int, int);
     callback list-filter-clicked(int);
     callback search-edited(string);
@@ -154,6 +153,7 @@ export component MailWindow inherits Window {
     callback escape();
     callback toggle-html();
     callback save-eml();
+    callback unsubscribe();
     callback open-source();
     callback save-attachment(int);
     callback open-link(string);
@@ -294,6 +294,11 @@ export component MailWindow inherits Window {
                 enabled: root.menu.message;
                 activated => { root.menu-item(MenuAction.add-to-selection); }
             }
+            MenuItem {
+                title: "Select all";
+                enabled: root.menu.message;
+                activated => { root.menu-item(MenuAction.select-all); }
+            }
         }
         Menu {
             title: "View";
@@ -379,7 +384,7 @@ export component MailWindow inherits Window {
             folders-width: root.folders-width;
             buttons: root.tool-buttons;
             buttons-enabled: root.tool-buttons-enabled;
-            search-enabled: root.mail-view;
+            mail-view: root.mail-view;
             search-icon: root.search-icon;
             search-hint: root.search-hint;
             action(i) => { root.tool(i); }
@@ -425,7 +430,7 @@ export component MailWindow inherits Window {
                     empty: root.list-empty;
                     rows: root.rows;
                     list-y <=> root.list-y;
-                    row-clicked(i) => { root.row-clicked(i); }
+                    row-clicked(i, extend, toggle) => { root.row-clicked(i, extend, toggle); }
                     row-menu(i, group, j) => { root.row-menu(i, group, j); }
                     drag-data(i) => { root.drag-data(i) }
                     drag-image(count, subject, fill, ink) => { root.drag-image(count, subject, fill, ink) }
@@ -452,6 +457,7 @@ export component MailWindow inherits Window {
                     source-icon: root.source-icon;
                     toggle-html => { root.toggle-html(); }
                     save-eml => { root.save-eml(); }
+                    unsubscribe => { root.unsubscribe(); }
                     open-source => { root.open-source(); }
                     save-attachment(i) => { root.save-attachment(i); }
                     open-link(url) => { root.open-link(url); }
@@ -491,15 +497,13 @@ export component MailWindow inherits Window {
             }
         }
 
-        StatusBar {
+        status := StatusBar {
             lines: root.status-lines;
             sync-icon: root.sync-icon;
             sync-hint: root.sync-hint;
-            version: root.version;
             update: root.update;
             sync => { root.sync(); }
             toggle-history => { root.toggle-history(); }
-            set-theme(theme) => { root.set-theme(theme); }
             open-update => { root.open-update(); }
         }
     }
@@ -521,14 +525,14 @@ export component MailWindow inherits Window {
 
     if root.history-open: HistoryDialog {
         x: Theme.inset;
-        y: root.height - self.height - Theme.top-bar - Theme.pad;
+        y: status.y - self.height - Theme.pad;
         lines: root.history;
         close-icon: root.close-icon;
         close => { root.toggle-history(); }
     }
 
     if root.move-open: MoveDialog {
-        x: Theme.inset + root.folders-width;
+        x: Theme.pad + root.folders-width + Theme.inset;
         y: Theme.top-bar + Theme.inset;
         targets: root.move-targets;
         close-icon: root.close-icon;
@@ -561,9 +565,18 @@ export component MailWindow inherits Window {
         open-url(url) => { root.open-link(url); }
     }
 
+    // Dims the panes behind the keys; a click on it closes them.
+    if root.help-open: Rectangle {
+        background: Theme.frame.background.transparentize(85%);
+        TouchArea {
+            clicked => { root.toggle-help(); }
+        }
+    }
+
     if root.help-open: KeysDialog {
         x: (root.width - self.width) / 2;
         y: Theme.top-bar + Theme.inset;
+        room: root.height - 2 * (Theme.top-bar + Theme.inset);
         keys: root.keys;
         close-icon: root.close-icon;
         close => { root.toggle-help(); }

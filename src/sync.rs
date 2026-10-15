@@ -230,17 +230,18 @@ fn fetching(folder: &str, what: &str, done: usize, total: usize) -> String {
     format!(
         "{} {what} {} / {}",
         clean(folder, false),
-        thousands(done),
-        thousands(total)
+        group_digits(done as u64, ','),
+        group_digits(total as u64, ',')
     )
 }
 
-fn thousands(n: usize) -> String {
+/// `n` with `separator` between groups of three digits.
+pub(crate) fn group_digits(n: u64, separator: char) -> String {
     let digits = n.to_string();
     let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, digit) in digits.chars().enumerate() {
         if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            grouped.push(',');
+            grouped.push(separator);
         }
         grouped.push(digit);
     }

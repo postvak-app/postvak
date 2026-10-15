@@ -95,7 +95,7 @@ mod recording {
 
     use super::*;
 
-    #[derive(Debug)]
+    #[derive(Debug, Default)]
     pub struct RecordingOps {
         pub folders: Vec<RemoteFolder>,
         pub uidvalidity: HashMap<String, u32>,
@@ -115,8 +115,8 @@ mod recording {
         pub shutdown_on_list_folders: Option<Arc<AtomicBool>>,
         /// A non-zero value becomes INBOX's uidvalidity at its next select; a test can set it while the fake is borrowed.
         pub next_inbox_uidvalidity: Option<Arc<AtomicU32>>,
-        /// Reports HIGHESTMODSEQ and honours CHANGEDSINCE, like a CONDSTORE server.
-        pub condstore: bool,
+        /// Reports no HIGHESTMODSEQ and ignores CHANGEDSINCE, unlike a CONDSTORE server.
+        pub no_condstore: bool,
         /// Per message the flags last seen and the modseq they got, so tests may edit `mail` directly.
         modseqs: HashMap<(String, u32), (Vec<String>, u64)>,
         highest_modseq: HashMap<String, u64>,
@@ -126,29 +126,6 @@ mod recording {
     }
 
     impl RecordingOps {
-        pub fn new() -> RecordingOps {
-            RecordingOps {
-                folders: Vec::new(),
-                uidvalidity: HashMap::new(),
-                mail: HashMap::new(),
-                raw: HashMap::new(),
-                calls: Vec::new(),
-                idle_outcomes: VecDeque::new(),
-                fail_fetch_after: None,
-                fail_next: None,
-                panic_on_add_flags: false,
-                shutdown_when_idle_empty: None,
-                shutdown_on_list_folders: None,
-                next_inbox_uidvalidity: None,
-                condstore: true,
-                modseqs: HashMap::new(),
-                highest_modseq: HashMap::new(),
-                envelope_fetches: 0,
-                selected: String::new(),
-                next_uid: HashMap::new(),
-            }
-        }
-
         pub fn with_folder(mut self, name: &str, special_use: Option<&str>) -> RecordingOps {
             self.folders.push(RemoteFolder {
                 name: name.into(),
@@ -209,12 +186,6 @@ mod recording {
         }
     }
 
-    impl Default for RecordingOps {
-        fn default() -> Self {
-            Self::new()
-        }
-    }
-
     impl MailOps for RecordingOps {
         fn list_folders(&mut self) -> MailResult<Vec<RemoteFolder>> {
             self.calls.push("list_folders".into());
@@ -245,7 +216,7 @@ mod recording {
             Ok(SelectInfo {
                 uidvalidity,
                 exists: self.mail.get(folder).map_or(0, |list| list.len() as u32),
-                highest_modseq: self.condstore.then_some(highest_modseq),
+                highest_modseq: (!self.no_condstore).then_some(highest_modseq),
             })
         }
 
@@ -491,7 +462,7 @@ mod tests {
 
     #[test]
     fn fake_search_uids_mimics_star_semantics() {
-        let mut ops = RecordingOps::new().with_folder("INBOX", None);
+        let mut ops = RecordingOps::default().with_folder("INBOX", None);
         ops.add_mail("INBOX", 3, 10, "Subject: a\r\n\r\n", None);
         ops.add_mail("INBOX", 9, 20, "Subject: b\r\n\r\n", None);
         ops.select("INBOX").unwrap();
@@ -504,7 +475,7 @@ mod tests {
 
     #[test]
     fn fake_fetch_envelopes_returns_the_range_and_can_fail_later() {
-        let mut ops = RecordingOps::new().with_folder("INBOX", None);
+        let mut ops = RecordingOps::default().with_folder("INBOX", None);
         for uid in [1, 5, 9] {
             ops.add_mail("INBOX", uid, 10, "Subject: a\r\n\r\n", None);
         }
@@ -523,7 +494,7 @@ mod tests {
 
     #[test]
     fn fake_move_moves_the_message_and_records_call() {
-        let mut ops = RecordingOps::new()
+        let mut ops = RecordingOps::default()
             .with_folder("INBOX", None)
             .with_folder("Archive", Some("Archive"));
         ops.add_mail("INBOX", 1, 10, "Subject: a\r\n\r\n", Some("raw"));
@@ -536,7 +507,7 @@ mod tests {
 
     #[test]
     fn fake_store_bumps_the_modseq_even_when_a_later_edit_restores_the_flags() {
-        let mut ops = RecordingOps::new().with_folder("INBOX", None);
+        let mut ops = RecordingOps::default().with_folder("INBOX", None);
         ops.add_mail("INBOX", 1, 10, "Subject: a\r\n\r\n", None);
         let before = ops.select("INBOX").unwrap().highest_modseq.unwrap();
         ops.add_flags(1, &["\\Seen"]).unwrap();
@@ -553,7 +524,7 @@ mod tests {
 
     #[test]
     fn fake_expunge_requires_deleted_flag() {
-        let mut ops = RecordingOps::new().with_folder("INBOX", None);
+        let mut ops = RecordingOps::default().with_folder("INBOX", None);
         ops.add_mail("INBOX", 1, 10, "Subject: a\r\n\r\n", Some("raw"));
         ops.select("INBOX").unwrap();
         ops.expunge(1).unwrap();
@@ -568,7 +539,7 @@ mod tests {
 
     #[test]
     fn fake_append_keeps_bytes_and_rejects_unknown_folder() {
-        let mut ops = RecordingOps::new().with_folder("Backup", None);
+        let mut ops = RecordingOps::default().with_folder("Backup", None);
         let raw = b"Subject: a\r\n\r\n\xFFbody";
         ops.append("Backup", raw, &["$PostvakRestored"]).unwrap();
         assert_eq!(ops.raw[&("Backup".into(), 1)], raw);

@@ -175,6 +175,7 @@ fn present_body(app: &App, window: &MailWindow) {
         text_note: pane.text_note.unwrap_or_default().into(),
         attachments: strings(shown.attachments.clone(), pane.attachments),
         saved: text(pane.saved),
+        unsubscribe: pane.unsubscribe,
         links: strings(shown.links.clone(), pane.links),
     };
     if info != shown {
@@ -403,11 +404,13 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     window.on_toggle_help(move || {
         act(UiAction::ToggleHelp);
     });
-    window.on_set_theme(move |theme| {
-        act(UiAction::SetTheme(theme_of(theme)));
-    });
-    window.on_row_clicked(move |i| {
-        act(UiAction::SelectRow(usize::try_from(i).unwrap_or_default()));
+    window.on_row_clicked(move |i, extend, toggle| {
+        let row = usize::try_from(i).unwrap_or_default();
+        act(match (extend, toggle) {
+            (true, _) => UiAction::ExtendSelection(row),
+            (false, true) => UiAction::ToggleRowMark(row),
+            (false, false) => UiAction::SelectRow(row),
+        });
     });
     window.on_row_menu(move |i, group, j| {
         on(Box::new(move |app| {
@@ -487,6 +490,9 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     });
     window.on_save_eml(move || {
         act(UiAction::SaveEml);
+    });
+    window.on_unsubscribe(move || {
+        act(UiAction::Unsubscribe);
     });
     window.on_open_source(move || {
         act(UiAction::OpenSource);
@@ -634,6 +640,7 @@ fn menu_item(action: MenuAction) -> menu::Item {
         MenuAction::ReadOrUnread => Item::ReadOrUnread,
         MenuAction::SaveEml => Item::SaveEml,
         MenuAction::Search => Item::Search,
+        MenuAction::SelectAll => Item::SelectAll,
         MenuAction::SyncNow => Item::SyncNow,
         MenuAction::TextOrHtml => Item::TextOrHtml,
         MenuAction::ThemeDark => Item::Theme(config::Theme::Dark),
@@ -764,14 +771,6 @@ fn preference(theme: config::Theme) -> ThemePreference {
         config::Theme::Dark => ThemePreference::Dark,
         config::Theme::Light => ThemePreference::Light,
         config::Theme::System => ThemePreference::System,
-    }
-}
-
-fn theme_of(preference: ThemePreference) -> config::Theme {
-    match preference {
-        ThemePreference::Dark => config::Theme::Dark,
-        ThemePreference::Light => config::Theme::Light,
-        ThemePreference::System => config::Theme::System,
     }
 }
 

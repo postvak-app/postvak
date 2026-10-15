@@ -40,17 +40,6 @@ impl RulesState {
     }
 }
 
-pub(crate) fn is_pending(rule: &Rule) -> bool {
-    !rule.enabled && rule.proposed_by.is_some()
-}
-
-pub(crate) fn toml_source(rule: &Rule) -> String {
-    toml::to_string(&RuleFile {
-        rules: vec![rule.clone()],
-    })
-    .unwrap_or_else(|e| e.to_string())
-}
-
 /// A rule waiting for approval, as the Rules view shows it.
 pub(crate) struct Proposal {
     pub name: String,
@@ -80,8 +69,10 @@ pub(crate) fn banner(state: &RulesState) -> Option<String> {
 }
 
 pub(crate) fn proposals(state: &RulesState) -> Vec<Proposal> {
-    let pending = state.rules.iter().filter(|rule| is_pending(rule));
-    pending
+    state
+        .rules
+        .iter()
+        .filter(|rule| !rule.enabled && rule.proposed_by.is_some())
         .map(|rule| {
             let by = rule.proposed_by.as_deref().unwrap_or_default();
             Proposal {
@@ -91,7 +82,15 @@ pub(crate) fn proposals(state: &RulesState) -> Vec<Proposal> {
                     clean(&rule.name, false),
                     clean(by, false)
                 ),
-                toml: clean(&toml_source(rule), true),
+                toml: clean(
+                    &toml::to_string(&RuleFile {
+                        rules: vec![rule.clone()],
+                    })
+                    .unwrap_or_else(|e| e.to_string()),
+                    true,
+                )
+                .trim_end()
+                .to_owned(),
             }
         })
         .collect()
@@ -395,7 +394,8 @@ mod tests {
     fn the_theme_switch_raises_no_banner() {
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = fx.window();
-        open.click("Dark");
+        open.window()
+            .invoke_menu_item(crate::gui::ui::MenuAction::ThemeDark);
         open.advance(5.0);
         assert!(open.labels_containing("reopen the window").is_empty());
     }

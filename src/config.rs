@@ -214,18 +214,7 @@ impl AccountConfig {
     }
 
     pub fn identity(&self) -> Result<Identity, ConfigError> {
-        let mut builder = globset::GlobSetBuilder::new();
-        for pattern in &self.aliases {
-            let glob = globset::GlobBuilder::new(pattern)
-                .case_insensitive(true)
-                .build()
-                .map_err(|e| {
-                    ConfigError::Invalid(format!("account '{}': alias '{pattern}': {e}", self.name))
-                })?;
-            builder.add(glob);
-        }
-        let aliases = builder
-            .build()
+        let aliases = regex::RegexSet::new(self.aliases.iter().map(|pattern| alias_regex(pattern)))
             .map_err(|e| ConfigError::Invalid(format!("account '{}': aliases: {e}", self.name)))?;
         Ok(Identity {
             address: self.address().to_ascii_lowercase(),
@@ -234,10 +223,15 @@ impl AccountConfig {
     }
 }
 
+/// An alias pattern as a regex over the whole address, ignoring case; `*` matches anything.
+pub(crate) fn alias_regex(pattern: &str) -> String {
+    format!("(?i)^{}$", regex::escape(pattern).replace(r"\*", ".*"))
+}
+
 #[derive(Debug, Clone)]
 pub struct Identity {
     address: String,
-    aliases: globset::GlobSet,
+    aliases: regex::RegexSet,
 }
 
 impl Identity {
@@ -250,6 +244,16 @@ impl Identity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alias_patterns_take_star_as_the_only_wildcard() {
+        let alias = |pattern: &str| regex::Regex::new(&alias_regex(pattern)).unwrap();
+        assert!(alias("*@shop.example.com").is_match("Orders@SHOP.example.com"));
+        assert!(!alias("*@shop.example.com").is_match("orders@shop.example.com.evil"));
+        assert!(alias("a+b@x.org").is_match("a+b@x.org"));
+        assert!(!alias("a+b@x.org").is_match("aab@xxorg"));
+        assert!(!alias("me?@x.org").is_match("mex@x.org"));
+    }
 
     const SAMPLE: &str = r#"
 [[accounts]]

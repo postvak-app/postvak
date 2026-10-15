@@ -64,7 +64,11 @@ pub fn apply(
         .iter()
         .find(|planned| matches!(planned.action, Action::Delete | Action::Trash))
     {
-        match trash_target(planned, msg, store)? {
+        let trash_folder = match planned.action {
+            Action::Trash => trash_destination(store, msg)?,
+            _ => None,
+        };
+        match trash_folder {
             Some(folder) => {
                 store.log_action(&log_entry(planned, msg, now))?;
                 move_to(msg, &folder, ops, store)?;
@@ -256,17 +260,6 @@ pub fn trash_destination(store: &Store, msg: &Message) -> Result<Option<String>,
     Ok(special_folder(store, "Trash")?.filter(|folder| *folder != msg.folder))
 }
 
-fn trash_target(
-    planned: &PlannedAction,
-    msg: &Message,
-    store: &Store,
-) -> Result<Option<String>, ApplyError> {
-    if planned.action != Action::Trash {
-        return Ok(None);
-    }
-    Ok(trash_destination(store, msg)?)
-}
-
 /// The new uid is not known, so the local row goes and the next sync of the target folder adds it.
 fn move_to(
     current: &Message,
@@ -300,7 +293,7 @@ mod tests {
 
     fn setup() -> (RecordingOps, Store, Trash, tempfile::TempDir, Message) {
         let dir = tempfile::tempdir().unwrap();
-        let mut ops = RecordingOps::new()
+        let mut ops = RecordingOps::default()
             .with_folder("INBOX", None)
             .with_folder("Archive", Some("Archive"));
         ops.add_mail(

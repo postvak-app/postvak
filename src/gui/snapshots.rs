@@ -240,7 +240,6 @@ fn trash() {
 }
 
 /// INBOX of `work` with the newsletter open as HTML, in a window `width` points wide, once it is painted.
-#[cfg(feature = "html")]
 fn newsletter(theme: &str, width: f32) -> (Fixture, Open, Wires) {
     use std::time::{Duration, Instant};
 
@@ -248,13 +247,14 @@ fn newsletter(theme: &str, width: f32) -> (Fixture, Open, Wires) {
 
     use super::fixture::mail;
     let fx = Fixture::mailbox(theme);
-    let news = mail(
+    let mut news = mail(
         99,
         "Postvak Weekly <news@example.org>",
         "Your October roundup",
         "\\Seen",
         "Your October roundup",
     );
+    news.headers = b"Subject: Your October roundup\r\nList-Unsubscribe: <https://news.example.org/leave>\r\n\r\n".to_vec();
     fx.add("work", news);
     let raw = super::test_support::raw(include_str!("../../tests/fixtures/newsletter.html"));
     fx.store("work")
@@ -287,14 +287,12 @@ fn newsletter(theme: &str, width: f32) -> (Fixture, Open, Wires) {
     (fx, open, wires)
 }
 
-#[cfg(feature = "html")]
 #[test]
 fn html_light() {
     let (_fx, open, _wires) = newsletter("light", 1280.0);
     snapshot(&open, "gui_html_light");
 }
 
-#[cfg(feature = "html")]
 #[test]
 fn html_dark() {
     let (_fx, open, _wires) = newsletter("dark", 1280.0);
@@ -302,7 +300,6 @@ fn html_dark() {
 }
 
 /// A body pane narrower than the newsletter's 600 px table: its media query stacks the columns.
-#[cfg(feature = "html")]
 #[test]
 fn html_narrow() {
     let (_fx, open, _wires) = newsletter("light", 1060.0);

@@ -10,7 +10,7 @@ The window remembers its size, its position (where the platform reports one; Way
 
 ## Menu bar
 
-The menu bar (in the window, or at the top of the screen on macOS) has the window's actions in one place: File (Save .eml, View source, Close window with Ctrl+W, Quit with Ctrl+Q; Cmd on macOS), Edit (Copy, Search), Message (Archive, Move…, Delete, Junk or not junk, Flag, Read or unread, Add to selection), View (Text or HTML, Theme, History, Keys), Mailbox (Sync now, Mark folder read) and Help (Postvak documentation, About Postvak). An item is greyed out when it would do nothing, as the toolbar's buttons are. About Postvak shows the version, the licence and the Slint attribution.
+The menu bar (in the window, or at the top of the screen on macOS) has the window's actions in one place: File (Save .eml, View source, Close window with Ctrl+W, Quit with Ctrl+Q; Cmd on macOS), Edit (Copy, Search), Message (Archive, Move…, Delete, Junk or not junk, Flag, Read or unread, Add to selection, Select all), View (Text or HTML, Theme, History, Keys), Mailbox (Sync now, Mark folder read) and Help (Postvak documentation, About Postvak). An item is greyed out when it would do nothing, as the toolbar's buttons are. About Postvak shows the version, the licence and the Slint attribution.
 
 Drag a message onto a folder of its account to move it there; drag a marked message to move every marked one. Right-click a message for read, flag, archive, move, delete, junk, View source and Save .eml; a folder for Open, Collapse or Expand, Mark all as read and Sync now; a link in an HTML message to open or copy it.
 
@@ -21,6 +21,7 @@ Drag a message onto a folder of its account to move it there; drag a marked mess
 | `j` / `k`, Down / Up | next or previous row |
 | Right / Left | expand or collapse a thread |
 | `x` | add the row to the selection, or take it out |
+| Ctrl+A (Cmd+A on macOS) | add every row in the list to the selection |
 | `e` | archive |
 | `#`, Delete (Backspace on macOS) | delete: move to Trash; from Trash, or with no Trash folder, delete for good after saving an `.eml` backup |
 | `!` | junk: tag `$Junk`, which trains the server's spam filter, and move to the Junk folder; in the Junk folder, not junk: tag `$NotJunk` and move to INBOX |
@@ -36,6 +37,8 @@ Drag a message onto a folder of its account to move it there; drag a marked mess
 
 Each attachment of the open message has a Save button, which saves it to your Downloads folder, or to your home folder when there is none.
 
+With the mouse, Shift-click selects every row from the current one to the one you click, and Ctrl-click (Cmd-click on macOS) adds a row to the selection or takes it out; the first one also selects the current row.
+
 Actions apply to the selection when there is one, else to the current row; on a thread row they apply to the whole thread in that folder. A message you open, with the keys or a click, is marked read after its text has been on screen for a second; the one a folder opens on stays unread.
 
 In All inboxes each action goes to the message's own account. `m` offers the folders of that account; marked messages from more than one account cannot be moved together.
@@ -48,7 +51,7 @@ Each account lists its INBOX and special folders (Archive, Drafts, Sent, Junk, T
 
 ## Toolbar and status bar
 
-The toolbar above the panes has buttons for Archive, Move, Delete, Junk, Flag and Read or unread; hover one to see its key. They act on the selection or the current row, like the keys. The search field on the right starts a search, like `/`. The status bar starts with a sync button (Ctrl+R, Cmd+R on macOS) and ends with Postvak's version.
+The toolbar above the panes has buttons for Archive, Move, Delete, Junk, Flag and Read or unread; hover one to see its key. They act on the selection or the current row, like the keys. The search field on the right starts a search, like `/`. The status bar starts with a sync button (Ctrl+R, Cmd+R on macOS).
 
 ## Message list
 
@@ -58,7 +61,7 @@ The switch above the list shows All, Unread, Flagged or Attachments: a thread st
 
 ## Status bar
 
-One line per account says what its sync is doing: connecting, which folder, how many headers or bodies of how many, up to date, or offline and when it retries. Click it for the last 50 lines. The switch on the right picks the System, Light or Dark theme and saves it as `[ui] theme` in `config.toml`. Both themes put the panes in an oxblood frame: warm paper in light mode, dark brown in dark mode. On macOS, `[ui] blur = true` lets the desktop show through the frame, blurred. Next to the version, a link appears when a newer release is out; it opens that release's notes on GitHub. Postvak does not update itself, and the daily check runs only with `[ui] check_updates = true` in `config.toml` (see [Accounts](accounts.md#appearance)).
+One line per account says what its sync is doing: connecting, which folder, how many headers or bodies of how many, up to date, or offline and when it retries. Click it for the last 50 lines. View ▸ Theme picks the System, Light or Dark theme and saves it as `[ui] theme` in `config.toml`. Both themes put the panes in an oxblood frame: warm paper in light mode, dark brown in dark mode. On macOS, `[ui] blur = true` lets the desktop show through the frame, blurred. On the right, a link appears when a newer release is out; it opens that release's notes on GitHub. Postvak does not update itself, and the daily check runs only with `[ui] check_updates = true` in `config.toml` (see [Accounts](accounts.md#appearance)).
 
 ## Rules, Activity and Backups
 
@@ -83,5 +86,7 @@ HTML over 2 MB, or a page too tall or too broken to lay out, shows as text with 
 Above the headers, **Save .eml** writes the message exactly as the server sent it to your Downloads folder, named after its subject; when that name is taken it saves beside it as "… (2).eml" and never replaces a file. The line under the attachments says where it went. Until the message is downloaded the button is greyed out and says why on hover.
 
 **View source** opens the message as plain text in a window, with control characters left out; Copy puts that text on the clipboard. Esc or moving to another message closes it.
+
+Mail from a mailing list that says how to leave it (a `List-Unsubscribe` header) has an **Unsubscribe** button there. When the sender supports one-click unsubscribe (RFC 8058), Postvak sends that request itself, only to a public web host, and the line under the attachments says whether the sender accepted it. Otherwise the button opens the sender's unsubscribe page in your browser, or a mail to their unsubscribe address in your mail app. Either way the sender learns that your address reads its mail.
 
 Mail with an HTML part also has a **Text | HTML** switch there, which does the same as `v`. View source always shows the whole message, whichever is active.
