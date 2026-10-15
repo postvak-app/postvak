@@ -175,6 +175,7 @@ impl Model for ListModel {
             subject: columns.subject.into(),
             date: columns.date.into(),
             selected: index == shown.cursor || marked,
+            marked,
             name: name.into(),
         })
     }

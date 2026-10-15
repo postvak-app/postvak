@@ -16,6 +16,7 @@ export struct RowData {
     date: string,
     // The cursor row, or a marked one.
     selected: bool,
+    marked: bool,
     // The accessible name, from `list::row_text`.
     name: string,
     // The right-click menu's three groups, from `list::menu`.
@@ -132,11 +133,14 @@ export component ListPane inherits Rectangle {
     in property <string> search-hint;
     in property <string> results;
     in property <[RowData]> rows;
+    in property <int> marked-count;
     in-out property <length> list-y;
     out property <length> list-height: list.visible-height;
     callback row-clicked(int);
     // The payload a dragged row carries.
     pure callback drag-data(int) -> data-transfer;
+    // The pill beside the pointer: the rows that move, the row's subject, its fill and text colours.
+    pure callback drag-image(int, string, color, color) -> image;
     // A row's menu item: the row, the item's group, its place in the group.
     callback row-menu(int, int, int);
     callback search-edited(string);
@@ -192,10 +196,14 @@ export component ListPane inherits Rectangle {
             for row[i] in root.rows: Rectangle {
                 height: Theme.list-row;
                 // Dragging onto a folder moves the row; a click still reaches it.
-                DragArea {
+                drag := DragArea {
                     allow-move: true;
                     data: root.drag-data(i);
+                    drag-image: root.drag-image(row.marked ? root.marked-count : 1, row.subject, Theme.frame.highlight, Theme.frame.background);
+                    drag-image-offset-x: -Theme.pad / 1px * 2;
+                    drag-image-offset-y: -Theme.pad / 1px;
                     ListRow {
+                        opacity: drag.dragging ? 0.4 : 1;
                         data: row;
                         clicked => { root.row-clicked(i); }
                     }

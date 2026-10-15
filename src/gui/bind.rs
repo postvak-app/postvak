@@ -113,6 +113,7 @@ fn present_list(app: &App, window: &MailWindow) {
     window.set_searching(app.search.is_some());
     window.set_search_hint_text(list::search_hint(&app.view).into());
     window.set_results(list::results(app.list.rows.len()).into());
+    window.set_marked_count(i32::try_from(app.list.marked.len()).unwrap_or(i32::MAX));
     let rows = window.get_rows();
     match rows.as_any().downcast_ref::<ListModel>() {
         Some(model) => model.update(app),
@@ -411,6 +412,10 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
         }));
     });
     window.on_drag_data(|row| slint::DataTransfer::from(SharedString::from(row.to_string())));
+    window.on_drag_image(|count, subject, fill, ink| {
+        let label = list::drag_label(usize::try_from(count).unwrap_or(1), &subject);
+        drag_image(&label, fill, ink)
+    });
     window.on_dragged_row(|data| {
         data.plain_text()
             .ok()
@@ -614,6 +619,21 @@ fn menu_item(action: MenuAction) -> menu::Item {
         MenuAction::ThemeSystem => Item::Theme(config::Theme::System),
         MenuAction::ViewSource => Item::ViewSource,
     }
+}
+
+/// A pill with `label`, drawn from SVG with the window's own fonts.
+fn drag_image(label: &str, fill: slint::Color, ink: slint::Color) -> slint::Image {
+    let hex = |c: slint::Color| format!("#{:02x}{:02x}{:02x}", c.red(), c.green(), c.blue());
+    // ponytail: width from an average glyph width, not measured; a long subject may get a little extra padding.
+    let width = 24 + 7 * label.chars().count();
+    let svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="28"><rect width="{width}" height="28" rx="14" fill="{fill}"/><text x="{x}" y="18.5" text-anchor="middle" font-family="Hanken Grotesk" font-weight="600" font-size="13" fill="{ink}">{text}</text></svg>"#,
+        x = width / 2,
+        fill = hex(fill),
+        ink = hex(ink),
+        text = crate::notify::escape_markup(label),
+    );
+    slint::Image::load_from_svg_data(svg.as_bytes()).unwrap_or_default()
 }
 
 /// The shown message's HTML view.

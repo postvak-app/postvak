@@ -10,7 +10,7 @@ pub fn new_mail(from: &str, subject: &str) {
 }
 
 /// Linux notification servers render a subset of HTML in the summary and body.
-fn escape_markup(text: &str) -> String {
+pub(crate) fn escape_markup(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
