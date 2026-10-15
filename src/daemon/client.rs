@@ -271,6 +271,23 @@ impl LazyClient {
         })
     }
 
+    /// Searches the account's server for every word of `query`, in `folder` or every folder; the stored hits.
+    pub fn search_server(
+        &self,
+        account: &str,
+        folder: Option<&str>,
+        query: &str,
+    ) -> anyhow::Result<Vec<(String, u32)>> {
+        let command = Command::SearchServer {
+            folder: folder.map(str::to_string),
+            query: query.into(),
+        };
+        self.request(account, command, |reply| match reply {
+            Event::ServerSearchDone { hits, .. } => Ok(hits),
+            other => Err(other),
+        })
+    }
+
     /// Appends a trashed `.eml` back into its folder through the daemon; the folder it went to.
     pub fn restore(&self, account: &str, file: PathBuf) -> anyhow::Result<String> {
         self.request(account, Command::Restore { file }, |reply| match reply {
@@ -588,7 +605,10 @@ impl Drop for Client {
 /// giving up early would drop the client and let an auto-started daemon idle out mid-run.
 pub(super) fn reply_timeout(command: &Command) -> Option<Duration> {
     match command {
-        Command::ApplyRule { .. } | Command::FetchBodies { .. } | Command::SyncNow => None,
+        Command::ApplyRule { .. }
+        | Command::FetchBodies { .. }
+        | Command::SearchServer { .. }
+        | Command::SyncNow => None,
         Command::Apply { .. } | Command::FetchBody { .. } | Command::Restore { .. } => {
             Some(REPLY_TIMEOUT)
         }

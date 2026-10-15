@@ -60,6 +60,8 @@ pub trait MailOps {
     fn select(&mut self, folder: &str) -> MailResult<SelectInfo>;
     /// Uids >= `from_uid` in the selected folder, ascending.
     fn search_uids(&mut self, from_uid: u32) -> MailResult<Vec<u32>>;
+    /// Uids in the selected folder whose headers or body contain every word, ignoring case, ascending.
+    fn search_text(&mut self, words: &[String]) -> MailResult<Vec<u32>>;
     /// Envelopes with `first <= uid <= last` in the selected folder.
     fn fetch_envelopes(&mut self, first: u32, last: u32) -> MailResult<Vec<Envelope>>;
     /// Current flags for uids <= `upto_uid` in the selected folder; with `changed_since`, only those whose modseq is above it.
@@ -262,6 +264,26 @@ mod recording {
                 return Ok(uids.into_iter().filter(|&uid| uid == max).collect());
             }
             Ok(uids.into_iter().filter(|&uid| uid >= from_uid).collect())
+        }
+
+        fn search_text(&mut self, words: &[String]) -> MailResult<Vec<u32>> {
+            self.calls
+                .push(format!("search_text {} {}", self.selected, words.join(" ")));
+            let folder = self.selected.clone();
+            let text = |e: &Envelope| {
+                let raw = self.raw.get(&(folder.clone(), e.uid)).unwrap_or(&e.headers);
+                String::from_utf8_lossy(raw).to_lowercase()
+            };
+            let mut uids: Vec<u32> = self
+                .mail
+                .get(&folder)
+                .into_iter()
+                .flatten()
+                .filter(|e| words.iter().all(|w| text(e).contains(&w.to_lowercase())))
+                .map(|e| e.uid)
+                .collect();
+            uids.sort_unstable();
+            Ok(uids)
         }
 
         fn fetch_envelopes(&mut self, first: u32, last: u32) -> MailResult<Vec<Envelope>> {

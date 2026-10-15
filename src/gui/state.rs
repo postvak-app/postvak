@@ -252,6 +252,8 @@ pub(crate) enum UiAction {
     Restore(usize, PathBuf),
     SaveAttachment(usize),
     SaveEml,
+    /// Enter in the search field: ask the servers too, and open the first hit.
+    SearchAccepted,
     /// The search field took (true) or lost (false) the keyboard.
     SearchFocused(bool),
     SearchFor(String),
@@ -620,6 +622,7 @@ impl App {
             | Event::NewMail { account, .. }
             | Event::Restored { account, .. }
             | Event::RuleApplied { account, .. }
+            | Event::ServerSearchDone { account, .. }
             | Event::Synced { account, .. } => account,
         };
         let Some(index) = self.accounts.iter().position(|a| &a.name == name) else {
@@ -647,7 +650,18 @@ impl App {
             // failure; the client drops the copy of our own `ActionDone`.
             Event::CommandFailed { request, .. } if request != 0 => {}
             Event::ActionDone { request, .. } if request != 0 => self.refresh(index),
+            Event::ServerSearchDone { query, hits, .. } => {
+                if self.search.as_deref() == Some(query.as_str()) {
+                    self.list.server_searching = self.list.server_searching.saturating_sub(1);
+                    self.list
+                        .server_hits
+                        .extend(hits.into_iter().map(|hit| (index, hit)));
+                    self.view_dirty = true;
+                }
+            }
             Event::CommandFailed { message, .. } => {
+                // The refusal does not say of what; a search that failed must not say it is still running.
+                self.list.server_searching = self.list.server_searching.saturating_sub(1);
                 // A refusal carries no uids, so every edit of the account goes and the store shows what is true.
                 let account = &mut self.accounts[index];
                 account.pending.clear();
@@ -842,6 +856,10 @@ impl App {
             UiAction::SaveAttachment(index) => self.save_attachment(index),
             UiAction::SaveEml => self.save_eml(),
             UiAction::SearchFocused(focused) => self.search_focused = focused,
+            UiAction::SearchAccepted => {
+                self.search_server();
+                self.apply_action(UiAction::SelectRow(0));
+            }
             UiAction::SetFilter(filter) => {
                 self.filter = filter;
                 self.reload_view();
@@ -850,6 +868,9 @@ impl App {
                 self.search = Some(query);
                 self.list.cursor = 0;
                 self.list.rows.clear();
+                self.list.server_hits.clear();
+                self.list.server_searching = 0;
+                self.list.server_asked = false;
                 self.reload_view();
             }
             UiAction::ExtendSelection(index) if index < self.list.rows.len() => {
@@ -1110,6 +1131,20 @@ impl App {
                 match store.search(query, None, list::SEARCH_LIMIT) {
                     Ok(found) => hits.extend(found.iter().map(|m| Row::from_message(account, m))),
                     Err(e) => log::warn!("[{}] search failed: {e}", self.accounts[account].name),
+                }
+            }
+            for (account, (folder, uid)) in &self.list.server_hits {
+                let known = hits
+                    .iter()
+                    .any(|row| row.account == *account && row.folder == *folder && row.uid == *uid);
+                let store = stores
+                    .iter()
+                    .find(|(index, _)| index == account)
+                    .map(|(_, store)| store);
+                if let (false, Some(store)) = (known, store)
+                    && let Ok(Some(message)) = store.message(folder, *uid)
+                {
+                    hits.push(Row::from_message(*account, &message));
                 }
             }
             self.list.hits = list::merge_hits(hits, list::SEARCH_LIMIT);
@@ -1701,6 +1736,29 @@ impl App {
         }
     }
 
+    /// Asks the server of each account the search covers for the current query; the hits arrive as `ServerSearchDone`.
+    fn search_server(&mut self) {
+        let Some(query) = self.search.clone().filter(|query| !query.trim().is_empty()) else {
+            return;
+        };
+        let covered: Vec<usize> = match self.view {
+            View::Folder { account, .. } => vec![account],
+            _ => (0..self.accounts.len()).collect(),
+        };
+        self.list.server_hits.clear();
+        self.list.server_searching = 0;
+        self.list.server_asked = true;
+        for account in covered {
+            let command = Command::SearchServer {
+                folder: None,
+                query: query.clone(),
+            };
+            if self.send(account, command) {
+                self.list.server_searching += 1;
+            }
+        }
+    }
+
     pub(crate) fn send(&self, account: usize, command: Command) -> bool {
         self.client.send(&self.accounts[account].name, command)
     }
@@ -2179,6 +2237,37 @@ mod tests {
         let (mut driver, wires) = fx.driver();
         driver.press("ctrl+a e");
         assert_eq!(wires.sent(), [apply(&[1, 2, 3], Action::Archive)]);
+    }
+
+    #[test]
+    fn enter_in_search_asks_the_server_and_adds_its_hits_for_that_query_only() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2, 3]);
+        let (mut driver, wires) = fx.driver();
+        driver.press("/ zebra");
+        assert!(driver.uids().is_empty());
+        driver.press("enter");
+        let search = Command::SearchServer {
+            folder: None,
+            query: "zebra".into(),
+        };
+        assert_eq!(wires.sent(), [("work".to_string(), search)]);
+        assert!(list::results(&driver.app).contains("searching the server"));
+        let found = |query: &str, uid| Event::ServerSearchDone {
+            account: "work".into(),
+            request: 9,
+            query: query.into(),
+            hits: vec![("INBOX".into(), uid)],
+        };
+        receive(
+            &mut driver,
+            &wires,
+            [found("old query", 1), found("zebra", 2)],
+        );
+        assert_eq!(driver.uids(), [2]);
+        assert!(!list::results(&driver.app).contains("searching the server"));
+        driver.press("escape escape");
+        assert_eq!(driver.uids(), [3, 2, 1]);
     }
 
     #[test]
