@@ -1,6 +1,5 @@
 //! The small window shown in place of the mail window when that cannot start: a launch from a desktop entry or
 //! Finder has no terminal to show stderr in.
-use std::fmt;
 use std::path::Path;
 
 use crate::message::clean;
@@ -9,16 +8,9 @@ use crate::message::clean;
 pub(crate) const ACCOUNTS_DOCS: &str = "https://postvak.pataar.nl/accounts.html";
 
 /// config.toml names no account, so the window has nothing to show.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("no accounts configured; run `postvak account add`")]
 pub(crate) struct NoAccounts;
-
-impl fmt::Display for NoAccounts {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("no accounts configured; run `postvak account add`")
-    }
-}
-
-impl std::error::Error for NoAccounts {}
 
 /// What went wrong and what to do about it, as the window states it.
 #[derive(Debug, PartialEq)]

@@ -318,7 +318,7 @@ mod tests {
         let connected = Mutex::new(connected);
         let connector: Connector = Arc::new(move |account: &AccountConfig| {
             let _ = connected.lock().unwrap().send(account.name.clone());
-            Ok(Box::new(RecordingOps::new().with_folder("INBOX", None)) as Box<dyn MailOps>)
+            Ok(Box::new(RecordingOps::default().with_folder("INBOX", None)) as Box<dyn MailOps>)
         });
         (connector, announced)
     }
@@ -355,7 +355,7 @@ mod tests {
             say("connecting");
             std::thread::sleep(std::time::Duration::from_secs(1));
             say("connected");
-            Ok(Box::new(RecordingOps::new().with_folder("INBOX", None)) as Box<dyn MailOps>)
+            Ok(Box::new(RecordingOps::default().with_folder("INBOX", None)) as Box<dyn MailOps>)
         });
         let mut config = config_of(&["a"]);
         let (mut engine, _events) = Engine::start(&config, &Paths::under(dir.path()), connector);

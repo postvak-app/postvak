@@ -338,14 +338,13 @@ fn system_fonts() -> FontContext {
     ctx
 }
 
-/// Fonts with arrows, dingbats and maths symbols on macOS, Linux and Windows; whichever are installed are used.
+/// Fonts with arrows, dingbats and maths symbols on macOS and Linux; whichever are installed are used.
 #[cfg_attr(test, allow(dead_code))]
 const SYMBOL_FONTS: &[&str] = &[
     "Apple Symbols",
     "DejaVu Sans",
     "Noto Sans Math",
     "Noto Sans Symbols 2",
-    "Segoe UI Symbol",
 ];
 
 /// Adds the installed `families` to the fallbacks every text run consults, whatever its script and language:

@@ -437,7 +437,6 @@ mod tests {
         driver.app.body.as_ref().and_then(|b| b.text.clone())
     }
 
-    #[cfg(feature = "html")]
     fn shows_html(open: &crate::gui::test_support::Open) -> bool {
         open.with(|live| live.app.body.as_ref().is_some_and(|b| b.shows_html()))
     }
@@ -893,7 +892,6 @@ mod tests {
         assert!(open.find("Subject: ]0;pwnedreport").is_empty());
     }
 
-    #[cfg(feature = "html")]
     #[test]
     fn the_text_html_switch_toggles_like_v_and_hides_without_html() {
         use crate::gui::test_support::add_html;
@@ -912,7 +910,6 @@ mod tests {
         assert!(open.find("Text").is_empty());
     }
 
-    #[cfg(feature = "html")]
     #[test]
     fn html_too_large_to_render_disables_the_html_side() {
         use crate::gui::html::MAX_HTML;
@@ -924,7 +921,6 @@ mod tests {
         assert_eq!(open.get("Text").accessible_enabled(), Some(true));
     }
 
-    #[cfg(feature = "html")]
     #[test]
     fn the_source_window_shows_the_raw_message_in_either_view() {
         use crate::gui::test_support::add_html;

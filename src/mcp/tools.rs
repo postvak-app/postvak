@@ -551,10 +551,7 @@ pub(super) fn wrap_body(text: &str) -> (String, bool) {
     let text = NAME
         .replace_all(&clean(text, true), "untrusted-mail-content")
         .into_owned();
-    let mut end = text.len().min(BODY_LIMIT);
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
+    let end = text.floor_char_boundary(BODY_LIMIT);
     (
         format!(
             "<untrusted_mail_content>\n{}\n</untrusted_mail_content>",
@@ -564,12 +561,7 @@ pub(super) fn wrap_body(text: &str) -> (String, bool) {
     )
 }
 
-/// Every string in the result without control characters; `body` keeps its newlines and tabs.
-fn cleaned(value: Value) -> Value {
-    clean_value(value, false)
-}
-
-/// Layout (newlines, tabs) is kept below any key named `body`.
+/// Every string in `value` without control characters; layout (newlines, tabs) is kept below any key named `body`.
 fn clean_value(value: Value, keep_layout: bool) -> Value {
     match value {
         Value::String(s) => Value::String(clean(&s, keep_layout)),
@@ -660,7 +652,7 @@ impl ServerHandler for Server {
         .await
         .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         Ok(match outcome {
-            Ok(value) => CallToolResult::structured(cleaned(value)),
+            Ok(value) => CallToolResult::structured(clean_value(value, false)),
             Err(e) => error_result(&format!("{e:#}")),
         }
         .into())

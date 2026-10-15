@@ -23,31 +23,3 @@ pub(crate) const SENT: &str = "\u{E398}"; // paper-plane-tilt
 pub(crate) const SOURCE: &str = "\u{E1BC}"; // code
 pub(crate) const SYNC: &str = "\u{E094}"; // arrows-clockwise
 pub(crate) const TRASH: &str = "\u{E4A6}"; // trash
-
-/// The icon for a folder: its special use, INBOX by name, else a plain folder.
-pub(crate) fn for_special_use(special_use: Option<&str>, name: &str) -> &'static str {
-    if name.eq_ignore_ascii_case("INBOX") {
-        return INBOX;
-    }
-    match special_use {
-        Some("Archive") => ARCHIVE,
-        Some("Drafts") => DRAFTS,
-        Some("Junk") => JUNK,
-        Some("Sent") => SENT,
-        Some("Trash") => TRASH,
-        _ => FOLDER,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn special_folders_get_their_icon_and_others_a_folder() {
-        assert_eq!(for_special_use(None, "inbox"), INBOX);
-        assert_eq!(for_special_use(Some("Archive"), "Archief"), ARCHIVE);
-        assert_eq!(for_special_use(Some("Sent"), "Sent Items"), SENT);
-        assert_eq!(for_special_use(None, "Receipts"), FOLDER);
-    }
-}

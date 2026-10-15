@@ -36,7 +36,9 @@ notify = false
 
 /// A fake server per connection that idles until woken.
 pub(crate) fn recording_connector() -> Connector {
-    Arc::new(|_| Ok(Box::new(RecordingOps::new().with_folder("INBOX", None)) as Box<dyn MailOps>))
+    Arc::new(|_| {
+        Ok(Box::new(RecordingOps::default().with_folder("INBOX", None)) as Box<dyn MailOps>)
+    })
 }
 
 /// Every connection attempt fails, so each account goes offline.

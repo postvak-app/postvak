@@ -181,7 +181,7 @@ impl Model for ListModel {
         let arrived = shown.arrived.contains(&row.id());
         let now = Local::now();
         let columns = list::columns(row, account, shown.recipient, shown.search, &now);
-        let mut name = list::row_text(row, account, shown.recipient, shown.search, &now);
+        let mut name = list::row_text(row, &columns);
         if marked {
             name = format!("✔ {name}");
         }
@@ -193,9 +193,11 @@ impl Model for ListModel {
             ""
         };
         let [read, moves, file] = list::menu(row, shown.junk).map(|group| {
-            let titles: Vec<SharedString> =
-                group.into_iter().map(|(title, _)| title.into()).collect();
-            ModelRc::from(Rc::new(VecModel::from(titles)))
+            model(
+                group
+                    .into_iter()
+                    .map(|(title, _)| SharedString::from(title)),
+            )
         });
         Some(RowData {
             menu_read: read,
