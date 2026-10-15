@@ -42,6 +42,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use slint::ComponentHandle;
+use slint::winit_030::WinitWindowAccessor;
 
 use crate::config::Config;
 use crate::paths::Paths;
@@ -127,10 +128,8 @@ impl Live {
         if let Some(tray) = &live.tray {
             let weak = live.window.as_weak();
             tray.on_open(move || {
-                if let Some(window) = weak.upgrade()
-                    && let Err(e) = window.show()
-                {
-                    log::warn!("could not show the window: {e}");
+                if let Some(window) = weak.upgrade() {
+                    raise(&window);
                 }
             });
             tray.on_sync(|| {
@@ -205,6 +204,24 @@ impl Live {
             });
         }
     }
+}
+
+/// Shows the window in front of other apps: `show` alone neither activates the app (macOS) nor restores a minimized
+/// window. The focus waits a turn of the event loop, for the native window `show` creates.
+fn raise(window: &ui::MailWindow) {
+    if let Err(e) = window.show() {
+        log::warn!("could not show the window: {e}");
+        return;
+    }
+    window.window().set_minimized(false);
+    let weak = window.as_weak();
+    slint::Timer::single_shot(Duration::ZERO, move || {
+        if let Some(window) = weak.upgrade() {
+            window
+                .window()
+                .with_winit_window(|native| native.focus_window());
+        }
+    });
 }
 
 /// The mail window, until it closes: a config with an account, the daemon, then the window.
