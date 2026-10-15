@@ -149,6 +149,21 @@ struct ListArgs {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct UnsubscribeArgs {
+    /// The uid, as `list` returns it
+    uid: u32,
+    /// Required when several accounts are visible
+    account: Option<String>,
+    /// Folder name as `folders` lists it; default INBOX
+    #[serde(default = "inbox")]
+    folder: String,
+    /// Report how the message offers unsubscribing without contacting the sender
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct MessageArgs {
     /// The uid, as `list` returns it
     uid: u32,
@@ -373,6 +388,12 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
             Effect::Changes,
             help::TRASH_RESTORE,
         ),
+        ToolDef::new::<UnsubscribeArgs>(
+            "unsubscribe",
+            Scope::MailModify,
+            Effect::Destructive,
+            help::UNSUBSCRIBE,
+        ),
     ]
 }
 
@@ -514,6 +535,10 @@ fn dispatch(
                 bodies,
                 a.server,
             )?)
+        }
+        "unsubscribe" => {
+            let a: UnsubscribeArgs = args(arguments)?;
+            backend.unsubscribe(a.account.as_deref(), &a.folder, a.uid, a.dry_run)
         }
         "show" => {
             let a: MessageArgs = args(arguments)?;

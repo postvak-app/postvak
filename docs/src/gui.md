@@ -87,4 +87,6 @@ Above the headers, **Save .eml** writes the message exactly as the server sent i
 
 **View source** opens the message as plain text in a window, with control characters left out; Copy puts that text on the clipboard. Esc or moving to another message closes it.
 
+Mail from a mailing list that says how to leave it (a `List-Unsubscribe` header) has an **Unsubscribe** button there. When the sender supports one-click unsubscribe (RFC 8058), Postvak sends that request itself, only to a public web host, and the line under the attachments says whether the sender accepted it. Otherwise the button opens the sender's unsubscribe page in your browser, or a mail to their unsubscribe address in your mail app. Either way the sender learns that your address reads its mail.
+
 Mail with an HTML part also has a **Text | HTML** switch there, which does the same as `v`. View source always shows the whole message, whichever is active.

@@ -247,13 +247,14 @@ fn newsletter(theme: &str, width: f32) -> (Fixture, Open, Wires) {
 
     use super::fixture::mail;
     let fx = Fixture::mailbox(theme);
-    let news = mail(
+    let mut news = mail(
         99,
         "Postvak Weekly <news@example.org>",
         "Your October roundup",
         "\\Seen",
         "Your October roundup",
     );
+    news.headers = b"Subject: Your October roundup\r\nList-Unsubscribe: <https://news.example.org/leave>\r\n\r\n".to_vec();
     fx.add("work", news);
     let raw = super::test_support::raw(include_str!("../../tests/fixtures/newsletter.html"));
     fx.store("work")

@@ -153,6 +153,7 @@ export component MailWindow inherits Window {
     callback escape();
     callback toggle-html();
     callback save-eml();
+    callback unsubscribe();
     callback open-source();
     callback save-attachment(int);
     callback open-link(string);
@@ -456,6 +457,7 @@ export component MailWindow inherits Window {
                     source-icon: root.source-icon;
                     toggle-html => { root.toggle-html(); }
                     save-eml => { root.save-eml(); }
+                    unsubscribe => { root.unsubscribe(); }
                     open-source => { root.open-source(); }
                     save-attachment(i) => { root.save-attachment(i); }
                     open-link(url) => { root.open-link(url); }
