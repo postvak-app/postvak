@@ -114,6 +114,7 @@ pub(crate) fn action(press: &Press, focus: Focus, typing: bool) -> Option<UiActi
                 Key::Named(Named::Left) => UiAction::Collapse,
                 Key::Text(t) if t == "x" => UiAction::ToggleMark,
                 Key::Text(t) if t == "e" => UiAction::Act(Action::Archive),
+                Key::Text(t) if t == "!" => UiAction::Act(Action::Junk),
                 Key::Text(t) if t == "m" => UiAction::OpenMovePicker,
                 Key::Text(t) if t == "s" => UiAction::ToggleFlag,
                 Key::Text(t) if t == "u" => UiAction::ToggleRead,
@@ -126,7 +127,7 @@ pub(crate) fn action(press: &Press, focus: Focus, typing: bool) -> Option<UiActi
 }
 
 /// The `?` window. Keys are spelled out, so every glyph is in the bundled fonts.
-pub(crate) const HELP: [(&str, &str); 14] = [
+pub(crate) const HELP: [(&str, &str); 15] = [
     ("j / k, Down / Up", "next or previous row"),
     ("Right / Left", "expand or collapse a thread"),
     ("x", "add the row to the selection, or take it out"),
@@ -135,6 +136,7 @@ pub(crate) const HELP: [(&str, &str); 14] = [
         "#, Delete (Backspace on macOS)",
         "delete (to the Trash folder; from Trash or with no Trash folder, saved as .eml and deleted for good)",
     ),
+    ("!", "junk; in the Junk folder, not junk"),
     ("m", "move to a folder"),
     ("u", "mark read or unread"),
     ("s", "flag or unflag"),
@@ -175,6 +177,7 @@ mod tests {
         let cases = [
             ("x", UiAction::ToggleMark),
             ("e", UiAction::Act(Action::Archive)),
+            ("!", UiAction::Act(Action::Junk)),
             ("#", UiAction::Act(Action::Trash)),
             ("m", UiAction::OpenMovePicker),
             ("s", UiAction::ToggleFlag),

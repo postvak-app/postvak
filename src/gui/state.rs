@@ -13,7 +13,7 @@ use crate::daemon::wire::AccountStatus;
 use crate::message::{self, Attachment, HtmlBody, clean};
 use crate::paths::Paths;
 use crate::rules::{self as rule_file, Action, RulesError};
-use crate::store::{LogEntry, Message, Store, StoreError, has_flag};
+use crate::store::{Filter, LogEntry, Message, Store, StoreError, has_flag};
 use crate::sync::{Activity, Command, Event};
 use crate::unsubscribe::{self, Method};
 use crate::update;
@@ -220,6 +220,7 @@ pub(crate) enum UiAction {
     DropOn(View),
     Escape,
     Expand,
+    SetFilter(Filter),
     /// The pointer over the HTML page, in page points, or `None` once it left.
     HtmlHover(Option<[f32; 2]>),
     /// Select the HTML page's text between two points, in page points.
@@ -344,6 +345,8 @@ pub struct App {
     pub(crate) rules: RulesState,
     pub(crate) rules_mtime: Option<SystemTime>,
     pub(crate) search: Option<String>,
+    /// Which rows a folder's list keeps; search results ignore it.
+    pub(crate) filter: Filter,
     /// Set by the window while the search field has the keyboard, so the list is not opened while a query is typed.
     pub(crate) search_focused: bool,
     /// The earliest time something here wants `tick` again (the read delay, a settling width, polling); the window
@@ -426,6 +429,7 @@ impl App {
             rules,
             rules_mtime,
             search: None,
+            filter: Filter::default(),
             search_focused: false,
             next_tick: None,
             wake: Arc::new(|| {}),
@@ -849,6 +853,10 @@ impl App {
             UiAction::SaveEml => self.save_eml(),
             UiAction::Unsubscribe => self.unsubscribe(),
             UiAction::SearchFocused(focused) => self.search_focused = focused,
+            UiAction::SetFilter(filter) => {
+                self.filter = filter;
+                self.reload_view();
+            }
             UiAction::SearchFor(query) => {
                 self.search = Some(query);
                 self.list.cursor = 0;
@@ -1036,10 +1044,23 @@ impl App {
 
     /// Whether `folder` is the account's Archive folder, where archiving moves a message back to the inbox.
     pub(crate) fn is_archive(&self, account: usize, folder: &str) -> bool {
+        self.has_role(account, folder, "Archive")
+    }
+
+    pub(crate) fn is_junk(&self, account: usize, folder: &str) -> bool {
+        self.has_role(account, folder, "Junk")
+    }
+
+    /// Whether the shown folder is a Junk folder, where the junk action means not junk.
+    pub(crate) fn shows_junk(&self) -> bool {
+        matches!(&self.view, View::Folder { account, folder } if self.is_junk(*account, folder))
+    }
+
+    fn has_role(&self, account: usize, folder: &str, role: &str) -> bool {
         self.accounts[account]
             .folders
             .iter()
-            .any(|f| f.name == folder && f.special_use.as_deref() == Some("Archive"))
+            .any(|f| f.name == folder && f.special_use.as_deref() == Some(role))
     }
 
     /// Loads the shown view's rows from the store. Runs on view changes and when events mark the view dirty, never
@@ -1080,7 +1101,7 @@ impl App {
         } else {
             let mut found = Vec::new();
             for &(account, store) in &stores {
-                match store.thread_summaries(&folder, THREAD_LIMIT) {
+                match store.thread_summaries(&folder, THREAD_LIMIT, self.filter) {
                     Ok(threads) => found.push((account, threads)),
                     Err(e) => {
                         log::warn!(
@@ -1657,10 +1678,12 @@ impl App {
         }
         self.pending_arm |= optimistic == Optimistic::Hidden;
         for (account, folder, uids) in targets {
-            let action = if matches!(action, Action::Archive) && self.is_archive(account, &folder) {
-                Action::Move("INBOX".into())
-            } else {
-                action.clone()
+            let action = match action {
+                Action::Archive if self.is_archive(account, &folder) => {
+                    Action::Move("INBOX".into())
+                }
+                Action::Junk if self.is_junk(account, &folder) => Action::NotJunk,
+                _ => action.clone(),
             };
             self.send_apply(account, folder, uids, action, optimistic);
         }
@@ -2106,6 +2129,28 @@ mod tests {
         assert_eq!(driver.uids(), [2, 1]);
         assert_eq!(driver.app.list.rows[driver.app.list.cursor].uid, 2);
         assert!(driver.status()[0].ends_with(" · 1 queued"));
+    }
+
+    #[test]
+    fn bang_reports_junk_and_in_the_junk_folder_not_junk() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Junk", Some("Junk"));
+        inbox(&fx, &[1]);
+        fx.add("work", message("Junk", 2, "offer"));
+        let (mut driver, wires) = fx.driver();
+        driver.press("!");
+        driver.apply(UiAction::SelectView(View::Folder {
+            account: 0,
+            folder: "Junk".into(),
+        }));
+        driver.press("!");
+        assert_eq!(
+            wires.sent(),
+            [
+                apply(&[1], Action::Junk),
+                command("work", "Junk", &[2], Action::NotJunk)
+            ]
+        );
     }
 
     #[test]

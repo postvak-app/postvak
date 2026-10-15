@@ -110,13 +110,19 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
 fn present_list(app: &App, window: &MailWindow) {
     window.set_list_title(list::title(&app.view).unwrap_or_default().into());
     window.set_list_counts(list::counts(&app.list.rows).into());
+    let filter = list::FILTERS.iter().position(|(_, f)| *f == app.filter);
+    window.set_list_filter(
+        filter
+            .and_then(|i| i32::try_from(i).ok())
+            .unwrap_or_default(),
+    );
     window.set_searching(app.search.is_some());
     window.set_search_hint_text(list::search_hint(&app.view).into());
     window.set_results(list::results(app.list.rows.len()).into());
     let empty = if app.list.rows.is_empty() {
-        list::empty(&app.view, app.search.as_deref())
+        list::empty(&app.view, app.search.as_deref(), app.filter)
     } else {
-        ""
+        String::new()
     };
     window.set_list_empty(empty.into());
     window.set_marked_count(i32::try_from(app.list.marked.len()).unwrap_or(i32::MAX));
@@ -412,7 +418,10 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
             else {
                 return Vec::new();
             };
-            let Some((_, action)) = nth(nth(list::menu(row), group).unwrap_or_default(), j) else {
+            let Some((_, action)) = nth(
+                nth(list::menu(row, app.shows_junk()), group).unwrap_or_default(),
+                j,
+            ) else {
                 return Vec::new();
             };
             vec![UiAction::TargetRow(i), action]
@@ -438,6 +447,12 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
             };
             vec![UiAction::TargetRow(row), UiAction::DropOn(view)]
         }));
+    });
+    window.on_list_filter_clicked(move |i| {
+        let filter = usize::try_from(i).ok().and_then(|i| list::FILTERS.get(i));
+        if let Some((_, filter)) = filter {
+            act(UiAction::SetFilter(*filter));
+        }
     });
     window.on_search_edited(move |text| {
         act(UiAction::SearchFor(text.into()));
@@ -616,6 +631,7 @@ fn menu_item(action: MenuAction) -> menu::Item {
         MenuAction::Documentation => Item::Documentation,
         MenuAction::Flag => Item::Flag,
         MenuAction::History => Item::History,
+        MenuAction::Junk => Item::Junk,
         MenuAction::Keys => Item::Keys,
         MenuAction::MarkFolderRead => Item::MarkFolderRead,
         MenuAction::Move => Item::Move,
