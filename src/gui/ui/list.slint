@@ -17,6 +17,8 @@ export struct RowData {
     // The cursor row, or a marked one.
     selected: bool,
     marked: bool,
+    // New mail, in the list since its last change: the row fades in.
+    arrived: bool,
     // The accessible name, from `list::row_text`.
     name: string,
     // The right-click menu's three groups, from `list::menu`.
@@ -37,8 +39,15 @@ component ListRow inherits Rectangle {
     property <bool> fade;
     // The message the row last showed.
     property <string> shown;
+    // 0 while new mail is about to fade in, else 1; the list sets the row's opacity from it.
+    out property <float> appear: 1;
+    property <bool> appearing;
     animate unread-level {
         duration: root.fade ? Theme.state-fade : 0ms;
+        easing: ease-out;
+    }
+    animate appear {
+        duration: root.appearing ? Theme.arrive-fade : 0ms;
         easing: ease-out;
     }
     init => { root.show(); }
@@ -47,6 +56,12 @@ component ListRow inherits Rectangle {
     function show() {
         let message = data.tag + "\n" + data.who + "\n" + data.subject + "\n" + data.date;
         root.fade = message == root.shown;
+        if !root.fade && data.arrived {
+            root.appearing = false;
+            root.appear = 0;
+            root.appearing = true;
+            root.appear = 1;
+        }
         root.shown = message;
         root.unread-level = data.unread ? 1 : 0;
     }
@@ -223,7 +238,7 @@ export component ListPane inherits Rectangle {
                     drag-image-offset-x: -Theme.pad / 1px * 2;
                     drag-image-offset-y: -Theme.pad / 1px;
                     ListRow {
-                        opacity: drag.dragging ? 0.4 : 1;
+                        opacity: (drag.dragging ? 0.4 : 1) * self.appear;
                         data: row;
                         clicked => { root.row-clicked(i); }
                     }
