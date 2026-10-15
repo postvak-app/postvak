@@ -30,6 +30,25 @@ component ListRow inherits Rectangle {
 
     property <color> ink: data.selected ? Theme.pane.on-accent : Theme.pane.text;
     property <length> indent: data.member ? Theme.inset : 0px;
+    // 1 while unread, 0 once read: the dot and the sender's and subject's ink follow it.
+    property <float> unread-level;
+    // Whether `unread-level` fades; the ListView reuses a row for another message as it scrolls, and that must not fade.
+    property <bool> fade;
+    // The message the row last showed.
+    property <string> shown;
+    animate unread-level {
+        duration: root.fade ? Theme.state-fade : 0ms;
+        easing: ease-out;
+    }
+    init => { root.show(); }
+    changed data => { root.show(); }
+
+    function show() {
+        let message = data.tag + "\n" + data.who + "\n" + data.subject + "\n" + data.date;
+        root.fade = message == root.shown;
+        root.shown = message;
+        root.unread-level = data.unread ? 1 : 0;
+    }
 
     height: Theme.list-row;
     border-radius: Theme.pad;
@@ -63,7 +82,8 @@ component ListRow inherits Rectangle {
         // The unread dot, then the mark or flag, on the sender's line.
         Rectangle {
             width: 1.5 * Theme.pad;
-            if data.unread: Rectangle {
+            Rectangle {
+                opacity: root.unread-level;
                 x: 0;
                 y: (Theme.list-row - 2 * Theme.pad) / 4 - self.height / 2;
                 width: 6px;
@@ -101,7 +121,7 @@ component ListRow inherits Rectangle {
                     horizontal-stretch: 1;
                     text: data.who;
                     font-weight: data.unread ? 600 : 500;
-                    color: data.selected || data.unread ? root.ink : Theme.pane.secondary;
+                    color: data.selected ? root.ink : root.ink.mix(Theme.pane.secondary, root.unread-level);
                     overflow: elide;
                     vertical-alignment: center;
                 }
@@ -117,7 +137,7 @@ component ListRow inherits Rectangle {
             Text {
                 accessible-role: none;
                 text: data.subject;
-                color: data.selected || data.unread ? root.ink : Theme.pane.muted;
+                color: data.selected ? root.ink : root.ink.mix(Theme.pane.muted, root.unread-level);
                 overflow: elide;
                 vertical-alignment: center;
             }

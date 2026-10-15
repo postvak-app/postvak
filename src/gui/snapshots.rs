@@ -393,19 +393,38 @@ fn with_one_account_the_first_folder_and_first_message_share_a_line() {
     assert_eq!(folder.absolute_position().y, row.absolute_position().y);
 }
 
+/// The colour drawn at `(x, y)` in the window.
+fn pixel(open: &Open, x: f32, y: f32) -> slint::Color {
+    let shot = slint::ComponentHandle::window(&open.window())
+        .take_snapshot()
+        .unwrap();
+    let pixel = shot.as_slice()[y as usize * shot.width() as usize + x as usize];
+    slint::Color::from_argb_u8(pixel.a, pixel.r, pixel.g, pixel.b)
+}
+
 /// The colour drawn just inside the left edge of the row labelled `label`.
 fn row_fill(open: &Open, label: &str) -> slint::Color {
     let row = open.get(label);
     let at = row.absolute_position();
-    let shot = slint::ComponentHandle::window(&open.window())
-        .take_snapshot()
-        .unwrap();
-    let (x, y) = (
-        (at.x + 2.0) as usize,
-        (at.y + row.size().height / 2.0) as usize,
-    );
-    let pixel = shot.as_slice()[y * shot.width() as usize + x];
-    slint::Color::from_argb_u8(pixel.a, pixel.r, pixel.g, pixel.b)
+    pixel(open, at.x + 2.0, at.y + row.size().height / 2.0)
+}
+
+/// The colour at the centre of the unread dot of the row labelled `label`, whether or not the dot shows.
+fn unread_dot(open: &Open, label: &str) -> slint::Color {
+    let (_, _, pad, _) = grid(open);
+    let at = open.get(label).absolute_position();
+    let list_row =
+        slint::ComponentHandle::global::<super::ui::Theme>(&open.window()).get_list_row();
+    pixel(
+        open,
+        at.x + pad + 3.0,
+        at.y + pad + (list_row - 2.0 * pad) / 4.0,
+    )
+}
+
+/// The full label of the one row containing `text`.
+fn row(open: &Open, text: &str) -> String {
+    open.labels_containing(text).remove(0)
 }
 
 #[test]
@@ -436,5 +455,54 @@ fn hovering_a_row_fades_in_and_selecting_it_shows_at_once() {
         row_fill(&open, row),
         pane.selected,
         "selection does not wait for a fade"
+    );
+}
+
+#[test]
+fn marking_a_message_read_fades_its_dot_out() {
+    let (_fx, open, _wires) = inbox("light");
+    let lunch = row(&open, "Lunch on Friday?");
+    let dot = unread_dot(&open, &lunch);
+
+    open.press("u");
+    let lunch = row(&open, "Lunch on Friday?");
+    assert_eq!(
+        unread_dot(&open, &lunch),
+        dot,
+        "the fade starts from the dot"
+    );
+    open.advance(1.0);
+    assert_ne!(unread_dot(&open, &lunch), dot, "and ends without it");
+}
+
+#[test]
+fn mail_that_moves_the_rows_down_shows_their_dots_at_once() {
+    let (fx, open, wires) = inbox("light");
+    // One in, one out: the list keeps its length, so each row's element now shows the message above it.
+    fx.add("work", message("INBOX", 96, "Fresh news"));
+    fx.store("work").remove_message("INBOX", 90).unwrap();
+    wires
+        .events
+        .send(Event::Synced {
+            account: "work".into(),
+            new_messages: 1,
+            actions: 0,
+            requests: vec![],
+            errors: vec![],
+        })
+        .unwrap();
+    open.tick();
+    let rows = [
+        "Fresh news",
+        "Lunch on Friday?",
+        "This week: ten things about tea",
+        "Your receipt for order 1042",
+    ]
+    .map(|text| row(&open, text));
+    let at_once = rows.each_ref().map(|label| unread_dot(&open, label));
+    open.advance(1.0);
+    assert_eq!(
+        rows.each_ref().map(|label| unread_dot(&open, label)),
+        at_once
     );
 }
