@@ -88,10 +88,12 @@ impl ImapOps {
         Ok((&self.rt, session))
     }
 
+    #[cfg(any(test, feature = "testing"))]
     pub fn has_move(&self) -> bool {
         self.has_move
     }
 
+    #[cfg(any(test, feature = "testing"))]
     pub fn delete_folder(&mut self, name: &str) -> MailResult<()> {
         let (rt, session) = self.parts()?;
         rt.block_on(async { session.delete(name).await.map_err(proto) })

@@ -32,7 +32,7 @@ impl Inline {
         let url = &request.url;
         match url.scheme() {
             "cid" => {
-                let cid = percent_decode(url.path());
+                let cid = percent_encoding::percent_decode_str(url.path()).decode_utf8_lossy();
                 self.parts
                     .iter()
                     .find(|part| part.cid == cid)
@@ -62,30 +62,6 @@ impl NetProvider for Inline {
         let bytes = self.resolve(&request).unwrap_or_default();
         handler.bytes(request.url.to_string(), Bytes::from(bytes));
     }
-}
-
-/// `%40` back to `@`; a `%` not followed by two hex digits stays as it is.
-fn percent_decode(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let hex = bytes
-            .get(i + 1..i + 3)
-            .and_then(|pair| std::str::from_utf8(pair).ok())
-            .and_then(|pair| u8::from_str_radix(pair, 16).ok());
-        match (bytes[i], hex) {
-            (b'%', Some(byte)) => {
-                out.push(byte);
-                i += 3;
-            }
-            (byte, _) => {
-                out.push(byte);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 #[cfg(test)]
@@ -151,11 +127,5 @@ mod tests {
             *refused.lock().unwrap(),
             BTreeSet::from(["https://tracker.example.com/p.gif".to_string()])
         );
-    }
-
-    #[test]
-    fn percent_decode_keeps_stray_percent_signs() {
-        assert_eq!(percent_decode("a%40b%2"), "a@b%2");
-        assert_eq!(percent_decode("%zz"), "%zz");
     }
 }

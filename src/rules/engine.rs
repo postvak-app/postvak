@@ -32,14 +32,6 @@ pub struct Plan {
     pub notify: bool,
 }
 
-impl Plan {
-    pub fn moves_or_deletes(&self) -> bool {
-        self.actions
-            .iter()
-            .any(|a| matches!(a.action, Action::Delete | Action::Move(_) | Action::Archive))
-    }
-}
-
 pub fn folder_needs_body(rules: &[CompiledRule], account: &str, folder: &str) -> bool {
     rules.iter().any(|r| {
         r.rule.enabled && r.applies_to_account(account) && r.folder() == folder && r.needs_body()
@@ -95,7 +87,12 @@ pub fn evaluate(rules: &[CompiledRule], msg: &Message, ctx: &Context) -> Plan {
     plan.notify = !deleted
         && match explicit_notify {
             Some(explicit) => explicit,
-            None => ctx.notify_default && !plan.moves_or_deletes(),
+            None => {
+                ctx.notify_default
+                    && !plan.actions.iter().any(|a| {
+                        matches!(a.action, Action::Delete | Action::Move(_) | Action::Archive)
+                    })
+            }
         };
     plan
 }
@@ -164,8 +161,8 @@ fn matches(c: &Conditions, msg: &Message, ctx: &Context) -> bool {
         {
             return false;
         }
-        if let Some(glob) = &c.alias
-            && !recipients.iter().any(|r| glob.is_match(r))
+        if let Some(alias) = &c.alias
+            && !recipients.iter().any(|r| alias.is_match(r))
         {
             return false;
         }

@@ -403,8 +403,13 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     window.on_toggle_help(move || {
         act(UiAction::ToggleHelp);
     });
-    window.on_row_clicked(move |i| {
-        act(UiAction::SelectRow(usize::try_from(i).unwrap_or_default()));
+    window.on_row_clicked(move |i, extend, toggle| {
+        let row = usize::try_from(i).unwrap_or_default();
+        act(match (extend, toggle) {
+            (true, _) => UiAction::ExtendSelection(row),
+            (false, true) => UiAction::ToggleRowMark(row),
+            (false, false) => UiAction::SelectRow(row),
+        });
     });
     window.on_row_menu(move |i, group, j| {
         on(Box::new(move |app| {
@@ -631,6 +636,7 @@ fn menu_item(action: MenuAction) -> menu::Item {
         MenuAction::ReadOrUnread => Item::ReadOrUnread,
         MenuAction::SaveEml => Item::SaveEml,
         MenuAction::Search => Item::Search,
+        MenuAction::SelectAll => Item::SelectAll,
         MenuAction::SyncNow => Item::SyncNow,
         MenuAction::TextOrHtml => Item::TextOrHtml,
         MenuAction::ThemeDark => Item::Theme(config::Theme::Dark),

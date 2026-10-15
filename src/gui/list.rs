@@ -420,18 +420,8 @@ where
     }
 }
 
-/// Unread dot, flag, sender (recipient in Sent and Drafts), subject, thread count and date, on one line.
-pub fn row_text<Tz: TimeZone>(
-    row: &Row,
-    account: Option<&str>,
-    recipient: bool,
-    in_search: bool,
-    now: &DateTime<Tz>,
-) -> String
-where
-    Tz::Offset: std::fmt::Display,
-{
-    let who = display_name(if recipient { &row.to } else { &row.from });
+/// Unread dot, flag, then the row's `columns` on one line.
+pub fn row_text(row: &Row, columns: &Columns) -> String {
     let mut text = String::from(if row.unread { "• " } else { "   " });
     if row.flagged {
         text.push_str("⚑ ");
@@ -439,18 +429,14 @@ where
     if row.member {
         text.push_str("      ");
     }
-    if let Some(account) = account {
+    if let Some(account) = &columns.account {
         text.push_str(&format!("{account} · "));
     }
-    if in_search {
-        text.push_str(&format!("[{}] ", folders::label(&row.folder)));
-    }
-    text.push_str(&format!("{who} — {}", row.subject));
-    if row.count > 1 {
-        text.push_str(&format!(" ({})", row.count));
-    }
-    text.push_str(&format!("  ·  {}", list_date(row.date, now)));
-    clean(&text, false)
+    text.push_str(&format!(
+        "{} — {}  ·  {}",
+        columns.who, columns.subject, columns.date
+    ));
+    text
 }
 
 /// The scroll offset that shows the cursor row, moving the view as little as possible.
@@ -629,9 +615,10 @@ mod tests {
     fn the_account_tag_comes_before_the_sender() {
         let now = Utc.with_ymd_and_hms(2026, 10, 6, 12, 0, 0).unwrap();
         let row = Row::from_message(1, &message("INBOX", 1, "hello"));
-        let text = row_text(&row, Some("work"), false, false, &now);
+        let text = row_text(&row, &columns(&row, Some("work"), false, false, &now));
         assert!(text.starts_with("   work · Sender 1 — hello"), "{text}");
-        assert!(row_text(&row, None, false, false, &now).starts_with("   Sender 1 — hello"));
+        let text = row_text(&row, &columns(&row, None, false, false, &now));
+        assert!(text.starts_with("   Sender 1 — hello"), "{text}");
         assert_eq!(
             columns(&row, Some("work"), false, false, &now)
                 .account
@@ -681,7 +668,7 @@ mod tests {
             unread: true,
         };
         let now = Utc.with_ymd_and_hms(2026, 10, 6, 12, 0, 0).unwrap();
-        let text = row_text(&row, None, false, false, &now);
+        let text = row_text(&row, &columns(&row, None, false, false, &now));
         assert!(!text.chars().any(char::is_control), "{text:?}");
         assert!(
             text.contains("[31mred alert") && text.starts_with("• ⚑ "),
@@ -1136,7 +1123,11 @@ mod tests {
             found,
             [("Archive".to_string(), 3), ("INBOX".to_string(), 1)]
         );
-        assert_eq!(open.labels_containing("[Archive] Sender 3").len(), 1);
+        assert_eq!(
+            open.labels_containing("Sender 3 — [Archive] invoice april")
+                .len(),
+            1
+        );
         assert_eq!(open.labels_containing("2 results").len(), 1);
         open.press("enter e");
         let search = Command::SearchServer {
@@ -1223,6 +1214,40 @@ mod tests {
         let older = open.labels_containing("older").remove(0);
         open.click(&older);
         assert_eq!(open.with(|live| live.app.list.cursor), 1);
+    }
+
+    #[test]
+    fn shift_click_and_command_click_in_the_window_mark_rows() {
+        use slint::platform::{Key, WindowEvent};
+        use slint::{ComponentHandle, Model};
+        let fx = Fixture::new(&["work"]);
+        for uid in [1, 2, 3, 4] {
+            fx.add("work", message("INBOX", uid, &format!("hello {uid}")));
+        }
+        let (open, _wires) = fx.window();
+        let label = |i: usize| {
+            open.window()
+                .get_rows()
+                .row_data(i)
+                .unwrap()
+                .name
+                .to_string()
+        };
+        let held = |key: Key, tap: &str| {
+            let window = open.window();
+            window
+                .window()
+                .dispatch_event(WindowEvent::KeyPressed { text: key.into() });
+            open.tap(tap);
+            window
+                .window()
+                .dispatch_event(WindowEvent::KeyReleased { text: key.into() });
+        };
+        held(Key::Shift, &label(2));
+        assert_eq!(open.with(|live| live.app.list.marked.len()), 3);
+        held(Key::Control, &label(3));
+        assert_eq!(open.with(|live| live.app.list.marked.len()), 4);
+        assert_eq!(open.with(|live| live.app.list.cursor), 2);
     }
 
     #[test]

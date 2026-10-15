@@ -825,7 +825,7 @@ async fn trash_list_names_backups_and_restore_takes_the_name() {
 /// A fake server holding one message in INBOX and an Archive folder.
 fn connector_with_mail() -> Connector {
     std::sync::Arc::new(|_| {
-        let mut ops = RecordingOps::new()
+        let mut ops = RecordingOps::default()
             .with_folder("INBOX", None)
             .with_folder("Archive", Some("Archive"));
         ops.add_mail(

@@ -29,7 +29,9 @@ export struct RowData {
 
 component ListRow inherits Rectangle {
     in property <RowData> data;
-    callback clicked();
+    // `extend` with Shift held, `toggle` with Cmd on macOS or Ctrl elsewhere.
+    callback clicked(/* extend */ bool, /* toggle */ bool);
+    property <KeyboardModifiers> held;
 
     property <color> ink: data.selected ? Theme.pane.on-accent : Theme.pane.text;
     property <length> indent: data.member ? Theme.inset : 0px;
@@ -73,7 +75,7 @@ component ListRow inherits Rectangle {
     accessible-role: list-item;
     accessible-label: data.name;
     accessible-item-selected: data.selected;
-    accessible-action-default => { root.clicked(); }
+    accessible-action-default => { root.clicked(false, false); }
 
     HoverFill {
         visible: !data.selected && !data.marked;
@@ -83,7 +85,12 @@ component ListRow inherits Rectangle {
     }
 
     touch := TouchArea {
-        clicked => { root.clicked(); }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                root.held = event.modifiers;
+            }
+        }
+        clicked => { root.clicked(root.held.shift, root.held.control); }
     }
 
     if !data.selected && !data.marked && !touch.has-hover: Rectangle {
@@ -175,7 +182,7 @@ export component ListPane inherits Rectangle {
     in property <int> marked-count;
     in-out property <length> list-y;
     out property <length> list-height: list.visible-height;
-    callback row-clicked(int);
+    callback row-clicked(int, bool, bool);
     callback filter-clicked(int);
     // The payload a dragged row carries.
     pure callback drag-data(int) -> data-transfer;
@@ -260,7 +267,7 @@ export component ListPane inherits Rectangle {
                     ListRow {
                         opacity: (drag.dragging ? 0.4 : 1) * self.appear;
                         data: row;
-                        clicked => { root.row-clicked(i); }
+                        clicked(extend, toggle) => { root.row-clicked(i, extend, toggle); }
                     }
                 }
                 ContextMenuArea {
