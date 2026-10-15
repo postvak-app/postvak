@@ -126,6 +126,25 @@ fn append_fetch_and_flags_round_trip() {
 }
 
 #[test]
+fn search_text_needs_every_word_in_headers_or_body() {
+    let Some(host) = host() else { return };
+    let mut ops = connect(&account(&host, PORT, "search-text"));
+    for subject in ["apple pie", "apple tart", "café crème"] {
+        ops.append("INBOX", &mail(subject), &[]).unwrap();
+    }
+    ops.select("INBOX").unwrap();
+    let uids: Vec<u32> = all_envelopes(&mut ops).iter().map(|e| e.uid).collect();
+    let search = |ops: &mut ImapOps, words: &[&str]| {
+        let words: Vec<String> = words.iter().map(|w| w.to_string()).collect();
+        ops.search_text(&words).unwrap()
+    };
+    assert_eq!(search(&mut ops, &["APPLE"]), uids[..2]);
+    assert_eq!(search(&mut ops, &["apple", "Body", "tart"]), [uids[1]]);
+    assert_eq!(search(&mut ops, &["crème"]), [uids[2]]);
+    assert_eq!(search(&mut ops, &["say \"hi\""]), Vec::<u32>::new());
+}
+
+#[test]
 fn condstore_fetches_only_flags_changed_since_a_modseq() {
     let Some(host) = host() else { return };
     let mut ops = connect(&account(&host, PORT, "condstore"));

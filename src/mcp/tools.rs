@@ -171,6 +171,9 @@ struct SearchArgs {
     /// At most 500
     #[serde(default = "fifty")]
     limit: u32,
+    /// Ask the mail server too, which searches bodies not downloaded yet; needs the read:bodies scope
+    #[serde(default)]
+    server: bool,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -463,6 +466,7 @@ fn dispatch(
                 a.folder.as_deref(),
                 a.limit,
                 bodies,
+                a.server,
             )?)
         }
         "show" => {

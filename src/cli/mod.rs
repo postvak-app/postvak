@@ -119,6 +119,9 @@ enum Command {
         /// Fetch and index missing bodies first; slow on a large folder
         #[arg(long)]
         bodies: bool,
+        /// Ask the server too, which searches bodies not downloaded yet; each folder costs a round trip
+        #[arg(long)]
+        server: bool,
         #[arg(long, default_value_t = 50)]
         limit: u32,
         #[arg(long)]
@@ -423,6 +426,7 @@ pub fn run() -> Result<()> {
             account,
             folder,
             bodies,
+            server,
             limit,
             json,
         } => {
@@ -442,7 +446,20 @@ pub fn run() -> Result<()> {
                         );
                     }
                 }
-                for m in store.search(&query, folder.as_deref(), limit)? {
+                let mut found = store.search(&query, folder.as_deref(), limit)?;
+                if server {
+                    match daemon.search_server(&acc.name, folder.as_deref(), &query) {
+                        Ok(hits) => {
+                            found = postvak::actions::with_server_hits(&store, found, &hits, limit)?
+                        }
+                        Err(e) => eprintln!(
+                            "{}: {}; showing local results only",
+                            acc.name,
+                            clean(&format!("{e:#}"), false)
+                        ),
+                    }
+                }
+                for m in found {
                     if json {
                         println!("{}", postvak::output::with_account(&acc.name, &m)?);
                     } else {

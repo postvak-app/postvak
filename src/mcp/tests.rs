@@ -901,6 +901,32 @@ async fn archive_goes_through_the_daemon_attributed_to_the_client() {
 }
 
 #[tokio::test]
+async fn a_server_search_finds_a_body_not_downloaded_yet() {
+    let fx = fixture_with_daemon(&["work"], connector_with_mail());
+    let client = connect(&fx, "read, read:bodies", &[]).await;
+    rows(&call(&client, "sync", json!({})).await);
+    assert!(rows(&call(&client, "search", json!({ "query": "body" })).await).is_empty());
+    let found = rows(
+        &call(
+            &client,
+            "search",
+            json!({ "query": "body", "server": true }),
+        )
+        .await,
+    );
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0]["uid"], 1);
+}
+
+#[tokio::test]
+async fn a_server_search_needs_the_bodies_scope() {
+    let fx = fixture(&["work"]);
+    let client = connect(&fx, "read", &[]).await;
+    let text = error_text(&call(&client, "search", json!({ "query": "x", "server": true })).await);
+    assert!(text.contains("read:bodies"), "{text}");
+}
+
+#[tokio::test]
 async fn show_fetches_a_missing_body_through_the_daemon() {
     let fx = fixture_with_daemon(&["work"], connector_with_mail());
     let client = connect(&fx, "read, read:bodies", &[]).await;

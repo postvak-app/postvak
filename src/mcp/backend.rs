@@ -151,6 +151,7 @@ impl Backend {
     }
 
     /// `bodies` searches stored body text too; without it the query matches subject and addresses as plain words.
+    /// `server` asks the mail server as well, which searches bodies, so it needs `bodies`.
     pub fn search(
         &self,
         query: &str,
@@ -158,16 +159,24 @@ impl Backend {
         folder: Option<&str>,
         limit: u32,
         bodies: bool,
+        server: bool,
     ) -> Result<Vec<Value>> {
+        if server && !bodies {
+            bail!("a server search matches message bodies, which needs the read:bodies scope");
+        }
         let limit = limit.min(MAX_LIMIT);
         let mut rows = Vec::new();
         for acc in self.select(account)? {
             let store = self.store(acc)?;
-            let found = if bodies {
+            let mut found = if bodies {
                 store.search(query, folder, limit)?
             } else {
                 store.search_headers(query, folder, limit)?
             };
+            if server {
+                let hits = self.daemon.search_server(&acc.name, folder, query)?;
+                found = actions::with_server_hits(&store, found, &hits, limit)?;
+            }
             for m in &found {
                 rows.push(message_row(&acc.name, m)?);
             }

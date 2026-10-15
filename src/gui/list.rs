@@ -9,7 +9,7 @@ use crate::rules::Action;
 use crate::store::{Message, MessageSummary, ThreadSummary};
 
 use super::folders;
-use super::state::{UiAction, View};
+use super::state::{App, UiAction, View};
 use super::theme::LIST_ROW;
 
 /// Threads loaded per folder. ponytail: older mail is reachable through search; page by date if that is not enough.
@@ -91,6 +91,12 @@ pub(crate) struct ListState {
     pub follow_cursor: bool,
     pub hits: Vec<Row>,
     pub marked: HashSet<(usize, RowKey)>,
+    /// What the servers found for the current query, by account; the rows come from the store.
+    pub server_hits: Vec<(usize, RowKey)>,
+    /// How many accounts' servers were asked for the current query and have not answered.
+    pub server_searching: usize,
+    /// Whether the servers were asked for the current query.
+    pub server_asked: bool,
     pub rows: Vec<Row>,
     /// Each thread with the account it is in.
     pub threads: Vec<(usize, ThreadSummary)>,
@@ -201,11 +207,16 @@ pub(crate) fn search_hint(view: &View) -> &'static str {
 }
 
 /// The line under the search field.
-pub(crate) fn results(count: usize) -> String {
-    format!(
-        "{} results · mail whose body is not downloaded matches on sender, recipients and subject only",
-        super::numbers::count(count as u64)
-    )
+pub(crate) fn results(app: &App) -> String {
+    let count = super::numbers::count(app.list.rows.len() as u64);
+    let note = if app.list.server_searching > 0 {
+        "searching the server…"
+    } else if app.list.server_asked {
+        "with what the server found"
+    } else {
+        "Enter also searches the server, for mail whose body is not downloaded"
+    };
+    format!("{count} results · {note}")
 }
 
 /// What an empty list says instead of rows; nothing before a search query is typed.
@@ -1077,9 +1088,16 @@ mod tests {
         assert_eq!(open.labels_containing("[Archive] Sender 3").len(), 1);
         assert_eq!(open.labels_containing("2 results").len(), 1);
         open.press("enter e");
+        let search = Command::SearchServer {
+            folder: None,
+            query: "invoice".into(),
+        };
         assert_eq!(
             wires.sent(),
-            [apply("Archive", &[3], Action::Move("INBOX".into()))]
+            [
+                ("work".to_string(), search),
+                apply("Archive", &[3], Action::Move("INBOX".into()))
+            ]
         );
         open.press("escape");
         assert!(open.with(|live| live.app.search.is_none()));
@@ -1110,9 +1128,16 @@ mod tests {
         open.press("/ invoice enter m");
         assert_eq!(open.find("Move to").len(), 1);
         open.press("enter");
+        let search = Command::SearchServer {
+            folder: None,
+            query: "invoice".into(),
+        };
         assert_eq!(
             wires.sent(),
-            [apply("Archive", &[3], Action::Move("INBOX".into()))]
+            [
+                ("work".to_string(), search),
+                apply("Archive", &[3], Action::Move("INBOX".into()))
+            ]
         );
         assert!(open.find("Move to").is_empty());
     }
