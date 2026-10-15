@@ -2,7 +2,7 @@
 // texts; this file only places them.
 import { LineEdit, ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Heading, HoverFill } from "common.slint";
+import { Heading, HoverFill, TextButton } from "common.slint";
 
 export struct RowData {
     unread: bool,
@@ -164,6 +164,8 @@ component ListRow inherits Rectangle {
 export component ListPane inherits Rectangle {
     in property <string> title;
     in property <string> counts;
+    // The filter switch's chosen index: All, Unread, Flagged, Attachments.
+    in property <int> filter;
     in property <bool> searching;
     in property <string> search-hint;
     in property <string> results;
@@ -174,6 +176,7 @@ export component ListPane inherits Rectangle {
     in-out property <length> list-y;
     out property <length> list-height: list.visible-height;
     callback row-clicked(int);
+    callback filter-clicked(int);
     // The payload a dragged row carries.
     pure callback drag-data(int) -> data-transfer;
     // The pill beside the pointer: the rows that move, the row's subject, its fill and text colours.
@@ -201,8 +204,21 @@ export component ListPane inherits Rectangle {
                 text: root.counts;
                 color: Theme.pane.muted;
                 vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
             }
-            Rectangle { horizontal-stretch: 1; }
+            HorizontalLayout {
+                spacing: Theme.pad / 2;
+                for label[i] in ["All", "Unread", "Flagged", "Attachments"]: VerticalLayout {
+                    alignment: center;
+                    TextButton {
+                        text: label;
+                        palette: Theme.pane;
+                        selected: root.filter == i;
+                        clicked => { root.filter-clicked(i); }
+                    }
+                }
+            }
         }
 
         if root.searching: VerticalLayout {

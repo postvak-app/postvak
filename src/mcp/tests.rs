@@ -681,7 +681,7 @@ async fn tools_list_per_scope_set_is_exact_and_alphabetical() {
         ),
         (
             "mail:modify",
-            &["archive", "delete", "mark", "move", "trash_restore"],
+            &["archive", "delete", "junk", "mark", "move", "trash_restore"],
         ),
     ];
     for (scopes, expected) in cases {
@@ -712,6 +712,7 @@ async fn annotations_mark_reads_and_destructive_tools() {
         let destructive = ["delete", "rules_approve", "rules_set_enabled"].contains(&name);
         let changes = [
             "archive",
+            "junk",
             "mark",
             "move",
             "rules_propose",
@@ -924,6 +925,25 @@ async fn a_server_search_needs_the_bodies_scope() {
     let client = connect(&fx, "read", &[]).await;
     let text = error_text(&call(&client, "search", json!({ "query": "x", "server": true })).await);
     assert!(text.contains("read:bodies"), "{text}");
+}
+
+#[tokio::test]
+async fn junk_with_not_goes_through_the_daemon() {
+    let fx = fixture_with_daemon(&["work"], connector_with_mail());
+    let client = connect(&fx, "mail:modify", &[]).await;
+    call(&client, "sync", json!({})).await;
+    let report = call(&client, "junk", json!({ "uids": [1], "not": true })).await;
+    let report = report.structured_content.unwrap();
+    assert_eq!(report["done"], 1, "{report}");
+    assert_eq!(fx.store("work").log(1).unwrap()[0].action, "not_junk");
+    assert!(
+        fx.store("work")
+            .message("INBOX", 1)
+            .unwrap()
+            .unwrap()
+            .flags
+            .contains("$NotJunk")
+    );
 }
 
 #[tokio::test]

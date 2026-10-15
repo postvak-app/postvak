@@ -178,6 +178,12 @@ pub enum Action {
     /// A user delete: to the Trash folder, or deleted with a backup when there is none or the message is already in it.
     #[serde(skip)]
     Trash,
+    /// A user report: tagged $Junk, which trains server spam filters, and moved to the Junk folder.
+    #[serde(skip)]
+    Junk,
+    /// Undoes a wrong `Junk`: tagged $NotJunk and moved to INBOX.
+    #[serde(skip)]
+    NotJunk,
     /// Move to this folder, creating it if needed
     #[serde(rename = "move")]
     Move(String),
@@ -206,6 +212,8 @@ impl Action {
             Action::MarkUnread => "mark_unread".into(),
             Action::Unflag => "unflag".into(),
             Action::Trash => "trash".into(),
+            Action::Junk => "junk".into(),
+            Action::NotJunk => "not_junk".into(),
             Action::Move(folder) => format!("move:{folder}"),
             Action::Tag(keyword) => format!("tag:{keyword}"),
         }

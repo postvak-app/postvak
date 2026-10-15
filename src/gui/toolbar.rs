@@ -16,8 +16,9 @@ pub(crate) struct Button {
 /// The hover hint of the search button.
 pub(crate) const SEARCH_HINT: &str = "Search · /";
 
-/// The message actions, left to right. In the Archive folder the archive button moves back to the inbox.
-pub(crate) fn buttons(app: &App) -> [Button; 5] {
+/// The message actions, left to right. In the Archive folder the archive button moves back to the inbox, and in the
+/// Junk folder the junk button reports not junk.
+pub(crate) fn buttons(app: &App) -> [Button; 6] {
     let in_archive =
         matches!(&app.view, View::Folder { account, folder } if app.is_archive(*account, folder));
     let (icon, name, hint) = if in_archive {
@@ -45,6 +46,7 @@ pub(crate) fn buttons(app: &App) -> [Button; 5] {
             "Delete · #",
             UiAction::Act(Action::Trash),
         ),
+        junk_button(app),
         button(
             icons::FLAG,
             "Flag message",
@@ -58,6 +60,20 @@ pub(crate) fn buttons(app: &App) -> [Button; 5] {
             UiAction::ToggleRead,
         ),
     ]
+}
+
+fn junk_button(app: &App) -> Button {
+    let (icon, name, hint) = if app.shows_junk() {
+        (icons::INBOX, "Not junk message", "Not junk · !")
+    } else {
+        (icons::JUNK, "Junk message", "Junk · !")
+    };
+    Button {
+        icon,
+        name,
+        hint,
+        action: UiAction::Act(Action::Junk),
+    }
 }
 
 /// The actions need a row, and a closed move picker: an action would move the cursor, and the picker would then
@@ -142,6 +158,26 @@ mod tests {
         assert_eq!(
             wires.sent(),
             [apply("Archive", Action::Move("INBOX".into()))]
+        );
+    }
+
+    #[test]
+    fn the_junk_button_reports_junk_and_in_the_junk_folder_not_junk() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Spam", Some("Junk"));
+        fx.add("work", message("INBOX", 1, "hello"));
+        fx.add("work", message("Spam", 2, "offer"));
+        let (open, wires) = fx.window();
+        open.click("Junk message");
+        open.click("Spam");
+        assert!(open.find("Junk message").is_empty());
+        open.click("Not junk message");
+        assert_eq!(
+            wires.sent(),
+            [
+                apply("INBOX", Action::Junk),
+                command("work", "Spam", &[2], Action::NotJunk)
+            ]
         );
     }
 

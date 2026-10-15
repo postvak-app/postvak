@@ -9,6 +9,8 @@ use crate::rules::Action;
 use crate::store::{Message, MessageSummary, ThreadSummary};
 
 use super::folders;
+use crate::store::Filter;
+
 use super::state::{App, UiAction, View};
 use super::theme::LIST_ROW;
 
@@ -151,9 +153,12 @@ pub enum Optimistic {
 impl Optimistic {
     pub fn of(action: &Action) -> Option<Optimistic> {
         match action {
-            Action::Archive | Action::Delete | Action::Move(_) | Action::Trash => {
-                Some(Optimistic::Hidden)
-            }
+            Action::Archive
+            | Action::Delete
+            | Action::Junk
+            | Action::Move(_)
+            | Action::NotJunk
+            | Action::Trash => Some(Optimistic::Hidden),
             Action::Flag => Some(Optimistic::Flagged(true)),
             Action::MarkRead => Some(Optimistic::Seen(true)),
             Action::MarkUnread => Some(Optimistic::Seen(false)),
@@ -220,14 +225,56 @@ pub(crate) fn results(app: &App) -> String {
 }
 
 /// What an empty list says instead of rows; nothing before a search query is typed.
-pub(crate) fn empty(view: &View, search: Option<&str>) -> &'static str {
+pub(crate) fn empty(view: &View, search: Option<&str>, filter: Filter) -> String {
+    let kind = FILTERS
+        .iter()
+        .find(|(_, f)| *f == filter && filter != Filter::default())
+        .map_or(String::new(), |(label, _)| {
+            format!("{} ", label.to_lowercase())
+        });
     match search {
-        Some("") => "",
-        Some(_) => "No mail matches.",
-        None if *view == View::AllInboxes => "No mail in any inbox.",
-        None => "No mail in this folder.",
+        Some("") => String::new(),
+        Some(_) => "No mail matches.".into(),
+        None if *view == View::AllInboxes => format!("No {kind}mail in any inbox."),
+        None => format!("No {kind}mail in this folder."),
     }
 }
+
+/// The list's filter switch, left to right.
+pub(crate) const FILTERS: [(&str, Filter); 4] = [
+    (
+        "All",
+        Filter {
+            unread: false,
+            flagged: false,
+            attachments: false,
+        },
+    ),
+    (
+        "Unread",
+        Filter {
+            unread: true,
+            flagged: false,
+            attachments: false,
+        },
+    ),
+    (
+        "Flagged",
+        Filter {
+            unread: false,
+            flagged: true,
+            attachments: false,
+        },
+    ),
+    (
+        "Attachments",
+        Filter {
+            unread: false,
+            flagged: false,
+            attachments: true,
+        },
+    ),
+];
 
 /// The text beside the pointer while rows are dragged: how many marked rows move, else the row's subject, shortened.
 pub(crate) fn drag_label(marked: usize, subject: &str) -> String {
@@ -243,7 +290,7 @@ pub(crate) fn drag_label(marked: usize, subject: &str) -> String {
 
 /// The right-click menu of a message row, in three groups; its items act like the toolbar, on the marked rows or this
 /// one.
-pub(crate) fn menu(row: &Row) -> [Vec<(&'static str, UiAction)>; 3] {
+pub(crate) fn menu(row: &Row, in_junk: bool) -> [Vec<(&'static str, UiAction)>; 3] {
     let (read, read_label) = if row.unread {
         (Action::MarkRead, "Mark as read")
     } else {
@@ -263,6 +310,10 @@ pub(crate) fn menu(row: &Row) -> [Vec<(&'static str, UiAction)>; 3] {
             ("Archive", UiAction::Act(Action::Archive)),
             ("Move to…", UiAction::OpenMovePicker),
             ("Delete", UiAction::Act(Action::Trash)),
+            (
+                if in_junk { "Not junk" } else { "Junk" },
+                UiAction::Act(Action::Junk),
+            ),
         ],
         vec![
             ("View source", UiAction::OpenSource),
@@ -870,7 +921,7 @@ mod tests {
         fx.add("work", message("INBOX", 1, "older"));
         fx.add("work", message("INBOX", 2, "newer"));
         let (open, wires) = fx.window();
-        let archive = menu(&open.with(|live| live.app.list.rows[1].clone()))[1]
+        let archive = menu(&open.with(|live| live.app.list.rows[1].clone()), false)[1]
             .iter()
             .position(|(title, _)| *title == "Archive")
             .unwrap();
@@ -1172,5 +1223,25 @@ mod tests {
         let older = open.labels_containing("older").remove(0);
         open.click(&older);
         assert_eq!(open.with(|live| live.app.list.cursor), 1);
+    }
+
+    #[test]
+    fn the_filter_switch_narrows_the_list_and_all_shows_every_row_again() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "read"));
+        fx.add(
+            "work",
+            crate::gui::test_support::unread("INBOX", 2, "unread"),
+        );
+        let (open, _wires) = fx.window();
+        open.click("Unread");
+        assert_eq!(
+            open.with(|live| live.app.list.rows.iter().map(|r| r.uid).collect::<Vec<_>>()),
+            [2]
+        );
+        open.click("Flagged");
+        assert_eq!(open.find("No flagged mail in this folder.").len(), 1);
+        open.click("All");
+        assert_eq!(open.with(|live| live.app.list.rows.len()), 2);
     }
 }
