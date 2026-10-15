@@ -242,13 +242,21 @@ impl Open {
 
     /// Clicks the middle of the one element labelled `label` with the mouse, for elements without an accessible action.
     pub fn tap(&self, label: &str) {
-        use slint::platform::{PointerEventButton, WindowEvent};
+        self.press_on(label, slint::platform::PointerEventButton::Left);
+    }
+
+    /// Right-clicks the middle of the one element labelled `label`.
+    pub fn right_tap(&self, label: &str) {
+        self.press_on(label, slint::platform::PointerEventButton::Right);
+    }
+
+    fn press_on(&self, label: &str, button: slint::platform::PointerEventButton) {
+        use slint::platform::WindowEvent;
         let element = self.get(label);
         let (at, size) = (element.absolute_position(), element.size());
         let position =
             slint::LogicalPosition::new(at.x + size.width / 2.0, at.y + size.height / 2.0);
         let window = self.window();
-        let button = PointerEventButton::Left;
         window
             .window()
             .dispatch_event(WindowEvent::PointerMoved { position });

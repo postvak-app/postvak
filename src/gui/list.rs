@@ -823,6 +823,19 @@ mod tests {
     }
 
     #[test]
+    fn right_clicking_a_row_opens_its_menu() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "hello"));
+        let (open, _wires) = fx.window();
+        assert!(open.find("Archive").is_empty());
+        let row = slint::Model::row_data(&open.window().get_rows(), 0)
+            .unwrap()
+            .name;
+        open.right_tap(&row);
+        assert!(!open.find("Archive").is_empty());
+    }
+
+    #[test]
     fn a_menu_on_a_marked_row_acts_on_every_marked_row() {
         let fx = Fixture::new(&["work"]);
         for uid in 1..=3 {

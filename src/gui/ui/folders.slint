@@ -156,27 +156,30 @@ export component FolderPane inherits Rectangle {
                             wrap: word-wrap;
                         }
                     }
-                    if item.kind == FolderKind.folder: ContextMenuArea {
+                    // The menu sits above the row: a TouchArea takes every button's press before its parent sees it.
+                    if item.kind == FolderKind.folder: Rectangle {
                         height: item.heading ? Theme.control : Theme.row;
-                        Menu {
-                            for choice[j] in item.menu-head: MenuItem {
-                                title: choice.title;
-                                enabled: choice.enabled;
-                                activated => { root.menu(i, 0, j); }
-                            }
-                            MenuSeparator { }
-                            for choice[j] in item.menu-tail: MenuItem {
-                                title: choice.title;
-                                enabled: choice.enabled;
-                                activated => { root.menu(i, 1, j); }
-                            }
-                        }
                         FolderRow {
                             y: (parent.height - self.height) / 2;
                             width: parent.width;
                             item: item;
                             clicked => { root.clicked(i); }
                             caret-clicked => { root.caret-clicked(i); }
+                        }
+                        ContextMenuArea {
+                            Menu {
+                                for choice[j] in item.menu-head: MenuItem {
+                                    title: choice.title;
+                                    enabled: choice.enabled;
+                                    activated => { root.menu(i, 0, j); }
+                                }
+                                MenuSeparator { }
+                                for choice[j] in item.menu-tail: MenuItem {
+                                    title: choice.title;
+                                    enabled: choice.enabled;
+                                    activated => { root.menu(i, 1, j); }
+                                }
+                            }
                         }
                     }
                 }

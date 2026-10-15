@@ -430,6 +430,16 @@ mod tests {
     }
 
     #[test]
+    fn right_clicking_a_folder_opens_its_menu() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", unread("INBOX", 1, "hello"));
+        let (open, _wires) = fx.window();
+        assert!(open.find("Mark all as read").is_empty());
+        open.right_tap("Inbox (1)");
+        assert!(!open.find("Mark all as read").is_empty());
+    }
+
+    #[test]
     fn a_folder_menu_marks_all_its_unread_mail_read() {
         let fx = Fixture::new(&["work"]);
         for uid in 1..=3 {
