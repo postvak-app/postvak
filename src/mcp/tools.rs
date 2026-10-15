@@ -1,4 +1,5 @@
 //! The MCP tools: definitions, scope filtering, and results cleaned for an agent.
+use super::backend::Filter;
 use std::collections::BTreeSet;
 use std::sync::{Arc, LazyLock};
 
@@ -135,6 +136,15 @@ struct ListArgs {
     /// Group by conversation, the most recently active thread first, each row with its `depth`
     #[serde(default)]
     threads: bool,
+    /// Only unread messages; with `threads`, threads with an unread message
+    #[serde(default)]
+    unread: bool,
+    /// Only flagged messages; with `threads`, threads with a flagged message
+    #[serde(default)]
+    flagged: bool,
+    /// Only messages with attachments, guessed from the headers; with `threads`, threads with one
+    #[serde(default)]
+    attachments: bool,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -386,7 +396,12 @@ fn dispatch(
         }
         "list" => {
             let a: ListArgs = args(arguments)?;
-            rows(backend.list(a.account.as_deref(), &a.folder, a.limit, a.threads)?)
+            let filter = Filter {
+                unread: a.unread,
+                flagged: a.flagged,
+                attachments: a.attachments,
+            };
+            rows(backend.list(a.account.as_deref(), &a.folder, a.limit, a.threads, filter)?)
         }
         "log" => {
             let a: LogArgs = args(arguments)?;

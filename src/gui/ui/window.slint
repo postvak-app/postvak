@@ -81,6 +81,7 @@ export component MailWindow inherits Window {
 
     in property <string> list-title;
     in property <string> list-counts;
+    in property <int> list-filter;
     in property <bool> searching;
     in property <string> search-hint-text;
     in property <string> results;
@@ -142,6 +143,7 @@ export component MailWindow inherits Window {
     callback open-update();
     callback row-clicked(int);
     callback row-menu(int, int, int);
+    callback list-filter-clicked(int);
     callback search-edited(string);
     callback search-accepted();
     callback search-focus(bool);
@@ -410,6 +412,8 @@ export component MailWindow inherits Window {
                 list := ListPane {
                     title: root.list-title;
                     counts: root.list-counts;
+                    filter: root.list-filter;
+                    filter-clicked(i) => { root.list-filter-clicked(i); }
                     searching: root.searching;
                     search-hint: root.search-hint-text;
                     results: root.results;
