@@ -182,6 +182,19 @@ impl Backend {
         Ok((message_row(&acc.name, &msg)?, message::body_text(&raw)))
     }
 
+    /// Unsubscribes by one click where the message allows it; otherwise the row names the page or address to open.
+    pub fn unsubscribe(
+        &self,
+        account: Option<&str>,
+        folder: &str,
+        uid: u32,
+        dry_run: bool,
+    ) -> Result<Value> {
+        let (acc, _store, msg) = self.message(account, folder, uid)?;
+        let report = crate::unsubscribe::unsubscribe(&msg.headers, dry_run)?;
+        Ok(output::with_account(&acc.name, &report)?)
+    }
+
     pub fn attachments(&self, account: Option<&str>, folder: &str, uid: u32) -> Result<Vec<Value>> {
         let (acc, store, msg) = self.message(account, folder, uid)?;
         let raw = self.daemon.raw_message(&acc.name, &store, &msg)?;

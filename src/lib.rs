@@ -10,6 +10,7 @@ pub mod mail_ops;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 pub mod message;
+pub mod net;
 pub mod notify;
 pub mod output;
 pub mod paths;
@@ -18,5 +19,6 @@ pub mod store;
 pub mod sync;
 pub mod time;
 pub mod trash;
+pub mod unsubscribe;
 #[cfg(feature = "gui")]
 pub mod update;

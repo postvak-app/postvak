@@ -34,6 +34,8 @@ pub(crate) struct Pane {
     /// "report.txt (2 KB)" per attachment.
     pub attachments: Vec<String>,
     pub saved: Option<String>,
+    /// The message has a List-Unsubscribe header: the Unsubscribe button shows.
+    pub unsubscribe: bool,
     /// The links in the text that open, in order, once each.
     pub links: Vec<String>,
 }
@@ -99,6 +101,7 @@ pub(crate) fn pane(app: &App) -> Pane {
         text_note: body.text_note,
         attachments,
         saved: body.saved.as_deref().map(|s| clean(s, false)),
+        unsubscribe: crate::unsubscribe::method(&message.headers).is_some(),
         links: body.links.clone(),
     }
 }
@@ -815,6 +818,62 @@ mod tests {
         let saved = fx.paths.cache_dir.join("downloads").join("Re- lunch.eml");
         assert_eq!(std::fs::read(&saved).unwrap(), WITH_ATTACHMENT_RAW);
         assert_eq!(open.labels_containing("Saved to").len(), 1);
+    }
+
+    fn list_mail(fx: &Fixture, list_headers: &str) {
+        let mut news = message("INBOX", 1, "news");
+        news.headers = format!("Subject: news\r\n{list_headers}\r\n\r\n").into_bytes();
+        fx.add("work", news);
+    }
+
+    /// Ticks the window until `label` shows, for an answer from another thread.
+    fn wait_for(open: &crate::gui::test_support::Open, label: &str) -> bool {
+        for _ in 0..200 {
+            open.tick();
+            if !open.labels_containing(label).is_empty() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        false
+    }
+
+    #[test]
+    fn unsubscribe_posts_one_click_and_says_whether_the_sender_accepted() {
+        let fx = Fixture::new(&["work"]);
+        let post = "List-Unsubscribe-Post: List-Unsubscribe=One-Click";
+        list_mail(
+            &fx,
+            &format!("List-Unsubscribe: <https://list.example/u>\r\n{post}"),
+        );
+        let (open, _wires) = fx.window();
+        open.click("Unsubscribe");
+        assert!(wait_for(&open, "Unsubscribed"));
+        assert!(crate::gui::test_support::launched().is_empty());
+        let fx = Fixture::new(&["work"]);
+        list_mail(
+            &fx,
+            &format!("List-Unsubscribe: <https://list.example/refuse>\r\n{post}"),
+        );
+        let (open, _wires) = fx.window();
+        open.click("Unsubscribe");
+        assert!(wait_for(&open, "Could not unsubscribe"));
+    }
+
+    #[test]
+    fn without_one_click_unsubscribe_opens_the_page_and_without_a_header_it_is_not_offered() {
+        let fx = Fixture::new(&["work"]);
+        list_mail(&fx, "List-Unsubscribe: <https://list.example/page>");
+        let (open, _wires) = fx.window();
+        open.click("Unsubscribe");
+        assert_eq!(
+            crate::gui::test_support::launched(),
+            ["https://list.example/page"]
+        );
+        let fx = Fixture::new(&["work"]);
+        list_mail(&fx, "X-Other: 1");
+        let (open, _wires) = fx.window();
+        assert!(open.find("Unsubscribe").is_empty());
     }
 
     #[test]
