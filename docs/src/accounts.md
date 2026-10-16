@@ -1,6 +1,6 @@
 # Accounts
 
-`postvak account add` asks for the details (including an extra CA file, if your server needs one), tests the login and writes `config.toml`. You can also edit the file by hand:
+`postvak account add` asks for the details (including an extra CA file, if your server needs one), tests the login and writes `config.toml`, keeping your comments and leaving out settings at their default. You can also edit the file by hand:
 
 | | Linux | macOS |
 |---|---|---|
