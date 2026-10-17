@@ -25,8 +25,8 @@ trap 'rm -rf "$work"' EXIT
 install -Dm755 "$binary" "$work/stage/postvak"
 install -Dm755 "$here/flatpak/postvak-launch" "$work/stage/postvak-launch"
 cp "$here/$app_id.desktop" "$work/stage/"
-# Software centres show the version from the metainfo's releases.
-sed "s|^</component>|  <releases>\n    <release version=\"$version\" date=\"$date\"/>\n  </releases>\n</component>|" \
+# Software centres show the version from the metainfo's releases, and the screenshots of that release.
+sed -e "s|/postvak/main/|/postvak/v$version/|" -e "s|^</component>|  <releases>\n    <release version=\"$version\" date=\"$date\"/>\n  </releases>\n</component>|" \
     "$here/$app_id.metainfo.xml" >"$work/stage/$app_id.metainfo.xml"
 cp -r "$here/../../assets/hicolor" "$work/stage/"
 cp "$here/flatpak/$app_id.yml" "$work/"

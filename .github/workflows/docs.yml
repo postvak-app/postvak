@@ -26,15 +26,13 @@ jobs:
         with:
           tool: mdbook
       - run: mdbook build docs
-      - id: pages
-        uses: actions/configure-pages@v5
       # Every deploy replaces the whole site, so each one carries the Flatpak repository as well.
       - name: Add the Flatpak repository
         env:
           GH_TOKEN: ${{ github.token }}
-          PAGES_BASE_URL: ${{ steps.pages.outputs.base_url }}
+          SITE_URL: https://postvak.pataar.nl
         run: |
-          sudo apt-get update && sudo apt-get install -y flatpak ostree
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends flatpak ostree
           packaging/linux/flatpak-repo.sh docs/book
       - uses: actions/upload-pages-artifact@v5
         with:
