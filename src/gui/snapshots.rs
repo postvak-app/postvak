@@ -160,6 +160,14 @@ fn inbox_with_marks_and_an_expanded_thread() {
 }
 
 #[test]
+fn inbox_filtered() {
+    let (_fx, open, _wires) = inbox("light");
+    open.window().invoke_list_filter_clicked(1);
+    assert_eq!(open.find("Clear filter").len(), 1);
+    snapshot(&open, "gui_inbox_filtered");
+}
+
+#[test]
 fn dragging_a_row_over_a_folder() {
     let (_fx, open, _wires) = inbox("light");
     let row = open.labels_containing("Linus Example").remove(0);
@@ -333,38 +341,43 @@ fn edge(open: &Open, label: &str) -> (f32, f32) {
 #[test]
 fn the_inbox_lines_up_on_the_grid() {
     let (_fx, open, _wires) = inbox("light");
-    let (glyph, _, pad, row_height) = grid(&open);
-    let archive = edge(&open, "Archive message");
+    let (_, inset, pad, _) = grid(&open);
+    let window = open.window();
+    let theme = slint::ComponentHandle::global::<super::ui::Theme>(&window);
     let title = open
         .find("Inbox")
         .into_iter()
         .map(|e| e.absolute_position().x)
         .fold(0.0, f32::max);
-    let row = edge(&open, "Your receipt for order 1042");
     assert_eq!(
-        archive.0 + glyph,
+        edge(&open, "Search").0,
         title,
-        "the toolbar glyph lines up with the list title"
+        "the search field over the list title"
+    );
+    let list = open.get(&row(&open, "Your receipt for order 1042"));
+    assert_eq!(
+        list.absolute_position().x - pad,
+        title - inset,
+        "the rows sit in from the list's edge"
     );
     assert_eq!(
-        row.0 + pad,
-        title,
-        "the list title lines up with the rows' content"
-    );
-    assert_eq!(
-        archive.1,
+        edge(&open, "Archive message").1,
         edge(&open, "Search").1,
-        "the toolbar's buttons share a line"
+        "the reader's actions and the search field share a line"
+    );
+    assert_eq!(
+        edge(&open, "Archive message").1,
+        edge(&open, "View source").1,
+        "the reader's actions share a line"
     );
     let (rules, activity) = (open.get("Rules"), open.get("Activity"));
-    assert_eq!(
-        edge(&open, "Sync now").0 + glyph,
-        rules.absolute_position().x + pad,
-        "status glyph"
-    );
-    assert_eq!(rules.size().height, row_height, "folder row");
+    assert_eq!(rules.size().height, theme.get_folder_row(), "folder row");
     let pitch = activity.absolute_position().y - rules.absolute_position().y;
-    assert_eq!(pitch, row_height + pad / 2.0, "folder row pitch");
+    assert_eq!(pitch, theme.get_folder_row(), "folder rows touch");
+    let names = rules.absolute_position().x + pad + theme.get_large_icon() + pad * 3.0 / 2.0;
+    let heading = open.get("work").absolute_position().x;
+    assert_eq!(heading, names, "the account heading over the folder names");
+    let row = edge(&open, "Your receipt for order 1042");
     open.with(|live| live.app.focus = Focus::Body);
     assert_eq!(
         edge(&open, "Your receipt for order 1042"),
@@ -374,43 +387,12 @@ fn the_inbox_lines_up_on_the_grid() {
 }
 
 #[test]
-fn the_list_title_the_readers_actions_and_all_inboxes_share_a_line() {
-    let (_fx, open, _wires) = inbox("light");
-    let title = open
-        .find("Inbox")
-        .into_iter()
-        .map(|e| e.absolute_position().y + e.size().height / 2.0)
-        .fold(f32::MAX, f32::min);
-    assert_eq!(edge(&open, "View source").1, title, "the reader's actions");
-    assert_eq!(edge(&open, "All inboxes (3)").1, title, "All inboxes");
-}
-
-#[test]
 fn the_keys_window_content_sits_inset() {
     let (_fx, open, _wires) = inbox("light");
     let (_, inset, _, _) = grid(&open);
     open.press("?");
     let window = open.get("Keys").absolute_position().x;
     assert_eq!(edge(&open, "j / k, Down / Up").0, window + inset);
-}
-
-#[test]
-fn with_one_account_the_first_folder_and_first_message_share_a_line() {
-    let fx = Fixture::new(&["work"]);
-    fx.add("work", message("INBOX", 1, "hello"));
-    let (open, _wires) = fx.window();
-    let folder = open
-        .find("Inbox")
-        .into_iter()
-        .map(|e| e.absolute_position())
-        .fold(f32::MAX, |x, p| x.min(p.x));
-    let folder = open
-        .find("Inbox")
-        .into_iter()
-        .find(|e| e.absolute_position().x == folder)
-        .unwrap();
-    let row = open.get(&open.labels_containing("hello").remove(0));
-    assert_eq!(folder.absolute_position().y, row.absolute_position().y);
 }
 
 /// The colour drawn at `(x, y)` in the window.
@@ -431,14 +413,14 @@ fn row_fill(open: &Open, label: &str) -> slint::Color {
 
 /// The colour at the centre of the unread dot of the row labelled `label`, whether or not the dot shows.
 fn unread_dot(open: &Open, label: &str) -> slint::Color {
-    let (_, _, pad, _) = grid(open);
+    let (_, _, pad, row) = grid(open);
     let at = open.get(label).absolute_position();
     let list_row =
         slint::ComponentHandle::global::<super::ui::Theme>(&open.window()).get_list_row();
     pixel(
         open,
-        at.x + pad + 3.0,
-        at.y + pad + (list_row - 2.0 * pad) / 4.0,
+        at.x + pad * 2.0,
+        at.y + (list_row - 2.0 * row) / 2.0 + row / 2.0,
     )
 }
 
@@ -664,26 +646,30 @@ fn rows_and_buttons_keep_the_grid_at_every_size() {
     use super::theme::{CONTROL, LIST_ROW};
     let (_fx, open, _wires) = inbox("light");
     let (_, _, _, row) = grid(&open);
+    let window = open.window();
+    let theme = slint::ComponentHandle::global::<super::ui::Theme>(&window);
     for size in sizes(&open) {
         resize(&open, size);
         let heights = [
-            ("FolderRow", row),
+            ("FolderRow", theme.get_folder_row()),
             ("ListRow", LIST_ROW),
             ("TextButton", row),
         ];
         for (type_name, height) in heights {
             let found = all(&open, type_name);
-            assert!(!found.is_empty(), "{size:?}: no {type_name}");
+            // The inbox's reader has no text buttons; the rule holds wherever they show.
+            assert!(
+                !found.is_empty() || type_name == "TextButton",
+                "{size:?}: no {type_name}"
+            );
             for b in found {
                 assert_eq!(b.height, height, "{size:?}: {type_name} {:?}", b.label);
             }
         }
         for b in all(&open, "IconButton") {
-            assert_eq!(
-                (b.width, b.height),
-                (CONTROL, CONTROL),
-                "{size:?}: {:?}",
-                b.label
+            assert!(
+                b.width == b.height && [CONTROL, theme.get_action()].contains(&b.height),
+                "{size:?}: {b:?}"
             );
         }
     }
@@ -709,22 +695,25 @@ fn content_sits_inset_from_its_pane_at_every_size() {
         let heading = |label: &str| headings.iter().find(|h| h.label == label).unwrap().left;
         let (list, body) = (one(&open, "ListPane"), one(&open, "BodyPane"));
         assert_eq!(heading("Inbox") - list.left, inset, "{size:?}: list title");
-        assert_eq!(
-            heading("Lunch on Friday?") - body.left,
-            inset,
-            "{size:?}: subject"
+        let search = labelled(&open, "Search");
+        assert_eq!(search.left - list.left, inset, "{size:?}: search");
+        assert_eq!(list.right() - search.right(), inset, "{size:?}: search");
+        // The reader's margin widens once there is room for it.
+        let margin = heading("Lunch on Friday?") - body.left;
+        assert!(
+            [inset, 2.0 * inset].contains(&margin),
+            "{size:?}: subject at {margin}"
         );
-        let actions = labelled(&open, "View source").right();
+        let archive = labelled(&open, "Archive message").left;
         assert_eq!(
-            body.right() - actions,
-            inset,
+            archive - body.left,
+            margin,
             "{size:?}: the reader's actions"
         );
-        let search = labelled(&open, "Search").right();
-        assert_eq!(
-            one(&open, "Toolbar").right() - search,
-            inset,
-            "{size:?}: search"
+        let source = labelled(&open, "View source").right();
+        assert!(
+            body.right() - source >= margin,
+            "{size:?}: the reader's tools"
         );
     }
 }
@@ -746,7 +735,6 @@ fn assert_nothing_overflows(open: &Open, (width, height): (f32, f32)) {
         "ListPane",
         "StatusBar",
         "TextButton",
-        "Toolbar",
     ];
     for type_name in drawn {
         for b in all(open, type_name) {

@@ -32,6 +32,8 @@ pub(crate) struct FolderEntry {
     /// The accessible name: the label, with the count in brackets.
     pub name: String,
     pub depth: usize,
+    /// The whole path, for a folder deeper than `DEEPEST`, whose own name may not say where it is.
+    pub path: Option<String>,
     pub selected: bool,
     /// What a click opens; None for a parent the server does not list.
     pub view: Option<View>,
@@ -49,11 +51,27 @@ impl FolderEntry {
             count,
             name,
             depth: 0,
+            path: None,
             selected: app.view == view,
             view: Some(view),
             branch: None,
             unread,
         }
+    }
+
+    /// Steps in from the left: one per level, up to `DEEPEST`.
+    pub(crate) fn indent(&self) -> usize {
+        self.depth.min(DEEPEST)
+    }
+
+    /// The chevron on a parent row: down while it is open.
+    pub(crate) fn caret(&self) -> Option<&'static str> {
+        let (expanded, ..) = self.branch.as_ref()?;
+        Some(if *expanded {
+            icons::CARET_DOWN
+        } else {
+            icons::CARET_RIGHT
+        })
     }
 
     /// The caret's accessible name on a parent row.
@@ -156,20 +174,16 @@ fn account_entries(app: &App, index: usize, account: &Account) -> Vec<Entry> {
             .and_then(|name| account.folders.iter().find(|f| &f.name == name))
             .map_or(0, |f| f.unread);
         let expanded = !is_collapsed(&row.path);
-        let icon = match (row.has_children, expanded) {
-            (false, _) => icons::FOLDER,
-            (true, true) => icons::CARET_DOWN,
-            (true, false) => icons::CARET_RIGHT,
-        };
         let label = clean(&row.label, false);
         let (count, name) = count_and_name(&label, unread);
         let view = row.folder.as_deref().map(open);
         entries.push(Entry::Folder(FolderEntry {
-            icon,
+            icon: icons::FOLDER,
             label,
             count,
             name,
             depth: row.depth,
+            path: (row.depth > DEEPEST).then(|| clean(&row.trail, false)),
             selected: view.as_ref() == Some(&app.view),
             view,
             branch: row
@@ -180,6 +194,9 @@ fn account_entries(app: &App, index: usize, account: &Account) -> Vec<Entry> {
     }
     entries
 }
+
+/// The deepest level that still steps in; folders below it line up with it, and show their path on hover.
+pub(crate) const DEEPEST: usize = 3;
 
 /// Rules, Activity and Backups, pinned at the bottom of the pane.
 pub(crate) fn pinned(app: &App) -> [FolderEntry; 3] {
@@ -219,6 +236,8 @@ pub(crate) struct TreeRow {
     pub depth: usize,
     /// Segments joined by '/', the key for collapse state.
     pub path: String,
+    /// Segments joined by " / ", as the hover text shows the path.
+    pub trail: String,
     pub has_children: bool,
 }
 
@@ -255,6 +274,7 @@ pub(crate) fn tree(folders: &[FolderRow]) -> Vec<TreeRow> {
                     label: segments[depth].clone(),
                     depth,
                     path,
+                    trail: segments[..=depth].join(" / "),
                     has_children: false,
                 }),
             }
@@ -554,6 +574,57 @@ mod tests {
         open.with(|live| live.app.focus = Focus::Folders);
         open.press("down");
         assert_eq!(open.with(|live| live.app.view.clone()), work("Zeta"));
+    }
+
+    #[test]
+    fn folders_step_in_three_levels_and_deeper_ones_show_their_path() {
+        let fx = Fixture::new(&["work"]);
+        fx.store("work")
+            .upsert_folder(&stored("A/B/C/D/Old explorations"))
+            .unwrap();
+        let (app, _wires) = fx.app();
+        let rows: Vec<(String, usize, Option<String>, Option<&str>)> = entries(&app)
+            .into_iter()
+            .filter_map(|e| match e {
+                Entry::Folder(f) => Some((f.label.clone(), f.indent(), f.path.clone(), f.caret())),
+                _ => None,
+            })
+            .collect();
+        let open = Some(icons::CARET_DOWN);
+        let row = |label: &str, indent, path: Option<&str>, caret| {
+            (label.to_string(), indent, path.map(str::to_string), caret)
+        };
+        assert_eq!(
+            rows,
+            [
+                row("Inbox", 0, None, None),
+                row("A", 0, None, open),
+                row("B", 1, None, open),
+                row("C", 2, None, open),
+                row("D", 3, None, open),
+                row(
+                    "Old explorations",
+                    3,
+                    Some("A / B / C / D / Old explorations"),
+                    None
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_collapsed_parent_points_its_chevron_right() {
+        let fx = Fixture::new(&["work"]);
+        projects(&fx, "work");
+        let (open, _wires) = fx.window();
+        open.click("Collapse Projects");
+        let caret = open.with(|live| {
+            entries(&live.app).into_iter().find_map(|e| match e {
+                Entry::Folder(f) if f.label == "Projects" => f.caret(),
+                _ => None,
+            })
+        });
+        assert_eq!(caret, Some(icons::CARET_RIGHT));
     }
 
     #[test]
