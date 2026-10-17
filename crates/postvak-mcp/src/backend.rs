@@ -396,10 +396,7 @@ impl Backend {
         for acc in self.select(account)? {
             let store = self.store(acc)?;
             for p in actions::planned(&compiled, &store, acc, &acc.identity()?, time::now())? {
-                rows.push(json!({
-                    "account": acc.name, "rule": p.rule, "folder": p.message.folder,
-                    "uid": p.message.uid, "action": p.action.label(), "subject": p.message.subject,
-                }));
+                rows.push(output::planned_row(&acc.name, &p));
             }
         }
         Ok(rows)

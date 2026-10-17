@@ -11,6 +11,7 @@ use postvak_core::config::{AccountConfig, Config, Identity, PasswordSource};
 use postvak_core::credentials::Secret;
 use postvak_core::daemon::Client;
 use postvak_core::daemon::client::LazyClient;
+use postvak_core::daemon::wire::Status;
 use postvak_core::message::clean;
 use postvak_core::paths::Paths;
 use postvak_core::rules::{Action, CompiledRule, Rule, RuleFile};
@@ -235,8 +236,11 @@ enum Command {
 
 #[derive(Subcommand)]
 enum DaemonCommand {
-    /// Print the daemon's pid, version, uptime and what each account is doing
-    Status,
+    #[command(about = postvak_core::help::STATUS)]
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
     /// Stop the daemon; it starts again when a command needs it
     Stop,
 }
@@ -297,7 +301,7 @@ enum AttachmentCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Save attachment N, as numbered by `attachment list`, into --dir
+    #[command(about = postvak_core::help::ATTACHMENT_SAVE)]
     Save {
         uid: u32,
         n: usize,
@@ -341,7 +345,7 @@ enum RulesCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Run one rule against mail that predates it
+    #[command(about = postvak_core::help::RULES_APPLY_EXISTING)]
     ApplyExisting {
         name: String,
         #[arg(long)]
@@ -363,7 +367,7 @@ enum TrashCommand {
         #[arg(long)]
         account: Option<String>,
     },
-    /// Remove trash files older than the retention period
+    #[command(about = postvak_core::help::TRASH_PURGE)]
     Purge {
         #[arg(long)]
         account: Option<String>,
@@ -372,9 +376,9 @@ enum TrashCommand {
 
 #[derive(Subcommand)]
 enum AccountCommand {
-    /// Interactively add an IMAP account; the daemon syncs it right away
+    #[command(about = postvak_core::help::ACCOUNT_ADD)]
     Add,
-    /// Print each configured account: name, username and server
+    #[command(about = postvak_core::help::ACCOUNT_LIST)]
     List {
         #[arg(long)]
         json: bool,
@@ -795,29 +799,37 @@ fn sync_account(client: &Client, name: &str) -> bool {
     }
 }
 
+fn print_status(status: &Status) {
+    let minutes = status.uptime_secs / 60;
+    println!(
+        "pid {}, version {}, up {}h {}m, {} clients",
+        status.pid,
+        status.version,
+        minutes / 60,
+        minutes % 60,
+        status.clients
+    );
+    for account in &status.accounts {
+        let activity = account
+            .activity
+            .as_ref()
+            .map_or("starting".into(), ToString::to_string);
+        println!("{}  {activity}", account.name);
+    }
+}
+
 fn cmd_daemon(command: DaemonCommand, paths: &Paths) -> Result<()> {
     let Some(client) = Client::connect_any_version(paths)? else {
         println!("no daemon running");
         return Ok(());
     };
     match command {
-        DaemonCommand::Status => {
+        DaemonCommand::Status { json } => {
             let status = client.status()?;
-            let minutes = status.uptime_secs / 60;
-            println!(
-                "pid {}, version {}, up {}h {}m, {} clients",
-                status.pid,
-                status.version,
-                minutes / 60,
-                minutes % 60,
-                status.clients
-            );
-            for account in &status.accounts {
-                let activity = account
-                    .activity
-                    .as_ref()
-                    .map_or("starting".into(), ToString::to_string);
-                println!("{}  {activity}", account.name);
+            if json {
+                println!("{}", postvak_core::output::status(&status)?);
+            } else {
+                print_status(&status);
             }
         }
         DaemonCommand::Stop => {
