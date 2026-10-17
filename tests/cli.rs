@@ -53,6 +53,27 @@ fn list_on_unknown_account_fails_and_empty_config_lists_nothing() {
     assert!(out.stdout.is_empty());
 }
 
+/// The wizard's answers in prompt order: name, host, port, CA file, username, address, storage, password command.
+const ADD_ANSWERS: &str = "late\n127.0.0.1\n1\n\nme@example.com\n\nc\nprintf x\n";
+
+#[test]
+fn account_add_saves_then_reports_the_first_sync() {
+    let (home, _store) = seeded_home(&[]);
+    let out = postvak_stdin(home.path(), &["account", "add"], ADD_ANSWERS);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stdout.contains("saved to"), "{stdout}");
+    assert!(!stdout.contains("Testing login"), "{stdout}");
+    let config = std::fs::read_to_string(home.path().join("config/config.toml")).unwrap();
+    assert!(config.contains("name = \"late\""), "{config}");
+    assert!(config.contains("command = \"printf x\""), "{config}");
+    // Port 1 refuses; whether the first sync reports a refusal or a pass that then goes offline depends on timing.
+    assert!(
+        stdout.contains("late") || stderr.contains("[late]"),
+        "{stdout}\n{stderr}"
+    );
+}
+
 #[test]
 fn account_add_rejects_invalid_name() {
     use std::io::Write;
@@ -463,6 +484,7 @@ fn postvak_stdin(home: &std::path::Path, args: &[&str], stdin: &str) -> std::pro
     let mut child = Command::new(env!("CARGO_BIN_EXE_postvak"))
         .args(args)
         .env("POSTVAK_HOME", home)
+        .env("POSTVAK_IDLE_EXIT_SECS", "1")
         .env("RUST_LOG", "error")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

@@ -6,11 +6,11 @@ use std::time::Duration;
 use anyhow::{Context as _, Result, bail};
 use clap::{Parser, Subcommand};
 
+use postvak_core::account;
 use postvak_core::config::{AccountConfig, Config, Identity, PasswordSource};
-use postvak_core::credentials::{self, Secret};
+use postvak_core::credentials::Secret;
 use postvak_core::daemon::Client;
 use postvak_core::daemon::client::LazyClient;
-use postvak_core::mail_ops::MailOps;
 use postvak_core::message::clean;
 use postvak_core::paths::Paths;
 use postvak_core::rules::{Action, CompiledRule, Rule, RuleFile};
@@ -372,7 +372,7 @@ enum TrashCommand {
 
 #[derive(Subcommand)]
 enum AccountCommand {
-    /// Interactively add an IMAP account and test the login
+    /// Interactively add an IMAP account; the daemon syncs it right away
     Add,
     /// Print each configured account: name, username and server
     List {
@@ -1216,6 +1216,9 @@ fn cmd_trash(command: TrashCommand, config: &Config, paths: &Paths) -> Result<()
     }
 }
 
+/// How long `account add` waits for the daemon to list the new account; it polls config.toml every 2 s.
+const ACCOUNT_START: Duration = Duration::from_secs(10);
+
 fn cmd_account_add(mut config: Config, paths: &Paths) -> Result<()> {
     let name = prompt("Account name (letters, digits, - _)")?;
     let host = prompt("IMAP host")?;
@@ -1247,26 +1250,22 @@ fn cmd_account_add(mut config: Config, paths: &Paths) -> Result<()> {
         ca_file,
         ..AccountConfig::new(&name, &host, &username, password)
     };
-    config.accounts.retain(|a| a.name != account.name);
-    config.accounts.push(account);
-    config.validate()?;
-    let Some(account) = config.accounts.last() else {
-        bail!("no account to save");
-    };
+    account::check(&config, &account)?;
     let secret = match &account.password {
-        PasswordSource::Command { .. } => credentials::resolve(account)?,
-        PasswordSource::Keyring { .. } => Secret::new(rpassword::prompt_password("Password: ")?),
+        PasswordSource::Command { .. } => None,
+        PasswordSource::Keyring { .. } => {
+            Some(Secret::new(rpassword::prompt_password("Password: ")?))
+        }
     };
-    print!("Testing login... ");
-    io::stdout().flush()?;
-    let mut ops = postvak_core::mail_ops::imap::ImapOps::connect(account, &secret)?;
-    let folders = ops.list_folders()?;
-    println!("ok, {} folders", folders.len());
-    if matches!(account.password, PasswordSource::Keyring { .. }) {
-        credentials::store(&account.name, &secret)?;
-    }
-    config.save(&paths.config_file())?;
+    account::add(&mut config, paths, account, secret)?;
     println!("saved to {}", paths.config_file().display());
+    let client = Client::connect_or_start(paths)?;
+    account::await_started(&client, &name, ACCOUNT_START)?;
+    if !sync_account(&client, &name) {
+        bail!(
+            "the first sync of '{name}' failed; check the login and run `postvak account add` again"
+        );
+    }
     Ok(())
 }
 

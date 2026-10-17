@@ -635,14 +635,14 @@ Manage accounts
 
 ###### **Subcommands:**
 
-* `add` — Interactively add an IMAP account and test the login
+* `add` — Interactively add an IMAP account; the daemon syncs it right away
 * `list` — Print each configured account: name, username and server
 
 
 
 ## `postvak account add`
 
-Interactively add an IMAP account and test the login
+Interactively add an IMAP account; the daemon syncs it right away
 
 **Usage:** `postvak account add`
 
