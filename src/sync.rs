@@ -329,6 +329,20 @@ pub type Checkpoint<'a> = dyn FnMut(&mut dyn MailOps, Activity) -> Result<bool, 
 const CHUNK: usize = 500;
 
 #[cfg(any(test, feature = "testing"))]
+thread_local! {
+    /// Replaces `CHUNK` for syncs on this thread, so a test proves chunking with a dozen messages.
+    pub static CHUNK_OVERRIDE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+fn chunk_size() -> usize {
+    #[cfg(any(test, feature = "testing"))]
+    if let Some(size) = CHUNK_OVERRIDE.get() {
+        return size;
+    }
+    CHUNK
+}
+
+#[cfg(any(test, feature = "testing"))]
 pub fn sync_folder(
     ops: &mut dyn MailOps,
     store: &Store,
@@ -424,7 +438,7 @@ pub fn sync_folder_with(
     let total = uids.len();
     let mut done = 0;
     let mut new = Vec::new();
-    for chunk in uids.chunks(CHUNK) {
+    for chunk in uids.chunks(chunk_size()) {
         let progress = Activity::FetchingHeaders {
             folder: folder.name.clone(),
             done,
