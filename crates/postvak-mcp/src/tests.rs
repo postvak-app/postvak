@@ -663,6 +663,7 @@ async fn tools_list_per_scope_set_is_exact_and_alphabetical() {
         (
             "read,rules:propose",
             &[
+                "accounts",
                 "folders",
                 "list",
                 "log",
@@ -672,6 +673,7 @@ async fn tools_list_per_scope_set_is_exact_and_alphabetical() {
                 "rules_schema",
                 "rules_test",
                 "search",
+                "status",
                 "sync",
                 "trash_list",
             ],
@@ -1179,4 +1181,32 @@ async fn rules_propose_without_account_is_refused_when_several_of_some_are_visib
     assert_ne!(result.is_error, Some(true), "{result:?}");
     let file = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
     assert_eq!(file.rules[1].account, None);
+}
+
+#[tokio::test]
+async fn accounts_lists_the_visible_accounts_without_secrets() {
+    let fx = fixture(&["home", "work"]);
+    let client = connect(&fx, "read", &["work"]).await;
+    let report = rows(&call(&client, "accounts", json!({})).await);
+    assert_eq!(report.len(), 1);
+    assert_eq!(report[0]["account"], "work");
+    assert_eq!(report[0]["port"], 1);
+    assert!(report[0].get("password").is_none());
+    assert!(!report[0].to_string().contains("printf"));
+}
+
+#[tokio::test]
+async fn status_reports_the_daemon_and_the_visible_accounts() {
+    let fx = fixture_with_daemon(&["home", "work"], recording_connector());
+    let client = connect(&fx, "read", &["work"]).await;
+    let report = call(&client, "status", json!({})).await;
+    let report = report.structured_content.unwrap();
+    assert!(report["pid"].as_u64().is_some(), "{report}");
+    let names: Vec<&str> = report["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["work"]);
 }

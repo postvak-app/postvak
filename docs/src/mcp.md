@@ -52,7 +52,7 @@ The install also prints a hint with the granted scopes and how to widen them. It
 
 | Scope | What it grants | Tools |
 |---|---|---|
-| `read` | Folders, message headers, the activity log, rules and trash listings, previews of rules that do not match on the body, and a sync. No body text. | `folders`, `list`, `log`, `rules_check`, `rules_list`, `rules_schema`, `rules_test`, `search`, `sync`, `trash_list` |
+| `read` | Folders, message headers, the activity log, rules and trash listings, previews of rules that do not match on the body, and a sync. No body text. | `accounts`, `folders`, `list`, `log`, `rules_check`, `rules_list`, `rules_schema`, `rules_test`, `search`, `status`, `sync`, `trash_list` |
 | `read:bodies` | Message bodies and attachment names, search over stored bodies and on the server (`search` with `server`), and with `read` previews of rules that match on the body. | `attachments`, `show` |
 | `rules:propose` | Proposing a rule. It is stored disabled until you approve it. | `rules_propose` |
 | `rules:write` | Approving and rejecting rules, and turning them on or off. | `rules_approve`, `rules_reject`, `rules_set_enabled` |
@@ -74,6 +74,7 @@ The names follow the CLI commands. A tool that lists things returns the CLI's `-
 
 `read`:
 
+- `accounts` lists the visible accounts: name, username, host, port, address and aliases. Never the password source.
 - `folders` lists folders with total and unread counts.
 - `list` lists the newest messages in a folder, or threads. `limit` defaults to 50 and is at most 500. With `threads: true` it counts threads, and each thread comes with all its messages.
 - `log` shows the rule and action log.
@@ -82,6 +83,7 @@ The names follow the CLI commands. A tool that lists things returns the CLI's `-
 - `rules_schema` returns the JSON Schema for a rule.
 - `rules_test` previews a rule, given as JSON, against the local store. It reports subjects, never bodies. A rule that matches on the body needs `read:bodies` too, since its matches would reveal what bodies contain.
 - `search` finds messages by subject, from and to. It matches all the given words as plain words.
+- `status` is `postvak daemon status --json`: the daemon's pid, version, uptime and each visible account's activity.
 - `sync` asks the daemon to sync and run rules once per account and reports its result: `new_messages`, `actions` and `errors`, or an `error` when the daemon refuses the account (offline, for example). It is in the `read` scope, but it writes the store and applies approved rules, so hosts see it as a changing tool.
 - `trash_list` lists the `.eml` backups.
 

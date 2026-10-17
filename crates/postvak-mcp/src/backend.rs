@@ -331,6 +331,20 @@ impl Backend {
         Ok(rows)
     }
 
+    /// The visible accounts' listing rows; never the password source.
+    pub fn accounts(&self) -> Result<Vec<Value>> {
+        Ok(self.accounts.iter().map(output::account).collect())
+    }
+
+    /// The daemon's status, with only the visible accounts.
+    pub fn status(&self) -> Result<Value> {
+        let mut status = self.daemon.client()?.status()?;
+        status
+            .accounts
+            .retain(|account| self.is_visible(Some(account.name.as_str())));
+        Ok(output::status(&status)?)
+    }
+
     fn is_visible(&self, account: Option<&str>) -> bool {
         account.is_none_or(|a| self.accounts.iter().any(|acc| acc.name == a))
     }

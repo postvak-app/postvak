@@ -311,6 +311,12 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
             Effect::Destructive,
             help::DELETE,
         ),
+        ToolDef::new::<NoArgs>(
+            "accounts",
+            Scope::Read,
+            Effect::ReadOnly,
+            help::ACCOUNT_LIST,
+        ),
         ToolDef::new::<AccountArgs>("folders", Scope::Read, Effect::ReadOnly, help::FOLDERS),
         ToolDef::new::<ListArgs>("list", Scope::Read, Effect::ReadOnly, help::LIST),
         ToolDef::new::<JunkArgs>("junk", Scope::MailModify, Effect::Changes, help::JUNK),
@@ -375,6 +381,7 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
                 help::SHOW
             ),
         ),
+        ToolDef::new::<NoArgs>("status", Scope::Read, Effect::ReadOnly, help::STATUS),
         ToolDef::new::<AccountArgs>("sync", Scope::Read, Effect::Changes, help::SYNC),
         ToolDef::new::<AccountArgs>(
             "trash_list",
@@ -444,6 +451,10 @@ fn dispatch(
                 a.dry_run,
                 &by,
             )
+        }
+        "accounts" => {
+            let _: NoArgs = args(arguments)?;
+            rows(backend.accounts()?)
         }
         "folders" => {
             let a: AccountArgs = args(arguments)?;
@@ -545,6 +556,10 @@ fn dispatch(
             let (row, body) = backend.show(a.account.as_deref(), &a.folder, a.uid)?;
             let (body, truncated) = wrap_body(&body);
             Ok(json!({ "message": row, "body": body, "truncated": truncated }))
+        }
+        "status" => {
+            let _: NoArgs = args(arguments)?;
+            backend.status()
         }
         "sync" => {
             let a: AccountArgs = args(arguments)?;
