@@ -390,8 +390,9 @@ pub struct Columns {
     pub date: String,
 }
 
-/// The list pane's narrowest width, so the unread dot and the flag never reach the date.
-pub const MIN_WIDTH: f32 = 220.0;
+/// The list pane's narrowest width, so the unread dot and the flag never reach the date and the filters fit beside
+/// the title; the body pane keeps it too.
+pub const MIN_WIDTH: f32 = 320.0;
 
 pub fn columns<Tz: TimeZone>(
     row: &Row,
