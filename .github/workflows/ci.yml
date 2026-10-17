@@ -75,12 +75,12 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
-          tool: cargo-audit,cargo-machete
+          tool: cargo-deny,cargo-machete
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo check --no-default-features --all-targets
       - run: cargo machete
-      - run: cargo audit
+      - run: cargo deny check
 
   test:
     needs: select
