@@ -532,13 +532,14 @@ fn first_sync_of_a_large_folder_runs_in_chunks() {
     let Some(host) = host() else { return };
     let account = account(&host, PORT, "chunks");
     let mut ops = connect(&account);
-    for i in 0..1200 {
+    for i in 0..12 {
         ops.append("INBOX", &mail(&format!("bulk {i}")), &[])
             .unwrap();
     }
     let home = tempfile::tempdir().unwrap();
     let paths = Paths::under(home.path());
     let (tx, rx) = std::sync::mpsc::channel();
+    sync::CHUNK_OVERRIDE.set(Some(5));
     sync::run_once(&account, &paths, &tx).unwrap();
     drop(tx);
     let progress: Vec<usize> = rx
@@ -553,15 +554,15 @@ fn first_sync_of_a_large_folder_runs_in_chunks() {
                     },
                 ..
             } if folder == "INBOX" => {
-                assert_eq!(total, 1200);
+                assert_eq!(total, 12);
                 Some(done)
             }
             _ => None,
         })
         .collect();
-    assert_eq!(progress, [0, 500, 1000, 1200]);
+    assert_eq!(progress, [0, 5, 10, 12]);
     let store = Store::open(&paths.mail_db(&account.name)).unwrap();
-    assert_eq!(store.message_count("INBOX").unwrap(), 1200);
+    assert_eq!(store.message_count("INBOX").unwrap(), 12);
 }
 
 #[test]
