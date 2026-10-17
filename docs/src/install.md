@@ -68,27 +68,12 @@ flatpak run io.github.postvak_app.postvak account add    # with arguments it is 
 
 An alias such as `alias postvak='flatpak run io.github.postvak_app.postvak'` saves typing. Each release also attaches the same app as a single file, `postvak-<arch>.flatpak`, for `flatpak install --user postvak-x86_64.flatpak`; that one does not update itself.
 
-The sandbox may use the network, the display, the password keyring (Secret Service) and desktop notifications, and nothing else. It keeps its own config and state in `~/.var/app/io.github.postvak_app.postvak/`, so a Flatpak install does not share accounts, rules or the daemon with a `postvak` installed another way.
+The sandbox may use the network, the display, the password keyring (Secret Service), desktop notifications and your Downloads folder, where saved attachments go, and nothing else. It keeps its own config and state in `~/.var/app/io.github.postvak_app.postvak/`, so a Flatpak install does not share accounts, rules or the daemon with a `postvak` installed another way. A `password = { command = "..." }` runs inside the sandbox too, where tools such as `pass` or `op` are missing, so use the keyring there.
 
 Two commands work differently inside the sandbox, because it cannot write files for programs outside it:
 
-- `mcp install json` prints an entry that runs `flatpak run io.github.postvak_app.postvak mcp`; add it to your MCP host yourself. `mcp install claude-code` prints the `claude mcp add` commands to run, and `mcp install claude-desktop` refuses.
-- `service install` refuses. To sync in the background from login, add a systemd user unit yourself, in `~/.config/systemd/user/postvak.service`:
-
-  ```ini
-  [Unit]
-  Description=Postvak mail sync
-
-  [Service]
-  ExecStart=flatpak run io.github.postvak_app.postvak run
-  Restart=always
-  RestartSec=10
-
-  [Install]
-  WantedBy=default.target
-  ```
-
-  Then `systemctl --user enable --now postvak.service`.
+- `mcp install json` prints an entry that runs `flatpak run io.github.postvak_app.postvak mcp`; add it to your MCP host yourself. `mcp install claude-code` prints the `claude mcp add` commands to run, and `mcp install claude-desktop` says which `mcp install json` to run instead.
+- `service install` prints a systemd user unit that runs `flatpak run io.github.postvak_app.postvak run`, and the commands to enable it; `service remove` prints the commands to undo that.
 
 ## Desktop entry on Linux
 
