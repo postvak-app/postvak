@@ -290,7 +290,7 @@ mod tests {
     fn a_flatpak_entry_runs_the_app_through_flatpak() {
         let entry = entry().through_flatpak("io.github.postvak_app.postvak");
         assert_eq!(
-            entry.shell(),
+            shell_words(&entry.argv()),
             "flatpak run io.github.postvak_app.postvak mcp --scopes read,rules:propose --account work"
         );
     }
