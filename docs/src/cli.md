@@ -122,7 +122,11 @@ Stop the daemon; it starts again when a command needs it
 
 Open the mail window; starts the daemon when needed
 
-**Usage:** `postvak gui`
+**Usage:** `postvak gui [OPTIONS]`
+
+###### **Options:**
+
+* `--safe-mode` — Draw with the software renderer and ignore the saved window layout, for when the window will not open; entered by itself after two starts in a row that died before the window showed
 
 
 
