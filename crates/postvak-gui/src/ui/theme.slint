@@ -1,0 +1,175 @@
+// Ossenbloed: per mode a pane palette and an oxblood chrome palette (toolbar, folders, status bar) around it, the
+// grid every size comes from (`theme.rs` has the sizes Rust needs; a test keeps them equal), and the bundled fonts.
+import "../../assets/fonts/HankenGrotesk-Medium.ttf";
+import "../../assets/fonts/HankenGrotesk-SemiBold.ttf";
+import "../../assets/fonts/Newsreader-Medium.ttf";
+import "../../assets/fonts/Phosphor.ttf";
+import "../../assets/fonts/SplineSansMono-Medium.ttf";
+
+import { Palette as StdPalette } from "std-widgets.slint";
+
+export enum ThemePreference { system, light, dark }
+
+export struct Palette {
+    accent: color,
+    background: color,
+    border: color,
+    error: color,
+    faint: color,
+    // The reader's subject.
+    heading: color,
+    highlight: color,
+    hover: color,
+    muted: color,
+    // Text on `selected`.
+    on-accent: color,
+    panel: color,
+    // Behind a widget while it is pressed or dragged; `strong` is drawn on it.
+    pressed: color,
+    secondary: color,
+    // Behind the selected row, folder and text.
+    selected: color,
+    // Bold text, such as account headings and header labels: more contrast than `text`, and it must also read on
+    // `pressed`.
+    strong: color,
+    text: color,
+    warning: color,
+}
+
+export global Theme {
+    // The user's choice; System follows the desktop's colour scheme.
+    in property <ThemePreference> preference;
+    // Whether the desktop is dark. The mail window sets std-widgets' scheme to match `dark`, so it learns the desktop's
+    // from a `SchemeProbe`; other windows read their own std-widgets scheme, which follows the desktop.
+    in property <bool> desktop-dark: StdPalette.color-scheme == ColorScheme.dark;
+    out property <bool> dark: preference == ThemePreference.dark || (preference == ThemePreference.system && desktop-dark);
+    // The panes.
+    out property <Palette> pane: dark ? night : paper;
+    // The oxblood chrome around them: toolbar, folders, status bar.
+    out property <Palette> frame: dark ? frame-night : frame-day;
+
+    out property <length> control: 28px;
+    // The message actions, the list's filter button and the search field: a little larger than `control`.
+    out property <length> action: control + pad;
+    out property <length> top-bar: 40px;
+    out property <length> row: 24px;
+    // A folder in the folder pane.
+    out property <length> folder-row: row + pad;
+    // A message in the list: the sender and date, then the subject, with half a row of room around them.
+    out property <length> list-row: 3 * row;
+    out property <length> pad: 8px;
+    out property <length> inset: 2 * pad;
+    out property <length> icon: 16px;
+    // The glyphs of folders and of `action` buttons.
+    out property <length> large-icon: icon + pad / 4;
+    // The sender's avatar in the reader.
+    out property <length> avatar: 5 * pad;
+    out property <length> glyph: (control - icon) / 2;
+    out property <length> radius: 10px;
+    // How long a hover background takes to fade in or out; selection and presses change at once.
+    out property <duration> hover-fade: 90ms;
+    // How long a message turning read or unread, or an account's status dot, takes to fade.
+    out property <duration> state-fade: 120ms;
+    // How long a message that arrives while the window is open takes to fade in.
+    out property <duration> arrive-fade: 150ms;
+
+    // Type sizes: secondary labels, the interface, the message text, pane headings, the list's title, the reader's subject.
+    out property <length> small-size: 12px;
+    out property <length> text-size: 13px;
+    out property <length> reading-size: 15px;
+    out property <length> heading-size: 19px;
+    out property <length> title-size: 22px;
+    out property <length> subject-size: 28px;
+    out property <string> text-font: "Hanken Grotesk";
+    out property <string> serif-font: "Newsreader";
+    out property <string> mono-font: "Spline Sans Mono";
+    out property <string> icon-font: "Phosphor";
+
+    // Avatar fills, picked per sender by `avatar::tint`; `pane.heading` is drawn on them.
+    out property <[color]> avatars: dark ? [#5a1f25, #4f3d1f, #2f3f2a, #263b3d, #3a2f48, #4a2a33] : [#e6cfc2, #e9dcc0, #d6dfc8, #cfdcdc, #d8d2e2, #ecd3cf];
+
+    out property <Palette> paper: {
+        accent: #9a4a1c,
+        background: #fbf8f3,
+        border: #e3d8cb,
+        error: #a8202e,
+        faint: #fffdfa,
+        heading: #3b1418,
+        highlight: #8c6720,
+        hover: #eadfd0,
+        muted: #6e5958,
+        on-accent: #2b1a1c,
+        panel: #f3ece2,
+        pressed: #e3d8cb,
+        secondary: #5e4a4b,
+        selected: #e6cfc2,
+        strong: #140b0c,
+        text: #2b1a1c,
+        warning: #8a5a00,
+    };
+    out property <Palette> night: {
+        accent: #e9c9b0,
+        background: #231919,
+        border: #3a2b2c,
+        error: #f08a8a,
+        faint: #140e0f,
+        heading: #e9c9b0,
+        highlight: #c99a3e,
+        hover: #2e2223,
+        muted: #b09a93,
+        on-accent: #f1e4d8,
+        panel: #1a1213,
+        pressed: #3a2b2c,
+        secondary: #cdb8af,
+        selected: #5a1f25,
+        strong: #ffffff,
+        text: #efe3d6,
+        warning: #e6b85c,
+    };
+    out property <Palette> frame-day: {
+        accent: #d9b36a,
+        background: #3b1418,
+        border: #5a2a2f,
+        error: #ffb4a8,
+        faint: #4e2629,
+        heading: #f1e4d8,
+        highlight: #d9b36a,
+        hover: #4a1d22,
+        muted: #c29a92,
+        on-accent: #ffffff,
+        panel: #3b1418,
+        pressed: #5e2a30,
+        secondary: #e0cbbe,
+        selected: #552a2b,
+        strong: #ffffff,
+        text: #f1e4d8,
+        warning: #f2cc7a,
+    };
+    out property <Palette> frame-night: {
+        accent: #d9b36a,
+        background: #2a0e11,
+        border: #4a2226,
+        error: #ffb4a8,
+        faint: #3b1d20,
+        heading: #f1e4d8,
+        highlight: #d9b36a,
+        hover: #3a171b,
+        muted: #c29a92,
+        on-accent: #ffffff,
+        panel: #2a0e11,
+        pressed: #4c2227,
+        secondary: #e0cbbe,
+        selected: #44262a,
+        strong: #ffffff,
+        text: #f1e4d8,
+        warning: #f2cc7a,
+    };
+}
+
+// Never shown: its std-widgets scheme is left alone, so it follows the desktop's, which the mail window cannot read
+// once it has set its own.
+export component SchemeProbe inherits Window {
+    out property <bool> dark: StdPalette.color-scheme == ColorScheme.dark;
+    callback dark-changed(bool);
+    changed dark => { root.dark-changed(self.dark); }
+}

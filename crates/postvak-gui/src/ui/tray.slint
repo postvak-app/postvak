@@ -1,0 +1,28 @@
+// The tray icon: it keeps Postvak running with the window closed, while the desktop shows it.
+export component Tray inherits SystemTrayIcon {
+    in property <string> hint;
+    callback open();
+    callback sync();
+    callback quit();
+
+    icon: @image-url("../../assets/icon.png");
+    tooltip: root.hint;
+    title: "Postvak";
+    clicked => { root.open(); }
+
+    Menu {
+        MenuItem {
+            title: "Open Postvak";
+            activated => { root.open(); }
+        }
+        MenuItem {
+            title: "Sync now";
+            activated => { root.sync(); }
+        }
+        MenuSeparator { }
+        MenuItem {
+            title: "Quit";
+            activated => { root.quit(); }
+        }
+    }
+}

@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use postvak::daemon::Client;
-use postvak::paths::Paths;
+use postvak_core::daemon::Client;
+use postvak_core::paths::Paths;
 use tempfile::TempDir;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");

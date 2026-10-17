@@ -81,8 +81,8 @@ fn account_add_rejects_invalid_name() {
 
 #[test]
 fn rules_test_previews_fresh_rule() {
-    use postvak::paths::Paths;
-    use postvak::store::{Folder, Message, Store};
+    use postvak_core::paths::Paths;
+    use postvak_core::store::{Folder, Message, Store};
 
     let home = tempfile::tempdir().unwrap();
     let paths = Paths::under(home.path());
@@ -140,8 +140,8 @@ fn rules_test_previews_fresh_rule() {
 
 const ONE_ACCOUNT: &str = "[[accounts]]\nname = \"work\"\nhost = \"127.0.0.1\"\nport = 1\nusername = \"me@example.com\"\npassword = { command = \"printf x\" }\n";
 
-use postvak::paths::Paths;
-use postvak::store::{Folder, LogEntry, Message, Store};
+use postvak_core::paths::Paths;
+use postvak_core::store::{Folder, LogEntry, Message, Store};
 
 fn message(uid: u32, from: &str, subject: &str) -> Message {
     Message {
@@ -231,7 +231,7 @@ fn list_and_log_show_the_account() {
 #[test]
 fn trash_list_shows_subjects() {
     let (home, _store) = seeded_home(&[]);
-    postvak::trash::Trash::new(Paths::under(home.path()).trash_dir("work"))
+    postvak_core::trash::Trash::new(Paths::under(home.path()).trash_dir("work"))
         .save(
             "INBOX",
             7,
@@ -822,10 +822,10 @@ const FAILED_PASS: &str = "rule 'x': invalid regex; running no rules until it is
 /// Answers like a daemon of `version`: hello, subscribe, status, shutdown (which removes its socket), and a sync whose
 /// pass failed with FAILED_PASS. Subscribers also get an error from an unrelated pass.
 fn serve_fake_daemon(paths: &Paths, version: &'static str) -> std::thread::JoinHandle<()> {
-    use postvak::daemon::wire::{
+    use postvak_core::daemon::wire::{
         self, ClientMessage, DaemonMessage, Outcome, PROTOCOL, Payload, Status,
     };
-    use postvak::sync::Event;
+    use postvak_core::sync::Event;
     use std::io::{BufRead, BufReader};
 
     std::fs::create_dir_all(&paths.state_dir).unwrap();
@@ -912,7 +912,10 @@ fn daemon_status_and_stop_reach_a_daemon_of_another_version() {
 #[test]
 fn sync_prints_the_errors_of_its_own_pass_and_fails() {
     let (home, _store) = seeded_home(&[]);
-    serve_fake_daemon(&Paths::under(home.path()), postvak::daemon::wire::VERSION);
+    serve_fake_daemon(
+        &Paths::under(home.path()),
+        postvak_core::daemon::wire::VERSION,
+    );
     let out = postvak(home.path(), &["sync"]);
     let (stdout, stderr) = (
         String::from_utf8_lossy(&out.stdout),

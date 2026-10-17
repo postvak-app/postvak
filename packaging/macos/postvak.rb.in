@@ -27,7 +27,7 @@ cask "postvak" do
 @ADHOC@    system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{appdir}/Postvak.app"]
 @ADHOC@  end
 
-  # Paths from src/paths.rs (directories::ProjectDirs on macOS) and src/daemon/service.rs (the launchd agent).
+  # Paths from postvak-core's paths.rs (directories::ProjectDirs on macOS) and daemon/service.rs (the launchd agent).
   # Passwords stay in the login Keychain; remove them with Keychain Access.
   zap launchctl: "io.github.postvak_app.postvak",
       trash:     [

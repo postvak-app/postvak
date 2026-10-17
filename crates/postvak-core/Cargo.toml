@@ -1,0 +1,62 @@
+[package]
+name = "postvak-core"
+description = "Postvak's sync, store, rules and daemon, shared by its command line, window and MCP server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+documentation.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-imap.workspace = true
+chrono.workspace = true
+directories.workspace = true
+futures-util.workspace = true
+humantime.workspace = true
+include_dir.workspace = true
+keyring-core.workspace = true
+log.workspace = true
+mail-parser.workspace = true
+notify-rust.workspace = true
+regex.workspace = true
+rusqlite.workspace = true
+rusqlite_migration.workspace = true
+rustls.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_rusqlite.workspace = true
+socket2.workspace = true
+tempfile = { workspace = true, optional = true }     # the daemon test harness behind `testing`
+thiserror.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+toml.workspace = true
+toml_edit.workspace = true
+ureq.workspace = true
+url.workspace = true
+webpki-roots.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus-secret-service-keyring-store.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
+
+[features]
+testing = ["dep:tempfile"]                           # exposes RecordingOps and the one-shot sync steps to integration tests and the front ends' tests
+
+[[test]]
+name = "sync_model"
+required-features = ["testing"]                      # drives sync against RecordingOps
+
+[lints]
+workspace = true

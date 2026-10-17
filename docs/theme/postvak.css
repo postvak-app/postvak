@@ -1,4 +1,4 @@
-/* Ossenbloed, as in the app (src/gui/theme.rs): dark brown panes and an oxblood sidebar for dark, warm paper for light. Every built-in theme maps to one of the two. */
+/* Ossenbloed, as in the app (crates/postvak-gui/src/theme.rs): dark brown panes and an oxblood sidebar for dark, warm paper for light. Every built-in theme maps to one of the two. */
 
 @font-face {
     font-family: "Newsreader";

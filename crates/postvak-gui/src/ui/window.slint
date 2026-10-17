@@ -1,0 +1,595 @@
+// The mail window. It draws what `bind.rs` gives it and hands every key and click back as a callback.
+import { Palette as StdPalette } from "std-widgets.slint";
+import { Theme, ThemePreference } from "theme.slint";
+import { FolderItem, FolderPane } from "folders.slint";
+import { StatusBar, StatusLine } from "status.slint";
+import { HistoryDialog, KeyHelp, KeysDialog, MoveDialog, SourceDialog } from "dialogs.slint";
+import { BodyInfo, BodyPane, PageInfo, SelectedData, StripData, ToolButton } from "body.slint";
+import { ProposalData, RuleData, RulesPane, Sheet } from "rules.slint";
+import { AboutDialog } from "about.slint";
+import { ListPane, RowData } from "list.slint";
+
+export enum Pane { body, folders, list }
+
+// The menu items that act on the app; `menu.rs` says what each does.
+export enum MenuAction { about, add-to-selection, archive, delete, documentation, flag, history, junk, keys, mark-folder-read, move, read-or-unread, save-eml, search, select-all, sync-now, text-or-html, theme-dark, theme-light, theme-system, view-source }
+
+// Which menu items would do something now; the others are disabled.
+export struct MenuState {
+    save-eml: bool,
+    view-source: bool,
+    search: bool,
+    message: bool,
+    text-or-html: bool,
+    mark-folder-read: bool,
+}
+
+// The edge between two panes, over both; dragging it sets `size`, the width of the pane on its left.
+component Splitter inherits TouchArea {
+    in-out property <length> size;
+    in property <length> min;
+    width: Theme.pad;
+    mouse-cursor: col-resize;
+    moved => {
+        if (self.pressed) {
+            root.size = max(root.min, root.size + self.mouse-x - self.pressed-x);
+        }
+    }
+}
+
+// A paper pane in the frame, with a soft accent outline while it has the keyboard; the outline is drawn inside, so
+// nothing moves.
+component PaneFrame inherits Rectangle {
+    in property <bool> focused;
+    background: Theme.pane.background;
+    border-width: focused ? 1px : 0px;
+    border-color: Theme.pane.border.mix(Theme.pane.accent, 65%);
+    clip: true;
+}
+
+export component MailWindow inherits Window {
+    // Saved with the window (Task 11) and dragged by the splitters.
+    in-out property <length> folders-width: 220px;
+    in-out property <length> list-width: 480px;
+    in property <length> list-min-width: 220px;
+    // The pane with the keyboard.
+    in property <Pane> focused-pane: Pane.list;
+    // A folder or All inboxes: a list and the body; else Rules, Activity or Backups, one pane.
+    in property <bool> mail-view: true;
+    in property <bool> config-changed;
+    // Phosphor glyphs from `icons.rs`.
+    in property <string> close-icon;
+    in property <string> search-icon;
+    in property <string> sync-icon;
+    in property <string> filter-icon;
+
+    in property <[ToolButton]> tool-buttons;
+    in property <bool> tool-buttons-enabled;
+    in property <string> search-hint;
+    in property <string> selection-title;
+    in property <[SelectedData]> selection;
+
+    in property <[FolderItem]> folders;
+    in property <[FolderItem]> pinned;
+
+    in property <StatusLine> status-line;
+    in property <string> status-detail;
+    in property <string> sync-hint;
+    in property <string> update;
+
+    in property <bool> help-open;
+    in property <[KeyHelp]> keys;
+    in property <bool> history-open;
+    in property <[string]> history;
+
+    in property <string> list-title;
+    in property <int> list-filter;
+    in property <string> filter-label;
+    in property <bool> searching;
+    in property <string> search-hint-text;
+    in property <string> results;
+    in property <string> list-empty;
+    in property <[RowData]> rows;
+    in property <int> marked-count;
+    in-out property <length> list-y;
+
+    in property <bool> move-open;
+    in property <[string]> move-targets;
+
+    in property <BodyInfo> body-info;
+    in property <string> body-text;
+    in property <string> save-icon;
+    in property <string> source-icon;
+    in property <PageInfo> page;
+    in property <[StripData]> strips;
+    // The HTML page's selected text, which Ctrl/Cmd+C copies.
+    in property <string> page-selection;
+    in property <Sheet> sheet;
+    in property <string> rules-banner;
+    in property <[ProposalData]> proposals;
+    in property <[RuleData]> rules;
+    in property <[TableColumn]> sheet-columns;
+    in property <[[StandardListViewItem]]> sheet-cells;
+    in-out property <int> sheet-row: -1;
+    in property <string> sheet-empty;
+    in property <MenuState> menu;
+    in property <bool> about-open;
+    in property <string> version;
+    in property <string> description;
+    in property <string> license;
+    in property <string> repository;
+    in property <string> homepage;
+    in property <bool> source-open;
+    in property <[string]> source-rows;
+    in property <string> source-text;
+    in property <length> source-widest;
+
+    // A key the focused text field did not take: its text, and whether Ctrl (Cmd on macOS) or Alt was held. True
+    // when it did something.
+    callback key(string, bool, bool) -> bool;
+    callback tool(int);
+    callback clear-selection();
+    callback search();
+    callback folder-clicked(int);
+    callback caret-clicked(int);
+    callback folder-menu(int, int, int);
+    // A list row dropped on a folder: the folder, the row.
+    callback folder-dropped(int, int);
+    // A dragged list row's payload, and the row back from it, or -1.
+    pure callback drag-data(int) -> data-transfer;
+    pure callback drag-image(int, string, color, color) -> image;
+    pure callback dragged-row(data-transfer) -> int;
+    callback pinned-clicked(int);
+    callback sync();
+    callback toggle-history();
+    callback toggle-help();
+    callback open-update();
+    callback row-clicked(int, bool, bool);
+    callback row-menu(int, int, int);
+    callback list-filter-clicked(int);
+    callback search-edited(string);
+    callback search-accepted();
+    callback search-focus(bool);
+    callback list-scrolled(length, length);
+    callback move-filter(string);
+    callback move-accepted();
+    callback move-chosen(int);
+    callback escape();
+    callback toggle-html();
+    callback save-eml();
+    callback unsubscribe();
+    callback open-source();
+    callback save-attachment(int);
+    callback open-link(string);
+    callback page-width(length);
+    callback page-visible(length, length);
+    callback page-hover(length, length);
+    callback page-leave();
+    callback page-select(length, length, length, length);
+    callback page-clicked(length, length);
+    callback load-remote();
+    callback page-open-link();
+    callback menu-item(MenuAction);
+    callback close-window();
+    callback quit();
+    callback open-rules-file();
+    callback approve-rule(int);
+    callback reject-rule(int);
+    callback set-enabled(int, bool);
+    callback restore(int);
+    callback sort-sheet(int, bool);
+
+    // Puts `text` on the clipboard: Slint copies only from a text field.
+    public function copy-text(text: string) {
+        clipboard.text = text;
+        clipboard.select-all();
+        clipboard.copy();
+    }
+
+    clipboard := TextInput {
+        visible: false;
+        width: 0;
+        height: 0;
+        read-only: true;
+        accessible-role: none;
+    }
+
+    // std-widgets (fields, check boxes, scroll bars, the menu bar) in the theme's scheme rather than the desktop's.
+    property <bool> dark: Theme.dark;
+    init => { StdPalette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light; }
+    changed dark => { StdPalette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light; }
+
+    // A text field that closes leaves the keyboard with the panes.
+    changed searching => {
+        if (!root.searching) {
+            keys.focus();
+        }
+    }
+    changed move-open => {
+        if (!root.move-open) {
+            keys.focus();
+        }
+    }
+
+    title: "Postvak";
+    // macOS shows it in the Dock, which expects Apple's margin.
+    icon: Platform.os == OperatingSystemType.macos ? @image-url("../../assets/icon_512x512@2x.png") : @image-url("../../assets/icon.png");
+    preferred-width: 1280px;
+    preferred-height: 800px;
+    // Behind the menu bar where the window draws it (not macOS). Its text follows std-widgets' scheme, which follows
+    // the theme: light text on the frame when dark, dark text on paper when light.
+    background: Theme.dark ? Theme.frame.background : Theme.pane.panel;
+    default-font-family: Theme.text-font;
+    default-font-size: Theme.text-size;
+    forward-focus: keys;
+
+    MenuBar {
+        Menu {
+            title: "File";
+            MenuItem {
+                title: "Save .eml";
+                enabled: root.menu.save-eml;
+                activated => { root.menu-item(MenuAction.save-eml); }
+            }
+            MenuItem {
+                title: "View source";
+                enabled: root.menu.view-source;
+                activated => { root.menu-item(MenuAction.view-source); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Close window";
+                shortcut: @keys(Control + W);
+                activated => { root.close-window(); }
+            }
+            MenuItem {
+                title: "Quit";
+                shortcut: @keys(Control + Q);
+                activated => { root.quit(); }
+            }
+        }
+        Menu {
+            title: "Edit";
+            MenuItem {
+                title: "Copy";
+                enabled: root.page-selection != "";
+                activated => { root.copy-text(root.page-selection); }
+            }
+            MenuItem {
+                title: "Search";
+                enabled: root.menu.search;
+                activated => { root.menu-item(MenuAction.search); }
+            }
+        }
+        Menu {
+            title: "Message";
+            MenuItem {
+                title: "Archive";
+                enabled: root.menu.message;
+                activated => { root.menu-item(MenuAction.archive); }
+            }
+            MenuItem {
+                title: "Move…";
+                enabled: root.menu.message;
+                activated => { root.menu-item(MenuAction.move); }
+            }
+            MenuItem {
+                title: "Delete";
+                enabled: root.menu.message;
+                activated => { root.menu-item(MenuAction.delete); }
+            }
+            MenuItem {
+                title: "Junk or not junk";
+                enabled: root.menu.message;
+                activated => { root.menu-item(MenuAction.junk); }
+            }
+            MenuItem {
+                title: "Flag";
+                enabled: root.menu.message;
+                activated => { root.menu-item(MenuAction.flag); }
+            }
+            MenuItem {
+                title: "Read or unread";
+                enabled: root.menu.message;
+                activated => { root.menu-item(MenuAction.read-or-unread); }
+            }
+            MenuItem {
+                title: "Add to selection";
+                enabled: root.menu.message;
+                activated => { root.menu-item(MenuAction.add-to-selection); }
+            }
+            MenuItem {
+                title: "Select all";
+                enabled: root.menu.message;
+                activated => { root.menu-item(MenuAction.select-all); }
+            }
+        }
+        Menu {
+            title: "View";
+            MenuItem {
+                title: "Text or HTML";
+                enabled: root.menu.text-or-html;
+                activated => { root.menu-item(MenuAction.text-or-html); }
+            }
+            Menu {
+                title: "Theme";
+                MenuItem {
+                    title: "System";
+                    checkable: true;
+                    checked: Theme.preference == ThemePreference.system;
+                    activated => { root.menu-item(MenuAction.theme-system); }
+                }
+                MenuItem {
+                    title: "Light";
+                    checkable: true;
+                    checked: Theme.preference == ThemePreference.light;
+                    activated => { root.menu-item(MenuAction.theme-light); }
+                }
+                MenuItem {
+                    title: "Dark";
+                    checkable: true;
+                    checked: Theme.preference == ThemePreference.dark;
+                    activated => { root.menu-item(MenuAction.theme-dark); }
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "History";
+                activated => { root.menu-item(MenuAction.history); }
+            }
+            MenuItem {
+                title: "Keys";
+                activated => { root.menu-item(MenuAction.keys); }
+            }
+        }
+        Menu {
+            title: "Mailbox";
+            MenuItem {
+                title: "Sync now";
+                activated => { root.menu-item(MenuAction.sync-now); }
+            }
+            MenuItem {
+                title: "Mark folder read";
+                enabled: root.menu.mark-folder-read;
+                activated => { root.menu-item(MenuAction.mark-folder-read); }
+            }
+        }
+        Menu {
+            title: "Help";
+            MenuItem {
+                title: "Postvak documentation";
+                activated => { root.menu-item(MenuAction.documentation); }
+            }
+            MenuItem {
+                title: "About Postvak";
+                activated => { root.menu-item(MenuAction.about); }
+            }
+        }
+    }
+
+    keys := FocusScope {
+        Rectangle { background: Theme.frame.background; }
+        key-pressed(event) => {
+            if (root.key(event.text, event.modifiers.control, event.modifiers.alt)) {
+                return accept;
+            }
+            return reject;
+        }
+        KeyBinding {
+            keys: @keys(Control + C);
+            enabled: root.page-selection != "";
+            activated => { root.copy-text(root.page-selection); }
+        }
+
+    panes := HorizontalLayout {
+        VerticalLayout {
+            width: root.folders-width;
+            FolderPane {
+                vertical-stretch: 1;
+                items: root.folders;
+                pinned: root.pinned;
+                clicked(i) => { root.folder-clicked(i); }
+                caret-clicked(i) => { root.caret-clicked(i); }
+                menu(i, group, j) => { root.folder-menu(i, group, j); }
+                pinned-clicked(i) => { root.pinned-clicked(i); }
+                dragged-row(data) => { root.dragged-row(data) }
+                dropped(i, row) => { root.folder-dropped(i, row); }
+            }
+            status := StatusBar {
+                line: root.status-line;
+                detail: root.status-detail;
+                sync-icon: root.sync-icon;
+                sync-hint: root.sync-hint;
+                update: root.update;
+                sync => { root.sync(); }
+                toggle-history => { root.toggle-history(); }
+                open-update => { root.open-update(); }
+            }
+        }
+
+        VerticalLayout {
+            padding-top: Theme.pad;
+            padding-right: Theme.pad;
+            padding-bottom: Theme.pad;
+            spacing: Theme.pad;
+
+            if root.config-changed: Text {
+                text: "config.toml changed — reopen the window to show it";
+                color: Theme.frame.warning;
+            }
+
+            HorizontalLayout {
+                spacing: Theme.pad;
+
+                if root.mail-view: PaneFrame {
+                    width: root.list-width;
+                    background: Theme.pane.panel;
+                    focused: root.focused-pane == Pane.list;
+                    border-radius: Theme.radius;
+                    list := ListPane {
+                        title: root.list-title;
+                        filter: root.list-filter;
+                        filter-label: root.filter-label;
+                        filter-icon: root.filter-icon;
+                        search-icon: root.search-icon;
+                        search-key: root.search-hint;
+                        filter-clicked(i) => { root.list-filter-clicked(i); }
+                        start-search => { root.search(); }
+                        searching: root.searching;
+                        search-hint: root.search-hint-text;
+                        results: root.results;
+                        empty: root.list-empty;
+                        rows: root.rows;
+                        list-y <=> root.list-y;
+                        row-clicked(i, extend, toggle) => { root.row-clicked(i, extend, toggle); }
+                        row-menu(i, group, j) => { root.row-menu(i, group, j); }
+                        drag-data(i) => { root.drag-data(i) }
+                        drag-image(count, subject, fill, ink) => { root.drag-image(count, subject, fill, ink) }
+                        marked-count: root.marked-count;
+                        search-edited(text) => { root.search-edited(text); }
+                        // Enter opens the first hit and hands the keyboard to the list.
+                        search-accepted => {
+                            root.search-accepted();
+                            keys.focus();
+                        }
+                        search-focus(focused) => { root.search-focus(focused); }
+                        scrolled => { root.list-scrolled(-self.list-y, self.list-height); }
+                    }
+                }
+
+                if root.mail-view: PaneFrame {
+                    // So the window, which cannot get narrower than its panes, leaves room for the subject and actions.
+                    min-width: root.list-min-width;
+                    focused: root.focused-pane == Pane.body;
+                    border-radius: Theme.radius;
+                    BodyPane {
+                        info: root.body-info;
+                        text: root.body-text;
+                        save-icon: root.save-icon;
+                        source-icon: root.source-icon;
+                        actions: root.tool-buttons;
+                        actions-enabled: root.tool-buttons-enabled;
+                        selection-title: root.selection-title;
+                        selection: root.selection;
+                        action(i) => { root.tool(i); }
+                        clear-selection => { root.clear-selection(); }
+                        toggle-html => { root.toggle-html(); }
+                        save-eml => { root.save-eml(); }
+                        unsubscribe => { root.unsubscribe(); }
+                        open-source => { root.open-source(); }
+                        save-attachment(i) => { root.save-attachment(i); }
+                        open-link(url) => { root.open-link(url); }
+                        page: root.page;
+                        strips: root.strips;
+                        page-width(width) => { root.page-width(width); }
+                        page-visible(top, bottom) => { root.page-visible(top, bottom); }
+                        page-hover(x, y) => { root.page-hover(x, y); }
+                        page-leave => { root.page-leave(); }
+                        page-select(fx, fy, tx, ty) => { root.page-select(fx, fy, tx, ty); }
+                        page-clicked(x, y) => { root.page-clicked(x, y); }
+                        load-remote => { root.load-remote(); }
+                        page-open-link => { root.page-open-link(); }
+                        page-copy-link => { root.copy-text(root.page.link); }
+                    }
+                }
+
+                if !root.mail-view: PaneFrame {
+                    focused: root.focused-pane != Pane.folders;
+                    border-radius: Theme.radius;
+                    RulesPane {
+                        sheet: root.sheet;
+                        banner: root.rules-banner;
+                        proposals: root.proposals;
+                        rules: root.rules;
+                        columns: root.sheet-columns;
+                        cells: root.sheet-cells;
+                        current-row <=> root.sheet-row;
+                        empty: root.sheet-empty;
+                        open-rules-file => { root.open-rules-file(); }
+                        approve(i) => { root.approve-rule(i); }
+                        reject(i) => { root.reject-rule(i); }
+                        set-enabled(i, enabled) => { root.set-enabled(i, enabled); }
+                        restore(i) => { root.restore(i); }
+                        sort(column, ascending) => { root.sort-sheet(column, ascending); }
+                    }
+                }
+            }
+        }
+    }
+
+    Splitter {
+        x: root.folders-width - self.width / 2;
+        y: panes.y;
+        height: panes.height;
+        size <=> root.folders-width;
+        min: Theme.control;
+    }
+    // In the gap between the list and the reader.
+    if root.mail-view: Splitter {
+        x: root.folders-width + root.list-width;
+        y: panes.y;
+        height: panes.height;
+        size <=> root.list-width;
+        min: root.list-min-width;
+    }
+
+    if root.history-open: HistoryDialog {
+        x: Theme.inset;
+        y: root.height - self.height - Theme.top-bar - Theme.inset;
+        lines: root.history;
+        close-icon: root.close-icon;
+        close => { root.toggle-history(); }
+    }
+
+    if root.move-open: MoveDialog {
+        x: root.folders-width + Theme.inset;
+        y: Theme.top-bar + Theme.inset;
+        targets: root.move-targets;
+        close-icon: root.close-icon;
+        filter-edited(text) => { root.move-filter(text); }
+        accepted => { root.move-accepted(); }
+        chosen(i) => { root.move-chosen(i); }
+        close => { root.escape(); }
+    }
+
+    if root.source-open: SourceDialog {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        rows: root.source-rows;
+        text: root.source-text;
+        widest: root.source-widest;
+        close-icon: root.close-icon;
+        close => { root.escape(); }
+    }
+
+    if root.about-open: AboutDialog {
+        x: (root.width - self.width) / 2;
+        y: Theme.top-bar + Theme.inset;
+        version: root.version;
+        description: root.description;
+        license: root.license;
+        repository: root.repository;
+        homepage: root.homepage;
+        close-icon: root.close-icon;
+        close => { root.menu-item(MenuAction.about); }
+        open-url(url) => { root.open-link(url); }
+    }
+
+    // Dims the panes behind the keys; a click on it closes them.
+    if root.help-open: Rectangle {
+        background: Theme.frame.background.transparentize(85%);
+        TouchArea {
+            clicked => { root.toggle-help(); }
+        }
+    }
+
+    if root.help-open: KeysDialog {
+        x: (root.width - self.width) / 2;
+        y: Theme.top-bar + Theme.inset;
+        room: root.height - 2 * (Theme.top-bar + Theme.inset);
+        keys: root.keys;
+        close-icon: root.close-icon;
+        close => { root.toggle-help(); }
+    }
+    }
+}
