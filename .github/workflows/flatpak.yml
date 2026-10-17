@@ -1,0 +1,125 @@
+# Postvak as a Flatpak bundle per Linux architecture, attached to the GitHub release. Like appimage.yml it
+# repackages dist's release binaries, so nothing compiles twice. Separate from release.yml, which dist generates and
+# owns.
+name: Flatpak
+
+on:
+  # release-plz pushes the tag with its own token, so this fires; the release itself is created by release.yml with
+  # GITHUB_TOKEN, which starts no workflows, so `release: published` only covers a release published by hand.
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+*']
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to package, e.g. v0.2.0
+        required: true
+  # A packaging change packages the latest release's binaries, so the manifest runs before the next release does.
+  pull_request:
+    paths:
+      - packaging/linux/**
+      - assets/hicolor/**
+      - .github/workflows/flatpak.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.tag || github.event.release.tag_name || github.ref_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Flatpak (${{ matrix.arch }})
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Pick the release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.event.release.tag_name || (github.event_name == 'push' && github.ref_name) || '' }}
+        run: |
+          if [ -z "$TAG" ]; then
+            TAG=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          fi
+          # On a tag push, release.yml may still be building; wait up to an hour for it to create the release.
+          for _ in $(seq 120); do
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && break
+            sleep 30
+          done
+          echo "tag=$TAG" >>"$GITHUB_OUTPUT"
+      - name: Download the release binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          ARCHIVE: postvak-${{ matrix.arch }}-unknown-linux-gnu.tar.xz
+        run: |
+          mkdir -p "$RUNNER_TEMP/release" && cd "$RUNNER_TEMP/release"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$ARCHIVE" --pattern "$ARCHIVE.sha256"
+          sha256sum -c "$ARCHIVE.sha256"
+          tar -xJf "$ARCHIVE"
+          echo "BINARY=$(find "$PWD" -type f -name postvak | head -n1)" >>"$GITHUB_ENV"
+      - name: Install flatpak-builder
+        run: |
+          sudo apt-get update && sudo apt-get install -y flatpak flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+      - name: Build the bundle
+        env:
+          ARCH: ${{ matrix.arch }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          mkdir -p dist
+          RELEASE_DATE=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json publishedAt --jq '.publishedAt[:10]')
+          export RELEASE_DATE
+          packaging/linux/flatpak.sh "$BINARY" "$ARCH" "$PWD/dist/postvak-$ARCH.flatpak"
+      - name: Smoke test
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          flatpak install --user -y --noninteractive "dist/postvak-$ARCH.flatpak"
+          dbus-run-session -- flatpak run io.github.postvak_app.postvak --version
+          dbus-run-session -- flatpak run io.github.postvak_app.postvak --help >/dev/null
+          flatpak info --user io.github.postvak_app.postvak | grep -q "Branch: stable"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: flatpak-${{ matrix.arch }}
+          path: dist/postvak-${{ matrix.arch }}.flatpak
+          retention-days: 7
+          if-no-files-found: error
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+
+  publish:
+    name: Attach to the release
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # To start docs.yml, which adds the new bundles to the Flatpak repository on the site.
+      actions: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: flatpak-*
+          path: dist
+          merge-multiple: true
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: gh release upload "$TAG" dist/*.flatpak --repo "$GITHUB_REPOSITORY" --clobber
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run docs.yml --repo "$GITHUB_REPOSITORY" --ref main

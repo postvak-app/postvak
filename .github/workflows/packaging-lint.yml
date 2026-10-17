@@ -21,6 +21,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - run: sudo apt-get update && sudo apt-get install -y desktop-file-utils shellcheck
+      - run: sudo apt-get update && sudo apt-get install -y appstream desktop-file-utils shellcheck
       - run: desktop-file-validate packaging/linux/*.desktop
-      - run: shellcheck packaging/*.sh packaging/*/*.sh packaging/linux/AppRun
+      - run: appstreamcli validate --no-net packaging/linux/*.metainfo.xml
+      - run: shellcheck packaging/*.sh packaging/*/*.sh packaging/linux/AppRun packaging/linux/flatpak/postvak-launch

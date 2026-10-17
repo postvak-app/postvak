@@ -10,7 +10,7 @@ It runs headless as a background service, at login or on a server. On top come a
 ## Quickstart
 
 ```sh
-brew install postvak-app/tap/postvak    # or cargo, mise, the macOS app or an AppImage: see Install
+brew install postvak-app/tap/postvak    # or cargo, mise, the macOS app, an AppImage or a Flatpak: see Install
 postvak account add                # asks for host, user and password, then tests the login
 postvak sync                       # first sync of every folder
 postvak list                       # newest mail in INBOX

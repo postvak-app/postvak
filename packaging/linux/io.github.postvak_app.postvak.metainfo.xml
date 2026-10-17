@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.postvak_app.postvak</id>
+  <name>Postvak</name>
+  <summary>Read and sort your mail</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT OR Apache-2.0</project_license>
+  <developer id="io.github.postvak_app">
+    <name>Postvak</name>
+  </developer>
+  <description>
+    <p>
+      Postvak is a fast, simple IMAP mail client with automatic mailbox rules. It syncs your accounts in the
+      background, runs your rules on new mail and shows it in a small window. The same app is a command line tool and
+      an MCP server, so an agent can read your inbox and propose rules.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.postvak_app.postvak.desktop</launchable>
+  <url type="homepage">https://postvak.pataar.nl/</url>
+  <url type="bugtracker">https://github.com/postvak-app/postvak/issues</url>
+  <url type="vcs-browser">https://github.com/postvak-app/postvak</url>
+  <screenshots>
+    <screenshot type="default">
+      <caption>The mail window</caption>
+      <image>https://raw.githubusercontent.com/postvak-app/postvak/main/tests/snapshots/gui_inbox_light.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Rules, with a rule an agent proposed</caption>
+      <image>https://raw.githubusercontent.com/postvak-app/postvak/main/tests/snapshots/gui_rules.png</image>
+    </screenshot>
+  </screenshots>
+  <content_rating type="oars-1.1"/>
+  <categories>
+    <category>Network</category>
+    <category>Email</category>
+  </categories>
+  <keywords>
+    <keyword>mail</keyword>
+    <keyword>email</keyword>
+    <keyword>IMAP</keyword>
+    <keyword>rules</keyword>
+  </keywords>
+</component>

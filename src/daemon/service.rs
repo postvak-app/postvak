@@ -134,6 +134,7 @@ impl Target {
 
 /// The text to print; with `dry_run` nothing is written, stopped or run.
 pub fn install(paths: &Paths, dry_run: bool) -> Result<String> {
+    refuse_in_flatpak(paths::flatpak_id().as_deref())?;
     let target = Target::current()?;
     let home = home_dir()?;
     let file = target.file(&home);
@@ -157,6 +158,7 @@ pub fn install(paths: &Paths, dry_run: bool) -> Result<String> {
 
 /// The text to print; with `dry_run` nothing is stopped, run or deleted.
 pub fn remove(dry_run: bool) -> Result<String> {
+    refuse_in_flatpak(paths::flatpak_id().as_deref())?;
     let target = Target::current()?;
     let home = home_dir()?;
     let file = target.file(&home);
@@ -177,6 +179,18 @@ pub fn remove(dry_run: bool) -> Result<String> {
         None,
         &steps,
     ))
+}
+
+/// From a Flatpak sandbox the unit would name a binary the host cannot run, and the sandbox cannot write the host's
+/// systemd folder.
+fn refuse_in_flatpak(flatpak_id: Option<&str>) -> Result<()> {
+    if let Some(id) = flatpak_id {
+        bail!(
+            "`service` does not work inside the Flatpak; add a systemd user unit that runs `flatpak run {id} run` \
+             yourself, see https://postvak.pataar.nl/install.html#flatpak-on-linux"
+        );
+    }
+    Ok(())
 }
 
 /// A daemon already running holds the lock the service's daemon needs.
@@ -320,6 +334,18 @@ fn systemd_quoted(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_flatpak_refuses_and_says_what_to_run_instead() {
+        let error = refuse_in_flatpak(Some("io.github.postvak_app.postvak")).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("flatpak run io.github.postvak_app.postvak run"),
+            "{error}"
+        );
+        assert!(refuse_in_flatpak(None).is_ok());
+    }
 
     #[test]
     fn the_launchd_plist_runs_the_binary_at_login_and_keeps_it_alive() {
