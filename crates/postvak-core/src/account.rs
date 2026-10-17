@@ -23,8 +23,14 @@ pub enum AddError {
 
 fn with_account(config: &Config, account: &AccountConfig) -> Config {
     let mut candidate = config.clone();
-    candidate.accounts.retain(|a| a.name != account.name);
-    candidate.accounts.push(account.clone());
+    match candidate
+        .accounts
+        .iter_mut()
+        .find(|a| a.name == account.name)
+    {
+        Some(existing) => *existing = account.clone(),
+        None => candidate.accounts.push(account.clone()),
+    }
     candidate
 }
 
@@ -154,12 +160,15 @@ mod tests {
         let (_dir, paths) = home();
         let mut config = Config::default();
         add(&mut config, &paths, command_account("work"), None).unwrap();
+        add(&mut config, &paths, command_account("home"), None).unwrap();
         let mut changed = command_account("work");
         changed.port = 1993;
         add(&mut config, &paths, changed, None).unwrap();
         let saved = Config::load(&paths.config_file()).unwrap();
-        assert_eq!(saved.accounts.len(), 1);
-        assert_eq!(saved.accounts[0].port, 1993);
+        assert_eq!(config.accounts, saved.accounts);
+        let names: Vec<&str> = config.accounts.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["work", "home"], "replaced in place");
+        assert_eq!(config.accounts[0].port, 1993);
     }
 
     #[test]
