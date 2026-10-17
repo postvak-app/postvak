@@ -113,6 +113,13 @@ testing = []                                         # exposes RecordingOps and 
 [profile.dev.package."*"]
 opt-level = 2
 
+# What CI tests with: optimised enough for the property tests, line tables only so builds and links stay small.
+[profile.ci]
+inherits = "dev"
+opt-level = 1
+debug = "line-tables-only"
+incremental = false
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

@@ -359,7 +359,7 @@ impl Open {
 
 /// Each element once: the query visits the rows of a `ListView` several times over. Two elements with the same label
 /// at the same spot count as one too, so `get` cannot tell those apart.
-fn once(elements: Vec<ElementHandle>) -> Vec<ElementHandle> {
+pub(crate) fn once(elements: Vec<ElementHandle>) -> Vec<ElementHandle> {
     let mut seen = Vec::new();
     let mut unique = Vec::new();
     for element in elements {

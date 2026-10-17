@@ -122,7 +122,7 @@ mod tests {
     }
 
     #[test]
-    fn text_on_the_selection_links_and_status_text_pass_aa_in_every_palette() {
+    fn text_on_its_backgrounds_passes_aa_in_every_palette() {
         for p in palettes() {
             let name = p.panel;
             let selected = contrast(p.on_accent, p.selected);
@@ -137,6 +137,19 @@ mod tests {
             for (what, color) in [("muted", p.muted), ("error", p.error)] {
                 let ratio = contrast(color, p.panel).min(contrast(color, p.hover));
                 assert!(ratio >= 4.5, "{name:?}: {what} text {ratio}");
+            }
+            let pairs = [
+                ("text", p.text, p.panel),
+                ("text", p.text, p.background),
+                ("text on hover", p.text, p.hover),
+                ("text on the selection", p.text, p.selected),
+                ("secondary on the selection", p.secondary, p.selected),
+                ("warning", p.warning, p.background),
+                ("highlight text", p.highlight, p.background),
+            ];
+            for (what, text, background) in pairs {
+                let ratio = contrast(text, background);
+                assert!(ratio >= 4.5, "{name:?}: {what} {ratio}");
             }
             let marks = contrast(p.highlight, p.panel);
             assert!(marks >= 3.0, "{name:?}: highlight marks {marks}");

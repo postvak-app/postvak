@@ -535,6 +535,7 @@ mod tests {
         ));
         fx.add("work", long);
         let (open, _wires) = fx.window();
+        open.window().set_list_width(crate::gui::list::MIN_WIDTH);
         open.window()
             .window()
             .set_size(slint::LogicalSize::new(900.0, 800.0));

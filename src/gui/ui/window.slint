@@ -458,6 +458,8 @@ export component MailWindow inherits Window {
                 }
 
                 if root.mail-view: PaneFrame {
+                    // So the window, which cannot get narrower than its panes, leaves room for the subject and actions.
+                    min-width: root.list-min-width;
                     focused: root.focused-pane == Pane.body;
                     border-radius: Theme.radius;
                     BodyPane {

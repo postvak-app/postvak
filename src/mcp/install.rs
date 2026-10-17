@@ -5,7 +5,7 @@ use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 
 use super::parse_scopes;
-use crate::paths::{stable_exe, write_atomic_keeping_dir_mode};
+use crate::paths::{flatpak_id, stable_exe, write_atomic_keeping_dir_mode};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Target {
@@ -34,6 +34,16 @@ impl Entry {
         }
         Entry {
             command: exe.to_path_buf(),
+            args,
+        }
+    }
+
+    /// The same command through `flatpak run`: a host outside the sandbox cannot see the binary inside it.
+    pub fn through_flatpak(self, app_id: &str) -> Entry {
+        let mut args = vec!["run".to_string(), app_id.to_string()];
+        args.extend(self.args);
+        Entry {
+            command: PathBuf::from("flatpak"),
             args,
         }
     }
@@ -172,17 +182,61 @@ pub fn install(
     remove: bool,
     dry_run: bool,
 ) -> Result<(String, Option<String>)> {
+    install_from(
+        target,
+        scopes,
+        accounts,
+        remove,
+        dry_run,
+        flatpak_id().as_deref(),
+    )
+}
+
+/// `flatpak` is the app id when this runs in the Flatpak sandbox.
+fn install_from(
+    target: Target,
+    scopes: &str,
+    accounts: &[String],
+    remove: bool,
+    dry_run: bool,
+    flatpak: Option<&str>,
+) -> Result<(String, Option<String>)> {
     let granted: Vec<&str> = parse_scopes(scopes)?
         .into_iter()
         .map(|s| s.as_str())
         .collect();
     let exe = stable_exe().context("finding the postvak binary")?;
     let entry = Entry::new(&exe, &granted.join(","), accounts);
+    let entry = match flatpak {
+        Some(id) => entry.through_flatpak(id),
+        None => entry,
+    };
     let wanted = (!remove).then_some(&entry);
-    let out = match target {
-        Target::Json => json_snippet(&entry),
-        Target::ClaudeDesktop => install_claude_desktop(wanted, &entry, dry_run)?,
-        Target::ClaudeCode => install_claude_code(wanted, remove, dry_run)?,
+    let out = match (target, flatpak) {
+        (Target::Json, _) => json_snippet(&entry),
+        // The sandbox cannot reach Claude Desktop's config; Claude Code is not on its PATH, so that prints commands.
+        (Target::ClaudeDesktop, Some(_)) if remove => {
+            bail!(
+                "the Flatpak cannot edit Claude Desktop's config; remove mcpServers.postvak from claude_desktop_config.json yourself"
+            )
+        }
+        (Target::ClaudeDesktop, Some(id)) => {
+            let mut json = [
+                "flatpak", "run", id, "mcp", "install", "json", "--scopes", scopes,
+            ]
+            .map(String::from)
+            .to_vec();
+            for account in accounts {
+                json.extend(["--account".to_string(), account.clone()]);
+            }
+            bail!(
+                "the Flatpak cannot edit Claude Desktop's config; run `{}` and add that entry to \
+                 claude_desktop_config.json yourself",
+                shell_words(&json)
+            )
+        }
+        (Target::ClaudeDesktop, None) => install_claude_desktop(wanted, &entry, dry_run)?,
+        (Target::ClaudeCode, _) => install_claude_code(wanted, remove, dry_run)?,
     };
     let hint = (!remove).then(|| {
         format!(
@@ -263,6 +317,49 @@ mod tests {
         assert_eq!(
             snippet["mcpServers"]["postvak"]["args"],
             serde_json::json!(["mcp", "--scopes", "read,rules:propose", "--account", "work"])
+        );
+    }
+
+    #[test]
+    fn a_flatpak_entry_runs_the_app_through_flatpak() {
+        let entry = entry().through_flatpak("io.github.postvak_app.postvak");
+        assert_eq!(
+            shell_words(&entry.argv()),
+            "flatpak run io.github.postvak_app.postvak mcp --scopes read,rules:propose --account work"
+        );
+    }
+
+    #[test]
+    fn in_a_flatpak_the_json_entry_runs_flatpak() {
+        let (out, _) = install_from(
+            Target::Json,
+            "read",
+            &[],
+            false,
+            false,
+            Some("io.github.postvak_app.postvak"),
+        )
+        .unwrap();
+        assert!(out.contains(r#""command": "flatpak""#), "{out}");
+        assert!(out.contains(r#""io.github.postvak_app.postvak""#), "{out}");
+    }
+
+    #[test]
+    fn in_a_flatpak_claude_desktop_says_what_to_run_with_the_same_flags() {
+        let accounts = ["work".to_string()];
+        let id = Some("io.github.postvak_app.postvak");
+        let error =
+            install_from(Target::ClaudeDesktop, "read", &accounts, false, false, id).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("`flatpak run io.github.postvak_app.postvak mcp install json --scopes read --account work`"),
+            "{error}"
+        );
+        let error = install_from(Target::ClaudeDesktop, "read", &[], true, false, id).unwrap_err();
+        assert!(
+            error.to_string().contains("remove mcpServers.postvak"),
+            "{error}"
         );
     }
 

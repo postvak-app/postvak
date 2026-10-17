@@ -7,6 +7,7 @@
 | crates.io | `cargo install postvak` |
 | mise | `mise use github:postvak-app/postvak` |
 | AppImage (Linux) | download `postvak-<arch>.AppImage` from the [latest release](https://github.com/postvak-app/postvak/releases/latest), see [below](#appimage-on-linux) |
+| Flatpak (Linux) | `flatpak install --user postvak io.github.postvak_app.postvak` after adding the remote, see [below](#flatpak-on-linux) |
 
 Each [GitHub release](https://github.com/postvak-app/postvak/releases) also has plain binaries for macOS and Linux on x86_64 and aarch64.
 
@@ -48,9 +49,35 @@ chmod +x postvak-x86_64.AppImage
 
 Keep the file where you run it from: the daemon it starts, `service install` and `mcp install` all point at it, so after moving it run those two again. To put it in your app launcher, use an AppImage manager such as Gear Lever or AppImageLauncher.
 
+## Flatpak on Linux
+
+Postvak has its own Flatpak repository, so it installs as a desktop app and `flatpak update` (or your software centre) brings each new release. The Freedesktop runtime it needs comes from Flathub:
+
+```sh
+flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+flatpak remote-add --user --if-not-exists postvak https://postvak.pataar.nl/flatpak/postvak.flatpakrepo
+flatpak install --user postvak io.github.postvak_app.postvak
+```
+
+Then open Postvak from your app launcher, or from a terminal:
+
+```sh
+flatpak run io.github.postvak_app.postvak                # the mail window
+flatpak run io.github.postvak_app.postvak account add    # with arguments it is the postvak command
+```
+
+An alias such as `alias postvak='flatpak run io.github.postvak_app.postvak'` saves typing. Each release also attaches the same app as a single file, `postvak-<arch>.flatpak`, for `flatpak install --user postvak-x86_64.flatpak`; that one does not update itself.
+
+The sandbox may use the network, the display, the password keyring (Secret Service), desktop notifications and your Downloads folder, where saved attachments go, and nothing else. It keeps its own config and state in `~/.var/app/io.github.postvak_app.postvak/`, so a Flatpak install does not share accounts, rules or the daemon with a `postvak` installed another way. A `password = { command = "..." }` runs inside the sandbox too, where tools such as `pass` or `op` are missing, so use the keyring there.
+
+Two commands work differently inside the sandbox, because it cannot write files for programs outside it:
+
+- `mcp install json` prints an entry that runs `flatpak run io.github.postvak_app.postvak mcp`; add it to your MCP host yourself. `mcp install claude-code` prints the `claude mcp add` commands to run, and `mcp install claude-desktop` says which `mcp install json` to run instead.
+- `service install` prints a systemd user unit that runs `flatpak run io.github.postvak_app.postvak run`, and the commands to enable it; `service remove` prints the commands to undo that.
+
 ## Desktop entry on Linux
 
-Apart from the macOS app and the AppImage, the channels above install only the binary. To get Postvak into your app launcher with its icon, run this from a checkout:
+Apart from the macOS app, the AppImage and the Flatpak, the channels above install only the binary. To get Postvak into your app launcher with its icon, run this from a checkout:
 
 ```sh
 packaging/linux/install.sh                                # into ~/.local/share, for you
