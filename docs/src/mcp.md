@@ -90,7 +90,7 @@ The names follow the CLI commands. A tool that lists things returns the CLI's `-
 `read:bodies`:
 
 - `attachment_save` saves attachment `n` into `dir`, an absolute path of an existing directory, and returns the written `path`. It fetches the message once if it is not stored yet.
-- `attachments` lists attachment names, types and sizes. It does not save them.
+- `attachments` lists attachment names, types and sizes. It does not save them; use `attachment_save` for that.
 - `show` returns the headers and the body. With this scope, `search` also covers stored bodies, in FTS5 syntax. `search` and `dry_run` never connect to the server. `show` and `attachments` fetch a message you have not stored yet, once.
 
 `rules:propose`:
