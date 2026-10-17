@@ -7,6 +7,7 @@ mod folders;
 mod html;
 mod icons;
 mod keys;
+mod launch;
 mod list;
 mod menu;
 mod numbers;
@@ -54,19 +55,88 @@ use state::App;
 const APP_ID: &str = "io.github.postvak_app.postvak";
 
 /// Opens the window and returns when it closes. When it cannot start, a small window says why before the error is
-/// returned, since a launch from a desktop entry or Finder has no terminal for stderr.
-pub fn run(paths: Result<Paths>) -> Result<()> {
+/// returned, since a launch from a desktop entry or Finder has no terminal for stderr. When no window can open, it
+/// tries once more with the software renderer. Safe mode, asked for or after two starts in a row that died before
+/// the window showed, draws in software and ignores the saved layout.
+pub fn run(paths: Result<Paths>, safe_mode: bool) -> Result<()> {
     if let Err(e) = slint::set_xdg_app_id(APP_ID) {
         log::debug!("could not set the app id: {e}");
     }
-    let error = match paths {
-        Ok(paths) => match open(paths.clone()) {
-            Ok(()) => return Ok(()),
-            Err(e) => explain(e, Some(&paths.daemon_log())),
-        },
-        Err(e) => explain(e, None),
+    let marker = paths
+        .as_ref()
+        .ok()
+        .map(|paths| launch::Marker::new(&paths.state_dir));
+    let failed_starts = marker.as_ref().map_or(0, launch::Marker::failed_starts);
+    let safe_mode = launch::safe_mode(safe_mode, failed_starts);
+    if safe_mode {
+        log::warn!("safe mode: the software renderer and the default window layout");
+    }
+    if let Some(marker) = &marker {
+        marker.set(failed_starts + 1);
+    }
+    let backend = std::env::var("SLINT_BACKEND").ok();
+    let renderer = launch::renderer(safe_mode, backend.as_deref());
+    launch::select(renderer);
+    let daemon_log = paths.as_ref().ok().map(Paths::daemon_log);
+    let (error, window_error) = match start(paths, safe_mode, marker.as_ref()) {
+        Ok(()) => return Ok(()),
+        Err(Failure::Explained(error)) => return Err(error),
+        Err(Failure::NoWindow { error, window }) => (error, window),
     };
+    if renderer == launch::Renderer::Default {
+        log::warn!("no window could open ({window_error:#}); trying the software renderer");
+        // The retry counts this start itself.
+        if let Some(marker) = &marker {
+            marker.set(failed_starts);
+        }
+        match launch::retry_in_software() {
+            Ok(status) if status.success() => return Ok(()),
+            Ok(status) => bail!("the software renderer failed too ({status})"),
+            Err(e) => log::warn!("could not start again: {e}"),
+        }
+    }
+    launch::report(&window_error, daemon_log.as_deref());
     Err(error)
+}
+
+enum Failure {
+    /// The error, after a window showed it.
+    Explained(anyhow::Error),
+    /// The error, and why no window could open to show it.
+    NoWindow {
+        error: anyhow::Error,
+        window: anyhow::Error,
+    },
+}
+
+/// The mail window, or the window that says why it could not start.
+fn start(
+    paths: Result<Paths>,
+    safe_mode: bool,
+    marker: Option<&launch::Marker>,
+) -> Result<(), Failure> {
+    let (error, daemon_log) = match paths {
+        Ok(paths) => {
+            let daemon_log = paths.daemon_log();
+            match open(paths, safe_mode, marker) {
+                Ok(()) => return Ok(()),
+                Err(e) => (e, Some(daemon_log)),
+            }
+        }
+        Err(e) => (e, None),
+    };
+    if launch::no_window(&error) {
+        let window = anyhow::anyhow!("{error:#}");
+        return Err(Failure::NoWindow { error, window });
+    }
+    match explain(&error, daemon_log.as_deref(), marker) {
+        Ok(()) => Err(Failure::Explained(error)),
+        Err(window) if launch::no_window(&window) => Err(Failure::NoWindow { error, window }),
+        Err(window) => {
+            log::warn!("the startup window failed: {window:#}");
+            Err(Failure::Explained(error))
+        }
+    }
 }
 
 /// The window and the app behind it, owned by the event loop's thread. Daemon events and timers reach it through
@@ -225,16 +295,19 @@ fn raise(window: &ui::MailWindow) {
 }
 
 /// The mail window, until it closes: a config with an account, the daemon, then the window.
-fn open(paths: Paths) -> Result<()> {
+fn open(paths: Paths, safe_mode: bool, marker: Option<&launch::Marker>) -> Result<()> {
     let config = Config::load(&paths.config_file())?;
     if config.accounts.is_empty() {
         bail!(startup::NoAccounts);
     }
     let (client, events, states) = state::connect(&paths, Box::new(wake))?;
     let window = ui::MailWindow::new().context("could not open the window")?;
+    launch::watch(window.window(), marker.cloned());
     let _scheme = follow_desktop_scheme(&window)?;
     let layout = persist::path(&paths);
-    restore(&window, persist::load(&layout));
+    if !safe_mode {
+        restore(&window, persist::load(&layout));
+    }
     let mut app = App::new(&config, paths, client, events, states);
     app.wake = std::sync::Arc::new(wake);
     window.show().context("could not show the window")?;
@@ -304,20 +377,23 @@ fn remember(window: &ui::MailWindow) -> persist::Layout {
     }
 }
 
-/// Shows why the mail window could not start until the user closes it, then hands the error back for stderr and the
-/// exit code. Without a display there is no window, and stderr is all there is. The window remembers nothing.
-fn explain(error: anyhow::Error, log: Option<&Path>) -> anyhow::Error {
-    let problem = startup::Problem::of(&error, log);
+/// Shows why the mail window could not start until the user closes it; the caller prints the error and sets the exit
+/// code. Without a display there is no window, and stderr is all there is. The window remembers nothing.
+fn explain(
+    error: &anyhow::Error,
+    log: Option<&Path>,
+    marker: Option<&launch::Marker>,
+) -> Result<()> {
+    let problem = startup::Problem::of(error, log);
     let open_docs = |url: &str| {
         if let Err(e) = state::launch(url.as_ref(), false) {
             log::warn!("could not open the docs: {e}");
         }
     };
-    let shown = startup_window(&problem, open_docs).and_then(|window| window.run());
-    if let Err(e) = shown {
-        log::debug!("could not show the startup error in a window: {e}");
-    }
-    error
+    let window = startup_window(&problem, open_docs)?;
+    launch::watch(window.window(), marker.cloned());
+    window.run()?;
+    Ok(())
 }
 
 fn startup_window(
