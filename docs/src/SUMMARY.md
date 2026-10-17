@@ -10,3 +10,4 @@
 - [Agent guide](agent-guide.md)
 - [Agents over MCP](mcp.md)
 - [CLI reference](cli.md)
+- [Performance](perf.md)
