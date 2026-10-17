@@ -5,6 +5,7 @@ Spec: `docs/superpowers/specs/2026-10-06-postvak-core-design.md`. Read it before
 ## Module map
 Four crates in one workspace. `crates/postvak-core` holds every module below except `gui`, `update`, `mcp` and `main` + `cli/`; `crates/postvak-gui` holds `gui` (its crate root) and `update`; `crates/postvak-mcp` holds `mcp`; the root crate `postvak` is the binary, whose `gui` and `mcp` features turn the front-end crates on. Below the front ends nothing depends on Slint, Blitz or rmcp, and only `postvak-core` depends on rusqlite (the front ends only in tests), so nothing else can open a store. A published crate cannot reach files outside its directory, so what one embeds from `assets/` or `docs/src/` is a symlink inside it (`crates/postvak-gui/assets/`, `crates/postvak-core/src/agent-guide.md`).
 
+- `account` adding an account (validate, store the keyring secret, save config.toml) and waiting for the daemon to start it; the only code that adds one
 - `actions` direct actions on chosen messages (mark, move, archive, delete); same `apply` as rules
 - `config` accounts and identity (address + aliases)
 - `credentials` keyring or password command; `Secret` has no Debug
