@@ -1,30 +1,28 @@
-//! The middle column: one row per thread, followed by its members when expanded.
+//! The message list without a toolkit: one row per thread, followed by its members when expanded; columns, dates and
+//! the accessible row names. The window draws it (`ui/list.slint`, `rows.rs`).
 use std::collections::{HashMap, HashSet};
 
-use chrono::{DateTime, Datelike, Local, TimeZone};
-use eframe::egui;
+use chrono::{DateTime, Datelike, TimeZone};
 
 use crate::message::clean;
 use crate::rules::Action;
 use crate::store::{Message, MessageSummary, ThreadSummary};
 
-use super::app::{App, UiAction, View};
-use super::theme::{self, PAD, Palette, ROW};
-use super::{folders, icons, numbers};
+use super::folders;
+use crate::store::Filter;
+
+use super::state::{App, UiAction, View};
+use super::theme::LIST_ROW;
 
 /// Threads loaded per folder. ponytail: older mail is reachable through search; page by date if that is not enough.
-pub(crate) const THREAD_LIMIT: u32 = 10_000;
+pub const THREAD_LIMIT: u32 = 10_000;
 /// Results shown for one search.
-pub(crate) const SEARCH_LIMIT: u32 = 500;
+pub const SEARCH_LIMIT: u32 = 500;
 
-pub(crate) type RowKey = (String, u32);
-
-pub(crate) fn search_id() -> egui::Id {
-    egui::Id::new("search")
-}
+pub type RowKey = (String, u32);
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Row {
+pub struct Row {
     /// Index into `App::accounts`: the account the message lives in.
     pub account: usize,
     pub count: u32,
@@ -91,10 +89,16 @@ pub(crate) struct ListState {
     pub cursor: usize,
     /// Expanded threads by account and thread id: mail sent to two accounts shares its thread id.
     pub expanded: HashMap<(usize, String), Vec<MessageSummary>>,
-    /// Set when a key moved the cursor, so this frame scrolls it into view.
+    /// Set when the cursor moved, so the list scrolls it into view; cleared once the list reports where it scrolled.
     pub follow_cursor: bool,
     pub hits: Vec<Row>,
     pub marked: HashSet<(usize, RowKey)>,
+    /// What the servers found for the current query, by account; the rows come from the store.
+    pub server_hits: Vec<(usize, RowKey)>,
+    /// How many accounts' servers were asked for the current query and have not answered.
+    pub server_searching: usize,
+    /// Whether the servers were asked for the current query.
+    pub server_asked: bool,
     pub rows: Vec<Row>,
     /// Each thread with the account it is in.
     pub threads: Vec<(usize, ThreadSummary)>,
@@ -102,8 +106,19 @@ pub(crate) struct ListState {
     pub viewport: (f32, f32),
 }
 
+impl ListState {
+    /// Whether the cursor's row is in view, or as much of it as a list lower than a row shows; not before the list
+    /// has reported its height.
+    pub fn cursor_shown(&self) -> bool {
+        let (offset, height) = self.viewport;
+        height > 0.0
+            && (height < LIST_ROW
+                || offset_showing(self.cursor, LIST_ROW, offset, height) == offset)
+    }
+}
+
 /// One row per thread describing its latest message, followed by its members when expanded.
-pub(crate) fn build_rows(
+pub fn build_rows(
     folder: &str,
     threads: &[(usize, ThreadSummary)],
     expanded: &HashMap<(usize, String), Vec<MessageSummary>>,
@@ -129,7 +144,7 @@ pub(crate) fn build_rows(
 
 /// What a sent action will do to a row, shown until its `ActionDone` arrives.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Optimistic {
+pub enum Optimistic {
     Flagged(bool),
     Hidden,
     Seen(bool),
@@ -138,9 +153,12 @@ pub(crate) enum Optimistic {
 impl Optimistic {
     pub fn of(action: &Action) -> Option<Optimistic> {
         match action {
-            Action::Archive | Action::Delete | Action::Move(_) | Action::Trash => {
-                Some(Optimistic::Hidden)
-            }
+            Action::Archive
+            | Action::Delete
+            | Action::Junk
+            | Action::Move(_)
+            | Action::NotJunk
+            | Action::Trash => Some(Optimistic::Hidden),
             Action::Flag => Some(Optimistic::Flagged(true)),
             Action::MarkRead => Some(Optimistic::Seen(true)),
             Action::MarkUnread => Some(Optimistic::Seen(false)),
@@ -152,7 +170,7 @@ impl Optimistic {
 
 /// Rows of sent actions as they will be: moved rows hidden, read and flag changes shown, a later edit over an earlier.
 /// `pending[i]` is account i's edits, as `App::accounts` is ordered.
-pub(crate) fn apply_pending(rows: &mut Vec<Row>, pending: &[&HashMap<RowKey, Vec<Optimistic>>]) {
+pub fn apply_pending(rows: &mut Vec<Row>, pending: &[&HashMap<RowKey, Vec<Optimistic>>]) {
     if pending.iter().all(|edits| edits.is_empty()) {
         return;
     }
@@ -175,8 +193,153 @@ fn edits_of<'a>(pending: &[&'a HashMap<RowKey, Vec<Optimistic>>], row: &Row) -> 
         .map_or(&[][..], Vec::as_slice)
 }
 
+/// The list's heading: the folder's name, or All inboxes; none in the rules views.
+pub(crate) fn title(view: &View) -> Option<&str> {
+    match view {
+        View::AllInboxes => Some("All inboxes"),
+        View::Folder { folder, .. } => Some(folders::label(folder)),
+        _ => None,
+    }
+}
+
+/// The search field's hint.
+pub(crate) fn search_hint(view: &View) -> &'static str {
+    if *view == View::AllInboxes {
+        "Search every account"
+    } else {
+        "Search this account"
+    }
+}
+
+/// The line under the search field.
+pub(crate) fn results(app: &App) -> String {
+    let count = super::numbers::count(app.list.rows.len() as u64);
+    let note = if app.list.server_searching > 0 {
+        "searching the server…"
+    } else if app.list.server_asked {
+        "with what the server found"
+    } else {
+        "Enter also searches the server, for mail whose body is not downloaded"
+    };
+    format!("{count} results · {note}")
+}
+
+/// What an empty list says instead of rows; nothing before a search query is typed.
+pub(crate) fn empty(view: &View, search: Option<&str>, filter: Filter) -> String {
+    let kind = FILTERS
+        .iter()
+        .find(|(_, f)| *f == filter && filter != Filter::default())
+        .map_or(String::new(), |(label, _)| {
+            format!("{} ", label.to_lowercase())
+        });
+    match search {
+        Some("") => String::new(),
+        Some(_) => "No mail matches.".into(),
+        None if *view == View::AllInboxes => format!("No {kind}mail in any inbox."),
+        None => format!("No {kind}mail in this folder."),
+    }
+}
+
+/// The list's filter switch, left to right.
+pub(crate) const FILTERS: [(&str, Filter); 4] = [
+    (
+        "All",
+        Filter {
+            unread: false,
+            flagged: false,
+            attachments: false,
+        },
+    ),
+    (
+        "Unread",
+        Filter {
+            unread: true,
+            flagged: false,
+            attachments: false,
+        },
+    ),
+    (
+        "Flagged",
+        Filter {
+            unread: false,
+            flagged: true,
+            attachments: false,
+        },
+    ),
+    (
+        "Attachments",
+        Filter {
+            unread: false,
+            flagged: false,
+            attachments: true,
+        },
+    ),
+];
+
+/// The text beside the pointer while rows are dragged: how many marked rows move, else the row's subject, shortened.
+pub(crate) fn drag_label(marked: usize, subject: &str) -> String {
+    const LONGEST: usize = 40;
+    if marked > 1 {
+        format!("{} messages", super::numbers::count(marked as u64))
+    } else if subject.chars().count() > LONGEST {
+        format!("{}…", subject.chars().take(LONGEST - 1).collect::<String>())
+    } else {
+        subject.to_string()
+    }
+}
+
+/// The right-click menu of a message row, in three groups; its items act like the toolbar, on the marked rows or this
+/// one.
+pub(crate) fn menu(row: &Row, in_junk: bool) -> [Vec<(&'static str, UiAction)>; 3] {
+    let (read, read_label) = if row.unread {
+        (Action::MarkRead, "Mark as read")
+    } else {
+        (Action::MarkUnread, "Mark as unread")
+    };
+    let (flag, flag_label) = if row.flagged {
+        (Action::Unflag, "Unflag")
+    } else {
+        (Action::Flag, "Flag")
+    };
+    [
+        vec![
+            (read_label, UiAction::Act(read)),
+            (flag_label, UiAction::Act(flag)),
+        ],
+        vec![
+            ("Archive", UiAction::Act(Action::Archive)),
+            ("Move to…", UiAction::OpenMovePicker),
+            ("Delete", UiAction::Act(Action::Trash)),
+            (
+                if in_junk { "Not junk" } else { "Junk" },
+                UiAction::Act(Action::Junk),
+            ),
+        ],
+        vec![
+            ("View source", UiAction::OpenSource),
+            ("Save .eml", UiAction::SaveEml),
+        ],
+    ]
+}
+
+/// The counts beside the list's title: "3 threads, 1 unread".
+pub(crate) fn counts(rows: &[Row]) -> String {
+    let threads: Vec<&Row> = rows.iter().filter(|row| !row.member).collect();
+    let unread = threads.iter().filter(|row| row.unread).count();
+    let noun = if threads.len() == 1 {
+        "thread"
+    } else {
+        "threads"
+    };
+    format!(
+        "{} {noun}, {} unread",
+        super::numbers::count(threads.len() as u64),
+        super::numbers::count(unread as u64)
+    )
+}
+
 /// "Alice <alice@x>, bob@y" is "Alice"; without a name, the first address.
-pub(crate) fn display_name(field: &str) -> String {
+pub fn display_name(field: &str) -> String {
     let field = field.trim();
     if let Some(rest) = field.strip_prefix('"')
         && let Some((name, _)) = rest.split_once('"')
@@ -199,7 +362,7 @@ pub(crate) fn display_name(field: &str) -> String {
 }
 
 /// The time today, weekday and time within the past week, day and month this year, else day, month and year.
-pub(crate) fn list_date<Tz: TimeZone>(ts: i64, now: &DateTime<Tz>) -> String
+pub fn list_date<Tz: TimeZone>(ts: i64, now: &DateTime<Tz>) -> String
 where
     Tz::Offset: std::fmt::Display,
 {
@@ -220,42 +383,19 @@ where
 }
 
 /// One list row split into what each column draws, cleaned of control characters.
-pub(crate) struct Columns {
+pub struct Columns {
     pub account: Option<String>,
-    pub unread: bool,
-    pub flagged: bool,
-    pub marked: bool,
     pub who: String,
     pub subject: String,
     pub date: String,
-    pub member: bool,
 }
 
-/// The unread dot's cell, then the flag's or mark's, before the sender.
-const DOT: f32 = 12.0;
-const MARKER: f32 = 20.0;
-const MARKERS: f32 = DOT + MARKER;
-const GAP: f32 = 12.0;
-/// Narrower than this, a column is left out: truncating would still draw its "…", over the date.
-const MIN_TEXT: f32 = 16.0;
 /// The list pane's narrowest width, so the unread dot and the flag never reach the date.
-pub(crate) const MIN_WIDTH: f32 = 220.0;
-/// How much further a thread member's sender is indented than its thread row's: a level, as in the folder tree.
-const MEMBER_INDENT: f32 = theme::INSET;
-/// The account tag's widest, so a long account name leaves room for the sender.
-const TAG: f32 = 80.0;
-/// A row's height: the sender and date, then the subject.
-pub(crate) const LIST_ROW: f32 = 2.0 * ROW;
+pub const MIN_WIDTH: f32 = 220.0;
 
-/// The sender's width in a row of `total` px whose date needs `date` px; the subject below has the full width.
-pub(crate) fn sender_width(total: f32, date: f32) -> f32 {
-    (total - MARKERS - date - GAP).max(0.0)
-}
-
-pub(crate) fn columns<Tz: TimeZone>(
+pub fn columns<Tz: TimeZone>(
     row: &Row,
     account: Option<&str>,
-    marked: bool,
     recipient: bool,
     in_search: bool,
     now: &DateTime<Tz>,
@@ -274,28 +414,14 @@ where
     }
     Columns {
         account: account.map(|name| clean(name, false)),
-        unread: row.unread,
-        flagged: row.flagged,
-        marked,
         who: clean(&who, false),
         subject: clean(&subject, false),
         date: list_date(row.date, now),
-        member: row.member,
     }
 }
 
-/// Unread dot, flag, sender (recipient in Sent and Drafts), subject, thread count and date, on one line.
-pub(crate) fn row_text<Tz: TimeZone>(
-    row: &Row,
-    account: Option<&str>,
-    recipient: bool,
-    in_search: bool,
-    now: &DateTime<Tz>,
-) -> String
-where
-    Tz::Offset: std::fmt::Display,
-{
-    let who = display_name(if recipient { &row.to } else { &row.from });
+/// Unread dot, flag, then the row's `columns` on one line.
+pub fn row_text(row: &Row, columns: &Columns) -> String {
     let mut text = String::from(if row.unread { "• " } else { "   " });
     if row.flagged {
         text.push_str("⚑ ");
@@ -303,129 +429,18 @@ where
     if row.member {
         text.push_str("      ");
     }
-    if let Some(account) = account {
+    if let Some(account) = &columns.account {
         text.push_str(&format!("{account} · "));
     }
-    if in_search {
-        text.push_str(&format!("[{}] ", folders::label(&row.folder)));
-    }
-    text.push_str(&format!("{who} — {}", row.subject));
-    if row.count > 1 {
-        text.push_str(&format!(" ({})", row.count));
-    }
-    text.push_str(&format!("  ·  {}", list_date(row.date, now)));
-    clean(&text, false)
-}
-
-/// Unread dot, flag or mark, sender and the date right-aligned, then the subject below, both truncated with "…";
-/// everything on-accent when the row is selected.
-fn draw_row(
-    ui: &egui::Ui,
-    rect: egui::Rect,
-    c: &Columns,
-    selected: bool,
-    hovered: bool,
-    palette: &Palette,
-    font: &egui::FontId,
-) {
-    let painter = ui.painter_at(rect);
-    if selected {
-        painter.rect_filled(rect, theme::RADIUS, palette.selected);
-    } else if hovered {
-        painter.rect_filled(rect, theme::RADIUS, palette.hover);
-    } else {
-        let rule = egui::Stroke::new(1.0, palette.border);
-        painter.hline(rect.x_range(), rect.bottom() - 0.5, rule);
-    }
-    let ink = |color| if selected { palette.on_accent } else { color };
-    let first = rect.top() + rect.height() / 3.0;
-    let second = rect.top() + 2.0 * rect.height() / 3.0;
-    let mut x = rect.left() + PAD;
-    if c.unread {
-        painter.circle_filled(egui::pos2(x + 3.0, first), 3.0, ink(palette.highlight));
-    }
-    x += DOT;
-    let marker = if c.marked {
-        Some(icons::CHECK)
-    } else if c.flagged {
-        Some(icons::FLAG)
-    } else {
-        None
-    };
-    if let Some(marker) = marker {
-        painter.text(
-            egui::pos2(x + MARKER / 2.0 - 2.0, first),
-            egui::Align2::CENTER_CENTER,
-            marker,
-            font.clone(),
-            ink(palette.highlight),
-        );
-    }
-    x += MARKER;
-    let date_color = ink(palette.muted);
-    let mono = egui::FontId::monospace(font.size - 1.0);
-    let date = painter.layout_no_wrap(c.date.clone(), mono, date_color);
-    let date_at = egui::pos2(
-        rect.right() - PAD - date.size().x,
-        first - date.size().y / 2.0,
-    );
-    let sender_width = sender_width(rect.width() - 2.0 * PAD, date.size().x);
-    painter.galley(date_at, date, date_color);
-    let (sender_color, subject_color) = if c.unread {
-        (palette.text, palette.text)
-    } else {
-        (palette.secondary, palette.muted)
-    };
-    let sender_font = if c.unread {
-        egui::FontId::new(font.size, theme::named(theme::BOLD))
-    } else {
-        font.clone()
-    };
-    let truncated = |text: &str, font: &egui::FontId, width: f32, color| {
-        let mut job =
-            egui::text::LayoutJob::simple_singleline(text.to_string(), font.clone(), color);
-        job.wrap = egui::text::TextWrapping::truncate_at_width(width.max(0.0));
-        painter.layout_job(job)
-    };
-    let indent = if c.member { MEMBER_INDENT } else { 0.0 };
-    let x = x + indent;
-    let mut sender_x = x;
-    let tag_width = TAG.min(sender_width - indent);
-    if let Some(account) = &c.account
-        && tag_width >= MIN_TEXT
-    {
-        let small = egui::FontId::new(font.size - 2.0, font.family.clone());
-        let tag = truncated(account, &small, tag_width, ink(palette.muted));
-        let width = tag.size().x;
-        painter.galley(
-            egui::pos2(x, first - tag.size().y / 2.0),
-            tag,
-            ink(palette.muted),
-        );
-        sender_x += width + PAD;
-    }
-    let sender_room = sender_width - indent - (sender_x - x);
-    if sender_room >= MIN_TEXT {
-        let sender = truncated(&c.who, &sender_font, sender_room, ink(sender_color));
-        painter.galley(
-            egui::pos2(sender_x, first - sender.size().y / 2.0),
-            sender,
-            ink(sender_color),
-        );
-    }
-    let subject_width = rect.right() - PAD - x;
-    if subject_width >= MIN_TEXT {
-        let subject = truncated(&c.subject, font, subject_width, ink(subject_color));
-        painter.galley(
-            egui::pos2(x, second - subject.size().y / 2.0),
-            subject,
-            ink(subject_color),
-        );
-    }
+    text.push_str(&format!(
+        "{} — {}  ·  {}",
+        columns.who, columns.subject, columns.date
+    ));
+    text
 }
 
 /// The scroll offset that shows the cursor row, moving the view as little as possible.
-pub(crate) fn offset_showing(cursor: usize, row_height: f32, offset: f32, height: f32) -> f32 {
+pub fn offset_showing(cursor: usize, row_height: f32, offset: f32, height: f32) -> f32 {
     let top = cursor as f32 * row_height;
     let bottom = top + row_height;
     if top < offset {
@@ -438,10 +453,10 @@ pub(crate) fn offset_showing(cursor: usize, row_height: f32, offset: f32, height
 }
 
 /// The folder All inboxes shows from each account; sync stores and queries it by this exact name.
-pub(crate) const INBOX: &str = "INBOX";
+pub const INBOX: &str = "INBOX";
 
 /// Search hits of several accounts, newest first, at most `limit`; each account's own order is kept on equal dates.
-pub(crate) fn merge_hits(mut hits: Vec<Row>, limit: u32) -> Vec<Row> {
+pub fn merge_hits(mut hits: Vec<Row>, limit: u32) -> Vec<Row> {
     hits.sort_by_key(|row| std::cmp::Reverse(row.date));
     hits.truncate(limit as usize);
     hits
@@ -449,7 +464,7 @@ pub(crate) fn merge_hits(mut hits: Vec<Row>, limit: u32) -> Vec<Row> {
 
 /// Threads of several accounts in one list, the most recently active first, at most `limit`. The sort is stable, so
 /// each account keeps its own order and equal dates keep account order.
-pub(crate) fn merge_threads(
+pub fn merge_threads(
     per_account: Vec<(usize, Vec<ThreadSummary>)>,
     limit: u32,
 ) -> Vec<(usize, ThreadSummary)> {
@@ -462,210 +477,12 @@ pub(crate) fn merge_threads(
     threads
 }
 
-pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
-    let mut actions = Vec::new();
-    let list = &app.list;
-    let recipient = app.shows_recipient();
-    let now = Local::now();
-    if app.search.is_none() {
-        match &app.view {
-            View::AllInboxes => title(ui, "All inboxes", &list.rows),
-            View::Folder { folder, .. } => title(ui, folders::label(folder), &list.rows),
-            _ => {}
-        }
-    }
-    if let Some(query) = &app.search {
-        let mut text = query.clone();
-        let response = theme::text_field(
-            ui,
-            egui::TextEdit::singleline(&mut text)
-                .id(search_id())
-                .hint_text(if app.view == View::AllInboxes {
-                    "Search every account"
-                } else {
-                    "Search this account"
-                })
-                .desired_width(f32::INFINITY),
-        );
-        if app.focus_search {
-            response.request_focus();
-            actions.push(UiAction::SearchFocused);
-        }
-        if response.changed() {
-            actions.push(UiAction::SearchFor(text));
-        }
-        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-            actions.push(UiAction::SelectRow(0));
-        }
-        ui.weak(format!(
-            "{} results · mail whose body is not downloaded matches on sender, recipients and subject only",
-            numbers::count(list.rows.len() as u64)
-        ));
-    }
-    let mut area = egui::ScrollArea::vertical().auto_shrink(false);
-    if list.follow_cursor {
-        let row_height = LIST_ROW + ui.spacing().item_spacing.y;
-        let (offset, height) = list.viewport;
-        area = area.vertical_scroll_offset(offset_showing(list.cursor, row_height, offset, height));
-    }
-    let palette = theme::palette(ui);
-    let font = egui::TextStyle::Button.resolve(ui.style());
-    let output = area.show_rows(ui, LIST_ROW, list.rows.len(), |ui, range| {
-        for index in range {
-            let row = &list.rows[index];
-            let marked = list.marked.contains(&row.id());
-            let selected = index == list.cursor || marked;
-            let (rect, response) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), LIST_ROW),
-                egui::Sense::click(),
-            );
-            let account =
-                (app.view == View::AllInboxes).then(|| app.accounts[row.account].name.as_str());
-            let c = columns(row, account, marked, recipient, app.search.is_some(), &now);
-            draw_row(ui, rect, &c, selected, response.hovered(), palette, &font);
-            let mut name = row_text(row, account, recipient, app.search.is_some(), &now);
-            if marked {
-                name = format!("✔ {name}");
-            }
-            response.widget_info(|| {
-                egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &name)
-            });
-            // A right click acts on the row under the pointer, unless it is one of the marked rows.
-            if response.clicked() || (response.secondary_clicked() && !marked) {
-                actions.push(UiAction::SelectRow(index));
-            }
-            response.context_menu(|ui| actions.extend(mail_menu(ui, row)));
-        }
-    });
-    actions.push(UiAction::ListViewport {
-        offset: output.state.offset.y,
-        height: output.inner_rect.height(),
-    });
-    actions
-}
-
-/// The right-click menu of a message row; its items act like the toolbar, on the marked rows or this one.
-fn mail_menu(ui: &mut egui::Ui, row: &Row) -> Vec<UiAction> {
-    let (read, read_label) = if row.unread {
-        (Action::MarkRead, "Mark as read")
-    } else {
-        (Action::MarkUnread, "Mark as unread")
-    };
-    let (flag, flag_label) = if row.flagged {
-        (Action::Unflag, "Unflag")
-    } else {
-        (Action::Flag, "Flag")
-    };
-    let groups = [
-        vec![
-            (read_label, Some("u"), UiAction::Act(read)),
-            (flag_label, Some("s"), UiAction::Act(flag)),
-        ],
-        vec![
-            ("Archive", Some("e"), UiAction::Act(Action::Archive)),
-            ("Move to…", Some("m"), UiAction::OpenMovePicker),
-            ("Delete", Some("#"), UiAction::Act(Action::Trash)),
-        ],
-        vec![
-            ("View source", None, UiAction::OpenSource),
-            ("Save .eml", None, UiAction::SaveEml),
-        ],
-    ];
-    let mut actions = Vec::new();
-    for (index, group) in groups.into_iter().enumerate() {
-        if index > 0 {
-            ui.separator();
-        }
-        for (label, shortcut, action) in group {
-            let button = egui::Button::new(label);
-            let button = match shortcut {
-                Some(key) => button.shortcut_text(key),
-                None => button,
-            };
-            if ui.add(button).clicked() {
-                actions.push(action);
-            }
-        }
-    }
-    actions
-}
-
-/// The folder's name as a heading, then how many threads it shows and how many are unread.
-fn title(ui: &mut egui::Ui, name: &str, rows: &[Row]) {
-    let threads: Vec<&Row> = rows.iter().filter(|row| !row.member).collect();
-    let unread = threads.iter().filter(|row| row.unread).count();
-    let noun = if threads.len() == 1 {
-        "thread"
-    } else {
-        "threads"
-    };
-    theme::heading_row(ui, |ui| {
-        // In line with the rows' content, which sits a padding inside each row.
-        ui.add_space(PAD);
-        ui.heading(clean(name, false));
-        ui.weak(format!(
-            "{} {noun}, {} unread",
-            numbers::count(threads.len() as u64),
-            numbers::count(unread as u64)
-        ));
-    });
-}
-
-/// The `m` popup: type to filter the folders of the selected rows' account, Enter or a click moves. It leaves out the
-/// folder the cursor message is in.
-pub(crate) fn show_move_picker(app: &App, ctx: &egui::Context) -> Vec<UiAction> {
-    let mut actions = Vec::new();
-    let (Some(filter), Some(row)) = (&app.move_picker, app.selected_rows().first().copied()) else {
-        return actions;
-    };
-    let folder = app
-        .list
-        .rows
-        .get(app.list.cursor)
-        .map_or(&row.folder, |cursor| &cursor.folder);
-    let needle = filter.to_lowercase();
-    let names: Vec<&str> = app.accounts[row.account]
-        .folders
-        .iter()
-        .map(|f| f.name.as_str())
-        .filter(|name| name != folder && name.to_lowercase().contains(&needle))
-        .collect();
-    egui::Window::new("Move to")
-        .collapsible(false)
-        .resizable(false)
-        .show(ctx, |ui| {
-            let mut text = filter.clone();
-            let response = theme::text_field(
-                ui,
-                egui::TextEdit::singleline(&mut text).hint_text("Folder"),
-            );
-            response.request_focus();
-            if response.changed() {
-                actions.push(UiAction::MoveFilter(text));
-            }
-            if ui.input(|i| i.key_pressed(egui::Key::Enter))
-                && let Some(first) = names.first()
-            {
-                actions.push(UiAction::MoveTo(first.to_string()));
-            }
-            for name in &names {
-                if ui.selectable_label(false, clean(name, false)).clicked() {
-                    actions.push(UiAction::MoveTo(name.to_string()));
-                }
-            }
-        });
-    actions
-}
-
 #[cfg(test)]
 mod tests {
     use chrono::{TimeZone, Utc};
-    use eframe::egui;
-    use egui_kittest::kittest::Queryable;
 
     use super::*;
-    use crate::gui::app::{Focus, View};
-    use crate::gui::test_support::{Fixture, message};
+    use crate::gui::test_support::message;
     use crate::store::{MessageSummary, ThreadSummary};
 
     #[test]
@@ -712,10 +529,6 @@ mod tests {
             date: 1_790_000_000 + i64::from(uid),
             flags: flags.into(),
         }
-    }
-
-    fn has_row(harness: &egui_kittest::Harness<'_, crate::gui::App>, uid: u32) -> bool {
-        harness.state().list.rows.iter().any(|row| row.uid == uid)
     }
 
     #[test]
@@ -792,8 +605,7 @@ mod tests {
             .with_ymd_and_hms(2026, 10, 6, 9, 13, 0)
             .unwrap()
             .timestamp();
-        let c = columns(&row, None, false, false, true, &now);
-        assert!(c.unread && c.flagged && !c.marked);
+        let c = columns(&row, None, false, true, &now);
         assert_eq!(c.who, "Linus Example");
         assert_eq!(c.subject, "[Inbox] Lunch? (3)");
         assert_eq!(c.date, "09:13");
@@ -803,42 +615,17 @@ mod tests {
     fn the_account_tag_comes_before_the_sender() {
         let now = Utc.with_ymd_and_hms(2026, 10, 6, 12, 0, 0).unwrap();
         let row = Row::from_message(1, &message("INBOX", 1, "hello"));
-        let text = row_text(&row, Some("work"), false, false, &now);
+        let text = row_text(&row, &columns(&row, Some("work"), false, false, &now));
         assert!(text.starts_with("   work · Sender 1 — hello"), "{text}");
-        assert!(row_text(&row, None, false, false, &now).starts_with("   Sender 1 — hello"));
+        let text = row_text(&row, &columns(&row, None, false, false, &now));
+        assert!(text.starts_with("   Sender 1 — hello"), "{text}");
         assert_eq!(
-            columns(&row, Some("work"), false, false, false, &now)
+            columns(&row, Some("work"), false, false, &now)
                 .account
                 .as_deref(),
             Some("work")
         );
-        assert_eq!(columns(&row, None, false, false, false, &now).account, None);
-    }
-
-    #[test]
-    fn rows_name_their_account_in_all_inboxes_only() {
-        let fx = Fixture::new(&["home", "work"]);
-        fx.add("home", message("INBOX", 1, "from home"));
-        let (mut harness, _wires) = fx.harness();
-        assert!(
-            harness
-                .query_by_label_contains("Sender 1 — from home")
-                .is_some()
-        );
-        assert!(harness.query_by_label_contains("home · Sender 1").is_none());
-        harness.state_mut().select_view(View::AllInboxes);
-        harness.run();
-        assert!(
-            harness
-                .query_by_label_contains("home · Sender 1 — from home")
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn the_sender_keeps_clear_of_the_date_and_never_goes_negative() {
-        assert_eq!(sender_width(600.0, 80.0), 600.0 - 32.0 - 80.0 - 12.0);
-        assert_eq!(sender_width(100.0, 80.0), 0.0);
+        assert_eq!(columns(&row, None, false, false, &now).account, None);
     }
 
     #[test]
@@ -881,314 +668,12 @@ mod tests {
             unread: true,
         };
         let now = Utc.with_ymd_and_hms(2026, 10, 6, 12, 0, 0).unwrap();
-        let text = row_text(&row, None, false, false, &now);
+        let text = row_text(&row, &columns(&row, None, false, false, &now));
         assert!(!text.chars().any(char::is_control), "{text:?}");
         assert!(
             text.contains("[31mred alert") && text.starts_with("• ⚑ "),
             "{text}"
         );
-    }
-
-    #[test]
-    fn j_and_k_move_through_rows_newest_first() {
-        let fx = Fixture::new(&["work"]);
-        for uid in 1..=3 {
-            fx.add("work", message("INBOX", uid, &format!("subject {uid}")));
-        }
-        let (mut harness, _wires) = fx.harness();
-        assert!(
-            harness
-                .query_by_label_contains("Sender 3 — subject 3")
-                .is_some()
-        );
-        let uids: Vec<u32> = harness.state().list.rows.iter().map(|r| r.uid).collect();
-        assert_eq!(uids, [3, 2, 1]);
-        harness.event(egui::Event::Text("j".into()));
-        harness.run();
-        harness.key_press(egui::Key::ArrowDown);
-        harness.run();
-        assert_eq!(harness.state().list.cursor, 2);
-        harness.event(egui::Event::Text("j".into()));
-        harness.run();
-        assert_eq!(
-            harness.state().list.cursor,
-            2,
-            "the cursor stops at the last row"
-        );
-        harness.event(egui::Event::Text("k".into()));
-        harness.run();
-        assert_eq!(harness.state().list.cursor, 1);
-    }
-
-    #[test]
-    fn right_expands_a_thread_and_left_collapses_it_from_a_member() {
-        let fx = Fixture::new(&["work"]);
-        for uid in [4, 5] {
-            let mut m = message("INBOX", uid, "thread");
-            m.thread_id = "<t@example.com>".into();
-            fx.add("work", m);
-        }
-        fx.add("work", message("INBOX", 1, "alone"));
-        let (mut harness, _wires) = fx.harness();
-        assert_eq!(harness.state().list.rows.len(), 2);
-        assert!(harness.query_by_label_contains("thread (2)").is_some());
-        harness.key_press(egui::Key::ArrowRight);
-        harness.run();
-        assert_eq!(harness.state().list.rows.len(), 4);
-        harness.key_press(egui::Key::ArrowDown);
-        harness.run();
-        assert!(harness.state().list.rows[1].member);
-        harness.key_press(egui::Key::ArrowLeft);
-        harness.run();
-        assert_eq!(
-            (harness.state().list.rows.len(), harness.state().list.cursor),
-            (2, 0)
-        );
-        assert!(has_row(&harness, 1));
-    }
-
-    #[test]
-    fn a_marked_row_says_so_in_its_name() {
-        let fx = Fixture::new(&["work"]);
-        for uid in 1..=2 {
-            fx.add("work", message("INBOX", uid, "hi"));
-        }
-        let (mut harness, _wires) = fx.harness();
-        harness.event(egui::Event::Text("x".into()));
-        harness.run();
-        assert_eq!(
-            harness
-                .get_all_by(|node| node.label().is_some_and(|l| l.starts_with("✔ ")))
-                .count(),
-            1
-        );
-    }
-
-    #[test]
-    fn in_a_narrow_row_nothing_is_drawn_over_the_date_or_past_the_edge() {
-        for width in [150.0, 130.0] {
-            let mut harness = egui_kittest::Harness::builder()
-                .with_size(egui::vec2(width + 16.0, LIST_ROW + 16.0))
-                .build_ui(move |ui| {
-                    let (rect, _) =
-                        ui.allocate_exact_size(egui::vec2(width, LIST_ROW), egui::Sense::hover());
-                    let c = Columns {
-                        account: Some("work".into()),
-                        unread: true,
-                        flagged: true,
-                        marked: false,
-                        who: "A very long sender name indeed".into(),
-                        subject: "A subject long enough to need truncating twice over".into(),
-                        date: "10 Dec 2025".into(),
-                        member: true,
-                    };
-                    let font = egui::TextStyle::Button.resolve(ui.style());
-                    draw_row(ui, rect, &c, false, false, &crate::gui::theme::NIGHT, &font);
-                });
-            harness.run();
-            let texts: Vec<(String, egui::Rect)> = harness
-                .output()
-                .shapes
-                .iter()
-                .filter_map(|clipped| match &clipped.shape {
-                    egui::Shape::Text(text) => Some((
-                        text.galley.text().to_string(),
-                        text.galley.rect.translate(text.pos.to_vec2()),
-                    )),
-                    _ => None,
-                })
-                .collect();
-            let date = texts.iter().find(|(t, _)| t == "10 Dec 2025").unwrap().1;
-            let subject = texts
-                .iter()
-                .find(|(t, _)| t.starts_with("A subject"))
-                .unwrap()
-                .1;
-            assert!(
-                subject.top() >= date.bottom(),
-                "{width}: subject {subject:?} not below the date"
-            );
-            for (text, rect) in texts.iter().filter(|(t, _)| t != "10 Dec 2025") {
-                let beside_the_date = rect.y_range().intersects(date.y_range());
-                assert!(
-                    !beside_the_date || rect.right() <= date.left(),
-                    "{width}: {text:?} {rect:?} vs date {date:?}"
-                );
-                assert!(
-                    rect.right() <= width + 8.0,
-                    "{width}: {text:?} {rect:?} past the row"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn unread_senders_are_semibold_dates_monospace_and_rows_ruled() {
-        let mut harness = egui_kittest::Harness::builder()
-            .with_size(egui::vec2(416.0, LIST_ROW + 16.0))
-            .build_ui(|ui| {
-                // Fonts load a pass after they are set, and the bold family does not exist before.
-                if ui.ctx().cumulative_pass_nr() == 0 {
-                    ui.ctx().set_fonts(theme::fonts());
-                    return;
-                }
-                let (rect, _) =
-                    ui.allocate_exact_size(egui::vec2(400.0, LIST_ROW), egui::Sense::hover());
-                let c = Columns {
-                    account: None,
-                    unread: true,
-                    flagged: false,
-                    marked: false,
-                    who: "Ada".into(),
-                    subject: "Notes".into(),
-                    date: "21 Sep".into(),
-                    member: false,
-                };
-                let font = egui::TextStyle::Button.resolve(ui.style());
-                draw_row(ui, rect, &c, false, false, &crate::gui::theme::PAPER, &font);
-            });
-        harness.run();
-        let shapes = &harness.output().shapes;
-        let family = |wanted: &str| {
-            shapes
-                .iter()
-                .find_map(|clipped| match &clipped.shape {
-                    egui::Shape::Text(text) if text.galley.text() == wanted => text
-                        .galley
-                        .job
-                        .sections
-                        .first()
-                        .map(|s| s.format.font_id.family.clone()),
-                    _ => None,
-                })
-                .unwrap()
-        };
-        assert_eq!(family("Ada"), theme::named(theme::BOLD));
-        assert_eq!(family("Notes"), egui::FontFamily::Proportional);
-        assert_eq!(family("21 Sep"), egui::FontFamily::Monospace);
-        let ruled = shapes.iter().any(|clipped| {
-            matches!(&clipped.shape, egui::Shape::LineSegment { stroke, .. }
-                if stroke.color == theme::PAPER.border)
-        });
-        assert!(ruled, "no rule under the row");
-    }
-
-    #[test]
-    fn the_list_is_titled_with_the_folder_and_its_counts() {
-        let fx = Fixture::new(&["work"]);
-        fx.add("work", message("INBOX", 1, "read"));
-        let mut unread = message("INBOX", 2, "new");
-        unread.flags = String::new();
-        fx.add("work", unread);
-        let (harness, _wires) = fx.harness();
-        assert!(harness.query_by_label("Inbox").is_some());
-        assert!(harness.query_by_label("2 threads, 1 unread").is_some());
-    }
-
-    #[test]
-    fn right_clicking_a_row_selects_it_and_its_menu_archives_it() {
-        let fx = Fixture::new(&["work"]);
-        fx.add("work", message("INBOX", 1, "older"));
-        fx.add("work", message("INBOX", 2, "newer"));
-        let (mut harness, wires) = fx.harness();
-        harness.get_by_label_contains("older").click_secondary();
-        harness.run();
-        assert_eq!(harness.state().list.cursor, 1);
-        harness.get_by_label("Archive e").click();
-        harness.run();
-        let archive = crate::sync::Command::Apply {
-            folder: "INBOX".into(),
-            uids: vec![1],
-            action: Action::Archive,
-            by: "gui".into(),
-        };
-        assert_eq!(wires.sent(), [("work".to_string(), archive)]);
-        assert!(harness.query_by_label("Archive e").is_none());
-    }
-
-    #[test]
-    fn x_marks_rows_and_escape_clears_them() {
-        let fx = Fixture::new(&["work"]);
-        for uid in 1..=2 {
-            fx.add("work", message("INBOX", uid, "hi"));
-        }
-        let (mut harness, _wires) = fx.harness();
-        harness.event(egui::Event::Text("x".into()));
-        harness.event(egui::Event::Text("j".into()));
-        harness.event(egui::Event::Text("x".into()));
-        harness.run();
-        assert_eq!(harness.state().list.marked.len(), 2);
-        harness.key_press(egui::Key::Escape);
-        harness.run();
-        assert!(harness.state().list.marked.is_empty());
-    }
-
-    #[test]
-    fn tab_cycles_focus_and_j_in_the_folder_pane_opens_the_next_folder() {
-        let fx = Fixture::new(&["work"]);
-        fx.folder("work", "Archive", Some("Archive"));
-        fx.add("work", message("Archive", 7, "archived"));
-        let (mut harness, _wires) = fx.harness();
-        harness.key_press(egui::Key::Tab);
-        harness.run();
-        assert_eq!(harness.state().focus, Focus::Body);
-        harness.key_press(egui::Key::Tab);
-        harness.run();
-        assert_eq!(harness.state().focus, Focus::Folders);
-        harness.event(egui::Event::Text("j".into()));
-        harness.run();
-        assert_eq!(
-            harness.state().view,
-            View::Folder {
-                account: 0,
-                folder: "Archive".into()
-            }
-        );
-        assert!(has_row(&harness, 7));
-    }
-
-    #[test]
-    fn keys_on_an_account_without_a_store_do_nothing() {
-        let fx = Fixture::new(&["work"]);
-        let db = fx.paths.mail_db("work");
-        std::fs::remove_file(&db).unwrap();
-        std::fs::create_dir_all(&db).unwrap();
-        let (mut harness, _wires) = fx.harness();
-        for key in ["j", "k", "x"] {
-            harness.event(egui::Event::Text(key.into()));
-        }
-        harness.key_press(egui::Key::ArrowRight);
-        harness.key_press(egui::Key::ArrowLeft);
-        harness.run();
-        assert!(harness.state().list.rows.is_empty());
-        assert!(harness.state().list.marked.is_empty());
-        assert_eq!(harness.state().list.cursor, 0);
-    }
-
-    #[test]
-    fn tab_and_arrows_leave_no_egui_widget_focus_for_space_or_enter_to_click() {
-        let fx = Fixture::new(&["work"]);
-        fx.folder("work", "Archive", Some("Archive"));
-        for uid in 1..=3 {
-            fx.add("work", message("INBOX", uid, "hi"));
-        }
-        let (mut harness, _wires) = fx.harness();
-        let view = harness.state().view.clone();
-        harness.key_press(egui::Key::Tab);
-        harness.run();
-        harness.key_press(egui::Key::Space);
-        harness.run();
-        harness.key_press(egui::Key::Enter);
-        harness.run();
-        assert_eq!(harness.state().view, view);
-        assert_eq!(harness.state().list.cursor, 0);
-        assert_eq!(harness.ctx.memory(|m| m.focused()), None);
-        harness.key_press(egui::Key::ArrowDown);
-        harness.run();
-        harness.key_press(egui::Key::Space);
-        harness.run();
-        assert_eq!(harness.state().list.cursor, 1);
-        assert_eq!(harness.ctx.memory(|m| m.focused()), None);
     }
 
     #[test]
@@ -1268,6 +753,359 @@ mod tests {
         );
     }
 
+    use crate::gui::state::Focus;
+    use crate::gui::test_support::{Fixture, command, unread};
+    use crate::rules::Action;
+    use crate::sync::Command;
+
+    fn uids(open: &crate::gui::test_support::Open) -> Vec<u32> {
+        open.with(|live| live.app.list.rows.iter().map(|r| r.uid).collect())
+    }
+
+    fn apply(folder: &str, uids: &[u32], action: Action) -> (String, Command) {
+        command("work", folder, uids, action)
+    }
+
+    #[test]
+    fn rows_name_their_account_in_all_inboxes_only() {
+        let fx = Fixture::new(&["home", "work"]);
+        fx.add("home", message("INBOX", 1, "from home"));
+        let (open, _wires) = fx.window();
+        assert_eq!(open.labels_containing("Sender 1 — from home").len(), 1);
+        assert!(open.labels_containing("home · Sender 1").is_empty());
+        open.with(|live| live.app.select_view(View::AllInboxes));
+        assert_eq!(
+            open.labels_containing("home · Sender 1 — from home").len(),
+            1
+        );
+    }
+
+    #[test]
+    fn j_and_k_move_through_rows_newest_first() {
+        let fx = Fixture::new(&["work"]);
+        for uid in 1..=3 {
+            fx.add("work", message("INBOX", uid, &format!("subject {uid}")));
+        }
+        let (open, _wires) = fx.window();
+        assert_eq!(open.labels_containing("Sender 3 — subject 3").len(), 1);
+        assert_eq!(uids(&open), [3, 2, 1]);
+        open.press("j down");
+        assert_eq!(open.with(|live| live.app.list.cursor), 2);
+        open.press("j");
+        assert_eq!(
+            open.with(|live| live.app.list.cursor),
+            2,
+            "the cursor stops at the last row"
+        );
+        open.press("k");
+        assert_eq!(open.with(|live| live.app.list.cursor), 1);
+    }
+
+    #[test]
+    fn right_expands_a_thread_and_left_collapses_it_from_a_member() {
+        let fx = Fixture::new(&["work"]);
+        for uid in [4, 5] {
+            let mut m = message("INBOX", uid, "thread");
+            m.thread_id = "<t@example.com>".into();
+            fx.add("work", m);
+        }
+        fx.add("work", message("INBOX", 1, "alone"));
+        let (open, _wires) = fx.window();
+        assert_eq!(uids(&open).len(), 2);
+        assert_eq!(open.labels_containing("thread (2)").len(), 1);
+        open.press("right");
+        assert_eq!(uids(&open).len(), 4);
+        open.press("down");
+        assert!(open.with(|live| live.app.list.rows[1].member));
+        open.press("left");
+        assert_eq!(
+            open.with(|live| (live.app.list.rows.len(), live.app.list.cursor)),
+            (2, 0)
+        );
+        assert!(uids(&open).contains(&1));
+    }
+
+    #[test]
+    fn a_marked_row_says_so_in_its_name() {
+        let fx = Fixture::new(&["work"]);
+        for uid in 1..=2 {
+            fx.add("work", message("INBOX", uid, "hi"));
+        }
+        let (open, _wires) = fx.window();
+        open.press("x");
+        let marked: Vec<String> = open
+            .labels_containing("Sender")
+            .into_iter()
+            .filter(|l| l.starts_with("✔ "))
+            .collect();
+        assert_eq!(marked.len(), 1, "{marked:?}");
+    }
+
+    #[test]
+    fn the_list_is_titled_with_the_folder_and_its_counts() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "read"));
+        let unread = unread("INBOX", 2, "new");
+        fx.add("work", unread);
+        let (open, _wires) = fx.window();
+        assert_eq!(
+            open.find("Inbox").len(),
+            1,
+            "the title; the folder row says Inbox (1)"
+        );
+        assert_eq!(open.find("2 threads, 1 unread").len(), 1);
+    }
+
+    #[test]
+    fn an_empty_list_says_so() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        assert_eq!(open.find("No mail in this folder.").len(), 1);
+        open.press("/");
+        assert_eq!(
+            open.find("No mail in this folder.").len(),
+            0,
+            "no query yet"
+        );
+        open.press("zzz");
+        assert_eq!(open.find("No mail matches.").len(), 1);
+    }
+
+    #[test]
+    fn a_list_with_mail_shows_no_placeholder() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "hi"));
+        let (open, _wires) = fx.window();
+        assert_eq!(open.find("No mail in this folder.").len(), 0);
+    }
+
+    #[test]
+    fn the_list_scrolls_to_the_cursor_however_it_moved() {
+        let fx = Fixture::new(&["work"]);
+        for uid in 1..=40 {
+            fx.add("work", message("INBOX", uid, "hi"));
+        }
+        let (open, _wires) = fx.window();
+        open.tick();
+        let shown = |open: &crate::gui::test_support::Open| {
+            let top = -open.window().get_list_y();
+            (top, top + open.with(|live| live.app.list.viewport.1))
+        };
+        assert_eq!(shown(&open).0, 0.0);
+        open.with(|live| live.app.apply(crate::gui::state::UiAction::SelectRow(30)));
+        open.tick();
+        let (top, bottom) = shown(&open);
+        let row = 30.0 * crate::gui::theme::LIST_ROW;
+        assert!(
+            top <= row && row + crate::gui::theme::LIST_ROW <= bottom,
+            "{top}..{bottom} hides row 30"
+        );
+    }
+
+    #[test]
+    fn a_rows_menu_acts_on_that_row() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "older"));
+        fx.add("work", message("INBOX", 2, "newer"));
+        let (open, wires) = fx.window();
+        let archive = menu(&open.with(|live| live.app.list.rows[1].clone()), false)[1]
+            .iter()
+            .position(|(title, _)| *title == "Archive")
+            .unwrap();
+        open.window().invoke_row_menu(1, 1, archive as i32);
+        assert_eq!(wires.sent(), [apply("INBOX", &[1], Action::Archive)]);
+    }
+
+    #[test]
+    fn right_clicking_a_row_opens_its_menu() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "hello"));
+        let (open, _wires) = fx.window();
+        assert!(open.find("Archive").is_empty());
+        let row = slint::Model::row_data(&open.window().get_rows(), 0)
+            .unwrap()
+            .name;
+        open.right_tap(&row);
+        assert!(!open.find("Archive").is_empty());
+    }
+
+    #[test]
+    fn a_menu_on_a_marked_row_acts_on_every_marked_row() {
+        let fx = Fixture::new(&["work"]);
+        for uid in 1..=3 {
+            fx.add("work", message("INBOX", uid, "hi"));
+        }
+        let (open, wires) = fx.window();
+        open.press("x j x");
+        open.window().invoke_row_menu(0, 1, 2);
+        assert_eq!(wires.sent(), [apply("INBOX", &[2, 3], Action::Trash)]);
+    }
+
+    #[test]
+    fn a_menu_on_an_unmarked_row_acts_on_that_row_alone() {
+        let fx = Fixture::new(&["work"]);
+        for uid in 1..=3 {
+            fx.add("work", message("INBOX", uid, "hi"));
+        }
+        let (open, wires) = fx.window();
+        open.press("x");
+        open.window().invoke_row_menu(2, 1, 2);
+        assert_eq!(wires.sent(), [apply("INBOX", &[1], Action::Trash)]);
+    }
+
+    /// The label of the row of message `uid`.
+    fn row_of(open: &crate::gui::test_support::Open, uid: u32) -> String {
+        open.labels_containing(&format!("Sender {uid} ")).remove(0)
+    }
+
+    #[test]
+    fn a_dragged_row_shows_its_subject_or_how_many_marked_rows_move() {
+        assert_eq!(drag_label(1, "Lunch on Friday?"), "Lunch on Friday?");
+        assert_eq!(drag_label(3, "Lunch on Friday?"), "3 messages");
+        let long = "a".repeat(50);
+        assert_eq!(drag_label(1, &long), format!("{}…", "a".repeat(39)));
+    }
+
+    #[test]
+    fn dragging_a_row_onto_a_folder_moves_it() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Travel", None);
+        fx.add("work", message("INBOX", 1, "hi"));
+        let (open, wires) = fx.window();
+        open.drag(&row_of(&open, 1), "Travel");
+        assert_eq!(
+            wires.sent(),
+            [apply("INBOX", &[1], Action::Move("Travel".into()))]
+        );
+    }
+
+    #[test]
+    fn dragging_a_marked_row_moves_every_marked_row() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Travel", None);
+        for uid in 1..=3 {
+            fx.add("work", message("INBOX", uid, "hi"));
+        }
+        let (open, wires) = fx.window();
+        open.press("x j x");
+        open.drag(&row_of(&open, 2), "Travel");
+        assert_eq!(
+            wires.sent(),
+            [apply("INBOX", &[2, 3], Action::Move("Travel".into()))]
+        );
+    }
+
+    #[test]
+    fn dragging_an_unmarked_row_moves_it_alone() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Travel", None);
+        for uid in 1..=3 {
+            fx.add("work", message("INBOX", uid, "hi"));
+        }
+        let (open, wires) = fx.window();
+        open.press("x");
+        open.drag(&row_of(&open, 1), "Travel");
+        assert_eq!(
+            wires.sent(),
+            [apply("INBOX", &[1], Action::Move("Travel".into()))]
+        );
+    }
+
+    #[test]
+    fn a_row_dropped_on_its_own_folder_stays() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Travel", None);
+        fx.add("work", message("Travel", 1, "hi"));
+        let (open, wires) = fx.window();
+        let travel = View::Folder {
+            account: 0,
+            folder: "Travel".into(),
+        };
+        let row = open.with(|live| {
+            live.app.select_view(travel.clone());
+            folders::entries(&live.app)
+                .iter()
+                .position(
+                    |e| matches!(e, folders::Entry::Folder(f) if f.view.as_ref() == Some(&travel)),
+                )
+                .unwrap()
+        });
+        // The list's title is "Travel" too, so the drop is invoked rather than dragged.
+        open.window().invoke_folder_dropped(row as i32, 0);
+        assert!(wires.sent().is_empty());
+    }
+
+    #[test]
+    fn a_row_dropped_on_another_accounts_folder_is_refused() {
+        let fx = Fixture::new(&["home", "work"]);
+        fx.folder("work", "Travel", None);
+        fx.add("home", message("INBOX", 1, "hi"));
+        let (open, wires) = fx.window();
+        open.with(|live| live.app.select_view(View::AllInboxes));
+        open.drag(&row_of(&open, 1), "Travel");
+        assert!(wires.sent().is_empty());
+        assert_eq!(
+            open.with(|live| live.app.error.clone()).as_deref(),
+            Some(crate::gui::state::MOVE_OWN_ACCOUNT)
+        );
+    }
+
+    #[test]
+    fn x_marks_rows_and_escape_clears_them() {
+        let fx = Fixture::new(&["work"]);
+        for uid in 1..=2 {
+            fx.add("work", message("INBOX", uid, "hi"));
+        }
+        let (open, _wires) = fx.window();
+        open.press("x j x");
+        assert_eq!(open.with(|live| live.app.list.marked.len()), 2);
+        open.press("escape");
+        assert!(open.with(|live| live.app.list.marked.is_empty()));
+    }
+
+    #[test]
+    fn tab_cycles_focus_and_j_in_the_folder_pane_opens_the_next_folder() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Archive", Some("Archive"));
+        fx.add("work", message("Archive", 7, "archived"));
+        let (open, _wires) = fx.window();
+        open.press("tab");
+        assert_eq!(open.with(|live| live.app.focus), Focus::Body);
+        open.press("tab j");
+        let archive = View::Folder {
+            account: 0,
+            folder: "Archive".into(),
+        };
+        assert_eq!(open.with(|live| live.app.view.clone()), archive);
+        assert_eq!(uids(&open), [7]);
+    }
+
+    #[test]
+    fn keys_on_an_account_without_a_store_do_nothing() {
+        let fx = Fixture::new(&["work"]);
+        fx.break_store("work");
+        let (open, _wires) = fx.window();
+        open.press("j k x right left");
+        assert!(uids(&open).is_empty());
+        assert!(open.with(|live| live.app.list.marked.is_empty() && live.app.list.cursor == 0));
+    }
+
+    #[test]
+    fn space_and_enter_never_click_a_row_or_a_folder() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Archive", Some("Archive"));
+        for uid in 1..=3 {
+            fx.add("work", message("INBOX", uid, "hi"));
+        }
+        let (open, _wires) = fx.window();
+        let view = open.with(|live| live.app.view.clone());
+        open.press("tab   enter");
+        assert_eq!(open.with(|live| live.app.view.clone()), view);
+        assert_eq!(open.with(|live| live.app.list.cursor), 0);
+        open.press("down  ");
+        assert_eq!(open.with(|live| live.app.list.cursor), 1);
+    }
+
     #[test]
     fn slash_searches_the_account_and_escape_returns_to_the_folder() {
         let fx = Fixture::new(&["work"]);
@@ -1275,55 +1113,52 @@ mod tests {
         fx.add("work", message("INBOX", 1, "invoice march"));
         fx.add("work", message("INBOX", 2, "lunch"));
         fx.add("work", message("Archive", 3, "invoice april"));
-        let (mut harness, wires) = fx.harness();
-        harness.event(egui::Event::Text("/".into()));
-        harness.run();
-        harness.event(egui::Event::Text("invoice".into()));
-        harness.run();
-        let found: Vec<(String, u32)> = harness.state().list.rows.iter().map(Row::key).collect();
+        let (open, wires) = fx.window();
+        open.press("/");
+        assert_eq!(open.find("Search this account").len(), 1);
+        open.press("invoice");
+        let found: Vec<RowKey> =
+            open.with(|live| live.app.list.rows.iter().map(Row::key).collect());
         assert_eq!(
             found,
             [("Archive".to_string(), 3), ("INBOX".to_string(), 1)]
         );
-        assert!(
-            harness
-                .query_by_label_contains("[Archive] Sender 3")
-                .is_some()
+        assert_eq!(
+            open.labels_containing("Sender 3 — [Archive] invoice april")
+                .len(),
+            1
         );
-        assert!(harness.query_by_label_contains("2 results").is_some());
-        harness.key_press(egui::Key::Enter);
-        harness.run();
-        harness.event(egui::Event::Text("e".into()));
-        harness.run();
-        let unarchive = crate::sync::Command::Apply {
-            folder: "Archive".into(),
-            uids: vec![3],
-            action: crate::rules::Action::Move("INBOX".into()),
-            by: "gui".into(),
+        assert_eq!(open.labels_containing("2 results").len(), 1);
+        open.press("enter e");
+        let search = Command::SearchServer {
+            folder: None,
+            query: "invoice".into(),
         };
-        assert_eq!(wires.sent(), [("work".to_string(), unarchive)]);
-        harness.key_press(egui::Key::Escape);
-        harness.run();
-        assert!(harness.state().search.is_none());
-        let uids: Vec<u32> = harness.state().list.rows.iter().map(|r| r.uid).collect();
-        assert_eq!(uids, [2, 1]);
-        assert_eq!(harness.ctx.memory(|m| m.focused()), None);
-        harness.event(egui::Event::Text("j".into()));
-        harness.run();
-        assert_eq!(harness.state().list.cursor, 1);
+        assert_eq!(
+            wires.sent(),
+            [
+                ("work".to_string(), search),
+                apply("Archive", &[3], Action::Move("INBOX".into()))
+            ]
+        );
+        open.press("escape");
+        assert!(open.with(|live| live.app.search.is_none()));
+        assert_eq!(uids(&open), [2, 1]);
+        open.press("j");
+        assert_eq!(open.with(|live| live.app.list.cursor), 1);
     }
 
     #[test]
     fn shortcut_letters_typed_into_search_stay_text() {
         let fx = Fixture::new(&["work"]);
         fx.add("work", message("INBOX", 1, "hello"));
-        let (mut harness, wires) = fx.harness();
-        harness.event(egui::Event::Text("/".into()));
-        harness.run();
-        harness.event(egui::Event::Text("e#us".into()));
-        harness.run();
+        let (open, wires) = fx.window();
+        open.press("/ e # u s");
         assert!(wires.sent().is_empty());
-        assert_eq!(harness.state().search.as_deref(), Some("e#us"));
+        assert_eq!(
+            open.with(|live| live.app.search.clone()).as_deref(),
+            Some("e#us")
+        );
     }
 
     #[test]
@@ -1331,23 +1166,107 @@ mod tests {
         let fx = Fixture::new(&["work"]);
         fx.folder("work", "Archive", Some("Archive"));
         fx.add("work", message("Archive", 3, "invoice april"));
-        let (mut harness, wires) = fx.harness();
-        harness.event(egui::Event::Text("/".into()));
-        harness.run();
-        harness.event(egui::Event::Text("invoice".into()));
-        harness.run();
-        harness.key_press(egui::Key::Enter);
-        harness.run();
-        harness.event(egui::Event::Text("m".into()));
-        harness.run();
-        harness.key_press(egui::Key::Enter);
-        harness.run();
-        let back = crate::sync::Command::Apply {
-            folder: "Archive".into(),
-            uids: vec![3],
-            action: crate::rules::Action::Move("INBOX".into()),
-            by: "gui".into(),
+        let (open, wires) = fx.window();
+        open.press("/ invoice enter m");
+        assert_eq!(open.find("Move to").len(), 1);
+        open.press("enter");
+        let search = Command::SearchServer {
+            folder: None,
+            query: "invoice".into(),
         };
-        assert_eq!(wires.sent(), [("work".to_string(), back)]);
+        assert_eq!(
+            wires.sent(),
+            [
+                ("work".to_string(), search),
+                apply("Archive", &[3], Action::Move("INBOX".into()))
+            ]
+        );
+        assert!(open.find("Move to").is_empty());
+    }
+
+    #[test]
+    fn the_move_picker_moves_to_a_clicked_folder_and_escape_closes_it() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Receipts", None);
+        fx.folder("work", "Travel", None);
+        fx.add("work", message("INBOX", 1, "hello"));
+        let (open, wires) = fx.window();
+        open.press("m escape");
+        assert!(open.with(|live| live.app.move_picker.is_none()));
+        open.press("m");
+        let picker = open
+            .find("Travel")
+            .into_iter()
+            .find(|e| e.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::Button));
+        picker.unwrap().invoke_accessible_default_action();
+        assert_eq!(
+            wires.sent(),
+            [apply("INBOX", &[1], Action::Move("Travel".into()))]
+        );
+    }
+
+    #[test]
+    fn clicking_a_row_selects_it() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "older"));
+        fx.add("work", message("INBOX", 2, "newer"));
+        let (open, _wires) = fx.window();
+        let older = open.labels_containing("older").remove(0);
+        open.click(&older);
+        assert_eq!(open.with(|live| live.app.list.cursor), 1);
+    }
+
+    #[test]
+    fn shift_click_and_command_click_in_the_window_mark_rows() {
+        use slint::platform::{Key, WindowEvent};
+        use slint::{ComponentHandle, Model};
+        let fx = Fixture::new(&["work"]);
+        for uid in [1, 2, 3, 4] {
+            fx.add("work", message("INBOX", uid, &format!("hello {uid}")));
+        }
+        let (open, _wires) = fx.window();
+        let label = |i: usize| {
+            open.window()
+                .get_rows()
+                .row_data(i)
+                .unwrap()
+                .name
+                .to_string()
+        };
+        let held = |key: Key, tap: &str| {
+            let window = open.window();
+            window
+                .window()
+                .dispatch_event(WindowEvent::KeyPressed { text: key.into() });
+            open.tap(tap);
+            window
+                .window()
+                .dispatch_event(WindowEvent::KeyReleased { text: key.into() });
+        };
+        held(Key::Shift, &label(2));
+        assert_eq!(open.with(|live| live.app.list.marked.len()), 3);
+        held(Key::Control, &label(3));
+        assert_eq!(open.with(|live| live.app.list.marked.len()), 4);
+        assert_eq!(open.with(|live| live.app.list.cursor), 2);
+    }
+
+    #[test]
+    fn the_filter_switch_narrows_the_list_and_all_shows_every_row_again() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "read"));
+        fx.add(
+            "work",
+            crate::gui::test_support::unread("INBOX", 2, "unread"),
+        );
+        let (open, _wires) = fx.window();
+        open.click("Unread");
+        assert_eq!(
+            open.with(|live| live.app.list.rows.iter().map(|r| r.uid).collect::<Vec<_>>()),
+            [2]
+        );
+        open.click("Flagged");
+        assert_eq!(open.find("No flagged mail in this folder.").len(), 1);
+        open.click("All");
+        assert_eq!(open.with(|live| live.app.list.rows.len()), 2);
     }
 }

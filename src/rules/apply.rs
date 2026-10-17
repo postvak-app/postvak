@@ -17,6 +17,8 @@ pub enum ApplyError {
     Trash(#[from] io::Error),
     #[error("the server has no Archive folder")]
     NoArchiveFolder,
+    #[error("the server has no Junk folder")]
+    NoJunkFolder,
     #[error("tag {0}")]
     InvalidTag(String),
     #[error("message {folder}/{uid} could not be fetched for backup")]
@@ -62,13 +64,25 @@ pub fn apply(
         .iter()
         .find(|planned| matches!(planned.action, Action::Delete | Action::Trash))
     {
-        match trash_target(planned, msg, store)? {
+        let trash_folder = match planned.action {
+            Action::Trash => trash_destination(store, msg)?,
+            _ => None,
+        };
+        match trash_folder {
             Some(folder) => {
                 store.log_action(&log_entry(planned, msg, now))?;
                 move_to(msg, &folder, ops, store)?;
             }
             None => delete(planned, msg, ops, store, trash, now)?,
         }
+        return Ok(1);
+    }
+    if let Some(planned) = plan
+        .actions
+        .iter()
+        .find(|planned| matches!(planned.action, Action::Junk | Action::NotJunk))
+    {
+        junk(planned, msg, ops, store, now)?;
         return Ok(1);
     }
     let first_move = first_move(plan, msg, store)?;
@@ -117,6 +131,34 @@ fn first_move<'a>(
         _ => archive_folder(store)?,
     };
     Ok((target != msg.folder).then_some((planned, target)))
+}
+
+/// Swaps the $Junk and $NotJunk keywords, then moves to the Junk folder or back to INBOX. A server that refuses
+/// keywords only loses the filter training, so the move still runs.
+fn junk(
+    planned: &PlannedAction,
+    msg: &Message,
+    ops: &mut dyn MailOps,
+    store: &Store,
+    now: i64,
+) -> Result<(), ApplyError> {
+    let (target, keyword, opposite) = match planned.action {
+        Action::Junk => (junk_folder(store)?, "$Junk", "$NotJunk"),
+        _ => ("INBOX".to_string(), "$NotJunk", "$Junk"),
+    };
+    store.log_action(&log_entry(planned, msg, now))?;
+    let mut current = msg.clone();
+    for (flag, wanted) in [(opposite, false), (keyword, true)] {
+        if has_flag(&current.flags, flag) != wanted
+            && let Err(e) = set_flag(&mut current, flag, wanted, ops, store)
+        {
+            log::warn!("{}/{}: could not set {flag}: {e}", msg.folder, msg.uid);
+        }
+    }
+    if target != msg.folder {
+        move_to(&current, &target, ops, store)?;
+    }
+    Ok(())
 }
 
 fn log_entry(planned: &PlannedAction, msg: &Message, now: i64) -> LogEntry {
@@ -197,6 +239,8 @@ pub fn move_target(
         Action::Archive => special_folder(store, "Archive")?,
         Action::Move(target) => Some(target.clone()),
         Action::Trash => special_folder(store, "Trash")?,
+        Action::Junk => special_folder(store, "Junk")?,
+        Action::NotJunk => Some("INBOX".to_string()),
         _ => None,
     };
     Ok(target.filter(|target| target != folder))
@@ -206,21 +250,14 @@ fn archive_folder(store: &Store) -> Result<String, ApplyError> {
     special_folder(store, "Archive")?.ok_or(ApplyError::NoArchiveFolder)
 }
 
+fn junk_folder(store: &Store) -> Result<String, ApplyError> {
+    special_folder(store, "Junk")?.ok_or(ApplyError::NoJunkFolder)
+}
+
 /// Where a user delete goes: `Some` is the Trash folder to move to; `None` means expunge with an .eml backup, because
 /// there is no Trash folder or the message already sits in it.
 pub fn trash_destination(store: &Store, msg: &Message) -> Result<Option<String>, StoreError> {
     Ok(special_folder(store, "Trash")?.filter(|folder| *folder != msg.folder))
-}
-
-fn trash_target(
-    planned: &PlannedAction,
-    msg: &Message,
-    store: &Store,
-) -> Result<Option<String>, ApplyError> {
-    if planned.action != Action::Trash {
-        return Ok(None);
-    }
-    Ok(trash_destination(store, msg)?)
 }
 
 /// The new uid is not known, so the local row goes and the next sync of the target folder adds it.
@@ -256,7 +293,7 @@ mod tests {
 
     fn setup() -> (RecordingOps, Store, Trash, tempfile::TempDir, Message) {
         let dir = tempfile::tempdir().unwrap();
-        let mut ops = RecordingOps::new()
+        let mut ops = RecordingOps::default()
             .with_folder("INBOX", None)
             .with_folder("Archive", Some("Archive"));
         ops.add_mail(
@@ -522,6 +559,131 @@ mod tests {
         );
         assert!(matches!(result, Err(ApplyError::NoArchiveFolder)));
         assert!(!ops.calls.iter().any(|c| c.starts_with("add_flags")));
+        assert!(store.log(10).unwrap().is_empty());
+    }
+
+    fn with_junk(ops: RecordingOps, store: &Store) -> RecordingOps {
+        store
+            .upsert_folder(&Folder {
+                name: "Spam".into(),
+                uidvalidity: 1,
+                last_uid: 0,
+                special_use: Some("Junk".into()),
+                delimiter: None,
+            })
+            .unwrap();
+        ops.with_folder("Spam", Some("Junk"))
+    }
+
+    #[test]
+    fn junk_tags_and_moves_to_the_junk_folder() {
+        let (ops, store, trash, _dir, mut msg) = setup();
+        let mut ops = with_junk(ops, &store);
+        ops.select("INBOX").unwrap();
+        msg.flags = "$NotJunk".into();
+        store.update_flags("INBOX", 5, "$NotJunk").unwrap();
+        let ran = apply(
+            &plan(vec![Action::Junk]),
+            &msg,
+            &mut ops,
+            &store,
+            &trash,
+            500,
+        )
+        .unwrap();
+        assert_eq!(ran, 1);
+        let calls: Vec<&str> = ops
+            .calls
+            .iter()
+            .map(String::as_str)
+            .filter(|c| !c.starts_with("select"))
+            .collect();
+        assert_eq!(
+            calls,
+            [
+                "remove_flags INBOX 5 $NotJunk",
+                "add_flags INBOX 5 $Junk",
+                "move INBOX 5 -> Spam"
+            ]
+        );
+        assert!(store.message("INBOX", 5).unwrap().is_none());
+        assert_eq!(store.log(10).unwrap()[0].action, "junk");
+    }
+
+    #[test]
+    fn not_junk_tags_and_moves_back_to_the_inbox() {
+        let (ops, store, trash, _dir, _msg) = setup();
+        let mut ops = with_junk(ops, &store);
+        ops.add_mail("Spam", 7, 100, "Subject: hi\r\n\r\n", None);
+        ops.select("Spam").unwrap();
+        let msg = Message {
+            folder: "Spam".into(),
+            uid: 7,
+            thread_id: "t".into(),
+            flags: "$Junk".into(),
+            ..Default::default()
+        };
+        store.insert_message(&msg).unwrap();
+        apply(
+            &plan(vec![Action::NotJunk]),
+            &msg,
+            &mut ops,
+            &store,
+            &trash,
+            500,
+        )
+        .unwrap();
+        let calls: Vec<&str> = ops
+            .calls
+            .iter()
+            .map(String::as_str)
+            .filter(|c| !c.starts_with("select"))
+            .collect();
+        assert_eq!(
+            calls,
+            [
+                "remove_flags Spam 7 $Junk",
+                "add_flags Spam 7 $NotJunk",
+                "move Spam 7 -> INBOX"
+            ]
+        );
+    }
+
+    #[test]
+    fn junk_still_moves_when_the_server_refuses_keywords() {
+        let (ops, store, trash, _dir, msg) = setup();
+        let mut ops = with_junk(ops, &store);
+        ops.select("INBOX").unwrap();
+        ops.fail_next = Some(MailError::Protocol("no keywords".into()));
+        apply(
+            &plan(vec![Action::Junk]),
+            &msg,
+            &mut ops,
+            &store,
+            &trash,
+            500,
+        )
+        .unwrap();
+        assert!(ops.calls.iter().any(|c| c == "move INBOX 5 -> Spam"));
+    }
+
+    #[test]
+    fn junk_without_a_junk_folder_changes_nothing() {
+        let (mut ops, store, trash, _dir, msg) = setup();
+        let result = apply(
+            &plan(vec![Action::Junk]),
+            &msg,
+            &mut ops,
+            &store,
+            &trash,
+            500,
+        );
+        assert!(matches!(result, Err(ApplyError::NoJunkFolder)));
+        assert!(
+            !ops.calls
+                .iter()
+                .any(|c| c.starts_with("add_flags") || c.starts_with("move"))
+        );
         assert!(store.log(10).unwrap().is_empty());
     }
 

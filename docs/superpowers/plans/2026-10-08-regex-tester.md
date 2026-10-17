@@ -1,5 +1,7 @@
 # Regex Tester Implementation Plan
 
+> **GUI toolkit (2026-10-13):** the GUI steps below were written for egui, which the Slint rewrite (`2026-10-13-slint-gui.md`, design `../specs/2026-10-13-postvak-slint-gui-design.md`) replaces. Redo them against `gui/state.rs`, `bind.rs` and `ui/*.slint` before executing; the non-GUI steps stand.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A regex tester dialog in the Rules view: type a pattern, see at once whether it is valid and which cached subjects, senders, recipients, bodies or lines of your own text it matches, with the matched part highlighted, then put it into the rule being edited.

@@ -2,6 +2,9 @@
 
 Date: 2026-10-07. Status: draft for review. Builds on `2026-10-06-postvak-gui-design.md` §6 (body panel) and replaces its §11 entry "HTML bodies through `wry`". Core §17's constraints (no bodies in logs, no `unwrap` outside tests) apply.
 
+
+> **Toolkit (2026-10-13):** the window is now built with Slint and egui is gone; see `2026-10-13-postvak-slint-gui-design.md`. The behaviour here is still the target; the egui details are history.
+
 ## 1. Purpose and scope
 
 HTML-only and multipart mail render as their author laid them out, inside the egui body panel, with no remote content and no scripts.
@@ -23,16 +26,22 @@ Out of scope, recorded in §9: loading remote images, text selection inside the 
 | Raster | CPU through `anyrender_vello_cpu`, uploaded as an egui texture | Vello on eframe's wgpu device (ties the wgpu version to eframe's, adds a GPU path the tests cannot see) |
 | Thread | One render thread owning every Blitz document; the UI thread sends jobs and receives pixels | Render on the UI thread (15–25 ms per layout stalls `j`/`k`); one thread per message (Blitz documents are not `Send`, so each would live and die on its thread anyway) |
 | Tall mail | Laid out once per width, painted in 512 px strips as they scroll into view | One texture per message (long newsletters exceed GPU texture limits) |
-| Remote content | Never fetched; only `cid:` and `data:` resolve | Fetch by default; per-sender allow list now |
+| Remote content | Not fetched until the user asks, per message: the first layout lists the remote URLs, `html/fetch.rs` downloads them (public hosts, capped in count, size and time) and the page is laid out again from memory; `cid:` and `data:` always resolve | Fetch by default; per-sender allow list now; fetching inside the net provider (the render thread would wait on the network) |
 | Colour scheme | Light, on a white page, in both app themes | Follow the app theme (most mail hardcodes dark text on no background) |
 | Default view | HTML when the message has an HTML part, else text | Text first; remember per sender |
 | Versions | Exact pins (`=0.3.0-beta.2`) for the Blitz crates and the matching `anyrender` | Caret ranges (the beta crates already disagree on `anyrender` between minor versions) |
 
 Measured on one newsletter fixture at 700 px, Linux x86_64, 4 cores, release build: first document 24 ms parse, style and layout, later ones 15 ms, paint 5 ms. A standalone renderer binary is 22 MB over 288 crates. Ran on Linux; not yet on macOS.
 
+`wry` on Wayland, rechecked 2026-10-13: still out. `build_as_child` and `WebView::new_as_child` are documented as X11-only. wry's Wayland route, `build_gtk` or `new_gtk` inside a `gtk::Fixed`, needs a GTK-owned window and GTK's main loop; eframe's window is winit's. The open GTK4 port (wry#1767, last updated 2026-08-07) adds a `wayland` feature that embeds only into GTK4-owned windows, found by matching `wl_surface`. The workarounds each lose more than Blitz costs:
+- Forcing eframe onto X11 under XWayland: blurry fractional scaling and an X11 server at runtime, and the other objections above still hold.
+- A separate GTK popup: Wayland clients cannot position their own toplevels, so it cannot sit in the body panel.
+- A GTK main window: replaces eframe.
+- Offscreen WebKitGTK snapshots: not exposed by wry, and the result is still a static image.
+
 ## 3. Packaging
 
-- Cargo feature `html = ["gui", "dep:blitz-dom", "dep:blitz-html", "dep:blitz-paint", "dep:blitz-traits", "dep:anyrender", "dep:anyrender_vello_cpu", "dep:data-url", "dep:fontique"]`, in `default`. `data-url` decodes `data:` URIs; it is already in the tree through `usvg`. `fontique` is named only to turn on its `fontconfig-dlopen` feature, so fontconfig is loaded at runtime rather than linked, as eframe does for X11 and Wayland. Without it the body panel is the text view of GUI §6, unchanged.
+- Cargo feature `html = ["gui", "dep:blitz-dom", "dep:blitz-html", "dep:blitz-paint", "dep:blitz-traits", "dep:html5ever", "dep:anyrender", "dep:anyrender_vello_cpu", "dep:data-url", "dep:fontique", "dep:ureq"]`, in `default`. `data-url` decodes `data:` URIs; it is already in the tree through `usvg`. `html5ever` parses mail as HTML even when it declares the XHTML namespace, which Blitz's own entry point would hand to its XML parser. `fontique` adds symbol fonts to the fallbacks and, on Linux, turns on `fontconfig-dlopen`, so fontconfig is loaded at runtime rather than linked, as eframe does for X11 and Wayland. `ureq` downloads remote content when the user asks. Without it the body panel is the text view of GUI §6, unchanged.
 - Stylo, Blitz's CSS engine, is MPL-2.0. File-level copyleft: shipping a binary that links it is fine; changes to its own files would be published. Noted in the licence section of `docs/src/index.md`, and so of `README.md`.
 - `cargo audit` and `cargo machete` cover the new crates as they cover the rest.
 
@@ -69,8 +78,8 @@ src/message.rs   html_body(raw) -> Option<HtmlBody { html, inline: Vec<InlinePar
 
 ## 6. Resources and privacy
 
-- The net provider answers `cid:` from the message's `Content-ID` parts and `data:` by decoding the URI. Everything else, including `http`, `https`, `file` and stylesheet `@import`, completes at once as a failure, so no request leaves the machine and nothing waits on it.
-- Blocked images keep their `width`/`height` box. When the page asked for anything remote (an image, a stylesheet, an `<iframe>`), a line above the page says "Remote content not loaded."
+- The net provider answers `cid:` from the message's `Content-ID` parts and `data:` by decoding the URI. Remote URLs the user chose to load answer from the downloaded bytes; everything else, including `file`, completes at once as a failure, so the render thread never waits on the network.
+- Blocked images keep their `width`/`height` box. When the page asked for anything remote (an image, a stylesheet, an `<iframe>`), a line above the page says "Remote content not loaded." with a "Load remote content" button.
 - Blitz runs no scripts; `<form>` controls draw but are never submitted, since the view sends Blitz no input events beyond hit tests.
 - Nothing from the body is logged. Upstream panic messages can quote the mail (a URL Blitz could not resolve), so a panic hook keeps them off stderr for the render thread and logs only that rendering failed; other threads keep the default hook.
 
@@ -109,7 +118,7 @@ Ran on Linux (CPU raster needs no GPU, so CI covers it); macOS reported separate
 
 ## 10. Later
 
-- Loading remote images on request, per message, then per sender.
+- Remembering a per-sender choice to load remote content.
 - Selecting and copying text in the HTML view (Blitz has selection; wiring it means forwarding pointer drags).
 - Dark-mode rendering of mail that declares `color-scheme: dark` or has no colours of its own.
 - Remembering the view choice in `[ui]`.

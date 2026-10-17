@@ -30,10 +30,12 @@ This document contains the help content for the `postvak` command-line program.
 * [`postvak list`↴](#postvak-list)
 * [`postvak search`↴](#postvak-search)
 * [`postvak show`↴](#postvak-show)
+* [`postvak unsubscribe`↴](#postvak-unsubscribe)
 * [`postvak mark`↴](#postvak-mark)
 * [`postvak move`↴](#postvak-move)
 * [`postvak archive`↴](#postvak-archive)
 * [`postvak delete`↴](#postvak-delete)
+* [`postvak junk`↴](#postvak-junk)
 * [`postvak log`↴](#postvak-log)
 * [`postvak trash`↴](#postvak-trash)
 * [`postvak trash list`↴](#postvak-trash-list)
@@ -65,10 +67,12 @@ A fast, simple mail client with automatic mailbox rules
 * `list` — List recent messages, newest first
 * `search` — Full-text search (FTS5 syntax) over subject, addresses and fetched bodies, newest first
 * `show` — Show one message
+* `unsubscribe` — Leave a message's mailing list: by one-click POST when the sender offers it (RFC 8058), else print the page or address from its List-Unsubscribe header to open
 * `mark` — Mark messages read or unread, flagged or unflagged
 * `move` — Move messages to another folder, creating it if needed
 * `archive` — Move messages to the Archive folder
 * `delete` — Move messages to Trash; inside Trash, or without one, delete them keeping a local .eml backup
+* `junk` — Report messages as junk: tag them $Junk, which trains server spam filters, and move them to the Junk folder; --not tags them $NotJunk and moves them to INBOX
 * `log` — Show what rules did, newest first
 * `trash` — Deleted mail kept for the retention period
 * `account` — Manage accounts
@@ -374,6 +378,9 @@ List recent messages, newest first
   Default value: `50`
 * `--json`
 * `--threads` — Group by conversation, the most recently active thread first
+* `--unread` — Only unread messages; with --threads, threads with an unread message
+* `--flagged` — Only flagged messages; with --threads, threads with a flagged message
+* `--attachments` — Only messages with attachments, guessed from the headers; with --threads, threads with one
 
 
 
@@ -392,6 +399,7 @@ Full-text search (FTS5 syntax) over subject, addresses and fetched bodies, newes
 * `--account <ACCOUNT>`
 * `--folder <FOLDER>`
 * `--bodies` — Fetch and index missing bodies first; slow on a large folder
+* `--server` — Ask the server too, which searches bodies not downloaded yet; each folder costs a round trip
 * `--limit <LIMIT>`
 
   Default value: `50`
@@ -416,6 +424,27 @@ Show one message
 
   Default value: `INBOX`
 * `--raw` — Print the raw RFC 5322 message instead of the text body
+* `--json`
+
+
+
+## `postvak unsubscribe`
+
+Leave a message's mailing list: by one-click POST when the sender offers it (RFC 8058), else print the page or address from its List-Unsubscribe header to open
+
+**Usage:** `postvak unsubscribe [OPTIONS] <UID>`
+
+###### **Arguments:**
+
+* `<UID>`
+
+###### **Options:**
+
+* `--account <ACCOUNT>`
+* `--folder <FOLDER>`
+
+  Default value: `INBOX`
+* `--dry-run` — Print what would happen without contacting the sender
 * `--json`
 
 
@@ -502,6 +531,27 @@ Move messages to Trash; inside Trash, or without one, delete them keeping a loca
 
   Default value: `INBOX`
 * `--dry-run` — Print what would happen without touching the server
+
+
+
+## `postvak junk`
+
+Report messages as junk: tag them $Junk, which trains server spam filters, and move them to the Junk folder; --not tags them $NotJunk and moves them to INBOX
+
+**Usage:** `postvak junk [OPTIONS] <UIDS>...`
+
+###### **Arguments:**
+
+* `<UIDS>` — Message uids in --folder, as `list` prints them
+
+###### **Options:**
+
+* `--account <ACCOUNT>`
+* `--folder <FOLDER>`
+
+  Default value: `INBOX`
+* `--dry-run` — Print what would happen without touching the server
+* `--not` — Not junk after all
 
 
 

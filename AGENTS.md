@@ -8,7 +8,7 @@ Spec: `docs/superpowers/specs/2026-10-06-postvak-core-design.md`. Read it before
 - `credentials` keyring or password command; `Secret` has no Debug
 - `daemon` the background process that owns sync and IMAP: `mod.rs` the server (socket, lock, log, idle exit), `wire` the JSON-lines protocol, `client` what front ends use (CLI, GUI, MCP; auto-starts the daemon), `service` launchd and systemd
 - `engine` one sync thread per account, commands in and events out; applies a config change by restarting only the changed accounts, each once its old thread ended; what the daemon runs
-- `gui` the egui window (feature `gui`, on by default), which talks to the daemon through `daemon::Client`: `app` holds state and is the only code that changes it, the view modules draw and return `UiAction`s; tests use `test_support::Fixture` with `egui_kittest`; `html` is the HTML body view, with its render thread (`html/render.rs`, Blitz, feature `html`) and the net provider that serves only `cid:` and `data:` (`html/net.rs`); layout follows one grid from `theme.rs`: rows `ROW` (24), icon buttons `CONTROL` (28), content `INSET` (16) from a pane's edge and `PAD` (8) inside a row, so use those constants rather than literal sizes
+- `gui` the Slint window (feature `gui`, on by default), which talks to the daemon through `daemon::Client`: `state` holds the state and is the only code that changes it; `ui/*.slint` draws; `bind` shows the state in the window and turns its callbacks into `UiAction`s, with `rows` the lazy models (list rows, HTML strips); `list`, `folders`, `body`, `status`, `toolbar`, `menu`, `rules` and `keys` word what the views show without a toolkit; `persist` is `window.json`; tests use `test_support::Fixture` with `Driver` (the state, keys and a clock) or `Fixture::window()` (the real window under Slint's testing backend), and `snapshots` compares the views with `tests/snapshots/*.png`; `html` is the HTML body view, with its render thread (`html/render.rs`, Blitz) the net provider that serves `cid:`, `data:` and downloaded remote content from memory (`html/net.rs`), and the downloads the user asks for (`html/fetch.rs`, public hosts only, never logged); layout follows one grid, `Theme` in `ui/theme.slint` (kept equal to `theme.rs` by a test): rows `row` (24), icon buttons `control` (28), content `inset` (16) from a pane's edge and `pad` (8) inside a row, so use those rather than literal sizes
 - `help` help texts shared by the CLI and the MCP tool descriptions
 - `mail_ops` `MailOps` trait; `imap.rs` is the real client; `RecordingOps` is the test fake
 - `main` + `cli/` clap only; no logic
@@ -38,7 +38,7 @@ Spec: `docs/superpowers/specs/2026-10-06-postvak-core-design.md`. Read it before
 - Every new dependency has a one-line reason in `Cargo.toml`
 - Do not broaden a task into adjacent features
 - After changing CLI flags or rule types, run `POSTVAK_BLESS=1 cargo test` to regenerate `docs/src/cli.md` and `docs/src/rules.schema.json`, and commit them
-- After GUI work, run `TZ=UTC UPDATE_SNAPSHOTS=1 cargo test gui::snapshots` on Linux with lavapipe (`mesa-vulkan-drivers`) and look at the changed PNGs in `tests/snapshots/`
+- After GUI work, run `TZ=UTC UPDATE_SNAPSHOTS=1 cargo test gui::snapshots` and look at the changed PNGs in `tests/snapshots/`; Slint's software renderer draws them, on any machine
 - Prose lives in `docs/src/`; `README.md` contains `docs/src/index.md` verbatim
 
 ## Privacy

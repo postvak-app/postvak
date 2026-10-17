@@ -17,27 +17,15 @@ pub(crate) fn separator_for(locale: &str) -> Option<char> {
     }
 }
 
-pub(crate) fn group(n: u64, separator: Option<char>) -> String {
-    let digits = n.to_string();
-    let Some(separator) = separator else {
-        return digits;
-    };
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index).is_multiple_of(3) {
-            out.push(separator);
-        }
-        out.push(digit);
-    }
-    out
-}
-
 /// `n` grouped for this device's locale, read once.
 pub(crate) fn count(n: u64) -> String {
     static SEPARATOR: OnceLock<Option<char>> = OnceLock::new();
     let separator =
         *SEPARATOR.get_or_init(|| sys_locale::get_locale().as_deref().and_then(separator_for));
-    group(n, separator)
+    separator.map_or_else(
+        || n.to_string(),
+        |separator| crate::sync::group_digits(n, separator),
+    )
 }
 
 #[cfg(test)]
@@ -55,14 +43,5 @@ mod tests {
         assert_eq!(separator_for("POSIX"), None);
         assert_eq!(separator_for(""), None);
         assert_eq!(separator_for("xx"), None);
-    }
-
-    #[test]
-    fn group_inserts_the_separator_every_three_digits() {
-        assert_eq!(group(0, Some('.')), "0");
-        assert_eq!(group(999, Some('.')), "999");
-        assert_eq!(group(1_284, Some('.')), "1.284");
-        assert_eq!(group(1_234_567, Some(',')), "1,234,567");
-        assert_eq!(group(1_234_567, None), "1234567");
     }
 }

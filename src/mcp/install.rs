@@ -57,11 +57,6 @@ impl Entry {
             .chain(self.args.iter().cloned())
             .collect()
     }
-
-    /// The command quoted for a POSIX shell.
-    pub fn shell(&self) -> String {
-        shell_words(&self.argv())
-    }
 }
 
 fn shell_words(words: &[String]) -> String {
@@ -411,7 +406,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn the_backup_keeps_the_config_mode() {
         use std::os::unix::fs::PermissionsExt;
@@ -427,7 +421,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn an_existing_config_folder_keeps_its_mode() {
         use std::os::unix::fs::PermissionsExt;
@@ -465,7 +458,7 @@ mod tests {
     #[test]
     fn shell_quoting_survives_spaces() {
         let e = Entry::new(Path::new("/Users/me/My Tools/postvak"), "read", &[]);
-        assert!(e.shell().starts_with("'/Users/me/My Tools/postvak' mcp"));
+        assert!(shell_words(&e.argv()).starts_with("'/Users/me/My Tools/postvak' mcp"));
     }
 
     #[test]
@@ -478,7 +471,6 @@ mod tests {
         assert!(install(Target::Json, "read,everything", &[], false, false).is_err());
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_symlinked_config_is_written_through_and_stays_a_link() {
         let dir = tempfile::tempdir().unwrap();

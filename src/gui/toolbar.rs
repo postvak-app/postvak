@@ -1,299 +1,194 @@
-//! The top bar: the logo, then actions on the cursor row or the selection, then search.
-use eframe::egui;
-use eframe::egui::containers::panel::PanelState;
-
+//! The toolbar without a toolkit: its action buttons, their names and hints, and when they are enabled. The window
+//! draws them beside the wordmark, with the search button on the right.
 use crate::rules::Action;
 
-use super::app::{App, FOLDERS, FOLDERS_WIDTH, UiAction, View};
 use super::icons;
-use super::theme::{self, CONTROL, GLYPH, ICON, PAD};
+use super::state::{App, UiAction, View};
 
-/// Width of the search field.
-const SEARCH_WIDTH: f32 = 260.0;
-
-pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
-    let mut actions = Vec::new();
-    // As wide as the folder pane (last frame's, so it follows a resize), less the gap and glyph inset after it, so
-    // the first action's glyph lines up with the list's content: the toolbar's margin and the list's content are both INSET in.
-    let folders = PanelState::load(ui.ctx(), egui::Id::new(FOLDERS))
-        .map_or(FOLDERS_WIDTH, |state| state.outer_rect.width());
-    let logo_cell = folders - ui.spacing().item_spacing.x - GLYPH;
-    ui.horizontal(|ui| {
-        // As tall as the action buttons, so the row centres it on the same line as them.
-        ui.allocate_ui(egui::vec2(logo_cell, CONTROL), |ui| {
-            ui.set_min_size(egui::vec2(logo_cell, CONTROL));
-            ui.horizontal_centered(|ui| {
-                if let Some(logo) = &app.logo {
-                    ui.add(egui::Image::new(logo).fit_to_exact_size(egui::vec2(20.0, 20.0)));
-                }
-                let serif = egui::FontFamily::Name(super::theme::SERIF.into());
-                ui.label(
-                    egui::RichText::new("Postvak")
-                        .family(serif)
-                        .size(19.0)
-                        .strong(),
-                );
-            });
-        });
-        let lists_mail = app.view.lists_mail();
-        let in_archive = matches!(&app.view, View::Folder { account, folder } if app.is_archive(*account, folder));
-        let archive = if in_archive {
-            (icons::INBOX, "Unarchive message", "Move to inbox · e")
-        } else {
-            (icons::ARCHIVE, "Archive message", "Archive · e")
-        };
-        // Closed picker only: an action would move the cursor, and the picker would then move a different message.
-        let has_row = lists_mail && !app.list.rows.is_empty() && app.move_picker.is_none();
-        ui.scope(|ui| {
-            ui.spacing_mut().item_spacing.x = PAD / 2.0;
-            for (icon, name, hint, action) in [
-                (archive.0, archive.1, archive.2, UiAction::Act(Action::Archive)),
-                (
-                    icons::MOVE,
-                    "Move message",
-                    "Move · m",
-                    UiAction::OpenMovePicker,
-                ),
-                (
-                    icons::TRASH,
-                    "Delete message",
-                    "Delete · #",
-                    UiAction::Act(Action::Trash),
-                ),
-                (
-                    icons::FLAG,
-                    "Flag message",
-                    "Flag · s",
-                    UiAction::ToggleFlag,
-                ),
-                (
-                    icons::MARK_UNREAD,
-                    "Mark read or unread",
-                    "Read or unread · u",
-                    UiAction::ToggleRead,
-                ),
-            ] {
-                if icon_button(ui, has_row, icon, name, hint).clicked() {
-                    actions.push(action);
-                }
-            }
-        });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if search_field(ui, lists_mail).clicked() {
-                actions.push(UiAction::StartSearch);
-            }
-        });
-    });
-    actions
+/// An icon button: its glyph, its accessible name, its hover hint and what a click does.
+pub(crate) struct Button {
+    pub icon: &'static str,
+    pub name: &'static str,
+    pub hint: &'static str,
+    pub action: UiAction,
 }
 
-/// An icon button named `name` for screen readers and tests, with `hint` on hover.
-pub(crate) fn icon_button(
-    ui: &mut egui::Ui,
-    enabled: bool,
-    icon: &str,
-    name: &str,
-    hint: &str,
-) -> egui::Response {
-    let response = ui
-        .add_enabled(
-            enabled,
-            egui::Button::new(egui::RichText::new(icon).size(ICON))
-                .frame(false)
-                .min_size(egui::vec2(CONTROL, CONTROL)),
-        )
-        .on_hover_text(hint);
-    let name = name.to_string();
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, &name));
-    response
-}
+/// The hover hint of the search button.
+pub(crate) const SEARCH_HINT: &str = "Search · /";
 
-/// Looks like a search field and starts the list pane's search, as `/` does; typing happens there.
-fn search_field(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
-    let sense = if enabled {
-        egui::Sense::click()
+/// The message actions, left to right. In the Archive folder the archive button moves back to the inbox, and in the
+/// Junk folder the junk button reports not junk.
+pub(crate) fn buttons(app: &App) -> [Button; 6] {
+    let in_archive =
+        matches!(&app.view, View::Folder { account, folder } if app.is_archive(*account, folder));
+    let (icon, name, hint) = if in_archive {
+        (icons::INBOX, "Unarchive message", "Move to inbox · e")
     } else {
-        egui::Sense::hover()
+        (icons::ARCHIVE, "Archive message", "Archive · e")
     };
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(SEARCH_WIDTH, CONTROL), sense);
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, "Search"));
-    if ui.is_rect_visible(rect) {
-        let palette = theme::palette(ui);
-        let fill = if enabled && response.hovered() {
-            palette.pressed
-        } else {
-            palette.faint
-        };
-        let mut painter = ui.painter().clone();
-        if !enabled {
-            painter.multiply_opacity(ui.visuals().disabled_alpha());
-        }
-        painter.rect_filled(rect, PAD, fill);
-        let left = rect.left_center() + egui::vec2(PAD, 0.0);
-        let icon = painter.text(
-            left,
-            egui::Align2::LEFT_CENTER,
-            icons::SEARCH,
-            egui::FontId::proportional(ICON),
-            palette.muted,
-        );
-        painter.text(
-            left + egui::vec2(icon.width() + PAD, 0.0),
-            egui::Align2::LEFT_CENTER,
-            "Search mail",
-            egui::TextStyle::Body.resolve(ui.style()),
-            palette.muted,
-        );
+    let button = |icon, name, hint, action| Button {
+        icon,
+        name,
+        hint,
+        action,
+    };
+    [
+        button(icon, name, hint, UiAction::Act(Action::Archive)),
+        button(
+            icons::MOVE,
+            "Move message",
+            "Move · m",
+            UiAction::OpenMovePicker,
+        ),
+        button(
+            icons::TRASH,
+            "Delete message",
+            "Delete · #",
+            UiAction::Act(Action::Trash),
+        ),
+        junk_button(app),
+        button(
+            icons::FLAG,
+            "Flag message",
+            "Flag · s",
+            UiAction::ToggleFlag,
+        ),
+        button(
+            icons::MARK_UNREAD,
+            "Mark read or unread",
+            "Read or unread · u",
+            UiAction::ToggleRead,
+        ),
+    ]
+}
+
+fn junk_button(app: &App) -> Button {
+    let (icon, name, hint) = if app.shows_junk() {
+        (icons::INBOX, "Not junk message", "Not junk · !")
+    } else {
+        (icons::JUNK, "Junk message", "Junk · !")
+    };
+    Button {
+        icon,
+        name,
+        hint,
+        action: UiAction::Act(Action::Junk),
     }
-    response.on_hover_text("Search · /")
+}
+
+/// The actions need a row, and a closed move picker: an action would move the cursor, and the picker would then
+/// move a different message.
+pub(crate) fn enabled(app: &App) -> bool {
+    app.view.lists_mail() && !app.list.rows.is_empty() && app.move_picker.is_none()
 }
 
 #[cfg(test)]
 mod tests {
-    use eframe::egui;
-    use egui_kittest::kittest::{NodeT, Queryable};
-
-    use crate::gui::app::View;
-    use crate::gui::test_support::{Fixture, message};
+    use crate::gui::state::{UiAction, View};
+    use crate::gui::test_support::{Fixture, Open, command, message};
     use crate::rules::Action;
     use crate::sync::Command;
 
-    const ACTIONS: [&str; 5] = [
-        "Archive message",
-        "Move message",
-        "Delete message",
-        "Flag message",
-        "Mark read or unread",
-    ];
+    fn enabled(open: &Open, label: &str) -> bool {
+        open.get(label).accessible_enabled().unwrap()
+    }
 
-    fn disabled(harness: &egui_kittest::Harness<'_, crate::gui::App>, label: &str) -> bool {
-        harness.get_by_label(label).accesskit_node().is_disabled()
+    fn apply(folder: &str, action: Action) -> (String, Command) {
+        command("work", folder, &[1], action)
     }
 
     #[test]
-    fn action_icons_are_drawn_at_the_icon_size() {
-        let fx = Fixture::new(&["work"]);
-        let (harness, _wires) = fx.harness();
-        let button = harness.get_by_label(ACTIONS[0]).rect();
-        let sizes: Vec<f32> = harness
-            .output()
-            .shapes
-            .iter()
-            .filter_map(|clipped| match &clipped.shape {
-                egui::Shape::Text(text) if button.contains(text.pos) => text
-                    .galley
-                    .job
-                    .sections
-                    .first()
-                    .map(|s| s.format.font_id.size),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(sizes, [crate::gui::theme::ICON]);
-    }
-
-    #[test]
-    fn the_wordmark_lines_up_with_the_action_buttons() {
-        let fx = Fixture::new(&["work"]);
-        let (harness, _wires) = fx.harness();
-        let wordmark = harness.get_by_label("Postvak").rect().center().y;
-        let archive = harness.get_by_label(ACTIONS[0]).rect().center().y;
-        assert!((wordmark - archive).abs() <= 1.0, "{wordmark} vs {archive}");
-    }
-
-    #[test]
-    fn the_actions_are_enabled_on_a_row_and_disabled_outside_a_folder() {
+    fn the_actions_are_enabled_on_a_row_and_gone_outside_a_folder() {
         let fx = Fixture::new(&["work"]);
         fx.add("work", message("INBOX", 1, "hello"));
-        let (mut harness, _wires) = fx.harness();
-        assert!(ACTIONS.iter().all(|label| !disabled(&harness, label)));
-        harness.state_mut().select_view(View::Rules);
-        harness.run();
-        assert!(ACTIONS.iter().all(|label| disabled(&harness, label)));
-        assert!(disabled(&harness, "Search"));
+        let (open, _wires) = fx.window();
+        for name in [
+            "Archive message",
+            "Move message",
+            "Delete message",
+            "Flag message",
+            "Mark read or unread",
+        ] {
+            assert!(enabled(&open, name), "{name}");
+        }
+        assert_eq!(open.find("Search").len(), 1);
+        open.with(|live| live.app.apply(UiAction::SelectView(View::Rules)));
+        for name in [
+            "Archive message",
+            "Move message",
+            "Delete message",
+            "Flag message",
+            "Mark read or unread",
+            "Search",
+        ] {
+            assert!(open.find(name).is_empty(), "{name}");
+        }
     }
 
     #[test]
     fn the_actions_are_disabled_while_the_move_picker_is_open() {
         let fx = Fixture::new(&["work"]);
-        fx.folder("work", "Archive", Some("Archive"));
+        fx.folder("work", "Receipts", None);
         fx.add("work", message("INBOX", 1, "hello"));
-        let (mut harness, _wires) = fx.harness();
-        harness.event(egui::Event::Text("m".into()));
-        harness.run();
-        assert!(harness.state().move_picker.is_some());
-        assert!(ACTIONS.iter().all(|label| disabled(&harness, label)));
+        let (open, _wires) = fx.window();
+        open.press("m");
+        assert!(open.with(|live| live.app.move_picker.is_some()));
+        assert!(!enabled(&open, "Archive message"));
     }
 
     #[test]
     fn the_archive_button_archives_the_cursor_row() {
         let fx = Fixture::new(&["work"]);
-        fx.folder("work", "Archive", Some("Archive"));
         fx.add("work", message("INBOX", 1, "hello"));
-        let (mut harness, wires) = fx.harness();
-        harness.get_by_label("Archive message").click();
-        harness.run();
-        assert!(matches!(
-            &wires.sent()[..],
-            [(account, Command::Apply { folder, uids, action: Action::Archive, .. })]
-                if account == "work" && folder == "INBOX" && uids == &[1]
-        ));
-        assert!(harness.state().list.rows.is_empty());
+        let (open, wires) = fx.window();
+        open.click("Archive message");
+        assert_eq!(wires.sent(), [apply("INBOX", Action::Archive)]);
+        assert!(open.with(|live| live.app.list.rows.is_empty()));
     }
 
     #[test]
     fn in_the_archive_the_archive_button_moves_the_row_back_to_the_inbox() {
         let fx = Fixture::new(&["work"]);
         fx.folder("work", "Archive", Some("Archive"));
-        fx.add("work", message("Archive", 7, "archived"));
-        let (mut harness, wires) = fx.harness();
-        harness.state_mut().select_view(View::Folder {
-            account: 0,
-            folder: "Archive".into(),
-        });
-        harness.run();
-        assert!(harness.query_by_label("Archive message").is_none());
-        harness.get_by_label("Unarchive message").click();
-        harness.run();
-        assert!(matches!(
-            &wires.sent()[..],
-            [(_, Command::Apply { folder, uids, action: Action::Move(target), .. })]
-                if folder == "Archive" && uids == &[7] && target == "INBOX"
-        ));
+        fx.add("work", message("Archive", 1, "hello"));
+        let (open, wires) = fx.window();
+        open.click("Archive");
+        assert!(open.find("Archive message").is_empty());
+        open.click("Unarchive message");
+        assert_eq!(
+            wires.sent(),
+            [apply("Archive", Action::Move("INBOX".into()))]
+        );
     }
 
     #[test]
-    fn the_search_button_opens_search() {
+    fn the_junk_button_reports_junk_and_in_the_junk_folder_not_junk() {
         let fx = Fixture::new(&["work"]);
-        let (mut harness, _wires) = fx.harness();
-        harness.get_by_label("Search").click();
-        harness.run();
-        assert!(harness.state().search.is_some());
-    }
-
-    #[test]
-    fn the_status_bar_sync_button_syncs_every_account() {
-        let fx = Fixture::new(&["home", "work"]);
-        let (mut harness, wires) = fx.harness();
-        harness.get_by_label("Sync now").click();
-        harness.run();
+        fx.folder("work", "Spam", Some("Junk"));
+        fx.add("work", message("INBOX", 1, "hello"));
+        fx.add("work", message("Spam", 2, "offer"));
+        let (open, wires) = fx.window();
+        open.click("Junk message");
+        open.click("Spam");
+        assert!(open.find("Junk message").is_empty());
+        open.click("Not junk message");
         assert_eq!(
             wires.sent(),
             [
-                ("home".to_string(), Command::SyncNow),
-                ("work".to_string(), Command::SyncNow)
+                apply("INBOX", Action::Junk),
+                command("work", "Spam", &[2], Action::NotJunk)
             ]
         );
     }
 
     #[test]
-    fn the_status_bar_shows_the_version() {
+    fn the_search_button_opens_search() {
         let fx = Fixture::new(&["work"]);
-        let (harness, _wires) = fx.harness();
-        assert!(
-            harness
-                .query_by_label(&format!("v{}", crate::gui::status::VERSION))
-                .is_some()
+        let (open, _wires) = fx.window();
+        open.click("Search");
+        assert_eq!(
+            open.with(|live| live.app.search.clone()),
+            Some(String::new())
         );
     }
 }

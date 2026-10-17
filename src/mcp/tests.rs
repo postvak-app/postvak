@@ -681,7 +681,15 @@ async fn tools_list_per_scope_set_is_exact_and_alphabetical() {
         ),
         (
             "mail:modify",
-            &["archive", "delete", "mark", "move", "trash_restore"],
+            &[
+                "archive",
+                "delete",
+                "junk",
+                "mark",
+                "move",
+                "trash_restore",
+                "unsubscribe",
+            ],
         ),
     ];
     for (scopes, expected) in cases {
@@ -709,9 +717,16 @@ async fn annotations_mark_reads_and_destructive_tools() {
     for tool in client.list_all_tools().await.unwrap() {
         let hints = tool.annotations.clone().unwrap();
         let name = tool.name.as_ref();
-        let destructive = ["delete", "rules_approve", "rules_set_enabled"].contains(&name);
+        let destructive = [
+            "delete",
+            "rules_approve",
+            "rules_set_enabled",
+            "unsubscribe",
+        ]
+        .contains(&name);
         let changes = [
             "archive",
+            "junk",
             "mark",
             "move",
             "rules_propose",
@@ -824,7 +839,7 @@ async fn trash_list_names_backups_and_restore_takes_the_name() {
 /// A fake server holding one message in INBOX and an Archive folder.
 fn connector_with_mail() -> Connector {
     std::sync::Arc::new(|_| {
-        let mut ops = RecordingOps::new()
+        let mut ops = RecordingOps::default()
             .with_folder("INBOX", None)
             .with_folder("Archive", Some("Archive"));
         ops.add_mail(
@@ -897,6 +912,74 @@ async fn archive_goes_through_the_daemon_attributed_to_the_client() {
     assert_eq!(
         fx.store("work").log(1).unwrap()[0].rule_name,
         "mcp:test-host"
+    );
+}
+
+#[tokio::test]
+async fn unsubscribe_reports_the_page_to_open_and_a_dry_run_contacts_no_one() {
+    let fx = fixture(&["work"]);
+    let mut news = fixture_message("INBOX", 1, "News", "weekly");
+    news.headers = b"Subject: News\r\nList-Unsubscribe: <https://list.example/u>\r\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n\r\n".to_vec();
+    fx.add("work", news);
+    let mut page = fixture_message("INBOX", 2, "Digest", "monthly");
+    page.headers =
+        b"Subject: Digest\r\nList-Unsubscribe: <https://list.example/page>\r\n\r\n".to_vec();
+    fx.add("work", page);
+    let client = connect(&fx, "mail:modify", &[]).await;
+    let dry = call(&client, "unsubscribe", json!({ "uid": 1, "dry_run": true })).await;
+    let dry = dry.structured_content.unwrap();
+    assert_eq!(
+        (dry["method"].as_str(), dry["done"].as_bool()),
+        (Some("one_click"), Some(false))
+    );
+    let page = call(&client, "unsubscribe", json!({ "uid": 2 })).await;
+    let page = page.structured_content.unwrap();
+    assert_eq!(page["url"], "https://list.example/page");
+    assert_eq!(page["done"], false);
+}
+
+#[tokio::test]
+async fn a_server_search_finds_a_body_not_downloaded_yet() {
+    let fx = fixture_with_daemon(&["work"], connector_with_mail());
+    let client = connect(&fx, "read, read:bodies", &[]).await;
+    rows(&call(&client, "sync", json!({})).await);
+    assert!(rows(&call(&client, "search", json!({ "query": "body" })).await).is_empty());
+    let found = rows(
+        &call(
+            &client,
+            "search",
+            json!({ "query": "body", "server": true }),
+        )
+        .await,
+    );
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0]["uid"], 1);
+}
+
+#[tokio::test]
+async fn a_server_search_needs_the_bodies_scope() {
+    let fx = fixture(&["work"]);
+    let client = connect(&fx, "read", &[]).await;
+    let text = error_text(&call(&client, "search", json!({ "query": "x", "server": true })).await);
+    assert!(text.contains("read:bodies"), "{text}");
+}
+
+#[tokio::test]
+async fn junk_with_not_goes_through_the_daemon() {
+    let fx = fixture_with_daemon(&["work"], connector_with_mail());
+    let client = connect(&fx, "mail:modify", &[]).await;
+    call(&client, "sync", json!({})).await;
+    let report = call(&client, "junk", json!({ "uids": [1], "not": true })).await;
+    let report = report.structured_content.unwrap();
+    assert_eq!(report["done"], 1, "{report}");
+    assert_eq!(fx.store("work").log(1).unwrap()[0].action, "not_junk");
+    assert!(
+        fx.store("work")
+            .message("INBOX", 1)
+            .unwrap()
+            .unwrap()
+            .flags
+            .contains("$NotJunk")
     );
 }
 

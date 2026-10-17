@@ -1,79 +1,126 @@
-//! The left column: All inboxes when there are several accounts, then special folders, then custom folders as a tree, per account, then the Rules, Activity and Backups entries, pinned to the bottom.
-use eframe::egui::{self, AtomExt as _};
+//! The folder pane without a toolkit: the tree of custom folders, the order of special ones, labels and unread counts.
+//! The window draws All inboxes, each account's folders and the Rules, Activity and Backups entries from it.
 
 use crate::message::clean;
 use crate::store::Folder;
 
-use super::app::{Account, App, FolderRow, UiAction, View};
-use super::{icons, list, numbers, theme};
+use super::state::{Account, App, FolderRow, UiAction, View};
+use super::{icons, list, numbers, status};
 
-pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
-    let mut actions = Vec::new();
-    egui::Panel::bottom("views")
-        .frame(egui::Frame::NONE)
-        .show(ui, |ui| {
-            for (view, icon, label) in [
-                (View::Rules, icons::RULES, "Rules"),
-                (View::Activity, icons::ACTIVITY, "Activity"),
-                (View::Trash, icons::BACKUPS, "Backups"),
-            ] {
-                if folder_row(ui, app.view == view, icon, label, 0.0, None, label).clicked() {
-                    actions.push(UiAction::SelectView(view));
-                }
-            }
-        });
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        if app.shows_all_inboxes() {
-            let label = "All inboxes";
-            let (count, accessible) = count_and_name(label, inbox_unread(&app.accounts));
-            let selected = app.view == View::AllInboxes;
-            // On the line of the list's title and the reader's actions, as an account's heading is without it.
-            let entry = theme::heading_row(ui, |ui| {
-                folder_row(
-                    ui,
-                    selected,
-                    icons::ALL_INBOXES,
-                    label,
-                    0.0,
-                    count,
-                    &accessible,
-                )
-            });
-            if entry.clicked() {
-                actions.push(UiAction::SelectView(View::AllInboxes));
-            }
-            ui.separator();
-        }
-        for (index, account) in app.accounts.iter().enumerate() {
-            // Indented like the rows' icons, which sit a button padding inside the row.
-            theme::heading_row(ui, |ui| {
-                ui.add_space(ui.spacing().button_padding.x);
-                let name = egui::RichText::new(&account.name)
-                    .family(theme::named(theme::BOLD))
-                    .color(theme::palette(ui).muted);
-                ui.label(name);
-                if account.busy() {
-                    let size = ui.text_style_height(&egui::TextStyle::Small);
-                    ui.add(
-                        egui::Spinner::new()
-                            .size(size)
-                            .color(ui.visuals().weak_text_color()),
-                    );
-                }
-            });
-            if let Err(e) = &account.store {
-                ui.colored_label(ui.visuals().error_fg_color, clean(e, false));
-            }
-            actions.extend(account_folders(app, index, account, ui));
-            ui.add_space(theme::PAD);
-        }
-    });
-    actions
+/// A line of the folder pane's scrolling part, top to bottom.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Entry {
+    /// An account's name, with a spinner while it syncs and its store error.
+    Account {
+        name: String,
+        busy: bool,
+        error: Option<String>,
+        /// After the first account, with space above it.
+        gap: bool,
+    },
+    Folder(FolderEntry),
+    Separator,
 }
 
-/// The special folders flat, a separator, then the custom folders as a tree.
-fn account_folders(app: &App, index: usize, account: &Account, ui: &mut egui::Ui) -> Vec<UiAction> {
-    let mut actions = Vec::new();
+/// A row that opens a view: All inboxes, a folder, or one of the views pinned at the bottom.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct FolderEntry {
+    pub icon: &'static str,
+    pub label: String,
+    /// The unread count shown on the right, grouped.
+    pub count: Option<String>,
+    /// The accessible name: the label, with the count in brackets.
+    pub name: String,
+    pub depth: usize,
+    pub selected: bool,
+    /// What a click opens; None for a parent the server does not list.
+    pub view: Option<View>,
+    /// For a parent row: whether it is expanded, its account and path.
+    pub branch: Option<(bool, usize, String)>,
+    pub unread: u32,
+}
+
+impl FolderEntry {
+    fn new(icon: &'static str, label: String, unread: u32, view: View, app: &App) -> FolderEntry {
+        let (count, name) = count_and_name(&label, unread);
+        FolderEntry {
+            icon,
+            label,
+            count,
+            name,
+            depth: 0,
+            selected: app.view == view,
+            view: Some(view),
+            branch: None,
+            unread,
+        }
+    }
+
+    /// The caret's accessible name on a parent row.
+    pub(crate) fn caret_name(&self) -> Option<String> {
+        let (expanded, ..) = self.branch.as_ref()?;
+        let verb = if *expanded { "Collapse" } else { "Expand" };
+        Some(format!("{verb} {}", self.label))
+    }
+
+    /// What the right-click menu offers, as (title, enabled, action): Open and Collapse or Expand, then, below a
+    /// separator, marking read and syncing.
+    pub(crate) fn menu(&self) -> [Vec<(String, bool, UiAction)>; 2] {
+        let mut items = Vec::new();
+        let folder = match &self.view {
+            Some(View::Folder { account, folder }) => Some((*account, folder.clone())),
+            _ => None,
+        };
+        if let Some(view) = &self.view {
+            items.push(("Open".to_string(), true, UiAction::SelectView(view.clone())));
+        }
+        if let Some((expanded, account, path)) = &self.branch {
+            let title = if *expanded { "Collapse" } else { "Expand" };
+            items.push((
+                title.to_string(),
+                true,
+                UiAction::ToggleFolder(*account, path.clone()),
+            ));
+        }
+        let mut below = Vec::new();
+        if let Some((account, folder)) = folder {
+            let mark = UiAction::MarkFolderRead(account, folder);
+            below.push(("Mark all as read".to_string(), self.unread > 0, mark));
+        }
+        below.push((status::sync_key().to_string(), true, UiAction::SyncNow));
+        [items, below]
+    }
+}
+
+/// The scrolling part of the folder pane: All inboxes when there is more than one account, then per account its
+/// name, its special folders, a separator and its custom folders as a tree.
+pub(crate) fn entries(app: &App) -> Vec<Entry> {
+    let mut entries = Vec::new();
+    if app.shows_all_inboxes() {
+        let unread = inbox_unread(&app.accounts);
+        let all = FolderEntry::new(
+            icons::ALL_INBOXES,
+            "All inboxes".into(),
+            unread,
+            View::AllInboxes,
+            app,
+        );
+        entries.push(Entry::Folder(all));
+        entries.push(Entry::Separator);
+    }
+    for (index, account) in app.accounts.iter().enumerate() {
+        entries.push(Entry::Account {
+            name: account.name.clone(),
+            busy: account.busy(),
+            error: account.store.as_ref().err().map(|e| clean(e, false)),
+            gap: index > 0,
+        });
+        entries.extend(account_entries(app, index, account));
+    }
+    entries
+}
+
+fn account_entries(app: &App, index: usize, account: &Account) -> Vec<Entry> {
     let open = |name: &str| View::Folder {
         account: index,
         folder: name.to_string(),
@@ -82,139 +129,69 @@ fn account_folders(app: &App, index: usize, account: &Account, ui: &mut egui::Ui
         .folders
         .iter()
         .partition(|f| is_special(&f.name, f.special_use.as_deref()));
-    for folder in &special {
-        let name = clean(label(&folder.name), false);
-        let (count, accessible) = count_and_name(&name, folder.unread);
-        let icon = icons::for_special_use(folder.special_use.as_deref(), &folder.name);
-        let view = open(&folder.name);
-        let response = folder_row(ui, app.view == view, icon, &name, 0.0, count, &accessible);
-        if response.clicked() {
-            actions.push(UiAction::SelectView(view.clone()));
-        }
-        response.context_menu(|ui| {
-            actions.extend(folder_menu(
-                ui,
-                index,
-                Some(&folder.name),
+    let mut entries: Vec<Entry> = special
+        .iter()
+        .map(|folder| {
+            let icon = special_folder(&folder.name, folder.special_use.as_deref())
+                .map_or(icons::FOLDER, |(_, icon)| icon);
+            let label = clean(label(&folder.name), false);
+            Entry::Folder(FolderEntry::new(
+                icon,
+                label,
                 folder.unread,
-                None,
-            ));
-        });
-    }
+                open(&folder.name),
+                app,
+            ))
+        })
+        .collect();
     if !special.is_empty() && !custom.is_empty() {
-        ui.separator();
+        entries.push(Entry::Separator);
     }
     let rows = tree(&account.folders);
     let is_collapsed = |path: &str| app.collapsed.contains(&(index, path.to_string()));
     for row in visible(&rows, is_collapsed) {
-        let label = clean(&row.label, false);
         let unread = row
             .folder
             .as_ref()
             .and_then(|name| account.folders.iter().find(|f| &f.name == name))
             .map_or(0, |f| f.unread);
-        let (count, accessible) = count_and_name(&label, unread);
         let expanded = !is_collapsed(&row.path);
         let icon = match (row.has_children, expanded) {
             (false, _) => icons::FOLDER,
             (true, true) => icons::CARET_DOWN,
             (true, false) => icons::CARET_RIGHT,
         };
-        let selected = row
-            .folder
-            .as_deref()
-            .is_some_and(|name| app.view == open(name));
-        let indent = INDENT * row.depth as f32;
-        let response = folder_row(ui, selected, icon, &label, indent, count, &accessible);
-        if row.has_children && caret(ui, &response, expanded, &label, (index, &row.path)).clicked()
-        {
-            actions.push(UiAction::ToggleFolder(index, row.path.clone()));
-        } else if response.clicked()
-            && let Some(name) = &row.folder
-        {
-            actions.push(UiAction::SelectView(open(name)));
-        }
-        let branch = row.has_children.then_some((expanded, &row.path));
-        response.context_menu(|ui| {
-            actions.extend(folder_menu(
-                ui,
-                index,
-                row.folder.as_deref(),
-                unread,
-                branch,
-            ));
-        });
-    }
-    actions
-}
-
-/// The right-click menu of a folder row; `branch` is whether a parent row is expanded, and its path.
-fn folder_menu(
-    ui: &mut egui::Ui,
-    account: usize,
-    folder: Option<&str>,
-    unread: u32,
-    branch: Option<(bool, &String)>,
-) -> Vec<UiAction> {
-    let mut actions = Vec::new();
-    if let Some(name) = folder
-        && ui.button("Open").clicked()
-    {
-        actions.push(UiAction::SelectView(View::Folder {
-            account,
-            folder: name.to_string(),
+        let label = clean(&row.label, false);
+        let (count, name) = count_and_name(&label, unread);
+        let view = row.folder.as_deref().map(open);
+        entries.push(Entry::Folder(FolderEntry {
+            icon,
+            label,
+            count,
+            name,
+            depth: row.depth,
+            selected: view.as_ref() == Some(&app.view),
+            view,
+            branch: row
+                .has_children
+                .then(|| (expanded, index, row.path.clone())),
+            unread,
         }));
     }
-    if let Some((expanded, path)) = branch
-        && ui
-            .button(if expanded { "Collapse" } else { "Expand" })
-            .clicked()
-    {
-        actions.push(UiAction::ToggleFolder(account, path.clone()));
-    }
-    ui.separator();
-    if let Some(name) = folder
-        && ui
-            .add_enabled(unread > 0, egui::Button::new("Mark all as read"))
-            .clicked()
-    {
-        actions.push(UiAction::MarkFolderRead(account, name.to_string()));
-    }
-    let sync = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::R);
-    let sync = ui.ctx().format_shortcut(&sync);
-    if ui
-        .add(egui::Button::new("Sync now").shortcut_text(sync))
-        .clicked()
-    {
-        actions.push(UiAction::SyncNow);
-    }
-    actions
+    entries
 }
 
-/// How far each tree level is indented.
-const INDENT: f32 = 16.0;
-
-/// The click target over a parent row's icon, which shows the caret: it folds the branch instead of opening the row.
-fn caret(
-    ui: &mut egui::Ui,
-    row: &egui::Response,
-    expanded: bool,
-    label: &str,
-    id: (usize, &String),
-) -> egui::Response {
-    let padding = ui.spacing().button_padding.x;
-    let rect = egui::Rect::from_min_size(
-        row.rect.min,
-        egui::vec2(padding * 2.0 + INDENT, row.rect.height()),
-    );
-    let response = ui.interact(rect, ui.id().with(("caret", id)), egui::Sense::click());
-    let name = format!("{} {label}", if expanded { "Collapse" } else { "Expand" });
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
-    response
+/// Rules, Activity and Backups, pinned at the bottom of the pane.
+pub(crate) fn pinned(app: &App) -> [FolderEntry; 3] {
+    [
+        FolderEntry::new(icons::RULES, "Rules".into(), 0, View::Rules, app),
+        FolderEntry::new(icons::ACTIVITY, "Activity".into(), 0, View::Activity, app),
+        FolderEntry::new(icons::BACKUPS, "Backups".into(), 0, View::Trash, app),
+    ]
 }
 
 /// Unread mail in every account's INBOX, for the All inboxes count.
-fn inbox_unread(accounts: &[Account]) -> u32 {
+pub(crate) fn inbox_unread(accounts: &[Account]) -> u32 {
     accounts
         .iter()
         .flat_map(|account| &account.folders)
@@ -223,7 +200,7 @@ fn inbox_unread(accounts: &[Account]) -> u32 {
         .sum()
 }
 
-fn count_and_name(name: &str, unread: u32) -> (Option<String>, String) {
+pub(crate) fn count_and_name(name: &str, unread: u32) -> (Option<String>, String) {
     match unread {
         0 => (None, name.to_string()),
         unread => {
@@ -347,62 +324,6 @@ pub(crate) fn shown(account: &Account, collapsed: impl Fn(&str) -> bool) -> Vec<
     special.chain(custom).collect()
 }
 
-/// A full-width selectable row: indent, icon, label, and the count right-aligned. `accessible` names it for screen
-/// readers and tests, so they read the count but not the icon glyph.
-pub(crate) fn folder_row(
-    ui: &mut egui::Ui,
-    selected: bool,
-    icon: &str,
-    label: &str,
-    indent: f32,
-    count: Option<String>,
-    accessible: &str,
-) -> egui::Response {
-    ui.horizontal(|ui| {
-        if indent > 0.0 {
-            ui.add_space(indent);
-        }
-        let palette = theme::palette(ui);
-        let count = count.unwrap_or_default();
-        let badge = selected && !count.is_empty();
-        let mut icon = egui::RichText::new(icon);
-        if badge {
-            icon = icon.color(palette.highlight);
-        }
-        let label = egui::Atom::from(format!("  {label}")).atom_shrink(true);
-        let font = egui::TextStyle::Button.resolve(ui.style());
-        let galley = ui
-            .painter()
-            .layout_no_wrap(count.clone(), font, palette.background);
-        let pill = egui::vec2(galley.size().x + theme::PAD * 1.5, galley.size().y);
-        let badge_id = egui::Id::new("count badge");
-        // Always a right text, even empty: its grow atom is what keeps the label on the left.
-        let right: egui::Atom = if badge {
-            egui::Atom::custom(badge_id, pill)
-        } else {
-            egui::RichText::new(count).color(palette.muted).into()
-        };
-        let drawn = egui::Button::selectable(selected, (icon, label))
-            .truncate()
-            .min_size(egui::vec2(ui.available_width(), 0.0))
-            .right_text(right)
-            .atom_ui(ui);
-        if let Some(rect) = drawn.rect(badge_id) {
-            ui.painter()
-                .rect_filled(rect, rect.height() / 2.0, palette.highlight);
-            let at = rect.center() - galley.size() / 2.0;
-            ui.painter().galley(at, galley, palette.background);
-        }
-        let response = drawn.response;
-        let name = accessible.to_string();
-        response.widget_info(|| {
-            egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &name)
-        });
-        response
-    })
-    .inner
-}
-
 /// A folder's name as the window shows it: "Inbox" for the INBOX, which IMAP spells in capitals; commands keep the
 /// server's name.
 pub(crate) fn label(name: &str) -> &str {
@@ -415,41 +336,312 @@ pub(crate) fn label(name: &str) -> &str {
 
 /// INBOX and the special-use folders, which sort above the rest.
 pub(crate) fn is_special(name: &str, special_use: Option<&str>) -> bool {
-    rank(name, special_use) < 6
+    special_folder(name, special_use).is_some()
 }
 
 /// INBOX first, then the special-use folders in a fixed order, then the rest alphabetically.
 pub(crate) fn sort(folders: &mut [Folder]) {
     folders.sort_by_key(|f| {
         (
-            rank(&f.name, f.special_use.as_deref()),
+            special_folder(&f.name, f.special_use.as_deref())
+                .map_or(SPECIAL.len(), |(rank, _)| rank),
             f.name.to_lowercase(),
         )
     });
 }
 
-fn rank(name: &str, special_use: Option<&str>) -> usize {
-    if name.eq_ignore_ascii_case("INBOX") {
-        return 0;
-    }
-    match special_use {
-        Some("Archive") => 1,
-        Some("Drafts") => 2,
-        Some("Sent") => 3,
-        Some("Junk") => 4,
-        Some("Trash") => 5,
-        _ => 6,
-    }
+/// INBOX by name, then the special uses, in the order they sort, with their icons.
+const SPECIAL: [(&str, &str); 6] = [
+    ("INBOX", icons::INBOX),
+    ("Archive", icons::ARCHIVE),
+    ("Drafts", icons::DRAFTS),
+    ("Sent", icons::SENT),
+    ("Junk", icons::JUNK),
+    ("Trash", icons::TRASH),
+];
+
+/// A special folder's rank and icon; `None` for the rest.
+fn special_folder(name: &str, special_use: Option<&str>) -> Option<(usize, &'static str)> {
+    let key = if name.eq_ignore_ascii_case("INBOX") {
+        "INBOX"
+    } else {
+        special_use?
+    };
+    SPECIAL
+        .iter()
+        .enumerate()
+        .find(|(_, (special, _))| *special == key)
+        .map(|(rank, (_, icon))| (rank, *icon))
 }
 
 #[cfg(test)]
 mod tests {
-    use egui_kittest::kittest::Queryable;
-
     use super::*;
-    use crate::gui::app::{Focus, FolderRow, View};
-    use crate::gui::test_support::{Fixture, message};
+    use crate::gui::state::{Focus, FolderRow};
+    use crate::gui::test_support::{Fixture, message, unread};
     use crate::store::Folder;
+
+    fn stored(name: &str) -> Folder {
+        Folder {
+            name: name.into(),
+            uidvalidity: 1,
+            last_uid: 0,
+            special_use: None,
+            delimiter: Some("/".into()),
+        }
+    }
+
+    fn work(name: &str) -> View {
+        View::Folder {
+            account: 0,
+            folder: name.into(),
+        }
+    }
+
+    /// Projects/Postvak, Projects/Website and Zeta in account `account`.
+    fn projects(fx: &Fixture, account: &str) {
+        let store = fx.store(account);
+        for name in ["Projects/Postvak", "Projects/Website", "Zeta"] {
+            store.upsert_folder(&stored(name)).unwrap();
+        }
+    }
+
+    #[test]
+    fn special_folders_get_their_icon_and_others_a_folder() {
+        assert_eq!(special_folder("inbox", None), Some((0, icons::INBOX)));
+        assert_eq!(
+            special_folder("Archief", Some("Archive")),
+            Some((1, icons::ARCHIVE))
+        );
+        assert_eq!(
+            special_folder("Sent Items", Some("Sent")),
+            Some((3, icons::SENT))
+        );
+        assert_eq!(special_folder("Receipts", None), None);
+    }
+
+    #[test]
+    fn all_inboxes_sits_on_top_with_every_inbox_unread_count_and_opens_on_click() {
+        let fx = Fixture::new(&["home", "work"]);
+        fx.folder("work", "Archive", Some("Archive"));
+        fx.add("home", unread("INBOX", 1, "hello"));
+        fx.add("work", unread("INBOX", 2, "hello"));
+        fx.add("work", unread("INBOX", 3, "hello"));
+        fx.add("work", unread("Archive", 4, "hello"));
+        let (open, _wires) = fx.window();
+        assert!(open.span("All inboxes (3)").1 < open.span("home").0);
+        open.click("All inboxes (3)");
+        assert_eq!(open.with(|live| live.app.view.clone()), View::AllInboxes);
+    }
+
+    #[test]
+    fn one_account_has_no_all_inboxes_entry() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        let labels = open.with(|live| entries(&live.app));
+        assert!(
+            !labels
+                .iter()
+                .any(|e| matches!(e, Entry::Folder(f) if f.view == Some(View::AllInboxes)))
+        );
+        assert!(open.find("All inboxes").is_empty());
+    }
+
+    #[test]
+    fn k_in_the_folder_pane_steps_up_from_the_first_inbox_to_all_inboxes() {
+        let fx = Fixture::new(&["home", "work"]);
+        let (open, _wires) = fx.window();
+        open.press("tab tab k");
+        assert_eq!(open.with(|live| live.app.view.clone()), View::AllInboxes);
+    }
+
+    #[test]
+    fn right_clicking_a_folder_opens_its_menu() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", unread("INBOX", 1, "hello"));
+        let (open, _wires) = fx.window();
+        assert!(open.find("Mark all as read").is_empty());
+        open.right_tap("Inbox (1)");
+        assert!(!open.find("Mark all as read").is_empty());
+    }
+
+    #[test]
+    fn a_folder_menu_marks_all_its_unread_mail_read() {
+        let fx = Fixture::new(&["work"]);
+        for uid in 1..=3 {
+            fx.add(
+                "work",
+                if uid == 2 {
+                    message("INBOX", 2, "hi")
+                } else {
+                    unread("INBOX", uid, "hello")
+                },
+            );
+        }
+        let (open, wires) = fx.window();
+        let (row, item) = open.with(|live| {
+            let entries = entries(&live.app);
+            let row = entries
+                .iter()
+                .position(|e| matches!(e, Entry::Folder(f) if f.name == "Inbox (2)"))
+                .unwrap();
+            let Entry::Folder(inbox) = &entries[row] else {
+                unreachable!()
+            };
+            let item = inbox.menu()[1]
+                .iter()
+                .position(|(title, ..)| title == "Mark all as read")
+                .unwrap();
+            (row, item)
+        });
+        open.window().invoke_folder_menu(row as i32, 1, item as i32);
+        let read = crate::sync::Command::Apply {
+            folder: "INBOX".into(),
+            uids: vec![1, 3],
+            action: crate::rules::Action::MarkRead,
+            by: "gui".into(),
+        };
+        assert_eq!(wires.sent(), [("work".to_string(), read)]);
+    }
+
+    #[test]
+    fn the_folder_menu_offers_open_collapse_mark_read_and_sync() {
+        let fx = Fixture::new(&["work"]);
+        projects(&fx, "work");
+        let (app, _wires) = fx.app();
+        let entries = entries(&app);
+        let titles = |label: &str| -> Vec<(String, bool)> {
+            let folder = entries
+                .iter()
+                .find_map(|e| match e {
+                    Entry::Folder(f) if f.label == label => Some(f),
+                    _ => None,
+                })
+                .unwrap();
+            folder
+                .menu()
+                .into_iter()
+                .flatten()
+                .map(|(title, enabled, _)| (title, enabled))
+                .collect()
+        };
+        let sync = (status::sync_key().to_string(), true);
+        assert_eq!(
+            titles("Projects"),
+            [("Collapse".to_string(), true), sync.clone()]
+        );
+        assert_eq!(
+            titles("Inbox"),
+            [
+                ("Open".to_string(), true),
+                ("Mark all as read".to_string(), false),
+                sync
+            ]
+        );
+    }
+
+    #[test]
+    fn stepping_from_a_folder_in_a_collapsed_branch_stays_in_its_account() {
+        let fx = Fixture::new(&["home", "work"]);
+        projects(&fx, "work");
+        let (open, _wires) = fx.window();
+        let work = |name: &str| View::Folder {
+            account: 1,
+            folder: name.into(),
+        };
+        open.with(|live| live.app.select_view(work("Projects/Postvak")));
+        open.click("Collapse Projects");
+        open.with(|live| live.app.focus = Focus::Folders);
+        open.press("down");
+        assert_eq!(open.with(|live| live.app.view.clone()), work("Zeta"));
+    }
+
+    #[test]
+    fn clicking_a_caret_collapses_its_folder() {
+        let fx = Fixture::new(&["work"]);
+        projects(&fx, "work");
+        let (open, _wires) = fx.window();
+        assert_eq!(open.find("Website").len(), 1);
+        open.click("Collapse Projects");
+        assert!(open.find("Website").is_empty());
+        assert_eq!(open.find("Expand Projects").len(), 1);
+        let collapsed = open.with(|live| live.app.collapsed.contains(&(0, "Projects".to_string())));
+        assert!(collapsed);
+    }
+
+    #[test]
+    fn arrow_keys_follow_the_tree_and_skip_collapsed_folders() {
+        let fx = Fixture::new(&["work"]);
+        projects(&fx, "work");
+        let (open, _wires) = fx.window();
+        open.with(|live| {
+            live.app.select_view(work("Projects/Postvak"));
+            live.app.focus = Focus::Folders;
+        });
+        open.press("down");
+        assert_eq!(
+            open.with(|live| live.app.view.clone()),
+            work("Projects/Website")
+        );
+        open.click("Collapse Projects");
+        open.with(|live| {
+            live.app.select_view(work("INBOX"));
+            live.app.focus = Focus::Folders;
+        });
+        open.press("down");
+        assert_eq!(open.with(|live| live.app.view.clone()), work("Zeta"));
+    }
+
+    #[test]
+    fn tree_shows_folders_with_unread_counts_and_selects_on_click() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Archive", Some("Archive"));
+        fx.add("work", unread("INBOX", 1, "hello"));
+        fx.add("work", message("INBOX", 2, "read already"));
+        let (open, _wires) = fx.window();
+        assert_eq!(open.find("Inbox (1)").len(), 1);
+        open.click("Archive");
+        assert_eq!(open.with(|live| live.app.view.clone()), work("Archive"));
+        open.click("Rules");
+        assert_eq!(open.with(|live| live.app.view.clone()), View::Rules);
+    }
+
+    #[test]
+    fn the_backup_view_is_labelled_backups_and_sits_at_the_bottom() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        let (_, bottom) = open.span("Backups");
+        assert!(
+            bottom > 700.0,
+            "pinned to the bottom of an 800 px window, at {bottom}"
+        );
+        open.click("Backups");
+        assert_eq!(open.with(|live| live.app.view.clone()), View::Trash);
+    }
+
+    #[test]
+    fn a_store_that_fails_to_open_shows_its_error_and_other_accounts_still_work() {
+        let fx = Fixture::new(&["broken", "work"]);
+        fx.break_store("broken");
+        let (app, _wires) = fx.app();
+        let errors: Vec<String> = entries(&app)
+            .into_iter()
+            .filter_map(|e| match e {
+                Entry::Account { error, .. } => error,
+                _ => None,
+            })
+            .collect();
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0].starts_with("could not open the store"),
+            "{errors:?}"
+        );
+        drop(app);
+        let (open, _wires) = fx.window();
+        assert_eq!(open.find(&errors[0]).len(), 1);
+        // The other account's Inbox row, and the list's title above that Inbox.
+        assert_eq!(open.find("Inbox").len(), 2);
+    }
 
     fn folder(name: &str, special_use: Option<&str>) -> Folder {
         Folder {
@@ -470,86 +662,10 @@ mod tests {
         }
     }
 
-    fn stored(name: &str) -> Folder {
-        Folder {
-            name: name.into(),
-            uidvalidity: 1,
-            last_uid: 0,
-            special_use: None,
-            delimiter: Some("/".into()),
-        }
-    }
-
     fn shape(rows: &[TreeRow]) -> Vec<(usize, &str, bool)> {
         rows.iter()
             .map(|r| (r.depth, r.label.as_str(), r.folder.is_some()))
             .collect()
-    }
-
-    #[test]
-    fn all_inboxes_sits_on_top_with_every_inbox_unread_count_and_opens_on_click() {
-        let fx = Fixture::new(&["home", "work"]);
-        fx.folder("work", "Archive", Some("Archive"));
-        for (account, folder, uid) in [
-            ("home", "INBOX", 1),
-            ("work", "INBOX", 2),
-            ("work", "INBOX", 3),
-            ("work", "Archive", 4),
-        ] {
-            let mut unread = message(folder, uid, "hello");
-            unread.flags = String::new();
-            fx.add(account, unread);
-        }
-        let (mut harness, _wires) = fx.harness();
-        let entry = harness.get_by_label("All inboxes (3)").rect();
-        assert!(entry.bottom() < harness.get_by_label("home").rect().top());
-        harness.get_by_label("All inboxes (3)").click();
-        harness.run();
-        assert_eq!(harness.state().view, View::AllInboxes);
-    }
-
-    #[test]
-    fn one_account_has_no_all_inboxes_entry() {
-        let fx = Fixture::new(&["work"]);
-        let (harness, _wires) = fx.harness();
-        assert!(harness.query_by_label_contains("All inboxes").is_none());
-    }
-
-    #[test]
-    fn k_in_the_folder_pane_steps_up_from_the_first_inbox_to_all_inboxes() {
-        let fx = Fixture::new(&["home", "work"]);
-        let (mut harness, _wires) = fx.harness();
-        for _ in 0..2 {
-            harness.key_press(egui::Key::Tab);
-            harness.run();
-        }
-        harness.event(egui::Event::Text("k".into()));
-        harness.run();
-        assert_eq!(harness.state().view, View::AllInboxes);
-    }
-
-    #[test]
-    fn a_folder_menu_marks_all_its_unread_mail_read() {
-        let fx = Fixture::new(&["work"]);
-        for uid in 1..=3 {
-            let mut m = message("INBOX", uid, "hi");
-            if uid != 2 {
-                m.flags = String::new();
-            }
-            fx.add("work", m);
-        }
-        let (mut harness, wires) = fx.harness();
-        harness.get_by_label("Inbox (2)").click_secondary();
-        harness.run();
-        harness.get_by_label("Mark all as read").click();
-        harness.run();
-        let read = crate::sync::Command::Apply {
-            folder: "INBOX".into(),
-            uids: vec![1, 3],
-            action: crate::rules::Action::MarkRead,
-            by: "gui".into(),
-        };
-        assert_eq!(wires.sent(), [("work".to_string(), read)]);
     }
 
     #[test]
@@ -622,28 +738,6 @@ mod tests {
     }
 
     #[test]
-    fn stepping_from_a_folder_in_a_collapsed_branch_stays_in_its_account() {
-        let fx = Fixture::new(&["home", "work"]);
-        let store = fx.store("work");
-        for name in ["Projects/Postvak", "Projects/Website", "Zeta"] {
-            store.upsert_folder(&stored(name)).unwrap();
-        }
-        let (mut harness, _wires) = fx.harness();
-        let work = |name: &str| View::Folder {
-            account: 1,
-            folder: name.into(),
-        };
-        harness.state_mut().select_view(work("Projects/Postvak"));
-        harness.run();
-        harness.get_by_label("Collapse Projects").click();
-        harness.run();
-        harness.state_mut().focus = Focus::Folders;
-        harness.key_press(egui::Key::ArrowDown);
-        harness.run();
-        assert_eq!(harness.state().view, work("Zeta"));
-    }
-
-    #[test]
     fn a_folder_without_a_delimiter_stays_flat() {
         let mut flat = custom("a/b", "/");
         flat.delimiter = None;
@@ -658,53 +752,6 @@ mod tests {
             .map(|r| r.label.as_str())
             .collect();
         assert_eq!(shown, ["A", "B", "D", "E"]);
-    }
-
-    #[test]
-    fn clicking_a_caret_collapses_its_folder() {
-        let fx = Fixture::new(&["work"]);
-        let store = fx.store("work");
-        for name in ["Projects/Postvak", "Projects/Website"] {
-            store.upsert_folder(&stored(name)).unwrap();
-        }
-        let (mut harness, _wires) = fx.harness();
-        assert!(harness.query_by_label("Website").is_some());
-        harness.get_by_label("Collapse Projects").click();
-        harness.run();
-        assert!(harness.query_by_label("Website").is_none());
-        assert!(
-            harness
-                .state()
-                .collapsed
-                .contains(&(0, "Projects".to_string()))
-        );
-    }
-
-    #[test]
-    fn arrow_keys_follow_the_tree_and_skip_collapsed_folders() {
-        let fx = Fixture::new(&["work"]);
-        let store = fx.store("work");
-        for name in ["Projects/Postvak", "Projects/Website", "Zeta"] {
-            store.upsert_folder(&stored(name)).unwrap();
-        }
-        let (mut harness, _wires) = fx.harness();
-        let folder = |name: &str| View::Folder {
-            account: 0,
-            folder: name.into(),
-        };
-        harness.state_mut().select_view(folder("Projects/Postvak"));
-        harness.state_mut().focus = Focus::Folders;
-        harness.run();
-        harness.key_press(egui::Key::ArrowDown);
-        harness.run();
-        assert_eq!(harness.state().view, folder("Projects/Website"));
-        harness.get_by_label("Collapse Projects").click();
-        harness.state_mut().select_view(folder("INBOX"));
-        harness.state_mut().focus = Focus::Folders;
-        harness.run();
-        harness.key_press(egui::Key::ArrowDown);
-        harness.run();
-        assert_eq!(harness.state().view, folder("Zeta"));
     }
 
     #[test]
@@ -734,228 +781,5 @@ mod tests {
                 "zeta"
             ]
         );
-    }
-
-    #[test]
-    fn tree_shows_folders_with_unread_counts_and_selects_on_click() {
-        let fx = Fixture::new(&["work"]);
-        fx.folder("work", "Archive", Some("Archive"));
-        let mut unread = message("INBOX", 1, "hello");
-        unread.flags = String::new();
-        fx.add("work", unread);
-        fx.add("work", message("INBOX", 2, "read already"));
-        let (mut harness, _wires) = fx.harness();
-        assert!(harness.query_by_label("Inbox (1)").is_some());
-        harness.get_by_label("Archive").click();
-        harness.run();
-        assert_eq!(
-            harness.state().view,
-            View::Folder {
-                account: 0,
-                folder: "Archive".into()
-            }
-        );
-        harness.get_by_label("Rules").click();
-        harness.run();
-        assert_eq!(harness.state().view, View::Rules);
-    }
-
-    #[test]
-    fn rows_are_full_width_and_keep_the_count_in_their_name() {
-        let fx = Fixture::new(&["work"]);
-        let mut unread = message("INBOX", 1, "hello");
-        unread.flags = String::new();
-        fx.add("work", unread);
-        let (harness, _wires) = fx.harness();
-        let inbox = harness.get_by_label("Inbox (1)").rect();
-        let rules = harness.get_by_label("Rules").rect();
-        assert!(
-            (inbox.width() - rules.width()).abs() < 1.0,
-            "{inbox:?} vs {rules:?}"
-        );
-    }
-
-    fn painted_text(harness: &egui_kittest::Harness<'_>) -> Vec<(String, egui::Rect)> {
-        harness
-            .output()
-            .shapes
-            .iter()
-            .filter_map(|clipped| match &clipped.shape {
-                egui::Shape::Text(text) => Some((
-                    text.galley.text().to_string(),
-                    text.galley.rect.translate(text.pos.to_vec2()),
-                )),
-                _ => None,
-            })
-            .collect()
-    }
-
-    #[test]
-    fn a_long_name_truncates_before_its_count() {
-        let mut harness = egui_kittest::Harness::builder()
-            .with_size(egui::vec2(160.0, 40.0))
-            .build_ui(|ui| {
-                let name = "Receipts from suppliers 2024";
-                folder_row(
-                    ui,
-                    false,
-                    icons::FOLDER,
-                    name,
-                    0.0,
-                    Some("123".into()),
-                    name,
-                );
-            });
-        harness.run();
-        let painted = painted_text(&harness);
-        let find = |wanted: &dyn Fn(&str) -> bool| {
-            painted
-                .iter()
-                .find(|(text, _)| wanted(text))
-                .map(|(_, rect)| *rect)
-        };
-        let name = find(&|text| text.contains("Receipts")).unwrap();
-        let count = find(&|text| text == "123").unwrap();
-        assert!(name.right() <= count.left(), "{painted:?}");
-    }
-
-    #[test]
-    fn the_selected_folder_has_a_brass_icon_and_count_badge() {
-        let mut harness = egui_kittest::Harness::builder()
-            .with_size(egui::vec2(200.0, 40.0))
-            .build_ui(|ui| {
-                *ui.visuals_mut() = theme::FRAME.visuals(true);
-                folder_row(
-                    ui,
-                    true,
-                    icons::INBOX,
-                    "INBOX",
-                    0.0,
-                    Some("2".into()),
-                    "INBOX",
-                );
-            });
-        harness.run();
-        let format_of = |wanted: &str| {
-            harness
-                .output()
-                .shapes
-                .iter()
-                .find_map(|clipped| match &clipped.shape {
-                    egui::Shape::Text(text) if text.galley.text().trim() == wanted => {
-                        text.galley.job.sections.first().map(|s| s.format.clone())
-                    }
-                    _ => None,
-                })
-                .unwrap()
-        };
-        assert_eq!(format_of(icons::INBOX).color, theme::FRAME.highlight);
-        assert_eq!(format_of("2").color, theme::FRAME.background);
-        let pill = harness.output().shapes.iter().any(|clipped| {
-            matches!(&clipped.shape, egui::Shape::Rect(rect)
-                if rect.fill == theme::FRAME.highlight && rect.corner_radius.nw as f32 >= rect.rect.height() / 2.0 - 1.0)
-        });
-        assert!(pill, "no brass pill behind the count");
-    }
-
-    #[test]
-    fn account_names_are_muted_and_semibold() {
-        let fx = Fixture::new(&["work"]);
-        let (harness, _wires) = fx.harness();
-        let format = harness
-            .output()
-            .shapes
-            .iter()
-            .find_map(|clipped| match &clipped.shape {
-                egui::Shape::Text(text) if text.galley.text() == "work" => {
-                    text.galley.job.sections.first().map(|s| s.format.clone())
-                }
-                _ => None,
-            })
-            .unwrap();
-        let chrome = theme::FRAME_NIGHT;
-        assert_eq!(format.font_id.family, theme::named(theme::BOLD));
-        assert!(format.color == chrome.muted || format.color == theme::FRAME.muted);
-    }
-
-    #[test]
-    fn a_row_without_a_count_keeps_its_label_on_the_left() {
-        let mut harness = egui_kittest::Harness::builder()
-            .with_size(egui::vec2(200.0, 40.0))
-            .build_ui(|ui| {
-                folder_row(ui, false, icons::FOLDER, "Work", 0.0, None, "Work");
-            });
-        harness.run();
-        let painted = painted_text(&harness);
-        let (_, label) = painted
-            .iter()
-            .find(|(text, _)| text.contains("Work"))
-            .unwrap();
-        assert!(label.left() < 30.0, "{painted:?}");
-    }
-
-    #[test]
-    fn an_indented_row_starts_later_and_ends_at_the_same_edge() {
-        let rects = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let seen = rects.clone();
-        let mut harness = egui_kittest::Harness::builder()
-            .with_size(egui::vec2(200.0, 80.0))
-            .build_ui(move |ui| {
-                let flat = folder_row(ui, false, icons::FOLDER, "Work", 0.0, None, "Work");
-                let nested = folder_row(ui, false, icons::FOLDER, "Clients", 16.0, None, "Clients");
-                *seen.borrow_mut() = vec![flat.rect, nested.rect];
-            });
-        harness.run();
-        let rects = rects.borrow();
-        let (flat, nested) = (rects[0], rects[1]);
-        assert!(nested.left() >= flat.left() + 16.0, "{flat:?} {nested:?}");
-        assert!(
-            (nested.right() - flat.right()).abs() < 1.0,
-            "{flat:?} {nested:?}"
-        );
-    }
-
-    #[test]
-    fn a_separator_divides_special_from_custom_folders() {
-        let fx = Fixture::new(&["work"]);
-        fx.folder("work", "Junk", Some("Junk"));
-        fx.folder("work", "Receipts", None);
-        let (harness, _wires) = fx.harness();
-        let junk = harness.get_by_label("Junk").rect();
-        let receipts = harness.get_by_label("Receipts").rect();
-        assert!(
-            receipts.top() - junk.bottom()
-                > harness.ctx.global_style().spacing.item_spacing.y + 2.0
-        );
-    }
-
-    #[test]
-    fn the_backup_view_is_labelled_backups_and_sits_at_the_bottom() {
-        let fx = Fixture::new(&["work"]);
-        let (mut harness, _wires) = fx.harness();
-        let backups = harness.get_by_label("Backups").rect();
-        assert!(
-            backups.bottom() > 700.0,
-            "pinned to the bottom of an 800 px window"
-        );
-        harness.get_by_label("Backups").click();
-        harness.run();
-        assert_eq!(harness.state().view, View::Trash);
-    }
-
-    #[test]
-    fn a_store_that_fails_to_open_shows_its_error_and_other_accounts_still_work() {
-        let broken = Fixture::new(&["broken", "work"]);
-        let db = broken.paths.mail_db("broken");
-        std::fs::remove_file(&db).unwrap();
-        std::fs::create_dir_all(&db).unwrap();
-        let (harness, _wires) = broken.harness();
-        assert!(
-            harness
-                .query_by_label_contains("could not open the store")
-                .is_some()
-        );
-        // The other account's Inbox row, and the list's title above that Inbox.
-        assert_eq!(harness.query_all_by_label("Inbox").count(), 2);
     }
 }

@@ -1,0 +1,105 @@
+// The status bar: the sync button, a line per account (and the window's error) and the update link. `status.rs` words
+// the lines.
+import { ProgressIndicator } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { IconButton, TextButton } from "common.slint";
+
+export enum Dot { none, failed, up-to-date, offline }
+
+export struct StatusLine {
+    text: string,
+    dot: Dot,
+    failed: bool,
+    // 0 to 1 while headers or bodies are fetched, else below 0.
+    progress: float,
+}
+
+export component StatusBar inherits Rectangle {
+    in property <[StatusLine]> lines;
+    in property <string> sync-icon;
+    in property <string> sync-hint;
+    // "↑ v1.2.3 available", or empty.
+    in property <string> update;
+    callback sync();
+    callback toggle-history();
+    callback open-update();
+
+    HorizontalLayout {
+        padding-left: Theme.inset - Theme.glyph;
+        padding-right: Theme.inset;
+        padding-top: Theme.pad;
+        padding-bottom: Theme.pad;
+        // The dots then line up with the folder names above.
+        spacing: Theme.pad - Theme.glyph;
+
+        VerticalLayout {
+            alignment: start;
+            IconButton {
+                icon: root.sync-icon;
+                name: "Sync now";
+                hint: root.sync-hint;
+                clicked => { root.sync(); }
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            for line in root.lines: TouchArea {
+                height: Theme.row;
+                clicked => { root.toggle-history(); }
+                accessible-role: button;
+                accessible-label: line.text;
+                accessible-action-default => { root.toggle-history(); }
+                HorizontalLayout {
+                    spacing: Theme.pad;
+                    Rectangle {
+                        width: Theme.pad;
+                        height: Theme.pad;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: self.width / 2;
+                        // Brass when up to date, quiet when offline; only a failure gets a ring.
+                        border-width: line.dot == Dot.failed ? 1.5px : 0px;
+                        border-color: Theme.frame.error;
+                        background: line.dot == Dot.up-to-date ? Theme.frame.highlight : line.dot == Dot.offline ? Theme.frame.muted : Theme.frame.highlight.transparentize(100%);
+                        animate background, border-color, border-width {
+                            duration: Theme.state-fade;
+                            easing: ease-out;
+                        }
+                    }
+                    Text {
+                        accessible-role: none;
+                        text: line.text;
+                        color: line.failed ? Theme.frame.error : Theme.frame.text;
+                        animate color {
+                            duration: Theme.state-fade;
+                            easing: ease-out;
+                        }
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    if line.progress >= 0: ProgressIndicator {
+                        width: 160px;
+                        height: Theme.pad / 2;
+                        y: (parent.height - self.height) / 2;
+                        progress: line.progress;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+            }
+        }
+
+        Rectangle { horizontal-stretch: 1; }
+
+        HorizontalLayout {
+            alignment: end;
+            if root.update != "": VerticalLayout {
+                alignment: center;
+                TextButton {
+                    text: root.update;
+                    text-color: Theme.frame.highlight;
+                    clicked => { root.open-update(); }
+                }
+            }
+        }
+    }
+}

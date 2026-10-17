@@ -117,9 +117,41 @@ impl Config {
         }
     }
 
+    /// Writes the accounts and `[ui]` into the file in place: comments, untouched keys and their order stay, and a
+    /// setting the file leaves out is only written once it differs from its default.
     pub fn save(&self, path: &Path) -> Result<(), ConfigError> {
-        let text = toml::to_string_pretty(self).map_err(|e| ConfigError::Invalid(e.to_string()))?;
-        write_atomic(path, text.as_bytes())?;
+        let mut doc = read_document(path)?;
+        let old_accounts = doc
+            .remove("accounts")
+            .and_then(|item| item.into_array_of_tables().ok())
+            .unwrap_or_default();
+        let account_defaults = account_defaults()?;
+        let mut accounts = toml_edit::ArrayOfTables::new();
+        for account in &self.accounts {
+            let mut table = old_accounts
+                .iter()
+                .find(|old| old.get("name").and_then(|n| n.as_str()) == Some(account.name.as_str()))
+                .cloned()
+                .unwrap_or_default();
+            merge_table(&mut table, &to_table(account)?, &account_defaults);
+            accounts.push(table);
+        }
+        if !accounts.is_empty() {
+            doc.insert("accounts", toml_edit::Item::ArrayOfTables(accounts));
+        }
+        let mut ui = doc
+            .remove("ui")
+            .and_then(|item| item.into_table().ok())
+            .unwrap_or_default();
+        merge_table(
+            &mut ui,
+            &to_table(&self.ui)?,
+            &to_table(&UiConfig::default())?,
+        );
+        if !ui.is_empty() {
+            doc.insert("ui", toml_edit::Item::Table(ui));
+        }
+        write_atomic(path, doc.to_string().as_bytes())?;
         Ok(())
     }
 
@@ -170,14 +202,7 @@ impl Config {
 
 /// Sets `[ui] theme`, keeping the rest of the file's text and comments.
 pub fn save_theme(path: &Path, theme: Theme) -> Result<(), ConfigError> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(e.into()),
-    };
-    let mut doc: toml_edit::DocumentMut = text
-        .parse()
-        .map_err(|e: toml_edit::TomlError| ConfigError::Parse(e.to_string()))?;
+    let mut doc = read_document(path)?;
     let ui = doc
         .entry("ui")
         .or_insert_with(toml_edit::table)
@@ -186,6 +211,82 @@ pub fn save_theme(path: &Path, theme: Theme) -> Result<(), ConfigError> {
     ui.insert("theme", toml_edit::value(theme.as_str()));
     write_atomic(path, doc.to_string().as_bytes())?;
     Ok(())
+}
+
+fn read_document(path: &Path) -> Result<toml_edit::DocumentMut, ConfigError> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.into()),
+    };
+    text.parse()
+        .map_err(|e: toml_edit::TomlError| ConfigError::Parse(e.to_string()))
+}
+
+fn to_table(value: &impl Serialize) -> Result<toml_edit::Table, ConfigError> {
+    let text = toml::to_string(value).map_err(|e| ConfigError::Invalid(e.to_string()))?;
+    let doc: toml_edit::DocumentMut = text
+        .parse()
+        .map_err(|e: toml_edit::TomlError| ConfigError::Parse(e.to_string()))?;
+    Ok(doc.as_table().clone())
+}
+
+/// The values an account gets for the keys it leaves out; the required keys are never defaults.
+fn account_defaults() -> Result<toml_edit::Table, ConfigError> {
+    let mut defaults = to_table(&AccountConfig::new(
+        "",
+        "",
+        "",
+        PasswordSource::Keyring { keyring: true },
+    ))?;
+    for required in ["name", "host", "username", "password"] {
+        defaults.remove(required);
+    }
+    Ok(defaults)
+}
+
+/// Makes `old` hold `new`'s values: keys `new` lacks go, changed values are replaced keeping their comments, and a
+/// key `old` lacks is only added when it differs from `defaults`. Nested tables are written inline.
+fn merge_table(old: &mut toml_edit::Table, new: &toml_edit::Table, defaults: &toml_edit::Table) {
+    let gone: Vec<String> = old
+        .iter()
+        .map(|(key, _)| key.to_string())
+        .filter(|key| !new.contains_key(key))
+        .collect();
+    for key in gone {
+        old.remove(&key);
+    }
+    for (key, item) in new.iter() {
+        let Ok(mut value) = item.clone().into_value() else {
+            continue;
+        };
+        value.decor_mut().clear();
+        match old.get_mut(key) {
+            Some(existing) if same_value(existing, item) => {}
+            Some(existing) => {
+                if let Some(decor) = existing.as_value().map(|v| v.decor().clone()) {
+                    *value.decor_mut() = decor;
+                }
+                *existing = toml_edit::Item::Value(value);
+            }
+            None if defaults.get(key).is_some_and(|d| same_value(d, item)) => {}
+            None => {
+                old.insert(key, toml_edit::Item::Value(value));
+            }
+        }
+    }
+}
+
+/// Whether two items hold the same data, whatever their layout: an inline table equals a `[section]`.
+fn same_value(a: &toml_edit::Item, b: &toml_edit::Item) -> bool {
+    let plain = |item: &toml_edit::Item| {
+        let mut doc = toml_edit::DocumentMut::new();
+        doc.insert("v", item.clone());
+        toml::from_str::<toml::Table>(&doc.to_string())
+            .ok()
+            .and_then(|mut table| table.remove("v"))
+    };
+    plain(a).is_some_and(|value| Some(value) == plain(b))
 }
 
 impl AccountConfig {
@@ -211,18 +312,7 @@ impl AccountConfig {
     }
 
     pub fn identity(&self) -> Result<Identity, ConfigError> {
-        let mut builder = globset::GlobSetBuilder::new();
-        for pattern in &self.aliases {
-            let glob = globset::GlobBuilder::new(pattern)
-                .case_insensitive(true)
-                .build()
-                .map_err(|e| {
-                    ConfigError::Invalid(format!("account '{}': alias '{pattern}': {e}", self.name))
-                })?;
-            builder.add(glob);
-        }
-        let aliases = builder
-            .build()
+        let aliases = regex::RegexSet::new(self.aliases.iter().map(|pattern| alias_regex(pattern)))
             .map_err(|e| ConfigError::Invalid(format!("account '{}': aliases: {e}", self.name)))?;
         Ok(Identity {
             address: self.address().to_ascii_lowercase(),
@@ -231,10 +321,15 @@ impl AccountConfig {
     }
 }
 
+/// An alias pattern as a regex over the whole address, ignoring case; `*` matches anything.
+pub(crate) fn alias_regex(pattern: &str) -> String {
+    format!("(?i)^{}$", regex::escape(pattern).replace(r"\*", ".*"))
+}
+
 #[derive(Debug, Clone)]
 pub struct Identity {
     address: String,
-    aliases: globset::GlobSet,
+    aliases: regex::RegexSet,
 }
 
 impl Identity {
@@ -247,6 +342,16 @@ impl Identity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alias_patterns_take_star_as_the_only_wildcard() {
+        let alias = |pattern: &str| regex::Regex::new(&alias_regex(pattern)).unwrap();
+        assert!(alias("*@shop.example.com").is_match("Orders@SHOP.example.com"));
+        assert!(!alias("*@shop.example.com").is_match("orders@shop.example.com.evil"));
+        assert!(alias("a+b@x.org").is_match("a+b@x.org"));
+        assert!(!alias("a+b@x.org").is_match("aab@xxorg"));
+        assert!(!alias("me?@x.org").is_match("mex@x.org"));
+    }
 
     const SAMPLE: &str = r#"
 [[accounts]]
@@ -407,6 +512,51 @@ notify = false
         );
         let cfg = Config::load(&path).unwrap();
         assert_eq!((cfg.ui.theme, cfg.accounts.len()), (Theme::Light, 2));
+    }
+
+    #[test]
+    fn save_keeps_comments_and_writes_only_what_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let text = "# my accounts\n\n# the day job\n[[accounts]]\nname = \"work\"\nhost = \"imap.example.com\" # via the VPN\nport = 993\nusername = \"pieter@example.com\"\npassword = { keyring = true }\n\n[[accounts]]\nname = \"home\"\nhost = \"mail.home.test\"\nusername = \"pieter@home.test\"\npassword = { keyring = true }\n";
+        std::fs::write(&path, text).unwrap();
+        let mut cfg = Config::load(&path).unwrap();
+        cfg.accounts[0].port = 994;
+        cfg.accounts[0].aliases = vec!["p@example.org".into()];
+        cfg.accounts.retain(|a| a.name != "home");
+        let password = PasswordSource::Command {
+            command: "pass show mail/extra".into(),
+        };
+        cfg.accounts.push(AccountConfig::new(
+            "extra",
+            "imap.extra.test",
+            "me@extra.test",
+            password,
+        ));
+        cfg.save(&path).unwrap();
+
+        let saved = std::fs::read_to_string(&path).unwrap();
+        for kept in [
+            "# my accounts",
+            "# the day job",
+            "host = \"imap.example.com\" # via the VPN",
+        ] {
+            assert!(saved.contains(kept), "lost {kept:?}:\n{saved}");
+        }
+        assert!(
+            saved.contains("port = 994") && !saved.contains("home"),
+            "{saved}"
+        );
+        assert!(
+            !saved.contains("sync_interval_secs"),
+            "defaults are left out:\n{saved}"
+        );
+        assert!(
+            saved.contains("password = { command = \"pass show mail/extra\" }"),
+            "{saved}"
+        );
+        let again = Config::load(&path).unwrap();
+        assert_eq!(again.accounts, cfg.accounts);
     }
 
     #[test]

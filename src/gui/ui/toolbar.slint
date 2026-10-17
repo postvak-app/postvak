@@ -1,0 +1,98 @@
+// The toolbar: the wordmark over the folder pane, the message actions over the list, the search button on the right.
+import { Theme } from "theme.slint";
+import { Heading, IconButton } from "common.slint";
+
+export struct ToolButton {
+    icon: string,
+    name: string,
+    hint: string,
+}
+
+export component Toolbar inherits Rectangle {
+    // The folder pane's width, so the first action's glyph lines up with the list's content.
+    in property <length> folders-width;
+    in property <[ToolButton]> buttons;
+    in property <bool> buttons-enabled;
+    // Off on Rules, Activity and Backups, which have no messages to act on or search: the actions and search go.
+    in property <bool> mail-view;
+    in property <string> search-icon;
+    in property <string> search-hint;
+    callback action(int);
+    callback search();
+
+    height: Theme.top-bar;
+
+    HorizontalLayout {
+        padding-left: Theme.inset;
+        padding-right: Theme.inset;
+        padding-top: (Theme.top-bar - Theme.control) / 2;
+        padding-bottom: (Theme.top-bar - Theme.control) / 2;
+        spacing: Theme.pad / 2;
+
+        // As wide as the folder pane, less the gap before the first button and that button's glyph
+        // inset, so the glyph lines up with the list's content.
+        HorizontalLayout {
+            width: max(0px, root.folders-width - Theme.pad / 2 - Theme.glyph);
+            spacing: Theme.pad;
+            Image {
+                width: Theme.icon + Theme.pad / 2;
+                height: self.width;
+                y: (parent.height - self.height) / 2;
+                source: @image-url("../../../assets/icon.png");
+            }
+            Heading {
+                text: "Postvak";
+                color: Theme.frame.strong;
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        // Archive, Move, Delete and Junk dispose of a message; a gap sets Flag and Read apart.
+        for button[i] in root.mail-view ? root.buttons : []: HorizontalLayout {
+            padding-left: i == 4 ? Theme.pad : 0px;
+            IconButton {
+                icon: button.icon;
+                name: button.name;
+                hint: button.hint;
+                enabled: root.buttons-enabled;
+                clicked => { root.action(i); }
+            }
+        }
+
+        Rectangle { horizontal-stretch: 1; }
+
+        if root.mail-view: Rectangle {
+            width: 260px;
+            border-radius: Theme.radius;
+            background: touch.has-hover ? Theme.frame.pressed : Theme.frame.faint;
+            accessible-role: button;
+            accessible-label: "Search";
+            accessible-description: root.search-hint;
+            accessible-action-default => { root.search(); }
+            touch := TouchArea {
+                clicked => { root.search(); }
+                Tooltip { text: @markdown("\{root.search-hint}"); }
+            }
+            HorizontalLayout {
+                padding-left: Theme.pad;
+                spacing: Theme.pad;
+                Text {
+                    accessible-role: none;
+                    text: root.search-icon;
+                    font-family: Theme.icon-font;
+                    font-size: Theme.icon;
+                    color: Theme.frame.muted;
+                    vertical-alignment: center;
+                }
+                Text {
+                    accessible-role: none;
+                    text: "Search mail";
+                    color: Theme.frame.muted;
+                    vertical-alignment: center;
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+        }
+    }
+}

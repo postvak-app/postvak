@@ -1,0 +1,304 @@
+// The message list: its title and counts or the search field, then a row per thread. `rows.rs` makes the rows'
+// texts; this file only places them.
+import { LineEdit, ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Heading, HoverFill, TextButton } from "common.slint";
+
+export struct RowData {
+    unread: bool,
+    // The mark's or flag's glyph, or empty.
+    marker: string,
+    member: bool,
+    // The account, in All inboxes.
+    tag: string,
+    who: string,
+    subject: string,
+    date: string,
+    // The cursor row.
+    selected: bool,
+    marked: bool,
+    // New mail, in the list since its last change: the row fades in.
+    arrived: bool,
+    // The accessible name, from `list::row_text`.
+    name: string,
+    // The right-click menu's three groups, from `list::menu`.
+    menu-read: [string],
+    menu-move: [string],
+    menu-file: [string],
+}
+
+component ListRow inherits Rectangle {
+    in property <RowData> data;
+    // `extend` with Shift held, `toggle` with Cmd on macOS or Ctrl elsewhere.
+    callback clicked(/* extend */ bool, /* toggle */ bool);
+    property <KeyboardModifiers> held;
+
+    property <color> ink: data.selected ? Theme.pane.on-accent : Theme.pane.text;
+    property <length> indent: data.member ? Theme.inset : 0px;
+    // 1 while unread, 0 once read: the dot and the sender's and subject's ink follow it.
+    property <float> unread-level;
+    // Whether `unread-level` fades; the ListView reuses a row for another message as it scrolls, and that must not fade.
+    property <bool> fade;
+    // The message the row last showed.
+    property <string> shown;
+    // 0 while new mail is about to fade in, else 1; the list sets the row's opacity from it.
+    out property <float> appear: 1;
+    property <bool> appearing;
+    animate unread-level {
+        duration: root.fade ? Theme.state-fade : 0ms;
+        easing: ease-out;
+    }
+    animate appear {
+        duration: root.appearing ? Theme.arrive-fade : 0ms;
+        easing: ease-out;
+    }
+    init => { root.show(); }
+    changed data => { root.show(); }
+
+    function show() {
+        let message = data.tag + "\n" + data.who + "\n" + data.subject + "\n" + data.date;
+        root.fade = message == root.shown;
+        if !root.fade && data.arrived {
+            root.appearing = false;
+            root.appear = 0;
+            root.appearing = true;
+            root.appear = 1;
+        }
+        root.shown = message;
+        root.unread-level = data.unread ? 1 : 0;
+    }
+
+    height: Theme.list-row;
+    border-radius: Theme.pad;
+    // A marked row is a lighter shade of the cursor's, apart from the hover fill.
+    background: data.selected ? Theme.pane.selected : data.marked ? Theme.pane.selected.mix(Theme.pane.panel, 60%) : transparent;
+    accessible-role: list-item;
+    accessible-label: data.name;
+    accessible-item-selected: data.selected;
+    accessible-action-default => { root.clicked(false, false); }
+
+    HoverFill {
+        visible: !data.selected && !data.marked;
+        border-radius: Theme.pad;
+        hovered: touch.has-hover;
+        fill: Theme.pane.hover;
+    }
+
+    touch := TouchArea {
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                root.held = event.modifiers;
+            }
+        }
+        clicked => { root.clicked(root.held.shift, root.held.control); }
+    }
+
+    if !data.selected && !data.marked && !touch.has-hover: Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.pane.border;
+    }
+
+    HorizontalLayout {
+        padding: Theme.pad;
+        spacing: Theme.pad / 2;
+
+        // The unread dot, then the mark or flag, on the sender's line.
+        Rectangle {
+            width: 1.5 * Theme.pad;
+            Rectangle {
+                opacity: root.unread-level;
+                x: 0;
+                y: (Theme.list-row - 2 * Theme.pad) / 4 - self.height / 2;
+                width: Theme.pad * 3 / 4;
+                height: self.width;
+                border-radius: self.width / 2;
+                background: Theme.pane.highlight;
+            }
+        }
+        Text {
+            accessible-role: none;
+            width: Theme.icon * 3 / 4;
+            height: (Theme.list-row - 2 * Theme.pad) / 2;
+            text: data.marker;
+            font-family: Theme.icon-font;
+            font-size: Theme.icon * 3 / 4;
+            color: Theme.pane.highlight;
+            vertical-alignment: center;
+        }
+
+        VerticalLayout {
+            padding-left: root.indent;
+            HorizontalLayout {
+                spacing: Theme.pad;
+                if data.tag != "": Text {
+                    accessible-role: none;
+                    max-width: 80px;
+                    text: data.tag;
+                    font-size: Theme.small-size;
+                    color: data.selected ? Theme.pane.secondary : Theme.pane.muted;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+                Text {
+                    accessible-role: none;
+                    horizontal-stretch: 1;
+                    text: data.who;
+                    font-weight: data.unread ? 600 : 500;
+                    color: data.selected ? root.ink : root.ink.mix(Theme.pane.secondary, root.unread-level);
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+                Text {
+                    accessible-role: none;
+                    text: data.date;
+                    font-size: Theme.small-size;
+                    color: data.selected ? Theme.pane.secondary : Theme.pane.muted;
+                    vertical-alignment: center;
+                }
+            }
+            Text {
+                accessible-role: none;
+                text: data.subject;
+                color: data.selected ? root.ink : root.ink.mix(Theme.pane.muted, root.unread-level);
+                overflow: elide;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+export component ListPane inherits Rectangle {
+    in property <string> title;
+    in property <string> counts;
+    // The filter switch's chosen index: All, Unread, Flagged, Attachments.
+    in property <int> filter;
+    in property <bool> searching;
+    in property <string> search-hint;
+    in property <string> results;
+    // Shown instead of rows, or empty.
+    in property <string> empty;
+    in property <[RowData]> rows;
+    in property <int> marked-count;
+    in-out property <length> list-y;
+    out property <length> list-height: list.visible-height;
+    callback row-clicked(int, bool, bool);
+    callback filter-clicked(int);
+    // The payload a dragged row carries.
+    pure callback drag-data(int) -> data-transfer;
+    // The pill beside the pointer: the rows that move, the row's subject, its fill and text colours.
+    pure callback drag-image(int, string, color, color) -> image;
+    // A row's menu item: the row, the item's group, its place in the group.
+    callback row-menu(int, int, int);
+    callback search-edited(string);
+    callback search-accepted();
+    callback search-focus(bool);
+    callback scrolled();
+
+    VerticalLayout {
+        padding: Theme.pad;
+        spacing: Theme.pad / 2;
+
+        if !root.searching && root.title != "": HorizontalLayout {
+            height: Theme.control;
+            padding-left: Theme.pad;
+            padding-right: Theme.pad;
+            spacing: Theme.pad;
+            Heading {
+                text: root.title;
+                vertical-alignment: center;
+            }
+            // The empty text says it already.
+            Text {
+                text: root.empty != "" ? "" : root.counts;
+                color: Theme.pane.muted;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+            HorizontalLayout {
+                spacing: Theme.pad / 2;
+                for label[i] in ["All", "Unread", "Flagged", "Attachments"]: VerticalLayout {
+                    alignment: center;
+                    TextButton {
+                        text: label;
+                        palette: Theme.pane;
+                        selected: root.filter == i;
+                        clicked => { root.filter-clicked(i); }
+                    }
+                }
+            }
+        }
+
+        if root.searching: VerticalLayout {
+            spacing: Theme.pad / 2;
+            LineEdit {
+                height: Theme.control;
+                placeholder-text: root.search-hint;
+                accessible-label: root.search-hint;
+                init => { self.focus(); }
+                edited(text) => { root.search-edited(text); }
+                accepted => { root.search-accepted(); }
+                changed has-focus => { root.search-focus(self.has-focus); }
+            }
+            Text {
+                text: root.results;
+                color: Theme.pane.muted;
+                wrap: word-wrap;
+            }
+        }
+
+        list := ListView {
+            vertical-stretch: 1;
+            content-y <=> root.list-y;
+            init => { root.scrolled(); }
+            changed content-y => { root.scrolled(); }
+            changed visible-height => { root.scrolled(); }
+            // The menu sits above the row: a TouchArea takes every button's press before its parent sees it.
+            for row[i] in root.rows: Rectangle {
+                height: Theme.list-row;
+                // Dragging onto a folder moves the row; a click still reaches it.
+                drag := DragArea {
+                    allow-move: true;
+                    data: root.drag-data(i);
+                    drag-image: root.drag-image(row.marked ? root.marked-count : 1, row.subject, Theme.frame.highlight, Theme.frame.background);
+                    drag-image-offset-x: -Theme.pad / 1px * 2;
+                    drag-image-offset-y: -Theme.pad / 1px;
+                    ListRow {
+                        opacity: (drag.dragging ? 0.4 : 1) * self.appear;
+                        data: row;
+                        clicked(extend, toggle) => { root.row-clicked(i, extend, toggle); }
+                    }
+                }
+                ContextMenuArea {
+                    Menu {
+                        for title[j] in row.menu-read: MenuItem {
+                            title: title;
+                            activated => { root.row-menu(i, 0, j); }
+                        }
+                        MenuSeparator { }
+                        for title[j] in row.menu-move: MenuItem {
+                            title: title;
+                            activated => { root.row-menu(i, 1, j); }
+                        }
+                        MenuSeparator { }
+                        for title[j] in row.menu-file: MenuItem {
+                            title: title;
+                            activated => { root.row-menu(i, 2, j); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.empty != "": Text {
+        x: Theme.inset;
+        y: (root.height - self.height) / 2;
+        width: root.width - 2 * Theme.inset;
+        text: root.empty;
+        color: Theme.pane.muted;
+        horizontal-alignment: center;
+        wrap: word-wrap;
+    }
+}

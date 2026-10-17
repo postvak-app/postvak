@@ -90,6 +90,13 @@ pub enum Event {
         from: String,
         subject: String,
     },
+    /// The stored messages a `SearchServer` found, as (folder, uid); `query` tells a window whether it still wants them.
+    ServerSearchDone {
+        account: String,
+        request: RequestId,
+        query: String,
+        hits: Vec<(String, u32)>,
+    },
     Restored {
         account: String,
         folder: String,
@@ -121,7 +128,8 @@ impl Event {
             | Event::BodyReady { request, .. }
             | Event::CommandFailed { request, .. }
             | Event::Restored { request, .. }
-            | Event::RuleApplied { request, .. } => vec![*request],
+            | Event::RuleApplied { request, .. }
+            | Event::ServerSearchDone { request, .. } => vec![*request],
             Event::Synced { requests, .. } => requests.clone(),
             Event::Activity { .. } | Event::Error { .. } | Event::NewMail { .. } => Vec::new(),
         }
@@ -222,17 +230,18 @@ fn fetching(folder: &str, what: &str, done: usize, total: usize) -> String {
     format!(
         "{} {what} {} / {}",
         clean(folder, false),
-        thousands(done),
-        thousands(total)
+        group_digits(done as u64, ','),
+        group_digits(total as u64, ',')
     )
 }
 
-fn thousands(n: usize) -> String {
+/// `n` with `separator` between groups of three digits.
+pub(crate) fn group_digits(n: u64, separator: char) -> String {
     let digits = n.to_string();
     let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, digit) in digits.chars().enumerate() {
         if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            grouped.push(',');
+            grouped.push(separator);
         }
         grouped.push(digit);
     }
@@ -263,6 +272,11 @@ pub enum Command {
     Restore {
         file: PathBuf,
     },
+    /// Searches the server for messages with every word of `query`, in `folder` or every synced folder.
+    SearchServer {
+        folder: Option<String>,
+        query: String,
+    },
     SyncNow,
 }
 
@@ -273,9 +287,11 @@ enum ActionDef {
     Archive,
     Delete,
     Flag,
+    Junk,
     MarkRead,
     MarkUnread,
     Move(String),
+    NotJunk,
     Notify,
     Silent,
     Tag(String),
@@ -914,7 +930,12 @@ fn run_command(
                 }
                 if matches!(
                     action,
-                    Action::Archive | Action::Delete | Action::Move(_) | Action::Trash
+                    Action::Archive
+                        | Action::Delete
+                        | Action::Junk
+                        | Action::Move(_)
+                        | Action::NotJunk
+                        | Action::Trash
                 ) {
                     run.next = NextPass::Inbox;
                 }
@@ -1011,6 +1032,25 @@ fn run_command(
                 }
             }
         }
+        Command::SearchServer { folder, query } => {
+            run.used_connection = true;
+            match search_server_in(ops, store, folder.as_deref(), &query) {
+                Ok(hits) => {
+                    let _ = events.send(Event::ServerSearchDone {
+                        account: name(),
+                        request,
+                        query,
+                        hits,
+                    });
+                }
+                Err(e) => {
+                    let _ = events.send(failed(request, e.to_string()));
+                    if connection_lost(&e) {
+                        return Err(e.into());
+                    }
+                }
+            }
+        }
         Command::Restore { file } => {
             run.used_connection = true;
             match trash.restore(ops, &file) {
@@ -1074,6 +1114,36 @@ fn fetch_bodies_in(
     Ok(fetched)
 }
 
+/// Searches the named folder on the server, failing if it cannot, or every synced folder, skipping any that fail. Only a
+/// lost connection stops the walk.
+fn search_server_in(
+    ops: &mut dyn MailOps,
+    store: &Store,
+    folder: Option<&str>,
+    query: &str,
+) -> Result<Vec<(String, u32)>, ActionError> {
+    let words = actions::search_words(query);
+    let folders = match folder {
+        Some(folder) => vec![folder.to_string()],
+        None if words.is_empty() => Vec::new(),
+        None => store
+            .folders()?
+            .into_iter()
+            .filter(|f| f.uidvalidity != 0)
+            .map(|f| f.name)
+            .collect(),
+    };
+    let mut hits = Vec::new();
+    for name in folders {
+        match actions::search_server(ops, store, &name, &words) {
+            Ok(uids) => hits.extend(uids.into_iter().map(|uid| (name.clone(), uid))),
+            Err(e) if folder.is_some() || connection_lost(&e) => return Err(e),
+            Err(e) => log::warn!("{name}: server search skipped: {e}"),
+        }
+    }
+    Ok(hits)
+}
+
 fn is_connection_error(e: &MailError) -> bool {
     matches!(e, MailError::Io(_) | MailError::Connect(_))
 }
@@ -1119,6 +1189,8 @@ fn describe(action: &Action, count: usize) -> String {
         Action::Archive => "archiving",
         Action::Delete | Action::Trash => "deleting",
         Action::Flag => "flagging",
+        Action::Junk => "marking junk",
+        Action::NotJunk => "marking not junk",
         Action::MarkRead => "marking read",
         Action::MarkUnread => "marking unread",
         Action::Move(_) => "moving",

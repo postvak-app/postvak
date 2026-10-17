@@ -15,7 +15,7 @@ const MCP_RULES_TYPES: [&str; 2] = ["Rule", "Action"];
 
 /// Functions outside `src/rules/edit.rs` that may write next to the rules path, as `(file, fn, reason)`.
 const RULES_WRITE_EXCEPTIONS: [(&str, &str, &str); 1] = [(
-    "src/gui/app.rs",
+    "src/gui/state.rs",
     "open_rules_file",
     "creates an empty rules.toml when there is none, so the editor has a file to open; never changes an existing one",
 )];
@@ -404,15 +404,14 @@ fn check_rules_writes(source: &Source) -> Vec<String> {
     out
 }
 
-/// Rule 3: in `src/gui/`, `app.rs` is the only code that changes state; the view modules draw from `&App` and
+/// Rule 3: in `src/gui/`, `state.rs` is the only code that changes state; the view modules draw from `&App` and
 /// return `UiAction`s. So a view never takes `&mut App`, reaches the daemon, or edits rules.
 fn check_gui_views(source: &Source) -> Vec<String> {
-    const RULE: &str =
-        "in src/gui/, app.rs is the only code that changes state; views draw and return UiActions";
+    const RULE: &str = "in src/gui/, state.rs is the only code that changes state; views draw and return UiActions";
     let Some(file) = source.path.strip_prefix("src/gui/") else {
         return Vec::new();
     };
-    if matches!(file, "app.rs" | "mod.rs" | "test_support.rs") {
+    if matches!(file, "mod.rs" | "state.rs" | "test_support.rs") {
         return Vec::new();
     }
     let mut out = Vec::new();
@@ -581,12 +580,12 @@ mod checks_fire {
         assert!(violations("src/rules/edit.rs", bad).is_empty());
         let excepted =
             "fn open_rules_file(&mut self) { write_atomic(&self.paths.rules_file(), b\"\"); }";
-        assert!(violations("src/gui/app.rs", excepted).is_empty());
+        assert!(violations("src/gui/state.rs", excepted).is_empty());
     }
 
     #[test]
     fn gui_views_never_change_state() {
-        let ok = "use super::app::{App, UiAction};\npub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> { vec![] }\n\
+        let ok = "use super::state::{App, UiAction};\npub(crate) fn show(app: &App) -> Vec<UiAction> { vec![] }\n\
                   #[cfg(test)]\nmod tests { fn at(h: &mut App) {} }";
         assert_eq!(violations("src/gui/list.rs", ok), Vec::<String>::new());
         for bad in [
@@ -601,7 +600,7 @@ mod checks_fire {
         }
         assert!(
             violations(
-                "src/gui/app.rs",
+                "src/gui/state.rs",
                 "fn f(app: &mut App) { self.client.send(c); }"
             )
             .is_empty()

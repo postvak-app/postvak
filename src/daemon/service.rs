@@ -238,12 +238,6 @@ fn launchd_domain(home: &Path) -> Result<String> {
     Ok(format!("gui/{uid}"))
 }
 
-fn xml_escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
 pub fn plist(exe: &Path, log: &Path, postvak_home: Option<&Path>) -> String {
     plist_with_path(
         exe,
@@ -259,8 +253,8 @@ fn plist_with_path(
     path: Option<&str>,
     postvak_home: Option<&Path>,
 ) -> String {
-    let exe = xml_escape(&exe.to_string_lossy());
-    let log = xml_escape(&log.to_string_lossy());
+    let exe = crate::notify::escape_markup(&exe.to_string_lossy());
+    let log = crate::notify::escape_markup(&log.to_string_lossy());
     let variables: Vec<(&str, String)> = [
         path.map(|path| ("PATH", path.to_string())),
         postvak_home.map(|home| ("POSTVAK_HOME", home.to_string_lossy().into_owned())),
@@ -276,7 +270,7 @@ fn plist_with_path(
             .map(|(key, value)| {
                 format!(
                     "        <key>{key}</key>\n        <string>{}</string>\n",
-                    xml_escape(value)
+                    crate::notify::escape_markup(value)
                 )
             })
             .collect();

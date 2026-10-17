@@ -241,7 +241,7 @@ struct Harness<'a> {
 
 impl<'a> Harness<'a> {
     fn new(store: &'a Store, trash_dir: PathBuf) -> Harness<'a> {
-        let ops = RecordingOps::new()
+        let ops = RecordingOps::default()
             .with_folder("INBOX", None)
             .with_folder("Lists", None)
             .with_folder("Archive", Some("Archive"));
@@ -792,6 +792,10 @@ impl MailOps for Harness<'_> {
 
     fn search_uids(&mut self, from_uid: u32) -> MailResult<Vec<u32>> {
         self.run_selected(|ops| ops.search_uids(from_uid))
+    }
+
+    fn search_text(&mut self, words: &[String]) -> MailResult<Vec<u32>> {
+        self.run_selected(|ops| ops.search_text(words))
     }
 
     fn fetch_envelopes(&mut self, first: u32, last: u32) -> MailResult<Vec<Envelope>> {

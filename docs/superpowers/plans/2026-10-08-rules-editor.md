@@ -1,5 +1,7 @@
 # Rules Editor Implementation Plan
 
+> **GUI toolkit (2026-10-13):** the GUI steps below were written for egui, which the Slint rewrite (`2026-10-13-slint-gui.md`, design `../specs/2026-10-13-postvak-slint-gui-design.md`) replaces. Redo them against `gui/state.rs`, `bind.rs` and `ui/*.slint` before executing; the non-GUI steps stand.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Turn the Rules view into a list of proposals and rules on the left and an editor for the selected rule on the right, with plain-language summaries, a highlighted TOML preview of each proposal, a preview on cached mail, and "Rule" buttons in the reader that start a draft.

@@ -126,6 +126,64 @@ pub fn fetch_body(
     Ok(())
 }
 
+/// The most hits one folder adds to a server search, the highest uids first.
+pub const SERVER_HITS_PER_FOLDER: usize = 500;
+
+/// The words of a search query that a server search needs all of; control characters cannot go into IMAP.
+pub fn search_words(query: &str) -> Vec<String> {
+    query
+        .split_whitespace()
+        .map(|word| word.chars().filter(|c| !c.is_control()).collect::<String>())
+        .filter(|word| !word.is_empty())
+        .collect()
+}
+
+/// Searches `folder` on the server for messages whose headers or body contain every word. Returns the uids the store
+/// knows; mail not synced yet waits for the next sync.
+pub fn search_server(
+    ops: &mut dyn MailOps,
+    store: &Store,
+    folder: &str,
+    words: &[String],
+) -> Result<Vec<u32>, ActionError> {
+    if words.is_empty() {
+        return Ok(Vec::new());
+    }
+    select_synced(ops, store, folder)?;
+    let mut hits = Vec::new();
+    for uid in ops
+        .search_text(words)?
+        .into_iter()
+        .rev()
+        .take(SERVER_HITS_PER_FOLDER)
+    {
+        if store.message(folder, uid)?.is_some() {
+            hits.push(uid);
+        }
+    }
+    Ok(hits)
+}
+
+/// Local search results plus the server's hits the store knows, each once, newest first, at most `limit`.
+pub fn with_server_hits(
+    store: &Store,
+    mut found: Vec<Message>,
+    hits: &[(String, u32)],
+    limit: u32,
+) -> Result<Vec<Message>, StoreError> {
+    for (folder, uid) in hits {
+        if found.iter().any(|m| m.folder == *folder && m.uid == *uid) {
+            continue;
+        }
+        if let Some(message) = store.message(folder, *uid)? {
+            found.push(message);
+        }
+    }
+    found.sort_by_key(|m| std::cmp::Reverse((m.internaldate, m.uid)));
+    found.truncate(limit as usize);
+    Ok(found)
+}
+
 /// What a dry run would do to `msg`; a user delete names its outcome, because an expunge cannot be undone on the server.
 pub fn planned_effect(store: &Store, msg: &Message, action: &Action) -> Result<String, StoreError> {
     if *action != Action::Trash {
@@ -184,7 +242,7 @@ mod tests {
 
     fn setup() -> (RecordingOps, Store, Trash, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let mut ops = RecordingOps::new().with_folder("INBOX", None);
+        let mut ops = RecordingOps::default().with_folder("INBOX", None);
         ops.add_mail(
             "INBOX",
             5,
@@ -299,5 +357,99 @@ mod tests {
         let calls = ops.calls.len();
         assert_eq!(fetch_bodies(&mut ops, &store, "INBOX").unwrap(), 0);
         assert_eq!(ops.calls.len(), calls, "nothing left to fetch");
+    }
+
+    #[test]
+    fn search_server_returns_the_hits_the_store_knows() {
+        let (mut ops, store, _trash, _dir) = setup();
+        let mut ops = {
+            ops.add_mail(
+                "INBOX",
+                9,
+                300,
+                "Subject: unsynced\r\n\r\n",
+                Some("Subject: unsynced\r\n\r\nbody"),
+            );
+            ops.with_folder("Archive", None)
+        };
+        ops.add_mail(
+            "Archive",
+            7,
+            200,
+            "Subject: old\r\n\r\n",
+            Some("Subject: old\r\n\r\nsome BODY text"),
+        );
+        ops.add_mail(
+            "Archive",
+            8,
+            250,
+            "Subject: other\r\n\r\n",
+            Some("Subject: other\r\n\r\nnothing"),
+        );
+        store
+            .upsert_folder(&Folder {
+                name: "Archive".into(),
+                uidvalidity: 1,
+                last_uid: 8,
+                special_use: None,
+                delimiter: None,
+            })
+            .unwrap();
+        for uid in [7, 8] {
+            store
+                .insert_message(&Message {
+                    folder: "Archive".into(),
+                    uid,
+                    thread_id: format!("t{uid}"),
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+        let words = search_words("body \u{7}");
+        assert_eq!(words, ["body"]);
+        assert_eq!(
+            search_server(&mut ops, &store, "Archive", &words).unwrap(),
+            [7]
+        );
+        assert_eq!(
+            search_server(&mut ops, &store, "INBOX", &words).unwrap(),
+            [5],
+            "uid 9 is not synced yet"
+        );
+        ops.calls.clear();
+        assert!(
+            search_server(&mut ops, &store, "INBOX", &search_words("  "))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(ops.calls.is_empty());
+    }
+
+    #[test]
+    fn with_server_hits_adds_the_known_ones_newest_first_once() {
+        let (_ops, store, _trash, _dir) = setup();
+        let older = Message {
+            folder: "INBOX".into(),
+            uid: 2,
+            thread_id: "t2".into(),
+            internaldate: 50,
+            ..Default::default()
+        };
+        store.insert_message(&older).unwrap();
+        let local = store.message("INBOX", 5).unwrap().into_iter().collect();
+        let hits = [
+            ("INBOX".to_string(), 2),
+            ("INBOX".to_string(), 5),
+            ("INBOX".to_string(), 77),
+        ];
+        let merged = with_server_hits(&store, local, &hits, 10).unwrap();
+        let uids: Vec<u32> = merged.iter().map(|m| m.uid).collect();
+        assert_eq!(uids, [5, 2]);
+        assert_eq!(
+            with_server_hits(&store, Vec::new(), &hits, 1)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }

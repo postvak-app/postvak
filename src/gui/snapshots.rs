@@ -1,159 +1,75 @@
-//! Each main view rendered to a PNG and compared with `tests/snapshots/gui_*.png`.
+//! Each main view drawn by Slint's software renderer and compared with `tests/snapshots/gui_*.png`, and the grid the
+//! views line up on, from element positions.
 //!
-//! Rendering differs between GPUs, drivers and backends (Metal, Vulkan, lavapipe) in anti-aliasing and glyph
-//! coverage, so one set of reference images can only match one renderer. The references are drawn by Mesa's lavapipe
-//! (a software Vulkan driver) with `TZ=UTC`, which is deterministic and what the Linux CI job installs. Everywhere
-//! else, and in a plain `cargo test`, these tests build the views and stop before rendering, so a machine without a
-//! GPU or a Vulkan driver still passes. Set `POSTVAK_SNAPSHOTS=1` to compare, or `UPDATE_SNAPSHOTS=1` to rewrite
-//! the PNGs, then look at what changed.
-use eframe::egui;
-use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+//! The software renderer and the bundled fonts draw the same pixels on every machine, so these run in every
+//! `cargo test`. The views show local times: with a local offset other than zero the pixels are not compared (run
+//! with `TZ=UTC`, as CI does). `UPDATE_SNAPSHOTS=1` rewrites the PNGs; a mismatch writes `{name}.new.png` beside the
+//! reference.
+use std::path::PathBuf;
 
-use super::App;
-use super::app::View;
-use super::test_support::{Fixture, Wires, message};
-use crate::store::{Folder, LogEntry, Message};
+use super::fixture::{AT, mail};
+use super::state::{Focus, View};
+use super::test_support::{Fixture, Open, Wires, message};
+use crate::store::LogEntry;
 use crate::sync::{Activity, Event};
 use crate::trash::Trash;
 
-/// Every fixture time: 2026-09-21 13:46 UTC, more than a week before any run, so the list shows the date.
-const AT: i64 = 1_790_000_000;
-
 const RULES: &str = "[[rules]]\nname = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions = [\"archive\"]\n\n[[rules]]\nname = \"receipts\"\naccount = \"work\"\nmatch.subject = { contains = \"receipt\" }\nactions = [{ move = \"Receipts\" }]\n\n[[rules]]\nname = \"codes\"\nenabled = false\nproposed_by = \"agent\"\nmatch.subject = { contains = \"verification code\" }\nactions = [\"delete\"]\n";
 
-fn enabled() -> bool {
-    std::env::var_os("UPDATE_SNAPSHOTS").is_some()
-        || std::env::var("POSTVAK_SNAPSHOTS").is_ok_and(|v| v == "1")
+/// Whether local times read as UTC, now and at the fixture time; a zone such as Europe/London is UTC in winter but
+/// not in September.
+fn utc() -> bool {
+    let fixture = chrono::DateTime::from_timestamp(AT, 0)
+        .unwrap()
+        .with_timezone(&chrono::Local);
+    chrono::Local::now().offset().local_minus_utc() == 0 && fixture.offset().local_minus_utc() == 0
 }
 
-/// Compares the frame with `tests/snapshots/{name}.png` when snapshots are enabled.
-fn snapshot(harness: &mut Harness<'static, App>, name: &str) {
-    if !enabled() {
+/// Compares the window with `tests/snapshots/{name}.png`.
+fn snapshot(open: &Open, name: &str) {
+    open.tick();
+    let png = open.png();
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/snapshots")
+        .join(format!("{name}.png"));
+    if std::env::var_os("UPDATE_SNAPSHOTS").is_some() {
+        assert!(
+            utc(),
+            "snapshots show local times; rewrite them with TZ=UTC"
+        );
+        std::fs::write(&path, &png).unwrap();
         return;
     }
-    // Both instants matter: the fixtures are dated September and the status clock shows now, and a zone such as
-    // Europe/London is UTC in winter but not in September.
-    let fixture = chrono::DateTime::from_timestamp(AT, 0).unwrap();
-    for (when, offset) in [
-        ("now", chrono::Local::now().offset().local_minus_utc()),
-        (
-            "at the fixture time",
-            fixture
-                .with_timezone(&chrono::Local)
-                .offset()
-                .local_minus_utc(),
-        ),
-    ] {
-        assert_eq!(
-            offset, 0,
-            "snapshots show local times, and the local offset {when} is not zero; run them with TZ=UTC"
+    if !utc() {
+        eprintln!("{name}: not compared, as the local offset is not zero; run with TZ=UTC");
+        return;
+    }
+    let reference = std::fs::read(&path).unwrap_or_default();
+    if pixels(&reference) != pixels(&png) {
+        let new = path.with_extension("new.png");
+        std::fs::write(&new, &png).unwrap();
+        panic!(
+            "{name} differs from {}; see {}",
+            path.display(),
+            new.display()
         );
     }
-    harness.snapshot(name);
 }
 
-fn mail(uid: u32, from: &str, subject: &str, flags: &str, body: &str) -> Message {
-    let mut m = message("INBOX", uid, subject);
-    let at = AT - i64::from(100 - uid) * 3_600;
-    m.from_addr = Some(from.into());
-    m.to_addr = Some("Robin Example <robin@example.com>".into());
-    m.flags = flags.into();
-    m.body_text = Some(body.into());
-    m.date = Some(at);
-    m.internaldate = at;
-    m
+/// The decoded pixels, so a different PNG encoder does not count as a change.
+fn pixels(png: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    let mut reader = png::Decoder::new(std::io::Cursor::new(png))
+        .read_info()
+        .ok()?;
+    let mut buffer = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buffer).ok()?;
+    buffer.truncate(info.buffer_size());
+    Some((info.width, info.height, buffer))
 }
 
-/// Two accounts with a few folders and a filled inbox.
-fn mailbox(theme: &str) -> Fixture {
-    let fx = Fixture::new(&["home", "work"]);
-    fx.append_config(&format!("[ui]\ntheme = \"{theme}\"\n"));
-    for (name, special) in [
-        ("Archive", Some("Archive")),
-        ("Sent", Some("Sent")),
-        ("Trash", Some("Trash")),
-        ("Receipts", None),
-    ] {
-        fx.folder("work", name, special);
-    }
-    fx.folder("home", "Archive", Some("Archive"));
-    for name in ["Projects/Postvak", "Projects/Website"] {
-        let nested = Folder {
-            name: name.into(),
-            uidvalidity: 1,
-            last_uid: 0,
-            special_use: None,
-            delimiter: Some("/".into()),
-        };
-        fx.store("work").upsert_folder(&nested).unwrap();
-    }
-    let lunch = "Hi Robin,\n\nShall we try the new place on the corner this Friday at noon?\nThe menu is at https://example.com/menu and they take bookings.\n\nCheers,\nLinus";
-    let inbox = [
-        (
-            90,
-            "Ada Lovelace <ada@example.com>",
-            "Notes on the analytical engine",
-            "\\Seen",
-            "",
-        ),
-        (
-            91,
-            "Example Shop <shop@example.com>",
-            "Your receipt for order 1042",
-            "\\Seen",
-            "",
-        ),
-        (
-            92,
-            "Weekly News <news@example.org>",
-            "This week: ten things about tea",
-            "",
-            "1. Green tea\n2. Black tea\n3. Mint tea",
-        ),
-        (
-            93,
-            "Grace Hopper <grace@example.com>",
-            "Planning the offsite",
-            "\\Seen",
-            "Shall we meet in Utrecht on the 14th?",
-        ),
-        (
-            94,
-            "Alan Turing <alan@example.com>",
-            "Re: Planning the offsite",
-            "\\Seen \\Flagged",
-            "The 14th works for me.",
-        ),
-        (
-            95,
-            "Linus Example <linus@example.com>",
-            "Lunch on Friday?",
-            "",
-            lunch,
-        ),
-    ];
-    for (uid, from, subject, flags, body) in inbox {
-        let mut m = mail(uid, from, subject, flags, body);
-        if uid == 93 || uid == 94 {
-            m.thread_id = "<offsite@example.com>".into();
-        }
-        fx.add("work", m);
-    }
-    let photos = mail(
-        96,
-        "Mum <mum@example.net>",
-        "Photos from the weekend",
-        "",
-        "",
-    );
-    fx.add("home", photos);
-    fx
-}
-
-/// The app over `fx` with one account up to date and the other offline, so the status bar holds still.
-fn open(fx: &Fixture) -> (Harness<'static, App>, Wires) {
-    let (mut harness, wires) = fx.harness();
+/// The window over `fx` with one account up to date and the other offline, so the status bar holds still.
+fn open(fx: &Fixture) -> (Open, Wires) {
+    let (open, wires) = fx.window();
     let events = [
         Event::Activity {
             account: "home".into(),
@@ -170,103 +86,110 @@ fn open(fx: &Fixture) -> (Harness<'static, App>, Wires) {
     for event in events {
         wires.events.send(event).unwrap();
     }
-    harness.run();
-    (harness, wires)
+    open.tick();
+    (open, wires)
+}
+
+fn work_inbox() -> View {
+    View::Folder {
+        account: 1,
+        folder: "INBOX".into(),
+    }
 }
 
 /// INBOX of `work` with the newest message open in the body pane.
-fn inbox(theme: &str) -> (Fixture, Harness<'static, App>, Wires) {
-    let fx = mailbox(theme);
-    let (mut harness, wires) = open(&fx);
-    harness.state_mut().select_view(View::Folder {
-        account: 1,
-        folder: "INBOX".into(),
-    });
-    harness.run();
-    assert!(harness.query_by_label_contains("Shall we try").is_some());
-    (fx, harness, wires)
-}
-
-fn press(harness: &mut Harness<'static, App>, text: &str) {
-    harness.event(egui::Event::Text(text.into()));
-    harness.run();
+fn inbox(theme: &str) -> (Fixture, Open, Wires) {
+    let fx = Fixture::mailbox(theme);
+    let (open, wires) = open(&fx);
+    open.with(|live| live.app.select_view(work_inbox()));
+    open.tick();
+    assert!(open.window().get_body_text().contains("Shall we try"));
+    (fx, open, wires)
 }
 
 #[test]
 fn inbox_light() {
-    let (_fx, mut harness, _wires) = inbox("light");
-    snapshot(&mut harness, "gui_inbox_light");
+    let (_fx, open, _wires) = inbox("light");
+    snapshot(&open, "gui_inbox_light");
 }
 
 #[test]
 fn inbox_dark() {
-    let (_fx, mut harness, _wires) = inbox("dark");
-    snapshot(&mut harness, "gui_inbox_dark");
+    let (_fx, open, _wires) = inbox("dark");
+    snapshot(&open, "gui_inbox_dark");
 }
 
 #[test]
 fn all_inboxes() {
-    let fx = mailbox("dark");
-    let (mut harness, _wires) = open(&fx);
-    harness.state_mut().select_view(View::AllInboxes);
-    harness.run();
-    assert!(harness.query_by_label_contains("home · Mum").is_some());
-    assert!(
-        harness
-            .query_by_label_contains("work · Linus Example")
-            .is_some()
-    );
-    snapshot(&mut harness, "gui_all_inboxes");
+    let fx = Fixture::mailbox("dark");
+    let (open, _wires) = open(&fx);
+    open.with(|live| live.app.select_view(View::AllInboxes));
+    open.tick();
+    assert_eq!(open.labels_containing("home · Mum").len(), 1);
+    assert_eq!(open.labels_containing("work · Linus Example").len(), 1);
+    snapshot(&open, "gui_all_inboxes");
+}
+
+#[test]
+fn an_empty_folder() {
+    let fx = Fixture::mailbox("light");
+    let (open, _wires) = open(&fx);
+    open.with(|live| {
+        live.app.select_view(View::Folder {
+            account: 1,
+            folder: "Sent".into(),
+        })
+    });
+    open.tick();
+    assert_eq!(open.find("No mail in this folder.").len(), 1);
+    snapshot(&open, "gui_empty_folder");
 }
 
 #[test]
 fn inbox_with_marks_and_an_expanded_thread() {
-    let (_fx, mut harness, _wires) = inbox("light");
-    for key in ["x", "j", "x"] {
-        press(&mut harness, key);
-    }
-    harness.key_press(egui::Key::ArrowRight);
-    harness.run();
-    // Checked here too, so runs without PNG comparison still catch a regression in marking or expanding.
-    let list = &harness.state().list;
-    for uid in [95, 94] {
-        assert!(
-            list.marked.contains(&(1, ("INBOX".to_string(), uid))),
-            "{uid} not marked"
-        );
-    }
-    for uid in [94, 93] {
-        assert!(
-            list.rows.iter().any(|row| row.member && row.uid == uid),
-            "thread member {uid} not shown"
-        );
-    }
-    snapshot(&mut harness, "gui_inbox_thread");
+    let (_fx, open, _wires) = inbox("light");
+    open.press("x j x right");
+    let (marked, members) = open.with(|live| {
+        let list = &live.app.list;
+        let marked = [95, 94].map(|uid| list.marked.contains(&(1, ("INBOX".to_string(), uid))));
+        let members = [94, 93].map(|uid| list.rows.iter().any(|row| row.member && row.uid == uid));
+        (marked, members)
+    });
+    assert_eq!((marked, members), ([true; 2], [true; 2]));
+    snapshot(&open, "gui_inbox_thread");
+}
+
+#[test]
+fn dragging_a_row_over_a_folder() {
+    let (_fx, open, _wires) = inbox("light");
+    let row = open.labels_containing("Linus Example").remove(0);
+    open.drag_over(&row, "Receipts");
+    snapshot(&open, "gui_drag");
 }
 
 #[test]
 fn keys_help() {
-    let (_fx, mut harness, _wires) = inbox("light");
-    press(&mut harness, "?");
-    assert!(harness.state().help_open);
-    snapshot(&mut harness, "gui_keys_help");
+    let (_fx, open, _wires) = inbox("light");
+    open.press("?");
+    assert!(open.with(|live| live.app.help_open));
+    snapshot(&open, "gui_keys_help");
 }
 
 #[test]
 fn rules() {
-    let fx = mailbox("light");
+    let fx = Fixture::mailbox("light");
     std::fs::write(fx.paths.rules_file(), RULES).unwrap();
-    let (mut harness, _wires) = open(&fx);
-    harness.state_mut().select_view(View::Rules);
-    harness.run();
-    assert!(harness.query_by_label("Approve").is_some());
-    snapshot(&mut harness, "gui_rules");
+    let (open, _wires) = open(&fx);
+    open.with(|live| live.app.select_view(View::Rules));
+    open.tick();
+    assert_eq!(open.find("Approve").len(), 1);
+    snapshot(&open, "gui_rules");
 }
 
 #[test]
 fn activity() {
-    let fx = mailbox("light");
-    for (minutes, rule, action, subject) in [
+    let fx = Fixture::mailbox("light");
+    let entries = [
         (
             0,
             "newsletters",
@@ -280,7 +203,8 @@ fn activity() {
             "Your receipt for order 1042",
         ),
         (9, "gui", "flag", "Re: Planning the offsite"),
-    ] {
+    ];
+    for (minutes, rule, action, subject) in entries {
         let entry = LogEntry {
             id: 0,
             at: AT + minutes * 60,
@@ -294,225 +218,352 @@ fn activity() {
         };
         fx.store("work").log_action(&entry).unwrap();
     }
-    let (mut harness, _wires) = open(&fx);
-    harness.state_mut().select_view(View::Activity);
-    harness.run();
-    assert!(harness.query_by_label("move Receipts").is_some());
-    snapshot(&mut harness, "gui_activity");
+    let (open, _wires) = open(&fx);
+    open.with(|live| live.app.select_view(View::Activity));
+    open.tick();
+    assert_eq!(open.find("move Receipts").len(), 1);
+    snapshot(&open, "gui_activity");
 }
 
 #[test]
 fn trash() {
-    let fx = mailbox("light");
+    let fx = Fixture::mailbox("light");
     let dir = fx.paths.trash_dir("work");
     std::fs::create_dir_all(&dir).unwrap();
     let raw = b"From: Example Shop <shop@example.com>\r\nSubject: Your verification code\r\n\r\n123456\r\n";
     Trash::new(dir).save("INBOX", 7, raw, AT).unwrap();
-    let (mut harness, _wires) = open(&fx);
-    harness.state_mut().select_view(View::Trash);
-    harness.run();
-    assert!(harness.query_by_label("Restore").is_some());
-    snapshot(&mut harness, "gui_trash");
+    let (open, _wires) = open(&fx);
+    open.with(|live| live.app.select_view(View::Trash));
+    open.tick();
+    assert_eq!(open.find("Restore").len(), 1);
+    snapshot(&open, "gui_trash");
 }
 
-/// INBOX of `work` with the newsletter fixture open as HTML, in a window `width` points wide.
-#[cfg(feature = "html")]
-fn newsletter(theme: &str, width: f32) -> (Fixture, Harness<'static, App>, Wires) {
-    use super::html::view_tests::{NEWSLETTER, painted, raw, wait_for};
-    let fx = mailbox(theme);
-    let news = mail(
+/// INBOX of `work` with the newsletter open as HTML, in a window `width` points wide, once it is painted.
+fn newsletter(theme: &str, width: f32) -> (Fixture, Open, Wires) {
+    use std::time::{Duration, Instant};
+
+    use slint::ComponentHandle;
+
+    use super::fixture::mail;
+    let fx = Fixture::mailbox(theme);
+    let mut news = mail(
         99,
         "Postvak Weekly <news@example.org>",
         "Your October roundup",
         "\\Seen",
         "Your October roundup",
     );
+    news.headers = b"Subject: Your October roundup\r\nList-Unsubscribe: <https://news.example.org/leave>\r\n\r\n".to_vec();
     fx.add("work", news);
+    let raw = super::test_support::raw(include_str!("../../tests/fixtures/newsletter.html"));
     fx.store("work")
-        .set_raw("INBOX", 99, &raw(NEWSLETTER), "Your October roundup")
+        .set_raw("INBOX", 99, &raw, "Your October roundup")
         .unwrap();
-    let (mut harness, wires) = open(&fx);
-    harness.set_size(egui::vec2(width, 800.0));
-    harness.state_mut().select_view(View::Folder {
-        account: 1,
-        folder: "INBOX".into(),
-    });
-    wait_for(&mut harness, painted);
-    (fx, harness, wires)
+    let (open, wires) = open(&fx);
+    open.window()
+        .window()
+        .set_size(slint::LogicalSize::new(width, 800.0));
+    open.with(|live| live.app.select_view(work_inbox()));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let painted = |open: &Open| {
+        open.with(|live| {
+            let view = live.app.body.as_ref().and_then(|b| b.html_view.as_ref());
+            view.is_some_and(|v| {
+                v.page.is_some()
+                    && !v.requested.is_empty()
+                    && v.requested.iter().all(|s| v.strips.contains_key(s))
+            })
+        })
+    };
+    while !painted(&open) {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the renderer"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+        open.tick();
+    }
+    (fx, open, wires)
 }
 
-#[cfg(feature = "html")]
 #[test]
 fn html_light() {
-    let (_fx, mut harness, _wires) = newsletter("light", 1280.0);
-    snapshot(&mut harness, "gui_html_light");
+    let (_fx, open, _wires) = newsletter("light", 1280.0);
+    snapshot(&open, "gui_html_light");
 }
 
-#[cfg(feature = "html")]
 #[test]
 fn html_dark() {
-    let (_fx, mut harness, _wires) = newsletter("dark", 1280.0);
-    snapshot(&mut harness, "gui_html_dark");
+    let (_fx, open, _wires) = newsletter("dark", 1280.0);
+    snapshot(&open, "gui_html_dark");
 }
 
 /// A body pane narrower than the newsletter's 600 px table: its media query stacks the columns.
-#[cfg(feature = "html")]
 #[test]
 fn html_narrow() {
-    let (_fx, mut harness, _wires) = newsletter("light", 1060.0);
-    snapshot(&mut harness, "gui_html_narrow");
+    let (_fx, open, _wires) = newsletter("light", 1060.0);
+    snapshot(&open, "gui_html_narrow");
 }
 
-/// Where `text` was painted.
-fn painted(harness: &Harness<'static, App>, text: &str) -> egui::Rect {
-    harness
-        .output()
-        .shapes
-        .iter()
-        .find_map(|clipped| match &clipped.shape {
-            egui::Shape::Text(shape) if shape.galley.text() == text => {
-                Some(shape.galley.rect.translate(shape.pos.to_vec2()))
-            }
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("{text:?} not painted"))
+/// The window's grid: (glyph, inset, pad, row).
+fn grid(open: &Open) -> (f32, f32, f32, f32) {
+    let window = open.window();
+    let theme = slint::ComponentHandle::global::<super::ui::Theme>(&window);
+    (
+        theme.get_glyph(),
+        theme.get_inset(),
+        theme.get_pad(),
+        theme.get_row(),
+    )
+}
+
+/// The left edge and vertical centre of the one element labelled `label`, or of the one containing it.
+fn edge(open: &Open, label: &str) -> (f32, f32) {
+    let label = open
+        .labels_containing(label)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("no {label:?}"));
+    let element = open.get(&label);
+    let at = element.absolute_position();
+    (at.x, at.y + element.size().height / 2.0)
 }
 
 #[test]
 fn the_inbox_lines_up_on_the_grid() {
-    use super::theme::{CONTROL, ICON, INSET, PAD, ROW};
-    use egui::containers::panel::PanelState;
-    let (_fx, mut harness, _wires) = inbox("light");
-    let panel = |id: &str| {
-        PanelState::load(&harness.ctx, egui::Id::new(id))
-            .unwrap()
-            .outer_rect
-    };
-    let glyph = (CONTROL - ICON) / 2.0;
-    let list_content = panel("list").left() + INSET;
-    let archive = harness.get_by_label("Archive message").rect();
-    assert_eq!(archive.left() + glyph, list_content, "toolbar glyph");
+    let (_fx, open, _wires) = inbox("light");
+    let (glyph, _, pad, row_height) = grid(&open);
+    let archive = edge(&open, "Archive message");
+    let title = open
+        .find("Inbox")
+        .into_iter()
+        .map(|e| e.absolute_position().x)
+        .fold(0.0, f32::max);
+    let row = edge(&open, "Your receipt for order 1042");
     assert_eq!(
-        painted(&harness, "Inbox").left(),
-        list_content,
-        "list title"
+        archive.0 + glyph,
+        title,
+        "the toolbar glyph lines up with the list title"
     );
     assert_eq!(
-        archive.center().y,
-        panel("toolbar").center().y,
-        "toolbar centred"
+        row.0 + pad,
+        title,
+        "the list title lines up with the rows' content"
     );
-    let rules = harness.get_by_label("Rules").rect();
-    let sync = harness.get_by_label("Sync now").rect();
-    assert_eq!(sync.left() + glyph, rules.left() + PAD, "status glyph");
-    let activity = harness.get_by_label("Activity").rect();
-    assert_eq!(rules.height(), ROW, "folder row");
     assert_eq!(
-        activity.top() - rules.top(),
-        ROW + PAD / 2.0,
-        "folder row pitch"
+        archive.1,
+        edge(&open, "Search").1,
+        "the toolbar's buttons share a line"
     );
-    let row = harness
-        .get_by_label_contains("Your receipt for order 1042")
-        .rect();
-    harness.state_mut().focus = super::app::Focus::Body;
-    harness.run();
-    let unfocused = harness
-        .get_by_label_contains("Your receipt for order 1042")
-        .rect();
-    assert_eq!(row, unfocused, "the focus outline moves no content");
+    let (rules, activity) = (open.get("Rules"), open.get("Activity"));
+    assert_eq!(
+        edge(&open, "Sync now").0 + glyph,
+        rules.absolute_position().x + pad,
+        "status glyph"
+    );
+    assert_eq!(rules.size().height, row_height, "folder row");
+    let pitch = activity.absolute_position().y - rules.absolute_position().y;
+    assert_eq!(pitch, row_height + pad / 2.0, "folder row pitch");
+    open.with(|live| live.app.focus = Focus::Body);
+    assert_eq!(
+        edge(&open, "Your receipt for order 1042"),
+        row,
+        "the focus outline moves no content"
+    );
 }
 
 #[test]
-fn headers_fields_and_popups_line_up_on_the_grid() {
-    use super::theme::{INSET, PAD, ROW};
-    use egui::containers::panel::PanelState;
-    let (_fx, mut harness, _wires) = inbox("light");
-    let list = PanelState::load(&harness.ctx, egui::Id::new("list"))
-        .unwrap()
-        .outer_rect;
-    let title = painted(&harness, "Inbox");
-    let source = harness.get_by_label("View source").rect();
-    assert_eq!(
-        title.center().y,
-        source.center().y,
-        "list title and reader actions share a line"
-    );
-    assert_eq!(
-        harness.get_by_label("All inboxes (3)").rect().center().y,
-        title.center().y,
-        "All inboxes and the list title share a line"
-    );
-    let avatar = harness
-        .output()
-        .shapes
-        .iter()
-        .find_map(|clipped| match &clipped.shape {
-            egui::Shape::Circle(circle) if circle.radius == INSET => Some(circle.center.y),
-            _ => None,
-        })
-        .unwrap();
-    let lines = (painted(&harness, "to").center().y - ROW - PAD / 2.0
-        + painted(&harness, "to").center().y)
-        / 2.0;
-    assert_eq!(
-        avatar, lines,
-        "avatar centred on the sender and recipient lines"
-    );
-    press(&mut harness, "?");
-    let keys = painted(&harness, "j / k, Down / Up").left();
-    let window = harness
-        .output()
-        .shapes
-        .iter()
-        .find_map(|clipped| match &clipped.shape {
-            egui::Shape::Rect(rect)
-                if rect.stroke.width > 0.0 && rect.rect.left() < list.left() =>
-            {
-                Some(rect.rect)
-            }
-            _ => None,
-        })
-        .unwrap();
-    assert_eq!(keys, window.left() + INSET, "window content");
-    harness.key_press(egui::Key::Escape);
-    press(&mut harness, "/");
-    let hint = painted(&harness, "Search this account");
-    let field = harness
-        .output()
-        .shapes
-        .iter()
-        .find_map(|clipped| match &clipped.shape {
-            egui::Shape::Rect(rect)
-                if rect.fill == super::theme::PAPER.faint && rect.rect.contains(hint.center()) =>
-            {
-                Some(rect.rect)
-            }
-            _ => None,
-        })
-        .unwrap();
-    assert_eq!(field.height(), ROW, "text field height");
-    assert_eq!(hint.left(), field.left() + PAD, "text field content");
+fn the_list_title_the_readers_actions_and_all_inboxes_share_a_line() {
+    let (_fx, open, _wires) = inbox("light");
+    let title = open
+        .find("Inbox")
+        .into_iter()
+        .map(|e| e.absolute_position().y + e.size().height / 2.0)
+        .fold(f32::MAX, f32::min);
+    assert_eq!(edge(&open, "View source").1, title, "the reader's actions");
+    assert_eq!(edge(&open, "All inboxes (3)").1, title, "All inboxes");
+}
+
+#[test]
+fn the_keys_window_content_sits_inset() {
+    let (_fx, open, _wires) = inbox("light");
+    let (_, inset, _, _) = grid(&open);
+    open.press("?");
+    let window = open.get("Keys").absolute_position().x;
+    assert_eq!(edge(&open, "j / k, Down / Up").0, window + inset);
 }
 
 #[test]
 fn with_one_account_the_first_folder_and_first_message_share_a_line() {
-    use egui::containers::panel::PanelState;
     let fx = Fixture::new(&["work"]);
     fx.add("work", message("INBOX", 1, "hello"));
-    let (harness, _wires) = fx.harness();
-    let list = PanelState::load(&harness.ctx, egui::Id::new("list"))
-        .unwrap()
-        .outer_rect;
-    let first_folder = harness
-        .query_all_by_label("Inbox")
-        .map(|node| node.rect())
-        .find(|rect| rect.right() < list.left())
+    let (open, _wires) = fx.window();
+    let folder = open
+        .find("Inbox")
+        .into_iter()
+        .map(|e| e.absolute_position())
+        .fold(f32::MAX, |x, p| x.min(p.x));
+    let folder = open
+        .find("Inbox")
+        .into_iter()
+        .find(|e| e.absolute_position().x == folder)
         .unwrap();
-    let first_row = harness
-        .query_all_by_label_contains("hello")
-        .map(|node| node.rect())
-        .find(|rect| rect.right() < list.right())
+    let row = open.get(&open.labels_containing("hello").remove(0));
+    assert_eq!(folder.absolute_position().y, row.absolute_position().y);
+}
+
+/// The colour drawn at `(x, y)` in the window.
+fn pixel(open: &Open, x: f32, y: f32) -> slint::Color {
+    let shot = slint::ComponentHandle::window(&open.window())
+        .take_snapshot()
         .unwrap();
-    assert_eq!(first_folder.top(), first_row.top());
+    let pixel = shot.as_slice()[y as usize * shot.width() as usize + x as usize];
+    slint::Color::from_argb_u8(pixel.a, pixel.r, pixel.g, pixel.b)
+}
+
+/// The colour drawn just inside the left edge of the row labelled `label`.
+fn row_fill(open: &Open, label: &str) -> slint::Color {
+    let row = open.get(label);
+    let at = row.absolute_position();
+    pixel(open, at.x + 2.0, at.y + row.size().height / 2.0)
+}
+
+/// The colour at the centre of the unread dot of the row labelled `label`, whether or not the dot shows.
+fn unread_dot(open: &Open, label: &str) -> slint::Color {
+    let (_, _, pad, _) = grid(open);
+    let at = open.get(label).absolute_position();
+    let list_row =
+        slint::ComponentHandle::global::<super::ui::Theme>(&open.window()).get_list_row();
+    pixel(
+        open,
+        at.x + pad + 3.0,
+        at.y + pad + (list_row - 2.0 * pad) / 4.0,
+    )
+}
+
+/// The full label of the one row containing `text`.
+fn row(open: &Open, text: &str) -> String {
+    open.labels_containing(text).remove(0)
+}
+
+#[test]
+fn hovering_a_row_fades_in_and_selecting_it_shows_at_once() {
+    let (_fx, open, _wires) = inbox("light");
+    let pane = slint::ComponentHandle::global::<super::ui::Theme>(&open.window()).get_pane();
+    let row = &open
+        .labels_containing("Your receipt for order 1042")
+        .remove(0);
+    let resting = row_fill(&open, row);
+    assert_ne!(resting, pane.hover);
+
+    open.hover(row);
+    assert_eq!(
+        row_fill(&open, row),
+        resting,
+        "the fade starts from nothing"
+    );
+    open.advance(1.0);
+    assert_eq!(
+        row_fill(&open, row),
+        pane.hover,
+        "and ends on the hover colour"
+    );
+
+    open.tap(row);
+    assert_eq!(
+        row_fill(&open, row),
+        pane.selected,
+        "selection does not wait for a fade"
+    );
+}
+
+#[test]
+fn marking_a_message_read_fades_its_dot_out() {
+    let (_fx, open, _wires) = inbox("light");
+    let lunch = row(&open, "Lunch on Friday?");
+    let dot = unread_dot(&open, &lunch);
+
+    open.press("u");
+    let lunch = row(&open, "Lunch on Friday?");
+    assert_eq!(
+        unread_dot(&open, &lunch),
+        dot,
+        "the fade starts from the dot"
+    );
+    open.advance(1.0);
+    assert_ne!(unread_dot(&open, &lunch), dot, "and ends without it");
+}
+
+#[test]
+fn mail_that_moves_the_rows_down_shows_their_dots_at_once() {
+    let (fx, open, wires) = inbox("light");
+    // One in, one out: the list keeps its length, so each row's element now shows the message above it.
+    fx.add("work", message("INBOX", 96, "Fresh news"));
+    fx.store("work").remove_message("INBOX", 90).unwrap();
+    synced(&wires, "work", 1);
+    open.tick();
+    let rows = [
+        "Lunch on Friday?",
+        "This week: ten things about tea",
+        "Your receipt for order 1042",
+    ]
+    .map(|text| row(&open, text));
+    let at_once = rows.each_ref().map(|label| unread_dot(&open, label));
+    open.advance(1.0);
+    assert_eq!(
+        rows.each_ref().map(|label| unread_dot(&open, label)),
+        at_once
+    );
+}
+
+/// Tells the window that `account` synced `new_messages`.
+fn synced(wires: &Wires, account: &str, new_messages: usize) {
+    let event = Event::Synced {
+        account: account.into(),
+        new_messages,
+        actions: 0,
+        requests: vec![],
+        errors: vec![],
+    };
+    wires.events.send(event).unwrap();
+}
+
+#[test]
+fn mail_that_arrives_fades_in() {
+    let (fx, open, wires) = inbox("light");
+    let tea = row(&open, "This week: ten things about tea");
+    let dot = unread_dot(&open, &tea);
+    let resting = row_fill(&open, &tea);
+
+    fx.add(
+        "work",
+        mail(96, "Sender <sender@example.com>", "Fresh news", "", ""),
+    );
+    synced(&wires, "work", 1);
+    open.tick();
+    let fresh = row(&open, "Fresh news");
+    assert_eq!(
+        unread_dot(&open, &fresh),
+        resting,
+        "the new row starts transparent"
+    );
+    open.advance(1.0);
+    assert_eq!(unread_dot(&open, &fresh), dot, "and ends opaque");
+}
+
+#[test]
+fn switching_views_shows_the_rows_at_once() {
+    let (_fx, open, _wires) = inbox("light");
+    open.with(|live| {
+        live.app.select_view(View::Folder {
+            account: 0,
+            folder: "INBOX".into(),
+        });
+    });
+    open.tick();
+    let photos = row(&open, "Photos from the weekend");
+    let at_once = unread_dot(&open, &photos);
+    open.advance(1.0);
+    assert_eq!(unread_dot(&open, &photos), at_once);
 }

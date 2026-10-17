@@ -1,4 +1,5 @@
 //! The MCP tools: definitions, scope filtering, and results cleaned for an agent.
+use super::backend::Filter;
 use std::collections::BTreeSet;
 use std::sync::{Arc, LazyLock};
 
@@ -135,6 +136,30 @@ struct ListArgs {
     /// Group by conversation, the most recently active thread first, each row with its `depth`
     #[serde(default)]
     threads: bool,
+    /// Only unread messages; with `threads`, threads with an unread message
+    #[serde(default)]
+    unread: bool,
+    /// Only flagged messages; with `threads`, threads with a flagged message
+    #[serde(default)]
+    flagged: bool,
+    /// Only messages with attachments, guessed from the headers; with `threads`, threads with one
+    #[serde(default)]
+    attachments: bool,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct UnsubscribeArgs {
+    /// The uid, as `list` returns it
+    uid: u32,
+    /// Required when several accounts are visible
+    account: Option<String>,
+    /// Folder name as `folders` lists it; default INBOX
+    #[serde(default = "inbox")]
+    folder: String,
+    /// Report how the message offers unsubscribing without contacting the sender
+    #[serde(default)]
+    dry_run: bool,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -171,6 +196,9 @@ struct SearchArgs {
     /// At most 500
     #[serde(default = "fifty")]
     limit: u32,
+    /// Ask the mail server too, which searches bodies not downloaded yet; needs the read:bodies scope
+    #[serde(default)]
+    server: bool,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -209,6 +237,24 @@ struct MarkArgs {
     /// Folder name as `folders` lists it; default INBOX
     #[serde(default = "inbox")]
     folder: String,
+    /// Report what would happen from the local store, without touching the server
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct JunkArgs {
+    /// Message uids in `folder`, as `list` returns them
+    uids: Vec<u32>,
+    /// Required when several accounts are visible
+    account: Option<String>,
+    /// Folder name as `folders` lists it; default INBOX
+    #[serde(default = "inbox")]
+    folder: String,
+    /// Not junk after all: tag $NotJunk and move to INBOX
+    #[serde(default)]
+    not: bool,
     /// Report what would happen from the local store, without touching the server
     #[serde(default)]
     dry_run: bool,
@@ -267,6 +313,7 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
         ),
         ToolDef::new::<AccountArgs>("folders", Scope::Read, Effect::ReadOnly, help::FOLDERS),
         ToolDef::new::<ListArgs>("list", Scope::Read, Effect::ReadOnly, help::LIST),
+        ToolDef::new::<JunkArgs>("junk", Scope::MailModify, Effect::Changes, help::JUNK),
         ToolDef::new::<LogArgs>("log", Scope::Read, Effect::ReadOnly, help::LOG),
         ToolDef::new::<MarkArgs>("mark", Scope::MailModify, Effect::Changes, help::MARK),
         ToolDef::new::<MoveArgs>("move", Scope::MailModify, Effect::Changes, help::MOVE),
@@ -341,6 +388,12 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
             Effect::Changes,
             help::TRASH_RESTORE,
         ),
+        ToolDef::new::<UnsubscribeArgs>(
+            "unsubscribe",
+            Scope::MailModify,
+            Effect::Destructive,
+            help::UNSUBSCRIBE,
+        ),
     ]
 }
 
@@ -369,6 +422,18 @@ fn dispatch(
             let a: MessageArgs = args(arguments)?;
             rows(backend.attachments(a.account.as_deref(), &a.folder, a.uid)?)
         }
+        "junk" => {
+            let a: JunkArgs = args(arguments)?;
+            let action = if a.not { Action::NotJunk } else { Action::Junk };
+            backend.act(
+                a.account.as_deref(),
+                &a.folder,
+                &a.uids,
+                action,
+                a.dry_run,
+                &by,
+            )
+        }
         "delete" => {
             let a: SelectionArgs = args(arguments)?;
             backend.act(
@@ -386,7 +451,12 @@ fn dispatch(
         }
         "list" => {
             let a: ListArgs = args(arguments)?;
-            rows(backend.list(a.account.as_deref(), &a.folder, a.limit, a.threads)?)
+            let filter = Filter {
+                unread: a.unread,
+                flagged: a.flagged,
+                attachments: a.attachments,
+            };
+            rows(backend.list(a.account.as_deref(), &a.folder, a.limit, a.threads, filter)?)
         }
         "log" => {
             let a: LogArgs = args(arguments)?;
@@ -463,7 +533,12 @@ fn dispatch(
                 a.folder.as_deref(),
                 a.limit,
                 bodies,
+                a.server,
             )?)
+        }
+        "unsubscribe" => {
+            let a: UnsubscribeArgs = args(arguments)?;
+            backend.unsubscribe(a.account.as_deref(), &a.folder, a.uid, a.dry_run)
         }
         "show" => {
             let a: MessageArgs = args(arguments)?;
@@ -501,10 +576,7 @@ pub(super) fn wrap_body(text: &str) -> (String, bool) {
     let text = NAME
         .replace_all(&clean(text, true), "untrusted-mail-content")
         .into_owned();
-    let mut end = text.len().min(BODY_LIMIT);
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
+    let end = text.floor_char_boundary(BODY_LIMIT);
     (
         format!(
             "<untrusted_mail_content>\n{}\n</untrusted_mail_content>",
@@ -514,12 +586,7 @@ pub(super) fn wrap_body(text: &str) -> (String, bool) {
     )
 }
 
-/// Every string in the result without control characters; `body` keeps its newlines and tabs.
-fn cleaned(value: Value) -> Value {
-    clean_value(value, false)
-}
-
-/// Layout (newlines, tabs) is kept below any key named `body`.
+/// Every string in `value` without control characters; layout (newlines, tabs) is kept below any key named `body`.
 fn clean_value(value: Value, keep_layout: bool) -> Value {
     match value {
         Value::String(s) => Value::String(clean(&s, keep_layout)),
@@ -610,7 +677,7 @@ impl ServerHandler for Server {
         .await
         .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         Ok(match outcome {
-            Ok(value) => CallToolResult::structured(cleaned(value)),
+            Ok(value) => CallToolResult::structured(clean_value(value, false)),
             Err(e) => error_result(&format!("{e:#}")),
         }
         .into())

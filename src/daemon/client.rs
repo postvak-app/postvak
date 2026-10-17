@@ -1,6 +1,5 @@
 //! A connection to the daemon: requests with replies, fire-and-forget sends, and the event subscription.
 use std::collections::{HashMap, HashSet};
-use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::Shutdown;
@@ -34,35 +33,17 @@ const START_WAIT: Duration = Duration::from_secs(5);
 const STOP_WAIT: Duration = Duration::from_secs(5);
 
 /// The error of a request that lost its daemon; a caller holding the client should reconnect.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
 pub struct Stopped(String);
 
-impl fmt::Display for Stopped {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for Stopped {}
-
 /// A daemon of a newer postvak than this one: this program has to restart, and the daemon keeps running.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("the daemon is version {theirs}, newer than this postvak ({ours}); restart this program")]
 pub struct NewerDaemon {
     pub theirs: String,
     pub ours: String,
 }
-
-impl fmt::Display for NewerDaemon {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "the daemon is version {}, newer than this postvak ({}); restart this program",
-            self.theirs, self.ours
-        )
-    }
-}
-
-impl std::error::Error for NewerDaemon {}
 
 pub struct Client {
     transport: Transport,
@@ -176,31 +157,19 @@ impl Inbox {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
 pub(super) enum ConnectError {
     /// Nothing answered, or the connection closed before the daemon's hello.
+    #[error("no daemon answered: {0}")]
     Down(io::Error),
     /// The daemon speaks another protocol or is another version; `connection` is the one that saw its hello.
+    #[error("{reason}")]
     Mismatch {
         reason: String,
         /// The daemon's version, when its hello was understood.
         theirs: Option<String>,
         connection: BufReader<UnixStream>,
     },
-}
-
-impl fmt::Display for ConnectError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ConnectError::Down(e) => write!(f, "no daemon answered: {e}"),
-            ConnectError::Mismatch { reason, .. } => f.write_str(reason),
-        }
-    }
-}
-
-impl From<ConnectError> for anyhow::Error {
-    fn from(error: ConnectError) -> anyhow::Error {
-        anyhow!("{error}")
-    }
 }
 
 /// The daemon connection a CLI command or the MCP server makes on first use, and again once its daemon hung up.
@@ -267,6 +236,23 @@ impl LazyClient {
         };
         self.request(account, command, |reply| match reply {
             Event::ActionDone { results, .. } => Ok(results),
+            other => Err(other),
+        })
+    }
+
+    /// Searches the account's server for every word of `query`, in `folder` or every folder; the stored hits.
+    pub fn search_server(
+        &self,
+        account: &str,
+        folder: Option<&str>,
+        query: &str,
+    ) -> anyhow::Result<Vec<(String, u32)>> {
+        let command = Command::SearchServer {
+            folder: folder.map(str::to_string),
+            query: query.into(),
+        };
+        self.request(account, command, |reply| match reply {
+            Event::ServerSearchDone { hits, .. } => Ok(hits),
             other => Err(other),
         })
     }
@@ -381,17 +367,7 @@ impl Client {
         self.request_until(account, command, timeout)
     }
 
-    #[cfg(test)]
-    pub(crate) fn request_within(
-        &self,
-        account: &str,
-        command: Command,
-        timeout: Duration,
-    ) -> anyhow::Result<Event> {
-        self.request_until(account, command, Some(timeout))
-    }
-
-    fn request_until(
+    pub(super) fn request_until(
         &self,
         account: &str,
         command: Command,
@@ -514,9 +490,7 @@ impl Client {
 
     /// A client with no daemon behind it: commands appear on the returned receiver, events are injected by the test.
     #[cfg(test)]
-    pub(crate) fn in_memory(
-        accounts: &[&str],
-    ) -> (Client, Receiver<(String, Command)>, Sender<Event>) {
+    pub fn in_memory(accounts: &[&str]) -> (Client, Receiver<(String, Command)>, Sender<Event>) {
         let (commands, sent) = mpsc::channel();
         let (inject, events) = mpsc::channel();
         let client = Client {
@@ -590,7 +564,10 @@ impl Drop for Client {
 /// giving up early would drop the client and let an auto-started daemon idle out mid-run.
 pub(super) fn reply_timeout(command: &Command) -> Option<Duration> {
     match command {
-        Command::ApplyRule { .. } | Command::FetchBodies { .. } | Command::SyncNow => None,
+        Command::ApplyRule { .. }
+        | Command::FetchBodies { .. }
+        | Command::SearchServer { .. }
+        | Command::SyncNow => None,
         Command::Apply { .. } | Command::FetchBody { .. } | Command::Restore { .. } => {
             Some(REPLY_TIMEOUT)
         }

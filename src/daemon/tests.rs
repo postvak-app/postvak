@@ -487,14 +487,14 @@ mod client {
     fn slow_connector() -> Connector {
         Arc::new(|_| {
             std::thread::sleep(Duration::from_secs(1));
-            Ok(Box::new(RecordingOps::new().with_folder("INBOX", None)) as Box<dyn MailOps>)
+            Ok(Box::new(RecordingOps::default().with_folder("INBOX", None)) as Box<dyn MailOps>)
         })
     }
 
     /// A server holding one message in INBOX whose body only the server has.
     fn one_message_connector() -> Connector {
         Arc::new(|_| {
-            let mut ops = RecordingOps::new().with_folder("INBOX", None);
+            let mut ops = RecordingOps::default().with_folder("INBOX", None);
             ops.add_mail(
                 "INBOX",
                 1,
@@ -527,7 +527,7 @@ mod client {
         let daemon = TestDaemon::start_with(options(slow_connector(), None));
         let client = Client::connect(&daemon.paths).unwrap();
         let error = client
-            .request_within("work", Command::SyncNow, Duration::from_millis(50))
+            .request_until("work", Command::SyncNow, Some(Duration::from_millis(50)))
             .unwrap_err();
         assert_eq!(error.to_string(), NO_REPLY);
         assert_eq!(
@@ -805,7 +805,7 @@ fn slow_connector(delay: Duration) -> crate::engine::Connector {
     std::sync::Arc::new(move |_| {
         std::thread::sleep(delay);
         Ok(
-            Box::new(crate::mail_ops::RecordingOps::new().with_folder("INBOX", None))
+            Box::new(crate::mail_ops::RecordingOps::default().with_folder("INBOX", None))
                 as Box<dyn crate::mail_ops::MailOps>,
         )
     })
@@ -889,7 +889,7 @@ fn gated_connector() -> (
                 std::thread::sleep(Duration::from_millis(10));
             }
             Ok(
-                Box::new(crate::mail_ops::RecordingOps::new().with_folder("INBOX", None))
+                Box::new(crate::mail_ops::RecordingOps::default().with_folder("INBOX", None))
                     as Box<dyn crate::mail_ops::MailOps>,
             )
         }

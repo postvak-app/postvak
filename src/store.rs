@@ -122,6 +122,39 @@ fn summary_from_row(row: &rusqlite::Row, offset: usize) -> rusqlite::Result<Mess
     })
 }
 
+/// Which messages a list keeps; each set field must hold, and the default keeps all.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Filter {
+    pub unread: bool,
+    pub flagged: bool,
+    /// Guessed from the headers: a top-level multipart/mixed.
+    pub attachments: bool,
+}
+
+impl Filter {
+    /// The filter as one SQL condition on a message row; `1` when it keeps all.
+    fn sql(self) -> String {
+        let conditions = [
+            (self.unread, r"instr(' ' || flags || ' ', ' \Seen ') = 0"),
+            (
+                self.flagged,
+                r"instr(' ' || flags || ' ', ' \Flagged ') > 0",
+            ),
+            (self.attachments, "has_attachment"),
+        ];
+        let set: Vec<&str> = conditions
+            .iter()
+            .filter(|(on, _)| *on)
+            .map(|(_, sql)| *sql)
+            .collect();
+        if set.is_empty() {
+            "1".into()
+        } else {
+            format!("({})", set.join(" AND "))
+        }
+    }
+}
+
 const SUMMARY_COLUMNS: &str = "uid, COALESCE(from_addr, ''), COALESCE(to_addr, ''), COALESCE(subject, ''), internaldate, flags";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -138,7 +171,7 @@ pub struct LogEntry {
     pub trash_file: Option<String>,
 }
 
-/// serde's `Vec<u8>` only accepts sequences; rusqlite offers BLOBs as bytes. Accept both.
+/// serde's `Vec<u8>` only accepts sequences; rusqlite offers BLOBs as bytes.
 fn deserialize_blob<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
     struct BlobVisitor;
     impl<'de> serde::de::Visitor<'de> for BlobVisitor {
@@ -151,13 +184,6 @@ fn deserialize_blob<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<u8>, D
         }
         fn visit_byte_buf<E: serde::de::Error>(self, v: Vec<u8>) -> Result<Vec<u8>, E> {
             Ok(v)
-        }
-        fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<u8>, A::Error> {
-            let mut out = Vec::new();
-            while let Some(b) = seq.next_element::<u8>()? {
-                out.push(b);
-            }
-            Ok(out)
         }
     }
     d.deserialize_byte_buf(BlobVisitor)
@@ -394,21 +420,35 @@ impl Store {
         Ok(removed)
     }
 
-    pub fn messages(&self, folder: &str, limit: u32) -> Result<Vec<Message>, StoreError> {
+    pub fn messages(
+        &self,
+        folder: &str,
+        limit: u32,
+        filter: Filter,
+    ) -> Result<Vec<Message>, StoreError> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT {MESSAGE_COLUMNS} FROM messages WHERE folder = ?1 ORDER BY internaldate DESC, uid DESC LIMIT ?2"
+            "SELECT {MESSAGE_COLUMNS} FROM messages WHERE folder = ?1 AND {}
+             ORDER BY internaldate DESC, uid DESC LIMIT ?2",
+            filter.sql()
         ))?;
         let rows = serde_rusqlite::from_rows::<Message>(stmt.query(params![folder, limit])?);
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
-    /// Threads in `folder`, the most recently active first; each thread's messages oldest first.
-    pub fn threads(&self, folder: &str, limit: u32) -> Result<Vec<Vec<Message>>, StoreError> {
+    /// Threads in `folder` with a member `filter` keeps, the most recently active first; each thread's messages oldest
+    /// first.
+    pub fn threads(
+        &self,
+        folder: &str,
+        limit: u32,
+        filter: Filter,
+    ) -> Result<Vec<Vec<Message>>, StoreError> {
         let ids: Vec<String> = {
-            let mut stmt = self.conn.prepare(
-                "SELECT thread_id FROM messages WHERE folder = ?1 GROUP BY thread_id
+            let mut stmt = self.conn.prepare(&format!(
+                "SELECT thread_id FROM messages WHERE folder = ?1 GROUP BY thread_id HAVING SUM({}) > 0
                  ORDER BY MAX(internaldate) DESC, MAX(uid) DESC LIMIT ?2",
-            )?;
+                filter.sql()
+            ))?;
             let rows = stmt.query_map(params![folder, limit], |r| r.get(0))?;
             rows.collect::<Result<_, _>>()?
         };
@@ -423,18 +463,20 @@ impl Store {
             .collect()
     }
 
-    /// One row per thread in `folder`, the most recently active first. With exactly one MAX() in the query, SQLite fills
+    /// One row per thread in `folder` with a member `filter` keeps, the most recently active first. With exactly one MAX() in the query, SQLite fills
     /// the bare columns from the row holding it: the thread's latest message. A second MAX() anywhere breaks that.
     pub fn thread_summaries(
         &self,
         folder: &str,
         limit: u32,
+        filter: Filter,
     ) -> Result<Vec<ThreadSummary>, StoreError> {
         let mut stmt = self.conn.prepare(&format!(
             r"SELECT thread_id, {SUMMARY_COLUMNS}, MAX(internaldate) AS latest, COUNT(*),
                      SUM(instr(' ' || flags || ' ', ' \Seen ') = 0), SUM(instr(' ' || flags || ' ', ' \Flagged ') > 0)
-              FROM messages WHERE folder = ?1 GROUP BY thread_id
-              ORDER BY latest DESC, uid DESC LIMIT ?2"
+              FROM messages WHERE folder = ?1 GROUP BY thread_id HAVING SUM({}) > 0
+              ORDER BY latest DESC, uid DESC LIMIT ?2",
+            filter.sql()
         ))?;
         let rows = stmt.query_map(params![folder, limit], |r| {
             Ok(ThreadSummary {
@@ -761,13 +803,13 @@ mod tests {
             s.insert_message(m).unwrap();
         }
         let uids: Vec<Vec<u32>> = s
-            .threads("INBOX", 10)
+            .threads("INBOX", 10, Filter::default())
             .unwrap()
             .iter()
             .map(|thread| thread.iter().map(|m| m.uid).collect())
             .collect();
         assert_eq!(uids, [vec![1, 3], vec![2]]);
-        assert_eq!(s.threads("INBOX", 1).unwrap().len(), 1);
+        assert_eq!(s.threads("INBOX", 1, Filter::default()).unwrap().len(), 1);
     }
 
     #[test]
@@ -785,7 +827,7 @@ mod tests {
         let s = store_with_inbox();
         s.insert_message(&msg("INBOX", 1, 10)).unwrap();
         s.insert_message(&msg("INBOX", 2, 20)).unwrap();
-        let list = s.messages("INBOX", 10).unwrap();
+        let list = s.messages("INBOX", 10, Filter::default()).unwrap();
         assert_eq!(list.iter().map(|m| m.uid).collect::<Vec<_>>(), vec![2, 1]);
         assert_eq!(list[1], msg("INBOX", 1, 10));
         assert_eq!(s.message("INBOX", 3).unwrap(), None);
@@ -1138,6 +1180,95 @@ mod tests {
         assert_eq!(s.initial_uid_next("INBOX").unwrap(), 1201);
     }
 
+    /// uid 1 read, 2 unread, 3 flagged and read, 4 read with a multipart/mixed Content-Type folded onto a second line.
+    fn filter_store() -> Store {
+        let s = store_with_inbox();
+        for (uid, flags) in [
+            (1, "\\Seen"),
+            (2, ""),
+            (3, "\\Seen \\Flagged"),
+            (4, "\\Seen"),
+        ] {
+            let mut m = msg("INBOX", uid, i64::from(uid));
+            m.thread_id = format!("t{uid}");
+            m.flags = flags.into();
+            if uid == 4 {
+                m.headers =
+                    b"Subject: x\r\nContent-Type:\r\n Multipart/Mixed; boundary=b\r\n\r\n".to_vec();
+            }
+            s.insert_message(&m).unwrap();
+        }
+        s
+    }
+
+    #[test]
+    fn messages_keep_only_what_the_filter_asks_for() {
+        let s = filter_store();
+        let uids = |filter: Filter| -> Vec<u32> {
+            s.messages("INBOX", 10, filter)
+                .unwrap()
+                .iter()
+                .map(|m| m.uid)
+                .collect()
+        };
+        assert_eq!(uids(Filter::default()), [4, 3, 2, 1]);
+        assert_eq!(
+            uids(Filter {
+                unread: true,
+                ..Filter::default()
+            }),
+            [2]
+        );
+        assert_eq!(
+            uids(Filter {
+                flagged: true,
+                ..Filter::default()
+            }),
+            [3]
+        );
+        assert_eq!(
+            uids(Filter {
+                attachments: true,
+                ..Filter::default()
+            }),
+            [4]
+        );
+        assert!(
+            uids(Filter {
+                unread: true,
+                flagged: true,
+                ..Filter::default()
+            })
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_thread_matches_the_filter_when_any_member_does() {
+        let s = filter_store();
+        let mut reply = msg("INBOX", 5, 5);
+        reply.thread_id = "t1".into();
+        s.insert_message(&reply).unwrap();
+        let unread = Filter {
+            unread: true,
+            ..Filter::default()
+        };
+        let summaries: Vec<String> = s
+            .thread_summaries("INBOX", 10, unread)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.thread_id)
+            .collect();
+        assert_eq!(summaries, ["t1", "t2"]);
+        let threads: Vec<usize> = s
+            .threads("INBOX", 10, unread)
+            .unwrap()
+            .iter()
+            .map(Vec::len)
+            .collect();
+        assert_eq!(threads, [2, 1], "a matching thread keeps all its members");
+    }
+
     #[test]
     fn thread_summaries_describe_the_latest_message() {
         let s = store_with_inbox();
@@ -1153,7 +1284,7 @@ mod tests {
         for m in [&first, &reply, &other] {
             s.insert_message(m).unwrap();
         }
-        let threads = s.thread_summaries("INBOX", 10).unwrap();
+        let threads = s.thread_summaries("INBOX", 10, Filter::default()).unwrap();
         assert_eq!(
             threads,
             vec![
@@ -1187,7 +1318,12 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(s.thread_summaries("INBOX", 1).unwrap().len(), 1);
+        assert_eq!(
+            s.thread_summaries("INBOX", 1, Filter::default())
+                .unwrap()
+                .len(),
+            1
+        );
         let members: Vec<u32> = s
             .thread_members("INBOX", "t1")
             .unwrap()
@@ -1205,7 +1341,7 @@ mod tests {
         bare.to_addr = None;
         bare.subject = None;
         s.insert_message(&bare).unwrap();
-        let latest = &s.thread_summaries("INBOX", 10).unwrap()[0].latest;
+        let latest = &s.thread_summaries("INBOX", 10, Filter::default()).unwrap()[0].latest;
         assert_eq!((latest.from.as_str(), latest.subject.as_str()), ("", ""));
         assert!(!latest.is_seen() && !latest.is_flagged());
     }

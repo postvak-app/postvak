@@ -1,0 +1,210 @@
+// The Rules, Activity and Backups views, in place of the list and the body. `rules.rs` words them.
+import { CheckBox, ScrollView, StandardTableView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Heading, TextButton } from "common.slint";
+
+export enum Sheet { rules, activity, backups }
+
+export struct ProposalData {
+    title: string,
+    toml: string,
+}
+
+export struct RuleData {
+    label: string,
+    enabled: bool,
+    scope: string,
+    by: string,
+}
+
+// Every other row of the rules list, as wide as the list.
+component Stripes {
+    in property <int> rows;
+    for r in root.rows: Rectangle {
+        x: 0;
+        y: r * Theme.control;
+        width: root.width;
+        height: Theme.control;
+        border-radius: Theme.pad / 2;
+        background: mod(r, 2) == 0 ? Theme.pane.panel : transparent;
+    }
+}
+
+// Names a part of the sheet under its title.
+component SectionLabel inherits Text {
+    font-size: Theme.small-size;
+    font-weight: 600;
+    color: Theme.pane.muted;
+}
+
+export component RulesPane inherits Rectangle {
+    in property <Sheet> sheet;
+    // Rules.
+    in property <string> banner;
+    in property <[ProposalData]> proposals;
+    in property <[RuleData]> rules;
+    // Activity and Backups.
+    in property <[TableColumn]> columns;
+    in property <[[StandardListViewItem]]> cells;
+    in property <string> empty;
+    // The chosen row of Backups, or -1.
+    in-out property <int> current-row: -1;
+    callback open-rules-file();
+    callback approve(int);
+    callback reject(int);
+    callback set-enabled(int, bool);
+    callback restore(int);
+    callback sort(int, bool);
+
+    // The title row starts where the list's and the reader's do.
+    VerticalLayout {
+        padding: Theme.inset;
+        padding-top: Theme.pad;
+        spacing: Theme.pad;
+
+        if root.sheet == Sheet.rules && root.banner != "": Text {
+            text: root.banner;
+            color: Theme.pane.error;
+            wrap: word-wrap;
+        }
+        // The sheet's title, with its action at the end.
+        HorizontalLayout {
+            height: Theme.control;
+            Heading {
+                text: root.sheet == Sheet.rules ? "Rules" : root.sheet == Sheet.activity ? "Activity" : "Backups";
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            if root.sheet == Sheet.rules: VerticalLayout {
+                alignment: center;
+                TextButton {
+                    text: "Open rules.toml";
+                    framed: true;
+                    palette: Theme.pane;
+                    clicked => { root.open-rules-file(); }
+                }
+            }
+            if root.sheet == Sheet.backups && root.cells.length > 0: VerticalLayout {
+                alignment: center;
+                TextButton {
+                    text: "Restore";
+                    framed: true;
+                    palette: Theme.pane;
+                    enabled: root.current-row >= 0;
+                    disabled-hint: "Choose a backup first";
+                    clicked => { root.restore(root.current-row); }
+                }
+            }
+        }
+
+        if root.sheet != Sheet.rules && root.cells.length == 0: Text {
+            text: root.empty;
+            color: Theme.pane.muted;
+            wrap: word-wrap;
+        }
+
+        // It takes the keyboard, so Up and Down choose a backup to restore; other keys reach the window.
+        if root.sheet != Sheet.rules && root.cells.length > 0: StandardTableView {
+            init => { self.focus(); }
+            columns: root.columns;
+            rows: root.cells;
+            current-row <=> root.current-row;
+            sort-ascending(column) => { root.sort(column, true); }
+            sort-descending(column) => { root.sort(column, false); }
+        }
+
+        if root.sheet == Sheet.rules: ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                alignment: start;
+                spacing: Theme.pad;
+
+                if root.proposals.length > 0: SectionLabel { text: "Proposals"; }
+                for proposal[i] in root.proposals: HorizontalLayout {
+                    Rectangle {
+                        border-width: 1px;
+                        border-color: Theme.pane.border;
+                        border-radius: Theme.pad;
+                        VerticalLayout {
+                            padding: Theme.pad;
+                            spacing: Theme.pad / 2;
+                            Text {
+                                text: proposal.title;
+                                font-weight: 600;
+                                color: Theme.pane.strong;
+                            }
+                            Text {
+                                text: proposal.toml;
+                                font-family: Theme.mono-font;
+                                color: Theme.pane.text;
+                            }
+                            HorizontalLayout {
+                                spacing: Theme.pad / 2;
+                                TextButton {
+                                    text: "Approve";
+                                    framed: true;
+                                    palette: Theme.pane;
+                                    clicked => { root.approve(i); }
+                                }
+                                TextButton {
+                                    text: "Reject";
+                                    framed: true;
+                                    palette: Theme.pane;
+                                    clicked => { root.reject(i); }
+                                }
+                                Rectangle { horizontal-stretch: 1; }
+                            }
+                        }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+
+                // The title above already says Rules; this only parts them from the proposals.
+                if root.proposals.length > 0: SectionLabel { text: "Your rules"; }
+                if root.rules.length == 0: Text {
+                    text: "rules.toml has no rules yet.";
+                    color: Theme.pane.muted;
+                }
+                // The stripes run the pane's width, as the tables' rows do; the columns keep their own widths.
+                if root.rules.length > 0: Rectangle {
+                    height: rule-grid.preferred-height;
+                        Stripes {
+                            x: 0;
+                            y: 0;
+                            width: parent.width;
+                            height: parent.height;
+                            rows: root.rules.length;
+                        }
+                        rule-grid := GridLayout {
+                            x: 0;
+                            width: self.preferred-width;
+                            spacing-horizontal: Theme.inset;
+                            padding-left: Theme.pad;
+                            padding-right: Theme.pad;
+                            for rule[i] in root.rules: Row {
+                                VerticalLayout {
+                                    height: Theme.control;
+                                    alignment: center;
+                                    CheckBox {
+                                        text: rule.label;
+                                        checked: rule.enabled;
+                                        toggled => { root.set-enabled(i, self.checked); }
+                                    }
+                                }
+                                Text {
+                                    text: rule.scope;
+                                    color: Theme.pane.text;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: rule.by;
+                                    color: Theme.pane.muted;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                }
+            }
+        }
+    }
+}

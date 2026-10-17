@@ -5,18 +5,18 @@ use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow, bail};
 
 use crate::config::Config;
 use crate::engine::{self, Connector, Engine};
 use crate::message::clean;
-use crate::paths::{self, Paths};
+use crate::paths::{self, FileWatch, Paths};
 use crate::store::Store;
 use crate::sync::{self, Activity, Command, Event, RequestId};
 use wire::{AccountStatus, ClientMessage, DaemonMessage, Outcome, Payload, Status};
@@ -103,7 +103,8 @@ pub fn report(event: &Event) {
         | Event::BodiesFetched { .. }
         | Event::BodyReady { .. }
         | Event::Restored { .. }
-        | Event::RuleApplied { .. } => {}
+        | Event::RuleApplied { .. }
+        | Event::ServerSearchDone { .. } => {}
     }
 }
 
@@ -300,34 +301,6 @@ impl Watch {
         });
         (config.flatten(), self.rules.changed())
     }
-}
-
-struct FileWatch {
-    path: PathBuf,
-    modified: Option<SystemTime>,
-}
-
-impl FileWatch {
-    fn new(path: PathBuf) -> FileWatch {
-        FileWatch {
-            modified: modified_time(&path),
-            path,
-        }
-    }
-
-    /// Whether the modification time changed since the last call.
-    fn changed(&mut self) -> bool {
-        let modified = modified_time(&self.path);
-        if modified == self.modified {
-            return false;
-        }
-        self.modified = modified;
-        true
-    }
-}
-
-fn modified_time(path: &Path) -> Option<SystemTime> {
-    fs::metadata(path).and_then(|meta| meta.modified()).ok()
 }
 
 struct Connection {

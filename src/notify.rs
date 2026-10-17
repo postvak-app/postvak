@@ -9,8 +9,8 @@ pub fn new_mail(from: &str, subject: &str) {
         .show();
 }
 
-/// Linux notification servers render a subset of HTML in the summary and body.
-fn escape_markup(text: &str) -> String {
+/// `&`, `<` and `>` as entities: Linux notification servers render a subset of HTML, and launchd plists are XML.
+pub(crate) fn escape_markup(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")

@@ -10,6 +10,8 @@ use crate::message;
 use crate::output;
 use crate::paths::Paths;
 use crate::rules::{self, Action, Rule, RuleFile};
+/// The `list` filter, a plain value, so the tools need not name the store.
+pub(crate) use crate::store::Filter;
 use crate::store::{Message, Store};
 use crate::sync::{Command, Event};
 use crate::time;
@@ -128,13 +130,14 @@ impl Backend {
         folder: &str,
         limit: u32,
         threads: bool,
+        filter: Filter,
     ) -> Result<Vec<Value>> {
         let limit = limit.min(MAX_LIMIT);
         let mut rows = Vec::new();
         for acc in self.select(account)? {
             let store = self.store(acc)?;
             if threads {
-                for thread in store.threads(folder, limit)? {
+                for thread in store.threads(folder, limit, filter)? {
                     for (m, depth) in thread.iter().zip(output::depths(&thread)) {
                         let mut row = message_row(&acc.name, m)?;
                         row["depth"] = depth.into();
@@ -142,7 +145,7 @@ impl Backend {
                     }
                 }
             } else {
-                for m in store.messages(folder, limit)? {
+                for m in store.messages(folder, limit, filter)? {
                     rows.push(message_row(&acc.name, &m)?);
                 }
             }
@@ -151,6 +154,7 @@ impl Backend {
     }
 
     /// `bodies` searches stored body text too; without it the query matches subject and addresses as plain words.
+    /// `server` asks the mail server as well, which searches bodies, so it needs `bodies`.
     pub fn search(
         &self,
         query: &str,
@@ -158,16 +162,24 @@ impl Backend {
         folder: Option<&str>,
         limit: u32,
         bodies: bool,
+        server: bool,
     ) -> Result<Vec<Value>> {
+        if server && !bodies {
+            bail!("a server search matches message bodies, which needs the read:bodies scope");
+        }
         let limit = limit.min(MAX_LIMIT);
         let mut rows = Vec::new();
         for acc in self.select(account)? {
             let store = self.store(acc)?;
-            let found = if bodies {
+            let mut found = if bodies {
                 store.search(query, folder, limit)?
             } else {
                 store.search_headers(query, folder, limit)?
             };
+            if server {
+                let hits = self.daemon.search_server(&acc.name, folder, query)?;
+                found = actions::with_server_hits(&store, found, &hits, limit)?;
+            }
             for m in &found {
                 rows.push(message_row(&acc.name, m)?);
             }
@@ -180,6 +192,19 @@ impl Backend {
         let (acc, store, msg) = self.message(account, folder, uid)?;
         let raw = self.daemon.raw_message(&acc.name, &store, &msg)?;
         Ok((message_row(&acc.name, &msg)?, message::body_text(&raw)))
+    }
+
+    /// Unsubscribes by one click where the message allows it; otherwise the row names the page or address to open.
+    pub fn unsubscribe(
+        &self,
+        account: Option<&str>,
+        folder: &str,
+        uid: u32,
+        dry_run: bool,
+    ) -> Result<Value> {
+        let (acc, _store, msg) = self.message(account, folder, uid)?;
+        let report = crate::unsubscribe::unsubscribe(&msg.headers, dry_run)?;
+        Ok(output::with_account(&acc.name, &report)?)
     }
 
     pub fn attachments(&self, account: Option<&str>, folder: &str, uid: u32) -> Result<Vec<Value>> {
