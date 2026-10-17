@@ -53,7 +53,7 @@ The install also prints a hint with the granted scopes and how to widen them. It
 | Scope | What it grants | Tools |
 |---|---|---|
 | `read` | Folders, message headers, the activity log, rules and trash listings, previews of rules that do not match on the body, and a sync. No body text. | `accounts`, `folders`, `list`, `log`, `rules_check`, `rules_list`, `rules_schema`, `rules_test`, `search`, `status`, `sync`, `trash_list` |
-| `read:bodies` | Message bodies and attachment names, search over stored bodies and on the server (`search` with `server`), and with `read` previews of rules that match on the body. | `attachments`, `show` |
+| `read:bodies` | Message bodies and attachment names, search over stored bodies and on the server (`search` with `server`), and with `read` previews of rules that match on the body. | `attachment_save`, `attachments`, `show` |
 | `rules:propose` | Proposing a rule. It is stored disabled until you approve it. | `rules_propose` |
 | `rules:write` | Approving and rejecting rules, and turning them on or off. | `rules_approve`, `rules_reject`, `rules_set_enabled` |
 | `mail:modify` | Acting on mail and restoring from the trash. | `archive`, `delete`, `junk`, `mark`, `move`, `trash_restore`, `unsubscribe` |
@@ -89,6 +89,7 @@ The names follow the CLI commands. A tool that lists things returns the CLI's `-
 
 `read:bodies`:
 
+- `attachment_save` saves attachment `n` into `dir`, an absolute path of an existing directory, and returns the written `path`. It fetches the message once if it is not stored yet.
 - `attachments` lists attachment names, types and sizes. It does not save them.
 - `show` returns the headers and the body. With this scope, `search` also covers stored bodies, in FTS5 syntax. `search` and `dry_run` never connect to the server. `show` and `attachments` fetch a message you have not stored yet, once.
 

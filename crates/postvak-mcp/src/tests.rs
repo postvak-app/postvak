@@ -590,14 +590,65 @@ async fn show_needs_an_account_when_several_are_visible() {
     assert!(error_text(&call(&client, "show", json!({ "uid": 1 })).await).contains("pass account"));
 }
 
+/// A message with one PDF attachment, `bill.pdf`, 6 bytes.
+const ATTACHED: &str = "From: a@example.com\r\nSubject: Files\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nsee attached\r\n--b\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=\"bill.pdf\"\r\n\r\n%PDF-1\r\n--b--\r\n";
+
+fn add_attached(fx: &Fixture, account: &str, uid: u32) {
+    fx.add(
+        account,
+        fixture_message("INBOX", uid, "Files", "see attached"),
+    );
+    fx.store(account)
+        .set_raw("INBOX", uid, ATTACHED.as_bytes(), "see attached")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn attachment_save_writes_the_file_and_returns_its_path() {
+    let fx = fixture(&["work"]);
+    add_attached(&fx, "work", 1);
+    let dir = fx.paths.cache_dir.join("saved");
+    std::fs::create_dir_all(&dir).unwrap();
+    let client = connect(&fx, "read:bodies", &[]).await;
+    let report = call(
+        &client,
+        "attachment_save",
+        json!({ "uid": 1, "n": 1, "dir": dir }),
+    )
+    .await;
+    let report = report.structured_content.unwrap();
+    let path = std::path::PathBuf::from(report["path"].as_str().unwrap());
+    assert!(path.starts_with(&dir), "{report}");
+    assert!(path.is_file());
+    assert_eq!(report["account"], "work");
+}
+
+#[tokio::test]
+async fn attachment_save_needs_an_absolute_dir() {
+    let fx = fixture(&["work"]);
+    add_attached(&fx, "work", 1);
+    let client = connect(&fx, "read:bodies", &[]).await;
+    let relative = call(
+        &client,
+        "attachment_save",
+        json!({ "uid": 1, "n": 1, "dir": "out" }),
+    )
+    .await;
+    assert!(error_text(&relative).contains("absolute"), "{relative:?}");
+    let missing = fx.paths.cache_dir.join("nowhere");
+    let gone = call(
+        &client,
+        "attachment_save",
+        json!({ "uid": 1, "n": 1, "dir": missing }),
+    )
+    .await;
+    assert!(error_text(&gone).contains("nowhere"), "{gone:?}");
+}
+
 #[tokio::test]
 async fn attachments_lists_names_and_sizes() {
     let fx = fixture(&["work"]);
-    fx.add("work", fixture_message("INBOX", 1, "Files", "see attached"));
-    let raw = "From: a@example.com\r\nSubject: Files\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nsee attached\r\n--b\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=\"bill.pdf\"\r\n\r\n%PDF-1\r\n--b--\r\n";
-    fx.store("work")
-        .set_raw("INBOX", 1, raw.as_bytes(), "see attached")
-        .unwrap();
+    add_attached(&fx, "work", 1);
     let client = connect(&fx, "read:bodies", &[]).await;
     let found = rows(&call(&client, "attachments", json!({ "uid": 1 })).await);
     assert_eq!(found[0]["name"], "bill.pdf");
@@ -678,7 +729,7 @@ async fn tools_list_per_scope_set_is_exact_and_alphabetical() {
                 "trash_list",
             ],
         ),
-        ("read:bodies", &["attachments", "show"]),
+        ("read:bodies", &["attachment_save", "attachments", "show"]),
         (
             "rules:write",
             &["rules_approve", "rules_reject", "rules_set_enabled"],
@@ -730,6 +781,7 @@ async fn annotations_mark_reads_and_destructive_tools() {
         .contains(&name);
         let changes = [
             "archive",
+            "attachment_save",
             "junk",
             "mark",
             "move",

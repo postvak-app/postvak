@@ -216,6 +216,29 @@ impl Backend {
             .collect()
     }
 
+    /// Saves attachment `n` into `dir`, which must be absolute: the server's working directory is the host's, not
+    /// the agent's.
+    pub fn attachment_save(
+        &self,
+        account: Option<&str>,
+        folder: &str,
+        uid: u32,
+        n: usize,
+        dir: &std::path::Path,
+    ) -> Result<Value> {
+        if !dir.is_absolute() {
+            bail!("dir must be an absolute path");
+        }
+        if !dir.is_dir() {
+            bail!("no directory {}", dir.display());
+        }
+        let (acc, store, msg) = self.message(account, folder, uid)?;
+        let raw = self.daemon.raw_message(&acc.name, &store, &msg)?;
+        let path = message::save_attachment(&raw, n, dir)
+            .with_context(|| format!("saving attachment {n}"))?;
+        Ok(json!({ "account": acc.name, "folder": folder, "uid": uid, "n": n, "path": path }))
+    }
+
     pub fn log(&self, account: Option<&str>, limit: u32) -> Result<Vec<Value>> {
         let mut rows = Vec::new();
         for acc in self.select(account)? {

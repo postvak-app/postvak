@@ -176,6 +176,22 @@ struct MessageArgs {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct AttachmentSaveArgs {
+    /// The uid, as `list` returns it
+    uid: u32,
+    /// The attachment's index, as `attachments` numbers it
+    n: usize,
+    /// An absolute path of an existing directory to save into
+    dir: std::path::PathBuf,
+    /// Required when several accounts are visible
+    account: Option<String>,
+    /// Folder name as `folders` lists it; default INBOX
+    #[serde(default = "inbox")]
+    folder: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct LogArgs {
     /// Only this account; default every visible account
     account: Option<String>,
@@ -299,6 +315,12 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
     };
     vec![
         ToolDef::new::<SelectionArgs>("archive", Scope::MailModify, Effect::Changes, help::ARCHIVE),
+        ToolDef::new::<AttachmentSaveArgs>(
+            "attachment_save",
+            Scope::ReadBodies,
+            Effect::Changes,
+            help::ATTACHMENT_SAVE,
+        ),
         ToolDef::new::<MessageArgs>(
             "attachments",
             Scope::ReadBodies,
@@ -424,6 +446,10 @@ fn dispatch(
                 a.dry_run,
                 &by,
             )
+        }
+        "attachment_save" => {
+            let a: AttachmentSaveArgs = args(arguments)?;
+            backend.attachment_save(a.account.as_deref(), &a.folder, a.uid, a.n, &a.dir)
         }
         "attachments" => {
             let a: MessageArgs = args(arguments)?;
