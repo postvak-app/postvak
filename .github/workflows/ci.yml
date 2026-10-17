@@ -17,7 +17,53 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Whether lint and test need to build. lint, test (macos-latest) and test (ubuntu-latest) are required checks, so they always report.
+  select:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      build: ${{ steps.select.outputs.build }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: select
+        env:
+          BEFORE: ${{ github.event.before }}
+          EVENT: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+          MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          changed() { git diff --name-only "$1" HEAD; }
+          # Paths no build or test reads. docs/src, README.md and the .desktop file are read by tests, and ci.yml is this workflow, so they still build.
+          only_unread() {
+            ! grep -qE '^(\.github/workflows/ci\.yml$|docs/src/|packaging/.*\.desktop$|README\.md$)' <<<"$1" &&
+              ! grep -qvE '^(\.coderabbit\.yaml$|\.github/|\.mise\.toml$|dist-workspace\.toml$|docs/|LICENSE|packaging/|release-plz\.toml$|[^/]+\.md$)' <<<"$1"
+          }
+          build=true
+          case "$EVENT" in
+            pull_request) only_unread "$(changed "$PR_BASE")" && build=false ;;
+            merge_group) only_unread "$(changed "$MERGE_GROUP_BASE")" && build=false ;;
+            push)
+              # The merge queue already ran CI on this commit. Build anyway when the dependencies change, so main's caches stay current.
+              passed=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$SHA&event=merge_group&status=success" --jq .total_count)
+              if [ "$passed" -gt 0 ] && ! grep -qE '^(Cargo\.(lock|toml)|rust-toolchain\.toml)$' <<<"$(changed "$BEFORE")"; then
+                build=false
+              fi
+              ;;
+          esac
+          echo "build=$build" | tee -a "$GITHUB_OUTPUT"
+
   lint:
+    needs: select
+    # A failed select job leaves the output empty, and then everything builds.
+    if: ${{ !cancelled() && needs.select.outputs.build != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -37,28 +83,51 @@ jobs:
       - run: cargo audit
 
   test:
+    needs: select
+    if: ${{ !cancelled() }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      # A skipped matrix job loses its os in the check name, which then never matches the required check, so the steps skip instead.
+      BUILD: ${{ needs.select.outputs.build != 'false' }}
+      NEXTEST_PROFILE: ci
+      # The GUI snapshots show local times; Slint's software renderer draws them the same on every machine.
+      TZ: UTC
     steps:
       - uses: actions/checkout@v7
+        if: env.BUILD == 'true'
         with:
           persist-credentials: false
       - run: rustup toolchain install
+        if: env.BUILD == 'true'
       - uses: Swatinem/rust-cache@v2
+        if: env.BUILD == 'true'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@v2
+        if: env.BUILD == 'true'
+        with:
+          tool: cargo-nextest
       - name: Start Dovecot
-        if: runner.os == 'Linux'
+        if: env.BUILD == 'true' && runner.os == 'Linux'
         run: |
           docker compose -f tests/dovecot/compose.yml up -d
           echo "POSTVAK_TEST_IMAP_HOST=localhost" >> "$GITHUB_ENV"
-      # The GUI snapshots show local times; Slint's software renderer draws them the same on every machine.
-      - run: cargo test --all-features
-        env:
-          TZ: UTC
+      - run: cargo nextest run --cargo-profile ci --all-features
+        if: env.BUILD == 'true'
+      # nextest does not run doc tests.
+      - run: cargo test --profile ci --all-features --doc
+        if: env.BUILD == 'true'
+      - name: Upload test results
+        if: env.BUILD == 'true' && !cancelled()
+        uses: actions/upload-artifact@v7
+        with:
+          name: junit-${{ matrix.os }}
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: ignore
       - name: Upload snapshot diffs
         if: failure()
         uses: actions/upload-artifact@v7

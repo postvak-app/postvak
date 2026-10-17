@@ -130,6 +130,12 @@ pub fn stable_exe() -> io::Result<PathBuf> {
     })
 }
 
+/// The app id when this process runs in a Flatpak sandbox, which sets `FLATPAK_ID`. The binary and config folders
+/// there are the sandbox's own, so something the host runs later must go through `flatpak run`.
+pub fn flatpak_id() -> Option<String> {
+    std::env::var("FLATPAK_ID").ok().filter(|id| !id.is_empty())
+}
+
 /// The AppImage file this binary runs from: the runtime sets `APPIMAGE` and `APPDIR` (its mount), and only a binary
 /// inside that mount is the AppImage; children of an AppImage inherit both variables.
 fn appimage_path(exe: &Path, appimage: Option<&Path>, appdir: Option<&Path>) -> Option<PathBuf> {
