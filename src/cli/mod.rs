@@ -20,6 +20,9 @@ use postvak_core::sync::{self, Event};
 use postvak_core::time;
 use postvak_core::trash::Trash;
 
+/// How long `account add` waits for the daemon to run the new account; a restart waits for the old thread to end.
+const ACCOUNT_START: Duration = Duration::from_secs(10);
+
 #[derive(Parser)]
 #[command(
     name = "postvak",
@@ -1228,9 +1231,6 @@ fn cmd_trash(command: TrashCommand, config: &Config, paths: &Paths) -> Result<()
         }
     }
 }
-
-/// How long `account add` waits for the daemon to list the new account; it polls config.toml every 2 s.
-const ACCOUNT_START: Duration = Duration::from_secs(10);
 
 fn cmd_account_add(mut config: Config, paths: &Paths) -> Result<()> {
     let name = prompt("Account name (letters, digits, - _)")?;

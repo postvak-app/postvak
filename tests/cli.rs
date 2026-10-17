@@ -67,10 +67,12 @@ fn account_add_saves_then_reports_the_first_sync() {
     let config = std::fs::read_to_string(home.path().join("config/config.toml")).unwrap();
     assert!(config.contains("name = \"late\""), "{config}");
     assert!(config.contains("command = \"printf x\""), "{config}");
-    // Port 1 refuses; whether the first sync reports a refusal or a pass that then goes offline depends on timing.
+    // Port 1 refuses, so the first sync fails with the offline reason its connect left.
+    assert!(!out.status.success(), "{stdout}\n{stderr}");
     assert!(
-        stdout.contains("late") || stderr.contains("[late]"),
-        "{stdout}\n{stderr}"
+        stderr.contains("[late] error: late is offline (")
+            && stderr.contains("the first sync of 'late' failed"),
+        "{stderr}"
     );
 }
 
