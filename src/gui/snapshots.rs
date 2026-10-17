@@ -567,3 +567,233 @@ fn switching_views_shows_the_rows_at_once() {
     open.advance(1.0);
     assert_eq!(unread_dot(&open, &photos), at_once);
 }
+
+/// The sizes the layout holds at: the narrowest window its panes allow, the default, wide.
+fn sizes(open: &Open) -> [(f32, f32); 3] {
+    let (_, _, pad, _) = grid(open);
+    let window = open.window();
+    let panes = window.get_folders_width() + window.get_list_width() + window.get_list_min_width();
+    [
+        (2.0 * pad + panes, 600.0),
+        (1280.0, 800.0),
+        (1920.0, 1200.0),
+    ]
+}
+
+/// Where an element is drawn, in window coordinates.
+#[derive(Debug)]
+struct Bounds {
+    label: String,
+    left: f32,
+    top: f32,
+    width: f32,
+    height: f32,
+}
+
+impl Bounds {
+    fn new(label: String, element: &i_slint_backend_testing::ElementHandle) -> Bounds {
+        let (at, size) = (element.absolute_position(), element.size());
+        Bounds {
+            label,
+            left: at.x,
+            top: at.y,
+            width: size.width,
+            height: size.height,
+        }
+    }
+
+    fn right(&self) -> f32 {
+        self.left + self.width
+    }
+
+    fn bottom(&self) -> f32 {
+        self.top + self.height
+    }
+
+    fn across(&self, pane: &Bounds) -> bool {
+        self.left >= pane.left && self.right() <= pane.right()
+    }
+
+    fn overlaps(&self, pane: &Bounds) -> bool {
+        self.right() > pane.left
+            && self.left < pane.right()
+            && self.bottom() > pane.top
+            && self.top < pane.bottom()
+    }
+
+    fn within(&self, outer: &Bounds) -> bool {
+        self.across(outer) && self.top >= outer.top && self.bottom() <= outer.bottom()
+    }
+}
+
+/// Every element of component `type_name` in the window, each once.
+fn all(open: &Open, type_name: &str) -> Vec<Bounds> {
+    use i_slint_backend_testing::ElementHandle;
+    let found = ElementHandle::find_by_element_type_name(&open.window(), type_name).collect();
+    super::test_support::once(found)
+        .iter()
+        .map(|e| {
+            let label = e.accessible_label().map_or(type_name.into(), String::from);
+            Bounds::new(label, e)
+        })
+        .collect()
+}
+
+/// The one element of component `type_name`.
+fn one(open: &Open, type_name: &str) -> Bounds {
+    let mut found = all(open, type_name);
+    assert_eq!(found.len(), 1, "{type_name} elements");
+    found.remove(0)
+}
+
+/// The one element labelled `label`.
+fn labelled(open: &Open, label: &str) -> Bounds {
+    Bounds::new(label.into(), &open.get(label))
+}
+
+fn resize(open: &Open, (width, height): (f32, f32)) {
+    use slint::ComponentHandle;
+    open.window()
+        .window()
+        .set_size(slint::LogicalSize::new(width, height));
+    open.tick();
+}
+
+#[test]
+fn rows_and_buttons_keep_the_grid_at_every_size() {
+    use super::theme::{CONTROL, LIST_ROW};
+    let (_fx, open, _wires) = inbox("light");
+    let (_, _, _, row) = grid(&open);
+    for size in sizes(&open) {
+        resize(&open, size);
+        let heights = [
+            ("FolderRow", row),
+            ("ListRow", LIST_ROW),
+            ("TextButton", row),
+        ];
+        for (type_name, height) in heights {
+            let found = all(&open, type_name);
+            assert!(!found.is_empty(), "{size:?}: no {type_name}");
+            for b in found {
+                assert_eq!(b.height, height, "{size:?}: {type_name} {:?}", b.label);
+            }
+        }
+        for b in all(&open, "IconButton") {
+            assert_eq!(
+                (b.width, b.height),
+                (CONTROL, CONTROL),
+                "{size:?}: {:?}",
+                b.label
+            );
+        }
+    }
+}
+
+#[test]
+fn content_sits_inset_from_its_pane_at_every_size() {
+    let (_fx, open, _wires) = inbox("light");
+    let (_, inset, pad, _) = grid(&open);
+    for size in sizes(&open) {
+        resize(&open, size);
+        let folders = one(&open, "FolderPane");
+        for row in all(&open, "FolderRow") {
+            let content = row.left + pad;
+            assert_eq!(
+                content - folders.left,
+                inset,
+                "{size:?}: folder {:?}",
+                row.label
+            );
+        }
+        let headings = all(&open, "Heading");
+        let heading = |label: &str| headings.iter().find(|h| h.label == label).unwrap().left;
+        let (list, body) = (one(&open, "ListPane"), one(&open, "BodyPane"));
+        assert_eq!(heading("Inbox") - list.left, inset, "{size:?}: list title");
+        assert_eq!(
+            heading("Lunch on Friday?") - body.left,
+            inset,
+            "{size:?}: subject"
+        );
+        let actions = labelled(&open, "View source").right();
+        assert_eq!(
+            body.right() - actions,
+            inset,
+            "{size:?}: the reader's actions"
+        );
+        let search = labelled(&open, "Search").right();
+        assert_eq!(
+            one(&open, "Toolbar").right() - search,
+            inset,
+            "{size:?}: search"
+        );
+    }
+}
+
+/// Every pane, bar, button and heading lies inside the window, and what the list and body panes draw inside them.
+fn assert_nothing_overflows(open: &Open, (width, height): (f32, f32)) {
+    let window = Bounds {
+        label: "window".into(),
+        left: 0.0,
+        top: 0.0,
+        width,
+        height,
+    };
+    let drawn = [
+        "BodyPane",
+        "FolderPane",
+        "Heading",
+        "IconButton",
+        "ListPane",
+        "StatusBar",
+        "TextButton",
+        "Toolbar",
+    ];
+    for type_name in drawn {
+        for b in all(open, type_name) {
+            assert!(
+                b.within(&window),
+                "{width}×{height}: {b:?} overflows the window"
+            );
+        }
+    }
+    let (list, body) = (one(open, "ListPane"), one(open, "BodyPane"));
+    let in_panes = ["Heading", "IconButton", "ListRow", "TextButton"];
+    for b in in_panes.iter().flat_map(|type_name| all(open, type_name)) {
+        let pane = [&list, &body].into_iter().find(|p| b.overlaps(p));
+        if let Some(pane) = pane {
+            assert!(b.across(pane), "{width}×{height}: {b:?} overflows {pane:?}");
+        }
+    }
+}
+
+#[test]
+fn nothing_overflows_the_window_or_its_pane_at_any_size() {
+    let (_fx, open, _wires) = inbox("light");
+    for size in sizes(&open) {
+        resize(&open, size);
+        assert_nothing_overflows(&open, size);
+    }
+}
+
+#[test]
+fn the_panes_hold_their_content_at_their_minimum_widths() {
+    use super::{list, theme::CONTROL};
+    let (_fx, open, _wires) = inbox("light");
+    let window = open.window();
+    window.set_folders_width(CONTROL);
+    window.set_list_width(list::MIN_WIDTH);
+    let narrowest = sizes(&open)[0];
+    resize(&open, narrowest);
+    assert_eq!(one(&open, "ListPane").width, list::MIN_WIDTH);
+    assert_eq!(one(&open, "BodyPane").width, list::MIN_WIDTH);
+    assert_nothing_overflows(&open, narrowest);
+}
+
+/// A window narrower than its panes, which the windowing system does not allow: the body pane keeps its minimum
+/// rather than vanishing.
+#[test]
+fn the_body_pane_keeps_its_minimum_width() {
+    let (_fx, open, _wires) = inbox("light");
+    resize(&open, (320.0, 600.0));
+    assert_eq!(one(&open, "BodyPane").width, super::list::MIN_WIDTH);
+}
