@@ -17,9 +17,10 @@ keywords = ["automation", "email", "email-client", "imap", "mail-filter"]
 categories = ["command-line-utilities", "email"]
 
 [workspace.dependencies]
-postvak-core = { version = "0.3.0", path = "crates/postvak-core" }  # sync, store, rules and the daemon: everything below the front ends
-postvak-gui = { version = "0.3.0", path = "crates/postvak-gui" }    # the Slint window, behind the `gui` feature
-postvak-mcp = { version = "0.3.0", path = "crates/postvak-mcp" }    # the MCP server, behind the `mcp` feature
+# Pinned exactly: their APIs are internal and change between patch releases, so a published binary builds only with its own.
+postvak-core = { version = "=0.3.0", path = "crates/postvak-core" }  # sync, store, rules and the daemon: everything below the front ends
+postvak-gui = { version = "=0.3.0", path = "crates/postvak-gui" }    # the Slint window, behind the `gui` feature
+postvak-mcp = { version = "=0.3.0", path = "crates/postvak-mcp" }    # the MCP server, behind the `mcp` feature
 
 anyhow = "1"                                         # error context in the binary and sync loop
 anyrender = "=0.14.0"                                # the drawing trait Blitz paints into; pinned to the version blitz-paint uses
