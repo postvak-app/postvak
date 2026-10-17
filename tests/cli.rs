@@ -794,6 +794,14 @@ fn daemon_stop_ends_the_daemon() {
 }
 
 #[test]
+fn daemon_status_json_without_a_daemon_prints_null() {
+    let (home, _store) = seeded_home(&[]);
+    let out = postvak(home.path(), &["daemon", "status", "--json"]);
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "null");
+}
+
+#[test]
 fn daemon_stop_without_a_daemon_says_so() {
     let (home, _store) = seeded_home(&[]);
     let out = postvak(home.path(), &["daemon", "stop"]);

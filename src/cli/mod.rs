@@ -820,7 +820,8 @@ fn print_status(status: &Status) {
 
 fn cmd_daemon(command: DaemonCommand, paths: &Paths) -> Result<()> {
     let Some(client) = Client::connect_any_version(paths)? else {
-        println!("no daemon running");
+        let json = matches!(command, DaemonCommand::Status { json: true });
+        println!("{}", if json { "null" } else { "no daemon running" });
         return Ok(());
     };
     match command {
