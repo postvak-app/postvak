@@ -1824,6 +1824,10 @@ impl App {
 
     /// Asks the server of each account the search covers for the current query; the hits arrive as `ServerSearchDone`.
     fn search_server(&mut self) {
+        // A new query resets the count, so a running round is for this query; a second one would only add duplicates.
+        if self.list.server_searching > 0 {
+            return;
+        }
         let Some(query) = self.search.clone().filter(|query| !query.trim().is_empty()) else {
             return;
         };
@@ -2351,6 +2355,18 @@ mod tests {
         assert!(!list::results(&driver.app).contains("searching the server"));
         driver.press("escape escape");
         assert_eq!(driver.uids(), [3, 2, 1]);
+    }
+
+    #[test]
+    fn enter_again_while_the_server_search_runs_asks_nothing_more() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1]);
+        let (mut driver, wires) = fx.driver();
+        driver.press("/ zebra");
+        driver.press("enter");
+        driver.press("enter");
+        assert_eq!(wires.sent().len(), 1);
+        assert!(list::results(&driver.app).contains("searching the server"));
     }
 
     #[test]
