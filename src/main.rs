@@ -5,7 +5,7 @@ fn main() {
     if let Err(e) = cli::run() {
         eprintln!(
             "error: {}",
-            postvak::message::clean(&format!("{e:#}"), false)
+            postvak_core::message::clean(&format!("{e:#}"), false)
         );
         std::process::exit(1);
     }

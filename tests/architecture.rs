@@ -1,4 +1,5 @@
-//! The module ownership rules from AGENTS.md's module map, checked on the source text.
+//! The module ownership rules from AGENTS.md's module map that crate boundaries cannot express, checked on the source
+//! text.
 //!
 //! Comments, string contents and `#[cfg(test)]` items are ignored: the rules are about shipped code. Each check is
 //! a plain text scan, so it only enforces what can be checked without false positives; allowed exceptions are listed
@@ -9,13 +10,13 @@
 
 use std::path::Path;
 
-/// Paths into `rules` that `src/mcp/` outside `backend.rs` may name: the data types its tool arguments deserialize
+/// Paths into `rules` that `postvak-mcp` outside `backend.rs` may name: the data types its tool arguments deserialize
 /// into and describe in their schemas. Loading, evaluating or editing rules stays in `backend.rs`.
 const MCP_RULES_TYPES: [&str; 2] = ["Rule", "Action"];
 
-/// Functions outside `src/rules/edit.rs` that may write next to the rules path, as `(file, fn, reason)`.
+/// Functions outside `rules/edit.rs` that may write next to the rules path, as `(file, fn, reason)`.
 const RULES_WRITE_EXCEPTIONS: [(&str, &str, &str); 1] = [(
-    "src/gui/state.rs",
+    "crates/postvak-gui/src/state.rs",
     "open_rules_file",
     "creates an empty rules.toml when there is none, so the editor has a file to open; never changes an existing one",
 )];
@@ -234,16 +235,15 @@ fn test_only_modules(path: &str, raw: &str) -> Vec<String> {
     out
 }
 
-/// Every crate path named in `code` after one of `roots`, relative to the crate root, with `use` groups expanded:
-/// `crate::rules::{self, Rule}` gives `rules` and `rules::Rule`.
-fn crate_paths(code: &[char], roots: &[&str]) -> Vec<(usize, String)> {
+/// Every `postvak_core` path named in `code`, relative to its root, with `use` groups expanded:
+/// `postvak_core::rules::{self, Rule}` gives `rules` and `rules::Rule`.
+fn core_paths(code: &[char]) -> Vec<(usize, String)> {
+    const ROOT: &str = "postvak_core::";
     let mut out = Vec::new();
-    for root in roots {
-        for at in find_tokens(code, root) {
-            let mut paths = Vec::new();
-            use_tree(code, at + root.chars().count(), String::new(), &mut paths);
-            out.extend(paths.into_iter().map(|p| (at, p)));
-        }
+    for at in find_tokens(code, ROOT) {
+        let mut paths = Vec::new();
+        use_tree(code, at + ROOT.len(), String::new(), &mut paths);
+        out.extend(paths.into_iter().map(|p| (at, p)));
     }
     out
 }
@@ -306,20 +306,15 @@ fn use_tree(code: &[char], i: usize, prefix: String, out: &mut Vec<String>) -> u
     i
 }
 
-/// Rule 1: in `src/mcp/`, only `backend.rs` touches the store, rules or the daemon.
+/// Rule 1: in `postvak-mcp`, only `backend.rs` touches the store, rules or the daemon.
 fn check_mcp(source: &Source) -> Vec<String> {
-    const RULE: &str = "in src/mcp/, only backend.rs touches the store, rules or the daemon";
-    let in_mcp = source.path.starts_with("src/mcp/");
-    if !in_mcp || source.path == "src/mcp/backend.rs" {
+    const RULE: &str = "in postvak-mcp, only backend.rs touches the store, rules or the daemon";
+    let in_mcp = source.path.starts_with("crates/postvak-mcp/src/");
+    if !in_mcp || source.path == "crates/postvak-mcp/src/backend.rs" {
         return Vec::new();
     }
-    let roots: &[&str] = if source.path == "src/mcp/mod.rs" {
-        &["crate::", "postvak::", "super::"]
-    } else {
-        &["crate::", "postvak::", "super::super::"]
-    };
     let mut out = Vec::new();
-    for (at, path) in crate_paths(&source.code, roots) {
+    for (at, path) in core_paths(&source.code) {
         let segments: Vec<&str> = path.split("::").collect();
         let allowed = match segments.as_slice() {
             ["store" | "daemon", ..] => false,
@@ -330,9 +325,6 @@ fn check_mcp(source: &Source) -> Vec<String> {
         if !allowed {
             out.push(source.violation(at, RULE, &format!("names `{path}`; go through `Backend`")));
         }
-    }
-    for at in find_tokens(&source.code, "rusqlite") {
-        out.push(source.violation(at, RULE, "uses rusqlite; go through `Backend`"));
     }
     out
 }
@@ -360,10 +352,10 @@ fn functions(code: &[char]) -> Vec<(String, usize, usize, usize)> {
     out
 }
 
-/// Rule 2: only `src/rules/edit.rs` writes rules.toml. Flags any function outside it that both names the rules path
+/// Rule 2: only `rules/edit.rs` in `postvak-core` writes rules.toml. Flags any function outside it that both names the rules path
 /// and calls a file write.
 fn check_rules_writes(source: &Source) -> Vec<String> {
-    const RULE: &str = "only src/rules/edit.rs writes rules.toml";
+    const RULE: &str = "only postvak-core's rules/edit.rs writes rules.toml";
     const PATH_MARKERS: [&str; 3] = ["rules_file", "rules_path", "\"rules.toml\""];
     const WRITES: [&str; 7] = [
         "write_atomic",
@@ -374,7 +366,7 @@ fn check_rules_writes(source: &Source) -> Vec<String> {
         "fs::rename",
         "fs::remove_file",
     ];
-    if source.path == "src/rules/edit.rs" {
+    if source.path == "crates/postvak-core/src/rules/edit.rs" {
         return Vec::new();
     }
     let mut out = Vec::new();
@@ -404,14 +396,14 @@ fn check_rules_writes(source: &Source) -> Vec<String> {
     out
 }
 
-/// Rule 3: in `src/gui/`, `state.rs` is the only code that changes state; the view modules draw from `&App` and
+/// Rule 3: in `postvak-gui`, `state.rs` is the only code that changes state; the view modules draw from `&App` and
 /// return `UiAction`s. So a view never takes `&mut App`, reaches the daemon, or edits rules.
 fn check_gui_views(source: &Source) -> Vec<String> {
-    const RULE: &str = "in src/gui/, state.rs is the only code that changes state; views draw and return UiActions";
-    let Some(file) = source.path.strip_prefix("src/gui/") else {
+    const RULE: &str = "in postvak-gui, state.rs is the only code that changes state; views draw and return UiActions";
+    let Some(file) = source.path.strip_prefix("crates/postvak-gui/src/") else {
         return Vec::new();
     };
-    if matches!(file, "mod.rs" | "state.rs" | "test_support.rs") {
+    if matches!(file, "lib.rs" | "state.rs" | "test_support.rs") {
         return Vec::new();
     }
     let mut out = Vec::new();
@@ -430,7 +422,7 @@ fn check_gui_views(source: &Source) -> Vec<String> {
             "uses the daemon client; return a `UiAction` instead",
         ));
     }
-    for (at, path) in crate_paths(&source.code, &["crate::", "postvak::", "super::super::"]) {
+    for (at, path) in core_paths(&source.code) {
         if path.starts_with("daemon") || path.starts_with("rules::edit") {
             out.push(source.violation(
                 at,
@@ -442,29 +434,16 @@ fn check_gui_views(source: &Source) -> Vec<String> {
     for at in find_tokens(&source.code, "rules::edit") {
         out.push(source.violation(at, RULE, "edits rules; return a `UiAction` instead"));
     }
-    // `crate::rules::edit` matches both scans; one report per line is enough.
+    // `postvak_core::rules::edit` matches both scans; one report per line is enough.
     out.sort();
     out.dedup_by(|a, b| a.split(": ").next() == b.split(": ").next());
     out
-}
-
-/// Rule 4, the checkable part of "main + cli/: clap only": they never open SQLite themselves.
-fn check_cli(source: &Source) -> Vec<String> {
-    const RULE: &str = "main.rs and src/cli/ hold no logic; the store owns SQLite";
-    if source.path != "src/main.rs" && !source.path.starts_with("src/cli/") {
-        return Vec::new();
-    }
-    find_tokens(&source.code, "rusqlite")
-        .into_iter()
-        .map(|at| source.violation(at, RULE, "uses rusqlite; go through `store`"))
-        .collect()
 }
 
 fn check(source: &Source) -> Vec<String> {
     let mut out = check_mcp(source);
     out.extend(check_rules_writes(source));
     out.extend(check_gui_views(source));
-    out.extend(check_cli(source));
     out
 }
 
@@ -484,6 +463,12 @@ fn module_ownership_rules_from_agents_md_hold() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     rust_files(&root.join("src"), &mut files);
+    for krate in std::fs::read_dir(root.join("crates")).unwrap() {
+        let src = krate.unwrap().path().join("src");
+        if src.is_dir() {
+            rust_files(&src, &mut files);
+        }
+    }
     files.sort();
     let sources: Vec<(String, String)> = files
         .iter()
@@ -500,7 +485,7 @@ fn module_ownership_rules_from_agents_md_hold() {
         .iter()
         .flat_map(|(p, raw)| test_only_modules(p, raw))
         .collect();
-    assert!(test_only.contains(&"src/mcp/tests.rs".to_string()));
+    assert!(test_only.contains(&"crates/postvak-mcp/src/tests.rs".to_string()));
     let mut violations = Vec::new();
     for (path, raw) in &sources {
         if !test_only.contains(path) {
@@ -536,30 +521,36 @@ mod checks_fire {
 
     #[test]
     fn mcp_outside_backend_may_name_rule_types_only() {
-        let ok = "use crate::rules::{Action, Rule};\nfn f(r: crate::rules::Rule) { let _ = Action::Archive; }\n\
-                  // crate::store::Store in a comment\nconst S: &str = \"crate::daemon::Client\";\n\
-                  #[cfg(test)]\nmod tests { use crate::store::Store; }\n";
-        assert_eq!(violations("src/mcp/tools.rs", ok), Vec::<String>::new());
+        let ok = "use postvak_core::rules::{Action, Rule};\nfn f(r: postvak_core::rules::Rule) { let _ = Action::Archive; }\n\
+                  // postvak_core::store::Store in a comment\nconst S: &str = \"postvak_core::daemon::Client\";\n\
+                  #[cfg(test)]\nmod tests { use postvak_core::store::Store; }\n";
+        assert_eq!(
+            violations("crates/postvak-mcp/src/tools.rs", ok),
+            Vec::<String>::new()
+        );
         for bad in [
-            "use crate::store::Store;",
-            "use crate::{config, daemon::Client};",
-            "use crate::rules::{self, Rule};",
-            "fn f() { crate::rules::load(p); }",
-            "use super::super::store;",
-            "use crate::rules::edit;",
-            "use crate::{rules::{self as r}, config};",
-            "fn f(c: rusqlite::Connection) {}",
+            "use postvak_core::store::Store;",
+            "use postvak_core::{config, daemon::Client};",
+            "use postvak_core::rules::{self, Rule};",
+            "fn f() { postvak_core::rules::load(p); }",
+            "use postvak_core::rules::edit;",
+            "use postvak_core::{rules::{self as r}, config};",
         ] {
-            let found = violations("src/mcp/tools.rs", &format!("\n{bad}\n"));
+            let found = violations("crates/postvak-mcp/src/tools.rs", &format!("\n{bad}\n"));
             assert_eq!(found.len(), 1, "{bad}: {found:?}");
-            assert!(found[0].starts_with("src/mcp/tools.rs:2: "), "{found:?}");
+            assert!(
+                found[0].starts_with("crates/postvak-mcp/src/tools.rs:2: "),
+                "{found:?}"
+            );
             assert!(found[0].contains("AGENTS.md"));
         }
-        assert_eq!(
-            violations("src/mcp/mod.rs", "use super::store::Store;").len(),
-            1
+        assert!(
+            violations(
+                "crates/postvak-mcp/src/backend.rs",
+                "use postvak_core::store::Store;"
+            )
+            .is_empty()
         );
-        assert!(violations("src/mcp/backend.rs", "use crate::store::Store;").is_empty());
     }
 
     #[test]
@@ -573,51 +564,44 @@ mod checks_fire {
         );
         let joined =
             "fn f(dir: &Path) { std::fs::write(dir.join(\"rules.toml\"), \"\").unwrap(); }";
-        assert_eq!(violations("src/sync.rs", joined).len(), 1);
+        assert_eq!(
+            violations("crates/postvak-core/src/sync.rs", joined).len(),
+            1
+        );
         let unrelated = "fn f(p: &Paths) { write_atomic(&p.config_file(), b\"\"); }\n\
                          fn g(p: &Paths) { let _ = rules::load(&p.rules_file()); }";
-        assert!(violations("src/sync.rs", unrelated).is_empty());
-        assert!(violations("src/rules/edit.rs", bad).is_empty());
+        assert!(violations("crates/postvak-core/src/sync.rs", unrelated).is_empty());
+        assert!(violations("crates/postvak-core/src/rules/edit.rs", bad).is_empty());
         let excepted =
             "fn open_rules_file(&mut self) { write_atomic(&self.paths.rules_file(), b\"\"); }";
-        assert!(violations("src/gui/state.rs", excepted).is_empty());
+        assert!(violations("crates/postvak-gui/src/state.rs", excepted).is_empty());
     }
 
     #[test]
     fn gui_views_never_change_state() {
         let ok = "use super::state::{App, UiAction};\npub(crate) fn show(app: &App) -> Vec<UiAction> { vec![] }\n\
                   #[cfg(test)]\nmod tests { fn at(h: &mut App) {} }";
-        assert_eq!(violations("src/gui/list.rs", ok), Vec::<String>::new());
+        assert_eq!(
+            violations("crates/postvak-gui/src/list.rs", ok),
+            Vec::<String>::new()
+        );
         for bad in [
             "fn show(app: &mut App) {}",
             "fn show(app: &App) { app.client.send(c); }",
-            "use crate::daemon::Client;",
-            "fn f(p: &Path) { crate::rules::edit::approve(p, \"x\"); }",
+            "use postvak_core::daemon::Client;",
+            "fn f(p: &Path) { postvak_core::rules::edit::approve(p, \"x\"); }",
             "fn f(p: &Path) { rules::edit::approve(p, \"x\"); }",
         ] {
-            let found = violations("src/gui/rules.rs", bad);
+            let found = violations("crates/postvak-gui/src/rules.rs", bad);
             assert_eq!(found.len(), 1, "{bad}: {found:?}");
         }
         assert!(
             violations(
-                "src/gui/state.rs",
+                "crates/postvak-gui/src/state.rs",
                 "fn f(app: &mut App) { self.client.send(c); }"
             )
             .is_empty()
         );
-    }
-
-    #[test]
-    fn cli_never_opens_sqlite() {
-        assert_eq!(
-            violations("src/cli/mod.rs", "use rusqlite::Connection;").len(),
-            1
-        );
-        assert_eq!(
-            violations("src/main.rs", "fn f() { rusqlite::Connection::open(p); }").len(),
-            1
-        );
-        assert!(violations("src/store.rs", "use rusqlite::Connection;").is_empty());
     }
 
     #[test]
@@ -633,14 +617,20 @@ mod checks_fire {
     #[test]
     fn cfg_test_module_files_are_found() {
         let found = test_only_modules(
-            "src/mcp/mod.rs",
+            "crates/postvak-mcp/src/lib.rs",
             "mod backend;\n#[cfg(test)]\nmod tests;\nmod tools;",
         );
-        assert_eq!(found, ["src/mcp/tests.rs", "src/mcp/tests/mod.rs"]);
+        assert_eq!(
+            found,
+            [
+                "crates/postvak-mcp/src/tests.rs",
+                "crates/postvak-mcp/src/tests/mod.rs"
+            ]
+        );
         let found = test_only_modules(
-            "src/daemon/mod.rs",
+            "crates/postvak-core/src/daemon/mod.rs",
             "#[cfg(test)]\npub(crate) mod test_support;",
         );
-        assert_eq!(found[0], "src/daemon/test_support.rs");
+        assert_eq!(found[0], "crates/postvak-core/src/daemon/test_support.rs");
     }
 }

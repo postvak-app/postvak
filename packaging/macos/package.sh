@@ -53,8 +53,8 @@ warn() {
 
 [ "$(uname -s)" = Darwin ] || { echo "package.sh runs on macOS only" >&2; exit 1; }
 
-version=$(awk -F'"' '/^\[/ { pkg = ($0 == "[package]") } pkg && /^version *=/ { print $2; exit }' "$root/Cargo.toml")
-[ -n "$version" ] || { echo "no [package] version in Cargo.toml" >&2; exit 1; }
+version=$(awk -F'"' '/^\[/ { pkg = ($0 == "[workspace.package]") } pkg && /^version *=/ { print $2; exit }' "$root/Cargo.toml")
+[ -n "$version" ] || { echo "no [workspace.package] version in Cargo.toml" >&2; exit 1; }
 short_version=${version%%[-+]*}
 build_sha=$(git -C "$root" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 

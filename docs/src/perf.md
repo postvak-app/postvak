@@ -4,7 +4,7 @@ How Postvak behaves as a mailbox grows, measured on generated mail. User stores 
 
 ## The benchmark
 
-`src/gui/bench.rs` builds three accounts with six folders each (INBOX holds half of an account's mail, Archive a quarter). The mail comes in threads: 60% single messages, then short threads, then a few with up to 60 replies, all with real `In-Reply-To` and `References` headers. About 10% is unread and 3% flagged. A fixed seed makes every run produce the same mail. The mail goes into SQLite through the real sync code, against `RecordingOps`, and then each phase is timed:
+`crates/postvak-gui/src/bench.rs` builds three accounts with six folders each (INBOX holds half of an account's mail, Archive a quarter). The mail comes in threads: 60% single messages, then short threads, then a few with up to 60 replies, all with real `In-Reply-To` and `References` headers. About 10% is unread and 3% flagged. A fixed seed makes every run produce the same mail. The mail goes into SQLite through the real sync code, against `RecordingOps`, and then each phase is timed:
 
 | Phase | What it times |
 | --- | --- |
@@ -18,7 +18,7 @@ How Postvak behaves as a mailbox grows, measured on generated mail. User stores 
 | `sync_pass` | One sync of an account after 200 messages arrived and 500 changed flags |
 
 ```sh
-POSTVAK_BENCH_SCALE=10000 cargo test --release --lib gui::bench::bench -- --ignored --nocapture
+POSTVAK_BENCH_SCALE=10000 cargo test --release -p postvak-gui --lib bench::bench -- --ignored --nocapture
 ```
 
 `POSTVAK_BENCH_SCALE` sets the total number of messages over all accounts (10,000 by default). Each phase prints one JSON line with the median, minimum and maximum of five runs (`first_sync` runs once). `cargo test` runs the same code at 600 messages as a plain test, so the benchmark keeps compiling and working.

@@ -1,0 +1,30 @@
+[package]
+name = "postvak-mcp"
+description = "Postvak's MCP server: mail and rules for agents, limited by scopes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+documentation.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+directories.workspace = true
+postvak-core.workspace = true
+regex.workspace = true
+rmcp.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+postvak-core = { workspace = true, features = ["testing"] }
+rmcp = { workspace = true, features = ["client", "transport-async-rw"] }  # in-process MCP client for the server tests
+rusqlite.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

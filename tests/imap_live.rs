@@ -7,15 +7,15 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use postvak::config::{AccountConfig, Config, PasswordSource};
-use postvak::credentials::Secret;
-use postvak::engine::{Engine, imap_connector};
-use postvak::mail_ops::imap::ImapOps;
-use postvak::mail_ops::{Envelope, IdleOutcome, MailOps};
-use postvak::paths::Paths;
-use postvak::rules::Action;
-use postvak::store::Store;
-use postvak::sync::{self, Activity, Command, Event};
+use postvak_core::config::{AccountConfig, Config, PasswordSource};
+use postvak_core::credentials::Secret;
+use postvak_core::engine::{Engine, imap_connector};
+use postvak_core::mail_ops::imap::ImapOps;
+use postvak_core::mail_ops::{Envelope, IdleOutcome, MailOps};
+use postvak_core::paths::Paths;
+use postvak_core::rules::Action;
+use postvak_core::store::Store;
+use postvak_core::sync::{self, Activity, Command, Event};
 
 const PASSWORD: &str = "postvak-test";
 const PORT: u16 = 10993;
@@ -641,16 +641,16 @@ fn idling_exe() -> &'static Path {
 
 /// A backend on a daemon this test starts, which exits a second after the backend is dropped.
 #[cfg(feature = "mcp")]
-fn backend(home: &Path) -> postvak::mcp::Backend {
+fn backend(home: &Path) -> postvak_mcp::Backend {
     let paths = Paths::under(home);
     let config = Config::load(&paths.config_file()).unwrap();
-    let client = postvak::daemon::Client::connect_or_start_with(
+    let client = postvak_core::daemon::Client::connect_or_start_with(
         &paths,
         idling_exe(),
-        postvak::daemon::wire::VERSION,
+        postvak_core::daemon::wire::VERSION,
     )
     .unwrap();
-    postvak::mcp::Backend::with_client(&config, &paths, &[], client).unwrap()
+    postvak_mcp::Backend::with_client(&config, &paths, &[], client).unwrap()
 }
 
 #[cfg(feature = "mcp")]

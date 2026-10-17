@@ -1,0 +1,56 @@
+[package]
+name = "postvak-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+# The About box shows this text, so it is the app's.
+description.workspace = true
+documentation.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+anyrender.workspace = true
+anyrender_vello_cpu.workspace = true
+blitz-dom.workspace = true
+blitz-html.workspace = true
+blitz-paint.workspace = true
+blitz-traits.workspace = true
+chrono.workspace = true
+data-url.workspace = true
+directories.workspace = true
+fontique.workspace = true
+html5ever.workspace = true
+log.workspace = true
+percent-encoding.workspace = true
+postvak-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+slint.workspace = true
+sys-locale.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+ureq.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+fontique = { workspace = true, features = ["fontconfig-dlopen"] }  # load fontconfig at runtime, as the window loads X11 and Wayland, instead of linking it
+i-slint-common = { workspace = true, features = ["fontconfig-dlopen"] }
+
+[build-dependencies]
+slint-build.workspace = true
+
+[dev-dependencies]
+i-slint-backend-testing.workspace = true
+png.workspace = true
+postvak-core = { workspace = true, features = ["testing"] }
+proptest.workspace = true
+rusqlite.workspace = true
+tempfile.workspace = true
+
+[package.metadata.cargo-machete]
+ignored = ["fontique", "i-slint-common"]             # only set a feature: of the fontique Blitz uses, and of Slint's
+
+[lints]
+workspace = true
