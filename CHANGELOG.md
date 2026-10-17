@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/postvak-app/postvak/compare/v0.3.0...v0.4.0) - 2026-10-17
+
+### Added
+
+- Flatpak desktop app with its own repository on the docs site ([#161](https://github.com/postvak-app/postvak/pull/161))
+- *(gui)* declutter the window and calm its look ([#151](https://github.com/postvak-app/postvak/pull/151))
+- unsubscribe from mailing lists ([#148](https://github.com/postvak-app/postvak/pull/148))
+- *(gui)* select rows with Shift-click, Cmd-click and Cmd+A ([#146](https://github.com/postvak-app/postvak/pull/146))
+- search the mail server for bodies not downloaded yet ([#147](https://github.com/postvak-app/postvak/pull/147))
+- report messages as junk or not junk ([#144](https://github.com/postvak-app/postvak/pull/144))
+- filter the list to unread, flagged or with attachments ([#145](https://github.com/postvak-app/postvak/pull/145))
+- *(gui)* fade in mail that arrives while the window is open ([#143](https://github.com/postvak-app/postvak/pull/143))
+- *(gui)* say so when the message list is empty ([#142](https://github.com/postvak-app/postvak/pull/142))
+- *(gui)* fade read state and account status changes ([#141](https://github.com/postvak-app/postvak/pull/141))
+- *(gui)* show what is being dragged and where it will land ([#140](https://github.com/postvak-app/postvak/pull/140))
+- *(gui)* drag messages onto a folder to move them ([#139](https://github.com/postvak-app/postvak/pull/139))
+- *(gui)* fade hover backgrounds in and out ([#138](https://github.com/postvak-app/postvak/pull/138))
+- *(gui)* rewrite the GUI in Slint ([#134](https://github.com/postvak-app/postvak/pull/134))
+- *(gui)* All inboxes, every account's INBOX in one list ([#124](https://github.com/postvak-app/postvak/pull/124))
+- *(gui)* unarchive from the Archive folder ([#123](https://github.com/postvak-app/postvak/pull/123))
+- *(gui)* right-click menus for messages and folders ([#125](https://github.com/postvak-app/postvak/pull/125))
+- *(gui)* select and copy text in the HTML view, and colour <font color> text ([#117](https://github.com/postvak-app/postvak/pull/117))
+
+### Fixed
+
+- *(config)* keep comments when saving config.toml ([#152](https://github.com/postvak-app/postvak/pull/152))
+- *(gui)* bring the window to the front from the menu bar ([#137](https://github.com/postvak-app/postvak/pull/137))
+- *(gui)* open right-click menus again ([#136](https://github.com/postvak-app/postvak/pull/136))
+- *(gui)* render newsletter HTML properly, and load remote content on request ([#133](https://github.com/postvak-app/postvak/pull/133))
+- *(gui)* line the UI up on the 4/8 px grid ([#122](https://github.com/postvak-app/postvak/pull/122))
+
+### Other
+
+- test with a ci profile and nextest, skip builds that only touch docs or packaging ([#163](https://github.com/postvak-app/postvak/pull/163))
+- cut over-engineering found by a repo audit ([#149](https://github.com/postvak-app/postvak/pull/149))
+- *(sync)* answer user commands sooner while the account syncs ([#121](https://github.com/postvak-app/postvak/pull/121))
+
 ## [0.3.0](https://github.com/postvak-app/postvak/compare/v0.2.0...v0.3.0) - 2026-10-09
 
 ### Changed
