@@ -3,13 +3,17 @@ name: Release-plz
 on:
   push:
     branches: [main]
+  # The release PR refreshes daily, not per push, since each refresh runs CI, CodeQL and dist plan on it; dispatch by hand before a release.
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
 
 permissions: {}
 
 jobs:
   release:
     name: Publish and tag
-    if: github.repository_owner == 'postvak-app'
+    if: github.repository_owner == 'postvak-app' && github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -32,7 +36,7 @@ jobs:
 
   release-pr:
     name: Release PR
-    if: github.repository_owner == 'postvak-app'
+    if: github.repository_owner == 'postvak-app' && github.event_name != 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
