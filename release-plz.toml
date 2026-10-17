@@ -4,3 +4,27 @@ git_release_enable = false
 git_tag_name = "v{{ version }}"
 # .coderabbit.yaml skips auto-review on this label.
 pr_labels = ["release"]
+
+# One version for all four crates, one changelog and one tag: the binary's.
+[[package]]
+name = "postvak"
+changelog_include = ["postvak-core", "postvak-gui", "postvak-mcp"]
+version_group = "postvak"
+
+[[package]]
+name = "postvak-core"
+changelog_update = false
+git_tag_enable = false
+version_group = "postvak"
+
+[[package]]
+name = "postvak-gui"
+changelog_update = false
+git_tag_enable = false
+version_group = "postvak"
+
+[[package]]
+name = "postvak-mcp"
+changelog_update = false
+git_tag_enable = false
+version_group = "postvak"

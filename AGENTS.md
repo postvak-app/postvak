@@ -3,42 +3,44 @@
 Spec: `docs/superpowers/specs/2026-10-06-postvak-core-design.md`. Read it before changing behaviour.
 
 ## Module map
+Four crates in one workspace. `crates/postvak-core` holds every module below except `gui`, `update`, `mcp` and `main` + `cli/`; `crates/postvak-gui` holds `gui` (its crate root) and `update`; `crates/postvak-mcp` holds `mcp`; the root crate `postvak` is the binary, whose `gui` and `mcp` features turn the front-end crates on. Below the front ends nothing depends on Slint, Blitz or rmcp. A published crate cannot reach files outside its directory, so what one embeds from `assets/` or `docs/src/` is a symlink inside it (`crates/postvak-gui/assets/`, `crates/postvak-core/src/agent-guide.md`).
+
 - `actions` direct actions on chosen messages (mark, move, archive, delete); same `apply` as rules
 - `config` accounts and identity (address + aliases)
 - `credentials` keyring or password command; `Secret` has no Debug
 - `daemon` the background process that owns sync and IMAP: `mod.rs` the server (socket, lock, log, idle exit), `wire` the JSON-lines protocol, `client` what front ends use (CLI, GUI, MCP; auto-starts the daemon), `service` launchd and systemd
 - `engine` one sync thread per account, commands in and events out; applies a config change by restarting only the changed accounts, each once its old thread ended; what the daemon runs
-- `gui` the Slint window (feature `gui`, on by default), which talks to the daemon through `daemon::Client`: `state` holds the state and is the only code that changes it; `ui/*.slint` draws; `bind` shows the state in the window and turns its callbacks into `UiAction`s, with `rows` the lazy models (list rows, HTML strips); `list`, `folders`, `body`, `status`, `toolbar`, `menu`, `rules` and `keys` word what the views show without a toolkit; `persist` is `window.json`; tests use `test_support::Fixture` with `Driver` (the state, keys and a clock) or `Fixture::window()` (the real window under Slint's testing backend), and `snapshots` compares the views with `tests/snapshots/*.png`; `html` is the HTML body view, with its render thread (`html/render.rs`, Blitz) the net provider that serves `cid:`, `data:` and downloaded remote content from memory (`html/net.rs`), and the downloads the user asks for (`html/fetch.rs`, public hosts only, never logged); layout follows one grid, `Theme` in `ui/theme.slint` (kept equal to `theme.rs` by a test): rows `row` (24), icon buttons `control` (28), content `inset` (16) from a pane's edge and `pad` (8) inside a row, so use those rather than literal sizes
+- `gui` the Slint window (`postvak-gui`, feature `gui`, on by default), which talks to the daemon through `daemon::Client`: `state` holds the state and is the only code that changes it; `ui/*.slint` draws; `bind` shows the state in the window and turns its callbacks into `UiAction`s, with `rows` the lazy models (list rows, HTML strips); `list`, `folders`, `body`, `status`, `toolbar`, `menu`, `rules` and `keys` word what the views show without a toolkit; `persist` is `window.json`; tests use `test_support::Fixture` with `Driver` (the state, keys and a clock) or `Fixture::window()` (the real window under Slint's testing backend), and `snapshots` compares the views with `tests/snapshots/*.png`; `html` is the HTML body view, with its render thread (`html/render.rs`, Blitz) the net provider that serves `cid:`, `data:` and downloaded remote content from memory (`html/net.rs`), and the downloads the user asks for (`html/fetch.rs`, public hosts only, never logged); layout follows one grid, `Theme` in `ui/theme.slint` (kept equal to `theme.rs` by a test): rows `row` (24), icon buttons `control` (28), content `inset` (16) from a pane's edge and `pad` (8) inside a row, so use those rather than literal sizes
 - `help` help texts shared by the CLI and the MCP tool descriptions
 - `mail_ops` `MailOps` trait; `imap.rs` is the real client; `RecordingOps` is the test fake
-- `main` + `cli/` clap only; no logic
-- `mcp` the MCP server (feature `mcp`, on by default): `tools` defines the tools and their scopes, `backend` is the only code touching store, rules or the daemon, `install` registers hosts
+- `main` + `cli/` clap only; no logic; the binary does not depend on rusqlite, so it cannot open the store itself
+- `mcp` the MCP server (`postvak-mcp`, feature `mcp`, on by default): `tools` defines the tools and their scopes, `backend` is the only code touching store, rules or the daemon, `install` registers hosts
 - `message` header parsing, thread id, body text, the HTML part and its `cid:` images
 - `notify` desktop notifications for new mail
 - `output` JSON rows shared by `--json` and MCP results
 - `paths` platform dirs, atomic writes, `stable_exe` (the binary path that survives `brew upgrade` and AppImage mounts), whether this is the macOS app opened from Finder (`launched_as_app`)
 - `rules` parse + validate + schema (`mod.rs`), pure `evaluate` (`engine.rs`), side effects (`apply.rs`), the only writer of rules.toml (`edit.rs`)
-- `store` one SQLite file per account; migrations in `migrations/`
+- `store` one SQLite file per account; migrations in `crates/postvak-core/migrations/`
 - `sync` per-account loop: sync folders in chunks, run rules, run commands, IDLE
 - `time` the current Unix time, and timestamps shown in local time
 - `trash` `.eml` backups before any rule delete
 - `update` whether a newer release is out (GUI only): GitHub's latest release at most once a day, cached; never updates itself
 
-`tests/architecture.rs` checks the ownership rules above for `mcp`, `rules` (rules.toml writes), `gui` views and `cli`; allowed exceptions live there with a reason.
+`tests/architecture.rs` checks the ownership rules above that crate boundaries cannot: `mcp`, `rules` (rules.toml writes) and `gui` views; allowed exceptions live there with a reason.
 
 ## Surfaces
 - A feature ships on the CLI, MCP and GUI together unless its spec names the exception; `help` and `output` are shared so the texts and JSON rows stay identical
-- Logic lives in a library module. Anything that touches IMAP goes through the daemon as a `Command`. Front ends only call library code and `daemon::Client`
+- Logic lives in a library module. Anything that touches IMAP goes through the daemon as a `Command`. Front ends only call `postvak-core` and `daemon::Client`
 
 ## Definition of done
 - `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, `cargo machete` and `cargo audit` all pass
 - New logic has a test; a bug fix has a regression test
 - No `unwrap`, `expect`, `panic!`, `todo!` or `unimplemented!` outside tests (clippy denies them); where a call cannot fail, a narrow `#[allow]` says why
 - Platform coverage reported honestly: say "compiled on" vs "ran on"
-- Every new dependency has a one-line reason in `Cargo.toml`
+- Every new dependency has a one-line reason in `[workspace.dependencies]` of the root `Cargo.toml`; crates name it with `workspace = true`
 - Do not broaden a task into adjacent features
 - After changing CLI flags or rule types, run `POSTVAK_BLESS=1 cargo test` to regenerate `docs/src/cli.md` and `docs/src/rules.schema.json`, and commit them
-- After GUI work, run `TZ=UTC UPDATE_SNAPSHOTS=1 cargo test gui::snapshots` and look at the changed PNGs in `tests/snapshots/`; Slint's software renderer draws them, on any machine
+- After GUI work, run `TZ=UTC UPDATE_SNAPSHOTS=1 cargo test -p postvak-gui snapshots` and look at the changed PNGs in `tests/snapshots/`; Slint's software renderer draws them, on any machine
 - Prose lives in `docs/src/`; `README.md` contains `docs/src/index.md` verbatim
 
 ## Privacy
@@ -56,10 +58,10 @@ POSTVAK_TEST_IMAP_HOST=localhost cargo test --features testing --test imap_live
 Port 10993 advertises MOVE and UIDPLUS, port 11993 neither. Each test logs in as its own throwaway user. `tests/dovecot/gen-certs.sh` regenerates the test-only CA.
 
 ## Property tests
-`tests/fuzz.rs` feeds hostile input to the message, rules and wire parsers; the only assertion is no panic. Deeper search: `PROPTEST_CASES=20000 cargo test --release --test fuzz`. A finding becomes a named test; unfixed ones go in `tests/known_bugs.rs` as `#[ignore = "BUG: …"]`.
+`crates/postvak-core/tests/fuzz.rs` feeds hostile input to the message, rules and wire parsers; the only assertion is no panic. Deeper search: `PROPTEST_CASES=20000 cargo test --release -p postvak-core --test fuzz`. A finding becomes a named test; unfixed ones go in `crates/postvak-core/tests/known_bugs.rs` as `#[ignore = "BUG: …"]`.
 
 ## Model-based sync tests
-`tests/sync_model.rs` runs random server events and sync passes against `RecordingOps`; search deeper with `PROPTEST_CASES=2000 cargo test --features testing --test sync_model`.
+`crates/postvak-core/tests/sync_model.rs` runs random server events and sync passes against `RecordingOps`; search deeper with `PROPTEST_CASES=2000 cargo test -p postvak-core --features testing --test sync_model`.
 
 ## Build speed
 `mise install` brings kache, cargo-nextest and actionlint. Run `kache init` once per machine to make kache your `RUSTC_WRAPPER`; it edits your own `~/.cargo/config.toml`, so the repo does not do it for you. Edit loop: `cargo check`, `cargo nextest run`.
@@ -67,14 +69,14 @@ Port 10993 advertises MOVE and UIDPLUS, port 11993 neither. Each test logs in as
 Run `packaging/icons.sh` after changing `assets/icon.svg`, `assets/logo.src.svg` or `assets/social-preview.src.svg`, and commit what it writes.
 
 ## Releasing
-Conventional commits on `main` drive everything. release-plz keeps a release PR open; merging it publishes to crates.io and pushes the `vX.Y.Z` tag, and dist's `release.yml` builds the binaries, creates the GitHub release and updates `postvak-app/homebrew-tap`. On the tag, `macos-app.yml` runs `packaging/macos/package.sh` on macOS (Postvak.app on a DMG, notarized once the Apple secrets below exist), attaches the DMG to the release and writes `Casks/postvak.rb` in the tap from `packaging/macos/postvak.rb.in`; rerun it for a tag via workflow_dispatch. Regenerate `release.yml` with `dist generate` after changing `dist-workspace.toml`; never edit it by hand. The same tag starts `appimage.yml`, which waits for that release, repackages its Linux binaries as AppImages (`packaging/linux/appimage.sh`, pinned appimagetool and runtime) and attaches them. `flatpak.yml` does the same as Flatpak bundles (`packaging/linux/flatpak.sh`, manifest in `packaging/linux/flatpak/`), then starts `docs.yml`, whose every deploy mirrors the Flatpak repository from the live site and imports the latest release's bundles (`packaging/linux/flatpak-repo.sh`), so `flatpak update` finds them at `postvak.pataar.nl/flatpak/`.
+Conventional commits on `main` drive everything. release-plz keeps a release PR open, with one version, one changelog and one tag for all four crates (`release-plz.toml`); merging it publishes them to crates.io and pushes the `vX.Y.Z` tag, and dist's `release.yml` builds the binaries, creates the GitHub release and updates `postvak-app/homebrew-tap`. On the tag, `macos-app.yml` runs `packaging/macos/package.sh` on macOS (Postvak.app on a DMG, notarized once the Apple secrets below exist), attaches the DMG to the release and writes `Casks/postvak.rb` in the tap from `packaging/macos/postvak.rb.in`; rerun it for a tag via workflow_dispatch. Regenerate `release.yml` with `dist generate` after changing `dist-workspace.toml`; never edit it by hand. The same tag starts `appimage.yml`, which waits for that release, repackages its Linux binaries as AppImages (`packaging/linux/appimage.sh`, pinned appimagetool and runtime) and attaches them. `flatpak.yml` does the same as Flatpak bundles (`packaging/linux/flatpak.sh`, manifest in `packaging/linux/flatpak/`), then starts `docs.yml`, whose every deploy mirrors the Flatpak repository from the live site and imports the latest release's bundles (`packaging/linux/flatpak-repo.sh`), so `flatpak update` finds them at `postvak.pataar.nl/flatpak/`.
 
 One-time setup, by the repo owner:
 1. Create `postvak-app/homebrew-tap` (public, empty); dist writes `Formula/postvak.rb` and `macos-app.yml` writes `Casks/postvak.rb`.
 2. Add repo secret `HOMEBREW_TAP_TOKEN` to `postvak-app/postvak`: a fine-grained token with Contents read/write on `postvak-app/homebrew-tap`.
 3. Add repo secret `RELEASE_PLZ_TOKEN`: a fine-grained token with Contents and Pull requests read/write on `postvak-app/postvak`.
-4. Publish the current version by hand (crates.io requires the first publish of a crate with a token): `cargo publish`, then `git tag vX.Y.Z && git push origin vX.Y.Z` to run the first dist release.
-5. On crates.io, add a trusted publisher for `postvak`: repository `postvak-app/postvak`, workflow `release-plz.yml`.
+4. Publish the current version by hand (crates.io requires the first publish of a crate with a token): `cargo publish --workspace`, then `git tag vX.Y.Z && git push origin vX.Y.Z` to run the first dist release. `postvak-core`, `postvak-gui` and `postvak-mcp` joined later; each needs this first publish once too.
+5. On crates.io, add a trusted publisher for each of `postvak`, `postvak-core`, `postvak-gui` and `postvak-mcp`: repository `postvak-app/postvak`, workflow `release-plz.yml`.
 6. For the macOS app, add repo secrets: `APPLE_CERTIFICATE` (base64 of the Developer ID Application .p12), `APPLE_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD` (any random string), `APPLE_ID`, `APPLE_PASSWORD` (an app-specific password) and `APPLE_TEAM_ID`. Without them the DMG is signed ad hoc, and the cask keeps a `postflight` that clears the quarantine flag (the `@ADHOC@` lines in `packaging/macos/postvak.rb.in`); with them those lines are dropped. The packaging has never run on a Mac before its first PR run; check that DMG by hand once.
 7. Under Settings → Code security, enable Dependabot alerts and security updates; version updates come from `.github/dependabot.yml`.
 8. For a signed Flatpak repository, add repo secret `FLATPAK_GPG_PRIVATE_KEY`: an armored secret key without a passphrase, used only for this (`gpg --quick-gen-key "Postvak Flatpak repository" rsa4096 sign never`, then `gpg --armor --export-secret-keys <fingerprint>`); keep a backup offline. `docs.yml` signs every deploy with it and puts its public key in `postvak.flatpakrepo`. Losing or replacing the key means every user re-adds the remote.

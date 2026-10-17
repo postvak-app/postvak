@@ -4691,37 +4691,37 @@ name = "postvak"
 version = "0.3.0"
 dependencies = [
  "anyhow",
- "anyrender",
- "anyrender_vello_cpu",
- "apple-native-keyring-store",
- "async-imap",
- "blitz-dom",
- "blitz-html",
- "blitz-paint",
- "blitz-traits",
- "chrono",
  "clap",
  "clap-markdown",
- "data-url",
- "directories",
  "env_logger",
- "fontique 0.12.0",
+ "log",
+ "postvak-core",
+ "postvak-gui",
+ "postvak-mcp",
+ "rpassword",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "postvak-core"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "apple-native-keyring-store",
+ "async-imap",
+ "chrono",
+ "directories",
  "futures-util",
- "html5ever",
  "humantime",
- "i-slint-backend-testing",
- "i-slint-common",
  "include_dir",
  "keyring-core",
  "log",
  "mail-parser",
  "notify-rust",
- "percent-encoding",
- "png",
  "proptest",
  "regex",
- "rmcp",
- "rpassword",
  "rusqlite",
  "rusqlite_migration",
  "rustls",
@@ -4729,10 +4729,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_rusqlite",
- "slint",
- "slint-build",
  "socket2",
- "sys-locale",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -4744,6 +4741,58 @@ dependencies = [
  "webpki-roots",
  "zbus-secret-service-keyring-store",
  "zeroize",
+]
+
+[[package]]
+name = "postvak-gui"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "anyrender",
+ "anyrender_vello_cpu",
+ "blitz-dom",
+ "blitz-html",
+ "blitz-paint",
+ "blitz-traits",
+ "chrono",
+ "data-url",
+ "directories",
+ "fontique 0.12.0",
+ "html5ever",
+ "i-slint-backend-testing",
+ "i-slint-common",
+ "log",
+ "percent-encoding",
+ "png",
+ "postvak-core",
+ "proptest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "slint",
+ "slint-build",
+ "sys-locale",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml",
+ "ureq",
+]
+
+[[package]]
+name = "postvak-mcp"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "directories",
+ "postvak-core",
+ "regex",
+ "rmcp",
+ "rusqlite",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

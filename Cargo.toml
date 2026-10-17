@@ -1,5 +1,10 @@
-[package]
-name = "postvak"
+[workspace]
+members = ["crates/*"]
+# Plain `cargo test`, `clippy` and `check` at the root cover every crate, as they did before the split.
+default-members = [".", "crates/*"]
+resolver = "3"
+
+[workspace.package]
 version = "0.3.0"
 edition = "2024"
 rust-version = "1.99"
@@ -10,35 +15,43 @@ repository = "https://github.com/postvak-app/postvak"
 homepage = "https://postvak.pataar.nl/"
 keywords = ["automation", "email", "email-client", "imap", "mail-filter"]
 categories = ["command-line-utilities", "email"]
-# Only what the build needs; keeps the test CA key, design docs and CI config out of the published crate.
-include = ["/assets/fonts/**", "/build.rs", "/assets/icon.png", "/assets/macos.iconset/icon_512x512@2x.png", "/CHANGELOG.md", "/Cargo.lock", "/LICENSE-*", "/README.md", "/docs/src/agent-guide.md", "/migrations/**", "/src/**"]
 
-[dependencies]
+[workspace.dependencies]
+postvak-core = { version = "0.3.0", path = "crates/postvak-core" }  # sync, store, rules and the daemon: everything below the front ends
+postvak-gui = { version = "0.3.0", path = "crates/postvak-gui" }    # the Slint window, behind the `gui` feature
+postvak-mcp = { version = "0.3.0", path = "crates/postvak-mcp" }    # the MCP server, behind the `mcp` feature
+
 anyhow = "1"                                         # error context in the binary and sync loop
-anyrender = { version = "=0.14.0", optional = true }  # the drawing trait Blitz paints into; pinned to the version blitz-paint uses
-anyrender_vello_cpu = { version = "=0.18.0", optional = true }  # CPU raster for Blitz, so HTML mail becomes an image in the window without a GPU path
+anyrender = "=0.14.0"                                # the drawing trait Blitz paints into; pinned to the version blitz-paint uses
+anyrender_vello_cpu = "=0.18.0"                      # CPU raster for Blitz, so HTML mail becomes an image in the window without a GPU path
+apple-native-keyring-store = { version = "1", features = ["keychain"] }  # macOS Keychain backend for keyring-core
 async-imap = { version = "0.12", default-features = false, features = ["runtime-tokio"] }  # IMAP client, maintained, IDLE support
-blitz-dom = { version = "=0.3.0-beta.3", optional = true, default-features = false, features = ["system-fonts", "svg", "floats"] }  # HTML mail: style and layout (Stylo, Taffy, Parley); beta, so pinned exactly
-blitz-html = { version = "=0.3.0-beta.3", optional = true }  # HTML mail: html5ever parsing into a Blitz document
-blitz-paint = { version = "=0.3.0-beta.3", optional = true }  # HTML mail: a laid-out document to draw commands
-blitz-traits = { version = "=0.3.0-beta.3", optional = true }  # HTML mail: the net provider and viewport types
+blitz-dom = { version = "=0.3.0-beta.3", default-features = false, features = ["system-fonts", "svg", "floats"] }  # HTML mail: style and layout (Stylo, Taffy, Parley); beta, so pinned exactly
+blitz-html = "=0.3.0-beta.3"                         # HTML mail: html5ever parsing into a Blitz document
+blitz-paint = "=0.3.0-beta.3"                        # HTML mail: a laid-out document to draw commands
+blitz-traits = "=0.3.0-beta.3"                       # HTML mail: the net provider and viewport types
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }         # INTERNALDATE comes back as chrono; also list output
 clap = { version = "4", features = ["derive"] }      # CLI
-data-url = { version = "0.3", optional = true }  # data: URIs in HTML mail; already in the tree through usvg
+clap-markdown = "0.1"                                # docs/src/cli.md generated from the clap definitions
+data-url = "0.3"                                     # data: URIs in HTML mail; already in the tree through usvg
 directories = "6"                                    # platform config/state/cache dirs
 env_logger = "0.11"                                  # log output to stderr, RUST_LOG filter
-fontique = { version = "0.12", optional = true }  # HTML mail: symbol fonts as a fallback for every script; the version Blitz's Parley uses
+fontique = "0.12"                                    # HTML mail: symbol fonts as a fallback for every script; the version Blitz's Parley uses
 futures-util = { version = "0.3", default-features = false }  # collect async-imap streams
-html5ever = { version = "=0.40.1", optional = true }  # HTML mail: parse as HTML ourselves, since Blitz's entry point parses XHTML-looking mail as XML; pinned to blitz-html's version
+html5ever = "=0.40.1"                                # HTML mail: parse as HTML ourselves, since Blitz's entry point parses XHTML-looking mail as XML; pinned to blitz-html's version
 humantime = "2"                                      # "1h", "2d" in rules
-include_dir = "0.7"                                  # embed migrations/ in the binary
+i-slint-backend-testing = { version = "=1.18.1", features = ["renderer-software"] }  # headless GUI tests: key events, mock time, elements found by accessible label, snapshots from the software renderer
+i-slint-common = "=1.18.1"                           # Slint's own fontique loads fontconfig at runtime on Linux; one linked and one loaded copy do not build together
+include_dir = "0.7"                                  # embed postvak-core's migrations/ in the binary
 keyring-core = "1"                                   # OS keyring API
 log = "0.4"                                          # logging facade
 mail-parser = "0.11"                                 # RFC 5322 header and body parsing
 notify-rust = "4"                                    # desktop notifications from `run`
-percent-encoding = { version = "2", optional = true }  # HTML mail: decode cid: URLs; already in the tree through url
+percent-encoding = "2"                               # HTML mail: decode cid: URLs; already in the tree through url
+png = "0.18"                                         # decodes the icons and reads and writes the GUI snapshots
+proptest = { version = "1", default-features = false, features = ["std"] }  # postvak-core's tests/fuzz.rs (hostile input never panics the parsers) and tests/sync_model.rs (random sync event sequences, shrunk)
 regex = "1"                                          # rule regex conditions and alias wildcards
-rmcp = { version = "3.5", optional = true, default-features = false, features = ["server", "transport-io"] }  # MCP server for `postvak mcp`, hand-written handler on stdio
+rmcp = { version = "3.5", default-features = false, features = ["server", "transport-io"] }  # MCP server for `postvak mcp`, hand-written handler on stdio
 rpassword = "7"                                      # hidden password prompt in `account add`
 rusqlite = { version = "0.40", features = ["bundled"] }       # SQLite, bundled build includes FTS5
 rusqlite_migration = { version = "2", features = ["from-directory"] }  # numbered SQL migrations
@@ -47,9 +60,11 @@ schemars = "1"                                       # JSON Schema for rules.tom
 serde = { version = "1", features = ["derive"] }     # config, rules, rows
 serde_json = "1"                                     # --json output
 serde_rusqlite = "0.43"                              # rows to structs
-slint = { version = "=1.18.1", optional = true, features = ["unstable-winit-030"] }  # the GUI window (royalty-free licence: About shows AboutSlint); default features: winit with runtime-loaded X11/Wayland, femtovg and software renderers, AccessKit, the system tray; unstable-winit-030 to raise the window from the tray (pinned, so the unstable API cannot shift)
+slint = { version = "=1.18.1", features = ["unstable-winit-030"] }  # the GUI window (royalty-free licence: About shows AboutSlint); default features: winit with runtime-loaded X11/Wayland, femtovg and software renderers, AccessKit, the system tray; unstable-winit-030 to raise the window from the tray (pinned, so the unstable API cannot shift)
+slint-build = "=1.18.1"                              # compiles the window's ui/*.slint into Rust
 socket2 = { version = "0.6", features = ["all"] }     # TCP keepalive on the IMAP socket so dead connections fail; "all" exposes the retry count
-sys-locale = { version = "0.3", optional = true }  # the device locale, to group digits in counts the way the user expects
+sys-locale = "0.3"                                   # the device locale, to group digits in counts the way the user expects
+tempfile = "3"                                       # temp dirs for store and paths tests
 thiserror = "2"                                      # user-facing error enums
 tokio = { version = "1", features = ["rt", "net", "time", "macros"] }  # current-thread runtimes for async-imap and the MCP server
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }  # TLS stream for tokio
@@ -58,45 +73,13 @@ toml_edit = "0.25"                                   # approve/reject edit rules
 ureq = { version = "3", default-features = false, features = ["rustls"] }  # HTTP over the same rustls and ring: remote images in HTML mail when the user asks, the update check, and one-click unsubscribe
 url = "2"                                            # parse URLs to check their host before Postvak contacts it; already in the tree through Blitz and webbrowser
 webpki-roots = "1"                                   # root certificates
+zbus-secret-service-keyring-store = { version = "1", features = ["rt-tokio-crypto-rust"] }  # Secret Service backend for keyring-core
 zeroize = "1"                                        # wipe secrets on drop
 
-[target.'cfg(target_os = "macos")'.dependencies]
-apple-native-keyring-store = { version = "1", features = ["keychain"] }  # macOS Keychain backend for keyring-core
+[workspace.lints.rust]
+unsafe_code = "deny"                                 # no unsafe in Postvak; only Slint's generated `ui` module allows it
 
-[target.'cfg(target_os = "linux")'.dependencies]
-fontique = { version = "0.12", optional = true, features = ["fontconfig-dlopen"] }  # HTML mail: load fontconfig at runtime, as the window loads X11 and Wayland, instead of linking it
-i-slint-common = { version = "=1.18.1", optional = true, features = ["fontconfig-dlopen"] }  # Slint's own fontique loads fontconfig at runtime too; one linked and one loaded copy do not build together
-zbus-secret-service-keyring-store = { version = "1", features = ["rt-tokio-crypto-rust"] }  # Secret Service backend for keyring-core
-
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-i-slint-common = { version = "=1.18.1", features = ["fontconfig-dlopen"] }  # the same for the GUI tests, which build Slint without the `gui` feature too
-
-[build-dependencies]
-slint-build = { version = "=1.18.1", optional = true }  # compiles src/gui/ui/*.slint into Rust for the `gui` feature
-
-[dev-dependencies]
-clap-markdown = "0.1"                                # docs/src/cli.md generated from the clap definitions
-i-slint-backend-testing = { version = "=1.18.1", features = ["renderer-software"] }  # headless GUI tests: key events, mock time, elements found by accessible label, snapshots from the software renderer
-png = "0.18"                                         # decodes the icons and reads and writes the GUI snapshots
-proptest = { version = "1", default-features = false, features = ["std"] }  # tests/fuzz.rs (hostile input never panics the parsers) and tests/sync_model.rs (random sync event sequences, shrunk)
-rmcp = { version = "3.5", default-features = false, features = ["client", "server", "transport-async-rw"] }  # in-process MCP client for the server tests
-tempfile = "3"                                       # temp dirs for store and paths tests
-
-[[test]]
-name = "sync_model"
-required-features = ["testing"]                      # drives sync against RecordingOps
-
-[[test]]
-name = "imap_live"
-required-features = ["testing"]                      # drives sync::run_once and sync_all against Dovecot
-
-[lints.rust]
-unsafe_code = "deny"                                 # no unsafe in this crate; only Slint's generated `gui::ui` allows it
-
-[package.metadata.cargo-machete]
-ignored = ["fontique", "i-slint-common"]             # only set a feature: of the fontique Blitz uses, and of Slint's
-
-[lints.clippy]
+[workspace.lints.clippy]
 unwrap_used = "deny"                                 # shipped code returns errors instead of panicking
 expect_used = "deny"                                 # same; allow narrowly where a call cannot fail
 panic = "deny"                                       # no deliberate panics outside tests
@@ -104,21 +87,52 @@ todo = "deny"                                        # unfinished code does not 
 unimplemented = "deny"                               # same as todo
 dbg_macro = "warn"                                   # debug output stays out of commits
 
+[package]
+name = "postvak"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description.workspace = true
+documentation.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+# Only what the build needs; keeps the test CA key, design docs and CI config out of the published crate.
+include = ["/CHANGELOG.md", "/Cargo.lock", "/LICENSE-*", "/README.md", "/src/**"]
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+env_logger.workspace = true
+log.workspace = true
+postvak-core.workspace = true
+postvak-gui = { workspace = true, optional = true }
+postvak-mcp = { workspace = true, optional = true }
+rpassword.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+clap-markdown.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
+
 [features]
 default = ["gui", "mcp"]
-gui = ["dep:i-slint-common", "dep:slint", "dep:slint-build", "dep:sys-locale", "dep:blitz-dom", "dep:blitz-html", "dep:blitz-paint", "dep:blitz-traits", "dep:html5ever", "dep:anyrender", "dep:anyrender_vello_cpu", "dep:data-url", "dep:fontique", "dep:percent-encoding"]  # `postvak gui` with HTML mail; off builds the CLI alone
-mcp = ["dep:rmcp"]                                   # `postvak mcp`; off builds without the MCP server
-testing = []                                         # exposes RecordingOps and the one-shot sync steps to integration tests
+gui = ["dep:postvak-gui"]                            # `postvak gui` with HTML mail; off builds the CLI alone
+mcp = ["dep:postvak-mcp"]                            # `postvak mcp`; off builds without the MCP server
+testing = ["postvak-core/testing"]                   # exposes RecordingOps and the one-shot sync steps to tests/imap_live.rs
+
+[[test]]
+name = "imap_live"
+required-features = ["mcp", "testing"]               # drives sync::run_once, sync_all and the MCP backend against Dovecot
 
 [profile.dev.package."*"]
 opt-level = 2
-
-# What CI tests with: optimised enough for the property tests, line tables only so builds and links stay small.
-[profile.ci]
-inherits = "dev"
-opt-level = 1
-debug = "line-tables-only"
-incremental = false
 
 [profile.release]
 lto = "thin"

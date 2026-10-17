@@ -32,10 +32,10 @@ cargo audit
 
 ## Property tests
 
-`tests/fuzz.rs` throws arbitrary and mutated input at the message, rules and daemon wire parsers and checks that none of them panic. `cargo test` runs a few cases; for a deeper search:
+`crates/postvak-core/tests/fuzz.rs` throws arbitrary and mutated input at the message, rules and daemon wire parsers and checks that none of them panic. `cargo test` runs a few cases; for a deeper search:
 
 ```sh
-PROPTEST_CASES=20000 cargo test --release --test fuzz
+PROPTEST_CASES=20000 cargo test --release -p postvak-core --test fuzz
 ```
 
 If it finds a panic, add the input as a named test next to the fix.
