@@ -1,7 +1,6 @@
 //! The body pane without a toolkit: header dates and names, initials, sizes, the links in plain text, the missing-body
 //! line, the selection, and the source window's rows. The window draws the pane from them.
 use std::ops::Range;
-use std::path::PathBuf;
 
 use crate::message::clean;
 use crate::sync::Activity;
@@ -20,8 +19,6 @@ pub(crate) struct Pane {
     pub initials: String,
     /// Which avatar fill the initials sit on.
     pub tint: usize,
-    /// The sender domain's logo, with `[ui] sender_images` on and once it is here.
-    pub logo: Option<PathBuf>,
     pub name: String,
     pub address: Option<String>,
     pub short_date: String,
@@ -95,11 +92,6 @@ pub(crate) fn pane(app: &App) -> Pane {
         subject: header(&message.subject),
         initials: initials(from),
         tint: avatar::tint(address.as_deref().unwrap_or(&name)),
-        logo: app
-            .logos
-            .as_ref()
-            .zip(avatar::domain(from))
-            .and_then(|(logos, domain)| logos.logo(&domain)),
         name: clean(&name, false),
         address: address.map(|a| clean(&a, false)),
         short_date: local_time(at, SHORT_DATE),
@@ -715,37 +707,6 @@ mod tests {
         let (driver, _wires) = fx.driver();
         let pane = pane(&driver.app);
         assert_eq!(pane.tint, crate::gui::avatar::tint("linus@example.com"));
-        assert_eq!(pane.logo, None, "sender images are off by default");
-        assert!(driver.app.logos.is_none());
-    }
-
-    #[test]
-    fn with_sender_images_on_the_senders_logo_replaces_the_initials() {
-        use std::collections::BTreeMap;
-
-        use crate::gui::html::{FetchDone, Fetcher};
-        let fx = Fixture::new(&["work"]);
-        fx.append_config("[ui]\nsender_images = true\n");
-        let mut from_shop = message("INBOX", 1, "receipt");
-        from_shop.from_addr = Some("Shop <orders@Example.com>".into());
-        fx.add("work", from_shop);
-        let (app, _wires) = fx.app();
-        let (fetcher, jobs, done) = Fetcher::fake();
-        let mut driver = Driver { app, now: 0.0 };
-        driver.app.logos.as_mut().unwrap().fetcher = Some(fetcher);
-        driver.tick();
-        let url = "https://example.com/apple-touch-icon.png";
-        let asked: Vec<Vec<String>> = jobs.try_iter().map(|job| job.urls).collect();
-        assert_eq!(asked, [[url]]);
-        assert_eq!(pane(&driver.app).logo, None);
-        let png = b"\x89PNG\r\n\x1a\nlogo".to_vec();
-        let fetched = BTreeMap::from([(url.to_string(), png)]);
-        done.send(FetchDone { tag: 0, fetched }).unwrap();
-        driver.tick();
-        let logo = fx.paths.sender_logos().join("example.com.png");
-        assert_eq!(pane(&driver.app).logo, Some(logo));
-        driver.tick();
-        assert_eq!(jobs.try_iter().count(), 0, "asked once");
     }
 
     #[test]

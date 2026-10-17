@@ -28,9 +28,6 @@ export struct BodyInfo {
     initials: string,
     // Which of `Theme.avatars` the initials sit on.
     tint: int,
-    // The sender domain's logo, which replaces the initials, with `[ui] sender_images` on.
-    logo: image,
-    has-logo: bool,
     name: string,
     address: string,
     short-date: string,
@@ -200,15 +197,14 @@ component HeaderLine inherits HorizontalLayout {
     }
 }
 
-// The sender's initials on their colour, or the logo of their domain.
+// The sender's initials on their colour.
 component Avatar inherits Rectangle {
     in property <BodyInfo> info;
     width: Theme.avatar;
     height: Theme.avatar;
     border-radius: self.width / 2;
-    clip: true;
     background: Theme.avatars[root.info.tint];
-    if !root.info.has-logo: Text {
+    Text {
         accessible-role: none;
         text: root.info.initials;
         font-size: Theme.text-size;
@@ -216,13 +212,6 @@ component Avatar inherits Rectangle {
         color: Theme.pane.heading;
         horizontal-alignment: center;
         vertical-alignment: center;
-    }
-    if root.info.has-logo: Image {
-        accessible-role: none;
-        width: parent.width;
-        height: parent.height;
-        source: root.info.logo;
-        image-fit: cover;
     }
 }
 

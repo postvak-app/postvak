@@ -161,17 +161,11 @@ fn present_body(app: &App, window: &MailWindow) {
     let strings = |current, items: Vec<String>| {
         synced(current, items.into_iter().map(SharedString::from).collect())
     };
-    let logo = pane
-        .logo
-        .as_deref()
-        .and_then(|path| slint::Image::load_from_path(path).ok());
     let info = BodyInfo {
         empty: pane.empty.unwrap_or_default().into(),
         subject: text(pane.subject),
         initials: pane.initials.into(),
         tint: i32::try_from(pane.tint).unwrap_or_default(),
-        has_logo: logo.is_some(),
-        logo: logo.unwrap_or_default(),
         name: pane.name.into(),
         address: text(pane.address),
         short_date: pane.short_date.into(),

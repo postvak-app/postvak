@@ -39,15 +39,12 @@ notify = true
 ```toml
 [ui]
 check_updates = false
-sender_images = false
 theme = "system"
 ```
 
 `theme` is `"system"` (follow the OS, the default), `"light"` or `"dark"`. The mail window's theme switch writes it.
 
 `check_updates` (off by default) lets the mail window ask GitHub at most once a day whether a newer release is out, and link to its release notes at the foot of the folder pane. The request is a plain HTTPS request to `api.github.com` with the user agent `postvak/<version>`: it carries nothing about your accounts or mail, though GitHub sees your IP address as with any request. Postvak never updates itself; upgrade the way you installed it (`brew upgrade postvak`, `cargo install postvak`, a new AppImage). Set `check_updates = true` to turn the check on.
-
-`sender_images` (off by default) shows the logo of each sender's mail domain in the reader, in place of their initials. The first time you open mail from a domain, the mail window asks that domain's web server for `https://<domain>/apple-touch-icon.png`, over HTTPS and only when the domain is a public host. That request tells the domain's owner your IP address and that someone there just read mail from them, much like loading remote content does, though it carries nothing about you or the message. A logo that arrives is kept in the cache directory (`sender-logos/`, one PNG per domain) and never asked for again; a domain without one keeps its initials and is asked again the next time the window opens. Postvak never uses Gravatar or any other service looked up by email address, which would tell a third party who mails you. Set `sender_images = true` to turn the logos on.
 
 ## Passwords
 
