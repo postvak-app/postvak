@@ -260,7 +260,10 @@ impl Matcher {
                 let text = text.to_lowercase();
                 needles.iter().any(|needle| text.contains(needle))
             }
-            Matcher::Equals(wanted) => wanted.iter().any(|w| text.trim().eq_ignore_ascii_case(w)),
+            Matcher::Equals(wanted) => {
+                let text = text.trim().to_lowercase();
+                wanted.contains(&text)
+            }
             Matcher::Regex(re) => re.is_match(text),
         }
     }
@@ -273,7 +276,7 @@ impl Matcher {
                 self.is_match(field)
                     || crate::message::bare_addresses(field)
                         .iter()
-                        .any(|address| wanted.iter().any(|w| address.eq_ignore_ascii_case(w)))
+                        .any(|address| wanted.contains(&address.to_lowercase()))
             }
             _ => self.is_match(field),
         }
@@ -312,7 +315,7 @@ impl Matcher {
                 c.iter().map(|value| value.to_lowercase()).collect(),
             )),
             (None, Some(e), None) => Ok(Matcher::Equals(
-                e.iter().map(|value| value.trim().to_string()).collect(),
+                e.iter().map(|value| value.trim().to_lowercase()).collect(),
             )),
             (None, None, Some(r)) => regex::Regex::new(r)
                 .map(Matcher::Regex)
@@ -758,6 +761,17 @@ actions = [{ move = "Shopping" }, "notify"]
         assert!(Matcher::Equals(vec!["a@b.c".into()]).is_match("A@B.C"));
         assert!(!Matcher::Equals(vec!["a@b.c".into()]).is_match("xa@b.c"));
         assert!(Matcher::Regex(regex::Regex::new("^no-?reply").unwrap()).is_match("noreply@x"));
+    }
+
+    #[test]
+    fn equals_ignores_case_beyond_ascii() {
+        let equals = |value: &str| {
+            let wanted = Some(OneOrMany::One(value.to_string()));
+            Matcher::build("r", "match.from", &None, &wanted, &None).unwrap()
+        };
+        assert!(equals("jürgen").is_match("JÜRGEN"));
+        assert!(equals("JÜRGEN").is_match("jürgen"));
+        assert!(equals("jürgen@x.de").is_address_match("Jürgen <JÜRGEN@x.de>"));
     }
 
     #[test]
