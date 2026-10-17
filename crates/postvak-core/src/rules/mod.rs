@@ -272,7 +272,10 @@ impl Matcher {
                 let text = text.to_lowercase();
                 needles.iter().any(|needle| text.contains(needle))
             }
-            Matcher::Equals(wanted) => wanted.contains(&text.trim().to_lowercase()),
+            Matcher::Equals(wanted) => {
+                let text = text.trim().to_lowercase();
+                wanted.contains(&text)
+            }
             Matcher::Regex(re) => re.is_match(text),
         }
     }
@@ -596,9 +599,7 @@ pub(crate) fn check_keyword(keyword: &str) -> Result<(), String> {
         .chars()
         .all(|c| c.is_ascii_graphic() && !ATOM_SPECIALS.contains(&c))
     {
-        return Err(
-            "must be printable ASCII without spaces, backslashes or ( ) { } % * \" ]".into(),
-        );
+        return Err("must be printable ASCII without spaces, backslashes or ( ) { % * \" ]".into());
     }
     if keyword.eq_ignore_ascii_case(engine::RESTORED_KEYWORD) {
         return Err("is reserved for restored mail".into());
@@ -772,6 +773,17 @@ actions = [{ move = "Shopping" }, "notify"]
         assert!(Matcher::Equals(vec!["a@b.c".into()]).is_match("A@B.C"));
         assert!(!Matcher::Equals(vec!["a@b.c".into()]).is_match("xa@b.c"));
         assert!(Matcher::Regex(regex::Regex::new("^no-?reply").unwrap()).is_match("noreply@x"));
+    }
+
+    #[test]
+    fn equals_ignores_case_beyond_ascii() {
+        let equals = |value: &str| {
+            let wanted = Some(OneOrMany::One(value.to_string()));
+            Matcher::build("r", "match.from", &None, &wanted, &None).unwrap()
+        };
+        assert!(equals("jürgen").is_match("JÜRGEN"));
+        assert!(equals("JÜRGEN").is_match("jürgen"));
+        assert!(equals("jürgen@x.de").is_address_match("Jürgen <JÜRGEN@x.de>"));
     }
 
     #[test]

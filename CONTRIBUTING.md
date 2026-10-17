@@ -4,10 +4,10 @@ Thanks for helping out. Bug reports, rule ideas and pull requests are all welcom
 
 ## Setup
 
-The toolchain is pinned in `rust-toolchain.toml`. With [mise](https://mise.jdx.dev), `mise install` brings the pinned Rust plus cargo-nextest, kache and actionlint. You also need `cargo-machete` and `cargo-audit`:
+The toolchain is pinned in `rust-toolchain.toml`. With [mise](https://mise.jdx.dev), `mise install` brings the pinned Rust plus cargo-nextest, kache and actionlint. You also need `cargo-machete` and `cargo-deny`:
 
 ```sh
-cargo install cargo-machete cargo-audit
+cargo install cargo-machete cargo-deny
 ```
 
 Fast edit loop: `cargo check` and `cargo nextest run`.
@@ -21,7 +21,7 @@ cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 cargo machete
-cargo audit
+cargo deny check
 ```
 
 - New logic comes with a test; a bug fix comes with a regression test.

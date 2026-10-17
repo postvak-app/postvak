@@ -21,7 +21,7 @@ actions = [{ move = "Lists/GitHub" }, "mark_read"]
 | `match` | required | Conditions that must all hold. At least one. |
 | `actions` | required | What to do. At least one. |
 
-A tag is printable ASCII without spaces, backslashes or `( ) { } % * " ]`, and `$PostvakRestored` is reserved. `name`, `account`, `folder` and `move` folders must not be blank, may not contain control characters, and are at most 255 characters.
+A tag is printable ASCII without spaces, backslashes or `( ) { % * " ]`, and `$PostvakRestored` is reserved. `name`, `account`, `folder` and `move` folders must not be blank, may not contain control characters, and are at most 255 characters.
 
 ## Conditions
 
@@ -37,7 +37,7 @@ Text conditions take exactly one of:
 |---|---|---|
 | `from`, `to`, `cc`, `subject` | text condition | That header. |
 | `body` | text condition | The plain-text body; HTML mail is converted. Postvak downloads the body of new mail in the rule's folder for this. |
-| `header` | text condition plus `name`, or a list of them | Any header, such as `List-Id`. Every header in a list must match. |
+| `header` | text condition plus `name`, or a list of them | Any header, such as `List-Id`, as raw text: encoded words (`=?UTF-8?…?=`) are not decoded, and of a repeated header only the last copy counts. Every header in a list must match. |
 | `older_than` | duration: `30m`, `1h`, `2days` | Mail that arrived at least this long ago. |
 | `seen` | `true` or `false` | Read or unread mail. |
 | `to_me` | `true` or `false` | To, Cc or Delivered-To holds your address or an alias. `false` catches list and bcc mail. |
@@ -55,7 +55,7 @@ Each entry of `any` and `none` is a set of conditions that must all hold, writte
 | `"delete"` | Saves the message as `.eml` in the local trash, then removes it from the server. Later rules don't run for that message. |
 | `"mark_read"` | Marks it read. |
 | `"flag"` | Flags it. |
-| `"archive"` | Moves it to the server's Archive folder. |
+| `"archive"` | Moves it to the server's Archive folder. Fails when the server has none. |
 | `{ move = "Folder/Sub" }` | Moves it to that folder, creating the folder if needed. |
 | `{ tag = "$label1" }` | Adds that IMAP keyword, which Thunderbird and other clients show as a tag. The server must accept custom keywords. |
 | `"notify"` | Notifies even when the message was moved. |
@@ -73,7 +73,7 @@ A `delete` wins: when any matching rule deletes a message, no other rule's actio
 
 ## Notifications
 
-New INBOX mail notifies unless a rule moved or deleted it, or a matching rule says `silent`. `notify` forces a notification for moved mail. With `notify = false` on the account, only rules that say `notify` notify. Deleted mail, and mail found by the first sync of a folder, never notifies.
+New INBOX mail notifies unless a rule moved, archived or deleted it, or a matching rule says `silent`; marking, flagging and tagging still notify. `notify` forces a notification for moved mail. When several matching rules say `notify` or `silent`, the last one wins. Only INBOX mail notifies, so `notify` on a rule for another folder does nothing. With `notify = false` on the account, only rules that say `notify` notify. Deleted mail, and mail found by the first sync of a folder, never notifies.
 
 ## Examples
 

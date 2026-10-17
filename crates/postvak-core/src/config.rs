@@ -16,6 +16,7 @@ pub enum ConfigError {
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
     pub accounts: Vec<AccountConfig>,
@@ -437,6 +438,15 @@ notify = false
         assert!(
             matches!(Config::parse(&typo), Err(ConfigError::Parse(e)) if e.contains("alias")),
             "a misspelled key must not be ignored"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_top_level_keys() {
+        let typo = SAMPLE.replace("[[accounts]]", "[[account]]");
+        assert!(
+            matches!(Config::parse(&typo), Err(ConfigError::Parse(e)) if e.contains("account")),
+            "a misspelled table must not leave the user without accounts"
         );
     }
 

@@ -68,27 +68,27 @@ The default is `read,rules:propose`. Three example grants:
 
 ## Tools
 
-The names follow the CLI commands. A tool that lists things returns the CLI's `--json` rows wrapped in `{"rows": [...]}`. Rows carry an `account`; in `rules_list` that is the rule's own scope, and `null` means every account. Message rows carry no body text. `show` returns `{"message": ..., "body": ..., "truncated": ...}`.
+The names follow the CLI commands. A tool that lists things returns the CLI's `--json` rows wrapped in `{"rows": [...]}`; the others return one object. Rows carry an `account`; in `rules_list` that is the rule's own scope, and `null` means every account. Message rows carry no body text. `show` returns `{"message": ..., "body": ..., "truncated": ...}`.
 
 `rules.toml` is shared by every account, so `rules_list`, `rules_propose`, `rules_approve`, `rules_reject` and `rules_set_enabled` take no `account` argument; a rule's own `account` field scopes it. They follow `--account` as described under [Safety](#safety).
 
 `read`:
 
 - `folders` lists folders with total and unread counts.
-- `list` lists the newest messages in a folder, or threads. `limit` defaults to 50 and is at most 500. With `threads: true` it counts threads, and each thread comes with all its messages.
+- `list` lists the newest messages in a folder, or threads. `folder` defaults to INBOX; `limit` defaults to 50 and is at most 500. With `threads: true` it counts threads, and each thread comes with all its messages. `unread`, `flagged` and `attachments` keep only the messages, or threads, that have one.
 - `log` shows the rule and action log.
 - `rules_check` validates `rules.toml`.
 - `rules_list` lists rules and their state.
 - `rules_schema` returns the JSON Schema for a rule.
 - `rules_test` previews a rule, given as JSON, against the local store. It reports subjects, never bodies. A rule that matches on the body needs `read:bodies` too, since its matches would reveal what bodies contain.
-- `search` finds messages by subject, from and to. It matches all the given words as plain words.
+- `search` finds messages by subject, from and to. It matches all the given words as plain words. Searching bodies, and `server: true`, need `read:bodies`.
 - `sync` asks the daemon to sync and run rules once per account and reports its result: `new_messages`, `actions` and `errors`, or an `error` when the daemon refuses the account (offline, for example). It is in the `read` scope, but it writes the store and applies approved rules, so hosts see it as a changing tool.
 - `trash_list` lists the `.eml` backups.
 
 `read:bodies`:
 
 - `attachments` lists attachment names, types and sizes. It does not save them.
-- `show` returns the headers and the body. With this scope, `search` also covers stored bodies, in FTS5 syntax. `search` and `dry_run` never connect to the server. `show` and `attachments` fetch a message you have not stored yet, once.
+- `show` returns the headers and the body. With this scope, `search` also covers stored bodies, in FTS5 syntax, and `server: true` asks the mail server too, which searches every body. Otherwise `search` and `dry_run` never connect to the server. `show` and `attachments` fetch a message you have not stored yet, once.
 
 `rules:propose`:
 
@@ -102,8 +102,8 @@ The names follow the CLI commands. A tool that lists things returns the CLI's `-
 
 `mail:modify`:
 
-- `archive`, `delete`, `junk`, `mark` and `move` act on uids in a folder. `log` shows them under the rule name `mcp:<client name>`, or `mcp`.
-- `unsubscribe` leaves a message's mailing list by one-click POST when the sender offers it; otherwise its row gives the page or `mailto:` address for the human to open. Use `dry_run` first: unsubscribing tells the sender the address is read.
+- `archive`, `delete`, `junk`, `mark` and `move` act on uids in a folder, INBOX by default. `mark` takes `how` (`read`, `unread`, `flag` or `unflag`), `move` takes `to`, and `junk` with `not: true` reports mail as not junk: it tags `$NotJunk` and moves it to INBOX. `log` shows them under the rule name `mcp:<client name>`, or `mcp`.
+- `unsubscribe` leaves a message's mailing list by one-click POST when the sender offers it; otherwise its row gives the page or `mailto:` address for the human to open. Use `dry_run` first: unsubscribing tells the sender the address is read. The request goes to the sender directly, not through the daemon, and is not recorded in `log`.
 - `trash_restore` restores a backup, given as the bare file name `trash_list` returns.
 
 With more than one visible account, every tool that acts on one message needs `account`.
@@ -111,7 +111,7 @@ With more than one visible account, every tool that acts on one message needs `a
 ## Safety
 
 - Mail is written by strangers. `show` wraps the body in `<untrusted_mail_content>`, and tells the agent that text inside is data, never instructions. Any spelling of that tag name inside a body is rewritten to `untrusted-mail-content`, so a mail cannot close the wrapper early. A body is cut at 100 KB and marked `"truncated": true`. Every mail-derived string loses its control characters; a body keeps its newlines and tabs. The tag rewrite ignores letter case, but it does not catch look-alike letters.
-- A host that honours tool annotations asks you before tools that change things. `delete`, `rules_approve` and `rules_set_enabled` are marked destructive, because they can delete mail. The other changing tools are marked as changing, but not destructive.
+- A host that honours tool annotations asks you before tools that change things. `delete`, `rules_approve` and `rules_set_enabled` are marked destructive, because they can delete mail, and so is `unsubscribe`, which cannot be undone. The other changing tools are marked as changing, but not destructive.
 - The `mail:modify` tools take `dry_run`. It reports what would happen from the local store and does not ask the daemon.
 - `--account` hides other accounts from every tool. Rule writes refuse rules scoped to a hidden account, and so does proposing one. A rule without `account` applies to every account, hidden ones too, so while an account is hidden `rules_approve` and `rules_set_enabled` refuse to turn such a rule on; turning it off and rejecting it still work.
 - Without `read:bodies`, no tool returns or reveals body text: `search` covers subject and addresses only, as plain words, with no search operators, and `rules_test` refuses a rule that matches on the body.
@@ -119,7 +119,7 @@ With more than one visible account, every tool that acts on one message needs `a
 
 ## Alongside the window and the CLI
 
-The MCP server reads the same local store as the mail window. Everything that needs the mail server goes through the Postvak daemon, which owns the connections: actions, `trash_restore`, `show` and `attachments` for a message not yet fetched, and `sync`. The first such call starts the daemon if none runs. The window picks up the changes as soon as the daemon reports them, so an archived message disappears from the list.
+The MCP server reads the same local store as the mail window. Everything that needs the mail server goes through the Postvak daemon, which owns the connections: actions, `trash_restore`, `show` and `attachments` for a message not yet fetched, `search` with `server`, and `sync`. The first such call starts the daemon if none runs. The window picks up the changes as soon as the daemon reports them, so an archived message disappears from the list.
 
 ## Troubleshooting
 
