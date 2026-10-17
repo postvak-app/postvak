@@ -78,7 +78,18 @@ pub struct InlinePart {
 
 /// The first `text/html` part with every `Content-ID` part, or `None` when the message has no HTML part.
 pub fn html_body(raw: &[u8]) -> Option<HtmlBody> {
-    let msg = MessageParser::default().parse(raw)?;
+    html_of(&MessageParser::default().parse(raw)?)
+}
+
+/// `attachments` and `html_body` from one parse, for a reader that shows both.
+pub fn attachments_and_html(raw: &[u8]) -> (Vec<Attachment>, Option<HtmlBody>) {
+    match MessageParser::default().parse(raw) {
+        Some(msg) => (attachments_of(&msg), html_of(&msg)),
+        None => (Vec::new(), None),
+    }
+}
+
+fn html_of(msg: &mail_parser::Message<'_>) -> Option<HtmlBody> {
     let part = msg.html_part(0).filter(|part| part.is_text_html())?;
     let html = part.text_contents()?.to_string();
     let inline = msg
@@ -147,9 +158,13 @@ pub struct Attachment {
 }
 
 pub fn attachments(raw: &[u8]) -> Vec<Attachment> {
-    let Some(msg) = MessageParser::default().parse(raw) else {
-        return Vec::new();
-    };
+    MessageParser::default()
+        .parse(raw)
+        .map(|msg| attachments_of(&msg))
+        .unwrap_or_default()
+}
+
+fn attachments_of(msg: &mail_parser::Message<'_>) -> Vec<Attachment> {
     msg.attachments()
         .enumerate()
         .map(|(i, part)| Attachment {
@@ -197,8 +212,23 @@ fn safe_file_name(name: Option<&str>, index: usize) -> String {
         .trim_end()
     {
         "" => format!("attachment-{index}"),
-        name => name.to_string(),
+        name => capped(name),
     }
+}
+
+/// `name` with its stem cut to `MAX_STEM` bytes and a short extension kept, so a sender's long name still fits the file
+/// system and opens with the right app.
+fn capped(name: &str) -> String {
+    let (stem, extension) = match name.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() && extension.len() <= 16 => {
+            (stem, &name[stem.len()..])
+        }
+        _ => (name, ""),
+    };
+    format!(
+        "{}{extension}",
+        stem[..stem.floor_char_boundary(MAX_STEM)].trim_end()
+    )
 }
 
 /// Bytes kept of a subject in a file name; well under the 255-byte limit of APFS and ext4, with room for " (100).eml".
@@ -475,6 +505,13 @@ JVBERi0=\r\n\
         assert_eq!(safe_file_name(Some("../.ssh/.config"), 1), "config");
         assert_eq!(safe_file_name(Some(" ..."), 4), "attachment-4");
         assert_eq!(safe_file_name(Some("report.v2.pdf"), 1), "report.v2.pdf");
+    }
+
+    #[test]
+    fn a_long_attachment_name_is_cut_before_its_extension() {
+        let name = safe_file_name(Some(&format!("{}.pdf", "é".repeat(200))), 1);
+        assert!(name.len() <= MAX_STEM + ".pdf".len(), "{}", name.len());
+        assert!(name.ends_with("é.pdf"), "{name}");
     }
 
     #[test]

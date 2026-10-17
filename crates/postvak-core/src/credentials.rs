@@ -97,7 +97,8 @@ fn run_command(account_name: &str, command: &str) -> Result<Secret, CredentialEr
             status: output.status.code().unwrap_or(-1),
         });
     }
-    let text = String::from_utf8_lossy(&output.stdout);
+    let stdout = Zeroizing::new(output.stdout);
+    let text = Zeroizing::new(String::from_utf8_lossy(&stdout).into_owned());
     let trimmed = text.trim_end_matches(['\n', '\r']);
     if trimmed.is_empty() {
         return Err(CredentialError::CommandEmpty(account_name.to_string()));

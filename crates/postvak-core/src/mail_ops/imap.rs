@@ -88,6 +88,20 @@ impl ImapOps {
         Ok((&self.rt, session))
     }
 
+    fn uid_search_sorted(&mut self, query: String) -> MailResult<Vec<u32>> {
+        let (rt, session) = self.parts()?;
+        rt.block_on(async {
+            let mut uids: Vec<u32> = session
+                .uid_search(query)
+                .await
+                .map_err(proto)?
+                .into_iter()
+                .collect();
+            uids.sort_unstable();
+            Ok(uids)
+        })
+    }
+
     #[cfg(any(test, feature = "testing"))]
     pub fn has_move(&self) -> bool {
         self.has_move
@@ -250,26 +264,11 @@ impl MailOps for ImapOps {
     }
 
     fn search_uids(&mut self, from_uid: u32) -> MailResult<Vec<u32>> {
-        let (rt, session) = self.parts()?;
-        rt.block_on(async {
-            let found = session
-                .uid_search(format!("UID {from_uid}:*"))
-                .await
-                .map_err(proto)?;
-            let mut uids: Vec<u32> = found.into_iter().collect();
-            uids.sort_unstable();
-            Ok(uids)
-        })
+        self.uid_search_sorted(format!("UID {from_uid}:*"))
     }
 
     fn search_text(&mut self, words: &[String]) -> MailResult<Vec<u32>> {
-        let (rt, session) = self.parts()?;
-        rt.block_on(async {
-            let found = session.uid_search(text_query(words)).await.map_err(proto)?;
-            let mut uids: Vec<u32> = found.into_iter().collect();
-            uids.sort_unstable();
-            Ok(uids)
-        })
+        self.uid_search_sorted(text_query(words))
     }
 
     fn fetch_envelopes(&mut self, first: u32, last: u32) -> MailResult<Vec<Envelope>> {
@@ -364,15 +363,7 @@ impl MailOps for ImapOps {
                     .await
                     .map_err(proto)?;
             } else {
-                // ponytail: another client can still flag a message between this search and the EXPUNGE.
-                let deleted = session.uid_search("DELETED").await.map_err(proto)?;
-                if deleted.iter().any(|&other| other != uid) {
-                    return Err(MailError::Protocol(format!(
-                        "refusing to expunge uid {uid}: the server lacks UIDPLUS, so EXPUNGE would also \
-                         remove {} other message(s) marked deleted in this folder",
-                        deleted.len() - usize::from(deleted.contains(&uid))
-                    )));
-                }
+                refuse_if_others_deleted(session, uid).await?;
                 let _: Vec<_> = session
                     .expunge()
                     .await
@@ -386,12 +377,18 @@ impl MailOps for ImapOps {
     }
 
     fn move_message(&mut self, uid: u32, to: &str) -> MailResult<()> {
-        let has_move = self.has_move;
+        let (has_move, has_uidplus) = (self.has_move, self.has_uidplus);
         let (rt, session) = self.parts()?;
         if has_move {
             return rt.block_on(async { session.uid_mv(uid.to_string(), to).await.map_err(proto) });
         }
-        rt.block_on(async { session.uid_copy(uid.to_string(), to).await.map_err(proto) })?;
+        rt.block_on(async {
+            // Before the copy: once copied, a refused expunge would leave the message in both folders.
+            if !has_uidplus {
+                refuse_if_others_deleted(session, uid).await?;
+            }
+            session.uid_copy(uid.to_string(), to).await.map_err(proto)
+        })?;
         self.add_flags(uid, &["\\Deleted"])?;
         self.expunge(uid)
     }
@@ -460,6 +457,21 @@ impl MailOps for ImapOps {
         self.session = Some(session);
         Ok(outcome)
     }
+}
+
+/// Without UIDPLUS only a plain EXPUNGE exists, which would also remove every other message marked deleted here.
+///
+/// ponytail: another client can still flag a message between this search and the EXPUNGE.
+async fn refuse_if_others_deleted(session: &mut ImapSession, uid: u32) -> MailResult<()> {
+    let deleted = session.uid_search("DELETED").await.map_err(proto)?;
+    let others = deleted.iter().filter(|&&other| other != uid).count();
+    if others > 0 {
+        return Err(MailError::Protocol(format!(
+            "refusing to expunge uid {uid}: the server lacks UIDPLUS, so EXPUNGE would also remove {others} other \
+             message(s) marked deleted in this folder"
+        )));
+    }
+    Ok(())
 }
 
 /// The timer loop for servers without IDLE: sleeps in short ticks so shutdown stays responsive.

@@ -13,7 +13,7 @@ use postvak_core::daemon::wire::AccountStatus;
 use postvak_core::message::{self, Attachment, HtmlBody, clean};
 use postvak_core::paths::{FileWatch, Paths};
 use postvak_core::rules::{self as rule_file, Action, RulesError};
-use postvak_core::store::{Filter, LogEntry, Message, Store, StoreError, has_flag};
+use postvak_core::store::{Filter, LogEntry, Message, Store, StoreError};
 use postvak_core::sync::{Activity, Command, Event};
 use postvak_core::unsubscribe::{self, Method};
 
@@ -154,7 +154,7 @@ fn folder_rows(
         let Some(stored) = store.message(folder, *uid)? else {
             continue;
         };
-        let was_unread = !has_flag(&stored.flags, "\\Seen");
+        let was_unread = !stored.is_seen();
         let unread = edits.iter().fold(was_unread, |unread, edit| match edit {
             Optimistic::Hidden => false,
             Optimistic::Seen(seen) => !seen,
@@ -1085,9 +1085,15 @@ impl App {
         let View::Folder { account, folder } = &self.view else {
             return false;
         };
-        self.accounts[*account].folders.iter().any(|f| {
-            &f.name == folder && matches!(f.special_use.as_deref(), Some("Drafts" | "Sent"))
-        })
+        self.has_role(*account, folder, "Drafts") || self.has_role(*account, folder, "Sent")
+    }
+
+    /// The accounts whose mail the view lists: the shown folder's, or all of them.
+    fn covered_accounts(&self) -> Vec<usize> {
+        match self.view {
+            View::Folder { account, .. } => vec![account],
+            _ => (0..self.accounts.len()).collect(),
+        }
     }
 
     /// With one account, All inboxes would only repeat its INBOX.
@@ -1136,12 +1142,9 @@ impl App {
             }
             return;
         };
-        let covered: Vec<usize> = match self.view {
-            View::Folder { account, .. } => vec![account],
-            _ => (0..self.accounts.len()).collect(),
-        };
         // A store that failed to open shows its error in the folder pane and adds no rows.
-        let stores: Vec<(usize, &Store)> = covered
+        let stores: Vec<(usize, &Store)> = self
+            .covered_accounts()
             .into_iter()
             .filter_map(|index| {
                 self.accounts[index]
@@ -1249,8 +1252,10 @@ impl App {
             return (None, Vec::new(), None);
         };
         let raw = store.raw(&key.0, key.1).ok().flatten();
-        let attachments = raw.as_deref().map(message::attachments).unwrap_or_default();
-        let html = raw.as_deref().and_then(postvak_core::message::html_body);
+        let (attachments, html) = raw
+            .as_deref()
+            .map(message::attachments_and_html)
+            .unwrap_or_default();
         (
             store.message(&key.0, key.1).ok().flatten(),
             attachments,
@@ -1824,13 +1829,14 @@ impl App {
 
     /// Asks the server of each account the search covers for the current query; the hits arrive as `ServerSearchDone`.
     fn search_server(&mut self) {
+        // A new query resets the count, so a running round is for this query; a second one would only add duplicates.
+        if self.list.server_searching > 0 {
+            return;
+        }
         let Some(query) = self.search.clone().filter(|query| !query.trim().is_empty()) else {
             return;
         };
-        let covered: Vec<usize> = match self.view {
-            View::Folder { account, .. } => vec![account],
-            _ => (0..self.accounts.len()).collect(),
-        };
+        let covered = self.covered_accounts();
         self.list.server_hits.clear();
         self.list.server_searching = 0;
         self.list.server_asked = true;
@@ -2351,6 +2357,18 @@ mod tests {
         assert!(!list::results(&driver.app).contains("searching the server"));
         driver.press("escape escape");
         assert_eq!(driver.uids(), [3, 2, 1]);
+    }
+
+    #[test]
+    fn enter_again_while_the_server_search_runs_asks_nothing_more() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1]);
+        let (mut driver, wires) = fx.driver();
+        driver.press("/ zebra");
+        driver.press("enter");
+        driver.press("enter");
+        assert_eq!(wires.sent().len(), 1);
+        assert!(list::results(&driver.app).contains("searching the server"));
     }
 
     #[test]

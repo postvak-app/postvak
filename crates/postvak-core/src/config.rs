@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::paths::write_atomic;
+use crate::paths::{read_or_empty, write_atomic};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -111,11 +111,7 @@ impl Config {
     }
 
     pub fn load(path: &Path) -> Result<Config, ConfigError> {
-        match std::fs::read_to_string(path) {
-            Ok(text) => Config::parse(&text),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Config::default()),
-            Err(e) => Err(e.into()),
-        }
+        Config::parse(&read_or_empty(path)?)
     }
 
     /// Writes the accounts and `[ui]` into the file in place: comments, untouched keys and their order stay, and a
@@ -215,12 +211,8 @@ pub fn save_theme(path: &Path, theme: Theme) -> Result<(), ConfigError> {
 }
 
 fn read_document(path: &Path) -> Result<toml_edit::DocumentMut, ConfigError> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(e.into()),
-    };
-    text.parse()
+    read_or_empty(path)?
+        .parse()
         .map_err(|e: toml_edit::TomlError| ConfigError::Parse(e.to_string()))
 }
 

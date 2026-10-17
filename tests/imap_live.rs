@@ -227,6 +227,11 @@ fn plain_expunge_refuses_while_another_message_is_marked_deleted() {
         left, uids,
         "a message another client marked deleted was expunged"
     );
+    ops.select("Archive").unwrap();
+    assert!(
+        all_envelopes(&mut ops).is_empty(),
+        "the refused move left a copy in Archive"
+    );
 }
 
 #[test]

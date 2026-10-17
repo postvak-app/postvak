@@ -239,11 +239,23 @@ pub fn parse(text: &str) -> Result<RuleFile, RulesError> {
 }
 
 pub fn load(path: &Path) -> Result<RuleFile, RulesError> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => parse(&text),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(RuleFile::default()),
-        Err(e) => Err(e.into()),
+    parse(&crate::paths::read_or_empty(path)?)
+}
+
+/// The compiled rule called `name`, or why `rules apply-existing` cannot run it. It keeps `first_seen_at` 0, which
+/// `ApplyExisting` ignores.
+pub fn enabled_rule(path: &Path, name: &str) -> Result<CompiledRule, String> {
+    let rule = compile(&load(path).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|r| r.rule.name == name)
+        .ok_or_else(|| format!("no rule named '{name}'"))?;
+    if !rule.rule.enabled {
+        return Err(format!(
+            "rule '{name}' is disabled; approve or enable it first"
+        ));
     }
+    Ok(rule)
 }
 
 #[derive(Debug, Clone)]

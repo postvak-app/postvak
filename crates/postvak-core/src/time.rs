@@ -14,6 +14,11 @@ pub fn local_time(ts: i64, format: &str) -> String {
         .unwrap_or_default()
 }
 
+/// `YYYY-MM-DD HH:MM` in local time, as the CLI and the window's Activity and Trash views show it.
+pub fn date_time(ts: i64) -> String {
+    local_time(ts, "%Y-%m-%d %H:%M")
+}
+
 /// `HH:MM` in local time.
 pub fn clock(ts: i64) -> String {
     local_time(ts, "%H:%M")
