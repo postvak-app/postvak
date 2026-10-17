@@ -15,7 +15,6 @@ directories.workspace = true
 postvak-core.workspace = true
 regex.workspace = true
 rmcp.workspace = true
-rusqlite.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -24,6 +23,7 @@ tokio.workspace = true
 [dev-dependencies]
 postvak-core = { workspace = true, features = ["testing"] }
 rmcp = { workspace = true, features = ["client", "transport-async-rw"] }  # in-process MCP client for the server tests
+rusqlite.workspace = true
 tempfile.workspace = true
 
 [lints]

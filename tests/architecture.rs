@@ -235,16 +235,15 @@ fn test_only_modules(path: &str, raw: &str) -> Vec<String> {
     out
 }
 
-/// Every crate path named in `code` after one of `roots`, relative to the crate root, with `use` groups expanded:
-/// `crate::rules::{self, Rule}` gives `rules` and `rules::Rule`.
-fn crate_paths(code: &[char], roots: &[&str]) -> Vec<(usize, String)> {
+/// Every `postvak_core` path named in `code`, relative to its root, with `use` groups expanded:
+/// `postvak_core::rules::{self, Rule}` gives `rules` and `rules::Rule`.
+fn core_paths(code: &[char]) -> Vec<(usize, String)> {
+    const ROOT: &str = "postvak_core::";
     let mut out = Vec::new();
-    for root in roots {
-        for at in find_tokens(code, root) {
-            let mut paths = Vec::new();
-            use_tree(code, at + root.chars().count(), String::new(), &mut paths);
-            out.extend(paths.into_iter().map(|p| (at, p)));
-        }
+    for at in find_tokens(code, ROOT) {
+        let mut paths = Vec::new();
+        use_tree(code, at + ROOT.len(), String::new(), &mut paths);
+        out.extend(paths.into_iter().map(|p| (at, p)));
     }
     out
 }
@@ -315,7 +314,7 @@ fn check_mcp(source: &Source) -> Vec<String> {
         return Vec::new();
     }
     let mut out = Vec::new();
-    for (at, path) in crate_paths(&source.code, &["postvak_core::"]) {
+    for (at, path) in core_paths(&source.code) {
         let segments: Vec<&str> = path.split("::").collect();
         let allowed = match segments.as_slice() {
             ["store" | "daemon", ..] => false,
@@ -326,9 +325,6 @@ fn check_mcp(source: &Source) -> Vec<String> {
         if !allowed {
             out.push(source.violation(at, RULE, &format!("names `{path}`; go through `Backend`")));
         }
-    }
-    for at in find_tokens(&source.code, "rusqlite") {
-        out.push(source.violation(at, RULE, "uses rusqlite; go through `Backend`"));
     }
     out
 }
@@ -426,7 +422,7 @@ fn check_gui_views(source: &Source) -> Vec<String> {
             "uses the daemon client; return a `UiAction` instead",
         ));
     }
-    for (at, path) in crate_paths(&source.code, &["postvak_core::"]) {
+    for (at, path) in core_paths(&source.code) {
         if path.starts_with("daemon") || path.starts_with("rules::edit") {
             out.push(source.violation(
                 at,
@@ -468,7 +464,10 @@ fn module_ownership_rules_from_agents_md_hold() {
     let mut files = Vec::new();
     rust_files(&root.join("src"), &mut files);
     for krate in std::fs::read_dir(root.join("crates")).unwrap() {
-        rust_files(&krate.unwrap().path().join("src"), &mut files);
+        let src = krate.unwrap().path().join("src");
+        if src.is_dir() {
+            rust_files(&src, &mut files);
+        }
     }
     files.sort();
     let sources: Vec<(String, String)> = files
@@ -536,7 +535,6 @@ mod checks_fire {
             "fn f() { postvak_core::rules::load(p); }",
             "use postvak_core::rules::edit;",
             "use postvak_core::{rules::{self as r}, config};",
-            "fn f(c: rusqlite::Connection) {}",
         ] {
             let found = violations("crates/postvak-mcp/src/tools.rs", &format!("\n{bad}\n"));
             assert_eq!(found.len(), 1, "{bad}: {found:?}");

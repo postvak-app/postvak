@@ -26,7 +26,6 @@ html5ever.workspace = true
 log.workspace = true
 percent-encoding.workspace = true
 postvak-core.workspace = true
-rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 slint.workspace = true
@@ -47,6 +46,7 @@ i-slint-backend-testing.workspace = true
 png.workspace = true
 postvak-core = { workspace = true, features = ["testing"] }
 proptest.workspace = true
+rusqlite.workspace = true
 tempfile.workspace = true
 
 [package.metadata.cargo-machete]

@@ -1,5 +1,5 @@
 //! An in-process daemon on a temp home and a raw line client, shared by the daemon, client and MCP tests.
-// Test harness, compiled only for tests: unwrap, expect and panic are how a test fails.
+// Test harness, built for tests and the `testing` feature: unwrap, expect and panic are how a test fails.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::io::{BufRead, BufReader, Lines};
 use std::os::unix::net::UnixStream;

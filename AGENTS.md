@@ -3,7 +3,7 @@
 Spec: `docs/superpowers/specs/2026-10-06-postvak-core-design.md`. Read it before changing behaviour.
 
 ## Module map
-Four crates in one workspace. `crates/postvak-core` holds every module below except `gui`, `update`, `mcp` and `main` + `cli/`; `crates/postvak-gui` holds `gui` (its crate root) and `update`; `crates/postvak-mcp` holds `mcp`; the root crate `postvak` is the binary, whose `gui` and `mcp` features turn the front-end crates on. Below the front ends nothing depends on Slint, Blitz or rmcp. A published crate cannot reach files outside its directory, so what one embeds from `assets/` or `docs/src/` is a symlink inside it (`crates/postvak-gui/assets/`, `crates/postvak-core/src/agent-guide.md`).
+Four crates in one workspace. `crates/postvak-core` holds every module below except `gui`, `update`, `mcp` and `main` + `cli/`; `crates/postvak-gui` holds `gui` (its crate root) and `update`; `crates/postvak-mcp` holds `mcp`; the root crate `postvak` is the binary, whose `gui` and `mcp` features turn the front-end crates on. Below the front ends nothing depends on Slint, Blitz or rmcp, and only `postvak-core` depends on rusqlite (the front ends only in tests), so nothing else can open a store. A published crate cannot reach files outside its directory, so what one embeds from `assets/` or `docs/src/` is a symlink inside it (`crates/postvak-gui/assets/`, `crates/postvak-core/src/agent-guide.md`).
 
 - `actions` direct actions on chosen messages (mark, move, archive, delete); same `apply` as rules
 - `config` accounts and identity (address + aliases)
@@ -13,7 +13,7 @@ Four crates in one workspace. `crates/postvak-core` holds every module below exc
 - `gui` the Slint window (`postvak-gui`, feature `gui`, on by default), which talks to the daemon through `daemon::Client`: `state` holds the state and is the only code that changes it; `ui/*.slint` draws; `bind` shows the state in the window and turns its callbacks into `UiAction`s, with `rows` the lazy models (list rows, HTML strips); `list`, `folders`, `body`, `status`, `toolbar`, `menu`, `rules` and `keys` word what the views show without a toolkit; `persist` is `window.json`; tests use `test_support::Fixture` with `Driver` (the state, keys and a clock) or `Fixture::window()` (the real window under Slint's testing backend), and `snapshots` compares the views with `tests/snapshots/*.png`; `html` is the HTML body view, with its render thread (`html/render.rs`, Blitz) the net provider that serves `cid:`, `data:` and downloaded remote content from memory (`html/net.rs`), and the downloads the user asks for (`html/fetch.rs`, public hosts only, never logged); layout follows one grid, `Theme` in `ui/theme.slint` (kept equal to `theme.rs` by a test): rows `row` (24), icon buttons `control` (28), content `inset` (16) from a pane's edge and `pad` (8) inside a row, so use those rather than literal sizes
 - `help` help texts shared by the CLI and the MCP tool descriptions
 - `mail_ops` `MailOps` trait; `imap.rs` is the real client; `RecordingOps` is the test fake
-- `main` + `cli/` clap only; no logic; the binary does not depend on rusqlite, so it cannot open the store itself
+- `main` + `cli/` clap only; no logic
 - `mcp` the MCP server (`postvak-mcp`, feature `mcp`, on by default): `tools` defines the tools and their scopes, `backend` is the only code touching store, rules or the daemon, `install` registers hosts
 - `message` header parsing, thread id, body text, the HTML part and its `cid:` images
 - `notify` desktop notifications for new mail

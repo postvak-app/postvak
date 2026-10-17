@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/*"]
-# Plain `cargo test`, `clippy` and `check` at the root cover every crate, as they did before the split.
+# Plain `cargo test`, `clippy` and `check` at the root cover every crate.
 default-members = [".", "crates/*"]
 resolver = "3"
 
@@ -129,7 +129,7 @@ testing = ["postvak-core/testing"]                   # exposes RecordingOps and 
 
 [[test]]
 name = "imap_live"
-required-features = ["mcp", "testing"]               # drives sync::run_once, sync_all and the MCP backend against Dovecot
+required-features = ["testing"]                      # drives sync::run_once and sync_all against Dovecot
 
 [profile.dev.package."*"]
 opt-level = 2
