@@ -41,10 +41,10 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           changed() { git diff --name-only "$1" HEAD; }
-          # Paths no build or test reads. docs/src, README.md and the .desktop file are read by tests, so they still build.
+          # Paths no build or test reads. docs/src, README.md and the .desktop file are read by tests, and ci.yml is this workflow, so they still build.
           only_unread() {
-            ! grep -qE '^(docs/src/|README\.md$|packaging/.*\.desktop$)' <<<"$1" &&
-              ! grep -qvE '^(docs/|packaging/|LICENSE|[^/]+\.md$)' <<<"$1"
+            ! grep -qE '^(\.github/workflows/ci\.yml$|docs/src/|packaging/.*\.desktop$|README\.md$)' <<<"$1" &&
+              ! grep -qvE '^(\.coderabbit\.yaml$|\.github/|\.mise\.toml$|dist-workspace\.toml$|docs/|LICENSE|packaging/|release-plz\.toml$|[^/]+\.md$)' <<<"$1"
           }
           build=true
           case "$EVENT" in
