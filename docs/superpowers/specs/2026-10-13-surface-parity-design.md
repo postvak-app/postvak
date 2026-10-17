@@ -29,7 +29,7 @@ One rule violation: `postvak account add` opens its own IMAP connection to test 
 
 ## Library
 
-New module `src/account.rs`, the only code that adds an account:
+New module `account` in `postvak-core` (`crates/postvak-core/src/account.rs`), the only code that adds an account:
 
 ```rust
 pub fn add(config: &mut Config, paths: &Paths, account: AccountConfig, secret: Option<Secret>) -> Result<(), AddError>

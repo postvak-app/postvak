@@ -2,6 +2,8 @@
 
 > **GUI toolkit (2026-10-13):** the GUI steps below were written for egui, which the Slint rewrite (`2026-10-13-slint-gui.md`, design `../specs/2026-10-13-postvak-slint-gui-design.md`) replaces. Redo them against `gui/state.rs`, `bind.rs` and `ui/*.slint` before executing; the non-GUI steps stand.
 
+> **Workspace (2026-10-18, #174):** the code is now four crates. Read a core path `src/<module>…` as `crates/postvak-core/src/<module>…`, `src/gui/…` as `crates/postvak-gui/src/…` and `src/mcp/…` as `crates/postvak-mcp/src/…` (each `mod.rs` there is now the crate's `lib.rs`), and `migrations/`, `tests/fuzz.rs`, `tests/sync_model.rs` and `tests/known_bugs.rs` as under `crates/postvak-core/`. `src/main.rs`, `src/cli/` and the other `tests/` stay at the root, and `src/<page>.md` means `docs/src/<page>.md`. In the GUI and MCP crates `crate::<core module>` is `postvak_core::<core module>`. A new dependency goes in the root `[workspace.dependencies]` with its reason; run one crate's tests with `-p <crate>`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A regex tester dialog in the Rules view: type a pattern, see at once whether it is valid and which cached subjects, senders, recipients, bodies or lines of your own text it matches, with the matched part highlighted, then put it into the rule being edited.

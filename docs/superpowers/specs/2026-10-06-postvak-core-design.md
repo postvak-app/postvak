@@ -48,10 +48,10 @@ The IMAP crate choice amends the "sync core" decision slightly: async lives only
 
 ## 4. Architecture
 
-One Cargo package `postvak`, edition 2024, `rust-version` pinned in `rust-toolchain.toml` and `.mise.toml`.
+One Cargo workspace, edition 2024, `rust-version` pinned in `rust-toolchain.toml` and `.mise.toml`. The core below is the crate `postvak-core` in `crates/postvak-core`; the GUI (`crates/postvak-gui`) and the MCP server (`crates/postvak-mcp`) are crates on top of it, and the root crate `postvak` is the binary (`src/main.rs` + `src/cli/`), whose `gui` and `mcp` features turn those crates on. All four publish with one version and one tag.
 
 ```
-src/
+crates/postvak-core/src/
   lib.rs            pub mod for everything below
   paths.rs          ProjectDirs split into config/state/cache; `Paths::under(root)` for tests
   config.rs         accounts: load config.toml
@@ -64,12 +64,12 @@ src/
   mail_ops.rs       trait MailOps + ImapOps (async-imap) + RecordingOps (cfg(test))
   sync.rs           per-account loop: sync folders, run rules, IDLE
   trash.rs          write .eml before delete, list, restore, purge
-  main.rs           clap CLI, thin: parse args, call lib, print
-migrations/
+crates/postvak-core/migrations/
   001-initial/up.sql
+src/main.rs         clap CLI, thin: parse args, call lib, print
 ```
 
-The library is the API boundary. The GUI, MCP server and daemon later consume `postvak::*` and never reach into SQLite or IMAP directly.
+The library is the API boundary. The GUI, MCP server and CLI consume `postvak_core::*` and never reach into SQLite or IMAP directly; only `postvak-core` depends on rusqlite.
 
 ## 5. Configuration
 
@@ -186,7 +186,7 @@ CREATE TABLE rule_log (
 );
 ```
 
-Migrations are numbered SQL files under `migrations/`, embedded with `include_dir`, applied by `rusqlite_migration` on open using `user_version`. Every account file runs the same migrations. Rows map to structs via `serde_rusqlite`.
+Migrations are numbered SQL files under `crates/postvak-core/migrations/`, embedded with `include_dir`, applied by `rusqlite_migration` on open using `user_version`. Every account file runs the same migrations. Rows map to structs via `serde_rusqlite`.
 
 Threading: on insert, `thread_id` is the first id in `References` if present, else `In-Reply-To`, else the own `message_id`. When a message arrives whose `message_id` is some existing row's `thread_id` ancestor, nothing is rewritten; threads are keyed on the root id, which is stable. Messages without a `message_id` get a synthetic `<uid>@<folder>.postvak` id.
 
@@ -319,7 +319,7 @@ Plain text, one record per line, so it pipes into grep and fzf. `--json` output 
 ## 14. Repo conventions and CI
 
 - `rust-toolchain.toml` with `channel`, `rustfmt`, `clippy`; `.mise.toml` pinning the same Rust.
-- `Cargo.toml`: every dependency has a one-line comment stating why. Dev profile: `[profile.dev.package."*"] opt-level = 2`. Release: `lto = "thin"`, `codegen-units = 1`, `strip = true`.
+- `Cargo.toml`: every dependency is declared once in `[workspace.dependencies]` with a one-line comment stating why, and lints once in `[workspace.lints]`. Dev profile: `[profile.dev.package."*"] opt-level = 2`. Release: `lto = "thin"`, `codegen-units = 1`, `strip = true`.
 - Build speed: dependency weight is watched with `cargo build --timings` and `cargo-machete` in CI. `.mise.toml` installs kache. Each developer runs `kache init` once, which makes it the `RUSTC_WRAPPER` in their own Cargo config: compiler outputs are content-addressed and shared across git worktrees, restored with reflinks on APFS, so a fresh worktree starts warm. No mold: Rust's default linker on x86_64 Linux has been lld since 1.90. CI uses `kunobi-ninja/kache-action` through the GitHub cache service, plus `Swatinem/rust-cache` for the registry and git deps only, both saving on pushes to `main`. Edit loop is `cargo check` and `cargo nextest`.
 - `AGENTS.md`: module map, definition of done (fmt, clippy -D warnings, tests, platform coverage reported honestly), one privacy rule: agents never read message bodies from a user's store, and never log bodies or secrets. `CLAUDE.md` is one line pointing to it.
 - GitHub Actions `ci.yml`: fmt, clippy `-D warnings`, `cargo-machete` and `cargo audit` on Ubuntu, and tests on `ubuntu-latest` and `macos-latest`. The Ubuntu test job starts `tests/dovecot/compose.yml` for the live IMAP tests; a compose step rather than a service container, so CI and local runs share one config. Concurrency with cancel-in-progress, `permissions: contents: read`.
@@ -331,7 +331,7 @@ Dependencies for phase 1: `anyhow`, `async-imap` (runtime-tokio), `clap` (derive
 
 Two tools, both driven by conventional commits and tags, no hand-written release scripts.
 
-**release-plz** runs on every push to `main`. It keeps a release PR open that bumps `Cargo.toml`, updates `CHANGELOG.md` from conventional commits, and when merged, tags `vX.Y.Z` and publishes to crates.io. Publishing uses crates.io trusted publishing (OIDC from GitHub Actions), so no API token is stored. `cargo install postvak` and `mise use cargo:postvak` work from that moment.
+**release-plz** runs on every push to `main`. It keeps a release PR open that bumps the workspace version (all four crates move together), updates `CHANGELOG.md` from conventional commits, and when merged, tags `vX.Y.Z` and publishes to crates.io. Publishing uses crates.io trusted publishing (OIDC from GitHub Actions), so no API token is stored. `cargo install postvak` and `mise use cargo:postvak` work from that moment.
 
 release-plz does not create the GitHub release (`git_release_enable = false`); dist does, from the tag. release-plz pushes with a `RELEASE_PLZ_TOKEN` fine-grained token, because tags and PRs created with the default `GITHUB_TOKEN` start no other workflows. The package `include` list keeps tests, the test CA and the design docs out of the published crate.
 
@@ -370,7 +370,7 @@ docs/
 ```
 
 Rules for keeping it truthful:
-- `postvak guide` is `include_str!("../docs/src/agent-guide.md")`. The binary and the site can't drift.
+- `postvak guide` and the MCP server print `help::AGENT_GUIDE`, an `include_str!` of `crates/postvak-core/src/agent-guide.md`, which is a symlink to `docs/src/agent-guide.md`. The binary and the site can't drift.
 - `README.md` is `docs/src/index.md` plus badges; a CI check diffs them.
 - Every ```toml block in `index.md`, `rules.md` and `accounts.md` is extracted by a test and run through the rules or config parser, and the JSON proposal examples in `agent-guide.md` through the rule validator. A broken example fails the build.
 - `cli.md` is regenerated in CI from `--help` output and the job fails on a diff, so flag changes force a docs commit.
