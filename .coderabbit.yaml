@@ -13,12 +13,12 @@ reviews:
   path_instructions:
     - path: "Cargo.toml"
       instructions: "Every dependency needs a one-line trailing comment giving the reason for it."
-    - path: "migrations/**"
+    - path: "crates/postvak-core/migrations/**"
       instructions: >-
         Migrations are applied once per store via SQLite user_version, so editing an existing migration
         never reaches existing users. Flag any change to an existing migration; changes belong in a new
         numbered migration.
-    - path: "src/**"
+    - path: "{src,crates/*/src}/**"
       instructions: >-
         Never log or print message bodies, passwords or tokens. Secrets must stay in the Secret type,
         which has no Debug impl.

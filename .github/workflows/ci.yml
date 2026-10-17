@@ -53,7 +53,7 @@ jobs:
             push)
               # The merge queue already ran CI on this commit. Build anyway when the dependencies change, so main's caches stay current.
               passed=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$SHA&event=merge_group&status=success" --jq .total_count)
-              if [ "$passed" -gt 0 ] && ! grep -qE '^(Cargo\.(lock|toml)|rust-toolchain\.toml)$' <<<"$(changed "$BEFORE")"; then
+              if [ "$passed" -gt 0 ] && ! grep -qE '^((crates/[^/]+/)?Cargo\.toml|Cargo\.lock|rust-toolchain\.toml)$' <<<"$(changed "$BEFORE")"; then
                 build=false
               fi
               ;;
