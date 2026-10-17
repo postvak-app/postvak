@@ -226,7 +226,7 @@ enum Command {
     /// Serve Postvak to an agent host over MCP on stdio; hosts start this, see `postvak mcp install`
     #[command(args_conflicts_with_subcommands = true)]
     Mcp {
-        /// Comma-separated: read, read:bodies, rules:propose, rules:write, mail:modify
+        /// Comma-separated: read, read:bodies, rules:propose, rules:write, files:write, mail:modify
         #[arg(long, default_value = postvak_core::help::MCP_DEFAULT_SCOPES)]
         scopes: String,
         /// Only this account; repeatable; default every account
@@ -270,7 +270,7 @@ enum McpCommand {
     Install {
         #[arg(value_enum)]
         target: InstallTarget,
-        /// Comma-separated: read, read:bodies, rules:propose, rules:write, mail:modify
+        /// Comma-separated: read, read:bodies, rules:propose, rules:write, files:write, mail:modify
         #[arg(long, default_value = postvak_core::help::MCP_DEFAULT_SCOPES)]
         scopes: String,
         /// Only this account; repeatable; default every account

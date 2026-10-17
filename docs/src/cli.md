@@ -685,7 +685,7 @@ Serve Postvak to an agent host over MCP on stdio; hosts start this, see `postvak
 
 ###### **Options:**
 
-* `--scopes <SCOPES>` — Comma-separated: read, read:bodies, rules:propose, rules:write, mail:modify
+* `--scopes <SCOPES>` — Comma-separated: read, read:bodies, rules:propose, rules:write, files:write, mail:modify
 
   Default value: `read,rules:propose`
 * `--account <ACCOUNT>` — Only this account; repeatable; default every account
@@ -707,7 +707,7 @@ Register `postvak mcp` with an agent host; re-run it to change the scopes
 
 ###### **Options:**
 
-* `--scopes <SCOPES>` — Comma-separated: read, read:bodies, rules:propose, rules:write, mail:modify
+* `--scopes <SCOPES>` — Comma-separated: read, read:bodies, rules:propose, rules:write, files:write, mail:modify
 
   Default value: `read,rules:propose`
 * `--account <ACCOUNT>` — Only this account; repeatable; default every account

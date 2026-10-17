@@ -166,6 +166,13 @@ pub(super) fn error_text(result: &CallToolResult) -> String {
 }
 
 #[test]
+fn files_write_is_a_scope_outside_the_default_set() {
+    let defaults = parse_scopes(postvak_core::help::MCP_DEFAULT_SCOPES).unwrap();
+    assert!(!defaults.iter().any(|scope| scope.as_str() == "files:write"));
+    assert!(parse_scopes("files:write").is_ok());
+}
+
+#[test]
 fn scopes_parse_and_unknown_ones_name_the_valid_ones() {
     let scopes = parse_scopes("read, rules:propose").unwrap();
     assert_eq!(scopes.len(), 2);
@@ -609,7 +616,7 @@ async fn attachment_save_writes_the_file_and_returns_its_path() {
     add_attached(&fx, "work", 1);
     let dir = fx.paths.cache_dir.join("saved");
     std::fs::create_dir_all(&dir).unwrap();
-    let client = connect(&fx, "read:bodies", &[]).await;
+    let client = connect(&fx, "files:write", &[]).await;
     let report = call(
         &client,
         "attachment_save",
@@ -627,7 +634,7 @@ async fn attachment_save_writes_the_file_and_returns_its_path() {
 async fn attachment_save_needs_an_absolute_dir() {
     let fx = fixture(&["work"]);
     add_attached(&fx, "work", 1);
-    let client = connect(&fx, "read:bodies", &[]).await;
+    let client = connect(&fx, "files:write", &[]).await;
     let relative = call(
         &client,
         "attachment_save",
@@ -710,7 +717,7 @@ fn wrap_body_cuts_inside_a_multibyte_character_without_panicking() {
 #[tokio::test]
 async fn tools_list_per_scope_set_is_exact_and_alphabetical() {
     let fx = fixture(&["work"]);
-    let cases: [(&str, &[&str]); 4] = [
+    let cases: [(&str, &[&str]); 5] = [
         (
             "read,rules:propose",
             &[
@@ -729,7 +736,8 @@ async fn tools_list_per_scope_set_is_exact_and_alphabetical() {
                 "trash_list",
             ],
         ),
-        ("read:bodies", &["attachment_save", "attachments", "show"]),
+        ("files:write", &["attachment_save"]),
+        ("read:bodies", &["attachments", "show"]),
         (
             "rules:write",
             &["rules_approve", "rules_reject", "rules_set_enabled"],
@@ -765,7 +773,7 @@ async fn annotations_mark_reads_and_destructive_tools() {
     let fx = fixture(&["work"]);
     let client = connect(
         &fx,
-        "read,read:bodies,rules:propose,rules:write,mail:modify",
+        "read,read:bodies,rules:propose,rules:write,files:write,mail:modify",
         &[],
     )
     .await;

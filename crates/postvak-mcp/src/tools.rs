@@ -317,7 +317,7 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
         ToolDef::new::<SelectionArgs>("archive", Scope::MailModify, Effect::Changes, help::ARCHIVE),
         ToolDef::new::<AttachmentSaveArgs>(
             "attachment_save",
-            Scope::ReadBodies,
+            Scope::FilesWrite,
             Effect::Changes,
             help::ATTACHMENT_SAVE,
         ),

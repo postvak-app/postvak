@@ -20,6 +20,7 @@ use postvak_core::paths::Paths;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Scope {
+    FilesWrite,
     MailModify,
     Read,
     ReadBodies,
@@ -28,16 +29,18 @@ pub enum Scope {
 }
 
 impl Scope {
-    pub const ALL: [Scope; 5] = [
+    pub const ALL: [Scope; 6] = [
         Scope::Read,
         Scope::ReadBodies,
         Scope::RulesPropose,
         Scope::RulesWrite,
+        Scope::FilesWrite,
         Scope::MailModify,
     ];
 
     pub fn as_str(self) -> &'static str {
         match self {
+            Scope::FilesWrite => "files:write",
             Scope::MailModify => "mail:modify",
             Scope::Read => "read",
             Scope::ReadBodies => "read:bodies",

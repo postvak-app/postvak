@@ -53,9 +53,10 @@ The install also prints a hint with the granted scopes and how to widen them. It
 | Scope | What it grants | Tools |
 |---|---|---|
 | `read` | Folders, message headers, the activity log, rules and trash listings, previews of rules that do not match on the body, and a sync. No body text. | `accounts`, `folders`, `list`, `log`, `rules_check`, `rules_list`, `rules_schema`, `rules_test`, `search`, `status`, `sync`, `trash_list` |
-| `read:bodies` | Message bodies and attachment names, search over stored bodies and on the server (`search` with `server`), and with `read` previews of rules that match on the body. | `attachment_save`, `attachments`, `show` |
+| `read:bodies` | Message bodies and attachment names, search over stored bodies and on the server (`search` with `server`), and with `read` previews of rules that match on the body. | `attachments`, `show` |
 | `rules:propose` | Proposing a rule. It is stored disabled until you approve it. | `rules_propose` |
 | `rules:write` | Approving and rejecting rules, and turning them on or off. | `rules_approve`, `rules_reject`, `rules_set_enabled` |
+| `files:write` | Writing attachment files into a directory the agent names. The file name and content come from the sender, so a prompt-injected email could make the agent write them anywhere you can. | `attachment_save` |
 | `mail:modify` | Acting on mail and restoring from the trash. | `archive`, `delete`, `junk`, `mark`, `move`, `trash_restore`, `unsubscribe` |
 
 The default is `read,rules:propose`. Three example grants:
@@ -64,7 +65,7 @@ The default is `read,rules:propose`. Three example grants:
 - Rule author: the default. The agent proposes, you approve in the window or with `postvak rules approve`.
 - Inbox assistant: `--scopes read,read:bodies,rules:propose,mail:modify`.
 
-`rules:write` lets the agent approve its own rules, and an approved rule can delete mail. Leave it off.
+`rules:write` lets the agent approve its own rules, and an approved rule can delete mail. Leave it off. `files:write` lets the agent write attachment files into any directory it names; leave it off too unless you need it.
 
 ## Tools
 
@@ -89,13 +90,16 @@ The names follow the CLI commands. A tool that lists things returns the CLI's `-
 
 `read:bodies`:
 
-- `attachment_save` saves attachment `n` into `dir`, an absolute path of an existing directory, and returns the written `path`. It fetches the message once if it is not stored yet.
 - `attachments` lists attachment names, types and sizes. It does not save them; use `attachment_save` for that.
 - `show` returns the headers and the body. With this scope, `search` also covers stored bodies, in FTS5 syntax. `search` and `dry_run` never connect to the server. `show` and `attachments` fetch a message you have not stored yet, once.
 
 `rules:propose`:
 
 - `rules_propose` stores a rule disabled, with `proposed_by` set to `mcp:<client name>`, or `mcp` when the host sends no name. A rule scoped to an account the server hides is refused. While `--account` hides an account, a rule without `account` gets the only visible account, or is refused when several are visible.
+
+`files:write`:
+
+- `attachment_save` saves attachment `n` into `dir`, an absolute path of an existing directory, and returns the written `path`. It fetches the message once if it is not stored yet.
 
 `rules:write`:
 
