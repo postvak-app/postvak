@@ -3,9 +3,9 @@ name: CodeQL
 on:
   push:
     branches: [main]
-    paths-ignore: ["docs/**", "packaging/**", "**/*.md", "LICENSE*"]
+    paths-ignore: [".coderabbit.yaml", ".mise.toml", "**/*.md", "LICENSE*", "dist-workspace.toml", "docs/**", "packaging/**", "release-plz.toml"]
   pull_request:
-    paths-ignore: ["docs/**", "packaging/**", "**/*.md", "LICENSE*"]
+    paths-ignore: [".coderabbit.yaml", ".mise.toml", "**/*.md", "LICENSE*", "dist-workspace.toml", "docs/**", "packaging/**", "release-plz.toml"]
   schedule:
     - cron: "17 4 * * 1"
 
