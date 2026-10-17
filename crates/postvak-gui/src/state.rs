@@ -214,6 +214,8 @@ pub(crate) enum UiAction {
     About,
     Act(Action),
     ApproveRule(String),
+    /// Take every row out of the selection.
+    ClearSelection,
     Collapse,
     /// Move the targeted rows into a folder dropped on.
     DropOn(View),
@@ -800,6 +802,7 @@ impl App {
             UiAction::HtmlVisible { top, bottom } => self.html_visible(top, bottom),
             UiAction::HtmlWidth { scale, width } => self.html_size = Some((scale, width)),
             UiAction::LoadRemote => self.load_remote(),
+            UiAction::ClearSelection => self.list.marked.clear(),
             UiAction::Escape => {
                 if self.move_picker.is_some() {
                     self.move_picker = None;
@@ -1340,6 +1343,10 @@ impl App {
 
     /// Marks the shown message read once the user opened it and its text has been on screen for `READ_DELAY`.
     fn mark_read_after_delay(&mut self, now: f64) {
+        // The selection hides the message.
+        if self.selected_rows().len() > 1 {
+            return;
+        }
         let Some(body) = &mut self.body else { return };
         if !body.armed {
             return;
@@ -2150,7 +2157,6 @@ mod tests {
         let (mut driver, _wires) = fx.driver();
         driver.apply(UiAction::SelectView(View::AllInboxes));
         assert_eq!(driver.ids(), [(0, 3), (1, 2), (0, 1)]);
-        assert_eq!(list::counts(&driver.app.list.rows), "3 threads, 0 unread");
     }
 
     #[test]

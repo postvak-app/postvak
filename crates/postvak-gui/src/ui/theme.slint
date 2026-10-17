@@ -49,13 +49,21 @@ export global Theme {
     out property <Palette> frame: dark ? frame-night : frame-day;
 
     out property <length> control: 28px;
+    // The message actions, the list's filter button and the search field: a little larger than `control`.
+    out property <length> action: control + pad;
     out property <length> top-bar: 40px;
     out property <length> row: 24px;
-    // A message in the list: the sender and date, then the subject.
-    out property <length> list-row: 2 * row + pad / 2;
+    // A folder in the folder pane.
+    out property <length> folder-row: row + pad;
+    // A message in the list: the sender and date, then the subject, with half a row of room around them.
+    out property <length> list-row: 3 * row;
     out property <length> pad: 8px;
     out property <length> inset: 2 * pad;
     out property <length> icon: 16px;
+    // The glyphs of folders and of `action` buttons.
+    out property <length> large-icon: icon + pad / 4;
+    // The sender's avatar in the reader.
+    out property <length> avatar: 5 * pad;
     out property <length> glyph: (control - icon) / 2;
     out property <length> radius: 10px;
     // How long a hover background takes to fade in or out; selection and presses change at once.
@@ -65,16 +73,20 @@ export global Theme {
     // How long a message that arrives while the window is open takes to fade in.
     out property <duration> arrive-fade: 150ms;
 
-    // Type sizes: secondary labels, the interface, the message text, pane headings, the reader's subject.
+    // Type sizes: secondary labels, the interface, the message text, pane headings, the list's title, the reader's subject.
     out property <length> small-size: 12px;
     out property <length> text-size: 13px;
     out property <length> reading-size: 15px;
     out property <length> heading-size: 19px;
     out property <length> title-size: 22px;
+    out property <length> subject-size: 28px;
     out property <string> text-font: "Hanken Grotesk";
     out property <string> serif-font: "Newsreader";
     out property <string> mono-font: "Spline Sans Mono";
     out property <string> icon-font: "Phosphor";
+
+    // Avatar fills, picked per sender by `avatar::tint`; `pane.heading` is drawn on them.
+    out property <[color]> avatars: dark ? [#5a1f25, #4f3d1f, #2f3f2a, #263b3d, #3a2f48, #4a2a33] : [#e6cfc2, #e9dcc0, #d6dfc8, #cfdcdc, #d8d2e2, #ecd3cf];
 
     out property <Palette> paper: {
         accent: #9a4a1c,

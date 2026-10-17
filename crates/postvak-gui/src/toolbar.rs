@@ -1,19 +1,21 @@
-//! The toolbar without a toolkit: its action buttons, their names and hints, and when they are enabled. The window
-//! draws them beside the wordmark, with the search button on the right.
+//! The message actions without a toolkit: their buttons, names, hints and labels, and when they are enabled. The window
+//! draws them at the top of the reading pane, with their labels while several messages are selected.
 use postvak_core::rules::Action;
 
 use super::icons;
 use super::state::{App, UiAction, View};
 
-/// An icon button: its glyph, its accessible name, its hover hint and what a click does.
+/// An icon button: its glyph, its accessible name, its hover hint, the label it shows for a selection, and what a click
+/// does.
 pub(crate) struct Button {
     pub icon: &'static str,
     pub name: &'static str,
     pub hint: &'static str,
+    pub label: &'static str,
     pub action: UiAction,
 }
 
-/// The hover hint of the search button.
+/// The hover hint of the search field.
 pub(crate) const SEARCH_HINT: &str = "Search · /";
 
 /// The message actions, left to right. In the Archive folder the archive button moves back to the inbox, and in the
@@ -21,29 +23,37 @@ pub(crate) const SEARCH_HINT: &str = "Search · /";
 pub(crate) fn buttons(app: &App) -> [Button; 6] {
     let in_archive =
         matches!(&app.view, View::Folder { account, folder } if app.is_archive(*account, folder));
-    let (icon, name, hint) = if in_archive {
-        (icons::INBOX, "Unarchive message", "Move to inbox · e")
+    let (icon, name, hint, label) = if in_archive {
+        (
+            icons::INBOX,
+            "Unarchive message",
+            "Move to inbox · e",
+            "Unarchive",
+        )
     } else {
-        (icons::ARCHIVE, "Archive message", "Archive · e")
+        (icons::ARCHIVE, "Archive message", "Archive · e", "Archive")
     };
-    let button = |icon, name, hint, action| Button {
+    let button = |icon, name, hint, label, action| Button {
         icon,
         name,
         hint,
+        label,
         action,
     };
     [
-        button(icon, name, hint, UiAction::Act(Action::Archive)),
+        button(icon, name, hint, label, UiAction::Act(Action::Archive)),
         button(
             icons::MOVE,
             "Move message",
             "Move · m",
+            "Move…",
             UiAction::OpenMovePicker,
         ),
         button(
             icons::TRASH,
             "Delete message",
             "Delete · #",
+            "Delete",
             UiAction::Act(Action::Trash),
         ),
         junk_button(app),
@@ -51,27 +61,30 @@ pub(crate) fn buttons(app: &App) -> [Button; 6] {
             icons::FLAG,
             "Flag message",
             "Flag · s",
+            "Flag",
             UiAction::ToggleFlag,
         ),
         button(
             icons::MARK_UNREAD,
             "Mark read or unread",
             "Read or unread · u",
+            "Read/unread",
             UiAction::ToggleRead,
         ),
     ]
 }
 
 fn junk_button(app: &App) -> Button {
-    let (icon, name, hint) = if app.shows_junk() {
-        (icons::INBOX, "Not junk message", "Not junk · !")
+    let (icon, name, hint, label) = if app.shows_junk() {
+        (icons::INBOX, "Not junk message", "Not junk · !", "Not junk")
     } else {
-        (icons::JUNK, "Junk message", "Junk · !")
+        (icons::JUNK, "Junk message", "Junk · !", "Junk")
     };
     Button {
         icon,
         name,
         hint,
+        label,
         action: UiAction::Act(Action::Junk),
     }
 }

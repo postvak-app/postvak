@@ -1,5 +1,6 @@
-//! The status bar without a toolkit: a line per account from its error or latest activity, its progress, the mark
-//! before it, the sync button's hint and the version About shows. The window draws the bar and the history window.
+//! The status line without a toolkit: a line per account from its error or latest activity, its progress, the mark
+//! before it, which line the folder pane shows, the sync button's hint and the version About shows. The window draws
+//! the line and the history window.
 use postvak_core::sync::Activity;
 
 use super::state::{Account, App};
@@ -29,6 +30,29 @@ pub(crate) fn lines(app: &App) -> Vec<Line> {
         progress: account.activity.as_ref().and_then(progress),
     });
     error.chain(accounts).collect()
+}
+
+/// The one line the folder pane has room for: a failure first, then an account offline, then one syncing, else the
+/// first account's.
+pub(crate) fn summary(app: &App) -> Line {
+    let urgency = |line: &Line| match (line.failed, line.dot) {
+        (true, _) => 0,
+        (false, Some(Dot::Offline)) => 1,
+        (false, None) => 2,
+        (false, _) => 3,
+    };
+    lines(app).into_iter().min_by_key(urgency).unwrap_or(Line {
+        text: String::new(),
+        dot: None,
+        failed: false,
+        progress: None,
+    })
+}
+
+/// Every line, one per row, for the summary's hover text.
+pub(crate) fn detail(app: &App) -> String {
+    let lines: Vec<String> = lines(app).into_iter().map(|line| line.text).collect();
+    lines.join("\n")
 }
 
 /// The tray icon's hover text: the unread mail in every INBOX, as All inboxes counts it.
@@ -213,7 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn the_status_bar_shows_each_accounts_line() {
+    fn the_status_line_says_what_the_account_is_doing() {
         let fx = Fixture::new(&["work"]);
         let (open, wires) = fx.window();
         let fetching = Activity::FetchingHeaders {
@@ -240,6 +264,36 @@ mod tests {
             1
         );
         assert!(!open.with(|live| live.app.accounts[0].busy()));
+    }
+
+    #[test]
+    fn the_folder_pane_shows_the_line_that_matters_most_and_every_line_on_hover() {
+        let fx = Fixture::new(&["home", "work"]);
+        let (open, wires) = fx.window();
+        let of = |account: &str, activity: Activity| Event::Activity {
+            account: account.into(),
+            activity,
+        };
+        let idle = || Activity::Idle {
+            since: 1_790_000_000,
+        };
+        send(&open, &wires, [of("home", idle()), of("work", idle())]);
+        let up_to_date = |name: &str| format!("{name}: up to date · {}", clock(1_790_000_000));
+        assert_eq!(open.find(&up_to_date("home")).len(), 1, "the first account");
+        let offline = Activity::Offline {
+            reason: "timeout".into(),
+            retry_at: 1_790_000_300,
+        };
+        send(&open, &wires, [of("work", offline)]);
+        let work = format!("work: offline (timeout) · retry {}", clock(1_790_000_300));
+        assert_eq!(open.find(&work).len(), 1, "offline beats up to date");
+        assert!(open.find(&up_to_date("home")).is_empty());
+        assert_eq!(
+            open.get(&work).accessible_description().unwrap(),
+            format!("{}\n{work}", up_to_date("home"))
+        );
+        send(&open, &wires, [error("boom")]);
+        assert_eq!(open.find("work: boom").len(), 1, "a failure beats offline");
     }
 
     #[test]
@@ -422,7 +476,7 @@ mod tests {
     }
 
     #[test]
-    fn the_status_bar_sync_button_syncs_every_account() {
+    fn the_sync_button_syncs_every_account() {
         let fx = Fixture::new(&["home", "work"]);
         let (open, wires) = fx.window();
         open.click("Sync now");
