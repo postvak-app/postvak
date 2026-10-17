@@ -260,7 +260,7 @@ impl Matcher {
                 let text = text.to_lowercase();
                 needles.iter().any(|needle| text.contains(needle))
             }
-            Matcher::Equals(wanted) => wanted.iter().any(|w| text.trim().eq_ignore_ascii_case(w)),
+            Matcher::Equals(wanted) => wanted.contains(&text.trim().to_lowercase()),
             Matcher::Regex(re) => re.is_match(text),
         }
     }
@@ -273,7 +273,7 @@ impl Matcher {
                 self.is_match(field)
                     || crate::message::bare_addresses(field)
                         .iter()
-                        .any(|address| wanted.iter().any(|w| address.eq_ignore_ascii_case(w)))
+                        .any(|address| wanted.contains(&address.to_lowercase()))
             }
             _ => self.is_match(field),
         }
@@ -312,7 +312,7 @@ impl Matcher {
                 c.iter().map(|value| value.to_lowercase()).collect(),
             )),
             (None, Some(e), None) => Ok(Matcher::Equals(
-                e.iter().map(|value| value.trim().to_string()).collect(),
+                e.iter().map(|value| value.trim().to_lowercase()).collect(),
             )),
             (None, None, Some(r)) => regex::Regex::new(r)
                 .map(Matcher::Regex)
