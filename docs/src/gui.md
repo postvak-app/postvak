@@ -4,7 +4,7 @@
 
 `postvak gui` opens a window with three columns: your accounts and folders, the threads in the chosen folder, and the selected message. Sync, rules and notifications run in the [daemon](daemon.md), which the window starts when none is running, so the window, the CLI and agents over MCP can all be open at once.
 
-When the window cannot start, for instance because no account is set up yet, a small window says why and what to do; the error also goes to stderr. Closing the window does not stop sync. Where the desktop shows tray icons, Postvak puts one there with the unread count in its tooltip: closing the window then keeps Postvak running in the tray, and the tray's menu opens the window again, syncs, or quits. Without a tray, closing the window quits. A daemon the window started stops a minute after its last client goes; one you run with `postvak run` keeps going. If the daemon goes away while the window is open, the sync line says "background sync stopped — reconnecting" and the window tries again every five seconds.
+When the window cannot start, for instance because no account is set up yet, a small window says why and what to do; the error also goes to stderr. [Troubleshooting](#troubleshooting) covers a window that does not open at all. Closing the window does not stop sync. Where the desktop shows tray icons, Postvak puts one there with the unread count in its tooltip: closing the window then keeps Postvak running in the tray, and the tray's menu opens the window again, syncs, or quits. Without a tray, closing the window quits. A daemon the window started stops a minute after its last client goes; one you run with `postvak run` keeps going. If the daemon goes away while the window is open, the sync line says "background sync stopped — reconnecting" and the window tries again every five seconds.
 
 The window remembers its size, its position (where the platform reports one; Wayland does not) and the width of its columns in `window.json`, next to `daemon.log` in the state directory. Delete the file to start from the defaults.
 
@@ -92,3 +92,15 @@ On the right of the action buttons, **Save .eml** writes the message exactly as 
 Mail from a mailing list that says how to leave it (a `List-Unsubscribe` header) has an **Unsubscribe** button there. When the sender supports one-click unsubscribe (RFC 8058), Postvak sends that request itself, only to a public web host, and the line under the attachments says whether the sender accepted it. Otherwise the button opens the sender's unsubscribe page in your browser, or a mail to their unsubscribe address in your mail app. Either way the sender learns that your address reads its mail.
 
 Mail with an HTML part also has a **Text | HTML** switch there, which does the same as `v`. View source always shows the whole message, whichever is active.
+
+## Troubleshooting
+
+The window draws with OpenGL. Where OpenGL cannot start (a virtual machine, a remote desktop, some Flatpak sandboxes, a broken or missing driver), Postvak starts again with Slint's software renderer, which needs no graphics driver and is slower on large windows. If no window opens even then, the error goes to stderr and to `daemon.log` in the state directory.
+
+To use the software renderer from the start, for a bug report or a driver you know is broken, set Slint's own variable:
+
+```sh
+SLINT_BACKEND=winit-software postvak gui
+```
+
+**Safe mode** draws with the software renderer and ignores `window.json`, opening the window at its default size. `postvak gui --safe-mode` asks for it. Postvak also enters it by itself when the last two starts in a row died before the window showed; it counts them in `gui-starting`, next to `window.json`, which it removes as soon as the window shows. The window saves its layout as usual when it closes in safe mode, which replaces a `window.json` that kept it from opening.
