@@ -1,0 +1,9 @@
+[profile.ci]
+fail-fast = false
+slow-timeout = { period = "60s" }
+# Every test's time in the log, and the slow ones again at the end.
+status-level = "pass"
+final-status-level = "slow"
+
+[profile.ci.junit]
+path = "junit.xml"
