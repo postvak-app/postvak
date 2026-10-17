@@ -12,16 +12,16 @@ The window remembers its size, its position (where the platform reports one; Way
 
 The menu bar (in the window, or at the top of the screen on macOS) has the window's actions in one place: File (Save .eml, View source, Close window with Ctrl+W, Quit with Ctrl+Q; Cmd on macOS), Edit (Copy, Search), Message (Archive, Move…, Delete, Junk or not junk, Flag, Read or unread, Add to selection, Select all), View (Text or HTML, Theme, History, Keys), Mailbox (Sync now, Mark folder read) and Help (Postvak documentation, About Postvak). An item is greyed out when it would do nothing, as the reader's action buttons are. About Postvak shows the version, the licence and the Slint attribution.
 
-Drag a message onto a folder of its account to move it there; drag a marked message to move every marked one. Right-click a message for read, flag, archive, move, delete, junk, View source and Save .eml; a folder for Open, Collapse or Expand, Mark all as read and Sync now; a link in an HTML message to open or copy it.
+Drag a message onto a folder of its account to move it there; drag a marked message to move every marked one. Right-click a message for read, flag, archive, move, delete, junk, View source and Save .eml; a folder for Open, Collapse or Expand, Mark all as read and Sync now; a link in an HTML message to open or copy it. In the tray, Open Postvak, Sync now and Quit.
 
 ## Keys
 
 | Key | Action |
 |---|---|
-| `j` / `k`, Down / Up | next or previous row |
+| `j` / `k`, Down / Up | next or previous row; in the folder pane, next or previous folder |
 | Right / Left | expand or collapse a thread |
 | `x` | add the row to the selection, or take it out |
-| Ctrl+A (Cmd+A on macOS) | add every row in the list to the selection |
+| Ctrl+A (Cmd+A on macOS) | in the list, add every row to the selection; in the message, select its text |
 | `e` | archive |
 | `#`, Delete (Backspace on macOS) | delete: move to Trash; from Trash, or with no Trash folder, delete for good after saving an `.eml` backup |
 | `!` | junk: tag `$Junk`, which trains the server's spam filter, and move to the Junk folder; in the Junk folder, not junk: tag `$NotJunk` and move to INBOX |
@@ -34,6 +34,8 @@ Drag a message onto a folder of its account to move it there; drag a marked mess
 | Tab | next pane: folders, list, body |
 | Ctrl+R (Cmd+R on macOS) | sync every account now |
 | `?` | show these keys |
+
+The letter keys and Right / Left act on the list and the open message; with the folder pane focused, only `j` / `k`, Down / Up, Tab, Esc, `/`, `?`, Ctrl+R and the menu shortcuts work. Ctrl+C (Cmd+C) copies text selected in an HTML message.
 
 Each attachment of the open message has a Save button, which saves it to your Downloads folder, or to your home folder when there is none.
 
@@ -51,11 +53,11 @@ Each account lists its INBOX and special folders (Archive, Drafts, Sent, Junk, T
 
 ## Message actions and search
 
-The top of the reading pane has buttons for Archive, Move, Delete, Junk, Flag and Read or unread; hover one to see its key. They act on the selection or the current row, like the keys. With two or more messages selected, the reading pane lists them under "3 messages selected" instead of showing one, and the same buttons, now with their names, act on all of them; **Clear selection** (or Esc) empties it. The search field at the top of the message list starts a search, like `/`.
+The top of the reading pane has buttons for Archive, Move, Delete, Junk, Flag and Read or unread; hover one to see its key. They act on the selection or the current row, like the keys. In the Archive folder the archive button moves mail back to INBOX, and in the Junk folder the junk button reports it as not junk. With two or more messages selected, the reading pane lists them under "3 messages selected" instead of showing one, and the same buttons, now with their names, act on all of them; **Clear selection** (or Esc) empties it. The search field at the top of the message list starts a search, like `/`.
 
 ## Message list
 
-Each row shows a dot when it is unread, then on its first line the sender (the recipient in Sent and Drafts), darker when unread, a flag (or a check when marked) and the date, and on its second line the subject with the thread's message count. Dates read "09:30" today, "Sun 18:00" within the past week, "3 Sep" earlier this year and "10 Dec 2025" before that. A long subject is cut off with "…" so the date always stays in view.
+Each row shows a dot when it is unread, then on its first line the sender (the recipient in Sent and Drafts), darker when unread, a flag (or a check when marked) and the date, and on its second line the subject with the thread's message count. In All inboxes the account name comes before the sender, and in search results the folder before the subject, as "[Archive] …". Dates read "09:30" today, "Sun 18:00" within the past week, "3 Sep" earlier this year and "10 Dec 2025" before that. A long sender or subject is cut off with "…".
 
 The funnel button beside the list's title shows All, Unread, Flagged or Attachments: a thread stays when one of its messages fits. Any choice but All shows as a chip beside the title, which clears it, and as a dot on the funnel. Attachments is a guess from the headers (mail sent as `multipart/mixed`), the same guess Thunderbird makes. The choice holds as you change folders; search results ignore it. On the CLI and over MCP, `list` takes `--unread`, `--flagged` and `--attachments`.
 
@@ -69,7 +71,7 @@ The foot of the folder pane has one line about sync: a failure when there is one
 
 These three views sit at the bottom of the folder pane.
 
-**Rules** lists proposals with Approve and Reject, then every rule with a switch. Changes to `rules.toml`, from the window or from your editor, take effect within about two seconds for new mail. **Activity** is the log of what rules and your actions did. **Backups** lists the `.eml` backups of mail deleted for good (deleted from Trash, from an account without a Trash folder, or by a rule), with Restore. Mail moved to the server's Trash folder is in that folder in the tree.
+**Rules** lists proposals with Approve and Reject, then every rule with a switch; Open rules.toml opens the file in your text editor. Changes to `rules.toml`, from the window or from your editor, take effect within about two seconds for new mail. **Activity** is the log of what rules and your actions did. **Backups** lists the `.eml` backups of mail deleted for good (deleted from Trash, from an account without a Trash folder, or by a rule), with Restore. Click a column heading in Activity or Backups to sort by it. Mail moved to the server's Trash folder is in that folder in the tree.
 
 The daemon applies changes to `config.toml` by itself; the window's account list catches up when you reopen it, and the window says so.
 
@@ -77,7 +79,7 @@ The daemon applies changes to `config.toml` by itself; the window's account list
 
 ![An HTML message rendered in the reader](https://raw.githubusercontent.com/postvak-app/postvak/main/tests/snapshots/gui_html_light.png)
 
-Mail with an HTML part shows as its sender laid it out, on a white page in both themes; `v` switches that message to its text and back. Images sent inside the message show. Images and stylesheets from the web are not loaded until you ask: when a message wants some, the line "Remote content not loaded." has a **Load remote content** button, which downloads it for that message only. Loading tells the sender's servers your IP address and that you opened the message, so leave it off for mail you don't trust. Postvak never loads content from your own machine or local network. No scripts run and forms do nothing. Hover over a link to see where it goes; in HTML and in text, only `http`, `https` and `mailto` links open, in your browser or mail app.
+Mail with an HTML part shows as its sender laid it out, on a white page in both themes; `v` switches that message to its text and back. Images sent inside the message show. Images and stylesheets from the web are not loaded until you ask: when a message wants some, the line "Remote content not loaded." has a **Load remote content** button, which downloads it for that message only. Loading tells the sender's servers your IP address and that you opened the message, so leave it off for mail you don't trust. Each download is capped at 5 MB and 15 seconds, and a message loads at most 200 of them. Postvak never loads content from your own machine or local network. No scripts run and forms do nothing. Hover over a link to see where it goes; in HTML and in text, only `http`, `https` and `mailto` links open, in your browser or mail app.
 
 HTML over 2 MB, or a page too tall or too broken to lay out, shows as text with a note saying why. Sending mail comes later.
 
@@ -85,7 +87,7 @@ HTML over 2 MB, or a page too tall or too broken to lay out, shows as text with 
 
 The subject heads the message, then the sender's initials on a colour picked from their address, their name and address, the recipients and the date.
 
-On the right of the action buttons, **Save .eml** writes the message exactly as the server sent it to your Downloads folder, named after its subject; when that name is taken it saves beside it as "… (2).eml" and never replaces a file. The line under the attachments says where it went. Until the message is downloaded the button is greyed out and says why on hover.
+On the right of the action buttons, **Save .eml** writes the message exactly as the server sent it to your Downloads folder (or your home folder when there is none), named after its subject; when that name is taken it saves beside it as "… (2).eml" and never replaces a file. The line under the attachments says where it went. Until the message is downloaded this button and View source are greyed out and say why on hover. The reader shows "Loading…" meanwhile, or, while the account is offline, that the message loads when it reconnects.
 
 **View source** opens the message as plain text in a window, with control characters left out; Copy puts that text on the clipboard. Esc or moving to another message closes it.
 
