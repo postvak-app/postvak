@@ -103,6 +103,10 @@ impl Fixture {
             LAUNCHED.with_borrow_mut(|launched| launched.push(target.to_string_lossy().into()));
             Ok(())
         };
+        // Sender logos never reach the network in tests; a test that wants them puts in its own fake.
+        if let Some(logos) = &mut app.logos {
+            logos.fetcher = Some(super::html::Fetcher::fake().0);
+        }
         app.downloads = self.paths.cache_dir.join("downloads");
         std::fs::create_dir_all(&app.downloads).unwrap();
         (app, Wires { commands, events })

@@ -14,8 +14,8 @@ use super::rules::SheetSort;
 use super::state::{App, Focus, UiAction, View};
 use super::ui::{
     BodyInfo, Dot, FolderItem, FolderKind, KeyHelp, MailWindow, MenuAction, MenuChoice, MenuState,
-    PageInfo, Pane, ProposalData, Remote, RuleData, Sheet, StatusLine, Theme, ThemePreference,
-    ToolButton,
+    PageInfo, Pane, ProposalData, Remote, RuleData, SelectedData, Sheet, StatusLine, Theme,
+    ThemePreference, ToolButton,
 };
 use super::{body, icons, list, menu, rules, status, theme, toolbar};
 use crate::message::clean;
@@ -33,6 +33,7 @@ pub(crate) fn init(window: &MailWindow) {
     window.set_list_min_width(list::MIN_WIDTH);
     window.set_close_icon(icons::CLOSE.into());
     window.set_search_icon(icons::SEARCH.into());
+    window.set_filter_icon(icons::FILTER.into());
     window.set_sync_icon(icons::SYNC.into());
     window.set_save_icon(icons::SAVE.into());
     window.set_source_icon(icons::SOURCE.into());
@@ -62,6 +63,7 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
         icon: b.icon.into(),
         name: b.name.into(),
         hint: b.hint.into(),
+        label: b.label.into(),
     });
     sync(window.get_tool_buttons(), buttons.into(), |m| {
         window.set_tool_buttons(m)
@@ -73,10 +75,11 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
     let pinned = folders::pinned(app).iter().map(folder_row).collect();
     sync(window.get_pinned(), pinned, |m| window.set_pinned(m));
 
-    let lines = status::lines(app).into_iter().map(status_line).collect();
-    sync(window.get_status_lines(), lines, |m| {
-        window.set_status_lines(m)
-    });
+    let line = status_line(status::summary(app));
+    if window.get_status_line() != line {
+        window.set_status_line(line);
+    }
+    window.set_status_detail(status::detail(app).into());
     let update = app
         .newer_release()
         .map(status::update_text)
@@ -109,7 +112,7 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
 
 fn present_list(app: &App, window: &MailWindow) {
     window.set_list_title(list::title(&app.view).unwrap_or_default().into());
-    window.set_list_counts(list::counts(&app.list.rows).into());
+    window.set_filter_label(list::filter_label(app.filter).unwrap_or_default().into());
     let filter = list::FILTERS.iter().position(|(_, f)| *f == app.filter);
     window.set_list_filter(
         filter
@@ -158,10 +161,17 @@ fn present_body(app: &App, window: &MailWindow) {
     let strings = |current, items: Vec<String>| {
         synced(current, items.into_iter().map(SharedString::from).collect())
     };
+    let logo = pane
+        .logo
+        .as_deref()
+        .and_then(|path| slint::Image::load_from_path(path).ok());
     let info = BodyInfo {
         empty: pane.empty.unwrap_or_default().into(),
         subject: text(pane.subject),
         initials: pane.initials.into(),
+        tint: i32::try_from(pane.tint).unwrap_or_default(),
+        has_logo: logo.is_some(),
+        logo: logo.unwrap_or_default(),
         name: pane.name.into(),
         address: text(pane.address),
         short_date: pane.short_date.into(),
@@ -181,6 +191,17 @@ fn present_body(app: &App, window: &MailWindow) {
     if info != shown {
         window.set_body_info(info);
     }
+    let (title, selected) = body::selection(app).unwrap_or_default();
+    window.set_selection_title(title.into());
+    let selected = selected.into_iter().map(|s| SelectedData {
+        who: s.who.into(),
+        subject: s.subject.into(),
+        date: s.date.into(),
+        unread: s.unread,
+    });
+    sync(window.get_selection(), selected.collect(), |m| {
+        window.set_selection(m)
+    });
     // Messages can be megabytes: set the text only when it changed.
     let body_text = app
         .body
@@ -370,6 +391,9 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     });
     window.on_search(move || {
         act(UiAction::StartSearch);
+    });
+    window.on_clear_selection(move || {
+        act(UiAction::ClearSelection);
     });
     window.on_folder_clicked(move |i| {
         on(one(move |app| {
@@ -715,9 +739,10 @@ fn folder_row(folder: &FolderEntry) -> FolderItem {
         label: folder.label.as_str().into(),
         count: folder.count.as_deref().unwrap_or_default().into(),
         name: folder.name.as_str().into(),
-        depth: i32::try_from(folder.depth).unwrap_or(i32::MAX),
+        indent: i32::try_from(folder.indent()).unwrap_or_default(),
+        path: folder.path.as_deref().unwrap_or_default().into(),
         selected: folder.selected,
-        heading: folder.view == Some(View::AllInboxes),
+        caret: folder.caret().unwrap_or_default().into(),
         caret_name: folder.caret_name().unwrap_or_default().into(),
         droppable: matches!(folder.view, Some(View::Folder { .. })),
         menu_head: choices(&head),

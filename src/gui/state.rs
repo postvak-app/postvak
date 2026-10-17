@@ -17,6 +17,7 @@ use crate::sync::{Activity, Command, Event};
 use crate::unsubscribe::{self, Method};
 use crate::update;
 
+use super::avatar::{self, Logos};
 use super::body;
 use super::folders;
 use super::html::{self, Fetcher, HtmlState, Renderer, Reply, Wake};
@@ -214,6 +215,8 @@ pub(crate) enum UiAction {
     About,
     Act(Action),
     ApproveRule(String),
+    /// Take every row out of the selection.
+    ClearSelection,
     Collapse,
     /// Move the targeted rows into a folder dropped on.
     DropOn(View),
@@ -325,6 +328,8 @@ pub struct App {
     pub(crate) unsubscribing: Option<Unsubscribing>,
     /// Downloads remote content for HTML mail, started the first time the user asks.
     pub(crate) fetcher: Option<Fetcher>,
+    /// The sender logos, with `[ui] sender_images` on.
+    pub(crate) logos: Option<Logos>,
     pub(crate) focus: Focus,
     pub(crate) about_open: bool,
     pub(crate) help_open: bool,
@@ -414,6 +419,10 @@ impl App {
             post_unsubscribe: |url| unsubscribe::one_click(url).map_err(|e| e.to_string()),
             unsubscribing: None,
             fetcher: None,
+            logos: config
+                .ui
+                .sender_images
+                .then(|| Logos::new(paths.sender_logos())),
             focus: Focus::List,
             about_open: false,
             help_open: false,
@@ -472,6 +481,7 @@ impl App {
         self.poll_files(now);
         let typing_search = self.search_focused;
         self.sync_body(now, typing_search);
+        self.want_logo();
         // The window reports the HTML view's width only when it changes; laying out at the last one starts a newly
         // shown message, and lays out again once a new width has held still.
         if let Some((scale, width)) = self.html_size {
@@ -795,6 +805,7 @@ impl App {
             UiAction::HtmlVisible { top, bottom } => self.html_visible(top, bottom),
             UiAction::HtmlWidth { scale, width } => self.html_size = Some((scale, width)),
             UiAction::LoadRemote => self.load_remote(),
+            UiAction::ClearSelection => self.list.marked.clear(),
             UiAction::Escape => {
                 if self.move_picker.is_some() {
                     self.move_picker = None;
@@ -1335,6 +1346,10 @@ impl App {
 
     /// Marks the shown message read once the user opened it and its text has been on screen for `READ_DELAY`.
     fn mark_read_after_delay(&mut self, now: f64) {
+        // The selection hides the message.
+        if self.selected_rows().len() > 1 {
+            return;
+        }
         let Some(body) = &mut self.body else { return };
         if !body.armed {
             return;
@@ -1372,6 +1387,16 @@ impl App {
             Optimistic::Seen(true),
         );
         self.rebuild_rows();
+    }
+
+    /// With sender images on: keeps the logos that arrived, and asks for the shown sender's.
+    fn want_logo(&mut self) {
+        let Some(logos) = &mut self.logos else { return };
+        logos.receive();
+        let from = self.body.as_ref().and_then(|b| b.message.as_ref());
+        if let Some(domain) = from.and_then(|m| avatar::domain(m.from_addr.as_deref()?)) {
+            logos.want(&domain, &self.wake);
+        }
     }
 
     /// The shown message's raw bytes from the store, or `None` while it is not downloaded.
@@ -2145,7 +2170,6 @@ mod tests {
         let (mut driver, _wires) = fx.driver();
         driver.apply(UiAction::SelectView(View::AllInboxes));
         assert_eq!(driver.ids(), [(0, 3), (1, 2), (0, 1)]);
-        assert_eq!(list::counts(&driver.app.list.rows), "3 threads, 0 unread");
     }
 
     #[test]

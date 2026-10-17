@@ -1,13 +1,36 @@
-// The body pane: the message's actions, its header, attachments, and the text with its links. `body.rs` words it.
-import { ScrollView } from "std-widgets.slint";
+// The body pane: the message actions, then the message's header, attachments, and the text with its links; or, with
+// several messages selected, the selection. `body.rs` words it, `toolbar.rs` the actions.
+import { ListView, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Heading, IconButton, Link, TextButton } from "common.slint";
+
+// A message action: its glyph, its accessible name, its hover hint and the label it shows beside the glyph while
+// several messages are selected.
+export struct ToolButton {
+    icon: string,
+    name: string,
+    hint: string,
+    label: string,
+}
+
+// A selected message, as the selection lists it.
+export struct SelectedData {
+    who: string,
+    subject: string,
+    date: string,
+    unread: bool,
+}
 
 export struct BodyInfo {
     // Instead of a message, when set.
     empty: string,
     subject: string,
     initials: string,
+    // Which of `Theme.avatars` the initials sit on.
+    tint: int,
+    // The sender domain's logo, which replaces the initials, with `[ui] sender_images` on.
+    logo: image,
+    has-logo: bool,
     name: string,
     address: string,
     short-date: string,
@@ -171,9 +194,110 @@ component HeaderLine inherits HorizontalLayout {
     Text {
         horizontal-stretch: 1;
         text: root.value;
-        color: Theme.pane.text;
+        color: Theme.pane.muted;
         overflow: elide;
         vertical-alignment: center;
+    }
+}
+
+// The sender's initials on their colour, or the logo of their domain.
+component Avatar inherits Rectangle {
+    in property <BodyInfo> info;
+    width: Theme.avatar;
+    height: Theme.avatar;
+    border-radius: self.width / 2;
+    clip: true;
+    background: Theme.avatars[root.info.tint];
+    if !root.info.has-logo: Text {
+        accessible-role: none;
+        text: root.info.initials;
+        font-size: Theme.text-size;
+        font-weight: 600;
+        color: Theme.pane.heading;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    if root.info.has-logo: Image {
+        accessible-role: none;
+        width: parent.width;
+        height: parent.height;
+        source: root.info.logo;
+        image-fit: cover;
+    }
+}
+
+// Beside the message actions: Unsubscribe, the Text | HTML switch, Save .eml and View source.
+component MessageTools inherits HorizontalLayout {
+    in property <BodyInfo> info;
+    in property <string> save-icon;
+    in property <string> source-icon;
+    callback unsubscribe();
+    callback toggle-html();
+    callback save-eml();
+    callback open-source();
+    spacing: Theme.pad / 2;
+    if root.info.unsubscribe: VerticalLayout {
+        alignment: center;
+        TextButton {
+            text: "Unsubscribe";
+            palette: Theme.pane;
+            framed: true;
+            clicked => { root.unsubscribe(); }
+        }
+    }
+    if root.info.has-html: VerticalLayout {
+        alignment: center;
+        Rectangle {
+            border-radius: Theme.pad;
+            background: Theme.pane.panel;
+            HorizontalLayout {
+                padding: Theme.pad / 4;
+                TextButton {
+                    text: "Text";
+                    palette: Theme.pane;
+                    selected: !root.info.shows-html;
+                    clicked => {
+                        if (root.info.shows-html) {
+                            root.toggle-html();
+                        }
+                    }
+                }
+                TextButton {
+                    text: "HTML";
+                    palette: Theme.pane;
+                    selected: root.info.shows-html;
+                    enabled: root.info.text-note == "";
+                    disabled-hint: root.info.text-note;
+                    clicked => {
+                        if (!root.info.shows-html) {
+                            root.toggle-html();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    IconButton {
+        icon: root.save-icon;
+        name: "Save .eml";
+        hint: "Save .eml";
+        disabled-hint: root.info.missing;
+        enabled: root.info.downloaded;
+        palette: Theme.pane;
+        size: Theme.action;
+        glyph-size: Theme.large-icon;
+        clicked => { root.save-eml(); }
+    }
+    IconButton {
+        icon: root.source-icon;
+        name: "View source";
+        hint: "View source";
+        disabled-hint: root.info.missing;
+        enabled: root.info.downloaded;
+        palette: Theme.pane;
+        size: Theme.action;
+        glyph-size: Theme.large-icon;
+        clicked => { root.open-source(); }
     }
 }
 
@@ -183,6 +307,13 @@ export component BodyPane inherits Rectangle {
     in property <string> text;
     in property <string> save-icon;
     in property <string> source-icon;
+    in property <[ToolButton]> actions;
+    in property <bool> actions-enabled;
+    // "3 messages selected" while two or more are, else empty; and those messages.
+    in property <string> selection-title;
+    in property <[SelectedData]> selection;
+    callback action(int);
+    callback clear-selection();
     callback toggle-html();
     callback save-eml();
     callback open-source();
@@ -201,9 +332,9 @@ export component BodyPane inherits Rectangle {
     callback page-open-link();
     callback page-copy-link();
 
-    property <length> avatar: 2 * Theme.inset;
+    property <bool> several: root.selection-title != "";
 
-    if root.info.empty != "": Text {
+    if root.info.empty != "" && !root.several: Text {
         x: Theme.inset;
         y: (root.height - self.height) / 2;
         width: root.width - 2 * Theme.inset;
@@ -213,222 +344,274 @@ export component BodyPane inherits Rectangle {
         wrap: word-wrap;
     }
 
-    if root.info.empty == "": VerticalLayout {
-        padding-left: Theme.inset;
-        padding-right: Theme.inset;
-        padding-top: Theme.pad;
+    // Wide margins while there is room for them.
+    property <length> margin: root.width > 80 * Theme.pad ? 2 * Theme.inset : Theme.inset;
+    // Room for the message actions and `MessageTools` on one line: the tools' labels are measured, their padding and
+    // icon buttons added.
+    property <length> tools: labels.preferred-width + (root.info.unsubscribe ? 2 * Theme.pad : 0px) + (root.info.has-html ? 3 * Theme.pad : 0px) + 2 * Theme.action + 2 * Theme.pad;
+    property <bool> wide: root.width - 2 * root.margin >= root.actions.length * (Theme.action + Theme.pad / 2) + Theme.inset + root.tools;
+    labels := Text {
+        visible: false;
+        accessible-role: none;
+        text: (root.info.unsubscribe ? "Unsubscribe" : "") + (root.info.has-html ? "TextHTML" : "");
+        font-weight: 600;
+    }
+
+    if root.info.empty == "" || root.several: VerticalLayout {
+        padding-left: root.margin;
+        padding-right: root.margin;
+        padding-top: Theme.inset;
         padding-bottom: Theme.inset;
         spacing: Theme.pad;
 
-        // The subject, with the view's choices and actions at the end of its first line.
+        // The message actions, then the view's choices on the right; with several messages, labelled. A pane too narrow
+        // for all of them cuts the bar off rather than growing.
+        Rectangle {
+            min-width: 0px;
+            height: Theme.action;
+            clip: true;
         HorizontalLayout {
-            spacing: Theme.pad;
-            Heading {
-                horizontal-stretch: 1;
-                text: root.info.subject;
-                font-size: Theme.title-size;
-                wrap: word-wrap;
-            }
-            VerticalLayout {
-                alignment: start;
-                HorizontalLayout {
-                    alignment: end;
-                    height: Theme.control;
-                    spacing: Theme.pad / 2;
-                    if root.info.unsubscribe: VerticalLayout {
-                        alignment: center;
-                        TextButton {
-                            text: "Unsubscribe";
-                            palette: Theme.pane;
-                            framed: true;
-                            clicked => { root.unsubscribe(); }
-                        }
-                    }
-                    if root.info.has-html: VerticalLayout {
-                        alignment: center;
-                        HorizontalLayout {
-                            TextButton {
-                                text: "Text";
-                                palette: Theme.pane;
-                                selected: !root.info.shows-html;
-                                clicked => {
-                                    if (root.info.shows-html) {
-                                        root.toggle-html();
-                                    }
-                                }
-                            }
-                            TextButton {
-                                text: "HTML";
-                                palette: Theme.pane;
-                                selected: root.info.shows-html;
-                                enabled: root.info.text-note == "";
-                                disabled-hint: root.info.text-note;
-                                clicked => {
-                                    if (!root.info.shows-html) {
-                                        root.toggle-html();
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    IconButton {
-                        icon: root.save-icon;
-                        name: "Save .eml";
-                        hint: "Save .eml";
-                        disabled-hint: root.info.missing;
-                        enabled: root.info.downloaded;
-                        palette: Theme.pane;
-                        clicked => { root.save-eml(); }
-                    }
-                    IconButton {
-                        icon: root.source-icon;
-                        name: "View source";
-                        hint: "View source";
-                        disabled-hint: root.info.missing;
-                        enabled: root.info.downloaded;
-                        palette: Theme.pane;
-                        clicked => { root.open-source(); }
-                    }
-                }
-            }
-        }
-
-        HorizontalLayout {
-            spacing: Theme.pad;
-            VerticalLayout {
-                alignment: center;
-                Rectangle {
-                    width: root.avatar;
-                    height: root.avatar;
-                    border-radius: root.avatar / 2;
-                    background: Theme.pane.hover;
-                    Text {
-                        text: root.info.initials;
-                        font-size: root.avatar * 0.4;
-                        color: Theme.pane.heading;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-            }
-            VerticalLayout {
-                alignment: center;
-                HorizontalLayout {
-                    height: Theme.row;
-                    spacing: Theme.pad;
-                    // The address gives way first in a narrow pane.
-                    Text {
-                        min-width: min(self.preferred-width, 4 * Theme.inset);
-                        text: root.info.name;
-                        color: Theme.pane.text;
-                        overflow: elide;
-                        vertical-alignment: center;
-                    }
-                    if root.info.address != "": Text {
-                        text: root.info.address;
-                        color: Theme.pane.muted;
-                        overflow: elide;
-                        vertical-alignment: center;
-                    }
-                    Rectangle { horizontal-stretch: 1; }
-                    TouchArea {
-                        width: date.preferred-width;
-                        accessible-role: none;
-                        Tooltip { text: @markdown("\{root.info.full-date}"); }
-                        date := Text {
-                            text: root.info.short-date;
-                            color: Theme.pane.muted;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
-                if root.info.to != "": HeaderLine {
-                    label: "to";
-                    value: root.info.to;
-                }
-                if root.info.cc != "": HeaderLine {
-                    label: "cc";
-                    value: root.info.cc;
-                }
-            }
-        }
-
-        for attachment[i] in root.info.attachments: HorizontalLayout {
-            spacing: Theme.pad;
-            Text {
-                text: attachment;
-                color: Theme.pane.text;
-                vertical-alignment: center;
-            }
-            TextButton {
-                text: "Save";
-                framed: true;
+            spacing: Theme.pad / 2;
+            for button[i] in root.actions: IconButton {
+                icon: button.icon;
+                name: button.name;
+                hint: button.hint;
+                label: root.several ? button.label : "";
+                enabled: root.actions-enabled;
                 palette: Theme.pane;
-                accessible-label: "Save " + attachment;
-                clicked => { root.save-attachment(i); }
+                size: Theme.action;
+                glyph-size: Theme.large-icon;
+                clicked => { root.action(i); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            if !root.several && root.wide: MessageTools {
+                info: root.info;
+                save-icon: root.save-icon;
+                source-icon: root.source-icon;
+                unsubscribe => { root.unsubscribe(); }
+                toggle-html => { root.toggle-html(); }
+                save-eml => { root.save-eml(); }
+                open-source => { root.open-source(); }
+            }
+        }
+        }
+        // A narrow pane puts them on a line of their own.
+        if !root.several && !root.wide: HorizontalLayout {
+            MessageTools {
+                info: root.info;
+                save-icon: root.save-icon;
+                source-icon: root.source-icon;
+                unsubscribe => { root.unsubscribe(); }
+                toggle-html => { root.toggle-html(); }
+                save-eml => { root.save-eml(); }
+                open-source => { root.open-source(); }
             }
             Rectangle { horizontal-stretch: 1; }
         }
-        if root.info.saved != "": Text {
-            text: root.info.saved;
-            color: Theme.pane.text;
-            wrap: word-wrap;
-        }
 
-        // More room under the headers' hairline than between them.
-        VerticalLayout {
-            padding-bottom: Theme.pad;
+        if root.several: VerticalLayout {
+            vertical-stretch: 1;
+            padding-top: Theme.inset;
+            spacing: Theme.pad;
+            Heading {
+                text: root.selection-title;
+                font-size: Theme.subject-size;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                height: Theme.row;
+                spacing: Theme.pad / 2;
+                Text {
+                    text: "Actions apply to all of them.";
+                    color: Theme.pane.muted;
+                    vertical-alignment: center;
+                }
+                Link {
+                    text: "Clear selection";
+                    clicked => { root.clear-selection(); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+            Rectangle { height: Theme.pad; }
             Rectangle {
                 height: 1px;
                 background: Theme.pane.border;
             }
+            ListView {
+                vertical-stretch: 1;
+                for message in root.selection: Rectangle {
+                    height: 2 * Theme.row;
+                    HorizontalLayout {
+                        spacing: Theme.pad * 3 / 2;
+                        Text {
+                            width: min(10 * Theme.inset, parent.width / 3);
+                            text: message.who;
+                            font-weight: 600;
+                            color: message.unread ? Theme.pane.strong : Theme.pane.secondary;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            horizontal-stretch: 1;
+                            text: message.subject;
+                            color: Theme.pane.secondary;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: message.date;
+                            font-size: Theme.small-size;
+                            color: Theme.pane.muted;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Rectangle {
+                        y: parent.height - 1px;
+                        height: 1px;
+                        background: Theme.pane.border;
+                    }
+                }
+            }
         }
 
-        if root.info.shows-html: HtmlView {
+        if !root.several: VerticalLayout {
             vertical-stretch: 1;
-            page: root.page;
-            strips: root.strips;
-            width-changed(width) => { root.page-width(width); }
-            shown(top, bottom) => { root.page-visible(top, bottom); }
-            hover(x, y) => { root.page-hover(x, y); }
-            leave => { root.page-leave(); }
-            select(fx, fy, tx, ty) => { root.page-select(fx, fy, tx, ty); }
-            clicked(x, y) => { root.page-clicked(x, y); }
-            load-remote => { root.load-remote(); }
-            open-link => { root.page-open-link(); }
-            copy-link => { root.page-copy-link(); }
-        }
+            padding-top: Theme.pad;
+            spacing: Theme.pad;
 
-        if !root.info.shows-html && root.info.text-note != "": Text {
-            text: root.info.text-note;
-            color: Theme.pane.muted;
-        }
+            Heading {
+                text: root.info.subject;
+                font-size: Theme.subject-size;
+                wrap: word-wrap;
+            }
 
-        if !root.info.shows-html: scroll := ScrollView {
-            vertical-stretch: 1;
-            VerticalLayout {
-                width: scroll.visible-width;
-                alignment: start;
+            HorizontalLayout {
+                padding-top: Theme.pad;
+                padding-bottom: Theme.pad;
+                spacing: Theme.pad * 3 / 2;
+                VerticalLayout {
+                    alignment: start;
+                    Avatar { info: root.info; }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    HorizontalLayout {
+                        height: Theme.row;
+                        spacing: Theme.pad;
+                        // The address gives way first in a narrow pane.
+                        Text {
+                            min-width: min(self.preferred-width, 4 * Theme.inset);
+                            text: root.info.name;
+                            font-weight: 600;
+                            color: Theme.pane.strong;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                        if root.info.address != "": Text {
+                            text: root.info.address;
+                            color: Theme.pane.muted;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        TouchArea {
+                            width: date.preferred-width;
+                            accessible-role: none;
+                            Tooltip { text: @markdown("\{root.info.full-date}"); }
+                            date := Text {
+                                text: root.info.short-date;
+                                color: Theme.pane.muted;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    if root.info.to != "": HeaderLine {
+                        label: "to";
+                        value: root.info.to;
+                    }
+                    if root.info.cc != "": HeaderLine {
+                        label: "cc";
+                        value: root.info.cc;
+                    }
+                }
+            }
+            for attachment[i] in root.info.attachments: HorizontalLayout {
                 spacing: Theme.pad;
-                if root.text == "": Text {
-                    text: root.info.missing;
-                    color: Theme.pane.muted;
-                }
-                if root.text != "": TextInput {
-                    text: root.text;
-                    read-only: true;
-                    single-line: false;
-                    wrap: word-wrap;
-                    font-size: Theme.reading-size;
+                Text {
+                    text: attachment;
                     color: Theme.pane.text;
-                    selection-background-color: Theme.pane.selected;
-                    selection-foreground-color: Theme.pane.on-accent;
-                    accessible-label: "Message text";
+                    vertical-alignment: center;
                 }
-                for link in root.info.links: Link {
-                    height: Theme.row;
-                    text: link;
-                    clicked => { root.open-link(link); }
+                TextButton {
+                    text: "Save";
+                    framed: true;
+                    palette: Theme.pane;
+                    accessible-label: "Save " + attachment;
+                    clicked => { root.save-attachment(i); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+            if root.info.saved != "": Text {
+                text: root.info.saved;
+                color: Theme.pane.text;
+                wrap: word-wrap;
+            }
+
+            // More room under the headers' hairline than between them.
+            VerticalLayout {
+                padding-bottom: Theme.pad;
+                Rectangle {
+                    height: 1px;
+                    background: Theme.pane.border;
+                }
+            }
+
+            if root.info.shows-html: HtmlView {
+                vertical-stretch: 1;
+                page: root.page;
+                strips: root.strips;
+                width-changed(width) => { root.page-width(width); }
+                shown(top, bottom) => { root.page-visible(top, bottom); }
+                hover(x, y) => { root.page-hover(x, y); }
+                leave => { root.page-leave(); }
+                select(fx, fy, tx, ty) => { root.page-select(fx, fy, tx, ty); }
+                clicked(x, y) => { root.page-clicked(x, y); }
+                load-remote => { root.load-remote(); }
+                open-link => { root.page-open-link(); }
+                copy-link => { root.page-copy-link(); }
+            }
+
+            if !root.info.shows-html && root.info.text-note != "": Text {
+                text: root.info.text-note;
+                color: Theme.pane.muted;
+            }
+
+            if !root.info.shows-html: scroll := ScrollView {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    width: scroll.visible-width;
+                    alignment: start;
+                    spacing: Theme.pad;
+                    if root.text == "": Text {
+                        text: root.info.missing;
+                        color: Theme.pane.muted;
+                    }
+                    if root.text != "": TextInput {
+                        text: root.text;
+                        read-only: true;
+                        single-line: false;
+                        wrap: word-wrap;
+                        font-size: Theme.reading-size;
+                        color: Theme.pane.text;
+                        selection-background-color: Theme.pane.selected;
+                        selection-foreground-color: Theme.pane.on-accent;
+                        accessible-label: "Message text";
+                    }
+                    for link in root.info.links: Link {
+                        height: Theme.row;
+                        text: link;
+                        clicked => { root.open-link(link); }
+                    }
                 }
             }
         }

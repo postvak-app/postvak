@@ -2,10 +2,9 @@
 import { Palette as StdPalette } from "std-widgets.slint";
 import { Theme, ThemePreference } from "theme.slint";
 import { FolderItem, FolderPane } from "folders.slint";
-import { ToolButton, Toolbar } from "toolbar.slint";
 import { StatusBar, StatusLine } from "status.slint";
 import { HistoryDialog, KeyHelp, KeysDialog, MoveDialog, SourceDialog } from "dialogs.slint";
-import { BodyInfo, BodyPane, PageInfo, StripData } from "body.slint";
+import { BodyInfo, BodyPane, PageInfo, SelectedData, StripData, ToolButton } from "body.slint";
 import { ProposalData, RuleData, RulesPane, Sheet } from "rules.slint";
 import { AboutDialog } from "about.slint";
 import { ListPane, RowData } from "list.slint";
@@ -62,15 +61,19 @@ export component MailWindow inherits Window {
     in property <string> close-icon;
     in property <string> search-icon;
     in property <string> sync-icon;
+    in property <string> filter-icon;
 
     in property <[ToolButton]> tool-buttons;
     in property <bool> tool-buttons-enabled;
     in property <string> search-hint;
+    in property <string> selection-title;
+    in property <[SelectedData]> selection;
 
     in property <[FolderItem]> folders;
     in property <[FolderItem]> pinned;
 
-    in property <[StatusLine]> status-lines;
+    in property <StatusLine> status-line;
+    in property <string> status-detail;
     in property <string> sync-hint;
     in property <string> update;
 
@@ -80,8 +83,8 @@ export component MailWindow inherits Window {
     in property <[string]> history;
 
     in property <string> list-title;
-    in property <string> list-counts;
     in property <int> list-filter;
+    in property <string> filter-label;
     in property <bool> searching;
     in property <string> search-hint-text;
     in property <string> results;
@@ -125,6 +128,7 @@ export component MailWindow inherits Window {
     // when it did something.
     callback key(string, bool, bool) -> bool;
     callback tool(int);
+    callback clear-selection();
     callback search();
     callback folder-clicked(int);
     callback caret-clicked(int);
@@ -377,32 +381,11 @@ export component MailWindow inherits Window {
             activated => { root.copy-text(root.page-selection); }
         }
 
-    VerticalLayout {
-        padding-left: Theme.pad;
-        padding-right: Theme.pad;
-        Toolbar {
-            folders-width: root.folders-width;
-            buttons: root.tool-buttons;
-            buttons-enabled: root.tool-buttons-enabled;
-            mail-view: root.mail-view;
-            search-icon: root.search-icon;
-            search-hint: root.search-hint;
-            action(i) => { root.tool(i); }
-            search => { root.search(); }
-        }
-
-        if root.config-changed: HorizontalLayout {
-            padding-left: Theme.inset;
-            padding-bottom: Theme.pad;
-            Text {
-                text: "config.toml changed — reopen the window to show it";
-                color: Theme.frame.warning;
-            }
-        }
-
-        panes := HorizontalLayout {
+    panes := HorizontalLayout {
+        VerticalLayout {
+            width: root.folders-width;
             FolderPane {
-                width: root.folders-width;
+                vertical-stretch: 1;
                 items: root.folders;
                 pinned: root.pinned;
                 clicked(i) => { root.folder-clicked(i); }
@@ -412,111 +395,136 @@ export component MailWindow inherits Window {
                 dragged-row(data) => { root.dragged-row(data) }
                 dropped(i, row) => { root.folder-dropped(i, row); }
             }
-
-            if root.mail-view: PaneFrame {
-                width: root.list-width;
-                background: Theme.pane.panel;
-                focused: root.focused-pane == Pane.list;
-                border-top-left-radius: Theme.radius;
-                border-bottom-left-radius: Theme.radius;
-                list := ListPane {
-                    title: root.list-title;
-                    counts: root.list-counts;
-                    filter: root.list-filter;
-                    filter-clicked(i) => { root.list-filter-clicked(i); }
-                    searching: root.searching;
-                    search-hint: root.search-hint-text;
-                    results: root.results;
-                    empty: root.list-empty;
-                    rows: root.rows;
-                    list-y <=> root.list-y;
-                    row-clicked(i, extend, toggle) => { root.row-clicked(i, extend, toggle); }
-                    row-menu(i, group, j) => { root.row-menu(i, group, j); }
-                    drag-data(i) => { root.drag-data(i) }
-                    drag-image(count, subject, fill, ink) => { root.drag-image(count, subject, fill, ink) }
-                    marked-count: root.marked-count;
-                    search-edited(text) => { root.search-edited(text); }
-                    // Enter opens the first hit and hands the keyboard to the list.
-                    search-accepted => {
-                        root.search-accepted();
-                        keys.focus();
-                    }
-                    search-focus(focused) => { root.search-focus(focused); }
-                    scrolled => { root.list-scrolled(-self.list-y, self.list-height); }
-                }
-            }
-
-            if root.mail-view: PaneFrame {
-                focused: root.focused-pane == Pane.body;
-                border-top-right-radius: Theme.radius;
-                border-bottom-right-radius: Theme.radius;
-                BodyPane {
-                    info: root.body-info;
-                    text: root.body-text;
-                    save-icon: root.save-icon;
-                    source-icon: root.source-icon;
-                    toggle-html => { root.toggle-html(); }
-                    save-eml => { root.save-eml(); }
-                    unsubscribe => { root.unsubscribe(); }
-                    open-source => { root.open-source(); }
-                    save-attachment(i) => { root.save-attachment(i); }
-                    open-link(url) => { root.open-link(url); }
-                    page: root.page;
-                    strips: root.strips;
-                    page-width(width) => { root.page-width(width); }
-                    page-visible(top, bottom) => { root.page-visible(top, bottom); }
-                    page-hover(x, y) => { root.page-hover(x, y); }
-                    page-leave => { root.page-leave(); }
-                    page-select(fx, fy, tx, ty) => { root.page-select(fx, fy, tx, ty); }
-                    page-clicked(x, y) => { root.page-clicked(x, y); }
-                    load-remote => { root.load-remote(); }
-                    page-open-link => { root.page-open-link(); }
-                    page-copy-link => { root.copy-text(root.page.link); }
-                }
-            }
-
-            if !root.mail-view: PaneFrame {
-                focused: root.focused-pane != Pane.folders;
-                border-radius: Theme.radius;
-                RulesPane {
-                    sheet: root.sheet;
-                    banner: root.rules-banner;
-                    proposals: root.proposals;
-                    rules: root.rules;
-                    columns: root.sheet-columns;
-                    cells: root.sheet-cells;
-                    current-row <=> root.sheet-row;
-                    empty: root.sheet-empty;
-                    open-rules-file => { root.open-rules-file(); }
-                    approve(i) => { root.approve-rule(i); }
-                    reject(i) => { root.reject-rule(i); }
-                    set-enabled(i, enabled) => { root.set-enabled(i, enabled); }
-                    restore(i) => { root.restore(i); }
-                    sort(column, ascending) => { root.sort-sheet(column, ascending); }
-                }
+            status := StatusBar {
+                line: root.status-line;
+                detail: root.status-detail;
+                sync-icon: root.sync-icon;
+                sync-hint: root.sync-hint;
+                update: root.update;
+                sync => { root.sync(); }
+                toggle-history => { root.toggle-history(); }
+                open-update => { root.open-update(); }
             }
         }
 
-        status := StatusBar {
-            lines: root.status-lines;
-            sync-icon: root.sync-icon;
-            sync-hint: root.sync-hint;
-            update: root.update;
-            sync => { root.sync(); }
-            toggle-history => { root.toggle-history(); }
-            open-update => { root.open-update(); }
+        VerticalLayout {
+            padding-top: Theme.pad;
+            padding-right: Theme.pad;
+            padding-bottom: Theme.pad;
+            spacing: Theme.pad;
+
+            if root.config-changed: Text {
+                text: "config.toml changed — reopen the window to show it";
+                color: Theme.frame.warning;
+            }
+
+            HorizontalLayout {
+                spacing: Theme.pad;
+
+                if root.mail-view: PaneFrame {
+                    width: root.list-width;
+                    background: Theme.pane.panel;
+                    focused: root.focused-pane == Pane.list;
+                    border-radius: Theme.radius;
+                    list := ListPane {
+                        title: root.list-title;
+                        filter: root.list-filter;
+                        filter-label: root.filter-label;
+                        filter-icon: root.filter-icon;
+                        search-icon: root.search-icon;
+                        search-key: root.search-hint;
+                        filter-clicked(i) => { root.list-filter-clicked(i); }
+                        start-search => { root.search(); }
+                        searching: root.searching;
+                        search-hint: root.search-hint-text;
+                        results: root.results;
+                        empty: root.list-empty;
+                        rows: root.rows;
+                        list-y <=> root.list-y;
+                        row-clicked(i, extend, toggle) => { root.row-clicked(i, extend, toggle); }
+                        row-menu(i, group, j) => { root.row-menu(i, group, j); }
+                        drag-data(i) => { root.drag-data(i) }
+                        drag-image(count, subject, fill, ink) => { root.drag-image(count, subject, fill, ink) }
+                        marked-count: root.marked-count;
+                        search-edited(text) => { root.search-edited(text); }
+                        // Enter opens the first hit and hands the keyboard to the list.
+                        search-accepted => {
+                            root.search-accepted();
+                            keys.focus();
+                        }
+                        search-focus(focused) => { root.search-focus(focused); }
+                        scrolled => { root.list-scrolled(-self.list-y, self.list-height); }
+                    }
+                }
+
+                if root.mail-view: PaneFrame {
+                    focused: root.focused-pane == Pane.body;
+                    border-radius: Theme.radius;
+                    BodyPane {
+                        info: root.body-info;
+                        text: root.body-text;
+                        save-icon: root.save-icon;
+                        source-icon: root.source-icon;
+                        actions: root.tool-buttons;
+                        actions-enabled: root.tool-buttons-enabled;
+                        selection-title: root.selection-title;
+                        selection: root.selection;
+                        action(i) => { root.tool(i); }
+                        clear-selection => { root.clear-selection(); }
+                        toggle-html => { root.toggle-html(); }
+                        save-eml => { root.save-eml(); }
+                        unsubscribe => { root.unsubscribe(); }
+                        open-source => { root.open-source(); }
+                        save-attachment(i) => { root.save-attachment(i); }
+                        open-link(url) => { root.open-link(url); }
+                        page: root.page;
+                        strips: root.strips;
+                        page-width(width) => { root.page-width(width); }
+                        page-visible(top, bottom) => { root.page-visible(top, bottom); }
+                        page-hover(x, y) => { root.page-hover(x, y); }
+                        page-leave => { root.page-leave(); }
+                        page-select(fx, fy, tx, ty) => { root.page-select(fx, fy, tx, ty); }
+                        page-clicked(x, y) => { root.page-clicked(x, y); }
+                        load-remote => { root.load-remote(); }
+                        page-open-link => { root.page-open-link(); }
+                        page-copy-link => { root.copy-text(root.page.link); }
+                    }
+                }
+
+                if !root.mail-view: PaneFrame {
+                    focused: root.focused-pane != Pane.folders;
+                    border-radius: Theme.radius;
+                    RulesPane {
+                        sheet: root.sheet;
+                        banner: root.rules-banner;
+                        proposals: root.proposals;
+                        rules: root.rules;
+                        columns: root.sheet-columns;
+                        cells: root.sheet-cells;
+                        current-row <=> root.sheet-row;
+                        empty: root.sheet-empty;
+                        open-rules-file => { root.open-rules-file(); }
+                        approve(i) => { root.approve-rule(i); }
+                        reject(i) => { root.reject-rule(i); }
+                        set-enabled(i, enabled) => { root.set-enabled(i, enabled); }
+                        restore(i) => { root.restore(i); }
+                        sort(column, ascending) => { root.sort-sheet(column, ascending); }
+                    }
+                }
+            }
         }
     }
 
     Splitter {
-        x: Theme.pad + root.folders-width - self.width / 2;
+        x: root.folders-width - self.width / 2;
         y: panes.y;
         height: panes.height;
         size <=> root.folders-width;
         min: Theme.control;
     }
+    // In the gap between the list and the reader.
     if root.mail-view: Splitter {
-        x: Theme.pad + root.folders-width + root.list-width - self.width / 2;
+        x: root.folders-width + root.list-width;
         y: panes.y;
         height: panes.height;
         size <=> root.list-width;
@@ -525,14 +533,14 @@ export component MailWindow inherits Window {
 
     if root.history-open: HistoryDialog {
         x: Theme.inset;
-        y: status.y - self.height - Theme.pad;
+        y: root.height - self.height - Theme.top-bar - Theme.inset;
         lines: root.history;
         close-icon: root.close-icon;
         close => { root.toggle-history(); }
     }
 
     if root.move-open: MoveDialog {
-        x: Theme.pad + root.folders-width + Theme.inset;
+        x: root.folders-width + Theme.inset;
         y: Theme.top-bar + Theme.inset;
         targets: root.move-targets;
         close-icon: root.close-icon;

@@ -107,13 +107,17 @@ pub fn mailbox(root: &Path, theme: &str) -> Result<Home> {
     for (name, special) in [
         ("Archive", Some("Archive")),
         ("Sent", Some("Sent")),
+        ("Junk", Some("Junk")),
         ("Trash", Some("Trash")),
         ("Receipts", None),
     ] {
         fx.folder("work", name, special)?;
     }
     fx.folder("home", "Archive", Some("Archive"))?;
-    for name in ["Projects/Postvak", "Projects/Website"] {
+    for name in [
+        "Projects/Postvak/Design/Mockups/Old explorations 2024",
+        "Projects/Website",
+    ] {
         let nested = Folder {
             name: name.into(),
             uidvalidity: 1,

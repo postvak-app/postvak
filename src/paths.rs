@@ -63,6 +63,11 @@ impl Paths {
         self.cache_dir.join("update-check.json")
     }
 
+    /// The mail window's sender logos, one PNG per domain.
+    pub fn sender_logos(&self) -> PathBuf {
+        self.cache_dir.join("sender-logos")
+    }
+
     pub fn account_dir(&self, name: &str) -> PathBuf {
         self.state_dir.join("accounts").join(name)
     }
