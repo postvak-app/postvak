@@ -1127,32 +1127,70 @@ mod tests {
     }
 
     #[test]
-    fn thread_list_and_unread_count_read_only_the_covering_index() {
+    fn thread_list_filters_and_unread_count_never_read_message_rows() {
         let s = store_with_inbox();
         // Without statistics an empty table plans differently; a few hundred rows plan like a real folder.
         for uid in 1..=500 {
             s.insert_message(&msg("INBOX", uid, i64::from(uid)))
                 .unwrap();
         }
-        let plan = |sql: &str| -> String {
-            let mut stmt = s
-                .conn
-                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+        let table_root: i64 = s
+            .conn
+            .query_row(
+                "SELECT rootpage FROM sqlite_master WHERE name = 'messages'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        /* The column reads from the messages table cursor, as (opcode, p1, p2) bytecode rows. EXPLAIN QUERY PLAN calls
+        the has_attachment index non-covering, because the column refers to headers, yet takes the value from it. */
+        let table_reads = |sql: &str| -> Vec<(String, i64, i64)> {
+            let mut stmt = s.conn.prepare(&format!("EXPLAIN {sql}")).unwrap();
+            let ops: Vec<(String, i64, i64)> = stmt
+                .query_map([], |r| Ok((r.get(1)?, r.get(2)?, r.get(3)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
                 .unwrap();
-            let rows = stmt.query_map([], |r| r.get::<_, String>(3)).unwrap();
-            rows.collect::<Result<Vec<_>, _>>().unwrap().join("\n")
+            let table_cursors: Vec<i64> = ops
+                .iter()
+                .filter(|(op, _, root)| op == "OpenRead" && *root == table_root)
+                .map(|(_, cursor, _)| *cursor)
+                .collect();
+            ops.into_iter()
+                .filter(|(op, cursor, _)| op == "Column" && table_cursors.contains(cursor))
+                .collect()
         };
-        let thread_list = plan(&format!(
-            "SELECT thread_id, {SUMMARY_COLUMNS}, MAX(internaldate) FROM messages WHERE folder = 'INBOX' GROUP BY thread_id"
-        ));
-        let unread = plan(
-            r"SELECT COUNT(*) FROM messages WHERE folder = 'INBOX' AND instr(flags, '\Seen') = 0",
+        let filters = [
+            Filter::default(),
+            Filter {
+                attachments: true,
+                ..Filter::default()
+            },
+            Filter {
+                flagged: true,
+                ..Filter::default()
+            },
+            Filter {
+                unread: true,
+                ..Filter::default()
+            },
+        ];
+        let mut queries: Vec<String> = filters
+            .iter()
+            .map(|filter| {
+                format!(
+                    "SELECT thread_id, {SUMMARY_COLUMNS}, MAX(internaldate) FROM messages WHERE folder = 'INBOX'
+                     GROUP BY thread_id HAVING SUM({}) > 0",
+                    filter.sql()
+                )
+            })
+            .collect();
+        queries.push(
+            r"SELECT COUNT(*) FROM messages WHERE folder = 'INBOX' AND instr(flags, '\Seen') = 0"
+                .into(),
         );
-        for detail in [thread_list, unread] {
-            assert!(
-                detail.contains("COVERING INDEX messages_folder_thread"),
-                "{detail}"
-            );
+        for sql in queries {
+            assert_eq!(table_reads(&sql), [], "{sql}");
         }
     }
 
