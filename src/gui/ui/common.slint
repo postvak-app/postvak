@@ -17,21 +17,29 @@ export component HoverFill inherits Rectangle {
     }
 }
 
-// A frameless square button with a Phosphor glyph, named for screen readers and tests, with its hint on hover.
+/* A frameless square button with a Phosphor glyph, named for screen readers and tests, with its hint on hover.
+
+With a `label` it is a framed button with the label instead of the glyph: the message actions while several messages
+are selected, where six glyphs and labels would not fit a narrow reader. */
 export component IconButton inherits Rectangle {
     in property <string> icon;
     in property <string> name;
     in property <string> hint;
+    in property <string> label;
     // Shown instead of `hint` while disabled, when set.
     in property <string> disabled-hint;
     in property <bool> enabled: true;
     in property <Palette> palette: Theme.frame;
+    in property <length> size: Theme.control;
+    in property <length> glyph-size: Theme.icon;
     callback clicked();
 
-    width: Theme.control;
-    height: Theme.control;
-    border-radius: Theme.pad / 2;
-    background: root.enabled && touch.pressed ? root.palette.pressed : transparent;
+    width: root.label == "" ? root.size : layout.preferred-width;
+    height: root.size;
+    border-radius: root.size == Theme.control ? Theme.pad / 2 : Theme.pad;
+    border-width: root.label == "" ? 0px : 1px;
+    border-color: root.palette.border;
+    background: root.enabled && touch.pressed ? root.palette.pressed : root.label == "" ? transparent : root.palette.faint;
     accessible-role: button;
     accessible-label: root.name;
     accessible-description: root.hint;
@@ -44,6 +52,7 @@ export component IconButton inherits Rectangle {
 
     HoverFill {
         visible: root.enabled && !touch.pressed;
+        border-radius: root.border-radius;
         hovered: touch.has-hover;
         fill: root.palette.hover;
     }
@@ -57,15 +66,26 @@ export component IconButton inherits Rectangle {
         Tooltip { text: @markdown("\{!root.enabled && root.disabled-hint != "" ? root.disabled-hint : root.hint}"); }
     }
 
-    Text {
-        accessible-role: none;
-        text: root.icon;
-        font-family: Theme.icon-font;
-        font-size: Theme.icon;
-        color: root.palette.text;
+    layout := HorizontalLayout {
+        alignment: center;
+        padding-left: root.label == "" ? 0px : Theme.pad * 3 / 2;
+        padding-right: self.padding-left;
+        spacing: Theme.pad;
         opacity: root.enabled ? 1 : 0.4;
-        horizontal-alignment: center;
-        vertical-alignment: center;
+        if root.label == "": Text {
+            accessible-role: none;
+            text: root.icon;
+            font-family: Theme.icon-font;
+            font-size: root.glyph-size;
+            color: root.palette.text;
+            vertical-alignment: center;
+        }
+        if root.label != "": Text {
+            accessible-role: none;
+            text: root.label;
+            color: root.palette.text;
+            vertical-alignment: center;
+        }
     }
 }
 

@@ -4,7 +4,9 @@
 /// Height of buttons and fields, and the width of icon buttons.
 pub(crate) const CONTROL: f32 = 28.0;
 /// Height of a message in the list: the sender and date, then the subject.
-pub(crate) const LIST_ROW: f32 = 52.0;
+pub(crate) const LIST_ROW: f32 = 72.0;
+/// How many avatar fills each mode has.
+pub(crate) const TINTS: usize = 6;
 
 #[cfg(test)]
 mod tests {
@@ -54,6 +56,28 @@ mod tests {
         let theme = window.global::<Theme>();
         assert_eq!(theme.get_control(), CONTROL);
         assert_eq!(theme.get_list_row(), LIST_ROW);
+    }
+
+    #[test]
+    fn every_avatar_fill_carries_its_initials_in_both_modes() {
+        use slint::Model;
+        crate::gui::test_support::headless();
+        let window = StartupWindow::new().unwrap();
+        let theme = window.global::<Theme>();
+        for dark in [false, true] {
+            theme.set_preference(if dark {
+                crate::gui::ui::ThemePreference::Dark
+            } else {
+                crate::gui::ui::ThemePreference::Light
+            });
+            let heading = theme.get_pane().heading;
+            let fills = theme.get_avatars();
+            assert_eq!(fills.row_count(), TINTS);
+            for fill in fills.iter() {
+                let ratio = contrast(heading, fill);
+                assert!(ratio >= 4.5, "dark {dark}: {fill:?} {ratio}");
+            }
+        }
     }
 
     #[test]

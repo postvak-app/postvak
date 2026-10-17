@@ -10,6 +10,7 @@ pub(crate) const CARET_RIGHT: &str = "\u{E13A}"; // caret-right
 pub(crate) const CHECK: &str = "\u{E182}"; // check
 pub(crate) const CLOSE: &str = "\u{E4F6}"; // x
 pub(crate) const DRAFTS: &str = "\u{E704}"; // file-dashed
+pub(crate) const FILTER: &str = "\u{E266}"; // funnel
 pub(crate) const FLAG: &str = "\u{E244}"; // flag
 pub(crate) const FOLDER: &str = "\u{E24A}"; // folder
 pub(crate) const INBOX: &str = "\u{E4AA}"; // tray

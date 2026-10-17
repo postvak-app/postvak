@@ -226,12 +226,8 @@ pub(crate) fn results(app: &App) -> String {
 
 /// What an empty list says instead of rows; nothing before a search query is typed.
 pub(crate) fn empty(view: &View, search: Option<&str>, filter: Filter) -> String {
-    let kind = FILTERS
-        .iter()
-        .find(|(_, f)| *f == filter && filter != Filter::default())
-        .map_or(String::new(), |(label, _)| {
-            format!("{} ", label.to_lowercase())
-        });
+    let kind =
+        filter_label(filter).map_or(String::new(), |label| format!("{} ", label.to_lowercase()));
     match search {
         Some("") => String::new(),
         Some(_) => "No mail matches.".into(),
@@ -240,7 +236,15 @@ pub(crate) fn empty(view: &View, search: Option<&str>, filter: Filter) -> String
     }
 }
 
-/// The list's filter switch, left to right.
+/// The chosen filter's name beside the list's title; none for All, which needs no reminder.
+pub(crate) fn filter_label(filter: Filter) -> Option<&'static str> {
+    FILTERS
+        .iter()
+        .find(|(_, f)| *f == filter && filter != Filter::default())
+        .map(|(label, _)| *label)
+}
+
+/// The list's filter menu, top to bottom.
 pub(crate) const FILTERS: [(&str, Filter); 4] = [
     (
         "All",
@@ -322,22 +326,6 @@ pub(crate) fn menu(row: &Row, in_junk: bool) -> [Vec<(&'static str, UiAction)>; 
     ]
 }
 
-/// The counts beside the list's title: "3 threads, 1 unread".
-pub(crate) fn counts(rows: &[Row]) -> String {
-    let threads: Vec<&Row> = rows.iter().filter(|row| !row.member).collect();
-    let unread = threads.iter().filter(|row| row.unread).count();
-    let noun = if threads.len() == 1 {
-        "thread"
-    } else {
-        "threads"
-    };
-    format!(
-        "{} {noun}, {} unread",
-        super::numbers::count(threads.len() as u64),
-        super::numbers::count(unread as u64)
-    )
-}
-
 /// "Alice <alice@x>, bob@y" is "Alice"; without a name, the first address.
 pub fn display_name(field: &str) -> String {
     let field = field.trim();
@@ -390,8 +378,8 @@ pub struct Columns {
     pub date: String,
 }
 
-/// The list pane's narrowest width, so the unread dot and the flag never reach the date and the filters fit beside
-/// the title; the body pane keeps it too.
+/// The list pane's narrowest width, so the unread dot and the flag never reach the date and a long title keeps room
+/// for the filter chip; the body pane keeps it too.
 pub const MIN_WIDTH: f32 = 320.0;
 
 pub fn columns<Tz: TimeZone>(
@@ -843,7 +831,7 @@ mod tests {
     }
 
     #[test]
-    fn the_list_is_titled_with_the_folder_and_its_counts() {
+    fn the_list_is_titled_with_the_folder() {
         let fx = Fixture::new(&["work"]);
         fx.add("work", message("INBOX", 1, "read"));
         let unread = unread("INBOX", 2, "new");
@@ -854,7 +842,37 @@ mod tests {
             1,
             "the title; the folder row says Inbox (1)"
         );
-        assert_eq!(open.find("2 threads, 1 unread").len(), 1);
+    }
+
+    #[test]
+    fn the_filter_menu_picks_a_filter_and_its_chip_clears_it() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "read"));
+        fx.add("work", unread("INBOX", 2, "new"));
+        let (open, _wires) = fx.window();
+        assert!(open.find("Clear filter").is_empty(), "All needs no chip");
+        assert!(open.find("Unread").is_empty(), "the menu is closed");
+        open.click("Filter messages");
+        for label in ["All", "Unread", "Flagged", "Attachments"] {
+            assert_eq!(open.find(label).len(), 1, "{label} in the menu");
+        }
+        // The testing backend does not activate menu items; this is what Unread's does.
+        open.window().invoke_list_filter_clicked(1);
+        assert_eq!(open.with(|live| live.app.filter), FILTERS[1].1);
+        assert_eq!(open.with(|live| live.app.list.rows.len()), 1);
+        assert_eq!(
+            open.get("Clear filter").accessible_description().unwrap(),
+            "Unread"
+        );
+        open.click("Clear filter");
+        assert_eq!(open.with(|live| live.app.filter), Filter::default());
+        assert!(open.find("Clear filter").is_empty());
+    }
+
+    #[test]
+    fn only_a_filter_other_than_all_is_named() {
+        assert_eq!(filter_label(Filter::default()), None);
+        assert_eq!(filter_label(FILTERS[3].1), Some("Attachments"));
     }
 
     #[test]
@@ -1260,14 +1278,18 @@ mod tests {
             crate::gui::test_support::unread("INBOX", 2, "unread"),
         );
         let (open, _wires) = fx.window();
-        open.click("Unread");
+        let pick = |label: &str| {
+            let i = FILTERS.iter().position(|(l, _)| *l == label).unwrap();
+            open.window().invoke_list_filter_clicked(i as i32);
+        };
+        pick("Unread");
         assert_eq!(
             open.with(|live| live.app.list.rows.iter().map(|r| r.uid).collect::<Vec<_>>()),
             [2]
         );
-        open.click("Flagged");
+        pick("Flagged");
         assert_eq!(open.find("No flagged mail in this folder.").len(), 1);
-        open.click("All");
+        pick("All");
         assert_eq!(open.with(|live| live.app.list.rows.len()), 2);
     }
 }
