@@ -1,5 +1,0 @@
-name: postvak
-query-filters:
-  # Flags every value named like `account` or `uid`; secrets are kept out of logs by `Secret` having no Debug.
-  - exclude:
-      id: rust/cleartext-logging
