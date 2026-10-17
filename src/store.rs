@@ -1127,6 +1127,36 @@ mod tests {
     }
 
     #[test]
+    fn thread_list_and_unread_count_read_only_the_covering_index() {
+        let s = store_with_inbox();
+        // Without statistics an empty table plans differently; a few hundred rows plan like a real folder.
+        for uid in 1..=500 {
+            s.insert_message(&msg("INBOX", uid, i64::from(uid)))
+                .unwrap();
+        }
+        let plan = |sql: &str| -> String {
+            let mut stmt = s
+                .conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap();
+            let rows = stmt.query_map([], |r| r.get::<_, String>(3)).unwrap();
+            rows.collect::<Result<Vec<_>, _>>().unwrap().join("\n")
+        };
+        let thread_list = plan(&format!(
+            "SELECT thread_id, {SUMMARY_COLUMNS}, MAX(internaldate) FROM messages WHERE folder = 'INBOX' GROUP BY thread_id"
+        ));
+        let unread = plan(
+            r"SELECT COUNT(*) FROM messages WHERE folder = 'INBOX' AND instr(flags, '\Seen') = 0",
+        );
+        for detail in [thread_list, unread] {
+            assert!(
+                detail.contains("COVERING INDEX messages_folder_thread"),
+                "{detail}"
+            );
+        }
+    }
+
+    #[test]
     fn rules_uid_round_trips_and_survives_upsert() {
         let s = store_with_inbox();
         assert_eq!(s.rules_uid("INBOX").unwrap(), 0);
