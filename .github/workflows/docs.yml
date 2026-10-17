@@ -3,7 +3,8 @@ name: Docs
 on:
   push:
     branches: [main]
-    paths: [.github/workflows/docs.yml, assets/**, docs/book.toml, docs/src/**, docs/theme/**]
+    paths: [.github/workflows/docs.yml, assets/**, docs/book.toml, docs/src/**, docs/theme/**, packaging/linux/flatpak-repo.sh]
+  # flatpak.yml starts this once a release's bundles are attached, so the Flatpak repository gets them.
   workflow_dispatch:
 
 permissions: {}
@@ -25,6 +26,14 @@ jobs:
         with:
           tool: mdbook
       - run: mdbook build docs
+      # Every deploy replaces the whole site, so each one carries the Flatpak repository as well.
+      - name: Add the Flatpak repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SITE_URL: https://postvak.pataar.nl
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends flatpak ostree
+          packaging/linux/flatpak-repo.sh docs/book
       - uses: actions/upload-pages-artifact@v5
         with:
           path: docs/book

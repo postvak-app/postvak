@@ -1,0 +1,38 @@
+# Postvak as a Flatpak, built by packaging/linux/flatpak.sh from a release binary, so nothing compiles twice. The
+# script stages the binary and the files below into `stage/` next to a copy of this manifest, with the release's
+# version in the metainfo. The binary needs glibc >= 2.35 and loads Wayland, X11 and Vulkan at runtime; the
+# Freedesktop runtime has them, and the GPU driver comes from its GL extension.
+id: io.github.postvak_app.postvak
+runtime: org.freedesktop.Platform
+runtime-version: '26.08'
+sdk: org.freedesktop.Sdk
+command: postvak-launch
+finish-args:
+  - --share=network
+  # Display: Wayland first, X11 only without a Wayland compositor; X11 needs shared memory.
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  # The GPU for the window (Vulkan, or GL as a fallback).
+  - --device=dri
+  # The password keyring (Secret Service) and new-mail notifications.
+  - --talk-name=org.freedesktop.secrets
+  - --talk-name=org.freedesktop.Notifications
+  # Saved attachments go to the Downloads folder. No other host files: config and mail stay in
+  # ~/.var/app/io.github.postvak_app.postvak, and rules.toml opens in the host's editor through the OpenURI portal.
+  - --filesystem=xdg-download
+modules:
+  - name: postvak
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 postvak /app/bin/postvak
+      - install -Dm755 postvak-launch /app/bin/postvak-launch
+      - install -Dm644 io.github.postvak_app.postvak.desktop /app/share/applications/io.github.postvak_app.postvak.desktop
+      - install -Dm644 io.github.postvak_app.postvak.metainfo.xml /app/share/metainfo/io.github.postvak_app.postvak.metainfo.xml
+      - |
+        for icon in hicolor/*/apps/io.github.postvak_app.postvak.*; do
+          install -Dm644 "$icon" "/app/share/icons/$icon"
+        done
+    sources:
+      - type: dir
+        path: stage

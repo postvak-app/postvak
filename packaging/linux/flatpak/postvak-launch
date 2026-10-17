@@ -1,0 +1,7 @@
+#!/bin/sh
+# The Flatpak's command: `flatpak run io.github.postvak_app.postvak` alone opens the window, as the launcher does;
+# with arguments it is the postvak command.
+if [ $# -eq 0 ]; then
+    set -- gui
+fi
+exec /app/bin/postvak "$@"

@@ -134,6 +134,9 @@ impl Target {
 
 /// The text to print; with `dry_run` nothing is written, stopped or run.
 pub fn install(paths: &Paths, dry_run: bool) -> Result<String> {
+    if let Some(id) = paths::flatpak_id() {
+        return Ok(flatpak_steps(&id, true));
+    }
     let target = Target::current()?;
     let home = home_dir()?;
     let file = target.file(&home);
@@ -157,6 +160,9 @@ pub fn install(paths: &Paths, dry_run: bool) -> Result<String> {
 
 /// The text to print; with `dry_run` nothing is stopped, run or deleted.
 pub fn remove(dry_run: bool) -> Result<String> {
+    if let Some(id) = paths::flatpak_id() {
+        return Ok(flatpak_steps(&id, false));
+    }
     let target = Target::current()?;
     let home = home_dir()?;
     let file = target.file(&home);
@@ -177,6 +183,24 @@ pub fn remove(dry_run: bool) -> Result<String> {
         None,
         &steps,
     ))
+}
+
+/// What to do by hand: the sandbox cannot write the host's systemd folder, and the unit must go through `flatpak run`.
+fn flatpak_steps(app_id: &str, install: bool) -> String {
+    let file = format!("~/.config/systemd/user/{}", Target::Systemd.file_name());
+    if install {
+        let text = unit_running(&format!("flatpak run {app_id}"), None);
+        format!(
+            "the Flatpak cannot write the host's systemd folder; save this as {file}:\n{}\nthen run: \
+             systemctl --user daemon-reload && systemctl --user enable --now {SYSTEMD_UNIT}",
+            text.trim_end()
+        )
+    } else {
+        format!(
+            "the Flatpak cannot change the host's systemd folder; run: systemctl --user disable --now {SYSTEMD_UNIT} \
+             && rm {file} && systemctl --user daemon-reload"
+        )
+    }
 }
 
 /// A daemon already running holds the lock the service's daemon needs.
@@ -289,7 +313,11 @@ fn plist_with_path(
 }
 
 pub fn unit(exe: &Path, postvak_home: Option<&Path>) -> String {
-    let exe = systemd_quoted(&exe.to_string_lossy());
+    unit_running(&systemd_quoted(&exe.to_string_lossy()), postvak_home)
+}
+
+/// `command` is already quoted for systemd.
+fn unit_running(command: &str, postvak_home: Option<&Path>) -> String {
     let environment = postvak_home.map_or_else(String::new, |home| {
         format!(
             "Environment={}\n",
@@ -297,7 +325,7 @@ pub fn unit(exe: &Path, postvak_home: Option<&Path>) -> String {
         )
     });
     format!(
-        "[Unit]\nDescription=Postvak mail sync\n\n[Service]\n{environment}ExecStart={exe} run\nRestart=always\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n"
+        "[Unit]\nDescription=Postvak mail sync\n\n[Service]\n{environment}ExecStart={command} run\nRestart=always\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n"
     )
 }
 
@@ -314,6 +342,28 @@ fn systemd_quoted(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_flatpak_prints_a_unit_that_runs_the_app_through_flatpak() {
+        let text = flatpak_steps("io.github.postvak_app.postvak", true);
+        assert!(
+            text.contains("ExecStart=flatpak run io.github.postvak_app.postvak run\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("~/.config/systemd/user/postvak.service"),
+            "{text}"
+        );
+        assert!(
+            text.contains("systemctl --user enable --now postvak"),
+            "{text}"
+        );
+        let text = flatpak_steps("io.github.postvak_app.postvak", false);
+        assert!(
+            text.contains("systemctl --user disable --now postvak"),
+            "{text}"
+        );
+    }
 
     #[test]
     fn the_launchd_plist_runs_the_binary_at_login_and_keeps_it_alive() {
