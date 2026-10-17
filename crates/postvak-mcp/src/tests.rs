@@ -938,16 +938,10 @@ async fn sync_reports_the_errors_of_its_pass() {
 }
 
 #[tokio::test]
-async fn sync_reports_a_refusal_as_the_accounts_error() {
+async fn sync_reports_a_failed_connect_as_the_accounts_error() {
     let fx = fixture_with_daemon(&["work"], offline_connector());
     let client = connect(&fx, "read", &[]).await;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let report = loop {
-        let report = rows(&call(&client, "sync", json!({})).await);
-        if report[0].get("error").is_some() || std::time::Instant::now() > deadline {
-            break report;
-        }
-    };
+    let report = rows(&call(&client, "sync", json!({})).await);
     let error = report[0]["error"].as_str().unwrap();
     assert!(
         error.starts_with("work is offline (no route to host)"),

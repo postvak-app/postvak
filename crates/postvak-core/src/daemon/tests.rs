@@ -1,7 +1,7 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use super::test_support::{
@@ -152,22 +152,55 @@ fn every_store_is_migrated_before_the_first_hello() {
     }
 }
 
+fn work_is_offline(status: &Status) -> bool {
+    status.accounts.iter().any(|account| {
+        account.name == "work" && matches!(account.activity, Some(Activity::Offline { .. }))
+    })
+}
+
 #[test]
 fn an_offline_account_refuses_commands_with_its_reason() {
     let daemon = TestDaemon::start_with(options(offline_connector(), None));
     let mut client = daemon.client();
-    status_until(&mut client, |status| {
-        status.accounts.iter().any(|account| {
-            account.name == "work" && matches!(account.activity, Some(Activity::Offline { .. }))
-        })
-    });
-    match client.request(command(3, "work", Command::SyncNow)) {
+    status_until(&mut client, work_is_offline);
+    match client.request(command(3, "work", Command::FetchBodies { folder: None })) {
         Outcome::Error(message) => assert!(
             message.starts_with("work is offline (no route to host); retrying at "),
             "{message}"
         ),
         other => panic!("expected a refusal, got {other:?}"),
     }
+}
+
+/// work's first connect fails and every later one succeeds, as after the user fixed its password.
+#[test]
+fn sync_now_on_an_offline_account_retries_at_once() {
+    let work_connects = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let connector: crate::engine::Connector = std::sync::Arc::new({
+        let work_connects = work_connects.clone();
+        move |account: &crate::config::AccountConfig| {
+            if account.name == "work"
+                && work_connects.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0
+            {
+                return Err(crate::sync::SyncError::Io(std::io::Error::other(
+                    "no route to host",
+                )));
+            }
+            recording_connector()(account)
+        }
+    });
+    let daemon = TestDaemon::start_with(options(connector, None));
+    let mut client = daemon.client();
+    status_until(&mut client, work_is_offline);
+    match client.request(command(3, "work", Command::SyncNow)) {
+        Outcome::Ok(Payload::Event(Event::Synced { .. })) => {}
+        other => panic!("expected the retried sync, got {other:?}"),
+    }
+    assert_eq!(
+        work_connects.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "SyncNow connected again well before the 5 s back-off ended"
+    );
 }
 
 #[test]
@@ -775,6 +808,7 @@ fn new_mail_notifies_even_on_an_account_with_notify_off() {
     let shared = super::Shared {
         engine: std::sync::Mutex::new(None),
         hub: std::sync::Mutex::new(super::Hub::new()),
+        watch: std::sync::Mutex::new(super::Watch::new(&Paths::under(Path::new("/nonexistent")))),
     };
     let (events, received) = std::sync::mpsc::channel();
     events
@@ -816,6 +850,7 @@ fn a_command_while_stopping_says_the_daemon_is_stopping() {
     let shared = super::Shared {
         engine: std::sync::Mutex::new(None),
         hub: std::sync::Mutex::new(super::Hub::new()),
+        watch: std::sync::Mutex::new(super::Watch::new(&Paths::under(Path::new("/nonexistent")))),
     };
     let (out, lines) = std::sync::mpsc::channel();
     let conn = super::ClientConn {
@@ -976,6 +1011,7 @@ fn a_command_for_an_account_between_threads_says_it_is_restarting() {
     let shared = super::Shared {
         engine: std::sync::Mutex::new(Some(engine)),
         hub: std::sync::Mutex::new(super::Hub::new()),
+        watch: std::sync::Mutex::new(super::Watch::new(&paths)),
     };
     // Bound after the engine, so the gate opens before the engine's drop waits for its threads.
     let gate = gate;

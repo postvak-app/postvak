@@ -34,7 +34,7 @@ pub const SEARCH: &str =
 pub const SHOW: &str = "Show one message";
 pub const STATUS: &str =
     "The daemon's pid, version, uptime, client count and each account's activity";
-pub const SYNC: &str = "Ask the daemon to sync now and apply rules; reports new messages and actions per account, or why one was refused";
+pub const SYNC: &str = "Ask the daemon to sync now and apply rules; reports new messages and actions per account, or why one could not sync";
 pub const TRASH_LIST: &str = "Deleted mail kept as .eml backups for the retention period";
 pub const TRASH_PURGE: &str = "Remove .eml backups older than the account's retention period";
 pub const TRASH_RESTORE: &str = "Append a trashed .eml back into its original folder";

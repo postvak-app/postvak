@@ -52,8 +52,9 @@ pub fn add(
     Ok(())
 }
 
-/// Waits until the daemon lists `name`, which it does within its config poll; a command for the account before that
-/// would be refused as unknown.
+/// Waits until the daemon lists `name` as running. Each status request makes the daemon apply a changed config.toml
+/// first, and an account restarting on a changed config is not listed until its new thread runs, so a command sent
+/// after this reaches the thread of the config just saved.
 pub fn await_started(client: &Client, name: &str, timeout: Duration) -> anyhow::Result<()> {
     let deadline = Instant::now() + timeout;
     loop {
@@ -189,6 +190,43 @@ mod tests {
         );
         assert!(check(&config, &command_account("work")).is_ok());
         assert!(config.accounts.is_empty());
+    }
+
+    /// Port 1 cannot connect; any other port can.
+    fn port_one_fails() -> crate::engine::Connector {
+        std::sync::Arc::new(|account: &AccountConfig| {
+            if account.port == 1 {
+                return Err(crate::sync::SyncError::Io(std::io::Error::other(
+                    "connection refused",
+                )));
+            }
+            recording_connector()(account)
+        })
+    }
+
+    #[test]
+    fn adding_an_account_again_syncs_with_its_new_config() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::under(home.path());
+        write_config(&paths);
+        let daemon = TestDaemon::serve(home, paths.clone(), options(port_one_fails(), None));
+        let client = Client::connect_or_start(&daemon.paths).unwrap();
+        let mut config = Config::load(&paths.config_file()).unwrap();
+        let mut account = command_account("late");
+        account.port = 1;
+        add(&mut config, &paths, account.clone(), None).unwrap();
+        await_started(&client, "late", Duration::from_secs(10)).unwrap();
+        let first = client.request("late", crate::sync::Command::SyncNow);
+        assert!(first.is_err(), "{first:?}");
+
+        account.port = 2;
+        add(&mut config, &paths, account, None).unwrap();
+        await_started(&client, "late", Duration::from_secs(10)).unwrap();
+        let second = client.request("late", crate::sync::Command::SyncNow);
+        assert!(
+            matches!(second, Ok(crate::sync::Event::Synced { .. })),
+            "{second:?}"
+        );
     }
 
     #[test]
