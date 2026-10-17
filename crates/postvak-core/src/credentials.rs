@@ -115,23 +115,31 @@ fn keyring_entry(account_name: &str) -> Result<keyring_core::Entry, CredentialEr
     keyring_core::Entry::new(SERVICE, account_name).map_err(|e| map_keyring_error(e, account_name))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 fn platform_store() -> Result<std::sync::Arc<keyring_core::CredentialStore>, String> {
     apple_native_keyring_store::keychain::Store::new()
         .map(|s| s as std::sync::Arc<keyring_core::CredentialStore>)
         .map_err(|e| e.to_string())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(test)))]
 fn platform_store() -> Result<std::sync::Arc<keyring_core::CredentialStore>, String> {
     zbus_secret_service_keyring_store::Store::new()
         .map(|s| s as std::sync::Arc<keyring_core::CredentialStore>)
         .map_err(|e| e.to_string())
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(all(not(any(target_os = "macos", target_os = "linux")), not(test)))]
 fn platform_store() -> Result<std::sync::Arc<keyring_core::CredentialStore>, String> {
     Err("no keyring store for this platform".to_string())
+}
+
+/// Tests never touch the OS keyring: an in-memory store that lives for the test process.
+#[cfg(test)]
+fn platform_store() -> Result<std::sync::Arc<keyring_core::CredentialStore>, String> {
+    keyring_core::mock::Store::new()
+        .map(|s| s as std::sync::Arc<keyring_core::CredentialStore>)
+        .map_err(|e| e.to_string())
 }
 
 fn map_keyring_error(e: keyring_core::Error, account_name: &str) -> CredentialError {
@@ -203,5 +211,17 @@ mod tests {
             resolve(&account("exit 3")),
             Err(CredentialError::CommandFailed { status: 3, .. })
         ));
+    }
+
+    #[test]
+    fn keyring_round_trips_in_tests() {
+        let account = AccountConfig::new(
+            "roundtrip",
+            "h",
+            "u@example.com",
+            PasswordSource::Keyring { keyring: true },
+        );
+        store("roundtrip", &Secret::new("hunter2".into())).unwrap();
+        assert_eq!(resolve(&account).unwrap().expose(), "hunter2");
     }
 }
