@@ -231,9 +231,7 @@ impl Backend {
         let mut rows = Vec::new();
         for acc in self.select(account)? {
             for e in Trash::new(self.paths.trash_dir(&acc.name)).list()? {
-                let subject = std::fs::read(&e.path)
-                    .ok()
-                    .and_then(|raw| message::parse_headers(&raw).subject);
+                let subject = e.headers().subject;
                 let file = e.path.file_name().map(|n| n.to_string_lossy().into_owned());
                 rows.push(json!({ "account": acc.name, "saved_at": e.saved_at, "folder": e.folder, "uid": e.uid, "subject": subject, "file": file }));
             }

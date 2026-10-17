@@ -88,6 +88,20 @@ impl ImapOps {
         Ok((&self.rt, session))
     }
 
+    fn uid_search_sorted(&mut self, query: String) -> MailResult<Vec<u32>> {
+        let (rt, session) = self.parts()?;
+        rt.block_on(async {
+            let mut uids: Vec<u32> = session
+                .uid_search(query)
+                .await
+                .map_err(proto)?
+                .into_iter()
+                .collect();
+            uids.sort_unstable();
+            Ok(uids)
+        })
+    }
+
     #[cfg(any(test, feature = "testing"))]
     pub fn has_move(&self) -> bool {
         self.has_move
@@ -250,26 +264,11 @@ impl MailOps for ImapOps {
     }
 
     fn search_uids(&mut self, from_uid: u32) -> MailResult<Vec<u32>> {
-        let (rt, session) = self.parts()?;
-        rt.block_on(async {
-            let found = session
-                .uid_search(format!("UID {from_uid}:*"))
-                .await
-                .map_err(proto)?;
-            let mut uids: Vec<u32> = found.into_iter().collect();
-            uids.sort_unstable();
-            Ok(uids)
-        })
+        self.uid_search_sorted(format!("UID {from_uid}:*"))
     }
 
     fn search_text(&mut self, words: &[String]) -> MailResult<Vec<u32>> {
-        let (rt, session) = self.parts()?;
-        rt.block_on(async {
-            let found = session.uid_search(text_query(words)).await.map_err(proto)?;
-            let mut uids: Vec<u32> = found.into_iter().collect();
-            uids.sort_unstable();
-            Ok(uids)
-        })
+        self.uid_search_sorted(text_query(words))
     }
 
     fn fetch_envelopes(&mut self, first: u32, last: u32) -> MailResult<Vec<Envelope>> {

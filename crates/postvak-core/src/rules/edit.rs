@@ -6,7 +6,7 @@ use std::path::Path;
 
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Value};
 
-use crate::paths::{Paths, create_private_dir, write_atomic};
+use crate::paths::{Paths, create_private_dir, read_or_empty, write_atomic};
 use crate::rules::{Rule, RuleFile, RulesError, compile, parse};
 use crate::store::Store;
 
@@ -17,7 +17,7 @@ pub fn propose(path: &Path, mut rule: Rule, by: &str) -> Result<(), RulesError> 
     let snippet = toml::to_string(&RuleFile { rules: vec![rule] })
         .map_err(|e| RulesError::Parse(e.to_string()))?;
     let _lock = lock(path)?;
-    let mut text = read(path)?;
+    let mut text = read_or_empty(path)?;
     if !text.is_empty() {
         if !text.ends_with('\n') {
             text.push('\n');
@@ -120,7 +120,7 @@ fn edit(
     change: impl FnOnce(&mut ArrayOfTables, usize) -> Result<Option<String>, RulesError>,
 ) -> Result<(), RulesError> {
     let _lock = lock(path)?;
-    let mut doc: DocumentMut = read(path)?
+    let mut doc: DocumentMut = read_or_empty(path)?
         .parse()
         .map_err(|e: toml_edit::TomlError| RulesError::Parse(e.to_string()))?;
     let rules = doc
@@ -158,14 +158,6 @@ fn save(path: &Path, text: &str) -> Result<(), RulesError> {
     compile(&parse(text)?)?;
     write_atomic(path, text.as_bytes())?;
     Ok(())
-}
-
-fn read(path: &Path) -> Result<String, RulesError> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => Ok(text),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(String::new()),
-        Err(e) => Err(e.into()),
-    }
 }
 
 fn invalid(name: &str, reason: &str) -> RulesError {

@@ -77,7 +77,7 @@ enum Command {
         #[command(subcommand)]
         command: ServiceCommand,
     },
-    /// Ask the daemon to sync now and apply rules; waits for the result
+    #[command(about = postvak_core::help::SYNC)]
     Sync {
         #[arg(long)]
         account: Option<String>,
@@ -353,6 +353,7 @@ enum RulesCommand {
 
 #[derive(Subcommand)]
 enum TrashCommand {
+    #[command(about = postvak_core::help::TRASH_LIST)]
     List {
         #[arg(long)]
         account: Option<String>,
@@ -481,7 +482,7 @@ pub fn run() -> Result<()> {
             let daemon = LazyClient::new(&paths);
             for acc in select_accounts(&config, account.as_deref())? {
                 let store = Store::open_account(&paths, &acc.name)?;
-                if bodies && lacks_bodies(&store, folder.as_deref())? {
+                if bodies && store.lacks_bodies(folder.as_deref())? {
                     eprintln!(
                         "{}: fetching missing bodies; this can take a while on a large folder",
                         acc.name
@@ -526,11 +527,8 @@ pub fn run() -> Result<()> {
             dry_run,
             json,
         } => {
-            let acc = single_account(&config, account.as_deref())?;
-            let store = Store::open_account(&paths, &acc.name)?;
-            let msg = store
-                .message(&folder, uid)?
-                .with_context(|| format!("no message {folder}/{uid}"))?;
+            let (acc, _store, msg) =
+                open_message(&config, &paths, account.as_deref(), &folder, uid)?;
             let report = postvak_core::unsubscribe::unsubscribe(&msg.headers, dry_run)?;
             if json {
                 println!(
@@ -549,11 +547,8 @@ pub fn run() -> Result<()> {
             raw,
             json,
         } => {
-            let acc = single_account(&config, account.as_deref())?;
-            let store = Store::open_account(&paths, &acc.name)?;
-            let msg = store
-                .message(&folder, uid)?
-                .with_context(|| format!("no message {folder}/{uid}"))?;
+            let (acc, store, msg) =
+                open_message(&config, &paths, account.as_deref(), &folder, uid)?;
             let body = LazyClient::new(&paths).raw_message(&acc.name, &store, &msg)?;
             if raw {
                 io::stdout().write_all(&body)?;
@@ -608,7 +603,7 @@ pub fn run() -> Result<()> {
                         println!(
                             "{}  {}  {:<20} {:<12} {}/{}  {}",
                             acc.name,
-                            format_time(e.at),
+                            time::date_time(e.at),
                             clean(&e.rule_name, false),
                             clean(&e.action, false),
                             clean(&e.folder, false),
@@ -703,24 +698,6 @@ fn cmd_act(config: &Config, paths: &Paths, selection: Selection, action: Action)
     Ok(())
 }
 
-fn lacks_bodies(store: &Store, folder: Option<&str>) -> Result<bool> {
-    let folders = match folder {
-        Some(folder) => vec![folder.to_string()],
-        None => store.folders()?.into_iter().map(|f| f.name).collect(),
-    };
-    for folder in folders {
-        if store
-            .messages_in_folder(&folder)?
-            .iter()
-            .any(|m| m.body_text.is_none())
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-/// Asks the daemon to fetch the missing bodies.
 fn unsubscribe_line(report: &postvak_core::unsubscribe::Report) -> String {
     let url = clean(&report.url, false);
     match (report.method, report.done) {
@@ -731,12 +708,15 @@ fn unsubscribe_line(report: &postvak_core::unsubscribe::Report) -> String {
     }
 }
 
+/// Asks the daemon to fetch the missing bodies.
 fn fetch_bodies(daemon: &LazyClient, account: &str, folder: Option<&str>) -> Result<()> {
     let fetch = sync::Command::FetchBodies {
         folder: folder.map(str::to_string),
     };
-    daemon.request(account, fetch, Ok)?;
-    Ok(())
+    daemon.request(account, fetch, |reply| match reply {
+        Event::BodiesFetched { .. } => Ok(()),
+        other => Err(other),
+    })
 }
 
 fn cmd_sync(config: &Config, paths: &Paths, account: Option<&str>) -> Result<()> {
@@ -784,12 +764,12 @@ fn sync_account(client: &Client, name: &str) -> bool {
                 _ => &[],
             };
             for message in errors {
-                eprintln!("[{name}] error: {}", clean(message, false));
+                postvak_core::daemon::report_error(name, message);
             }
             errors.is_empty()
         }
         Err(e) => {
-            eprintln!("[{name}] error: {}", clean(&format!("{e:#}"), false));
+            postvak_core::daemon::report_error(name, &format!("{e:#}"));
             false
         }
     }
@@ -854,11 +834,7 @@ fn cmd_attachment(command: AttachmentCommand, config: &Config, paths: &Paths) ->
             ..
         } => (*uid, account.as_deref(), folder.as_str()),
     };
-    let acc = single_account(config, account)?;
-    let store = Store::open_account(paths, &acc.name)?;
-    let msg = store
-        .message(folder, uid)?
-        .with_context(|| format!("no message {}/{uid}", clean(folder, false)))?;
+    let (acc, store, msg) = open_message(config, paths, account, folder, uid)?;
     let raw = LazyClient::new(paths).raw_message(&acc.name, &store, &msg)?;
     match command {
         AttachmentCommand::List { json, .. } => {
@@ -907,9 +883,20 @@ fn single_account<'a>(config: &'a Config, name: Option<&str>) -> Result<&'a Acco
     }
 }
 
-/// In local time, as the mail window shows it.
-fn format_time(timestamp: i64) -> String {
-    time::local_time(timestamp, "%Y-%m-%d %H:%M")
+/// The account, its store and the stored message `folder/uid`.
+fn open_message<'a>(
+    config: &'a Config,
+    paths: &Paths,
+    account: Option<&str>,
+    folder: &str,
+    uid: u32,
+) -> Result<(&'a AccountConfig, Store, Message)> {
+    let acc = single_account(config, account)?;
+    let store = Store::open_account(paths, &acc.name)?;
+    let msg = store
+        .message(folder, uid)?
+        .with_context(|| format!("no message {}/{uid}", clean(folder, false)))?;
+    Ok((acc, store, msg))
 }
 
 /// `account  * INBOX/42  date  from  subject`; `*` marks unread, `depth` indents the subject in thread views.
@@ -918,7 +905,7 @@ fn message_line(account: &str, m: &Message, depth: usize) -> String {
         "{account}  {} {:<14}  {}  {:<30}  {}{}",
         if m.is_seen() { " " } else { "*" },
         clean(&format!("{}/{}", m.folder, m.uid), false),
-        format_time(m.internaldate),
+        time::date_time(m.internaldate),
         truncate(&clean(m.from_addr.as_deref().unwrap_or(""), false), 30),
         "  ".repeat(depth),
         clean(m.subject.as_deref().unwrap_or(""), false)
@@ -1042,10 +1029,10 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             account,
             dry_run,
         } => {
-            let rules = compiled_rules(paths, Some(&name))?;
-            if rules.iter().any(|r| !r.rule.enabled) {
-                bail!("rule '{name}' is disabled; approve or enable it first");
-            }
+            let rules = vec![
+                postvak_core::rules::enabled_rule(&paths.rules_file(), &name)
+                    .map_err(anyhow::Error::msg)?,
+            ];
             let mut failed = false;
             let daemon = LazyClient::new(paths);
             for acc in select_accounts(config, account.as_deref())? {
@@ -1179,14 +1166,11 @@ fn cmd_trash(command: TrashCommand, config: &Config, paths: &Paths) -> Result<()
         TrashCommand::List { account } => {
             for acc in select_accounts(config, account.as_deref())? {
                 for e in Trash::new(paths.trash_dir(&acc.name)).list()? {
-                    let subject = std::fs::read(&e.path)
-                        .ok()
-                        .and_then(|raw| postvak_core::message::parse_headers(&raw).subject)
-                        .unwrap_or_default();
+                    let subject = e.headers().subject.unwrap_or_default();
                     println!(
                         "{}  {}  {}/{}  {}  {}",
                         acc.name,
-                        format_time(e.saved_at),
+                        time::date_time(e.saved_at),
                         clean(&e.folder, false),
                         e.uid,
                         clean(&subject, false),

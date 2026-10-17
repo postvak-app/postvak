@@ -75,14 +75,7 @@ impl Marker {
     }
 
     pub(crate) fn set(&self, starts: u32) {
-        let written = self
-            .0
-            .parent()
-            .map_or(Ok(()), postvak_core::paths::create_private_dir)
-            .and_then(|()| {
-                postvak_core::paths::write_atomic(&self.0, starts.to_string().as_bytes())
-            });
-        if let Err(e) = written {
+        if let Err(e) = postvak_core::paths::write_atomic(&self.0, starts.to_string().as_bytes()) {
             log::warn!("could not write {}: {e}", self.0.display());
         }
     }
