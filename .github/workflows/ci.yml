@@ -26,7 +26,7 @@ jobs:
     outputs:
       build: ${{ steps.select.outputs.build }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -66,21 +66,21 @@ jobs:
     if: ${{ !cancelled() && needs.select.outputs.build != 'false' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
-          tool: cargo-audit,cargo-machete
+          tool: cargo-deny,cargo-machete
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo check --no-default-features --all-targets
       - run: cargo machete
-      - run: cargo audit
+      - run: cargo deny check
 
   test:
     needs: select
@@ -97,17 +97,17 @@ jobs:
       # The GUI snapshots show local times; Slint's software renderer draws them the same on every machine.
       TZ: UTC
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: env.BUILD == 'true'
         with:
           persist-credentials: false
       - run: rustup toolchain install
         if: env.BUILD == 'true'
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: env.BUILD == 'true'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         if: env.BUILD == 'true'
         with:
           tool: cargo-nextest
@@ -123,14 +123,14 @@ jobs:
         if: env.BUILD == 'true'
       - name: Upload test results
         if: env.BUILD == 'true' && !cancelled()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: junit-${{ matrix.os }}
           path: target/nextest/ci/junit.xml
           if-no-files-found: ignore
       - name: Upload snapshot diffs
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: snapshot-diffs-${{ matrix.os }}
           path: tests/snapshots/*.new.png
