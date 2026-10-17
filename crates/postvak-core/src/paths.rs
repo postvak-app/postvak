@@ -83,7 +83,7 @@ impl Paths {
     }
 }
 
-pub(crate) fn create_private_dir(dir: &Path) -> io::Result<()> {
+pub fn create_private_dir(dir: &Path) -> io::Result<()> {
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)

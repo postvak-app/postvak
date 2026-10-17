@@ -66,7 +66,12 @@ enum Command {
         command: DaemonCommand,
     },
     /// Open the mail window; starts the daemon when needed
-    Gui,
+    Gui {
+        /// Draw with the software renderer and ignore the saved window layout, for when the window will not open;
+        /// entered by itself after two starts in a row that died before the window showed
+        #[arg(long)]
+        safe_mode: bool,
+    },
     /// Start the daemon at login: a launchd agent on macOS, a systemd user unit on Linux
     Service {
         #[command(subcommand)]
@@ -379,7 +384,7 @@ enum AccountCommand {
 pub fn run() -> Result<()> {
     let cli = if opened_as_mac_app() {
         Cli {
-            command: Command::Gui,
+            command: Command::Gui { safe_mode: false },
         }
     } else {
         Cli::parse()
@@ -389,15 +394,15 @@ pub fn run() -> Result<()> {
         None => Paths::discover(),
     };
     // The window explains its own startup errors, since it may have no terminal to print them in.
-    if matches!(cli.command, Command::Gui) {
-        return cmd_gui(paths);
+    if let Command::Gui { safe_mode } = cli.command {
+        return cmd_gui(paths, safe_mode);
     }
     let paths = paths?;
     let config = Config::load(&paths.config_file())?;
     match cli.command {
         Command::Run { idle_exit } => cmd_run(&paths, idle_exit),
         Command::Daemon { command } => cmd_daemon(command, &paths),
-        Command::Gui => cmd_gui(Ok(paths)),
+        Command::Gui { safe_mode } => cmd_gui(Ok(paths), safe_mode),
         Command::Service { command } => cmd_service(command, &paths),
         Command::Sync { account } => cmd_sync(&config, &paths, account.as_deref()),
         Command::Attachment { command } => cmd_attachment(command, &config, &paths),
@@ -940,12 +945,12 @@ fn opened_as_mac_app() -> bool {
 }
 
 #[cfg(feature = "gui")]
-fn cmd_gui(paths: Result<Paths>) -> Result<()> {
-    postvak_gui::run(paths)
+fn cmd_gui(paths: Result<Paths>, safe_mode: bool) -> Result<()> {
+    postvak_gui::run(paths, safe_mode)
 }
 
 #[cfg(not(feature = "gui"))]
-fn cmd_gui(_paths: Result<Paths>) -> Result<()> {
+fn cmd_gui(_paths: Result<Paths>, _safe_mode: bool) -> Result<()> {
     bail!("this postvak was built without the GUI; install it with the default features")
 }
 
