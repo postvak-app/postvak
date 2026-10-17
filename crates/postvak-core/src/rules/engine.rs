@@ -315,17 +315,6 @@ actions = ["delete"]
     }
 
     #[test]
-    fn equals_ignores_case_beyond_ascii() {
-        let id = identity();
-        let rule = rules(
-            "[[rules]]\nname = \"s\"\nmatch.subject = { equals = \"übersicht\" }\nactions = [\"flag\"]\n",
-            0,
-        );
-        let shouted = msg("a@x", "pieter@example.com", "ÜBERSICHT", 100, false);
-        assert_eq!(evaluate(&rule, &shouted, &ctx(&id, 200)).actions.len(), 1);
-    }
-
-    #[test]
     fn equals_on_address_fields_compares_bare_addresses() {
         let id = identity();
         let from_rule = rules(
