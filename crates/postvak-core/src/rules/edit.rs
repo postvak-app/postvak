@@ -164,7 +164,17 @@ fn rule_table(rule: &Rule) -> Result<Table, RulesError> {
         }
         conditions.fmt();
     }
+    // Actions that are all tables, such as `move`, would come out as `[[rules.actions]]` headers.
     if let Some(actions) = table.remove("actions") {
+        let actions = match actions.into_value() {
+            Ok(mut value) => {
+                if let Value::Array(array) = &mut value {
+                    array.fmt();
+                }
+                Item::Value(value)
+            }
+            Err(other) => other,
+        };
         table.insert("actions", actions);
     }
     if rule.enabled {
@@ -520,6 +530,19 @@ mod tests {
             format!(
                 "{HUMAN}\n[[rules]]\nname = \"codes\"\nmatch.subject = {{ contains = \"code\" }}\nactions = [\"delete\"]\n"
             )
+        );
+    }
+
+    #[test]
+    fn save_rule_writes_table_actions_inline() {
+        let (_dir, path) = rules_file(HUMAN);
+        let mut moved = rule("receipts", "receipt");
+        moved.actions = vec![Action::Move("Receipts".into())];
+        save_rule(&path, None, &moved).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.ends_with("actions = [{ move = \"Receipts\" }]\n"),
+            "{text}"
         );
     }
 
