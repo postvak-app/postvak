@@ -73,9 +73,12 @@ if [ -z "$(ostree --repo="$repo" refs)" ]; then
 fi
 if [ ${#sign[@]} -gt 0 ]; then
     # Signs every ref's tip: the imported ones, and mirrored ones, which the pull verified already carry this key's
-    # signature; a commit this key signed before is skipped.
+    # signature; ostree refuses to sign a commit twice, so that refusal for this key is not a failure.
     while read -r ref; do
-        ostree --repo="$repo" gpg-sign --gpg-homedir="$gnupg" "$(ostree --repo="$repo" rev-parse "$ref")" "$key"
+        if ! output=$(ostree --repo="$repo" gpg-sign --gpg-homedir="$gnupg" \
+            "$(ostree --repo="$repo" rev-parse "$ref")" "$key" 2>&1); then
+            grep -q "already signed with GPG key $key" <<<"$output" || { echo "$output" >&2; exit 1; }
+        fi
     done < <(ostree --repo="$repo" refs)
 fi
 # Each imported bundle is a root commit and the mirror copies only each ref's tip, so a ref holds just the latest
