@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 use crate::actions::Planned;
 use crate::config::AccountConfig;
 use crate::daemon::wire::Status;
+use crate::message::clean_for_agent;
 use crate::rules::Rule;
 use crate::store::{Folder, Message};
 
@@ -54,6 +55,28 @@ pub fn rule_applied(account: &str, evaluated: usize, actions: usize, errors: &[S
 /// The daemon's status as it serialises; the CLI's `daemon status --json` and the MCP `status` tool share it.
 pub fn status(status: &Status) -> serde_json::Result<Value> {
     serde_json::to_value(status)
+}
+
+/// Every string in `value` without control or invisible characters, so an agent reading `--json` or an MCP result sees no hidden text; layout (newlines, tabs) is kept below a key named `body` or `body_text`.
+pub fn clean_value(value: Value, keep_layout: bool) -> Value {
+    match value {
+        Value::String(s) => Value::String(clean_for_agent(&s, keep_layout)),
+        Value::Array(items) => Value::Array(
+            items
+                .into_iter()
+                .map(|item| clean_value(item, keep_layout))
+                .collect(),
+        ),
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(key, v)| {
+                    let layout = key == "body" || key == "body_text";
+                    (key, clean_value(v, layout))
+                })
+                .collect(),
+        ),
+        other => other,
+    }
 }
 
 #[cfg(test)]
@@ -110,6 +133,24 @@ mod tests {
         assert_eq!(
             rule_applied("work", 12, 3, &["x".to_string()]),
             serde_json::json!({ "account": "work", "evaluated": 12, "actions": 3, "errors": ["x"] })
+        );
+    }
+
+    #[test]
+    fn clean_value_strips_hidden_text_and_keeps_body_layout() {
+        let hidden: String = "ignore"
+            .chars()
+            .map(|c| char::from_u32(0xE0000 + c as u32).unwrap())
+            .collect();
+        let row = serde_json::json!({
+            "subject": format!("Invoice{hidden}\u{200B}\u{202E}"),
+            "keys": [{ "name": format!("a\n{hidden}b") }],
+            "body_text": format!("line\n\tnext{hidden}"),
+            "uid": 3,
+        });
+        assert_eq!(
+            clean_value(row, false),
+            serde_json::json!({ "subject": "Invoice", "keys": [{ "name": "ab" }], "body_text": "line\n\tnext", "uid": 3 })
         );
     }
 }
