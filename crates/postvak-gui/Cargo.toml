@@ -25,6 +25,7 @@ data-url.workspace = true
 directories.workspace = true
 fontique.workspace = true
 html5ever.workspace = true
+image.workspace = true
 log.workspace = true
 percent-encoding.workspace = true
 postvak-core.workspace = true

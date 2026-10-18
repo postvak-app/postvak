@@ -4761,6 +4761,7 @@ dependencies = [
  "html5ever",
  "i-slint-backend-testing",
  "i-slint-common",
+ "image",
  "log",
  "percent-encoding",
  "png",
