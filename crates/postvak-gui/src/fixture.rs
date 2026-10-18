@@ -1,8 +1,6 @@
 //! Mail homes for the GUI tests: a config and SQLite stores under a directory the caller owns.
 use std::path::Path;
 
-use anyhow::Result;
-
 use postvak_core::paths::Paths;
 use postvak_core::store::{Folder, Message, Store};
 
@@ -17,38 +15,37 @@ pub struct Home {
 
 impl Home {
     /// A config entry and an empty INBOX per account, under `root`.
-    pub fn new(root: &Path, accounts: &[&str]) -> Result<Home> {
+    pub fn new(root: &Path, accounts: &[&str]) -> Home {
         let paths = Paths::under(root);
-        std::fs::create_dir_all(&paths.config_dir)?;
+        std::fs::create_dir_all(&paths.config_dir).unwrap();
         let mut config = String::from("# test accounts\n");
         for name in accounts {
             config.push_str(&format!(
                 "[[accounts]]\nname = \"{name}\"\nhost = \"imap.example.com\"\nusername = \"{name}@example.com\"\npassword = {{ keyring = true }}\n\n"
             ));
         }
-        std::fs::write(paths.config_file(), config)?;
+        std::fs::write(paths.config_file(), config).unwrap();
         let home = Home {
             accounts: accounts.iter().map(|name| name.to_string()).collect(),
             paths,
         };
         for name in accounts {
-            home.folder(name, "INBOX", None)?;
+            home.folder(name, "INBOX", None);
         }
-        Ok(home)
+        home
     }
 
-    pub fn append_config(&self, text: &str) -> Result<()> {
-        let mut config = std::fs::read_to_string(self.paths.config_file())?;
+    pub fn append_config(&self, text: &str) {
+        let mut config = std::fs::read_to_string(self.paths.config_file()).unwrap();
         config.push_str(text);
-        std::fs::write(self.paths.config_file(), config)?;
-        Ok(())
+        std::fs::write(self.paths.config_file(), config).unwrap();
     }
 
-    pub fn store(&self, account: &str) -> Result<Store> {
-        Ok(Store::open(&self.paths.mail_db(account))?)
+    pub fn store(&self, account: &str) -> Store {
+        Store::open(&self.paths.mail_db(account)).unwrap()
     }
 
-    pub fn folder(&self, account: &str, name: &str, special_use: Option<&str>) -> Result<()> {
+    pub fn folder(&self, account: &str, name: &str, special_use: Option<&str>) {
         let folder = Folder {
             name: name.into(),
             uidvalidity: 1,
@@ -56,13 +53,11 @@ impl Home {
             special_use: special_use.map(str::to_string),
             delimiter: None,
         };
-        self.store(account)?.upsert_folder(&folder)?;
-        Ok(())
+        self.store(account).upsert_folder(&folder).unwrap();
     }
 
-    pub fn add(&self, account: &str, message: Message) -> Result<()> {
-        self.store(account)?.insert_message(&message)?;
-        Ok(())
+    pub fn add(&self, account: &str, message: Message) {
+        self.store(account).insert_message(&message).unwrap();
     }
 }
 
@@ -101,9 +96,9 @@ pub fn mail(uid: u32, from: &str, subject: &str, flags: &str, body: &str) -> Mes
 }
 
 /// Two accounts with a few folders and a filled inbox, in a new home under `root`.
-pub fn mailbox(root: &Path, theme: &str) -> Result<Home> {
-    let fx = Home::new(root, &["home", "work"])?;
-    fx.append_config(&format!("[ui]\ntheme = \"{theme}\"\n"))?;
+pub fn mailbox(root: &Path, theme: &str) -> Home {
+    let fx = Home::new(root, &["home", "work"]);
+    fx.append_config(&format!("[ui]\ntheme = \"{theme}\"\n"));
     for (name, special) in [
         ("Archive", Some("Archive")),
         ("Sent", Some("Sent")),
@@ -111,9 +106,9 @@ pub fn mailbox(root: &Path, theme: &str) -> Result<Home> {
         ("Trash", Some("Trash")),
         ("Receipts", None),
     ] {
-        fx.folder("work", name, special)?;
+        fx.folder("work", name, special);
     }
-    fx.folder("home", "Archive", Some("Archive"))?;
+    fx.folder("home", "Archive", Some("Archive"));
     for name in [
         "Projects/Postvak/Design/Mockups/Old explorations 2024",
         "Projects/Website",
@@ -125,7 +120,7 @@ pub fn mailbox(root: &Path, theme: &str) -> Result<Home> {
             special_use: None,
             delimiter: Some("/".into()),
         };
-        fx.store("work")?.upsert_folder(&nested)?;
+        fx.store("work").upsert_folder(&nested).unwrap();
     }
     let lunch = "Hi Robin,\n\nShall we try the new place on the corner this Friday at noon?\nThe menu is at https://example.com/menu and they take bookings.\n\nCheers,\nLinus";
     let inbox = [
@@ -177,7 +172,7 @@ pub fn mailbox(root: &Path, theme: &str) -> Result<Home> {
         if uid == 93 || uid == 94 {
             m.thread_id = "<offsite@example.com>".into();
         }
-        fx.add("work", m)?;
+        fx.add("work", m);
     }
     let photos = mail(
         96,
@@ -186,6 +181,6 @@ pub fn mailbox(root: &Path, theme: &str) -> Result<Home> {
         "",
         "",
     );
-    fx.add("home", photos)?;
-    Ok(fx)
+    fx.add("home", photos);
+    fx
 }

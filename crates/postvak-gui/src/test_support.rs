@@ -12,7 +12,7 @@ use tempfile::TempDir;
 
 use postvak_core::config::Config;
 use postvak_core::daemon::Client;
-use postvak_core::store::{Message, Store};
+use postvak_core::store::Message;
 use postvak_core::sync::{Command, Event};
 
 use super::fixture::{self, Home};
@@ -57,22 +57,10 @@ impl Fixture {
         Fixture::build(|root| fixture::mailbox(root, theme))
     }
 
-    fn build(home: impl FnOnce(&std::path::Path) -> anyhow::Result<Home>) -> Fixture {
+    fn build(home: impl FnOnce(&std::path::Path) -> Home) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
-        let home = home(dir.path()).unwrap();
+        let home = home(dir.path());
         Fixture { home, _dir: dir }
-    }
-
-    pub fn append_config(&self, text: &str) {
-        self.home.append_config(text).unwrap();
-    }
-
-    pub fn store(&self, account: &str) -> Store {
-        self.home.store(account).unwrap()
-    }
-
-    pub fn folder(&self, account: &str, name: &str, special_use: Option<&str>) {
-        self.home.folder(account, name, special_use).unwrap();
     }
 
     /// Puts a directory where the account's store should be, so it fails to open.
@@ -80,10 +68,6 @@ impl Fixture {
         let db = self.paths.mail_db(account);
         std::fs::remove_file(&db).unwrap();
         std::fs::create_dir_all(&db).unwrap();
-    }
-
-    pub fn add(&self, account: &str, message: Message) {
-        self.home.add(account, message).unwrap();
     }
 
     /// The app over this home with no daemon behind it: what it sends shows on `Wires`, events are injected there.
