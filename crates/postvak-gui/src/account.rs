@@ -114,6 +114,122 @@ mod tests {
     use postvak_core::paths::Paths;
 
     use super::*;
+    use std::time::Instant;
+
+    use crate::state::View;
+    use crate::test_support::{Fixture, Open};
+    use crate::ui::MenuAction;
+    use postvak_core::sync::Event;
+
+    fn fill_window(open: &Open, name: &str, host: &str) {
+        let values = [
+            ("Account name", name),
+            ("IMAP host", host),
+            ("Username", "me@example.com"),
+            ("Password", "hunter2"),
+        ];
+        for (label, value) in values {
+            open.get(label).set_accessible_value(value);
+        }
+    }
+
+    /// Clicks Save account and ticks until the save thread answered, for at most 5 s of real time.
+    fn save_in(open: &Open) {
+        open.click("Save account");
+        let saving = || {
+            open.with(|live| {
+                live.app
+                    .account_form
+                    .as_ref()
+                    .is_some_and(|form| form.saving.is_some())
+            })
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while saving() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+            open.tick();
+        }
+        assert!(!saving(), "the save did not finish");
+    }
+
+    fn names(open: &Open) -> Vec<String> {
+        open.with(|live| live.app.accounts.iter().map(|a| a.name.clone()).collect())
+    }
+
+    #[test]
+    fn add_account_saves_it_and_its_sync_shows_on_its_line() {
+        let fx = Fixture::new(&["work"]);
+        let (open, wires) = fx.window();
+        open.window().invoke_menu_item(MenuAction::AddAccount);
+        assert_eq!(open.find("Add account").len(), 1);
+        fill_window(&open, "home", "imap.example.com");
+        save_in(&open);
+        assert!(open.find("Add account").is_empty());
+        assert_eq!(names(&open), ["work", "home"]);
+        assert_eq!(
+            open.with(|live| live.app.view.clone()),
+            View::Folder {
+                account: 1,
+                folder: "INBOX".into()
+            }
+        );
+        let config = Config::load(&fx.paths.config_file()).unwrap();
+        assert!(config.accounts.iter().any(|a| a.name == "home"));
+        // The daemon's first sync of the new account reaches its line.
+        let refused = Event::Error {
+            account: "home".into(),
+            message: "login failed".into(),
+        };
+        wires.events.send(refused).unwrap();
+        open.tick();
+        assert_eq!(open.find("home: login failed").len(), 1);
+        open.advance(5.0);
+        assert!(
+            open.labels_containing("reopen the window").is_empty(),
+            "the window's own save is no outside edit"
+        );
+    }
+
+    #[test]
+    fn saving_an_existing_name_replaces_the_account() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        open.window().invoke_menu_item(MenuAction::AddAccount);
+        fill_window(&open, "work", "imap.example.org");
+        save_in(&open);
+        assert_eq!(names(&open), ["work"]);
+        let config = Config::load(&fx.paths.config_file()).unwrap();
+        assert_eq!(config.accounts.len(), 1);
+        assert_eq!(config.accounts[0].host, "imap.example.org");
+    }
+
+    #[test]
+    fn a_refused_save_keeps_the_form_open_and_says_why() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        open.window().invoke_menu_item(MenuAction::AddAccount);
+        fill_window(&open, "my home", "imap.example.com");
+        save_in(&open);
+        let why =
+            "config.toml: account name 'my home' may only contain letters, digits, '-' and '_'";
+        assert_eq!(open.find(why).len(), 1);
+        assert_eq!(names(&open), ["work"]);
+    }
+
+    #[test]
+    fn escape_closes_the_form_and_letters_typed_stay_text() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", crate::test_support::message("INBOX", 1, "hello"));
+        let (open, wires) = fx.window();
+        open.window().invoke_menu_item(MenuAction::AddAccount);
+        open.press("e");
+        assert!(
+            wires.sent().is_empty(),
+            "e is text in the form, not archive"
+        );
+        open.press("escape");
+        assert!(open.find("Add account").is_empty());
+    }
 
     fn filled(name: &str) -> Fields {
         Fields {

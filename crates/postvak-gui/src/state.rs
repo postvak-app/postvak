@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use crate::update;
-use postvak_core::config::{self, Config, Theme};
+use postvak_core::config::{self, AccountConfig, Config, Theme};
 use postvak_core::daemon::Client;
 use postvak_core::daemon::client::NewerDaemon;
 use postvak_core::daemon::wire::AccountStatus;
@@ -17,6 +17,7 @@ use postvak_core::store::{Filter, LogEntry, Message, Store, StoreError, has_flag
 use postvak_core::sync::{Activity, Command, Event};
 use postvak_core::unsubscribe::{self, Method};
 
+use super::account::{self, AccountForm};
 use super::body;
 use super::folders;
 use super::html::{self, Fetcher, HtmlState, Renderer, Reply, Wake};
@@ -252,6 +253,8 @@ pub(crate) enum UiAction {
     MoveFilter(String),
     MoveTo(String),
     NextFocus,
+    /// Open the add-account form.
+    OpenAccountForm,
     OpenMovePicker,
     /// Open a web page in the browser.
     OpenUrl(String),
@@ -259,6 +262,8 @@ pub(crate) enum UiAction {
     OpenSource,
     RejectRule(String),
     Restore(usize, PathBuf),
+    /// Save the form's account, replacing one of the same name.
+    SaveAccount(account::Fields),
     SaveAttachment(usize),
     SaveEml,
     /// Leave the shown message's mailing list: by one click, or by opening its page or address.
@@ -342,6 +347,8 @@ pub struct App {
     pub(crate) last_reconnect: f64,
     pub(crate) list: ListState,
     pub(crate) move_picker: Option<String>,
+    /// The add-account form while it is open.
+    pub(crate) account_form: Option<AccountForm>,
     pub(crate) paths: Paths,
     /// Set by the user's own navigation; the next body `sync_body` loads is armed.
     pub(crate) pending_arm: bool,
@@ -372,6 +379,23 @@ pub struct App {
     pub(crate) view_dirty: bool,
 }
 
+/// An account's window state over its store; `open_account` creates the store of an account just added.
+fn account_state(paths: &Paths, name: String, activity: Option<Activity>) -> Account {
+    let store =
+        Store::open_account(paths, &name).map_err(|e| format!("could not open the store: {e}"));
+    let mut account = Account {
+        activity,
+        error: None,
+        folders: Vec::new(),
+        name,
+        pending: HashMap::new(),
+        queued: 0,
+        store,
+    };
+    account.reload_folders();
+    account
+}
+
 impl App {
     pub fn new(
         config: &Config,
@@ -382,21 +406,7 @@ impl App {
     ) -> App {
         let accounts = states
             .into_iter()
-            .map(|AccountStatus { activity, name }| {
-                let store = Store::open_account(&paths, &name)
-                    .map_err(|e| format!("could not open the store: {e}"));
-                let mut account = Account {
-                    activity,
-                    error: None,
-                    folders: Vec::new(),
-                    name,
-                    pending: HashMap::new(),
-                    queued: 0,
-                    store,
-                };
-                account.reload_folders();
-                account
-            })
+            .map(|AccountStatus { activity, name }| account_state(&paths, name, activity))
             .collect();
         let rules_path = paths.rules_file();
         let rules = RulesState::load(&rules_path, Vec::new());
@@ -428,6 +438,7 @@ impl App {
             last_reconnect: 0.0,
             list: ListState::default(),
             move_picker: None,
+            account_form: None,
             paths,
             pending_arm: false,
             reconnect: connect,
@@ -468,6 +479,7 @@ impl App {
         self.keep_daemon(now);
         self.check_release();
         self.receive_unsubscribe();
+        self.receive_saved_account();
         if std::mem::take(&mut self.view_dirty) {
             self.reload_view();
         }
@@ -804,7 +816,12 @@ impl App {
             UiAction::LoadRemote => self.load_remote(),
             UiAction::ClearSelection => self.list.marked.clear(),
             UiAction::Escape => {
-                if self.move_picker.is_some() {
+                if let Some(form) = &self.account_form {
+                    // A save in flight finishes first, so its account joins the window.
+                    if form.saving.is_none() {
+                        self.account_form = None;
+                    }
+                } else if self.move_picker.is_some() {
                     self.move_picker = None;
                 } else if let Some(body) = self.body.as_mut().filter(|b| b.source.is_some()) {
                     body.source = None;
@@ -991,6 +1008,10 @@ impl App {
             }
             UiAction::ToggleHelp => self.help_open = !self.help_open,
             UiAction::About => self.about_open = !self.about_open,
+            UiAction::OpenAccountForm => {
+                self.account_form.get_or_insert_with(AccountForm::default);
+            }
+            UiAction::SaveAccount(fields) => self.save_account(&fields),
             UiAction::ToggleHtml => {
                 if let Some(body) = self.body.as_mut().filter(|b| b.html.is_some()) {
                     body.show_text = !body.show_text;
@@ -1021,7 +1042,7 @@ impl App {
 
     /// Whether a text field has the keyboard, so letters are text rather than keys.
     pub(crate) fn typing(&self) -> bool {
-        self.search_focused || self.move_picker.is_some()
+        self.search_focused || self.move_picker.is_some() || self.account_form.is_some()
     }
 
     /// The `m` picker's folders: those of the selected rows' account that match the filter, without the folder the
@@ -1858,9 +1879,75 @@ impl App {
         if self.rules_watch.changed() {
             self.rules_changed();
         }
-        if self.config_watch.changed() {
+        let saving = self
+            .account_form
+            .as_ref()
+            .is_some_and(|form| form.saving.is_some());
+        if !saving && self.config_watch.changed() {
             self.config_changed = true;
         }
+    }
+
+    /// Starts the save; a form that cannot make an account says why at once.
+    fn save_account(&mut self, fields: &account::Fields) {
+        let wake = self.wake.clone();
+        let paths = self.paths.clone();
+        let Some(form) = self
+            .account_form
+            .as_mut()
+            .filter(|form| form.saving.is_none())
+        else {
+            return;
+        };
+        match account::save(paths, fields, wake) {
+            Ok(answer) => {
+                form.error = None;
+                form.saving = Some(answer);
+            }
+            Err(message) => form.error = Some(message),
+        }
+    }
+
+    /// Takes the save's answer: the account joins the window, or the form says why not.
+    fn receive_saved_account(&mut self) {
+        let Some(form) = &mut self.account_form else {
+            return;
+        };
+        let Some(answer) = &form.saving else { return };
+        let saved = match answer.try_recv() {
+            Err(TryRecvError::Empty) => return,
+            Ok(saved) => saved,
+            Err(TryRecvError::Disconnected) => Err(account::STOPPED.into()),
+        };
+        form.saving = None;
+        match saved {
+            Ok(account) => self.account_added(account),
+            Err(message) => form.error = Some(message),
+        }
+    }
+
+    /// A new account joins the list and a replaced one keeps its place; the daemon starts it from config.toml and its
+    /// events arrive by name, so its first sync shows on its line.
+    fn account_added(&mut self, account: AccountConfig) {
+        self.account_form = None;
+        // Absorbs this window's own write, so the poll does not take it for an outside edit.
+        self.config_watch.changed();
+        let index = match self.accounts.iter().position(|a| a.name == account.name) {
+            Some(index) => index,
+            None => {
+                let state = account_state(&self.paths, account.name.clone(), None);
+                self.accounts.push(state);
+                self.accounts.len() - 1
+            }
+        };
+        self.push_history(format!(
+            "{}: account saved; its first sync starts",
+            account.name
+        ));
+        self.select_view(View::Folder {
+            account: index,
+            folder: list::INBOX.into(),
+        });
     }
 
     /// Reloads the rules view; the daemon notices the change itself and syncs every account.

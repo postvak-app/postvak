@@ -1,6 +1,6 @@
 # Accounts
 
-`postvak account add` asks for the details (including an extra CA file, if your server needs one), writes `config.toml`, keeping your comments and leaving out settings at their default, and syncs the account once through the background daemon. A wrong login shows as that sync's error; running it again with the same name replaces the account. Agents with the `accounts:write` scope can add an account through the MCP `account_add` tool, with a password command and never a plain password; see [MCP](mcp.md). You can also edit the file by hand:
+`postvak account add` asks for the details (including an extra CA file, if your server needs one), writes `config.toml`, keeping your comments and leaving out settings at their default, and syncs the account once through the background daemon. A wrong login shows as that sync's error; running it again with the same name replaces the account. Agents with the `accounts:write` scope can add an account through the MCP `account_add` tool, with a password command and never a plain password; see [MCP](mcp.md). In the window, Mailbox ▸ Add account… does the same, with the password in the OS keyring. You can also edit the file by hand:
 
 | | Linux | macOS |
 |---|---|---|

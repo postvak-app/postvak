@@ -112,6 +112,13 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
         mark_folder_read: enabled(menu::Item::MarkFolderRead),
     });
     window.set_about_open(app.about_open);
+    let form = app.account_form.as_ref();
+    window.set_account_open(form.is_some());
+    let error = form
+        .and_then(|form| form.error.as_deref())
+        .unwrap_or_default();
+    window.set_account_error(error.into());
+    window.set_account_saving(form.is_some_and(|form| form.saving.is_some()));
 
     window.set_help_open(app.help_open);
     window.set_history_open(app.history_open);
@@ -601,6 +608,9 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     window.on_load_remote(move || {
         act(UiAction::LoadRemote);
     });
+    window.on_save_account(move |fields| {
+        act(UiAction::SaveAccount(account_fields(fields)));
+    });
     window.on_menu_item(move |action| {
         on(one(move |app| menu_item(action).action(app)));
     });
@@ -657,6 +667,7 @@ fn menu_item(action: MenuAction) -> menu::Item {
     use menu::Item;
     match action {
         MenuAction::About => Item::About,
+        MenuAction::AddAccount => Item::AddAccount,
         MenuAction::AddToSelection => Item::AddToSelection,
         MenuAction::Archive => Item::Archive,
         MenuAction::Delete => Item::Delete,

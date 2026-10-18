@@ -10,7 +10,7 @@ The window remembers its size, its position (where the platform reports one; Way
 
 ## Menu bar
 
-The menu bar (in the window, or at the top of the screen on macOS) has the window's actions in one place: File (Save .eml, View source, Close window with Ctrl+W, Quit with Ctrl+Q; Cmd on macOS), Edit (Copy, Search), Message (Archive, Move…, Delete, Junk or not junk, Flag, Read or unread, Add to selection, Select all), View (Text or HTML, Theme, History, Keys), Mailbox (Sync now, Mark folder read) and Help (Postvak documentation, About Postvak). An item is greyed out when it would do nothing, as the reader's action buttons are. About Postvak shows the version, the licence and the Slint attribution.
+The menu bar (in the window, or at the top of the screen on macOS) has the window's actions in one place: File (Save .eml, View source, Close window with Ctrl+W, Quit with Ctrl+Q; Cmd on macOS), Edit (Copy, Search), Message (Archive, Move…, Delete, Junk or not junk, Flag, Read or unread, Add to selection, Select all), View (Text or HTML, Theme, History, Keys), Mailbox (Add account…, Sync now, Mark folder read) and Help (Postvak documentation, About Postvak). Add account… asks for the account's name, IMAP host, port, username, password and address; the password goes to the OS keyring. The account joins the folder pane at once and its first sync starts, so a wrong login shows on its sync line. Saving a name that exists replaces that account. An item is greyed out when it would do nothing, as the reader's action buttons are. About Postvak shows the version, the licence and the Slint attribution.
 
 Drag a message onto a folder of its account to move it there; drag a marked message to move every marked one. Right-click a message for read, flag, archive, move, delete, junk, View source and Save .eml; a folder for Open, Collapse or Expand, Mark all as read and Sync now; a link in an HTML message to open or copy it.
 
@@ -71,7 +71,7 @@ These three views sit at the bottom of the folder pane.
 
 **Rules** lists proposals with Approve and Reject, then every rule with a switch. Changes to `rules.toml`, from the window or from your editor, take effect within about two seconds for new mail. **Activity** is the log of what rules and your actions did. **Backups** lists the `.eml` backups of mail deleted for good (deleted from Trash, from an account without a Trash folder, or by a rule), with Restore. Mail moved to the server's Trash folder is in that folder in the tree.
 
-The daemon applies changes to `config.toml` by itself; the window's account list catches up when you reopen it, and the window says so.
+The daemon applies changes to `config.toml` by itself. An account added from the window joins it at once; other changes show when you reopen the window, and the window says so.
 
 ## HTML mail
 
