@@ -85,7 +85,7 @@ HTML over 2 MB, or a page too tall or too broken to lay out, shows as text with 
 
 ## Reader
 
-The subject heads the message, then the sender's initials on a colour picked from their address, their name and address, the recipients and the date.
+The subject heads the message, then the sender's initials on a colour picked from their address, their name and address, the recipients and the date. With `[ui] sender_images = true`, mail that passed DMARC shows the logo its sender's domain publishes in place of the initials (see [Accounts](accounts.md#appearance)).
 
 On the right of the action buttons, **Save .eml** writes the message exactly as the server sent it to your Downloads folder (or your home folder when there is none), named after its subject; when that name is taken it saves beside it as "… (2).eml" and never replaces a file. The line under the attachments says where it went. Until the message is downloaded this button and View source are greyed out and say why on hover. The reader shows "Loading…" meanwhile, or, while the account is offline, that the message loads when it reconnects.
 
