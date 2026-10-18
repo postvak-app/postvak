@@ -13,11 +13,11 @@ use super::rows::{ListModel, PageModel, model, sync, synced};
 use super::rules::SheetSort;
 use super::state::{App, Focus, UiAction, View};
 use super::ui::{
-    BodyInfo, Dot, FolderItem, FolderKind, KeyHelp, MailWindow, MenuAction, MenuChoice, MenuState,
-    PageInfo, Pane, ProposalData, Remote, RuleData, SelectedData, Sheet, StatusLine, Theme,
-    ThemePreference, ToolButton,
+    AccountFields, BodyInfo, Dot, FolderItem, FolderKind, KeyHelp, MailWindow, MenuAction,
+    MenuChoice, MenuState, PageInfo, Pane, ProposalData, Remote, RuleData, SelectedData, Sheet,
+    StatusLine, Theme, ThemePreference, ToolButton,
 };
-use super::{body, icons, list, menu, rules, status, theme, toolbar};
+use super::{account, body, icons, list, menu, rules, status, theme, toolbar};
 use postvak_core::message::clean;
 
 /// What a callback asks the app: the actions it means, in order.
@@ -26,6 +26,18 @@ pub(crate) type Ask = Box<dyn FnOnce(&App) -> Vec<UiAction>>;
 /// An `Ask` for at most one action.
 fn one(f: impl FnOnce(&App) -> Option<UiAction> + 'static) -> Ask {
     Box::new(move |app| f(app).into_iter().collect())
+}
+
+/// The form's fields as the window sent them.
+pub(crate) fn account_fields(fields: AccountFields) -> account::Fields {
+    account::Fields {
+        name: fields.name.into(),
+        host: fields.host.into(),
+        port: fields.port.into(),
+        username: fields.username.into(),
+        password: fields.password.into(),
+        address: fields.address.into(),
+    }
 }
 
 /// What never changes while the window is open.
@@ -100,6 +112,13 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
         mark_folder_read: enabled(menu::Item::MarkFolderRead),
     });
     window.set_about_open(app.about_open);
+    let form = app.account_form.as_ref();
+    window.set_account_open(form.is_some());
+    let error = form
+        .and_then(|form| form.error.as_deref())
+        .unwrap_or_default();
+    window.set_account_error(error.into());
+    window.set_account_saving(form.is_some_and(|form| form.saving.is_some()));
 
     window.set_help_open(app.help_open);
     window.set_history_open(app.history_open);
@@ -300,6 +319,7 @@ fn present_sheet(app: &App, window: &MailWindow) {
             let rows = rules::trash_cells(app);
             present_table(window, &rules::TRASH_COLUMNS, &rows, app.sheet_sort);
             window.set_sheet_empty(rules::NO_TRASH.into());
+            window.set_purge_hint(rules::purge_hint(app).into());
         }
         View::AllInboxes | View::Folder { .. } => {}
     }
@@ -589,11 +609,20 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     window.on_load_remote(move || {
         act(UiAction::LoadRemote);
     });
+    window.on_save_account(move |fields| {
+        act(UiAction::SaveAccount(account_fields(fields)));
+    });
     window.on_menu_item(move |action| {
         on(one(move |app| menu_item(action).action(app)));
     });
     window.on_open_rules_file(move || {
         act(UiAction::OpenRulesFile);
+    });
+    window.on_apply_rule(move |i| {
+        on(one(move |app| {
+            let rule = nth(rules::rule_lines(&app.rules), i)?;
+            rule.enabled.then_some(UiAction::ApplyRule(rule.name))
+        }));
     });
     window.on_approve_rule(move |i| {
         on(one(move |app| {
@@ -610,6 +639,9 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
             let rule = nth(rules::rule_lines(&app.rules), i)?;
             Some(UiAction::SetRuleEnabled(rule.name, enabled))
         }));
+    });
+    window.on_purge_trash(move || {
+        act(UiAction::PurgeTrash);
     });
     window.on_restore(move |i| {
         on(one(move |app| {
@@ -645,6 +677,7 @@ fn menu_item(action: MenuAction) -> menu::Item {
     use menu::Item;
     match action {
         MenuAction::About => Item::About,
+        MenuAction::AddAccount => Item::AddAccount,
         MenuAction::AddToSelection => Item::AddToSelection,
         MenuAction::Archive => Item::Archive,
         MenuAction::Delete => Item::Delete,

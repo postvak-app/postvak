@@ -166,9 +166,21 @@ pub(super) fn error_text(result: &CallToolResult) -> String {
 }
 
 #[test]
+fn files_write_is_a_scope_outside_the_default_set() {
+    let defaults = parse_scopes(postvak_core::help::MCP_DEFAULT_SCOPES).unwrap();
+    assert!(!defaults.iter().any(|scope| scope.as_str() == "files:write"));
+    assert!(parse_scopes("files:write").is_ok());
+}
+
+#[test]
 fn scopes_parse_and_unknown_ones_name_the_valid_ones() {
     let scopes = parse_scopes("read, rules:propose").unwrap();
     assert_eq!(scopes.len(), 2);
+    assert!(
+        parse_scopes("accounts:write")
+            .unwrap()
+            .contains(&super::Scope::AccountsWrite)
+    );
     for empty in ["", ","] {
         let err = parse_scopes(empty).unwrap_err().to_string();
         assert!(err.contains("read:bodies"), "{err}");
@@ -183,9 +195,12 @@ fn scopes_parse_and_unknown_ones_name_the_valid_ones() {
 }
 
 #[test]
-fn backend_refuses_no_accounts_and_unknown_accounts() {
+fn backend_without_accounts_opens_but_every_lookup_says_so() {
     let fx = fixture(&[]);
-    assert!(Backend::new(&fx.config(), &fx.paths, &[]).is_err());
+    let backend = Backend::new(&fx.config(), &fx.paths, &[]).unwrap();
+    let err = backend.folders(None).unwrap_err().to_string();
+    assert!(err.contains("no accounts configured"), "{err}");
+    assert!(backend.accounts().unwrap().is_empty());
     let fx = fixture(&["work"]);
     let err = Backend::new(&fx.config(), &fx.paths, &["play".into()])
         .err()
@@ -590,14 +605,65 @@ async fn show_needs_an_account_when_several_are_visible() {
     assert!(error_text(&call(&client, "show", json!({ "uid": 1 })).await).contains("pass account"));
 }
 
+/// A message with one PDF attachment, `bill.pdf`, 6 bytes.
+const ATTACHED: &str = "From: a@example.com\r\nSubject: Files\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nsee attached\r\n--b\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=\"bill.pdf\"\r\n\r\n%PDF-1\r\n--b--\r\n";
+
+fn add_attached(fx: &Fixture, account: &str, uid: u32) {
+    fx.add(
+        account,
+        fixture_message("INBOX", uid, "Files", "see attached"),
+    );
+    fx.store(account)
+        .set_raw("INBOX", uid, ATTACHED.as_bytes(), "see attached")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn attachment_save_writes_the_file_and_returns_its_path() {
+    let fx = fixture(&["work"]);
+    add_attached(&fx, "work", 1);
+    let dir = fx.paths.cache_dir.join("saved");
+    std::fs::create_dir_all(&dir).unwrap();
+    let client = connect(&fx, "files:write", &[]).await;
+    let report = call(
+        &client,
+        "attachment_save",
+        json!({ "uid": 1, "n": 1, "dir": dir }),
+    )
+    .await;
+    let report = report.structured_content.unwrap();
+    let path = std::path::PathBuf::from(report["path"].as_str().unwrap());
+    assert!(path.starts_with(&dir), "{report}");
+    assert!(path.is_file());
+    assert_eq!(report["account"], "work");
+}
+
+#[tokio::test]
+async fn attachment_save_needs_an_absolute_dir() {
+    let fx = fixture(&["work"]);
+    add_attached(&fx, "work", 1);
+    let client = connect(&fx, "files:write", &[]).await;
+    let relative = call(
+        &client,
+        "attachment_save",
+        json!({ "uid": 1, "n": 1, "dir": "out" }),
+    )
+    .await;
+    assert!(error_text(&relative).contains("absolute"), "{relative:?}");
+    let missing = fx.paths.cache_dir.join("nowhere");
+    let gone = call(
+        &client,
+        "attachment_save",
+        json!({ "uid": 1, "n": 1, "dir": missing }),
+    )
+    .await;
+    assert!(error_text(&gone).contains("nowhere"), "{gone:?}");
+}
+
 #[tokio::test]
 async fn attachments_lists_names_and_sizes() {
     let fx = fixture(&["work"]);
-    fx.add("work", fixture_message("INBOX", 1, "Files", "see attached"));
-    let raw = "From: a@example.com\r\nSubject: Files\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nsee attached\r\n--b\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=\"bill.pdf\"\r\n\r\n%PDF-1\r\n--b--\r\n";
-    fx.store("work")
-        .set_raw("INBOX", 1, raw.as_bytes(), "see attached")
-        .unwrap();
+    add_attached(&fx, "work", 1);
     let client = connect(&fx, "read:bodies", &[]).await;
     let found = rows(&call(&client, "attachments", json!({ "uid": 1 })).await);
     assert_eq!(found[0]["name"], "bill.pdf");
@@ -659,10 +725,12 @@ fn wrap_body_cuts_inside_a_multibyte_character_without_panicking() {
 #[tokio::test]
 async fn tools_list_per_scope_set_is_exact_and_alphabetical() {
     let fx = fixture(&["work"]);
-    let cases: [(&str, &[&str]); 4] = [
+    let cases: [(&str, &[&str]); 6] = [
+        ("accounts:write", &["account_add"]),
         (
             "read,rules:propose",
             &[
+                "accounts",
                 "folders",
                 "list",
                 "log",
@@ -672,10 +740,12 @@ async fn tools_list_per_scope_set_is_exact_and_alphabetical() {
                 "rules_schema",
                 "rules_test",
                 "search",
+                "status",
                 "sync",
                 "trash_list",
             ],
         ),
+        ("files:write", &["attachment_save"]),
         ("read:bodies", &["attachments", "show"]),
         (
             "rules:write",
@@ -689,6 +759,8 @@ async fn tools_list_per_scope_set_is_exact_and_alphabetical() {
                 "junk",
                 "mark",
                 "move",
+                "rules_apply_existing",
+                "trash_purge",
                 "trash_restore",
                 "unsubscribe",
             ],
@@ -712,7 +784,7 @@ async fn annotations_mark_reads_and_destructive_tools() {
     let fx = fixture(&["work"]);
     let client = connect(
         &fx,
-        "read,read:bodies,rules:propose,rules:write,mail:modify",
+        "read,read:bodies,rules:propose,rules:write,files:write,mail:modify,accounts:write",
         &[],
     )
     .await;
@@ -720,14 +792,18 @@ async fn annotations_mark_reads_and_destructive_tools() {
         let hints = tool.annotations.clone().unwrap();
         let name = tool.name.as_ref();
         let destructive = [
+            "account_add",
             "delete",
+            "rules_apply_existing",
             "rules_approve",
             "rules_set_enabled",
+            "trash_purge",
             "unsubscribe",
         ]
         .contains(&name);
         let changes = [
             "archive",
+            "attachment_save",
             "junk",
             "mark",
             "move",
@@ -884,16 +960,10 @@ async fn sync_reports_the_errors_of_its_pass() {
 }
 
 #[tokio::test]
-async fn sync_reports_a_refusal_as_the_accounts_error() {
+async fn sync_reports_a_failed_connect_as_the_accounts_error() {
     let fx = fixture_with_daemon(&["work"], offline_connector());
     let client = connect(&fx, "read", &[]).await;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let report = loop {
-        let report = rows(&call(&client, "sync", json!({})).await);
-        if report[0].get("error").is_some() || std::time::Instant::now() > deadline {
-            break report;
-        }
-    };
+    let report = rows(&call(&client, "sync", json!({})).await);
     let error = report[0]["error"].as_str().unwrap();
     assert!(
         error.starts_with("work is offline (no route to host)"),
@@ -994,6 +1064,89 @@ async fn show_fetches_a_missing_body_through_the_daemon() {
     let shown = call(&client, "show", json!({ "uid": 1 })).await;
     let body = shown.structured_content.unwrap()["body"].to_string();
     assert!(body.contains("the body"), "{body}");
+}
+
+#[tokio::test]
+async fn trash_purge_removes_only_backups_past_the_retention() {
+    let fx = fixture(&["work"]);
+    let trash = postvak_core::trash::Trash::new(fx.paths.trash_dir("work"));
+    let now = postvak_core::time::now();
+    let old = trash
+        .save("INBOX", 1, b"Subject: old\r\n\r\n", now - 31 * 86_400)
+        .unwrap();
+    let fresh = trash
+        .save("INBOX", 2, b"Subject: fresh\r\n\r\n", now - 86_400)
+        .unwrap();
+    let client = connect(&fx, "mail:modify", &[]).await;
+    let report = rows(&call(&client, "trash_purge", json!({})).await);
+    assert_eq!(report, vec![json!({ "account": "work", "removed": 1 })]);
+    assert!(!old.exists());
+    assert!(fresh.exists());
+}
+
+#[tokio::test]
+async fn rules_apply_existing_dry_run_lists_planned_rows() {
+    let fx = fixture(&["work"]);
+    fx.add("work", fixture_message("INBOX", 1, "Your code", ""));
+    std::fs::write(
+        fx.paths.rules_file(),
+        "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = [\"flag\"]\n",
+    )
+    .unwrap();
+    let client = connect(&fx, "mail:modify", &[]).await;
+    let args = json!({ "name": "codes", "dry_run": true });
+    let report = rows(&call(&client, "rules_apply_existing", args).await);
+    assert_eq!(report.len(), 1, "{report:?}");
+    assert_eq!(report[0]["rule"], "codes");
+    assert_eq!(report[0]["uid"], 1);
+    assert_eq!(report[0]["action"], "flag");
+}
+
+#[tokio::test]
+async fn rules_apply_existing_goes_through_the_daemon() {
+    let fx = fixture_with_daemon(&["work"], connector_with_mail());
+    std::fs::write(
+        fx.paths.rules_file(),
+        "[[rules]]\nname = \"greet\"\nmatch.subject = { contains = \"Hi\" }\nactions = [\"flag\"]\n",
+    )
+    .unwrap();
+    let client = connect(&fx, "mail:modify", &[]).await;
+    call(&client, "sync", json!({})).await;
+    let report = rows(&call(&client, "rules_apply_existing", json!({ "name": "greet" })).await);
+    assert_eq!(report.len(), 1, "{report:?}");
+    assert_eq!(report[0]["account"], "work");
+    assert_eq!(report[0]["evaluated"], 1);
+    assert_eq!(report[0]["actions"], 1);
+    assert_eq!(report[0]["errors"], json!([]));
+}
+
+#[tokio::test]
+async fn rules_apply_existing_refuses_disabled_and_hidden_rules() {
+    let fx = fixture(&["home", "work"]);
+    std::fs::write(
+        fx.paths.rules_file(),
+        format!(
+            "[[rules]]\nname = \"off\"\nenabled = false\nmatch.subject = {{ contains = \"x\" }}\nactions = [\"flag\"]\n\n{}",
+            scoped_rule("hidden", "home")
+        ),
+    )
+    .unwrap();
+    let client = connect(&fx, "mail:modify", &["work"]).await;
+    let off = call(&client, "rules_apply_existing", json!({ "name": "off" })).await;
+    assert!(
+        error_text(&off).contains("rule 'off' is disabled"),
+        "{off:?}"
+    );
+    let hidden = call(&client, "rules_apply_existing", json!({ "name": "hidden" })).await;
+    assert!(
+        error_text(&hidden).contains("no rule named 'hidden'"),
+        "{hidden:?}"
+    );
+    let unknown = call(&client, "rules_apply_existing", json!({ "name": "nope" })).await;
+    assert!(
+        error_text(&unknown).contains("no rule named 'nope'"),
+        "{unknown:?}"
+    );
 }
 
 #[tokio::test]
@@ -1136,6 +1289,17 @@ async fn enabling_a_rule_for_every_account_is_refused_while_some_are_hidden() {
 }
 
 #[tokio::test]
+async fn a_server_limited_to_the_only_account_still_refuses_enabling_a_rule_for_every_account() {
+    let fx = fixture(&["work"]);
+    std::fs::write(fx.paths.rules_file(), unscoped_rule("everywhere")).unwrap();
+    let before = rule_file(&fx);
+    let narrow = connect(&fx, "rules:write", &["work"]).await;
+    let text = error_text(&call(&narrow, "rules_approve", json!({ "name": "everywhere" })).await);
+    assert!(text.contains("applies to every account"), "{text}");
+    assert_eq!(rule_file(&fx), before);
+}
+
+#[tokio::test]
 async fn rejecting_a_rule_for_every_account_works_while_some_are_hidden() {
     let fx = fixture(&["home", "work"]);
     std::fs::write(fx.paths.rules_file(), unscoped_rule("everywhere")).unwrap();
@@ -1179,4 +1343,113 @@ async fn rules_propose_without_account_is_refused_when_several_of_some_are_visib
     assert_ne!(result.is_error, Some(true), "{result:?}");
     let file = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
     assert_eq!(file.rules[1].account, None);
+}
+
+#[tokio::test]
+async fn accounts_lists_the_visible_accounts_without_secrets() {
+    let fx = fixture(&["home", "work"]);
+    let client = connect(&fx, "read", &["work"]).await;
+    let report = rows(&call(&client, "accounts", json!({})).await);
+    assert_eq!(report.len(), 1);
+    assert_eq!(report[0]["account"], "work");
+    assert_eq!(report[0]["port"], 1);
+    assert!(report[0].get("password").is_none());
+    assert!(!report[0].to_string().contains("printf"));
+}
+
+#[tokio::test]
+async fn accounts_tool_lists_nothing_without_accounts() {
+    let fx = fixture(&[]);
+    let client = connect(&fx, "read", &[]).await;
+    let result = call(&client, "accounts", json!({})).await;
+    assert_ne!(result.is_error, Some(true), "{}", error_text(&result));
+    assert!(rows(&result).is_empty());
+}
+
+#[tokio::test]
+async fn status_reports_the_daemon_and_the_visible_accounts() {
+    let fx = fixture_with_daemon(&["home", "work"], recording_connector());
+    let client = connect(&fx, "read", &["work"]).await;
+    let report = call(&client, "status", json!({})).await;
+    let report = report.structured_content.unwrap();
+    assert!(report["pid"].as_u64().is_some(), "{report}");
+    let names: Vec<&str> = report["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["work"]);
+}
+
+#[tokio::test]
+async fn account_add_returns_the_account_and_its_first_sync() {
+    let fx = fixture_with_daemon(&["work"], recording_connector());
+    let client = connect(&fx, "accounts:write", &[]).await;
+    let report = call(
+        &client,
+        "account_add",
+        json!({ "name": "late", "host": "127.0.0.1", "port": 1, "username": "me@example.org", "password_command": "printf x" }),
+    )
+    .await;
+    let report = report.structured_content.unwrap();
+    assert_eq!(report["account"]["account"], "late", "{report}");
+    assert!(report["account"].get("password").is_none());
+    assert!(!report.to_string().contains("printf"), "{report}");
+    assert_eq!(report["sync"]["account"], "late", "{report}");
+    assert!(fx.config().accounts.iter().any(|a| a.name == "late"));
+    let client = connect(&fx, "read", &[]).await;
+    let report = rows(&call(&client, "accounts", json!({})).await);
+    assert_eq!(report.len(), 2);
+}
+
+#[tokio::test]
+async fn account_add_rejects_a_plain_password_and_a_narrowed_server() {
+    let fx = fixture_with_daemon(&["work"], recording_connector());
+    let client = connect(&fx, "accounts:write", &[]).await;
+    let refused = call(
+        &client,
+        "account_add",
+        json!({ "name": "x", "host": "h", "username": "u@example.com", "password_command": "printf x", "password": "hunter2" }),
+    )
+    .await;
+    assert!(
+        error_text(&refused).contains("unknown field"),
+        "{refused:?}"
+    );
+    assert!(!fx.config().accounts.iter().any(|a| a.name == "x"));
+    let narrowed = connect(&fx, "accounts:write", &["work"]).await;
+    let refused = call(
+        &narrowed,
+        "account_add",
+        json!({ "name": "y", "host": "h", "username": "u@example.com", "password_command": "printf x" }),
+    )
+    .await;
+    assert!(error_text(&refused).contains("--account"), "{refused:?}");
+}
+
+#[tokio::test]
+async fn account_add_keeps_accounts_added_to_config_toml_since_the_server_started() {
+    let fx = fixture_with_daemon(&["work"], recording_connector());
+    let client = connect(&fx, "accounts:write", &[]).await;
+    let mut config = fx.config();
+    config
+        .accounts
+        .push(postvak_core::config::AccountConfig::new(
+            "edited",
+            "127.0.0.1",
+            "edited@example.org",
+            postvak_core::config::PasswordSource::Command {
+                command: "printf x".into(),
+            },
+        ));
+    config.save(&fx.paths.config_file()).unwrap();
+    call(
+        &client,
+        "account_add",
+        json!({ "name": "late", "host": "127.0.0.1", "port": 1, "username": "me@example.org", "password_command": "printf x" }),
+    )
+    .await;
+    let names: Vec<String> = fx.config().accounts.into_iter().map(|a| a.name).collect();
+    assert_eq!(names, ["work", "edited", "late"]);
 }

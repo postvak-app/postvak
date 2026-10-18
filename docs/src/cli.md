@@ -60,7 +60,7 @@ A fast, simple mail client with automatic mailbox rules
 * `daemon` — Inspect or stop the daemon that syncs your accounts; other commands start it when needed
 * `gui` — Open the mail window; starts the daemon when needed
 * `service` — Start the daemon at login: a launchd agent on macOS, a systemd user unit on Linux
-* `sync` — Ask the daemon to sync now and apply rules; reports new messages and actions per account, or why one was refused
+* `sync` — Ask the daemon to sync now and apply rules; reports new messages and actions per account, or why one could not sync
 * `attachment` — List or save a message's attachments
 * `rules` — Inspect and test rules.toml
 * `folders` — List folders with message and unread counts
@@ -97,16 +97,20 @@ Inspect or stop the daemon that syncs your accounts; other commands start it whe
 
 ###### **Subcommands:**
 
-* `status` — Print the daemon's pid, version, uptime and what each account is doing
+* `status` — The daemon's pid, version, uptime, client count and each account's activity
 * `stop` — Stop the daemon; it starts again when a command needs it
 
 
 
 ## `postvak daemon status`
 
-Print the daemon's pid, version, uptime and what each account is doing
+The daemon's pid, version, uptime, client count and each account's activity
 
-**Usage:** `postvak daemon status`
+**Usage:** `postvak daemon status [OPTIONS]`
+
+###### **Options:**
+
+* `--json`
 
 
 
@@ -169,7 +173,7 @@ Stop and remove the service
 
 ## `postvak sync`
 
-Ask the daemon to sync now and apply rules; reports new messages and actions per account, or why one was refused
+Ask the daemon to sync now and apply rules; reports new messages and actions per account, or why one could not sync
 
 **Usage:** `postvak sync [OPTIONS]`
 
@@ -188,7 +192,7 @@ List or save a message's attachments
 ###### **Subcommands:**
 
 * `list` — Index, type, size and name of each attachment
-* `save` — Save attachment N, as numbered by `attachment list`, into --dir
+* `save` — Save attachment N, as numbered by the attachment list, into a directory; returns the written path
 
 
 
@@ -214,7 +218,7 @@ Index, type, size and name of each attachment
 
 ## `postvak attachment save`
 
-Save attachment N, as numbered by `attachment list`, into --dir
+Save attachment N, as numbered by the attachment list, into a directory; returns the written path
 
 **Usage:** `postvak attachment save [OPTIONS] <UID> <N>`
 
@@ -250,7 +254,7 @@ Inspect and test rules.toml
 * `approve` — Enable a disabled rule, such as a proposal
 * `reject` — Remove a pending proposal
 * `list` — Names, enabled state and who proposed them
-* `apply-existing` — Run one rule against mail that predates it
+* `apply-existing` — Run one enabled rule against mail that predates it; dry run lists what it would do
 
 
 
@@ -337,7 +341,7 @@ Names, enabled state and who proposed them
 
 ## `postvak rules apply-existing`
 
-Run one rule against mail that predates it
+Run one enabled rule against mail that predates it; dry run lists what it would do
 
 **Usage:** `postvak rules apply-existing [OPTIONS] <NAME>`
 
@@ -585,7 +589,7 @@ Deleted mail kept for the retention period
 
 * `list` — Deleted mail kept as .eml backups for the retention period
 * `restore` — Append a trashed .eml back into its original folder
-* `purge` — Remove trash files older than the retention period
+* `purge` — Remove .eml backups older than the account's retention period
 
 
 
@@ -619,7 +623,7 @@ Append a trashed .eml back into its original folder
 
 ## `postvak trash purge`
 
-Remove trash files older than the retention period
+Remove .eml backups older than the account's retention period
 
 **Usage:** `postvak trash purge [OPTIONS]`
 
@@ -637,14 +641,14 @@ Manage accounts
 
 ###### **Subcommands:**
 
-* `add` — Interactively add an IMAP account and test the login
-* `list` — Print each configured account: name, username and server
+* `add` — Add an IMAP account; the daemon syncs it right away, and a wrong login shows as that sync's error
+* `list` — Each configured account: name, username and server; never the password source
 
 
 
 ## `postvak account add`
 
-Interactively add an IMAP account and test the login
+Add an IMAP account; the daemon syncs it right away, and a wrong login shows as that sync's error
 
 **Usage:** `postvak account add`
 
@@ -652,7 +656,7 @@ Interactively add an IMAP account and test the login
 
 ## `postvak account list`
 
-Print each configured account: name, username and server
+Each configured account: name, username and server; never the password source
 
 **Usage:** `postvak account list [OPTIONS]`
 
@@ -683,7 +687,7 @@ Serve Postvak to an agent host over MCP on stdio; hosts start this, see `postvak
 
 ###### **Options:**
 
-* `--scopes <SCOPES>` — Comma-separated: read, read:bodies, rules:propose, rules:write, mail:modify
+* `--scopes <SCOPES>` — Comma-separated: read, read:bodies, rules:propose, rules:write, files:write, mail:modify, accounts:write
 
   Default value: `read,rules:propose`
 * `--account <ACCOUNT>` — Only this account; repeatable; default every account
@@ -705,7 +709,7 @@ Register `postvak mcp` with an agent host; re-run it to change the scopes
 
 ###### **Options:**
 
-* `--scopes <SCOPES>` — Comma-separated: read, read:bodies, rules:propose, rules:write, mail:modify
+* `--scopes <SCOPES>` — Comma-separated: read, read:bodies, rules:propose, rules:write, files:write, mail:modify, accounts:write
 
   Default value: `read,rules:propose`
 * `--account <ACCOUNT>` — Only this account; repeatable; default every account

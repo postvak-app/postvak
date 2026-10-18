@@ -53,6 +53,29 @@ fn list_on_unknown_account_fails_and_empty_config_lists_nothing() {
     assert!(out.stdout.is_empty());
 }
 
+/// The wizard's answers in prompt order: name, host, port, CA file, username, address, storage, password command.
+const ADD_ANSWERS: &str = "late\n127.0.0.1\n1\n\nme@example.com\n\nc\nprintf x\n";
+
+#[test]
+fn account_add_saves_then_reports_the_first_sync() {
+    let (home, _store) = seeded_home(&[]);
+    let out = postvak_stdin(home.path(), &["account", "add"], ADD_ANSWERS);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stdout.contains("saved to"), "{stdout}");
+    assert!(!stdout.contains("Testing login"), "{stdout}");
+    let config = std::fs::read_to_string(home.path().join("config/config.toml")).unwrap();
+    assert!(config.contains("name = \"late\""), "{config}");
+    assert!(config.contains("command = \"printf x\""), "{config}");
+    // Port 1 refuses, so the first sync fails with the offline reason its connect left.
+    assert!(!out.status.success(), "{stdout}\n{stderr}");
+    assert!(
+        stderr.contains("[late] error: late is offline (")
+            && stderr.contains("the first sync of 'late' failed"),
+        "{stderr}"
+    );
+}
+
 #[test]
 fn account_add_rejects_invalid_name() {
     use std::io::Write;
@@ -463,6 +486,7 @@ fn postvak_stdin(home: &std::path::Path, args: &[&str], stdin: &str) -> std::pro
     let mut child = Command::new(env!("CARGO_BIN_EXE_postvak"))
         .args(args)
         .env("POSTVAK_HOME", home)
+        .env("POSTVAK_IDLE_EXIT_SECS", "1")
         .env("RUST_LOG", "error")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -769,6 +793,14 @@ fn daemon_stop_ends_the_daemon() {
         String::from_utf8_lossy(&out.stdout).trim(),
         "no daemon running"
     );
+}
+
+#[test]
+fn daemon_status_json_without_a_daemon_prints_null() {
+    let (home, _store) = seeded_home(&[]);
+    let out = postvak(home.path(), &["daemon", "status", "--json"]);
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "null");
 }
 
 #[test]

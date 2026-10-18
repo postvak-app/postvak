@@ -6,11 +6,12 @@ use std::time::Duration;
 use anyhow::{Context as _, Result, bail};
 use clap::{Parser, Subcommand};
 
+use postvak_core::account;
 use postvak_core::config::{AccountConfig, Config, Identity, PasswordSource};
-use postvak_core::credentials::{self, Secret};
+use postvak_core::credentials::Secret;
 use postvak_core::daemon::Client;
 use postvak_core::daemon::client::LazyClient;
-use postvak_core::mail_ops::MailOps;
+use postvak_core::daemon::wire::Status;
 use postvak_core::message::clean;
 use postvak_core::paths::Paths;
 use postvak_core::rules::{Action, CompiledRule, Rule, RuleFile};
@@ -18,6 +19,9 @@ use postvak_core::store::{Filter, Message, Store};
 use postvak_core::sync::{self, Event};
 use postvak_core::time;
 use postvak_core::trash::Trash;
+
+/// How long `account add` waits for the daemon to run the new account; a restart waits for the old thread to end.
+const ACCOUNT_START: Duration = Duration::from_secs(10);
 
 #[derive(Parser)]
 #[command(
@@ -222,7 +226,7 @@ enum Command {
     /// Serve Postvak to an agent host over MCP on stdio; hosts start this, see `postvak mcp install`
     #[command(args_conflicts_with_subcommands = true)]
     Mcp {
-        /// Comma-separated: read, read:bodies, rules:propose, rules:write, mail:modify
+        /// Comma-separated: read, read:bodies, rules:propose, rules:write, files:write, mail:modify, accounts:write
         #[arg(long, default_value = postvak_core::help::MCP_DEFAULT_SCOPES)]
         scopes: String,
         /// Only this account; repeatable; default every account
@@ -235,8 +239,11 @@ enum Command {
 
 #[derive(Subcommand)]
 enum DaemonCommand {
-    /// Print the daemon's pid, version, uptime and what each account is doing
-    Status,
+    #[command(about = postvak_core::help::STATUS)]
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
     /// Stop the daemon; it starts again when a command needs it
     Stop,
 }
@@ -263,7 +270,7 @@ enum McpCommand {
     Install {
         #[arg(value_enum)]
         target: InstallTarget,
-        /// Comma-separated: read, read:bodies, rules:propose, rules:write, mail:modify
+        /// Comma-separated: read, read:bodies, rules:propose, rules:write, files:write, mail:modify, accounts:write
         #[arg(long, default_value = postvak_core::help::MCP_DEFAULT_SCOPES)]
         scopes: String,
         /// Only this account; repeatable; default every account
@@ -297,7 +304,7 @@ enum AttachmentCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Save attachment N, as numbered by `attachment list`, into --dir
+    #[command(about = postvak_core::help::ATTACHMENT_SAVE)]
     Save {
         uid: u32,
         n: usize,
@@ -341,7 +348,7 @@ enum RulesCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Run one rule against mail that predates it
+    #[command(about = postvak_core::help::RULES_APPLY_EXISTING)]
     ApplyExisting {
         name: String,
         #[arg(long)]
@@ -364,7 +371,7 @@ enum TrashCommand {
         #[arg(long)]
         account: Option<String>,
     },
-    /// Remove trash files older than the retention period
+    #[command(about = postvak_core::help::TRASH_PURGE)]
     Purge {
         #[arg(long)]
         account: Option<String>,
@@ -373,9 +380,9 @@ enum TrashCommand {
 
 #[derive(Subcommand)]
 enum AccountCommand {
-    /// Interactively add an IMAP account and test the login
+    #[command(about = postvak_core::help::ACCOUNT_ADD)]
     Add,
-    /// Print each configured account: name, username and server
+    #[command(about = postvak_core::help::ACCOUNT_LIST)]
     List {
         #[arg(long)]
         json: bool,
@@ -775,29 +782,38 @@ fn sync_account(client: &Client, name: &str) -> bool {
     }
 }
 
+fn print_status(status: &Status) {
+    let minutes = status.uptime_secs / 60;
+    println!(
+        "pid {}, version {}, up {}h {}m, {} clients",
+        status.pid,
+        status.version,
+        minutes / 60,
+        minutes % 60,
+        status.clients
+    );
+    for account in &status.accounts {
+        let activity = account
+            .activity
+            .as_ref()
+            .map_or("starting".into(), ToString::to_string);
+        println!("{}  {activity}", account.name);
+    }
+}
+
 fn cmd_daemon(command: DaemonCommand, paths: &Paths) -> Result<()> {
     let Some(client) = Client::connect_any_version(paths)? else {
-        println!("no daemon running");
+        let json = matches!(command, DaemonCommand::Status { json: true });
+        println!("{}", if json { "null" } else { "no daemon running" });
         return Ok(());
     };
     match command {
-        DaemonCommand::Status => {
+        DaemonCommand::Status { json } => {
             let status = client.status()?;
-            let minutes = status.uptime_secs / 60;
-            println!(
-                "pid {}, version {}, up {}h {}m, {} clients",
-                status.pid,
-                status.version,
-                minutes / 60,
-                minutes % 60,
-                status.clients
-            );
-            for account in &status.accounts {
-                let activity = account
-                    .activity
-                    .as_ref()
-                    .map_or("starting".into(), ToString::to_string);
-                println!("{}  {activity}", account.name);
+            if json {
+                println!("{}", postvak_core::output::status(&status)?);
+            } else {
+                print_status(&status);
             }
         }
         DaemonCommand::Stop => {
@@ -1029,10 +1045,10 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             account,
             dry_run,
         } => {
-            let rules = vec![
-                postvak_core::rules::enabled_rule(&paths.rules_file(), &name)
-                    .map_err(anyhow::Error::msg)?,
-            ];
+            let rules = vec![postvak_core::rules::enabled_rule(
+                &paths.rules_file(),
+                &name,
+            )?];
             let mut failed = false;
             let daemon = LazyClient::new(paths);
             for acc in select_accounts(config, account.as_deref())? {
@@ -1192,7 +1208,7 @@ fn cmd_trash(command: TrashCommand, config: &Config, paths: &Paths) -> Result<()
         TrashCommand::Purge { account } => {
             for acc in select_accounts(config, account.as_deref())? {
                 let removed = Trash::new(paths.trash_dir(&acc.name))
-                    .purge(acc.trash_retention_days as i64 * 86_400, time::now())?;
+                    .purge(acc.trash_retention_days, time::now())?;
                 println!("{}: removed {removed}", acc.name);
             }
             Ok(())
@@ -1231,26 +1247,22 @@ fn cmd_account_add(mut config: Config, paths: &Paths) -> Result<()> {
         ca_file,
         ..AccountConfig::new(&name, &host, &username, password)
     };
-    config.accounts.retain(|a| a.name != account.name);
-    config.accounts.push(account);
-    config.validate()?;
-    let Some(account) = config.accounts.last() else {
-        bail!("no account to save");
-    };
+    account::check(&config, &account)?;
     let secret = match &account.password {
-        PasswordSource::Command { .. } => credentials::resolve(account)?,
-        PasswordSource::Keyring { .. } => Secret::new(rpassword::prompt_password("Password: ")?),
+        PasswordSource::Command { .. } => None,
+        PasswordSource::Keyring { .. } => {
+            Some(Secret::new(rpassword::prompt_password("Password: ")?))
+        }
     };
-    print!("Testing login... ");
-    io::stdout().flush()?;
-    let mut ops = postvak_core::mail_ops::imap::ImapOps::connect(account, &secret)?;
-    let folders = ops.list_folders()?;
-    println!("ok, {} folders", folders.len());
-    if matches!(account.password, PasswordSource::Keyring { .. }) {
-        credentials::store(&account.name, &secret)?;
-    }
-    config.save(&paths.config_file())?;
+    account::add(&mut config, paths, account, secret)?;
     println!("saved to {}", paths.config_file().display());
+    let client = Client::connect_or_start(paths)?;
+    account::await_started(&client, &name, ACCOUNT_START)?;
+    if !sync_account(&client, &name) {
+        bail!(
+            "the first sync of '{name}' failed; check the login and run `postvak account add` again"
+        );
+    }
     Ok(())
 }
 

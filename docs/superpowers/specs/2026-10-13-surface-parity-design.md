@@ -22,7 +22,7 @@ One rule violation: `postvak account add` opens its own IMAP connection to test 
 - **Account add saves first and syncs through the daemon.** No login probe before saving. The daemon watches `config.toml`, starts the new account's thread; the CLI and MCP wait for it to list the account and request one sync, while the GUI shows the sync the daemon starts on its own. A wrong password surfaces as that sync's error; running add again with the same name replaces the account. The CLI's "Testing login..." line goes.
 - **Over MCP, account add takes a password command only.** A plain password would pass through the agent host's context and logs. Keyring passwords stay CLI and GUI.
 - **Account add gets its own scope, `accounts:write`.** Adding an account is neither mail nor rules, and a host should be able to grant everything else without it. It is not in the default scope set.
-- **`attachment_save` is `read:bodies`.** The agent already sees the content; writing it to a directory it names adds little.
+- **`attachment_save` gets its own scope, `files:write`, not in the default set:** the file name and content come from the sender and the agent picks the directory, so a read-only grant must not write files.
 - **`trash_purge` and `rules_apply_existing` are `mail:modify`.** Purge deletes backups for good; apply-existing acts on stored mail.
 - **GUI password entry is keyring only.** A GUI user has no terminal for a password command.
 - **GUI rules editing stays as it is.** Propose, test, check and schema are agent and CLI features; the GUI opens the file. This is the one named exception, already in the GUI spec.
@@ -61,7 +61,7 @@ Six tools. Arguments mirror the CLI flags.
 | `account_add` | `accounts:write` | `name`, `host`, `port` (default 993), `username`, `password_command`, `address`, `ca_file` | the account row, then the sync result for that account |
 | `accounts` | `read` | none | `output::account` rows |
 | `status` | `read` | none | `output::status` |
-| `attachment_save` | `read:bodies` | `account`, `folder`, `uid`, `n`, `dir` | the written path |
+| `attachment_save` | `files:write` | `account`, `folder`, `uid`, `n`, `dir` | the written path |
 | `trash_purge` | `mail:modify` | `account` (optional, all when absent) | per account the removed count |
 | `rules_apply_existing` | `mail:modify` | `name`, `account` (optional), `dry_run` | dry run: planned rows; otherwise per account evaluated, actions and errors |
 

@@ -1,7 +1,9 @@
 //! JSON rows shared by the CLI's `--json` and the MCP results; each row carries its account.
 use serde_json::{Value, json};
 
+use crate::actions::Planned;
 use crate::config::AccountConfig;
+use crate::daemon::wire::Status;
 use crate::rules::Rule;
 use crate::store::{Folder, Message};
 
@@ -36,6 +38,24 @@ pub fn rule(rule: &Rule) -> Value {
     json!({ "name": rule.name, "enabled": rule.enabled, "proposed_by": rule.proposed_by, "account": rule.account, "folder": rule.folder })
 }
 
+/// One row of a dry run: what `rule` would do to the message.
+pub fn planned_row(account: &str, planned: &Planned) -> Value {
+    json!({
+        "account": account, "rule": planned.rule, "folder": planned.message.folder,
+        "uid": planned.message.uid, "action": planned.action.label(), "subject": planned.message.subject,
+    })
+}
+
+/// The outcome of running a rule over an account's existing mail.
+pub fn rule_applied(account: &str, evaluated: usize, actions: usize, errors: &[String]) -> Value {
+    json!({ "account": account, "evaluated": evaluated, "actions": actions, "errors": errors })
+}
+
+/// The daemon's status as it serialises; the CLI's `daemon status --json` and the MCP `status` tool share it.
+pub fn status(status: &Status) -> serde_json::Result<Value> {
+    serde_json::to_value(status)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -65,5 +85,31 @@ mod tests {
             message(3, Some("a b c d e f g")),
         ];
         assert_eq!(depths(&thread), vec![0, 1, 4]);
+    }
+
+    #[test]
+    fn planned_rows_name_the_rule_folder_uid_and_action() {
+        let planned = Planned {
+            rule: "codes".into(),
+            message: Message {
+                folder: "INBOX".into(),
+                uid: 7,
+                subject: Some("Your code".into()),
+                ..Default::default()
+            },
+            action: crate::rules::Action::Flag,
+        };
+        assert_eq!(
+            planned_row("work", &planned),
+            serde_json::json!({ "account": "work", "rule": "codes", "folder": "INBOX", "uid": 7, "action": "flag", "subject": "Your code" })
+        );
+    }
+
+    #[test]
+    fn rule_applied_rows_carry_counts_and_errors() {
+        assert_eq!(
+            rule_applied("work", 12, 3, &["x".to_string()]),
+            serde_json::json!({ "account": "work", "evaluated": 12, "actions": 3, "errors": ["x"] })
+        );
     }
 }

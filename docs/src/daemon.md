@@ -49,7 +49,7 @@ postvak daemon status    # pid, version, uptime, clients and what each account i
 postvak daemon stop
 ```
 
-Both only look for a running daemon; they never start one, and say `no daemon running` when there is none. After `stop`, the next command that needs the server starts it again, and an open mail window does so within 5 s. A service restarts it on its own.
+Both only look for a running daemon; they never start one, and say `no daemon running` when there is none (`status --json` prints `null`). After `stop`, the next command that needs the server starts it again, and an open mail window does so within 5 s. A service restarts it on its own.
 
 ## Logs
 
@@ -60,7 +60,7 @@ A daemon started by a command, or by the launchd service on macOS, writes `daemo
 - `already running (pid N)`: a daemon holds the lock. Use it, or stop it with `postvak daemon stop` before running another.
 - `socket path too long`: the state directory is nested too deep for a Unix socket. Shorten `POSTVAK_HOME`.
 - `the daemon stopped; see <log>`: the daemon quit while a command was waiting. The log says why.
-- `<account> is offline (<reason>); retrying at HH:MM`: that account could not reach its server. Everything else keeps syncing.
+- `<account> is offline (<reason>); retrying at HH:MM`: that account could not reach its server. Everything else keeps syncing. `postvak sync` tries it again at once.
 - `<account> is restarting`: `config.toml` changed that account and its old sync thread is still finishing. Try again in a moment.
 - After an upgrade, the next command notices the old daemon, stops it and starts the new one. A daemon started by the service is restarted by launchd or systemd.
 - `the daemon is version X, newer than this postvak (Y); restart this program`: a window or MCP server from before an upgrade is still open. It leaves the newer daemon alone; restart it.

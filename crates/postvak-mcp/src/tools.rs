@@ -122,6 +122,18 @@ struct RulesTestArgs {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct ApplyExistingArgs {
+    /// The rule's name in rules_list; it must be enabled
+    name: String,
+    /// Only this account; default every visible account the rule applies to
+    account: Option<String>,
+    /// List what the rule would do from the local store, without touching the server
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct AccountArgs {
     /// Only this account; default every visible account
     account: Option<String>,
@@ -172,6 +184,22 @@ struct UnsubscribeArgs {
 struct MessageArgs {
     /// The uid, as `list` returns it
     uid: u32,
+    /// Required when several accounts are visible
+    account: Option<String>,
+    /// Folder name as `folders` lists it; default INBOX
+    #[serde(default = "inbox")]
+    folder: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct AttachmentSaveArgs {
+    /// The uid, as `list` returns it
+    uid: u32,
+    /// The attachment's index, as `attachments` numbers it
+    n: usize,
+    /// An absolute path of an existing directory to save into
+    dir: std::path::PathBuf,
     /// Required when several accounts are visible
     account: Option<String>,
     /// Folder name as `folders` lists it; default INBOX
@@ -294,6 +322,29 @@ struct RestoreArgs {
     dry_run: bool,
 }
 
+fn imaps() -> u16 {
+    993
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct AccountAddArgs {
+    /// Letters, digits, - and _; an existing account of this name is replaced
+    name: String,
+    /// IMAP host, TLS on `port`
+    host: String,
+    #[serde(default = "imaps")]
+    port: u16,
+    /// The IMAP login
+    username: String,
+    /// A shell command that prints the password, such as `pass show mail/work`; the password itself is never taken
+    password_command: String,
+    /// The mail address, when the username is not one
+    address: Option<String>,
+    /// Absolute path of a PEM file with an extra trusted root certificate
+    ca_file: Option<std::path::PathBuf>,
+}
+
 /// Every tool, in any order; `Server::new` sorts them and listing filters by scope. `bodies` is whether
 /// `read:bodies` is granted, which changes what `search` covers.
 fn catalog(bodies: bool) -> Vec<ToolDef> {
@@ -303,7 +354,19 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
         "Search subject and addresses for all the given words, newest first; bodies need the read:bodies scope".to_string()
     };
     vec![
+        ToolDef::new::<AccountAddArgs>(
+            "account_add",
+            Scope::AccountsWrite,
+            Effect::Destructive,
+            help::ACCOUNT_ADD,
+        ),
         ToolDef::new::<SelectionArgs>("archive", Scope::MailModify, Effect::Changes, help::ARCHIVE),
+        ToolDef::new::<AttachmentSaveArgs>(
+            "attachment_save",
+            Scope::FilesWrite,
+            Effect::Changes,
+            help::ATTACHMENT_SAVE,
+        ),
         ToolDef::new::<MessageArgs>(
             "attachments",
             Scope::ReadBodies,
@@ -316,12 +379,24 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
             Effect::Destructive,
             help::DELETE,
         ),
+        ToolDef::new::<NoArgs>(
+            "accounts",
+            Scope::Read,
+            Effect::ReadOnly,
+            help::ACCOUNT_LIST,
+        ),
         ToolDef::new::<AccountArgs>("folders", Scope::Read, Effect::ReadOnly, help::FOLDERS),
         ToolDef::new::<ListArgs>("list", Scope::Read, Effect::ReadOnly, help::LIST),
         ToolDef::new::<JunkArgs>("junk", Scope::MailModify, Effect::Changes, help::JUNK),
         ToolDef::new::<LogArgs>("log", Scope::Read, Effect::ReadOnly, help::LOG),
         ToolDef::new::<MarkArgs>("mark", Scope::MailModify, Effect::Changes, help::MARK),
         ToolDef::new::<MoveArgs>("move", Scope::MailModify, Effect::Changes, help::MOVE),
+        ToolDef::new::<ApplyExistingArgs>(
+            "rules_apply_existing",
+            Scope::MailModify,
+            Effect::Destructive,
+            help::RULES_APPLY_EXISTING,
+        ),
         ToolDef::new::<NameArgs>(
             "rules_approve",
             Scope::RulesWrite,
@@ -380,12 +455,19 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
                 help::SHOW
             ),
         ),
+        ToolDef::new::<NoArgs>("status", Scope::Read, Effect::ReadOnly, help::STATUS),
         ToolDef::new::<AccountArgs>("sync", Scope::Read, Effect::Changes, help::SYNC),
         ToolDef::new::<AccountArgs>(
             "trash_list",
             Scope::Read,
             Effect::ReadOnly,
             help::TRASH_LIST,
+        ),
+        ToolDef::new::<AccountArgs>(
+            "trash_purge",
+            Scope::MailModify,
+            Effect::Destructive,
+            help::TRASH_PURGE,
         ),
         ToolDef::new::<RestoreArgs>(
             "trash_restore",
@@ -412,6 +494,19 @@ fn dispatch(
 ) -> Result<Value> {
     let by = client.map_or_else(|| "mcp".to_string(), |client| format!("mcp:{client}"));
     match name {
+        "account_add" => {
+            let a: AccountAddArgs = args(arguments)?;
+            let password = postvak_core::config::PasswordSource::Command {
+                command: a.password_command,
+            };
+            let account = postvak_core::config::AccountConfig {
+                port: a.port,
+                address: a.address,
+                ca_file: a.ca_file,
+                ..postvak_core::config::AccountConfig::new(&a.name, &a.host, &a.username, password)
+            };
+            backend.account_add(account)
+        }
         "archive" => {
             let a: SelectionArgs = args(arguments)?;
             backend.act(
@@ -422,6 +517,10 @@ fn dispatch(
                 a.dry_run,
                 &by,
             )
+        }
+        "attachment_save" => {
+            let a: AttachmentSaveArgs = args(arguments)?;
+            backend.attachment_save(a.account.as_deref(), &a.folder, a.uid, a.n, &a.dir)
         }
         "attachments" => {
             let a: MessageArgs = args(arguments)?;
@@ -449,6 +548,10 @@ fn dispatch(
                 a.dry_run,
                 &by,
             )
+        }
+        "accounts" => {
+            let _: NoArgs = args(arguments)?;
+            rows(backend.accounts()?)
         }
         "folders" => {
             let a: AccountArgs = args(arguments)?;
@@ -497,6 +600,10 @@ fn dispatch(
                 a.dry_run,
                 &by,
             )
+        }
+        "rules_apply_existing" => {
+            let a: ApplyExistingArgs = args(arguments)?;
+            rows(backend.rules_apply_existing(&a.name, a.account.as_deref(), a.dry_run)?)
         }
         "rules_approve" => {
             let a: NameArgs = args(arguments)?;
@@ -551,6 +658,10 @@ fn dispatch(
             let (body, truncated) = wrap_body(&body);
             Ok(json!({ "message": row, "body": body, "truncated": truncated }))
         }
+        "status" => {
+            let _: NoArgs = args(arguments)?;
+            backend.status()
+        }
         "sync" => {
             let a: AccountArgs = args(arguments)?;
             rows(backend.sync(a.account.as_deref())?)
@@ -558,6 +669,10 @@ fn dispatch(
         "trash_list" => {
             let a: AccountArgs = args(arguments)?;
             rows(backend.trash_list(a.account.as_deref())?)
+        }
+        "trash_purge" => {
+            let a: AccountArgs = args(arguments)?;
+            rows(backend.trash_purge(a.account.as_deref())?)
         }
         "trash_restore" => {
             let a: RestoreArgs = args(arguments)?;

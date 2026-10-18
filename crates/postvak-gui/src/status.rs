@@ -15,7 +15,7 @@ pub(crate) struct Line {
     pub progress: Option<f32>,
 }
 
-/// The window's error first, then a line per account.
+/// The window's error first, then the last result, then a line per account.
 pub(crate) fn lines(app: &App) -> Vec<Line> {
     let error = app.error.iter().map(|error| Line {
         text: error.clone(),
@@ -29,7 +29,13 @@ pub(crate) fn lines(app: &App) -> Vec<Line> {
         failed: failed(account),
         progress: account.activity.as_ref().and_then(progress),
     });
-    error.chain(accounts).collect()
+    let notice = app.notice.iter().map(|text| Line {
+        text: text.clone(),
+        dot: None,
+        failed: false,
+        progress: None,
+    });
+    error.chain(notice).chain(accounts).collect()
 }
 
 /// The one line the folder pane has room for: a failure first, then an account offline, then one syncing, else the
@@ -369,6 +375,35 @@ mod tests {
             driver.tick();
             assert_eq!(driver.app.list.rows.len(), 1);
         }
+    }
+
+    #[test]
+    fn the_next_sync_of_any_account_clears_a_notice_from_the_status_row() {
+        let fx = Fixture::new(&["work", "home"]);
+        let (mut driver, wires) = fx.driver();
+        let applied = Event::RuleApplied {
+            account: "work".into(),
+            request: 1,
+            evaluated: 2,
+            actions: 2,
+            errors: vec![],
+        };
+        wires.events.send(applied).unwrap();
+        driver.tick();
+        let notice = "work: 2 actions on 2 messages";
+        assert_eq!(super::summary(&driver.app).text, notice);
+        let synced = Event::Synced {
+            account: "home".into(),
+            new_messages: 0,
+            actions: 0,
+            requests: vec![],
+            errors: vec![],
+        };
+        wires.events.send(synced).unwrap();
+        driver.tick();
+        assert_ne!(super::summary(&driver.app).text, notice);
+        assert!(driver.app.notice.is_none());
+        assert!(driver.app.history.iter().any(|line| line.text == notice));
     }
 
     #[test]

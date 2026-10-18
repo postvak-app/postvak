@@ -228,6 +228,7 @@ impl Hub {
 struct Shared {
     engine: Mutex<Option<Engine>>,
     hub: Mutex<Hub>,
+    watch: Mutex<Watch>,
 }
 
 /// A panic elsewhere must not take the daemon down with a poisoned lock.
@@ -236,13 +237,14 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 fn serve(paths: &Paths, options: Options, listener: UnixListener) -> anyhow::Result<()> {
-    let mut watch = Watch::new(paths);
+    let watch = Watch::new(paths);
     let config = Config::load(&paths.config_file())?;
     migrate_stores(&config, paths);
     let (engine, events) = Engine::start(&config, paths, options.connect.clone());
     let shared = Arc::new(Shared {
         engine: Mutex::new(Some(engine)),
         hub: Mutex::new(Hub::new()),
+        watch: Mutex::new(watch),
     });
     let notify: fn(&str, &str) = if options.notify {
         crate::notify::new_mail
@@ -255,7 +257,7 @@ fn serve(paths: &Paths, options: Options, listener: UnixListener) -> anyhow::Res
             let shared = shared.clone();
             move || route_events(&shared, events, io::stdout().is_terminal(), notify)
         })?;
-    let connections = accept_until_done(&shared, &listener, &mut watch, options.idle_exit);
+    let connections = accept_until_done(&shared, &listener, options.idle_exit);
     // Connects fail at once from here on instead of waiting out the hello timeout; the socket file and lock remain.
     drop(listener);
     stop(&shared, router, connections);
@@ -272,7 +274,7 @@ fn migrate_stores(config: &Config, paths: &Paths) {
     }
 }
 
-/// config.toml and rules.toml, looked at every 2 s.
+/// config.toml and rules.toml, looked at every 2 s and before each client request.
 struct Watch {
     config: FileWatch,
     rules: FileWatch,
@@ -288,9 +290,10 @@ impl Watch {
         }
     }
 
-    /// The config, loaded again once it changed, and whether the rules file changed.
-    fn changed(&mut self) -> (Option<Config>, bool) {
-        if self.checked.elapsed() < FILE_POLL {
+    /// The config, loaded again once it changed, and whether the rules file changed; `poll` skips the check until
+    /// FILE_POLL passed since the last one.
+    fn changed(&mut self, poll: bool) -> (Option<Config>, bool) {
+        if poll && self.checked.elapsed() < FILE_POLL {
             return (None, false);
         }
         self.checked = Instant::now();
@@ -308,29 +311,35 @@ struct Connection {
     reader: JoinHandle<()>,
 }
 
+/// Applies a changed config.toml or rules.toml and starts the accounts whose old thread ended.
+fn apply_file_changes(shared: &Shared, poll: bool) {
+    // Held throughout, so a request never overtakes a change another thread is still applying.
+    let mut watch = lock(&shared.watch);
+    let (config, rules) = watch.changed(poll);
+    if let Some(engine) = lock(&shared.engine).as_mut() {
+        if let Some(config) = &config {
+            engine.apply_config(config);
+        }
+        engine.start_ready();
+        if rules {
+            // Rules act on mail synced after they change, so every running account syncs at once; request 0 has
+            // nobody waiting for its reply.
+            for account in engine.accounts() {
+                engine.send(&account, 0, Command::SyncNow);
+            }
+        }
+    }
+}
+
 fn accept_until_done(
     shared: &Arc<Shared>,
     listener: &UnixListener,
-    watch: &mut Watch,
     idle_exit: Option<Duration>,
 ) -> Vec<Connection> {
     let mut connections: Vec<Connection> = Vec::new();
     let mut next_client: ClientId = 0;
     while !done(shared, idle_exit) {
-        let (config, rules) = watch.changed();
-        if let Some(engine) = lock(&shared.engine).as_mut() {
-            if let Some(config) = &config {
-                engine.apply_config(config);
-            }
-            engine.start_ready();
-            if rules {
-                // Rules act on mail synced after they change, so every running account syncs at once; request 0 has
-                // nobody waiting for its reply.
-                for account in engine.accounts() {
-                    engine.send(&account, 0, Command::SyncNow);
-                }
-            }
-        }
+        apply_file_changes(shared, true);
         match listener.accept() {
             Ok((stream, _)) => {
                 next_client += 1;
@@ -529,6 +538,8 @@ fn handle_line(shared: &Shared, client: ClientId, line: &str) -> bool {
             return true;
         }
     };
+    // A request right after a client saved config.toml sees the accounts it saved.
+    apply_file_changes(shared, false);
     match message {
         ClientMessage::Hello { .. } => {}
         ClientMessage::Subscribe { id } => {
@@ -595,9 +606,13 @@ fn submit(shared: &Shared, client: ClientId, id: u64, account: &str, command: Co
         let mut hub = lock(&shared.hub);
         let refused = match known {
             None => Some("the daemon is stopping".to_string()),
-            Some((running, restarting)) => {
-                refusal(account, running, restarting, hub.activity.get(account))
-            }
+            Some((running, restarting)) => refusal(
+                account,
+                &command,
+                running,
+                restarting,
+                hub.activity.get(account),
+            ),
         };
         if let Some(refusal) = refused {
             hub.reply(client, id, Outcome::Error(refusal));
@@ -623,9 +638,11 @@ fn submit(shared: &Shared, client: ClientId, id: u64, account: &str, command: Co
     }
 }
 
-/// Why a command for `account` cannot run now, if it cannot.
+/// Why a command for `account` cannot run now, if it cannot. SyncNow is never refused for an offline account: it
+/// wakes the thread from its back-off to connect again at once.
 fn refusal(
     account: &str,
+    command: &Command,
     running: bool,
     restarting: bool,
     activity: Option<&Activity>,
@@ -633,6 +650,7 @@ fn refusal(
     match (running, activity) {
         (false, _) if restarting => Some(format!("{account} is restarting")),
         (false, _) => Some(format!("no account named '{account}'")),
+        (true, _) if matches!(command, Command::SyncNow) => None,
         (true, Some(Activity::Offline { reason, retry_at })) => {
             Some(sync::offline_message(account, reason, *retry_at))
         }
