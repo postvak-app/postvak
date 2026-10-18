@@ -4796,7 +4796,7 @@ dependencies = [
 
 [[package]]
 name = "postvak"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4814,7 +4814,7 @@ dependencies = [
 
 [[package]]
 name = "postvak-core"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "apple-native-keyring-store",
@@ -4852,7 +4852,7 @@ dependencies = [
 
 [[package]]
 name = "postvak-gui"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "anyrender",
@@ -4890,7 +4890,7 @@ dependencies = [
 
 [[package]]
 name = "postvak-mcp"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "directories",
