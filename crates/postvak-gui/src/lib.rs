@@ -42,13 +42,15 @@ mod ui {
     slint::include_modules!();
 }
 
-use std::cell::RefCell;
-use std::path::Path;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::mpsc::TryRecvError;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use slint::ComponentHandle;
 use slint::winit_030::WinitWindowAccessor;
+use slint::{ComponentHandle, SharedString};
 
 use postvak_core::config::Config;
 use postvak_core::paths::Paths;
@@ -120,22 +122,21 @@ fn start(
     safe_mode: bool,
     marker: Option<&launch::Marker>,
 ) -> Result<(), Failure> {
-    let (error, daemon_log) = match paths {
-        Ok(paths) => {
-            let daemon_log = paths.daemon_log();
-            match open(paths, safe_mode, marker) {
-                Ok(()) => return Ok(()),
-                Err(e) => (e, Some(daemon_log)),
-            }
-        }
+    let (error, paths) = match paths {
+        Ok(paths) => match open(paths.clone(), safe_mode, marker) {
+            Ok(()) => return Ok(()),
+            Err(e) => (e, Some(paths)),
+        },
         Err(e) => (e, None),
     };
     if launch::no_window(&error) {
         let window = anyhow::anyhow!("{error:#}");
         return Err(Failure::NoWindow { error, window });
     }
-    match explain(&error, daemon_log.as_deref(), marker) {
-        Ok(()) => Err(Failure::Explained(error)),
+    match explain(&error, paths.as_ref(), marker) {
+        // The first-run form saved an account, so the mail window can open now.
+        Ok(true) => start(paths.ok_or(error), safe_mode, marker),
+        Ok(false) => Err(Failure::Explained(error)),
         Err(window) if launch::no_window(&window) => Err(Failure::NoWindow { error, window }),
         Err(window) => {
             log::warn!("the startup window failed: {window:#}");
@@ -383,27 +384,35 @@ fn remember(window: &ui::MailWindow) -> persist::Layout {
 }
 
 /// Shows why the mail window could not start until the user closes it; the caller prints the error and sets the exit
-/// code. Without a display there is no window, and stderr is all there is. The window remembers nothing.
+/// code. With no account yet and paths to save under, the window holds the add-account form: true when it saved one.
+/// Without a display there is no window, and stderr is all there is. The window remembers nothing.
 fn explain(
     error: &anyhow::Error,
-    log: Option<&Path>,
+    paths: Option<&Paths>,
     marker: Option<&launch::Marker>,
-) -> Result<()> {
-    let problem = startup::Problem::of(error, log);
+) -> Result<bool> {
+    let log = paths.map(Paths::daemon_log);
+    let problem = startup::Problem::of(error, log.as_deref());
     let open_docs = |url: &str| {
         if let Err(e) = state::launch(url.as_ref(), false) {
             log::warn!("could not open the docs: {e}");
         }
     };
-    let window = startup_window(&problem, open_docs)?;
+    let form = paths.filter(|_| error.is::<startup::NoAccounts>()).cloned();
+    let saved = Rc::new(Cell::new(false));
+    let window = startup_window(&problem, open_docs, form, saved.clone())?;
     launch::watch(window.window(), marker.cloned());
     window.run()?;
-    Ok(())
+    Ok(saved.get())
 }
 
+/// The window that says what went wrong. With `form`, the paths to save under, it holds the add-account form, and
+/// `saved` turns true once an account was saved and the window closed.
 fn startup_window(
     problem: &startup::Problem,
     open_docs: impl Fn(&str) + 'static,
+    form: Option<Paths>,
+    saved: Rc<Cell<bool>>,
 ) -> Result<ui::StartupWindow, slint::PlatformError> {
     let window = ui::StartupWindow::new()?;
     window.set_summary(problem.summary.as_str().into());
@@ -419,7 +428,46 @@ fn startup_window(
             let _ = window.hide();
         }
     });
+    window.set_form(form.is_some());
+    if let Some(paths) = form {
+        let weak = window.as_weak();
+        window.on_save_account(move |fields| {
+            let Some(window) = weak.upgrade() else { return };
+            let fields = bind::account_fields(fields);
+            match account::save(paths.clone(), &fields, Arc::new(|| {})) {
+                Ok(answer) => {
+                    window.set_account_error(SharedString::new());
+                    window.set_account_saving(true);
+                    await_save(&window, answer, saved.clone());
+                }
+                Err(message) => window.set_account_error(message.into()),
+            }
+        });
+    }
     Ok(window)
+}
+
+/// How often the first-run window looks for the save's answer.
+const SAVE_POLL: Duration = Duration::from_millis(100);
+
+/// Looks for the save's answer every `SAVE_POLL`: a saved account closes the window, a refusal shows why.
+fn await_save(window: &ui::StartupWindow, answer: account::Saving, saved: Rc<Cell<bool>>) {
+    let weak = window.as_weak();
+    slint::Timer::single_shot(SAVE_POLL, move || {
+        let Some(window) = weak.upgrade() else { return };
+        let refused = match answer.try_recv() {
+            Err(TryRecvError::Empty) => return await_save(&window, answer, saved),
+            Ok(Ok(_)) => {
+                saved.set(true);
+                let _ = window.hide();
+                return;
+            }
+            Ok(Err(message)) => message,
+            Err(TryRecvError::Disconnected) => account::STOPPED.into(),
+        };
+        window.set_account_saving(false);
+        window.set_account_error(refused.into());
+    });
 }
 
 #[cfg(test)]
@@ -461,9 +509,13 @@ mod tests {
         );
     }
 
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::path::Path;
     use std::rc::Rc;
+    use std::time::{Duration, Instant};
+
+    use postvak_core::config::Config;
+    use postvak_core::paths::Paths;
 
     use i_slint_backend_testing::ElementHandle;
     use slint::ComponentHandle;
@@ -484,10 +536,107 @@ mod tests {
         let opened = Rc::new(RefCell::new(Vec::new()));
         let record = opened.clone();
         let problem = Problem::of(&error, log);
-        let window =
-            startup_window(&problem, move |url| record.borrow_mut().push(url.into())).unwrap();
+        let window = startup_window(
+            &problem,
+            move |url| record.borrow_mut().push(url.into()),
+            None,
+            Rc::default(),
+        )
+        .unwrap();
         window.show().unwrap();
         (window, opened)
+    }
+
+    /// The first-run window over an empty home under `paths`, and whether it saved an account.
+    fn first_run(paths: &Paths) -> (super::ui::StartupWindow, Rc<Cell<bool>>) {
+        headless();
+        let saved = Rc::new(Cell::new(false));
+        let problem = Problem::of(&anyhow::Error::new(NoAccounts), None);
+        let window = startup_window(&problem, |_| {}, Some(paths.clone()), saved.clone()).unwrap();
+        window.show().unwrap();
+        (window, saved)
+    }
+
+    /// The text field labelled `label`; its label beside it is hidden from screen readers.
+    fn field(window: &super::ui::StartupWindow, label: &str) -> ElementHandle {
+        let role = Some(i_slint_backend_testing::AccessibleRole::TextInput);
+        let mut found: Vec<ElementHandle> = labelled(window, label)
+            .into_iter()
+            .filter(|e| e.accessible_role() == role)
+            .collect();
+        assert_eq!(found.len(), 1, "fields labelled {label:?}");
+        found.remove(0)
+    }
+
+    fn fill(window: &super::ui::StartupWindow, name: &str) {
+        let values = [
+            ("Account name", name),
+            ("IMAP host", "imap.example.com"),
+            ("Username", "me@example.com"),
+            ("Password", "hunter2"),
+        ];
+        for (label, value) in values {
+            field(window, label).set_accessible_value(value);
+        }
+    }
+
+    /// Fires the window's timers until `done`, for at most 5 s of real time: the save runs on its own thread.
+    fn wait_for(done: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !done() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+            i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(100));
+        }
+        assert!(done(), "timed out");
+    }
+
+    fn home() -> (tempfile::TempDir, Paths) {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        std::fs::create_dir_all(&paths.config_dir).unwrap();
+        (dir, paths)
+    }
+
+    #[test]
+    fn the_first_run_form_saves_the_account_and_closes_the_window() {
+        let (_dir, paths) = home();
+        let (window, saved) = first_run(&paths);
+        assert_eq!(
+            labelled(&window, "Postvak has no mail account set up yet.").len(),
+            1
+        );
+        let fix = "Run `postvak account add` in a terminal, then open Postvak again.";
+        assert!(
+            labelled(&window, fix).is_empty(),
+            "the form replaces the fix"
+        );
+        fill(&window, "work");
+        labelled(&window, "Save account")[0].invoke_accessible_default_action();
+        wait_for(|| !window.window().is_visible());
+        assert!(saved.get());
+        let config = Config::load(&paths.config_file()).unwrap();
+        assert_eq!(config.accounts[0].name, "work");
+    }
+
+    #[test]
+    fn a_refused_first_run_save_says_why_and_stays_open() {
+        let (_dir, paths) = home();
+        let (window, saved) = first_run(&paths);
+        fill(&window, "my work");
+        labelled(&window, "Save account")[0].invoke_accessible_default_action();
+        let why =
+            "config.toml: account name 'my work' may only contain letters, digits, '-' and '_'";
+        wait_for(|| !labelled(&window, why).is_empty());
+        assert!(window.window().is_visible());
+        assert!(!saved.get());
+    }
+
+    #[test]
+    fn a_missing_field_is_named_at_once() {
+        let (_dir, paths) = home();
+        let (window, _saved) = first_run(&paths);
+        labelled(&window, "Save account")[0].invoke_accessible_default_action();
+        assert_eq!(labelled(&window, "the account name is required").len(), 1);
     }
 
     fn labelled(

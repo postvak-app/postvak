@@ -13,11 +13,11 @@ use super::rows::{ListModel, PageModel, model, sync, synced};
 use super::rules::SheetSort;
 use super::state::{App, Focus, UiAction, View};
 use super::ui::{
-    BodyInfo, Dot, FolderItem, FolderKind, KeyHelp, MailWindow, MenuAction, MenuChoice, MenuState,
-    PageInfo, Pane, ProposalData, Remote, RuleData, SelectedData, Sheet, StatusLine, Theme,
-    ThemePreference, ToolButton,
+    AccountFields, BodyInfo, Dot, FolderItem, FolderKind, KeyHelp, MailWindow, MenuAction,
+    MenuChoice, MenuState, PageInfo, Pane, ProposalData, Remote, RuleData, SelectedData, Sheet,
+    StatusLine, Theme, ThemePreference, ToolButton,
 };
-use super::{body, icons, list, menu, rules, status, theme, toolbar};
+use super::{account, body, icons, list, menu, rules, status, theme, toolbar};
 use postvak_core::message::clean;
 
 /// What a callback asks the app: the actions it means, in order.
@@ -26,6 +26,18 @@ pub(crate) type Ask = Box<dyn FnOnce(&App) -> Vec<UiAction>>;
 /// An `Ask` for at most one action.
 fn one(f: impl FnOnce(&App) -> Option<UiAction> + 'static) -> Ask {
     Box::new(move |app| f(app).into_iter().collect())
+}
+
+/// The form's fields as the window sent them.
+pub(crate) fn account_fields(fields: AccountFields) -> account::Fields {
+    account::Fields {
+        name: fields.name.into(),
+        host: fields.host.into(),
+        port: fields.port.into(),
+        username: fields.username.into(),
+        password: fields.password.into(),
+        address: fields.address.into(),
+    }
 }
 
 /// What never changes while the window is open.

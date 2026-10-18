@@ -2,6 +2,7 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Heading, Link, TextButton } from "common.slint";
+import { AccountFields, AccountForm } from "account.slint";
 
 export component StartupWindow inherits Window {
     in property <string> summary;
@@ -11,11 +12,16 @@ export component StartupWindow inherits Window {
     in property <string> link-url;
     callback open-url(string);
     callback close-clicked();
+    // With paths to save under and no account yet: the add-account form in place of the fix.
+    in property <bool> form;
+    in property <string> account-error;
+    in property <bool> account-saving;
+    callback save-account(AccountFields);
 
     title: "Postvak";
     icon: @image-url("../../assets/icon.png");
     preferred-width: 520px;
-    preferred-height: 260px;
+    preferred-height: root.form ? 460px : 260px;
     background: Theme.pane.background;
     default-font-family: Theme.text-font;
     default-font-size: Theme.text-size;
@@ -27,10 +33,15 @@ export component StartupWindow inherits Window {
             text: root.summary;
             wrap: word-wrap;
         }
-        Text {
+        if !root.form: Text {
             text: root.fix;
             color: Theme.pane.text;
             wrap: word-wrap;
+        }
+        if root.form: AccountForm {
+            error: root.account-error;
+            saving: root.account-saving;
+            save(fields) => { root.save-account(fields); }
         }
         if root.link-url != "": Link {
             text: root.link-label;

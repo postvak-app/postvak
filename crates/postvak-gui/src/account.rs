@@ -115,7 +115,7 @@ mod tests {
 
     use super::*;
 
-    pub(crate) fn filled(name: &str) -> Fields {
+    fn filled(name: &str) -> Fields {
         Fields {
             name: name.into(),
             host: "imap.example.com".into(),
