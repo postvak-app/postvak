@@ -88,9 +88,15 @@ pub struct Match {
     /// Arrived at least this long ago, e.g. 30m, 1h, 2days
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub older_than: Option<String>,
+    /// Larger than this size, e.g. 500KB, 5MB; a bare number is bytes and 1KB is 1024 bytes
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub larger_than: Option<String>,
     /// Read (true) or unread (false)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seen: Option<bool>,
+    /// Flagged (true) or not (false)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flagged: Option<bool>,
     /// To, Cc or Delivered-To holds your address or an alias
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to_me: Option<bool>,
@@ -171,6 +177,8 @@ pub enum Action {
     Notify,
     /// Never notify
     Silent,
+    /// Later rules don't run for this message
+    Stop,
     #[serde(skip)]
     MarkUnread,
     #[serde(skip)]
@@ -209,6 +217,7 @@ impl Action {
             Action::Archive => "archive".into(),
             Action::Notify => "notify".into(),
             Action::Silent => "silent".into(),
+            Action::Stop => "stop".into(),
             Action::MarkUnread => "mark_unread".into(),
             Action::Unflag => "unflag".into(),
             Action::Trash => "trash".into(),
@@ -239,11 +248,23 @@ pub fn parse(text: &str) -> Result<RuleFile, RulesError> {
 }
 
 pub fn load(path: &Path) -> Result<RuleFile, RulesError> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => parse(&text),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(RuleFile::default()),
-        Err(e) => Err(e.into()),
+    parse(&crate::paths::read_or_empty(path)?)
+}
+
+/// The compiled rule called `name`, or why `rules apply-existing` cannot run it. It keeps `first_seen_at` 0, which
+/// `ApplyExisting` ignores.
+pub fn enabled_rule(path: &Path, name: &str) -> Result<CompiledRule, String> {
+    let rule = compile(&load(path).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|r| r.rule.name == name)
+        .ok_or_else(|| format!("no rule named '{name}'"))?;
+    if !rule.rule.enabled {
+        return Err(format!(
+            "rule '{name}' is disabled; approve or enable it first"
+        ));
     }
+    Ok(rule)
 }
 
 #[derive(Debug, Clone)]
@@ -260,7 +281,10 @@ impl Matcher {
                 let text = text.to_lowercase();
                 needles.iter().any(|needle| text.contains(needle))
             }
-            Matcher::Equals(wanted) => wanted.iter().any(|w| text.trim().eq_ignore_ascii_case(w)),
+            Matcher::Equals(wanted) => {
+                let text = text.trim().to_lowercase();
+                wanted.contains(&text)
+            }
             Matcher::Regex(re) => re.is_match(text),
         }
     }
@@ -273,7 +297,7 @@ impl Matcher {
                 self.is_match(field)
                     || crate::message::bare_addresses(field)
                         .iter()
-                        .any(|address| wanted.iter().any(|w| address.eq_ignore_ascii_case(w)))
+                        .any(|address| wanted.contains(&address.to_lowercase()))
             }
             _ => self.is_match(field),
         }
@@ -312,7 +336,7 @@ impl Matcher {
                 c.iter().map(|value| value.to_lowercase()).collect(),
             )),
             (None, Some(e), None) => Ok(Matcher::Equals(
-                e.iter().map(|value| value.trim().to_string()).collect(),
+                e.iter().map(|value| value.trim().to_lowercase()).collect(),
             )),
             (None, None, Some(r)) => regex::Regex::new(r)
                 .map(Matcher::Regex)
@@ -341,7 +365,9 @@ pub(crate) struct Conditions {
     pub(crate) body: Option<Matcher>,
     pub(crate) headers: Vec<(String, Matcher)>,
     pub(crate) older_than: Option<Duration>,
+    pub(crate) larger_than: Option<u64>,
     pub(crate) seen: Option<bool>,
+    pub(crate) flagged: Option<bool>,
     pub(crate) to_me: Option<bool>,
     pub(crate) alias: Option<regex::Regex>,
     pub(crate) tag: Option<String>,
@@ -472,7 +498,9 @@ fn compile_match(
         || m.body.is_some()
         || !headers.is_empty()
         || m.older_than.is_some()
+        || m.larger_than.is_some()
         || m.seen.is_some()
+        || m.flagged.is_some()
         || m.to_me.is_some()
         || m.alias.is_some()
         || m.tag.is_some()
@@ -530,6 +558,17 @@ fn compile_match(
             humantime::parse_duration(s).map_err(|e| invalid(format!("{path}.older_than: {e}")))
         })
         .transpose()?;
+    let larger_than = m
+        .larger_than
+        .as_deref()
+        .map(|text| {
+            parse_size(text).ok_or_else(|| {
+                invalid(format!(
+                    "{path}.larger_than: expected a size such as 500KB or 5MB, got '{text}'"
+                ))
+            })
+        })
+        .transpose()?;
     let alias = m
         .alias
         .as_ref()
@@ -561,13 +600,32 @@ fn compile_match(
         body: text("body", &m.body)?,
         headers,
         older_than,
+        larger_than,
         seen: m.seen,
+        flagged: m.flagged,
         to_me: m.to_me,
         alias,
         tag: m.tag.clone(),
         none,
         any,
     })
+}
+
+/// Bytes in `500`, `500B`, `2KB`, `5 MB` or `1GB`, ignoring case; units are powers of 1024, as in Thunderbird.
+fn parse_size(text: &str) -> Option<u64> {
+    let text = text.trim();
+    let digits_end = text
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(text.len());
+    let (number, unit) = text.split_at(digits_end);
+    let shift = match unit.trim().to_ascii_uppercase().as_str() {
+        "" | "B" => 0,
+        "KB" => 10,
+        "MB" => 20,
+        "GB" => 30,
+        _ => return None,
+    };
+    number.parse::<u64>().ok()?.checked_mul(1 << shift)
 }
 
 /// An IMAP keyword is an atom (RFC 3501): printable ASCII without specials. It goes into the STORE command verbatim, so
@@ -584,9 +642,7 @@ pub(crate) fn check_keyword(keyword: &str) -> Result<(), String> {
         .chars()
         .all(|c| c.is_ascii_graphic() && !ATOM_SPECIALS.contains(&c))
     {
-        return Err(
-            "must be printable ASCII without spaces, backslashes or ( ) { } % * \" ]".into(),
-        );
+        return Err("must be printable ASCII without spaces, backslashes or ( ) { % * \" ]".into());
     }
     if keyword.eq_ignore_ascii_case(engine::RESTORED_KEYWORD) {
         return Err("is reserved for restored mail".into());
@@ -760,6 +816,17 @@ actions = [{ move = "Shopping" }, "notify"]
         assert!(Matcher::Equals(vec!["a@b.c".into()]).is_match("A@B.C"));
         assert!(!Matcher::Equals(vec!["a@b.c".into()]).is_match("xa@b.c"));
         assert!(Matcher::Regex(regex::Regex::new("^no-?reply").unwrap()).is_match("noreply@x"));
+    }
+
+    #[test]
+    fn equals_ignores_case_beyond_ascii() {
+        let equals = |value: &str| {
+            let wanted = Some(OneOrMany::One(value.to_string()));
+            Matcher::build("r", "match.from", &None, &wanted, &None).unwrap()
+        };
+        assert!(equals("jürgen").is_match("JÜRGEN"));
+        assert!(equals("JÜRGEN").is_match("jürgen"));
+        assert!(equals("jürgen@x.de").is_address_match("Jürgen <JÜRGEN@x.de>"));
     }
 
     #[test]
@@ -973,6 +1040,42 @@ actions = [{ tag = "$label4" }, { move = "Shop" }]
             compile(&parse(&action(good)).unwrap()).unwrap();
             compile(&parse(&matcher(good)).unwrap()).unwrap();
         }
+    }
+
+    #[test]
+    fn larger_than_takes_a_size_with_a_unit() {
+        let rule = |size: &str| {
+            format!(
+                "[[rules]]\nname = \"x\"\nmatch.larger_than = \"{size}\"\nactions = [\"flag\"]\n"
+            )
+        };
+        let size =
+            |text: &str| compile(&parse(&rule(text)).unwrap()).map(|c| c[0].conditions.larger_than);
+        assert_eq!(size("500").unwrap(), Some(500));
+        assert_eq!(size("500B").unwrap(), Some(500));
+        assert_eq!(size("2kb").unwrap(), Some(2048));
+        assert_eq!(size("5 MB").unwrap(), Some(5 << 20));
+        assert_eq!(size("1GB").unwrap(), Some(1 << 30));
+        for bad in ["", "MB", "5TB", "-1MB", "1.5MB", "99999999999999999999"] {
+            match size(bad) {
+                Err(RulesError::Invalid { reason, .. }) => {
+                    assert!(reason.contains("match.larger_than"), "{reason}")
+                }
+                other => panic!("expected Invalid for {bad:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn flagged_and_stop_parse() {
+        let text =
+            "[[rules]]\nname = \"x\"\nmatch.flagged = true\nactions = [\"mark_read\", \"stop\"]\n";
+        let compiled = compile(&parse(text).unwrap()).unwrap();
+        assert_eq!(compiled[0].conditions.flagged, Some(true));
+        assert_eq!(
+            compiled[0].rule.actions,
+            vec![Action::MarkRead, Action::Stop]
+        );
     }
 
     #[test]

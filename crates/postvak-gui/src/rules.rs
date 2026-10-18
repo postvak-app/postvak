@@ -1,23 +1,19 @@
 //! The Rules, Activity and Trash views: what replaces the list and body columns.
-use std::io::Read;
 use std::path::Path;
 
 use postvak_core::help;
-use postvak_core::message::{clean, parse_headers};
+use postvak_core::message::clean;
 use postvak_core::paths::Paths;
 use postvak_core::rules::{self, Rule, RuleFile};
 use postvak_core::store::LogEntry;
 use postvak_core::trash::{Trash, TrashEntry};
 
-use postvak_core::time::local_time;
+use postvak_core::time::date_time;
 
 use super::state::{Account, App};
 
 /// Entries shown in the Activity view.
 const LOG_LIMIT: u32 = 500;
-
-/// How much of a backup is read to find its sender and subject.
-const HEADER_BYTES: u64 = 64 * 1024;
 
 pub(crate) struct RulesState {
     pub error: Option<String>,
@@ -171,7 +167,7 @@ pub(crate) fn sheet_order<const N: usize>(
 pub(crate) fn activity_cells(app: &App) -> Vec<[String; 6]> {
     let row = |(account, entry): &(String, LogEntry)| {
         [
-            local_time(entry.at, "%Y-%m-%d %H:%M"),
+            date_time(entry.at),
             account.clone(),
             clean(&entry.rule_name, false),
             clean(&entry.action, false),
@@ -190,7 +186,7 @@ pub(crate) fn activity_cells(app: &App) -> Vec<[String; 6]> {
 pub(crate) fn trash_cells(app: &App) -> Vec<[String; 5]> {
     let row = |row: &TrashRow| {
         [
-            local_time(row.entry.saved_at, "%Y-%m-%d %H:%M"),
+            date_time(row.entry.saved_at),
             app.accounts[row.account].name.clone(),
             clean(&row.entry.folder, false),
             clean(&row.from, false),
@@ -230,12 +226,12 @@ pub(crate) fn trash_rows(accounts: &[Account], paths: &Paths) -> Vec<TrashRow> {
     for (index, account) in accounts.iter().enumerate() {
         match Trash::new(paths.trash_dir(&account.name)).list() {
             Ok(entries) => rows.extend(entries.into_iter().map(|entry| {
-                let (from, subject) = eml_summary(&entry.path);
+                let headers = entry.headers();
                 TrashRow {
                     account: index,
                     entry,
-                    from,
-                    subject,
+                    from: headers.from.unwrap_or_default(),
+                    subject: headers.subject.unwrap_or_default(),
                 }
             })),
             Err(e) => log::warn!("[{}] could not list the trash: {e}", account.name),
@@ -243,19 +239,6 @@ pub(crate) fn trash_rows(accounts: &[Account], paths: &Paths) -> Vec<TrashRow> {
     }
     rows.sort_by_key(|row| std::cmp::Reverse(row.entry.saved_at));
     rows
-}
-
-/// Sender and subject of a backup; reads only the start of the file.
-fn eml_summary(path: &Path) -> (String, String) {
-    let mut head = Vec::new();
-    if let Ok(file) = std::fs::File::open(path) {
-        let _ = file.take(HEADER_BYTES).read_to_end(&mut head);
-    }
-    let parsed = parse_headers(&head);
-    (
-        parsed.from.unwrap_or_default(),
-        parsed.subject.unwrap_or_default(),
-    )
 }
 
 /// The Purge button's hover text: what it does, and each account's retention.
