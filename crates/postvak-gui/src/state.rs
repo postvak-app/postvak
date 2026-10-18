@@ -894,6 +894,7 @@ impl App {
 
     /// Applies `action`; when it moved the cursor, by key, click, search or collapse, the list scrolls to it.
     pub fn apply(&mut self, action: UiAction) {
+        postvak_core::crash::note(&action);
         let cursor = self.list.cursor;
         self.apply_action(action);
         if self.list.cursor != cursor && !self.list.cursor_shown() {

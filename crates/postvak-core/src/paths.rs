@@ -59,6 +59,10 @@ impl Paths {
         self.state_dir.join("daemon.log")
     }
 
+    pub fn crash_dir(&self) -> PathBuf {
+        self.state_dir.join("crashes")
+    }
+
     pub fn update_check(&self) -> PathBuf {
         self.cache_dir.join("update-check.json")
     }
