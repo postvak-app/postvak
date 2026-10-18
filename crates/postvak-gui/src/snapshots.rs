@@ -247,6 +247,26 @@ fn trash() {
     snapshot(&open, "gui_trash");
 }
 
+/// The add-account form over the inbox, with the keyboard in its first field.
+fn add_account(theme: &str, name: &str) {
+    let (_fx, open, _wires) = inbox(theme);
+    open.window()
+        .invoke_menu_item(super::ui::MenuAction::AddAccount);
+    open.tick();
+    assert_eq!(open.find("Add account").len(), 1);
+    snapshot(&open, name);
+}
+
+#[test]
+fn add_account_light() {
+    add_account("light", "gui_add_account_light");
+}
+
+#[test]
+fn add_account_dark() {
+    add_account("dark", "gui_add_account_dark");
+}
+
 /// INBOX of `work` with the newsletter open as HTML, in a window `width` points wide, once it is painted.
 fn newsletter(theme: &str, width: f32) -> (Fixture, Open, Wires) {
     use std::time::{Duration, Instant};
