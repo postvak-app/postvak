@@ -2741,27 +2741,51 @@ mod tests {
         }
     }
 
-    /// Gates for the list loads of the test that set them, one per load in order: each load reads the store, then
-    /// waits for its gate. One per test, as `load_list` is a plain `fn`.
+    /// A held list load's gate: it says when it has read the store, then waits to be let go.
+    type Gate = (mpsc::Sender<()>, Receiver<()>);
+
+    /// Gates for the list loads of the test that set them, one per load in order: each load reads the store, says so,
+    /// then waits for its gate. One per test, as `load_list` is a plain `fn`.
     macro_rules! held_loads {
         ($gates:ident, $load:ident) => {
-            static $gates: Mutex<VecDeque<Receiver<()>>> = Mutex::new(VecDeque::new());
+            static $gates: Mutex<VecDeque<Gate>> = Mutex::new(VecDeque::new());
             fn $load(paths: &Paths, accounts: &[(usize, String)], query: &ListQuery) -> Loaded {
-                let loaded = load::load_from_paths(paths, accounts, query);
                 let gate = $gates.lock().unwrap().pop_front();
-                if let Some(gate) = gate {
-                    let _ = gate.recv();
+                let loaded = load::load_from_paths(paths, accounts, query);
+                if let Some((read, release)) = gate {
+                    let _ = read.send(());
+                    let _ = release.recv();
                 }
                 loaded
             }
         };
     }
 
-    /// A gate for the next held load; sending on the returned end lets it finish.
-    fn hold(gates: &Mutex<VecDeque<Receiver<()>>>) -> mpsc::Sender<()> {
-        let (release, gate) = mpsc::channel();
-        gates.lock().unwrap().push_back(gate);
-        release
+    /// The next held load, seen from the test.
+    struct Held {
+        read: Receiver<()>,
+        release: mpsc::Sender<()>,
+    }
+
+    impl Held {
+        /// Waits until the load has read the store, so what the test changes next is after its read.
+        fn wait_read(&self) {
+            self.read.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+
+        fn release(&self) {
+            self.release.send(()).unwrap();
+        }
+    }
+
+    fn hold(gates: &Mutex<VecDeque<Gate>>) -> Held {
+        let (read, read_seen) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        gates.lock().unwrap().push_back((read, released));
+        Held {
+            read: read_seen,
+            release,
+        }
     }
 
     #[test]
@@ -2777,7 +2801,7 @@ mod tests {
         receive(&mut driver, &wires, [synced()]);
         assert!(driver.app.list_loading.is_some());
         assert_eq!(driver.uids(), [3, 2, 1], "the frame does not wait");
-        release.send(()).unwrap();
+        release.release();
         tick_until(&mut driver, 0.0, |app| app.list_loading.is_none());
         assert_eq!(driver.uids(), [4, 3, 2, 1]);
     }
@@ -2794,17 +2818,18 @@ mod tests {
         let second = hold(&GATES);
         receive(&mut driver, &wires, [synced()]);
         let started = driver.app.list_generation;
+        first.wait_read();
         fx.add("work", message("INBOX", 3, "subject 3"));
         receive(&mut driver, &wires, [synced()]);
         assert!(driver.app.list_again, "the second waits for the first");
-        first.send(()).unwrap();
+        first.release();
         tick_until(&mut driver, 0.0, |app| app.list_applied == started);
         assert_eq!(
             driver.uids(),
             [2, 1],
             "the first read before message 3 came"
         );
-        second.send(()).unwrap();
+        second.release();
         tick_until(&mut driver, 0.0, |app| app.list_loading.is_none());
         assert_eq!(driver.uids(), [3, 2, 1]);
     }
@@ -2824,17 +2849,18 @@ mod tests {
         // This reload reads the store while message 3 is still in it.
         receive(&mut driver, &wires, [synced()]);
         let started = driver.app.list_generation;
+        stale.wait_read();
         fx.store("work").remove_message("INBOX", 3).unwrap();
         receive(&mut driver, &wires, [done("work", vec![(3, Ok(1))], 0)]);
         assert_eq!(driver.uids(), [2, 1]);
-        stale.send(()).unwrap();
+        stale.release();
         tick_until(&mut driver, 0.0, |app| app.list_applied == started);
         assert_eq!(
             driver.uids(),
             [2, 1],
             "the archive settles until a newer load"
         );
-        fresh.send(()).unwrap();
+        fresh.release();
         tick_until(&mut driver, 0.0, |app| app.accounts[0].settling.is_empty());
         assert_eq!(driver.uids(), [2, 1]);
         assert!(driver.app.list_loading.is_none());
@@ -2860,7 +2886,7 @@ mod tests {
             "the row is back before the reload ends"
         );
         assert!(driver.app.accounts[0].settling.is_empty());
-        release.send(()).unwrap();
+        release.release();
         tick_until(&mut driver, 0.0, |app| app.list_loading.is_none());
         assert_eq!(driver.uids(), [3, 2, 1]);
     }
@@ -2875,11 +2901,12 @@ mod tests {
         driver.app.load_list = held;
         let release = hold(&GATES);
         receive(&mut driver, &wires, [synced()]);
+        release.wait_read();
         fx.store("work").remove_message("INBOX", 3).unwrap();
         driver.app.reload_view();
         assert_eq!(driver.uids(), [2, 1]);
         assert!(driver.app.list_loading.is_none());
-        release.send(()).unwrap();
+        release.release();
         driver.tick();
         assert_eq!(driver.uids(), [2, 1]);
     }
