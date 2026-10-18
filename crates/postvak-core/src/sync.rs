@@ -976,7 +976,7 @@ fn run_command(
             let rule = match crate::rules::enabled_rule(rules_path, &rule_name) {
                 Ok(rule) => rule,
                 Err(message) => {
-                    let _ = events.send(failed(request, message));
+                    let _ = events.send(failed(request, message.to_string()));
                     return Ok(run);
                 }
             };
@@ -1618,10 +1618,7 @@ fn run_session(
         if pass {
             next = state.pass(ops.as_mut(), full, carried, events, commands, shutdown)?;
             if now() - last_purge > 3600 {
-                match state
-                    .trash
-                    .purge(account.trash_retention_days as i64 * 86_400, now())
-                {
+                match state.trash.purge(account.trash_retention_days, now()) {
                     Ok(0) => {}
                     Ok(removed) => log::info!("{}: purged {removed} trash files", account.name),
                     Err(e) => log::warn!("{}: trash purge failed: {e}", account.name),

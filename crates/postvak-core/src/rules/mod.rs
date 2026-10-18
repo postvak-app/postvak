@@ -15,6 +15,10 @@ pub enum RulesError {
     Parse(String),
     #[error("rule '{rule}': {reason}")]
     Invalid { rule: String, reason: String },
+    #[error("no rule named '{0}'")]
+    NotFound(String),
+    #[error("rule '{0}' is disabled; approve or enable it first")]
+    Disabled(String),
     #[error(transparent)]
     Io(#[from] io::Error),
     #[error(transparent)]
@@ -251,22 +255,6 @@ pub fn load(path: &Path) -> Result<RuleFile, RulesError> {
     parse(&crate::paths::read_or_empty(path)?)
 }
 
-/// The compiled rule called `name`, or why `rules apply-existing` cannot run it. It keeps `first_seen_at` 0, which
-/// `ApplyExisting` ignores.
-pub fn enabled_rule(path: &Path, name: &str) -> Result<CompiledRule, String> {
-    let rule = compile(&load(path).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .find(|r| r.rule.name == name)
-        .ok_or_else(|| format!("no rule named '{name}'"))?;
-    if !rule.rule.enabled {
-        return Err(format!(
-            "rule '{name}' is disabled; approve or enable it first"
-        ));
-    }
-    Ok(rule)
-}
-
 #[derive(Debug, Clone)]
 pub(crate) enum Matcher {
     Contains(Vec<String>),
@@ -402,6 +390,19 @@ const MAX_NAME_CHARS: usize = 255;
 
 /// Deepest nesting of `not` and `any`; Thunderbird's filters need two levels at most.
 const MAX_DEPTH: usize = 8;
+
+/// The compiled rule called `name`, refused when absent or disabled. It keeps `first_seen_at` 0, so it also covers mail
+/// that predates the rule.
+pub fn enabled_rule(path: &Path, name: &str) -> Result<CompiledRule, RulesError> {
+    let rule = compile(&load(path)?)?
+        .into_iter()
+        .find(|r| r.rule.name == name)
+        .ok_or_else(|| RulesError::NotFound(name.to_string()))?;
+    if !rule.rule.enabled {
+        return Err(RulesError::Disabled(name.to_string()));
+    }
+    Ok(rule)
+}
 
 pub fn compile(file: &RuleFile) -> Result<Vec<CompiledRule>, RulesError> {
     let mut names = std::collections::HashSet::new();
@@ -780,6 +781,21 @@ actions = [{ move = "Shopping" }, "notify"]
         ));
         let unknown = "[[rules]]\nname = \"x\"\nmatch.seen = true\nactions = [\"explode\"]\n";
         assert!(matches!(parse(unknown), Err(RulesError::Parse(_))));
+    }
+
+    #[test]
+    fn enabled_rule_finds_by_name_and_refuses_absent_or_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rules.toml");
+        std::fs::write(&path, SAMPLE).unwrap();
+        let rule = enabled_rule(&path, "github to folder").unwrap();
+        assert_eq!(rule.rule.name, "github to folder");
+        let error = |name| enabled_rule(&path, name).err().map(|e| e.to_string());
+        assert_eq!(error("nope").as_deref(), Some("no rule named 'nope'"));
+        assert_eq!(
+            error("shop alias").as_deref(),
+            Some("rule 'shop alias' is disabled; approve or enable it first")
+        );
     }
 
     #[test]

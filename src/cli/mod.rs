@@ -1045,10 +1045,10 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             account,
             dry_run,
         } => {
-            let rules = vec![
-                postvak_core::rules::enabled_rule(&paths.rules_file(), &name)
-                    .map_err(anyhow::Error::msg)?,
-            ];
+            let rules = vec![postvak_core::rules::enabled_rule(
+                &paths.rules_file(),
+                &name,
+            )?];
             let mut failed = false;
             let daemon = LazyClient::new(paths);
             for acc in select_accounts(config, account.as_deref())? {
@@ -1208,7 +1208,7 @@ fn cmd_trash(command: TrashCommand, config: &Config, paths: &Paths) -> Result<()
         TrashCommand::Purge { account } => {
             for acc in select_accounts(config, account.as_deref())? {
                 let removed = Trash::new(paths.trash_dir(&acc.name))
-                    .purge(acc.trash_retention_days as i64 * 86_400, time::now())?;
+                    .purge(acc.trash_retention_days, time::now())?;
                 println!("{}: removed {removed}", acc.name);
             }
             Ok(())
