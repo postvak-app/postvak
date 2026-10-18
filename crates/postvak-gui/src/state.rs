@@ -52,9 +52,9 @@ pub(crate) const READ_DELAY: f64 = 1.0;
 /// Seconds between attempts to reach the daemon again.
 const RECONNECT: f64 = 5.0;
 
-/// How long a frame waits for a list reload after a sync event: a third of a 60 Hz frame. A small mailbox's rows come
+/// How long a frame waits for a list reload after a sync event: a quarter of a 120 Hz frame. A small mailbox's rows come
 /// in time and show in the same frame; a large one's show when they come.
-pub(crate) const LIST_BUDGET: Duration = Duration::from_millis(5);
+pub(crate) const LIST_BUDGET: Duration = Duration::from_millis(2);
 
 /// A daemon client, its event subscription, and each account's state and activity when it connected.
 pub(crate) type Connection = (Client, Receiver<Event>, Vec<AccountStatus>);
@@ -389,6 +389,9 @@ pub struct App {
     pub(crate) list_loading: Option<Loading>,
     /// Set when the view changed again while `list_loading` ran, so another reload follows it.
     pub(crate) list_again: bool,
+    /// Set when edits went or settled since the rows were built, so a reload that runs on rebuilds them from the
+    /// threads already loaded; rebuilding a large list costs milliseconds, so not on every sync event.
+    pub(crate) edits_changed: bool,
     /// Reads the list off the window thread; tests swap it to hold a load back.
     pub(crate) load_list: LoadFn,
     pub(crate) move_picker: Option<String>,
@@ -493,6 +496,7 @@ impl App {
             list_applied: 0,
             list_loading: None,
             list_again: false,
+            edits_changed: false,
             load_list: load::load_from_paths,
             move_picker: None,
             account_form: None,
@@ -696,6 +700,7 @@ impl App {
             account.queued = 0;
             account.reload_folders();
         }
+        self.edits_changed = true;
         self.push_history("background sync reconnected".into());
         self.view_dirty = true;
     }
@@ -756,6 +761,7 @@ impl App {
                 account.pending.clear();
                 account.settling.clear();
                 account.queued = 0;
+                self.edits_changed = true;
                 self.note_error(Some(index), message);
                 self.refresh(index);
             }
@@ -809,6 +815,7 @@ impl App {
                         }
                     }
                 }
+                self.edits_changed = true;
                 let failed: Vec<&String> = results
                     .iter()
                     .filter_map(|(_, result)| result.as_ref().err())
@@ -1291,8 +1298,7 @@ impl App {
         };
         if self.list_loading.is_some() {
             self.list_again = true;
-            // Edits that changed meanwhile show on the rows already loaded.
-            self.rebuild_rows();
+            self.show_changed_edits();
             return;
         }
         self.list_generation += 1;
@@ -1314,11 +1320,18 @@ impl App {
             Ok(loaded) => self.apply_loaded(generation, loaded),
             Err(RecvTimeoutError::Timeout) => {
                 self.list_loading = Some(Loading { generation, answer });
-                self.rebuild_rows();
+                self.show_changed_edits();
             }
             Err(RecvTimeoutError::Disconnected) => {
                 log::warn!("the list reload stopped; the rows stay as they were");
             }
+        }
+    }
+
+    /// Edits that went or settled while a reload runs show on the rows already loaded.
+    fn show_changed_edits(&mut self) {
+        if self.edits_changed {
+            self.rebuild_rows();
         }
     }
 
@@ -1914,6 +1927,7 @@ impl App {
     /// Rows from the cached threads, without a store query. The cursor stays on its message; when that row is gone it
     /// keeps its index, so the next row is selected.
     pub(crate) fn rebuild_rows(&mut self) {
+        self.edits_changed = false;
         let Some(folder) = self.list_folder().map(str::to_string) else {
             return;
         };
@@ -2889,6 +2903,26 @@ mod tests {
         release.release();
         tick_until(&mut driver, 0.0, |app| app.list_loading.is_none());
         assert_eq!(driver.uids(), [3, 2, 1]);
+    }
+
+    #[test]
+    fn a_sync_event_during_a_reload_rebuilds_the_rows_only_when_edits_changed() {
+        held_loads!(GATES, held);
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2, 3]);
+        let (mut driver, wires) = fx.driver();
+        driver.app.list_budget = Duration::ZERO;
+        driver.app.load_list = held;
+        let release = hold(&GATES);
+        receive(&mut driver, &wires, [synced()]);
+        // Rows the store does not hold, so a rebuild from the loaded threads would show.
+        driver.app.list.rows.truncate(1);
+        receive(&mut driver, &wires, [synced()]);
+        assert_eq!(driver.uids(), [3], "nothing changed the edits");
+        receive(&mut driver, &wires, [refused("work", 0, "NO")]);
+        assert_eq!(driver.uids(), [3, 2, 1], "a refusal drops every edit");
+        release.release();
+        tick_until(&mut driver, 0.0, |app| app.list_loading.is_none());
     }
 
     #[test]

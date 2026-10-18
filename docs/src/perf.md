@@ -15,6 +15,7 @@ How Postvak behaves as a mailbox grows, measured on generated mail. User stores 
 | `folder_list` | Reloading one account's INBOX list: the query plus the rows |
 | `all_inboxes` | Reloading All inboxes: every account's INBOX, merged |
 | `sync_event` | The frame that takes a sync event in All inboxes: how long it waits for the reload |
+| `folder_counts` | One account's folders with their unread counts, read again on each of its sync events |
 | `search` | One word searched in All inboxes |
 | `sync_pass` | One sync of an account after 200 messages arrived and 500 changed flags |
 
@@ -55,17 +56,21 @@ What this shows:
 
 ## Reloads after a sync event
 
-The window reloads the shown list whenever sync reports changes. That reload runs on a thread of its own with its own store connections; the frame waits for it at most 5 ms (`LIST_BUDGET` in `state.rs`), so a small mailbox's rows still show in the same frame, and a large one's show when the thread wakes the window. While a reload runs, the next waits for it and then starts once. A view change reads on the window thread, as before, and drops a reload still running.
+The window reloads the shown list whenever sync reports changes. That reload runs on a thread of its own with its own store connections; the frame waits for it at most 2 ms (`LIST_BUDGET` in `state.rs`, a quarter of a 120 Hz frame), so a small mailbox's rows still show in the same frame, and a large one's show when the thread wakes the window. While a reload runs, the next waits for it and then starts once; the rows already loaded are rebuilt meanwhile only when edits changed, since rebuilding a large list costs milliseconds. A view change reads on the window thread, as before, and drops a reload still running.
 
 An archive, move or delete hides its rows at once and its `ActionDone` arrives after the daemon changed the store. A reload that started before then still holds the old rows, so the edit stays on the rows until a reload that started after it is applied.
 
-`all_inboxes` is what the frame that took a sync event waited before; `sync_event` is what it waits now. Release build, the same run of each: Linux container, 4 vCPUs of an Intel Xeon at 2.10 GHz, 15 GB, Rust 1.99.1, shared (load average about 3), so the ranges are wider than on a quiet machine. Median in ms, with the range of five runs.
+The same sync event also reads the account's folders and unread counts again, on the window thread. Each count reads the partial index `messages_unread` (migration 010), which holds only unread mail; the covering folder index SQLite chose before read every message in the folder. The query names the index (`INDEXED BY`), since without statistics SQLite does not know it is the smaller one, and a test checks that the plan uses it.
+
+`all_inboxes` is what the frame that took a sync event waited for the list before; `sync_event` is what it waits now. Release build, the same run of each: Linux container, 4 vCPUs of an Intel Xeon at 2.10 GHz, 15 GB, Rust 1.99.1, shared (load average about 3), so the ranges are wider than on a quiet machine. Median in ms, with the range of five runs.
 
 | Phase | 10k | 100k |
 | --- | --- | --- |
-| `all_inboxes` | 5.8 (5.5–6.9) | 59 (56–60) |
-| `sync_event` | 5.2 (5.2–5.2) | 5.2 (5.2–5.4) |
+| `all_inboxes` | 6.6 (6.0–7.1) | 68 (60–81) |
+| `sync_event` | 2.2 (2.2–2.3) | 2.3 (2.2–2.8) |
+| `folder_counts` before migration 010 | 0.42 (0.41–0.77) | 5.8 (4.0–9.9) |
+| `folder_counts` | 0.06 (0.06–0.22) | 0.17 (0.15–0.39) |
 
-The frame now waits the budget at most, however large the mailbox. At 10k on this machine the reload just outlasts it, so those rows show one wake later.
+The frame now waits the budget at most for the list, however large the mailbox, and the counts no longer grow with the read mail. `open_window`, which reads the counts too, went from 48 to 28 ms at 100k.
 
 Not measured yet: drawing a frame of the list through the real window (`Fixture::window()`), and opening one message.

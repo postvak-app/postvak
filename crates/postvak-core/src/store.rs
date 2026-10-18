@@ -126,6 +126,14 @@ fn summary_from_row(row: &rusqlite::Row, offset: usize) -> rusqlite::Result<Mess
 const UNSEEN: &str = r"instr(' ' || flags || ' ', ' \Seen ') = 0";
 const FLAGGED: &str = r"instr(' ' || flags || ' ', ' \Flagged ') > 0";
 
+/// A folder's unread count, from the index of unread messages alone (migration 010). Without statistics SQLite would
+/// pick the covering folder index and read the whole folder; a condition other than the index's makes this an error.
+fn unread_count_sql() -> String {
+    format!(
+        "SELECT COUNT(*) FROM messages INDEXED BY messages_unread WHERE folder = ?1 AND {UNSEEN}"
+    )
+}
+
 /// Which messages a list keeps; each set field must hold, and the default keeps all.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Filter {
@@ -693,11 +701,9 @@ impl Store {
     }
 
     pub fn unread_count(&self, folder: &str) -> Result<u32, StoreError> {
-        Ok(self.conn.query_row(
-            &format!("SELECT COUNT(*) FROM messages WHERE folder = ?1 AND {UNSEEN}"),
-            params![folder],
-            |r| r.get(0),
-        )?)
+        Ok(self
+            .conn
+            .query_row(&unread_count_sql(), params![folder], |r| r.get(0))?)
     }
 
     pub fn unread_uids(&self, folder: &str) -> Result<Vec<u32>, StoreError> {
@@ -1151,7 +1157,7 @@ mod tests {
     }
 
     #[test]
-    fn thread_list_and_unread_count_read_only_the_covering_index() {
+    fn the_thread_list_reads_only_the_covering_index_and_the_unread_count_only_unread_mail() {
         let s = store_with_inbox();
         // Without statistics an empty table plans differently; a few hundred rows plan like a real folder.
         for uid in 1..=500 {
@@ -1169,15 +1175,27 @@ mod tests {
         let thread_list = plan(&format!(
             "SELECT thread_id, {SUMMARY_COLUMNS}, MAX(internaldate) FROM messages WHERE folder = 'INBOX' GROUP BY thread_id"
         ));
-        let unread = plan(
-            r"SELECT COUNT(*) FROM messages WHERE folder = 'INBOX' AND instr(flags, '\Seen') = 0",
+        assert!(
+            thread_list.contains("COVERING INDEX messages_folder_thread"),
+            "{thread_list}"
         );
-        for detail in [thread_list, unread] {
-            assert!(
-                detail.contains("COVERING INDEX messages_folder_thread"),
-                "{detail}"
-            );
+        let unread = plan(&unread_count_sql().replace("?1", "'INBOX'"));
+        assert!(unread.contains("INDEX messages_unread"), "{unread}");
+    }
+
+    #[test]
+    fn the_unread_count_follows_the_seen_flag() {
+        let s = store_with_inbox();
+        for uid in 1..=4 {
+            s.insert_message(&msg("INBOX", uid, i64::from(uid)))
+                .unwrap();
         }
+        let unread = s.unread_count("INBOX").unwrap();
+        s.update_flags("INBOX", 2, r"\Seen \Flagged").unwrap();
+        assert_eq!(s.unread_count("INBOX").unwrap(), unread - 1);
+        s.update_flags("INBOX", 2, r"\Flagged").unwrap();
+        assert_eq!(s.unread_count("INBOX").unwrap(), unread);
+        assert_eq!(s.unread_count("Archive").unwrap(), 0);
     }
 
     #[test]

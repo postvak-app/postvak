@@ -222,6 +222,15 @@ fn run(scale: u32, runs: usize) {
     report("sync_event", scale, frames.collect());
     driver.app.list_budget = std::time::Duration::from_secs(60);
 
+    // What every sync event of an account also does on the window thread: its folders with their unread counts.
+    report(
+        "folder_counts",
+        scale,
+        (0..runs)
+            .map(|_| timed(|| driver.app.accounts[0].reload_folders()))
+            .collect(),
+    );
+
     driver.press("/");
     driver.apply(UiAction::SearchFor("invoice".into()));
     report(
