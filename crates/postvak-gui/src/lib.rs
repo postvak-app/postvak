@@ -537,9 +537,9 @@ mod tests {
     use slint::ComponentHandle;
 
     use super::startup::{ACCOUNTS_DOCS, NoAccounts, Problem};
-    use super::{Pending, saved, startup_window};
     use super::test_support::{Fixture, headless};
     use super::ui::{Pane, Theme, ThemePreference};
+    use super::{Pending, saved, startup_window};
     use crate::state::UiAction;
     use crate::state::View;
 
