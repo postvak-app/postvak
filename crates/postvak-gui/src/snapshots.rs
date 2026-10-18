@@ -247,13 +247,16 @@ fn trash() {
     snapshot(&open, "gui_trash");
 }
 
-/// The add-account form over the inbox, with the keyboard in its first field.
+/// The add-account form over the inbox, with the keyboard in its first field and the window inactive.
 fn add_account(theme: &str, name: &str) {
     let (_fx, open, _wires) = inbox(theme);
     open.window()
         .invoke_menu_item(super::ui::MenuAction::AddAccount);
     open.tick();
     assert_eq!(open.find("Add account").len(), 1);
+    // An inactive window draws no text cursor, whose blink phase differs between platforms.
+    slint::ComponentHandle::window(&open.window())
+        .dispatch_event(slint::platform::WindowEvent::WindowActiveChanged(false));
     snapshot(&open, name);
 }
 
