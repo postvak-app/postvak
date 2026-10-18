@@ -511,6 +511,163 @@ fn every_rules_write_exception_still_exists() {
     }
 }
 
+/// Packages no crate below the front ends may reach, by name prefix: the GUI toolkit, the HTML engine and the MCP SDK.
+const FRONT_END_ONLY: [&str; 4] = ["slint", "i-slint-", "blitz-", "rmcp"];
+
+/// What `cargo metadata` says for the host: packages by id, and each package's dependencies as `(id, dev_only)`.
+struct Graph {
+    names: std::collections::HashMap<String, String>,
+    deps: std::collections::HashMap<String, Vec<(String, bool)>>,
+}
+
+impl Graph {
+    fn from_metadata(metadata: &serde_json::Value) -> Graph {
+        let names = metadata["packages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| {
+                (
+                    p["id"].as_str().unwrap().to_string(),
+                    p["name"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        let deps = metadata["resolve"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|node| {
+                let deps = node["deps"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|dep| {
+                        let kinds = dep["dep_kinds"].as_array().unwrap();
+                        let dev_only = kinds.iter().all(|k| k["kind"] == "dev");
+                        (dep["pkg"].as_str().unwrap().to_string(), dev_only)
+                    })
+                    .collect();
+                (node["id"].as_str().unwrap().to_string(), deps)
+            })
+            .collect();
+        Graph { names, deps }
+    }
+
+    fn id(&self, name: &str) -> &str {
+        self.names
+            .iter()
+            .find(|(_, n)| *n == name)
+            .map(|(id, _)| id.as_str())
+            .unwrap()
+    }
+
+    fn name(&self, id: &str) -> &str {
+        &self.names[id]
+    }
+
+    /// Normal and build dependencies of `id`, `(id, dev_only)` pairs filtered to the shipped ones.
+    fn shipped(&self, id: &str) -> impl Iterator<Item = &str> {
+        self.deps
+            .get(id)
+            .into_iter()
+            .flatten()
+            .filter(|(_, dev)| !dev)
+            .map(|(d, _)| d.as_str())
+    }
+}
+
+/// The dependency rules from AGENTS.md's module map: nothing below the front ends reaches Slint, Blitz or rmcp, and
+/// only `postvak-core` depends on rusqlite (the front ends only in tests).
+fn check_graph(graph: &Graph, workspace: &[&str]) -> Vec<String> {
+    let mut violations = Vec::new();
+    // Breadth-first from postvak-core, remembering who pulled each package in so a violation names its path.
+    let core = graph.id("postvak-core");
+    let mut via: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    let mut queue = std::collections::VecDeque::from([core]);
+    while let Some(id) = queue.pop_front() {
+        for dep in graph.shipped(id) {
+            if dep != core && !via.contains_key(dep) {
+                via.insert(dep, id);
+                queue.push_back(dep);
+            }
+        }
+    }
+    let mut reached: Vec<&str> = via.keys().copied().collect();
+    reached.sort_by_key(|id| graph.name(id));
+    for id in reached {
+        if FRONT_END_ONLY.iter().any(|p| graph.name(id).starts_with(p)) {
+            let mut path = vec![graph.name(id)];
+            let mut at = id;
+            while let Some(&from) = via.get(at) {
+                path.push(graph.name(from));
+                at = from;
+            }
+            path.reverse();
+            violations.push(format!(
+                "postvak-core depends on {} ({}); AGENTS.md: nothing below the front ends depends on Slint, Blitz or rmcp",
+                graph.name(id),
+                path.join(" -> ")
+            ));
+        }
+    }
+    for krate in workspace.iter().filter(|k| **k != "postvak-core") {
+        for dep in graph.shipped(graph.id(krate)) {
+            if graph.name(dep).starts_with("rusqlite") {
+                violations.push(format!(
+                    "{krate} depends on {}; AGENTS.md: only postvak-core depends on rusqlite (the front ends only in tests)",
+                    graph.name(dep)
+                ));
+            }
+        }
+    }
+    violations
+}
+
+#[test]
+fn dependency_rules_from_agents_md_hold() {
+    // The host only: other platforms' crates may not be downloaded, and CI runs this on each platform it tests.
+    let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+    let version = std::process::Command::new(rustc)
+        .arg("-vV")
+        .output()
+        .unwrap();
+    let version = String::from_utf8(version.stdout).unwrap();
+    let host = version
+        .lines()
+        .find_map(|l| l.strip_prefix("host: "))
+        .unwrap();
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let output = std::process::Command::new(cargo)
+        .args([
+            "metadata",
+            "--format-version",
+            "1",
+            "--locked",
+            "--filter-platform",
+            host,
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "cargo metadata: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let graph = Graph::from_metadata(&metadata);
+    let violations = check_graph(
+        &graph,
+        &["postvak", "postvak-core", "postvak-gui", "postvak-mcp"],
+    );
+    assert!(
+        violations.is_empty(),
+        "dependency rules broken:\n{}",
+        violations.join("\n")
+    );
+}
+
 #[cfg(test)]
 mod checks_fire {
     use super::*;
@@ -601,6 +758,48 @@ mod checks_fire {
                 "fn f(app: &mut App) { self.client.send(c); }"
             )
             .is_empty()
+        );
+    }
+
+    /// Metadata with `postvak-core -> helper -> slint` and `postvak-mcp -> rusqlite`, both forbidden, beside the allowed
+    /// `postvak-gui -> slint` and `postvak-gui -dev-> rusqlite`.
+    #[test]
+    fn dependency_rules_flag_a_front_end_crate_below_and_rusqlite_beside_core() {
+        let package = |name: &str| serde_json::json!({"id": format!("{name}-id"), "name": name});
+        let dep = |name: &str, kind: Option<&str>| serde_json::json!({"pkg": format!("{name}-id"), "dep_kinds": [{"kind": kind}]});
+        let node = |name: &str, deps: Vec<serde_json::Value>| serde_json::json!({"id": format!("{name}-id"), "deps": deps});
+        let metadata = |core_deps: Vec<serde_json::Value>, mcp_deps: Vec<serde_json::Value>| {
+            serde_json::json!({
+                "packages": (["postvak-core", "postvak-gui", "postvak-mcp", "helper", "slint", "rusqlite"].map(package)),
+                "resolve": {"nodes": [
+                    node("postvak-core", core_deps),
+                    node("postvak-gui", vec![dep("postvak-core", None), dep("slint", None), dep("rusqlite", Some("dev"))]),
+                    node("postvak-mcp", mcp_deps),
+                    node("helper", vec![dep("slint", Some("build"))]),
+                    node("slint", vec![]),
+                    node("rusqlite", vec![]),
+                ]},
+            })
+        };
+        let workspace = ["postvak-core", "postvak-gui", "postvak-mcp"];
+        let ok = metadata(
+            vec![dep("rusqlite", None)],
+            vec![dep("postvak-core", None), dep("rusqlite", Some("dev"))],
+        );
+        assert_eq!(
+            check_graph(&Graph::from_metadata(&ok), &workspace),
+            Vec::<String>::new()
+        );
+        let bad = metadata(vec![dep("helper", None)], vec![dep("rusqlite", None)]);
+        let found = check_graph(&Graph::from_metadata(&bad), &workspace);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(
+            found[0].contains("(postvak-core -> helper -> slint)"),
+            "{found:?}"
+        );
+        assert!(
+            found[1].starts_with("postvak-mcp depends on rusqlite"),
+            "{found:?}"
         );
     }
 

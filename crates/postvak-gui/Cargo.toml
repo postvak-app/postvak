@@ -9,6 +9,8 @@ description.workspace = true
 documentation.workspace = true
 repository.workspace = true
 homepage.workspace = true
+# Only what the build needs; the tests read fixtures outside this crate.
+include = ["/assets/**", "/build.rs", "/LICENSE-*", "/src/**"]
 
 [dependencies]
 anyhow.workspace = true

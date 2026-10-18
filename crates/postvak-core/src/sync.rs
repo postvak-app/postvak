@@ -13,9 +13,9 @@ use crate::config::{AccountConfig, ConfigError, Identity};
 use crate::credentials::{self, CredentialError};
 use crate::mail_ops::imap::ImapOps;
 use crate::mail_ops::{Envelope, IdleOutcome, MailError, MailOps, RemoteFolder};
-use crate::message::{body_text, clean, parse_headers, thread_id};
+use crate::message::{clean, parse_headers, thread_id};
 use crate::paths::Paths;
-use crate::rules::apply::{ApplyError, apply, ensure_raw};
+use crate::rules::apply::{ApplyError, apply, ensure_body_text};
 use crate::rules::engine::{Context, Mode, evaluate, folder_needs_body};
 use crate::rules::{Action, CompiledRule, RulesError};
 use crate::store::{Folder, Message, Store, StoreError};
@@ -294,6 +294,7 @@ enum ActionDef {
     NotJunk,
     Notify,
     Silent,
+    Stop,
     Tag(String),
     Trash,
     Unflag,
@@ -768,8 +769,8 @@ pub fn run_rules_with(
                 }
             }
             if needs_body && msg.body_text.is_none() && is_fresh {
-                match ensure_raw(&msg, ops, store) {
-                    Ok(raw) => msg.body_text = Some(body_text(&raw)),
+                match ensure_body_text(&msg, ops, store) {
+                    Ok(text) => msg.body_text = Some(text),
                     Err(e) => log::warn!("{}/{}: body fetch failed: {e}", msg.folder, msg.uid),
                 }
                 bodies_done += 1;
@@ -912,8 +913,14 @@ fn run_command(
         }
     };
     let mut run = CommandsRun::default();
-    match command {
-        Command::SyncNow => unreachable!("run_commands holds SyncNow for the next full pass"),
+    // Prefixed to a failure's message, so it names the message it is about.
+    let mut context = String::new();
+    let answer: Result<Event, SyncError> = match command {
+        // run_commands holds SyncNow for the next full pass, so none arrives here; answer it rather than panic if one does.
+        Command::SyncNow => Ok(failed(
+            request,
+            "sync now is answered by the next full pass".to_string(),
+        )),
         Command::Apply {
             folder,
             uids,
@@ -960,9 +967,10 @@ fn run_command(
                 results,
                 request,
             });
-            if let Some(e) = lost {
-                return Err(e.into());
-            }
+            return match lost {
+                Some(e) => Err(e.into()),
+                None => Ok(run),
+            };
         }
         Command::ApplyRule { name: rule_name } => {
             let rule = match crate::rules::enabled_rule(rules_path, &rule_name) {
@@ -974,7 +982,7 @@ fn run_command(
             };
             run.used_connection = true;
             let rules = std::slice::from_ref(&rule);
-            match run_rules(
+            run_rules(
                 ops,
                 store,
                 trash,
@@ -983,112 +991,85 @@ fn run_command(
                 identity,
                 Mode::ApplyExisting,
                 now(),
-            ) {
-                Ok(rules_run) => {
-                    let errors = rules_run
-                        .events
-                        .into_iter()
-                        .filter_map(|event| match event {
-                            Event::Error { message, .. } => Some(message),
-                            _ => None,
-                        })
-                        .collect();
-                    let _ = events.send(Event::RuleApplied {
-                        account: name(),
-                        request,
-                        evaluated: rules_run.evaluated,
-                        actions: rules_run.actions,
-                        errors,
-                    });
-                }
-                Err(e) => {
-                    let _ = events.send(failed(request, e.to_string()));
-                    if is_lost_connection(&e) {
-                        return Err(e);
-                    }
-                }
-            }
+            )
+            .map(|rules_run| Event::RuleApplied {
+                account: name(),
+                request,
+                evaluated: rules_run.evaluated,
+                actions: rules_run.actions,
+                errors: rules_run
+                    .events
+                    .into_iter()
+                    .filter_map(|event| match event {
+                        Event::Error { message, .. } => Some(message),
+                        _ => None,
+                    })
+                    .collect(),
+            })
         }
         Command::FetchBodies { folder } => {
             run.used_connection = true;
-            match fetch_bodies_in(ops, store, folder.as_deref()) {
-                Ok(fetched) => {
-                    let _ = events.send(Event::BodiesFetched {
-                        account: name(),
-                        request,
-                        fetched,
-                    });
-                }
-                Err(e) => {
-                    let _ = events.send(failed(request, e.to_string()));
-                    if connection_lost(&e) {
-                        return Err(e.into());
-                    }
-                }
-            }
+            fetch_bodies_in(ops, store, folder.as_deref())
+                .map(|fetched| Event::BodiesFetched {
+                    account: name(),
+                    request,
+                    fetched,
+                })
+                .map_err(SyncError::from)
         }
         Command::FetchBody { folder, uid } => {
             run.used_connection = true;
-            match actions::fetch_body(ops, store, &folder, uid) {
-                Ok(()) => {
-                    let _ = events.send(Event::BodyReady {
-                        account: name(),
-                        folder,
-                        uid,
-                        request,
-                    });
-                }
-                Err(e) => {
-                    let _ = events.send(failed(request, format!("{folder}/{uid}: {e}")));
-                    if connection_lost(&e) {
-                        return Err(e.into());
-                    }
-                }
-            }
+            context = format!("{folder}/{uid}: ");
+            actions::fetch_body(ops, store, &folder, uid)
+                .map(|()| Event::BodyReady {
+                    account: name(),
+                    folder,
+                    uid,
+                    request,
+                })
+                .map_err(SyncError::from)
         }
         Command::SearchServer { folder, query } => {
             run.used_connection = true;
-            match search_server_in(ops, store, folder.as_deref(), &query) {
-                Ok(hits) => {
-                    let _ = events.send(Event::ServerSearchDone {
-                        account: name(),
-                        request,
-                        query,
-                        hits,
-                    });
-                }
-                Err(e) => {
-                    let _ = events.send(failed(request, e.to_string()));
-                    if connection_lost(&e) {
-                        return Err(e.into());
-                    }
-                }
-            }
+            search_server_in(ops, store, folder.as_deref(), &query)
+                .map(|hits| Event::ServerSearchDone {
+                    account: name(),
+                    request,
+                    query,
+                    hits,
+                })
+                .map_err(SyncError::from)
         }
         Command::Restore { file } => {
             run.used_connection = true;
-            match trash.restore(ops, &file) {
-                Ok(folder) => {
+            trash
+                .restore(ops, &file)
+                .map(|folder| {
                     sync_now(ops, store, &folder);
                     run.next = NextPass::Inbox;
-                    let _ = events.send(Event::Restored {
+                    Event::Restored {
                         account: name(),
                         folder,
                         request,
-                    });
-                }
-                Err(e) => {
-                    let _ = events.send(failed(request, e.to_string()));
-                    if let RestoreError::Mail(e) = e
-                        && is_connection_error(&e)
-                    {
-                        return Err(SyncError::Mail(e));
                     }
-                }
+                })
+                .map_err(SyncError::from)
+        }
+    };
+    match answer {
+        Ok(event) => {
+            let _ = events.send(event);
+            Ok(run)
+        }
+        Err(e) => {
+            let _ = events.send(failed(request, format!("{context}{e}")));
+            if is_lost_connection(&e) {
+                Err(e)
+            } else {
+                Ok(run)
             }
         }
     }
-    Ok(run)
 }
 
 /// Downloads the missing bodies of the named folder, failing if it cannot, or of every stored folder, skipping any
@@ -1192,7 +1173,7 @@ fn describe(action: &Action, count: usize) -> String {
         Action::MarkRead => "marking read",
         Action::MarkUnread => "marking unread",
         Action::Move(_) => "moving",
-        Action::Notify | Action::Silent => "updating",
+        Action::Notify | Action::Silent | Action::Stop => "updating",
         Action::Tag(_) => "tagging",
         Action::Unflag => "unflagging",
     };

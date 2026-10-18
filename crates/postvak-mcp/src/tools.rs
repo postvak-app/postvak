@@ -35,6 +35,7 @@ enum Effect {
     ReadOnly,
 }
 
+#[derive(Clone)]
 struct ToolDef {
     name: &'static str,
     scope: Scope,
@@ -72,7 +73,11 @@ impl ToolDef {
 fn schema<A: JsonSchema>() -> Arc<JsonObject> {
     match serde_json::to_value(schemars::schema_for!(A)) {
         Ok(Value::Object(map)) => Arc::new(map),
-        _ => unreachable!("a derived schema is a JSON object"),
+        // A derived schema is always a JSON object; should that change, accept any object rather than panic.
+        _ => Arc::new(JsonObject::from_iter([(
+            "type".to_string(),
+            Value::String("object".to_string()),
+        )])),
     }
 }
 
@@ -340,7 +345,7 @@ struct AccountAddArgs {
     ca_file: Option<std::path::PathBuf>,
 }
 
-/// Every tool, in any order; the scope filter and the alphabetical sort happen when listing. `bodies` is whether
+/// Every tool, in any order; `Server::new` sorts them and listing filters by scope. `bodies` is whether
 /// `read:bodies` is granted, which changes what `search` covers.
 fn catalog(bodies: bool) -> Vec<ToolDef> {
     let search = if bodies {
@@ -729,13 +734,18 @@ fn error_result(text: &str) -> CallToolResult {
 
 pub struct Server {
     backend: Arc<Backend>,
+    /// Every tool, sorted by name; built once, as it depends only on the scopes.
+    catalog: Vec<ToolDef>,
     scopes: BTreeSet<Scope>,
 }
 
 impl Server {
     pub fn new(backend: Backend, scopes: BTreeSet<Scope>) -> Server {
+        let mut catalog = catalog(scopes.contains(&Scope::ReadBodies));
+        catalog.sort_by_key(|t| t.name);
         Server {
             backend: Arc::new(backend),
+            catalog,
             scopes,
         }
     }
@@ -757,12 +767,13 @@ impl ServerHandler for Server {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        let mut granted: Vec<ToolDef> = catalog(self.bodies())
-            .into_iter()
+        let tools = self
+            .catalog
+            .iter()
             .filter(|t| self.scopes.contains(&t.scope))
+            .cloned()
+            .map(ToolDef::into_tool)
             .collect();
-        granted.sort_by_key(|t| t.name);
-        let tools = granted.into_iter().map(ToolDef::into_tool).collect();
         Ok(ListToolsResult::with_all_items(tools)
             .with_ttl_ms(LIST_TTL_MS)
             .with_cache_scope(CacheScope::Private))
@@ -774,7 +785,7 @@ impl ServerHandler for Server {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
         let name = request.name.to_string();
-        let Some(tool) = catalog(false).into_iter().find(|t| t.name == name) else {
+        let Some(tool) = self.catalog.iter().find(|t| t.name == name) else {
             return Err(McpError::new(
                 ErrorCode::METHOD_NOT_FOUND,
                 format!("unknown tool {name}"),

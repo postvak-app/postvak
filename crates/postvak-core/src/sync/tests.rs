@@ -2503,7 +2503,10 @@ fn a_lost_connection_during_restore_ends_the_drain() {
         &trash,
         vec![Command::Restore { file: file.clone() }],
     );
-    assert!(matches!(run, Err(SyncError::Mail(MailError::Io(_)))));
+    assert!(matches!(
+        run,
+        Err(SyncError::Restore(RestoreError::Mail(MailError::Io(_))))
+    ));
     assert!(file.exists());
     assert!(
         events.iter().any(|e| matches!(e,
@@ -2588,10 +2591,36 @@ fn a_command_failure_carries_its_request_id() {
         message,
     } = failed[0]
     else {
-        unreachable!()
+        panic!("filtered to CommandFailed")
     };
     assert_eq!((account.as_str(), *request), ("work", 1));
     assert_eq!(message, "/nope.eml is not a backup in this account's trash");
+}
+
+#[test]
+fn a_sync_now_that_reaches_run_command_is_answered_not_a_panic() {
+    let (mut ops, store, dir) = synced();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let (events, seen) = std::sync::mpsc::channel();
+    let acc = account();
+    let identity = acc.identity().unwrap();
+    let run = run_command(
+        &mut ops,
+        &store,
+        &trash,
+        &acc,
+        &identity,
+        Path::new("/nonexistent/rules.toml"),
+        7,
+        Command::SyncNow,
+        &events,
+    );
+    assert!(run.is_ok());
+    let events: Vec<Event> = seen.try_iter().collect();
+    assert!(
+        matches!(&events[..], [Event::CommandFailed { request: 7, .. }]),
+        "{events:?}"
+    );
 }
 
 #[test]
@@ -2894,6 +2923,7 @@ fn every_action_a_front_end_can_send_survives_the_wire() {
         Action::NotJunk,
         Action::Notify,
         Action::Silent,
+        Action::Stop,
         Action::Trash,
         Action::Unflag,
     ] {

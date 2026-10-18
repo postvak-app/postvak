@@ -27,16 +27,16 @@ Four crates in one workspace. `crates/postvak-core` holds every module below exc
 - `trash` `.eml` backups before any rule delete
 - `update` whether a newer release is out (GUI only): GitHub's latest release at most once a day, cached; never updates itself
 
-`tests/architecture.rs` checks the ownership rules above that crate boundaries cannot: `mcp`, `rules` (rules.toml writes) and `gui` views; allowed exceptions live there with a reason.
+`tests/architecture.rs` checks the ownership rules above that crate boundaries cannot: `mcp`, `rules` (rules.toml writes) and `gui` views; allowed exceptions live there with a reason. It also checks the dependency graph from `cargo metadata`: nothing `postvak-core` pulls in is Slint, Blitz or rmcp, and no other crate depends on rusqlite outside its tests.
 
 ## Surfaces
 - A feature ships on the CLI, MCP and GUI together unless its spec names the exception; `help` and `output` are shared so the texts and JSON rows stay identical
 - Logic lives in a library module. Anything that touches IMAP goes through the daemon as a `Command`. Front ends only call `postvak-core` and `daemon::Client`
 
 ## Definition of done
-- `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, `cargo machete` and `cargo audit` all pass
+- `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, `cargo machete` and `cargo deny check` all pass
 - New logic has a test; a bug fix has a regression test
-- No `unwrap`, `expect`, `panic!`, `todo!` or `unimplemented!` outside tests (clippy denies them); where a call cannot fail, a narrow `#[allow]` says why
+- No `unwrap`, `expect`, `panic!`, `unreachable!`, `todo!` or `unimplemented!` outside tests (clippy denies them; tests use `panic!` for a case that cannot happen); where a call cannot fail, a narrow `#[allow]` says why
 - Platform coverage reported honestly: say "compiled on" vs "ran on"
 - Every new dependency has a one-line reason in `[workspace.dependencies]` of the root `Cargo.toml`; crates name it with `workspace = true`
 - Do not broaden a task into adjacent features
@@ -59,7 +59,7 @@ POSTVAK_TEST_IMAP_HOST=localhost cargo test --features testing --test imap_live
 Port 10993 advertises MOVE and UIDPLUS, port 11993 neither. Each test logs in as its own throwaway user. `tests/dovecot/gen-certs.sh` regenerates the test-only CA.
 
 ## Property tests
-`crates/postvak-core/tests/fuzz.rs` feeds hostile input to the message, rules and wire parsers; the only assertion is no panic. Deeper search: `PROPTEST_CASES=20000 cargo test --release -p postvak-core --test fuzz`. A finding becomes a named test; unfixed ones go in `crates/postvak-core/tests/known_bugs.rs` as `#[ignore = "BUG: …"]`.
+`crates/postvak-core/tests/fuzz.rs` feeds hostile input to the message, rules and wire parsers; the only assertion is no panic. Deeper search: `PROPTEST_CASES=20000 cargo test --release -p postvak-core --test fuzz`. A finding becomes a named test; unfixed ones go in `crates/postvak-core/tests/known_bugs.rs` as `#[ignore = "BUG: …"]`. `.github/workflows/nightly.yml` runs this search, and the one below, every night with ten times the cases.
 
 ## Model-based sync tests
 `crates/postvak-core/tests/sync_model.rs` runs random server events and sync passes against `RecordingOps`; search deeper with `PROPTEST_CASES=2000 cargo test -p postvak-core --features testing --test sync_model`.
@@ -79,7 +79,7 @@ One-time setup, by the repo owner:
 1. Create `postvak-app/homebrew-tap` (public, empty); dist writes `Formula/postvak.rb` and `macos-app.yml` writes `Casks/postvak.rb`.
 2. Add repo secret `HOMEBREW_TAP_TOKEN` to `postvak-app/postvak`: a fine-grained token with Contents read/write on `postvak-app/homebrew-tap`.
 3. Add repo secret `RELEASE_PLZ_TOKEN`: a fine-grained token with Contents and Pull requests read/write on `postvak-app/postvak`.
-4. Publish the current version by hand (crates.io requires the first publish of a crate with a token): `cargo publish --workspace`, then `git tag vX.Y.Z && git push origin vX.Y.Z` to run the first dist release. `postvak-core`, `postvak-gui` and `postvak-mcp` joined later; each needs this first publish once too.
+4. Publish the current version by hand (crates.io requires the first publish of a crate with a token): `cargo publish --workspace`, then `git tag vX.Y.Z && git push origin vX.Y.Z` to run the first dist release.
 5. On crates.io, add a trusted publisher for each of `postvak`, `postvak-core`, `postvak-gui` and `postvak-mcp`: repository `postvak-app/postvak`, workflow `release-plz.yml`.
 6. For the macOS app, add repo secrets: `APPLE_CERTIFICATE` (base64 of the Developer ID Application .p12), `APPLE_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD` (any random string), `APPLE_ID`, `APPLE_PASSWORD` (an app-specific password) and `APPLE_TEAM_ID`. Without them the DMG is signed ad hoc, and the cask keeps a `postflight` that clears the quarantine flag (the `@ADHOC@` lines in `packaging/macos/postvak.rb.in`); with them those lines are dropped. The packaging has never run on a Mac before its first PR run; check that DMG by hand once.
 7. Under Settings → Code security, enable Dependabot alerts and security updates; version updates come from `.github/dependabot.yml`.
