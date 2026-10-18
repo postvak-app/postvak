@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 use super::{Backend, Scope};
 use postvak_core::help;
 use postvak_core::message::clean_for_agent;
+use postvak_core::output;
 use postvak_core::rules::Action;
 
 const BODY_LIMIT: usize = 100 * 1024;
@@ -707,28 +708,6 @@ pub(super) fn wrap_body(text: &str) -> (String, bool) {
     )
 }
 
-/// Every string in `value` without control or invisible characters; layout (newlines, tabs) is kept below any key named `body`.
-fn clean_value(value: Value, keep_layout: bool) -> Value {
-    match value {
-        Value::String(s) => Value::String(clean_for_agent(&s, keep_layout)),
-        Value::Array(items) => Value::Array(
-            items
-                .into_iter()
-                .map(|item| clean_value(item, keep_layout))
-                .collect(),
-        ),
-        Value::Object(map) => Value::Object(
-            map.into_iter()
-                .map(|(key, v)| {
-                    let layout = key == "body";
-                    (key, clean_value(v, layout))
-                })
-                .collect(),
-        ),
-        other => other,
-    }
-}
-
 fn error_result(text: &str) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(clean_for_agent(text, false))])
 }
@@ -804,7 +783,7 @@ impl ServerHandler for Server {
         .await
         .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         Ok(match outcome {
-            Ok(value) => CallToolResult::structured(clean_value(value, false)),
+            Ok(value) => CallToolResult::structured(output::clean_value(value, false)),
             Err(e) => error_result(&format!("{e:#}")),
         }
         .into())

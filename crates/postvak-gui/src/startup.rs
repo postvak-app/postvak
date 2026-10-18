@@ -45,6 +45,12 @@ impl Problem {
             link: None,
         }
     }
+
+    /// Points at the crash folder too, which holds reports.
+    pub fn with_crashes(mut self, dir: &Path) -> Problem {
+        self.fix = format!("{}; crash reports are in {}", self.fix, dir.display());
+        self
+    }
 }
 
 #[cfg(test)]
@@ -78,6 +84,19 @@ mod tests {
         assert_eq!(
             problem.detail.as_deref(),
             Some("could not start the daemon: socket refused")
+        );
+    }
+
+    #[test]
+    fn crash_reports_are_pointed_at() {
+        let problem = Problem::of(
+            &anyhow::anyhow!("boom"),
+            Some(Path::new("/state/daemon.log")),
+        )
+        .with_crashes(Path::new("/state/crashes"));
+        assert_eq!(
+            problem.fix,
+            "The background sync logs to /state/daemon.log; crash reports are in /state/crashes"
         );
     }
 

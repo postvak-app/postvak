@@ -464,7 +464,7 @@ fn cli_applies_a_rule_to_existing_mail_and_restores_it_through_the_daemon() {
     success(&["sync"]);
     assert!(success(&["search", "--bodies", "Body"]).contains("INBOX/1"));
     assert!(success(&["show", "1", "--raw"]).contains("Body of Your sign-in code"));
-    assert!(success(&["rules", "apply-existing", "codes"]).contains("live: 1 actions on"));
+    assert!(success(&["rules", "apply-existing", "codes", "--yes"]).contains("live: 1 actions on"));
 
     let trash_dir = Paths::under(home.path()).trash_dir(&account.name);
     let backup = std::fs::read_dir(&trash_dir)

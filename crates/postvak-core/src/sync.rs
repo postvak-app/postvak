@@ -889,6 +889,7 @@ fn run_command(
     command: Command,
     events: &Sender<Event>,
 ) -> Result<CommandsRun, SyncError> {
+    crate::crash::note(&command);
     let name = || account.name.clone();
     let failed = |request, message: String| {
         log::warn!("{}: {message}", account.name);

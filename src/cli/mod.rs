@@ -218,6 +218,11 @@ enum Command {
         #[command(subcommand)]
         command: AccountCommand,
     },
+    /// List the local crash reports, newest first; they are never sent anywhere
+    Crashes {
+        #[command(subcommand)]
+        command: Option<CrashesCommand>,
+    },
     /// Print the agent guide: how an LLM should drive Postvak
     Guide,
     /// Serve Postvak to an agent host over MCP on stdio; hosts start this, see `postvak mcp install`
@@ -232,6 +237,12 @@ enum Command {
         #[command(subcommand)]
         command: Option<McpCommand>,
     },
+}
+
+#[derive(Subcommand)]
+enum CrashesCommand {
+    /// Print one crash report, by the id `postvak crashes` lists
+    Show { id: String },
 }
 
 #[derive(Subcommand)]
@@ -352,6 +363,9 @@ enum RulesCommand {
         account: Option<String>,
         #[arg(long)]
         dry_run: bool,
+        /// Run even when the rule would permanently delete mail from the server
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -398,6 +412,9 @@ pub fn run() -> Result<()> {
         Some(home) => Ok(Paths::under(Path::new(&home))),
         None => Paths::discover(),
     };
+    if let Ok(paths) = &paths {
+        postvak_core::crash::install(paths.crash_dir(), process(&cli.command));
+    }
     // The window explains its own startup errors, since it may have no terminal to print them in.
     if let Command::Gui { safe_mode } = cli.command {
         return cmd_gui(paths, safe_mode);
@@ -406,6 +423,7 @@ pub fn run() -> Result<()> {
     let config = Config::load(&paths.config_file())?;
     match cli.command {
         Command::Run { idle_exit } => cmd_run(&paths, idle_exit),
+        Command::Crashes { command } => cmd_crashes(command, &paths),
         Command::Daemon { command } => cmd_daemon(command, &paths),
         Command::Gui { safe_mode } => cmd_gui(Ok(paths), safe_mode),
         Command::Service { command } => cmd_service(command, &paths),
@@ -419,10 +437,7 @@ pub fn run() -> Result<()> {
                     let total = store.message_count(&f.name)?;
                     let unread = store.unread_count(&f.name)?;
                     if json {
-                        println!(
-                            "{}",
-                            postvak_core::output::folder(&acc.name, &f, total, unread)
-                        );
+                        print_json(postvak_core::output::folder(&acc.name, &f, total, unread));
                     } else {
                         println!("{}\t{}\t{total}\t{unread}", acc.name, clean(&f.name, false));
                     }
@@ -453,10 +468,7 @@ pub fn run() -> Result<()> {
                             if json {
                                 let mut value = serde_json::to_value(m)?;
                                 value["depth"] = depth.into();
-                                println!(
-                                    "{}",
-                                    postvak_core::output::with_account(&acc.name, &value)?
-                                );
+                                print_json(postvak_core::output::with_account(&acc.name, &value)?);
                             } else {
                                 println!("{}", message_line(&acc.name, m, depth));
                             }
@@ -466,7 +478,7 @@ pub fn run() -> Result<()> {
                 }
                 for m in store.messages(&folder, limit, filter)? {
                     if json {
-                        println!("{}", postvak_core::output::with_account(&acc.name, &m)?);
+                        print_json(postvak_core::output::with_account(&acc.name, &m)?);
                     } else {
                         println!("{}", message_line(&acc.name, &m, 0));
                     }
@@ -516,7 +528,7 @@ pub fn run() -> Result<()> {
                 }
                 for m in found {
                     if json {
-                        println!("{}", postvak_core::output::with_account(&acc.name, &m)?);
+                        print_json(postvak_core::output::with_account(&acc.name, &m)?);
                     } else {
                         println!("{}", message_line(&acc.name, &m, 0));
                     }
@@ -535,10 +547,7 @@ pub fn run() -> Result<()> {
                 open_message(&config, &paths, account.as_deref(), &folder, uid)?;
             let report = postvak_core::unsubscribe::unsubscribe(&msg.headers, dry_run)?;
             if json {
-                println!(
-                    "{}",
-                    postvak_core::output::with_account(&acc.name, &report)?
-                );
+                print_json(postvak_core::output::with_account(&acc.name, &report)?);
             } else {
                 println!("{}", unsubscribe_line(&report));
             }
@@ -557,9 +566,8 @@ pub fn run() -> Result<()> {
             if raw {
                 io::stdout().write_all(&body)?;
             } else if json {
-                println!(
-                    "{}",
-                    serde_json::json!({ "account": acc.name, "message": msg, "body_text": postvak_core::message::body_text(&body) })
+                print_json(
+                    serde_json::json!({ "account": acc.name, "message": msg, "body_text": postvak_core::message::body_text(&body) }),
                 );
             } else {
                 println!(
@@ -602,7 +610,7 @@ pub fn run() -> Result<()> {
                 let store = Store::open_account(&paths, &acc.name)?;
                 for e in store.log(limit)? {
                     if json {
-                        println!("{}", postvak_core::output::with_account(&acc.name, &e)?);
+                        print_json(postvak_core::output::with_account(&acc.name, &e)?);
                     } else {
                         println!(
                             "{}  {}  {:<20} {:<12} {}/{}  {}",
@@ -625,7 +633,7 @@ pub fn run() -> Result<()> {
             AccountCommand::List { json } => {
                 for acc in &config.accounts {
                     if json {
-                        println!("{}", postvak_core::output::account(acc));
+                        print_json(postvak_core::output::account(acc));
                     } else {
                         println!(
                             "{}\t{}\t{}:{}",
@@ -808,7 +816,7 @@ fn cmd_daemon(command: DaemonCommand, paths: &Paths) -> Result<()> {
         DaemonCommand::Status { json } => {
             let status = client.status()?;
             if json {
-                println!("{}", postvak_core::output::status(&status)?);
+                print_json(postvak_core::output::status(&status)?);
             } else {
                 print_status(&status);
             }
@@ -853,7 +861,7 @@ fn cmd_attachment(command: AttachmentCommand, config: &Config, paths: &Paths) ->
         AttachmentCommand::List { json, .. } => {
             for a in postvak_core::message::attachments(&raw) {
                 if json {
-                    println!("{}", postvak_core::output::with_account(&acc.name, &a)?);
+                    print_json(postvak_core::output::with_account(&acc.name, &a)?);
                 } else {
                     println!(
                         "{}  {}  {}  {}",
@@ -912,6 +920,11 @@ fn open_message<'a>(
     Ok((acc, store, msg))
 }
 
+/// One `--json` line, every string cleaned as in MCP results, so an agent reading it sees no hidden text.
+fn print_json(value: serde_json::Value) {
+    println!("{}", postvak_core::output::clean_value(value, false));
+}
+
 /// `account  * INBOX/42  date  from  subject`; `*` marks unread, `depth` indents the subject in thread views.
 fn message_line(account: &str, m: &Message, depth: usize) -> String {
     format!(
@@ -935,6 +948,33 @@ fn truncate(s: &str, width: usize) -> String {
 }
 
 /// Finder and the Dock start Postvak.app with no arguments; that opens the window rather than printing help.
+/// The process a crash report names.
+fn process(command: &Command) -> &'static str {
+    match command {
+        Command::Gui { .. } => "gui",
+        Command::Mcp { command: None, .. } => "mcp",
+        Command::Run { .. } => "daemon",
+        _ => "cli",
+    }
+}
+
+fn cmd_crashes(command: Option<CrashesCommand>, paths: &Paths) -> Result<()> {
+    let dir = paths.crash_dir();
+    match command {
+        None => {
+            let ids = postvak_core::crash::list(&dir)?;
+            if ids.is_empty() {
+                eprintln!("no crash reports in {}", dir.display());
+            }
+            for id in ids {
+                println!("{id}");
+            }
+        }
+        Some(CrashesCommand::Show { id }) => print!("{}", postvak_core::crash::show(&dir, &id)?),
+    }
+    Ok(())
+}
+
 fn opened_as_mac_app() -> bool {
     use std::io::IsTerminal as _;
     cfg!(target_os = "macos")
@@ -1025,7 +1065,7 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             let file = postvak_core::rules::load(&paths.rules_file())?;
             for r in &file.rules {
                 if json {
-                    println!("{}", postvak_core::output::rule(r));
+                    print_json(postvak_core::output::rule(r));
                 } else {
                     println!(
                         "{}\t{}\t{}",
@@ -1041,23 +1081,29 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             name,
             account,
             dry_run,
+            yes,
         } => {
             let rules = vec![postvak_core::rules::enabled_rule(
                 &paths.rules_file(),
                 &name,
             )?];
+            let accounts: Vec<&AccountConfig> = select_accounts(config, account.as_deref())?
+                .into_iter()
+                .filter(|acc| rules.iter().any(|r| r.applies_to_account(&acc.name)))
+                .collect();
+            if dry_run {
+                for acc in accounts {
+                    let store = Store::open_account(paths, &acc.name)?;
+                    print_planned_actions(&rules, &store, acc, &acc.identity()?)?;
+                }
+                return Ok(());
+            }
+            if !yes {
+                confirm_expunges(&rules, paths, &accounts)?;
+            }
             let mut failed = false;
             let daemon = LazyClient::new(paths);
-            for acc in select_accounts(config, account.as_deref())? {
-                if !rules.iter().any(|r| r.applies_to_account(&acc.name)) {
-                    continue;
-                }
-                let store = Store::open_account(paths, &acc.name)?;
-                let identity = acc.identity()?;
-                if dry_run {
-                    print_planned_actions(&rules, &store, acc, &identity)?;
-                    continue;
-                }
+            for acc in accounts {
                 let (evaluated, actions, errors) = daemon.apply_rule(&acc.name, &name)?;
                 failed |= !errors.is_empty();
                 for message in &errors {
@@ -1143,6 +1189,46 @@ fn compiled_rules(paths: &Paths, name: Option<&str>) -> Result<Vec<CompiledRule>
         bail!("no rule named '{name}'");
     }
     Ok(compiled)
+}
+
+/// Asks before a rule expunges existing mail, since the server copy is gone for good; refuses without a terminal.
+fn confirm_expunges(
+    rules: &[CompiledRule],
+    paths: &Paths,
+    accounts: &[&AccountConfig],
+) -> Result<()> {
+    use std::io::IsTerminal as _;
+    let mut any = false;
+    for acc in accounts {
+        let store = Store::open_account(paths, &acc.name)?;
+        let planned =
+            postvak_core::actions::planned(rules, &store, acc, &acc.identity()?, time::now())?;
+        let mut count = 0;
+        for p in &planned {
+            count += usize::from(postvak_core::actions::expunges(&store, p)?);
+        }
+        if count > 0 {
+            any = true;
+            eprintln!(
+                "{}: would permanently delete {count} message{} from the server; .eml backups kept locally for {} days",
+                acc.name,
+                if count == 1 { "" } else { "s" },
+                acc.trash_retention_days
+            );
+        }
+    }
+    if !any {
+        return Ok(());
+    }
+    if !io::stdin().is_terminal() {
+        bail!(
+            "refusing to delete without confirmation; check with --dry-run, then rerun with --yes"
+        );
+    }
+    if prompt("Type yes to continue")? != "yes" {
+        bail!("cancelled");
+    }
+    Ok(())
 }
 
 fn print_planned_actions(

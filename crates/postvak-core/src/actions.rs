@@ -226,6 +226,15 @@ pub fn planned(
     Ok(planned)
 }
 
+/// Whether `planned` would remove the message from the server for good rather than move or flag it.
+pub fn expunges(store: &Store, planned: &Planned) -> Result<bool, StoreError> {
+    Ok(match planned.action {
+        Action::Delete => true,
+        Action::Trash => move_target(store, &planned.message.folder, &Action::Trash)?.is_none(),
+        _ => false,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,6 +287,35 @@ mod tests {
             planned_effect(&store, &msg, &Action::Archive).unwrap(),
             "would archive"
         );
+    }
+
+    #[test]
+    fn expunges_only_deletes_and_trash_without_a_trash_folder() {
+        let (_ops, store, _trash, _dir) = setup();
+        let message = store.message("INBOX", 5).unwrap().unwrap();
+        let expunges_with = |action: Action| {
+            let planned = Planned {
+                rule: "r".into(),
+                message: message.clone(),
+                action,
+            };
+            expunges(&store, &planned).unwrap()
+        };
+        assert!(expunges_with(Action::Delete));
+        assert!(expunges_with(Action::Trash));
+        assert!(!expunges_with(Action::Archive));
+        assert!(!expunges_with(Action::Flag));
+        store
+            .upsert_folder(&Folder {
+                name: "Trash".into(),
+                uidvalidity: 1,
+                last_uid: 0,
+                special_use: Some("Trash".into()),
+                delimiter: None,
+            })
+            .unwrap();
+        assert!(!expunges_with(Action::Trash));
+        assert!(expunges_with(Action::Delete));
     }
 
     #[test]

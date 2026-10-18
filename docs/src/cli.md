@@ -44,6 +44,8 @@ This document contains the help content for the `postvak` command-line program.
 * [`postvak account`↴](#postvak-account)
 * [`postvak account add`↴](#postvak-account-add)
 * [`postvak account list`↴](#postvak-account-list)
+* [`postvak crashes`↴](#postvak-crashes)
+* [`postvak crashes show`↴](#postvak-crashes-show)
 * [`postvak guide`↴](#postvak-guide)
 * [`postvak mcp`↴](#postvak-mcp)
 * [`postvak mcp install`↴](#postvak-mcp-install)
@@ -76,6 +78,7 @@ A fast, simple mail client with automatic mailbox rules
 * `log` — Show what rules did, newest first
 * `trash` — Deleted mail kept for the retention period
 * `account` — Manage accounts
+* `crashes` — List the local crash reports, newest first; they are never sent anywhere
 * `guide` — Print the agent guide: how an LLM should drive Postvak
 * `mcp` — Serve Postvak to an agent host over MCP on stdio; hosts start this, see `postvak mcp install`
 
@@ -353,6 +356,7 @@ Run one enabled rule against mail that predates it; dry run lists what it would 
 
 * `--account <ACCOUNT>`
 * `--dry-run`
+* `--yes` — Run even when the rule would permanently delete mail from the server
 
 
 
@@ -663,6 +667,30 @@ Each configured account: name, username and server; never the password source
 ###### **Options:**
 
 * `--json`
+
+
+
+## `postvak crashes`
+
+List the local crash reports, newest first; they are never sent anywhere
+
+**Usage:** `postvak crashes [COMMAND]`
+
+###### **Subcommands:**
+
+* `show` — Print one crash report, by the id `postvak crashes` lists
+
+
+
+## `postvak crashes show`
+
+Print one crash report, by the id `postvak crashes` lists
+
+**Usage:** `postvak crashes show <ID>`
+
+###### **Arguments:**
+
+* `<ID>`
 
 
 
