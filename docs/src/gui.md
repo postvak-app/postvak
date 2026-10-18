@@ -63,7 +63,7 @@ The funnel button beside the list's title shows All, Unread, Flagged or Attachme
 
 ## Sync status
 
-The foot of the folder pane has one line about sync: a failure when there is one, else an account that is offline and when it retries, else one that is syncing (which folder, how many headers or bodies of how many), else that the first account is up to date. Hover it for every account's line, click it for the last 50 lines. The button beside it syncs every account now (Ctrl+R, Cmd+R on macOS). View ▸ Theme picks the System, Light or Dark theme and saves it as `[ui] theme` in `config.toml`. Both themes put the panes in an oxblood frame: warm paper in light mode, dark brown in dark mode. Under the line, a link appears when a newer release is out; it opens that release's notes on GitHub. Postvak does not update itself, and the daily check runs only with `[ui] check_updates = true` in `config.toml` (see [Accounts](accounts.md#appearance)).
+The foot of the folder pane has one line about sync: a failure when there is one, else an account that is offline and when it retries, else one that is syncing (which folder, how many headers or bodies of how many), else that the first account is up to date. Hover it for every account's line, click it for the last 50 lines. The button beside it syncs every account now (Ctrl+R, Cmd+R on macOS). View ▸ Theme picks the System, Light or Dark theme and saves it as `[ui] theme` in `config.toml`. Both themes put the panes in an ink-blue frame: warm paper in light mode, near-black in dark mode. Under the line, a link appears when a newer release is out; it opens that release's notes on GitHub. Postvak does not update itself, and the daily check runs only with `[ui] check_updates = true` in `config.toml` (see [Accounts](accounts.md#appearance)).
 
 ## Rules, Activity and Backups
 
@@ -85,7 +85,7 @@ HTML over 2 MB, or a page too tall or too broken to lay out, shows as text with 
 
 ## Reader
 
-The subject heads the message, then the sender's initials on a colour picked from their address, their name and address, the recipients and the date.
+The subject heads the message, then the sender's initials on a colour picked from their address, their name and address, the recipients and the date. With `[ui] sender_images = true`, mail that passed DMARC shows the logo its sender's domain publishes in place of the initials (see [Accounts](accounts.md#appearance)).
 
 On the right of the action buttons, **Save .eml** writes the message exactly as the server sent it to your Downloads folder (or your home folder when there is none), named after its subject; when that name is taken it saves beside it as "… (2).eml" and never replaces a file. The line under the attachments says where it went. Until the message is downloaded this button and View source are greyed out and say why on hover. The reader shows "Loading…" meanwhile, or, while the account is offline, that the message loads when it reconnects.
 

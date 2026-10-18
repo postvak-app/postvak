@@ -147,9 +147,10 @@ export component TextButton inherits Rectangle {
     }
 }
 
-// A serif heading in the pane's palette.
+// A heading in the display face and the pane's palette.
 export component Heading inherits Text {
-    font-family: Theme.serif-font;
+    font-family: Theme.heading-font;
+    font-weight: 600;
     font-size: Theme.heading-size;
     color: Theme.pane.heading;
 }

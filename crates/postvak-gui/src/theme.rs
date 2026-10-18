@@ -156,7 +156,7 @@ mod tests {
         }
     }
 
-    /// Regression: light links were oxblood, which next to the near-black ink read as plain text.
+    /// Regression: light links were once the frame colour, which next to the near-black text read as plain text.
     #[test]
     fn links_stand_apart_from_text_in_every_palette() {
         for p in palettes() {

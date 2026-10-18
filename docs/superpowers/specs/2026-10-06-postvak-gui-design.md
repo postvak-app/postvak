@@ -186,18 +186,20 @@ egui ships light and dark themes, and eframe follows the OS setting when the pre
 - The status bar has a three-way switch (system, light, dark). Choosing one applies at once through `ctx.set_theme(ThemePreference)` and writes `[ui] theme` with `toml_edit`, keeping comments. The app records the file's new modification time, so its own write does not raise the "config.toml changed" banner.
 - `postvak` without the `gui` feature parses and ignores `[ui]`.
 
-### Visual identity: Ossenbloed
+### Visual identity: Inkt
 
-Chosen 2026-10-09 over the first look (Catppuccin Mocha and Latte, peach and mint), which read as a stock terminal theme. Mock-ups: https://claude.ai/artifact/6T24ycUywqkcN5ghd8DhQP (boards `Ossenbloed` and `OssenbloedDark`).
-- An oxblood frame (toolbar, folder pane, status bar) around the panes, which are rounded (`theme::RADIUS`) where they meet it, like mail in a letterbox. The frame keeps cream text in both modes; the panes are warm paper in light mode and near-black brown in dark mode.
-- `theme.rs` has four palettes: `PAPER` and `NIGHT` for the panes, `FRAME` and `FRAME_NIGHT` for the frame. `theme::chrome(ui)` switches a ui to its mode's frame palette, and `theme::palette(ui)` finds a ui's palette by its panel colour, so views stay unaware of which surface they are on.
-- The selected row and folder take the frame colour (`selected`, a lighter oxblood in dark mode). Brass (`highlight`) marks unread mail, flags and the frame's focus ring. Every palette passes WCAG AA for text, checked by tests.
-- The list has the folder's name as a serif title with its thread and unread counts. Rows are two lines, ruled apart: sender and date, then the subject; unread senders are SemiBold.
-- The reader opens with the subject as a serif heading, then the sender's initials in a circle beside the sender's name (SemiBold), address, recipients and a short date (the full date on hover). Message text is 15 px, larger than the interface.
-- Dates and the version are monospace. The status bar marks each account with a brass dot when up to date, a brass ring while offline and a ring in the error colour on an error. Account names are muted SemiBold; the selected folder's icon is brass and its unread count a brass pill.
+Chosen 2026-10-18 over Ossenbloed (an oxblood frame, brass marks, a Newsreader wordmark and a split-envelope icon, chosen 2026-10-09 over a Catppuccin first look). Ossenbloed was one colour doing every job: the icon was a dark blob in a dock, the frame outweighed the mail, and the register (wine list, law firm) was wrong for a tool made of `rules.toml`, a CLI and an MCP server. Its mark explained neither mail nor rules nor the name. Proposal with the alternatives: https://claude.ai/artifact/1bGGdDJikmDVLdsno4GPnP.
+- The mark is Kaart: a postcard with a vermilion stamp on an ink-blue tile. A postvak is a pigeonhole; the postcard is the thing that lands in it.
+- Three colours with one job each: ink blue (`#1c2436`) is the frame, paper (`#f3eee4`) is what text sits on, and vermilion (`#e8562f`, darkened to `#b83d1c` as text on paper) marks state and nothing else: unread mail, flags, the selected folder's icon and count, links, the focus ring, the status dot.
+- An ink frame (toolbar, folder pane, status bar) around the panes, which are rounded (`theme::RADIUS`) where they meet it, like mail in a letterbox. The frame keeps paper text in both modes; the panes are warm paper in light mode and near-black blue in dark mode.
+- `ui/theme.slint` has four palettes: `paper` and `night` for the panes, `frame-day` and `frame-night` for the frame, so views stay unaware of which surface they are on. Every palette passes WCAG AA for text, checked by tests in `theme.rs`.
+- The selected row and folder take a tint of the frame colour (`selected`).
+- The list has the folder's name as a heading with its thread and unread counts. Rows are two lines, ruled apart: sender and date, then the subject; unread senders are SemiBold.
+- The reader opens with the subject as a heading, then the sender's initials in a circle beside the sender's name (SemiBold), address, recipients and a short date (the full date on hover). Message text is 15 px, larger than the interface.
+- Dates and the version are monospace. The status bar marks each account with a vermilion dot when up to date, a vermilion ring while offline and a ring in the error colour on an error. Account names are muted SemiBold; the selected folder's icon is vermilion and its unread count a vermilion pill.
 - The window names the INBOX "Inbox" (`folders::label`); commands and the status line keep the server's name.
-- The app icon, `assets/logo.svg`, the social preview and the docs theme use the same colours: a cream envelope with a brass flap on oxblood.
-- Fonts, bundled and under the OFL: Hanken Grotesk Medium for text and SemiBold for emphasis, Spline Sans Mono Medium for monospace with egui's Hack behind it for the arrows it lacks, and Newsreader Medium for headings and the wordmark. All are static instances of Google Fonts' variable fonts, since egui cannot pick a weight.
+- The app icon, `assets/logo.svg`, the social preview and the docs theme use the same three colours, and the social preview carries the README's tagline.
+- Fonts, bundled and under the OFL: Hanken Grotesk Medium for text and SemiBold for emphasis, Spline Sans Mono Medium for monospace, and Bricolage Grotesque SemiBold for headings and the wordmark. All are static instances of Google Fonts' variable fonts.
 
 ## 6. Reading
 

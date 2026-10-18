@@ -124,13 +124,13 @@ pub(crate) fn failed(account: &Account) -> bool {
 pub(crate) enum Dot {
     /// A ring in the error colour.
     Failed,
-    /// A filled brass dot.
+    /// A filled vermilion dot.
     UpToDate,
-    /// A brass ring.
+    /// A vermilion ring.
     Offline,
 }
 
-/// A ring in the error colour for an error, a muted dot while offline, a brass dot once up to date, none while it
+/// A ring in the error colour for an error, a muted dot while offline, a vermilion dot once up to date, none while it
 /// syncs.
 pub(crate) fn dot(account: &Account) -> Option<Dot> {
     if failed(account) {
@@ -176,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn an_up_to_date_account_gets_a_brass_dot_and_an_error_wins() {
+    fn an_up_to_date_account_gets_a_vermilion_dot_and_an_error_wins() {
         let mut account = account();
         assert!(!failed(&account));
         assert_eq!(dot(&account), None);
