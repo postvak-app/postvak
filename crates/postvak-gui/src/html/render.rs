@@ -770,7 +770,8 @@ mod tests {
 
     #[test]
     fn markup_nested_too_deep_replies_failed() {
-        let got = replies(vec![load(3, &nested(100_000), 400.0)], handle);
+        // Just past the limit: html5ever parses nesting in quadratic time, so a deeper page only slows the test.
+        let got = replies(vec![load(3, &nested(MAX_DEPTH + 8), 400.0)], handle);
         assert!(matches!(got[..], [Reply::Failed { generation: 3 }]));
     }
 
