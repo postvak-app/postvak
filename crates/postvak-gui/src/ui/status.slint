@@ -49,7 +49,7 @@ export component StatusBar inherits VerticalLayout {
                     height: Theme.pad;
                     y: (parent.height - self.height) / 2;
                     border-radius: self.width / 2;
-                    // Brass when up to date, quiet when offline; only a failure gets a ring.
+                    // Vermilion when up to date, quiet when offline; only a failure gets a ring.
                     border-width: root.line.dot == Dot.failed ? 1.5px : 0px;
                     border-color: Theme.frame.error;
                     background: root.line.dot == Dot.up-to-date ? Theme.frame.highlight : root.line.dot == Dot.offline ? Theme.frame.muted : Theme.frame.highlight.transparentize(100%);
