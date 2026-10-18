@@ -1,0 +1,118 @@
+# Postvak's daemon as a container image on ghcr.io, for amd64 and arm64. It repackages dist's release binaries, so
+# nothing compiles twice. Separate from release.yml, which dist generates and owns.
+name: Docker
+
+on:
+  # release-plz pushes the tag with its own token, so this fires; the release itself is created by release.yml with
+  # GITHUB_TOKEN, which starts no workflows, so `release: published` only covers a release published by hand.
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+*']
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to package, e.g. v0.2.0
+        required: true
+  # A packaging change packages the latest release's binaries, so the image builds before the next release does.
+  pull_request:
+    paths:
+      - packaging/docker/**
+      - .github/workflows/docker.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.tag || github.event.release.tag_name || github.ref_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    permissions:
+      attestations: write # build provenance for the pushed image
+      contents: read
+      id-token: write
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Pick the release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.event.release.tag_name || (github.event_name == 'push' && github.ref_name) || '' }}
+        run: |
+          if [ -z "$TAG" ]; then
+            TAG=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          fi
+          # On a tag push, release.yml may still be building; wait up to an hour for it to create the release.
+          for _ in $(seq 120); do
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && break
+            sleep 30
+          done
+          echo "tag=$TAG" >>"$GITHUB_OUTPUT"
+      - name: Download the release binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          context="$RUNNER_TEMP/context"
+          mkdir -p "$context/data" "$RUNNER_TEMP/release"
+          cp packaging/docker/Dockerfile "$context/"
+          cd "$RUNNER_TEMP/release"
+          for pair in amd64:x86_64 arm64:aarch64; do
+            platform=${pair%%:*} archive="postvak-${pair#*:}-unknown-linux-gnu.tar.xz"
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$archive" --pattern "$archive.sha256"
+            sha256sum -c "$archive.sha256"
+            mkdir "$platform" && tar -xJf "$archive" -C "$platform"
+            cp "$(find "$platform" -type f -name postvak | head -n1)" "$context/postvak-$platform"
+          done
+          echo "CONTEXT=$context" >>"$GITHUB_ENV"
+      - name: Set up a builder for both platforms
+        run: docker buildx create --use --driver docker-container
+      - name: Smoke test
+        run: |
+          docker buildx build --platform linux/amd64 --load --tag postvak:test "$CONTEXT"
+          docker run --rm postvak:test --version
+          docker volume create postvak-test
+          docker run --detach --name postvak-test --volume postvak-test:/data postvak:test
+          for _ in $(seq 20); do
+            docker exec postvak-test postvak daemon status --json | grep -qv '^null$' && break
+            sleep 1
+          done
+          docker exec postvak-test postvak daemon status
+          docker stop --timeout 30 postvak-test
+          docker logs postvak-test
+      - name: Log in to ghcr.io
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - name: Build and push
+        id: push
+        if: github.event_name != 'pull_request'
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          version=${TAG#v}
+          tags=(--tag "$IMAGE:$version")
+          # A pre-release (v1.2.0-rc.1) gets only its own tag; a release also moves 1.2 and latest.
+          if [[ $version != *-* ]]; then
+            tags+=(--tag "$IMAGE:${version%.*}" --tag "$IMAGE:latest")
+          fi
+          docker buildx build --platform linux/amd64,linux/arm64 --push \
+            --label "org.opencontainers.image.version=$version" \
+            --metadata-file "$RUNNER_TEMP/metadata.json" "${tags[@]}" "$CONTEXT"
+          echo "digest=$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/metadata.json")" >>"$GITHUB_OUTPUT"
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        if: github.event_name != 'pull_request'
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true

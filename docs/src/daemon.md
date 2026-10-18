@@ -25,22 +25,18 @@ Postvak runs headless on any Linux machine, such as a NAS, a VPS or a Raspberry 
 
 ### Docker
 
-There is no published image. To run Postvak in a container, mount the Linux binary from a [release](https://github.com/postvak-app/postvak/releases/latest) into a plain Debian container. On Unraid, use this file with the Compose Manager plugin:
+The image `ghcr.io/postvak-app/postvak` runs the daemon on amd64 and arm64. On Unraid, use this file with the Compose Manager plugin:
 
 ```yaml
 services:
   postvak:
-    image: debian:stable-slim
-    command: ["postvak", "run"]
-    environment:
-      POSTVAK_HOME: /data
+    image: ghcr.io/postvak-app/postvak:latest
     volumes:
-      - ./postvak:/usr/local/bin/postvak:ro  # the binary extracted from the release archive
       - ./data:/data
     restart: unless-stopped
 ```
 
-With `POSTVAK_HOME` set, `config.toml` and `rules.toml` go in `./data/config/`, and the mail store in `./data/state/`. Errors go to `docker compose logs postvak`. The binary sits in the `postvak-<target>/` folder of the release's `postvak-<target>.tar.xz`, for example `postvak-x86_64-unknown-linux-gnu`. Put the password in a file under `./data/`, for example `password = { command = "cat /data/imap-work" }`. To use the CLI against the running daemon, run `docker compose exec postvak postvak rules test`.
+The image runs `postvak run` as user 1000 with `POSTVAK_HOME=/data`, so `config.toml` and `rules.toml` go in `./data/config/`, and the mail store in `./data/state/`. User 1000 has to be able to write `./data`; otherwise set `user:` to its owner (`user: "99:100"` on Unraid). Put the password in a file, for example `password = { command = "cat /data/imap-work" }`, or in a Docker secret, `cat /run/secrets/imap-work`. Errors go to `docker compose logs postvak`. To use the CLI against the running daemon, run `docker compose exec postvak postvak rules test`; an agent host starts the MCP server with `docker compose exec -T postvak postvak mcp`. Tags follow releases: `latest`, `X.Y` and `X.Y.Z`; `docker compose pull && docker compose up -d` upgrades. `gh attestation verify oci://ghcr.io/postvak-app/postvak:latest --repo postvak-app/postvak` checks that an image was built from this repository.
 
 ## Status and stopping
 
