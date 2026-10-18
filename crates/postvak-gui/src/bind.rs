@@ -47,6 +47,7 @@ pub(crate) fn init(window: &MailWindow) {
     window.set_close_icon(icons::CLOSE.into());
     window.set_search_icon(icons::SEARCH.into());
     window.set_filter_icon(icons::FILTER.into());
+    window.set_rule_icon(icons::RULES.into());
     window.set_sync_icon(icons::SYNC.into());
     window.set_save_icon(icons::SAVE.into());
     window.set_source_icon(icons::SOURCE.into());
@@ -908,6 +909,12 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     window.on_reject_rule(move |i| {
         on(one(move |app| {
             Some(UiAction::RejectRule(proposal(app, i)?))
+        }));
+    });
+    window.on_rule_from(move || {
+        on(one(|app| {
+            let message = app.body.as_ref()?.message.as_ref()?;
+            Some(UiAction::RuleFrom(message.from_addr.clone()?))
         }));
     });
     window.on_new_rule(move || {

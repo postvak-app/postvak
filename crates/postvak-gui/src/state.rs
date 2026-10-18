@@ -299,6 +299,8 @@ pub(crate) enum UiAction {
     /// Count what a rule would do to the cached mail, without doing it.
     PreviewRule(String),
     RejectRule(String),
+    /// Start a new rule for mail from the sender of the message shown, given its From.
+    RuleFrom(String),
     /// Remove the open rule from rules.toml; unconfirmed, it asks first.
     RemoveRule {
         confirmed: bool,
@@ -934,7 +936,9 @@ impl App {
 
     fn apply_action(&mut self, action: UiAction) {
         match action {
-            leave @ (UiAction::EditRule(_) | UiAction::NewRule) if self.draft_edited() => {
+            leave @ (UiAction::EditRule(_) | UiAction::NewRule | UiAction::RuleFrom(_))
+                if self.draft_edited() =>
+            {
                 self.leave_draft = Some(Box::new(leave));
             }
             UiAction::Act(action) => self.act(action),
@@ -1048,6 +1052,14 @@ impl App {
                 self.edit_rules(|path| rule_file::edit::reject(path, &name));
             }
             UiAction::RemoveRule { confirmed } => self.remove_draft(confirmed),
+            UiAction::RuleFrom(from) => {
+                if let Some(body) = &self.body {
+                    let draft =
+                        Draft::from_sender(&from, &self.accounts[body.account].name, &body.key.0);
+                    self.select_view(View::Rules);
+                    self.open_draft(Some(draft));
+                }
+            }
             UiAction::SaveDraft => {
                 self.save_draft();
             }

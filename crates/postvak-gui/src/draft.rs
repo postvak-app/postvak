@@ -1,5 +1,5 @@
 //! Rules in plain language, and rules as the editor's rows of conditions.
-use postvak_core::message::clean;
+use postvak_core::message::{bare_addresses, clean};
 use postvak_core::rules::{Action, HeaderMatch, Match, OneOrMany, Rule, TextMatch};
 
 /// `subject contains "a" or "b"`: a text condition, whose list matches any of its values.
@@ -496,6 +496,36 @@ impl Draft {
     }
 }
 
+/// Longest name a draft made from a message gets; rules.toml allows 255 characters.
+const SEED_NAME_CHARS: usize = 60;
+
+impl Draft {
+    /// A new rule for mail from the sender of the message on screen, given its From, watching its account and folder.
+    pub fn from_sender(from: &str, account: &str, folder: &str) -> Draft {
+        let address = bare_addresses(from)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| from.trim().to_string());
+        let value = clean(&address, false);
+        let name: String = format!("from {value}")
+            .chars()
+            .take(SEED_NAME_CHARS)
+            .collect();
+        Draft {
+            account: Some(account.to_string()),
+            conditions: vec![Condition {
+                field: Field::From,
+                header: String::new(),
+                op: Op::Equals,
+                value,
+            }],
+            folder: (!folder.eq_ignore_ascii_case("INBOX")).then(|| folder.to_string()),
+            name: name.trim_end().to_string(),
+            ..Draft::new()
+        }
+    }
+}
+
 fn text_match(c: &Condition) -> TextMatch {
     let one = || Some(OneOrMany::One(c.value.clone()));
     match c.op {
@@ -738,5 +768,35 @@ actions = ["flag"]
     #[test]
     fn every_action_the_menu_offers_has_a_name() {
         assert!(ACTIONS.iter().all(|action| !action_name(action).is_empty()));
+    }
+
+    #[test]
+    fn a_draft_from_a_sender_matches_their_first_address_in_short_clean_words() {
+        let from = Draft::from_sender(
+            "Alice <Alice@Example.com>, bob@example.com",
+            "work",
+            "INBOX",
+        );
+        assert_eq!(
+            from.conditions,
+            [Condition {
+                field: Field::From,
+                header: String::new(),
+                op: Op::Equals,
+                value: "alice@example.com".into(),
+            }]
+        );
+        assert_eq!(from.name, "from alice@example.com");
+        assert_eq!(
+            (from.account.as_deref(), from.folder.as_deref()),
+            (Some("work"), None)
+        );
+        assert!(from.original.is_none() && from.actions.is_empty() && from.enabled);
+
+        let long = format!("x\u{1b}[2J{}@example.com", "y".repeat(300));
+        let sneaky = Draft::from_sender(&long, "work", "Lists");
+        assert_eq!(sneaky.folder.as_deref(), Some("Lists"));
+        assert!(sneaky.name.chars().count() <= 60, "{}", sneaky.name);
+        assert!(!sneaky.name.contains('\u{1b}') && !sneaky.conditions[0].value.contains('\u{1b}'));
     }
 }

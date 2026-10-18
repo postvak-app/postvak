@@ -64,6 +64,7 @@ export component MailWindow inherits Window {
     in property <string> search-icon;
     in property <string> sync-icon;
     in property <string> filter-icon;
+    in property <string> rule-icon;
 
     in property <[ToolButton]> tool-buttons;
     in property <bool> tool-buttons-enabled;
@@ -185,6 +186,7 @@ export component MailWindow inherits Window {
     callback reject-rule(int);
     callback preview-rule(int);
     callback new-rule();
+    callback rule-from();
     callback edit-rule(int);
     callback set-enabled(int, bool);
     callback apply-rule(int);
@@ -501,6 +503,8 @@ export component MailWindow inherits Window {
                         open-source => { root.open-source(); }
                         save-attachment(i) => { root.save-attachment(i); }
                         open-link(url) => { root.open-link(url); }
+                        rule-icon: root.rule-icon;
+                        rule-from => { root.rule-from(); }
                         page: root.page;
                         strips: root.strips;
                         page-width(width) => { root.page-width(width); }
