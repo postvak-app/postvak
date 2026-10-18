@@ -375,6 +375,10 @@ impl Backend {
             // Start from the file, not the start-up snapshot, or edits made since would be lost on save.
             let mut held = self.config.write().unwrap_or_else(PoisonError::into_inner);
             let mut config = Config::load(&self.paths.config_file())?;
+            // Replacing would let an agent point the user's account at a server it chose.
+            if config.accounts.iter().any(|a| a.name == name) {
+                bail!("account '{name}' exists already; an agent can only add new accounts");
+            }
             postvak_core::account::add(&mut config, &self.paths, account.clone(), None)?;
             *held = config;
         }
@@ -487,9 +491,7 @@ impl Backend {
     ) -> Result<Vec<Value>> {
         rule.enabled = true;
         let compiled = rules::compile(&RuleFile { rules: vec![rule] })?;
-        if !bodies && compiled.iter().any(|r| r.needs_body()) {
-            bail!("matching on the body needs the read:bodies scope");
-        }
+        refuse_body_rule(&compiled, bodies)?;
         let mut rows = Vec::new();
         for acc in self.select(account)? {
             let store = self.store(&acc)?;
@@ -507,9 +509,11 @@ impl Backend {
         name: &str,
         account: Option<&str>,
         dry_run: bool,
+        bodies: bool,
     ) -> Result<Vec<Value>> {
         self.ensure_rule_visible(name, false)?;
         let compiled = vec![rules::enabled_rule(&self.paths.rules_file(), name)?];
+        refuse_body_rule(&compiled, bodies)?;
         let mut rows = Vec::new();
         for acc in self.select(account)? {
             if !compiled.iter().any(|r| r.applies_to_account(&acc.name)) {
@@ -531,7 +535,13 @@ impl Backend {
     }
 
     /// While accounts are hidden, a rule without `account` gets the only visible one, or is refused.
-    pub fn propose(&self, mut rule: Rule, by: &str) -> Result<Value> {
+    pub fn propose(&self, mut rule: Rule, by: &str, bodies: bool) -> Result<Value> {
+        refuse_body_rule(
+            &rules::compile(&RuleFile {
+                rules: vec![rule.clone()],
+            })?,
+            bodies,
+        )?;
         match rule.account.as_deref() {
             Some(account) if !self.is_visible(Some(account)) => {
                 bail!("no account named '{account}'")
@@ -545,8 +555,9 @@ impl Backend {
     }
 
     /// Enables the rule and restarts its clock in every account, so it acts only on mail that arrives from now on.
-    pub fn approve(&self, name: &str) -> Result<Value> {
+    pub fn approve(&self, name: &str, bodies: bool) -> Result<Value> {
         self.ensure_rule_visible(name, true)?;
+        refuse_named_body_rule(&self.paths, name, bodies)?;
         rules::edit::approve_from_now(&self.paths, &self.all_accounts(), name, time::now())?;
         Ok(json!({ "rule": name, "enabled": true }))
     }
@@ -557,11 +568,29 @@ impl Backend {
         Ok(json!({ "rejected": name }))
     }
 
-    pub fn set_enabled(&self, name: &str, enabled: bool) -> Result<Value> {
+    pub fn set_enabled(&self, name: &str, enabled: bool, bodies: bool) -> Result<Value> {
         self.ensure_rule_visible(name, enabled)?;
+        if enabled {
+            refuse_named_body_rule(&self.paths, name, bodies)?;
+        }
         rules::edit::set_enabled(&self.paths.rules_file(), name, enabled)?;
         Ok(json!({ "rule": name, "enabled": enabled }))
     }
+}
+
+fn refuse_named_body_rule(paths: &Paths, name: &str, bodies: bool) -> Result<()> {
+    let file = rules::load(&paths.rules_file())?;
+    let named: Vec<Rule> = file.rules.into_iter().filter(|r| r.name == name).collect();
+    refuse_body_rule(&rules::compile(&RuleFile { rules: named })?, bodies)
+}
+
+/// Without read:bodies an agent may not propose, enable or run a rule that matches on the body: which mail it acts on,
+/// or a dry run lists, would reveal body text.
+fn refuse_body_rule(compiled: &[rules::CompiledRule], bodies: bool) -> Result<()> {
+    if !bodies && compiled.iter().any(|r| r.needs_body()) {
+        bail!("matching on the body needs the read:bodies scope");
+    }
+    Ok(())
 }
 
 /// A message's listing row: the CLI's `--json` shape with its account, without the body.

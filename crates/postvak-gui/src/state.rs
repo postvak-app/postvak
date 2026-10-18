@@ -1720,7 +1720,7 @@ impl App {
                     width,
                     ..
                 } => {
-                    if height > html::MAX_HEIGHT {
+                    if height > html::MAX_HEIGHT || width > html::MAX_WIDTH {
                         body.text_note = Some(html::TOO_LARGE);
                         body.html_view = None;
                         continue;

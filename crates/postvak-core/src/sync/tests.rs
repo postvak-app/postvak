@@ -481,6 +481,50 @@ fn body_rule_fetches_bodies_for_new_messages() {
 }
 
 #[test]
+fn body_rule_does_not_download_a_message_over_the_size_cap() {
+    let mut ops = RecordingOps::default().with_folder("INBOX", None);
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open_in_memory().unwrap();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let acc = account();
+    let identity = acc.identity().unwrap();
+    let toml =
+        "[[rules]]\nname = \"codes\"\nmatch.body = { contains = \"code\" }\nactions = [\"flag\"]\n";
+    let rules = rules_from(toml, &store, 0);
+    sync_all(&mut ops, &store).unwrap();
+    ops.add_mail(
+        "INBOX",
+        2,
+        11 * H,
+        &headers("noreply@login.x", "Your sign-in code", "m2@x"),
+        Some("From: noreply@login.x\r\n\r\ncode 1234"),
+    );
+    ops.mail.get_mut("INBOX").unwrap()[0].size = Some(crate::sync::MAX_RULE_BODY + 1);
+    sync_all(&mut ops, &store).unwrap();
+    let run = run_rules(
+        &mut ops,
+        &store,
+        &trash,
+        &rules,
+        &acc,
+        &identity,
+        Mode::Normal,
+        12 * H,
+    )
+    .unwrap();
+    assert_eq!(run.actions, 0);
+    assert!(!ops.calls.iter().any(|c| c.starts_with("fetch_raw")));
+    assert!(
+        store
+            .message("INBOX", 2)
+            .unwrap()
+            .unwrap()
+            .body_text
+            .is_none()
+    );
+}
+
+#[test]
 fn a_body_rule_added_later_skips_mail_its_folder_already_had() {
     let mut ops = RecordingOps::default()
         .with_folder("INBOX", None)

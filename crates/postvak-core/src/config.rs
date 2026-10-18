@@ -187,6 +187,11 @@ impl Config {
                     "account '{name}': `password = {{ keyring = false }}` has no meaning; use `{{ keyring = true }}` or a `command`"
                 )));
             }
+            if account.trash_retention_days == 0 {
+                return Err(ConfigError::Invalid(format!(
+                    "account '{name}': trash_retention_days must be at least 1, or a rule delete keeps no backup"
+                )));
+            }
             if let Some(ca_file) = &account.ca_file
                 && !ca_file.is_absolute()
             {
@@ -424,6 +429,17 @@ notify = false
         assert!(matches!(Config::parse(&dup), Err(ConfigError::Invalid(_))));
         let bad = SAMPLE.replace("name = \"home\"", "name = \"ho/me\"");
         assert!(matches!(Config::parse(&bad), Err(ConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn rejects_a_trash_retention_of_zero_days() {
+        let bad = SAMPLE.replace(
+            "name = \"home\"",
+            "name = \"home\"\ntrash_retention_days = 0",
+        );
+        assert!(
+            matches!(Config::parse(&bad), Err(ConfigError::Invalid(e)) if e.contains("trash_retention_days")),
+        );
     }
 
     #[test]

@@ -8,7 +8,8 @@
 #   $SITE_URL is the site's address. Before the first release with bundles, it writes nothing. A failure to read the
 #   live repository or the release stops the script, so a deploy never drops the repository. With
 #   $FLATPAK_GPG_PRIVATE_KEY (an armored secret key without a passphrase) the commits and summary are signed and the
-#   .flatpakrepo carries the public key, so `flatpak remote-add` verifies them; without it the repository is unsigned.
+#   .flatpakrepo carries the public key, so `flatpak remote-add` verifies them, and the mirror of the live site must be
+#   signed by that key too, so a site serving other commits stops the deploy; without it the repository is unsigned.
 set -euo pipefail
 
 site=${1:?usage: flatpak-repo.sh SITE}
@@ -21,10 +22,28 @@ trap 'rm -rf "$bundles"' EXIT
 
 mkdir -p "$repo"
 ostree --repo="$repo" init --mode=archive-z2
+
+sign=()
+gpg_key_line=
+# With the key, the mirror must carry its signature: the key never signs what the live site serves unchecked.
+verify=(--no-gpg-verify)
+if [ -n "${FLATPAK_GPG_PRIVATE_KEY:-}" ]; then
+    gnupg=$(mktemp -d)
+    trap 'rm -rf "$bundles" "$gnupg"' EXIT
+    gpg --homedir "$gnupg" --batch --quiet --import <<<"$FLATPAK_GPG_PRIVATE_KEY"
+    key=$(gpg --homedir "$gnupg" --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')
+    sign=(--gpg-sign="$key" --gpg-homedir="$gnupg")
+    gpg --homedir "$gnupg" --batch --export "$key" >"$gnupg/public.gpg"
+    gpg_key_line="GPGKey=$(base64 -w0 <"$gnupg/public.gpg")"
+    verify=(--set=gpg-verify=true --set=gpg-verify-summary=true --gpg-import="$gnupg/public.gpg")
+else
+    echo "FLATPAK_GPG_PRIVATE_KEY is not set; the repository is unsigned"
+fi
+
 status=$(curl -sSL -o /dev/null -w '%{http_code}' "$base_url/flatpak/repo/summary")
 case $status in
     200)
-        ostree --repo="$repo" remote add --no-gpg-verify live "$base_url/flatpak/repo"
+        ostree --repo="$repo" remote add "${verify[@]}" live "$base_url/flatpak/repo"
         ostree --repo="$repo" pull --mirror live
         ostree --repo="$repo" remote delete live
         ;;
@@ -52,21 +71,12 @@ if [ -z "$(ostree --repo="$repo" refs)" ]; then
     rm -rf "$site/flatpak"
     exit 0
 fi
-sign=()
-gpg_key_line=
-if [ -n "${FLATPAK_GPG_PRIVATE_KEY:-}" ]; then
-    gnupg=$(mktemp -d)
-    trap 'rm -rf "$bundles" "$gnupg"' EXIT
-    gpg --homedir "$gnupg" --batch --quiet --import <<<"$FLATPAK_GPG_PRIVATE_KEY"
-    key=$(gpg --homedir "$gnupg" --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')
-    sign=(--gpg-sign="$key" --gpg-homedir="$gnupg")
-    gpg_key_line="GPGKey=$(gpg --homedir "$gnupg" --batch --export "$key" | base64 -w0)"
-    # Signs every ref's tip, mirrored or just imported; a commit this key signed before is skipped.
+if [ ${#sign[@]} -gt 0 ]; then
+    # Signs every ref's tip: the imported ones, and mirrored ones, which the pull verified already carry this key's
+    # signature; a commit this key signed before is skipped.
     while read -r ref; do
         ostree --repo="$repo" gpg-sign --gpg-homedir="$gnupg" "$(ostree --repo="$repo" rev-parse "$ref")" "$key"
     done < <(ostree --repo="$repo" refs)
-else
-    echo "FLATPAK_GPG_PRIVATE_KEY is not set; the repository is unsigned"
 fi
 # Each imported bundle is a root commit and the mirror copies only each ref's tip, so a ref holds just the latest
 # release; pruning drops the objects of the one it replaced.
