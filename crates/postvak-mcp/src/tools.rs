@@ -130,6 +130,9 @@ struct ApplyExistingArgs {
     /// List what the rule would do from the local store, without touching the server
     #[serde(default)]
     dry_run: bool,
+    /// Run even when the rule would permanently delete mail from the server
+    #[serde(default)]
+    yes: bool,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -603,7 +606,7 @@ fn dispatch(
         }
         "rules_apply_existing" => {
             let a: ApplyExistingArgs = args(arguments)?;
-            rows(backend.rules_apply_existing(&a.name, a.account.as_deref(), a.dry_run)?)
+            rows(backend.rules_apply_existing(&a.name, a.account.as_deref(), a.dry_run, a.yes)?)
         }
         "rules_approve" => {
             let a: NameArgs = args(arguments)?;

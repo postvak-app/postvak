@@ -499,20 +499,43 @@ impl Backend {
     }
 
     /// Runs one enabled rule over the existing mail of the visible accounts it applies to, through the daemon; a dry
-    /// run plans from the local store instead. A rule of a hidden account reads as absent.
+    /// run plans from the local store instead. Refuses to expunge mail without `yes`. A rule of a hidden account reads
+    /// as absent.
     pub fn rules_apply_existing(
         &self,
         name: &str,
         account: Option<&str>,
         dry_run: bool,
+        yes: bool,
     ) -> Result<Vec<Value>> {
         self.ensure_rule_visible(name, false)?;
         let compiled = vec![rules::enabled_rule(&self.paths.rules_file(), name)?];
-        let mut rows = Vec::new();
-        for acc in self.select(account)? {
-            if !compiled.iter().any(|r| r.applies_to_account(&acc.name)) {
-                continue;
+        let accounts: Vec<_> = self
+            .select(account)?
+            .into_iter()
+            .filter(|acc| compiled.iter().any(|r| r.applies_to_account(&acc.name)))
+            .collect();
+        if !dry_run && !yes {
+            let mut warnings = Vec::new();
+            for acc in &accounts {
+                let store = self.store(acc)?;
+                warnings.extend(actions::expunge_warning(
+                    &compiled,
+                    &store,
+                    acc,
+                    &acc.identity()?,
+                    time::now(),
+                )?);
             }
+            if !warnings.is_empty() {
+                bail!(
+                    "{}; check with dry_run, then call again with yes once the user agrees",
+                    warnings.join("; ")
+                );
+            }
+        }
+        let mut rows = Vec::new();
+        for acc in accounts {
             if dry_run {
                 let store = self.store(&acc)?;
                 for p in actions::planned(&compiled, &store, &acc, &acc.identity()?, time::now())? {

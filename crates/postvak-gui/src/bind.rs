@@ -112,6 +112,8 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
         mark_folder_read: enabled(menu::Item::MarkFolderRead),
     });
     window.set_about_open(app.about_open);
+    let apply_confirm = app.apply_confirm.as_ref().map(|c| c.warning.as_str());
+    window.set_apply_confirm(apply_confirm.unwrap_or_default().into());
     let form = app.account_form.as_ref();
     window.set_account_open(form.is_some());
     let error = form
@@ -623,6 +625,9 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
             let rule = nth(rules::rule_lines(&app.rules), i)?;
             rule.enabled.then_some(UiAction::ApplyRule(rule.name))
         }));
+    });
+    window.on_confirm_apply_rule(move || {
+        act(UiAction::ConfirmApplyRule);
     });
     window.on_approve_rule(move |i| {
         on(one(move |app| {

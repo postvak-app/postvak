@@ -1103,6 +1103,32 @@ async fn rules_apply_existing_dry_run_lists_planned_rows() {
 }
 
 #[tokio::test]
+async fn rules_apply_existing_refuses_to_expunge_without_yes() {
+    let fx = fixture(&["work"]);
+    fx.add("work", fixture_message("INBOX", 1, "Your code", ""));
+    fx.add("work", fixture_message("INBOX", 2, "Another code", ""));
+    std::fs::write(
+        fx.paths.rules_file(),
+        "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = [\"delete\"]\n",
+    )
+    .unwrap();
+    let client = connect(&fx, "mail:modify", &[]).await;
+    let refused =
+        error_text(&call(&client, "rules_apply_existing", json!({ "name": "codes" })).await);
+    assert!(
+        refused.contains(
+            "work: would permanently delete 2 messages from the server; .eml backups kept locally for 30 days"
+        ),
+        "{refused}"
+    );
+    assert!(refused.contains("yes"), "{refused}");
+    // With yes the request reaches the client, which here has no daemon.
+    let args = json!({ "name": "codes", "yes": true });
+    let text = error_text(&call(&client, "rules_apply_existing", args).await);
+    assert!(text.contains("no daemon"), "{text}");
+}
+
+#[tokio::test]
 async fn rules_apply_existing_goes_through_the_daemon() {
     let fx = fixture_with_daemon(&["work"], connector_with_mail());
     std::fs::write(
