@@ -49,7 +49,7 @@ postvak daemon status    # pid, version, uptime, clients and what each account i
 postvak daemon stop
 ```
 
-Both only look for a running daemon; they never start one, and say `no daemon running` when there is none (`status --json` prints `null`). After `stop`, the next command that needs the server starts it again, and an open mail window does so within 5 s. A service restarts it on its own.
+Both only look for a running daemon; they never start one, and say `no daemon running` when there is none (`status --json` prints `null`). SIGTERM (`docker stop`, `systemctl --user stop postvak`) and Ctrl-C stop it the same way as `daemon stop`; a second one exits at once. After `stop`, the next command that needs the server starts it again, and an open mail window does so within 5 s. A service restarts it on its own.
 
 ## Logs
 
