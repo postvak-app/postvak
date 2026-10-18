@@ -721,8 +721,14 @@ impl App {
                 ..
             } => {
                 // Accounts report one by one; the status row shows the latest and the history keeps them all.
+                let action_noun = if actions == 1 { "action" } else { "actions" };
+                let message_noun = if evaluated == 1 {
+                    "message"
+                } else {
+                    "messages"
+                };
                 let line = format!(
-                    "{}: {actions} actions on {evaluated} messages",
+                    "{}: {actions} {action_noun} on {evaluated} {message_noun}",
                     self.accounts[index].name
                 );
                 self.notice(line);

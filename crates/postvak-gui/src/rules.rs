@@ -374,6 +374,22 @@ mod tests {
     }
 
     #[test]
+    fn one_action_on_one_message_is_worded_singular() {
+        let fx = Fixture::new(&["work"]);
+        let (open, wires) = rules_view(&fx);
+        let applied = Event::RuleApplied {
+            account: "work".into(),
+            request: 1,
+            evaluated: 1,
+            actions: 1,
+            errors: vec![],
+        };
+        wires.events.send(applied).unwrap();
+        open.tick();
+        assert_eq!(open.find("work: 1 action on 1 message").len(), 1);
+    }
+
+    #[test]
     fn purge_removes_backups_past_their_retention_and_says_how_many() {
         let fx = Fixture::new(&["work"]);
         let dir = fx.paths.trash_dir("work");
