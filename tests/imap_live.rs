@@ -235,6 +235,34 @@ fn plain_expunge_refuses_while_another_message_is_marked_deleted() {
 }
 
 #[test]
+fn a_refused_move_without_move_or_uidplus_changes_nothing() {
+    let Some(host) = host() else { return };
+    let mut ops = connect(&account(&host, PORT_WITHOUT_MOVE, "move-refused"));
+    ops.append("INBOX", &mail("flagged elsewhere"), &["\\Deleted"])
+        .unwrap();
+    ops.append("INBOX", &mail("ours"), &[]).unwrap();
+    ops.select("INBOX").unwrap();
+    let ours = all_envelopes(&mut ops)[1].uid;
+    assert!(ops.move_message(ours, "Archive").is_err());
+    let flags: Vec<String> = ops
+        .fetch_flags(ours, None)
+        .unwrap()
+        .into_iter()
+        .find(|update| update.uid == ours)
+        .map(|update| update.flags)
+        .unwrap_or_default();
+    assert!(
+        !flags.iter().any(|flag| flag == "\\Deleted"),
+        "the refused move left the source marked deleted: {flags:?}"
+    );
+    ops.select("Archive").unwrap();
+    assert!(
+        all_envelopes(&mut ops).is_empty(),
+        "the refused move left a copy in Archive"
+    );
+}
+
+#[test]
 fn idle_wakes_when_mail_arrives() {
     let Some(host) = host() else { return };
     let account = account(&host, PORT, "idle");

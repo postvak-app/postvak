@@ -107,6 +107,8 @@ mod recording {
         pub fail_fetch_after: Option<usize>,
         /// Makes the next `add_flags`, `append` or `fetch_raw` fail with this error, once.
         pub fail_next: Option<MailError>,
+        /// Makes the next `expunge` fail with this error, once, like a server refusing it after a COPY.
+        pub fail_next_expunge: Option<MailError>,
         /// Makes `add_flags` panic, like a bug in a command.
         pub panic_on_add_flags: bool,
         /// With no queued outcome, `idle` sets this flag and returns instead of waiting for a wake-up.
@@ -357,6 +359,7 @@ mod recording {
 
         fn expunge(&mut self, uid: u32) -> MailResult<()> {
             self.calls.push(format!("expunge {} {uid}", self.selected));
+            self.fail_next_expunge.take().map_or(Ok(()), Err)?;
             let folder = self.selected.clone();
             let is_deleted = self.mail.get(&folder).is_some_and(|list| {
                 list.iter()

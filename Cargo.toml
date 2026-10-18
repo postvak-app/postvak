@@ -39,6 +39,7 @@ directories = "6"                                    # platform config/state/cac
 env_logger = "0.11"                                  # log output to stderr, RUST_LOG filter
 fontique = "0.12"                                    # HTML mail: symbol fonts as a fallback for every script; the version Blitz's Parley uses
 futures-util = { version = "0.3", default-features = false }  # collect async-imap streams
+hickory-resolver = { version = "0.26", default-features = false, features = ["system-config", "tokio"] }  # DNS TXT lookups for BIMI sender logos; std has no TXT query
 html5ever = "=0.40.1"                                # HTML mail: parse as HTML ourselves, since Blitz's entry point parses XHTML-looking mail as XML; pinned to blitz-html's version
 humantime = "2"                                      # "1h", "2d" in rules
 i-slint-backend-testing = { version = "=1.18.1", features = ["renderer-software"] }  # headless GUI tests: key events, mock time, elements found by accessible label, snapshots from the software renderer
