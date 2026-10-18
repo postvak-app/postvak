@@ -21,6 +21,8 @@ use crate::mail_ops::{
 type ImapSession = Session<TlsStream<TcpStream>>;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// A server that stops answering mid-command would otherwise hold the account's thread until keepalive gives up, or forever.
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 /// A peer that vanished (a NAT entry dropped during sleep) is noticed after about 60 + 4 × 15 seconds instead of never.
 const KEEPALIVE_IDLE: Duration = Duration::from_secs(60);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
@@ -33,6 +35,7 @@ pub struct ImapOps {
     has_move: bool,
     has_uidplus: bool,
     has_condstore: bool,
+    command_timeout: Duration,
 }
 
 impl ImapOps {
@@ -40,7 +43,6 @@ impl ImapOps {
         ImapOps::connect_within(account, secret, CONNECT_TIMEOUT)
     }
 
-    // ponytail: only connecting is bounded; a live server that stops answering mid-command still blocks. Wrap block_on in a timeout if that shows up.
     fn connect_within(
         account: &AccountConfig,
         secret: &Secret,
@@ -76,21 +78,40 @@ impl ImapOps {
             has_uidplus: caps.has_str("UIDPLUS"),
             // QRESYNC implies CONDSTORE (RFC 7162).
             has_condstore: caps.has_str("CONDSTORE") || caps.has_str("QRESYNC"),
+            command_timeout: COMMAND_TIMEOUT,
         })
     }
 
-    /// Splits the borrow so `rt.block_on` can drive a future that holds the session.
-    fn parts(&mut self) -> MailResult<(&Runtime, &mut ImapSession)> {
+    /// FETCHes of a whole chunk of headers, every flag or a large body, and APPENDs of a large message.
+    fn bulk_timeout(&self) -> Duration {
+        self.command_timeout * 5
+    }
+
+    /// Runs one command, giving up after `limit` as a lost connection so the sync loop reconnects.
+    fn run<T>(
+        &mut self,
+        limit: Duration,
+        command: impl AsyncFnOnce(&mut ImapSession) -> MailResult<T>,
+    ) -> MailResult<T> {
         let session = self
             .session
             .as_mut()
             .ok_or_else(|| MailError::Io("session closed".into()))?;
-        Ok((&self.rt, session))
+        let bounded = async { tokio::time::timeout(limit, command(session)).await };
+        match self.rt.block_on(bounded) {
+            Ok(result) => result,
+            Err(_) => {
+                // A late reply would be read as the next command's, so this session is done.
+                self.session = None;
+                Err(MailError::Io(format!(
+                    "no answer within {limit:?}; whether the command ran is unknown until the next sync"
+                )))
+            }
+        }
     }
 
     fn uid_search_sorted(&mut self, query: String) -> MailResult<Vec<u32>> {
-        let (rt, session) = self.parts()?;
-        rt.block_on(async {
+        self.run(self.command_timeout, async |session| {
             let mut uids: Vec<u32> = session
                 .uid_search(query)
                 .await
@@ -109,8 +130,9 @@ impl ImapOps {
 
     #[cfg(any(test, feature = "testing"))]
     pub fn delete_folder(&mut self, name: &str) -> MailResult<()> {
-        let (rt, session) = self.parts()?;
-        rt.block_on(async { session.delete(name).await.map_err(proto) })
+        self.run(self.command_timeout, async |session| {
+            session.delete(name).await.map_err(proto)
+        })
     }
 }
 
@@ -220,8 +242,7 @@ fn envelope_from(fetch: &Fetch) -> Option<Envelope> {
 
 impl MailOps for ImapOps {
     fn list_folders(&mut self) -> MailResult<Vec<RemoteFolder>> {
-        let (rt, session) = self.parts()?;
-        rt.block_on(async {
+        self.run(self.command_timeout, async |session| {
             let names: Vec<_> = session
                 .list(Some(""), Some("*"))
                 .await
@@ -247,8 +268,7 @@ impl MailOps for ImapOps {
 
     fn select(&mut self, folder: &str) -> MailResult<SelectInfo> {
         let condstore = self.has_condstore;
-        let (rt, session) = self.parts()?;
-        rt.block_on(async {
+        self.run(self.command_timeout, async |session| {
             let mailbox = if condstore {
                 session.select_condstore(folder).await
             } else {
@@ -272,8 +292,7 @@ impl MailOps for ImapOps {
     }
 
     fn fetch_envelopes(&mut self, first: u32, last: u32) -> MailResult<Vec<Envelope>> {
-        let (rt, session) = self.parts()?;
-        rt.block_on(async {
+        self.run(self.bulk_timeout(), async |session| {
             let fetches: Vec<Fetch> = session
                 .uid_fetch(
                     format!("{first}:{last}"),
@@ -304,8 +323,7 @@ impl MailOps for ImapOps {
             Some(modseq) => format!("(UID FLAGS) (CHANGEDSINCE {modseq})"),
             None => "(UID FLAGS)".into(),
         };
-        let (rt, session) = self.parts()?;
-        rt.block_on(async {
+        self.run(self.bulk_timeout(), async |session| {
             let fetches: Vec<Fetch> = session
                 .uid_fetch(format!("1:{upto_uid}"), query)
                 .await
@@ -326,8 +344,7 @@ impl MailOps for ImapOps {
     }
 
     fn fetch_raw(&mut self, uid: u32) -> MailResult<Option<Vec<u8>>> {
-        let (rt, session) = self.parts()?;
-        rt.block_on(async {
+        self.run(self.bulk_timeout(), async |session| {
             let fetches: Vec<Fetch> = session
                 .uid_fetch(uid.to_string(), "(UID BODY.PEEK[])")
                 .await
@@ -352,8 +369,7 @@ impl MailOps for ImapOps {
 
     fn expunge(&mut self, uid: u32) -> MailResult<()> {
         let has_uidplus = self.has_uidplus;
-        let (rt, session) = self.parts()?;
-        rt.block_on(async {
+        self.run(self.command_timeout, async |session| {
             if has_uidplus {
                 let _: Vec<_> = session
                     .uid_expunge(uid.to_string())
@@ -378,11 +394,12 @@ impl MailOps for ImapOps {
 
     fn move_message(&mut self, uid: u32, to: &str) -> MailResult<()> {
         let (has_move, has_uidplus) = (self.has_move, self.has_uidplus);
-        let (rt, session) = self.parts()?;
         if has_move {
-            return rt.block_on(async { session.uid_mv(uid.to_string(), to).await.map_err(proto) });
+            return self.run(self.command_timeout, async |session| {
+                session.uid_mv(uid.to_string(), to).await.map_err(proto)
+            });
         }
-        rt.block_on(async {
+        self.run(self.command_timeout, async |session| {
             // Before the copy: once copied, a refused expunge would leave the message in both folders.
             if !has_uidplus {
                 refuse_if_others_deleted(session, uid).await?;
@@ -394,14 +411,14 @@ impl MailOps for ImapOps {
     }
 
     fn create_folder(&mut self, name: &str) -> MailResult<()> {
-        let (rt, session) = self.parts()?;
-        rt.block_on(async { session.create(name).await.map_err(proto) })
+        self.run(self.command_timeout, async |session| {
+            session.create(name).await.map_err(proto)
+        })
     }
 
     fn append(&mut self, folder: &str, raw: &[u8], flags: &[&str]) -> MailResult<()> {
         let flags = (!flags.is_empty()).then(|| format!("({})", flags.join(" ")));
-        let (rt, session) = self.parts()?;
-        rt.block_on(async {
+        self.run(self.bulk_timeout(), async |session| {
             session
                 .append(folder, flags.as_deref(), None, raw)
                 .await
@@ -490,8 +507,7 @@ fn sleep_until(timeout: Duration, interrupt: &AtomicBool) -> IdleOutcome {
 }
 
 fn store_flags(ops: &mut ImapOps, uid: u32, sign: char, flags: &[&str]) -> MailResult<()> {
-    let (rt, session) = ops.parts()?;
-    rt.block_on(async {
+    ops.run(ops.command_timeout, async |session| {
         let query = format!("{sign}FLAGS.SILENT ({})", flags.join(" "));
         let _: Vec<_> = session
             .uid_store(uid.to_string(), query)
@@ -565,6 +581,14 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/../../tests/dovecot/certs/ca.pem"
     );
+    const TEST_CERT: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/dovecot/certs/tls.crt"
+    );
+    const TEST_KEY: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/dovecot/certs/tls.key"
+    );
 
     #[test]
     fn root_store_adds_the_ca_file_to_the_public_roots() {
@@ -616,6 +640,65 @@ mod tests {
         }
         assert!(started.elapsed() < Duration::from_secs(5));
         drop(listener);
+    }
+
+    /// Answers LOGIN and CAPABILITY over TLS with the test certificate, then holds every later command unanswered.
+    fn serve_login_then_stall(listener: std::net::TcpListener) {
+        use std::io::{BufRead, BufReader, Write};
+        let certs = CertificateDer::pem_file_iter(TEST_CERT)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let key = rustls::pki_types::PrivateKeyDer::from_pem_file(TEST_KEY).unwrap();
+        let config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(certs, key)
+            .unwrap();
+        let (tcp, _) = listener.accept().unwrap();
+        let tls = rustls::ServerConnection::new(Arc::new(config)).unwrap();
+        let mut stream = BufReader::new(rustls::StreamOwned::new(tls, tcp));
+        stream.get_mut().write_all(b"* OK ready\r\n").unwrap();
+        stream.get_mut().flush().unwrap();
+        let mut line = String::new();
+        while matches!(stream.read_line(&mut line), Ok(n) if n > 0) {
+            let mut words = line.split_whitespace();
+            let (tag, command) = (words.next().unwrap_or(""), words.next().unwrap_or(""));
+            let reply = match command.to_ascii_uppercase().as_str() {
+                "LOGIN" => format!("{tag} OK logged in\r\n"),
+                "CAPABILITY" => format!("* CAPABILITY IMAP4rev1\r\n{tag} OK done\r\n"),
+                _ => String::new(),
+            };
+            let _ = stream.get_mut().write_all(reply.as_bytes());
+            let _ = stream.get_mut().flush();
+            line.clear();
+        }
+    }
+
+    #[test]
+    fn a_command_the_server_never_answers_gives_up_as_a_lost_connection() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || serve_login_then_stall(listener));
+        let account = AccountConfig {
+            ca_file: Some(TEST_CA.into()),
+            ..test_account("127.0.0.1", port)
+        };
+        let mut ops =
+            ImapOps::connect_within(&account, &Secret::new("x".into()), Duration::from_secs(5))
+                .unwrap();
+        ops.command_timeout = Duration::from_millis(300);
+        let started = Instant::now();
+        match ops.list_folders() {
+            Err(MailError::Io(message)) => assert!(message.contains("unknown"), "{message}"),
+            other => panic!("expected a lost connection, got {other:?}"),
+        }
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(
+            matches!(ops.select("INBOX"), Err(MailError::Io(_))),
+            "the stalled session was reused"
+        );
+        drop(ops);
+        server.join().unwrap();
     }
 
     #[test]
