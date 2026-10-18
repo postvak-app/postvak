@@ -156,11 +156,15 @@ export component FolderPane inherits Rectangle {
             padding-left: Theme.inset;
             padding-top: Theme.pad;
             spacing: Theme.pad;
-            Image {
+            // The layout stretches this cell to the row; the icon centres in it, level with the wordmark.
+            Rectangle {
                 width: Theme.large-icon + Theme.pad / 4;
-                height: self.width;
-                y: (parent.height - self.height) / 2;
-                source: @image-url("../../assets/icon.png");
+                Image {
+                    width: parent.width;
+                    height: self.width;
+                    y: (parent.height - self.height) / 2;
+                    source: @image-url("../../assets/icon.png");
+                }
             }
             Heading {
                 text: "Postvak";
