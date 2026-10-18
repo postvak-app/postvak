@@ -2897,6 +2897,7 @@ fn every_action_a_front_end_can_send_survives_the_wire() {
         Action::NotJunk,
         Action::Notify,
         Action::Silent,
+        Action::Stop,
         Action::Trash,
         Action::Unflag,
     ] {
