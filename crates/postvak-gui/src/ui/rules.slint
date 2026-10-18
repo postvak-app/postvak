@@ -186,7 +186,8 @@ export component RulesPane inherits Rectangle {
                             }
                             Text {
                                 text: proposal.summary;
-                                font-family: Theme.mono-font;
+                                // The mono font has no "→"; this one does, so the arrow looks the same on every system.
+                                font-family: Theme.text-font;
                                 font-size: Theme.small-size;
                                 color: Theme.pane.secondary;
                                 wrap: word-wrap;
@@ -307,7 +308,8 @@ export component RulesPane inherits Rectangle {
                                 }
                                 Text {
                                     text: rule.summary;
-                                    font-family: Theme.mono-font;
+                                    // The mono font has no "→"; this one does, so the arrow looks the same on every system.
+                                    font-family: Theme.text-font;
                                     font-size: Theme.small-size;
                                     color: Theme.pane.secondary;
                                     wrap: word-wrap;
