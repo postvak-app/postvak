@@ -6,7 +6,7 @@ use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use super::{FetchDone, FetchJob, MAX_REMOTE, Wake};
-use postvak_core::net::public;
+use postvak_core::net::{public, public_agent};
 
 /// A larger response counts as failed.
 const MAX_BYTES: u64 = 5 * 1024 * 1024;
@@ -92,17 +92,18 @@ fn fetch_all(
 /// The body of a GET, when it answers 2xx within the limits and every hop is a public host. Nothing about the URL is
 /// logged: it can identify the reader.
 fn get(url: &str) -> Option<Vec<u8>> {
-    get_from(url, public)
+    get_from(url, public, &public_agent(config()))
 }
 
-/// `get` with the host check given, so tests can serve from this machine. Redirects are followed here, so each one is
-/// checked.
-fn get_from(url: &str, allowed: impl Fn(&str) -> bool) -> Option<Vec<u8>> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
+fn config() -> ureq::config::ConfigBuilder<ureq::typestate::AgentScope> {
+    ureq::Agent::config_builder()
         .max_redirects(0)
         .timeout_global(Some(TIMEOUT))
-        .build()
-        .into();
+}
+
+/// `get` with the host check and agent given, so tests can serve from this machine. Redirects are followed here, so
+/// each one is checked.
+fn get_from(url: &str, allowed: impl Fn(&str) -> bool, agent: &ureq::Agent) -> Option<Vec<u8>> {
     let mut url = url.to_string();
     for _ in 0..=MAX_REDIRECTS {
         if !allowed(&url) {
@@ -190,6 +191,10 @@ mod tests {
         [head.as_bytes(), body].concat()
     }
 
+    fn plain() -> ureq::Agent {
+        config().build().into()
+    }
+
     fn local(url: &str) -> bool {
         url.starts_with("http://127.0.0.1:")
     }
@@ -197,11 +202,11 @@ mod tests {
     #[test]
     fn get_returns_a_success_body_and_nothing_for_an_error_or_an_oversized_body() {
         let ok = serve_once(response("200 OK", b"PNG"));
-        assert_eq!(get_from(&ok, local), Some(b"PNG".to_vec()));
+        assert_eq!(get_from(&ok, local, &plain()), Some(b"PNG".to_vec()));
         let missing = serve_once(response("404 Not Found", b"gone"));
-        assert_eq!(get_from(&missing, local), None);
+        assert_eq!(get_from(&missing, local, &plain()), None);
         let huge = serve_once(response("200 OK", &vec![0; MAX_BYTES as usize + 1]));
-        assert_eq!(get_from(&huge, local), None);
+        assert_eq!(get_from(&huge, local, &plain()), None);
     }
 
     #[test]
@@ -209,13 +214,13 @@ mod tests {
         let target = serve_once(response("200 OK", b"PNG"));
         let hop = format!("HTTP/1.1 302 Found\r\nLocation: {target}\r\nContent-Length: 0\r\n\r\n");
         assert_eq!(
-            get_from(&serve_once(hop.into_bytes()), local),
+            get_from(&serve_once(hop.into_bytes()), local, &plain()),
             Some(b"PNG".to_vec())
         );
         let inward =
             "HTTP/1.1 302 Found\r\nLocation: http://192.168.0.1/admin\r\nContent-Length: 0\r\n\r\n";
         assert_eq!(
-            get_from(&serve_once(inward.as_bytes().to_vec()), local),
+            get_from(&serve_once(inward.as_bytes().to_vec()), local, &plain()),
             None
         );
         let ok = serve_once(response("200 OK", b"PNG"));
