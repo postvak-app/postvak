@@ -109,6 +109,9 @@ jobs:
       BUILD: ${{ needs.select.outputs.build != 'false' }}
       # Main after the merge queue passed: compile to fill the caches, run nothing.
       WARM: ${{ needs.select.outputs.warm == 'true' }}
+      # A pull request only type-checks on macOS: the suite is platform-neutral and the merge queue still runs it there in full,
+      # while check skips codegen and linking. Main runs the same check so its artifacts are cached.
+      CHECK_ONLY: ${{ github.event_name == 'pull_request' && matrix.os == 'macos-latest' }}
       NEXTEST_PROFILE: ci
       # See lint.
       RUSTC_WRAPPER: sccache
@@ -139,15 +142,17 @@ jobs:
         run: |
           docker compose -f tests/dovecot/compose.yml up -d
           echo "POSTVAK_TEST_IMAP_HOST=localhost" >> "$GITHUB_ENV"
+      - run: cargo check --all-targets --all-features
+        if: env.BUILD == 'true' && (env.CHECK_ONLY == 'true' || (env.WARM == 'true' && runner.os == 'macOS'))
       - run: cargo nextest run --cargo-profile ci --all-features --no-run
         if: env.BUILD == 'true' && env.WARM == 'true'
       - run: cargo nextest run --cargo-profile ci --all-features
-        if: env.BUILD == 'true' && env.WARM != 'true'
+        if: env.BUILD == 'true' && env.WARM != 'true' && env.CHECK_ONLY != 'true'
       # nextest does not run doc tests.
       - run: cargo test --profile ci --all-features --doc
-        if: env.BUILD == 'true' && env.WARM != 'true'
+        if: env.BUILD == 'true' && env.WARM != 'true' && env.CHECK_ONLY != 'true'
       - name: Upload test results
-        if: env.BUILD == 'true' && env.WARM != 'true' && !cancelled()
+        if: env.BUILD == 'true' && env.WARM != 'true' && env.CHECK_ONLY != 'true' && !cancelled()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: junit-${{ matrix.os }}
