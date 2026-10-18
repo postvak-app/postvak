@@ -73,7 +73,11 @@ impl ToolDef {
 fn schema<A: JsonSchema>() -> Arc<JsonObject> {
     match serde_json::to_value(schemars::schema_for!(A)) {
         Ok(Value::Object(map)) => Arc::new(map),
-        _ => unreachable!("a derived schema is a JSON object"),
+        // A derived schema is always a JSON object; should that change, accept any object rather than panic.
+        _ => Arc::new(JsonObject::from_iter([(
+            "type".to_string(),
+            Value::String("object".to_string()),
+        )])),
     }
 }
 

@@ -1,0 +1,58 @@
+# Every night: the property tests with ten times the cases of AGENTS.md's deeper searches (a few minutes each), and
+# the advisory database against main's lockfile, since a new advisory needs no code change to apply.
+name: Nightly
+
+on:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # proptest seeds each run afresh, so every night searches new cases. A failure prints the shrunk input; it becomes a
+  # named test in the same file, or an ignored one in tests/known_bugs.rs while it is unfixed.
+  properties:
+    name: Property tests (${{ matrix.test }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - test: fuzz
+            cases: 200000
+          - test: sync_model
+            cases: 20000
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: nightly-${{ matrix.test }}
+      # The ci profile keeps overflow checks and debug assertions, which turn more hostile input into a finding.
+      - run: cargo test --profile ci -p postvak-core --features testing --test ${{ matrix.test }}
+        env:
+          PROPTEST_CASES: ${{ matrix.cases }}
+
+  advisories:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: cargo-deny
+      - run: cargo deny --locked check

@@ -916,7 +916,11 @@ fn run_command(
     // Prefixed to a failure's message, so it names the message it is about.
     let mut context = String::new();
     let answer: Result<Event, SyncError> = match command {
-        Command::SyncNow => unreachable!("run_commands holds SyncNow for the next full pass"),
+        // run_commands holds SyncNow for the next full pass, so none arrives here; answer it rather than panic if one does.
+        Command::SyncNow => Ok(failed(
+            request,
+            "sync now is answered by the next full pass".to_string(),
+        )),
         Command::Apply {
             folder,
             uids,
