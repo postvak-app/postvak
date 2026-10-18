@@ -8,6 +8,7 @@
 | mise | `mise use github:postvak-app/postvak` |
 | AppImage (Linux) | download `postvak-<arch>.AppImage` from the [latest release](https://github.com/postvak-app/postvak/releases/latest), see [below](#appimage-on-linux) |
 | Flatpak (Linux) | `flatpak install --user postvak io.github.postvak_app.postvak` after adding the remote, see [below](#flatpak-on-linux) |
+| Docker (headless) | `ghcr.io/postvak-app/postvak`, see [Docker](daemon.md#docker) |
 
 Each [GitHub release](https://github.com/postvak-app/postvak/releases) also has plain binaries for macOS and Linux on x86_64 and aarch64.
 
