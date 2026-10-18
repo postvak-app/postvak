@@ -22,7 +22,7 @@ use postvak_core::unsubscribe::{self, Method};
 
 use super::account::{self, AccountForm};
 use super::body;
-use super::draft;
+use super::draft::{self, Draft};
 use super::folders;
 use super::html::{self, Fetcher, HtmlState, Renderer, Reply, Wake};
 use super::list::{self, ListState, Optimistic, Row, RowKey};
@@ -247,6 +247,10 @@ pub(crate) enum UiAction {
     ApproveRule(String),
     /// Take every row out of the selection.
     ClearSelection,
+    /// The rule editor's form changed.
+    EditDraft(Draft),
+    /// Open a rule in the editor.
+    EditRule(String),
     Collapse,
     /// Move the targeted rows into a folder dropped on.
     DropOn(View),
@@ -282,6 +286,8 @@ pub(crate) enum UiAction {
     MoveCursor(isize),
     MoveFilter(String),
     MoveTo(String),
+    /// Open an empty rule in the editor.
+    NewRule,
     NextFocus,
     /// Open the add-account form.
     OpenAccountForm,
@@ -293,10 +299,16 @@ pub(crate) enum UiAction {
     /// Count what a rule would do to the cached mail, without doing it.
     PreviewRule(String),
     RejectRule(String),
+    /// Remove the open rule from rules.toml; unconfirmed, it asks first.
+    RemoveRule {
+        confirmed: bool,
+    },
     Restore(usize, PathBuf),
     /// Save the form's account, replacing one of the same name.
     SaveAccount(account::Fields),
     SaveAttachment(usize),
+    /// Write the open rule to rules.toml.
+    SaveDraft,
     SaveEml,
     /// Leave the shown message's mailing list: by one click, or by opening its page or address.
     Unsubscribe,
@@ -314,6 +326,8 @@ pub(crate) enum UiAction {
     SetTheme(Theme),
     StartSearch,
     StepFolder(isize),
+    /// Count what the open rule would do to the cached mail.
+    TestDraft,
     /// Remove each account's backups past its retention
     PurgeTrash,
     /// Run an enabled rule once over the stored mail of the accounts it covers
@@ -330,6 +344,10 @@ pub(crate) enum UiAction {
     ToggleRead,
     /// Cmd-click (Ctrl-click off macOS): add this row to the selection, which starts from the cursor row, or take it out.
     ToggleRowMark(usize),
+    /// The answers to "This rule has unsaved changes."
+    UnsavedCancel,
+    UnsavedDiscard,
+    UnsavedSave,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -417,6 +435,12 @@ pub struct App {
     pub(crate) requested: HashSet<(usize, RowKey)>,
     pub(crate) rules: RulesState,
     pub(crate) rules_watch: FileWatch,
+    /// The rule open in the Rules view's editor; nothing in it is written until Save.
+    pub(crate) rule_draft: Option<Draft>,
+    /// What `rule_draft` was opened or last saved as, which tells an edit from a look.
+    pub(crate) rule_draft_opened: Option<Draft>,
+    /// Opening another rule while the open one has unsaved changes: held until the prompt is answered.
+    pub(crate) leave_draft: Option<Box<UiAction>>,
     pub(crate) search: Option<String>,
     /// Which rows a folder's list keeps; search results ignore it.
     pub(crate) filter: Filter,
@@ -518,6 +542,9 @@ impl App {
             requested: HashSet::new(),
             rules,
             rules_watch: FileWatch::new(rules_path),
+            rule_draft: None,
+            rule_draft_opened: None,
+            leave_draft: None,
             search: None,
             filter: Filter::default(),
             search_focused: false,
@@ -907,6 +934,9 @@ impl App {
 
     fn apply_action(&mut self, action: UiAction) {
         match action {
+            leave @ (UiAction::EditRule(_) | UiAction::NewRule) if self.draft_edited() => {
+                self.leave_draft = Some(Box::new(leave));
+            }
             UiAction::Act(action) => self.act(action),
             UiAction::ApproveRule(name) => {
                 let accounts: Vec<String> = self.accounts.iter().map(|a| a.name.clone()).collect();
@@ -953,6 +983,19 @@ impl App {
                     self.list.marked.clear();
                 }
             }
+            UiAction::EditDraft(draft) => {
+                self.rule_draft = Some(Draft {
+                    error: None,
+                    tested: None,
+                    ..draft
+                });
+            }
+            UiAction::EditRule(name) => {
+                let rule = self.rules.rules.iter().find(|rule| rule.name == name);
+                if let Some(draft) = rule.map(Draft::from_rule) {
+                    self.open_draft(Some(draft));
+                }
+            }
             UiAction::Expand => self.expand(),
             UiAction::ListViewport { offset, height } => {
                 self.list.viewport = (offset, height);
@@ -987,6 +1030,7 @@ impl App {
                 1 => self.move_picker = Some(String::new()),
                 _ => self.note_error(None, MOVE_ONE_ACCOUNT.into()),
             },
+            UiAction::NewRule => self.open_draft(Some(Draft::new())),
             UiAction::OpenSource => self.open_source(),
             UiAction::OpenUrl(url) => {
                 if let Err(e) = (self.launch)(url.as_ref(), false) {
@@ -1002,6 +1046,35 @@ impl App {
             }
             UiAction::RejectRule(name) => {
                 self.edit_rules(|path| rule_file::edit::reject(path, &name));
+            }
+            UiAction::RemoveRule { confirmed } => self.remove_draft(confirmed),
+            UiAction::SaveDraft => {
+                self.save_draft();
+            }
+            UiAction::TestDraft => {
+                if let Some(draft) = &self.rule_draft {
+                    let tested = match draft.to_rule() {
+                        Ok(rule) => self.preview(rule),
+                        Err(e) => e,
+                    };
+                    if let Some(draft) = &mut self.rule_draft {
+                        draft.tested = Some(tested);
+                    }
+                }
+            }
+            UiAction::UnsavedCancel => self.leave_draft = None,
+            UiAction::UnsavedDiscard => {
+                if let Some(leave) = self.leave_draft.take() {
+                    self.open_draft(None);
+                    self.apply_action(*leave);
+                }
+            }
+            UiAction::UnsavedSave => {
+                if let Some(leave) = self.leave_draft.take()
+                    && self.save_draft()
+                {
+                    self.apply_action(*leave);
+                }
             }
             UiAction::Restore(account, file) => {
                 // A failed restore reloads the view, which lists the backup again.
@@ -1069,6 +1142,15 @@ impl App {
             UiAction::SortSheet(sort) => self.sheet_sort = Some(sort),
             UiAction::SetRuleEnabled(name, enabled) => {
                 self.edit_rules(|path| rule_file::edit::set_enabled(path, &name, enabled));
+                // The open rule follows the switch, so a later Save keeps it; it does not count as an edit.
+                for draft in [&mut self.rule_draft, &mut self.rule_draft_opened]
+                    .into_iter()
+                    .flatten()
+                {
+                    if draft.original.as_deref() == Some(name.as_str()) {
+                        draft.enabled = enabled;
+                    }
+                }
             }
             UiAction::SetTheme(theme) => {
                 self.theme = theme;
@@ -2237,6 +2319,73 @@ impl App {
             &self.paths.rules_file(),
             std::mem::take(&mut self.rules.rules),
         );
+    }
+
+    fn open_draft(&mut self, draft: Option<Draft>) {
+        self.rule_draft_opened = draft.clone();
+        self.rule_draft = draft;
+    }
+
+    /// Whether the open rule has changes that Save has not written.
+    fn draft_edited(&self) -> bool {
+        match (&self.rule_draft, &self.rule_draft_opened) {
+            (Some(draft), Some(opened)) => draft.edited(opened),
+            _ => false,
+        }
+    }
+
+    /// Writes the open rule; on failure it stays open with the reason.
+    fn save_draft(&mut self) -> bool {
+        let Some(draft) = &self.rule_draft else {
+            return false;
+        };
+        let path = self.paths.rules_file();
+        let saved = draft.to_rule().and_then(|rule| {
+            rule_file::edit::save_rule(&path, draft.original.as_deref(), &rule)
+                .map(|()| rule.name)
+                .map_err(|e| e.to_string())
+        });
+        let Some(draft) = &mut self.rule_draft else {
+            return false;
+        };
+        match saved {
+            Ok(name) => {
+                draft.original = Some(name);
+                draft.error = None;
+                self.rule_draft_opened = Some(draft.clone());
+                self.rules_changed();
+                true
+            }
+            Err(e) => {
+                draft.error = Some(e);
+                false
+            }
+        }
+    }
+
+    /// Closes an unsaved rule; a saved one asks first, then leaves rules.toml.
+    fn remove_draft(&mut self, confirmed: bool) {
+        let Some(draft) = &mut self.rule_draft else {
+            return;
+        };
+        let Some(name) = draft.original.clone() else {
+            self.open_draft(None);
+            return;
+        };
+        if !confirmed {
+            draft.confirm_remove = true;
+            return;
+        }
+        match rule_file::edit::remove_rule(&self.paths.rules_file(), &name) {
+            Ok(()) => {
+                self.open_draft(None);
+                self.rules_changed();
+            }
+            Err(e) => {
+                draft.confirm_remove = false;
+                draft.error = Some(e.to_string());
+            }
+        }
     }
 
     fn edit_rules(&mut self, edit: impl FnOnce(&Path) -> Result<(), RulesError>) {

@@ -7,6 +7,7 @@ import { AccountDialog, HistoryDialog, KeyHelp, KeysDialog, MoveDialog, SourceDi
 import { AccountFields } from "account.slint";
 import { BodyInfo, BodyPane, PageInfo, SelectedData, StripData, ToolButton } from "body.slint";
 import { ProposalData, RuleData, RulesPane, Sheet } from "rules.slint";
+import { RuleEditor, UnsavedDialog } from "rule_editor.slint";
 import { AboutDialog } from "about.slint";
 import { ListPane, RowData } from "list.slint";
 
@@ -183,6 +184,8 @@ export component MailWindow inherits Window {
     callback approve-rule(int);
     callback reject-rule(int);
     callback preview-rule(int);
+    callback new-rule();
+    callback edit-rule(int);
     callback set-enabled(int, bool);
     callback apply-rule(int);
     callback restore(int);
@@ -519,6 +522,9 @@ export component MailWindow inherits Window {
                         sheet: root.sheet;
                         banner: root.rules-banner;
                         counts: root.rules-counts;
+                        close-icon: root.close-icon;
+                        new-rule => { root.new-rule(); }
+                        edit-rule(i) => { root.edit-rule(i); }
                         proposals: root.proposals;
                         rules: root.rules;
                         columns: root.sheet-columns;
@@ -615,6 +621,12 @@ export component MailWindow inherits Window {
         TouchArea {
             clicked => { root.toggle-help(); }
         }
+    }
+
+    if RuleEditor.unsaved: UnsavedDialog {
+        x: (root.width - self.width) / 2;
+        y: Theme.top-bar + Theme.inset;
+        close-icon: root.close-icon;
     }
 
     if root.help-open: KeysDialog {

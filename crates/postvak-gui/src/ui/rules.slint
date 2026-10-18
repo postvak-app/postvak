@@ -2,6 +2,7 @@
 import { ScrollView, StandardTableView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Heading, Switch, TextButton } from "common.slint";
+import { RuleEditor, RuleEditorPane } from "rule_editor.slint";
 
 export enum Sheet { rules, activity, backups }
 
@@ -19,6 +20,8 @@ export struct RuleData {
     scope: string,
     by: string,
     summary: string,
+    // Open in the editor.
+    selected: bool,
 }
 
 // A small rounded label, such as "work · INBOX" or "proposed by agent".
@@ -51,9 +54,12 @@ export component RulesPane inherits Rectangle {
     in property <[[StandardListViewItem]]> cells;
     in property <string> empty;
     in property <string> purge-hint;
+    in property <string> close-icon;
     // The chosen row of Backups, or -1.
     in-out property <int> current-row: -1;
     callback open-rules-file();
+    callback new-rule();
+    callback edit-rule(int);
     callback approve(int);
     callback reject(int);
     callback preview(int);
@@ -92,9 +98,17 @@ export component RulesPane inherits Rectangle {
                 alignment: center;
                 TextButton {
                     text: "Open rules.toml";
-                    framed: true;
                     palette: Theme.pane;
                     clicked => { root.open-rules-file(); }
+                }
+            }
+            if root.sheet == Sheet.rules: VerticalLayout {
+                alignment: center;
+                TextButton {
+                    text: "New rule";
+                    framed: true;
+                    palette: Theme.pane;
+                    clicked => { root.new-rule(); }
                 }
             }
             if root.sheet == Sheet.backups && root.cells.length > 0: VerticalLayout {
@@ -231,7 +245,7 @@ export component RulesPane inherits Rectangle {
                     }
                     for rule[i] in root.rules: Rectangle {
                         border-radius: Theme.pad / 2;
-                        background: mod(i, 2) == 0 ? Theme.pane.panel : transparent;
+                        background: rule.selected ? Theme.pane.selected : mod(i, 2) == 0 ? Theme.pane.panel : transparent;
                         HorizontalLayout {
                             padding: Theme.pad;
                             spacing: Theme.pad;
@@ -247,12 +261,22 @@ export component RulesPane inherits Rectangle {
                                 spacing: Theme.pad / 2;
                                 HorizontalLayout {
                                     spacing: Theme.pad;
-                                    Text {
-                                        text: rule.label;
-                                        font-weight: 600;
-                                        color: Theme.pane.strong;
-                                        overflow: elide;
-                                        vertical-alignment: center;
+                                    TouchArea {
+                                        width: name.preferred-width;
+                                        mouse-cursor: pointer;
+                                        accessible-role: button;
+                                        accessible-label: rule.label;
+                                        accessible-description: "Open in the editor";
+                                        accessible-action-default => { root.edit-rule(i); }
+                                        clicked => { root.edit-rule(i); }
+                                        name := Text {
+                                            accessible-role: none;
+                                            text: rule.label;
+                                            font-weight: 600;
+                                            color: Theme.pane.strong;
+                                            overflow: elide;
+                                            vertical-alignment: center;
+                                        }
                                     }
                                     VerticalLayout {
                                         alignment: center;
@@ -296,7 +320,16 @@ export component RulesPane inherits Rectangle {
                     }
                 }
             }
-            Rectangle { horizontal-stretch: 1; }
+            if RuleEditor.open: RuleEditorPane {
+                horizontal-stretch: 1;
+                close-icon: root.close-icon;
+            }
+            if !RuleEditor.open: Text {
+                horizontal-stretch: 1;
+                text: "Choose a rule to edit it, or start a New rule.";
+                color: Theme.pane.muted;
+                wrap: word-wrap;
+            }
         }
     }
 }

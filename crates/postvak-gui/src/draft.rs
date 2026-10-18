@@ -1,6 +1,6 @@
-//! Rules in plain language: the one-line summary the Rules view shows for a rule, and what a preview found.
+//! Rules in plain language, and rules as the editor's rows of conditions.
 use postvak_core::message::clean;
-use postvak_core::rules::{Action, Match, OneOrMany, Rule};
+use postvak_core::rules::{Action, HeaderMatch, Match, OneOrMany, Rule, TextMatch};
 
 /// `subject contains "a" or "b"`: a text condition, whose list matches any of its values.
 fn text_label(
@@ -152,6 +152,374 @@ pub(crate) fn preview_text(rule: &Rule, matched: usize, needs_body: bool) -> Str
     )
 }
 
+/// A condition's key in rules.toml.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Field {
+    From,
+    To,
+    Cc,
+    Subject,
+    Body,
+    Header,
+    OlderThan,
+    LargerThan,
+    Seen,
+    Flagged,
+    ToMe,
+    Alias,
+    Tag,
+}
+
+impl Field {
+    /// In the order the rules docs list them.
+    pub const ALL: [Field; 13] = [
+        Field::From,
+        Field::To,
+        Field::Cc,
+        Field::Subject,
+        Field::Body,
+        Field::Header,
+        Field::OlderThan,
+        Field::LargerThan,
+        Field::Seen,
+        Field::Flagged,
+        Field::ToMe,
+        Field::Alias,
+        Field::Tag,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Field::Alias => "alias",
+            Field::Body => "body",
+            Field::Cc => "cc",
+            Field::Flagged => "flagged",
+            Field::From => "from",
+            Field::Header => "header",
+            Field::LargerThan => "larger than",
+            Field::OlderThan => "older than",
+            Field::Seen => "seen",
+            Field::Subject => "subject",
+            Field::Tag => "tag",
+            Field::To => "to",
+            Field::ToMe => "to me",
+        }
+    }
+
+    /// Fields that take contains, equals or regex.
+    pub fn is_text(self) -> bool {
+        matches!(
+            self,
+            Field::Body | Field::Cc | Field::From | Field::Header | Field::Subject | Field::To
+        )
+    }
+
+    /// Fields whose value is yes or no.
+    pub fn is_flag(self) -> bool {
+        matches!(self, Field::Flagged | Field::Seen | Field::ToMe)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Op {
+    Contains,
+    Equals,
+    Regex,
+}
+
+impl Op {
+    pub const ALL: [Op; 3] = [Op::Contains, Op::Equals, Op::Regex];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Op::Contains => "contains",
+            Op::Equals => "equals",
+            Op::Regex => "matches regex",
+        }
+    }
+}
+
+/// One row of a rule's conditions.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Condition {
+    pub field: Field,
+    /// The header's name; used by `Field::Header` only.
+    pub header: String,
+    /// Used by text fields only.
+    pub op: Op,
+    /// The text, duration, size, alias or tag; "true" or "false" for the yes-or-no fields.
+    pub value: String,
+}
+
+impl Condition {
+    pub fn new(field: Field) -> Condition {
+        Condition {
+            field,
+            header: String::new(),
+            op: Op::Contains,
+            value: if field.is_flag() {
+                "true".into()
+            } else {
+                String::new()
+            },
+        }
+    }
+
+    /// This condition on `field`: the value stays unless it switches between yes/no and text.
+    pub fn with_field(&self, field: Field) -> Condition {
+        if field.is_flag() != self.field.is_flag() {
+            return Condition::new(field);
+        }
+        Condition {
+            field,
+            ..self.clone()
+        }
+    }
+}
+
+/// A text condition with one operator and one value as a row; `None` for anything else, which the form keeps.
+fn row(
+    field: Field,
+    header: &str,
+    contains: Option<&OneOrMany<String>>,
+    equals: Option<&OneOrMany<String>>,
+    regex: Option<&String>,
+) -> Option<Condition> {
+    let (op, value) = match (contains, equals, regex) {
+        (Some(OneOrMany::One(value)), None, None) => (Op::Contains, value.clone()),
+        (None, Some(OneOrMany::One(value)), None) => (Op::Equals, value.clone()),
+        (None, None, Some(value)) => (Op::Regex, value.clone()),
+        _ => return None,
+    };
+    Some(Condition {
+        field,
+        header: header.to_string(),
+        op,
+        value,
+    })
+}
+
+/// A rule's conditions as the form's rows, in the order of the rules docs, and the rest of `m` (`any`, `none`, value
+/// and header lists), which the form shows read-only and saves as it was.
+pub(crate) fn conditions(m: &Match) -> (Vec<Condition>, Match) {
+    let mut kept = Match {
+        any: m.any.clone(),
+        none: m.none.clone(),
+        ..Match::default()
+    };
+    let mut rows = Vec::new();
+    for (field, condition, slot) in [
+        (Field::From, &m.from, &mut kept.from),
+        (Field::To, &m.to, &mut kept.to),
+        (Field::Cc, &m.cc, &mut kept.cc),
+        (Field::Subject, &m.subject, &mut kept.subject),
+        (Field::Body, &m.body, &mut kept.body),
+    ] {
+        let Some(t) = condition else { continue };
+        match row(
+            field,
+            "",
+            t.contains.as_ref(),
+            t.equals.as_ref(),
+            t.regex.as_ref(),
+        ) {
+            Some(condition) => rows.push(condition),
+            None => *slot = Some(t.clone()),
+        }
+    }
+    let header = match &m.header {
+        Some(OneOrMany::One(h)) => row(
+            Field::Header,
+            &h.name,
+            h.contains.as_ref(),
+            h.equals.as_ref(),
+            h.regex.as_ref(),
+        ),
+        _ => None,
+    };
+    match header {
+        Some(condition) => rows.push(condition),
+        None => kept.header = m.header.clone(),
+    }
+    let plain = |field, value: String| Condition {
+        value,
+        ..Condition::new(field)
+    };
+    rows.extend(m.older_than.clone().map(|v| plain(Field::OlderThan, v)));
+    rows.extend(m.larger_than.clone().map(|v| plain(Field::LargerThan, v)));
+    rows.extend(m.seen.map(|v| plain(Field::Seen, v.to_string())));
+    rows.extend(m.flagged.map(|v| plain(Field::Flagged, v.to_string())));
+    rows.extend(m.to_me.map(|v| plain(Field::ToMe, v.to_string())));
+    rows.extend(m.alias.clone().map(|v| plain(Field::Alias, v)));
+    rows.extend(m.tag.clone().map(|v| plain(Field::Tag, v)));
+    (rows, kept)
+}
+
+/// The actions "+ Add action" offers, in its order; Move to and Tag start with an empty value.
+pub(crate) const ACTIONS: [Action; 9] = [
+    Action::Archive,
+    Action::Delete,
+    Action::Flag,
+    Action::MarkRead,
+    Action::Move(String::new()),
+    Action::Notify,
+    Action::Silent,
+    Action::Stop,
+    Action::Tag(String::new()),
+];
+
+/// An action as a chip or menu entry names it.
+pub(crate) fn action_name(action: &Action) -> &'static str {
+    match action {
+        Action::Archive => "Archive",
+        Action::Delete => "Delete",
+        Action::Flag => "Flag",
+        Action::MarkRead => "Mark read",
+        Action::Move(_) => "Move to",
+        Action::Notify => "Notify",
+        Action::Silent => "Silent",
+        Action::Stop => "Stop",
+        Action::Tag(_) => "Tag",
+        _ => "",
+    }
+}
+
+/// The rule editor's working copy. Lives in `App.rule_draft` until Save writes it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Draft {
+    pub account: Option<String>,
+    pub actions: Vec<Action>,
+    pub conditions: Vec<Condition>,
+    /// Set by "Remove rule" on a saved rule; the footer then asks to confirm.
+    pub confirm_remove: bool,
+    pub enabled: bool,
+    /// Why the last save or removal failed; cleared by any edit.
+    pub error: Option<String>,
+    pub folder: Option<String>,
+    /// The conditions the form cannot edit, saved as they were.
+    pub kept: Match,
+    pub name: String,
+    /// The rule's name in rules.toml; None until the draft is first saved.
+    pub original: Option<String>,
+    pub proposed_by: Option<String>,
+    /// The last Test result; cleared by any edit.
+    pub tested: Option<String>,
+}
+
+impl Draft {
+    pub fn new() -> Draft {
+        Draft {
+            enabled: true,
+            ..Draft::default()
+        }
+    }
+
+    pub fn from_rule(rule: &Rule) -> Draft {
+        let (conditions, kept) = conditions(&rule.matches);
+        Draft {
+            account: rule.account.clone(),
+            actions: rule.actions.clone(),
+            conditions,
+            enabled: rule.enabled,
+            folder: rule.folder.clone(),
+            kept,
+            name: rule.name.clone(),
+            original: Some(rule.name.clone()),
+            proposed_by: rule.proposed_by.clone(),
+            ..Draft::default()
+        }
+    }
+
+    /// True when Save would rename a saved rule, which makes it a new rule with a new clock.
+    pub fn renames(&self) -> bool {
+        self.original
+            .as_deref()
+            .is_some_and(|original| original != self.name)
+    }
+
+    /// True when the form differs from `opened`; Test results, errors and the remove prompt do not count.
+    pub fn edited(&self, opened: &Draft) -> bool {
+        let form = |draft: &Draft| Draft {
+            confirm_remove: false,
+            error: None,
+            tested: None,
+            ..draft.clone()
+        };
+        form(self) != form(opened)
+    }
+
+    /// The rule this draft saves as: the kept conditions plus the rows. `rules::compile` checks the values when the
+    /// file is saved; this only refuses what one rule cannot hold.
+    pub fn to_rule(&self) -> Result<Rule, String> {
+        let mut m = self.kept.clone();
+        for c in &self.conditions {
+            let twice = match c.field {
+                Field::Alias => m.alias.replace(c.value.clone()).is_some(),
+                Field::Body => m.body.replace(text_match(c)).is_some(),
+                Field::Cc => m.cc.replace(text_match(c)).is_some(),
+                Field::Flagged => m.flagged.replace(flag(c)?).is_some(),
+                Field::From => m.from.replace(text_match(c)).is_some(),
+                Field::Header => {
+                    let t = text_match(c);
+                    let header = HeaderMatch {
+                        name: c.header.clone(),
+                        contains: t.contains,
+                        equals: t.equals,
+                        regex: t.regex,
+                    };
+                    m.header.replace(OneOrMany::One(header)).is_some()
+                }
+                Field::LargerThan => m.larger_than.replace(c.value.clone()).is_some(),
+                Field::OlderThan => m.older_than.replace(c.value.clone()).is_some(),
+                Field::Seen => m.seen.replace(flag(c)?).is_some(),
+                Field::Subject => m.subject.replace(text_match(c)).is_some(),
+                Field::Tag => m.tag.replace(c.value.clone()).is_some(),
+                Field::To => m.to.replace(text_match(c)).is_some(),
+                Field::ToMe => m.to_me.replace(flag(c)?).is_some(),
+            };
+            if twice {
+                return Err(format!(
+                    "{} appears twice; a rule has one condition per field",
+                    c.field.label()
+                ));
+            }
+        }
+        Ok(Rule {
+            name: self.name.clone(),
+            account: self.account.clone(),
+            folder: self.folder.clone(),
+            enabled: self.enabled,
+            proposed_by: self.proposed_by.clone(),
+            matches: m,
+            actions: self.actions.clone(),
+        })
+    }
+}
+
+fn text_match(c: &Condition) -> TextMatch {
+    let one = || Some(OneOrMany::One(c.value.clone()));
+    match c.op {
+        Op::Contains => TextMatch {
+            contains: one(),
+            ..TextMatch::default()
+        },
+        Op::Equals => TextMatch {
+            equals: one(),
+            ..TextMatch::default()
+        },
+        Op::Regex => TextMatch {
+            regex: Some(c.value.clone()),
+            ..TextMatch::default()
+        },
+    }
+}
+
+fn flag(c: &Condition) -> Result<bool, String> {
+    c.value
+        .parse()
+        .map_err(|_| format!("{} must be yes or no", c.field.label()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,5 +619,124 @@ actions = ["flag"]
             preview_text(&flag, 2, true),
             "would flag 2 cached messages; only mail whose body is downloaded is checked"
         );
+    }
+
+    #[test]
+    fn every_single_value_condition_becomes_a_row_in_docs_order() {
+        let (rows, kept) = conditions(&rule(ALL_FIELDS).matches);
+        let fields: Vec<Field> = rows.iter().map(|c| c.field).collect();
+        assert_eq!(fields, Field::ALL);
+        assert_eq!(
+            (rows[0].op, rows[0].value.as_str()),
+            (Op::Equals, "a@example.com")
+        );
+        assert_eq!(
+            (rows[5].header.as_str(), rows[5].op),
+            ("List-Id", Op::Contains)
+        );
+        assert_eq!(kept, Match::default());
+    }
+
+    #[test]
+    fn lists_any_and_none_are_kept_out_of_the_rows() {
+        let (rows, kept) = conditions(&rule(GROUPED).matches);
+        assert_eq!(
+            rows.iter().map(|c| c.field).collect::<Vec<_>>(),
+            [Field::From]
+        );
+        assert!(
+            kept.subject.is_some()
+                && kept.header.is_some()
+                && kept.any.is_some()
+                && kept.none.is_some()
+        );
+        assert!(kept.from.is_none());
+    }
+
+    #[test]
+    fn a_rule_survives_the_round_trip_through_the_form() {
+        let original = rule(&ALL_FIELDS.replace(
+            "name = \"everything\"",
+            "name = \"everything\"\naccount = \"work\"\nfolder = \"Lists\"\nenabled = false\nproposed_by = \"mcp:agent\"",
+        ));
+        let back = Draft::from_rule(&original).to_rule().unwrap();
+        assert_eq!(
+            toml::to_string(&back).unwrap(),
+            toml::to_string(&original).unwrap()
+        );
+        let grouped = rule(GROUPED);
+        let back = Draft::from_rule(&grouped).to_rule().unwrap();
+        assert_eq!(
+            toml::to_string(&back).unwrap(),
+            toml::to_string(&grouped).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_row_on_a_kept_field_is_refused() {
+        let mut draft = Draft::from_rule(&rule(GROUPED));
+        draft.conditions.push(Condition::new(Field::Subject));
+        assert_eq!(
+            draft.to_rule().unwrap_err(),
+            "subject appears twice; a rule has one condition per field"
+        );
+    }
+
+    #[test]
+    fn to_rule_refuses_what_one_rule_cannot_hold() {
+        let mut draft = Draft::new();
+        draft.conditions = vec![
+            Condition::new(Field::Subject),
+            Condition::new(Field::Subject),
+        ];
+        assert_eq!(
+            draft.to_rule().unwrap_err(),
+            "subject appears twice; a rule has one condition per field"
+        );
+        draft.conditions = vec![Condition {
+            value: "maybe".into(),
+            ..Condition::new(Field::Seen)
+        }];
+        assert_eq!(draft.to_rule().unwrap_err(), "seen must be yes or no");
+    }
+
+    #[test]
+    fn changing_a_conditions_field_keeps_the_value_where_it_fits() {
+        let subject = Condition {
+            value: "code".into(),
+            ..Condition::new(Field::Subject)
+        };
+        assert_eq!(subject.with_field(Field::From).value, "code");
+        assert_eq!(subject.with_field(Field::Seen).value, "true");
+        assert_eq!(
+            Condition::new(Field::Seen).with_field(Field::Subject).value,
+            ""
+        );
+    }
+
+    #[test]
+    fn renaming_is_noticed() {
+        let mut draft = Draft::from_rule(&rule(ALL_FIELDS));
+        assert!(!draft.renames());
+        draft.name = "else".into();
+        assert!(draft.renames());
+        assert!(!Draft::new().renames(), "a new rule has nothing to rename");
+    }
+
+    #[test]
+    fn only_form_changes_count_as_edits() {
+        let opened = Draft::from_rule(&rule(ALL_FIELDS));
+        let mut draft = opened.clone();
+        draft.confirm_remove = true;
+        draft.error = Some("no such rule".into());
+        draft.tested = Some("would archive 1 cached message".into());
+        assert!(!draft.edited(&opened));
+        draft.name = "else".into();
+        assert!(draft.edited(&opened));
+    }
+
+    #[test]
+    fn every_action_the_menu_offers_has_a_name() {
+        assert!(ACTIONS.iter().all(|action| !action_name(action).is_empty()));
     }
 }
