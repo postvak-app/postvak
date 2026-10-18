@@ -9,14 +9,11 @@ use std::sync::{Arc, PoisonError};
 use anyrender::ImageRenderer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz_dom::{BaseDocument, DEFAULT_CSS, DocumentConfig, FontContext, QualName, local_name, ns};
-use blitz_html::DocumentHtmlParser;
 use blitz_traits::shell::{ColorScheme, Viewport};
 use fontique::{Blob, Collection, CollectionOptions, FallbackKey, Script, SourceCache};
-use html5ever::tendril::TendrilSink;
-use html5ever::tree_builder::TreeBuilderOpts;
 
-use super::net;
 use super::{Load, Pixels, Reply, Request, STRIP, Wake};
+use super::{depth, net};
 
 /// Layout, style and paint recurse once per element level, and a stack overflow aborts the app: deeper markup shows as
 /// text, and the thread gets a stack that holds this depth.
@@ -192,8 +189,9 @@ fn layout(load: Load) -> Option<(Current, Reply)> {
         font_ctx: fonts(),
         ..Default::default()
     };
-    let mut doc = parse(&load.html, config);
-    if deeper_than(&doc, MAX_DEPTH) {
+    let mut doc = BaseDocument::new(config);
+    // The parse stops early on most deep markup, but a node it moved can end up deeper than it landed.
+    if !depth::parse(&mut doc, &load.html, MAX_DEPTH) || deeper_than(&doc, MAX_DEPTH) {
         return None;
     }
     font_colours(&mut doc);
@@ -256,24 +254,6 @@ fn paint(current: &mut Current, strip: u32) -> Option<Pixels> {
         &mut rgba,
     );
     Pixels::new(width, height, rgba)
-}
-
-/// Mail is HTML whatever it declares: Blitz's own entry point sniffs `xmlns="…xhtml"` and parses as XML, where a void
-/// `<img>` swallows the rest of the page.
-fn parse(html: &str, config: DocumentConfig) -> BaseDocument {
-    let mut doc = BaseDocument::new(config);
-    let mut mutator = doc.mutate();
-    let opts = html5ever::ParseOpts {
-        // No script runs, so `<noscript>` content shows, as Blitz's own HTML path does.
-        tree_builder: TreeBuilderOpts {
-            scripting_enabled: false,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    html5ever::parse_document(DocumentHtmlParser::new(&mut mutator), opts).one(html);
-    drop(mutator);
-    doc
 }
 
 /// Selects the text from `from` to `to` (CSS pixels) and returns it. A `to` off any text keeps the selection as it
