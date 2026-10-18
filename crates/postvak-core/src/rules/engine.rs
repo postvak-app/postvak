@@ -1,7 +1,7 @@
 use crate::config::Identity;
 use crate::message::{bare_addresses, header_text};
 use crate::rules::{Action, CompiledRule, Conditions};
-use crate::store::Message;
+use crate::store::{Message, has_flag_ignore_case};
 
 /// Set by `trash restore`; rules never act on, or notify about, mail carrying it.
 pub const RESTORED_KEYWORD: &str = "$PostvakRestored";
@@ -39,11 +39,7 @@ pub fn folder_needs_body(rules: &[CompiledRule], account: &str, folder: &str) ->
 }
 
 pub fn evaluate(rules: &[CompiledRule], msg: &Message, ctx: &Context) -> Plan {
-    if msg
-        .flags
-        .split(' ')
-        .any(|flag| flag.eq_ignore_ascii_case(RESTORED_KEYWORD))
-    {
+    if has_flag_ignore_case(&msg.flags, RESTORED_KEYWORD) {
         return Plan::default();
     }
     let mut plan = Plan::default();
@@ -155,10 +151,7 @@ fn matches(c: &Conditions, msg: &Message, ctx: &Context) -> bool {
         return false;
     }
     if let Some(tag) = &c.tag
-        && !msg
-            .flags
-            .split_whitespace()
-            .any(|flag| flag.eq_ignore_ascii_case(tag))
+        && !has_flag_ignore_case(&msg.flags, tag)
     {
         return false;
     }

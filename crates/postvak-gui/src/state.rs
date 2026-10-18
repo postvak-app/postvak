@@ -76,6 +76,12 @@ pub(crate) fn session(client: Client, wake: Waker) -> anyhow::Result<Connection>
     Ok((client, events, states))
 }
 
+/// A rule run that would expunge mail, waiting for the user's yes.
+pub(crate) struct ApplyConfirm {
+    pub rule: String,
+    pub warning: String,
+}
+
 /// The one-click unsubscribe in flight, for the message it came from.
 pub(crate) struct Unsubscribing {
     account: usize,
@@ -313,8 +319,10 @@ pub(crate) enum UiAction {
     StepFolder(isize),
     /// Remove each account's backups past its retention
     PurgeTrash,
-    /// Run an enabled rule once over the stored mail of the accounts it covers
+    /// Run an enabled rule once over the stored mail of the accounts it covers; asks first when it would expunge mail
     ApplyRule(String),
+    /// Run the rule the expunge question is about
+    ConfirmApplyRule,
     SyncNow,
     /// Aim the next action at the marked rows when `row` is one of them, else at `row` alone.
     TargetRow(usize),
@@ -336,10 +344,9 @@ pub(crate) enum Focus {
     List,
 }
 
-/// The release check: off in config, waiting for the first frame, running on its thread, or done with the version to
-/// announce.
+/// The release check: waiting for the first frame, running on its thread, or done with the version to announce; a
+/// check that config turns off starts done.
 pub(crate) enum UpdateCheck {
-    Off,
     Waiting,
     Running(Receiver<Option<String>>),
     Done(Option<String>),
@@ -371,6 +378,8 @@ pub struct App {
     pub(crate) fetcher: Option<Fetcher>,
     pub(crate) focus: Focus,
     pub(crate) about_open: bool,
+    /// The rule waiting for the user to agree to the mail it would expunge, with the warning per account.
+    pub(crate) apply_confirm: Option<ApplyConfirm>,
     pub(crate) help_open: bool,
     /// Numbers HTML layouts, so a reply for an older one is dropped.
     pub(crate) html_generation: u64,
@@ -488,6 +497,7 @@ impl App {
             fetcher: None,
             focus: Focus::List,
             about_open: false,
+            apply_confirm: None,
             help_open: false,
             html_generation: 0,
             html_size: None,
@@ -526,7 +536,7 @@ impl App {
             update: if config.ui.check_updates {
                 UpdateCheck::Waiting
             } else {
-                UpdateCheck::Off
+                UpdateCheck::Done(None)
             },
             view: View::Folder {
                 account: 0,
@@ -574,11 +584,6 @@ impl App {
     /// Asks for `tick` at `at` (seconds on the window's clock) at the latest.
     pub(crate) fn request_tick(&mut self, at: f64) {
         self.next_tick = Some(self.next_tick.map_or(at, |next| next.min(at)));
-    }
-
-    /// When the window should call `tick` next; it takes the time and the request starts over.
-    pub fn take_next_tick(&mut self) -> Option<f64> {
-        self.next_tick.take()
     }
 
     fn receive(&mut self, now: f64) {
@@ -667,7 +672,7 @@ impl App {
                 Err(TryRecvError::Disconnected) => Some(UpdateCheck::Done(None)),
                 Err(TryRecvError::Empty) => None,
             },
-            UpdateCheck::Off | UpdateCheck::Done(_) => None,
+            UpdateCheck::Done(_) => None,
         };
         if let Some(next) = next {
             self.update = next;
@@ -926,7 +931,9 @@ impl App {
             UiAction::LoadRemote => self.load_remote(),
             UiAction::ClearSelection => self.list.marked.clear(),
             UiAction::Escape => {
-                if let Some(form) = &self.account_form {
+                if self.apply_confirm.is_some() {
+                    self.apply_confirm = None;
+                } else if let Some(form) = &self.account_form {
                     // A save in flight finishes first, so its account joins the window.
                     if form.saving.is_none() {
                         self.account_form = None;
@@ -1129,6 +1136,11 @@ impl App {
             }
             UiAction::PurgeTrash => self.purge_trash(),
             UiAction::ApplyRule(name) => self.apply_rule(&name),
+            UiAction::ConfirmApplyRule => {
+                if let Some(confirm) = self.apply_confirm.take() {
+                    self.send_apply_rule(&confirm.rule);
+                }
+            }
             UiAction::ToggleHistory => {
                 self.history_open = !self.history_open;
                 self.error = None;
@@ -2184,7 +2196,8 @@ impl App {
         self.view_dirty = true;
     }
 
-    /// Asks each account the rule covers to run it over the mail it holds; `RuleApplied` reports back per account.
+    /// Asks each account the rule covers to run it over the mail it holds, once the user agreed to any mail it would
+    /// expunge; `RuleApplied` reports back per account.
     fn apply_rule(&mut self, name: &str) {
         let Some(scope) = self
             .rules
@@ -2204,10 +2217,55 @@ impl App {
             self.note_error(None, message);
             return;
         }
+        match self.expunge_warnings(name) {
+            Ok(warnings) if warnings.is_empty() => self.send_apply_rule(name),
+            Ok(warnings) => {
+                self.apply_confirm = Some(ApplyConfirm {
+                    rule: name.into(),
+                    warning: warnings.join("\n"),
+                });
+            }
+            Err(e) => self.note_error(None, format!("could not plan rule '{name}': {e}")),
+        }
+    }
+
+    /// What `name` would expunge in each account of the window it covers, planned from the stores.
+    fn expunge_warnings(&self, name: &str) -> anyhow::Result<Vec<String>> {
+        let compiled = [rule_file::enabled_rule(&self.paths.rules_file(), name)?];
+        let config = Config::load(&self.paths.config_file())?;
+        let mut warnings = Vec::new();
+        for account in &self.accounts {
+            if !compiled[0].applies_to_account(&account.name) {
+                continue;
+            }
+            let store = account
+                .store
+                .as_ref()
+                .map_err(|e| anyhow::anyhow!("{}: {e}", account.name))?;
+            let config = config
+                .account(&account.name)
+                .ok_or_else(|| anyhow::anyhow!("no account named '{}'", account.name))?;
+            warnings.extend(postvak_core::actions::expunge_warning(
+                &compiled,
+                store,
+                config,
+                &config.identity()?,
+                postvak_core::time::now(),
+            )?);
+        }
+        Ok(warnings)
+    }
+
+    fn send_apply_rule(&mut self, name: &str) {
         for index in 0..self.accounts.len() {
-            let covered = scope
-                .as_deref()
-                .is_none_or(|account| account == self.accounts[index].name);
+            let covered = self.rules.rules.iter().any(|rule| {
+                rule.name == name
+                    && rule.enabled
+                    && rule
+                        .account
+                        .as_deref()
+                        .is_none_or(|account| account == self.accounts[index].name)
+            });
             let command = Command::ApplyRule { name: name.into() };
             if covered && !self.send(index, command) {
                 self.note_error(Some(index), DAEMON_LOST.into());
@@ -3273,7 +3331,7 @@ mod tests {
         let fx = Fixture::new(&["work"]);
         let (mut driver, _wires) = fx.driver();
         driver.tick();
-        assert!(matches!(driver.app.update, UpdateCheck::Off));
+        assert!(matches!(driver.app.update, UpdateCheck::Done(None)));
         assert!(!fx.paths.update_check().exists());
     }
 

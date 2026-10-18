@@ -58,6 +58,9 @@ pub fn add(
     Ok(())
 }
 
+/// How long a front end waits for the daemon to run a new account; a restart waits for the old thread to end.
+pub const START_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Waits until the daemon lists `name` as running. Each status request makes the daemon apply a changed config.toml
 /// first, and an account restarting on a changed config is not listed until its new thread runs, so a command sent
 /// after this reaches the thread of the config just saved.

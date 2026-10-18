@@ -131,6 +131,9 @@ struct ApplyExistingArgs {
     /// List what the rule would do from the local store, without touching the server
     #[serde(default)]
     dry_run: bool,
+    /// Run even when the rule would permanently delete mail from the server
+    #[serde(default)]
+    yes: bool,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -605,7 +608,13 @@ fn dispatch(
         }
         "rules_apply_existing" => {
             let a: ApplyExistingArgs = args(arguments)?;
-            rows(backend.rules_apply_existing(&a.name, a.account.as_deref(), a.dry_run, bodies)?)
+            rows(backend.rules_apply_existing(
+                &a.name,
+                a.account.as_deref(),
+                a.dry_run,
+                a.yes,
+                bodies,
+            )?)
         }
         "rules_approve" => {
             let a: NameArgs = args(arguments)?;
@@ -729,10 +738,6 @@ impl Server {
             scopes,
         }
     }
-
-    fn bodies(&self) -> bool {
-        self.scopes.contains(&Scope::ReadBodies)
-    }
 }
 
 impl ServerHandler for Server {
@@ -776,7 +781,11 @@ impl ServerHandler for Server {
             return Ok(error_result("not allowed with these scopes").into());
         }
         let client = context.client_info().map(|info| info.name);
-        let (backend, bodies, arguments) = (self.backend.clone(), self.bodies(), request.arguments);
+        let (backend, bodies, arguments) = (
+            self.backend.clone(),
+            self.scopes.contains(&Scope::ReadBodies),
+            request.arguments,
+        );
         let outcome = tokio::task::spawn_blocking(move || {
             dispatch(&backend, bodies, client.as_deref(), &name, arguments)
         })

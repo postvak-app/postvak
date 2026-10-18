@@ -7,7 +7,7 @@ use std::path::Path;
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Value};
 
 use crate::paths::{Paths, create_private_dir, read_or_empty, write_atomic};
-use crate::rules::{Rule, RuleFile, RulesError, compile, parse};
+use crate::rules::{Rule, RuleFile, RulesError, compile, invalid, parse};
 use crate::store::Store;
 
 /// Appends `rule` disabled and attributed to `by`, so it only acts once a human approves it.
@@ -158,13 +158,6 @@ fn save(path: &Path, text: &str) -> Result<(), RulesError> {
     compile(&parse(text)?)?;
     write_atomic(path, text.as_bytes())?;
     Ok(())
-}
-
-fn invalid(name: &str, reason: &str) -> RulesError {
-    RulesError::Invalid {
-        rule: name.to_string(),
-        reason: reason.to_string(),
-    }
 }
 
 #[cfg(test)]

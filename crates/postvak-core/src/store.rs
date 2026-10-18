@@ -1,14 +1,27 @@
 use std::io;
 use std::path::Path;
 
-use include_dir::{Dir, include_dir};
 use rusqlite::{Connection, OptionalExtension, params};
-use rusqlite_migration::Migrations;
+use rusqlite_migration::{M, Migrations};
 use serde::{Deserialize, Serialize};
 
 use crate::paths::Paths;
 
-static MIGRATIONS_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/migrations");
+/// In order; a new directory under `migrations/` needs its line here too.
+const MIGRATIONS: &[M<'static>] = &[
+    M::up(include_str!("../migrations/001-initial/up.sql")),
+    M::up(include_str!("../migrations/002-initial-uid-next/up.sql")),
+    M::up(include_str!("../migrations/003-notified-uid/up.sql")),
+    M::up(include_str!(
+        "../migrations/004-drop-message-id-index/up.sql"
+    )),
+    M::up(include_str!("../migrations/005-folder-delimiter/up.sql")),
+    M::up(include_str!("../migrations/006-flag-sync/up.sql")),
+    M::up(include_str!("../migrations/007-rule-definition/up.sql")),
+    M::up(include_str!("../migrations/008-has-attachment/up.sql")),
+    M::up(include_str!("../migrations/009-folder-thread-index/up.sql")),
+    M::up(include_str!("../migrations/010-unread-index/up.sql")),
+];
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -59,6 +72,13 @@ pub struct Message {
 /// Whether the space-separated `flags` contain `flag`.
 pub fn has_flag(flags: &str, flag: &str) -> bool {
     flags.split_whitespace().any(|f| f == flag)
+}
+
+/// Keywords compare case-insensitively (RFC 3501).
+pub fn has_flag_ignore_case(flags: &str, flag: &str) -> bool {
+    flags
+        .split_whitespace()
+        .any(|f| f.eq_ignore_ascii_case(flag))
 }
 
 impl Message {
@@ -205,8 +225,8 @@ pub struct Store {
 const MESSAGE_COLUMNS: &str = "folder, uid, message_id, from_addr, to_addr, cc_addr, delivered_to, in_reply_to, refs, thread_id, subject, date, internaldate, flags, size, headers, body_text";
 
 impl Store {
-    pub fn migrations() -> Result<Migrations<'static>, StoreError> {
-        Ok(Migrations::from_directory(&MIGRATIONS_DIR)?)
+    pub fn migrations() -> Migrations<'static> {
+        Migrations::from_slice(MIGRATIONS)
     }
 
     pub fn open(path: &Path) -> Result<Store, StoreError> {
@@ -233,7 +253,7 @@ impl Store {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         // Clients migrate and write rule clocks while the daemon may hold the write lock.
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        Store::migrations()?.to_latest(&mut conn)?;
+        Store::migrations().to_latest(&mut conn)?;
         Ok(Store { conn })
     }
 
@@ -441,12 +461,25 @@ impl Store {
         limit: u32,
         filter: Filter,
     ) -> Result<Vec<Message>, StoreError> {
-        let mut stmt = self.conn.prepare(&format!(
-            "SELECT {MESSAGE_COLUMNS} FROM messages WHERE folder = ?1 AND {}
-             ORDER BY internaldate DESC, uid DESC LIMIT ?2",
-            filter.sql()
-        ))?;
-        let rows = serde_rusqlite::from_rows::<Message>(stmt.query(params![folder, limit])?);
+        self.query_messages(
+            &format!(
+                "WHERE folder = ?1 AND {} ORDER BY internaldate DESC, uid DESC LIMIT ?2",
+                filter.sql()
+            ),
+            params![folder, limit],
+        )
+    }
+
+    /// `SELECT` every message column, then `tail`; the statement is cached, so a repeated `tail` is prepared once.
+    fn query_messages(
+        &self,
+        tail: &str,
+        params: impl rusqlite::Params,
+    ) -> Result<Vec<Message>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare_cached(&format!("SELECT {MESSAGE_COLUMNS} FROM messages {tail}"))?;
+        let rows = serde_rusqlite::from_rows::<Message>(stmt.query(params)?);
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
@@ -467,13 +500,12 @@ impl Store {
             let rows = stmt.query_map(params![folder, limit], |r| r.get(0))?;
             rows.collect::<Result<_, _>>()?
         };
-        let mut stmt = self.conn.prepare(&format!(
-            "SELECT {MESSAGE_COLUMNS} FROM messages WHERE folder = ?1 AND thread_id = ?2 ORDER BY internaldate, uid"
-        ))?;
         ids.iter()
             .map(|id| {
-                let rows = serde_rusqlite::from_rows::<Message>(stmt.query(params![folder, id])?);
-                Ok(rows.collect::<Result<Vec<_>, _>>()?)
+                self.query_messages(
+                    "WHERE folder = ?1 AND thread_id = ?2 ORDER BY internaldate, uid",
+                    params![folder, id],
+                )
             })
             .collect()
     }
@@ -517,20 +549,15 @@ impl Store {
     }
 
     pub fn messages_in_folder(&self, folder: &str) -> Result<Vec<Message>, StoreError> {
-        let mut stmt = self.conn.prepare(&format!(
-            "SELECT {MESSAGE_COLUMNS} FROM messages WHERE folder = ?1 ORDER BY uid"
-        ))?;
-        let rows = serde_rusqlite::from_rows::<Message>(stmt.query(params![folder])?);
-        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        self.query_messages("WHERE folder = ?1 ORDER BY uid", params![folder])
     }
 
     /// The messages in `folder` whose body is not downloaded yet, by uid.
     pub fn messages_without_body(&self, folder: &str) -> Result<Vec<Message>, StoreError> {
-        let mut stmt = self.conn.prepare(&format!(
-            "SELECT {MESSAGE_COLUMNS} FROM messages WHERE folder = ?1 AND body_text IS NULL ORDER BY uid"
-        ))?;
-        let rows = serde_rusqlite::from_rows::<Message>(stmt.query(params![folder])?);
-        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        self.query_messages(
+            "WHERE folder = ?1 AND body_text IS NULL ORDER BY uid",
+            params![folder],
+        )
     }
 
     /// Whether any message in `folder`, or in any folder, lacks its body.
@@ -576,14 +603,12 @@ impl Store {
         folder: Option<&str>,
         limit: u32,
     ) -> Result<Vec<Message>, StoreError> {
-        let mut stmt = self.conn.prepare(&format!(
-            "SELECT {MESSAGE_COLUMNS} FROM messages
-             WHERE id IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?1)
+        self.query_messages(
+            "WHERE id IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?1)
                AND (?2 IS NULL OR folder = ?2)
-             ORDER BY internaldate DESC, uid DESC LIMIT ?3"
-        ))?;
-        let rows = serde_rusqlite::from_rows::<Message>(stmt.query(params![query, folder, limit])?);
-        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+             ORDER BY internaldate DESC, uid DESC LIMIT ?3",
+            params![query, folder, limit],
+        )
     }
 
     pub fn message(&self, folder: &str, uid: u32) -> Result<Option<Message>, StoreError> {
@@ -790,7 +815,13 @@ mod tests {
 
     #[test]
     fn migrations_are_valid() {
-        Store::migrations().unwrap().validate().unwrap();
+        Store::migrations().validate().unwrap();
+    }
+
+    #[test]
+    fn every_migration_directory_is_listed() {
+        let dirs = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations")).unwrap();
+        assert_eq!(dirs.count(), MIGRATIONS.len());
     }
 
     #[test]
@@ -986,10 +1017,7 @@ mod tests {
     #[test]
     fn migration_006_keeps_rule_clocks_and_adopts_the_next_definition() {
         let mut conn = Connection::open_in_memory().unwrap();
-        Store::migrations()
-            .unwrap()
-            .to_version(&mut conn, 5)
-            .unwrap();
+        Store::migrations().to_version(&mut conn, 5).unwrap();
         conn.execute(
             "INSERT INTO rules_seen (name, first_seen_at) VALUES ('purge', 100)",
             [],
@@ -1107,10 +1135,7 @@ mod tests {
     #[test]
     fn migration_002_keeps_rows_and_marks_existing_mail_as_processed() {
         let mut conn = Connection::open_in_memory().unwrap();
-        Store::migrations()
-            .unwrap()
-            .to_version(&mut conn, 1)
-            .unwrap();
+        Store::migrations().to_version(&mut conn, 1).unwrap();
         conn.execute(
             "INSERT INTO folders (name, uidvalidity, last_uid) VALUES ('INBOX', 7, 42)",
             [],
@@ -1126,10 +1151,7 @@ mod tests {
     #[test]
     fn migration_003_counts_mail_the_rules_saw_as_notified() {
         let mut conn = Connection::open_in_memory().unwrap();
-        Store::migrations()
-            .unwrap()
-            .to_version(&mut conn, 2)
-            .unwrap();
+        Store::migrations().to_version(&mut conn, 2).unwrap();
         conn.execute(
             "INSERT INTO folders (name, uidvalidity, last_uid, rules_uid) VALUES ('INBOX', 7, 42, 40)",
             [],

@@ -221,6 +221,20 @@ fn rules() {
 }
 
 #[test]
+fn apply_confirm() {
+    let fx = Fixture::mailbox("light");
+    let tidy = "[[rules]]\nname = \"tidy\"\naccount = \"work\"\nmatch.subject = { contains = \"a\" }\nactions = [\"delete\"]\n";
+    std::fs::write(fx.paths.rules_file(), tidy).unwrap();
+    let (open, _wires) = open(&fx);
+    open.with(|live| live.app.select_view(View::Rules));
+    open.tick();
+    open.click("Apply to existing mail");
+    open.tick();
+    assert_eq!(open.find("Delete and apply").len(), 1);
+    snapshot(&open, "gui_apply_confirm");
+}
+
+#[test]
 fn activity() {
     let fx = Fixture::mailbox("light");
     let entries = [

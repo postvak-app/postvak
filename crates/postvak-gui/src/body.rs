@@ -53,11 +53,9 @@ const MAX_LINKS: usize = 200;
 pub(crate) fn links(text: Option<&str>) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     text.iter()
-        .flat_map(|text| segments(text))
-        .filter_map(|segment| match segment {
-            Segment::Link(url) if has_target(url) && seen.insert(url) => Some(url.to_string()),
-            _ => None,
-        })
+        .flat_map(|text| links_in(text))
+        .filter(|url| seen.insert(*url))
+        .map(str::to_string)
         .take(MAX_LINKS)
         .collect()
 }
@@ -162,20 +160,14 @@ pub const HEADER_DATE: &str = "%A %-d %B %Y, %H:%M:%S (UTC%:z)";
 /// The date beside the sender; `HEADER_DATE` shows on hover.
 pub const SHORT_DATE: &str = "%a %-d %b %Y, %H:%M";
 
-#[derive(Debug, PartialEq)]
-pub enum Segment<'a> {
-    Link(&'a str),
-    Text(&'a str),
-}
-
 /// The only schemes a body link may open; anything else stays text.
 const SCHEMES: [&str; 3] = ["http://", "https://", "mailto:"];
 
-/// Splits a line into text and links. A link starts at a word start and ends at whitespace, a quote or an angle
-/// bracket, minus trailing punctuation.
-pub fn segments(text: &str) -> Vec<Segment<'_>> {
-    let mut parts = Vec::new();
-    let (mut text_start, mut scan) = (0, 0);
+/// The links in a line. A link starts at a word start and ends at whitespace, a quote or an angle bracket, minus
+/// trailing punctuation.
+fn links_in(text: &str) -> Vec<&str> {
+    let mut links = Vec::new();
+    let mut scan = 0;
     while let Some(offset) = next_link(&text[scan..]) {
         let start = scan + offset;
         let tail = &text[start..];
@@ -186,17 +178,10 @@ pub fn segments(text: &str) -> Vec<Segment<'_>> {
         scan = start + link.len();
         // Trimming can leave a bare scheme, which is not a link.
         if has_target(link) {
-            if start > text_start {
-                parts.push(Segment::Text(&text[text_start..start]));
-            }
-            parts.push(Segment::Link(link));
-            text_start = scan;
+            links.push(link);
         }
     }
-    if text_start < text.len() {
-        parts.push(Segment::Text(&text[text_start..]));
-    }
-    parts
+    links
 }
 
 pub fn has_target(link: &str) -> bool {
@@ -206,7 +191,7 @@ pub fn has_target(link: &str) -> bool {
     })
 }
 
-/// Where the next link starts. One pass up to it, so `segments`, which resumes after each link, stays linear in the text.
+/// Where the next link starts. One pass up to it, so `links_in`, which resumes after each link, stays linear in the text.
 fn next_link(text: &str) -> Option<usize> {
     let mut previous = None;
     for (at, c) in text.char_indices() {
@@ -340,25 +325,12 @@ mod tests {
     }
 
     #[test]
-    fn segments_link_only_http_https_and_mailto_at_word_starts() {
+    fn links_are_only_http_https_and_mailto_at_word_starts() {
         assert_eq!(
-            segments("see https://example.com/a?b=1. or mailto:me@example.com, thanks"),
-            [
-                Segment::Text("see "),
-                Segment::Link("https://example.com/a?b=1"),
-                Segment::Text(". or "),
-                Segment::Link("mailto:me@example.com"),
-                Segment::Text(", thanks"),
-            ]
+            links_in("see https://example.com/a?b=1. or mailto:me@example.com, thanks"),
+            ["https://example.com/a?b=1", "mailto:me@example.com"]
         );
-        assert_eq!(
-            segments("(http://x.test)"),
-            [
-                Segment::Text("("),
-                Segment::Link("http://x.test"),
-                Segment::Text(")")
-            ]
-        );
+        assert_eq!(links_in("(http://x.test)"), ["http://x.test"]);
         for plain in [
             "javascript:alert(1)",
             "file:///etc/passwd",
@@ -369,7 +341,7 @@ mod tests {
             "mailto:)",
             "mailto:.",
         ] {
-            assert_eq!(segments(plain), [Segment::Text(plain)], "{plain}");
+            assert!(links_in(plain).is_empty(), "{plain}");
         }
     }
 
@@ -387,11 +359,7 @@ mod tests {
 
     #[test]
     fn a_bare_scheme_after_trimming_is_not_a_link() {
-        assert!(
-            segments("see https://)")
-                .iter()
-                .all(|segment| matches!(segment, Segment::Text(_)))
-        );
+        assert!(links_in("see https://)").is_empty());
     }
 
     #[test]

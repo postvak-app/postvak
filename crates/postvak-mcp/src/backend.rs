@@ -1,7 +1,6 @@
 //! The only MCP code that touches the store, rules.toml or the daemon; the daemon owns every IMAP connection.
 use anyhow::{Context as _, Result, bail};
 use std::sync::{PoisonError, RwLock};
-use std::time::Duration;
 
 use serde_json::{Value, json};
 
@@ -20,8 +19,7 @@ use postvak_core::sync::{Command, Event};
 use postvak_core::time;
 use postvak_core::trash::Trash;
 
-pub const MAX_LIMIT: u32 = 500;
-const ACCOUNT_START: Duration = Duration::from_secs(10);
+const MAX_LIMIT: u32 = 500;
 
 pub struct Backend {
     /// Replaced by `account_add`, so a server outlives the config it started with.
@@ -369,7 +367,7 @@ impl Backend {
     /// Saves the account and reports its first sync; refused while `--account` hides accounts, since the new one
     /// would be invisible to this server.
     pub fn account_add(&self, account: AccountConfig) -> Result<Value> {
-        if !self.only.is_empty() {
+        if self.narrowed() {
             bail!("this server is limited with --account and cannot add accounts");
         }
         let name = account.name.clone();
@@ -384,12 +382,16 @@ impl Backend {
             postvak_core::account::add(&mut config, &self.paths, account.clone(), None)?;
             *held = config;
         }
-        postvak_core::account::await_started(&*self.daemon.client()?, &name, ACCOUNT_START)
-            .map_err(|e| {
-                e.context(format!(
-                    "account '{name}' was saved to config.toml and the daemon will start it"
-                ))
-            })?;
+        postvak_core::account::await_started(
+            &*self.daemon.client()?,
+            &name,
+            postvak_core::account::START_TIMEOUT,
+        )
+        .map_err(|e| {
+            e.context(format!(
+                "account '{name}' was saved to config.toml and the daemon will start it"
+            ))
+        })?;
         let sync = self.sync(Some(&name))?.swap_remove(0);
         Ok(json!({ "account": output::account(&account), "sync": sync }))
     }
@@ -501,22 +503,45 @@ impl Backend {
     }
 
     /// Runs one enabled rule over the existing mail of the visible accounts it applies to, through the daemon; a dry
-    /// run plans from the local store instead. A rule of a hidden account reads as absent.
+    /// run plans from the local store instead. Refuses to expunge mail without `yes`. A rule of a hidden account reads
+    /// as absent.
     pub fn rules_apply_existing(
         &self,
         name: &str,
         account: Option<&str>,
         dry_run: bool,
+        yes: bool,
         bodies: bool,
     ) -> Result<Vec<Value>> {
         self.ensure_rule_visible(name, false)?;
         let compiled = vec![rules::enabled_rule(&self.paths.rules_file(), name)?];
         refuse_body_rule(&compiled, bodies)?;
-        let mut rows = Vec::new();
-        for acc in self.select(account)? {
-            if !compiled.iter().any(|r| r.applies_to_account(&acc.name)) {
-                continue;
+        let accounts: Vec<_> = self
+            .select(account)?
+            .into_iter()
+            .filter(|acc| compiled.iter().any(|r| r.applies_to_account(&acc.name)))
+            .collect();
+        if !dry_run && !yes {
+            let mut warnings = Vec::new();
+            for acc in &accounts {
+                let store = self.store(acc)?;
+                warnings.extend(actions::expunge_warning(
+                    &compiled,
+                    &store,
+                    acc,
+                    &acc.identity()?,
+                    time::now(),
+                )?);
             }
+            if !warnings.is_empty() {
+                bail!(
+                    "{}; check with dry_run, then call again with yes once the user agrees",
+                    warnings.join("; ")
+                );
+            }
+        }
+        let mut rows = Vec::new();
+        for acc in accounts {
             if dry_run {
                 let store = self.store(&acc)?;
                 for p in actions::planned(&compiled, &store, &acc, &acc.identity()?, time::now())? {
@@ -524,21 +549,10 @@ impl Backend {
                 }
                 continue;
             }
-            let command = Command::ApplyRule {
-                name: name.to_string(),
-            };
-            let (evaluated, actions, errors) =
-                self.daemon
-                    .request(&acc.name, command, |reply| match reply {
-                        Event::RuleApplied {
-                            evaluated,
-                            actions,
-                            errors,
-                            ..
-                        } => Ok((evaluated, actions, errors)),
-                        other => Err(other),
-                    })?;
-            rows.push(output::rule_applied(&acc.name, evaluated, actions, &errors));
+            let (evaluated, actions, errors) = self.daemon.apply_rule(&acc.name, name)?;
+            rows.push(
+                json!({ "account": acc.name, "evaluated": evaluated, "actions": actions, "errors": errors }),
+            );
         }
         Ok(rows)
     }

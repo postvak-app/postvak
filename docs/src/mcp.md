@@ -112,7 +112,7 @@ The names follow the CLI commands. A tool that lists things returns the CLI's `-
 
 - `archive`, `delete`, `junk`, `mark` and `move` act on uids in a folder, INBOX by default. `mark` takes `how` (`read`, `unread`, `flag` or `unflag`), `move` takes `to`, and `junk` with `not: true` reports mail as not junk: it tags `$NotJunk` and moves it to INBOX. `log` shows them under the rule name `mcp:<client name>`, or `mcp`.
 - `unsubscribe` leaves a message's mailing list by one-click POST when the sender offers it; otherwise its row gives the page or `mailto:` address for the human to open. Use `dry_run` first: unsubscribing tells the sender the address is read. The request goes to the sender directly, not through the daemon, and is not recorded in `log`.
-- `rules_apply_existing` runs one enabled rule over the mail each account already holds, the way `postvak rules apply-existing` does, and reports `evaluated`, `actions` and `errors` per account. With `dry_run` it lists the planned rows from the local store.
+- `rules_apply_existing` runs one enabled rule over the mail each account already holds, the way `postvak rules apply-existing` does, and reports `evaluated`, `actions` and `errors` per account. With `dry_run` it lists the planned rows from the local store. When the rule would delete mail from the server for good, it refuses with how many messages per account until it is called again with `yes`.
 - `trash_purge` deletes the backups older than each account's `trash_retention_days`, for good; it reports `removed` per account.
 - `trash_restore` restores a backup, given as the bare file name `trash_list` returns.
 

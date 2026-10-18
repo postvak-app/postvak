@@ -45,7 +45,7 @@ pub fn header_text(raw_headers: &[u8], name: &str) -> Option<String> {
     value.as_text().map(|text| text.trim().to_string())
 }
 
-pub fn synthetic_message_id(folder: &str, uid: u32) -> String {
+fn synthetic_message_id(folder: &str, uid: u32) -> String {
     format!("{uid}@{folder}.postvak")
 }
 
@@ -83,12 +83,8 @@ pub struct InlinePart {
     pub bytes: Vec<u8>,
 }
 
-/// The first `text/html` part with every `Content-ID` part, or `None` when the message has no HTML part.
-pub fn html_body(raw: &[u8]) -> Option<HtmlBody> {
-    html_of(&MessageParser::default().parse(raw)?)
-}
-
-/// `attachments` and `html_body` from one parse, for a reader that shows both.
+/// `attachments`, and the first `text/html` part with every `Content-ID` part (`None` when there is no HTML part), from
+/// one parse, for a reader that shows both.
 pub fn attachments_and_html(raw: &[u8]) -> (Vec<Attachment>, Option<HtmlBody>) {
     match MessageParser::default().parse(raw) {
         Some(msg) => (attachments_of(&msg), html_of(&msg)),
@@ -313,10 +309,9 @@ pub fn clean(text: &str, keep_layout: bool) -> String {
 /// (U+E0000–U+E007F, "ASCII smuggling"), bidi controls, zero-width spaces and the other invisible format characters.
 /// For text an agent reads. The zero-width joiner stays, so joined emoji survive; tag-sequence flags lose their tags.
 pub fn clean_for_agent(text: &str, keep_layout: bool) -> String {
-    text.chars()
-        .filter(|&c| {
-            (!c.is_control() || (keep_layout && matches!(c, '\n' | '\t'))) && !invisible(c)
-        })
+    clean(text, keep_layout)
+        .chars()
+        .filter(|&c| !invisible(c))
         .collect()
 }
 
@@ -476,12 +471,12 @@ List-Id: Dev <dev.lists.example.com>\r\n\
     #[test]
     fn html_body_is_the_html_part_or_none() {
         let html = b"From: a@b\r\nContent-Type: text/html\r\n\r\n<p>hello</p>\r\n";
-        let body = html_body(html).unwrap();
+        let body = attachments_and_html(html).1.unwrap();
         assert_eq!(body.html.trim(), "<p>hello</p>");
         assert!(body.inline.is_empty());
         let plain = b"From: a@b\r\nContent-Type: text/plain\r\n\r\n<p>not html</p>\r\n";
-        assert_eq!(html_body(plain), None);
-        assert_eq!(html_body(b""), None);
+        assert_eq!(attachments_and_html(plain).1, None);
+        assert_eq!(attachments_and_html(b"").1, None);
     }
 
     #[test]
@@ -489,7 +484,10 @@ List-Id: Dev <dev.lists.example.com>\r\n\
         let raw = b"From: a@b\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=\"b\"\r\n\r\n\
 --b\r\nContent-Type: text/plain\r\n\r\nplain\r\n\
 --b\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<b>rich</b>\r\n--b--\r\n";
-        assert_eq!(html_body(raw).unwrap().html.trim(), "<b>rich</b>");
+        assert_eq!(
+            attachments_and_html(raw).1.unwrap().html.trim(),
+            "<b>rich</b>"
+        );
     }
 
     #[test]
@@ -498,7 +496,7 @@ List-Id: Dev <dev.lists.example.com>\r\n\
 --b\r\nContent-Type: text/html\r\n\r\n<img src=\"cid:logo@x\"><img src=\"cid:sig\">\r\n\
 --b\r\nContent-Type: image/png\r\nContent-ID: <logo@x>\r\nContent-Transfer-Encoding: base64\r\n\r\niVBORw==\r\n\
 --b\r\nContent-Type: image/gif\r\nContent-ID: sig\r\n\r\nGIF89a\r\n--b--\r\n";
-        let body = html_body(raw).unwrap();
+        let body = attachments_and_html(raw).1.unwrap();
         let cids: Vec<_> = body
             .inline
             .iter()

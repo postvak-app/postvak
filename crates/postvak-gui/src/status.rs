@@ -6,7 +6,7 @@ use postvak_core::sync::Activity;
 use super::state::{Account, App};
 
 /// A line of the status bar: the window's error, or an account's state.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Default, PartialEq)]
 pub(crate) struct Line {
     pub text: String,
     pub dot: Option<Dot>,
@@ -19,9 +19,8 @@ pub(crate) struct Line {
 pub(crate) fn lines(app: &App) -> Vec<Line> {
     let error = app.error.iter().map(|error| Line {
         text: error.clone(),
-        dot: None,
         failed: true,
-        progress: None,
+        ..Line::default()
     });
     let accounts = app.accounts.iter().map(|account| Line {
         text: account_line(account),
@@ -31,9 +30,7 @@ pub(crate) fn lines(app: &App) -> Vec<Line> {
     });
     let notice = app.notice.iter().map(|text| Line {
         text: text.clone(),
-        dot: None,
-        failed: false,
-        progress: None,
+        ..Line::default()
     });
     error.chain(notice).chain(accounts).collect()
 }
@@ -47,12 +44,10 @@ pub(crate) fn summary(app: &App) -> Line {
         (false, None) => 2,
         (false, _) => 3,
     };
-    lines(app).into_iter().min_by_key(urgency).unwrap_or(Line {
-        text: String::new(),
-        dot: None,
-        failed: false,
-        progress: None,
-    })
+    lines(app)
+        .into_iter()
+        .min_by_key(urgency)
+        .unwrap_or_default()
 }
 
 /// Every line, one per row, for the summary's hover text.

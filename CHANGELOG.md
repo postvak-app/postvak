@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/postvak-app/postvak/compare/v0.3.1...v0.4.0) - 2026-10-18
+
+### Added
+
+- *(gui,mcp)* confirm before rules apply-existing expunges mail ([#209](https://github.com/postvak-app/postvak/pull/209))
+- local crash reports for the GUI and the daemon, without mail data ([#210](https://github.com/postvak-app/postvak/pull/210))
+- *(cli)* confirm before rules apply-existing expunges mail ([#205](https://github.com/postvak-app/postvak/pull/205))
+- *(gui)* sender brand logos (BIMI) in the reader ([#201](https://github.com/postvak-app/postvak/pull/201))
+- *(gui)* Inkt window palettes, Bricolage Grotesque headings, Ossenbloed retired ([#195](https://github.com/postvak-app/postvak/pull/195))
+- *(brand)* try the Kaart mark on the Inkt palette ([#194](https://github.com/postvak-app/postvak/pull/194))
+- account add through the library, and MCP accounts, status and attachment_save ([#186](https://github.com/postvak-app/postvak/pull/186))
+- *(rules)* add flagged, larger_than and stop, and decode header matches ([#183](https://github.com/postvak-app/postvak/pull/183))
+
+### Fixed
+
+- *(flatpak)* tolerate re-signing a commit the key already signed ([#213](https://github.com/postvak-app/postvak/pull/213))
+- harden Postvak against the security audit's findings ([#211](https://github.com/postvak-app/postvak/pull/211))
+- *(cli)* strip invisible characters from --json output ([#202](https://github.com/postvak-app/postvak/pull/202))
+- *(imap)* give every command after login a timeout, reconnecting on a stalled server ([#208](https://github.com/postvak-app/postvak/pull/208))
+- *(imap)* a move refused after the copy clears \Deleted from the source again ([#207](https://github.com/postvak-app/postvak/pull/207))
+- *(mcp)* strip invisible characters and flag mail headers as untrusted ([#200](https://github.com/postvak-app/postvak/pull/200))
+
+### Other
+
+- over-engineering quick wins ([#212](https://github.com/postvak-app/postvak/pull/212))
+- *(macos)* bundle a dSYM in Postvak.app so crash reports name file:line ([#214](https://github.com/postvak-app/postvak/pull/214))
+- pull requests only type-check on macOS ([#206](https://github.com/postvak-app/postvak/pull/206))
+- keep sccache read-only in the merge queue ([#204](https://github.com/postvak-app/postvak/pull/204))
+- deterministic rules instead of an AI sorting your mail, as a selling point ([#203](https://github.com/postvak-app/postvak/pull/203))
+- cache workspace crates with sccache, and keep main's caches warm ([#199](https://github.com/postvak-app/postvak/pull/199))
+- unread counts from an index of unread mail, and a 2 ms list budget ([#193](https://github.com/postvak-app/postvak/pull/193))
+- *(gui)* reload the list off the window thread after a sync event ([#192](https://github.com/postvak-app/postvak/pull/192))
+- *(agents)* drop the first-publish note for the workspace crates ([#189](https://github.com/postvak-app/postvak/pull/189))
+- deny unreachable!, check dependency rules, run property tests nightly ([#184](https://github.com/postvak-app/postvak/pull/184))
+- *(macos-app)* push the cask only after release.yml has pushed the formula ([#185](https://github.com/postvak-app/postvak/pull/185))
+
 ## [0.3.1](https://github.com/postvak-app/postvak/compare/v0.3.0...v0.3.1) - 2026-10-17
 
 ### Added
