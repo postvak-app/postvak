@@ -110,6 +110,7 @@ export component MailWindow inherits Window {
     in property <string> page-selection;
     in property <Sheet> sheet;
     in property <string> rules-banner;
+    in property <string> rules-counts;
     in property <[ProposalData]> proposals;
     in property <[RuleData]> rules;
     in property <[TableColumn]> sheet-columns;
@@ -181,6 +182,7 @@ export component MailWindow inherits Window {
     callback open-rules-file();
     callback approve-rule(int);
     callback reject-rule(int);
+    callback preview-rule(int);
     callback set-enabled(int, bool);
     callback apply-rule(int);
     callback restore(int);
@@ -516,6 +518,7 @@ export component MailWindow inherits Window {
                     RulesPane {
                         sheet: root.sheet;
                         banner: root.rules-banner;
+                        counts: root.rules-counts;
                         proposals: root.proposals;
                         rules: root.rules;
                         columns: root.sheet-columns;
@@ -526,6 +529,7 @@ export component MailWindow inherits Window {
                         open-rules-file => { root.open-rules-file(); }
                         approve(i) => { root.approve-rule(i); }
                         reject(i) => { root.reject-rule(i); }
+                        preview(i) => { root.preview-rule(i); }
                         set-enabled(i, enabled) => { root.set-enabled(i, enabled); }
                         apply-rule(i) => { root.apply-rule(i); }
                         restore(i) => { root.restore(i); }

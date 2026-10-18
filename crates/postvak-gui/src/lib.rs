@@ -5,6 +5,7 @@ mod avatar;
 mod bench;
 mod bind;
 mod body;
+mod draft;
 #[cfg(test)]
 mod fixture;
 mod folders;

@@ -1,4 +1,5 @@
 //! The Rules, Activity and Trash views: what replaces the list and body columns.
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use postvak_core::help;
@@ -10,6 +11,7 @@ use postvak_core::trash::{Trash, TrashEntry};
 
 use postvak_core::time::date_time;
 
+use super::draft;
 use super::state::{Account, App};
 
 /// Entries shown in the Activity view.
@@ -17,6 +19,8 @@ const LOG_LIMIT: u32 = 500;
 
 pub(crate) struct RulesState {
     pub error: Option<String>,
+    /// "Preview on cached mail" results by proposal name; a reload drops them.
+    pub previews: BTreeMap<String, String>,
     pub rules: Vec<Rule>,
 }
 
@@ -24,15 +28,17 @@ impl RulesState {
     /// The file's rules, or the previous ones when it does not parse. A rule that does not compile is reported but
     /// still listed, so it can be switched off.
     pub fn load(path: &Path, previous: Vec<Rule>) -> RulesState {
-        match rules::load(path) {
-            Ok(file) => RulesState {
-                error: rules::compile(&file).err().map(|e| e.to_string()),
-                rules: file.rules,
-            },
-            Err(e) => RulesState {
-                error: Some(e.to_string()),
-                rules: previous,
-            },
+        let (error, rules) = match rules::load(path) {
+            Ok(file) => (
+                rules::compile(&file).err().map(|e| e.to_string()),
+                file.rules,
+            ),
+            Err(e) => (Some(e.to_string()), previous),
+        };
+        RulesState {
+            error,
+            previews: BTreeMap::new(),
+            rules,
         }
     }
 }
@@ -40,9 +46,14 @@ impl RulesState {
 /// A rule waiting for approval, as the Rules view shows it.
 pub(crate) struct Proposal {
     pub name: String,
-    /// "codes · proposed by agent".
-    pub title: String,
+    pub label: String,
+    /// "proposed by agent".
+    pub by: String,
+    pub summary: String,
+    /// The TOML it adds, each line behind a "+".
     pub toml: String,
+    /// What "Preview on cached mail" found, or empty.
+    pub preview: String,
 }
 
 /// A rule in the Rules view's list.
@@ -54,6 +65,22 @@ pub(crate) struct RuleLine {
     pub scope: String,
     /// "proposed by agent", or empty.
     pub by: String,
+    pub summary: String,
+}
+
+/// "1 rule · 2 proposals", beside the Rules title.
+pub(crate) fn counts(rules: usize, proposals: usize) -> String {
+    let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
+    format!(
+        "{} · {}",
+        plural(rules, "rule"),
+        plural(proposals, "proposal")
+    )
+}
+
+/// Whether the list shows `rule` as a proposal rather than a rule.
+pub(crate) fn is_proposal(rule: &Rule) -> bool {
+    !rule.enabled && rule.proposed_by.is_some()
 }
 
 /// The line above the Rules view when rules.toml does not load.
@@ -69,25 +96,27 @@ pub(crate) fn proposals(state: &RulesState) -> Vec<Proposal> {
     state
         .rules
         .iter()
-        .filter(|rule| !rule.enabled && rule.proposed_by.is_some())
+        .filter(|rule| is_proposal(rule))
         .map(|rule| {
-            let by = rule.proposed_by.as_deref().unwrap_or_default();
+            let toml = toml::to_string(&RuleFile {
+                rules: vec![rule.clone()],
+            })
+            .unwrap_or_else(|e| e.to_string());
+            let toml: Vec<String> = clean(&toml, true)
+                .trim_end()
+                .lines()
+                .map(|line| format!("+ {line}").trim_end().to_owned())
+                .collect();
             Proposal {
                 name: rule.name.clone(),
-                title: format!(
-                    "{} · proposed by {}",
-                    clean(&rule.name, false),
-                    clean(by, false)
+                label: clean(&rule.name, false),
+                by: format!(
+                    "proposed by {}",
+                    clean(rule.proposed_by.as_deref().unwrap_or_default(), false)
                 ),
-                toml: clean(
-                    &toml::to_string(&RuleFile {
-                        rules: vec![rule.clone()],
-                    })
-                    .unwrap_or_else(|e| e.to_string()),
-                    true,
-                )
-                .trim_end()
-                .to_owned(),
+                summary: draft::summary(rule),
+                toml: toml.join("\n"),
+                preview: state.previews.get(&rule.name).cloned().unwrap_or_default(),
             }
         })
         .collect()
@@ -113,9 +142,15 @@ pub(crate) fn rule_lines(state: &RulesState) -> Vec<RuleLine> {
                 .as_deref()
                 .map(|by| format!("proposed by {}", clean(by, false)))
                 .unwrap_or_default(),
+            summary: draft::summary(rule),
         }
     };
-    state.rules.iter().map(line).collect()
+    state
+        .rules
+        .iter()
+        .filter(|rule| !is_proposal(rule))
+        .map(line)
+        .collect()
 }
 
 /// A table column: its heading, its narrowest width, and its share of the room left over.
@@ -257,7 +292,7 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use crate::state::View;
-    use crate::test_support::{Fixture, Open, Wires};
+    use crate::test_support::{Fixture, Open, Wires, message};
     use postvak_core::store::LogEntry;
     use postvak_core::sync::{Command, Event};
     use postvak_core::trash::Trash;
@@ -299,14 +334,12 @@ mod tests {
             let buttons = open.find("Apply to existing mail");
             assert_eq!(
                 buttons.len(),
-                3,
-                "one per rule: newsletters, codes, only-work"
+                2,
+                "one per rule, not for the proposal: newsletters, only-work"
             );
             buttons[nth].invoke_accessible_default_action();
         };
         apply(1);
-        assert!(wires.sent().is_empty(), "codes is a disabled proposal");
-        apply(2);
         let only = |name: &str, account: &str| {
             (
                 account.to_string(),
@@ -438,8 +471,9 @@ mod tests {
         // A clock left from when the rule ran before must not let it act on older mail.
         fx.store("work").restart_rule_clock("codes", 1).unwrap();
         let (open, wires) = rules_view(&fx);
-        assert_eq!(open.find("codes · proposed by agent").len(), 1);
-        assert_eq!(open.labels_containing("name = \"codes\"").len(), 1);
+        assert_eq!(open.find("proposed by agent").len(), 1);
+        assert_eq!(open.find("subject contains \"code\" → delete").len(), 1);
+        assert_eq!(open.labels_containing("+ name = \"codes\"").len(), 1);
         open.click("Approve");
         assert!(enabled(&fx, "codes"));
         assert!(fx.store("work").rule_first_seen("codes", "", 0).unwrap() > 1);
@@ -453,20 +487,55 @@ mod tests {
     }
 
     #[test]
+    fn the_header_counts_rules_and_proposals_and_rows_say_what_they_do() {
+        assert_eq!(super::counts(1, 2), "1 rule · 2 proposals");
+        assert_eq!(super::counts(0, 1), "0 rules · 1 proposal");
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = rules_view(&fx);
+        assert_eq!(open.find("1 rule · 1 proposal").len(), 1);
+        assert_eq!(open.find("every account · INBOX").len(), 1);
+        assert_eq!(open.find("from contains \"news@\" → archive").len(), 1);
+    }
+
+    #[test]
+    fn preview_counts_what_a_proposal_would_do_to_cached_mail() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "your code is 1234"));
+        fx.add("work", message("INBOX", 2, "lunch"));
+        let (open, wires) = rules_view(&fx);
+        open.click("Preview on cached mail");
+        assert_eq!(open.find("would delete 1 cached message").len(), 1);
+        assert!(wires.sent().is_empty());
+        assert!(!enabled(&fx, "codes"), "a preview changes nothing");
+    }
+
+    #[test]
+    fn agent_text_is_drawn_without_control_characters() {
+        let sneaky = "[[rules]]\nname = \"codes\"\nenabled = false\nproposed_by = \"age\\u001bnt\"\nmatch.subject = { contains = \"\\u001b[2Jcode\" }\nactions = [\"delete\"]\n";
+        let fx = Fixture::new(&["work"]);
+        std::fs::write(fx.paths.rules_file(), sneaky).unwrap();
+        let (open, _wires) = view(&fx, View::Rules);
+        assert_eq!(open.find("proposed by agent").len(), 1);
+        assert_eq!(open.find("subject contains \"[2Jcode\" → delete").len(), 1);
+        assert!(open.labels_containing("\u{1b}").is_empty());
+    }
+
+    #[test]
     fn reject_takes_the_proposal_out() {
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = rules_view(&fx);
         open.click("Reject");
         let file = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
         assert!(file.rules.iter().all(|r| r.name != "codes"));
-        assert!(open.find("Proposals").is_empty());
+        assert!(open.find("Approve").is_empty());
     }
 
     #[test]
     fn the_switch_turns_a_rule_off_and_keeps_comments() {
         let fx = Fixture::new(&["work"]);
         let (open, wires) = rules_view(&fx);
-        open.get("newsletters").invoke_accessible_default_action();
+        open.get("Enable newsletters")
+            .invoke_accessible_default_action();
         assert!(!enabled(&fx, "newsletters"));
         assert!(
             std::fs::read_to_string(fx.paths.rules_file())

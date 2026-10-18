@@ -173,3 +173,35 @@ export component Link inherits TouchArea {
         }
     }
 }
+
+// An on/off switch in the pane's colours; `name` is what screen readers and tests call it. The owner flips `checked`.
+export component Switch inherits Rectangle {
+    in property <bool> checked;
+    in property <string> name;
+    callback toggled(bool);
+
+    width: 3 * Theme.row / 2;
+    height: 3 * Theme.row / 4;
+    border-radius: self.height / 2;
+    background: root.checked ? Theme.pane.accent : Theme.pane.border;
+    accessible-role: switch;
+    accessible-label: root.name;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-action-default => { root.toggled(!root.checked); }
+
+    // The knob takes the pane's background when on, so it reads on the accent in both modes.
+    Rectangle {
+        width: parent.height * 3 / 4;
+        height: self.width;
+        x: root.checked ? parent.width - parent.height / 2 - self.width / 2 : parent.height / 2 - self.width / 2;
+        y: (parent.height - self.height) / 2;
+        border-radius: self.width / 2;
+        background: root.checked ? Theme.pane.background : Theme.pane.muted;
+        animate x { duration: Theme.state-fade; easing: ease-out; }
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.toggled(!root.checked); }
+    }
+}

@@ -14,7 +14,7 @@ use postvak_core::daemon::client::NewerDaemon;
 use postvak_core::daemon::wire::AccountStatus;
 use postvak_core::message::{self, Attachment, HtmlBody, clean};
 use postvak_core::paths::{FileWatch, Paths};
-use postvak_core::rules::{self as rule_file, Action, RulesError};
+use postvak_core::rules::{self as rule_file, Action, Rule, RuleFile, RulesError};
 use postvak_core::store::{Filter, LogEntry, Message, Store, StoreError};
 use postvak_core::sync::{Activity, Command, Event};
 use postvak_core::trash::Trash;
@@ -22,6 +22,7 @@ use postvak_core::unsubscribe::{self, Method};
 
 use super::account::{self, AccountForm};
 use super::body;
+use super::draft;
 use super::folders;
 use super::html::{self, Fetcher, HtmlState, Renderer, Reply, Wake};
 use super::list::{self, ListState, Optimistic, Row, RowKey};
@@ -289,6 +290,8 @@ pub(crate) enum UiAction {
     OpenUrl(String),
     OpenRulesFile,
     OpenSource,
+    /// Count what a rule would do to the cached mail, without doing it.
+    PreviewRule(String),
     RejectRule(String),
     Restore(usize, PathBuf),
     /// Save the form's account, replacing one of the same name.
@@ -991,6 +994,12 @@ impl App {
                 }
             }
             UiAction::OpenRulesFile => self.open_rules_file(),
+            UiAction::PreviewRule(name) => {
+                if let Some(rule) = self.rules.rules.iter().find(|rule| rule.name == name) {
+                    let text = self.preview(rule.clone());
+                    self.rules.previews.insert(name, text);
+                }
+            }
             UiAction::RejectRule(name) => {
                 self.edit_rules(|path| rule_file::edit::reject(path, &name));
             }
@@ -2235,6 +2244,53 @@ impl App {
             Ok(()) => self.rules_changed(),
             Err(e) => self.note_error(None, e.to_string()),
         }
+    }
+
+    /// What `rule` would do to every account's cached mail if it were enabled, as `postvak rules test` shows it. Reads
+    /// config.toml and the stores only. ponytail: scans the cache on the window thread; move it to a thread if large
+    /// stores stall the window.
+    fn preview(&self, mut rule: Rule) -> String {
+        rule.enabled = true;
+        let compiled = match rule_file::compile(&RuleFile {
+            rules: vec![rule.clone()],
+        }) {
+            Ok(compiled) => compiled,
+            Err(e) => return e.to_string(),
+        };
+        let config = match Config::load(&self.paths.config_file()) {
+            Ok(config) => config,
+            Err(e) => return e.to_string(),
+        };
+        let mut matched = HashSet::new();
+        for account in &self.accounts {
+            let Ok(store) = &account.store else { continue };
+            let Some(settings) = config.accounts.iter().find(|a| a.name == account.name) else {
+                continue;
+            };
+            let planned = settings
+                .identity()
+                .map_err(|e| e.to_string())
+                .and_then(|identity| {
+                    postvak_core::actions::planned(
+                        &compiled,
+                        store,
+                        settings,
+                        &identity,
+                        postvak_core::time::now(),
+                    )
+                    .map_err(|e| e.to_string())
+                });
+            match planned {
+                Ok(planned) => matched.extend(
+                    planned
+                        .into_iter()
+                        .map(|p| (account.name.clone(), p.message.folder, p.message.uid)),
+                ),
+                Err(e) => return format!("{}: {e}", account.name),
+            }
+        }
+        let needs_body = compiled.iter().any(|compiled| compiled.needs_body());
+        draft::preview_text(&rule, matched.len(), needs_body)
     }
 
     fn open_rules_file(&mut self) {

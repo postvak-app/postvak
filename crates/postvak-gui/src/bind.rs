@@ -308,22 +308,31 @@ fn present_sheet(app: &App, window: &MailWindow) {
         View::Rules => {
             window.set_sheet(Sheet::Rules);
             window.set_rules_banner(rules::banner(&app.rules).unwrap_or_default().into());
-            let proposals = rules::proposals(&app.rules)
+            let proposals: Vec<ProposalData> = rules::proposals(&app.rules)
                 .into_iter()
                 .map(|p| ProposalData {
-                    title: p.title.into(),
+                    label: p.label.into(),
+                    by: p.by.into(),
+                    summary: p.summary.into(),
                     toml: p.toml.into(),
-                });
-            sync(window.get_proposals(), proposals.collect(), |m| {
+                    preview: p.preview.into(),
+                })
+                .collect();
+            let lines: Vec<RuleData> = rules::rule_lines(&app.rules)
+                .into_iter()
+                .map(|r| RuleData {
+                    label: r.label.into(),
+                    enabled: r.enabled,
+                    scope: r.scope.into(),
+                    by: r.by.into(),
+                    summary: r.summary.into(),
+                })
+                .collect();
+            window.set_rules_counts(rules::counts(lines.len(), proposals.len()).into());
+            sync(window.get_proposals(), proposals, |m| {
                 window.set_proposals(m)
             });
-            let lines = rules::rule_lines(&app.rules).into_iter().map(|r| RuleData {
-                label: r.label.into(),
-                enabled: r.enabled,
-                scope: r.scope.into(),
-                by: r.by.into(),
-            });
-            sync(window.get_rules(), lines.collect(), |m| window.set_rules(m));
+            sync(window.get_rules(), lines, |m| window.set_rules(m));
         }
         View::Activity => {
             window.set_sheet(Sheet::Activity);
@@ -649,6 +658,11 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     window.on_reject_rule(move |i| {
         on(one(move |app| {
             Some(UiAction::RejectRule(proposal(app, i)?))
+        }));
+    });
+    window.on_preview_rule(move |i| {
+        on(one(move |app| {
+            Some(UiAction::PreviewRule(proposal(app, i)?))
         }));
     });
     window.on_set_enabled(move |i, enabled| {

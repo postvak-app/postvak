@@ -1,13 +1,16 @@
 // The Rules, Activity and Backups views, in place of the list and the body. `rules.rs` words them.
-import { CheckBox, ScrollView, StandardTableView } from "std-widgets.slint";
+import { ScrollView, StandardTableView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Heading, TextButton } from "common.slint";
+import { Heading, Switch, TextButton } from "common.slint";
 
 export enum Sheet { rules, activity, backups }
 
 export struct ProposalData {
-    title: string,
+    label: string,
+    by: string,
+    summary: string,
     toml: string,
+    preview: string,
 }
 
 export struct RuleData {
@@ -15,32 +18,32 @@ export struct RuleData {
     enabled: bool,
     scope: string,
     by: string,
+    summary: string,
 }
 
-// Every other row of the rules list, as wide as the list.
-component Stripes {
-    in property <int> rows;
-    for r in root.rows: Rectangle {
-        x: 0;
-        y: r * Theme.control;
-        width: root.width;
-        height: Theme.control;
-        border-radius: Theme.pad / 2;
-        background: mod(r, 2) == 0 ? Theme.pane.panel : transparent;
+// A small rounded label, such as "work · INBOX" or "proposed by agent".
+component Chip inherits Rectangle {
+    in property <string> text;
+    in property <color> tint: Theme.pane.muted;
+    height: Theme.row - Theme.pad / 2;
+    width: label.preferred-width + Theme.pad;
+    border-radius: Theme.pad;
+    border-width: 1px;
+    border-color: root.tint;
+    label := Text {
+        text: root.text;
+        color: root.tint;
+        font-size: Theme.small-size;
+        vertical-alignment: center;
     }
-}
-
-// Names a part of the sheet under its title.
-component SectionLabel inherits Text {
-    font-size: Theme.small-size;
-    font-weight: 600;
-    color: Theme.pane.muted;
 }
 
 export component RulesPane inherits Rectangle {
     in property <Sheet> sheet;
     // Rules.
     in property <string> banner;
+    // "1 rule · 2 proposals".
+    in property <string> counts;
     in property <[ProposalData]> proposals;
     in property <[RuleData]> rules;
     // Activity and Backups.
@@ -53,6 +56,7 @@ export component RulesPane inherits Rectangle {
     callback open-rules-file();
     callback approve(int);
     callback reject(int);
+    callback preview(int);
     callback set-enabled(int, bool);
     callback apply-rule(int);
     callback restore(int);
@@ -76,6 +80,11 @@ export component RulesPane inherits Rectangle {
             spacing: Theme.pad;
             Heading {
                 text: root.sheet == Sheet.rules ? "Rules" : root.sheet == Sheet.activity ? "Activity" : "Backups";
+                vertical-alignment: center;
+            }
+            if root.sheet == Sheet.rules: Text {
+                text: root.counts;
+                color: Theme.pane.muted;
                 vertical-alignment: center;
             }
             Rectangle { horizontal-stretch: 1; }
@@ -127,30 +136,64 @@ export component RulesPane inherits Rectangle {
             sort-descending(column) => { root.sort(column, false); }
         }
 
-        if root.sheet == Sheet.rules: ScrollView {
+        if root.sheet == Sheet.rules: HorizontalLayout {
             vertical-stretch: 1;
-            VerticalLayout {
-                alignment: start;
-                spacing: Theme.pad;
+            spacing: Theme.inset;
+            ScrollView {
+                width: 460px;
+                VerticalLayout {
+                    alignment: start;
+                    spacing: Theme.pad;
 
-                if root.proposals.length > 0: SectionLabel { text: "Proposals"; }
-                for proposal[i] in root.proposals: HorizontalLayout {
-                    Rectangle {
+                    for proposal[i] in root.proposals: Rectangle {
                         border-width: 1px;
                         border-color: Theme.pane.border;
                         border-radius: Theme.pad;
                         VerticalLayout {
                             padding: Theme.pad;
                             spacing: Theme.pad / 2;
-                            Text {
-                                text: proposal.title;
-                                font-weight: 600;
-                                color: Theme.pane.strong;
+                            HorizontalLayout {
+                                spacing: Theme.pad;
+                                Text {
+                                    text: proposal.label;
+                                    font-weight: 600;
+                                    color: Theme.pane.strong;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    Chip {
+                                        text: proposal.by;
+                                        tint: Theme.pane.warning;
+                                    }
+                                }
+                                Rectangle { horizontal-stretch: 1; }
                             }
                             Text {
-                                text: proposal.toml;
+                                text: proposal.summary;
                                 font-family: Theme.mono-font;
-                                color: Theme.pane.text;
+                                font-size: Theme.small-size;
+                                color: Theme.pane.secondary;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: "Adds to rules.toml";
+                                font-size: Theme.small-size;
+                                color: Theme.pane.muted;
+                            }
+                            Rectangle {
+                                background: Theme.pane.panel;
+                                border-radius: Theme.pad / 2;
+                                VerticalLayout {
+                                    padding: Theme.pad;
+                                    Text {
+                                        text: proposal.toml;
+                                        font-family: Theme.mono-font;
+                                        font-size: Theme.small-size;
+                                        color: Theme.pane.text;
+                                    }
+                                }
                             }
                             HorizontalLayout {
                                 spacing: Theme.pad / 2;
@@ -166,71 +209,94 @@ export component RulesPane inherits Rectangle {
                                     palette: Theme.pane;
                                     clicked => { root.reject(i); }
                                 }
+                                TextButton {
+                                    text: "Preview on cached mail";
+                                    palette: Theme.pane;
+                                    hint: "Counts what it would do to the mail already downloaded; changes nothing";
+                                    clicked => { root.preview(i); }
+                                }
                                 Rectangle { horizontal-stretch: 1; }
+                            }
+                            if proposal.preview != "": Text {
+                                text: proposal.preview;
+                                color: Theme.pane.secondary;
+                                wrap: word-wrap;
                             }
                         }
                     }
-                    Rectangle { horizontal-stretch: 1; }
-                }
 
-                // The title above already says Rules; this only parts them from the proposals.
-                if root.proposals.length > 0: SectionLabel { text: "Your rules"; }
-                if root.rules.length == 0: Text {
-                    text: "rules.toml has no rules yet.";
-                    color: Theme.pane.muted;
-                }
-                // The stripes run the pane's width, as the tables' rows do; the columns keep their own widths.
-                if root.rules.length > 0: Rectangle {
-                    height: rule-grid.preferred-height;
-                        Stripes {
-                            x: 0;
-                            y: 0;
-                            width: parent.width;
-                            height: parent.height;
-                            rows: root.rules.length;
-                        }
-                        rule-grid := GridLayout {
-                            x: 0;
-                            width: self.preferred-width;
-                            spacing-horizontal: Theme.inset;
-                            padding-left: Theme.pad;
-                            padding-right: Theme.pad;
-                            for rule[i] in root.rules: Row {
-                                VerticalLayout {
-                                    height: Theme.control;
-                                    alignment: center;
-                                    CheckBox {
+                    if root.rules.length == 0: Text {
+                        text: "rules.toml has no rules yet.";
+                        color: Theme.pane.muted;
+                    }
+                    for rule[i] in root.rules: Rectangle {
+                        border-radius: Theme.pad / 2;
+                        background: mod(i, 2) == 0 ? Theme.pane.panel : transparent;
+                        HorizontalLayout {
+                            padding: Theme.pad;
+                            spacing: Theme.pad;
+                            VerticalLayout {
+                                alignment: start;
+                                Switch {
+                                    name: "Enable " + rule.label;
+                                    checked: rule.enabled;
+                                    toggled(on) => { root.set-enabled(i, on); }
+                                }
+                            }
+                            VerticalLayout {
+                                spacing: Theme.pad / 2;
+                                HorizontalLayout {
+                                    spacing: Theme.pad;
+                                    Text {
                                         text: rule.label;
-                                        checked: rule.enabled;
-                                        toggled => { root.set-enabled(i, self.checked); }
+                                        font-weight: 600;
+                                        color: Theme.pane.strong;
+                                        overflow: elide;
+                                        vertical-alignment: center;
                                     }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Chip { text: rule.scope; }
+                                    }
+                                    if rule.by != "": VerticalLayout {
+                                        alignment: center;
+                                        Chip {
+                                            text: rule.by;
+                                            tint: Theme.pane.warning;
+                                        }
+                                    }
+                                    Rectangle { horizontal-stretch: 1; }
                                 }
                                 Text {
-                                    text: rule.scope;
-                                    color: Theme.pane.text;
-                                    vertical-alignment: center;
+                                    text: rule.summary;
+                                    font-family: Theme.mono-font;
+                                    font-size: Theme.small-size;
+                                    color: Theme.pane.secondary;
+                                    wrap: word-wrap;
                                 }
-                                Text {
-                                    text: rule.by;
-                                    color: Theme.pane.muted;
-                                    vertical-alignment: center;
-                                }
-                                VerticalLayout {
-                                    alignment: center;
+                                HorizontalLayout {
                                     TextButton {
                                         text: "Apply to existing mail";
-                                        framed: true;
                                         palette: Theme.pane;
                                         enabled: rule.enabled;
                                         hint: "Runs this rule's actions, which may delete mail, on the mail its accounts already hold, now";
                                         disabled-hint: "Turn the rule on first";
                                         clicked => { root.apply-rule(i); }
                                     }
+                                    Rectangle { horizontal-stretch: 1; }
                                 }
                             }
                         }
+                    }
+                    Text {
+                        text: "Rules run top to bottom on every sync, only on mail that arrives after they are enabled.";
+                        font-size: Theme.small-size;
+                        color: Theme.pane.muted;
+                        wrap: word-wrap;
+                    }
                 }
             }
+            Rectangle { horizontal-stretch: 1; }
         }
     }
 }
