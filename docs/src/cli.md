@@ -353,6 +353,7 @@ Run one enabled rule against mail that predates it; dry run lists what it would 
 
 * `--account <ACCOUNT>`
 * `--dry-run`
+* `--yes` — Run even when the rule would permanently delete mail from the server
 
 
 

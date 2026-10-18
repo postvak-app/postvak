@@ -372,6 +372,51 @@ fn apply_existing_refuses_a_disabled_rule() {
 }
 
 #[test]
+fn apply_existing_refuses_to_expunge_without_yes() {
+    let (home, _store) = seeded_home(&[
+        message(42, "a@example.com", "Your code"),
+        message(43, "b@example.com", "Another code"),
+    ]);
+    std::fs::write(
+        Paths::under(home.path()).rules_file(),
+        "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = [\"delete\"]\n",
+    )
+    .unwrap();
+    let out = postvak(home.path(), &["rules", "apply-existing", "codes"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(
+            "work: would permanently delete 2 messages from the server; .eml backups kept locally for 30 days"
+        ),
+        "{stderr}"
+    );
+    assert!(stderr.contains("--yes"), "{stderr}");
+    assert!(
+        !Paths::under(home.path()).daemon_socket().exists(),
+        "asked the daemon before confirming"
+    );
+}
+
+#[test]
+fn apply_existing_runs_a_flag_rule_without_yes() {
+    let (home, _store) = seeded_home(&[message(42, "a@example.com", "Your code")]);
+    std::fs::write(
+        Paths::under(home.path()).rules_file(),
+        "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = [\"flag\"]\n",
+    )
+    .unwrap();
+    let out = postvak(home.path(), &["rules", "apply-existing", "codes"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("--yes"), "{stderr}");
+    assert!(
+        Paths::under(home.path()).daemon_socket().exists(),
+        "never asked the daemon: {stderr}"
+    );
+    assert!(postvak(home.path(), &["daemon", "stop"]).status.success());
+}
+
+#[test]
 fn direct_actions_need_at_least_one_uid() {
     let (home, _store) = seeded_home(&[]);
     assert_eq!(postvak(home.path(), &["archive"]).status.code(), Some(2));
