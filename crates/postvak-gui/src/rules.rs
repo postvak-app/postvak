@@ -337,6 +337,36 @@ mod tests {
     }
 
     #[test]
+    fn a_failing_account_is_named_and_the_others_are_still_purged() {
+        let fx = Fixture::new(&["broken", "work"]);
+        std::fs::write(fx.paths.trash_dir("broken"), "not a directory").unwrap();
+        let dir = fx.paths.trash_dir("work");
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = postvak_core::time::now();
+        let old = Trash::new(dir)
+            .save(
+                "INBOX",
+                1,
+                b"From: a@example.com\r\n\r\nx\r\n",
+                now - 31 * 86_400,
+            )
+            .unwrap();
+        let (open, _wires) = view(&fx, View::Trash);
+        open.with(|live| live.app.apply(crate::state::UiAction::PurgeTrash));
+        assert!(!old.exists());
+        open.with(|live| {
+            let error = live.app.error.clone().unwrap();
+            assert!(error.starts_with("could not purge: broken: "), "{error}");
+            assert!(!error.contains("work"), "{error}");
+            let notice = live.app.notice.clone().unwrap();
+            assert_eq!(
+                notice,
+                "removed 1 backup older than the retention period; 1 account failed"
+            );
+        });
+    }
+
+    #[test]
     fn a_proposal_shows_its_toml_and_approve_enables_it() {
         let fx = Fixture::new(&["work"]);
         // A clock left from when the rule ran before must not let it act on older mail.

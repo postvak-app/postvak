@@ -1971,18 +1971,24 @@ impl App {
     /// Removes each account's backups past its retention, as `postvak trash purge` does; the view lists the rest.
     fn purge_trash(&mut self) {
         let now = postvak_core::time::now();
+        let mut failures = Vec::new();
         let mut removed = 0;
         for (name, days) in self.retention.clone() {
             let trash = Trash::new(self.paths.trash_dir(&name));
             match trash.purge(days as i64 * 86_400, now) {
                 Ok(count) => removed += count,
-                Err(e) => self.note_error(None, format!("{name}: could not purge: {e}")),
+                Err(e) => failures.push(format!("{name}: {e}")),
             }
         }
         let noun = if removed == 1 { "backup" } else { "backups" };
-        self.notice(format!(
-            "removed {removed} {noun} older than the retention period"
-        ));
+        let mut notice = format!("removed {removed} {noun} older than the retention period");
+        if !failures.is_empty() {
+            let count = failures.len();
+            let accounts = if count == 1 { "account" } else { "accounts" };
+            notice.push_str(&format!("; {count} {accounts} failed"));
+            self.note_error(None, format!("could not purge: {}", failures.join("; ")));
+        }
+        self.notice(notice);
         self.view_dirty = true;
     }
 
