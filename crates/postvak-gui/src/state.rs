@@ -7,6 +7,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::time::Duration;
 
 use crate::update;
+use postvak_core::bimi::Brand;
 use postvak_core::config::{self, AccountConfig, Config, Theme};
 use postvak_core::daemon::Client;
 use postvak_core::daemon::client::NewerDaemon;
@@ -25,6 +26,7 @@ use super::folders;
 use super::html::{self, Fetcher, HtmlState, Renderer, Reply, Wake};
 use super::list::{self, ListState, Optimistic, Row, RowKey};
 use super::load::{self, ListQuery, LoadFn, Loaded, Loading};
+use super::logos::Logos;
 use super::rules::{self, RulesState, SheetSort, TrashRow};
 
 /// The status line when `m` is pressed with marked rows from more than one account.
@@ -83,6 +85,8 @@ pub(crate) struct Unsubscribing {
 
 pub(crate) struct BodyState {
     pub account: usize,
+    /// The sender's logo record, when sender images are on and the message passed DMARC.
+    pub brand: Option<Brand>,
     /// Set when the user chose this message, not when a view change or reload put it on screen; only then does it
     /// become read.
     pub armed: bool,
@@ -379,6 +383,8 @@ pub struct App {
     pub(crate) last_poll: f64,
     pub(crate) last_reconnect: f64,
     pub(crate) list: ListState,
+    /// Sender logos, with `[ui] sender_images = true`.
+    pub(crate) logos: Logos,
     /// How long `tick` waits for a list reload before it lets the window draw and applies the rows when they come;
     /// tests wait as long as it takes.
     pub(crate) list_budget: Duration,
@@ -491,6 +497,7 @@ impl App {
             last_poll: 0.0,
             last_reconnect: 0.0,
             list: ListState::default(),
+            logos: Logos::new(config.ui.sender_images, paths.cache_dir.clone()),
             list_budget: LIST_BUDGET,
             list_generation: 0,
             list_applied: 0,
@@ -539,6 +546,7 @@ impl App {
         self.receive(now);
         self.receive_html();
         self.receive_remote();
+        self.logos.receive();
         self.keep_daemon(now);
         self.check_release();
         self.receive_unsubscribe();
@@ -1528,8 +1536,13 @@ impl App {
             self.request_body(account, &key);
         }
         let text = body_text(stored.as_ref());
+        let brand = stored.as_ref().and_then(|m| self.logos.brand(&m.headers));
+        if let Some(brand) = &brand {
+            self.logos.want(brand, &self.wake);
+        }
         BodyState {
             account,
+            brand,
             armed,
             attachments,
             text_note: too_large(html.as_ref()),

@@ -33,7 +33,7 @@ pub const SETTLE: f64 = 0.1;
 pub const TOO_LARGE: &str = "Too large to render; showing text.";
 pub const FAILED: &str = "Could not render HTML; showing text.";
 
-pub(crate) use fetch::Fetcher;
+pub(crate) use fetch::{Fetcher, get};
 pub use render::Renderer;
 
 /// Asks the window to draw again; the render thread calls it after each reply.

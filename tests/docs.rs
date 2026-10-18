@@ -29,7 +29,7 @@ fn fenced(text: &str, lang: &str) -> Vec<String> {
 
 #[test]
 fn rule_examples_parse_and_validate() {
-    for page in ["docs/src/index.md", "docs/src/rules.md"] {
+    for page in ["docs/src/quickstart.md", "docs/src/rules.md"] {
         let blocks = fenced(&read(page), "toml");
         assert!(!blocks.is_empty(), "{page} has no toml examples");
         for block in blocks {

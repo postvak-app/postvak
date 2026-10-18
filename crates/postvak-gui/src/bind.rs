@@ -180,11 +180,28 @@ fn present_body(app: &App, window: &MailWindow) {
     let strings = |current, items: Vec<String>| {
         synced(current, items.into_iter().map(SharedString::from).collect())
     };
+    // Drawn once per logo: the shown image is kept while the record is the same. A logo the window cannot draw shows
+    // the initials.
+    let logo_key = pane
+        .logo
+        .as_ref()
+        .map(|(key, _)| key.as_str())
+        .unwrap_or_default();
+    let logo = if shown.logo_key == logo_key {
+        shown.has_logo.then(|| shown.logo.clone())
+    } else {
+        pane.logo
+            .as_ref()
+            .and_then(|(_, svg)| slint::Image::load_from_svg_data(svg.as_bytes()).ok())
+    };
     let info = BodyInfo {
         empty: pane.empty.unwrap_or_default().into(),
         subject: text(pane.subject),
         initials: pane.initials.into(),
         tint: i32::try_from(pane.tint).unwrap_or_default(),
+        has_logo: logo.is_some(),
+        logo: logo.unwrap_or_default(),
+        logo_key: logo_key.into(),
         name: pane.name.into(),
         address: text(pane.address),
         short_date: pane.short_date.into(),

@@ -28,6 +28,10 @@ export struct BodyInfo {
     initials: string,
     // Which of `Theme.avatars` the initials sit on.
     tint: int,
+    // The sender's logo instead of the initials, when `has-logo`; `logo-key` names it, so it is drawn once.
+    logo: image,
+    has-logo: bool,
+    logo-key: string,
     name: string,
     address: string,
     short-date: string,
@@ -197,14 +201,31 @@ component HeaderLine inherits HorizontalLayout {
     }
 }
 
-// The sender's initials on their colour.
+// The sender's logo cut to a circle, or else their initials on their colour. The software renderer does not clip to
+// a rounded rectangle, so the logo's corners are painted over in the reader's background instead.
 component Avatar inherits Rectangle {
     in property <BodyInfo> info;
     width: Theme.avatar;
     height: Theme.avatar;
     border-radius: self.width / 2;
-    background: Theme.avatars[root.info.tint];
-    Text {
+    background: root.info.has-logo ? transparent : Theme.avatars[root.info.tint];
+    if root.info.has-logo: Image {
+        accessible-role: none;
+        width: parent.width;
+        height: parent.height;
+        source: root.info.logo;
+        image-fit: cover;
+    }
+    if root.info.has-logo: Path {
+        width: parent.width;
+        height: parent.height;
+        viewbox-width: 2;
+        viewbox-height: 2;
+        fill: Theme.pane.background;
+        fill-rule: evenodd;
+        commands: "M 0 0 L 2 0 L 2 2 L 0 2 Z M 1 0 A 1 1 0 1 0 1 2 A 1 1 0 1 0 1 0 Z";
+    }
+    if !root.info.has-logo: Text {
         accessible-role: none;
         text: root.info.initials;
         font-size: Theme.text-size;

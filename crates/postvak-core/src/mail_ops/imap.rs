@@ -389,8 +389,7 @@ impl MailOps for ImapOps {
             }
             session.uid_copy(uid.to_string(), to).await.map_err(proto)
         })?;
-        self.add_flags(uid, &["\\Deleted"])?;
-        self.expunge(uid)
+        delete_copied(self, uid, to)
     }
 
     fn create_folder(&mut self, name: &str) -> MailResult<()> {
@@ -459,6 +458,26 @@ impl MailOps for ImapOps {
     }
 }
 
+/// Removes the source of a COPY; on failure clears `\\Deleted` again, so the source stays as it was next to the copy.
+fn delete_copied(ops: &mut impl MailOps, uid: u32, to: &str) -> MailResult<()> {
+    let Err(err) = ops
+        .add_flags(uid, &["\\Deleted"])
+        .and_then(|()| ops.expunge(uid))
+    else {
+        return Ok(());
+    };
+    if let Err(undo) = ops.remove_flags(uid, &["\\Deleted"]) {
+        log::warn!("uid {uid}: could not clear \\Deleted after a failed move to {to}: {undo}");
+    }
+    let kept = |reason: String| format!("copied to {to}, original kept: {reason}");
+    Err(match err {
+        MailError::Connect(reason) => MailError::Connect(kept(reason)),
+        MailError::Auth(reason) => MailError::Auth(kept(reason)),
+        MailError::Protocol(reason) => MailError::Protocol(kept(reason)),
+        MailError::Io(reason) => MailError::Io(kept(reason)),
+    })
+}
+
 /// Without UIDPLUS only a plain EXPUNGE exists, which would also remove every other message marked deleted here.
 ///
 /// ponytail: another client can still flag a message between this search and the EXPUNGE.
@@ -525,6 +544,21 @@ fn text_query(words: &[String]) -> String {
 mod tests {
     use super::*;
     use crate::config::PasswordSource;
+    use crate::mail_ops::RecordingOps;
+
+    #[test]
+    fn a_refused_expunge_after_the_copy_clears_deleted_again() {
+        let mut ops = RecordingOps::default().with_folder("INBOX", None);
+        ops.add_mail("INBOX", 1, 0, "Subject: a\r\n\r\n", None);
+        ops.select("INBOX").unwrap();
+        ops.fail_next_expunge = Some(MailError::Protocol("refused".into()));
+        let err = delete_copied(&mut ops, 1, "Archive")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("copied to Archive, original kept"), "{err}");
+        assert!(err.contains("refused"), "{err}");
+        assert!(ops.mail["INBOX"][0].flags.is_empty(), "{:?}", ops.calls);
+    }
 
     #[test]
     fn text_query_quotes_each_word() {
