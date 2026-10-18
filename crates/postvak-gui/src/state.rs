@@ -2010,7 +2010,7 @@ impl App {
         let mut removed = 0;
         for (name, days) in self.retention.clone() {
             let trash = Trash::new(self.paths.trash_dir(&name));
-            match trash.purge(days as i64 * 86_400, now) {
+            match trash.purge(days, now) {
                 Ok(count) => removed += count,
                 Err(e) => failures.push(format!("{name}: {e}")),
             }

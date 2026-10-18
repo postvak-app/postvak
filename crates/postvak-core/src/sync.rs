@@ -965,10 +965,10 @@ fn run_command(
             }
         }
         Command::ApplyRule { name: rule_name } => {
-            let rule = match enabled_rule(rules_path, &rule_name) {
+            let rule = match crate::rules::enabled_rule(rules_path, &rule_name) {
                 Ok(rule) => rule,
                 Err(message) => {
-                    let _ = events.send(failed(request, message));
+                    let _ = events.send(failed(request, message.to_string()));
                     return Ok(run);
                 }
             };
@@ -1089,22 +1089,6 @@ fn run_command(
         }
     }
     Ok(run)
-}
-
-/// The compiled rule called `name`, or why it cannot run. It keeps `first_seen_at` 0, which `ApplyExisting` ignores.
-fn enabled_rule(rules_path: &Path, name: &str) -> Result<CompiledRule, String> {
-    let file = crate::rules::load(rules_path).map_err(|e| e.to_string())?;
-    let rule = crate::rules::compile(&file)
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .find(|r| r.rule.name == name)
-        .ok_or_else(|| format!("no rule named '{name}'"))?;
-    if !rule.rule.enabled {
-        return Err(format!(
-            "rule '{name}' is disabled; approve or enable it first"
-        ));
-    }
-    Ok(rule)
 }
 
 /// Downloads the missing bodies of the named folder, failing if it cannot, or of every stored folder, skipping any
@@ -1653,10 +1637,7 @@ fn run_session(
         if pass {
             next = state.pass(ops.as_mut(), full, carried, events, commands, shutdown)?;
             if now() - last_purge > 3600 {
-                match state
-                    .trash
-                    .purge(account.trash_retention_days as i64 * 86_400, now())
-                {
+                match state.trash.purge(account.trash_retention_days, now()) {
                     Ok(0) => {}
                     Ok(removed) => log::info!("{}: purged {removed} trash files", account.name),
                     Err(e) => log::warn!("{}: trash purge failed: {e}", account.name),

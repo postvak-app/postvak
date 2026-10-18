@@ -70,10 +70,14 @@ impl Trash {
         Ok(entries)
     }
 
-    pub fn purge(&self, retention_secs: i64, now: i64) -> io::Result<usize> {
+    /// Removes the backups saved more than `retention_days` before `now`; a retention too large to count in seconds keeps all.
+    pub fn purge(&self, retention_days: u64, now: i64) -> io::Result<usize> {
+        let retention_secs = i64::try_from(retention_days)
+            .unwrap_or(i64::MAX)
+            .saturating_mul(86_400);
         let mut removed = 0;
         for entry in self.list()? {
-            if now - entry.saved_at <= retention_secs {
+            if now.saturating_sub(entry.saved_at) <= retention_secs {
                 continue;
             }
             match std::fs::remove_file(&entry.path) {
@@ -117,6 +121,8 @@ impl Trash {
 mod tests {
     use super::*;
 
+    const DAY: i64 = 86_400;
+
     #[test]
     fn save_list_and_parse_round_trip() {
         let dir = tempfile::tempdir().unwrap();
@@ -151,10 +157,22 @@ mod tests {
     fn purge_removes_only_old_files() {
         let dir = tempfile::tempdir().unwrap();
         let trash = Trash::new(dir.path().to_path_buf());
-        trash.save("INBOX", 1, b"a", 1000).unwrap();
-        trash.save("INBOX", 2, b"b", 5000).unwrap();
-        assert_eq!(trash.purge(3000, 6000).unwrap(), 1);
+        trash.save("INBOX", 1, b"a", 0).unwrap();
+        trash.save("INBOX", 2, b"b", 5 * DAY).unwrap();
+        assert_eq!(trash.purge(3, 6 * DAY).unwrap(), 1);
         assert_eq!(trash.list().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn purge_keeps_everything_when_retention_overflows_seconds() {
+        let dir = tempfile::tempdir().unwrap();
+        let trash = Trash::new(dir.path().to_path_buf());
+        trash.save("INBOX", 1, b"a", 0).unwrap();
+        assert_eq!(trash.purge(u64::MAX, i64::MAX).unwrap(), 0);
+        assert_eq!(
+            trash.purge(i64::MAX as u64 / 86_400 + 1, i64::MAX).unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -172,9 +190,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let trash = Trash::new(dir.path().to_path_buf());
         // A directory with a backup's name cannot be removed with remove_file.
-        std::fs::create_dir(dir.path().join("1000-INBOX-9.eml")).unwrap();
-        trash.save("INBOX", 1, b"a", 1000).unwrap();
-        assert_eq!(trash.purge(3000, 6000).unwrap(), 1);
-        assert!(!dir.path().join("1000-INBOX-1.eml").exists());
+        std::fs::create_dir(dir.path().join("0-INBOX-9.eml")).unwrap();
+        trash.save("INBOX", 1, b"a", 0).unwrap();
+        assert_eq!(trash.purge(3, 6 * DAY).unwrap(), 1);
+        assert!(!dir.path().join("0-INBOX-1.eml").exists());
     }
 }
