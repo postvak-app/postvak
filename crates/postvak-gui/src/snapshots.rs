@@ -119,6 +119,32 @@ fn inbox_dark() {
     snapshot(&open, "gui_inbox_dark");
 }
 
+/// With sender images on, GitHub's DMARC-passing mail shows its logo in the reader instead of the initials.
+#[test]
+fn a_sender_logo() {
+    let fx = Fixture::mailbox("light");
+    fx.append_config("sender_images = true\n");
+    let mut github = mail(
+        96,
+        "GitHub <noreply@github.com>",
+        "[postvak] Pull request merged",
+        "",
+        "Merged into main.",
+    );
+    github.headers = super::test_support::branded("INBOX", 96, "x").headers;
+    fx.add("work", github);
+    super::test_support::cache_github_logo(&fx.paths);
+    let (open, _wires) = open(&fx);
+    open.with(|live| live.app.select_view(work_inbox()));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !open.window().get_body_info().has_logo && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        open.tick();
+    }
+    assert!(open.window().get_body_info().has_logo);
+    snapshot(&open, "gui_sender_logo");
+}
+
 #[test]
 fn all_inboxes() {
     let fx = Fixture::mailbox("dark");
