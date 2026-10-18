@@ -1,7 +1,7 @@
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
-use mail_parser::{Address, HeaderValue, MessageParser, MimeHeaders};
+use mail_parser::{Address, HeaderForm, HeaderValue, MessageParser, MimeHeaders};
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Parsed {
@@ -36,6 +36,13 @@ pub fn parse_headers(raw: &[u8]) -> Parsed {
 pub fn header_value(raw_headers: &[u8], name: &str) -> Option<String> {
     let msg = MessageParser::default().parse_headers(raw_headers)?;
     msg.header_raw(name).map(|v| v.trim().to_string())
+}
+
+/// The last copy of a header as text: unfolded, with encoded words (`=?UTF-8?…?=`) decoded.
+pub fn header_text(raw_headers: &[u8], name: &str) -> Option<String> {
+    let msg = MessageParser::default().parse_headers(raw_headers)?;
+    let value = msg.header_as(name, HeaderForm::Text).pop()?;
+    value.as_text().map(|text| text.trim().to_string())
 }
 
 pub fn synthetic_message_id(folder: &str, uid: u32) -> String {
@@ -349,6 +356,20 @@ List-Id: Dev <dev.lists.example.com>\r\n\
             Some("Dev <dev.lists.example.com>")
         );
         assert_eq!(header_value(HEADERS, "X-Missing"), None);
+    }
+
+    #[test]
+    fn header_text_decodes_encoded_words_and_unfolds() {
+        let raw = b"X-Team: =?UTF-8?Q?Gr=C3=BC=C3=9Fe?= aus\r\n K\xc3\xb6ln\r\nList-Id: Dev <dev.lists.example.com>\r\n\r\n";
+        assert_eq!(
+            header_text(raw, "x-team").as_deref(),
+            Some("Grüße aus Köln")
+        );
+        assert_eq!(
+            header_text(raw, "List-Id").as_deref(),
+            Some("Dev <dev.lists.example.com>")
+        );
+        assert_eq!(header_text(raw, "X-Missing"), None);
     }
 
     #[test]
