@@ -8,6 +8,8 @@ license.workspace = true
 documentation.workspace = true
 repository.workspace = true
 homepage.workspace = true
+# Only what the build needs.
+include = ["/LICENSE-*", "/src/**"]
 
 [dependencies]
 anyhow.workspace = true

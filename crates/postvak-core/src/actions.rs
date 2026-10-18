@@ -89,11 +89,7 @@ pub fn fetch_bodies(
     store: &Store,
     folder: &str,
 ) -> Result<usize, ActionError> {
-    let missing: Vec<Message> = store
-        .messages_in_folder(folder)?
-        .into_iter()
-        .filter(|m| m.body_text.is_none())
-        .collect();
+    let missing = store.messages_without_body(folder)?;
     if missing.is_empty() {
         return Ok(0);
     }
@@ -133,7 +129,7 @@ pub const SERVER_HITS_PER_FOLDER: usize = 500;
 pub fn search_words(query: &str) -> Vec<String> {
     query
         .split_whitespace()
-        .map(|word| word.chars().filter(|c| !c.is_control()).collect::<String>())
+        .map(|word| clean(word, false))
         .filter(|word| !word.is_empty())
         .collect()
 }

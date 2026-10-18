@@ -50,6 +50,11 @@
           "const": "silent"
         },
         {
+          "description": "Later rules don't run for this message",
+          "type": "string",
+          "const": "stop"
+        },
+        {
           "description": "Move to this folder, creating it if needed",
           "type": "object",
           "properties": {
@@ -161,6 +166,13 @@
             }
           ]
         },
+        "flagged": {
+          "description": "Flagged (true) or not (false)",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "from": {
           "description": "The From header",
           "anyOf": [
@@ -181,6 +193,13 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "larger_than": {
+          "description": "Larger than this size, e.g. 500KB, 5MB; a bare number is bytes and 1KB is 1024 bytes",
+          "type": [
+            "string",
+            "null"
           ]
         },
         "none": {

@@ -1,7 +1,8 @@
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use crate::mail_ops::{MailError, MailOps};
+use crate::message::{Parsed, parse_headers};
 use crate::paths::write_atomic;
 use crate::rules::engine::RESTORED_KEYWORD;
 
@@ -25,6 +26,20 @@ pub struct TrashEntry {
     pub folder: String,
     pub uid: u32,
     pub saved_at: i64,
+}
+
+/// How much of a backup is read to find its headers.
+const HEADER_BYTES: u64 = 64 * 1024;
+
+impl TrashEntry {
+    /// The backup's headers, such as its sender and subject; reads only the start of the file.
+    pub fn headers(&self) -> Parsed {
+        let mut head = Vec::new();
+        if let Ok(file) = std::fs::File::open(&self.path) {
+            let _ = file.take(HEADER_BYTES).read_to_end(&mut head);
+        }
+        parse_headers(&head)
+    }
 }
 
 impl Trash {

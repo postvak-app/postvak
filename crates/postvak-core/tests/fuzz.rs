@@ -573,6 +573,7 @@ fn action() -> BoxedStrategy<Action> {
         Just(Action::Archive),
         Just(Action::Notify),
         Just(Action::Silent),
+        Just(Action::Stop),
         hostile_text().prop_map(Action::Move),
         hostile_text().prop_map(Action::Tag),
     ]
@@ -609,11 +610,16 @@ fn match_leaf() -> BoxedStrategy<Match> {
         proptest::option::of(any::<bool>()),
         proptest::option::of(hostile_text()),
         proptest::option::of(hostile_text()),
+        proptest::option::of(hostile_text()),
+        proptest::option::of(any::<bool>()),
     )
         .boxed();
     (texts, others)
         .prop_map(
-            |((from, to, cc, subject, body), (header, older_than, seen, to_me, alias, tag))| {
+            |(
+                (from, to, cc, subject, body),
+                (header, older_than, seen, to_me, alias, tag, larger_than, flagged),
+            )| {
                 Match {
                     from,
                     to,
@@ -622,7 +628,9 @@ fn match_leaf() -> BoxedStrategy<Match> {
                     body,
                     header,
                     older_than,
+                    larger_than,
                     seen,
+                    flagged,
                     to_me,
                     alias,
                     tag,

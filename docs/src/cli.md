@@ -60,7 +60,7 @@ A fast, simple mail client with automatic mailbox rules
 * `daemon` — Inspect or stop the daemon that syncs your accounts; other commands start it when needed
 * `gui` — Open the mail window; starts the daemon when needed
 * `service` — Start the daemon at login: a launchd agent on macOS, a systemd user unit on Linux
-* `sync` — Ask the daemon to sync now and apply rules; waits for the result
+* `sync` — Ask the daemon to sync now and apply rules; reports new messages and actions per account, or why one could not sync
 * `attachment` — List or save a message's attachments
 * `rules` — Inspect and test rules.toml
 * `folders` — List folders with message and unread counts
@@ -173,7 +173,7 @@ Stop and remove the service
 
 ## `postvak sync`
 
-Ask the daemon to sync now and apply rules; waits for the result
+Ask the daemon to sync now and apply rules; reports new messages and actions per account, or why one could not sync
 
 **Usage:** `postvak sync [OPTIONS]`
 
@@ -587,13 +587,15 @@ Deleted mail kept for the retention period
 
 ###### **Subcommands:**
 
-* `list` — 
+* `list` — Deleted mail kept as .eml backups for the retention period
 * `restore` — Append a trashed .eml back into its original folder
 * `purge` — Remove .eml backups older than the account's retention period
 
 
 
 ## `postvak trash list`
+
+Deleted mail kept as .eml backups for the retention period
 
 **Usage:** `postvak trash list [OPTIONS]`
 

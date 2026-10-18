@@ -329,13 +329,14 @@ fn unit_running(command: &str, postvak_home: Option<&Path>) -> String {
     )
 }
 
-/// systemd expands `%` specifiers and unquotes `"` and `\` in ExecStart and Environment, so a value needs all three
-/// escaped inside its quotes.
+/// systemd expands `%` specifiers and `$` variables and unquotes `"` and `\` in ExecStart and Environment, so a value
+/// needs all four escaped inside its quotes.
 fn systemd_quoted(text: &str) -> String {
     let escaped = text
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
-        .replace('%', "%%");
+        .replace('%', "%%")
+        .replace('$', "$$");
     format!("\"{escaped}\"")
 }
 
@@ -401,10 +402,10 @@ mod tests {
     }
 
     #[test]
-    fn the_systemd_exec_start_survives_spaces_and_percent_signs() {
-        let text = unit(Path::new("/home/me/my bin/50%/postvak"), None);
+    fn the_systemd_exec_start_survives_spaces_percent_and_dollar_signs() {
+        let text = unit(Path::new("/home/me/my bin/50%/$HOME/postvak"), None);
         assert!(
-            text.contains("ExecStart=\"/home/me/my bin/50%%/postvak\" run"),
+            text.contains("ExecStart=\"/home/me/my bin/50%%/$$HOME/postvak\" run"),
             "{text}"
         );
     }

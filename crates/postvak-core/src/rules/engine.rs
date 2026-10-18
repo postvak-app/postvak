@@ -1,5 +1,5 @@
 use crate::config::Identity;
-use crate::message::{bare_addresses, header_value};
+use crate::message::{bare_addresses, header_text};
 use crate::rules::{Action, CompiledRule, Conditions};
 use crate::store::Message;
 
@@ -65,21 +65,22 @@ pub fn evaluate(rules: &[CompiledRule], msg: &Message, ctx: &Context) -> Plan {
         if !matches(&rule.conditions, msg, ctx) {
             continue;
         }
-        let mut deleted = false;
+        let mut stop = false;
         for action in &rule.rule.actions {
             match action {
                 Action::Notify => explicit_notify = Some(true),
                 Action::Silent => explicit_notify = Some(false),
+                Action::Stop => stop = true,
                 _ => plan.actions.push(PlannedAction {
                     rule: rule.rule.name.clone(),
                     action: action.clone(),
                 }),
             }
             if *action == Action::Delete {
-                deleted = true;
+                stop = true;
             }
         }
-        if deleted {
+        if stop {
             break;
         }
     }
@@ -128,7 +129,7 @@ fn matches(c: &Conditions, msg: &Message, ctx: &Context) -> bool {
         return false;
     }
     for (name, m) in &c.headers {
-        match header_value(&msg.headers, name) {
+        match header_text(&msg.headers, name) {
             Some(value) if m.is_match(&value) => {}
             _ => return false,
         }
@@ -138,8 +139,18 @@ fn matches(c: &Conditions, msg: &Message, ctx: &Context) -> bool {
     {
         return false;
     }
+    if let Some(min_size) = c.larger_than
+        && msg.size.is_none_or(|size| u64::from(size) <= min_size)
+    {
+        return false;
+    }
     if let Some(seen) = c.seen
         && msg.is_seen() != seen
+    {
+        return false;
+    }
+    if let Some(flagged) = c.flagged
+        && msg.is_flagged() != flagged
     {
         return false;
     }
@@ -705,6 +716,65 @@ actions = ["flag"]
         m.body_text = Some("please keep this".into());
         assert!(!fires(toml, &m));
         m.body_text = Some("junk".into());
+        assert!(fires(toml, &m));
+    }
+
+    #[test]
+    fn flagged_matches_the_flagged_state() {
+        let toml = "[[rules]]\nname = \"f\"\nmatch.flagged = true\nactions = [\"mark_read\"]\n";
+        let mut m = msg("a@x", "p@x", "s", 100, false);
+        assert!(!fires(toml, &m));
+        m.flags = "\\Flagged".into();
+        assert!(fires(toml, &m));
+        let unflagged = toml.replace("flagged = true", "flagged = false");
+        assert!(!fires(&unflagged, &m));
+    }
+
+    #[test]
+    fn larger_than_compares_the_message_size() {
+        let toml = "[[rules]]\nname = \"big\"\nmatch.larger_than = \"1KB\"\nactions = [\"flag\"]\n";
+        let mut m = msg("a@x", "p@x", "s", 100, false);
+        assert!(!fires(toml, &m), "an unknown size is not large");
+        m.size = Some(1024);
+        assert!(!fires(toml, &m));
+        m.size = Some(1025);
+        assert!(fires(toml, &m));
+    }
+
+    #[test]
+    fn stop_keeps_later_rules_from_acting() {
+        let id = identity();
+        let toml = r#"
+[[rules]]
+name = "first"
+match.subject = { contains = "x" }
+actions = [{ tag = "$label1" }, "stop"]
+
+[[rules]]
+name = "second"
+match.subject = { contains = "x" }
+actions = [{ move = "Later" }]
+"#;
+        let plan = evaluate(
+            &rules(toml, 0),
+            &msg("a@x", "p@x", "x", 100, false),
+            &ctx(&id, 200),
+        );
+        assert_eq!(
+            plan.actions,
+            vec![PlannedAction {
+                rule: "first".into(),
+                action: Action::Tag("$label1".into())
+            }]
+        );
+        assert!(plan.notify);
+    }
+
+    #[test]
+    fn header_matches_the_decoded_value() {
+        let toml = "[[rules]]\nname = \"h\"\nmatch.header = { name = \"X-Team\", contains = \"grüße\" }\nactions = [\"flag\"]\n";
+        let mut m = msg("a@x", "p@x", "s", 100, false);
+        m.headers = b"X-Team: =?UTF-8?Q?Gr=C3=BC=C3=9Fe?=\r\n\r\n".to_vec();
         assert!(fires(toml, &m));
     }
 

@@ -91,6 +91,14 @@ pub fn create_private_dir(dir: &Path) -> io::Result<()> {
     fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
 }
 
+/// The file's text, or empty when it does not exist.
+pub fn read_or_empty(path: &Path) -> io::Result<String> {
+    match fs::read_to_string(path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(String::new()),
+        read => read,
+    }
+}
+
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     write_atomic_in(path, bytes, true)
 }

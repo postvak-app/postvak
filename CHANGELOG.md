@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1](https://github.com/postvak-app/postvak/compare/v0.3.0...v0.3.1) - 2026-10-17
+
+### Added
+
+- *(gui)* calmer inbox with sender avatars ([#169](https://github.com/postvak-app/postvak/pull/169))
+- *(gui)* fall back to the software renderer and add safe mode ([#167](https://github.com/postvak-app/postvak/pull/167))
+- Flatpak desktop app with its own repository on the docs site ([#161](https://github.com/postvak-app/postvak/pull/161))
+- *(gui)* declutter the window and calm its look ([#151](https://github.com/postvak-app/postvak/pull/151))
+- unsubscribe from mailing lists ([#148](https://github.com/postvak-app/postvak/pull/148))
+- *(gui)* select rows with Shift-click, Cmd-click and Cmd+A ([#146](https://github.com/postvak-app/postvak/pull/146))
+- search the mail server for bodies not downloaded yet ([#147](https://github.com/postvak-app/postvak/pull/147))
+- report messages as junk or not junk ([#144](https://github.com/postvak-app/postvak/pull/144))
+- filter the list to unread, flagged or with attachments ([#145](https://github.com/postvak-app/postvak/pull/145))
+- *(gui)* fade in mail that arrives while the window is open ([#143](https://github.com/postvak-app/postvak/pull/143))
+- *(gui)* say so when the message list is empty ([#142](https://github.com/postvak-app/postvak/pull/142))
+- *(gui)* fade read state and account status changes ([#141](https://github.com/postvak-app/postvak/pull/141))
+- *(gui)* show what is being dragged and where it will land ([#140](https://github.com/postvak-app/postvak/pull/140))
+- *(gui)* drag messages onto a folder to move them ([#139](https://github.com/postvak-app/postvak/pull/139))
+- *(gui)* fade hover backgrounds in and out ([#138](https://github.com/postvak-app/postvak/pull/138))
+- *(gui)* rewrite the GUI in Slint ([#134](https://github.com/postvak-app/postvak/pull/134))
+- *(gui)* All inboxes, every account's INBOX in one list ([#124](https://github.com/postvak-app/postvak/pull/124))
+- *(gui)* unarchive from the Archive folder ([#123](https://github.com/postvak-app/postvak/pull/123))
+- *(gui)* right-click menus for messages and folders ([#125](https://github.com/postvak-app/postvak/pull/125))
+- *(gui)* select and copy text in the HTML view, and colour <font color> text ([#117](https://github.com/postvak-app/postvak/pull/117))
+
+### Fixed
+
+- *(config)* keep comments when saving config.toml ([#152](https://github.com/postvak-app/postvak/pull/152))
+- *(gui)* bring the window to the front from the menu bar ([#137](https://github.com/postvak-app/postvak/pull/137))
+- *(gui)* open right-click menus again ([#136](https://github.com/postvak-app/postvak/pull/136))
+- *(gui)* render newsletter HTML properly, and load remote content on request ([#133](https://github.com/postvak-app/postvak/pull/133))
+- *(gui)* line the UI up on the 4/8 px grid ([#122](https://github.com/postvak-app/postvak/pull/122))
+
+### Other
+
+- cargo-deny and SHA-pinned actions ([#179](https://github.com/postvak-app/postvak/pull/179))
+- correct and complete the pages against the current code ([#177](https://github.com/postvak-app/postvak/pull/177))
+- pin the workspace crates exactly and package only what they build from ([#178](https://github.com/postvak-app/postvak/pull/178))
+- point the core spec and unstarted plans at the workspace crates ([#176](https://github.com/postvak-app/postvak/pull/176))
+- split the crate into a workspace of core, gui, mcp and the binary ([#174](https://github.com/postvak-app/postvak/pull/174))
+- *(store)* cover the thread list and unread counts with one index ([#170](https://github.com/postvak-app/postvak/pull/170))
+- benchmark over generated stores, with a perf page in the docs ([#168](https://github.com/postvak-app/postvak/pull/168))
+- *(imap)* prove chunked first sync with 12 messages instead of 1,200 ([#166](https://github.com/postvak-app/postvak/pull/166))
+- *(gui)* check the layout grid as measured rules ([#164](https://github.com/postvak-app/postvak/pull/164))
+- test with a ci profile and nextest, skip builds that only touch docs or packaging ([#163](https://github.com/postvak-app/postvak/pull/163))
+- cut over-engineering found by a repo audit ([#149](https://github.com/postvak-app/postvak/pull/149))
+- *(sync)* answer user commands sooner while the account syncs ([#121](https://github.com/postvak-app/postvak/pull/121))
+
 ## [0.3.0](https://github.com/postvak-app/postvak/compare/v0.2.0...v0.3.0) - 2026-10-09
 
 ### Changed

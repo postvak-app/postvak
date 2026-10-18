@@ -34,7 +34,7 @@ Four crates in one workspace. `crates/postvak-core` holds every module below exc
 - Logic lives in a library module. Anything that touches IMAP goes through the daemon as a `Command`. Front ends only call `postvak-core` and `daemon::Client`
 
 ## Definition of done
-- `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, `cargo machete` and `cargo audit` all pass
+- `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, `cargo machete` and `cargo deny check` all pass
 - New logic has a test; a bug fix has a regression test
 - No `unwrap`, `expect`, `panic!`, `todo!` or `unimplemented!` outside tests (clippy denies them); where a call cannot fail, a narrow `#[allow]` says why
 - Platform coverage reported honestly: say "compiled on" vs "ran on"
