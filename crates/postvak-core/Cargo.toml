@@ -54,7 +54,7 @@ proptest.workspace = true
 tempfile.workspace = true
 
 [features]
-testing = ["dep:tempfile"]                           # exposes RecordingOps and the one-shot sync steps to integration tests and the front ends' tests
+testing = ["dep:tempfile"]                           # exposes RecordingOps, the one-shot sync steps and an in-memory keyring to integration tests and the front ends' tests
 
 [[test]]
 name = "sync_model"

@@ -3,7 +3,8 @@ import { Palette as StdPalette } from "std-widgets.slint";
 import { Theme, ThemePreference } from "theme.slint";
 import { FolderItem, FolderPane } from "folders.slint";
 import { StatusBar, StatusLine } from "status.slint";
-import { HistoryDialog, KeyHelp, KeysDialog, MoveDialog, SourceDialog } from "dialogs.slint";
+import { AccountDialog, HistoryDialog, KeyHelp, KeysDialog, MoveDialog, SourceDialog } from "dialogs.slint";
+import { AccountFields } from "account.slint";
 import { BodyInfo, BodyPane, PageInfo, SelectedData, StripData, ToolButton } from "body.slint";
 import { ProposalData, RuleData, RulesPane, Sheet } from "rules.slint";
 import { AboutDialog } from "about.slint";
@@ -12,7 +13,7 @@ import { ListPane, RowData } from "list.slint";
 export enum Pane { body, folders, list }
 
 // The menu items that act on the app; `menu.rs` says what each does.
-export enum MenuAction { about, add-to-selection, archive, delete, documentation, flag, history, junk, keys, mark-folder-read, move, read-or-unread, save-eml, search, select-all, sync-now, text-or-html, theme-dark, theme-light, theme-system, view-source }
+export enum MenuAction { about, add-account, add-to-selection, archive, delete, documentation, flag, history, junk, keys, mark-folder-read, move, read-or-unread, save-eml, search, select-all, sync-now, text-or-html, theme-dark, theme-light, theme-system, view-source }
 
 // Which menu items would do something now; the others are disabled.
 export struct MenuState {
@@ -95,6 +96,9 @@ export component MailWindow inherits Window {
 
     in property <bool> move-open;
     in property <[string]> move-targets;
+    in property <bool> account-open;
+    in property <string> account-error;
+    in property <bool> account-saving;
 
     in property <BodyInfo> body-info;
     in property <string> body-text;
@@ -112,6 +116,7 @@ export component MailWindow inherits Window {
     in property <[[StandardListViewItem]]> sheet-cells;
     in-out property <int> sheet-row: -1;
     in property <string> sheet-empty;
+    in property <string> purge-hint;
     in property <MenuState> menu;
     in property <bool> about-open;
     in property <string> version;
@@ -154,6 +159,7 @@ export component MailWindow inherits Window {
     callback move-filter(string);
     callback move-accepted();
     callback move-chosen(int);
+    callback save-account(AccountFields);
     callback escape();
     callback toggle-html();
     callback save-eml();
@@ -176,7 +182,9 @@ export component MailWindow inherits Window {
     callback approve-rule(int);
     callback reject-rule(int);
     callback set-enabled(int, bool);
+    callback apply-rule(int);
     callback restore(int);
+    callback purge-trash();
     callback sort-sheet(int, bool);
 
     // Puts `text` on the clipboard: Slint copies only from a text field.
@@ -207,6 +215,11 @@ export component MailWindow inherits Window {
     }
     changed move-open => {
         if (!root.move-open) {
+            keys.focus();
+        }
+    }
+    changed account-open => {
+        if (!root.account-open) {
             keys.focus();
         }
     }
@@ -344,6 +357,10 @@ export component MailWindow inherits Window {
         }
         Menu {
             title: "Mailbox";
+            MenuItem {
+                title: "Add account…";
+                activated => { root.menu-item(MenuAction.add-account); }
+            }
             MenuItem {
                 title: "Sync now";
                 activated => { root.menu-item(MenuAction.sync-now); }
@@ -505,11 +522,14 @@ export component MailWindow inherits Window {
                         cells: root.sheet-cells;
                         current-row <=> root.sheet-row;
                         empty: root.sheet-empty;
+                        purge-hint: root.purge-hint;
                         open-rules-file => { root.open-rules-file(); }
                         approve(i) => { root.approve-rule(i); }
                         reject(i) => { root.reject-rule(i); }
                         set-enabled(i, enabled) => { root.set-enabled(i, enabled); }
+                        apply-rule(i) => { root.apply-rule(i); }
                         restore(i) => { root.restore(i); }
+                        purge => { root.purge-trash(); }
                         sort(column, ascending) => { root.sort-sheet(column, ascending); }
                     }
                 }
@@ -573,6 +593,16 @@ export component MailWindow inherits Window {
         close-icon: root.close-icon;
         close => { root.menu-item(MenuAction.about); }
         open-url(url) => { root.open-link(url); }
+    }
+
+    if root.account-open: AccountDialog {
+        x: (root.width - self.width) / 2;
+        y: Theme.top-bar + Theme.inset;
+        error: root.account-error;
+        saving: root.account-saving;
+        close-icon: root.close-icon;
+        save(fields) => { root.save-account(fields); }
+        close => { root.escape(); }
     }
 
     // Dims the panes behind the keys; a click on it closes them.

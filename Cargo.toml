@@ -127,7 +127,7 @@ workspace = true
 default = ["gui", "mcp"]
 gui = ["dep:postvak-gui"]                            # `postvak gui` with HTML mail; off builds the CLI alone
 mcp = ["dep:postvak-mcp"]                            # `postvak mcp`; off builds without the MCP server
-testing = ["postvak-core/testing"]                   # exposes RecordingOps and the one-shot sync steps to tests/imap_live.rs
+testing = ["postvak-core/testing"]                   # exposes RecordingOps and the one-shot sync steps to tests/imap_live.rs, and swaps the OS keyring for an in-memory one: never on in a real build
 
 [[test]]
 name = "imap_live"

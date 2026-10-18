@@ -1,5 +1,8 @@
 //! The only MCP code that touches the store, rules.toml or the daemon; the daemon owns every IMAP connection.
 use anyhow::{Context as _, Result, bail};
+use std::sync::{PoisonError, RwLock};
+use std::time::Duration;
+
 use serde_json::{Value, json};
 
 use postvak_core::actions;
@@ -18,17 +21,19 @@ use postvak_core::time;
 use postvak_core::trash::Trash;
 
 pub const MAX_LIMIT: u32 = 500;
+const ACCOUNT_START: Duration = Duration::from_secs(10);
 
 pub struct Backend {
-    /// Every configured account, visible or not: an approved rule's clock restarts in all of them.
-    all_accounts: Vec<String>,
-    accounts: Vec<AccountConfig>,
+    /// Replaced by `account_add`, so a server outlives the config it started with.
+    config: RwLock<Config>,
+    /// The `--account` filter; empty shows every account.
+    only: Vec<String>,
     daemon: LazyClient,
     paths: Paths,
 }
 
 impl Backend {
-    /// The accounts in `only`, or all of them; an unknown name, or no account at all, is an error.
+    /// The accounts in `only`, or all of them; an unknown name is an error.
     pub fn new(config: &Config, paths: &Paths, only: &[String]) -> Result<Backend> {
         Backend::build(config, paths, only, LazyClient::new(paths))
     }
@@ -49,43 +54,64 @@ impl Backend {
         only: &[String],
         daemon: LazyClient,
     ) -> Result<Backend> {
-        if config.accounts.is_empty() {
-            bail!("no accounts configured; run `postvak account add`");
-        }
         if let Some(name) = only.iter().find(|n| config.account(n).is_none()) {
             bail!("no account named '{name}'");
         }
         Ok(Backend {
-            all_accounts: config.accounts.iter().map(|a| a.name.clone()).collect(),
-            accounts: config
-                .accounts
-                .iter()
-                .filter(|a| only.is_empty() || only.contains(&a.name))
-                .cloned()
-                .collect(),
+            config: RwLock::new(config.clone()),
+            only: only.to_vec(),
             daemon,
             paths: paths.clone(),
         })
     }
 
-    /// The named visible account, or every visible one.
-    fn select(&self, name: Option<&str>) -> Result<Vec<&AccountConfig>> {
+    fn config(&self) -> Config {
+        self.config
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Every configured account's name, visible or not: an approved rule's clock restarts in all of them.
+    fn all_accounts(&self) -> Vec<String> {
+        self.config()
+            .accounts
+            .iter()
+            .map(|a| a.name.clone())
+            .collect()
+    }
+
+    /// The accounts this server shows.
+    fn visible(&self) -> Vec<AccountConfig> {
+        self.config()
+            .accounts
+            .into_iter()
+            .filter(|a| self.only.is_empty() || self.only.contains(&a.name))
+            .collect()
+    }
+
+    /// The named visible account, or every visible one; none at all is an error that says what to do.
+    fn select(&self, name: Option<&str>) -> Result<Vec<AccountConfig>> {
+        let visible = self.visible();
+        if visible.is_empty() {
+            bail!("no accounts configured; call account_add or run `postvak account add`");
+        }
         match name {
             Some(name) => Ok(vec![
-                self.accounts
-                    .iter()
+                visible
+                    .into_iter()
                     .find(|a| a.name == name)
                     .with_context(|| format!("no account named '{name}'"))?,
             ]),
-            None => Ok(self.accounts.iter().collect()),
+            None => Ok(visible),
         }
     }
 
     /// One account: the named one, or the only visible one.
-    fn single(&self, name: Option<&str>) -> Result<&AccountConfig> {
-        match (name, self.accounts.as_slice()) {
-            (Some(_), _) => Ok(self.select(name)?[0]),
-            (None, [only]) => Ok(only),
+    fn single(&self, name: Option<&str>) -> Result<AccountConfig> {
+        let mut selected = self.select(name)?;
+        match (name, selected.len()) {
+            (Some(_), _) | (None, 1) => Ok(selected.swap_remove(0)),
             (None, _) => bail!("several accounts are visible; pass account"),
         }
     }
@@ -99,9 +125,9 @@ impl Backend {
         account: Option<&str>,
         folder: &str,
         uid: u32,
-    ) -> Result<(&AccountConfig, Store, Message)> {
+    ) -> Result<(AccountConfig, Store, Message)> {
         let acc = self.single(account)?;
-        let store = self.store(acc)?;
+        let store = self.store(&acc)?;
         let msg = store
             .message(folder, uid)?
             .with_context(|| format!("no message {folder}/{uid}"))?;
@@ -111,7 +137,7 @@ impl Backend {
     pub fn folders(&self, account: Option<&str>) -> Result<Vec<Value>> {
         let mut rows = Vec::new();
         for acc in self.select(account)? {
-            let store = self.store(acc)?;
+            let store = self.store(&acc)?;
             for f in store.folders()? {
                 rows.push(output::folder(
                     &acc.name,
@@ -135,7 +161,7 @@ impl Backend {
         let limit = limit.min(MAX_LIMIT);
         let mut rows = Vec::new();
         for acc in self.select(account)? {
-            let store = self.store(acc)?;
+            let store = self.store(&acc)?;
             if threads {
                 for thread in store.threads(folder, limit, filter)? {
                     for (m, depth) in thread.iter().zip(output::depths(&thread)) {
@@ -170,7 +196,7 @@ impl Backend {
         let limit = limit.min(MAX_LIMIT);
         let mut rows = Vec::new();
         for acc in self.select(account)? {
-            let store = self.store(acc)?;
+            let store = self.store(&acc)?;
             let mut found = if bodies {
                 store.search(query, folder, limit)?
             } else {
@@ -242,7 +268,7 @@ impl Backend {
     pub fn log(&self, account: Option<&str>, limit: u32) -> Result<Vec<Value>> {
         let mut rows = Vec::new();
         for acc in self.select(account)? {
-            for entry in self.store(acc)?.log(limit.min(MAX_LIMIT))? {
+            for entry in self.store(&acc)?.log(limit.min(MAX_LIMIT))? {
                 rows.push(output::with_account(&acc.name, &entry)?);
             }
         }
@@ -262,6 +288,17 @@ impl Backend {
         Ok(rows)
     }
 
+    /// Deletes each visible account's backups older than its `trash_retention_days`, for good.
+    pub fn trash_purge(&self, account: Option<&str>) -> Result<Vec<Value>> {
+        let mut rows = Vec::new();
+        for acc in self.select(account)? {
+            let removed = Trash::new(self.paths.trash_dir(&acc.name))
+                .purge(acc.trash_retention_days, time::now())?;
+            rows.push(json!({ "account": acc.name, "removed": removed }));
+        }
+        Ok(rows)
+    }
+
     /// A direct action on `uids` in `folder`, logged as done `by` the agent; `dry_run` reads the local store only and
     /// opens no connection.
     pub fn act(
@@ -277,7 +314,7 @@ impl Backend {
             bail!("uids must name at least one message");
         }
         let acc = self.single(account)?;
-        let store = self.store(acc)?;
+        let store = self.store(&acc)?;
         if dry_run {
             let (mut would, mut missing) = (Vec::new(), Vec::new());
             for &uid in uids {
@@ -329,6 +366,30 @@ impl Backend {
         Ok(json!({ "account": acc.name, "restored_to": folder }))
     }
 
+    /// Saves the account and reports its first sync; refused while `--account` hides accounts, since the new one
+    /// would be invisible to this server.
+    pub fn account_add(&self, account: AccountConfig) -> Result<Value> {
+        if !self.only.is_empty() {
+            bail!("this server is limited with --account and cannot add accounts");
+        }
+        let name = account.name.clone();
+        {
+            // Start from the file, not the start-up snapshot, or edits made since would be lost on save.
+            let mut held = self.config.write().unwrap_or_else(PoisonError::into_inner);
+            let mut config = Config::load(&self.paths.config_file())?;
+            postvak_core::account::add(&mut config, &self.paths, account.clone(), None)?;
+            *held = config;
+        }
+        postvak_core::account::await_started(&*self.daemon.client()?, &name, ACCOUNT_START)
+            .map_err(|e| {
+                e.context(format!(
+                    "account '{name}' was saved to config.toml and the daemon will start it"
+                ))
+            })?;
+        let sync = self.sync(Some(&name))?.swap_remove(0);
+        Ok(json!({ "account": output::account(&account), "sync": sync }))
+    }
+
     /// Asks the daemon for one sync with rules per visible account; a refusal is that account's `error`.
     pub fn sync(&self, account: Option<&str>) -> Result<Vec<Value>> {
         let mut rows = Vec::new();
@@ -354,7 +415,7 @@ impl Backend {
 
     /// The visible accounts' listing rows; never the password source.
     pub fn accounts(&self) -> Result<Vec<Value>> {
-        Ok(self.accounts.iter().map(output::account).collect())
+        Ok(self.visible().iter().map(output::account).collect())
     }
 
     /// The daemon's status, with only the visible accounts.
@@ -367,12 +428,12 @@ impl Backend {
     }
 
     fn is_visible(&self, account: Option<&str>) -> bool {
-        account.is_none_or(|a| self.accounts.iter().any(|acc| acc.name == a))
+        account.is_none_or(|a| self.visible().iter().any(|acc| acc.name == a))
     }
 
-    /// Whether `--account` hides some configured account; a rule without `account` then reaches beyond this server.
+    /// Whether the server was started with `--account`, so accounts added later stay hidden too; a rule without `account` then reaches beyond this server.
     fn narrowed(&self) -> bool {
-        self.accounts.len() < self.all_accounts.len()
+        !self.only.is_empty()
     }
 
     /// A rule scoped to a hidden account is as good as absent, and while accounts are hidden a rule for every account
@@ -384,7 +445,7 @@ impl Backend {
                 bail!("no rule named '{name}'")
             }
             Some(rule) if enabling && rule.account.is_none() && self.narrowed() => {
-                let visible: Vec<&str> = self.accounts.iter().map(|a| a.name.as_str()).collect();
+                let visible: Vec<String> = self.visible().into_iter().map(|a| a.name).collect();
                 bail!(
                     "rule '{name}' applies to every account; this server only sees {}",
                     visible.join(", ")
@@ -429,10 +490,51 @@ impl Backend {
         }
         let mut rows = Vec::new();
         for acc in self.select(account)? {
-            let store = self.store(acc)?;
-            for p in actions::planned(&compiled, &store, acc, &acc.identity()?, time::now())? {
+            let store = self.store(&acc)?;
+            for p in actions::planned(&compiled, &store, &acc, &acc.identity()?, time::now())? {
                 rows.push(output::planned_row(&acc.name, &p));
             }
+        }
+        Ok(rows)
+    }
+
+    /// Runs one enabled rule over the existing mail of the visible accounts it applies to, through the daemon; a dry
+    /// run plans from the local store instead. A rule of a hidden account reads as absent.
+    pub fn rules_apply_existing(
+        &self,
+        name: &str,
+        account: Option<&str>,
+        dry_run: bool,
+    ) -> Result<Vec<Value>> {
+        self.ensure_rule_visible(name, false)?;
+        let compiled = vec![rules::enabled_rule(&self.paths.rules_file(), name)?];
+        let mut rows = Vec::new();
+        for acc in self.select(account)? {
+            if !compiled.iter().any(|r| r.applies_to_account(&acc.name)) {
+                continue;
+            }
+            if dry_run {
+                let store = self.store(&acc)?;
+                for p in actions::planned(&compiled, &store, &acc, &acc.identity()?, time::now())? {
+                    rows.push(output::planned_row(&acc.name, &p));
+                }
+                continue;
+            }
+            let command = Command::ApplyRule {
+                name: name.to_string(),
+            };
+            let (evaluated, actions, errors) =
+                self.daemon
+                    .request(&acc.name, command, |reply| match reply {
+                        Event::RuleApplied {
+                            evaluated,
+                            actions,
+                            errors,
+                            ..
+                        } => Ok((evaluated, actions, errors)),
+                        other => Err(other),
+                    })?;
+            rows.push(output::rule_applied(&acc.name, evaluated, actions, &errors));
         }
         Ok(rows)
     }
@@ -443,7 +545,7 @@ impl Backend {
             Some(account) if !self.is_visible(Some(account)) => {
                 bail!("no account named '{account}'")
             }
-            None if self.narrowed() => rule.account = Some(self.single(None)?.name.clone()),
+            None if self.narrowed() => rule.account = Some(self.single(None)?.name),
             _ => {}
         }
         let (name, account) = (rule.name.clone(), rule.account.clone());
@@ -454,7 +556,7 @@ impl Backend {
     /// Enables the rule and restarts its clock in every account, so it acts only on mail that arrives from now on.
     pub fn approve(&self, name: &str) -> Result<Value> {
         self.ensure_rule_visible(name, true)?;
-        rules::edit::approve_from_now(&self.paths, &self.all_accounts, name, time::now())?;
+        rules::edit::approve_from_now(&self.paths, &self.all_accounts(), name, time::now())?;
         Ok(json!({ "rule": name, "enabled": true }))
     }
 

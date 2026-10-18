@@ -13,6 +13,7 @@ pub(crate) const DOCS: &str = env!("CARGO_PKG_HOMEPAGE");
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Item {
     About,
+    AddAccount,
     AddToSelection,
     Archive,
     Delete,
@@ -45,6 +46,7 @@ impl Item {
         let act = |on: bool, action: UiAction| on.then_some(action);
         match self {
             Item::About => Some(UiAction::About),
+            Item::AddAccount => Some(UiAction::OpenAccountForm),
             Item::AddToSelection => act(message, UiAction::ToggleMark),
             Item::Archive => act(message, UiAction::Act(Action::Archive)),
             Item::Delete => act(message, UiAction::Act(Action::Trash)),
@@ -101,6 +103,7 @@ mod tests {
         let inbox = || UiAction::MarkFolderRead(0, "INBOX".into());
         let expected = [
             Some(UiAction::About),
+            Some(UiAction::OpenAccountForm),
             Some(UiAction::ToggleMark),
             Some(UiAction::Act(Action::Archive)),
             Some(UiAction::Act(Action::Trash)),
@@ -124,6 +127,7 @@ mod tests {
         ];
         let items = [
             Item::About,
+            Item::AddAccount,
             Item::AddToSelection,
             Item::Archive,
             Item::Delete,
