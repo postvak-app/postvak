@@ -10,7 +10,7 @@ export struct ProposalData {
     label: string,
     by: string,
     summary: string,
-    toml: string,
+    toml: [string],
     preview: string,
 }
 
@@ -196,16 +196,30 @@ export component RulesPane inherits Rectangle {
                                 font-size: Theme.small-size;
                                 color: Theme.pane.muted;
                             }
+                            // Every line is added, so each gets a diff's "+" and tint.
                             Rectangle {
-                                background: Theme.pane.panel;
+                                background: Theme.pane.added;
                                 border-radius: Theme.pad / 2;
                                 VerticalLayout {
-                                    padding: Theme.pad;
-                                    Text {
-                                        text: proposal.toml;
-                                        font-family: Theme.mono-font;
-                                        font-size: Theme.small-size;
-                                        color: Theme.pane.text;
+                                    padding-top: Theme.pad / 2;
+                                    padding-bottom: Theme.pad / 2;
+                                    for line in proposal.toml: HorizontalLayout {
+                                        padding-left: Theme.pad;
+                                        spacing: Theme.pad;
+                                        Text {
+                                            accessible-role: none;
+                                            text: "+";
+                                            font-family: Theme.mono-font;
+                                            font-size: Theme.small-size;
+                                            color: Theme.pane.success;
+                                        }
+                                        Text {
+                                            horizontal-stretch: 1;
+                                            text: line;
+                                            font-family: Theme.mono-font;
+                                            font-size: Theme.small-size;
+                                            color: Theme.pane.text;
+                                        }
                                     }
                                 }
                             }
@@ -301,6 +315,7 @@ export component RulesPane inherits Rectangle {
                                 HorizontalLayout {
                                     TextButton {
                                         text: "Apply to existing mail";
+                                        flush: true;
                                         palette: Theme.pane;
                                         enabled: rule.enabled;
                                         hint: "Runs this rule's actions, which may delete mail, on the mail its accounts already hold, now";

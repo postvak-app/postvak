@@ -50,8 +50,8 @@ pub(crate) struct Proposal {
     /// "proposed by agent".
     pub by: String,
     pub summary: String,
-    /// The TOML it adds, each line behind a "+".
-    pub toml: String,
+    /// The TOML lines it adds.
+    pub toml: Vec<String>,
     /// What "Preview on cached mail" found, or empty.
     pub preview: String,
 }
@@ -102,10 +102,10 @@ pub(crate) fn proposals(state: &RulesState) -> Vec<Proposal> {
                 rules: vec![rule.clone()],
             })
             .unwrap_or_else(|e| e.to_string());
-            let toml: Vec<String> = clean(&toml, true)
+            let toml = clean(&toml, true)
                 .trim_end()
                 .lines()
-                .map(|line| format!("+ {line}").trim_end().to_owned())
+                .map(str::to_owned)
                 .collect();
             Proposal {
                 name: rule.name.clone(),
@@ -115,7 +115,7 @@ pub(crate) fn proposals(state: &RulesState) -> Vec<Proposal> {
                     clean(rule.proposed_by.as_deref().unwrap_or_default(), false)
                 ),
                 summary: draft::summary(rule),
-                toml: toml.join("\n"),
+                toml,
                 preview: state.previews.get(&rule.name).cloned().unwrap_or_default(),
             }
         })
@@ -473,7 +473,7 @@ mod tests {
         let (open, wires) = rules_view(&fx);
         assert_eq!(open.find("proposed by agent").len(), 1);
         assert_eq!(open.find("subject contains \"code\" → delete").len(), 1);
-        assert_eq!(open.labels_containing("+ name = \"codes\"").len(), 1);
+        assert_eq!(open.find("name = \"codes\"").len(), 1);
         open.click("Approve");
         assert!(enabled(&fx, "codes"));
         assert!(fx.store("work").rule_first_seen("codes", "", 0).unwrap() > 1);

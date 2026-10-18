@@ -425,7 +425,7 @@ fn edit_draft(change: impl FnOnce(&App, &mut Draft) + 'static) -> Ask {
     one(move |app| {
         let mut draft = app.rule_draft.clone()?;
         change(app, &mut draft);
-        (Some(&draft) != app.rule_draft.as_ref()).then_some(UiAction::EditDraft(draft))
+        (Some(&draft) != app.rule_draft.as_ref()).then(|| UiAction::EditDraft(Box::new(draft)))
     })
 }
 
@@ -560,7 +560,7 @@ fn present_sheet(app: &App, window: &MailWindow) {
                     label: p.label.into(),
                     by: p.by.into(),
                     summary: p.summary.into(),
-                    toml: p.toml.into(),
+                    toml: model(p.toml.into_iter().map(SharedString::from)),
                     preview: p.preview.into(),
                 })
                 .collect();

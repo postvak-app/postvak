@@ -103,6 +103,8 @@ export component TextButton inherits Rectangle {
     in property <string> text-font: Theme.text-font;
     // A filled button for an action in a pane, rather than a choice in a bar.
     in property <bool> framed;
+    // Its text starts at its left edge, in line with the text above it; the hover fill still frames it.
+    in property <bool> flush;
     callback clicked();
 
     height: Theme.row;
@@ -126,7 +128,7 @@ export component TextButton inherits Rectangle {
         fill: root.framed ? root.palette.pressed : root.palette.hover;
     }
     HorizontalLayout {
-        padding-left: root.framed ? Theme.pad : Theme.pad / 2;
+        padding-left: root.framed ? Theme.pad : root.flush ? 0 : Theme.pad / 2;
         padding-right: root.framed ? Theme.pad : Theme.pad / 2;
         Text {
             accessible-role: none;

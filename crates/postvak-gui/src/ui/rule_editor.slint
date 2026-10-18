@@ -246,6 +246,7 @@ export component RuleEditorPane inherits ScrollView {
         HorizontalLayout {
             TextButton {
                 text: "+ Add condition";
+                flush: true;
                 palette: Theme.pane;
                 clicked => { RuleEditor.add-condition(); }
             }
@@ -293,6 +294,7 @@ export component RuleEditorPane inherits ScrollView {
             spacing: Theme.pad / 2;
             TextButton {
                 text: "+ Add action";
+                flush: true;
                 palette: Theme.pane;
                 selected: root.adding-action;
                 clicked => { root.adding-action = !root.adding-action; }

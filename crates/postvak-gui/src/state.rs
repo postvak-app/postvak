@@ -248,7 +248,7 @@ pub(crate) enum UiAction {
     /// Take every row out of the selection.
     ClearSelection,
     /// The rule editor's form changed.
-    EditDraft(Draft),
+    EditDraft(Box<Draft>),
     /// Open a rule in the editor.
     EditRule(String),
     Collapse,
@@ -987,7 +987,7 @@ impl App {
                 self.rule_draft = Some(Draft {
                     error: None,
                     tested: None,
-                    ..draft
+                    ..*draft
                 });
             }
             UiAction::EditRule(name) => {
