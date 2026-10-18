@@ -378,6 +378,35 @@ mod tests {
     }
 
     #[test]
+    fn the_next_sync_of_any_account_clears_a_notice_from_the_status_row() {
+        let fx = Fixture::new(&["work", "home"]);
+        let (mut driver, wires) = fx.driver();
+        let applied = Event::RuleApplied {
+            account: "work".into(),
+            request: 1,
+            evaluated: 2,
+            actions: 2,
+            errors: vec![],
+        };
+        wires.events.send(applied).unwrap();
+        driver.tick();
+        let notice = "work: 2 actions on 2 messages";
+        assert_eq!(super::summary(&driver.app).text, notice);
+        let synced = Event::Synced {
+            account: "home".into(),
+            new_messages: 0,
+            actions: 0,
+            requests: vec![],
+            errors: vec![],
+        };
+        wires.events.send(synced).unwrap();
+        driver.tick();
+        assert_ne!(super::summary(&driver.app).text, notice);
+        assert!(driver.app.notice.is_none());
+        assert!(driver.app.history.iter().any(|line| line.text == notice));
+    }
+
+    #[test]
     fn choosing_dark_applies_it_and_writes_it_keeping_comments() {
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = fx.window();

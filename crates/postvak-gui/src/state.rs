@@ -330,7 +330,7 @@ pub struct App {
     pub(crate) daemon_lost: bool,
     pub(crate) downloads: PathBuf,
     pub(crate) error: Option<String>,
-    /// The outcome of the last purge or rule run, shown in the status row until the history is opened.
+    /// The outcome of the last purge or rule run, shown in the status row until the next sync or the history opens.
     pub(crate) notice: Option<String>,
     /// Each account's trash retention in days, from config.toml as the window opened or added the account.
     pub(crate) retention: BTreeMap<String, u64>,
@@ -731,7 +731,12 @@ impl App {
                 }
                 self.refresh(index);
             }
-            Event::BodiesFetched { .. } | Event::Synced { .. } => self.refresh(index),
+            Event::BodiesFetched { .. } => self.refresh(index),
+            Event::Synced { .. } => {
+                // A fresh sync result replaces the last notice, which would otherwise outrank every account line.
+                self.notice = None;
+                self.refresh(index);
+            }
             Event::ActionDone {
                 folder, results, ..
             } => {
