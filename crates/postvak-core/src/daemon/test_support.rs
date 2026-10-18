@@ -53,6 +53,7 @@ pub fn options(connect: Connector, idle_exit: Option<Duration>) -> Options {
         idle_exit,
         connect,
         notify: false,
+        signals: false,
     }
 }
 

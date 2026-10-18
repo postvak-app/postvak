@@ -1,4 +1,4 @@
-//! The real binary as an auto-started daemon: one per home, idling out, replaced when stale or killed.
+//! The real binary as a daemon: one per home, idling out, replaced when stale or killed, stopped by a signal.
 
 // Test code: unwrap, expect and panic are how a test fails.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -166,4 +166,50 @@ fn a_killed_daemon_is_replaced_by_the_next_client() {
     let pid = next.status().unwrap().pid;
     assert_ne!(pid, killed);
     stop(next, &paths);
+}
+
+/// `docker stop`, `systemctl stop` and launchd send SIGTERM; the daemon stops cleanly, as on `daemon stop`.
+#[test]
+fn a_terminated_daemon_stops_cleanly() {
+    let (_home, paths) = home();
+    for signal in ["TERM", "INT"] {
+        let client = start(&paths);
+        let pid = client.status().unwrap().pid;
+        let status = std::process::Command::new("kill")
+            .args([&format!("-{signal}"), &pid.to_string()])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert_gone(&paths, pid);
+        drop(client);
+    }
+}
+
+/// A foreground daemon is the container's own process, so its exit status is what `docker stop` sees.
+#[test]
+fn run_exits_zero_on_sigterm() {
+    let (home, paths) = home();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_postvak"))
+        .arg("run")
+        .env("POSTVAK_HOME", home.path())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !paths.daemon_socket().exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the daemon never bound its socket"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let status = std::process::Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let exit = child.wait().unwrap();
+    assert!(exit.success(), "{exit}");
+    assert!(!paths.daemon_socket().exists());
 }
