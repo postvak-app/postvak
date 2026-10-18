@@ -759,6 +759,7 @@ async fn tools_list_per_scope_set_is_exact_and_alphabetical() {
                 "junk",
                 "mark",
                 "move",
+                "trash_purge",
                 "trash_restore",
                 "unsubscribe",
             ],
@@ -793,6 +794,7 @@ async fn annotations_mark_reads_and_destructive_tools() {
             "delete",
             "rules_approve",
             "rules_set_enabled",
+            "trash_purge",
             "unsubscribe",
         ]
         .contains(&name);
@@ -1060,6 +1062,24 @@ async fn show_fetches_a_missing_body_through_the_daemon() {
     let shown = call(&client, "show", json!({ "uid": 1 })).await;
     let body = shown.structured_content.unwrap()["body"].to_string();
     assert!(body.contains("the body"), "{body}");
+}
+
+#[tokio::test]
+async fn trash_purge_removes_only_backups_past_the_retention() {
+    let fx = fixture(&["work"]);
+    let trash = postvak_core::trash::Trash::new(fx.paths.trash_dir("work"));
+    let now = postvak_core::time::now();
+    let old = trash
+        .save("INBOX", 1, b"Subject: old\r\n\r\n", now - 31 * 86_400)
+        .unwrap();
+    let fresh = trash
+        .save("INBOX", 2, b"Subject: fresh\r\n\r\n", now - 86_400)
+        .unwrap();
+    let client = connect(&fx, "mail:modify", &[]).await;
+    let report = rows(&call(&client, "trash_purge", json!({})).await);
+    assert_eq!(report, vec![json!({ "account": "work", "removed": 1 })]);
+    assert!(!old.exists());
+    assert!(fresh.exists());
 }
 
 #[tokio::test]

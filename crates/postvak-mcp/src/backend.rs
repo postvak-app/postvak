@@ -290,6 +290,17 @@ impl Backend {
         Ok(rows)
     }
 
+    /// Deletes each visible account's backups older than its `trash_retention_days`, for good.
+    pub fn trash_purge(&self, account: Option<&str>) -> Result<Vec<Value>> {
+        let mut rows = Vec::new();
+        for acc in self.select(account)? {
+            let removed = Trash::new(self.paths.trash_dir(&acc.name))
+                .purge(acc.trash_retention_days as i64 * 86_400, time::now())?;
+            rows.push(json!({ "account": acc.name, "removed": removed }));
+        }
+        Ok(rows)
+    }
+
     /// A direct action on `uids` in `folder`, logged as done `by` the agent; `dry_run` reads the local store only and
     /// opens no connection.
     pub fn act(

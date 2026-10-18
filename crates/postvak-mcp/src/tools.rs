@@ -440,6 +440,12 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
             Effect::ReadOnly,
             help::TRASH_LIST,
         ),
+        ToolDef::new::<AccountArgs>(
+            "trash_purge",
+            Scope::MailModify,
+            Effect::Destructive,
+            help::TRASH_PURGE,
+        ),
         ToolDef::new::<RestoreArgs>(
             "trash_restore",
             Scope::MailModify,
@@ -636,6 +642,10 @@ fn dispatch(
         "trash_list" => {
             let a: AccountArgs = args(arguments)?;
             rows(backend.trash_list(a.account.as_deref())?)
+        }
+        "trash_purge" => {
+            let a: AccountArgs = args(arguments)?;
+            rows(backend.trash_purge(a.account.as_deref())?)
         }
         "trash_restore" => {
             let a: RestoreArgs = args(arguments)?;
