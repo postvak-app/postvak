@@ -2032,6 +2032,15 @@ impl App {
         else {
             return;
         };
+        if let Some(account) = scope
+            .as_deref()
+            .filter(|account| !self.accounts.iter().any(|a| &a.name == account))
+        {
+            let message =
+                format!("rule '{name}' names account '{account}', which this window does not list");
+            self.note_error(None, message);
+            return;
+        }
         for index in 0..self.accounts.len() {
             let covered = scope
                 .as_deref()

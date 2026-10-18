@@ -359,6 +359,21 @@ mod tests {
     }
 
     #[test]
+    fn a_rule_for_an_account_the_window_does_not_list_says_so() {
+        let fx = Fixture::new(&["work"]);
+        let gone = "[[rules]]\nname = \"old\"\naccount = \"gone\"\nmatch.subject = { contains = \"x\" }\nactions = [\"flag\"]\n";
+        std::fs::write(fx.paths.rules_file(), gone).unwrap();
+        let (open, wires) = view(&fx, View::Rules);
+        open.click("Apply to existing mail");
+        assert!(wires.sent().is_empty());
+        let why = "rule 'old' names account 'gone', which this window does not list";
+        assert_eq!(
+            open.with(|live| live.app.error.clone()).as_deref(),
+            Some(why)
+        );
+    }
+
+    #[test]
     fn purge_removes_backups_past_their_retention_and_says_how_many() {
         let fx = Fixture::new(&["work"]);
         let dir = fx.paths.trash_dir("work");
