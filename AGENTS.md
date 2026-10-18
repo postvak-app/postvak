@@ -26,7 +26,7 @@ Four crates in one workspace. `crates/postvak-core` holds every module below exc
 - `trash` `.eml` backups before any rule delete
 - `update` whether a newer release is out (GUI only): GitHub's latest release at most once a day, cached; never updates itself
 
-`tests/architecture.rs` checks the ownership rules above that crate boundaries cannot: `mcp`, `rules` (rules.toml writes) and `gui` views; allowed exceptions live there with a reason.
+`tests/architecture.rs` checks the ownership rules above that crate boundaries cannot: `mcp`, `rules` (rules.toml writes) and `gui` views; allowed exceptions live there with a reason. It also checks the dependency graph from `cargo metadata`: nothing `postvak-core` pulls in is Slint, Blitz or rmcp, and no other crate depends on rusqlite outside its tests.
 
 ## Surfaces
 - A feature ships on the CLI, MCP and GUI together unless its spec names the exception; `help` and `output` are shared so the texts and JSON rows stay identical
@@ -35,7 +35,7 @@ Four crates in one workspace. `crates/postvak-core` holds every module below exc
 ## Definition of done
 - `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, `cargo machete` and `cargo deny check` all pass
 - New logic has a test; a bug fix has a regression test
-- No `unwrap`, `expect`, `panic!`, `todo!` or `unimplemented!` outside tests (clippy denies them); where a call cannot fail, a narrow `#[allow]` says why
+- No `unwrap`, `expect`, `panic!`, `unreachable!`, `todo!` or `unimplemented!` outside tests (clippy denies them; tests use `panic!` for a case that cannot happen); where a call cannot fail, a narrow `#[allow]` says why
 - Platform coverage reported honestly: say "compiled on" vs "ran on"
 - Every new dependency has a one-line reason in `[workspace.dependencies]` of the root `Cargo.toml`; crates name it with `workspace = true`
 - Do not broaden a task into adjacent features
@@ -58,7 +58,7 @@ POSTVAK_TEST_IMAP_HOST=localhost cargo test --features testing --test imap_live
 Port 10993 advertises MOVE and UIDPLUS, port 11993 neither. Each test logs in as its own throwaway user. `tests/dovecot/gen-certs.sh` regenerates the test-only CA.
 
 ## Property tests
-`crates/postvak-core/tests/fuzz.rs` feeds hostile input to the message, rules and wire parsers; the only assertion is no panic. Deeper search: `PROPTEST_CASES=20000 cargo test --release -p postvak-core --test fuzz`. A finding becomes a named test; unfixed ones go in `crates/postvak-core/tests/known_bugs.rs` as `#[ignore = "BUG: …"]`.
+`crates/postvak-core/tests/fuzz.rs` feeds hostile input to the message, rules and wire parsers; the only assertion is no panic. Deeper search: `PROPTEST_CASES=20000 cargo test --release -p postvak-core --test fuzz`. A finding becomes a named test; unfixed ones go in `crates/postvak-core/tests/known_bugs.rs` as `#[ignore = "BUG: …"]`. `.github/workflows/nightly.yml` runs this search, and the one below, every night with ten times the cases.
 
 ## Model-based sync tests
 `crates/postvak-core/tests/sync_model.rs` runs random server events and sync passes against `RecordingOps`; search deeper with `PROPTEST_CASES=2000 cargo test -p postvak-core --features testing --test sync_model`.
