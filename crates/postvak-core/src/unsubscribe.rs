@@ -4,7 +4,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::message::header_value;
-use crate::net::public;
+use crate::net::{public, public_agent};
 
 const TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -108,21 +108,26 @@ pub fn unsubscribe(headers: &[u8], dry_run: bool) -> Result<Report, UnsubscribeE
 
 /// The RFC 8058 POST to a public host.
 pub fn one_click(url: &str) -> Result<(), UnsubscribeError> {
-    post_to(url, public)
+    post_to(url, public, public_agent(config()))
 }
 
-/// The RFC 8058 POST. The RFC forbids a redirect in answer, so only a 2xx counts; the host check is given so tests can
-/// serve from this machine.
-fn post_to(url: &str, allowed: impl Fn(&str) -> bool) -> Result<(), UnsubscribeError> {
-    if !allowed(url) {
-        return Err(UnsubscribeError::NotPublic);
-    }
-    let agent: ureq::Agent = ureq::Agent::config_builder()
+fn config() -> ureq::config::ConfigBuilder<ureq::typestate::AgentScope> {
+    ureq::Agent::config_builder()
         .max_redirects(0)
         .http_status_as_error(false)
         .timeout_global(Some(TIMEOUT))
-        .build()
-        .into();
+}
+
+/// The RFC 8058 POST. The RFC forbids a redirect in answer, so only a 2xx counts; the host check and agent are given so
+/// tests can serve from this machine.
+fn post_to(
+    url: &str,
+    allowed: impl Fn(&str) -> bool,
+    agent: ureq::Agent,
+) -> Result<(), UnsubscribeError> {
+    if !allowed(url) {
+        return Err(UnsubscribeError::NotPublic);
+    }
     let response = agent
         .post(url)
         .header("Content-Type", "application/x-www-form-urlencoded")
@@ -244,17 +249,17 @@ mod tests {
     fn the_post_says_one_click_and_only_a_success_counts() {
         let anywhere = |_: &str| true;
         let (url, request) = serve_once("200 OK");
-        post_to(&url, anywhere).unwrap();
+        post_to(&url, anywhere, config().build().into()).unwrap();
         let request = request.recv().unwrap();
         assert!(request.starts_with("POST /u?id=7 "), "{request}");
         assert!(request.ends_with("List-Unsubscribe=One-Click"), "{request}");
         let (url, _) = serve_once("302 Found");
         assert!(
-            matches!(post_to(&url, anywhere), Err(UnsubscribeError::Refused(e)) if e == "HTTP 302")
+            matches!(post_to(&url, anywhere, config().build().into()), Err(UnsubscribeError::Refused(e)) if e == "HTTP 302")
         );
         let (url, _) = serve_once("200 OK");
         assert!(matches!(
-            post_to(&url, public),
+            post_to(&url, public, public_agent(config())),
             Err(UnsubscribeError::NotPublic)
         ));
     }

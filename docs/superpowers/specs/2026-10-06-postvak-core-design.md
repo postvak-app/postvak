@@ -286,6 +286,7 @@ postvak delete UID... [--account NAME] [--folder INBOX] [--dry-run]     to Trash
 postvak attachment list UID [--json] | save UID N [--dir DIR]   [--account NAME] [--folder INBOX]
 postvak trash list | restore FILE | purge
 postvak account add                          interactive; tests login before saving
+postvak crashes | crashes show ID            local crash reports, newest first
 ```
 
 `rules propose` is the only write path agents use; they never edit `rules.toml` directly. A proposed rule carries `proposed_by = "cli:<who>"` now and `"mcp:<client>"` later. `rules check` errors name the rule and the TOML span, which is what lets an agent self-correct.
@@ -300,6 +301,7 @@ Plain text, one record per line, so it pipes into grep and fzf. `--json` output 
 - Secrets never implement `Debug`. Status enums for logging use a `log_label()` rather than `Debug`.
 - `Paths` from `directories::ProjectDirs("", "", "postvak")`, directories created with mode 0700. `Paths::under(tempdir)` roots everything for tests. `Paths::account(name)` gives the per-account state dir holding `mail.db` and `trash/`.
 - All file writes: tmp in the same dir, then rename.
+- Every process installs a panic hook that writes a crash report to `<state dir>/crashes/<time>-<process>.txt`, keeping the newest 20, and never sends it anywhere. A report holds the version, OS, process, thread name up to its first non-word character, code location, backtrace and the variant name of the last `Command` or `UiAction`. The panic message is kept only when it is a literal, since a formatted one can quote mail. `postvak crashes` reads them; the GUI's startup problem window names the folder. Exception to the surface rule: no MCP tool, since a report is for the user to attach to a bug report and an agent gains nothing from reading one.
 - IMAP connections give up after 30s while connecting (TCP, TLS and login together) and use TCP keepalive (60s idle, then 4 probes 15s apart), so a dead connection fails within about two minutes and the run loop reconnects. A live server that stops answering mid-command is not bounded yet.
 
 ## 13. Testing

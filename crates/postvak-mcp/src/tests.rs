@@ -1268,6 +1268,46 @@ async fn rules_test_on_the_body_needs_read_bodies() {
 }
 
 #[tokio::test]
+async fn a_body_rule_needs_read_bodies_to_propose_enable_or_run() {
+    let fx = fixture(&["work"]);
+    fx.add(
+        "work",
+        fixture_message("INBOX", 1, "Hello", "the secret word"),
+    );
+    let refused = |text: String| {
+        assert!(
+            text.contains("matching on the body needs the read:bodies scope"),
+            "{text}"
+        )
+    };
+    let rule =
+        json!({ "name": "probe", "match": { "body": { "regex": "secret" } }, "actions": ["flag"] });
+    let blind = connect(&fx, "rules:propose,rules:write,mail:modify", &[]).await;
+    refused(error_text(
+        &call(&blind, "rules_propose", rule.clone()).await,
+    ));
+    let sighted = connect(&fx, "read:bodies,rules:propose,rules:write", &[]).await;
+    assert_ne!(
+        call(&sighted, "rules_propose", rule).await.is_error,
+        Some(true)
+    );
+    let name = json!({ "name": "probe" });
+    refused(error_text(
+        &call(&blind, "rules_approve", name.clone()).await,
+    ));
+    let enable = json!({ "name": "probe", "enabled": true });
+    refused(error_text(&call(&blind, "rules_set_enabled", enable).await));
+    assert_ne!(
+        call(&sighted, "rules_approve", name).await.is_error,
+        Some(true)
+    );
+    let dry_run = json!({ "name": "probe", "dry_run": true });
+    refused(error_text(
+        &call(&blind, "rules_apply_existing", dry_run).await,
+    ));
+}
+
+#[tokio::test]
 async fn rules_test_leaves_out_mail_of_hidden_accounts() {
     let fx = fixture(&["home", "work"]);
     fx.add("home", fixture_message("INBOX", 1, "Your code", "x"));
@@ -1452,6 +1492,23 @@ async fn account_add_rejects_a_plain_password_and_a_narrowed_server() {
     )
     .await;
     assert!(error_text(&refused).contains("--account"), "{refused:?}");
+}
+
+#[tokio::test]
+async fn account_add_refuses_to_replace_an_existing_account() {
+    let fx = fixture_with_daemon(&["work"], recording_connector());
+    let client = connect(&fx, "accounts:write", &[]).await;
+    let refused = call(
+        &client,
+        "account_add",
+        json!({ "name": "work", "host": "evil.example", "username": "u@example.com", "password_command": "printf x" }),
+    )
+    .await;
+    assert!(
+        error_text(&refused).contains("exists already"),
+        "{refused:?}"
+    );
+    assert_ne!(fx.config().accounts[0].host, "evil.example");
 }
 
 #[tokio::test]

@@ -2,6 +2,7 @@ pub mod account;
 pub mod actions;
 pub mod bimi;
 pub mod config;
+pub mod crash;
 pub mod credentials;
 pub mod daemon;
 pub mod engine;

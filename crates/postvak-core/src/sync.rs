@@ -731,11 +731,15 @@ pub fn run_rules_with(
         let fresh = |uid: u32| mode == Mode::Normal && unseen(uid);
         let messages = store.messages_in_folder(&folder)?;
         let highest_uid = messages.last().map(|m| m.uid.min(stored.last_uid));
+        // A rule's body condition does not download a message larger than this; such mail counts as body unknown.
+        let wants_body = |m: &Message| {
+            needs_body
+                && m.body_text.is_none()
+                && fresh(m.uid)
+                && m.size.is_none_or(|size| size <= MAX_RULE_BODY)
+        };
         let bodies_total = if needs_body {
-            messages
-                .iter()
-                .filter(|m| m.body_text.is_none() && fresh(m.uid))
-                .count()
+            messages.iter().filter(|m| wants_body(m)).count()
         } else {
             0
         };
@@ -745,7 +749,7 @@ pub fn run_rules_with(
         for mut msg in messages {
             let is_fresh = fresh(msg.uid);
             // Mail found by a first sync or resync already sat on the server; fetching it would download the whole folder.
-            if needs_body && msg.body_text.is_none() && is_fresh {
+            if wants_body(&msg) {
                 let progress = Activity::FetchingBodies {
                     folder: folder.clone(),
                     done: bodies_done,
@@ -768,7 +772,7 @@ pub fn run_rules_with(
                     None => continue,
                 }
             }
-            if needs_body && msg.body_text.is_none() && is_fresh {
+            if wants_body(&msg) {
                 match ensure_body_text(&msg, ops, store) {
                     Ok(text) => msg.body_text = Some(text),
                     Err(e) => log::warn!("{}/{}: body fetch failed: {e}", msg.folder, msg.uid),
@@ -811,6 +815,9 @@ pub fn run_rules_with(
     }
     Ok(run)
 }
+
+/// The largest message, in bytes, a rule's body condition downloads by itself.
+pub const MAX_RULE_BODY: u32 = 25 * 1024 * 1024;
 
 /* Whether a uid is fresh: not yet seen by the rules, not already on the server when the folder was first tracked, and
 synced. A row a move stored above last_uid waits for sync, so unsynced mail below it is not marked seen too early. */
@@ -903,6 +910,7 @@ fn run_command(
     command: Command,
     events: &Sender<Event>,
 ) -> Result<CommandsRun, SyncError> {
+    crate::crash::note(&command);
     let name = || account.name.clone();
     let failed = |request, message: String| {
         log::warn!("{}: {message}", account.name);

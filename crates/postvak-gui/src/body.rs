@@ -46,18 +46,20 @@ pub(crate) struct Pane {
     pub links: Vec<String>,
 }
 
-/// The links in `text` that open, in order, once each.
+/// The most links the pane lists; a sender can write hundreds of thousands.
+const MAX_LINKS: usize = 200;
+
+/// The links in `text` that open, in order, once each, at most `MAX_LINKS`.
 pub(crate) fn links(text: Option<&str>) -> Vec<String> {
-    let mut links: Vec<String> = Vec::new();
-    for segment in text.iter().flat_map(|text| segments(text)) {
-        if let Segment::Link(url) = segment
-            && has_target(url)
-            && !links.iter().any(|l| l == url)
-        {
-            links.push(url.to_string());
-        }
-    }
-    links
+    let mut seen = std::collections::HashSet::new();
+    text.iter()
+        .flat_map(|text| segments(text))
+        .filter_map(|segment| match segment {
+            Segment::Link(url) if has_target(url) && seen.insert(url) => Some(url.to_string()),
+            _ => None,
+        })
+        .take(MAX_LINKS)
+        .collect()
 }
 
 /// What the body pane shows for `app`.
@@ -204,23 +206,25 @@ pub fn has_target(link: &str) -> bool {
     })
 }
 
+/// Where the next link starts. One pass up to it, so `segments`, which resumes after each link, stays linear in the text.
 fn next_link(text: &str) -> Option<usize> {
-    SCHEMES
-        .iter()
-        .filter_map(|scheme| {
-            text.match_indices(scheme).map(|(at, _)| at).find(|&at| {
-                let word_start = text[..at]
-                    .chars()
-                    .next_back()
-                    .is_none_or(|c| !c.is_alphanumeric());
-                let more = text[at + scheme.len()..]
-                    .chars()
-                    .next()
-                    .is_some_and(|c| !c.is_whitespace());
-                word_start && more
-            })
-        })
-        .min()
+    let mut previous = None;
+    for (at, c) in text.char_indices() {
+        let word_start = previous.is_none_or(|p: char| !p.is_alphanumeric());
+        previous = Some(c);
+        if !word_start {
+            continue;
+        }
+        let starts_link = SCHEMES.iter().any(|scheme| {
+            text[at..]
+                .strip_prefix(scheme)
+                .is_some_and(|rest| rest.chars().next().is_some_and(|c| !c.is_whitespace()))
+        });
+        if starts_link {
+            return Some(at);
+        }
+    }
+    None
 }
 
 pub fn size(bytes: usize) -> String {
@@ -367,6 +371,18 @@ mod tests {
         ] {
             assert_eq!(segments(plain), [Segment::Text(plain)], "{plain}");
         }
+    }
+
+    #[test]
+    fn a_body_of_many_links_is_scanned_in_linear_time_and_lists_at_most_the_cap() {
+        let repeated = "http://a\n".repeat(250_000);
+        let distinct: String = (0..250_000).map(|i| format!("http://a{i}\n")).collect();
+        let started = std::time::Instant::now();
+        assert_eq!(links(Some(&repeated)), ["http://a"]);
+        let found = links(Some(&distinct));
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert_eq!(found.len(), MAX_LINKS);
+        assert_eq!(found[MAX_LINKS - 1], format!("http://a{}", MAX_LINKS - 1));
     }
 
     #[test]
