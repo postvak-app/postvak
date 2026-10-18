@@ -122,6 +122,10 @@ fn summary_from_row(row: &rusqlite::Row, offset: usize) -> rusqlite::Result<Mess
     })
 }
 
+/// SQL conditions on a message row's space-separated `flags`.
+const UNSEEN: &str = r"instr(' ' || flags || ' ', ' \Seen ') = 0";
+const FLAGGED: &str = r"instr(' ' || flags || ' ', ' \Flagged ') > 0";
+
 /// Which messages a list keeps; each set field must hold, and the default keeps all.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Filter {
@@ -135,11 +139,8 @@ impl Filter {
     /// The filter as one SQL condition on a message row; `1` when it keeps all.
     fn sql(self) -> String {
         let conditions = [
-            (self.unread, r"instr(' ' || flags || ' ', ' \Seen ') = 0"),
-            (
-                self.flagged,
-                r"instr(' ' || flags || ' ', ' \Flagged ') > 0",
-            ),
+            (self.unread, UNSEEN),
+            (self.flagged, FLAGGED),
             (self.attachments, "has_attachment"),
         ];
         let set: Vec<&str> = conditions
@@ -369,23 +370,37 @@ impl Store {
     }
 
     pub fn insert_message(&self, m: &Message) -> Result<(), StoreError> {
-        self.conn.execute(
-            &format!(
-                "INSERT OR IGNORE INTO messages ({MESSAGE_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)"
-            ),
-            params![
-                m.folder, m.uid, m.message_id, m.from_addr, m.to_addr, m.cc_addr, m.delivered_to, m.in_reply_to,
-                m.refs, m.thread_id, m.subject, m.date, m.internaldate, m.flags, m.size, m.headers, m.body_text
-            ],
-        )?;
+        let sql = format!(
+            "INSERT OR IGNORE INTO messages ({MESSAGE_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)"
+        );
+        self.conn.prepare_cached(&sql)?.execute(params![
+            m.folder,
+            m.uid,
+            m.message_id,
+            m.from_addr,
+            m.to_addr,
+            m.cc_addr,
+            m.delivered_to,
+            m.in_reply_to,
+            m.refs,
+            m.thread_id,
+            m.subject,
+            m.date,
+            m.internaldate,
+            m.flags,
+            m.size,
+            m.headers,
+            m.body_text
+        ])?;
         Ok(())
     }
 
     pub fn update_flags(&self, folder: &str, uid: u32, flags: &str) -> Result<(), StoreError> {
-        self.conn.execute(
-            "UPDATE messages SET flags = ?3 WHERE folder = ?1 AND uid = ?2 AND flags IS NOT ?3",
-            params![folder, uid, flags],
-        )?;
+        self.conn
+            .prepare_cached(
+                "UPDATE messages SET flags = ?3 WHERE folder = ?1 AND uid = ?2 AND flags IS NOT ?3",
+            )?
+            .execute(params![folder, uid, flags])?;
         Ok(())
     }
 
@@ -404,20 +419,12 @@ impl Store {
         upto_uid: u32,
         present: &[u32],
     ) -> Result<usize, StoreError> {
-        let existing: Vec<u32> = {
-            let mut stmt = self
-                .conn
-                .prepare("SELECT uid FROM messages WHERE folder = ?1 AND uid <= ?2")?;
-            let rows = stmt.query_map(params![folder, upto_uid], |r| r.get(0))?;
-            rows.collect::<Result<_, _>>()?
-        };
-        let present: std::collections::HashSet<u32> = present.iter().copied().collect();
-        let mut removed = 0;
-        for uid in existing.into_iter().filter(|u| !present.contains(u)) {
-            self.remove_message(folder, uid)?;
-            removed += 1;
-        }
-        Ok(removed)
+        let present = serde_json::to_string(present)?;
+        Ok(self.conn.execute(
+            "DELETE FROM messages
+             WHERE folder = ?1 AND uid <= ?2 AND uid NOT IN (SELECT value FROM json_each(?3))",
+            params![folder, upto_uid, present],
+        )?)
     }
 
     pub fn messages(
@@ -472,8 +479,7 @@ impl Store {
         filter: Filter,
     ) -> Result<Vec<ThreadSummary>, StoreError> {
         let mut stmt = self.conn.prepare(&format!(
-            r"SELECT thread_id, {SUMMARY_COLUMNS}, MAX(internaldate) AS latest, COUNT(*),
-                     SUM(instr(' ' || flags || ' ', ' \Seen ') = 0), SUM(instr(' ' || flags || ' ', ' \Flagged ') > 0)
+            "SELECT thread_id, {SUMMARY_COLUMNS}, MAX(internaldate) AS latest, COUNT(*), SUM({UNSEEN}), SUM({FLAGGED})
               FROM messages WHERE folder = ?1 GROUP BY thread_id HAVING SUM({}) > 0
               ORDER BY latest DESC, uid DESC LIMIT ?2",
             filter.sql()
@@ -508,6 +514,24 @@ impl Store {
         ))?;
         let rows = serde_rusqlite::from_rows::<Message>(stmt.query(params![folder])?);
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// The messages in `folder` whose body is not downloaded yet, by uid.
+    pub fn messages_without_body(&self, folder: &str) -> Result<Vec<Message>, StoreError> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {MESSAGE_COLUMNS} FROM messages WHERE folder = ?1 AND body_text IS NULL ORDER BY uid"
+        ))?;
+        let rows = serde_rusqlite::from_rows::<Message>(stmt.query(params![folder])?);
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Whether any message in `folder`, or in any folder, lacks its body.
+    pub fn lacks_bodies(&self, folder: Option<&str>) -> Result<bool, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM messages WHERE body_text IS NULL AND (?1 IS NULL OR folder = ?1))",
+            params![folder],
+            |r| r.get(0),
+        )?)
     }
 
     /// FTS5 search, newest first. A query FTS5 cannot parse, such as a bare email address, is retried with every word quoted.
@@ -555,7 +579,7 @@ impl Store {
     }
 
     pub fn message(&self, folder: &str, uid: u32) -> Result<Option<Message>, StoreError> {
-        let mut stmt = self.conn.prepare(&format!(
+        let mut stmt = self.conn.prepare_cached(&format!(
             "SELECT {MESSAGE_COLUMNS} FROM messages WHERE folder = ?1 AND uid = ?2"
         ))?;
         let mut rows = stmt.query(params![folder, uid])?;
@@ -670,16 +694,16 @@ impl Store {
 
     pub fn unread_count(&self, folder: &str) -> Result<u32, StoreError> {
         Ok(self.conn.query_row(
-            "SELECT COUNT(*) FROM messages WHERE folder = ?1 AND instr(flags, '\\Seen') = 0",
+            &format!("SELECT COUNT(*) FROM messages WHERE folder = ?1 AND {UNSEEN}"),
             params![folder],
             |r| r.get(0),
         )?)
     }
 
     pub fn unread_uids(&self, folder: &str) -> Result<Vec<u32>, StoreError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT uid FROM messages WHERE folder = ?1 AND instr(flags, '\\Seen') = 0 ORDER BY uid",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT uid FROM messages WHERE folder = ?1 AND {UNSEEN} ORDER BY uid"
+        ))?;
         let uids = stmt.query_map(params![folder], |r| r.get(0))?;
         Ok(uids.collect::<Result<_, _>>()?)
     }

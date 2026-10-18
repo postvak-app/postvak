@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::paths::write_atomic;
+use crate::paths::{read_or_empty, write_atomic};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -16,6 +16,7 @@ pub enum ConfigError {
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
     pub accounts: Vec<AccountConfig>,
@@ -110,11 +111,7 @@ impl Config {
     }
 
     pub fn load(path: &Path) -> Result<Config, ConfigError> {
-        match std::fs::read_to_string(path) {
-            Ok(text) => Config::parse(&text),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Config::default()),
-            Err(e) => Err(e.into()),
-        }
+        Config::parse(&read_or_empty(path)?)
     }
 
     /// Writes the accounts and `[ui]` into the file in place: comments, untouched keys and their order stay, and a
@@ -214,12 +211,8 @@ pub fn save_theme(path: &Path, theme: Theme) -> Result<(), ConfigError> {
 }
 
 fn read_document(path: &Path) -> Result<toml_edit::DocumentMut, ConfigError> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(e.into()),
-    };
-    text.parse()
+    read_or_empty(path)?
+        .parse()
         .map_err(|e: toml_edit::TomlError| ConfigError::Parse(e.to_string()))
 }
 
@@ -445,6 +438,15 @@ notify = false
         assert!(
             matches!(Config::parse(&typo), Err(ConfigError::Parse(e)) if e.contains("alias")),
             "a misspelled key must not be ignored"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_top_level_keys() {
+        let typo = SAMPLE.replace("[[accounts]]", "[[account]]");
+        assert!(
+            matches!(Config::parse(&typo), Err(ConfigError::Parse(e)) if e.contains("account")),
+            "a misspelled table must not leave the user without accounts"
         );
     }
 

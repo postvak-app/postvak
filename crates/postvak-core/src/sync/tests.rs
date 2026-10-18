@@ -2503,7 +2503,10 @@ fn a_lost_connection_during_restore_ends_the_drain() {
         &trash,
         vec![Command::Restore { file: file.clone() }],
     );
-    assert!(matches!(run, Err(SyncError::Mail(MailError::Io(_)))));
+    assert!(matches!(
+        run,
+        Err(SyncError::Restore(RestoreError::Mail(MailError::Io(_))))
+    ));
     assert!(file.exists());
     assert!(
         events.iter().any(|e| matches!(e,
@@ -2894,6 +2897,7 @@ fn every_action_a_front_end_can_send_survives_the_wire() {
         Action::NotJunk,
         Action::Notify,
         Action::Silent,
+        Action::Stop,
         Action::Trash,
         Action::Unflag,
     ] {

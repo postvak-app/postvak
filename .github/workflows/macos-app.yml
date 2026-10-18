@@ -35,7 +35,7 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - run: sudo apt-get update && sudo apt-get install -y libxml2-utils shellcheck
@@ -53,16 +53,16 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - run: rustup toolchain install && rustup target add aarch64-apple-darwin
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-targets: false
           save-if: false
       - run: packaging/macos/package.sh --arch aarch64
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: postvak-macos-dry-run
           path: dist/macos/*.dmg
@@ -73,13 +73,14 @@ jobs:
     if: github.event_name != 'pull_request' && github.repository_owner == 'postvak-app'
     runs-on: macos-15
     permissions:
+      actions: read # gh run list, to wait for release.yml
       contents: write
     env:
       TAG: ${{ inputs.tag || github.event.release.tag_name || github.ref_name }}
       HAS_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE != '' }}
       HAS_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.TAG }}
           persist-credentials: false
@@ -137,7 +138,22 @@ jobs:
             fi
             echo "update=true" >>"$GITHUB_OUTPUT"
           fi
-      - uses: actions/checkout@v7
+      - name: Wait for release.yml to push the formula
+        if: steps.cask.outputs.update == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # release.yml's publish-homebrew-formula checks out the tap, runs `brew style` for a minute, then pushes
+          # without pulling; a cask commit landing in between rejects its push and skips its announce job. So
+          # stay out of the tap until that run for this tag has finished. No run (a release made by hand): no wait.
+          for _ in $(seq 120); do
+            status=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release.yml --branch "$TAG" \
+              --limit 1 --json status --jq '.[0].status // "completed"')
+            [ "$status" = completed ] && exit 0
+            sleep 30
+          done
+          echo "::warning::release.yml for $TAG is still running after an hour; pushing the cask anyway"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.cask.outputs.update == 'true'
         with:
           repository: postvak-app/homebrew-tap

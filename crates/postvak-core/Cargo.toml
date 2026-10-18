@@ -8,6 +8,8 @@ license.workspace = true
 documentation.workspace = true
 repository.workspace = true
 homepage.workspace = true
+# Only what the build needs; the tests read docs and fixtures outside this crate.
+include = ["/LICENSE-*", "/migrations/**", "/src/**"]
 
 [dependencies]
 anyhow.workspace = true

@@ -40,7 +40,7 @@ services:
     restart: unless-stopped
 ```
 
-With `POSTVAK_HOME` set, `config.toml` and `rules.toml` go in `./data/config/`, and the mail store and `daemon.log` in `./data/state/`. Put the password in a file under `./data/`, for example `password = { command = "cat /data/imap-work" }`. To use the CLI against the running daemon, run `docker compose exec postvak postvak rules test`.
+With `POSTVAK_HOME` set, `config.toml` and `rules.toml` go in `./data/config/`, and the mail store in `./data/state/`. Errors go to `docker compose logs postvak`. The binary sits in the `postvak-<target>/` folder of the release's `postvak-<target>.tar.xz`, for example `postvak-x86_64-unknown-linux-gnu`. Put the password in a file under `./data/`, for example `password = { command = "cat /data/imap-work" }`. To use the CLI against the running daemon, run `docker compose exec postvak postvak rules test`.
 
 ## Status and stopping
 
@@ -53,7 +53,7 @@ Both only look for a running daemon; they never start one, and say `no daemon ru
 
 ## Logs
 
-The daemon writes `daemon.log` in its state directory: `~/Library/Application Support/postvak/` on macOS, `~/.local/state/postvak/` on Linux. The log is emptied at start when it is over 1 MB. It holds the daemon's errors, warnings and notes such as reconnects, but never senders or subjects; `postvak run` in a terminal also prints each sync's counts and each new mail's sender and subject. The socket `daemon.sock` and the lock `daemon.lock` live there too. `postvak log` shows what rules and actions did.
+A daemon started by a command, or by the launchd service on macOS, writes `daemon.log` in its state directory: `~/Library/Application Support/postvak/` on macOS, `~/.local/state/postvak/` on Linux. The log is emptied at start when it is over 1 MB. It holds the daemon's errors, warnings and notes such as reconnects, but never senders or subjects. Under the systemd service the same output goes to the journal: `journalctl --user -u postvak`. `postvak run` in a terminal prints it there, plus each sync's counts and each new mail's sender and subject. The socket `daemon.sock` and the lock `daemon.lock` live there too. `postvak log` shows what rules and actions did.
 
 ## Troubleshooting
 

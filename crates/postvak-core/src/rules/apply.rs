@@ -33,14 +33,36 @@ pub fn ensure_raw(
     if let Some(raw) = store.raw(&msg.folder, msg.uid)? {
         return Ok(raw);
     }
+    download(msg, ops, store).map(|(raw, _)| raw)
+}
+
+/// The message's body text, downloading the message once when the store lacks it.
+pub fn ensure_body_text(
+    msg: &Message,
+    ops: &mut dyn MailOps,
+    store: &Store,
+) -> Result<String, ApplyError> {
+    if let Some(raw) = store.raw(&msg.folder, msg.uid)? {
+        return Ok(body_text(&raw));
+    }
+    download(msg, ops, store).map(|(_, text)| text)
+}
+
+/// Fetches the whole message and stores it with its body text.
+fn download(
+    msg: &Message,
+    ops: &mut dyn MailOps,
+    store: &Store,
+) -> Result<(Vec<u8>, String), ApplyError> {
     let raw = ops
         .fetch_raw(msg.uid)?
         .ok_or_else(|| ApplyError::RawUnavailable {
             folder: msg.folder.clone(),
             uid: msg.uid,
         })?;
-    store.set_raw(&msg.folder, msg.uid, &raw, &body_text(&raw))?;
-    Ok(raw)
+    let text = body_text(&raw);
+    store.set_raw(&msg.folder, msg.uid, &raw, &text)?;
+    Ok((raw, text))
 }
 
 /// A delete or user delete wins over everything else in the plan. Otherwise flag actions run first, then only the first
