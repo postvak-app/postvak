@@ -73,6 +73,7 @@ jobs:
     if: github.event_name != 'pull_request' && github.repository_owner == 'postvak-app'
     runs-on: macos-15
     permissions:
+      actions: read # gh run list, to wait for release.yml
       contents: write
     env:
       TAG: ${{ inputs.tag || github.event.release.tag_name || github.ref_name }}
@@ -137,6 +138,21 @@ jobs:
             fi
             echo "update=true" >>"$GITHUB_OUTPUT"
           fi
+      - name: Wait for release.yml to push the formula
+        if: steps.cask.outputs.update == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # release.yml's publish-homebrew-formula checks out the tap, runs `brew style` for a minute, then pushes
+          # without pulling; a cask commit landing in between rejects its push and skips its announce job. So
+          # stay out of the tap until that run for this tag has finished. No run (a release made by hand): no wait.
+          for _ in $(seq 120); do
+            status=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release.yml --branch "$TAG" \
+              --limit 1 --json status --jq '.[0].status // "completed"')
+            [ "$status" = completed ] && exit 0
+            sleep 30
+          done
+          echo "::warning::release.yml for $TAG is still running after an hour; pushing the cask anyway"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.cask.outputs.update == 'true'
         with:
