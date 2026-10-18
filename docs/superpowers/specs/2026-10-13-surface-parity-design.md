@@ -104,5 +104,5 @@ Three PRs, each leaving the rule truer:
 ## Out of scope
 
 - Editing or removing an account from the GUI or MCP; the CLI has neither either.
-- A GUI rules editor beyond what the Rules view does.
+- A GUI rules editor; `docs/superpowers/plans/2026-10-08-rules-editor.md` covers it.
 - Testing the login before saving.
