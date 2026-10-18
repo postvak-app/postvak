@@ -120,7 +120,7 @@ With more than one visible account, every tool that acts on one message needs `a
 
 `accounts:write`:
 
-- `account_add` saves an account with a `password_command`, such as `pass show mail/work`, and returns the account row and the result of its first sync. A wrong login shows as that sync's `error`; call it again with the same `name` to replace the account. It never takes a password; keyring passwords are set with `postvak account add`.
+- `account_add` saves an account with a `password_command`, such as `pass show mail/work`, and returns the account row and the result of its first sync. A wrong login shows as that sync's `error`. It only adds: an existing account is refused, so an agent cannot point one of yours at another server; fix a wrong login with `postvak account add`. It never takes a password; keyring passwords are set with `postvak account add`.
 
 ## Safety
 

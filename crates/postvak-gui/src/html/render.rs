@@ -18,6 +18,11 @@ use html5ever::tree_builder::TreeBuilderOpts;
 use super::net;
 use super::{Load, Pixels, Reply, Request, STRIP, Wake};
 
+/// Layout, style and paint recurse once per element level, and a stack overflow aborts the app: deeper markup shows as
+/// text, and the thread gets a stack that holds this depth.
+const MAX_DEPTH: usize = 512;
+const STACK: usize = 64 * 1024 * 1024;
+
 /// The thread's name, which the panic hook uses to keep Blitz's panic messages, which can quote the mail, off stderr.
 const THREAD: &str = "html-render";
 
@@ -44,6 +49,7 @@ impl Renderer {
         let waker = wake.clone();
         let spawned = std::thread::Builder::new()
             .name(THREAD.into())
+            .stack_size(STACK)
             .spawn(move || run(&jobs, &done, &waker, handle));
         if let Err(e) = spawned {
             log::warn!("could not start the HTML renderer: {e}");
@@ -133,9 +139,11 @@ fn kind(request: &Request) -> (u8, u32) {
 fn handle(current: &mut Option<Current>, request: Request) -> Option<Reply> {
     match request {
         Request::Load(load) => {
-            let (laid, reply) = layout(load);
-            *current = Some(laid);
-            Some(reply)
+            let generation = load.generation;
+            *current = None;
+            let (laid, reply) = layout(load).unzip();
+            *current = laid;
+            Some(reply.unwrap_or(Reply::Failed { generation }))
         }
         Request::Paint { generation, strip } => {
             let current = current.as_mut().filter(|c| c.generation == generation)?;
@@ -166,7 +174,8 @@ fn handle(current: &mut Option<Current>, request: Request) -> Option<Reply> {
     }
 }
 
-fn layout(load: Load) -> (Current, Reply) {
+/// The laid-out document and its reply; None for markup nested too deep to lay out safely.
+fn layout(load: Load) -> Option<(Current, Reply)> {
     let scale = load.scale.max(0.5);
     let width = physical(load.width, scale).max(1);
     let (provider, remote) = net::Inline::new(load.inline, load.fetched);
@@ -184,6 +193,9 @@ fn layout(load: Load) -> (Current, Reply) {
         ..Default::default()
     };
     let mut doc = parse(&load.html, config);
+    if deeper_than(&doc, MAX_DEPTH) {
+        return None;
+    }
     font_colours(&mut doc);
     // The provider answered every request synchronously; take its answers before the layout.
     doc.handle_messages();
@@ -206,7 +218,21 @@ fn layout(load: Load) -> (Current, Reply) {
         remote: std::mem::take(&mut *remote.lock().unwrap_or_else(PoisonError::into_inner)),
         width: laid_width,
     };
-    (current, reply)
+    Some((current, reply))
+}
+
+/// Whether any node sits more than `limit` levels below the root; iterative, as recursion is what it guards against.
+fn deeper_than(doc: &BaseDocument, limit: usize) -> bool {
+    let mut stack = vec![(doc.root_node().id, 0)];
+    while let Some((id, depth)) = stack.pop() {
+        if depth > limit {
+            return true;
+        }
+        if let Some(node) = doc.get_node(id) {
+            stack.extend(node.children.iter().map(|&child| (child, depth + 1)));
+        }
+    }
+    false
 }
 
 fn paint(current: &mut Current, strip: u32) -> Option<Pixels> {
@@ -736,6 +762,43 @@ mod tests {
             })
             .collect();
         assert_eq!(got, [("laid", 2), ("strip", 2)]);
+    }
+
+    fn nested(depth: usize) -> String {
+        format!("{}x{}", "<div>".repeat(depth), "</div>".repeat(depth))
+    }
+
+    #[test]
+    fn markup_nested_too_deep_replies_failed() {
+        let got = replies(vec![load(3, &nested(100_000), 400.0)], handle);
+        assert!(matches!(got[..], [Reply::Failed { generation: 3 }]));
+    }
+
+    #[test]
+    fn markup_just_under_the_depth_limit_lays_out_and_paints_on_the_render_stack() {
+        let html = nested(MAX_DEPTH - 8);
+        let painted = std::thread::Builder::new()
+            .stack_size(STACK)
+            .spawn(move || {
+                let mut current = None;
+                let laid = handle(&mut current, load(1, &html, 400.0));
+                let paint = Request::Paint {
+                    generation: 1,
+                    strip: 0,
+                };
+                let hit = Request::Hit {
+                    generation: 1,
+                    x: 5.0,
+                    y: 5.0,
+                };
+                handle(&mut current, hit);
+                matches!(laid, Some(Reply::Laid { .. }))
+                    && matches!(handle(&mut current, paint), Some(Reply::Strip { .. }))
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(painted);
     }
 
     #[test]
