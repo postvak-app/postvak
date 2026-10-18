@@ -86,6 +86,7 @@ expect_used = "deny"                                 # same; allow narrowly wher
 panic = "deny"                                       # no deliberate panics outside tests
 todo = "deny"                                        # unfinished code does not ship
 unimplemented = "deny"                               # same as todo
+unreachable = "deny"                                 # a "cannot happen" panic is still a panic; return an error or allow narrowly
 dbg_macro = "warn"                                   # debug output stays out of commits
 
 [package]
