@@ -3,7 +3,7 @@
 use crate::config::{AccountConfig, Identity};
 use crate::mail_ops::{MailError, MailOps};
 use crate::message::clean;
-use crate::rules::apply::{ApplyError, apply, ensure_raw, trash_destination};
+use crate::rules::apply::{ApplyError, apply, ensure_raw, move_target};
 use crate::rules::engine::{Context, Mode, Plan, PlannedAction, evaluate};
 use crate::rules::{Action, CompiledRule};
 use crate::store::{Message, Store, StoreError};
@@ -32,11 +32,7 @@ pub enum ActionError {
 pub type UidResult = (u32, Result<usize, ActionError>);
 
 /// Selects `folder`, refusing when the stored uids belong to another UIDVALIDITY and would hit unrelated messages.
-pub fn select_synced(
-    ops: &mut dyn MailOps,
-    store: &Store,
-    folder: &str,
-) -> Result<(), ActionError> {
+fn select_synced(ops: &mut dyn MailOps, store: &Store, folder: &str) -> Result<(), ActionError> {
     let stored = store
         .folder(folder)?
         .ok_or_else(|| ActionError::UnknownFolder(folder.to_string()))?;
@@ -123,7 +119,7 @@ pub fn fetch_body(
 }
 
 /// The most hits one folder adds to a server search, the highest uids first.
-pub const SERVER_HITS_PER_FOLDER: usize = 500;
+const SERVER_HITS_PER_FOLDER: usize = 500;
 
 /// The words of a search query that a server search needs all of; control characters cannot go into IMAP.
 pub fn search_words(query: &str) -> Vec<String> {
@@ -185,7 +181,7 @@ pub fn planned_effect(store: &Store, msg: &Message, action: &Action) -> Result<S
     if *action != Action::Trash {
         return Ok(format!("would {}", clean(&action.label(), false)));
     }
-    let effect = match trash_destination(store, msg)? {
+    let effect = match move_target(store, &msg.folder, action)? {
         Some(trash) => format!("would move to {}", clean(&trash, false)),
         None => "would delete (expunge, .eml backup kept)".to_string(),
     };

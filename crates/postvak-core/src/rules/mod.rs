@@ -25,6 +25,13 @@ pub enum RulesError {
     Store(#[from] crate::store::StoreError),
 }
 
+pub(crate) fn invalid(rule: &str, reason: impl Into<String>) -> RulesError {
+    RulesError::Invalid {
+        rule: rule.to_string(),
+        reason: reason.into(),
+    }
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RuleFile {
@@ -298,10 +305,6 @@ impl Matcher {
         equals: &Option<OneOrMany<String>>,
         regex: &Option<String>,
     ) -> Result<Matcher, RulesError> {
-        let invalid = |reason: String| RulesError::Invalid {
-            rule: rule.to_string(),
-            reason,
-        };
         let values =
             |list: &Option<OneOrMany<String>>| list.as_ref().map(|l| l.as_slice().to_vec());
         let (contains, equals) = (values(contains), values(equals));
@@ -317,7 +320,7 @@ impl Matcher {
                 .chain(regex)
                 .any(|value| value.trim().is_empty())
         {
-            return Err(invalid(format!("{path} must not be empty")));
+            return Err(invalid(rule, format!("{path} must not be empty")));
         }
         match (contains, equals, regex) {
             (Some(c), None, None) => Ok(Matcher::Contains(
@@ -328,10 +331,11 @@ impl Matcher {
             )),
             (None, None, Some(r)) => regex::Regex::new(r)
                 .map(Matcher::Regex)
-                .map_err(|e| invalid(format!("{path}: invalid regex: {e}"))),
-            _ => Err(invalid(format!(
-                "{path} needs exactly one of contains, equals, regex"
-            ))),
+                .map_err(|e| invalid(rule, format!("{path}: invalid regex: {e}"))),
+            _ => Err(invalid(
+                rule,
+                format!("{path} needs exactly one of contains, equals, regex"),
+            )),
         }
     }
 }
@@ -416,25 +420,14 @@ fn compile_rule(
     rule: &Rule,
     names: &mut std::collections::HashSet<String>,
 ) -> Result<CompiledRule, RulesError> {
-    let invalid = |reason: &str| RulesError::Invalid {
-        rule: rule.name.clone(),
-        reason: reason.to_string(),
-    };
     if rule.name.trim().is_empty() {
-        return Err(invalid("name must not be empty"));
+        return Err(invalid(&rule.name, "name must not be empty"));
     }
     if !names.insert(rule.name.clone()) {
-        return Err(invalid("duplicate rule name"));
+        return Err(invalid(&rule.name, "duplicate rule name"));
     }
     if rule.actions.is_empty() {
-        return Err(invalid("actions must not be empty"));
-    }
-    if rule
-        .actions
-        .iter()
-        .any(|action| matches!(action, Action::Move(folder) if folder.trim().is_empty()))
-    {
-        return Err(invalid("move folder must not be empty"));
+        return Err(invalid(&rule.name, "actions must not be empty"));
     }
     let strings = [
         ("name", Some(&rule.name)),
@@ -449,22 +442,25 @@ fn compile_rule(
     }));
     for (field, value) in strings {
         if value.chars().any(char::is_control) {
-            return Err(invalid(&format!(
-                "{field} must not contain control characters"
-            )));
+            return Err(invalid(
+                &rule.name,
+                format!("{field} must not contain control characters"),
+            ));
         }
         if value.trim().is_empty() {
-            return Err(invalid(&format!("{field} must not be empty")));
+            return Err(invalid(&rule.name, format!("{field} must not be empty")));
         }
         if value.chars().count() > MAX_NAME_CHARS {
-            return Err(invalid(&format!(
-                "{field} must be at most {MAX_NAME_CHARS} characters"
-            )));
+            return Err(invalid(
+                &rule.name,
+                format!("{field} must be at most {MAX_NAME_CHARS} characters"),
+            ));
         }
     }
     for action in &rule.actions {
         if let Action::Tag(keyword) = action {
-            check_keyword(keyword).map_err(|reason| invalid(&format!("tag {reason}")))?;
+            check_keyword(keyword)
+                .map_err(|reason| invalid(&rule.name, format!("tag {reason}")))?;
         }
     }
     Ok(CompiledRule {
@@ -480,12 +476,11 @@ fn compile_match(
     path: &str,
     depth: usize,
 ) -> Result<Conditions, RulesError> {
-    let invalid = |reason: String| RulesError::Invalid {
-        rule: rule.to_string(),
-        reason,
-    };
     if depth > MAX_DEPTH {
-        return Err(invalid(format!("{path} is nested deeper than {MAX_DEPTH}")));
+        return Err(invalid(
+            rule,
+            format!("{path} is nested deeper than {MAX_DEPTH}"),
+        ));
     }
     let headers = m
         .header
@@ -512,16 +507,16 @@ fn compile_match(
             Some(_) => format!("{path}.header must not be empty"),
             None => format!("{path} needs at least one condition"),
         };
-        return Err(invalid(reason));
+        return Err(invalid(rule, reason));
     }
     if m.alias
         .as_ref()
         .is_some_and(|alias| alias.trim().is_empty())
     {
-        return Err(invalid(format!("{path}.alias must not be empty")));
+        return Err(invalid(rule, format!("{path}.alias must not be empty")));
     }
     if let Some(tag) = &m.tag {
-        check_keyword(tag).map_err(|reason| invalid(format!("{path}.tag {reason}")))?;
+        check_keyword(tag).map_err(|reason| invalid(rule, format!("{path}.tag {reason}")))?;
     }
     let text = |field: &str, t: &Option<TextMatch>| -> Result<Option<Matcher>, RulesError> {
         t.as_ref()
@@ -540,7 +535,10 @@ fn compile_match(
         .iter()
         .map(|h| {
             if h.name.trim().is_empty() {
-                return Err(invalid(format!("{path}.header.name must not be empty")));
+                return Err(invalid(
+                    rule,
+                    format!("{path}.header.name must not be empty"),
+                ));
             }
             Matcher::build(
                 rule,
@@ -556,7 +554,8 @@ fn compile_match(
         .older_than
         .as_ref()
         .map(|s| {
-            humantime::parse_duration(s).map_err(|e| invalid(format!("{path}.older_than: {e}")))
+            humantime::parse_duration(s)
+                .map_err(|e| invalid(rule, format!("{path}.older_than: {e}")))
         })
         .transpose()?;
     let larger_than = m
@@ -564,9 +563,12 @@ fn compile_match(
         .as_deref()
         .map(|text| {
             parse_size(text).ok_or_else(|| {
-                invalid(format!(
-                    "{path}.larger_than: expected a size such as 500KB or 5MB, got '{text}'"
-                ))
+                invalid(
+                    rule,
+                    format!(
+                        "{path}.larger_than: expected a size such as 500KB or 5MB, got '{text}'"
+                    ),
+                )
             })
         })
         .transpose()?;
@@ -575,13 +577,13 @@ fn compile_match(
         .as_ref()
         .map(|pattern| {
             regex::Regex::new(&crate::config::alias_regex(pattern))
-                .map_err(|e| invalid(format!("{path}.alias: {e}")))
+                .map_err(|e| invalid(rule, format!("{path}.alias: {e}")))
         })
         .transpose()?;
     let branches = |key: &str, list: &Option<Vec<Match>>| -> Result<Vec<Conditions>, RulesError> {
         match list.as_deref() {
             None => Ok(Vec::new()),
-            Some([]) => Err(invalid(format!("{path}.{key} must not be empty"))),
+            Some([]) => Err(invalid(rule, format!("{path}.{key} must not be empty"))),
             Some(entries) => entries
                 .iter()
                 .enumerate()

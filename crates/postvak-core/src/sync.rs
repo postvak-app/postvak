@@ -136,12 +136,6 @@ impl Event {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct NewMessageRef {
-    pub folder: String,
-    pub uid: u32,
-}
-
 #[derive(Debug, Default)]
 pub struct RulesRun {
     pub evaluated: usize,
@@ -343,12 +337,11 @@ fn chunk_size() -> usize {
     CHUNK
 }
 
-#[cfg(any(test, feature = "testing"))]
 pub fn sync_folder(
     ops: &mut dyn MailOps,
     store: &Store,
     folder: &RemoteFolder,
-) -> Result<Vec<NewMessageRef>, SyncError> {
+) -> Result<usize, SyncError> {
     sync_folder_with(ops, store, folder, &mut |_, _| Ok(false))
 }
 
@@ -357,7 +350,7 @@ pub fn sync_folder_with(
     store: &Store,
     folder: &RemoteFolder,
     checkpoint: &mut Checkpoint<'_>,
-) -> Result<Vec<NewMessageRef>, SyncError> {
+) -> Result<usize, SyncError> {
     let info = ops.select(&folder.name)?;
     let stored = store.folder(&folder.name)?;
     // Newly tracked, a placeholder, or reset: everything listed now was already on the server.
@@ -438,7 +431,7 @@ pub fn sync_folder_with(
 
     let total = uids.len();
     let mut done = 0;
-    let mut new = Vec::new();
+    let mut new = 0;
     for chunk in uids.chunks(chunk_size()) {
         let progress = Activity::FetchingHeaders {
             folder: folder.name.clone(),
@@ -462,12 +455,8 @@ pub fn sync_folder_with(
         let envelopes = ops.fetch_envelopes(first, last)?;
         store.transaction(|| {
             for env in envelopes {
-                let uid = env.uid;
                 store.insert_message(&to_message(&folder.name, env))?;
-                new.push(NewMessageRef {
-                    folder: folder.name.clone(),
-                    uid,
-                });
+                new += 1;
             }
             store.upsert_folder(&row(last))
         })?;
@@ -539,10 +528,7 @@ fn to_message(folder: &str, env: Envelope) -> Message {
 }
 
 #[cfg(any(test, feature = "testing"))]
-pub fn sync_all(
-    ops: &mut dyn MailOps,
-    store: &Store,
-) -> Result<(Vec<NewMessageRef>, Vec<String>), SyncError> {
+pub fn sync_all(ops: &mut dyn MailOps, store: &Store) -> Result<(usize, Vec<String>), SyncError> {
     sync_all_with(ops, store, &mut |_, _| Ok(false))
 }
 
@@ -552,7 +538,7 @@ pub fn sync_all_with(
     ops: &mut dyn MailOps,
     store: &Store,
     checkpoint: &mut Checkpoint<'_>,
-) -> Result<(Vec<NewMessageRef>, Vec<String>), SyncError> {
+) -> Result<(usize, Vec<String>), SyncError> {
     checkpoint(ops, Activity::ListingFolders)?;
     let mut folders = ops.list_folders()?;
     // Gmail's All Mail, Starred and Important hold copies of messages in other folders; syncing them doubles the traffic.
@@ -566,7 +552,7 @@ pub fn sync_all_with(
     // New mail shows up before the rest of a first sync, which can take minutes.
     folders.sort_by_key(|f| !f.name.eq_ignore_ascii_case("INBOX"));
     let of = folders.len();
-    let mut new = Vec::new();
+    let mut new = 0;
     let mut errors = Vec::new();
     for (index, folder) in folders.iter().enumerate() {
         let syncing = Activity::SyncingFolder {
@@ -576,7 +562,7 @@ pub fn sync_all_with(
         };
         checkpoint(ops, syncing)?;
         match sync_folder_with(ops, store, folder, checkpoint) {
-            Ok(found) => new.extend(found),
+            Ok(found) => new += found,
             Err(e) if matches!(e, SyncError::Stopped) || is_lost_connection(&e) => return Err(e),
             Err(e) => errors.push(format!("{}: {e}; skipped this pass", folder.name)),
         }
@@ -885,7 +871,7 @@ fn sync_now(ops: &mut dyn MailOps, store: &Store, folder: &str) {
         special_use: stored.as_ref().and_then(|f| f.special_use.clone()),
         delimiter: stored.and_then(|f| f.delimiter),
     };
-    if let Err(e) = sync_folder_with(ops, store, &remote, &mut |_, _| Ok(false)) {
+    if let Err(e) = sync_folder(ops, store, &remote) {
         log::warn!("{folder}: sync after a command failed: {e}");
     }
 }
@@ -1192,7 +1178,7 @@ fn sync_inbox_with(
     ops: &mut dyn MailOps,
     store: &Store,
     checkpoint: &mut Checkpoint<'_>,
-) -> Result<Vec<NewMessageRef>, SyncError> {
+) -> Result<usize, SyncError> {
     let inbox = RemoteFolder {
         name: "INBOX".into(),
         special_use: None,
@@ -1430,7 +1416,7 @@ impl<'a> AccountSync<'a> {
         }
         let _ = events.send(Event::Synced {
             account: account.name.clone(),
-            new_messages: new.len(),
+            new_messages: new,
             actions: run.actions,
             requests: carried.sync_requests.drain(..answering).collect(),
             errors,

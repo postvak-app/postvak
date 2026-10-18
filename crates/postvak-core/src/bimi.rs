@@ -56,7 +56,7 @@ pub fn brand(raw_headers: &[u8]) -> Option<Brand> {
 
 /// Whether an `Authentication-Results` value says DMARC passed for `domain`. A `header.from` that names another
 /// domain is a pass for that one, not this.
-pub fn dmarc_passed(results: &str, domain: &str) -> bool {
+fn dmarc_passed(results: &str, domain: &str) -> bool {
     let results = without_comments(results);
     results.split(';').skip(1).any(|method| {
         let mut words = method.split_whitespace();
@@ -162,7 +162,7 @@ struct Cached {
 }
 
 /// Where the answer for `brand` is kept: the record name is a safe file name, since `Brand` holds only labels.
-pub fn cache_file(cache_dir: &Path, brand: &Brand) -> PathBuf {
+fn cache_file(cache_dir: &Path, brand: &Brand) -> PathBuf {
     cache_dir
         .join("bimi")
         .join(format!("{}.json", brand.record_name()))
@@ -200,6 +200,7 @@ pub fn logo(
 }
 
 /// Writes `svg` as the answer for `brand` checked at `now`, as a lookup would; for test fixtures.
+#[cfg(any(test, feature = "testing"))]
 pub fn cache_logo(cache_dir: &Path, brand: &Brand, now: i64, svg: Option<&str>) -> io::Result<()> {
     let cached = Cached {
         checked_at: now,
