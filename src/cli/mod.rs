@@ -355,6 +355,9 @@ enum RulesCommand {
         account: Option<String>,
         #[arg(long)]
         dry_run: bool,
+        /// Run even when the rule would permanently delete mail from the server
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -1044,23 +1047,29 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             name,
             account,
             dry_run,
+            yes,
         } => {
             let rules = vec![postvak_core::rules::enabled_rule(
                 &paths.rules_file(),
                 &name,
             )?];
+            let accounts: Vec<&AccountConfig> = select_accounts(config, account.as_deref())?
+                .into_iter()
+                .filter(|acc| rules.iter().any(|r| r.applies_to_account(&acc.name)))
+                .collect();
+            if dry_run {
+                for acc in accounts {
+                    let store = Store::open_account(paths, &acc.name)?;
+                    print_planned_actions(&rules, &store, acc, &acc.identity()?)?;
+                }
+                return Ok(());
+            }
+            if !yes {
+                confirm_expunges(&rules, paths, &accounts)?;
+            }
             let mut failed = false;
             let daemon = LazyClient::new(paths);
-            for acc in select_accounts(config, account.as_deref())? {
-                if !rules.iter().any(|r| r.applies_to_account(&acc.name)) {
-                    continue;
-                }
-                let store = Store::open_account(paths, &acc.name)?;
-                let identity = acc.identity()?;
-                if dry_run {
-                    print_planned_actions(&rules, &store, acc, &identity)?;
-                    continue;
-                }
+            for acc in accounts {
                 let command = sync::Command::ApplyRule { name: name.clone() };
                 let (evaluated, actions, errors) =
                     daemon.request(&acc.name, command, |reply| match reply {
@@ -1156,6 +1165,46 @@ fn compiled_rules(paths: &Paths, name: Option<&str>) -> Result<Vec<CompiledRule>
         bail!("no rule named '{name}'");
     }
     Ok(compiled)
+}
+
+/// Asks before a rule expunges existing mail, since the server copy is gone for good; refuses without a terminal.
+fn confirm_expunges(
+    rules: &[CompiledRule],
+    paths: &Paths,
+    accounts: &[&AccountConfig],
+) -> Result<()> {
+    use std::io::IsTerminal as _;
+    let mut any = false;
+    for acc in accounts {
+        let store = Store::open_account(paths, &acc.name)?;
+        let planned =
+            postvak_core::actions::planned(rules, &store, acc, &acc.identity()?, time::now())?;
+        let mut count = 0;
+        for p in &planned {
+            count += usize::from(postvak_core::actions::expunges(&store, p)?);
+        }
+        if count > 0 {
+            any = true;
+            eprintln!(
+                "{}: would permanently delete {count} message{} from the server; .eml backups kept locally for {} days",
+                acc.name,
+                if count == 1 { "" } else { "s" },
+                acc.trash_retention_days
+            );
+        }
+    }
+    if !any {
+        return Ok(());
+    }
+    if !io::stdin().is_terminal() {
+        bail!(
+            "refusing to delete without confirmation; check with --dry-run, then rerun with --yes"
+        );
+    }
+    if prompt("Type yes to continue")? != "yes" {
+        bail!("cancelled");
+    }
+    Ok(())
 }
 
 fn print_planned_actions(
