@@ -506,7 +506,7 @@ mod tests {
                 .position(|e| matches!(e, Entry::Folder(f) if f.name == "Inbox (2)"))
                 .unwrap();
             let Entry::Folder(inbox) = &entries[row] else {
-                unreachable!()
+                panic!("the Inbox row is a folder")
             };
             let item = inbox.menu()[1]
                 .iter()
