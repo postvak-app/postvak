@@ -26,8 +26,8 @@ use postvak_core::daemon::wire::{
     self, AccountStatus, ClientMessage, DaemonMessage, Outcome, Payload, Status,
 };
 use postvak_core::message::{
-    attachments, bare_addresses, body_text, clean, header_value, html_body, parse_headers,
-    save_attachment, thread_id,
+    attachments, bare_addresses, body_text, clean, clean_for_agent, header_value, html_body,
+    parse_headers, save_attachment, thread_id,
 };
 use postvak_core::rules::{self, Action, HeaderMatch, Match, OneOrMany, Rule, RuleFile, TextMatch};
 use postvak_core::sync::{Activity, Command, Event};
@@ -436,6 +436,7 @@ fn exercise_message_inner(raw: &[u8], folder: &str, uid: u32) {
     }
     let body = body_text(raw);
     let _ = clean(&body, true);
+    let _ = clean_for_agent(&body, true);
     let _ = bare_addresses(&String::from_utf8_lossy(raw));
     let _ = attachments(raw);
     let _ = html_body(raw);
@@ -499,6 +500,57 @@ fn rule_examples() -> Vec<String> {
 fn exercise_rules(text: &str) {
     if let Ok(file) = rules::parse(text) {
         let _ = rules::compile(&file);
+    }
+}
+
+/// Text mixing plain letters with tag, bidi, zero-width and other invisible characters, and emoji joined by U+200D.
+fn invisible_text() -> BoxedStrategy<String> {
+    let piece = prop_oneof![
+        "[a-z <>/_]{0,4}",
+        (0xE0000u32..=0xE007F)
+            .prop_map(|c| char::from_u32(c).map(String::from).unwrap_or_default()),
+        prop::sample::select(vec![
+            "\u{202A}",
+            "\u{202E}",
+            "\u{2066}",
+            "\u{2069}",
+            "\u{200B}",
+            "\u{200C}",
+            "\u{200D}",
+            "\u{200E}",
+            "\u{2060}",
+            "\u{2064}",
+            "\u{FEFF}",
+            "\u{AD}",
+            "\u{61C}",
+            "\u{1D173}",
+            "\u{1F468}",
+            "\u{FE0F}",
+        ])
+        .prop_map(str::to_string),
+    ];
+    proptest::collection::vec(piece, 0..32)
+        .prop_map(|pieces| pieces.concat())
+        .boxed()
+}
+
+proptest! {
+    #![proptest_config(config())]
+
+    /// No hidden character survives, the visible ones and U+200D all do, and a second pass changes nothing.
+    #[test]
+    fn clean_for_agent_leaves_nothing_hidden(text in invisible_text(), layout in any::<bool>()) {
+        let cleaned = clean_for_agent(&text, layout);
+        let hidden = |c: char| {
+            ('\u{E0000}'..='\u{E007F}').contains(&c)
+                || ('\u{202A}'..='\u{202E}').contains(&c)
+                || ('\u{2066}'..='\u{2069}').contains(&c)
+                || matches!(c, '\u{200B}' | '\u{2060}' | '\u{FEFF}')
+        };
+        prop_assert!(!cleaned.chars().any(hidden), "{:?}", cleaned);
+        let visible: String = text.chars().filter(|&c| c.is_ascii() || matches!(c, '\u{200D}' | '\u{1F468}' | '\u{FE0F}')).collect();
+        prop_assert_eq!(&cleaned, &visible);
+        prop_assert_eq!(clean_for_agent(&cleaned, layout), cleaned);
     }
 }
 

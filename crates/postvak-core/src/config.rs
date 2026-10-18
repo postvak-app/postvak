@@ -61,6 +61,9 @@ pub struct UiConfig {
     /// Ask GitHub once a day whether a newer release is out.
     #[serde(default)]
     pub check_updates: bool,
+    /// Show the logo a sender's domain publishes (BIMI): a DNS lookup and an HTTPS fetch to that domain.
+    #[serde(default)]
+    pub sender_images: bool,
     #[serde(default)]
     pub theme: Theme,
 }
@@ -583,5 +586,13 @@ notify = false
         assert!(!Config::parse(&theme_only).unwrap().ui.check_updates);
         let on = format!("{SAMPLE}\n[ui]\ncheck_updates = true\n");
         assert!(Config::parse(&on).unwrap().ui.check_updates);
+    }
+
+    #[test]
+    fn sender_images_are_off_unless_turned_on() {
+        assert!(!Config::default().ui.sender_images);
+        assert!(!Config::parse(SAMPLE).unwrap().ui.sender_images);
+        let on = format!("{SAMPLE}\n[ui]\nsender_images = true\n");
+        assert!(Config::parse(&on).unwrap().ui.sender_images);
     }
 }

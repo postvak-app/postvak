@@ -1,6 +1,7 @@
 //! The body pane without a toolkit: header dates and names, initials, sizes, the links in plain text, the missing-body
 //! line, the selection, and the source window's rows. The window draws the pane from them.
 use std::ops::Range;
+use std::sync::Arc;
 
 use postvak_core::message::clean;
 use postvak_core::sync::Activity;
@@ -19,6 +20,8 @@ pub(crate) struct Pane {
     pub initials: String,
     /// Which avatar fill the initials sit on.
     pub tint: usize,
+    /// The sender's logo record and its SVG, which the window draws instead of the initials.
+    pub logo: Option<(String, Arc<str>)>,
     pub name: String,
     pub address: Option<String>,
     pub short_date: String,
@@ -92,6 +95,10 @@ pub(crate) fn pane(app: &App) -> Pane {
         subject: header(&message.subject),
         initials: initials(from),
         tint: avatar::tint(address.as_deref().unwrap_or(&name)),
+        logo: body.brand.as_ref().and_then(|brand| {
+            let svg = app.logos.svg(brand)?;
+            Some((brand.record_name(), svg.clone()))
+        }),
         name: clean(&name, false),
         address: address.map(|a| clean(&a, false)),
         short_date: local_time(at, SHORT_DATE),
@@ -708,6 +715,70 @@ mod tests {
         let (driver, _wires) = fx.driver();
         let pane = pane(&driver.app);
         assert_eq!(pane.tint, crate::avatar::tint("linus@example.com"));
+    }
+
+    /// Ticks until the shown message's logo is in, or five seconds.
+    fn wait_for_logo(driver: &mut Driver) -> Pane {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while pane(&driver.app).logo.is_none() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            driver.tick();
+        }
+        pane(&driver.app)
+    }
+
+    #[test]
+    fn a_dmarc_passing_sender_shows_its_logo_instead_of_the_initials() {
+        let fx = Fixture::new(&["work"]);
+        fx.append_config("[ui]\nsender_images = true\n");
+        fx.add("work", crate::test_support::branded("INBOX", 1, "merged"));
+        crate::test_support::cache_github_logo(&fx.paths);
+        let (mut driver, _wires) = fx.driver();
+        let (key, svg) = wait_for_logo(&mut driver).logo.unwrap();
+        assert_eq!(key, "default._bimi.github.com");
+        assert!(svg.contains("<svg"));
+    }
+
+    #[test]
+    fn without_a_dmarc_pass_or_with_sender_images_off_the_initials_stay() {
+        let fx = Fixture::new(&["work"]);
+        fx.append_config("[ui]\nsender_images = true\n");
+        let mut spoofed = crate::test_support::branded("INBOX", 1, "merged");
+        spoofed.headers = b"From: GitHub <noreply@github.com>\r\n\r\n".to_vec();
+        fx.add("work", spoofed);
+        crate::test_support::cache_github_logo(&fx.paths);
+        let (driver, _wires) = fx.driver();
+        assert_eq!(pane(&driver.app).logo, None);
+        assert!(!driver.app.logos.started(), "nothing to look up");
+
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", crate::test_support::branded("INBOX", 1, "merged"));
+        crate::test_support::cache_github_logo(&fx.paths);
+        let (driver, _wires) = fx.driver();
+        assert_eq!(pane(&driver.app).logo, None);
+        assert!(!driver.app.logos.started(), "off by default");
+    }
+
+    #[test]
+    fn the_window_draws_the_logo_once() {
+        let fx = Fixture::new(&["work"]);
+        fx.append_config("[ui]\nsender_images = true\n");
+        fx.add("work", crate::test_support::branded("INBOX", 1, "merged"));
+        crate::test_support::cache_github_logo(&fx.paths);
+        let (open, _wires) = fx.window();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !open.window().get_body_info().has_logo && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            open.tick();
+        }
+        let shown = open.window().get_body_info();
+        assert!(shown.has_logo);
+        assert_eq!(shown.logo_key, "default._bimi.github.com");
+        open.tick();
+        assert!(
+            open.window().get_body_info().logo == shown.logo,
+            "kept, not drawn again"
+        );
     }
 
     #[test]
