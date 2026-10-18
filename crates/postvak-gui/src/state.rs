@@ -1974,7 +1974,13 @@ impl App {
         self.retention
             .insert(account.name.clone(), account.trash_retention_days);
         let index = match self.accounts.iter().position(|a| a.name == account.name) {
-            Some(index) => index,
+            Some(index) => {
+                // The restarted thread reports afresh; the replaced account's state no longer holds.
+                let replaced = &mut self.accounts[index];
+                replaced.error = None;
+                replaced.activity = None;
+                index
+            }
             None => {
                 let state = account_state(&self.paths, account.name.clone(), None);
                 self.accounts.push(state);

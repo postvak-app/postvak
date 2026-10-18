@@ -193,11 +193,21 @@ mod tests {
     #[test]
     fn saving_an_existing_name_replaces_the_account() {
         let fx = Fixture::new(&["work"]);
-        let (open, _wires) = fx.window();
+        let (open, wires) = fx.window();
+        let refused = Event::Error {
+            account: "work".into(),
+            message: "login failed".into(),
+        };
+        wires.events.send(refused).unwrap();
+        open.tick();
         open.window().invoke_menu_item(MenuAction::AddAccount);
         fill_window(&open, "work", "imap.example.org");
         save_in(&open);
         assert_eq!(names(&open), ["work"]);
+        assert!(
+            open.labels_containing("login failed").is_empty(),
+            "the old account's error goes with it"
+        );
         let config = Config::load(&fx.paths.config_file()).unwrap();
         assert_eq!(config.accounts.len(), 1);
         assert_eq!(config.accounts[0].host, "imap.example.org");
