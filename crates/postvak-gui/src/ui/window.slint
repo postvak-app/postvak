@@ -3,7 +3,7 @@ import { Palette as StdPalette } from "std-widgets.slint";
 import { Theme, ThemePreference } from "theme.slint";
 import { FolderItem, FolderPane } from "folders.slint";
 import { StatusBar, StatusLine } from "status.slint";
-import { AccountDialog, HistoryDialog, KeyHelp, KeysDialog, MoveDialog, SourceDialog } from "dialogs.slint";
+import { AccountDialog, ApplyConfirmDialog, HistoryDialog, KeyHelp, KeysDialog, MoveDialog, SourceDialog } from "dialogs.slint";
 import { AccountFields } from "account.slint";
 import { BodyInfo, BodyPane, PageInfo, SelectedData, StripData, ToolButton } from "body.slint";
 import { ProposalData, RuleData, RulesPane, Sheet } from "rules.slint";
@@ -101,6 +101,7 @@ export component MailWindow inherits Window {
     in property <bool> account-open;
     in property <string> account-error;
     in property <bool> account-saving;
+    in property <string> apply-confirm;
 
     in property <BodyInfo> body-info;
     in property <string> body-text;
@@ -190,6 +191,7 @@ export component MailWindow inherits Window {
     callback edit-rule(int);
     callback set-enabled(int, bool);
     callback apply-rule(int);
+    callback confirm-apply-rule();
     callback restore(int);
     callback purge-trash();
     callback sort-sheet(int, bool);
@@ -616,6 +618,15 @@ export component MailWindow inherits Window {
         saving: root.account-saving;
         close-icon: root.close-icon;
         save(fields) => { root.save-account(fields); }
+        close => { root.escape(); }
+    }
+
+    if root.apply-confirm != "": ApplyConfirmDialog {
+        x: (root.width - self.width) / 2;
+        y: Theme.top-bar + Theme.inset;
+        warning: root.apply-confirm;
+        close-icon: root.close-icon;
+        confirm => { root.confirm-apply-rule(); }
         close => { root.escape(); }
     }
 

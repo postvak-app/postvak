@@ -126,7 +126,7 @@ fn first_sync_inserts_folders_and_messages() {
     let mut ops = ops_with_inbox();
     let store = Store::open_in_memory().unwrap();
     let new = sync_all(&mut ops, &store).unwrap().0;
-    assert_eq!(new.len(), 2);
+    assert_eq!(new, 2);
     let inbox = store.folder("INBOX").unwrap().unwrap();
     assert_eq!((inbox.uidvalidity, inbox.last_uid), (1, 2));
     assert_eq!(
@@ -179,7 +179,7 @@ fn first_mail_into_empty_tracked_folder_notifies() {
     let trash = Trash::new(dir.path().to_path_buf());
     let acc = account();
     let identity = acc.identity().unwrap();
-    assert!(sync_all(&mut ops, &store).unwrap().0.is_empty());
+    assert_eq!(sync_all(&mut ops, &store).unwrap().0, 0);
     ops.add_mail("INBOX", 1, 12 * H, &headers("bob@x", "first", "f1@x"), None);
     sync_all(&mut ops, &store).unwrap();
     let run = run_rules(
@@ -209,13 +209,8 @@ fn second_sync_only_fetches_new_and_updates_flags_and_removals() {
     ops.add_mail("INBOX", 3, 12 * H, &headers("bob@x", "new", "m3@x"), None);
     ops.calls.clear();
     let new = sync_all(&mut ops, &store).unwrap().0;
-    assert_eq!(
-        new,
-        vec![NewMessageRef {
-            folder: "INBOX".into(),
-            uid: 3,
-        }]
-    );
+    assert_eq!(new, 1);
+    assert!(store.message("INBOX", 3).unwrap().is_some());
     assert!(store.message("INBOX", 1).unwrap().unwrap().is_seen());
     assert_eq!(store.message("INBOX", 2).unwrap(), None);
     assert!(ops.calls.iter().any(|c| c == "search_uids INBOX 3"));
@@ -228,7 +223,7 @@ fn sync_ignores_uids_below_last_uid() {
     sync_all(&mut ops, &store).unwrap();
     let new = sync_all(&mut ops, &store).unwrap().0;
     assert!(
-        new.is_empty(),
+        new == 0,
         "server answered 3:* with uid 2, which must not count as new"
     );
 }
@@ -241,7 +236,7 @@ fn uidvalidity_change_wipes_and_resyncs() {
     ops.uidvalidity.insert("INBOX".into(), 9);
     let new = sync_all(&mut ops, &store).unwrap().0;
     assert_eq!(store.folder("INBOX").unwrap().unwrap().uidvalidity, 9);
-    assert_eq!(new.len(), 2);
+    assert_eq!(new, 2);
     assert_eq!(store.messages_in_folder("INBOX").unwrap().len(), 2);
 }
 
@@ -442,7 +437,7 @@ fn resync_after_uidvalidity_change_does_not_notify() {
         12 * H,
     )
     .unwrap();
-    assert_eq!(resync.len(), 3);
+    assert_eq!(resync, 3);
     assert!(run.events.is_empty(), "a UIDVALIDITY resync never notifies");
 }
 
@@ -483,6 +478,50 @@ fn body_rule_fetches_bodies_for_new_messages() {
     let m = store.message("INBOX", 2).unwrap().unwrap();
     assert!(m.body_text.is_some());
     assert!(m.flags.contains("\\Flagged"));
+}
+
+#[test]
+fn body_rule_does_not_download_a_message_over_the_size_cap() {
+    let mut ops = RecordingOps::default().with_folder("INBOX", None);
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open_in_memory().unwrap();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let acc = account();
+    let identity = acc.identity().unwrap();
+    let toml =
+        "[[rules]]\nname = \"codes\"\nmatch.body = { contains = \"code\" }\nactions = [\"flag\"]\n";
+    let rules = rules_from(toml, &store, 0);
+    sync_all(&mut ops, &store).unwrap();
+    ops.add_mail(
+        "INBOX",
+        2,
+        11 * H,
+        &headers("noreply@login.x", "Your sign-in code", "m2@x"),
+        Some("From: noreply@login.x\r\n\r\ncode 1234"),
+    );
+    ops.mail.get_mut("INBOX").unwrap()[0].size = Some(crate::sync::MAX_RULE_BODY + 1);
+    sync_all(&mut ops, &store).unwrap();
+    let run = run_rules(
+        &mut ops,
+        &store,
+        &trash,
+        &rules,
+        &acc,
+        &identity,
+        Mode::Normal,
+        12 * H,
+    )
+    .unwrap();
+    assert_eq!(run.actions, 0);
+    assert!(!ops.calls.iter().any(|c| c.starts_with("fetch_raw")));
+    assert!(
+        store
+            .message("INBOX", 2)
+            .unwrap()
+            .unwrap()
+            .body_text
+            .is_none()
+    );
 }
 
 #[test]
@@ -1298,7 +1337,7 @@ fn sparse_uids_are_fetched_in_chunks_of_500_messages() {
     }
     let store = Store::open_in_memory().unwrap();
     let new = sync_folder(&mut ops, &store, &inbox()).unwrap();
-    assert_eq!(new.len(), 1200);
+    assert_eq!(new, 1200);
     let fetches: Vec<&String> = ops
         .calls
         .iter()
@@ -1337,7 +1376,7 @@ fn interrupted_chunked_first_sync_resumes_and_stays_silent() {
     ops.fail_fetch_after = None;
     ops.add_mail("INBOX", 1201, 11 * H, &headers("b@x", "new", "n@x"), None);
     let new = sync_folder(&mut ops, &store, &inbox()).unwrap();
-    assert_eq!(new.len(), 701);
+    assert_eq!(new, 701);
     assert_eq!(notify_uids(&mut ops, &store), [1201]);
 }
 
@@ -1345,7 +1384,7 @@ fn interrupted_chunked_first_sync_resumes_and_stays_silent() {
 fn a_folder_that_starts_empty_notifies_its_first_mail() {
     let mut ops = RecordingOps::default().with_folder("INBOX", None);
     let store = Store::open_in_memory().unwrap();
-    assert!(sync_folder(&mut ops, &store, &inbox()).unwrap().is_empty());
+    assert_eq!(sync_folder(&mut ops, &store, &inbox()).unwrap(), 0);
     assert_eq!(store.initial_uid_next("INBOX").unwrap(), 0);
     ops.add_mail("INBOX", 1, 10 * H, &headers("a@x", "first", "f@x"), None);
     sync_folder(&mut ops, &store, &inbox()).unwrap();

@@ -226,3 +226,38 @@ export component AccountDialog {
         }
     }
 }
+
+// Asks before a rule run expunges mail from the server; Esc, the X or Cancel closes it.
+export component ApplyConfirmDialog {
+    in property <string> warning;
+    in property <string> close-icon;
+    callback confirm();
+    callback close();
+    width: 480px;
+    Dialog {
+        title: "Apply to existing mail";
+        close-icon: root.close-icon;
+        close => { root.close(); }
+        Text {
+            text: root.warning;
+            color: Theme.pane.text;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            spacing: Theme.pad;
+            Rectangle { horizontal-stretch: 1; }
+            TextButton {
+                text: "Cancel";
+                palette: Theme.pane;
+                framed: true;
+                clicked => { root.close(); }
+            }
+            TextButton {
+                text: "Delete and apply";
+                palette: Theme.pane;
+                framed: true;
+                clicked => { root.confirm(); }
+            }
+        }
+    }
+}

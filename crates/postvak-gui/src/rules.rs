@@ -325,6 +325,44 @@ mod tests {
     }
 
     #[test]
+    fn apply_asks_before_a_rule_expunges_mail() {
+        let fx = Fixture::new(&["work"]);
+        fx.add(
+            "work",
+            crate::test_support::message("INBOX", 1, "Your code"),
+        );
+        std::fs::write(
+            fx.paths.rules_file(),
+            "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = [\"delete\"]\n",
+        )
+        .unwrap();
+        let (open, wires) = view(&fx, View::Rules);
+        let warning = "work: would permanently delete 1 message from the server; .eml backups kept locally for 30 days";
+        open.click("Apply to existing mail");
+        open.tick();
+        assert!(wires.sent().is_empty(), "sent before confirming");
+        assert_eq!(open.find(warning).len(), 1);
+        open.click("Cancel");
+        open.tick();
+        assert!(open.find(warning).is_empty());
+        assert!(wires.sent().is_empty(), "cancel sent it");
+        open.click("Apply to existing mail");
+        open.tick();
+        open.click("Delete and apply");
+        open.tick();
+        assert!(open.find(warning).is_empty());
+        assert_eq!(
+            wires.sent(),
+            [(
+                "work".to_string(),
+                Command::ApplyRule {
+                    name: "codes".into()
+                }
+            )]
+        );
+    }
+
+    #[test]
     fn apply_runs_an_enabled_rule_on_its_accounts_and_shows_the_outcome() {
         let fx = Fixture::new(&["home", "work"]);
         let only_work = "\n[[rules]]\nname = \"only-work\"\naccount = \"work\"\nmatch.subject = { contains = \"x\" }\nactions = [\"flag\"]\n";

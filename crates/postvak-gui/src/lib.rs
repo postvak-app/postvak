@@ -275,7 +275,7 @@ impl Live {
 
     /// Starts the timer for the tick the app asked for.
     fn schedule(&mut self, now: f64) {
-        if let Some(at) = self.app.take_next_tick() {
+        if let Some(at) = self.app.next_tick.take() {
             let delay = Duration::from_secs_f64((at - now).max(0.0));
             // Timers fire on the window's thread, so they tick directly.
             self.timer.start(slint::TimerMode::SingleShot, delay, || {

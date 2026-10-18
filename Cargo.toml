@@ -27,7 +27,7 @@ anyrender = "=0.14.0"                                # the drawing trait Blitz p
 anyrender_vello_cpu = "=0.18.0"                      # CPU raster for Blitz, so HTML mail becomes an image in the window without a GPU path
 apple-native-keyring-store = { version = "1", features = ["keychain"] }  # macOS Keychain backend for keyring-core
 async-imap = { version = "0.12", default-features = false, features = ["runtime-tokio"] }  # IMAP client, maintained, IDLE support
-blitz-dom = { version = "=0.3.0-beta.3", default-features = false, features = ["system-fonts", "svg", "floats"] }  # HTML mail: style and layout (Stylo, Taffy, Parley); beta, so pinned exactly
+blitz-dom = { version = "=0.3.0-beta.3", default-features = false, features = ["system-fonts", "floats"] }  # HTML mail: style and layout (Stylo, Taffy, Parley); beta, so pinned exactly. No "svg": usvg reads an <image href> path from disk
 blitz-html = "=0.3.0-beta.3"                         # HTML mail: html5ever parsing into a Blitz document
 blitz-paint = "=0.3.0-beta.3"                        # HTML mail: a laid-out document to draw commands
 blitz-traits = "=0.3.0-beta.3"                       # HTML mail: the net provider and viewport types
@@ -44,11 +44,11 @@ html5ever = "=0.40.1"                                # HTML mail: parse as HTML 
 humantime = "2"                                      # "1h", "2d" in rules
 i-slint-backend-testing = { version = "=1.18.1", features = ["renderer-software"] }  # headless GUI tests: key events, mock time, elements found by accessible label, snapshots from the software renderer
 i-slint-common = "=1.18.1"                           # Slint's own fontique loads fontconfig at runtime on Linux; one linked and one loaded copy do not build together
-include_dir = "0.7"                                  # embed postvak-core's migrations/ in the binary
 keyring-core = "1"                                   # OS keyring API
 log = "0.4"                                          # logging facade
 mail-parser = "0.11"                                 # RFC 5322 header and body parsing
 notify-rust = "4"                                    # desktop notifications from `run`
+image = { version = "0.25", default-features = false }  # HTML mail: read an image's size from its header to refuse decompression bombs; the decoders Blitz enables; already in the tree through Blitz
 percent-encoding = "2"                               # HTML mail: decode cid: URLs; already in the tree through url
 png = "0.18"                                         # decodes the icons and reads and writes the GUI snapshots
 proptest = { version = "1", default-features = false, features = ["std"] }  # postvak-core's tests/fuzz.rs (hostile input never panics the parsers) and tests/sync_model.rs (random sync event sequences, shrunk)
@@ -56,7 +56,7 @@ regex = "1"                                          # rule regex conditions and
 rmcp = { version = "3.5", default-features = false, features = ["server", "transport-io"] }  # MCP server for `postvak mcp`, hand-written handler on stdio
 rpassword = "7"                                      # hidden password prompt in `account add`
 rusqlite = { version = "0.40", features = ["bundled"] }       # SQLite, bundled build includes FTS5
-rusqlite_migration = { version = "2", features = ["from-directory"] }  # numbered SQL migrations
+rusqlite_migration = "2"                               # numbered SQL migrations
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }  # TLS without a C toolchain
 schemars = "1"                                       # JSON Schema for rules.toml, generated from the rule types
 serde = { version = "1", features = ["derive"] }     # config, rules, rows

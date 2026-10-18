@@ -1,7 +1,6 @@
 //! The only MCP code that touches the store, rules.toml or the daemon; the daemon owns every IMAP connection.
 use anyhow::{Context as _, Result, bail};
 use std::sync::{PoisonError, RwLock};
-use std::time::Duration;
 
 use serde_json::{Value, json};
 
@@ -20,8 +19,7 @@ use postvak_core::sync::{Command, Event};
 use postvak_core::time;
 use postvak_core::trash::Trash;
 
-pub const MAX_LIMIT: u32 = 500;
-const ACCOUNT_START: Duration = Duration::from_secs(10);
+const MAX_LIMIT: u32 = 500;
 
 pub struct Backend {
     /// Replaced by `account_add`, so a server outlives the config it started with.
@@ -369,7 +367,7 @@ impl Backend {
     /// Saves the account and reports its first sync; refused while `--account` hides accounts, since the new one
     /// would be invisible to this server.
     pub fn account_add(&self, account: AccountConfig) -> Result<Value> {
-        if !self.only.is_empty() {
+        if self.narrowed() {
             bail!("this server is limited with --account and cannot add accounts");
         }
         let name = account.name.clone();
@@ -377,15 +375,23 @@ impl Backend {
             // Start from the file, not the start-up snapshot, or edits made since would be lost on save.
             let mut held = self.config.write().unwrap_or_else(PoisonError::into_inner);
             let mut config = Config::load(&self.paths.config_file())?;
+            // Replacing would let an agent point the user's account at a server it chose.
+            if config.accounts.iter().any(|a| a.name == name) {
+                bail!("account '{name}' exists already; an agent can only add new accounts");
+            }
             postvak_core::account::add(&mut config, &self.paths, account.clone(), None)?;
             *held = config;
         }
-        postvak_core::account::await_started(&*self.daemon.client()?, &name, ACCOUNT_START)
-            .map_err(|e| {
-                e.context(format!(
-                    "account '{name}' was saved to config.toml and the daemon will start it"
-                ))
-            })?;
+        postvak_core::account::await_started(
+            &*self.daemon.client()?,
+            &name,
+            postvak_core::account::START_TIMEOUT,
+        )
+        .map_err(|e| {
+            e.context(format!(
+                "account '{name}' was saved to config.toml and the daemon will start it"
+            ))
+        })?;
         let sync = self.sync(Some(&name))?.swap_remove(0);
         Ok(json!({ "account": output::account(&account), "sync": sync }))
     }
@@ -485,9 +491,7 @@ impl Backend {
     ) -> Result<Vec<Value>> {
         rule.enabled = true;
         let compiled = rules::compile(&RuleFile { rules: vec![rule] })?;
-        if !bodies && compiled.iter().any(|r| r.needs_body()) {
-            bail!("matching on the body needs the read:bodies scope");
-        }
+        refuse_body_rule(&compiled, bodies)?;
         let mut rows = Vec::new();
         for acc in self.select(account)? {
             let store = self.store(&acc)?;
@@ -499,20 +503,45 @@ impl Backend {
     }
 
     /// Runs one enabled rule over the existing mail of the visible accounts it applies to, through the daemon; a dry
-    /// run plans from the local store instead. A rule of a hidden account reads as absent.
+    /// run plans from the local store instead. Refuses to expunge mail without `yes`. A rule of a hidden account reads
+    /// as absent.
     pub fn rules_apply_existing(
         &self,
         name: &str,
         account: Option<&str>,
         dry_run: bool,
+        yes: bool,
+        bodies: bool,
     ) -> Result<Vec<Value>> {
         self.ensure_rule_visible(name, false)?;
         let compiled = vec![rules::enabled_rule(&self.paths.rules_file(), name)?];
-        let mut rows = Vec::new();
-        for acc in self.select(account)? {
-            if !compiled.iter().any(|r| r.applies_to_account(&acc.name)) {
-                continue;
+        refuse_body_rule(&compiled, bodies)?;
+        let accounts: Vec<_> = self
+            .select(account)?
+            .into_iter()
+            .filter(|acc| compiled.iter().any(|r| r.applies_to_account(&acc.name)))
+            .collect();
+        if !dry_run && !yes {
+            let mut warnings = Vec::new();
+            for acc in &accounts {
+                let store = self.store(acc)?;
+                warnings.extend(actions::expunge_warning(
+                    &compiled,
+                    &store,
+                    acc,
+                    &acc.identity()?,
+                    time::now(),
+                )?);
             }
+            if !warnings.is_empty() {
+                bail!(
+                    "{}; check with dry_run, then call again with yes once the user agrees",
+                    warnings.join("; ")
+                );
+            }
+        }
+        let mut rows = Vec::new();
+        for acc in accounts {
             if dry_run {
                 let store = self.store(&acc)?;
                 for p in actions::planned(&compiled, &store, &acc, &acc.identity()?, time::now())? {
@@ -520,27 +549,22 @@ impl Backend {
                 }
                 continue;
             }
-            let command = Command::ApplyRule {
-                name: name.to_string(),
-            };
-            let (evaluated, actions, errors) =
-                self.daemon
-                    .request(&acc.name, command, |reply| match reply {
-                        Event::RuleApplied {
-                            evaluated,
-                            actions,
-                            errors,
-                            ..
-                        } => Ok((evaluated, actions, errors)),
-                        other => Err(other),
-                    })?;
-            rows.push(output::rule_applied(&acc.name, evaluated, actions, &errors));
+            let (evaluated, actions, errors) = self.daemon.apply_rule(&acc.name, name)?;
+            rows.push(
+                json!({ "account": acc.name, "evaluated": evaluated, "actions": actions, "errors": errors }),
+            );
         }
         Ok(rows)
     }
 
     /// While accounts are hidden, a rule without `account` gets the only visible one, or is refused.
-    pub fn propose(&self, mut rule: Rule, by: &str) -> Result<Value> {
+    pub fn propose(&self, mut rule: Rule, by: &str, bodies: bool) -> Result<Value> {
+        refuse_body_rule(
+            &rules::compile(&RuleFile {
+                rules: vec![rule.clone()],
+            })?,
+            bodies,
+        )?;
         match rule.account.as_deref() {
             Some(account) if !self.is_visible(Some(account)) => {
                 bail!("no account named '{account}'")
@@ -554,8 +578,9 @@ impl Backend {
     }
 
     /// Enables the rule and restarts its clock in every account, so it acts only on mail that arrives from now on.
-    pub fn approve(&self, name: &str) -> Result<Value> {
+    pub fn approve(&self, name: &str, bodies: bool) -> Result<Value> {
         self.ensure_rule_visible(name, true)?;
+        refuse_named_body_rule(&self.paths, name, bodies)?;
         rules::edit::approve_from_now(&self.paths, &self.all_accounts(), name, time::now())?;
         Ok(json!({ "rule": name, "enabled": true }))
     }
@@ -566,11 +591,29 @@ impl Backend {
         Ok(json!({ "rejected": name }))
     }
 
-    pub fn set_enabled(&self, name: &str, enabled: bool) -> Result<Value> {
+    pub fn set_enabled(&self, name: &str, enabled: bool, bodies: bool) -> Result<Value> {
         self.ensure_rule_visible(name, enabled)?;
+        if enabled {
+            refuse_named_body_rule(&self.paths, name, bodies)?;
+        }
         rules::edit::set_enabled(&self.paths.rules_file(), name, enabled)?;
         Ok(json!({ "rule": name, "enabled": enabled }))
     }
+}
+
+fn refuse_named_body_rule(paths: &Paths, name: &str, bodies: bool) -> Result<()> {
+    let file = rules::load(&paths.rules_file())?;
+    let named: Vec<Rule> = file.rules.into_iter().filter(|r| r.name == name).collect();
+    refuse_body_rule(&rules::compile(&RuleFile { rules: named })?, bodies)
+}
+
+/// Without read:bodies an agent may not propose, enable or run a rule that matches on the body: which mail it acts on,
+/// or a dry run lists, would reveal body text.
+fn refuse_body_rule(compiled: &[rules::CompiledRule], bodies: bool) -> Result<()> {
+    if !bodies && compiled.iter().any(|r| r.needs_body()) {
+        bail!("matching on the body needs the read:bodies scope");
+    }
+    Ok(())
 }
 
 /// A message's listing row: the CLI's `--json` shape with its account, without the body.
