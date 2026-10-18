@@ -153,6 +153,15 @@ match.older_than = "30days"
 actions = ["archive"]
 ```
 
+Filter junk on your provider's spam score. Many servers score mail but only move it to Junk above a high threshold; SpamAssassin writes the score as stars in `X-Spam-Level`, and some providers use their own header, such as `X-Soverin-Spam-Level`. Look at the headers of a few spam and legitimate messages to find yours, tag first to see what a threshold catches, then change the action to `{ move = "Junk" }` once it only catches spam:
+
+```toml
+[[rules]]
+name = "spam suspects"
+match.header = { name = "X-Spam-Level", regex = '^\*{2,}' }
+actions = [{ tag = "$SpamSuspect" }]
+```
+
 ## Proposals
 
 Agents never edit `rules.toml`. They run `postvak rules propose`, which appends the rule with `enabled = false` and `proposed_by` set. To review a proposal:
