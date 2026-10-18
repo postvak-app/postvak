@@ -1214,20 +1214,16 @@ fn confirm_expunges(
     let mut any = false;
     for acc in accounts {
         let store = Store::open_account(paths, &acc.name)?;
-        let planned =
-            postvak_core::actions::planned(rules, &store, acc, &acc.identity()?, time::now())?;
-        let mut count = 0;
-        for p in &planned {
-            count += usize::from(postvak_core::actions::expunges(&store, p)?);
-        }
-        if count > 0 {
+        let warning = postvak_core::actions::expunge_warning(
+            rules,
+            &store,
+            acc,
+            &acc.identity()?,
+            time::now(),
+        )?;
+        if let Some(warning) = warning {
             any = true;
-            eprintln!(
-                "{}: would permanently delete {count} message{} from the server; .eml backups kept locally for {} days",
-                acc.name,
-                if count == 1 { "" } else { "s" },
-                acc.trash_retention_days
-            );
+            eprintln!("{warning}");
         }
     }
     if !any {

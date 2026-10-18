@@ -239,6 +239,28 @@ pub fn expunges(store: &Store, planned: &Planned) -> Result<bool, StoreError> {
     })
 }
 
+/// What every surface says before `rules apply-existing` expunges mail of `account`; None when the rules expunge none.
+pub fn expunge_warning(
+    rules: &[CompiledRule],
+    store: &Store,
+    account: &AccountConfig,
+    identity: &Identity,
+    now: i64,
+) -> Result<Option<String>, StoreError> {
+    let mut count = 0;
+    for p in planned(rules, store, account, identity, now)? {
+        count += usize::from(expunges(store, &p)?);
+    }
+    Ok((count > 0).then(|| {
+        format!(
+            "{}: would permanently delete {count} message{} from the server; .eml backups kept locally for {} days",
+            account.name,
+            if count == 1 { "" } else { "s" },
+            account.trash_retention_days
+        )
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,6 +342,28 @@ mod tests {
             .unwrap();
         assert!(!expunges_with(Action::Trash));
         assert!(expunges_with(Action::Delete));
+    }
+
+    #[test]
+    fn expunge_warning_counts_what_the_rules_would_expunge() {
+        let (_ops, store, _trash, _dir) = setup();
+        let password = crate::config::PasswordSource::Keyring { keyring: true };
+        let account = AccountConfig::new("work", "h", "me@example.com", password);
+        let identity = account.identity().unwrap();
+        let warning = |actions: &str| {
+            let toml = format!(
+                "[[rules]]\nname = \"r\"\nmatch.subject = {{ contains = \"hi\" }}\nactions = [{actions}]\n"
+            );
+            let rules = crate::rules::compile(&crate::rules::parse(&toml).unwrap()).unwrap();
+            expunge_warning(&rules, &store, &account, &identity, 0).unwrap()
+        };
+        assert_eq!(
+            warning("\"delete\"").as_deref(),
+            Some(
+                "work: would permanently delete 1 message from the server; .eml backups kept locally for 30 days"
+            )
+        );
+        assert_eq!(warning("\"flag\""), None);
     }
 
     #[test]
