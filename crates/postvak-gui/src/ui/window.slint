@@ -218,6 +218,11 @@ export component MailWindow inherits Window {
             keys.focus();
         }
     }
+    changed account-open => {
+        if (!root.account-open) {
+            keys.focus();
+        }
+    }
 
     title: "Postvak";
     // macOS shows it in the Dock, which expects Apple's margin.

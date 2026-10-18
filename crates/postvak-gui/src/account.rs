@@ -231,6 +231,40 @@ mod tests {
         assert!(open.find("Add account").is_empty());
     }
 
+    fn two_messages() -> Fixture {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", crate::test_support::message("INBOX", 1, "hello"));
+        fx.add("work", crate::test_support::message("INBOX", 2, "again"));
+        fx
+    }
+
+    fn cursor(open: &Open) -> usize {
+        open.with(|live| live.app.list.cursor)
+    }
+
+    #[test]
+    fn the_keys_work_again_after_escape_closes_the_form() {
+        let fx = two_messages();
+        let (open, _wires) = fx.window();
+        open.window().invoke_menu_item(MenuAction::AddAccount);
+        open.press("escape");
+        open.press("j");
+        assert_eq!(cursor(&open), 1);
+    }
+
+    #[test]
+    fn the_keys_work_again_after_a_save_closes_the_form() {
+        let fx = two_messages();
+        let (open, _wires) = fx.window();
+        open.window().invoke_menu_item(MenuAction::AddAccount);
+        // Draws the form, so its first field takes the keyboard before the save.
+        open.tick();
+        fill_window(&open, "work", "imap.example.org");
+        save_in(&open);
+        open.press("j");
+        assert_eq!(cursor(&open), 1);
+    }
+
     fn filled(name: &str) -> Fields {
         Fields {
             name: name.into(),
