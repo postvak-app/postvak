@@ -15,6 +15,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # A merge-queue branch exists for one run, so nothing can read what sccache writes there; it would only crowd main's entries out of the 10 GB quota.
+  SCCACHE_GHA_RW_MODE: ${{ github.event_name == 'merge_group' && 'READ_ONLY' || 'READ_WRITE' }}
 
 jobs:
   # Whether lint and test need to build. lint, test (macos-latest) and test (ubuntu-latest) are required checks, so they always report.
