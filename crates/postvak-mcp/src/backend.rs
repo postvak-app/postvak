@@ -433,7 +433,7 @@ impl Backend {
         account.is_none_or(|a| self.visible().iter().any(|acc| acc.name == a))
     }
 
-    /// Whether `--account` hides some configured account; a rule without `account` then reaches beyond this server.
+    /// Whether the server was started with `--account`, so accounts added later stay hidden too; a rule without `account` then reaches beyond this server.
     fn narrowed(&self) -> bool {
         !self.only.is_empty()
     }
