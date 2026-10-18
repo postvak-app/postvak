@@ -14,6 +14,7 @@ mod keys;
 mod launch;
 mod list;
 mod load;
+mod logos;
 mod menu;
 mod numbers;
 mod persist;

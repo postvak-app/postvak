@@ -425,10 +425,7 @@ pub fn run() -> Result<()> {
                     let total = store.message_count(&f.name)?;
                     let unread = store.unread_count(&f.name)?;
                     if json {
-                        println!(
-                            "{}",
-                            postvak_core::output::folder(&acc.name, &f, total, unread)
-                        );
+                        print_json(postvak_core::output::folder(&acc.name, &f, total, unread));
                     } else {
                         println!("{}\t{}\t{total}\t{unread}", acc.name, clean(&f.name, false));
                     }
@@ -459,10 +456,7 @@ pub fn run() -> Result<()> {
                             if json {
                                 let mut value = serde_json::to_value(m)?;
                                 value["depth"] = depth.into();
-                                println!(
-                                    "{}",
-                                    postvak_core::output::with_account(&acc.name, &value)?
-                                );
+                                print_json(postvak_core::output::with_account(&acc.name, &value)?);
                             } else {
                                 println!("{}", message_line(&acc.name, m, depth));
                             }
@@ -472,7 +466,7 @@ pub fn run() -> Result<()> {
                 }
                 for m in store.messages(&folder, limit, filter)? {
                     if json {
-                        println!("{}", postvak_core::output::with_account(&acc.name, &m)?);
+                        print_json(postvak_core::output::with_account(&acc.name, &m)?);
                     } else {
                         println!("{}", message_line(&acc.name, &m, 0));
                     }
@@ -522,7 +516,7 @@ pub fn run() -> Result<()> {
                 }
                 for m in found {
                     if json {
-                        println!("{}", postvak_core::output::with_account(&acc.name, &m)?);
+                        print_json(postvak_core::output::with_account(&acc.name, &m)?);
                     } else {
                         println!("{}", message_line(&acc.name, &m, 0));
                     }
@@ -541,10 +535,7 @@ pub fn run() -> Result<()> {
                 open_message(&config, &paths, account.as_deref(), &folder, uid)?;
             let report = postvak_core::unsubscribe::unsubscribe(&msg.headers, dry_run)?;
             if json {
-                println!(
-                    "{}",
-                    postvak_core::output::with_account(&acc.name, &report)?
-                );
+                print_json(postvak_core::output::with_account(&acc.name, &report)?);
             } else {
                 println!("{}", unsubscribe_line(&report));
             }
@@ -563,9 +554,8 @@ pub fn run() -> Result<()> {
             if raw {
                 io::stdout().write_all(&body)?;
             } else if json {
-                println!(
-                    "{}",
-                    serde_json::json!({ "account": acc.name, "message": msg, "body_text": postvak_core::message::body_text(&body) })
+                print_json(
+                    serde_json::json!({ "account": acc.name, "message": msg, "body_text": postvak_core::message::body_text(&body) }),
                 );
             } else {
                 println!(
@@ -608,7 +598,7 @@ pub fn run() -> Result<()> {
                 let store = Store::open_account(&paths, &acc.name)?;
                 for e in store.log(limit)? {
                     if json {
-                        println!("{}", postvak_core::output::with_account(&acc.name, &e)?);
+                        print_json(postvak_core::output::with_account(&acc.name, &e)?);
                     } else {
                         println!(
                             "{}  {}  {:<20} {:<12} {}/{}  {}",
@@ -631,7 +621,7 @@ pub fn run() -> Result<()> {
             AccountCommand::List { json } => {
                 for acc in &config.accounts {
                     if json {
-                        println!("{}", postvak_core::output::account(acc));
+                        print_json(postvak_core::output::account(acc));
                     } else {
                         println!(
                             "{}\t{}\t{}:{}",
@@ -814,7 +804,7 @@ fn cmd_daemon(command: DaemonCommand, paths: &Paths) -> Result<()> {
         DaemonCommand::Status { json } => {
             let status = client.status()?;
             if json {
-                println!("{}", postvak_core::output::status(&status)?);
+                print_json(postvak_core::output::status(&status)?);
             } else {
                 print_status(&status);
             }
@@ -859,7 +849,7 @@ fn cmd_attachment(command: AttachmentCommand, config: &Config, paths: &Paths) ->
         AttachmentCommand::List { json, .. } => {
             for a in postvak_core::message::attachments(&raw) {
                 if json {
-                    println!("{}", postvak_core::output::with_account(&acc.name, &a)?);
+                    print_json(postvak_core::output::with_account(&acc.name, &a)?);
                 } else {
                     println!(
                         "{}  {}  {}  {}",
@@ -916,6 +906,11 @@ fn open_message<'a>(
         .message(folder, uid)?
         .with_context(|| format!("no message {}/{uid}", clean(folder, false)))?;
     Ok((acc, store, msg))
+}
+
+/// One `--json` line, every string cleaned as in MCP results, so an agent reading it sees no hidden text.
+fn print_json(value: serde_json::Value) {
+    println!("{}", postvak_core::output::clean_value(value, false));
 }
 
 /// `account  * INBOX/42  date  from  subject`; `*` marks unread, `depth` indents the subject in thread views.
@@ -1031,7 +1026,7 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             let file = postvak_core::rules::load(&paths.rules_file())?;
             for r in &file.rules {
                 if json {
-                    println!("{}", postvak_core::output::rule(r));
+                    print_json(postvak_core::output::rule(r));
                 } else {
                     println!(
                         "{}\t{}\t{}",

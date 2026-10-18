@@ -91,7 +91,7 @@ fn fetch_all(
 
 /// The body of a GET, when it answers 2xx within the limits and every hop is a public host. Nothing about the URL is
 /// logged: it can identify the reader.
-fn get(url: &str) -> Option<Vec<u8>> {
+pub(crate) fn get(url: &str) -> Option<Vec<u8>> {
     get_from(url, public)
 }
 
