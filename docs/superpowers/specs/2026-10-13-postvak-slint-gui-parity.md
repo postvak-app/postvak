@@ -600,7 +600,7 @@ The menu closes after a click: a test checks that the `"Archive e"` label disapp
 - A full-width selectable button: indent, then the icon, then `"  {label}"`, which shrinks and truncates before the count.
 - The count sits on the right in `muted`. The right slot is always present, even when empty, so the label stays on the left.
 - When selected and the count is non-empty:
-  - the icon turns `highlight` (brass);
+  - the icon turns `highlight` (brass then, vermilion since Inkt);
   - the count becomes a pill: a `highlight` fill with radius `h/2`, width `text + 1.5*PAD`, and the text in `palette.background`.
 - Accessible name is `count_and_name` (folders.rs:226): `"Name"`, or `"Name (n)"` with a grouped number.
 
@@ -688,8 +688,8 @@ Note that this module also holds two status-bar tests.
 - `line_color`: the error colour when failed.
 - `dot` (status.rs:62-81):
   - failed: a ring in the error colour;
-  - Idle: a filled brass (`highlight`) dot;
-  - Offline: a brass ring;
+  - Idle: a filled `highlight` dot;
+  - Offline: a `highlight` ring;
   - otherwise none.
   - The logic is [pure] apart from the `Color32` type, so parametrise the colour.
 - `paint_dot`: a PAD×PAD cell that is always reserved, so the text lines up. Radius `PAD/2 - 1`, ring stroke 1.5.
@@ -729,7 +729,7 @@ Note that this module also holds two status-bar tests.
 
 ### Tests in `status.rs`
 Several of these test app event handling, not drawing.
-- `an_up_to_date_account_gets_a_brass_dot_and_an_error_wins`.
+- `an_up_to_date_account_gets_a_vermilion_dot_and_an_error_wins` (`brass` until Inkt).
 - `fetching_headers_shows_the_counts`: `"work: INBOX headers 12,500 / 48,213"`. Note that the Activity `Display` groups with commas regardless of locale.
 - `offline_shows_the_retry_time`: `"work: offline (timeout) · retry {clock}"`.
 - `an_account_that_is_not_running_says_why_in_red_without_a_spinner`: `"work: not running (could not start its sync thread)"`; not busy; red ring.
@@ -1219,7 +1219,7 @@ Legend: **[free]** means toolkit-free and reusable as is. **[free\*]** means too
 - `the_error_window_saves_nothing`
 - `the_desktop_entry_names_the_app_id`: the `.desktop` file's `Icon=` and `StartupWMClass=` equal `APP_ID`. **A Slint window must set the same Wayland app id and X11 WM_CLASS.**
 
-### 5. Theme: Ossenbloed (`src/gui/theme.rs`)
+### 5. Theme (`src/gui/theme.rs`)
 
 ### Grid constants (pure; AGENTS.md requires these instead of literal sizes)
 
@@ -1242,26 +1242,26 @@ Spacing set in `install` (`:249-266`):
 
 ### Palettes (pure data)
 
-The `hex()` helper is egui-specific. The values below are what to carry over.
+The `hex()` helper is egui-specific. The values below are the Inkt palettes (the port carried over Ossenbloed's; the identity changed on 2026-10-18, see the design spec); `ui/theme.slint` is the source of truth.
 
-| field | PAPER (light pane) | NIGHT (dark pane) | FRAME | FRAME_NIGHT |
+| field | paper (light pane) | night (dark pane) | frame-day | frame-night |
 |---|---|---|---|---|
-| accent | 9a4a1c | e9c9b0 | d9b36a | d9b36a |
-| background | fbf8f3 | 231919 | 3b1418 | 2a0e11 |
-| border | e3d8cb | 3a2b2c | 5a2a2f | 4a2226 |
+| accent | b83d1c | f3b39d | f08a68 | f08a68 |
+| background | faf7f1 | 16181f | 1c2436 | 0f121c |
+| border | dcd6c9 | 2b3042 | 2b3650 | 222a3b |
 | error | a8202e | f08a8a | ffb4a8 | ffb4a8 |
-| faint | fffdfa | 140e0f | 4e2629 | 3b1d20 |
-| heading | 3b1418 | e9c9b0 | f1e4d8 | f1e4d8 |
-| highlight | 8c6720 | c99a3e | d9b36a | d9b36a |
-| hover | eadfd0 | 2e2223 | 4a1d22 | 3a171b |
-| muted | 6e5958 | b09a93 | c29a92 | c29a92 |
-| on_accent | f1e4d8 | f1e4d8 | ffffff | ffffff |
-| panel | f3ece2 | 1a1213 | 3b1418 | 2a0e11 |
-| pressed | e3d8cb | 3a2b2c | 5e2a30 | 4c2227 |
-| secondary | 5e4a4b | cdb8af | e0cbbe | e0cbbe |
-| selected | 3b1418 | 5a1f25 | 552a2b | 44262a |
-| strong | 140b0c | ffffff | ffffff | ffffff |
-| text | 2b1a1c | efe3d6 | f1e4d8 | f1e4d8 |
+| faint | fffdf9 | 0f1117 | 273049 | 1a2030 |
+| heading | 1c2436 | f3eee4 | f3eee4 | f3eee4 |
+| highlight | b83d1c | f08a68 | f08a68 | f08a68 |
+| hover | ebe5d9 | 20242f | 253050 | 1a2030 |
+| muted | 646574 | 9b9aa4 | a8adbd | 9ba0b3 |
+| on_accent | 1c2436 | f3eee4 | ffffff | ffffff |
+| panel | f3eee4 | 0f1117 | 1c2436 | 0f121c |
+| pressed | dcd6c9 | 2b3042 | 34405e | 2b3650 |
+| secondary | 4d5063 | c3c4cf | cfd3df | cfd3df |
+| selected | dfe1ea | 2b3650 | 2b3650 | 222b40 |
+| strong | 0a0e1b | ffffff | ffffff | ffffff |
+| text | 1c2436 | e9e5dc | f3eee4 | f3eee4 |
 | warning | 8a5a00 | e6b85c | f2cc7a | f2cc7a |
 
 **Rules that matter:**
@@ -1294,7 +1294,7 @@ The `hex()` helper is egui-specific. The values below are what to carry over.
 | Text | Hanken Grotesk Medium | `assets/fonts/HankenGrotesk-Medium.ttf` |
 | Bold family | Hanken Grotesk SemiBold | `HankenGrotesk-SemiBold.ttf` |
 | Monospace | Spline Sans Mono Medium, then egui's **Hack** behind it for arrows | `SplineSansMono-Medium.ttf` |
-| Serif family (headings, wordmark) | Newsreader Medium | `Newsreader-Medium.ttf` |
+| Headings and wordmark | Newsreader Medium, since replaced by Bricolage Grotesque SemiBold | `BricolageGrotesque-SemiBold.ttf` |
 | Icons | Phosphor Regular (`egui-phosphor`) | — |
 
 - Phosphor is the **first fallback** after the text font, so icons mix into ordinary labels.

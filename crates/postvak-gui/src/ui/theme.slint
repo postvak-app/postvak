@@ -1,8 +1,8 @@
-// Ossenbloed: per mode a pane palette and an oxblood chrome palette (toolbar, folders, status bar) around it, the
+// Inkt: per mode a pane palette and an ink-blue chrome palette (toolbar, folders, status bar) around it, the
 // grid every size comes from (`theme.rs` has the sizes Rust needs; a test keeps them equal), and the bundled fonts.
+import "../../assets/fonts/BricolageGrotesque-SemiBold.ttf";
 import "../../assets/fonts/HankenGrotesk-Medium.ttf";
 import "../../assets/fonts/HankenGrotesk-SemiBold.ttf";
-import "../../assets/fonts/Newsreader-Medium.ttf";
 import "../../assets/fonts/Phosphor.ttf";
 import "../../assets/fonts/SplineSansMono-Medium.ttf";
 
@@ -45,7 +45,7 @@ export global Theme {
     out property <bool> dark: preference == ThemePreference.dark || (preference == ThemePreference.system && desktop-dark);
     // The panes.
     out property <Palette> pane: dark ? night : paper;
-    // The oxblood chrome around them: toolbar, folders, status bar.
+    // The ink chrome around them: toolbar, folders, status bar.
     out property <Palette> frame: dark ? frame-night : frame-day;
 
     out property <length> control: 28px;
@@ -81,87 +81,88 @@ export global Theme {
     out property <length> title-size: 22px;
     out property <length> subject-size: 28px;
     out property <string> text-font: "Hanken Grotesk";
-    out property <string> serif-font: "Newsreader";
+    // Headings and the wordmark; only its SemiBold is bundled.
+    out property <string> heading-font: "Bricolage Grotesque";
     out property <string> mono-font: "Spline Sans Mono";
     out property <string> icon-font: "Phosphor";
 
     // Avatar fills, picked per sender by `avatar::tint`; `pane.heading` is drawn on them.
-    out property <[color]> avatars: dark ? [#5a1f25, #4f3d1f, #2f3f2a, #263b3d, #3a2f48, #4a2a33] : [#e6cfc2, #e9dcc0, #d6dfc8, #cfdcdc, #d8d2e2, #ecd3cf];
+    out property <[color]> avatars: dark ? [#2b3650, #5a2a22, #4f3d1f, #2f3f2a, #263b3d, #3a2f48] : [#dfe1ea, #f5d9d0, #e9dcc0, #d6dfc8, #cfdcdc, #e4d8e6];
 
     out property <Palette> paper: {
-        accent: #9a4a1c,
-        background: #fbf8f3,
-        border: #e3d8cb,
+        accent: #b83d1c,
+        background: #faf7f1,
+        border: #dcd6c9,
         error: #a8202e,
-        faint: #fffdfa,
-        heading: #3b1418,
-        highlight: #8c6720,
-        hover: #eadfd0,
-        muted: #6e5958,
-        on-accent: #2b1a1c,
-        panel: #f3ece2,
-        pressed: #e3d8cb,
-        secondary: #5e4a4b,
-        selected: #e6cfc2,
-        strong: #140b0c,
-        text: #2b1a1c,
+        faint: #fffdf9,
+        heading: #1c2436,
+        highlight: #b83d1c,
+        hover: #ebe5d9,
+        muted: #646574,
+        on-accent: #1c2436,
+        panel: #f3eee4,
+        pressed: #dcd6c9,
+        secondary: #4d5063,
+        selected: #dfe1ea,
+        strong: #0a0e1b,
+        text: #1c2436,
         warning: #8a5a00,
     };
     out property <Palette> night: {
-        accent: #e9c9b0,
-        background: #231919,
-        border: #3a2b2c,
+        accent: #f3b39d,
+        background: #16181f,
+        border: #2b3042,
         error: #f08a8a,
-        faint: #140e0f,
-        heading: #e9c9b0,
-        highlight: #c99a3e,
-        hover: #2e2223,
-        muted: #b09a93,
-        on-accent: #f1e4d8,
-        panel: #1a1213,
-        pressed: #3a2b2c,
-        secondary: #cdb8af,
-        selected: #5a1f25,
+        faint: #0f1117,
+        heading: #f3eee4,
+        highlight: #f08a68,
+        hover: #20242f,
+        muted: #9b9aa4,
+        on-accent: #f3eee4,
+        panel: #0f1117,
+        pressed: #2b3042,
+        secondary: #c3c4cf,
+        selected: #2b3650,
         strong: #ffffff,
-        text: #efe3d6,
+        text: #e9e5dc,
         warning: #e6b85c,
     };
     out property <Palette> frame-day: {
-        accent: #d9b36a,
-        background: #3b1418,
-        border: #5a2a2f,
+        accent: #f08a68,
+        background: #1c2436,
+        border: #2b3650,
         error: #ffb4a8,
-        faint: #4e2629,
-        heading: #f1e4d8,
-        highlight: #d9b36a,
-        hover: #4a1d22,
-        muted: #c29a92,
+        faint: #273049,
+        heading: #f3eee4,
+        highlight: #f08a68,
+        hover: #253050,
+        muted: #a8adbd,
         on-accent: #ffffff,
-        panel: #3b1418,
-        pressed: #5e2a30,
-        secondary: #e0cbbe,
-        selected: #552a2b,
+        panel: #1c2436,
+        pressed: #34405e,
+        secondary: #cfd3df,
+        selected: #2b3650,
         strong: #ffffff,
-        text: #f1e4d8,
+        text: #f3eee4,
         warning: #f2cc7a,
     };
     out property <Palette> frame-night: {
-        accent: #d9b36a,
-        background: #2a0e11,
-        border: #4a2226,
+        accent: #f08a68,
+        background: #0f121c,
+        border: #222a3b,
         error: #ffb4a8,
-        faint: #3b1d20,
-        heading: #f1e4d8,
-        highlight: #d9b36a,
-        hover: #3a171b,
-        muted: #c29a92,
+        faint: #1a2030,
+        heading: #f3eee4,
+        highlight: #f08a68,
+        hover: #1a2030,
+        muted: #9ba0b3,
         on-accent: #ffffff,
-        panel: #2a0e11,
-        pressed: #4c2227,
-        secondary: #e0cbbe,
-        selected: #44262a,
+        panel: #0f121c,
+        pressed: #2b3650,
+        secondary: #cfd3df,
+        selected: #222b40,
         strong: #ffffff,
-        text: #f1e4d8,
+        text: #f3eee4,
         warning: #f2cc7a,
     };
 }
