@@ -177,9 +177,9 @@ impl Config {
                     "duplicate account name '{name}'"
                 )));
             }
-            if account.address.is_none() && !account.username.contains('@') {
+            if !account.address().contains('@') {
                 return Err(ConfigError::Invalid(format!(
-                    "account '{name}': set `address` because the username is not an email address"
+                    "account '{name}': `address` must be an email address; set it when the username is not one"
                 )));
             }
             if account.password == (PasswordSource::Keyring { keyring: false }) {
@@ -451,6 +451,12 @@ notify = false
     #[test]
     fn rejects_username_without_at_and_no_address() {
         let bad = SAMPLE.replace("address = \"pieter@home.test\"\n", "");
+        assert!(matches!(Config::parse(&bad), Err(ConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn rejects_an_address_that_is_no_email_address() {
+        let bad = SAMPLE.replace("pieter@home.test", "pieter");
         assert!(matches!(Config::parse(&bad), Err(ConfigError::Invalid(_))));
     }
 
