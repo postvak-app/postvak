@@ -146,7 +146,8 @@ incremental = false
 [profile.release]
 lto = "thin"
 codegen-units = 1
-strip = true
+# Crash reports' backtraces name file:line.
+debug = "line-tables-only"
 
 [profile.dist]
 inherits = "release"
