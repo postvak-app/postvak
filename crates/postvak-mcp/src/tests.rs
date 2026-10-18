@@ -176,6 +176,11 @@ fn files_write_is_a_scope_outside_the_default_set() {
 fn scopes_parse_and_unknown_ones_name_the_valid_ones() {
     let scopes = parse_scopes("read, rules:propose").unwrap();
     assert_eq!(scopes.len(), 2);
+    assert!(
+        parse_scopes("accounts:write")
+            .unwrap()
+            .contains(&super::Scope::AccountsWrite)
+    );
     for empty in ["", ","] {
         let err = parse_scopes(empty).unwrap_err().to_string();
         assert!(err.contains("read:bodies"), "{err}");
@@ -190,9 +195,12 @@ fn scopes_parse_and_unknown_ones_name_the_valid_ones() {
 }
 
 #[test]
-fn backend_refuses_no_accounts_and_unknown_accounts() {
+fn backend_without_accounts_opens_but_every_lookup_says_so() {
     let fx = fixture(&[]);
-    assert!(Backend::new(&fx.config(), &fx.paths, &[]).is_err());
+    let backend = Backend::new(&fx.config(), &fx.paths, &[]).unwrap();
+    let err = backend.folders(None).unwrap_err().to_string();
+    assert!(err.contains("no accounts configured"), "{err}");
+    assert!(backend.accounts().unwrap().is_empty());
     let fx = fixture(&["work"]);
     let err = Backend::new(&fx.config(), &fx.paths, &["play".into()])
         .err()
@@ -717,7 +725,8 @@ fn wrap_body_cuts_inside_a_multibyte_character_without_panicking() {
 #[tokio::test]
 async fn tools_list_per_scope_set_is_exact_and_alphabetical() {
     let fx = fixture(&["work"]);
-    let cases: [(&str, &[&str]); 5] = [
+    let cases: [(&str, &[&str]); 6] = [
+        ("accounts:write", &[]),
         (
             "read,rules:propose",
             &[
@@ -1247,6 +1256,15 @@ async fn accounts_lists_the_visible_accounts_without_secrets() {
     assert_eq!(report[0]["port"], 1);
     assert!(report[0].get("password").is_none());
     assert!(!report[0].to_string().contains("printf"));
+}
+
+#[tokio::test]
+async fn accounts_tool_lists_nothing_without_accounts() {
+    let fx = fixture(&[]);
+    let client = connect(&fx, "read", &[]).await;
+    let result = call(&client, "accounts", json!({})).await;
+    assert_ne!(result.is_error, Some(true), "{}", error_text(&result));
+    assert!(rows(&result).is_empty());
 }
 
 #[tokio::test]

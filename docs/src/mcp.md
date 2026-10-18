@@ -58,6 +58,7 @@ The install also prints a hint with the granted scopes and how to widen them. It
 | `rules:write` | Approving and rejecting rules, and turning them on or off. | `rules_approve`, `rules_reject`, `rules_set_enabled` |
 | `files:write` | Writing attachment files into a directory the agent names. The file name and content come from the sender, so a prompt-injected email could make the agent write them anywhere you can. | `attachment_save` |
 | `mail:modify` | Acting on mail and restoring from the trash. | `archive`, `delete`, `junk`, `mark`, `move`, `trash_restore`, `unsubscribe` |
+| `accounts:write` | Adding an account with a password command. Never a plain password. | `account_add` |
 
 The default is `read,rules:propose`. Three example grants:
 
@@ -65,7 +66,7 @@ The default is `read,rules:propose`. Three example grants:
 - Rule author: the default. The agent proposes, you approve in the window or with `postvak rules approve`.
 - Inbox assistant: `--scopes read,read:bodies,rules:propose,mail:modify`.
 
-`rules:write` lets the agent approve its own rules, and an approved rule can delete mail. Leave it off. `files:write` lets the agent write attachment files into any directory it names; leave it off too unless you need it.
+`rules:write` lets the agent approve its own rules, and an approved rule can delete mail. Leave it off. `files:write` lets the agent write attachment files into any directory it names; leave it off too unless you need it. `accounts:write` lets the agent add mail accounts. It is not in the default, and it is refused on a server limited with `--account`.
 
 ## Tools
 
