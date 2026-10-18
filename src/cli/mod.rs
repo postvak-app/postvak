@@ -221,6 +221,11 @@ enum Command {
         #[command(subcommand)]
         command: AccountCommand,
     },
+    /// List the local crash reports, newest first; they are never sent anywhere
+    Crashes {
+        #[command(subcommand)]
+        command: Option<CrashesCommand>,
+    },
     /// Print the agent guide: how an LLM should drive Postvak
     Guide,
     /// Serve Postvak to an agent host over MCP on stdio; hosts start this, see `postvak mcp install`
@@ -235,6 +240,12 @@ enum Command {
         #[command(subcommand)]
         command: Option<McpCommand>,
     },
+}
+
+#[derive(Subcommand)]
+enum CrashesCommand {
+    /// Print one crash report, by the id `postvak crashes` lists
+    Show { id: String },
 }
 
 #[derive(Subcommand)]
@@ -401,6 +412,9 @@ pub fn run() -> Result<()> {
         Some(home) => Ok(Paths::under(Path::new(&home))),
         None => Paths::discover(),
     };
+    if let Ok(paths) = &paths {
+        postvak_core::crash::install(paths.crash_dir(), process(&cli.command));
+    }
     // The window explains its own startup errors, since it may have no terminal to print them in.
     if let Command::Gui { safe_mode } = cli.command {
         return cmd_gui(paths, safe_mode);
@@ -409,6 +423,7 @@ pub fn run() -> Result<()> {
     let config = Config::load(&paths.config_file())?;
     match cli.command {
         Command::Run { idle_exit } => cmd_run(&paths, idle_exit),
+        Command::Crashes { command } => cmd_crashes(command, &paths),
         Command::Daemon { command } => cmd_daemon(command, &paths),
         Command::Gui { safe_mode } => cmd_gui(Ok(paths), safe_mode),
         Command::Service { command } => cmd_service(command, &paths),
@@ -938,6 +953,33 @@ fn truncate(s: &str, width: usize) -> String {
 }
 
 /// Finder and the Dock start Postvak.app with no arguments; that opens the window rather than printing help.
+/// The process a crash report names.
+fn process(command: &Command) -> &'static str {
+    match command {
+        Command::Gui { .. } => "gui",
+        Command::Mcp { command: None, .. } => "mcp",
+        Command::Run { .. } => "daemon",
+        _ => "cli",
+    }
+}
+
+fn cmd_crashes(command: Option<CrashesCommand>, paths: &Paths) -> Result<()> {
+    let dir = paths.crash_dir();
+    match command {
+        None => {
+            let ids = postvak_core::crash::list(&dir)?;
+            if ids.is_empty() {
+                eprintln!("no crash reports in {}", dir.display());
+            }
+            for id in ids {
+                println!("{id}");
+            }
+        }
+        Some(CrashesCommand::Show { id }) => print!("{}", postvak_core::crash::show(&dir, &id)?),
+    }
+    Ok(())
+}
+
 fn opened_as_mac_app() -> bool {
     use std::io::IsTerminal as _;
     cfg!(target_os = "macos")

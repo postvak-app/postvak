@@ -9,5 +9,6 @@
 - [Rules](rules.md)
 - [Agent guide](agent-guide.md)
 - [Agents over MCP](mcp.md)
+- [Crash reports](crashes.md)
 - [CLI reference](cli.md)
 - [Performance](perf.md)

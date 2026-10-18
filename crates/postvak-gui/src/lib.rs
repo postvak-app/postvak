@@ -393,7 +393,12 @@ fn explain(
     marker: Option<&launch::Marker>,
 ) -> Result<bool> {
     let log = paths.map(Paths::daemon_log);
-    let problem = startup::Problem::of(error, log.as_deref());
+    let mut problem = startup::Problem::of(error, log.as_deref());
+    let crashes = paths.map(Paths::crash_dir);
+    if let Some(dir) = crashes.filter(|dir| has_crashes(dir) && !error.is::<startup::NoAccounts>())
+    {
+        problem = problem.with_crashes(&dir);
+    }
     let open_docs = |url: &str| {
         if let Err(e) = state::launch(url.as_ref(), false) {
             log::warn!("could not open the docs: {e}");
@@ -405,6 +410,10 @@ fn explain(
     launch::watch(window.window(), marker.cloned());
     window.run()?;
     Ok(form.is_some_and(|paths| saved(&paths, &pending)))
+}
+
+fn has_crashes(dir: &std::path::Path) -> bool {
+    postvak_core::crash::list(dir).is_ok_and(|ids| !ids.is_empty())
 }
 
 /// The first-run form's save in flight, if any.
