@@ -94,7 +94,9 @@ export component TextButton inherits Rectangle {
     in property <string> text;
     in property <bool> selected;
     in property <bool> enabled: true;
-    // The hover hint, shown only while the button is disabled: why it is.
+    // The hover hint while enabled; `disabled-hint` replaces it while disabled.
+    in property <string> hint;
+    // The hover hint while the button is disabled: why it is.
     in property <string> disabled-hint;
     in property <Palette> palette: Theme.frame;
     in property <color> text-color: root.selected ? root.palette.strong : root.palette.text;
@@ -112,7 +114,7 @@ export component TextButton inherits Rectangle {
     accessible-label: root.text;
     accessible-item-selected: root.selected;
     accessible-enabled: root.enabled;
-    accessible-description: root.enabled ? "" : root.disabled-hint;
+    accessible-description: root.enabled ? root.hint : root.disabled-hint;
     accessible-action-default => {
         if (root.enabled) {
             root.clicked();
@@ -141,7 +143,7 @@ export component TextButton inherits Rectangle {
                 root.clicked();
             }
         }
-        if !root.enabled && root.disabled-hint != "": Tooltip { text: @markdown("\{root.disabled-hint}"); }
+        if (root.enabled ? root.hint : root.disabled-hint) != "": Tooltip { text: @markdown("\{root.enabled ? root.hint : root.disabled-hint}"); }
     }
 }
 

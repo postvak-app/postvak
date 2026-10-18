@@ -1,6 +1,7 @@
 //! The Rules, Activity and Trash views: what replaces the list and body columns.
 use std::path::Path;
 
+use postvak_core::help;
 use postvak_core::message::clean;
 use postvak_core::paths::Paths;
 use postvak_core::rules::{self, Rule, RuleFile};
@@ -240,6 +241,16 @@ pub(crate) fn trash_rows(accounts: &[Account], paths: &Paths) -> Vec<TrashRow> {
     rows
 }
 
+/// The Purge button's hover text: what it does, and each account's retention.
+pub(crate) fn purge_hint(app: &App) -> String {
+    let days: Vec<String> = app
+        .retention
+        .iter()
+        .map(|(name, days)| format!("{name}: {days} days"))
+        .collect();
+    format!("{} ({})", help::TRASH_PURGE, days.join(", "))
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -276,6 +287,149 @@ mod tests {
     fn enabled(fx: &Fixture, name: &str) -> bool {
         let file = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
         file.rules.iter().find(|r| r.name == name).unwrap().enabled
+    }
+
+    #[test]
+    fn apply_runs_an_enabled_rule_on_its_accounts_and_shows_the_outcome() {
+        let fx = Fixture::new(&["home", "work"]);
+        let only_work = "\n[[rules]]\nname = \"only-work\"\naccount = \"work\"\nmatch.subject = { contains = \"x\" }\nactions = [\"flag\"]\n";
+        std::fs::write(fx.paths.rules_file(), format!("{RULES}{only_work}")).unwrap();
+        let (open, wires) = view(&fx, View::Rules);
+        let apply = |nth: usize| {
+            let buttons = open.find("Apply to existing mail");
+            assert_eq!(
+                buttons.len(),
+                3,
+                "one per rule: newsletters, codes, only-work"
+            );
+            buttons[nth].invoke_accessible_default_action();
+        };
+        apply(1);
+        assert!(wires.sent().is_empty(), "codes is a disabled proposal");
+        apply(2);
+        let only = |name: &str, account: &str| {
+            (
+                account.to_string(),
+                Command::ApplyRule { name: name.into() },
+            )
+        };
+        assert_eq!(wires.sent(), [only("only-work", "work")]);
+        apply(0);
+        assert_eq!(
+            wires.sent(),
+            [only("newsletters", "home"), only("newsletters", "work")]
+        );
+        let applied = |errors: Vec<String>| Event::RuleApplied {
+            account: "work".into(),
+            request: 7,
+            evaluated: 12,
+            actions: 3,
+            errors,
+        };
+        wires.events.send(applied(Vec::new())).unwrap();
+        open.tick();
+        assert_eq!(open.find("work: 3 actions on 12 messages").len(), 1);
+        wires
+            .events
+            .send(applied(vec!["INBOX/4: gone".into()]))
+            .unwrap();
+        open.tick();
+        assert_eq!(
+            open.find("work: INBOX/4: gone").len(),
+            1,
+            "a failure wins the line"
+        );
+    }
+
+    #[test]
+    fn a_rule_for_an_account_the_window_does_not_list_says_so() {
+        let fx = Fixture::new(&["work"]);
+        let gone = "[[rules]]\nname = \"old\"\naccount = \"gone\"\nmatch.subject = { contains = \"x\" }\nactions = [\"flag\"]\n";
+        std::fs::write(fx.paths.rules_file(), gone).unwrap();
+        let (open, wires) = view(&fx, View::Rules);
+        open.click("Apply to existing mail");
+        assert!(wires.sent().is_empty());
+        let why = "rule 'old' names account 'gone', which this window does not list";
+        assert_eq!(
+            open.with(|live| live.app.error.clone()).as_deref(),
+            Some(why)
+        );
+    }
+
+    #[test]
+    fn one_action_on_one_message_is_worded_singular() {
+        let fx = Fixture::new(&["work"]);
+        let (open, wires) = rules_view(&fx);
+        let applied = Event::RuleApplied {
+            account: "work".into(),
+            request: 1,
+            evaluated: 1,
+            actions: 1,
+            errors: vec![],
+        };
+        wires.events.send(applied).unwrap();
+        open.tick();
+        assert_eq!(open.find("work: 1 action on 1 message").len(), 1);
+    }
+
+    #[test]
+    fn purge_removes_backups_past_their_retention_and_says_how_many() {
+        let fx = Fixture::new(&["work"]);
+        let dir = fx.paths.trash_dir("work");
+        std::fs::create_dir_all(&dir).unwrap();
+        let trash = Trash::new(dir);
+        let now = postvak_core::time::now();
+        let raw = |subject: &str| format!("From: a@example.com\r\nSubject: {subject}\r\n\r\nx\r\n");
+        let old = trash
+            .save("INBOX", 1, raw("old").as_bytes(), now - 31 * 86_400)
+            .unwrap();
+        let fresh = trash
+            .save("INBOX", 2, raw("fresh").as_bytes(), now - 86_400)
+            .unwrap();
+        let (open, _wires) = view(&fx, View::Trash);
+        assert_eq!(
+            open.get("Purge").accessible_description().unwrap(),
+            "Remove .eml backups older than the account's retention period (work: 30 days)"
+        );
+        open.click("Purge");
+        assert!(!old.exists());
+        assert!(fresh.exists());
+        assert!(open.find("old").is_empty());
+        assert_eq!(open.find("fresh").len(), 1);
+        let line = "removed 1 backup older than the retention period";
+        assert_eq!(open.find(line).len(), 1, "the status row says it");
+        open.with(|live| live.app.apply(crate::state::UiAction::ToggleHistory));
+        assert!(open.find(line).is_empty(), "opening the history clears it");
+    }
+
+    #[test]
+    fn a_failing_account_is_named_and_the_others_are_still_purged() {
+        let fx = Fixture::new(&["broken", "work"]);
+        std::fs::write(fx.paths.trash_dir("broken"), "not a directory").unwrap();
+        let dir = fx.paths.trash_dir("work");
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = postvak_core::time::now();
+        let old = Trash::new(dir)
+            .save(
+                "INBOX",
+                1,
+                b"From: a@example.com\r\n\r\nx\r\n",
+                now - 31 * 86_400,
+            )
+            .unwrap();
+        let (open, _wires) = view(&fx, View::Trash);
+        open.with(|live| live.app.apply(crate::state::UiAction::PurgeTrash));
+        assert!(!old.exists());
+        open.with(|live| {
+            let error = live.app.error.clone().unwrap();
+            assert!(error.starts_with("could not purge: broken: "), "{error}");
+            assert!(!error.contains("work"), "{error}");
+            let notice = live.app.notice.clone().unwrap();
+            assert_eq!(
+                notice,
+                "removed 1 backup older than the retention period; 1 account failed"
+            );
+        });
     }
 
     #[test]

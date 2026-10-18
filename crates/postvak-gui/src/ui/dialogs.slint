@@ -2,6 +2,7 @@
 import { LineEdit, ListView, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Heading, HoverFill, IconButton, TextButton } from "common.slint";
+import { AccountFields, AccountForm } from "account.slint";
 
 export struct KeyHelp {
     keys: string,
@@ -202,6 +203,26 @@ export component SourceDialog {
                 color: Theme.pane.text;
                 vertical-alignment: center;
             }
+        }
+    }
+}
+
+// The add-account form over the panes. Esc or the X closes it; the app keeps it open while a save runs.
+export component AccountDialog {
+    in property <string> error;
+    in property <bool> saving;
+    in property <string> close-icon;
+    callback save(AccountFields);
+    callback close();
+    width: 480px;
+    Dialog {
+        title: "Add account";
+        close-icon: root.close-icon;
+        close => { root.close(); }
+        AccountForm {
+            error: root.error;
+            saving: root.saving;
+            save(fields) => { root.save(fields); }
         }
     }
 }

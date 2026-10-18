@@ -47,13 +47,16 @@ export component RulesPane inherits Rectangle {
     in property <[TableColumn]> columns;
     in property <[[StandardListViewItem]]> cells;
     in property <string> empty;
+    in property <string> purge-hint;
     // The chosen row of Backups, or -1.
     in-out property <int> current-row: -1;
     callback open-rules-file();
     callback approve(int);
     callback reject(int);
     callback set-enabled(int, bool);
+    callback apply-rule(int);
     callback restore(int);
+    callback purge();
     callback sort(int, bool);
 
     // The title row starts where the list's and the reader's do.
@@ -70,6 +73,7 @@ export component RulesPane inherits Rectangle {
         // The sheet's title, with its action at the end.
         HorizontalLayout {
             height: Theme.control;
+            spacing: Theme.pad;
             Heading {
                 text: root.sheet == Sheet.rules ? "Rules" : root.sheet == Sheet.activity ? "Activity" : "Backups";
                 vertical-alignment: center;
@@ -82,6 +86,16 @@ export component RulesPane inherits Rectangle {
                     framed: true;
                     palette: Theme.pane;
                     clicked => { root.open-rules-file(); }
+                }
+            }
+            if root.sheet == Sheet.backups && root.cells.length > 0: VerticalLayout {
+                alignment: center;
+                TextButton {
+                    text: "Purge";
+                    framed: true;
+                    palette: Theme.pane;
+                    hint: root.purge-hint;
+                    clicked => { root.purge(); }
                 }
             }
             if root.sheet == Sheet.backups && root.cells.length > 0: VerticalLayout {
@@ -200,6 +214,18 @@ export component RulesPane inherits Rectangle {
                                     text: rule.by;
                                     color: Theme.pane.muted;
                                     vertical-alignment: center;
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    TextButton {
+                                        text: "Apply to existing mail";
+                                        framed: true;
+                                        palette: Theme.pane;
+                                        enabled: rule.enabled;
+                                        hint: "Runs this rule's actions, which may delete mail, on the mail its accounts already hold, now";
+                                        disabled-hint: "Turn the rule on first";
+                                        clicked => { root.apply-rule(i); }
+                                    }
                                 }
                             }
                         }

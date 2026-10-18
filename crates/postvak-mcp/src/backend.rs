@@ -293,7 +293,7 @@ impl Backend {
         let mut rows = Vec::new();
         for acc in self.select(account)? {
             let removed = Trash::new(self.paths.trash_dir(&acc.name))
-                .purge(acc.trash_retention_days as i64 * 86_400, time::now())?;
+                .purge(acc.trash_retention_days, time::now())?;
             rows.push(json!({ "account": acc.name, "removed": removed }));
         }
         Ok(rows)
@@ -507,17 +507,7 @@ impl Backend {
         dry_run: bool,
     ) -> Result<Vec<Value>> {
         self.ensure_rule_visible(name, false)?;
-        let file = rules::load(&self.paths.rules_file())?;
-        let compiled: Vec<_> = rules::compile(&file)?
-            .into_iter()
-            .filter(|r| r.rule.name == name)
-            .collect();
-        if compiled.is_empty() {
-            bail!("no rule named '{name}'");
-        }
-        if compiled.iter().any(|r| !r.rule.enabled) {
-            bail!("rule '{name}' is disabled; approve or enable it first");
-        }
+        let compiled = vec![rules::enabled_rule(&self.paths.rules_file(), name)?];
         let mut rows = Vec::new();
         for acc in self.select(account)? {
             if !compiled.iter().any(|r| r.applies_to_account(&acc.name)) {

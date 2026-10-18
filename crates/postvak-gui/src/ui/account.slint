@@ -1,0 +1,128 @@
+// The add-account form: on the first-run window and in the mail window's dialog. `account.rs` checks and saves what
+// `save` sends.
+import { LineEdit } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { TextButton } from "common.slint";
+
+export struct AccountFields {
+    name: string,
+    host: string,
+    port: string,
+    username: string,
+    password: string,
+    address: string,
+}
+
+// A label and its field on one row; the label names the field for screen readers and tests.
+component Field inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> hint;
+    in property <InputType> input-type: InputType.text;
+    // Takes the keyboard as the form appears.
+    in property <bool> first;
+    in property <bool> enabled: true;
+    out property <string> text: edit.text;
+    callback accepted();
+
+    spacing: Theme.pad;
+    Text {
+        accessible-role: none;
+        width: 15 * Theme.pad;
+        text: root.label;
+        color: Theme.pane.text;
+        vertical-alignment: center;
+    }
+    edit := LineEdit {
+        height: Theme.control;
+        horizontal-stretch: 1;
+        enabled: root.enabled;
+        input-type: root.input-type;
+        placeholder-text: root.hint;
+        accessible-label: root.label;
+        init => {
+            if (root.first) {
+                self.focus();
+            }
+        }
+        accepted => { root.accepted(); }
+    }
+}
+
+export component AccountForm inherits VerticalLayout {
+    in property <string> error;
+    in property <bool> saving;
+    callback save(AccountFields);
+
+    // Enter in any field saves, as the button does.
+    function submit() {
+        root.save({
+            name: name-field.text,
+            host: host-field.text,
+            port: port-field.text,
+            username: username-field.text,
+            password: password-field.text,
+            address: address-field.text
+        });
+    }
+
+    spacing: Theme.pad;
+    name-field := Field {
+        label: "Account name";
+        hint: "letters, digits, - and _";
+        first: true;
+        enabled: !root.saving;
+        accepted => { root.submit(); }
+    }
+    host-field := Field {
+        label: "IMAP host";
+        hint: "imap.example.com";
+        enabled: !root.saving;
+        accepted => { root.submit(); }
+    }
+    port-field := Field {
+        label: "Port";
+        hint: "993";
+        enabled: !root.saving;
+        accepted => { root.submit(); }
+    }
+    username-field := Field {
+        label: "Username";
+        hint: "the IMAP login";
+        enabled: !root.saving;
+        accepted => { root.submit(); }
+    }
+    password-field := Field {
+        label: "Password";
+        hint: "kept in the OS keyring";
+        input-type: InputType.password;
+        enabled: !root.saving;
+        accepted => { root.submit(); }
+    }
+    address-field := Field {
+        label: "Email address";
+        hint: "only when the username is not one";
+        enabled: !root.saving;
+        accepted => { root.submit(); }
+    }
+    if root.error != "": Text {
+        text: root.error;
+        color: Theme.pane.error;
+        wrap: word-wrap;
+    }
+    HorizontalLayout {
+        spacing: Theme.pad;
+        TextButton {
+            text: "Save account";
+            framed: true;
+            palette: Theme.pane;
+            enabled: !root.saving;
+            clicked => { root.submit(); }
+        }
+        if root.saving: Text {
+            text: "Saving…";
+            color: Theme.pane.muted;
+            vertical-alignment: center;
+        }
+        Rectangle { horizontal-stretch: 1; }
+    }
+}
