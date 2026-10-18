@@ -32,6 +32,7 @@ Many AI mail clients hand every message to a model and let it decide what happen
 ## Why not server-side filters?
 
 - Works with any IMAP server, without Sieve or a webmail settings page.
+- Rules go further than most filters: regex on any header or the body, age, size, read and flagged state, aliases and tags, combined with `any` and `none`; actions move, archive, tag, flag, mark read, delete or silence notifications. See [Rules](https://postvak.pataar.nl/rules.html).
 - Rules run on every sync, not once on delivery, so they can act later: an hour after you read a sign-in code, or once a newsletter is a week old.
 - `rules test` shows what every rule would do before it does it, and deleted mail can be restored.
 - Passwords stay in the macOS Keychain or the Secret Service, or come from a command such as `pass`.
