@@ -14,12 +14,6 @@ use super::html::{self, Wake};
 /// Each DNS query gives up after this.
 const DNS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-enum Logo {
-    Pending,
-    Ready(Arc<str>),
-    None,
-}
-
 /// What the worker sends back: the brand and its SVG, if it has one.
 type Found = (Brand, Option<String>);
 
@@ -28,7 +22,8 @@ pub(crate) struct Logos {
     cache_dir: PathBuf,
     /// Swapped by tests before the first lookup starts the worker.
     pub(crate) net: Arc<dyn Net + Send + Sync>,
-    known: HashMap<Brand, Logo>,
+    /// `None` while a lookup is pending, and for a brand without a logo.
+    known: HashMap<Brand, Option<Arc<str>>>,
     worker: Option<(Sender<Brand>, Receiver<Found>)>,
 }
 
@@ -56,12 +51,8 @@ impl Logos {
         let (requests, _) = self
             .worker
             .get_or_insert_with(|| spawn(self.cache_dir.clone(), self.net.clone(), wake.clone()));
-        let logo = if requests.send(brand.clone()).is_ok() {
-            Logo::Pending
-        } else {
-            Logo::None
-        };
-        self.known.insert(brand.clone(), logo);
+        let _ = requests.send(brand.clone());
+        self.known.insert(brand.clone(), None);
     }
 
     /// Takes the worker's answers.
@@ -71,17 +62,13 @@ impl Logos {
         };
         let found: Vec<Found> = found.try_iter().collect();
         for (brand, svg) in found {
-            let logo = svg.map_or(Logo::None, |svg| Logo::Ready(svg.into()));
-            self.known.insert(brand, logo);
+            self.known.insert(brand, svg.map(Arc::from));
         }
     }
 
     /// The SVG `brand` shows, once it is in.
     pub fn svg(&self, brand: &Brand) -> Option<&Arc<str>> {
-        match self.known.get(brand)? {
-            Logo::Ready(svg) => Some(svg),
-            Logo::Pending | Logo::None => None,
-        }
+        self.known.get(brand)?.as_ref()
     }
 
     #[cfg(test)]
@@ -216,12 +203,14 @@ mod tests {
         let brand = logos.brand(&branded("INBOX", 1, "Hi").headers).unwrap();
         let wake: Wake = Arc::new(|| {});
         logos.want(&brand, &wake);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while matches!(logos.known.get(&brand), Some(Logo::Pending)) && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-            logos.receive();
-        }
-        assert!(matches!(logos.known.get(&brand), Some(Logo::None)));
+        let Some((_, found)) = &logos.worker else {
+            panic!("want starts the worker");
+        };
+        assert_eq!(
+            found.recv_timeout(Duration::from_secs(5)).unwrap(),
+            (brand.clone(), None)
+        );
+        assert_eq!(logos.svg(&brand), None);
         assert!(!fx.paths.cache_dir.join("bimi").exists());
     }
 }

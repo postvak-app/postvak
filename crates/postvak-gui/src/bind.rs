@@ -102,14 +102,14 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
     present_body(app, window);
     present_sheet(app, window);
 
-    let enabled = |item: menu::Item| item.action(app).is_some();
+    let enabled = |item: MenuAction| menu::action(item, app).is_some();
     window.set_menu(MenuState {
-        save_eml: enabled(menu::Item::SaveEml),
-        view_source: enabled(menu::Item::ViewSource),
-        search: enabled(menu::Item::Search),
+        save_eml: enabled(MenuAction::SaveEml),
+        view_source: enabled(MenuAction::ViewSource),
+        search: enabled(MenuAction::Search),
         message: toolbar::enabled(app),
-        text_or_html: enabled(menu::Item::TextOrHtml),
-        mark_folder_read: enabled(menu::Item::MarkFolderRead),
+        text_or_html: enabled(MenuAction::TextOrHtml),
+        mark_folder_read: enabled(MenuAction::MarkFolderRead),
     });
     window.set_about_open(app.about_open);
     let apply_confirm = app.apply_confirm.as_ref().map(|c| c.warning.as_str());
@@ -632,7 +632,7 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
         act(UiAction::SaveAccount(account_fields(fields)));
     });
     window.on_menu_item(move |action| {
-        on(one(move |app| menu_item(action).action(app)));
+        on(one(move |app| menu::action(action, app)));
     });
     window.on_open_rules_file(move || {
         act(UiAction::OpenRulesFile);
@@ -693,34 +693,6 @@ fn nth<T>(items: impl IntoIterator<Item = T>, index: i32) -> Option<T> {
 /// The name of the proposal the Rules view shows at `index`.
 fn proposal(app: &App, index: i32) -> Option<String> {
     Some(nth(rules::proposals(&app.rules), index)?.name)
-}
-
-fn menu_item(action: MenuAction) -> menu::Item {
-    use menu::Item;
-    match action {
-        MenuAction::About => Item::About,
-        MenuAction::AddAccount => Item::AddAccount,
-        MenuAction::AddToSelection => Item::AddToSelection,
-        MenuAction::Archive => Item::Archive,
-        MenuAction::Delete => Item::Delete,
-        MenuAction::Documentation => Item::Documentation,
-        MenuAction::Flag => Item::Flag,
-        MenuAction::History => Item::History,
-        MenuAction::Junk => Item::Junk,
-        MenuAction::Keys => Item::Keys,
-        MenuAction::MarkFolderRead => Item::MarkFolderRead,
-        MenuAction::Move => Item::Move,
-        MenuAction::ReadOrUnread => Item::ReadOrUnread,
-        MenuAction::SaveEml => Item::SaveEml,
-        MenuAction::Search => Item::Search,
-        MenuAction::SelectAll => Item::SelectAll,
-        MenuAction::SyncNow => Item::SyncNow,
-        MenuAction::TextOrHtml => Item::TextOrHtml,
-        MenuAction::ThemeDark => Item::Theme(config::Theme::Dark),
-        MenuAction::ThemeLight => Item::Theme(config::Theme::Light),
-        MenuAction::ThemeSystem => Item::Theme(config::Theme::System),
-        MenuAction::ViewSource => Item::ViewSource,
-    }
 }
 
 /// A pill with `label`, drawn from SVG with the window's own fonts.

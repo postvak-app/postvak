@@ -240,6 +240,25 @@ impl LazyClient {
         })
     }
 
+    /// Runs rule `name` over the account's existing mail through the daemon: messages evaluated, actions taken, and
+    /// the errors that did not stop the run.
+    pub fn apply_rule(
+        &self,
+        account: &str,
+        name: &str,
+    ) -> anyhow::Result<(usize, usize, Vec<String>)> {
+        let command = Command::ApplyRule { name: name.into() };
+        self.request(account, command, |reply| match reply {
+            Event::RuleApplied {
+                evaluated,
+                actions,
+                errors,
+                ..
+            } => Ok((evaluated, actions, errors)),
+            other => Err(other),
+        })
+    }
+
     /// Searches the account's server for every word of `query`, in `folder` or every folder; the stored hits.
     pub fn search_server(
         &self,

@@ -344,10 +344,9 @@ pub(crate) enum Focus {
     List,
 }
 
-/// The release check: off in config, waiting for the first frame, running on its thread, or done with the version to
-/// announce.
+/// The release check: waiting for the first frame, running on its thread, or done with the version to announce; a
+/// check that config turns off starts done.
 pub(crate) enum UpdateCheck {
-    Off,
     Waiting,
     Running(Receiver<Option<String>>),
     Done(Option<String>),
@@ -537,7 +536,7 @@ impl App {
             update: if config.ui.check_updates {
                 UpdateCheck::Waiting
             } else {
-                UpdateCheck::Off
+                UpdateCheck::Done(None)
             },
             view: View::Folder {
                 account: 0,
@@ -585,11 +584,6 @@ impl App {
     /// Asks for `tick` at `at` (seconds on the window's clock) at the latest.
     pub(crate) fn request_tick(&mut self, at: f64) {
         self.next_tick = Some(self.next_tick.map_or(at, |next| next.min(at)));
-    }
-
-    /// When the window should call `tick` next; it takes the time and the request starts over.
-    pub fn take_next_tick(&mut self) -> Option<f64> {
-        self.next_tick.take()
     }
 
     fn receive(&mut self, now: f64) {
@@ -678,7 +672,7 @@ impl App {
                 Err(TryRecvError::Disconnected) => Some(UpdateCheck::Done(None)),
                 Err(TryRecvError::Empty) => None,
             },
-            UpdateCheck::Off | UpdateCheck::Done(_) => None,
+            UpdateCheck::Done(_) => None,
         };
         if let Some(next) = next {
             self.update = next;
@@ -3337,7 +3331,7 @@ mod tests {
         let fx = Fixture::new(&["work"]);
         let (mut driver, _wires) = fx.driver();
         driver.tick();
-        assert!(matches!(driver.app.update, UpdateCheck::Off));
+        assert!(matches!(driver.app.update, UpdateCheck::Done(None)));
         assert!(!fx.paths.update_check().exists());
     }
 

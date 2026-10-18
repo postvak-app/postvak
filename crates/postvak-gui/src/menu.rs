@@ -1,74 +1,50 @@
-//! The menu bar without a toolkit: what each item does and when it is enabled, as the toolbar's buttons are. The
+//! The menu bar: what each of the window's menu items does and when it is enabled, as the toolbar's buttons are. The
 //! window lays the menus out; Quit and Close window are the window's own.
 use postvak_core::config::Theme;
 use postvak_core::rules::Action;
 
 use super::state::{App, UiAction, View};
 use super::toolbar;
+use super::ui::MenuAction;
 
 /// Where Help ▸ Postvak documentation goes.
 pub(crate) const DOCS: &str = env!("CARGO_PKG_HOMEPAGE");
 
-/// The menu bar's items that act on the app.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Item {
-    About,
-    AddAccount,
-    AddToSelection,
-    Archive,
-    Delete,
-    Documentation,
-    Flag,
-    History,
-    Junk,
-    Keys,
-    MarkFolderRead,
-    Move,
-    ReadOrUnread,
-    SaveEml,
-    Search,
-    SelectAll,
-    SyncNow,
-    TextOrHtml,
-    Theme(Theme),
-    ViewSource,
-}
-
-impl Item {
-    /// What the item does now; None while it would do nothing, which disables it.
-    pub(crate) fn action(self, app: &App) -> Option<UiAction> {
-        let message = toolbar::enabled(app);
-        let downloaded = app
-            .body
-            .as_ref()
-            .and_then(|b| b.message.as_ref())
-            .is_some_and(|m| m.body_text.is_some());
-        let act = |on: bool, action: UiAction| on.then_some(action);
-        match self {
-            Item::About => Some(UiAction::About),
-            Item::AddAccount => Some(UiAction::OpenAccountForm),
-            Item::AddToSelection => act(message, UiAction::ToggleMark),
-            Item::Archive => act(message, UiAction::Act(Action::Archive)),
-            Item::Delete => act(message, UiAction::Act(Action::Trash)),
-            Item::Documentation => Some(UiAction::OpenUrl(DOCS.into())),
-            Item::Flag => act(message, UiAction::ToggleFlag),
-            Item::History => Some(UiAction::ToggleHistory),
-            Item::Junk => act(message, UiAction::Act(Action::Junk)),
-            Item::Keys => Some(UiAction::ToggleHelp),
-            Item::MarkFolderRead => mark_folder_read(app),
-            Item::Move => act(message, UiAction::OpenMovePicker),
-            Item::ReadOrUnread => act(message, UiAction::ToggleRead),
-            Item::SaveEml => act(downloaded, UiAction::SaveEml),
-            Item::Search => act(app.view.lists_mail(), UiAction::StartSearch),
-            Item::SelectAll => act(message, UiAction::SelectAll),
-            Item::SyncNow => Some(UiAction::SyncNow),
-            Item::TextOrHtml => act(
-                app.body.as_ref().is_some_and(|b| b.html.is_some()),
-                UiAction::ToggleHtml,
-            ),
-            Item::Theme(theme) => Some(UiAction::SetTheme(theme)),
-            Item::ViewSource => act(downloaded, UiAction::OpenSource),
-        }
+/// What `item` does now; None while it would do nothing, which disables it.
+pub(crate) fn action(item: MenuAction, app: &App) -> Option<UiAction> {
+    let message = toolbar::enabled(app);
+    let downloaded = app
+        .body
+        .as_ref()
+        .and_then(|b| b.message.as_ref())
+        .is_some_and(|m| m.body_text.is_some());
+    let act = |on: bool, action: UiAction| on.then_some(action);
+    match item {
+        MenuAction::About => Some(UiAction::About),
+        MenuAction::AddAccount => Some(UiAction::OpenAccountForm),
+        MenuAction::AddToSelection => act(message, UiAction::ToggleMark),
+        MenuAction::Archive => act(message, UiAction::Act(Action::Archive)),
+        MenuAction::Delete => act(message, UiAction::Act(Action::Trash)),
+        MenuAction::Documentation => Some(UiAction::OpenUrl(DOCS.into())),
+        MenuAction::Flag => act(message, UiAction::ToggleFlag),
+        MenuAction::History => Some(UiAction::ToggleHistory),
+        MenuAction::Junk => act(message, UiAction::Act(Action::Junk)),
+        MenuAction::Keys => Some(UiAction::ToggleHelp),
+        MenuAction::MarkFolderRead => mark_folder_read(app),
+        MenuAction::Move => act(message, UiAction::OpenMovePicker),
+        MenuAction::ReadOrUnread => act(message, UiAction::ToggleRead),
+        MenuAction::SaveEml => act(downloaded, UiAction::SaveEml),
+        MenuAction::Search => act(app.view.lists_mail(), UiAction::StartSearch),
+        MenuAction::SelectAll => act(message, UiAction::SelectAll),
+        MenuAction::SyncNow => Some(UiAction::SyncNow),
+        MenuAction::TextOrHtml => act(
+            app.body.as_ref().is_some_and(|b| b.html.is_some()),
+            UiAction::ToggleHtml,
+        ),
+        MenuAction::ThemeDark => Some(UiAction::SetTheme(Theme::Dark)),
+        MenuAction::ThemeLight => Some(UiAction::SetTheme(Theme::Light)),
+        MenuAction::ThemeSystem => Some(UiAction::SetTheme(Theme::System)),
+        MenuAction::ViewSource => act(downloaded, UiAction::OpenSource),
     }
 }
 
@@ -89,7 +65,6 @@ fn mark_folder_read(app: &App) -> Option<UiAction> {
 mod tests {
     use super::*;
     use crate::test_support::{Fixture, launched, message, unread};
-    use crate::ui::MenuAction;
     use postvak_core::sync::Command;
 
     #[test]
@@ -126,34 +101,34 @@ mod tests {
             Some(UiAction::OpenSource),
         ];
         let items = [
-            Item::About,
-            Item::AddAccount,
-            Item::AddToSelection,
-            Item::Archive,
-            Item::Delete,
-            Item::Documentation,
-            Item::Flag,
-            Item::History,
-            Item::Junk,
-            Item::Keys,
-            Item::MarkFolderRead,
-            Item::Move,
-            Item::ReadOrUnread,
-            Item::SaveEml,
-            Item::Search,
-            Item::SelectAll,
-            Item::SyncNow,
-            Item::TextOrHtml,
-            Item::Theme(Theme::Dark),
-            Item::Theme(Theme::Light),
-            Item::Theme(Theme::System),
-            Item::ViewSource,
+            MenuAction::About,
+            MenuAction::AddAccount,
+            MenuAction::AddToSelection,
+            MenuAction::Archive,
+            MenuAction::Delete,
+            MenuAction::Documentation,
+            MenuAction::Flag,
+            MenuAction::History,
+            MenuAction::Junk,
+            MenuAction::Keys,
+            MenuAction::MarkFolderRead,
+            MenuAction::Move,
+            MenuAction::ReadOrUnread,
+            MenuAction::SaveEml,
+            MenuAction::Search,
+            MenuAction::SelectAll,
+            MenuAction::SyncNow,
+            MenuAction::TextOrHtml,
+            MenuAction::ThemeDark,
+            MenuAction::ThemeLight,
+            MenuAction::ThemeSystem,
+            MenuAction::ViewSource,
         ];
         for (item, expected) in items.into_iter().zip(expected) {
-            assert_eq!(item.action(&driver.app), expected, "{item:?}");
+            assert_eq!(action(item, &driver.app), expected, "{item:?}");
         }
         driver.press("k");
-        let html = Item::TextOrHtml.action(&driver.app);
+        let html = action(MenuAction::TextOrHtml, &driver.app);
         assert_eq!(
             html,
             Some(UiAction::ToggleHtml),
@@ -168,20 +143,23 @@ mod tests {
         let (mut driver, _wires) = fx.driver();
         driver.apply(UiAction::SelectView(View::Rules));
         for item in [
-            Item::Archive,
-            Item::Delete,
-            Item::Flag,
-            Item::Junk,
-            Item::Move,
-            Item::ReadOrUnread,
-            Item::AddToSelection,
-            Item::SelectAll,
-            Item::Search,
-            Item::MarkFolderRead,
+            MenuAction::Archive,
+            MenuAction::Delete,
+            MenuAction::Flag,
+            MenuAction::Junk,
+            MenuAction::Move,
+            MenuAction::ReadOrUnread,
+            MenuAction::AddToSelection,
+            MenuAction::SelectAll,
+            MenuAction::Search,
+            MenuAction::MarkFolderRead,
         ] {
-            assert_eq!(item.action(&driver.app), None, "{item:?}");
+            assert_eq!(action(item, &driver.app), None, "{item:?}");
         }
-        assert_eq!(Item::SyncNow.action(&driver.app), Some(UiAction::SyncNow));
+        assert_eq!(
+            action(MenuAction::SyncNow, &driver.app),
+            Some(UiAction::SyncNow)
+        );
     }
 
     #[test]

@@ -20,9 +20,6 @@ use postvak_core::sync::{self, Event};
 use postvak_core::time;
 use postvak_core::trash::Trash;
 
-/// How long `account add` waits for the daemon to run the new account; a restart waits for the old thread to end.
-const ACCOUNT_START: Duration = Duration::from_secs(10);
-
 #[derive(Parser)]
 #[command(
     name = "postvak",
@@ -1107,17 +1104,7 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             let mut failed = false;
             let daemon = LazyClient::new(paths);
             for acc in accounts {
-                let command = sync::Command::ApplyRule { name: name.clone() };
-                let (evaluated, actions, errors) =
-                    daemon.request(&acc.name, command, |reply| match reply {
-                        Event::RuleApplied {
-                            evaluated,
-                            actions,
-                            errors,
-                            ..
-                        } => Ok((evaluated, actions, errors)),
-                        other => Err(other),
-                    })?;
+                let (evaluated, actions, errors) = daemon.apply_rule(&acc.name, &name)?;
                 failed |= !errors.is_empty();
                 for message in &errors {
                     postvak_core::daemon::report_error(&acc.name, message);
@@ -1339,7 +1326,7 @@ fn cmd_account_add(mut config: Config, paths: &Paths) -> Result<()> {
     account::add(&mut config, paths, account, secret)?;
     println!("saved to {}", paths.config_file().display());
     let client = Client::connect_or_start(paths)?;
-    account::await_started(&client, &name, ACCOUNT_START)?;
+    account::await_started(&client, &name, account::START_TIMEOUT)?;
     if !sync_account(&client, &name) {
         bail!(
             "the first sync of '{name}' failed; check the login and run `postvak account add` again"

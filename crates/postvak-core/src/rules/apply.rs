@@ -87,7 +87,7 @@ pub fn apply(
         .find(|planned| matches!(planned.action, Action::Delete | Action::Trash))
     {
         let trash_folder = match planned.action {
-            Action::Trash => trash_destination(store, msg)?,
+            Action::Trash => move_target(store, &msg.folder, &Action::Trash)?,
             _ => None,
         };
         match trash_folder {
@@ -274,12 +274,6 @@ fn archive_folder(store: &Store) -> Result<String, ApplyError> {
 
 fn junk_folder(store: &Store) -> Result<String, ApplyError> {
     special_folder(store, "Junk")?.ok_or(ApplyError::NoJunkFolder)
-}
-
-/// Where a user delete goes: `Some` is the Trash folder to move to; `None` means expunge with an .eml backup, because
-/// there is no Trash folder or the message already sits in it.
-pub fn trash_destination(store: &Store, msg: &Message) -> Result<Option<String>, StoreError> {
-    Ok(special_folder(store, "Trash")?.filter(|folder| *folder != msg.folder))
 }
 
 /// The new uid is not known, so the local row goes and the next sync of the target folder adds it.

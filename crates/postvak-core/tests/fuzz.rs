@@ -26,8 +26,8 @@ use postvak_core::daemon::wire::{
     self, AccountStatus, ClientMessage, DaemonMessage, Outcome, Payload, Status,
 };
 use postvak_core::message::{
-    attachments, bare_addresses, body_text, clean, clean_for_agent, header_value, html_body,
-    parse_headers, save_attachment, thread_id,
+    attachments, attachments_and_html, bare_addresses, body_text, clean, clean_for_agent,
+    header_value, parse_headers, save_attachment, thread_id,
 };
 use postvak_core::rules::{self, Action, HeaderMatch, Match, OneOrMany, Rule, RuleFile, TextMatch};
 use postvak_core::sync::{Activity, Command, Event};
@@ -439,7 +439,7 @@ fn exercise_message_inner(raw: &[u8], folder: &str, uid: u32) {
     let _ = clean_for_agent(&body, true);
     let _ = bare_addresses(&String::from_utf8_lossy(raw));
     let _ = attachments(raw);
-    let _ = html_body(raw);
+    let _ = attachments_and_html(raw);
 }
 
 fn exercise_save(raw: &[u8]) {
