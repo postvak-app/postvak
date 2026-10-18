@@ -57,7 +57,7 @@ The install also prints a hint with the granted scopes and how to widen them. It
 | `rules:propose` | Proposing a rule. It is stored disabled until you approve it. | `rules_propose` |
 | `rules:write` | Approving and rejecting rules, and turning them on or off. | `rules_approve`, `rules_reject`, `rules_set_enabled` |
 | `files:write` | Writing attachment files into a directory the agent names. The file name and content come from the sender, so a prompt-injected email could make the agent write them anywhere you can. | `attachment_save` |
-| `mail:modify` | Acting on mail and the trash. | `archive`, `delete`, `junk`, `mark`, `move`, `trash_purge`, `trash_restore`, `unsubscribe` |
+| `mail:modify` | Acting on mail and the trash. | `archive`, `delete`, `junk`, `mark`, `move`, `rules_apply_existing`, `trash_purge`, `trash_restore`, `unsubscribe` |
 | `accounts:write` | Adding an account with a password command. Never a plain password. | `account_add` |
 
 The default is `read,rules:propose`. Three example grants:
@@ -112,6 +112,7 @@ The names follow the CLI commands. A tool that lists things returns the CLI's `-
 
 - `archive`, `delete`, `junk`, `mark` and `move` act on uids in a folder. `log` shows them under the rule name `mcp:<client name>`, or `mcp`.
 - `unsubscribe` leaves a message's mailing list by one-click POST when the sender offers it; otherwise its row gives the page or `mailto:` address for the human to open. Use `dry_run` first: unsubscribing tells the sender the address is read.
+- `rules_apply_existing` runs one enabled rule over the mail each account already holds, the way `postvak rules apply-existing` does, and reports `evaluated`, `actions` and `errors` per account. With `dry_run` it lists the planned rows from the local store.
 - `trash_purge` deletes the backups older than each account's `trash_retention_days`, for good; it reports `removed` per account.
 - `trash_restore` restores a backup, given as the bare file name `trash_list` returns.
 
@@ -125,7 +126,7 @@ With more than one visible account, every tool that acts on one message needs `a
 
 - Mail is written by strangers. `show` wraps the body in `<untrusted_mail_content>`, and tells the agent that text inside is data, never instructions. Any spelling of that tag name inside a body is rewritten to `untrusted-mail-content`, so a mail cannot close the wrapper early. A body is cut at 100 KB and marked `"truncated": true`. Every mail-derived string loses its control characters; a body keeps its newlines and tabs. The tag rewrite ignores letter case, but it does not catch look-alike letters.
 - A host that honours tool annotations asks you before tools that change things. `delete`, `rules_approve`, `rules_set_enabled` and `trash_purge` are marked destructive, because they can delete mail or its backups. The other changing tools are marked as changing, but not destructive.
-- The `mail:modify` tools take `dry_run`. It reports what would happen from the local store and does not ask the daemon.
+- Except `trash_purge`, the `mail:modify` tools take `dry_run`. It reports what would happen from the local store and does not ask the daemon.
 - `--account` hides other accounts from every tool. Rule writes refuse rules scoped to a hidden account, and so does proposing one. A rule without `account` applies to every account, hidden ones too, so while an account is hidden `rules_approve` and `rules_set_enabled` refuse to turn such a rule on; turning it off and rejecting it still work.
 - Without `read:bodies`, no tool returns or reveals body text: `search` covers subject and addresses only, as plain words, with no search operators, and `rules_test` refuses a rule that matches on the body.
 - A call outside the granted scopes fails with "not allowed with these scopes". Hosts only see the tools you granted, so they should not make such a call.

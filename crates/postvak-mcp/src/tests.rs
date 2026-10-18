@@ -759,6 +759,7 @@ async fn tools_list_per_scope_set_is_exact_and_alphabetical() {
                 "junk",
                 "mark",
                 "move",
+                "rules_apply_existing",
                 "trash_purge",
                 "trash_restore",
                 "unsubscribe",
@@ -805,6 +806,7 @@ async fn annotations_mark_reads_and_destructive_tools() {
             "junk",
             "mark",
             "move",
+            "rules_apply_existing",
             "rules_propose",
             "rules_reject",
             "sync",
@@ -1080,6 +1082,71 @@ async fn trash_purge_removes_only_backups_past_the_retention() {
     assert_eq!(report, vec![json!({ "account": "work", "removed": 1 })]);
     assert!(!old.exists());
     assert!(fresh.exists());
+}
+
+#[tokio::test]
+async fn rules_apply_existing_dry_run_lists_planned_rows() {
+    let fx = fixture(&["work"]);
+    fx.add("work", fixture_message("INBOX", 1, "Your code", ""));
+    std::fs::write(
+        fx.paths.rules_file(),
+        "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = [\"flag\"]\n",
+    )
+    .unwrap();
+    let client = connect(&fx, "mail:modify", &[]).await;
+    let args = json!({ "name": "codes", "dry_run": true });
+    let report = rows(&call(&client, "rules_apply_existing", args).await);
+    assert_eq!(report.len(), 1, "{report:?}");
+    assert_eq!(report[0]["rule"], "codes");
+    assert_eq!(report[0]["uid"], 1);
+    assert_eq!(report[0]["action"], "flag");
+}
+
+#[tokio::test]
+async fn rules_apply_existing_goes_through_the_daemon() {
+    let fx = fixture_with_daemon(&["work"], connector_with_mail());
+    std::fs::write(
+        fx.paths.rules_file(),
+        "[[rules]]\nname = \"greet\"\nmatch.subject = { contains = \"Hi\" }\nactions = [\"flag\"]\n",
+    )
+    .unwrap();
+    let client = connect(&fx, "mail:modify", &[]).await;
+    call(&client, "sync", json!({})).await;
+    let report = rows(&call(&client, "rules_apply_existing", json!({ "name": "greet" })).await);
+    assert_eq!(report.len(), 1, "{report:?}");
+    assert_eq!(report[0]["account"], "work");
+    assert_eq!(report[0]["evaluated"], 1);
+    assert_eq!(report[0]["actions"], 1);
+    assert_eq!(report[0]["errors"], json!([]));
+}
+
+#[tokio::test]
+async fn rules_apply_existing_refuses_disabled_and_hidden_rules() {
+    let fx = fixture(&["home", "work"]);
+    std::fs::write(
+        fx.paths.rules_file(),
+        format!(
+            "[[rules]]\nname = \"off\"\nenabled = false\nmatch.subject = {{ contains = \"x\" }}\nactions = [\"flag\"]\n\n{}",
+            scoped_rule("hidden", "home")
+        ),
+    )
+    .unwrap();
+    let client = connect(&fx, "mail:modify", &["work"]).await;
+    let off = call(&client, "rules_apply_existing", json!({ "name": "off" })).await;
+    assert!(
+        error_text(&off).contains("rule 'off' is disabled"),
+        "{off:?}"
+    );
+    let hidden = call(&client, "rules_apply_existing", json!({ "name": "hidden" })).await;
+    assert!(
+        error_text(&hidden).contains("no rule named 'hidden'"),
+        "{hidden:?}"
+    );
+    let unknown = call(&client, "rules_apply_existing", json!({ "name": "nope" })).await;
+    assert!(
+        error_text(&unknown).contains("no rule named 'nope'"),
+        "{unknown:?}"
+    );
 }
 
 #[tokio::test]

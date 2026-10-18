@@ -117,6 +117,18 @@ struct RulesTestArgs {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct ApplyExistingArgs {
+    /// The rule's name in rules_list; it must be enabled
+    name: String,
+    /// Only this account; default every visible account the rule applies to
+    account: Option<String>,
+    /// List what the rule would do from the local store, without touching the server
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct AccountArgs {
     /// Only this account; default every visible account
     account: Option<String>,
@@ -374,6 +386,12 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
         ToolDef::new::<LogArgs>("log", Scope::Read, Effect::ReadOnly, help::LOG),
         ToolDef::new::<MarkArgs>("mark", Scope::MailModify, Effect::Changes, help::MARK),
         ToolDef::new::<MoveArgs>("move", Scope::MailModify, Effect::Changes, help::MOVE),
+        ToolDef::new::<ApplyExistingArgs>(
+            "rules_apply_existing",
+            Scope::MailModify,
+            Effect::Changes,
+            help::RULES_APPLY_EXISTING,
+        ),
         ToolDef::new::<NameArgs>(
             "rules_approve",
             Scope::RulesWrite,
@@ -577,6 +595,10 @@ fn dispatch(
                 a.dry_run,
                 &by,
             )
+        }
+        "rules_apply_existing" => {
+            let a: ApplyExistingArgs = args(arguments)?;
+            rows(backend.rules_apply_existing(&a.name, a.account.as_deref(), a.dry_run)?)
         }
         "rules_approve" => {
             let a: NameArgs = args(arguments)?;

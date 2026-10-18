@@ -495,6 +495,57 @@ impl Backend {
         Ok(rows)
     }
 
+    /// Runs one enabled rule over the existing mail of the visible accounts it applies to, through the daemon; a dry
+    /// run plans from the local store instead. A rule of a hidden account reads as absent.
+    pub fn rules_apply_existing(
+        &self,
+        name: &str,
+        account: Option<&str>,
+        dry_run: bool,
+    ) -> Result<Vec<Value>> {
+        self.ensure_rule_visible(name, false)?;
+        let file = rules::load(&self.paths.rules_file())?;
+        let compiled: Vec<_> = rules::compile(&file)?
+            .into_iter()
+            .filter(|r| r.rule.name == name)
+            .collect();
+        if compiled.is_empty() {
+            bail!("no rule named '{name}'");
+        }
+        if compiled.iter().any(|r| !r.rule.enabled) {
+            bail!("rule '{name}' is disabled; approve or enable it first");
+        }
+        let mut rows = Vec::new();
+        for acc in self.select(account)? {
+            if !compiled.iter().any(|r| r.applies_to_account(&acc.name)) {
+                continue;
+            }
+            if dry_run {
+                let store = self.store(&acc)?;
+                for p in actions::planned(&compiled, &store, &acc, &acc.identity()?, time::now())? {
+                    rows.push(output::planned_row(&acc.name, &p));
+                }
+                continue;
+            }
+            let command = Command::ApplyRule {
+                name: name.to_string(),
+            };
+            let (evaluated, actions, errors) =
+                self.daemon
+                    .request(&acc.name, command, |reply| match reply {
+                        Event::RuleApplied {
+                            evaluated,
+                            actions,
+                            errors,
+                            ..
+                        } => Ok((evaluated, actions, errors)),
+                        other => Err(other),
+                    })?;
+            rows.push(output::rule_applied(&acc.name, evaluated, actions, &errors));
+        }
+        Ok(rows)
+    }
+
     /// While accounts are hidden, a rule without `account` gets the only visible one, or is refused.
     pub fn propose(&self, mut rule: Rule, by: &str) -> Result<Value> {
         match rule.account.as_deref() {
