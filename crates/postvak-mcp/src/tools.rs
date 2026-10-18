@@ -329,7 +329,7 @@ fn imaps() -> u16 {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct AccountAddArgs {
-    /// Letters, digits, - and _; an existing account of this name is replaced
+    /// Letters, digits, - and _; not the name of an existing account
     name: String,
     /// IMAP host, TLS on `port`
     host: String,
@@ -604,11 +604,11 @@ fn dispatch(
         }
         "rules_apply_existing" => {
             let a: ApplyExistingArgs = args(arguments)?;
-            rows(backend.rules_apply_existing(&a.name, a.account.as_deref(), a.dry_run)?)
+            rows(backend.rules_apply_existing(&a.name, a.account.as_deref(), a.dry_run, bodies)?)
         }
         "rules_approve" => {
             let a: NameArgs = args(arguments)?;
-            backend.approve(&a.name)
+            backend.approve(&a.name, bodies)
         }
         "rules_check" => {
             let _: NoArgs = args(arguments)?;
@@ -620,7 +620,7 @@ fn dispatch(
         }
         "rules_propose" => {
             let rule: postvak_core::rules::Rule = args(arguments)?;
-            backend.propose(rule, &by)
+            backend.propose(rule, &by, bodies)
         }
         "rules_reject" => {
             let a: NameArgs = args(arguments)?;
@@ -632,7 +632,7 @@ fn dispatch(
         }
         "rules_set_enabled" => {
             let a: SetEnabledArgs = args(arguments)?;
-            backend.set_enabled(&a.name, a.enabled)
+            backend.set_enabled(&a.name, a.enabled, bodies)
         }
         "rules_test" => {
             let a: RulesTestArgs = args(arguments)?;
