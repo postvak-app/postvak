@@ -36,7 +36,8 @@ printf '%s' "$APPLE_CERTIFICATE" | base64 --decode >"$cert"
 security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
 security set-keychain-settings -lut 21600 "$keychain"
 security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
-security import "$cert" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -f pkcs12 \
+# -x: the private key cannot be exported from the keychain again.
+security import "$cert" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -f pkcs12 -x \
     -T /usr/bin/codesign -T /usr/bin/security
 security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$keychain" >/dev/null
 # Add it to the search list, keeping the existing keychains, so codesign finds the certificate chain.

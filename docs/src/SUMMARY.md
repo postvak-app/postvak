@@ -2,6 +2,7 @@
 
 [Introduction](index.md)
 
+- [Quickstart](quickstart.md)
 - [Install](install.md)
 - [Accounts](accounts.md)
 - [Mail window](gui.md)

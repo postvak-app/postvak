@@ -95,6 +95,7 @@ impl Fixture {
         let mut app = App::new(&config, self.paths.clone(), client, received, states);
         app.reconnect = |_, _| Err(anyhow::anyhow!("no daemon in tests"));
         app.fetch_release = || Err(anyhow::anyhow!("no network in tests"));
+        app.logos.net = std::sync::Arc::new(Offline);
         // Reloads after events apply in the tick that started them, so tests see their rows at once; the tests of
         // reloads that outlast a frame set a budget of their own.
         app.list_budget = std::time::Duration::from_secs(60);
@@ -118,6 +119,42 @@ impl Fixture {
         driver.tick();
         (driver, wires)
     }
+}
+
+/// A network that is never there, so no test looks up a real sender's logo.
+pub(crate) struct Offline;
+
+impl postvak_core::bimi::Net for Offline {
+    fn txt(&self, _name: &str) -> anyhow::Result<Vec<String>> {
+        Err(anyhow::anyhow!("no network in tests"))
+    }
+
+    fn get(&self, _url: &str) -> anyhow::Result<Vec<u8>> {
+        Err(anyhow::anyhow!("no network in tests"))
+    }
+}
+
+/// A message from GitHub that passed DMARC, so it may show GitHub's logo.
+pub(crate) fn branded(folder: &str, uid: u32, subject: &str) -> Message {
+    Message {
+        from_addr: Some("GitHub <noreply@github.com>".into()),
+        headers: format!(
+            "Authentication-Results: mx.example.com; dmarc=pass header.from=github.com\r\nFrom: GitHub <noreply@github.com>\r\nSubject: {subject}\r\n\r\n"
+        )
+        .into_bytes(),
+        ..fixture::message(folder, uid, subject)
+    }
+}
+
+/// A red square in the logo cache for github.com, as if fetched just now.
+pub(crate) fn cache_github_logo(paths: &postvak_core::paths::Paths) {
+    let brand = postvak_core::bimi::Brand {
+        domain: "github.com".into(),
+        selector: "default".into(),
+    };
+    let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" fill="#d1242f"/></svg>"##;
+    let now = postvak_core::time::now();
+    postvak_core::bimi::cache_logo(&paths.cache_dir, &brand, now, Some(svg)).unwrap();
 }
 
 thread_local! {

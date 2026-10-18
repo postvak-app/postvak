@@ -24,13 +24,16 @@ pub const MAX_HTML: usize = 2 * 1024 * 1024;
 /// A laid-out page taller than this, in points, shows as text.
 pub const MAX_HEIGHT: f32 = 200_000.0;
 
+/// A laid-out page wider than this, in points, shows as text: every painted strip is this wide.
+pub const MAX_WIDTH: f32 = 5_000.0;
+
 /// Seconds the panel width must hold still before the page is laid out again.
 pub const SETTLE: f64 = 0.1;
 
 pub const TOO_LARGE: &str = "Too large to render; showing text.";
 pub const FAILED: &str = "Could not render HTML; showing text.";
 
-pub(crate) use fetch::Fetcher;
+pub(crate) use fetch::{Fetcher, get};
 pub use render::Renderer;
 
 /// Asks the window to draw again; the render thread calls it after each reply.
@@ -314,7 +317,8 @@ mod view_tests {
     use slint::ComponentHandle;
 
     use super::{
-        FAILED, FetchDone, Fetcher, Load, MAX_HEIGHT, MAX_HTML, Renderer, Reply, Request, TOO_LARGE,
+        FAILED, FetchDone, Fetcher, Load, MAX_HEIGHT, MAX_HTML, MAX_WIDTH, Renderer, Reply,
+        Request, TOO_LARGE,
     };
     use crate::state::App;
     use crate::test_support::{Fixture, Open, Wires, add_html, launched, message};
@@ -549,6 +553,22 @@ mod view_tests {
         reply(&faked, laid(faked.generation, MAX_HEIGHT + 1.0, &[]));
         assert_eq!(faked.open.find(TOO_LARGE).len(), 1);
         assert_eq!(faked.open.window().get_body_text(), "tall text");
+    }
+
+    #[test]
+    fn a_page_over_the_width_limit_shows_text_with_a_note() {
+        let fx = Fixture::new(&["work"]);
+        add_html(&fx, 1, "<p>x</p>", "wide text");
+        let faked = faked(&fx);
+        let wide = Reply::Laid {
+            generation: faked.generation,
+            height: 100.0,
+            remote: Default::default(),
+            width: MAX_WIDTH + 1.0,
+        };
+        reply(&faked, wide);
+        assert_eq!(faked.open.find(TOO_LARGE).len(), 1);
+        assert_eq!(faked.open.window().get_body_text(), "wide text");
     }
 
     #[test]

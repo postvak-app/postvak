@@ -61,6 +61,9 @@ pub struct UiConfig {
     /// Ask GitHub once a day whether a newer release is out.
     #[serde(default)]
     pub check_updates: bool,
+    /// Show the logo a sender's domain publishes (BIMI): a DNS lookup and an HTTPS fetch to that domain.
+    #[serde(default)]
+    pub sender_images: bool,
     #[serde(default)]
     pub theme: Theme,
 }
@@ -182,6 +185,11 @@ impl Config {
             if account.password == (PasswordSource::Keyring { keyring: false }) {
                 return Err(ConfigError::Invalid(format!(
                     "account '{name}': `password = {{ keyring = false }}` has no meaning; use `{{ keyring = true }}` or a `command`"
+                )));
+            }
+            if account.trash_retention_days == 0 {
+                return Err(ConfigError::Invalid(format!(
+                    "account '{name}': trash_retention_days must be at least 1, or a rule delete keeps no backup"
                 )));
             }
             if let Some(ca_file) = &account.ca_file
@@ -424,6 +432,17 @@ notify = false
     }
 
     #[test]
+    fn rejects_a_trash_retention_of_zero_days() {
+        let bad = SAMPLE.replace(
+            "name = \"home\"",
+            "name = \"home\"\ntrash_retention_days = 0",
+        );
+        assert!(
+            matches!(Config::parse(&bad), Err(ConfigError::Invalid(e)) if e.contains("trash_retention_days")),
+        );
+    }
+
+    #[test]
     fn rejects_keyring_false() {
         let bad = SAMPLE.replace("{ keyring = true }", "{ keyring = false }");
         assert!(
@@ -583,5 +602,13 @@ notify = false
         assert!(!Config::parse(&theme_only).unwrap().ui.check_updates);
         let on = format!("{SAMPLE}\n[ui]\ncheck_updates = true\n");
         assert!(Config::parse(&on).unwrap().ui.check_updates);
+    }
+
+    #[test]
+    fn sender_images_are_off_unless_turned_on() {
+        assert!(!Config::default().ui.sender_images);
+        assert!(!Config::parse(SAMPLE).unwrap().ui.sender_images);
+        let on = format!("{SAMPLE}\n[ui]\nsender_images = true\n");
+        assert!(Config::parse(&on).unwrap().ui.sender_images);
     }
 }
