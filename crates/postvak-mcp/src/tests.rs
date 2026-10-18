@@ -726,7 +726,7 @@ fn wrap_body_cuts_inside_a_multibyte_character_without_panicking() {
 async fn tools_list_per_scope_set_is_exact_and_alphabetical() {
     let fx = fixture(&["work"]);
     let cases: [(&str, &[&str]); 6] = [
-        ("accounts:write", &[]),
+        ("accounts:write", &["account_add"]),
         (
             "read,rules:propose",
             &[
@@ -782,7 +782,7 @@ async fn annotations_mark_reads_and_destructive_tools() {
     let fx = fixture(&["work"]);
     let client = connect(
         &fx,
-        "read,read:bodies,rules:propose,rules:write,files:write,mail:modify",
+        "read,read:bodies,rules:propose,rules:write,files:write,mail:modify,accounts:write",
         &[],
     )
     .await;
@@ -797,6 +797,7 @@ async fn annotations_mark_reads_and_destructive_tools() {
         ]
         .contains(&name);
         let changes = [
+            "account_add",
             "archive",
             "attachment_save",
             "junk",
@@ -1281,4 +1282,73 @@ async fn status_reports_the_daemon_and_the_visible_accounts() {
         .map(|a| a["name"].as_str().unwrap())
         .collect();
     assert_eq!(names, ["work"]);
+}
+
+#[tokio::test]
+async fn account_add_returns_the_account_and_its_first_sync() {
+    let fx = fixture_with_daemon(&["work"], recording_connector());
+    let client = connect(&fx, "accounts:write", &[]).await;
+    let report = call(
+        &client,
+        "account_add",
+        json!({ "name": "late", "host": "127.0.0.1", "port": 1, "username": "me@example.org", "password_command": "printf x" }),
+    )
+    .await;
+    let report = report.structured_content.unwrap();
+    assert_eq!(report["account"]["account"], "late", "{report}");
+    assert!(report["account"].get("password").is_none());
+    assert!(!report.to_string().contains("printf"), "{report}");
+    assert_eq!(report["sync"]["account"], "late", "{report}");
+    assert!(fx.config().accounts.iter().any(|a| a.name == "late"));
+    let client = connect(&fx, "read", &[]).await;
+    let report = rows(&call(&client, "accounts", json!({})).await);
+    assert_eq!(report.len(), 2);
+}
+
+#[tokio::test]
+async fn account_add_rejects_a_plain_password_and_a_narrowed_server() {
+    let fx = fixture_with_daemon(&["work"], recording_connector());
+    let client = connect(&fx, "accounts:write", &[]).await;
+    let refused = call(
+        &client,
+        "account_add",
+        json!({ "name": "x", "host": "h", "username": "u@example.com", "password": "hunter2" }),
+    )
+    .await;
+    assert!(error_text(&refused).contains("password"), "{refused:?}");
+    assert!(!fx.config().accounts.iter().any(|a| a.name == "x"));
+    let narrowed = connect(&fx, "accounts:write", &["work"]).await;
+    let refused = call(
+        &narrowed,
+        "account_add",
+        json!({ "name": "y", "host": "h", "username": "u@example.com", "password_command": "printf x" }),
+    )
+    .await;
+    assert!(error_text(&refused).contains("--account"), "{refused:?}");
+}
+
+#[tokio::test]
+async fn account_add_keeps_accounts_added_to_config_toml_since_the_server_started() {
+    let fx = fixture_with_daemon(&["work"], recording_connector());
+    let client = connect(&fx, "accounts:write", &[]).await;
+    let mut config = fx.config();
+    config
+        .accounts
+        .push(postvak_core::config::AccountConfig::new(
+            "edited",
+            "127.0.0.1",
+            "edited@example.org",
+            postvak_core::config::PasswordSource::Command {
+                command: "printf x".into(),
+            },
+        ));
+    config.save(&fx.paths.config_file()).unwrap();
+    call(
+        &client,
+        "account_add",
+        json!({ "name": "late", "host": "127.0.0.1", "port": 1, "username": "me@example.org", "password_command": "printf x" }),
+    )
+    .await;
+    let names: Vec<String> = fx.config().accounts.into_iter().map(|a| a.name).collect();
+    assert_eq!(names, ["work", "edited", "late"]);
 }

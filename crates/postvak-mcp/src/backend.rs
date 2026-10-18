@@ -1,6 +1,7 @@
 //! The only MCP code that touches the store, rules.toml or the daemon; the daemon owns every IMAP connection.
 use anyhow::{Context as _, Result, bail};
 use std::sync::{PoisonError, RwLock};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 
@@ -20,6 +21,7 @@ use postvak_core::time;
 use postvak_core::trash::Trash;
 
 pub const MAX_LIMIT: u32 = 500;
+const ACCOUNT_START: Duration = Duration::from_secs(10);
 
 pub struct Backend {
     /// Replaced by `account_add`, so a server outlives the config it started with.
@@ -112,12 +114,6 @@ impl Backend {
             (Some(_), _) | (None, 1) => Ok(selected.swap_remove(0)),
             (None, _) => bail!("several accounts are visible; pass account"),
         }
-    }
-
-    /// The config after `account::add`, so the next call sees the new account.
-    #[allow(dead_code)]
-    fn replace_config(&self, config: Config) {
-        *self.config.write().unwrap_or_else(PoisonError::into_inner) = config;
     }
 
     fn store(&self, account: &AccountConfig) -> Result<Store> {
@@ -359,6 +355,25 @@ impl Backend {
         }
         let folder = self.daemon.restore(&acc.name, path)?;
         Ok(json!({ "account": acc.name, "restored_to": folder }))
+    }
+
+    /// Saves the account and reports its first sync; refused while `--account` hides accounts, since the new one
+    /// would be invisible to this server.
+    pub fn account_add(&self, account: AccountConfig) -> Result<Value> {
+        if !self.only.is_empty() {
+            bail!("this server is limited with --account and cannot add accounts");
+        }
+        let name = account.name.clone();
+        {
+            // Start from the file, not the start-up snapshot, or edits made since would be lost on save.
+            let mut held = self.config.write().unwrap_or_else(PoisonError::into_inner);
+            let mut config = Config::load(&self.paths.config_file())?;
+            postvak_core::account::add(&mut config, &self.paths, account.clone(), None)?;
+            *held = config;
+        }
+        postvak_core::account::await_started(&*self.daemon.client()?, &name, ACCOUNT_START)?;
+        let sync = self.sync(Some(&name))?.swap_remove(0);
+        Ok(json!({ "account": output::account(&account), "sync": sync }))
     }
 
     /// Asks the daemon for one sync with rules per visible account; a refusal is that account's `error`.

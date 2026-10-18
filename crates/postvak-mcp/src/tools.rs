@@ -305,6 +305,29 @@ struct RestoreArgs {
     dry_run: bool,
 }
 
+fn imaps() -> u16 {
+    993
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct AccountAddArgs {
+    /// Letters, digits, - and _; an existing account of this name is replaced
+    name: String,
+    /// IMAP host, TLS on `port`
+    host: String,
+    #[serde(default = "imaps")]
+    port: u16,
+    /// The IMAP login
+    username: String,
+    /// A shell command that prints the password, such as `pass show mail/work`; the password itself is never taken
+    password_command: String,
+    /// The mail address, when the username is not one
+    address: Option<String>,
+    /// Absolute path of a PEM file with an extra trusted root certificate
+    ca_file: Option<std::path::PathBuf>,
+}
+
 /// Every tool, in any order; the scope filter and the alphabetical sort happen when listing. `bodies` is whether
 /// `read:bodies` is granted, which changes what `search` covers.
 fn catalog(bodies: bool) -> Vec<ToolDef> {
@@ -314,6 +337,12 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
         "Search subject and addresses for all the given words, newest first; bodies need the read:bodies scope".to_string()
     };
     vec![
+        ToolDef::new::<AccountAddArgs>(
+            "account_add",
+            Scope::AccountsWrite,
+            Effect::Changes,
+            help::ACCOUNT_ADD,
+        ),
         ToolDef::new::<SelectionArgs>("archive", Scope::MailModify, Effect::Changes, help::ARCHIVE),
         ToolDef::new::<AttachmentSaveArgs>(
             "attachment_save",
@@ -436,6 +465,19 @@ fn dispatch(
 ) -> Result<Value> {
     let by = client.map_or_else(|| "mcp".to_string(), |client| format!("mcp:{client}"));
     match name {
+        "account_add" => {
+            let a: AccountAddArgs = args(arguments)?;
+            let password = postvak_core::config::PasswordSource::Command {
+                command: a.password_command,
+            };
+            let account = postvak_core::config::AccountConfig {
+                port: a.port,
+                address: a.address,
+                ca_file: a.ca_file,
+                ..postvak_core::config::AccountConfig::new(&a.name, &a.host, &a.username, password)
+            };
+            backend.account_add(account)
+        }
         "archive" => {
             let a: SelectionArgs = args(arguments)?;
             backend.act(
