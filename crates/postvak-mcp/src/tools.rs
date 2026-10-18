@@ -750,10 +750,6 @@ impl Server {
             scopes,
         }
     }
-
-    fn bodies(&self) -> bool {
-        self.scopes.contains(&Scope::ReadBodies)
-    }
 }
 
 impl ServerHandler for Server {
@@ -797,7 +793,11 @@ impl ServerHandler for Server {
             return Ok(error_result("not allowed with these scopes").into());
         }
         let client = context.client_info().map(|info| info.name);
-        let (backend, bodies, arguments) = (self.backend.clone(), self.bodies(), request.arguments);
+        let (backend, bodies, arguments) = (
+            self.backend.clone(),
+            self.scopes.contains(&Scope::ReadBodies),
+            request.arguments,
+        );
         let outcome = tokio::task::spawn_blocking(move || {
             dispatch(&backend, bodies, client.as_deref(), &name, arguments)
         })

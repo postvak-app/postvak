@@ -1,7 +1,6 @@
 //! The only MCP code that touches the store, rules.toml or the daemon; the daemon owns every IMAP connection.
 use anyhow::{Context as _, Result, bail};
 use std::sync::{PoisonError, RwLock};
-use std::time::Duration;
 
 use serde_json::{Value, json};
 
@@ -20,8 +19,7 @@ use postvak_core::sync::{Command, Event};
 use postvak_core::time;
 use postvak_core::trash::Trash;
 
-pub const MAX_LIMIT: u32 = 500;
-const ACCOUNT_START: Duration = Duration::from_secs(10);
+const MAX_LIMIT: u32 = 500;
 
 pub struct Backend {
     /// Replaced by `account_add`, so a server outlives the config it started with.
@@ -369,7 +367,7 @@ impl Backend {
     /// Saves the account and reports its first sync; refused while `--account` hides accounts, since the new one
     /// would be invisible to this server.
     pub fn account_add(&self, account: AccountConfig) -> Result<Value> {
-        if !self.only.is_empty() {
+        if self.narrowed() {
             bail!("this server is limited with --account and cannot add accounts");
         }
         let name = account.name.clone();
@@ -380,12 +378,16 @@ impl Backend {
             postvak_core::account::add(&mut config, &self.paths, account.clone(), None)?;
             *held = config;
         }
-        postvak_core::account::await_started(&*self.daemon.client()?, &name, ACCOUNT_START)
-            .map_err(|e| {
-                e.context(format!(
-                    "account '{name}' was saved to config.toml and the daemon will start it"
-                ))
-            })?;
+        postvak_core::account::await_started(
+            &*self.daemon.client()?,
+            &name,
+            postvak_core::account::START_TIMEOUT,
+        )
+        .map_err(|e| {
+            e.context(format!(
+                "account '{name}' was saved to config.toml and the daemon will start it"
+            ))
+        })?;
         let sync = self.sync(Some(&name))?.swap_remove(0);
         Ok(json!({ "account": output::account(&account), "sync": sync }))
     }
@@ -520,21 +522,10 @@ impl Backend {
                 }
                 continue;
             }
-            let command = Command::ApplyRule {
-                name: name.to_string(),
-            };
-            let (evaluated, actions, errors) =
-                self.daemon
-                    .request(&acc.name, command, |reply| match reply {
-                        Event::RuleApplied {
-                            evaluated,
-                            actions,
-                            errors,
-                            ..
-                        } => Ok((evaluated, actions, errors)),
-                        other => Err(other),
-                    })?;
-            rows.push(output::rule_applied(&acc.name, evaluated, actions, &errors));
+            let (evaluated, actions, errors) = self.daemon.apply_rule(&acc.name, name)?;
+            rows.push(
+                json!({ "account": acc.name, "evaluated": evaluated, "actions": actions, "errors": errors }),
+            );
         }
         Ok(rows)
     }

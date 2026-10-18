@@ -46,11 +46,6 @@ pub fn planned_row(account: &str, planned: &Planned) -> Value {
     })
 }
 
-/// The outcome of running a rule over an account's existing mail.
-pub fn rule_applied(account: &str, evaluated: usize, actions: usize, errors: &[String]) -> Value {
-    json!({ "account": account, "evaluated": evaluated, "actions": actions, "errors": errors })
-}
-
 /// The daemon's status as it serialises; the CLI's `daemon status --json` and the MCP `status` tool share it.
 pub fn status(status: &Status) -> serde_json::Result<Value> {
     serde_json::to_value(status)
@@ -102,14 +97,6 @@ mod tests {
         assert_eq!(
             planned_row("work", &planned),
             serde_json::json!({ "account": "work", "rule": "codes", "folder": "INBOX", "uid": 7, "action": "flag", "subject": "Your code" })
-        );
-    }
-
-    #[test]
-    fn rule_applied_rows_carry_counts_and_errors() {
-        assert_eq!(
-            rule_applied("work", 12, 3, &["x".to_string()]),
-            serde_json::json!({ "account": "work", "evaluated": 12, "actions": 3, "errors": ["x"] })
         );
     }
 }
