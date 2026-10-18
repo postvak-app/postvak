@@ -11,7 +11,7 @@ use postvak_core::store::{Filter, Store};
 use postvak_core::sync::sync_all;
 
 use super::list::THREAD_LIMIT;
-use super::state::{UiAction, View};
+use super::state::{LIST_BUDGET, UiAction, View};
 use super::test_support::Fixture;
 
 const ACCOUNTS: [&str; 3] = ["home", "lists", "work"];
@@ -206,6 +206,21 @@ fn run(scale: u32, runs: usize) {
     let accounts: std::collections::HashSet<usize> =
         driver.app.list.rows.iter().map(|row| row.account).collect();
     assert_eq!(accounts.len(), ACCOUNTS.len());
+
+    // A sync event in All inboxes with the window's own budget: how long the frame that takes it waits. The reload
+    // that outlasts the budget finishes before the next run.
+    driver.app.list_budget = LIST_BUDGET;
+    let frames = (0..runs).map(|_| {
+        driver.app.view_dirty = true;
+        let ms = timed(|| driver.tick());
+        while driver.app.list_loading.is_some() {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            driver.tick();
+        }
+        ms
+    });
+    report("sync_event", scale, frames.collect());
+    driver.app.list_budget = std::time::Duration::from_secs(60);
 
     driver.press("/");
     driver.apply(UiAction::SearchFor("invoice".into()));

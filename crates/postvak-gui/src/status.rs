@@ -169,6 +169,7 @@ mod tests {
             folders: Vec::new(),
             name: "work".into(),
             pending: Default::default(),
+            settling: Vec::new(),
             queued: 0,
             store: Err("no store".into()),
         }

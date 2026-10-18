@@ -13,6 +13,7 @@ mod icons;
 mod keys;
 mod launch;
 mod list;
+mod load;
 mod menu;
 mod numbers;
 mod persist;

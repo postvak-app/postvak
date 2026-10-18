@@ -3,7 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
+use std::time::Duration;
 
 use crate::update;
 use postvak_core::config::{self, AccountConfig, Config, Theme};
@@ -22,7 +23,8 @@ use super::account::{self, AccountForm};
 use super::body;
 use super::folders;
 use super::html::{self, Fetcher, HtmlState, Renderer, Reply, Wake};
-use super::list::{self, ListState, Optimistic, Row, RowKey, THREAD_LIMIT};
+use super::list::{self, ListState, Optimistic, Row, RowKey};
+use super::load::{self, ListQuery, LoadFn, Loaded, Loading};
 use super::rules::{self, RulesState, SheetSort, TrashRow};
 
 /// The status line when `m` is pressed with marked rows from more than one account.
@@ -49,6 +51,10 @@ pub(crate) const READ_DELAY: f64 = 1.0;
 
 /// Seconds between attempts to reach the daemon again.
 const RECONNECT: f64 = 5.0;
+
+/// How long a frame waits for a list reload after a sync event: a third of a 60 Hz frame. A small mailbox's rows come
+/// in time and show in the same frame; a large one's show when they come.
+pub(crate) const LIST_BUDGET: Duration = Duration::from_millis(5);
 
 /// A daemon client, its event subscription, and each account's state and activity when it connected.
 pub(crate) type Connection = (Client, Receiver<Event>, Vec<AccountStatus>);
@@ -122,11 +128,29 @@ pub(crate) struct Account {
     pub name: String,
     /// Edits of sent commands per row, oldest first; each `ActionDone` removes the oldest of its uids.
     pub pending: HashMap<RowKey, Vec<Optimistic>>,
+    /// Edits whose `ActionDone` arrived, with the first list load that reads the store after it; shown until a load
+    /// that new is applied, so an older load still running does not bring the row back as it was.
+    pub settling: Vec<(RowKey, Optimistic, u64)>,
     pub queued: usize,
     pub store: Result<Store, String>,
 }
 
 impl Account {
+    /// The edits the list shows: the settling ones, which are older, then the pending ones.
+    pub fn shown_edits(&self) -> std::borrow::Cow<'_, HashMap<RowKey, Vec<Optimistic>>> {
+        if self.settling.is_empty() {
+            return std::borrow::Cow::Borrowed(&self.pending);
+        }
+        let mut edits: HashMap<RowKey, Vec<Optimistic>> = HashMap::new();
+        for (key, edit, _) in &self.settling {
+            edits.entry(key.clone()).or_default().push(*edit);
+        }
+        for (key, pending) in &self.pending {
+            edits.entry(key.clone()).or_default().extend(pending);
+        }
+        std::borrow::Cow::Owned(edits)
+    }
+
     /// True while the sync thread works, for the spinner beside the account.
     pub fn busy(&self) -> bool {
         !matches!(
@@ -355,6 +379,18 @@ pub struct App {
     pub(crate) last_poll: f64,
     pub(crate) last_reconnect: f64,
     pub(crate) list: ListState,
+    /// How long `tick` waits for a list reload before it lets the window draw and applies the rows when they come;
+    /// tests wait as long as it takes.
+    pub(crate) list_budget: Duration,
+    /// Numbers list loads; the last one started, and the last one whose rows are shown.
+    pub(crate) list_generation: u64,
+    pub(crate) list_applied: u64,
+    /// The reload running on its own thread; at most one runs.
+    pub(crate) list_loading: Option<Loading>,
+    /// Set when the view changed again while `list_loading` ran, so another reload follows it.
+    pub(crate) list_again: bool,
+    /// Reads the list off the window thread; tests swap it to hold a load back.
+    pub(crate) load_list: LoadFn,
     pub(crate) move_picker: Option<String>,
     /// The add-account form while it is open.
     pub(crate) account_form: Option<AccountForm>,
@@ -398,6 +434,7 @@ fn account_state(paths: &Paths, name: String, activity: Option<Activity>) -> Acc
         folders: Vec::new(),
         name,
         pending: HashMap::new(),
+        settling: Vec::new(),
         queued: 0,
         store,
     };
@@ -451,6 +488,12 @@ impl App {
             last_poll: 0.0,
             last_reconnect: 0.0,
             list: ListState::default(),
+            list_budget: LIST_BUDGET,
+            list_generation: 0,
+            list_applied: 0,
+            list_loading: None,
+            list_again: false,
+            load_list: load::load_from_paths,
             move_picker: None,
             account_form: None,
             paths,
@@ -496,8 +539,9 @@ impl App {
         self.check_release();
         self.receive_unsubscribe();
         self.receive_saved_account();
+        self.receive_list();
         if std::mem::take(&mut self.view_dirty) {
-            self.reload_view();
+            self.refresh_view();
         }
         self.poll_files(now);
         let typing_search = self.search_focused;
@@ -648,6 +692,7 @@ impl App {
                 account.error = None;
             }
             account.pending.clear();
+            account.settling.clear();
             account.queued = 0;
             account.reload_folders();
         }
@@ -709,6 +754,7 @@ impl App {
                 // A refusal carries no uids, so every edit of the account goes and the store shows what is true.
                 let account = &mut self.accounts[index];
                 account.pending.clear();
+                account.settling.clear();
                 account.queued = 0;
                 self.note_error(Some(index), message);
                 self.refresh(index);
@@ -748,10 +794,16 @@ impl App {
             } => {
                 let account = &mut self.accounts[index];
                 account.queued = account.queued.saturating_sub(1);
-                for (uid, _) in &results {
+                // The next load reads the store after this change; until one does, a done edit stays shown. A failed
+                // one changed nothing, so it goes at once.
+                let settles = self.list_generation + 1;
+                for (uid, result) in &results {
                     let key = (folder.clone(), *uid);
                     if let Some(edits) = account.pending.get_mut(&key) {
-                        edits.remove(0);
+                        let edit = edits.remove(0);
+                        if result.is_ok() {
+                            account.settling.push((key.clone(), edit, settles));
+                        }
                         if edits.is_empty() {
                             account.pending.remove(&key);
                         }
@@ -1197,10 +1249,14 @@ impl App {
             .any(|f| f.name == folder && f.special_use.as_deref() == Some(role))
     }
 
-    /// Loads the shown view's rows from the store. Runs on view changes and when events mark the view dirty, never
-    /// per frame: `thread_summaries` scans the folder.
+    /// Loads the shown view's rows from the store, on this thread: for view changes, where the user waits for the new
+    /// rows anyway. A reload still running is dropped, since this one reads everything it would.
     pub(crate) fn reload_view(&mut self) {
-        let Some(folder) = self.list_folder().map(str::to_string) else {
+        self.list_generation += 1;
+        let generation = self.list_generation;
+        self.list_loading = None;
+        self.list_again = false;
+        let Some(query) = self.list_query() else {
             match self.view {
                 View::Activity => self.activity_log = rules::activity_log(&self.accounts),
                 View::Trash => self.trash = rules::trash_rows(&self.accounts, &self.paths),
@@ -1209,73 +1265,139 @@ impl App {
             return;
         };
         // A store that failed to open shows its error in the folder pane and adds no rows.
-        let stores: Vec<(usize, &Store)> = self
+        let stores: Vec<(usize, &str, &Store)> = self
             .covered_accounts()
             .into_iter()
             .filter_map(|index| {
-                self.accounts[index]
+                let account = &self.accounts[index];
+                account
                     .store
                     .as_ref()
                     .ok()
-                    .map(|store| (index, store))
+                    .map(|store| (index, account.name.as_str(), store))
             })
             .collect();
-        if let Some(query) = &self.search {
-            let mut hits = Vec::new();
-            for &(account, store) in &stores {
-                match store.search(query, None, list::SEARCH_LIMIT) {
-                    Ok(found) => hits.extend(found.iter().map(|m| Row::from_message(account, m))),
-                    Err(e) => log::warn!("[{}] search failed: {e}", self.accounts[account].name),
-                }
+        let loaded = load::load(&stores, &query);
+        self.apply_loaded(generation, loaded);
+    }
+
+    /// The daemon reported changes to the shown view: reloads it on a thread of its own, so a large mailbox does not
+    /// stall the frame. Rows that come within `list_budget` are applied at once; later ones when the thread wakes the
+    /// window. While one reload runs, the next waits for it.
+    fn refresh_view(&mut self) {
+        let Some(query) = self.list_query() else {
+            self.reload_view();
+            return;
+        };
+        if self.list_loading.is_some() {
+            self.list_again = true;
+            // Edits that changed meanwhile show on the rows already loaded.
+            self.rebuild_rows();
+            return;
+        }
+        self.list_generation += 1;
+        let generation = self.list_generation;
+        let accounts = self
+            .covered_accounts()
+            .into_iter()
+            .filter(|&index| self.accounts[index].store.is_ok())
+            .map(|index| (index, self.accounts[index].name.clone()))
+            .collect();
+        let answer = load::spawn(
+            self.load_list,
+            self.paths.clone(),
+            accounts,
+            query,
+            self.wake.clone(),
+        );
+        match answer.recv_timeout(self.list_budget) {
+            Ok(loaded) => self.apply_loaded(generation, loaded),
+            Err(RecvTimeoutError::Timeout) => {
+                self.list_loading = Some(Loading { generation, answer });
+                self.rebuild_rows();
             }
-            for (account, (folder, uid)) in &self.list.server_hits {
-                let known = hits
-                    .iter()
-                    .any(|row| row.account == *account && row.folder == *folder && row.uid == *uid);
-                let store = stores
-                    .iter()
-                    .find(|(index, _)| index == account)
-                    .map(|(_, store)| store);
-                if let (false, Some(store)) = (known, store)
-                    && let Ok(Some(message)) = store.message(folder, *uid)
-                {
-                    hits.push(Row::from_message(*account, &message));
-                }
+            Err(RecvTimeoutError::Disconnected) => {
+                log::warn!("the list reload stopped; the rows stay as they were");
             }
-            self.list.hits = list::merge_hits(hits, list::SEARCH_LIMIT);
+        }
+    }
+
+    /// Applies a reload that outlasted `list_budget`, then starts the one the view asked for meanwhile.
+    fn receive_list(&mut self) {
+        let Some(loading) = &self.list_loading else {
+            return;
+        };
+        let loaded = match loading.answer.try_recv() {
+            Err(TryRecvError::Empty) => return,
+            Ok(loaded) => Some(loaded),
+            Err(TryRecvError::Disconnected) => {
+                log::warn!("the list reload stopped; the rows stay as they were");
+                None
+            }
+        };
+        let generation = loading.generation;
+        self.list_loading = None;
+        if let Some(loaded) = loaded {
+            self.apply_loaded(generation, loaded);
+        }
+        if std::mem::take(&mut self.list_again) {
+            self.view_dirty = true;
+        }
+    }
+
+    /// What the shown view's list reads, or `None` for a view without one.
+    fn list_query(&self) -> Option<ListQuery> {
+        let folder = self.list_folder()?.to_string();
+        Some(ListQuery {
+            folder,
+            filter: self.filter,
+            search: self.search.clone(),
+            server_hits: self.list.server_hits.clone(),
+            expanded: self.list.expanded.keys().cloned().collect(),
+        })
+    }
+
+    /// Shows a load's rows, unless a later load is already shown; edits that it reads as stored stop settling.
+    fn apply_loaded(&mut self, generation: u64, loaded: Loaded) {
+        if generation < self.list_applied {
+            return;
+        }
+        self.list_applied = generation;
+        for account in &mut self.accounts {
+            account
+                .settling
+                .retain(|(_, _, settles)| *settles > generation);
+        }
+        if let Some(hits) = loaded.hits {
+            self.list.hits = hits;
         } else {
-            let mut found = Vec::new();
-            for &(account, store) in &stores {
-                match store.thread_summaries(&folder, THREAD_LIMIT, self.filter) {
-                    Ok(threads) => found.push((account, threads)),
-                    Err(e) => {
-                        log::warn!(
-                            "[{}] {folder}: could not load threads: {e}",
-                            self.accounts[account].name
-                        );
-                        let previous = self
-                            .list
+            let found = loaded
+                .threads
+                .into_iter()
+                .map(|(account, threads)| {
+                    // A store that could not list its threads keeps the ones shown.
+                    let threads = threads.unwrap_or_else(|| {
+                        self.list
                             .threads
                             .iter()
                             .filter(|(owner, _)| *owner == account)
                             .map(|(_, thread)| thread.clone())
-                            .collect();
-                        found.push((account, previous));
-                    }
+                            .collect()
+                    });
+                    (account, threads)
+                })
+                .collect();
+            self.list.threads = list::merge_threads(found, list::THREAD_LIMIT);
+            for (key, members) in loaded.members {
+                // A thread collapsed while the load ran stays collapsed.
+                if !self.list.expanded.contains_key(&key) {
+                    continue;
                 }
-            }
-            self.list.threads = list::merge_threads(found, THREAD_LIMIT);
-            let expanded: Vec<(usize, String)> = self.list.expanded.keys().cloned().collect();
-            for key in expanded {
-                let members = stores
-                    .iter()
-                    .find(|(account, _)| *account == key.0)
-                    .and_then(|(_, store)| store.thread_members(&folder, &key.1).ok());
                 match members {
-                    Some(members) if members.len() > 1 => {
+                    Some(members) => {
                         self.list.expanded.insert(key, members);
                     }
-                    _ => {
+                    None => {
                         self.list.expanded.remove(&key);
                     }
                 }
@@ -1801,7 +1923,8 @@ impl App {
         } else {
             list::build_rows(&folder, &self.list.threads, &self.list.expanded)
         };
-        let pending: Vec<_> = self.accounts.iter().map(|a| &a.pending).collect();
+        let edits: Vec<_> = self.accounts.iter().map(Account::shown_edits).collect();
+        let pending: Vec<_> = edits.iter().map(|edits| edits.as_ref()).collect();
         list::apply_pending(&mut rows, &pending);
         let kept = current.and_then(|cursor| rows.iter().position(|row| same_row(row, &cursor)));
         self.list.rows = rows;
@@ -2605,6 +2728,159 @@ mod tests {
         assert_eq!(driver.uids(), [2, 1]);
         fx.store("work").remove_message("INBOX", 3).unwrap();
         receive(&mut driver, &wires, [done("work", vec![(3, Ok(1))], 0)]);
+        assert_eq!(driver.uids(), [2, 1]);
+    }
+
+    fn synced() -> Event {
+        Event::Synced {
+            account: "work".into(),
+            new_messages: 0,
+            actions: 0,
+            requests: vec![],
+            errors: vec![],
+        }
+    }
+
+    /// Gates for the list loads of the test that set them, one per load in order: each load reads the store, then
+    /// waits for its gate. One per test, as `load_list` is a plain `fn`.
+    macro_rules! held_loads {
+        ($gates:ident, $load:ident) => {
+            static $gates: Mutex<VecDeque<Receiver<()>>> = Mutex::new(VecDeque::new());
+            fn $load(paths: &Paths, accounts: &[(usize, String)], query: &ListQuery) -> Loaded {
+                let loaded = load::load_from_paths(paths, accounts, query);
+                let gate = $gates.lock().unwrap().pop_front();
+                if let Some(gate) = gate {
+                    let _ = gate.recv();
+                }
+                loaded
+            }
+        };
+    }
+
+    /// A gate for the next held load; sending on the returned end lets it finish.
+    fn hold(gates: &Mutex<VecDeque<Receiver<()>>>) -> mpsc::Sender<()> {
+        let (release, gate) = mpsc::channel();
+        gates.lock().unwrap().push_back(gate);
+        release
+    }
+
+    #[test]
+    fn a_reload_that_outlasts_the_budget_shows_its_rows_when_they_come() {
+        held_loads!(GATES, held);
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2, 3]);
+        let (mut driver, wires) = fx.driver();
+        driver.app.list_budget = Duration::ZERO;
+        driver.app.load_list = held;
+        let release = hold(&GATES);
+        fx.add("work", message("INBOX", 4, "subject 4"));
+        receive(&mut driver, &wires, [synced()]);
+        assert!(driver.app.list_loading.is_some());
+        assert_eq!(driver.uids(), [3, 2, 1], "the frame does not wait");
+        release.send(()).unwrap();
+        tick_until(&mut driver, 0.0, |app| app.list_loading.is_none());
+        assert_eq!(driver.uids(), [4, 3, 2, 1]);
+    }
+
+    #[test]
+    fn a_change_during_a_reload_reloads_again_after_it() {
+        held_loads!(GATES, held);
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2]);
+        let (mut driver, wires) = fx.driver();
+        driver.app.list_budget = Duration::ZERO;
+        driver.app.load_list = held;
+        let first = hold(&GATES);
+        let second = hold(&GATES);
+        receive(&mut driver, &wires, [synced()]);
+        let started = driver.app.list_generation;
+        fx.add("work", message("INBOX", 3, "subject 3"));
+        receive(&mut driver, &wires, [synced()]);
+        assert!(driver.app.list_again, "the second waits for the first");
+        first.send(()).unwrap();
+        tick_until(&mut driver, 0.0, |app| app.list_applied == started);
+        assert_eq!(
+            driver.uids(),
+            [2, 1],
+            "the first read before message 3 came"
+        );
+        second.send(()).unwrap();
+        tick_until(&mut driver, 0.0, |app| app.list_loading.is_none());
+        assert_eq!(driver.uids(), [3, 2, 1]);
+    }
+
+    #[test]
+    fn an_older_reload_does_not_bring_back_an_archived_row() {
+        held_loads!(GATES, held);
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2, 3]);
+        let (mut driver, wires) = fx.driver();
+        driver.app.list_budget = Duration::ZERO;
+        driver.app.load_list = held;
+        let stale = hold(&GATES);
+        let fresh = hold(&GATES);
+        driver.press("e");
+        assert_eq!(driver.uids(), [2, 1]);
+        // This reload reads the store while message 3 is still in it.
+        receive(&mut driver, &wires, [synced()]);
+        let started = driver.app.list_generation;
+        fx.store("work").remove_message("INBOX", 3).unwrap();
+        receive(&mut driver, &wires, [done("work", vec![(3, Ok(1))], 0)]);
+        assert_eq!(driver.uids(), [2, 1]);
+        stale.send(()).unwrap();
+        tick_until(&mut driver, 0.0, |app| app.list_applied == started);
+        assert_eq!(
+            driver.uids(),
+            [2, 1],
+            "the archive settles until a newer load"
+        );
+        fresh.send(()).unwrap();
+        tick_until(&mut driver, 0.0, |app| app.accounts[0].settling.is_empty());
+        assert_eq!(driver.uids(), [2, 1]);
+        assert!(driver.app.list_loading.is_none());
+    }
+
+    #[test]
+    fn a_failed_action_puts_the_row_back_while_a_reload_runs() {
+        held_loads!(GATES, held);
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2, 3]);
+        let (mut driver, wires) = fx.driver();
+        driver.app.list_budget = Duration::ZERO;
+        driver.app.load_list = held;
+        let release = hold(&GATES);
+        driver.press("e");
+        receive(&mut driver, &wires, [synced()]);
+        assert_eq!(driver.uids(), [2, 1]);
+        let failed = done("work", vec![(3, Err("NO [SERVERBUG] try later".into()))], 0);
+        receive(&mut driver, &wires, [failed]);
+        assert_eq!(
+            driver.uids(),
+            [3, 2, 1],
+            "the row is back before the reload ends"
+        );
+        assert!(driver.app.accounts[0].settling.is_empty());
+        release.send(()).unwrap();
+        tick_until(&mut driver, 0.0, |app| app.list_loading.is_none());
+        assert_eq!(driver.uids(), [3, 2, 1]);
+    }
+
+    #[test]
+    fn a_view_change_drops_a_reload_still_running() {
+        held_loads!(GATES, held);
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2, 3]);
+        let (mut driver, wires) = fx.driver();
+        driver.app.list_budget = Duration::ZERO;
+        driver.app.load_list = held;
+        let release = hold(&GATES);
+        receive(&mut driver, &wires, [synced()]);
+        fx.store("work").remove_message("INBOX", 3).unwrap();
+        driver.app.reload_view();
+        assert_eq!(driver.uids(), [2, 1]);
+        assert!(driver.app.list_loading.is_none());
+        release.send(()).unwrap();
+        driver.tick();
         assert_eq!(driver.uids(), [2, 1]);
     }
 

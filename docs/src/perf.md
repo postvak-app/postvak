@@ -14,6 +14,7 @@ How Postvak behaves as a mailbox grows, measured on generated mail. User stores 
 | `thread_grouping` | `thread_summaries` on one INBOX: the query that groups the list into threads |
 | `folder_list` | Reloading one account's INBOX list: the query plus the rows |
 | `all_inboxes` | Reloading All inboxes: every account's INBOX, merged |
+| `sync_event` | The frame that takes a sync event in All inboxes: how long it waits for the reload |
 | `search` | One word searched in All inboxes |
 | `sync_pass` | One sync of an account after 200 messages arrived and 500 changed flags |
 
@@ -48,8 +49,23 @@ Release build of `main` at 783a0f2. Apple M1 Pro, 32 GB, macOS 27.0.1, Rust 1.99
 What this shows:
 
 - No phase grows faster than the mailbox; all of them scale about linearly.
-- A list reload runs `thread_summaries`, which groups every message in the folder, however few rows fit on screen. At 100k messages (about 17k per INBOX) All inboxes takes 33 ms, two frames at 60 Hz. The window reloads the list when sync reports changes, so with big inboxes a frame can still stall on each sync event.
+- A list reload runs `thread_summaries`, which groups every message in the folder, however few rows fit on screen. At 100k messages (about 17k per INBOX) All inboxes takes 33 ms, two frames at 60 Hz. A view change still waits for it; a reload after a sync event no longer does (below).
 - `open_window` grows with the mail too, so the window opens more slowly on big mailboxes. It includes the first list load and per-folder counts.
 - `sync_pass` includes the fake server's own work: `RecordingOps` scans each folder on every select. A real server's time is not in these numbers, and the fake's is.
+
+## Reloads after a sync event
+
+The window reloads the shown list whenever sync reports changes. That reload runs on a thread of its own with its own store connections; the frame waits for it at most 5 ms (`LIST_BUDGET` in `state.rs`), so a small mailbox's rows still show in the same frame, and a large one's show when the thread wakes the window. While a reload runs, the next waits for it and then starts once. A view change reads on the window thread, as before, and drops a reload still running.
+
+An archive, move or delete hides its rows at once and its `ActionDone` arrives after the daemon changed the store. A reload that started before then still holds the old rows, so the edit stays on the rows until a reload that started after it is applied.
+
+`all_inboxes` is what the frame that took a sync event waited before; `sync_event` is what it waits now. Release build, the same run of each: Linux container, 4 vCPUs of an Intel Xeon at 2.10 GHz, 15 GB, Rust 1.99.1, shared (load average about 3), so the ranges are wider than on a quiet machine. Median in ms, with the range of five runs.
+
+| Phase | 10k | 100k |
+| --- | --- | --- |
+| `all_inboxes` | 5.8 (5.5–6.9) | 59 (56–60) |
+| `sync_event` | 5.2 (5.2–5.2) | 5.2 (5.2–5.4) |
+
+The frame now waits the budget at most, however large the mailbox. At 10k on this machine the reload just outlasts it, so those rows show one wake later.
 
 Not measured yet: drawing a frame of the list through the real window (`Fixture::window()`), and opening one message.
