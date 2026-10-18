@@ -115,27 +115,30 @@ fn keyring_entry(account_name: &str) -> Result<keyring_core::Entry, CredentialEr
     keyring_core::Entry::new(SERVICE, account_name).map_err(|e| map_keyring_error(e, account_name))
 }
 
-#[cfg(all(target_os = "macos", not(test)))]
+#[cfg(all(target_os = "macos", not(any(test, feature = "testing"))))]
 fn platform_store() -> Result<std::sync::Arc<keyring_core::CredentialStore>, String> {
     apple_native_keyring_store::keychain::Store::new()
         .map(|s| s as std::sync::Arc<keyring_core::CredentialStore>)
         .map_err(|e| e.to_string())
 }
 
-#[cfg(all(target_os = "linux", not(test)))]
+#[cfg(all(target_os = "linux", not(any(test, feature = "testing"))))]
 fn platform_store() -> Result<std::sync::Arc<keyring_core::CredentialStore>, String> {
     zbus_secret_service_keyring_store::Store::new()
         .map(|s| s as std::sync::Arc<keyring_core::CredentialStore>)
         .map_err(|e| e.to_string())
 }
 
-#[cfg(all(not(any(target_os = "macos", target_os = "linux")), not(test)))]
+#[cfg(all(
+    not(any(target_os = "macos", target_os = "linux")),
+    not(any(test, feature = "testing"))
+))]
 fn platform_store() -> Result<std::sync::Arc<keyring_core::CredentialStore>, String> {
     Err("no keyring store for this platform".to_string())
 }
 
-/// Tests never touch the OS keyring: an in-memory store that lives for the test process.
-#[cfg(test)]
+/// Tests never touch the OS keyring, the front ends' tests included (`testing`): an in-memory store for the process.
+#[cfg(any(test, feature = "testing"))]
 fn platform_store() -> Result<std::sync::Arc<keyring_core::CredentialStore>, String> {
     keyring_core::mock::Store::new()
         .map(|s| s as std::sync::Arc<keyring_core::CredentialStore>)

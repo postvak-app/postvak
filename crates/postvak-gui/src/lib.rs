@@ -1,4 +1,5 @@
 //! The mail window: folders, threads and the message body over the local store, as a client of the daemon that syncs.
+mod account;
 mod avatar;
 #[cfg(test)]
 mod bench;
