@@ -42,7 +42,7 @@ mod ui {
     slint::include_modules!();
 }
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc::TryRecvError;
@@ -399,20 +399,32 @@ fn explain(
         }
     };
     let form = paths.filter(|_| error.is::<startup::NoAccounts>()).cloned();
-    let saved = Rc::new(Cell::new(false));
-    let window = startup_window(&problem, open_docs, form, saved.clone())?;
+    let pending = Pending::default();
+    let window = startup_window(&problem, open_docs, form.clone(), pending.clone())?;
     launch::watch(window.window(), marker.cloned());
     window.run()?;
-    Ok(saved.get())
+    Ok(form.is_some_and(|paths| saved(&paths, &pending)))
+}
+
+/// The first-run form's save in flight, if any.
+type Pending = Rc<RefCell<Option<account::Saving>>>;
+
+/// Whether config.toml holds an account once the window closed, after waiting for a save still in flight: closing
+/// the window does not stop the save.
+fn saved(paths: &Paths, pending: &Pending) -> bool {
+    if let Some(answer) = pending.take() {
+        let _ = answer.recv();
+    }
+    Config::load(&paths.config_file()).is_ok_and(|config| !config.accounts.is_empty())
 }
 
 /// The window that says what went wrong. With `form`, the paths to save under, it holds the add-account form, and
-/// `saved` turns true once an account was saved and the window closed.
+/// `pending` holds its save while it runs.
 fn startup_window(
     problem: &startup::Problem,
     open_docs: impl Fn(&str) + 'static,
     form: Option<Paths>,
-    saved: Rc<Cell<bool>>,
+    pending: Pending,
 ) -> Result<ui::StartupWindow, slint::PlatformError> {
     let window = ui::StartupWindow::new()?;
     window.set_summary(problem.summary.as_str().into());
@@ -438,7 +450,8 @@ fn startup_window(
                 Ok(answer) => {
                     window.set_account_error(SharedString::new());
                     window.set_account_saving(true);
-                    await_save(&window, answer, saved.clone());
+                    pending.replace(Some(answer));
+                    await_save(&window, pending.clone());
                 }
                 Err(message) => window.set_account_error(message.into()),
             }
@@ -451,14 +464,17 @@ fn startup_window(
 const SAVE_POLL: Duration = Duration::from_millis(100);
 
 /// Looks for the save's answer every `SAVE_POLL`: a saved account closes the window, a refusal shows why.
-fn await_save(window: &ui::StartupWindow, answer: account::Saving, saved: Rc<Cell<bool>>) {
+fn await_save(window: &ui::StartupWindow, pending: Pending) {
     let weak = window.as_weak();
     slint::Timer::single_shot(SAVE_POLL, move || {
         let Some(window) = weak.upgrade() else { return };
+        let Some(answer) = pending.take() else { return };
         let refused = match answer.try_recv() {
-            Err(TryRecvError::Empty) => return await_save(&window, answer, saved),
+            Err(TryRecvError::Empty) => {
+                pending.replace(Some(answer));
+                return await_save(&window, pending);
+            }
             Ok(Ok(_)) => {
-                saved.set(true);
                 let _ = window.hide();
                 return;
             }
@@ -509,7 +525,7 @@ mod tests {
         );
     }
 
-    use std::cell::{Cell, RefCell};
+    use std::cell::RefCell;
     use std::path::Path;
     use std::rc::Rc;
     use std::time::{Duration, Instant};
@@ -521,7 +537,7 @@ mod tests {
     use slint::ComponentHandle;
 
     use super::startup::{ACCOUNTS_DOCS, NoAccounts, Problem};
-    use super::startup_window;
+    use super::{Pending, saved, startup_window};
     use super::test_support::{Fixture, headless};
     use super::ui::{Pane, Theme, ThemePreference};
     use crate::state::UiAction;
@@ -547,14 +563,15 @@ mod tests {
         (window, opened)
     }
 
-    /// The first-run window over an empty home under `paths`, and whether it saved an account.
-    fn first_run(paths: &Paths) -> (super::ui::StartupWindow, Rc<Cell<bool>>) {
+    /// The first-run window over an empty home under `paths`, and its save in flight.
+    fn first_run(paths: &Paths) -> (super::ui::StartupWindow, Pending) {
         headless();
-        let saved = Rc::new(Cell::new(false));
+        let pending = Pending::default();
         let problem = Problem::of(&anyhow::Error::new(NoAccounts), None);
-        let window = startup_window(&problem, |_| {}, Some(paths.clone()), saved.clone()).unwrap();
+        let window =
+            startup_window(&problem, |_| {}, Some(paths.clone()), pending.clone()).unwrap();
         window.show().unwrap();
-        (window, saved)
+        (window, pending)
     }
 
     /// The text field labelled `label`; its label beside it is hidden from screen readers.
@@ -600,7 +617,7 @@ mod tests {
     #[test]
     fn the_first_run_form_saves_the_account_and_closes_the_window() {
         let (_dir, paths) = home();
-        let (window, saved) = first_run(&paths);
+        let (window, pending) = first_run(&paths);
         assert_eq!(
             labelled(&window, "Postvak has no mail account set up yet.").len(),
             1
@@ -613,7 +630,7 @@ mod tests {
         fill(&window, "work");
         labelled(&window, "Save account")[0].invoke_accessible_default_action();
         wait_for(|| !window.window().is_visible());
-        assert!(saved.get());
+        assert!(saved(&paths, &pending));
         let config = Config::load(&paths.config_file()).unwrap();
         assert_eq!(config.accounts[0].name, "work");
     }
@@ -621,14 +638,25 @@ mod tests {
     #[test]
     fn a_refused_first_run_save_says_why_and_stays_open() {
         let (_dir, paths) = home();
-        let (window, saved) = first_run(&paths);
+        let (window, pending) = first_run(&paths);
         fill(&window, "my work");
         labelled(&window, "Save account")[0].invoke_accessible_default_action();
         let why =
             "config.toml: account name 'my work' may only contain letters, digits, '-' and '_'";
         wait_for(|| !labelled(&window, why).is_empty());
         assert!(window.window().is_visible());
-        assert!(!saved.get());
+        assert!(!saved(&paths, &pending));
+    }
+
+    #[test]
+    fn closing_the_first_run_window_during_a_save_still_counts_the_account() {
+        let (_dir, paths) = home();
+        let (window, pending) = first_run(&paths);
+        fill(&window, "work");
+        labelled(&window, "Save account")[0].invoke_accessible_default_action();
+        labelled(&window, "Close")[0].invoke_accessible_default_action();
+        assert!(!window.window().is_visible());
+        assert!(saved(&paths, &pending));
     }
 
     #[test]
