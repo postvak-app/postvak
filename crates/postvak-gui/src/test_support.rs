@@ -95,6 +95,9 @@ impl Fixture {
         let mut app = App::new(&config, self.paths.clone(), client, received, states);
         app.reconnect = |_, _| Err(anyhow::anyhow!("no daemon in tests"));
         app.fetch_release = || Err(anyhow::anyhow!("no network in tests"));
+        // Reloads after events apply in the tick that started them, so tests see their rows at once; the tests of
+        // reloads that outlast a frame set a budget of their own.
+        app.list_budget = std::time::Duration::from_secs(60);
         app.post_unsubscribe = |url| match url.contains("refuse") {
             true => Err("HTTP 500".into()),
             false => Ok(()),
