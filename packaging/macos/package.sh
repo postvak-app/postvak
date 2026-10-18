@@ -3,7 +3,7 @@
 #
 # Usage: packaging/macos/package.sh [--arch universal|aarch64|x86_64] [--skip-build]
 #   --arch        what to build (default universal: both architectures joined with lipo)
-#   --skip-build  reuse target/<triple>/release/postvak from an earlier build
+#   --skip-build  reuse target/<triple>/release/postvak and its .dSYM from an earlier build
 #
 # Runs on macOS only, with its stock bash 3.2 too (lipo, iconutil, codesign, hdiutil, xcrun). Needs the Rust targets:
 #   rustup target add aarch64-apple-darwin x86_64-apple-darwin
@@ -20,6 +20,9 @@ set -euo pipefail
 
 # Keep equal to LSMinimumSystemVersion in Info.plist.in (and the cask's depends_on macos).
 export MACOSX_DEPLOYMENT_TARGET=11.0
+# Writes target/<triple>/release/postvak.dSYM, the line tables crash reports need for file:line. Set here, not in
+# Cargo.toml, because on Linux it would move the line tables out of the binary.
+export CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO=packed
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 here=$root/packaging/macos
@@ -60,6 +63,7 @@ build_sha=$(git -C "$root" rev-parse --short=12 HEAD 2>/dev/null || echo unknown
 
 # --- build -----------------------------------------------------------------------------------------------------
 bins=()
+dwarfs=()
 for triple in "${triples[@]}"; do
     if [ "$skip_build" = false ]; then
         cargo build --manifest-path "$root/Cargo.toml" --release --locked --target "$triple"
@@ -67,6 +71,9 @@ for triple in "${triples[@]}"; do
     bin=$root/target/$triple/release/postvak
     [ -x "$bin" ] || { echo "missing $bin; build it or drop --skip-build" >&2; exit 1; }
     bins+=("$bin")
+    dwarf=$(echo "$bin.dSYM"/Contents/Resources/DWARF/*)
+    [ -f "$dwarf" ] || { echo "missing $dwarf; build without --skip-build" >&2; exit 1; }
+    dwarfs+=("$dwarf")
 done
 
 # --- bundle ----------------------------------------------------------------------------------------------------
@@ -79,6 +86,11 @@ else
     cp "${bins[0]}" "$app/Contents/MacOS/postvak"
 fi
 lipo -info "$app/Contents/MacOS/postvak"
+# Next to the binary is where std's backtrace looks for a dSYM.
+dsym=$app/Contents/MacOS/postvak.dSYM
+mkdir -p "$dsym/Contents/Resources/DWARF"
+cp "${bins[0]}.dSYM/Contents/Info.plist" "$dsym/Contents/"
+lipo -create "${dwarfs[@]}" -output "$dsym/Contents/Resources/DWARF/postvak"
 iconutil -c icns "$root/assets/macos.iconset" -o "$app/Contents/Resources/Postvak.icns"
 sed -e "s/@VERSION@/$version/g" -e "s/@SHORT_VERSION@/$short_version/g" -e "s/@BUILD_SHA@/$build_sha/g" \
     "$here/Info.plist.in" >"$app/Contents/Info.plist"
