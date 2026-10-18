@@ -319,6 +319,7 @@ fn present_sheet(app: &App, window: &MailWindow) {
             let rows = rules::trash_cells(app);
             present_table(window, &rules::TRASH_COLUMNS, &rows, app.sheet_sort);
             window.set_sheet_empty(rules::NO_TRASH.into());
+            window.set_purge_hint(rules::purge_hint(app).into());
         }
         View::AllInboxes | View::Folder { .. } => {}
     }
@@ -632,6 +633,9 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
             let rule = nth(rules::rule_lines(&app.rules), i)?;
             Some(UiAction::SetRuleEnabled(rule.name, enabled))
         }));
+    });
+    window.on_purge_trash(move || {
+        act(UiAction::PurgeTrash);
     });
     window.on_restore(move |i| {
         on(one(move |app| {

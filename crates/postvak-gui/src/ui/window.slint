@@ -116,6 +116,7 @@ export component MailWindow inherits Window {
     in property <[[StandardListViewItem]]> sheet-cells;
     in-out property <int> sheet-row: -1;
     in property <string> sheet-empty;
+    in property <string> purge-hint;
     in property <MenuState> menu;
     in property <bool> about-open;
     in property <string> version;
@@ -182,6 +183,7 @@ export component MailWindow inherits Window {
     callback reject-rule(int);
     callback set-enabled(int, bool);
     callback restore(int);
+    callback purge-trash();
     callback sort-sheet(int, bool);
 
     // Puts `text` on the clipboard: Slint copies only from a text field.
@@ -514,11 +516,13 @@ export component MailWindow inherits Window {
                         cells: root.sheet-cells;
                         current-row <=> root.sheet-row;
                         empty: root.sheet-empty;
+                        purge-hint: root.purge-hint;
                         open-rules-file => { root.open-rules-file(); }
                         approve(i) => { root.approve-rule(i); }
                         reject(i) => { root.reject-rule(i); }
                         set-enabled(i, enabled) => { root.set-enabled(i, enabled); }
                         restore(i) => { root.restore(i); }
+                        purge => { root.purge-trash(); }
                         sort(column, ascending) => { root.sort-sheet(column, ascending); }
                     }
                 }

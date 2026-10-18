@@ -15,6 +15,7 @@ use postvak_core::paths::{FileWatch, Paths};
 use postvak_core::rules::{self as rule_file, Action, RulesError};
 use postvak_core::store::{Filter, LogEntry, Message, Store, StoreError, has_flag};
 use postvak_core::sync::{Activity, Command, Event};
+use postvak_core::trash::Trash;
 use postvak_core::unsubscribe::{self, Method};
 
 use super::account::{self, AccountForm};
@@ -282,6 +283,8 @@ pub(crate) enum UiAction {
     SetTheme(Theme),
     StartSearch,
     StepFolder(isize),
+    /// Remove each account's backups past its retention
+    PurgeTrash,
     SyncNow,
     /// Aim the next action at the marked rows when `row` is one of them, else at `row` alone.
     TargetRow(usize),
@@ -325,6 +328,10 @@ pub struct App {
     pub(crate) daemon_lost: bool,
     pub(crate) downloads: PathBuf,
     pub(crate) error: Option<String>,
+    /// The outcome of the last purge or rule run, shown in the status row until the history is opened.
+    pub(crate) notice: Option<String>,
+    /// Each account's trash retention in days, from config.toml as the window opened or added the account.
+    pub(crate) retention: BTreeMap<String, u64>,
     pub(crate) events: Receiver<Event>,
     pub(crate) fetch_release: fn() -> anyhow::Result<String>,
     /// Sends a one-click unsubscribe; tests swap it so nothing leaves the machine.
@@ -404,6 +411,11 @@ impl App {
         events: Receiver<Event>,
         states: Vec<AccountStatus>,
     ) -> App {
+        let retention = config
+            .accounts
+            .iter()
+            .map(|a| (a.name.clone(), a.trash_retention_days))
+            .collect();
         let accounts = states
             .into_iter()
             .map(|AccountStatus { activity, name }| account_state(&paths, name, activity))
@@ -465,6 +477,8 @@ impl App {
                 folder: "INBOX".into(),
             },
             view_dirty: false,
+            retention,
+            notice: None,
         };
         app.reload_view();
         app
@@ -1017,9 +1031,11 @@ impl App {
                     body.show_text = !body.show_text;
                 }
             }
+            UiAction::PurgeTrash => self.purge_trash(),
             UiAction::ToggleHistory => {
                 self.history_open = !self.history_open;
                 self.error = None;
+                self.notice = None;
             }
             UiAction::ToggleMark => {
                 if let Some(id) = self.list.rows.get(self.list.cursor).map(list::Row::id)
@@ -1932,6 +1948,8 @@ impl App {
         self.account_form = None;
         // Absorbs this window's own write, so the poll does not take it for an outside edit.
         self.config_watch.changed();
+        self.retention
+            .insert(account.name.clone(), account.trash_retention_days);
         let index = match self.accounts.iter().position(|a| a.name == account.name) {
             Some(index) => index,
             None => {
@@ -1948,6 +1966,30 @@ impl App {
             account: index,
             folder: list::INBOX.into(),
         });
+    }
+
+    /// Removes each account's backups past its retention, as `postvak trash purge` does; the view lists the rest.
+    fn purge_trash(&mut self) {
+        let now = postvak_core::time::now();
+        let mut removed = 0;
+        for (name, days) in self.retention.clone() {
+            let trash = Trash::new(self.paths.trash_dir(&name));
+            match trash.purge(days as i64 * 86_400, now) {
+                Ok(count) => removed += count,
+                Err(e) => self.note_error(None, format!("{name}: could not purge: {e}")),
+            }
+        }
+        let noun = if removed == 1 { "backup" } else { "backups" };
+        self.notice(format!(
+            "removed {removed} {noun} older than the retention period"
+        ));
+        self.view_dirty = true;
+    }
+
+    /// A result for the status row and the history.
+    fn notice(&mut self, text: String) {
+        self.push_history(text.clone());
+        self.notice = Some(text);
     }
 
     /// Reloads the rules view; the daemon notices the change itself and syncs every account.

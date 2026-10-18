@@ -69,7 +69,7 @@ The foot of the folder pane has one line about sync: a failure when there is one
 
 These three views sit at the bottom of the folder pane.
 
-**Rules** lists proposals with Approve and Reject, then every rule with a switch. Changes to `rules.toml`, from the window or from your editor, take effect within about two seconds for new mail. **Activity** is the log of what rules and your actions did. **Backups** lists the `.eml` backups of mail deleted for good (deleted from Trash, from an account without a Trash folder, or by a rule), with Restore. Mail moved to the server's Trash folder is in that folder in the tree.
+**Rules** lists proposals with Approve and Reject, then every rule with a switch. Changes to `rules.toml`, from the window or from your editor, take effect within about two seconds for new mail. **Activity** is the log of what rules and your actions did. **Backups** lists the `.eml` backups of mail deleted for good (deleted from Trash, from an account without a Trash folder, or by a rule), with Restore, and Purge, which removes the backups older than each account's retention period as `postvak trash purge` does and says how many in the sync line. Mail moved to the server's Trash folder is in that folder in the tree.
 
 The daemon applies changes to `config.toml` by itself. An account added from the window joins it at once; other changes show when you reopen the window, and the window says so.
 

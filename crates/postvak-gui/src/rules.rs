@@ -2,6 +2,7 @@
 use std::io::Read;
 use std::path::Path;
 
+use postvak_core::help;
 use postvak_core::message::{clean, parse_headers};
 use postvak_core::paths::Paths;
 use postvak_core::rules::{self, Rule, RuleFile};
@@ -257,6 +258,16 @@ fn eml_summary(path: &Path) -> (String, String) {
     )
 }
 
+/// The Purge button's hover text: what it does, and each account's retention.
+pub(crate) fn purge_hint(app: &App) -> String {
+    let days: Vec<String> = app
+        .retention
+        .iter()
+        .map(|(name, days)| format!("{name}: {days} days"))
+        .collect();
+    format!("{} ({})", help::TRASH_PURGE, days.join(", "))
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -293,6 +304,36 @@ mod tests {
     fn enabled(fx: &Fixture, name: &str) -> bool {
         let file = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
         file.rules.iter().find(|r| r.name == name).unwrap().enabled
+    }
+
+    #[test]
+    fn purge_removes_backups_past_their_retention_and_says_how_many() {
+        let fx = Fixture::new(&["work"]);
+        let dir = fx.paths.trash_dir("work");
+        std::fs::create_dir_all(&dir).unwrap();
+        let trash = Trash::new(dir);
+        let now = postvak_core::time::now();
+        let raw = |subject: &str| format!("From: a@example.com\r\nSubject: {subject}\r\n\r\nx\r\n");
+        let old = trash
+            .save("INBOX", 1, raw("old").as_bytes(), now - 31 * 86_400)
+            .unwrap();
+        let fresh = trash
+            .save("INBOX", 2, raw("fresh").as_bytes(), now - 86_400)
+            .unwrap();
+        let (open, _wires) = view(&fx, View::Trash);
+        assert_eq!(
+            open.get("Purge").accessible_description().unwrap(),
+            "Remove .eml backups older than the account's retention period (work: 30 days)"
+        );
+        open.click("Purge");
+        assert!(!old.exists());
+        assert!(fresh.exists());
+        assert!(open.find("old").is_empty());
+        assert_eq!(open.find("fresh").len(), 1);
+        let line = "removed 1 backup older than the retention period";
+        assert_eq!(open.find(line).len(), 1, "the status row says it");
+        open.with(|live| live.app.apply(crate::state::UiAction::ToggleHistory));
+        assert!(open.find(line).is_empty(), "opening the history clears it");
     }
 
     #[test]

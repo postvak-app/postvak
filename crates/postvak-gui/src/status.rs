@@ -15,7 +15,7 @@ pub(crate) struct Line {
     pub progress: Option<f32>,
 }
 
-/// The window's error first, then a line per account.
+/// The window's error first, then the last result, then a line per account.
 pub(crate) fn lines(app: &App) -> Vec<Line> {
     let error = app.error.iter().map(|error| Line {
         text: error.clone(),
@@ -29,7 +29,13 @@ pub(crate) fn lines(app: &App) -> Vec<Line> {
         failed: failed(account),
         progress: account.activity.as_ref().and_then(progress),
     });
-    error.chain(accounts).collect()
+    let notice = app.notice.iter().map(|text| Line {
+        text: text.clone(),
+        dot: None,
+        failed: false,
+        progress: None,
+    });
+    error.chain(notice).chain(accounts).collect()
 }
 
 /// The one line the folder pane has room for: a failure first, then an account offline, then one syncing, else the
