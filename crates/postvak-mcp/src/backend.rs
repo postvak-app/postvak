@@ -382,7 +382,12 @@ impl Backend {
             postvak_core::account::add(&mut config, &self.paths, account.clone(), None)?;
             *held = config;
         }
-        postvak_core::account::await_started(&*self.daemon.client()?, &name, ACCOUNT_START)?;
+        postvak_core::account::await_started(&*self.daemon.client()?, &name, ACCOUNT_START)
+            .map_err(|e| {
+                e.context(format!(
+                    "account '{name}' was saved to config.toml and the daemon will start it"
+                ))
+            })?;
         let sync = self.sync(Some(&name))?.swap_remove(0);
         Ok(json!({ "account": output::account(&account), "sync": sync }))
     }
@@ -430,7 +435,7 @@ impl Backend {
 
     /// Whether `--account` hides some configured account; a rule without `account` then reaches beyond this server.
     fn narrowed(&self) -> bool {
-        self.visible().len() < self.all_accounts().len()
+        !self.only.is_empty()
     }
 
     /// A rule scoped to a hidden account is as good as absent, and while accounts are hidden a rule for every account

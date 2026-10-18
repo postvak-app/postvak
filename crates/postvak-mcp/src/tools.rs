@@ -352,7 +352,7 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
         ToolDef::new::<AccountAddArgs>(
             "account_add",
             Scope::AccountsWrite,
-            Effect::Changes,
+            Effect::Destructive,
             help::ACCOUNT_ADD,
         ),
         ToolDef::new::<SelectionArgs>("archive", Scope::MailModify, Effect::Changes, help::ARCHIVE),
@@ -389,7 +389,7 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
         ToolDef::new::<ApplyExistingArgs>(
             "rules_apply_existing",
             Scope::MailModify,
-            Effect::Changes,
+            Effect::Destructive,
             help::RULES_APPLY_EXISTING,
         ),
         ToolDef::new::<NameArgs>(

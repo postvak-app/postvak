@@ -792,7 +792,9 @@ async fn annotations_mark_reads_and_destructive_tools() {
         let hints = tool.annotations.clone().unwrap();
         let name = tool.name.as_ref();
         let destructive = [
+            "account_add",
             "delete",
+            "rules_apply_existing",
             "rules_approve",
             "rules_set_enabled",
             "trash_purge",
@@ -800,13 +802,11 @@ async fn annotations_mark_reads_and_destructive_tools() {
         ]
         .contains(&name);
         let changes = [
-            "account_add",
             "archive",
             "attachment_save",
             "junk",
             "mark",
             "move",
-            "rules_apply_existing",
             "rules_propose",
             "rules_reject",
             "sync",
@@ -1289,6 +1289,17 @@ async fn enabling_a_rule_for_every_account_is_refused_while_some_are_hidden() {
 }
 
 #[tokio::test]
+async fn a_server_limited_to_the_only_account_still_refuses_enabling_a_rule_for_every_account() {
+    let fx = fixture(&["work"]);
+    std::fs::write(fx.paths.rules_file(), unscoped_rule("everywhere")).unwrap();
+    let before = rule_file(&fx);
+    let narrow = connect(&fx, "rules:write", &["work"]).await;
+    let text = error_text(&call(&narrow, "rules_approve", json!({ "name": "everywhere" })).await);
+    assert!(text.contains("applies to every account"), "{text}");
+    assert_eq!(rule_file(&fx), before);
+}
+
+#[tokio::test]
 async fn rejecting_a_rule_for_every_account_works_while_some_are_hidden() {
     let fx = fixture(&["home", "work"]);
     std::fs::write(fx.paths.rules_file(), unscoped_rule("everywhere")).unwrap();
@@ -1399,10 +1410,13 @@ async fn account_add_rejects_a_plain_password_and_a_narrowed_server() {
     let refused = call(
         &client,
         "account_add",
-        json!({ "name": "x", "host": "h", "username": "u@example.com", "password": "hunter2" }),
+        json!({ "name": "x", "host": "h", "username": "u@example.com", "password_command": "printf x", "password": "hunter2" }),
     )
     .await;
-    assert!(error_text(&refused).contains("password"), "{refused:?}");
+    assert!(
+        error_text(&refused).contains("unknown field"),
+        "{refused:?}"
+    );
     assert!(!fx.config().accounts.iter().any(|a| a.name == "x"));
     let narrowed = connect(&fx, "accounts:write", &["work"]).await;
     let refused = call(

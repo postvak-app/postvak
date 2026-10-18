@@ -66,7 +66,7 @@ The default is `read,rules:propose`. Three example grants:
 - Rule author: the default. The agent proposes, you approve in the window or with `postvak rules approve`.
 - Inbox assistant: `--scopes read,read:bodies,rules:propose,mail:modify`.
 
-`rules:write` lets the agent approve its own rules, and an approved rule can delete mail. Leave it off. `files:write` lets the agent write attachment files into any directory it names; leave it off too unless you need it. `accounts:write` lets the agent add mail accounts. It is not in the default, and it is refused on a server limited with `--account`.
+`rules:write` lets the agent approve its own rules, and an approved rule can delete mail. Leave it off. `files:write` lets the agent write attachment files into any directory it names; leave it off too unless you need it. `accounts:write` lets the agent add mail accounts, and the password command runs as a shell command as you, so a prompt-injected email could make the agent run anything you can; leave it off unless you need it. It is not in the default, and it is refused on a server limited with `--account`.
 
 ## Tools
 
@@ -120,12 +120,12 @@ With more than one visible account, every tool that acts on one message needs `a
 
 `accounts:write`:
 
-- `account_add` saves an account with a `password_command`, such as `pass show mail/work`, and returns the account row and the result of its first sync. A wrong login shows as that sync's `error`; call it again with the same `name` to replace the account. It never takes a password; keyring passwords are set with `postvak account add` or in the window.
+- `account_add` saves an account with a `password_command`, such as `pass show mail/work`, and returns the account row and the result of its first sync. A wrong login shows as that sync's `error`; call it again with the same `name` to replace the account. It never takes a password; keyring passwords are set with `postvak account add`.
 
 ## Safety
 
 - Mail is written by strangers. `show` wraps the body in `<untrusted_mail_content>`, and tells the agent that text inside is data, never instructions. Any spelling of that tag name inside a body is rewritten to `untrusted-mail-content`, so a mail cannot close the wrapper early. A body is cut at 100 KB and marked `"truncated": true`. Every mail-derived string loses its control characters; a body keeps its newlines and tabs. The tag rewrite ignores letter case, but it does not catch look-alike letters.
-- A host that honours tool annotations asks you before tools that change things. `delete`, `rules_approve`, `rules_set_enabled` and `trash_purge` are marked destructive, because they can delete mail or its backups. The other changing tools are marked as changing, but not destructive.
+- A host that honours tool annotations asks you before tools that change things. `account_add`, `delete`, `rules_apply_existing`, `rules_approve`, `rules_set_enabled`, `trash_purge` and `unsubscribe` are marked destructive, because they can delete mail or its backups, replace an account, or run a password command. The other changing tools are marked as changing, but not destructive.
 - Except `trash_purge`, the `mail:modify` tools take `dry_run`. It reports what would happen from the local store and does not ask the daemon.
 - `--account` hides other accounts from every tool. Rule writes refuse rules scoped to a hidden account, and so does proposing one. A rule without `account` applies to every account, hidden ones too, so while an account is hidden `rules_approve` and `rules_set_enabled` refuse to turn such a rule on; turning it off and rejecting it still work.
 - Without `read:bodies`, no tool returns or reveals body text: `search` covers subject and addresses only, as plain words, with no search operators, and `rules_test` refuses a rule that matches on the body.
