@@ -54,6 +54,7 @@ export component RulesPane inherits Rectangle {
     callback approve(int);
     callback reject(int);
     callback set-enabled(int, bool);
+    callback apply-rule(int);
     callback restore(int);
     callback purge();
     callback sort(int, bool);
@@ -213,6 +214,18 @@ export component RulesPane inherits Rectangle {
                                     text: rule.by;
                                     color: Theme.pane.muted;
                                     vertical-alignment: center;
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    TextButton {
+                                        text: "Apply to existing mail";
+                                        framed: true;
+                                        palette: Theme.pane;
+                                        enabled: rule.enabled;
+                                        hint: "Runs this rule's actions, which may delete mail, on the mail its accounts already hold, now";
+                                        disabled-hint: "Turn the rule on first";
+                                        clicked => { root.apply-rule(i); }
+                                    }
                                 }
                             }
                         }

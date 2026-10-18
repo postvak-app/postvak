@@ -307,6 +307,58 @@ mod tests {
     }
 
     #[test]
+    fn apply_runs_an_enabled_rule_on_its_accounts_and_shows_the_outcome() {
+        let fx = Fixture::new(&["home", "work"]);
+        let only_work = "\n[[rules]]\nname = \"only-work\"\naccount = \"work\"\nmatch.subject = { contains = \"x\" }\nactions = [\"flag\"]\n";
+        std::fs::write(fx.paths.rules_file(), format!("{RULES}{only_work}")).unwrap();
+        let (open, wires) = view(&fx, View::Rules);
+        let apply = |nth: usize| {
+            let buttons = open.find("Apply to existing mail");
+            assert_eq!(
+                buttons.len(),
+                3,
+                "one per rule: newsletters, codes, only-work"
+            );
+            buttons[nth].invoke_accessible_default_action();
+        };
+        apply(1);
+        assert!(wires.sent().is_empty(), "codes is a disabled proposal");
+        apply(2);
+        let only = |name: &str, account: &str| {
+            (
+                account.to_string(),
+                Command::ApplyRule { name: name.into() },
+            )
+        };
+        assert_eq!(wires.sent(), [only("only-work", "work")]);
+        apply(0);
+        assert_eq!(
+            wires.sent(),
+            [only("newsletters", "home"), only("newsletters", "work")]
+        );
+        let applied = |errors: Vec<String>| Event::RuleApplied {
+            account: "work".into(),
+            request: 7,
+            evaluated: 12,
+            actions: 3,
+            errors,
+        };
+        wires.events.send(applied(Vec::new())).unwrap();
+        open.tick();
+        assert_eq!(open.find("work: 3 actions on 12 messages").len(), 1);
+        wires
+            .events
+            .send(applied(vec!["INBOX/4: gone".into()]))
+            .unwrap();
+        open.tick();
+        assert_eq!(
+            open.find("work: INBOX/4: gone").len(),
+            1,
+            "a failure wins the line"
+        );
+    }
+
+    #[test]
     fn purge_removes_backups_past_their_retention_and_says_how_many() {
         let fx = Fixture::new(&["work"]);
         let dir = fx.paths.trash_dir("work");

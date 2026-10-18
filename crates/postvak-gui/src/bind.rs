@@ -618,6 +618,12 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     window.on_open_rules_file(move || {
         act(UiAction::OpenRulesFile);
     });
+    window.on_apply_rule(move |i| {
+        on(one(move |app| {
+            let rule = nth(rules::rule_lines(&app.rules), i)?;
+            rule.enabled.then_some(UiAction::ApplyRule(rule.name))
+        }));
+    });
     window.on_approve_rule(move |i| {
         on(one(move |app| {
             Some(UiAction::ApproveRule(proposal(app, i)?))

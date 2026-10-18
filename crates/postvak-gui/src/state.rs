@@ -285,6 +285,8 @@ pub(crate) enum UiAction {
     StepFolder(isize),
     /// Remove each account's backups past its retention
     PurgeTrash,
+    /// Run an enabled rule once over the stored mail of the accounts it covers
+    ApplyRule(String),
     SyncNow,
     /// Aim the next action at the marked rows when `row` is one of them, else at `row` alone.
     TargetRow(usize),
@@ -712,9 +714,24 @@ impl App {
                 self.refresh(index);
             }
             Event::Error { message, .. } => self.note_error(Some(index), message),
-            Event::BodiesFetched { .. } | Event::RuleApplied { .. } | Event::Synced { .. } => {
-                self.refresh(index)
+            Event::RuleApplied {
+                evaluated,
+                actions,
+                errors,
+                ..
+            } => {
+                // Accounts report one by one; the status row shows the latest and the history keeps them all.
+                let line = format!(
+                    "{}: {actions} actions on {evaluated} messages",
+                    self.accounts[index].name
+                );
+                self.notice(line);
+                for message in errors {
+                    self.note_error(Some(index), message);
+                }
+                self.refresh(index);
             }
+            Event::BodiesFetched { .. } | Event::Synced { .. } => self.refresh(index),
             Event::ActionDone {
                 folder, results, ..
             } => {
@@ -1032,6 +1049,7 @@ impl App {
                 }
             }
             UiAction::PurgeTrash => self.purge_trash(),
+            UiAction::ApplyRule(name) => self.apply_rule(&name),
             UiAction::ToggleHistory => {
                 self.history_open = !self.history_open;
                 self.error = None;
@@ -1990,6 +2008,28 @@ impl App {
         }
         self.notice(notice);
         self.view_dirty = true;
+    }
+
+    /// Asks each account the rule covers to run it over the mail it holds; `RuleApplied` reports back per account.
+    fn apply_rule(&mut self, name: &str) {
+        let Some(scope) = self
+            .rules
+            .rules
+            .iter()
+            .find(|rule| rule.name == name && rule.enabled)
+            .map(|rule| rule.account.clone())
+        else {
+            return;
+        };
+        for index in 0..self.accounts.len() {
+            let covered = scope
+                .as_deref()
+                .is_none_or(|account| account == self.accounts[index].name);
+            let command = Command::ApplyRule { name: name.into() };
+            if covered && !self.send(index, command) {
+                self.note_error(Some(index), DAEMON_LOST.into());
+            }
+        }
     }
 
     /// A result for the status row and the history.
