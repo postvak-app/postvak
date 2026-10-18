@@ -25,6 +25,7 @@ jobs:
       contents: read
     outputs:
       build: ${{ steps.select.outputs.build }}
+      warm: ${{ steps.select.outputs.warm }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -47,24 +48,32 @@ jobs:
               ! grep -qvE '^(\.coderabbit\.yaml$|\.github/|\.mise\.toml$|dist-workspace\.toml$|docs/|LICENSE|packaging/|release-plz\.toml$|[^/]+\.md$)' <<<"$1"
           }
           build=true
+          warm=false
           case "$EVENT" in
             pull_request) only_unread "$(changed "$PR_BASE")" && build=false ;;
             merge_group) only_unread "$(changed "$MERGE_GROUP_BASE")" && build=false ;;
             push)
-              # The merge queue already ran CI on this commit. Build anyway when the dependencies change, so main's caches stay current.
+              # The merge queue already ran CI on this commit. Compile without running the tests anyway, so main's caches stay current:
+              # pull requests can read caches written on main, not ones written in the merge queue.
               passed=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$SHA&event=merge_group&status=success" --jq .total_count)
-              if [ "$passed" -gt 0 ] && ! grep -qE '^((crates/[^/]+/)?Cargo\.toml|Cargo\.lock|rust-toolchain\.toml)$' <<<"$(changed "$BEFORE")"; then
-                build=false
+              if [ "$passed" -gt 0 ]; then
+                if only_unread "$(changed "$BEFORE")"; then build=false; else warm=true; fi
               fi
               ;;
           esac
           echo "build=$build" | tee -a "$GITHUB_OUTPUT"
+          echo "warm=$warm" | tee -a "$GITHUB_OUTPUT"
 
   lint:
     needs: select
     # A failed select job leaves the output empty, and then everything builds.
     if: ${{ !cancelled() && needs.select.outputs.build != 'false' }}
     runs-on: ubuntu-latest
+    env:
+      # rust-cache keeps only the dependencies, and Cargo judges the workspace crates by mtime, which a checkout resets.
+      # sccache keys on content, so a crate a pull request leaves alone comes from the cache.
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -73,6 +82,9 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: v0.18.0
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-deny,cargo-machete
@@ -93,7 +105,12 @@ jobs:
     env:
       # A skipped matrix job loses its os in the check name, which then never matches the required check, so the steps skip instead.
       BUILD: ${{ needs.select.outputs.build != 'false' }}
+      # Main after the merge queue passed: compile to fill the caches, run nothing.
+      WARM: ${{ needs.select.outputs.warm == 'true' }}
       NEXTEST_PROFILE: ci
+      # See lint.
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
       # The GUI snapshots show local times; Slint's software renderer draws them the same on every machine.
       TZ: UTC
     steps:
@@ -107,22 +124,28 @@ jobs:
         if: env.BUILD == 'true'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        if: env.BUILD == 'true'
+        with:
+          version: v0.18.0
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         if: env.BUILD == 'true'
         with:
           tool: cargo-nextest
       - name: Start Dovecot
-        if: env.BUILD == 'true' && runner.os == 'Linux'
+        if: env.BUILD == 'true' && env.WARM != 'true' && runner.os == 'Linux'
         run: |
           docker compose -f tests/dovecot/compose.yml up -d
           echo "POSTVAK_TEST_IMAP_HOST=localhost" >> "$GITHUB_ENV"
+      - run: cargo nextest run --cargo-profile ci --all-features --no-run
+        if: env.BUILD == 'true' && env.WARM == 'true'
       - run: cargo nextest run --cargo-profile ci --all-features
-        if: env.BUILD == 'true'
+        if: env.BUILD == 'true' && env.WARM != 'true'
       # nextest does not run doc tests.
       - run: cargo test --profile ci --all-features --doc
-        if: env.BUILD == 'true'
+        if: env.BUILD == 'true' && env.WARM != 'true'
       - name: Upload test results
-        if: env.BUILD == 'true' && !cancelled()
+        if: env.BUILD == 'true' && env.WARM != 'true' && !cancelled()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: junit-${{ matrix.os }}
