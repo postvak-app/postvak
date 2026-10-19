@@ -11,6 +11,7 @@ mod fixture;
 mod folders;
 mod html;
 mod icons;
+mod instance;
 mod keys;
 mod launch;
 mod list;
@@ -56,19 +57,27 @@ use slint::winit_030::WinitWindowAccessor;
 use slint::{ComponentHandle, SharedString};
 
 use postvak_core::config::Config;
-use postvak_core::paths::Paths;
+use postvak_core::paths::{APP_ID, Paths};
 
 use state::App;
 
-/// The Wayland app id and X11 WM class; the Linux desktop entry and icons are named after it, so the compositor can
-/// match the window to them.
-const APP_ID: &str = "io.github.postvak_app.postvak";
+pub use instance::Open;
 
 /// Opens the window and returns when it closes. When it cannot start, a small window says why before the error is
 /// returned, since a launch from a desktop entry or Finder has no terminal for stderr. When no window can open, it
 /// tries once more with the software renderer. Safe mode, asked for or after two starts in a row that died before
-/// the window showed, draws in software and ignores the saved layout.
-pub fn run(paths: Result<Paths>, safe_mode: bool) -> Result<()> {
+/// the window showed, draws in software and ignores the saved layout. With a window already open, this start hands
+/// it `open` and returns: that window comes to the front, showing the message.
+pub fn run(paths: Result<Paths>, safe_mode: bool, open: Option<Open>) -> Result<()> {
+    let token = launch::take_token();
+    let instance = match &paths {
+        Ok(paths) => match instance::claim(paths, &instance::Request { open: open.clone() }) {
+            instance::Claim::Handed => return Ok(()),
+            instance::Claim::First(instance) => Some(instance),
+            instance::Claim::Alone => None,
+        },
+        Err(_) => None,
+    };
     let marker = paths
         .as_ref()
         .ok()
@@ -83,9 +92,15 @@ pub fn run(paths: Result<Paths>, safe_mode: bool) -> Result<()> {
     }
     let backend = std::env::var("SLINT_BACKEND").ok();
     let renderer = launch::renderer(safe_mode, backend.as_deref());
-    launch::select(renderer, APP_ID);
+    launch::select(renderer, APP_ID, token.clone());
     let daemon_log = paths.as_ref().ok().map(Paths::daemon_log);
-    let (error, window_error) = match start(paths, safe_mode, marker.as_ref()) {
+    let start = Start {
+        safe_mode,
+        marker: marker.as_ref(),
+        instance: instance.as_ref(),
+        open,
+    };
+    let (error, window_error) = match start.run(paths) {
         Ok(()) => return Ok(()),
         Err(Failure::Explained(error)) => return Err(error),
         Err(Failure::NoWindow { error, window }) => (error, window),
@@ -96,7 +111,9 @@ pub fn run(paths: Result<Paths>, safe_mode: bool) -> Result<()> {
         if let Some(marker) = &marker {
             marker.set(failed_starts);
         }
-        match launch::retry_in_software() {
+        // The retry is the first window now.
+        drop(instance);
+        match launch::retry_in_software(token.as_ref()) {
             Ok(status) if status.success() => return Ok(()),
             Ok(status) => bail!("the software renderer failed too ({status})"),
             Err(e) => log::warn!("could not start again: {e}"),
@@ -116,31 +133,40 @@ enum Failure {
     },
 }
 
-/// The mail window, or the window that says why it could not start.
-fn start(
-    paths: Result<Paths>,
+/// How this start opens its window.
+struct Start<'a> {
     safe_mode: bool,
-    marker: Option<&launch::Marker>,
-) -> Result<(), Failure> {
-    let (error, paths) = match paths {
-        Ok(paths) => match open(paths.clone(), safe_mode, marker) {
-            Ok(()) => return Ok(()),
-            Err(e) => (e, Some(paths)),
-        },
-        Err(e) => (e, None),
-    };
-    if launch::no_window(&error) {
-        let window = anyhow::anyhow!("{error:#}");
-        return Err(Failure::NoWindow { error, window });
-    }
-    match explain(&error, paths.as_ref(), marker) {
-        // The first-run form saved an account, so the mail window can open now.
-        Ok(true) => start(paths.ok_or(error), safe_mode, marker),
-        Ok(false) => Err(Failure::Explained(error)),
-        Err(window) if launch::no_window(&window) => Err(Failure::NoWindow { error, window }),
-        Err(window) => {
-            log::warn!("the startup window failed: {window:#}");
-            Err(Failure::Explained(error))
+    marker: Option<&'a launch::Marker>,
+    /// Held when this is the first window, which then answers later starts.
+    instance: Option<&'a instance::Instance>,
+    /// The message to show once the window opens.
+    open: Option<Open>,
+}
+
+impl Start<'_> {
+    /// The mail window, or the window that says why it could not start.
+    fn run(&self, paths: Result<Paths>) -> Result<(), Failure> {
+        let marker = self.marker;
+        let (error, paths) = match paths {
+            Ok(paths) => match open(paths.clone(), self) {
+                Ok(()) => return Ok(()),
+                Err(e) => (e, Some(paths)),
+            },
+            Err(e) => (e, None),
+        };
+        if launch::no_window(&error) {
+            let window = anyhow::anyhow!("{error:#}");
+            return Err(Failure::NoWindow { error, window });
+        }
+        match explain(&error, paths.as_ref(), marker) {
+            // The first-run form saved an account, so the mail window can open now.
+            Ok(true) => self.run(paths.ok_or(error)),
+            Ok(false) => Err(Failure::Explained(error)),
+            Err(window) if launch::no_window(&window) => Err(Failure::NoWindow { error, window }),
+            Err(window) => {
+                log::warn!("the startup window failed: {window:#}");
+                Err(Failure::Explained(error))
+            }
         }
     }
 }
@@ -284,6 +310,10 @@ impl Live {
 
 /// Shows the window in front of other apps: `show` alone neither activates the app (macOS) nor restores a minimized
 /// window. The focus waits a turn of the event loop, for the native window `show` creates.
+///
+/// Wayland lets no app restore, focus or raise its own window: a window that was hidden comes back as a new one,
+/// which the compositor usually puts in front, and one that is open asks for attention, which Plasma shows on its
+/// task bar entry and GNOME as "Postvak is ready".
 fn raise(window: &ui::MailWindow) {
     if let Err(e) = window.show() {
         log::warn!("could not show the window: {e}");
@@ -293,15 +323,39 @@ fn raise(window: &ui::MailWindow) {
     let weak = window.as_weak();
     slint::Timer::single_shot(Duration::ZERO, move || {
         if let Some(window) = weak.upgrade() {
-            window
-                .window()
-                .with_winit_window(|native| native.focus_window());
+            window.window().with_winit_window(|native| {
+                native.focus_window();
+                if on_wayland(native) {
+                    native.request_user_attention(Some(
+                        slint::winit_030::winit::window::UserAttentionType::Informational,
+                    ));
+                }
+            });
         }
     });
 }
 
+fn on_wayland(native: &slint::winit_030::winit::window::Window) -> bool {
+    use slint::winit_030::winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    native
+        .window_handle()
+        .is_ok_and(|handle| matches!(handle.as_raw(), RawWindowHandle::Wayland(_)))
+}
+
+/// A later start's request: open its message, then bring the window to the front.
+fn hand_over(request: instance::Request) {
+    if let Some(open) = request.open {
+        on(Box::new(move |_| vec![state::UiAction::OpenMessage(open)]));
+    }
+    let window = with_live(|live| live.window.as_weak()).and_then(|weak| weak.upgrade());
+    if let Some(window) = window {
+        raise(&window);
+    }
+}
+
 /// The mail window, until it closes: a config with an account, the daemon, then the window.
-fn open(paths: Paths, safe_mode: bool, marker: Option<&launch::Marker>) -> Result<()> {
+fn open(paths: Paths, start: &Start) -> Result<()> {
+    let (safe_mode, marker) = (start.safe_mode, start.marker);
     let config = Config::load(&paths.config_file())?;
     if config.accounts.is_empty() {
         bail!(startup::NoAccounts);
@@ -325,6 +379,16 @@ fn open(paths: Paths, safe_mode: bool, marker: Option<&launch::Marker>) -> Resul
     let started = Instant::now();
     let clock = Box::new(move || started.elapsed().as_secs_f64());
     Live::install(app, window, tray, clock);
+    if let Some(open) = start.open.clone() {
+        on(Box::new(move |_| vec![state::UiAction::OpenMessage(open)]));
+    }
+    if let Some(instance) = start.instance
+        && let Err(e) = instance.listen(|request| {
+            let _ = slint::invoke_from_event_loop(move || hand_over(request));
+        })
+    {
+        log::warn!("a second start will open a second window: {e}");
+    }
     let ran = slint::run_event_loop();
     if let Some(live) = LIVE.with_borrow_mut(Option::take)
         && let Err(e) = persist::save(&layout, &remember(&live.window))

@@ -78,6 +78,8 @@ A `delete` wins: when any matching rule deletes a message, no other rule's actio
 
 New INBOX mail notifies unless a rule moved, archived or deleted it, or a matching rule says `silent`; marking, flagging and tagging still notify. `notify` forces a notification for moved mail. When several matching rules say `notify` or `silent`, the last one wins. Only INBOX mail notifies, so `notify` on a rule for another folder does nothing. With `notify = false` on the account, only rules that say `notify` notify. Deleted mail, and mail found by the first sync of a folder, never notifies.
 
+On Linux a notification shows the sender and the subject with Postvak's icon, and asks the desktop for its new-mail sound, which follows Do Not Disturb and your volume; your desktop's notification settings list Postvak, so you can turn the sound or the popups off there. Clicking it opens the message in the window, which starts if it is not open. On Wayland an open window cannot bring itself to the front, so Plasma highlights it on the task bar and GNOME says "Postvak is ready".
+
 ## Examples
 
 Delete sign-in codes and magic links an hour after you read them:

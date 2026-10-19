@@ -823,15 +823,18 @@ fn new_mail_notifies_even_on_an_account_with_notify_off() {
         .unwrap();
     drop(events);
     let notified = std::sync::Mutex::new(Vec::new());
-    super::route_events(&shared, received, false, |from, subject| {
-        notified
-            .lock()
-            .unwrap()
-            .push((from.to_string(), subject.to_string()))
+    super::route_events(&shared, received, false, |mail| {
+        notified.lock().unwrap().push(mail.clone())
     });
     assert_eq!(
         notified.into_inner().unwrap(),
-        [("bob@example.com".to_string(), "hi".to_string())]
+        [crate::notify::Mail {
+            account: "work".into(),
+            folder: "INBOX".into(),
+            uid: 1,
+            from: "bob@example.com".into(),
+            subject: "hi".into(),
+        }]
     );
 }
 

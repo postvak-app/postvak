@@ -134,6 +134,11 @@ Open the mail window; starts the daemon when needed
 ###### **Options:**
 
 * `--safe-mode` — Draw with the software renderer and ignore the saved window layout, for when the window will not open; entered by itself after two starts in a row that died before the window showed
+* `--open <UID>` — Show this message (a uid in --folder, as `list` prints it); with a window already open, that window shows it
+* `--account <ACCOUNT>` — The account of the message to show; the first account when left out
+* `--folder <FOLDER>` — The folder of the message to show
+
+  Default value: `INBOX`
 
 
 

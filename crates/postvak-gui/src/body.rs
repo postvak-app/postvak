@@ -3,12 +3,12 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use postvak_core::message::clean;
+use postvak_core::message::{clean, display_name};
 use postvak_core::sync::Activity;
 use postvak_core::time::local_time;
 
 use super::avatar;
-use super::list::{self, display_name};
+use super::list;
 use super::state::{Account, App};
 
 /// The body pane for the shown message, in words.

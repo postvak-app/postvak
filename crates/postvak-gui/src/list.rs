@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Datelike, TimeZone};
 
-use postvak_core::message::clean;
+use postvak_core::message::{clean, display_name};
 use postvak_core::rules::Action;
 use postvak_core::store::{Message, MessageSummary, ThreadSummary};
 
@@ -326,29 +326,6 @@ pub(crate) fn menu(row: &Row, in_junk: bool) -> [Vec<(&'static str, UiAction)>; 
     ]
 }
 
-/// "Alice <alice@x>, bob@y" is "Alice"; without a name, the first address.
-pub fn display_name(field: &str) -> String {
-    let field = field.trim();
-    if let Some(rest) = field.strip_prefix('"')
-        && let Some((name, _)) = rest.split_once('"')
-        && !name.trim().is_empty()
-    {
-        return name.trim().to_string();
-    }
-    let first = field.split(',').next().unwrap_or("").trim();
-    match first.split_once('<') {
-        Some((name, address)) => {
-            let name = name.trim().trim_matches('"').trim();
-            if name.is_empty() {
-                address.trim_end_matches('>').trim().to_string()
-            } else {
-                name.to_string()
-            }
-        }
-        None => first.to_string(),
-    }
-}
-
 /// The time today, weekday and time within the past week, day and month this year, else day, month and year.
 pub fn list_date<Tz: TimeZone>(ts: i64, now: &DateTime<Tz>) -> String
 where
@@ -615,21 +592,6 @@ mod tests {
             Some("work")
         );
         assert_eq!(columns(&row, None, false, false, &now).account, None);
-    }
-
-    #[test]
-    fn display_name_prefers_the_name_then_the_address() {
-        assert_eq!(display_name("Alice <alice@example.com>"), "Alice");
-        assert_eq!(
-            display_name("\"Doe, John\" <john@example.com>, bob@example.com"),
-            "Doe, John"
-        );
-        assert_eq!(display_name("<bare@example.com>"), "bare@example.com");
-        assert_eq!(
-            display_name("plain@example.com, other@example.com"),
-            "plain@example.com"
-        );
-        assert_eq!(display_name(""), "");
     }
 
     #[test]

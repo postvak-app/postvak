@@ -5,6 +5,10 @@ use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+/// The Wayland app id and X11 WM class; the Linux desktop entry and icons are named after it, so the compositor and the
+/// notification server can match the window and its notifications to them.
+pub const APP_ID: &str = "io.github.postvak_app.postvak";
+
 #[derive(Debug, Clone)]
 pub struct Paths {
     /// The root given to `under` (`POSTVAK_HOME`); None for the platform directories.
@@ -53,6 +57,15 @@ impl Paths {
 
     pub fn daemon_lock(&self) -> PathBuf {
         self.state_dir.join("daemon.lock")
+    }
+
+    /// Where the open window listens for a second `postvak gui`, which hands it what it was asked and exits.
+    pub fn gui_socket(&self) -> PathBuf {
+        self.state_dir.join("gui.sock")
+    }
+
+    pub fn gui_lock(&self) -> PathBuf {
+        self.state_dir.join("gui.lock")
     }
 
     pub fn daemon_log(&self) -> PathBuf {

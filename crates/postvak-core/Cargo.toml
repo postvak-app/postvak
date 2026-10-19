@@ -21,7 +21,6 @@ humantime.workspace = true
 keyring-core.workspace = true
 log.workspace = true
 mail-parser.workspace = true
-notify-rust.workspace = true
 regex.workspace = true
 rusqlite.workspace = true
 rusqlite_migration.workspace = true
@@ -45,8 +44,10 @@ zeroize.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store.workspace = true
+notify-rust.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+zbus.workspace = true
 zbus-secret-service-keyring-store.workspace = true
 
 [dev-dependencies]

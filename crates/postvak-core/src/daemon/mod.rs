@@ -296,16 +296,18 @@ fn serve(
         signalled,
         watch: Mutex::new(watch),
     });
-    let notify: fn(&str, &str) = if options.notify {
-        crate::notify::new_mail
-    } else {
-        |_, _| {}
-    };
+    let mut notifier = options.notify.then(crate::notify::Notifier::new);
     let router = std::thread::Builder::new()
         .name("daemon-events".into())
         .spawn({
             let shared = shared.clone();
-            move || route_events(&shared, events, io::stdout().is_terminal(), notify)
+            move || {
+                route_events(&shared, events, io::stdout().is_terminal(), |mail| {
+                    if let Some(notifier) = &mut notifier {
+                        notifier.new_mail(mail);
+                    }
+                });
+            }
         })?;
     let connections = accept_until_done(&shared, &listener, options.idle_exit);
     // Connects fail at once from here on instead of waiting out the hello timeout; the socket file and lock remain.
@@ -454,15 +456,28 @@ fn route_events(
     shared: &Shared,
     events: Receiver<Event>,
     terminal: bool,
-    notify: impl Fn(&str, &str),
+    mut notify: impl FnMut(&crate::notify::Mail),
 ) {
     for event in events {
         if reported(&event, terminal) {
             report(&event);
         }
         // The sync sends NewMail only for mail that should notify, rules included.
-        if let Event::NewMail { from, subject, .. } = &event {
-            notify(from, subject);
+        if let Event::NewMail {
+            account,
+            folder,
+            uid,
+            from,
+            subject,
+        } = &event
+        {
+            notify(&crate::notify::Mail {
+                account: account.clone(),
+                folder: folder.clone(),
+                uid: *uid,
+                from: from.clone(),
+                subject: subject.clone(),
+            });
         }
         let mut hub = lock(&shared.hub);
         if let Event::Activity { account, activity } = &event {

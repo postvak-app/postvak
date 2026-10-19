@@ -1,0 +1,437 @@
+//! Notifications through the desktop's notification server (`org.freedesktop.Notifications` on the session bus), on one
+//! connection that also hears the server's signals: a click arrives as `ActivationToken` and then `ActionInvoked`, and
+//! servers send those only to the connection that sent the notification.
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex, PoisonError};
+
+use zbus::blocking::{Connection, MessageIterator};
+use zbus::message::Type;
+use zbus::zvariant::Value;
+use zbus::{MatchRule, Message};
+
+use super::{Mail, escape_markup, title};
+use crate::message::clean;
+use crate::paths::APP_ID;
+
+const SERVER: &str = "org.freedesktop.Notifications";
+const PATH: &str = "/org/freedesktop/Notifications";
+/// The action a click on the notification itself invokes.
+const DEFAULT_ACTION: &str = "default";
+/// Notifications whose click is still remembered; a server may keep older ones in its history without telling.
+const REMEMBERED: usize = 64;
+
+/// What a click does: opens the mail, with the activation token the server gave for it.
+pub type Open = Box<dyn Fn(&Mail, Option<&str>) + Send + Sync>;
+
+pub struct Bus {
+    /// Connected on the first notification; tried again on the next one while there is no notification server.
+    session: Option<Session>,
+    clicks: Arc<Mutex<Clicks>>,
+    open: Arc<Open>,
+}
+
+struct Session {
+    connection: Connection,
+    /// Whether the server renders markup in the body; then `&`, `<` and `>` there must be entities.
+    body_markup: bool,
+}
+
+impl Bus {
+    pub fn new(open: Open) -> Bus {
+        Bus {
+            session: None,
+            clicks: Arc::new(Mutex::new(Clicks::default())),
+            open: Arc::new(open),
+        }
+    }
+
+    pub fn notify(&mut self, mail: &Mail) {
+        if self.session.is_none() {
+            match self.connect() {
+                Ok(session) => self.session = Some(session),
+                Err(e) => {
+                    log::debug!("no notification server: {e}");
+                    return;
+                }
+            }
+        }
+        let Some(session) = &self.session else { return };
+        match send(session, mail) {
+            Ok((id, server)) => lock(&self.clicks).sent(id, server, mail.clone()),
+            // The connection stays: a server that failed this once (restarting, say) is started again by the bus.
+            Err(e) => log::debug!("could not send a notification: {e}"),
+        }
+    }
+
+    /// Connects, and hears the server's signals from then on.
+    fn connect(&self) -> zbus::Result<Session> {
+        let connection = Connection::session()?;
+        // Fails at once on a desktop without a notification server, before anything is started for it.
+        let capabilities: Vec<String> = connection
+            .call_method(Some(SERVER), PATH, Some(SERVER), "GetCapabilities", &())?
+            .body()
+            .deserialize()?;
+        let rule = MatchRule::builder()
+            .msg_type(Type::Signal)
+            .interface(SERVER)?
+            .path(PATH)?
+            .build();
+        let signals = MessageIterator::for_match_rule(rule, &connection, Some(REMEMBERED))?;
+        let (clicks, open) = (self.clicks.clone(), self.open.clone());
+        std::thread::Builder::new()
+            .name("notification-clicks".into())
+            .spawn(move || {
+                for message in signals.flatten() {
+                    if let Some(signal) = Signal::read(&message)
+                        && let Some((mail, token)) = lock(&clicks).heard(signal)
+                    {
+                        open(&mail, token.as_deref());
+                    }
+                }
+            })
+            .map_err(|e| zbus::Error::Failure(e.to_string()))?;
+        Ok(Session {
+            connection,
+            body_markup: capabilities.iter().any(|c| c == "body-markup"),
+        })
+    }
+}
+
+/// Sends the notification; its id, and the server's unique bus name, which the signals about it come from.
+fn send(session: &Session, mail: &Mail) -> zbus::Result<(u32, Option<String>)> {
+    let request = Request::of(mail, session.body_markup);
+    let reply = session.connection.call_method(
+        Some(SERVER),
+        PATH,
+        Some(SERVER),
+        "Notify",
+        &(
+            "Postvak",
+            0u32,
+            APP_ID,
+            request.summary.as_str(),
+            request.body.as_str(),
+            request.actions,
+            request.hints,
+            -1i32,
+        ),
+    )?;
+    let server = reply.header().sender().map(ToString::to_string);
+    Ok((reply.body().deserialize()?, server))
+}
+
+/// A `Notify` call's texts, actions and hints.
+struct Request {
+    summary: String,
+    body: String,
+    actions: Vec<&'static str>,
+    hints: HashMap<&'static str, Value<'static>>,
+}
+
+impl Request {
+    fn of(mail: &Mail, body_markup: bool) -> Request {
+        let subject = clean(&mail.subject, false);
+        Request {
+            // The summary is plain text everywhere; only the body may hold markup.
+            summary: title(&mail.from),
+            body: if body_markup {
+                escape_markup(&subject)
+            } else {
+                subject
+            },
+            actions: vec![DEFAULT_ACTION, "Open"],
+            hints: HashMap::from([
+                // Ties the notification to the desktop entry: its icon, and the desktop's per-app settings.
+                ("desktop-entry", Value::from(APP_ID)),
+                ("category", Value::from("email.arrived")),
+                // From the sound theme; the server plays it, so Do Not Disturb and the volume apply.
+                ("sound-name", Value::from("message-new-email")),
+            ]),
+        }
+    }
+}
+
+/// The server's signals about notifications.
+#[derive(Debug, PartialEq)]
+enum Signal {
+    ActionInvoked {
+        id: u32,
+        action: String,
+        from: String,
+    },
+    ActivationToken {
+        id: u32,
+        token: String,
+        from: String,
+    },
+    Closed {
+        id: u32,
+        from: String,
+    },
+}
+
+impl Signal {
+    fn read(message: &Message) -> Option<Signal> {
+        let header = message.header();
+        let from = header.sender()?.to_string();
+        let body = message.body();
+        Some(match header.member()?.as_str() {
+            "ActionInvoked" => {
+                let (id, action) = body.deserialize().ok()?;
+                Signal::ActionInvoked { id, action, from }
+            }
+            "ActivationToken" => {
+                let (id, token) = body.deserialize().ok()?;
+                Signal::ActivationToken { id, token, from }
+            }
+            "NotificationClosed" => {
+                let (id, _reason): (u32, u32) = body.deserialize().ok()?;
+                Signal::Closed { id, from }
+            }
+            _ => return None,
+        })
+    }
+}
+
+/// The notifications that can still be clicked, by id.
+#[derive(Default)]
+struct Clicks {
+    /// The notification server's unique name; signals from anyone else on the bus are not its.
+    server: Option<String>,
+    sent: BTreeMap<u32, (Mail, Option<String>)>,
+}
+
+impl Clicks {
+    fn sent(&mut self, id: u32, server: Option<String>, mail: Mail) {
+        if server.is_some() {
+            self.server = server;
+        }
+        self.sent.insert(id, (mail, None));
+        while self.sent.len() > REMEMBERED {
+            self.sent.pop_first();
+        }
+    }
+
+    /// The mail to open and its token, when `signal` is a click on one of ours.
+    fn heard(&mut self, signal: Signal) -> Option<(Mail, Option<String>)> {
+        let from = match &signal {
+            Signal::ActionInvoked { from, .. }
+            | Signal::ActivationToken { from, .. }
+            | Signal::Closed { from, .. } => from,
+        };
+        if self.server.as_ref() != Some(from) {
+            return None;
+        }
+        match signal {
+            Signal::ActivationToken { id, token, .. } => {
+                if let Some((_, slot)) = self.sent.get_mut(&id) {
+                    *slot = Some(token);
+                }
+                None
+            }
+            Signal::ActionInvoked { id, action, .. }
+                if action == DEFAULT_ACTION || action == "Open" =>
+            {
+                self.sent.remove(&id)
+            }
+            Signal::ActionInvoked { .. } => None,
+            Signal::Closed { id, .. } => {
+                self.sent.remove(&id);
+                None
+            }
+        }
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mail(uid: u32) -> Mail {
+        Mail {
+            account: "work".into(),
+            folder: "INBOX".into(),
+            uid,
+            from: "Tom & Jerry <tj@example.com>".into(),
+            subject: "Cheese <today> & tomorrow".into(),
+        }
+    }
+
+    #[test]
+    fn the_notification_names_the_desktop_entry_and_asks_for_the_mail_sound() {
+        let request = Request::of(&mail(1), true);
+        assert_eq!(request.summary, "Tom & Jerry");
+        assert_eq!(request.body, "Cheese &lt;today&gt; &amp; tomorrow");
+        assert_eq!(request.actions, ["default", "Open"]);
+        assert_eq!(request.hints["desktop-entry"], Value::from(APP_ID));
+        assert_eq!(request.hints["category"], Value::from("email.arrived"));
+        assert_eq!(
+            request.hints["sound-name"],
+            Value::from("message-new-email")
+        );
+    }
+
+    #[test]
+    fn the_body_is_escaped_only_for_a_server_that_renders_markup() {
+        assert_eq!(
+            Request::of(&mail(1), false).body,
+            "Cheese <today> & tomorrow"
+        );
+    }
+
+    fn server() -> String {
+        ":1.7".into()
+    }
+
+    #[test]
+    fn a_click_opens_its_mail_once_with_the_token_sent_before_it() {
+        let mut clicks = Clicks::default();
+        clicks.sent(5, Some(server()), mail(10));
+        clicks.sent(6, Some(server()), mail(11));
+        let token = Signal::ActivationToken {
+            id: 6,
+            token: "tok".into(),
+            from: server(),
+        };
+        assert_eq!(clicks.heard(token), None);
+        let click = || Signal::ActionInvoked {
+            id: 6,
+            action: "default".into(),
+            from: server(),
+        };
+        assert_eq!(clicks.heard(click()), Some((mail(11), Some("tok".into()))));
+        assert_eq!(clicks.heard(click()), None);
+        // Opened without a token from a server that sends none.
+        let click = Signal::ActionInvoked {
+            id: 5,
+            action: "Open".into(),
+            from: server(),
+        };
+        assert_eq!(clicks.heard(click), Some((mail(10), None)));
+    }
+
+    #[test]
+    fn signals_from_others_on_the_bus_and_closed_notifications_open_nothing() {
+        let mut clicks = Clicks::default();
+        clicks.sent(5, Some(server()), mail(10));
+        let forged = Signal::ActionInvoked {
+            id: 5,
+            action: "default".into(),
+            from: ":1.99".into(),
+        };
+        assert_eq!(clicks.heard(forged), None);
+        assert_eq!(
+            clicks.heard(Signal::Closed {
+                id: 5,
+                from: server()
+            }),
+            None
+        );
+        let click = Signal::ActionInvoked {
+            id: 5,
+            action: "default".into(),
+            from: server(),
+        };
+        assert_eq!(clicks.heard(click), None);
+    }
+
+    /// Against a stand-in notification server on a private bus, so nothing reaches your desktop:
+    /// `dbus-run-session -- env POSTVAK_TEST_DBUS=1 cargo test -p postvak-core notify::dbus`.
+    #[test]
+    fn a_click_on_the_bus_opens_the_mail_with_its_token() {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+        use zbus::zvariant::OwnedValue;
+        type Notify = (
+            String,
+            u32,
+            String,
+            String,
+            String,
+            Vec<String>,
+            HashMap<String, OwnedValue>,
+            i32,
+        );
+
+        if std::env::var_os("POSTVAK_TEST_DBUS").is_none() {
+            return;
+        }
+        let server = Connection::session().unwrap();
+        server.request_name(SERVER).unwrap();
+        let rule = MatchRule::builder()
+            .msg_type(Type::MethodCall)
+            .interface(SERVER)
+            .unwrap()
+            .build();
+        let calls = MessageIterator::for_match_rule(rule, &server, None).unwrap();
+        let (notified, notifies) = channel();
+        std::thread::spawn({
+            let server = server.clone();
+            move || {
+                for call in calls.flatten() {
+                    let header = call.header();
+                    let reply = Message::method_return(&header).unwrap();
+                    let reply = match header.member().unwrap().as_str() {
+                        // No body-markup, so the body stays as it is.
+                        "GetCapabilities" => reply.build(&vec!["body", "actions"]),
+                        "Notify" => {
+                            let notify: Notify = call.body().deserialize().unwrap();
+                            notified
+                                .send((notify, header.sender().unwrap().to_string()))
+                                .unwrap();
+                            reply.build(&7u32)
+                        }
+                        _ => continue,
+                    };
+                    server.send(&reply.unwrap()).unwrap();
+                }
+            }
+        });
+        let (opened, opens) = channel();
+        let mut bus = Bus::new(Box::new(move |mail, token| {
+            opened
+                .send((mail.clone(), token.map(str::to_string)))
+                .unwrap();
+        }));
+        bus.notify(&mail(3));
+
+        let wait = Duration::from_secs(5);
+        let (notify, client) = notifies.recv_timeout(wait).unwrap();
+        assert_eq!(notify.0, "Postvak");
+        assert_eq!(notify.2, APP_ID);
+        assert_eq!(notify.3, "Tom & Jerry");
+        assert_eq!(notify.4, "Cheese <today> & tomorrow");
+        assert_eq!(notify.5, ["default", "Open"]);
+        assert_eq!(
+            notify.6["desktop-entry"],
+            OwnedValue::try_from(Value::from(APP_ID)).unwrap()
+        );
+        // Sent to the client alone, as Plasma does.
+        for (signal, body) in [
+            ("ActivationToken", (7u32, "tok")),
+            ("ActionInvoked", (7u32, "default")),
+        ] {
+            server
+                .emit_signal(Some(client.as_str()), PATH, SERVER, signal, &body)
+                .unwrap();
+        }
+        assert_eq!(
+            opens.recv_timeout(wait).unwrap(),
+            (mail(3), Some("tok".to_string()))
+        );
+    }
+
+    #[test]
+    fn only_the_latest_notifications_are_remembered() {
+        let mut clicks = Clicks::default();
+        for id in 0..(REMEMBERED as u32 + 10) {
+            clicks.sent(id, Some(server()), mail(id));
+        }
+        assert_eq!(clicks.sent.len(), REMEMBERED);
+        assert_eq!(clicks.sent.keys().next(), Some(&10));
+    }
+}
