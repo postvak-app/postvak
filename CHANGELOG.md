@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/postvak-app/postvak/compare/v0.4.0...v0.5.0) - 2026-10-19
+
+### Added
+
+- *(packaging)* publish a headless Docker image on ghcr.io ([#218](https://github.com/postvak-app/postvak/pull/218))
+
+### Fixed
+
+- *(macos-app)* build the release's dSYM before packaging with --skip-build ([#221](https://github.com/postvak-app/postvak/pull/221))
+- *(gui)* stop parsing HTML mail once it nests too deep ([#219](https://github.com/postvak-app/postvak/pull/219))
+- *(daemon)* stop cleanly on SIGTERM and SIGINT ([#217](https://github.com/postvak-app/postvak/pull/217))
+
+### Other
+
+- *(release-plz)* refresh the release PR on every push to main ([#220](https://github.com/postvak-app/postvak/pull/220))
+- *(gui)* nest just past the depth limit, not 100,000 levels deep ([#216](https://github.com/postvak-app/postvak/pull/216))
+
 ## [0.4.0](https://github.com/postvak-app/postvak/compare/v0.3.1...v0.4.0) - 2026-10-18
 
 ### Added
