@@ -1005,6 +1005,50 @@ mod editor_tests {
         assert!(!file.rules[0].enabled);
     }
 
+    /// Writes rules.toml as another program would, with a time the window's next poll sees as new.
+    fn write_elsewhere(open: &Open, fx: &Fixture, rules: &str) {
+        std::fs::write(fx.paths.rules_file(), rules).unwrap();
+        let file = std::fs::File::options()
+            .write(true)
+            .open(fx.paths.rules_file())
+            .unwrap();
+        file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
+            .unwrap();
+        open.advance(5.0);
+    }
+
+    /// Regression: a rule only looked at kept the conditions it was opened with, so Save undid a change made outside.
+    #[test]
+    fn a_rule_changed_elsewhere_while_open_shows_and_saves_the_change() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = open_newsletters(&fx);
+        let changed = RULES.replace("news@", "digest@");
+        write_elsewhere(&open, &fx, &changed);
+        let value = open.get("Condition 1 value").accessible_value();
+        assert_eq!(value.as_deref(), Some("digest@"));
+        open.click("Save");
+        assert_eq!(file(&fx), changed);
+    }
+
+    /// Regression: an edit saved over a change made outside while the rule was open, without a word.
+    #[test]
+    fn an_edit_does_not_silently_undo_a_change_made_elsewhere() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = open_newsletters(&fx);
+        editor(&open, |e| e.invoke_value_edited(0, "letters@".into()));
+        let changed = RULES.replace("[\"archive\"]", "[\"flag\"]");
+        write_elsewhere(&open, &fx, &changed);
+        open.click("Save");
+        assert_eq!(file(&fx), changed, "the first Save writes nothing");
+        assert_eq!(
+            open.labels_containing("changed in rules.toml while you edited it")
+                .len(),
+            1
+        );
+        open.click("Save");
+        assert_eq!(file(&fx), RULES.replace("news@", "letters@"));
+    }
+
     #[test]
     fn remove_asks_first_and_keeps_the_comment() {
         let fx = Fixture::new(&["work"]);

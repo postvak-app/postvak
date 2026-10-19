@@ -450,6 +450,8 @@ pub struct App {
     pub(crate) rule_draft: Option<Draft>,
     /// What `rule_draft` was opened or last saved as, which tells an edit from a look.
     pub(crate) rule_draft_opened: Option<Draft>,
+    /// The open rule changed in rules.toml while the editor had unsaved changes; the next Save says so instead.
+    pub(crate) rule_draft_stale: bool,
     /// Opening another rule while the open one has unsaved changes: held until the prompt is answered.
     pub(crate) leave_draft: Option<Box<UiAction>>,
     pub(crate) search: Option<String>,
@@ -556,6 +558,7 @@ impl App {
             rules_watch: FileWatch::new(rules_path),
             rule_draft: None,
             rule_draft_opened: None,
+            rule_draft_stale: false,
             leave_draft: None,
             search: None,
             filter: Filter::default(),
@@ -2378,26 +2381,42 @@ impl App {
             &self.paths.rules_file(),
             std::mem::take(&mut self.rules.rules),
         );
-        // The open rule follows its switch as the file now has it, from the list or from outside, unless the editor
-        // changed it; so a later Save does not turn it back.
-        let enabled = self.rule_draft_opened.as_ref().and_then(|opened| {
+        let on_disk = self.rule_draft_opened.as_ref().and_then(|opened| {
             let name = opened.original.as_deref()?;
             let rule = self.rules.rules.iter().find(|rule| rule.name == name)?;
-            Some(rule.enabled)
+            Some(Draft::from_rule(rule))
         });
-        if let (Some(enabled), Some(opened)) = (enabled, &mut self.rule_draft_opened) {
-            if let Some(draft) = self
-                .rule_draft
-                .as_mut()
-                .filter(|d| d.enabled == opened.enabled)
-            {
-                draft.enabled = enabled;
-            }
-            opened.enabled = enabled;
+        let Some(on_disk) = on_disk else { return };
+        if !self.draft_edited() {
+            // A rule only looked at shows the file as it now is, so Save writes nothing back.
+            let tested = self.rule_draft.as_mut().and_then(|d| d.tested.take());
+            self.open_draft(Some(Draft { tested, ..on_disk }));
+            return;
         }
+        let Some(opened) = &mut self.rule_draft_opened else {
+            return;
+        };
+        // The edited rule follows its switch as the file now has it, from the list or from outside, unless the editor
+        // changed it; so a later Save does not turn it back. Any other change outside is not merged: Save says so first.
+        let switched = Draft {
+            enabled: opened.enabled,
+            ..on_disk.clone()
+        };
+        if switched.edited(opened) {
+            self.rule_draft_stale = true;
+        }
+        if let Some(draft) = self
+            .rule_draft
+            .as_mut()
+            .filter(|d| d.enabled == opened.enabled)
+        {
+            draft.enabled = on_disk.enabled;
+        }
+        *opened = on_disk;
     }
 
     fn open_draft(&mut self, draft: Option<Draft>) {
+        self.rule_draft_stale = false;
         self.rule_draft_opened = draft.clone();
         self.rule_draft = draft;
     }
@@ -2412,9 +2431,17 @@ impl App {
     /// Writes the open rule; on failure it stays open with the reason.
     fn save_draft(&mut self) -> bool {
         let path = self.paths.rules_file();
+        let edited = self.draft_edited();
         let Some(draft) = &mut self.rule_draft else {
             return false;
         };
+        if std::mem::take(&mut self.rule_draft_stale) && edited {
+            let name = draft.original.as_deref().unwrap_or(&draft.name);
+            draft.error = Some(format!(
+                "'{name}' changed in rules.toml while you edited it. Save again to replace that change with this form, or discard your edits to see it."
+            ));
+            return false;
+        }
         let saved = draft.to_rule().and_then(|rule| {
             rule_file::edit::save_rule(&path, draft.original.as_deref(), &rule)
                 .map(|()| rule.name)
