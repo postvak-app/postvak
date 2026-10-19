@@ -10,6 +10,7 @@ How Postvak behaves as a mailbox grows, measured on generated mail. User stores 
 | --- | --- |
 | `first_sync` | Syncing every account into empty stores, once |
 | `open_store` | Opening one account's store |
+| `rebuild_index` | Rebuilding every account's search index, what migration 011 does once per store when it opens |
 | `open_window` | Building the mail window's state over all accounts, with its first list |
 | `thread_grouping` | `thread_summaries` on one INBOX: the query that groups the list into threads |
 | `folder_list` | Reloading one account's INBOX list: the query plus the rows |

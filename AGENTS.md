@@ -21,13 +21,14 @@ Four crates in one workspace. `crates/postvak-core` holds every module below exc
 - `output` JSON rows shared by `--json` and MCP results
 - `paths` platform dirs, atomic writes, `stable_exe` (the binary path that survives `brew upgrade` and AppImage mounts), whether this is the macOS app opened from Finder (`launched_as_app`)
 - `rules` parse + validate + schema (`mod.rs`), pure `evaluate` (`engine.rs`), side effects (`apply.rs`), the only writer of rules.toml (`edit.rs`)
+- `search` the query syntax: `parse` reads what the user typed and never fails, `plan` builds the one FTS5 expression `Store::search` runs; nothing else names the FTS table
 - `store` one SQLite file per account; migrations in `crates/postvak-core/migrations/`
 - `sync` per-account loop: sync folders in chunks, run rules, run commands, IDLE
 - `time` the current Unix time, and timestamps shown in local time
 - `trash` `.eml` backups before any rule delete
 - `update` whether a newer release is out (GUI only): GitHub's latest release at most once a day, cached; never updates itself
 
-`tests/architecture.rs` checks the ownership rules above that crate boundaries cannot: `mcp`, `rules` (rules.toml writes) and `gui` views; allowed exceptions live there with a reason. It also checks the dependency graph from `cargo metadata`: nothing `postvak-core` pulls in is Slint, Blitz or rmcp, and no other crate depends on rusqlite outside its tests.
+`tests/architecture.rs` checks the ownership rules above that crate boundaries cannot: `mcp`, `rules` (rules.toml writes), `search` (the FTS table) and `gui` views; allowed exceptions live there with a reason. It also checks the dependency graph from `cargo metadata`: nothing `postvak-core` pulls in is Slint, Blitz or rmcp, and no other crate depends on rusqlite outside its tests.
 
 ## Surfaces
 - A feature ships on the CLI, MCP and GUI together unless its spec names the exception; `help` and `output` are shared so the texts and JSON rows stay identical

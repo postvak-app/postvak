@@ -162,6 +162,14 @@ fn run(scale: u32, runs: usize) {
             .map(|_| timed(|| drop(fx.store("home"))))
             .collect(),
     );
+    // What migration 011 cost once per store: the one rebuild of the search index, here over every account's.
+    report(
+        "rebuild_index",
+        scale,
+        (0..runs)
+            .map(|_| timed(|| stores.iter().for_each(|s| s.rebuild_search_index().unwrap())))
+            .collect(),
+    );
     report(
         "open_window",
         scale,
