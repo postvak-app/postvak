@@ -317,6 +317,7 @@ export component BodyPane inherits Rectangle {
     in property <string> text;
     in property <string> save-icon;
     in property <string> source-icon;
+    in property <string> rule-icon;
     in property <[ToolButton]> actions;
     in property <bool> actions-enabled;
     // "3 messages selected" while two or more are, else empty; and those messages.
@@ -330,6 +331,8 @@ export component BodyPane inherits Rectangle {
     callback unsubscribe();
     callback save-attachment(int);
     callback open-link(string);
+    // Start a rule for mail from this sender.
+    callback rule-from();
     in property <PageInfo> page;
     in property <[StripData]> strips;
     callback page-width(length);
@@ -489,10 +492,24 @@ export component BodyPane inherits Rectangle {
             padding-top: Theme.pad;
             spacing: Theme.pad;
 
-            Heading {
-                text: root.info.subject;
-                font-size: Theme.subject-size;
-                wrap: word-wrap;
+            HorizontalLayout {
+                spacing: Theme.pad;
+                Heading {
+                    horizontal-stretch: 1;
+                    text: root.info.subject;
+                    font-size: Theme.subject-size;
+                    wrap: word-wrap;
+                }
+                if root.info.address != "": VerticalLayout {
+                    alignment: start;
+                    IconButton {
+                        icon: root.rule-icon;
+                        name: "New rule for mail from this sender";
+                        hint: "New rule for mail from this sender";
+                        palette: Theme.pane;
+                        clicked => { root.rule-from(); }
+                    }
+                }
             }
 
             HorizontalLayout {

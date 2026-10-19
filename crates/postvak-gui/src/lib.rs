@@ -5,6 +5,7 @@ mod avatar;
 mod bench;
 mod bind;
 mod body;
+mod draft;
 #[cfg(test)]
 mod fixture;
 mod folders;
@@ -68,9 +69,6 @@ const APP_ID: &str = "io.github.postvak_app.postvak";
 /// tries once more with the software renderer. Safe mode, asked for or after two starts in a row that died before
 /// the window showed, draws in software and ignores the saved layout.
 pub fn run(paths: Result<Paths>, safe_mode: bool) -> Result<()> {
-    if let Err(e) = slint::set_xdg_app_id(APP_ID) {
-        log::debug!("could not set the app id: {e}");
-    }
     let marker = paths
         .as_ref()
         .ok()
@@ -85,7 +83,7 @@ pub fn run(paths: Result<Paths>, safe_mode: bool) -> Result<()> {
     }
     let backend = std::env::var("SLINT_BACKEND").ok();
     let renderer = launch::renderer(safe_mode, backend.as_deref());
-    launch::select(renderer);
+    launch::select(renderer, APP_ID);
     let daemon_log = paths.as_ref().ok().map(Paths::daemon_log);
     let (error, window_error) = match start(paths, safe_mode, marker.as_ref()) {
         Ok(()) => return Ok(()),

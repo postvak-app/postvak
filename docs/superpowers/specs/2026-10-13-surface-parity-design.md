@@ -25,7 +25,7 @@ One rule violation: `postvak account add` opens its own IMAP connection to test 
 - **`attachment_save` gets its own scope, `files:write`, not in the default set:** the file name and content come from the sender and the agent picks the directory, so a read-only grant must not write files.
 - **`trash_purge` and `rules_apply_existing` are `mail:modify`.** Purge deletes backups for good; apply-existing acts on stored mail.
 - **GUI password entry is keyring only.** A GUI user has no terminal for a password command.
-- **GUI rules editing stays as it is.** Propose, test, check and schema are agent and CLI features; the GUI opens the file. This is the one named exception, already in the GUI spec.
+- **Rule editing has a form only in the GUI.** The GUI's rules editor saves a whole rule, removes one, and starts a draft from a message's sender (`docs/superpowers/plans/2026-10-08-rules-editor.md`), all through `rules::edit::save_rule` and `remove_rule`. The CLI and agents get no equivalent: a person at a terminal edits rules.toml, and an agent proposes (`rules propose`, `rules_propose`) for a person to approve, so neither needs a form or a way to rewrite or delete a rule outright. Propose, check and schema stay agent and CLI features. This is the one named exception.
 
 ## Library
 
@@ -104,5 +104,5 @@ Three PRs, each leaving the rule truer:
 ## Out of scope
 
 - Editing or removing an account from the GUI or MCP; the CLI has neither either.
-- A GUI rules editor; `docs/superpowers/plans/2026-10-08-rules-editor.md` covers it.
+- The GUI rules editor itself; `docs/superpowers/plans/2026-10-08-rules-editor.md` covers it, and the exception above names what it adds to the GUI alone.
 - Testing the login before saving; `2026-10-19-account-login-test-design.md` adds it.

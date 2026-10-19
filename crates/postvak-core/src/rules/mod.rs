@@ -1,5 +1,7 @@
 pub mod apply;
 pub mod edit;
+
+pub use edit::rule_toml;
 pub mod engine;
 
 use std::io;
@@ -75,7 +77,7 @@ impl Rule {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Match {
     /// The From header
@@ -126,7 +128,7 @@ pub struct Match {
 }
 
 /// One value, or a list of them
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged, expecting = "one value or a list of them")]
 pub enum OneOrMany<T> {
     One(T),
@@ -143,7 +145,7 @@ impl<T> OneOrMany<T> {
 }
 
 /// Exactly one of contains, equals, regex
-#[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TextMatch {
     /// Case-insensitive substring; a list matches any of them
@@ -157,7 +159,7 @@ pub struct TextMatch {
     pub regex: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HeaderMatch {
     /// Header name, e.g. List-Id
