@@ -9,8 +9,7 @@ use zbus::message::Type;
 use zbus::zvariant::Value;
 use zbus::{MatchRule, Message};
 
-use super::{Mail, escape_markup, title};
-use crate::message::clean;
+use super::{Notice, escape_markup};
 use crate::paths::APP_ID;
 
 const SERVER: &str = "org.freedesktop.Notifications";
@@ -20,8 +19,8 @@ const DEFAULT_ACTION: &str = "default";
 /// Notifications whose click is still remembered; a server may keep older ones in its history without telling.
 const REMEMBERED: usize = 64;
 
-/// What a click does: opens the mail, with the activation token the server gave for it.
-pub type Open = Box<dyn Fn(&Mail, Option<&str>) + Send + Sync>;
+/// What a click does: opens the notice's message, with the activation token the server gave for it.
+pub type Open = Box<dyn Fn(&Notice, Option<&str>) + Send + Sync>;
 
 pub struct Bus {
     /// Connected on the first notification; tried again on the next one while there is no notification server.
@@ -45,7 +44,7 @@ impl Bus {
         }
     }
 
-    pub fn notify(&mut self, mail: &Mail) {
+    pub fn notify(&mut self, notice: &Notice) {
         if self.session.is_none() {
             match self.connect() {
                 Ok(session) => self.session = Some(session),
@@ -56,8 +55,8 @@ impl Bus {
             }
         }
         let Some(session) = &self.session else { return };
-        match send(session, mail) {
-            Ok((id, server)) => lock(&self.clicks).sent(id, server, mail.clone()),
+        match send(session, notice) {
+            Ok((id, server)) => lock(&self.clicks).sent(id, server, notice.clone()),
             // The connection stays: a server that failed this once (restarting, say) is started again by the bus.
             Err(e) => log::debug!("could not send a notification: {e}"),
         }
@@ -83,9 +82,9 @@ impl Bus {
             .spawn(move || {
                 for message in signals.flatten() {
                     if let Some(signal) = Signal::read(&message)
-                        && let Some((mail, token)) = lock(&clicks).heard(signal)
+                        && let Some((notice, token)) = lock(&clicks).heard(signal)
                     {
-                        open(&mail, token.as_deref());
+                        open(&notice, token.as_deref());
                     }
                 }
             })
@@ -98,8 +97,8 @@ impl Bus {
 }
 
 /// Sends the notification; its id, and the server's unique bus name, which the signals about it come from.
-fn send(session: &Session, mail: &Mail) -> zbus::Result<(u32, Option<String>)> {
-    let request = Request::of(mail, session.body_markup);
+fn send(session: &Session, notice: &Notice) -> zbus::Result<(u32, Option<String>)> {
+    let request = Request::of(notice, session.body_markup);
     let reply = session.connection.call_method(
         Some(SERVER),
         PATH,
@@ -129,15 +128,14 @@ struct Request {
 }
 
 impl Request {
-    fn of(mail: &Mail, body_markup: bool) -> Request {
-        let subject = clean(&mail.subject, false);
+    fn of(notice: &Notice, body_markup: bool) -> Request {
         Request {
             // The summary is plain text everywhere; only the body may hold markup.
-            summary: title(&mail.from),
+            summary: notice.title.clone(),
             body: if body_markup {
-                escape_markup(&subject)
+                escape_markup(&notice.body)
             } else {
-                subject
+                notice.body.clone()
             },
             actions: vec![DEFAULT_ACTION, "Open"],
             hints: HashMap::from([
@@ -146,6 +144,8 @@ impl Request {
                 ("category", Value::from("email.arrived")),
                 // From the sound theme; the server plays it, so Do Not Disturb and the volume apply.
                 ("sound-name", Value::from("message-new-email")),
+                // Plasma shows it beside the app's name, so you see which account the mail is for.
+                ("x-kde-origin-name", Value::from(notice.account.clone())),
             ]),
         }
     }
@@ -198,22 +198,22 @@ impl Signal {
 struct Clicks {
     /// The notification server's unique name; signals from anyone else on the bus are not its.
     server: Option<String>,
-    sent: BTreeMap<u32, (Mail, Option<String>)>,
+    sent: BTreeMap<u32, (Notice, Option<String>)>,
 }
 
 impl Clicks {
-    fn sent(&mut self, id: u32, server: Option<String>, mail: Mail) {
+    fn sent(&mut self, id: u32, server: Option<String>, notice: Notice) {
         if server.is_some() {
             self.server = server;
         }
-        self.sent.insert(id, (mail, None));
+        self.sent.insert(id, (notice, None));
         while self.sent.len() > REMEMBERED {
             self.sent.pop_first();
         }
     }
 
-    /// The mail to open and its token, when `signal` is a click on one of ours.
-    fn heard(&mut self, signal: Signal) -> Option<(Mail, Option<String>)> {
+    /// The notice to open and its token, when `signal` is a click on one of ours.
+    fn heard(&mut self, signal: Signal) -> Option<(Notice, Option<String>)> {
         let from = match &signal {
             Signal::ActionInvoked { from, .. }
             | Signal::ActivationToken { from, .. }
@@ -251,13 +251,13 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 mod tests {
     use super::*;
 
-    fn mail(uid: u32) -> Mail {
-        Mail {
+    fn mail(uid: u32) -> Notice {
+        Notice {
+            title: "Tom & Jerry".into(),
+            body: "Cheese <today> & tomorrow".into(),
             account: "work".into(),
             folder: "INBOX".into(),
             uid,
-            from: "Tom & Jerry <tj@example.com>".into(),
-            subject: "Cheese <today> & tomorrow".into(),
         }
     }
 
@@ -269,6 +269,7 @@ mod tests {
         assert_eq!(request.actions, ["default", "Open"]);
         assert_eq!(request.hints["desktop-entry"], Value::from(APP_ID));
         assert_eq!(request.hints["category"], Value::from("email.arrived"));
+        assert_eq!(request.hints["x-kde-origin-name"], Value::from("work"));
         assert_eq!(
             request.hints["sound-name"],
             Value::from("message-new-email")

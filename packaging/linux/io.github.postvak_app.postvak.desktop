@@ -9,5 +9,7 @@ Icon=io.github.postvak_app.postvak
 Terminal=false
 StartupNotify=true
 StartupWMClass=io.github.postvak_app.postvak
+SingleMainWindow=true
+X-GNOME-UsesNotifications=true
 Categories=Network;Email;
 Keywords=mail;email;IMAP;inbox;rules;

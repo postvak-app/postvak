@@ -20,6 +20,9 @@ GUI and daemon only. This is the named exception to the surface parity rule: the
 - **One window:** `gui.lock` and `gui.sock` in the state directory. The first start holds the lock and listens once its mail window is live. A later start sends `{"open": …}` on the socket, waits for `ok` and exits. If the window holding the lock does not answer within 3 s, for example because it is still showing the startup window, the later start opens its own window, as before. The software-renderer retry releases the lock first, because the retry becomes the first window.
 - **Activation token:** `postvak gui` takes `XDG_ACTIVATION_TOKEN` or `DESKTOP_STARTUP_ID` out of its environment before any thread starts, so the daemon and browser it starts do not inherit it, and gives it to its first window through Slint's attributes hook. The window can then come to the front, and the launcher stops showing that the app is starting.
 - **Raising an open window on Wayland is best effort.** Wayland gives an app no way to restore, focus or raise its own window. Slint applies the attributes hook only when it first creates a window, not when it recreates one after a hide, so a token handed over by a later start cannot reach the window either. A window that was hidden comes back as a new one, which compositors usually put in front. An open one asks for attention, which Plasma shows on its task bar entry and GNOME shows as "Postvak is ready". If Slint applied the hook on every recreation, the handed-over token could do better.
+- **Bursts:** the daemon holds each account's `NewMail` until that pass's `Synced`. Up to three messages notify one by one; more become one "N new messages" notification naming up to three senders, newest first, which opens the newest message. On Plasma, `x-kde-origin-name` shows the account.
+- **Unread count on the task bar entry:** the window sends the All inboxes unread count with the `com.canonical.Unity.LauncherEntry` `Update` signal (Plasma's task manager, Ubuntu's dock, Dash to Dock), only when it changes, and clears it when the window closes. With the window closed the count is gone, since only the window knows it. No `urgent` flag: it needs the window's focus, which winit does not report on every platform. Whether the Flatpak's D-Bus proxy lets this broadcast signal through needs checking on a real desktop.
+- **Desktop entry:** `SingleMainWindow=true` now that there is one window, and `X-GNOME-UsesNotifications=true`, so GNOME lists Postvak in its notification settings before the first notification.
 - **Opening the message:** its folder, with the search cleared. A filter that hides the message is reset to the default. The cursor goes to the row whose uid matches; in a thread, that is the newest message, which new mail is.
 
 ## Tests
@@ -29,6 +32,8 @@ GUI and daemon only. This is the named exception to the surface parity rule: the
 - The command a click runs: arguments, and the token set or cleared.
 - One window: a later start's request reaches the first window; the lock frees when the first window ends; a first window that does not answer leaves the later start alone; a stale socket is replaced.
 - The token: the Wayland one is preferred, and an empty one counts as none.
+- Bursts: a few messages notify one by one; more become one notification that names the senders and opens the newest; the daemon hands each account's mail over when its pass ends.
+- The unread count: its properties, and on a private bus, that only a changed count is sent.
 - `OpenMessage` shows the message's folder with the cursor on it, and resets a filter that hid it.
 
 Not automated: a real notification server, compositor or desktop. Report the platform coverage as compiled and tested on Linux, not run on GNOME or Plasma.

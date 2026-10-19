@@ -1,5 +1,5 @@
 //! The one process that owns the engine, serving it to the GUI, CLI and MCP over a private Unix socket.
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File, TryLockError};
 use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
 use std::net::Shutdown;
@@ -456,28 +456,38 @@ fn route_events(
     shared: &Shared,
     events: Receiver<Event>,
     terminal: bool,
-    mut notify: impl FnMut(&crate::notify::Mail),
+    mut notify: impl FnMut(&[crate::notify::Mail]),
 ) {
+    // Each account's new mail, held until the pass that found it ends, so a burst becomes one notification.
+    let mut new_mail: BTreeMap<String, Vec<crate::notify::Mail>> = BTreeMap::new();
     for event in events {
         if reported(&event, terminal) {
             report(&event);
         }
-        // The sync sends NewMail only for mail that should notify, rules included.
-        if let Event::NewMail {
-            account,
-            folder,
-            uid,
-            from,
-            subject,
-        } = &event
-        {
-            notify(&crate::notify::Mail {
-                account: account.clone(),
-                folder: folder.clone(),
-                uid: *uid,
-                from: from.clone(),
-                subject: subject.clone(),
-            });
+        // The sync sends NewMail only for mail that should notify, rules included, and then the pass's Synced.
+        match &event {
+            Event::NewMail {
+                account,
+                folder,
+                uid,
+                from,
+                subject,
+            } => new_mail
+                .entry(account.clone())
+                .or_default()
+                .push(crate::notify::Mail {
+                    account: account.clone(),
+                    folder: folder.clone(),
+                    uid: *uid,
+                    from: from.clone(),
+                    subject: subject.clone(),
+                }),
+            Event::Synced { account, .. } => {
+                if let Some(batch) = new_mail.remove(account) {
+                    notify(&batch);
+                }
+            }
+            _ => {}
         }
         let mut hub = lock(&shared.hub);
         if let Event::Activity { account, activity } = &event {
@@ -489,6 +499,9 @@ fn route_events(
             }
         }
         hub.broadcast(&event);
+    }
+    for batch in new_mail.values() {
+        notify(batch);
     }
 }
 

@@ -7,6 +7,7 @@ Four crates in one workspace. `crates/postvak-core` holds every module below exc
 
 - `account` adding an account (validate, store the keyring secret, save config.toml) and waiting for the daemon to start it; the only code that adds one
 - `actions` direct actions on chosen messages (mark, move, archive, delete); same `apply` as rules
+- `badge` the unread count on the Linux task bar or dock entry (the Unity LauncherEntry signal over D-Bus); the GUI keeps it current while open
 - `config` accounts and identity (address + aliases)
 - `credentials` keyring or password command; `Secret` has no Debug
 - `daemon` the background process that owns sync and IMAP: `mod.rs` the server (socket, lock, log, idle exit), `wire` the JSON-lines protocol, `client` what front ends use (CLI, GUI, MCP; auto-starts the daemon), `service` launchd and systemd
@@ -58,7 +59,7 @@ POSTVAK_TEST_IMAP_HOST=localhost cargo test --features testing --test imap_live
 
 Port 10993 advertises MOVE and UIDPLUS, port 11993 neither. Each test logs in as its own throwaway user. `tests/dovecot/gen-certs.sh` regenerates the test-only CA.
 
-The notification click test runs against a stand-in server on a private session bus, so nothing reaches your desktop: `dbus-run-session -- env POSTVAK_TEST_DBUS=1 cargo test -p postvak-core notify::dbus`.
+The notification click test runs against a stand-in server on a private session bus, so nothing reaches your desktop: `dbus-run-session -- env POSTVAK_TEST_DBUS=1 cargo test -p postvak-core notify::dbus badge`.
 
 ## Property tests
 `crates/postvak-core/tests/fuzz.rs` feeds hostile input to the message, rules and wire parsers; the only assertion is no panic. Deeper search: `PROPTEST_CASES=20000 cargo test --release -p postvak-core --test fuzz`. A finding becomes a named test; unfixed ones go in `crates/postvak-core/tests/known_bugs.rs` as `#[ignore = "BUG: …"]`. `.github/workflows/nightly.yml` runs this search, and the one below, every night with ten times the cases.

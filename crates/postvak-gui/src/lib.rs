@@ -180,6 +180,8 @@ pub(crate) struct Live {
     timer: slint::Timer,
     /// None in tests, and where the platform has no tray.
     tray: Option<ui::Tray>,
+    /// The unread count on the task bar entry; None in tests.
+    badge: Option<postvak_core::badge::Badge>,
     pub window: ui::MailWindow,
 }
 
@@ -218,6 +220,7 @@ impl Live {
         app: App,
         window: ui::MailWindow,
         tray: Option<ui::Tray>,
+        badge: Option<postvak_core::badge::Badge>,
         clock: Box<dyn Fn() -> f64>,
     ) {
         let live = Live {
@@ -225,6 +228,7 @@ impl Live {
             clock,
             timer: slint::Timer::default(),
             tray,
+            badge,
             window,
         };
         if let Some(tray) = &live.tray {
@@ -293,6 +297,9 @@ impl Live {
         bind::present(&self.app, &self.window);
         if let Some(tray) = &self.tray {
             tray.set_hint(status::tray_hint(&self.app).into());
+        }
+        if let Some(badge) = &mut self.badge {
+            badge.show(folders::inbox_unread(&self.app.accounts));
         }
     }
 
@@ -378,7 +385,13 @@ fn open(paths: Paths, start: &Start) -> Result<()> {
         .ok();
     let started = Instant::now();
     let clock = Box::new(move || started.elapsed().as_secs_f64());
-    Live::install(app, window, tray, clock);
+    Live::install(
+        app,
+        window,
+        tray,
+        Some(postvak_core::badge::Badge::new()),
+        clock,
+    );
     if let Some(open) = start.open.clone() {
         on(Box::new(move |_| vec![state::UiAction::OpenMessage(open)]));
     }
@@ -390,10 +403,14 @@ fn open(paths: Paths, start: &Start) -> Result<()> {
         log::warn!("a second start will open a second window: {e}");
     }
     let ran = slint::run_event_loop();
-    if let Some(live) = LIVE.with_borrow_mut(Option::take)
-        && let Err(e) = persist::save(&layout, &remember(&live.window))
-    {
-        log::warn!("could not save the window's layout: {e:#}");
+    if let Some(mut live) = LIVE.with_borrow_mut(Option::take) {
+        // Without the window there is nobody to keep the count current.
+        if let Some(badge) = &mut live.badge {
+            badge.show(0);
+        }
+        if let Err(e) = persist::save(&layout, &remember(&live.window)) {
+            log::warn!("could not save the window's layout: {e:#}");
+        }
     }
     ran.context("the window failed")
 }
