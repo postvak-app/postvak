@@ -18,10 +18,10 @@
 # Writes dist/macos/Postvak.app and dist/macos/postvak-<version>-macos-<arch>.dmg, and prints the DMG's sha256.
 set -euo pipefail
 
-# Keep equal to LSMinimumSystemVersion in Info.plist.in (and the cask's depends_on macos).
+# Keep equal to LSMinimumSystemVersion in Info.plist.in, the cask's depends_on macos and the env of macos-app.yml.
 export MACOSX_DEPLOYMENT_TARGET=11.0
-# Writes target/<triple>/release/postvak.dSYM, the line tables crash reports need for file:line. Set here, not in
-# Cargo.toml, because on Linux it would move the line tables out of the binary.
+# Writes target/<triple>/release/postvak.dSYM, the line tables crash reports need for file:line; macos-app.yml sets it
+# too. Set here, not in Cargo.toml, because on Linux it would move the line tables out of the binary.
 export CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO=packed
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
