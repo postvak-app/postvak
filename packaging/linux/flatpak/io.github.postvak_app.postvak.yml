@@ -9,11 +9,9 @@ sdk: org.freedesktop.Sdk
 command: postvak-launch
 finish-args:
   - --share=network
-  # Display: Wayland first; X11 needs shared memory. X11 stays shared under Wayland too, as Xwayland: Slint's
-  # clipboard (arboard) speaks only the wlr data-control protocol on Wayland, which GNOME lacks and sandboxed
-  # clients are not offered, and otherwise falls back to X11. Without it copy and paste do nothing.
+  # Display: Wayland first, X11 only without a Wayland compositor; X11 needs shared memory.
   - --socket=wayland
-  - --socket=x11
+  - --socket=fallback-x11
   - --share=ipc
   # The GPU for the window (Vulkan, or GL as a fallback).
   - --device=dri
