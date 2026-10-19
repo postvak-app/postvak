@@ -146,6 +146,8 @@ mod tests {
                 ("secondary on the selection", p.secondary, p.selected),
                 ("warning", p.warning, p.background),
                 ("highlight text", p.highlight, p.background),
+                ("text on an added line", p.text, p.added),
+                ("an added line's mark", p.success, p.added),
             ];
             for (what, text, background) in pairs {
                 let ratio = contrast(text, background);

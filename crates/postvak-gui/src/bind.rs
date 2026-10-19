@@ -6,6 +6,7 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString};
 
 use postvak_core::config;
 
+use super::draft::{self, ACTIONS, Condition, Draft, Field, Op};
 use super::folders::{self, Entry, FolderEntry};
 use super::html::{self, HtmlState};
 use super::keys::{self, Key, Named, Press};
@@ -13,9 +14,9 @@ use super::rows::{ListModel, PageModel, model, sync, synced};
 use super::rules::SheetSort;
 use super::state::{App, Focus, UiAction, View};
 use super::ui::{
-    AccountFields, BodyInfo, Dot, FolderItem, FolderKind, KeyHelp, MailWindow, MenuAction,
-    MenuChoice, MenuState, PageInfo, Pane, ProposalData, Remote, RuleData, SelectedData, Sheet,
-    StatusLine, Theme, ThemePreference, ToolButton,
+    AccountFields, ActionData, BodyInfo, ConditionData, Dot, FolderItem, FolderKind, KeyHelp,
+    MailWindow, MenuAction, MenuChoice, MenuState, PageInfo, Pane, ProposalData, Remote, RuleData,
+    RuleEditor, SelectedData, Sheet, StatusLine, Theme, ThemePreference, ToolButton,
 };
 use super::{account, body, icons, list, menu, rules, status, theme, toolbar};
 use postvak_core::message::clean;
@@ -43,9 +44,11 @@ pub(crate) fn account_fields(fields: AccountFields) -> account::Fields {
 /// What never changes while the window is open.
 pub(crate) fn init(window: &MailWindow) {
     window.set_list_min_width(list::MIN_WIDTH);
+    init_editor(window);
     window.set_close_icon(icons::CLOSE.into());
     window.set_search_icon(icons::SEARCH.into());
     window.set_filter_icon(icons::FILTER.into());
+    window.set_rule_icon(icons::RULES.into());
     window.set_sync_icon(icons::SYNC.into());
     window.set_save_icon(icons::SAVE.into());
     window.set_source_icon(icons::SOURCE.into());
@@ -101,6 +104,7 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
     present_list(app, window);
     present_body(app, window);
     present_sheet(app, window);
+    present_editor(app, window);
 
     let enabled = |item: MenuAction| menu::action(item, app).is_some();
     window.set_menu(MenuState {
@@ -307,27 +311,277 @@ fn present_page(app: &App, window: &MailWindow) {
     }
 }
 
+/// The accounts the editor offers: every account, then each by name, then the draft's own when no longer listed.
+fn draft_accounts(app: &App) -> Vec<String> {
+    let mut names: Vec<String> = app.accounts.iter().map(|a| a.name.clone()).collect();
+    if let Some(own) = app.rule_draft.as_ref().and_then(|d| d.account.as_ref())
+        && !names.contains(own)
+    {
+        names.push(own.clone());
+    }
+    names
+}
+
+/// The editor's fixed choices, which never change while the window is open.
+fn init_editor(window: &MailWindow) {
+    let editor = window.global::<RuleEditor>();
+    let labels = |items: Vec<&str>| model(items.into_iter().map(SharedString::from));
+    editor.set_fields(labels(Field::ALL.map(Field::label).to_vec()));
+    editor.set_ops(labels(Op::ALL.map(Op::label).to_vec()));
+    editor.set_action_choices(labels(ACTIONS.iter().map(draft::action_name).collect()));
+}
+
+fn present_editor(app: &App, window: &MailWindow) {
+    let editor = window.global::<RuleEditor>();
+    // The prompt can show over the reader, when its Rule button would replace an edited rule.
+    editor.set_unsaved(app.leave_draft.is_some());
+    let draft = app.rule_draft.as_ref().filter(|_| app.view == View::Rules);
+    let Some(draft) = draft else {
+        editor.set_open(false);
+        return;
+    };
+    let accounts = draft_accounts(app);
+    let account = draft
+        .account
+        .as_ref()
+        .and_then(|own| accounts.iter().position(|name| name == own))
+        .map_or(0, |i| i + 1);
+    let mut choices = vec!["Every account".to_string()];
+    choices.extend(accounts.iter().map(|name| clean(name, false)));
+    let conditions: Vec<ConditionData> = draft
+        .conditions
+        .iter()
+        .map(|c| ConditionData {
+            field: index_of(&Field::ALL, &c.field),
+            header: clean(&c.header, false).into(),
+            op: index_of(&Op::ALL, &c.op),
+            value: clean(&c.value, false).into(),
+            text: c.field.is_text(),
+            flag: c.field.is_flag(),
+            named: c.field == Field::Header,
+        })
+        .collect();
+    let actions: Vec<ActionData> = draft
+        .actions
+        .iter()
+        .map(|action| {
+            let value = match action {
+                postvak_core::rules::Action::Move(v) | postvak_core::rules::Action::Tag(v) => {
+                    Some(v)
+                }
+                _ => None,
+            };
+            ActionData {
+                name: draft::action_name(action).into(),
+                label: clean(&draft::action_label(action), false).into(),
+                value: value.map(|v| clean(v, false)).unwrap_or_default().into(),
+                takes_value: value.is_some(),
+                note: if *action == postvak_core::rules::Action::Delete {
+                    "keeps a .eml backup".into()
+                } else {
+                    SharedString::new()
+                },
+            }
+        })
+        .collect();
+    let kept: Vec<SharedString> = draft::match_labels(&draft.kept)
+        .iter()
+        .map(|label| clean(label, false).into())
+        .collect();
+    editor.set_open(true);
+    editor.set_name(clean(&draft.name, false).into());
+    editor.set_enabled(draft.enabled);
+    editor.set_account(i32::try_from(account).unwrap_or(0));
+    let choices = choices.into_iter().map(SharedString::from).collect();
+    sync(editor.get_accounts(), choices, |m| editor.set_accounts(m));
+    editor.set_folder(clean(draft.folder.as_deref().unwrap_or_default(), false).into());
+    sync(editor.get_kept(), kept, |m| editor.set_kept(m));
+    sync(editor.get_conditions(), conditions, |m| {
+        editor.set_conditions(m)
+    });
+    sync(editor.get_actions(), actions, |m| editor.set_actions(m));
+    editor.set_renaming(draft.renames());
+    editor.set_error(draft.error.as_deref().unwrap_or_default().into());
+    editor.set_tested(draft.tested.as_deref().unwrap_or_default().into());
+    editor.set_confirm_remove(draft.confirm_remove);
+}
+
+fn index_of<T: PartialEq>(all: &[T], item: &T) -> i32 {
+    all.iter()
+        .position(|x| x == item)
+        .and_then(|i| i32::try_from(i).ok())
+        .unwrap_or(0)
+}
+
+/// An `Ask` that changes a copy of the open rule and hands it back when it differs.
+fn edit_draft(change: impl FnOnce(&App, &mut Draft) + 'static) -> Ask {
+    one(move |app| {
+        let mut draft = app.rule_draft.clone()?;
+        change(app, &mut draft);
+        (Some(&draft) != app.rule_draft.as_ref()).then(|| UiAction::EditDraft(Box::new(draft)))
+    })
+}
+
+/// Removes the `index`th of `items`, as the window's callbacks number them, when there is one.
+fn remove_nth<T>(items: &mut Vec<T>, index: i32) {
+    if let Ok(index) = usize::try_from(index)
+        && index < items.len()
+    {
+        items.remove(index);
+    }
+}
+
+/// The open rule's row `index`, when there is one.
+fn condition(draft: &mut Draft, index: i32) -> Option<&mut Condition> {
+    draft.conditions.get_mut(usize::try_from(index).ok()?)
+}
+
+fn connect_editor(window: &MailWindow, on: fn(Ask) -> bool) {
+    let editor = window.global::<RuleEditor>();
+    let act = move |action: UiAction| on(Box::new(move |_| vec![action]));
+    editor.on_name_edited(move |text| {
+        on(edit_draft(move |_, d| d.name = text.into()));
+    });
+    editor.on_enabled_toggled(move |enabled| {
+        on(edit_draft(move |_, d| d.enabled = enabled));
+    });
+    editor.on_account_chosen(move |i| {
+        on(edit_draft(move |app, d| {
+            d.account = usize::try_from(i - 1)
+                .ok()
+                .and_then(|i| draft_accounts(app).into_iter().nth(i));
+        }));
+    });
+    editor.on_folder_edited(move |text| {
+        on(edit_draft(move |_, d| {
+            d.folder = (!text.trim().is_empty()).then(|| text.into());
+        }));
+    });
+    editor.on_field_chosen(move |row, i| {
+        on(edit_draft(move |_, d| {
+            if let (Some(field), Some(c)) = (nth(Field::ALL, i), condition(d, row)) {
+                *c = c.with_field(field);
+            }
+        }));
+    });
+    editor.on_op_chosen(move |row, i| {
+        on(edit_draft(move |_, d| {
+            if let (Some(op), Some(c)) = (nth(Op::ALL, i), condition(d, row)) {
+                c.op = op;
+            }
+        }));
+    });
+    editor.on_header_edited(move |row, text| {
+        on(edit_draft(move |_, d| {
+            if let Some(c) = condition(d, row) {
+                c.header = text.into();
+            }
+        }));
+    });
+    editor.on_value_edited(move |row, text| {
+        on(edit_draft(move |_, d| {
+            if let Some(c) = condition(d, row) {
+                c.value = text.into();
+            }
+        }));
+    });
+    editor.on_add_condition(move || {
+        on(edit_draft(|_, d| {
+            let unused = Field::ALL
+                .into_iter()
+                .find(|f| d.conditions.iter().all(|c| c.field != *f));
+            d.conditions
+                .push(Condition::new(unused.unwrap_or(Field::From)));
+        }));
+    });
+    editor.on_remove_condition(move |row| {
+        on(edit_draft(move |_, d| remove_nth(&mut d.conditions, row)));
+    });
+    editor.on_action_chosen(move |i| {
+        on(edit_draft(move |_, d| {
+            d.actions.extend(nth(ACTIONS, i));
+        }));
+    });
+    editor.on_action_value_edited(move |i, text| {
+        on(edit_draft(move |_, d| {
+            let action = usize::try_from(i).ok().and_then(|i| d.actions.get_mut(i));
+            if let Some(
+                postvak_core::rules::Action::Move(value) | postvak_core::rules::Action::Tag(value),
+            ) = action
+            {
+                *value = text.into();
+            }
+        }));
+    });
+    editor.on_remove_action(move |i| {
+        on(edit_draft(move |_, d| remove_nth(&mut d.actions, i)));
+    });
+    editor.on_cancel_remove(move || {
+        on(edit_draft(|_, d| d.confirm_remove = false));
+    });
+    editor.on_save(move || {
+        act(UiAction::SaveDraft);
+    });
+    editor.on_test(move || {
+        act(UiAction::TestDraft);
+    });
+    editor.on_remove(move |confirmed| {
+        act(UiAction::RemoveRule { confirmed });
+    });
+    editor.on_unsaved_save(move || {
+        act(UiAction::UnsavedSave);
+    });
+    editor.on_unsaved_discard(move || {
+        act(UiAction::UnsavedDiscard);
+    });
+    editor.on_unsaved_cancel(move || {
+        act(UiAction::UnsavedCancel);
+    });
+}
+
 fn present_sheet(app: &App, window: &MailWindow) {
     match app.view {
         View::Rules => {
             window.set_sheet(Sheet::Rules);
             window.set_rules_banner(rules::banner(&app.rules).unwrap_or_default().into());
-            let proposals = rules::proposals(&app.rules)
-                .into_iter()
+            let proposals: Vec<ProposalData> = app
+                .rules
+                .proposals
+                .iter()
                 .map(|p| ProposalData {
-                    title: p.title.into(),
-                    toml: p.toml.into(),
-                });
-            sync(window.get_proposals(), proposals.collect(), |m| {
+                    label: p.label.as_str().into(),
+                    by: p.by.as_str().into(),
+                    summary: p.summary.as_str().into(),
+                    toml: p.toml.as_str().into(),
+                    marks: p.marks.as_str().into(),
+                    preview: app
+                        .rules
+                        .previews
+                        .get(&p.name)
+                        .map_or_else(SharedString::new, Into::into),
+                })
+                .collect();
+            let lines: Vec<RuleData> = app
+                .rules
+                .lines
+                .iter()
+                .map(|r| RuleData {
+                    label: r.label.as_str().into(),
+                    enabled: r.enabled,
+                    scope: r.scope.as_str().into(),
+                    by: r.by.as_str().into(),
+                    summary: r.summary.as_str().into(),
+                    selected: app
+                        .rule_draft
+                        .as_ref()
+                        .is_some_and(|d| d.original.as_ref() == Some(&r.name)),
+                })
+                .collect();
+            window.set_rules_counts(rules::counts(lines.len(), proposals.len()).into());
+            sync(window.get_proposals(), proposals, |m| {
                 window.set_proposals(m)
             });
-            let lines = rules::rule_lines(&app.rules).into_iter().map(|r| RuleData {
-                label: r.label.into(),
-                enabled: r.enabled,
-                scope: r.scope.into(),
-                by: r.by.into(),
-            });
-            sync(window.get_rules(), lines.collect(), |m| window.set_rules(m));
+            sync(window.get_rules(), lines, |m| window.set_rules(m));
         }
         View::Activity => {
             window.set_sheet(Sheet::Activity);
@@ -641,8 +895,8 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     });
     window.on_apply_rule(move |i| {
         on(one(move |app| {
-            let rule = nth(rules::rule_lines(&app.rules), i)?;
-            rule.enabled.then_some(UiAction::ApplyRule(rule.name))
+            let rule = nth(&app.rules.lines, i)?;
+            rule.enabled.then(|| UiAction::ApplyRule(rule.name.clone()))
         }));
     });
     window.on_confirm_apply_rule(move || {
@@ -658,10 +912,30 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
             Some(UiAction::RejectRule(proposal(app, i)?))
         }));
     });
+    window.on_rule_from(move || {
+        on(one(|app| {
+            let message = app.body.as_ref()?.message.as_ref()?;
+            Some(UiAction::RuleFrom(message.from_addr.clone()?))
+        }));
+    });
+    window.on_new_rule(move || {
+        act(UiAction::NewRule);
+    });
+    window.on_edit_rule(move |i| {
+        on(one(move |app| {
+            Some(UiAction::EditRule(nth(&app.rules.lines, i)?.name.clone()))
+        }));
+    });
+    connect_editor(window, on);
+    window.on_preview_rule(move |i| {
+        on(one(move |app| {
+            Some(UiAction::PreviewRule(proposal(app, i)?))
+        }));
+    });
     window.on_set_enabled(move |i, enabled| {
         on(one(move |app| {
-            let rule = nth(rules::rule_lines(&app.rules), i)?;
-            Some(UiAction::SetRuleEnabled(rule.name, enabled))
+            let rule = nth(&app.rules.lines, i)?;
+            Some(UiAction::SetRuleEnabled(rule.name.clone(), enabled))
         }));
     });
     window.on_purge_trash(move || {
@@ -694,7 +968,7 @@ fn nth<T>(items: impl IntoIterator<Item = T>, index: i32) -> Option<T> {
 
 /// The name of the proposal the Rules view shows at `index`.
 fn proposal(app: &App, index: i32) -> Option<String> {
-    Some(nth(rules::proposals(&app.rules), index)?.name)
+    Some(nth(&app.rules.proposals, index)?.name.clone())
 }
 
 /// A pill with `label`, drawn from SVG with the window's own fonts.

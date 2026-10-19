@@ -1,15 +1,17 @@
 //! The Rules, Activity and Trash views: what replaces the list and body columns.
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use postvak_core::help;
 use postvak_core::message::clean;
 use postvak_core::paths::Paths;
-use postvak_core::rules::{self, Rule, RuleFile};
+use postvak_core::rules::{self, Rule};
 use postvak_core::store::LogEntry;
 use postvak_core::trash::{Trash, TrashEntry};
 
 use postvak_core::time::date_time;
 
+use super::draft;
 use super::state::{Account, App};
 
 /// Entries shown in the Activity view.
@@ -17,22 +19,31 @@ const LOG_LIMIT: u32 = 500;
 
 pub(crate) struct RulesState {
     pub error: Option<String>,
+    /// "Preview on cached mail" results by proposal name; a reload drops them.
+    pub previews: BTreeMap<String, String>,
     pub rules: Vec<Rule>,
+    /// The rules as the view words them, worded once per load rather than on every frame.
+    pub proposals: Vec<Proposal>,
+    pub lines: Vec<RuleLine>,
 }
 
 impl RulesState {
     /// The file's rules, or the previous ones when it does not parse. A rule that does not compile is reported but
     /// still listed, so it can be switched off.
     pub fn load(path: &Path, previous: Vec<Rule>) -> RulesState {
-        match rules::load(path) {
-            Ok(file) => RulesState {
-                error: rules::compile(&file).err().map(|e| e.to_string()),
-                rules: file.rules,
-            },
-            Err(e) => RulesState {
-                error: Some(e.to_string()),
-                rules: previous,
-            },
+        let (error, rules) = match rules::load(path) {
+            Ok(file) => (
+                rules::compile(&file).err().map(|e| e.to_string()),
+                file.rules,
+            ),
+            Err(e) => (Some(e.to_string()), previous),
+        };
+        RulesState {
+            error,
+            previews: BTreeMap::new(),
+            proposals: proposals(&rules),
+            lines: rule_lines(&rules),
+            rules,
         }
     }
 }
@@ -40,9 +51,14 @@ impl RulesState {
 /// A rule waiting for approval, as the Rules view shows it.
 pub(crate) struct Proposal {
     pub name: String,
-    /// "codes · proposed by agent".
-    pub title: String,
+    pub label: String,
+    /// "proposed by agent".
+    pub by: String,
+    pub summary: String,
+    /// The TOML it adds.
     pub toml: String,
+    /// A "+" beside each line of `toml`, as a diff marks added lines.
+    pub marks: String,
 }
 
 /// A rule in the Rules view's list.
@@ -54,6 +70,22 @@ pub(crate) struct RuleLine {
     pub scope: String,
     /// "proposed by agent", or empty.
     pub by: String,
+    pub summary: String,
+}
+
+/// "1 rule · 2 proposals", beside the Rules title.
+pub(crate) fn counts(rules: usize, proposals: usize) -> String {
+    let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
+    format!(
+        "{} · {}",
+        plural(rules, "rule"),
+        plural(proposals, "proposal")
+    )
+}
+
+/// Whether the list shows `rule` as a proposal rather than a rule.
+pub(crate) fn is_proposal(rule: &Rule) -> bool {
+    !rule.enabled && rule.proposed_by.is_some()
 }
 
 /// The line above the Rules view when rules.toml does not load.
@@ -65,35 +97,29 @@ pub(crate) fn banner(state: &RulesState) -> Option<String> {
     ))
 }
 
-pub(crate) fn proposals(state: &RulesState) -> Vec<Proposal> {
-    state
-        .rules
+fn proposals(rules: &[Rule]) -> Vec<Proposal> {
+    rules
         .iter()
-        .filter(|rule| !rule.enabled && rule.proposed_by.is_some())
+        .filter(|rule| is_proposal(rule))
         .map(|rule| {
-            let by = rule.proposed_by.as_deref().unwrap_or_default();
+            let toml = rules::rule_toml(rule).unwrap_or_else(|e| e.to_string());
+            let toml = clean(&toml, true).trim_end().to_owned();
             Proposal {
                 name: rule.name.clone(),
-                title: format!(
-                    "{} · proposed by {}",
-                    clean(&rule.name, false),
-                    clean(by, false)
+                label: clean(&rule.name, false),
+                by: format!(
+                    "proposed by {}",
+                    clean(rule.proposed_by.as_deref().unwrap_or_default(), false)
                 ),
-                toml: clean(
-                    &toml::to_string(&RuleFile {
-                        rules: vec![rule.clone()],
-                    })
-                    .unwrap_or_else(|e| e.to_string()),
-                    true,
-                )
-                .trim_end()
-                .to_owned(),
+                summary: draft::summary(rule),
+                marks: vec!["+"; toml.lines().count()].join("\n"),
+                toml,
             }
         })
         .collect()
 }
 
-pub(crate) fn rule_lines(state: &RulesState) -> Vec<RuleLine> {
+fn rule_lines(rules: &[Rule]) -> Vec<RuleLine> {
     let line = |rule: &Rule| {
         let account = rule
             .account
@@ -113,9 +139,14 @@ pub(crate) fn rule_lines(state: &RulesState) -> Vec<RuleLine> {
                 .as_deref()
                 .map(|by| format!("proposed by {}", clean(by, false)))
                 .unwrap_or_default(),
+            summary: draft::summary(rule),
         }
     };
-    state.rules.iter().map(line).collect()
+    rules
+        .iter()
+        .filter(|rule| !is_proposal(rule))
+        .map(line)
+        .collect()
 }
 
 /// A table column: its heading, its narrowest width, and its share of the room left over.
@@ -257,7 +288,7 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use crate::state::View;
-    use crate::test_support::{Fixture, Open, Wires};
+    use crate::test_support::{Fixture, Open, Wires, message};
     use postvak_core::store::LogEntry;
     use postvak_core::sync::{Command, Event};
     use postvak_core::trash::Trash;
@@ -337,14 +368,12 @@ mod tests {
             let buttons = open.find("Apply to existing mail");
             assert_eq!(
                 buttons.len(),
-                3,
-                "one per rule: newsletters, codes, only-work"
+                2,
+                "one per rule, not for the proposal: newsletters, only-work"
             );
             buttons[nth].invoke_accessible_default_action();
         };
         apply(1);
-        assert!(wires.sent().is_empty(), "codes is a disabled proposal");
-        apply(2);
         let only = |name: &str, account: &str| {
             (
                 account.to_string(),
@@ -476,7 +505,8 @@ mod tests {
         // A clock left from when the rule ran before must not let it act on older mail.
         fx.store("work").restart_rule_clock("codes", 1).unwrap();
         let (open, wires) = rules_view(&fx);
-        assert_eq!(open.find("codes · proposed by agent").len(), 1);
+        assert_eq!(open.find("proposed by agent").len(), 1);
+        assert_eq!(open.find("subject contains \"code\" → delete").len(), 1);
         assert_eq!(open.labels_containing("name = \"codes\"").len(), 1);
         open.click("Approve");
         assert!(enabled(&fx, "codes"));
@@ -491,20 +521,55 @@ mod tests {
     }
 
     #[test]
+    fn the_header_counts_rules_and_proposals_and_rows_say_what_they_do() {
+        assert_eq!(super::counts(1, 2), "1 rule · 2 proposals");
+        assert_eq!(super::counts(0, 1), "0 rules · 1 proposal");
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = rules_view(&fx);
+        assert_eq!(open.find("1 rule · 1 proposal").len(), 1);
+        assert_eq!(open.find("every account · INBOX").len(), 1);
+        assert_eq!(open.find("from contains \"news@\" → archive").len(), 1);
+    }
+
+    #[test]
+    fn preview_counts_what_a_proposal_would_do_to_cached_mail() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "your code is 1234"));
+        fx.add("work", message("INBOX", 2, "lunch"));
+        let (open, wires) = rules_view(&fx);
+        open.click("Preview on cached mail");
+        assert_eq!(open.find("would delete 1 cached message").len(), 1);
+        assert!(wires.sent().is_empty());
+        assert!(!enabled(&fx, "codes"), "a preview changes nothing");
+    }
+
+    #[test]
+    fn agent_text_is_drawn_without_control_characters() {
+        let sneaky = "[[rules]]\nname = \"codes\"\nenabled = false\nproposed_by = \"age\\u001bnt\"\nmatch.subject = { contains = \"\\u001b[2Jcode\" }\nactions = [\"delete\"]\n";
+        let fx = Fixture::new(&["work"]);
+        std::fs::write(fx.paths.rules_file(), sneaky).unwrap();
+        let (open, _wires) = view(&fx, View::Rules);
+        assert_eq!(open.find("proposed by agent").len(), 1);
+        assert_eq!(open.find("subject contains \"[2Jcode\" → delete").len(), 1);
+        assert!(open.labels_containing("\u{1b}").is_empty());
+    }
+
+    #[test]
     fn reject_takes_the_proposal_out() {
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = rules_view(&fx);
         open.click("Reject");
         let file = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
         assert!(file.rules.iter().all(|r| r.name != "codes"));
-        assert!(open.find("Proposals").is_empty());
+        assert!(open.find("Approve").is_empty());
     }
 
     #[test]
     fn the_switch_turns_a_rule_off_and_keeps_comments() {
         let fx = Fixture::new(&["work"]);
         let (open, wires) = rules_view(&fx);
-        open.get("newsletters").invoke_accessible_default_action();
+        open.get("Enable newsletters")
+            .invoke_accessible_default_action();
         assert!(!enabled(&fx, "newsletters"));
         assert!(
             std::fs::read_to_string(fx.paths.rules_file())
@@ -732,5 +797,368 @@ mod tests {
                 .any(|line| line.text == "work: restored to INBOX")
         });
         assert!(history);
+    }
+}
+
+#[cfg(test)]
+mod editor_tests {
+    use slint::ComponentHandle;
+
+    use crate::state::View;
+    use crate::test_support::{Fixture, Open, Wires, message};
+    use crate::ui::RuleEditor;
+    use postvak_core::rules::Action;
+
+    const RULES: &str = "# keep me\n[[rules]]\nname = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions = [\"archive\"]\n";
+
+    fn two_rules() -> String {
+        format!(
+            "{RULES}\n[[rules]]\nname = \"receipts\"\nmatch.subject = {{ contains = \"receipt\" }}\nactions = [\"flag\"]\n"
+        )
+    }
+
+    fn file(fx: &Fixture) -> String {
+        std::fs::read_to_string(fx.paths.rules_file()).unwrap()
+    }
+
+    fn rules_view(fx: &Fixture, rules: &str) -> (Open, Wires) {
+        std::fs::write(fx.paths.rules_file(), rules).unwrap();
+        let (open, wires) = fx.window();
+        open.with(|live| live.app.select_view(View::Rules));
+        open.tick();
+        (open, wires)
+    }
+
+    /// Runs `f` on the editor's global, as the window's fields would, then lets the window catch up.
+    fn editor(open: &Open, f: impl FnOnce(&RuleEditor)) {
+        f(&open.window().global::<RuleEditor>());
+        open.tick();
+    }
+
+    fn open_newsletters(fx: &Fixture) -> (Open, Wires) {
+        let (open, wires) = rules_view(fx, RULES);
+        open.click("newsletters");
+        (open, wires)
+    }
+
+    fn draft_name(open: &Open) -> Option<String> {
+        open.with(|live| live.app.rule_draft.as_ref().map(|d| d.name.clone()))
+    }
+
+    /// newsletters open with an unsaved edit, then receipts clicked in the list.
+    fn leave_edited_newsletters(fx: &Fixture) -> (Open, Wires) {
+        let (open, wires) = rules_view(fx, &two_rules());
+        open.click("newsletters");
+        editor(&open, |e| e.invoke_value_edited(0, "letters@".into()));
+        open.click("receipts");
+        assert_eq!(open.find("This rule has unsaved changes.").len(), 1);
+        (open, wires)
+    }
+
+    #[test]
+    fn a_new_rule_is_saved_below_the_others_and_keeps_comments() {
+        let fx = Fixture::new(&["work"]);
+        let (open, wires) = rules_view(&fx, RULES);
+        open.click("New rule");
+        editor(&open, |e| {
+            e.invoke_name_edited("receipts".into());
+            e.invoke_add_condition();
+            e.invoke_field_chosen(0, 3);
+            e.invoke_value_edited(0, "receipt".into());
+            e.invoke_action_chosen(4);
+            e.invoke_action_value_edited(0, "Receipts".into());
+        });
+        open.click("Save");
+        assert_eq!(
+            file(&fx),
+            format!(
+                "{RULES}\n[[rules]]\nname = \"receipts\"\nmatch.subject = {{ contains = \"receipt\" }}\nactions = [{{ move = \"Receipts\" }}]\n"
+            )
+        );
+        let original = open.with(|live| live.app.rule_draft.clone().unwrap().original);
+        assert_eq!(original.as_deref(), Some("receipts"));
+        assert!(wires.sent().is_empty());
+    }
+
+    #[test]
+    fn editing_a_rule_changes_only_its_value() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = open_newsletters(&fx);
+        open.get("Condition 1 value")
+            .set_accessible_value("letters@");
+        open.tick();
+        open.click("Save");
+        assert_eq!(file(&fx), RULES.replace("news@", "letters@"));
+    }
+
+    #[test]
+    fn a_field_typed_in_shows_the_next_rule_opened() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = rules_view(&fx, &two_rules());
+        open.click("newsletters");
+        open.get("Condition 1 value")
+            .set_accessible_value("letters@");
+        open.tick();
+        open.click("receipts");
+        open.click("Discard");
+        open.tick();
+        let value = open.get("Condition 1 value").accessible_value();
+        assert_eq!(value.as_deref(), Some("receipt"));
+    }
+
+    #[test]
+    fn conditions_the_form_cannot_edit_are_shown_and_saved_unchanged() {
+        let grouped = RULES.replace(
+            "actions = [\"archive\"]",
+            "match.subject = { contains = [\"weekly\", \"digest\"] }\nactions = [\"archive\"]",
+        );
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = rules_view(&fx, &grouped);
+        open.click("newsletters");
+        assert_eq!(
+            open.find("subject contains \"weekly\" or \"digest\"").len(),
+            1
+        );
+        assert_eq!(
+            open.find("Edit these in rules.toml; Save keeps them as they are.")
+                .len(),
+            1
+        );
+        editor(&open, |e| e.invoke_value_edited(0, "letters@".into()));
+        open.click("Save");
+        assert_eq!(file(&fx), grouped.replace("news@", "letters@"));
+    }
+
+    #[test]
+    fn renaming_warns_first_and_saves_in_place() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = open_newsletters(&fx);
+        assert!(
+            open.labels_containing("Renaming makes this a new rule")
+                .is_empty()
+        );
+        editor(&open, |e| e.invoke_name_edited("news".into()));
+        assert_eq!(
+            open.find(
+                "Renaming makes this a new rule: it acts only on mail that arrives after you save."
+            )
+            .len(),
+            1
+        );
+        open.click("Save");
+        assert_eq!(file(&fx), RULES.replace("newsletters", "news"));
+    }
+
+    #[test]
+    fn a_taken_name_is_refused_and_shown() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = rules_view(&fx, &two_rules());
+        open.click("newsletters");
+        editor(&open, |e| e.invoke_name_edited("receipts".into()));
+        open.click("Save");
+        assert_eq!(file(&fx), two_rules());
+        assert_eq!(open.labels_containing("duplicate").len(), 1);
+    }
+
+    #[test]
+    fn a_rule_removed_elsewhere_is_not_saved_back() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = open_newsletters(&fx);
+        std::fs::write(fx.paths.rules_file(), "# emptied\n").unwrap();
+        editor(&open, |e| e.invoke_value_edited(0, "letters@".into()));
+        open.click("Save");
+        assert_eq!(file(&fx), "# emptied\n");
+        assert_eq!(open.labels_containing("no such rule").len(), 1);
+    }
+
+    #[test]
+    fn the_list_switch_updates_the_open_rule_so_save_keeps_it() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = open_newsletters(&fx);
+        open.click("Enable newsletters");
+        let enabled = open.with(|live| live.app.rule_draft.clone().unwrap().enabled);
+        assert!(!enabled);
+        open.click("Save");
+        let file = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
+        assert!(!file.rules[0].enabled);
+    }
+
+    #[test]
+    fn a_rule_switched_off_elsewhere_stays_off_when_saved() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = open_newsletters(&fx);
+        let off = RULES.replace(
+            "actions = [\"archive\"]",
+            "enabled = false\nactions = [\"archive\"]",
+        );
+        std::fs::write(fx.paths.rules_file(), &off).unwrap();
+        let file = std::fs::File::options()
+            .write(true)
+            .open(fx.paths.rules_file())
+            .unwrap();
+        file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
+            .unwrap();
+        open.advance(5.0);
+        editor(&open, |e| e.invoke_value_edited(0, "letters@".into()));
+        open.click("Save");
+        let file = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
+        assert!(!file.rules[0].enabled);
+    }
+
+    /// Writes rules.toml as another program would, with a time the window's next poll sees as new.
+    fn write_elsewhere(open: &Open, fx: &Fixture, rules: &str) {
+        std::fs::write(fx.paths.rules_file(), rules).unwrap();
+        let file = std::fs::File::options()
+            .write(true)
+            .open(fx.paths.rules_file())
+            .unwrap();
+        file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
+            .unwrap();
+        open.advance(5.0);
+    }
+
+    /// Regression: a rule only looked at kept the conditions it was opened with, so Save undid a change made outside.
+    #[test]
+    fn a_rule_changed_elsewhere_while_open_shows_and_saves_the_change() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = open_newsletters(&fx);
+        let changed = RULES.replace("news@", "digest@");
+        write_elsewhere(&open, &fx, &changed);
+        let value = open.get("Condition 1 value").accessible_value();
+        assert_eq!(value.as_deref(), Some("digest@"));
+        open.click("Save");
+        assert_eq!(file(&fx), changed);
+    }
+
+    /// Regression: an edit saved over a change made outside while the rule was open, without a word.
+    #[test]
+    fn an_edit_does_not_silently_undo_a_change_made_elsewhere() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = open_newsletters(&fx);
+        editor(&open, |e| e.invoke_value_edited(0, "letters@".into()));
+        let changed = RULES.replace("[\"archive\"]", "[\"flag\"]");
+        write_elsewhere(&open, &fx, &changed);
+        open.click("Save");
+        assert_eq!(file(&fx), changed, "the first Save writes nothing");
+        assert_eq!(
+            open.labels_containing("changed in rules.toml while you edited it")
+                .len(),
+            1
+        );
+        open.click("Save");
+        assert_eq!(file(&fx), RULES.replace("news@", "letters@"));
+    }
+
+    #[test]
+    fn remove_asks_first_and_keeps_the_comment() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = open_newsletters(&fx);
+        open.click("Remove rule");
+        assert_eq!(file(&fx), RULES, "nothing removed before the confirmation");
+        open.click("Remove from rules.toml");
+        assert_eq!(file(&fx), "# keep me\n");
+        assert!(draft_name(&open).is_none());
+    }
+
+    #[test]
+    fn an_unsaved_rule_is_closed_without_asking() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = rules_view(&fx, RULES);
+        open.click("New rule");
+        open.click("Remove rule");
+        assert!(draft_name(&open).is_none());
+        assert_eq!(file(&fx), RULES);
+    }
+
+    #[test]
+    fn test_counts_cached_mail_and_changes_nothing() {
+        let fx = Fixture::new(&["work"]);
+        let mut weekly = message("INBOX", 1, "weekly");
+        weekly.from_addr = Some("News <news@example.com>".into());
+        fx.add("work", weekly);
+        fx.add("work", message("INBOX", 2, "lunch"));
+        let (open, wires) = open_newsletters(&fx);
+        open.click("Test");
+        assert_eq!(open.find("would archive 1 cached message").len(), 1);
+        assert_eq!(file(&fx), RULES);
+        assert!(wires.sent().is_empty());
+    }
+
+    #[test]
+    fn conditions_and_actions_are_added_and_removed() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = open_newsletters(&fx);
+        open.click("+ Add condition");
+        let fields = open.with(|live| {
+            let draft = live.app.rule_draft.clone().unwrap();
+            draft.conditions.iter().map(|c| c.field).collect::<Vec<_>>()
+        });
+        assert_eq!(fields, [crate::draft::Field::From, crate::draft::Field::To]);
+        open.click("Remove condition 2");
+        open.click("Remove archive");
+        open.click("+ Add action");
+        open.click("Delete");
+        let actions = open.with(|live| live.app.rule_draft.clone().unwrap().actions);
+        assert_eq!(actions, [Action::Delete]);
+        assert_eq!(open.find("keeps a .eml backup").len(), 1);
+    }
+
+    #[test]
+    fn cancel_keeps_the_edited_draft() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = leave_edited_newsletters(&fx);
+        open.click("Cancel");
+        assert!(open.find("This rule has unsaved changes.").is_empty());
+        assert_eq!(draft_name(&open).as_deref(), Some("newsletters"));
+        let value = open.with(|live| {
+            live.app.rule_draft.clone().unwrap().conditions[0]
+                .value
+                .clone()
+        });
+        assert_eq!(value, "letters@");
+        assert_eq!(file(&fx), two_rules());
+    }
+
+    #[test]
+    fn discard_drops_the_edit_and_opens_the_other_rule() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = leave_edited_newsletters(&fx);
+        open.click("Discard");
+        assert_eq!(draft_name(&open).as_deref(), Some("receipts"));
+        assert_eq!(file(&fx), two_rules());
+    }
+
+    #[test]
+    fn save_writes_the_edit_then_opens_the_other_rule() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = leave_edited_newsletters(&fx);
+        assert_eq!(open.find("Save").len(), 2, "the editor's and the prompt's");
+        editor(&open, |e| e.invoke_unsaved_save());
+        assert_eq!(file(&fx), two_rules().replace("news@", "letters@"));
+        assert_eq!(draft_name(&open).as_deref(), Some("receipts"));
+    }
+
+    #[test]
+    fn a_failed_save_stays_on_the_draft_and_shows_why() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = leave_edited_newsletters(&fx);
+        std::fs::write(fx.paths.rules_file(), "# emptied\n").unwrap();
+        editor(&open, |e| e.invoke_unsaved_save());
+        assert_eq!(draft_name(&open).as_deref(), Some("newsletters"));
+        assert!(open.find("This rule has unsaved changes.").is_empty());
+        assert_eq!(open.labels_containing("no such rule").len(), 1);
+        assert_eq!(file(&fx), "# emptied\n");
+    }
+
+    #[test]
+    fn an_unchanged_draft_is_left_without_asking() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = rules_view(&fx, &two_rules());
+        open.click("New rule");
+        open.click("newsletters");
+        open.click("Test");
+        open.click("receipts");
+        assert!(open.find("This rule has unsaved changes.").is_empty());
+        assert_eq!(draft_name(&open).as_deref(), Some("receipts"));
     }
 }

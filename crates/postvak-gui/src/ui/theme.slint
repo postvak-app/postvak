@@ -12,6 +12,8 @@ export enum ThemePreference { system, light, dark }
 
 export struct Palette {
     accent: color,
+    // Behind lines a change adds, as in a diff; `success` marks them.
+    added: color,
     background: color,
     border: color,
     error: color,
@@ -32,6 +34,7 @@ export struct Palette {
     // Bold text, such as account headings and header labels: more contrast than `text`, and it must also read on
     // `pressed`.
     strong: color,
+    success: color,
     text: color,
     warning: color,
 }
@@ -91,6 +94,7 @@ export global Theme {
 
     out property <Palette> paper: {
         accent: #b83d1c,
+        added: #e6eedb,
         background: #faf7f1,
         border: #dcd6c9,
         error: #a8202e,
@@ -105,11 +109,13 @@ export global Theme {
         secondary: #4d5063,
         selected: #dfe1ea,
         strong: #0a0e1b,
+        success: #3d6420,
         text: #1c2436,
         warning: #8a5a00,
     };
     out property <Palette> night: {
         accent: #f3b39d,
+        added: #18241a,
         background: #16181f,
         border: #2b3042,
         error: #f08a8a,
@@ -124,11 +130,13 @@ export global Theme {
         secondary: #c3c4cf,
         selected: #2b3650,
         strong: #ffffff,
+        success: #a9c98a,
         text: #e9e5dc,
         warning: #e6b85c,
     };
     out property <Palette> frame-day: {
         accent: #f08a68,
+        added: #18241a,
         background: #1c2436,
         border: #2b3650,
         error: #ffb4a8,
@@ -143,11 +151,13 @@ export global Theme {
         secondary: #cfd3df,
         selected: #2b3650,
         strong: #ffffff,
+        success: #a9c98a,
         text: #f3eee4,
         warning: #f2cc7a,
     };
     out property <Palette> frame-night: {
         accent: #f08a68,
+        added: #18241a,
         background: #0f121c,
         border: #222a3b,
         error: #ffb4a8,
@@ -162,6 +172,7 @@ export global Theme {
         secondary: #cfd3df,
         selected: #222b40,
         strong: #ffffff,
+        success: #a9c98a,
         text: #f3eee4,
         warning: #f2cc7a,
     };

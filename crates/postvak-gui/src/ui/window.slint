@@ -7,6 +7,7 @@ import { AccountDialog, ApplyConfirmDialog, HistoryDialog, KeyHelp, KeysDialog, 
 import { AccountFields } from "account.slint";
 import { BodyInfo, BodyPane, PageInfo, SelectedData, StripData, ToolButton } from "body.slint";
 import { ProposalData, RuleData, RulesPane, Sheet } from "rules.slint";
+import { RuleEditor, UnsavedDialog } from "rule_editor.slint";
 import { AboutDialog } from "about.slint";
 import { ListPane, RowData } from "list.slint";
 
@@ -63,6 +64,7 @@ export component MailWindow inherits Window {
     in property <string> search-icon;
     in property <string> sync-icon;
     in property <string> filter-icon;
+    in property <string> rule-icon;
 
     in property <[ToolButton]> tool-buttons;
     in property <bool> tool-buttons-enabled;
@@ -112,6 +114,7 @@ export component MailWindow inherits Window {
     in property <string> page-selection;
     in property <Sheet> sheet;
     in property <string> rules-banner;
+    in property <string> rules-counts;
     in property <[ProposalData]> proposals;
     in property <[RuleData]> rules;
     in property <[TableColumn]> sheet-columns;
@@ -183,6 +186,10 @@ export component MailWindow inherits Window {
     callback open-rules-file();
     callback approve-rule(int);
     callback reject-rule(int);
+    callback preview-rule(int);
+    callback new-rule();
+    callback rule-from();
+    callback edit-rule(int);
     callback set-enabled(int, bool);
     callback apply-rule(int);
     callback confirm-apply-rule();
@@ -499,6 +506,8 @@ export component MailWindow inherits Window {
                         open-source => { root.open-source(); }
                         save-attachment(i) => { root.save-attachment(i); }
                         open-link(url) => { root.open-link(url); }
+                        rule-icon: root.rule-icon;
+                        rule-from => { root.rule-from(); }
                         page: root.page;
                         strips: root.strips;
                         page-width(width) => { root.page-width(width); }
@@ -519,6 +528,10 @@ export component MailWindow inherits Window {
                     RulesPane {
                         sheet: root.sheet;
                         banner: root.rules-banner;
+                        counts: root.rules-counts;
+                        close-icon: root.close-icon;
+                        new-rule => { root.new-rule(); }
+                        edit-rule(i) => { root.edit-rule(i); }
                         proposals: root.proposals;
                         rules: root.rules;
                         columns: root.sheet-columns;
@@ -529,6 +542,7 @@ export component MailWindow inherits Window {
                         open-rules-file => { root.open-rules-file(); }
                         approve(i) => { root.approve-rule(i); }
                         reject(i) => { root.reject-rule(i); }
+                        preview(i) => { root.preview-rule(i); }
                         set-enabled(i, enabled) => { root.set-enabled(i, enabled); }
                         apply-rule(i) => { root.apply-rule(i); }
                         restore(i) => { root.restore(i); }
@@ -624,6 +638,12 @@ export component MailWindow inherits Window {
         TouchArea {
             clicked => { root.toggle-help(); }
         }
+    }
+
+    if RuleEditor.unsaved: UnsavedDialog {
+        x: (root.width - self.width) / 2;
+        y: Theme.top-bar + Theme.inset;
+        close-icon: root.close-icon;
     }
 
     if root.help-open: KeysDialog {
