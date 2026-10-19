@@ -25,7 +25,7 @@ One rule violation: `postvak account add` opens its own IMAP connection to test 
 - **`attachment_save` gets its own scope, `files:write`, not in the default set:** the file name and content come from the sender and the agent picks the directory, so a read-only grant must not write files.
 - **`trash_purge` and `rules_apply_existing` are `mail:modify`.** Purge deletes backups for good; apply-existing acts on stored mail.
 - **GUI password entry is keyring only.** A GUI user has no terminal for a password command.
-- **GUI rules editing stays as it is.** Propose, test, check and schema are agent and CLI features; the GUI opens the file. This is the one named exception, already in the GUI spec.
+- **Rule editing has a form only in the GUI.** The GUI's rules editor saves a whole rule, removes one, and starts a draft from a message's sender (`docs/superpowers/plans/2026-10-08-rules-editor.md`), all through `rules::edit::save_rule` and `remove_rule`. The CLI and agents get no equivalent: a person at a terminal edits rules.toml, and an agent proposes (`rules propose`, `rules_propose`) for a person to approve, so neither needs a form or a way to rewrite or delete a rule outright. Propose, check and schema stay agent and CLI features. This is the one named exception.
 
 ## Library
 
@@ -71,7 +71,7 @@ Six tools. Arguments mirror the CLI flags.
 
 Three additions. Each is a `UiAction` carried out in `app.rs`; the view modules only draw.
 
-- **Account form.** Fields: name, host, port, username, password, address. The first-run screen in `startup.rs` shows it instead of pointing at the terminal, and a toolbar button opens the same form when accounts exist. Save runs `account::add` with a keyring secret on a worker thread, since the OS keyring may prompt. The daemon starts the new account from the saved config and syncs it itself, so the window only adds the account to its list and shows the sync on its status line. Esc closes the form.
+- **Account form.** Fields: name, host, port, username, password, address. The first-run screen in `startup.rs` shows it instead of pointing at the terminal, and a toolbar button opens the same form when accounts exist. Save runs `account::add` with a keyring secret on a worker thread, since the OS keyring may prompt, and the window adds the account to its list. The thread then runs `account::first_sync`, as the CLI does: a pass closes the form, a failure keeps it open with the error and the account saved, so saving again replaces it. Esc closes the form, during the first sync too.
 - **Purge.** A "Purge" button in the Trash view with the retention days in its hover text. It runs `Trash::purge` for every account and shows the total removed in the status row.
 - **Apply to existing mail.** A button per enabled rule in the Rules view. It sends `ApplyRule` for each account the rule applies to and shows evaluated and action counts in the status row. No dry run in the GUI; the row text is the result.
 
@@ -104,5 +104,5 @@ Three PRs, each leaving the rule truer:
 ## Out of scope
 
 - Editing or removing an account from the GUI or MCP; the CLI has neither either.
-- A GUI rules editor; `docs/superpowers/plans/2026-10-08-rules-editor.md` covers it.
+- The GUI rules editor itself; `docs/superpowers/plans/2026-10-08-rules-editor.md` covers it, and the exception above names what it adds to the GUI alone.
 - Testing the login before saving.

@@ -51,6 +51,8 @@ component Field inherits HorizontalLayout {
 export component AccountForm inherits VerticalLayout {
     in property <string> error;
     in property <bool> saving;
+    // What the form says while a save runs: saving, then testing the login.
+    in property <string> progress;
     callback save(AccountFields);
 
     // Enter in any field saves, as the button does.
@@ -119,7 +121,7 @@ export component AccountForm inherits VerticalLayout {
             clicked => { root.submit(); }
         }
         if root.saving: Text {
-            text: "Saving…";
+            text: root.progress;
             color: Theme.pane.muted;
             vertical-alignment: center;
         }

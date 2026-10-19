@@ -1,0 +1,399 @@
+// The right side of the Rules view: the open rule as a form, and the prompt when leaving it unsaved. `bind.rs` fills
+// `RuleEditor` from `App.rule_draft` and turns its callbacks into edits of the draft.
+import { ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { IconButton, Note, Switch, TextButton } from "common.slint";
+import { Dialog } from "dialogs.slint";
+
+export struct ConditionData {
+    // Index into `RuleEditor.fields`.
+    field: int,
+    header: string,
+    // Index into `RuleEditor.ops`.
+    op: int,
+    value: string,
+    // Takes contains, equals or matches regex.
+    text: bool,
+    // Takes yes or no.
+    flag: bool,
+    // Takes a header name.
+    named: bool,
+}
+
+export struct ActionData {
+    // "Move to", as the chip shows it.
+    name: string,
+    // "move to Receipts", which names its remove button.
+    label: string,
+    value: string,
+    // Move to and Tag take a folder or a keyword.
+    takes-value: bool,
+    // "keeps a .eml backup" on Delete.
+    note: string,
+}
+
+export global RuleEditor {
+    in property <bool> open;
+    in property <string> name;
+    in property <bool> enabled;
+    // Index into `accounts`; 0 is every account.
+    in property <int> account;
+    in property <[string]> accounts;
+    in property <string> folder;
+    // What the form cannot edit, in words.
+    in property <[string]> kept;
+    in property <[ConditionData]> conditions;
+    in property <[ActionData]> actions;
+    in property <[string]> fields;
+    in property <[string]> ops;
+    in property <[string]> action-choices;
+    // Save would rename a saved rule.
+    in property <bool> renaming;
+    in property <string> error;
+    in property <string> tested;
+    in property <bool> confirm-remove;
+    // "This rule has unsaved changes."
+    in property <bool> unsaved;
+    callback name-edited(string);
+    callback enabled-toggled(bool);
+    callback account-chosen(int);
+    callback folder-edited(string);
+    callback field-chosen(int, int);
+    callback op-chosen(int, int);
+    callback header-edited(int, string);
+    callback value-edited(int, string);
+    callback add-condition();
+    callback remove-condition(int);
+    callback action-chosen(int);
+    callback action-value-edited(int, string);
+    callback remove-action(int);
+    callback save();
+    callback test();
+    callback remove(bool);
+    callback cancel-remove();
+    callback unsaved-save();
+    callback unsaved-discard();
+    callback unsaved-cancel();
+}
+
+// A line of the form: a small muted label above its fields.
+component Label inherits Text {
+    font-size: Theme.small-size;
+    font-weight: 600;
+    color: Theme.pane.muted;
+}
+
+/* A text field that shows `value` and reports edits.
+
+A field forgets its binding once typed in, so `changed value` puts a new value in by hand: one opened from another rule. */
+component Field inherits LineEdit {
+    in property <string> value;
+    callback value-edited(string);
+    height: Theme.control;
+    text: root.value;
+    changed value => {
+        if (self.text != self.value) {
+            self.text = self.value;
+        }
+    }
+    edited(text) => { root.value-edited(text); }
+}
+
+// A drop-down that shows `index` and reports choices; like `Field`, it is put right by hand when `index` changes.
+component Choice inherits ComboBox {
+    in property <int> index;
+    callback index-chosen(int);
+    height: Theme.control;
+    current-index: root.index;
+    changed index => { self.current-index = self.index; }
+    selected => { root.index-chosen(self.current-index); }
+}
+
+component ConditionRow {
+    in property <ConditionData> condition;
+    in property <string> remove-icon;
+    in property <int> number;
+    HorizontalLayout {
+        spacing: Theme.pad;
+        Choice {
+            width: 120px;
+            model: RuleEditor.fields;
+            index: root.condition.field;
+            accessible-label: "Condition " + root.number + " field";
+            index-chosen(i) => { RuleEditor.field-chosen(root.number - 1, i); }
+        }
+        if root.condition.named: Field {
+            width: 120px;
+            placeholder-text: "Header";
+            accessible-label: "Condition " + root.number + " header";
+            value: root.condition.header;
+            value-edited(text) => { RuleEditor.header-edited(root.number - 1, text); }
+        }
+        if root.condition.text: Choice {
+            width: 140px;
+            model: RuleEditor.ops;
+            index: root.condition.op;
+            accessible-label: "Condition " + root.number + " test";
+            index-chosen(i) => { RuleEditor.op-chosen(root.number - 1, i); }
+        }
+        if root.condition.flag: Choice {
+            horizontal-stretch: 1;
+            model: ["yes", "no"];
+            index: root.condition.value == "true" ? 0 : 1;
+            accessible-label: "Condition " + root.number + " value";
+            index-chosen(i) => { RuleEditor.value-edited(root.number - 1, i == 0 ? "true" : "false"); }
+        }
+        if !root.condition.flag: Field {
+            horizontal-stretch: 1;
+            accessible-label: "Condition " + root.number + " value";
+            value: root.condition.value;
+            value-edited(text) => { RuleEditor.value-edited(root.number - 1, text); }
+        }
+        IconButton {
+            icon: root.remove-icon;
+            name: "Remove condition " + root.number;
+            hint: "Remove this condition";
+            palette: Theme.pane;
+            clicked => { RuleEditor.remove-condition(root.number - 1); }
+        }
+    }
+}
+
+export component RuleEditorPane inherits ScrollView {
+    in property <string> close-icon;
+    // "+ Add action" shows the actions to pick from.
+    property <bool> adding-action;
+
+    VerticalLayout {
+        alignment: start;
+        spacing: Theme.pad;
+        padding-right: Theme.inset;
+
+        Label { text: "Name"; }
+        HorizontalLayout {
+            spacing: Theme.inset;
+            Field {
+                horizontal-stretch: 1;
+                accessible-label: "Name";
+                value: RuleEditor.name;
+                value-edited(text) => { RuleEditor.name-edited(text); }
+            }
+            VerticalLayout {
+                alignment: center;
+                Switch {
+                    name: "Enabled";
+                    checked: RuleEditor.enabled;
+                    toggled(on) => { RuleEditor.enabled-toggled(on); }
+                }
+            }
+            Text {
+                text: "Enabled";
+                color: Theme.pane.text;
+                vertical-alignment: center;
+                accessible-role: none;
+            }
+        }
+        if RuleEditor.renaming: Text {
+            text: "Renaming makes this a new rule: it acts only on mail that arrives after you save.";
+            color: Theme.pane.warning;
+            wrap: word-wrap;
+        }
+
+        Label { text: "Watches"; }
+        HorizontalLayout {
+            spacing: Theme.pad;
+            Choice {
+                width: 180px;
+                model: RuleEditor.accounts;
+                index: RuleEditor.account;
+                accessible-label: "Account";
+                index-chosen(i) => { RuleEditor.account-chosen(i); }
+            }
+            Text {
+                text: "in";
+                color: Theme.pane.muted;
+                vertical-alignment: center;
+            }
+            Field {
+                horizontal-stretch: 1;
+                placeholder-text: "INBOX";
+                accessible-label: "Folder";
+                value: RuleEditor.folder;
+                value-edited(text) => { RuleEditor.folder-edited(text); }
+            }
+        }
+
+        Label { text: "When all of these match"; }
+        for kept in RuleEditor.kept: Text {
+            text: kept;
+            font-family: Theme.mono-font;
+            font-size: Theme.small-size;
+            color: Theme.pane.secondary;
+            wrap: word-wrap;
+        }
+        if RuleEditor.kept.length > 0: Note { text: "Edit these in rules.toml; Save keeps them as they are."; }
+        for condition[i] in RuleEditor.conditions: ConditionRow {
+            condition: condition;
+            remove-icon: root.close-icon;
+            number: i + 1;
+        }
+        HorizontalLayout {
+            TextButton {
+                text: "+ Add condition";
+                flush: true;
+                palette: Theme.pane;
+                clicked => { RuleEditor.add-condition(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        Label { text: "Then"; }
+        for action[i] in RuleEditor.actions: HorizontalLayout {
+            spacing: Theme.pad;
+            Rectangle {
+                width: chip.preferred-width + Theme.inset;
+                height: Theme.control;
+                border-radius: Theme.pad / 2;
+                background: Theme.pane.panel;
+                chip := Text {
+                    text: action.name;
+                    font-weight: 600;
+                    color: action.note != "" ? Theme.pane.error : Theme.pane.strong;
+                    vertical-alignment: center;
+                }
+            }
+            if action.takes-value: Field {
+                horizontal-stretch: 1;
+                placeholder-text: action.name == "Tag" ? "$label1" : "Folder";
+                accessible-label: action.name + " value";
+                value: action.value;
+                value-edited(text) => { RuleEditor.action-value-edited(i, text); }
+            }
+            if action.note != "": Text {
+                text: action.note;
+                font-size: Theme.small-size;
+                color: Theme.pane.muted;
+                vertical-alignment: center;
+            }
+            if !action.takes-value: Rectangle { horizontal-stretch: 1; }
+            IconButton {
+                icon: root.close-icon;
+                name: "Remove " + action.label;
+                hint: "Remove this action";
+                palette: Theme.pane;
+                clicked => { RuleEditor.remove-action(i); }
+            }
+        }
+        HorizontalLayout {
+            spacing: Theme.pad / 2;
+            TextButton {
+                text: "+ Add action";
+                flush: true;
+                palette: Theme.pane;
+                selected: root.adding-action;
+                clicked => { root.adding-action = !root.adding-action; }
+            }
+            if root.adding-action: HorizontalLayout {
+                spacing: Theme.pad / 2;
+                for choice[i] in RuleEditor.action-choices: TextButton {
+                    text: choice;
+                    framed: true;
+                    palette: Theme.pane;
+                    clicked => {
+                        root.adding-action = false;
+                        RuleEditor.action-chosen(i);
+                    }
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Theme.pane.border;
+        }
+        if RuleEditor.error != "": Text {
+            text: RuleEditor.error;
+            color: Theme.pane.error;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            spacing: Theme.pad;
+            TextButton {
+                text: "Test";
+                framed: true;
+                palette: Theme.pane;
+                hint: "Counts what it would do to the mail already downloaded; changes nothing";
+                clicked => { RuleEditor.test(); }
+            }
+            if RuleEditor.tested != "": Text {
+                text: RuleEditor.tested;
+                color: Theme.pane.secondary;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            if !RuleEditor.confirm-remove: TextButton {
+                text: "Remove rule";
+                palette: Theme.pane;
+                text-color: Theme.pane.error;
+                clicked => { RuleEditor.remove(false); }
+            }
+            if RuleEditor.confirm-remove: TextButton {
+                text: "Remove from rules.toml";
+                framed: true;
+                palette: Theme.pane;
+                text-color: Theme.pane.error;
+                clicked => { RuleEditor.remove(true); }
+            }
+            if RuleEditor.confirm-remove: TextButton {
+                text: "Cancel";
+                palette: Theme.pane;
+                clicked => { RuleEditor.cancel-remove(); }
+            }
+            TextButton {
+                text: "Save";
+                framed: true;
+                palette: Theme.pane;
+                clicked => { RuleEditor.save(); }
+            }
+        }
+        Note { text: "Saving a change restarts the rule: it acts only on mail that arrives after you save."; }
+    }
+}
+
+// Asked when another rule would replace one with unsaved changes.
+export component UnsavedDialog {
+    in property <string> close-icon;
+    width: 360px;
+    Dialog {
+        title: "Unsaved changes";
+        close-icon: root.close-icon;
+        close => { RuleEditor.unsaved-cancel(); }
+        Text {
+            text: "This rule has unsaved changes.";
+            color: Theme.pane.text;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            spacing: Theme.pad;
+            Rectangle { horizontal-stretch: 1; }
+            TextButton {
+                text: "Cancel";
+                palette: Theme.pane;
+                clicked => { RuleEditor.unsaved-cancel(); }
+            }
+            TextButton {
+                text: "Discard";
+                palette: Theme.pane;
+                clicked => { RuleEditor.unsaved-discard(); }
+            }
+            TextButton {
+                text: "Save";
+                framed: true;
+                palette: Theme.pane;
+                clicked => { RuleEditor.unsaved-save(); }
+            }
+        }
+    }
+}

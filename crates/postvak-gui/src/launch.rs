@@ -43,17 +43,21 @@ pub(crate) fn safe_mode(asked: bool, failed_starts: u32) -> bool {
     asked || failed_starts >= SAFE_MODE_AFTER
 }
 
-/// Makes this process draw with `renderer`; before the first window, after which Slint keeps the platform it has.
-pub(crate) fn select(renderer: Renderer) {
-    if renderer == Renderer::Default {
-        return;
+/// Makes this process draw with `renderer`, then names its windows `app_id`; before the first window, after which
+/// Slint keeps the platform it has. Slint keeps the app id on the platform and drops it when there is none yet, so
+/// the platform comes first.
+pub(crate) fn select(renderer: Renderer, app_id: &str) {
+    let selector = match renderer {
+        Renderer::Default => slint::BackendSelector::new(),
+        Renderer::Software => slint::BackendSelector::new()
+            .backend_name("winit".into())
+            .renderer_name("software".into()),
+    };
+    if let Err(e) = selector.select() {
+        log::warn!("could not select the {renderer:?} renderer: {e}");
     }
-    let selected = slint::BackendSelector::new()
-        .backend_name("winit".into())
-        .renderer_name("software".into())
-        .select();
-    if let Err(e) = selected {
-        log::warn!("could not select the software renderer: {e}");
+    if let Err(e) = slint::set_xdg_app_id(app_id) {
+        log::warn!("could not set the app id: {e}");
     }
 }
 
@@ -180,5 +184,14 @@ mod tests {
         marker.clear();
         assert_eq!(marker.failed_starts(), 0);
         marker.clear();
+    }
+
+    /// Regression: the app id was set before the platform existed, so Slint dropped it and Wayland showed a generic
+    /// icon instead of the desktop entry's.
+    #[test]
+    fn slint_keeps_the_app_id_only_once_a_platform_exists() {
+        assert!(slint::set_xdg_app_id(crate::APP_ID).is_err());
+        crate::test_support::headless();
+        assert!(slint::set_xdg_app_id(crate::APP_ID).is_ok());
     }
 }

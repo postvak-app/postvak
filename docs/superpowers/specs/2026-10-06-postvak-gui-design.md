@@ -28,7 +28,7 @@ Out of scope, recorded in §11: compose and send, HTML rendering, account setup 
 | Layout | Three columns: folders, list, body | List over body; list then body |
 | List | Collapsed threads, expand in place | Flat; per-folder toggle |
 | Accounts | One tree per account, plus All inboxes with two or more accounts | Unified inbox instead of per-account trees |
-| Rules UI | Proposals, enable switch, open in editor, log, trash | Rule-from-message form; full form editor |
+| Rules UI | Proposals, enable switch, open in editor, log, trash; since the rules editor (`plans/2026-10-08-rules-editor.md`), a form editor and a rule from a message's sender | Rule-from-message form; full form editor (both rejected at first; the rules editor added them) |
 | UI to IMAP | Commands into the existing account thread; IDLE woken by a flag | Second action connection per account; connection per action |
 | Packaging | `gui` cargo feature, on by default; `postvak gui` | Separate binary; workspace |
 | Thread spawning | `postvak::engine`, shared by `run` and `gui` | Each front end spawns its own threads |

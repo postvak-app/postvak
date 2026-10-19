@@ -1,5 +1,6 @@
 //! The add-account form without a toolkit: what its fields mean, and the save, which runs on a thread since the OS
-//! keyring may prompt. The first-run window (`lib.rs`) and the mail window (`state.rs`) both use it.
+//! keyring may prompt and the first sync that tests the login takes a while. The first-run window (`lib.rs`) and the
+//! mail window (`state.rs`) both use it.
 use std::fmt;
 use std::sync::mpsc::{self, Receiver};
 
@@ -74,8 +75,32 @@ impl Fields {
     }
 }
 
-/// The answer of a save in flight: the saved account, or why it was refused.
-pub(crate) type Saving = Receiver<Result<AccountConfig, String>>;
+/// What a save in flight reports, in order: `Saved` once config.toml holds the account, then whether its first sync
+/// passed; or `Refused` when nothing was saved.
+#[derive(Debug)]
+pub(crate) enum Step {
+    Refused(String),
+    Saved(AccountConfig),
+    Synced,
+    /// The account stays saved, as with `postvak account add`; saving again replaces it.
+    Failed(String),
+}
+
+impl Step {
+    /// What the form says about a failed first sync of `name`.
+    pub fn failed(name: &str, why: &str) -> String {
+        let why = why.trim_end_matches('.');
+        format!(
+            "'{name}' is saved, but its first sync failed: {why}. Fix the fields and save again to replace it."
+        )
+    }
+}
+
+/// The steps of a save in flight.
+pub(crate) type Saving = Receiver<Step>;
+
+/// Tests a saved account's login by name; tests swap it so no daemon starts.
+pub(crate) type Check = fn(&Paths, &str) -> Result<(), String>;
 
 /// The mail window's form while it is open.
 #[derive(Default)]
@@ -83,11 +108,26 @@ pub(crate) struct AccountForm {
     /// Why the last save was refused, shown under the fields.
     pub error: Option<String>,
     pub saving: Option<Saving>,
+    /// The save in flight has written the account and now tests its login.
+    pub testing: bool,
 }
 
-/// Checks the fields, then saves on a thread, since the OS keyring may prompt; `wake` runs once it answered. The
-/// daemon notices config.toml and starts the account itself, so a wrong password shows as its first sync's error.
-pub(crate) fn save(paths: Paths, fields: &Fields, wake: Wake) -> Result<Saving, String> {
+/// What the form says while a save runs.
+pub(crate) fn progress(testing: bool) -> &'static str {
+    match testing {
+        true => "Testing the login…",
+        false => "Saving…",
+    }
+}
+
+/// Checks the fields, then on a thread saves and runs `check`, the first sync that tests the login; `wake` runs once
+/// it answered. The daemon notices config.toml and starts the account itself.
+pub(crate) fn save(
+    paths: Paths,
+    fields: &Fields,
+    wake: Wake,
+    check: Check,
+) -> Result<Saving, String> {
     let (account, secret) = fields.account()?;
     let (done, answer) = mpsc::channel();
     std::thread::spawn(move || {
@@ -97,9 +137,18 @@ pub(crate) fn save(paths: Paths, fields: &Fields, wake: Wake) -> Result<Saving, 
                 postvak_core::account::add(&mut config, &paths, account.clone(), Some(secret))
                     .map_err(|e| e.to_string())
             })
-            .map(|()| account)
             .map_err(|e| clean(&e, false));
-        let _ = done.send(saved);
+        if let Err(why) = saved {
+            let _ = done.send(Step::Refused(why));
+            return wake();
+        }
+        let name = account.name.clone();
+        let _ = done.send(Step::Saved(account));
+        wake();
+        let _ = done.send(match check(&paths, &name) {
+            Ok(()) => Step::Synced,
+            Err(why) => Step::Failed(Step::failed(&name, &why)),
+        });
         wake();
     });
     Ok(answer)
@@ -188,6 +237,46 @@ mod tests {
             open.labels_containing("reopen the window").is_empty(),
             "the window's own save is no outside edit"
         );
+    }
+
+    #[test]
+    fn a_failed_first_sync_keeps_the_form_open_with_the_account_listed() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        open.with(|live| live.app.check_login = |_, _| Err("login failed".into()));
+        open.window().invoke_menu_item(MenuAction::AddAccount);
+        fill_window(&open, "home", "imap.example.com");
+        save_in(&open);
+        let why = "'home' is saved, but its first sync failed: login failed. Fix the fields and save again to replace it.";
+        assert_eq!(open.find(why).len(), 1);
+        assert_eq!(names(&open), ["work", "home"], "saved, as with the CLI");
+        open.press("escape");
+        assert!(open.find("Add account").is_empty());
+        assert_eq!(names(&open), ["work", "home"]);
+    }
+
+    #[test]
+    fn escape_during_the_first_sync_closes_the_form_and_keeps_the_account() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        open.with(|live| {
+            live.app.check_login = |_, _| {
+                std::thread::sleep(Duration::from_secs(60));
+                Ok(())
+            }
+        });
+        open.window().invoke_menu_item(MenuAction::AddAccount);
+        fill_window(&open, "home", "imap.example.com");
+        open.click("Save account");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while open.find("Testing the login…").is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+            open.tick();
+        }
+        assert_eq!(open.find("Testing the login…").len(), 1);
+        assert_eq!(names(&open), ["work", "home"]);
+        open.press("escape");
+        assert!(open.find("Add account").is_empty());
     }
 
     #[test]
@@ -329,26 +418,72 @@ mod tests {
         assert_eq!(fields.account().err().unwrap(), "the password is required");
     }
 
+    fn step(answer: &Saving) -> Step {
+        answer.recv_timeout(Duration::from_secs(5)).unwrap()
+    }
+
     #[test]
-    fn save_adds_the_account_to_config_toml_and_answers_with_it() {
+    fn save_adds_the_account_to_config_toml_then_tests_it() {
         let (_dir, paths) = home();
-        let answer = save(paths.clone(), &filled("work"), Arc::new(|| {})).unwrap();
-        let saved = answer
-            .recv_timeout(Duration::from_secs(5))
-            .unwrap()
-            .unwrap();
+        let answer = save(
+            paths.clone(),
+            &filled("work"),
+            Arc::new(|| {}),
+            |paths, name| {
+                // The check runs once config.toml holds the account, as the daemon starts it from there.
+                let config = Config::load(&paths.config_file()).map_err(|e| e.to_string())?;
+                match config.accounts.iter().any(|a| a.name == name) {
+                    true => Ok(()),
+                    false => Err("not saved yet".into()),
+                }
+            },
+        )
+        .unwrap();
+        let Step::Saved(saved) = step(&answer) else {
+            panic!("the account is saved first");
+        };
         assert_eq!(saved.name, "work");
+        assert!(matches!(step(&answer), Step::Synced));
         let config = Config::load(&paths.config_file()).unwrap();
         assert_eq!(config.accounts, [saved]);
     }
 
     #[test]
+    fn a_failed_check_names_the_saved_account_and_why() {
+        let (_dir, paths) = home();
+        let answer = save(paths.clone(), &filled("work"), Arc::new(|| {}), |_, _| {
+            Err("login failed.".into())
+        })
+        .unwrap();
+        assert!(matches!(step(&answer), Step::Saved(_)));
+        let Step::Failed(why) = step(&answer) else {
+            panic!("the check failed");
+        };
+        assert_eq!(
+            why,
+            "'work' is saved, but its first sync failed: login failed. Fix the fields and save again to replace it."
+        );
+        assert_eq!(
+            Config::load(&paths.config_file()).unwrap().accounts.len(),
+            1
+        );
+    }
+
+    #[test]
     fn a_name_config_toml_refuses_comes_back_as_the_answer() {
         let (_dir, paths) = home();
-        let answer = save(paths.clone(), &filled("my work"), Arc::new(|| {})).unwrap();
-        let refused = answer.recv_timeout(Duration::from_secs(5)).unwrap();
+        let answer = save(
+            paths.clone(),
+            &filled("my work"),
+            Arc::new(|| {}),
+            |_, _| panic!("nothing saved, so nothing to test"),
+        )
+        .unwrap();
+        let Step::Refused(why) = step(&answer) else {
+            panic!("refused");
+        };
         assert_eq!(
-            refused.unwrap_err(),
+            why,
             "config.toml: account name 'my work' may only contain letters, digits, '-' and '_'"
         );
         assert!(
