@@ -50,6 +50,7 @@ CREATE VIRTUAL TABLE messages_vocab USING fts5vocab('messages_fts', 'col');
 ```
 
 - `remove_diacritics 2` makes `cafe` find `café` and `Müller` find `Muller`. The default separators stay, so `pieter@example.nl` indexes as `pieter`, `example`, `nl`, and a pasted address searches as that phrase.
+- The subject stays the first column: a plain word finds it, `subject:` narrows to it, and close matches and the last-word prefix apply to it as to every column. It is the decoded subject (`mail-parser` undoes RFC 2047), so `Rechnung` finds a subject sent as `=?utf-8?q?Rechnung?=`, and a search for `factuur` finds `Re: Fwd: factuur 2026-042`.
 - `cc_addr` and `attachment_names` join the index; `from_addr` already holds display names (`Pieter Willekens <pieter@…>`), so a surname finds the sender.
 - The rebuild runs inside the migration, in whichever process opens the store first. Today's stores hold few bodies, so it is a header rebuild: measure it at 100k in the benchmark before merging; the budget is 5 s. This is the one rebuild, which is why every FTS column change is in this migration.
 - `messages_vocab` is a live view of the index's terms with per-column document counts. It costs nothing until queried.
