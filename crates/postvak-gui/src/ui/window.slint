@@ -99,6 +99,7 @@ export component MailWindow inherits Window {
     in property <bool> account-open;
     in property <string> account-error;
     in property <bool> account-saving;
+    in property <string> account-progress;
     in property <string> apply-confirm;
 
     in property <BodyInfo> body-info;
@@ -602,6 +603,7 @@ export component MailWindow inherits Window {
         y: Theme.top-bar + Theme.inset;
         error: root.account-error;
         saving: root.account-saving;
+        progress: root.account-progress;
         close-icon: root.close-icon;
         save(fields) => { root.save-account(fields); }
         close => { root.escape(); }

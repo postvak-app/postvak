@@ -121,6 +121,8 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
         .unwrap_or_default();
     window.set_account_error(error.into());
     window.set_account_saving(form.is_some_and(|form| form.saving.is_some()));
+    let testing = form.is_some_and(|form| form.testing);
+    window.set_account_progress(account::progress(testing).into());
 
     window.set_help_open(app.help_open);
     window.set_history_open(app.history_open);

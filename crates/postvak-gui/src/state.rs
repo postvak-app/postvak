@@ -69,6 +69,14 @@ pub(crate) fn connect(paths: &Paths, wake: Waker) -> anyhow::Result<Connection> 
     session(Client::connect_or_start(paths)?, wake)
 }
 
+/// Syncs a saved account once through a connection of its own, starting the daemon if none runs, as
+/// `postvak account add` does: the add-account form's test of the login.
+pub(crate) fn first_sync(paths: &Paths, name: &str) -> Result<(), String> {
+    Client::connect_or_start(paths)
+        .and_then(|client| postvak_core::account::first_sync(&client, name))
+        .map_err(|e| clean(&format!("{e:#}"), false))
+}
+
 /// Subscribes before asking for the states, so no event between the two is lost.
 pub(crate) fn session(client: Client, wake: Waker) -> anyhow::Result<Connection> {
     let events = client.subscribe_waking(wake)?;
@@ -371,6 +379,8 @@ pub struct App {
     pub(crate) retention: BTreeMap<String, u64>,
     pub(crate) events: Receiver<Event>,
     pub(crate) fetch_release: fn() -> anyhow::Result<String>,
+    /// Tests a saved account's login with its first sync; tests swap it so no daemon starts.
+    pub(crate) check_login: account::Check,
     /// Sends a one-click unsubscribe; tests swap it so nothing leaves the machine.
     pub(crate) post_unsubscribe: fn(&str) -> Result<(), String>,
     pub(crate) unsubscribing: Option<Unsubscribing>,
@@ -492,6 +502,7 @@ impl App {
             error: None,
             events,
             fetch_release: update::fetch,
+            check_login: first_sync,
             post_unsubscribe: |url| unsubscribe::one_click(url).map_err(|e| e.to_string()),
             unsubscribing: None,
             fetcher: None,
@@ -553,6 +564,8 @@ impl App {
     /// Everything that happens with time: daemon events and render replies in, reconnects, the release check, reloads,
     /// file polling, the shown body and its read delay. The window calls it when woken, on its timer and after input.
     pub fn tick(&mut self, now: f64) {
+        // Before the events, so a new account is listed when its first sync reports.
+        self.receive_saved_account();
         self.receive(now);
         self.receive_html();
         self.receive_remote();
@@ -560,7 +573,6 @@ impl App {
         self.keep_daemon(now);
         self.check_release();
         self.receive_unsubscribe();
-        self.receive_saved_account();
         self.receive_list();
         if std::mem::take(&mut self.view_dirty) {
             self.refresh_view();
@@ -934,8 +946,9 @@ impl App {
                 if self.apply_confirm.is_some() {
                     self.apply_confirm = None;
                 } else if let Some(form) = &self.account_form {
-                    // A save in flight finishes first, so its account joins the window.
-                    if form.saving.is_none() {
+                    // A save in flight writes first, so its account joins the window; its first sync goes on, and
+                    // shows on the account's line.
+                    if form.saving.is_none() || form.testing {
                         self.account_form = None;
                     }
                 } else if self.move_picker.is_some() {
@@ -2104,7 +2117,7 @@ impl App {
 
     /// Starts the save; a form that cannot make an account says why at once.
     fn save_account(&mut self, fields: &account::Fields) {
-        let wake = self.wake.clone();
+        let (wake, check) = (self.wake.clone(), self.check_login);
         let paths = self.paths.clone();
         let Some(form) = self
             .account_form
@@ -2113,7 +2126,7 @@ impl App {
         else {
             return;
         };
-        match account::save(paths, fields, wake) {
+        match account::save(paths, fields, wake, check) {
             Ok(answer) => {
                 form.error = None;
                 form.saving = Some(answer);
@@ -2122,28 +2135,37 @@ impl App {
         }
     }
 
-    /// Takes the save's answer: the account joins the window, or the form says why not.
+    /// Takes the save's steps: a saved account joins the window, a passed first sync closes the form, and a refusal or
+    /// a failed sync stays in the form with why.
     fn receive_saved_account(&mut self) {
-        let Some(form) = &mut self.account_form else {
-            return;
-        };
-        let Some(answer) = &form.saving else { return };
-        let saved = match answer.try_recv() {
-            Err(TryRecvError::Empty) => return,
-            Ok(saved) => saved,
-            Err(TryRecvError::Disconnected) => Err(account::STOPPED.into()),
-        };
-        form.saving = None;
-        match saved {
-            Ok(account) => self.account_added(account),
-            Err(message) => form.error = Some(message),
+        loop {
+            let Some(form) = &mut self.account_form else {
+                return;
+            };
+            let Some(answer) = &form.saving else { return };
+            let step = match answer.try_recv() {
+                Err(TryRecvError::Empty) => return,
+                Ok(step) => step,
+                Err(TryRecvError::Disconnected) => account::Step::Refused(account::STOPPED.into()),
+            };
+            match step {
+                account::Step::Saved(account) => {
+                    form.testing = true;
+                    self.account_added(account);
+                }
+                account::Step::Synced => self.account_form = None,
+                account::Step::Refused(why) | account::Step::Failed(why) => {
+                    form.saving = None;
+                    form.testing = false;
+                    form.error = Some(why);
+                }
+            }
         }
     }
 
     /// A new account joins the list and a replaced one keeps its place; the daemon starts it from config.toml and its
     /// events arrive by name, so its first sync shows on its line.
     fn account_added(&mut self, account: AccountConfig) {
-        self.account_form = None;
         // Absorbs this window's own write, so the poll does not take it for an outside edit.
         self.config_watch.changed();
         self.retention
