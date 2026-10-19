@@ -55,6 +55,17 @@ What this shows:
 - `open_window` grows with the mail too, so the window opens more slowly on big mailboxes. It includes the first list load and per-folder counts.
 - `sync_pass` includes the fake server's own work: `RecordingOps` scans each folder on every select. A real server's time is not in these numbers, and the fake's is.
 
+## The search index
+
+Migration 011 rebuilds the FTS index once per store, the first time the store opens after the upgrade; `rebuild_index` times that rebuild for all three stores together. Release build: Linux container, 4 vCPUs of an Intel Xeon at 2.80 GHz, Rust 1.99.1; another build was running during the 10k run. Median in ms, with the range of five runs.
+
+| Phase | 10k | 100k |
+| --- | --- | --- |
+| `rebuild_index` | 30 (26–31) | 235 (219–251) |
+| `search` | 10 (9.9–23) | 62 (60–70) |
+
+Rebuilding three stores that hold 100k header-only messages takes a quarter of a second, far under the five seconds the search design allows; stored bodies add to it in proportion to their text. `search` runs its last word as a prefix now (`invoice*`), which costs more than the exact word did, and this machine is not the baseline's M1, so the two `search` rows are not comparable.
+
 ## Reloads after a sync event
 
 The window reloads the shown list whenever sync reports changes. That reload runs on a thread of its own with its own store connections; the frame waits for it at most 2 ms (`LIST_BUDGET` in `state.rs`, a quarter of a 120 Hz frame), so a small mailbox's rows still show in the same frame, and a large one's show when the thread wakes the window. While a reload runs, the next waits for it and then starts once; the rows already loaded are rebuilt meanwhile only when edits changed, since rebuilding a large list costs milliseconds. A view change reads on the window thread, as before, and drops a reload still running.

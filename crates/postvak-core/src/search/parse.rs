@@ -4,7 +4,8 @@ use super::{Query, Term};
 
 /// Reads a query. Whitespace separates terms; a term with a `"` in it is a phrase that runs to the next `"` or the
 /// end, spaces included; a leading `-` negates. A term without a letter or digit is dropped, since FTS5 would
-/// tokenize it to nothing.
+/// tokenize it to nothing. Control characters count as whitespace: FTS5 reads the expression as a C string, so a
+/// NUL would end it early.
 pub fn parse(text: &str) -> Query {
     let mut terms = Vec::new();
     let mut token = String::new();
@@ -37,7 +38,10 @@ pub fn parse(text: &str) -> Query {
                 in_quote = !in_quote;
                 quoted = true;
             }
-            c if c.is_whitespace() && !in_quote => flush(&mut token, &mut quoted),
+            c if (c.is_whitespace() || c.is_control()) && !in_quote => {
+                flush(&mut token, &mut quoted);
+            }
+            c if c.is_control() => token.push(' '),
             c => token.push(c),
         }
     }
@@ -90,6 +94,13 @@ mod tests {
         for text in ["", "   ", "\"\"", "-", "--", "- -", "...", "\" \"", "-\"\""] {
             assert!(parse(text).is_empty(), "{text:?}");
         }
+    }
+
+    #[test]
+    fn control_characters_separate_words_and_blank_inside_phrases() {
+        assert_eq!(parse("a\0b\tc").terms, vec![word("a"), word("b"), word("c")]);
+        assert_eq!(parse("\"a\0b\"").terms, vec![phrase("a b")]);
+        assert!(parse("\0\x01").is_empty());
     }
 
     #[test]

@@ -67,7 +67,7 @@ A fast, simple mail client with automatic mailbox rules
 * `rules` — Inspect and test rules.toml
 * `folders` — List folders with message and unread counts
 * `list` — List recent messages, newest first
-* `search` — Full-text search (FTS5 syntax) over subject, addresses and fetched bodies, newest first
+* `search` — Search subject, addresses, attachment names and stored bodies, newest first; words, "phrases" and -not; the last word also matches as a prefix
 * `show` — Show one message
 * `unsubscribe` — Leave a message's mailing list: by one-click POST when the sender offers it (RFC 8058), else print the page or address from its List-Unsubscribe header to open
 * `mark` — Mark messages read or unread, flagged or unflagged
@@ -398,7 +398,7 @@ List recent messages, newest first
 
 ## `postvak search`
 
-Full-text search (FTS5 syntax) over subject, addresses and fetched bodies, newest first
+Search subject, addresses, attachment names and stored bodies, newest first; words, "phrases" and -not; the last word also matches as a prefix
 
 **Usage:** `postvak search [OPTIONS] <QUERY>`
 
