@@ -384,6 +384,9 @@ pub(crate) fn action_name(action: &Action) -> &'static str {
     }
 }
 
+/// Longest name a draft made from a message gets; rules.toml allows 255 characters.
+const SEED_NAME_CHARS: usize = 60;
+
 /// The rule editor's working copy. Lives in `App.rule_draft` until Save writes it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Draft {
@@ -494,12 +497,7 @@ impl Draft {
             actions: self.actions.clone(),
         })
     }
-}
 
-/// Longest name a draft made from a message gets; rules.toml allows 255 characters.
-const SEED_NAME_CHARS: usize = 60;
-
-impl Draft {
     /// A new rule for mail from the sender of the message on screen, given its From, watching its account and folder.
     pub fn from_sender(from: &str, account: &str, folder: &str) -> Draft {
         let address = bare_addresses(from)

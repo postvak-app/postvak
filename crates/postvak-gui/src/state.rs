@@ -1071,14 +1071,12 @@ impl App {
                 self.save_draft();
             }
             UiAction::TestDraft => {
-                if let Some(draft) = &self.rule_draft {
-                    let tested = match draft.to_rule() {
-                        Ok(rule) => self.preview(rule),
-                        Err(e) => e,
-                    };
-                    if let Some(draft) = &mut self.rule_draft {
-                        draft.tested = Some(tested);
-                    }
+                let tested = self.rule_draft.as_ref().map(|draft| match draft.to_rule() {
+                    Ok(rule) => self.preview(rule),
+                    Err(e) => e,
+                });
+                if let Some(draft) = &mut self.rule_draft {
+                    draft.tested = tested;
                 }
             }
             UiAction::UnsavedCancel => self.leave_draft = None,
@@ -1161,15 +1159,6 @@ impl App {
             UiAction::SortSheet(sort) => self.sheet_sort = Some(sort),
             UiAction::SetRuleEnabled(name, enabled) => {
                 self.edit_rules(|path| rule_file::edit::set_enabled(path, &name, enabled));
-                // The open rule follows the switch, so a later Save keeps it; it does not count as an edit.
-                for draft in [&mut self.rule_draft, &mut self.rule_draft_opened]
-                    .into_iter()
-                    .flatten()
-                {
-                    if draft.original.as_deref() == Some(name.as_str()) {
-                        draft.enabled = enabled;
-                    }
-                }
             }
             UiAction::SetTheme(theme) => {
                 self.theme = theme;
@@ -2389,6 +2378,23 @@ impl App {
             &self.paths.rules_file(),
             std::mem::take(&mut self.rules.rules),
         );
+        // The open rule follows its switch as the file now has it, from the list or from outside, unless the editor
+        // changed it; so a later Save does not turn it back.
+        let enabled = self.rule_draft_opened.as_ref().and_then(|opened| {
+            let name = opened.original.as_deref()?;
+            let rule = self.rules.rules.iter().find(|rule| rule.name == name)?;
+            Some(rule.enabled)
+        });
+        if let (Some(enabled), Some(opened)) = (enabled, &mut self.rule_draft_opened) {
+            if let Some(draft) = self
+                .rule_draft
+                .as_mut()
+                .filter(|d| d.enabled == opened.enabled)
+            {
+                draft.enabled = enabled;
+            }
+            opened.enabled = enabled;
+        }
     }
 
     fn open_draft(&mut self, draft: Option<Draft>) {
@@ -2398,26 +2404,22 @@ impl App {
 
     /// Whether the open rule has changes that Save has not written.
     fn draft_edited(&self) -> bool {
-        match (&self.rule_draft, &self.rule_draft_opened) {
-            (Some(draft), Some(opened)) => draft.edited(opened),
-            _ => false,
-        }
+        (self.rule_draft.as_ref())
+            .zip(self.rule_draft_opened.as_ref())
+            .is_some_and(|(draft, opened)| draft.edited(opened))
     }
 
     /// Writes the open rule; on failure it stays open with the reason.
     fn save_draft(&mut self) -> bool {
-        let Some(draft) = &self.rule_draft else {
+        let path = self.paths.rules_file();
+        let Some(draft) = &mut self.rule_draft else {
             return false;
         };
-        let path = self.paths.rules_file();
         let saved = draft.to_rule().and_then(|rule| {
             rule_file::edit::save_rule(&path, draft.original.as_deref(), &rule)
                 .map(|()| rule.name)
                 .map_err(|e| e.to_string())
         });
-        let Some(draft) = &mut self.rule_draft else {
-            return false;
-        };
         match saved {
             Ok(name) => {
                 draft.original = Some(name);
@@ -2483,7 +2485,7 @@ impl App {
         let mut matched = HashSet::new();
         for account in &self.accounts {
             let Ok(store) = &account.store else { continue };
-            let Some(settings) = config.accounts.iter().find(|a| a.name == account.name) else {
+            let Some(settings) = config.account(&account.name) else {
                 continue;
             };
             let planned = settings

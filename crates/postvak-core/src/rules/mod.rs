@@ -1,5 +1,7 @@
 pub mod apply;
 pub mod edit;
+
+pub use edit::rule_toml;
 pub mod engine;
 
 use std::io;

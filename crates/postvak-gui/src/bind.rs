@@ -44,6 +44,7 @@ pub(crate) fn account_fields(fields: AccountFields) -> account::Fields {
 /// What never changes while the window is open.
 pub(crate) fn init(window: &MailWindow) {
     window.set_list_min_width(list::MIN_WIDTH);
+    init_editor(window);
     window.set_close_icon(icons::CLOSE.into());
     window.set_search_icon(icons::SEARCH.into());
     window.set_filter_icon(icons::FILTER.into());
@@ -319,13 +320,21 @@ fn draft_accounts(app: &App) -> Vec<String> {
     names
 }
 
-const RENAMING: &str =
-    "Renaming makes this a new rule: it acts only on mail that arrives after you save.";
+/// The editor's fixed choices, which never change while the window is open.
+fn init_editor(window: &MailWindow) {
+    let editor = window.global::<RuleEditor>();
+    let labels = |items: Vec<&str>| model(items.into_iter().map(SharedString::from));
+    editor.set_fields(labels(Field::ALL.map(Field::label).to_vec()));
+    editor.set_ops(labels(Op::ALL.map(Op::label).to_vec()));
+    editor.set_action_choices(labels(ACTIONS.iter().map(draft::action_name).collect()));
+}
 
 fn present_editor(app: &App, window: &MailWindow) {
     let editor = window.global::<RuleEditor>();
+    // The prompt can show over the reader, when its Rule button would replace an edited rule.
     editor.set_unsaved(app.leave_draft.is_some());
-    let Some(draft) = &app.rule_draft else {
+    let draft = app.rule_draft.as_ref().filter(|_| app.view == View::Rules);
+    let Some(draft) = draft else {
         editor.set_open(false);
         return;
     };
@@ -378,42 +387,21 @@ fn present_editor(app: &App, window: &MailWindow) {
         .map(|label| clean(label, false).into())
         .collect();
     editor.set_open(true);
-    editor.set_saved(draft.original.is_some());
     editor.set_name(clean(&draft.name, false).into());
     editor.set_enabled(draft.enabled);
     editor.set_account(i32::try_from(account).unwrap_or(0));
-    sync(editor.get_accounts(), strings(choices), |m| {
-        editor.set_accounts(m)
-    });
+    let choices = choices.into_iter().map(SharedString::from).collect();
+    sync(editor.get_accounts(), choices, |m| editor.set_accounts(m));
     editor.set_folder(clean(draft.folder.as_deref().unwrap_or_default(), false).into());
     sync(editor.get_kept(), kept, |m| editor.set_kept(m));
     sync(editor.get_conditions(), conditions, |m| {
         editor.set_conditions(m)
     });
     sync(editor.get_actions(), actions, |m| editor.set_actions(m));
-    sync(
-        editor.get_fields(),
-        strings(Field::ALL.map(|f| f.label().to_string())),
-        |m| editor.set_fields(m),
-    );
-    sync(
-        editor.get_ops(),
-        strings(Op::ALL.map(|o| o.label().to_string())),
-        |m| editor.set_ops(m),
-    );
-    sync(
-        editor.get_action_choices(),
-        strings(ACTIONS.iter().map(|a| draft::action_name(a).to_string())),
-        |m| editor.set_action_choices(m),
-    );
-    editor.set_renaming(if draft.renames() { RENAMING } else { "" }.into());
+    editor.set_renaming(draft.renames());
     editor.set_error(draft.error.as_deref().unwrap_or_default().into());
     editor.set_tested(draft.tested.as_deref().unwrap_or_default().into());
     editor.set_confirm_remove(draft.confirm_remove);
-}
-
-fn strings(items: impl IntoIterator<Item = String>) -> Vec<SharedString> {
-    items.into_iter().map(SharedString::from).collect()
 }
 
 fn index_of<T: PartialEq>(all: &[T], item: &T) -> i32 {
@@ -430,6 +418,15 @@ fn edit_draft(change: impl FnOnce(&App, &mut Draft) + 'static) -> Ask {
         change(app, &mut draft);
         (Some(&draft) != app.rule_draft.as_ref()).then(|| UiAction::EditDraft(Box::new(draft)))
     })
+}
+
+/// Removes the `index`th of `items`, as the window's callbacks number them, when there is one.
+fn remove_nth<T>(items: &mut Vec<T>, index: i32) {
+    if let Ok(index) = usize::try_from(index)
+        && index < items.len()
+    {
+        items.remove(index);
+    }
 }
 
 /// The open rule's row `index`, when there is one.
@@ -496,13 +493,7 @@ fn connect_editor(window: &MailWindow, on: fn(Ask) -> bool) {
         }));
     });
     editor.on_remove_condition(move |row| {
-        on(edit_draft(move |_, d| {
-            if let Ok(row) = usize::try_from(row)
-                && row < d.conditions.len()
-            {
-                d.conditions.remove(row);
-            }
-        }));
+        on(edit_draft(move |_, d| remove_nth(&mut d.conditions, row)));
     });
     editor.on_action_chosen(move |i| {
         on(edit_draft(move |_, d| {
@@ -521,13 +512,7 @@ fn connect_editor(window: &MailWindow, on: fn(Ask) -> bool) {
         }));
     });
     editor.on_remove_action(move |i| {
-        on(edit_draft(move |_, d| {
-            if let Ok(i) = usize::try_from(i)
-                && i < d.actions.len()
-            {
-                d.actions.remove(i);
-            }
-        }));
+        on(edit_draft(move |_, d| remove_nth(&mut d.actions, i)));
     });
     editor.on_cancel_remove(move || {
         on(edit_draft(|_, d| d.confirm_remove = false));
@@ -557,24 +542,33 @@ fn present_sheet(app: &App, window: &MailWindow) {
         View::Rules => {
             window.set_sheet(Sheet::Rules);
             window.set_rules_banner(rules::banner(&app.rules).unwrap_or_default().into());
-            let proposals: Vec<ProposalData> = rules::proposals(&app.rules)
-                .into_iter()
+            let proposals: Vec<ProposalData> = app
+                .rules
+                .proposals
+                .iter()
                 .map(|p| ProposalData {
-                    label: p.label.into(),
-                    by: p.by.into(),
-                    summary: p.summary.into(),
-                    toml: model(p.toml.into_iter().map(SharedString::from)),
-                    preview: p.preview.into(),
+                    label: p.label.as_str().into(),
+                    by: p.by.as_str().into(),
+                    summary: p.summary.as_str().into(),
+                    toml: p.toml.as_str().into(),
+                    marks: p.marks.as_str().into(),
+                    preview: app
+                        .rules
+                        .previews
+                        .get(&p.name)
+                        .map_or_else(SharedString::new, Into::into),
                 })
                 .collect();
-            let lines: Vec<RuleData> = rules::rule_lines(&app.rules)
-                .into_iter()
+            let lines: Vec<RuleData> = app
+                .rules
+                .lines
+                .iter()
                 .map(|r| RuleData {
-                    label: r.label.into(),
+                    label: r.label.as_str().into(),
                     enabled: r.enabled,
-                    scope: r.scope.into(),
-                    by: r.by.into(),
-                    summary: r.summary.into(),
+                    scope: r.scope.as_str().into(),
+                    by: r.by.as_str().into(),
+                    summary: r.summary.as_str().into(),
                     selected: app
                         .rule_draft
                         .as_ref()
@@ -899,8 +893,8 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     });
     window.on_apply_rule(move |i| {
         on(one(move |app| {
-            let rule = nth(rules::rule_lines(&app.rules), i)?;
-            rule.enabled.then_some(UiAction::ApplyRule(rule.name))
+            let rule = nth(&app.rules.lines, i)?;
+            rule.enabled.then(|| UiAction::ApplyRule(rule.name.clone()))
         }));
     });
     window.on_confirm_apply_rule(move || {
@@ -927,9 +921,7 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     });
     window.on_edit_rule(move |i| {
         on(one(move |app| {
-            Some(UiAction::EditRule(
-                nth(rules::rule_lines(&app.rules), i)?.name,
-            ))
+            Some(UiAction::EditRule(nth(&app.rules.lines, i)?.name.clone()))
         }));
     });
     connect_editor(window, on);
@@ -940,8 +932,8 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     });
     window.on_set_enabled(move |i, enabled| {
         on(one(move |app| {
-            let rule = nth(rules::rule_lines(&app.rules), i)?;
-            Some(UiAction::SetRuleEnabled(rule.name, enabled))
+            let rule = nth(&app.rules.lines, i)?;
+            Some(UiAction::SetRuleEnabled(rule.name.clone(), enabled))
         }));
     });
     window.on_purge_trash(move || {
@@ -974,7 +966,7 @@ fn nth<T>(items: impl IntoIterator<Item = T>, index: i32) -> Option<T> {
 
 /// The name of the proposal the Rules view shows at `index`.
 fn proposal(app: &App, index: i32) -> Option<String> {
-    Some(nth(rules::proposals(&app.rules), index)?.name)
+    Some(nth(&app.rules.proposals, index)?.name.clone())
 }
 
 /// A pill with `label`, drawn from SVG with the window's own fonts.

@@ -15,18 +15,7 @@ use crate::store::Store;
 pub fn propose(path: &Path, mut rule: Rule, by: &str) -> Result<(), RulesError> {
     rule.enabled = false;
     rule.proposed_by = Some(by.to_string());
-    let snippet = toml::to_string(&RuleFile { rules: vec![rule] })
-        .map_err(|e| RulesError::Parse(e.to_string()))?;
-    let _lock = lock(path)?;
-    let mut text = read_or_empty(path)?;
-    if !text.is_empty() {
-        if !text.ends_with('\n') {
-            text.push('\n');
-        }
-        text.push('\n');
-    }
-    text.push_str(&snippet);
-    save(path, &text)
+    save_rule(path, None, &rule)
 }
 
 /// Turns a rule on or off, keeping the file's comments and layout.
@@ -141,8 +130,17 @@ fn remove_at(rules: &mut ArrayOfTables, index: usize) -> Option<String> {
     }
 }
 
-/// `rule` as a `[[rules]]` table in the docs' style: `match.from = { … }` dotted keys with inline tables, `actions`
-/// last, and no `enabled = true`.
+/// `rule` as rules.toml holds it, in the docs' style: what a proposal adds to the file.
+pub fn rule_toml(rule: &Rule) -> Result<String, RulesError> {
+    let mut rules = ArrayOfTables::new();
+    rules.push(rule_table(rule)?);
+    let mut doc = DocumentMut::new();
+    doc.insert("rules", Item::ArrayOfTables(rules));
+    Ok(doc.to_string())
+}
+
+/// `rule` as a `[[rules]]` table in the docs' style: one block, nested tables as dotted keys with inline values,
+/// `actions` last, and no `enabled = true`.
 fn rule_table(rule: &Rule) -> Result<Table, RulesError> {
     let text = toml::to_string(&RuleFile {
         rules: vec![rule.clone()],
@@ -154,33 +152,38 @@ fn rule_table(rule: &Rule) -> Result<Table, RulesError> {
         .filter(|rules| !rules.is_empty())
         .map(|mut rules| rules.remove(0))
         .ok_or_else(|| invalid(&rule.name, "could not be written as TOML"))?;
-    if let Some(Item::Table(conditions)) = table.get_mut("match") {
-        conditions.set_dotted(true);
-        for (_, item) in conditions.iter_mut() {
-            *item = match std::mem::take(item).into_value() {
-                Ok(value) => Item::Value(value),
-                Err(other) => other,
-            };
-        }
-        conditions.fmt();
-    }
-    // Actions that are all tables, such as `move`, would come out as `[[rules.actions]]` headers.
-    if let Some(actions) = table.remove("actions") {
-        let actions = match actions.into_value() {
-            Ok(mut value) => {
-                if let Value::Array(array) = &mut value {
-                    array.fmt();
+    for (_, item) in table.iter_mut() {
+        match item {
+            Item::Table(nested) => {
+                nested.set_dotted(true);
+                for (_, child) in nested.iter_mut() {
+                    inline(child);
                 }
-                Item::Value(value)
+                nested.fmt();
             }
-            Err(other) => other,
-        };
+            other => inline(other),
+        }
+    }
+    if let Some(actions) = table.remove("actions") {
         table.insert("actions", actions);
     }
     if rule.enabled {
         table.remove("enabled");
     }
     Ok(table)
+}
+
+/// `item` written on one line: `toml` puts a table, or an array of tables such as `[{ move = "x" }]`, under headers.
+fn inline(item: &mut Item) {
+    *item = match std::mem::take(item).into_value() {
+        Ok(mut value) => {
+            if let Value::Array(array) = &mut value {
+                array.fmt();
+            }
+            Item::Value(value)
+        }
+        Err(other) => other,
+    };
 }
 
 /// Adds `table` after the last rule and after any comments that end the file, a blank line apart from what is above.
@@ -212,14 +215,7 @@ fn append(doc: &mut DocumentMut, mut table: Table, after_text: bool) -> Result<(
 /// Makes `old` hold `new`'s keys and values: keys `new` lacks go, keys it adds come last, an unchanged value stays as
 /// written, and a changed value keeps the old one's comment.
 fn merge(old: &mut Table, new: &Table) {
-    let gone: Vec<String> = old
-        .iter()
-        .map(|(key, _)| key.to_string())
-        .filter(|key| !new.contains_key(key))
-        .collect();
-    for key in gone {
-        old.remove(&key);
-    }
+    old.retain(|key, _| new.contains_key(key));
     for (key, item) in new.iter() {
         match (old.get_mut(key), item) {
             (Some(Item::Table(old_table)), Item::Table(new_table)) => merge(old_table, new_table),

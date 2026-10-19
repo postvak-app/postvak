@@ -5,7 +5,7 @@ use std::path::Path;
 use postvak_core::help;
 use postvak_core::message::clean;
 use postvak_core::paths::Paths;
-use postvak_core::rules::{self, Rule, RuleFile};
+use postvak_core::rules::{self, Rule};
 use postvak_core::store::LogEntry;
 use postvak_core::trash::{Trash, TrashEntry};
 
@@ -22,6 +22,9 @@ pub(crate) struct RulesState {
     /// "Preview on cached mail" results by proposal name; a reload drops them.
     pub previews: BTreeMap<String, String>,
     pub rules: Vec<Rule>,
+    /// The rules as the view words them, worded once per load rather than on every frame.
+    pub proposals: Vec<Proposal>,
+    pub lines: Vec<RuleLine>,
 }
 
 impl RulesState {
@@ -38,6 +41,8 @@ impl RulesState {
         RulesState {
             error,
             previews: BTreeMap::new(),
+            proposals: proposals(&rules),
+            lines: rule_lines(&rules),
             rules,
         }
     }
@@ -50,10 +55,10 @@ pub(crate) struct Proposal {
     /// "proposed by agent".
     pub by: String,
     pub summary: String,
-    /// The TOML lines it adds.
-    pub toml: Vec<String>,
-    /// What "Preview on cached mail" found, or empty.
-    pub preview: String,
+    /// The TOML it adds.
+    pub toml: String,
+    /// A "+" beside each line of `toml`, as a diff marks added lines.
+    pub marks: String,
 }
 
 /// A rule in the Rules view's list.
@@ -92,21 +97,13 @@ pub(crate) fn banner(state: &RulesState) -> Option<String> {
     ))
 }
 
-pub(crate) fn proposals(state: &RulesState) -> Vec<Proposal> {
-    state
-        .rules
+fn proposals(rules: &[Rule]) -> Vec<Proposal> {
+    rules
         .iter()
         .filter(|rule| is_proposal(rule))
         .map(|rule| {
-            let toml = toml::to_string(&RuleFile {
-                rules: vec![rule.clone()],
-            })
-            .unwrap_or_else(|e| e.to_string());
-            let toml = clean(&toml, true)
-                .trim_end()
-                .lines()
-                .map(str::to_owned)
-                .collect();
+            let toml = rules::rule_toml(rule).unwrap_or_else(|e| e.to_string());
+            let toml = clean(&toml, true).trim_end().to_owned();
             Proposal {
                 name: rule.name.clone(),
                 label: clean(&rule.name, false),
@@ -115,14 +112,14 @@ pub(crate) fn proposals(state: &RulesState) -> Vec<Proposal> {
                     clean(rule.proposed_by.as_deref().unwrap_or_default(), false)
                 ),
                 summary: draft::summary(rule),
+                marks: vec!["+"; toml.lines().count()].join("\n"),
                 toml,
-                preview: state.previews.get(&rule.name).cloned().unwrap_or_default(),
             }
         })
         .collect()
 }
 
-pub(crate) fn rule_lines(state: &RulesState) -> Vec<RuleLine> {
+fn rule_lines(rules: &[Rule]) -> Vec<RuleLine> {
     let line = |rule: &Rule| {
         let account = rule
             .account
@@ -145,8 +142,7 @@ pub(crate) fn rule_lines(state: &RulesState) -> Vec<RuleLine> {
             summary: draft::summary(rule),
         }
     };
-    state
-        .rules
+    rules
         .iter()
         .filter(|rule| !is_proposal(rule))
         .map(line)
@@ -511,7 +507,7 @@ mod tests {
         let (open, wires) = rules_view(&fx);
         assert_eq!(open.find("proposed by agent").len(), 1);
         assert_eq!(open.find("subject contains \"code\" → delete").len(), 1);
-        assert_eq!(open.find("name = \"codes\"").len(), 1);
+        assert_eq!(open.labels_containing("name = \"codes\"").len(), 1);
         open.click("Approve");
         assert!(enabled(&fx, "codes"));
         assert!(fx.store("work").rule_first_seen("codes", "", 0).unwrap() > 1);
@@ -982,6 +978,28 @@ mod editor_tests {
         open.click("Enable newsletters");
         let enabled = open.with(|live| live.app.rule_draft.clone().unwrap().enabled);
         assert!(!enabled);
+        open.click("Save");
+        let file = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
+        assert!(!file.rules[0].enabled);
+    }
+
+    #[test]
+    fn a_rule_switched_off_elsewhere_stays_off_when_saved() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = open_newsletters(&fx);
+        let off = RULES.replace(
+            "actions = [\"archive\"]",
+            "enabled = false\nactions = [\"archive\"]",
+        );
+        std::fs::write(fx.paths.rules_file(), &off).unwrap();
+        let file = std::fs::File::options()
+            .write(true)
+            .open(fx.paths.rules_file())
+            .unwrap();
+        file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
+            .unwrap();
+        open.advance(5.0);
+        editor(&open, |e| e.invoke_value_edited(0, "letters@".into()));
         open.click("Save");
         let file = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
         assert!(!file.rules[0].enabled);

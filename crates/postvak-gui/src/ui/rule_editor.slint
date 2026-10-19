@@ -2,7 +2,7 @@
 // `RuleEditor` from `App.rule_draft` and turns its callbacks into edits of the draft.
 import { ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Heading, IconButton, Switch, TextButton } from "common.slint";
+import { IconButton, Note, Switch, TextButton } from "common.slint";
 import { Dialog } from "dialogs.slint";
 
 export struct ConditionData {
@@ -34,8 +34,6 @@ export struct ActionData {
 
 export global RuleEditor {
     in property <bool> open;
-    // The rule is in rules.toml, so Remove asks first.
-    in property <bool> saved;
     in property <string> name;
     in property <bool> enabled;
     // Index into `accounts`; 0 is every account.
@@ -49,7 +47,8 @@ export global RuleEditor {
     in property <[string]> fields;
     in property <[string]> ops;
     in property <[string]> action-choices;
-    in property <string> renaming;
+    // Save would rename a saved rule.
+    in property <bool> renaming;
     in property <string> error;
     in property <string> tested;
     in property <bool> confirm-remove;
@@ -194,8 +193,8 @@ export component RuleEditorPane inherits ScrollView {
                 accessible-role: none;
             }
         }
-        if RuleEditor.renaming != "": Text {
-            text: RuleEditor.renaming;
+        if RuleEditor.renaming: Text {
+            text: "Renaming makes this a new rule: it acts only on mail that arrives after you save.";
             color: Theme.pane.warning;
             wrap: word-wrap;
         }
@@ -232,12 +231,7 @@ export component RuleEditorPane inherits ScrollView {
             color: Theme.pane.secondary;
             wrap: word-wrap;
         }
-        if RuleEditor.kept.length > 0: Text {
-            text: "Edit these in rules.toml; Save keeps them as they are.";
-            font-size: Theme.small-size;
-            color: Theme.pane.muted;
-            wrap: word-wrap;
-        }
+        if RuleEditor.kept.length > 0: Note { text: "Edit these in rules.toml; Save keeps them as they are."; }
         for condition[i] in RuleEditor.conditions: ConditionRow {
             condition: condition;
             remove-icon: root.close-icon;
@@ -364,12 +358,7 @@ export component RuleEditorPane inherits ScrollView {
                 clicked => { RuleEditor.save(); }
             }
         }
-        Text {
-            text: "Saving a change restarts the rule: it acts only on mail that arrives after you save.";
-            font-size: Theme.small-size;
-            color: Theme.pane.muted;
-            wrap: word-wrap;
-        }
+        Note { text: "Saving a change restarts the rule: it acts only on mail that arrives after you save."; }
     }
 }
 

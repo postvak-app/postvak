@@ -149,6 +149,13 @@ export component TextButton inherits Rectangle {
     }
 }
 
+// A small muted line that explains what is around it.
+export component Note inherits Text {
+    font-size: Theme.small-size;
+    color: Theme.pane.muted;
+    wrap: word-wrap;
+}
+
 // A heading in the display face and the pane's palette.
 export component Heading inherits Text {
     font-family: Theme.heading-font;
