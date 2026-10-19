@@ -808,6 +808,7 @@ fn new_mail_notifies_even_on_an_account_with_notify_off() {
     let shared = super::Shared {
         engine: std::sync::Mutex::new(None),
         hub: std::sync::Mutex::new(super::Hub::new()),
+        login: super::test_support::refuse_wrong(),
         signalled: Default::default(),
         watch: std::sync::Mutex::new(super::Watch::new(&Paths::under(Path::new("/nonexistent")))),
     };
@@ -851,6 +852,7 @@ fn a_command_while_stopping_says_the_daemon_is_stopping() {
     let shared = super::Shared {
         engine: std::sync::Mutex::new(None),
         hub: std::sync::Mutex::new(super::Hub::new()),
+        login: super::test_support::refuse_wrong(),
         signalled: Default::default(),
         watch: std::sync::Mutex::new(super::Watch::new(&Paths::under(Path::new("/nonexistent")))),
     };
@@ -1013,6 +1015,7 @@ fn a_command_for_an_account_between_threads_says_it_is_restarting() {
     let shared = super::Shared {
         engine: std::sync::Mutex::new(Some(engine)),
         hub: std::sync::Mutex::new(super::Hub::new()),
+        login: super::test_support::refuse_wrong(),
         signalled: Default::default(),
         watch: std::sync::Mutex::new(super::Watch::new(&paths)),
     };
