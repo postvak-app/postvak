@@ -40,13 +40,17 @@ component Splitter inherits TouchArea {
 }
 
 // A paper pane in the frame, with a soft accent outline while it has the keyboard; the outline is drawn inside, so
-// nothing moves.
+// nothing moves. The clip has no radius: FemtoVG draws a rounded clip through a layer that blurs text (slint#10499).
 component PaneFrame inherits Rectangle {
     in property <bool> focused;
     background: Theme.pane.background;
+    border-radius: Theme.radius;
     border-width: focused ? 1px : 0px;
     border-color: Theme.pane.border.mix(Theme.pane.accent, 65%);
-    clip: true;
+    Rectangle {
+        clip: true;
+        @children
+    }
 }
 
 export component MailWindow inherits Window {
@@ -452,7 +456,6 @@ export component MailWindow inherits Window {
                     width: root.list-width;
                     background: Theme.pane.panel;
                     focused: root.focused-pane == Pane.list;
-                    border-radius: Theme.radius;
                     list := ListPane {
                         title: root.list-title;
                         filter: root.list-filter;
@@ -488,7 +491,6 @@ export component MailWindow inherits Window {
                     // So the window, which cannot get narrower than its panes, leaves room for the subject and actions.
                     min-width: root.list-min-width;
                     focused: root.focused-pane == Pane.body;
-                    border-radius: Theme.radius;
                     BodyPane {
                         info: root.body-info;
                         text: root.body-text;
@@ -524,7 +526,6 @@ export component MailWindow inherits Window {
 
                 if !root.mail-view: PaneFrame {
                     focused: root.focused-pane != Pane.folders;
-                    border-radius: Theme.radius;
                     RulesPane {
                         sheet: root.sheet;
                         banner: root.rules-banner;
