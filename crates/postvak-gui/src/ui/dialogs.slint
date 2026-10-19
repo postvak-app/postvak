@@ -207,10 +207,11 @@ export component SourceDialog {
     }
 }
 
-// The add-account form over the panes. Esc or the X closes it; the app keeps it open while a save runs.
+// The add-account form over the panes. Esc or the X closes it; the app keeps it open while a save writes.
 export component AccountDialog {
     in property <string> error;
     in property <bool> saving;
+    in property <string> progress;
     in property <string> close-icon;
     callback save(AccountFields);
     callback close();
@@ -222,6 +223,7 @@ export component AccountDialog {
         AccountForm {
             error: root.error;
             saving: root.saving;
+            progress: root.progress;
             save(fields) => { root.save(fields); }
         }
     }

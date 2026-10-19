@@ -71,7 +71,7 @@ Six tools. Arguments mirror the CLI flags.
 
 Three additions. Each is a `UiAction` carried out in `app.rs`; the view modules only draw.
 
-- **Account form.** Fields: name, host, port, username, password, address. The first-run screen in `startup.rs` shows it instead of pointing at the terminal, and a toolbar button opens the same form when accounts exist. Save runs `account::add` with a keyring secret on a worker thread, since the OS keyring may prompt. The daemon starts the new account from the saved config and syncs it itself, so the window only adds the account to its list and shows the sync on its status line. Esc closes the form.
+- **Account form.** Fields: name, host, port, username, password, address. The first-run screen in `startup.rs` shows it instead of pointing at the terminal, and a toolbar button opens the same form when accounts exist. Save runs `account::add` with a keyring secret on a worker thread, since the OS keyring may prompt, and the window adds the account to its list. The thread then runs `account::first_sync`, as the CLI does: a pass closes the form, a failure keeps it open with the error and the account saved, so saving again replaces it. Esc closes the form, during the first sync too.
 - **Purge.** A "Purge" button in the Trash view with the retention days in its hover text. It runs `Trash::purge` for every account and shows the total removed in the status row.
 - **Apply to existing mail.** A button per enabled rule in the Rules view. It sends `ApplyRule` for each account the rule applies to and shows evaluated and action counts in the status row. No dry run in the GUI; the row text is the result.
 

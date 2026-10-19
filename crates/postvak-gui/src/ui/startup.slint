@@ -16,6 +16,7 @@ export component StartupWindow inherits Window {
     in property <bool> form;
     in property <string> account-error;
     in property <bool> account-saving;
+    in property <string> account-progress;
     callback save-account(AccountFields);
 
     title: "Postvak";
@@ -41,6 +42,7 @@ export component StartupWindow inherits Window {
         if root.form: AccountForm {
             error: root.account-error;
             saving: root.account-saving;
+            progress: root.account-progress;
             save(fields) => { root.save-account(fields); }
         }
         if root.link-url != "": Link {

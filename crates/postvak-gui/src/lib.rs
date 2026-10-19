@@ -404,7 +404,13 @@ fn explain(
     };
     let form = paths.filter(|_| error.is::<startup::NoAccounts>()).cloned();
     let pending = Pending::default();
-    let window = startup_window(&problem, open_docs, form.clone(), pending.clone())?;
+    let window = startup_window(
+        &problem,
+        open_docs,
+        form.clone(),
+        pending.clone(),
+        state::first_sync,
+    )?;
     launch::watch(window.window(), marker.cloned());
     window.run()?;
     Ok(form.is_some_and(|paths| saved(&paths, &pending)))
@@ -417,8 +423,8 @@ fn has_crashes(dir: &std::path::Path) -> bool {
 /// The first-run form's save in flight, if any.
 type Pending = Rc<RefCell<Option<account::Saving>>>;
 
-/// Whether config.toml holds an account once the window closed, after waiting for a save still in flight: closing
-/// the window does not stop the save.
+/// Whether config.toml holds an account once the window closed, after waiting for a save still in flight to write:
+/// closing the window does not stop the save, and its first sync goes on in the daemon.
 fn saved(paths: &Paths, pending: &Pending) -> bool {
     if let Some(answer) = pending.take() {
         let _ = answer.recv();
@@ -427,12 +433,13 @@ fn saved(paths: &Paths, pending: &Pending) -> bool {
 }
 
 /// The window that says what went wrong. With `form`, the paths to save under, it holds the add-account form, and
-/// `pending` holds its save while it runs.
+/// `pending` holds its save while it runs; `check` tests the saved account's login.
 fn startup_window(
     problem: &startup::Problem,
     open_docs: impl Fn(&str) + 'static,
     form: Option<Paths>,
     pending: Pending,
+    check: account::Check,
 ) -> Result<ui::StartupWindow, slint::PlatformError> {
     let window = ui::StartupWindow::new()?;
     window.set_summary(problem.summary.as_str().into());
@@ -454,10 +461,11 @@ fn startup_window(
         window.on_save_account(move |fields| {
             let Some(window) = weak.upgrade() else { return };
             let fields = bind::account_fields(fields);
-            match account::save(paths.clone(), &fields, Arc::new(|| {})) {
+            match account::save(paths.clone(), &fields, Arc::new(|| {}), check) {
                 Ok(answer) => {
                     window.set_account_error(SharedString::new());
                     window.set_account_saving(true);
+                    window.set_account_progress(account::progress(false).into());
                     pending.replace(Some(answer));
                     await_save(&window, pending.clone());
                 }
@@ -471,23 +479,29 @@ fn startup_window(
 /// How often the first-run window looks for the save's answer.
 const SAVE_POLL: Duration = Duration::from_millis(100);
 
-/// Looks for the save's answer every `SAVE_POLL`: a saved account closes the window, a refusal shows why.
+/// Looks for the save's steps every `SAVE_POLL`: a passed first sync closes the window, a refusal or a failed sync
+/// shows why.
 fn await_save(window: &ui::StartupWindow, pending: Pending) {
     let weak = window.as_weak();
     slint::Timer::single_shot(SAVE_POLL, move || {
         let Some(window) = weak.upgrade() else { return };
         let Some(answer) = pending.take() else { return };
-        let refused = match answer.try_recv() {
-            Err(TryRecvError::Empty) => {
-                pending.replace(Some(answer));
-                return await_save(&window, pending);
+        let refused = loop {
+            match answer.try_recv() {
+                Err(TryRecvError::Empty) => {
+                    pending.replace(Some(answer));
+                    return await_save(&window, pending);
+                }
+                Ok(account::Step::Saved(_)) => {
+                    window.set_account_progress(account::progress(true).into());
+                }
+                Ok(account::Step::Synced) => {
+                    let _ = window.hide();
+                    return;
+                }
+                Ok(account::Step::Refused(why) | account::Step::Failed(why)) => break why,
+                Err(TryRecvError::Disconnected) => break account::STOPPED.into(),
             }
-            Ok(Ok(_)) => {
-                let _ = window.hide();
-                return;
-            }
-            Ok(Err(message)) => message,
-            Err(TryRecvError::Disconnected) => account::STOPPED.into(),
         };
         window.set_account_saving(false);
         window.set_account_error(refused.into());
@@ -565,19 +579,34 @@ mod tests {
             move |url| record.borrow_mut().push(url.into()),
             None,
             Rc::default(),
+            |_, _| Ok(()),
         )
         .unwrap();
         window.show().unwrap();
         (window, opened)
     }
 
-    /// The first-run window over an empty home under `paths`, and its save in flight.
+    /// The first-run window over an empty home under `paths`, whose first sync passes, and its save in flight.
     fn first_run(paths: &Paths) -> (super::ui::StartupWindow, Pending) {
+        first_run_checked(paths, |_, _| Ok(()))
+    }
+
+    /// As `first_run`, with `check` as the first sync.
+    fn first_run_checked(
+        paths: &Paths,
+        check: crate::account::Check,
+    ) -> (super::ui::StartupWindow, Pending) {
         headless();
         let pending = Pending::default();
         let problem = Problem::of(&anyhow::Error::new(NoAccounts), None);
-        let window =
-            startup_window(&problem, |_| {}, Some(paths.clone()), pending.clone()).unwrap();
+        let window = startup_window(
+            &problem,
+            |_| {},
+            Some(paths.clone()),
+            pending.clone(),
+            check,
+        )
+        .unwrap();
         window.show().unwrap();
         (window, pending)
     }
@@ -654,6 +683,21 @@ mod tests {
         wait_for(|| !labelled(&window, why).is_empty());
         assert!(window.window().is_visible());
         assert!(!saved(&paths, &pending));
+    }
+
+    #[test]
+    fn a_failed_first_sync_keeps_the_first_run_window_open_with_why() {
+        let (_dir, paths) = home();
+        let (window, pending) = first_run_checked(&paths, |_, _| Err("login failed".into()));
+        fill(&window, "work");
+        labelled(&window, "Save account")[0].invoke_accessible_default_action();
+        let why = "'work' is saved, but its first sync failed: login failed. Fix the fields and save again to replace it.";
+        wait_for(|| !labelled(&window, why).is_empty());
+        assert!(window.window().is_visible());
+        assert!(
+            saved(&paths, &pending),
+            "the account stays saved, as with the CLI"
+        );
     }
 
     #[test]
