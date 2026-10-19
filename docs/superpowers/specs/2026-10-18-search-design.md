@@ -1,6 +1,6 @@
 # Search — design
 
-Status: draft for review, 2026-10-18. The task-by-task plan follows once the decisions below are settled.
+Status: decisions settled with the owner on 2026-10-19; the plan is `../plans/2026-10-19-search.md`.
 
 ## Goal
 
@@ -22,11 +22,16 @@ What exists: an FTS5 index over `subject`, `from_addr`, `to_addr` and `body_text
 | Ranking | Newest first, in two tiers: exact matches, then close matches | BM25 relevance order: mail users expect date order, as Gmail, Outlook and Apple Mail default to; relevance can come later as a sort option |
 | What the indexer fetches | Text parts only, chosen from `BODYSTRUCTURE`, plus attachment names from it; never the raw message | Fetching whole messages: downloads every attachment to index a few KB of text, and either bloats `mail.db` with `raw` or throws the bytes away |
 | Where the indexer runs | The account's sync thread, in slices between short IDLE waits, on its one connection | A second connection per account: faster, but doubles connections on hosts that cap them at two or three per user, and duplicates the connect, backoff and credential paths |
-| Pacing | At most 5 s of fetching per slice, then an INBOX check and a 1 s IDLE; nothing while a command is queued or a pass runs | A fixed message count: a slice of 50 huge HTML newsletters and 50 one-liners differ by two orders of magnitude |
+| Pacing | At most 5 s of fetching per slice, then an INBOX check and a 1 s IDLE; nothing while a command is queued or a pass runs; the account's idle, not the machine's | A fixed message count: a slice of 50 huge HTML newsletters and 50 one-liners differ by two orders of magnitude. Machine idle (battery, user input) is platform-specific and a feature of its own |
 | Order | Newest first across all folders, Junk and Trash included | Skipping Junk and Trash: "the mail I deleted last week" is a common search |
-| Auto-started daemon | Stays up while an account still has a backlog and indexed something in the last minute, at most two hours past the last client | Exiting 60 s after the last client: a CLI-only user would never get an index |
+| Auto-started daemon | Exits as today, 60 s after its last client; indexing happens while a client is connected or the service is installed | Holding it up to two hours while a backlog exists: a one-off `postvak list` would leave a process fetching mail in the background |
 | Query language | A small operator set parsed in `postvak-core`, the same on every surface; raw FTS5 syntax goes | Keeping FTS5 syntax: column names leak into the UI (`from_addr:`), unbalanced quotes are errors, and `search_headers` already has to quote every word so a query cannot escape its column filter |
 | Snippets | FTS5 `snippet()` for body hits, in the GUI row and the JSON row; over MCP only with `read:bodies` | Highlighting inside the open message: a reader feature, not a search one |
+| Close matches | Run only when the exact tier returns fewer than ten hits | Whenever exact is under the limit: two queries per keystroke and a divider under almost every search |
+| Servers | Dovecot, as the live tests cover; Gmail, Outlook and Fastmail are compiled for, not run against, until someone tries them | A per-host quirks table before the first user of those hosts exists |
+| Results | Flat messages, as today | Grouping hits by thread |
+| Substrings inside words | Out of scope; prefix and typo tolerance only | Trigram tokenizer, on headers or everywhere |
+| Rebuild | Inside the migration, in the first process that opens the store, within 5 s at 100k messages | Leaving the index empty for the daemon to fill: search incomplete after an upgrade |
 | Schema | One migration carries every FTS change (tokenizer, `cc_addr`, `attachment_names`, the vocab table), so the index is rebuilt once | A migration per PR: each FTS column change recreates the table and rebuilds it |
 
 ## 1. Index
@@ -40,18 +45,18 @@ CREATE INDEX messages_unindexed ON messages (internaldate DESC) WHERE indexed_at
 
 DROP TABLE messages_fts;  -- and its three triggers
 CREATE VIRTUAL TABLE messages_fts USING fts5 (
-  subject, from_addr, to_addr, cc_addr, attachment_names, body_text,
+  subject, from_addr, to_addr, cc_addr, delivered_to, attachment_names, body_text,
   content='messages', content_rowid='id',
   tokenize="unicode61 remove_diacritics 2"
 );
--- the three external-content triggers again, now over the six columns
+-- the three external-content triggers again, now over the seven columns
 INSERT INTO messages_fts(messages_fts) VALUES ('rebuild');
 CREATE VIRTUAL TABLE messages_vocab USING fts5vocab('messages_fts', 'col');
 ```
 
 - `remove_diacritics 2` makes `cafe` find `café` and `Müller` find `Muller`. The default separators stay, so `pieter@example.nl` indexes as `pieter`, `example`, `nl`, and a pasted address searches as that phrase.
 - The subject stays the first column: a plain word finds it, `subject:` narrows to it, and close matches and the last-word prefix apply to it as to every column. It is the decoded subject (`mail-parser` undoes RFC 2047), so `Rechnung` finds a subject sent as `=?utf-8?q?Rechnung?=`, and a search for `factuur` finds `Re: Fwd: factuur 2026-042`.
-- `cc_addr` and `attachment_names` join the index; `from_addr` already holds display names (`Pieter Willekens <pieter@…>`), so a surname finds the sender.
+- `cc_addr`, `delivered_to` (what `to:` covers besides To and Cc) and `attachment_names` join the index; `from_addr` already holds display names (`Pieter Willekens <pieter@…>`), so a surname finds the sender.
 - The rebuild runs inside the migration, in whichever process opens the store first. Today's stores hold few bodies, so it is a header rebuild: measure it at 100k in the benchmark before merging; the budget is 5 s. This is the one rebuild, which is why every FTS column change is in this migration.
 - `messages_vocab` is a live view of the index's terms with per-column document counts. It costs nothing until queried.
 - `has_attachment` (migration 008) stays the header guess for now; replacing it with `attachment_names IS NOT NULL` is a later change, since the names only exist once the indexer has passed.
@@ -90,13 +95,13 @@ Everything else is a word. There are no operators to balance, so `parse` cannot 
 
 For each `Word` of four or more characters, the planner asks the vocabulary for candidates: terms of length n−1 to n+1 sharing the first character, counted either in a header column or in at least three documents (the body vocabulary is full of tracking tokens). Candidates within the distance are kept, at most five per word, by document count. The `close` expression is the exact one with each such word replaced by `(word OR cand1 OR …)`; it is `None` when no word gained a candidate. A quoted phrase, a filter value and a negated word are never expanded.
 
-Search runs `exact` first, newest first, up to `limit`. If that returns fewer than `limit`, `close` runs for the remainder, excluding the ids already found. Each returned message carries `match: exact | close`. The vocabulary lookup is the one cost that is new per keystroke; at 100k messages the benchmark must show the whole query under 30 ms, else the length and first-character prefilter tightens, or expansion waits until the user pauses typing.
+Search runs `exact` first, newest first, up to `limit`. If that returns fewer than ten hits, `close` runs for the remainder, excluding the ids already found; with ten or more the close tier is skipped and the vocabulary is never consulted, so the common keystroke costs one query. Each returned message carries `match: exact | close`. The vocabulary lookup is the one cost that is new per keystroke; at 100k messages the benchmark must show the whole query under 30 ms, else the length and first-character prefilter tightens, or expansion waits until the user pauses typing.
 
 `Vocab` is a trait so the planner's tests use a fixed term list; the store's implementation queries `messages_vocab`.
 
 ### Scopes
 
-`Scope::Headers` wraps the whole expression in the column filter `{subject from_addr to_addr cc_addr attachment_names}`, so MCP without `read:bodies` keeps the guarantee it has today: no body text decides a result. Snippets are never built in that scope.
+`Scope::Headers` wraps the whole expression in the column filter `{subject from_addr to_addr cc_addr delivered_to attachment_names}`, so MCP without `read:bodies` keeps the guarantee it has today: no body text decides a result. Snippets are never built in that scope.
 
 ### Snippets
 
@@ -137,7 +142,7 @@ Rules that need bodies keep their own fetch (`MAX_RULE_BODY`), which now finds `
 
 ### Daemon lifetime
 
-`daemon::Options::idle_exit` gains a hold: the auto-started daemon does not exit while any account reports `Indexing` and advanced its count within the last minute, for at most two hours after the last client left. `postvak daemon status` shows the backlog per account, so a user who wants it done sooner installs the service.
+Unchanged: an auto-started daemon exits 60 s after its last client leaves, backlog or not. Indexing therefore advances while the window is open, while a CLI or MCP client is connected, or always with the service installed. `postvak status` shows the backlog per account, and `docs/src/search.md` and `daemon.md` say that a CLI-only user who wants a complete index installs the service.
 
 ## 4. Surfaces
 
@@ -188,8 +193,7 @@ postvak search QUERY [--account NAME] [--folder NAME] [--exact] [--server] [--li
 - `search::plan`: tiers, prefix on the last word only, no expansion of phrases, filter values and negations, candidate limits, the `Headers` scope column filter, and that `"x) OR body_text:secret"` stays a phrase.
 - Store: the migration rebuilds an index that then passes `integrity-check` and finds a body indexed before it; diacritics; `cc_addr` and `attachment_names` hits; `match` values and the exclusion of exact ids from the close tier; snippets only for body hits; `backlog()`.
 - Sync, with `RecordingOps`: a slice stops at its time budget (clock injected) and at a queued command; newest first across folders; a failure sets `indexed_at` without `body_text` and is retried after a day; headers-only above 2 MB without a text part; `Indexing` then `Idle` activities; the INBOX check syncs new mail between slices; `index_bodies = false` indexes nothing. `tests/sync_model.rs` gains: after enough idle slices every message is indexed and `integrity-check` passes.
-- Daemon: idle exit held while an account indexes, released when it stops advancing, hard stop at two hours.
-- Live: the four `BODYSTRUCTURE` cases above on both Dovecot ports.
+- Live: the four `BODYSTRUCTURE` cases above on both Dovecot ports. Other hosts are not run against; the release notes say so.
 - GUI: divider and snippet rows, hint text with and without a backlog, reload on `Event::Indexed` keeps the cursor; snapshots.
 - CLI black box: `search 'from:alice'` on a fixture store, `~` prefix on a close match, `--exact`, `--json` fields.
 - MCP: `search` without `read:bodies` never returns `snippet` and never matches on a body word; the operator table is in the description; `tools_list_per_scope_set_is_exact_and_alphabetical` unchanged.
@@ -199,8 +203,8 @@ postvak search QUERY [--account NAME] [--folder NAME] [--exact] [--server] [--li
 
 Five PRs, each leaving `main` releasable. 2 and 3 are independent and can run as parallel branches; the rest stack.
 
-1. `feat(store): rebuild the search index with diacritics folding, cc and attachment columns` — migration 011, the `search` module with `parse` and `plan` for words and phrases only (no operators, no close matches yet), prefix on the last word, `Store::search(&Query, Scope, limit)` replacing the string API, the quoted-words retry removed. The surfaces change only in that a query can no longer fail to parse.
-2. `feat(sync): index message bodies in idle time` — `fetch_structure`, `fetch_part`, `text_from_parts`, the backlog loop, `Indexing`, `Event::Indexed`, `index_bodies`, the daemon hold, status on all three surfaces, `--bodies` removed, `search.md`.
+1. `feat(store)!: rebuild the search index with diacritics folding, cc and attachment columns` — migration 011, the `search` module with `parse` and `plan` for words and phrases only (no operators, no close matches yet), prefix on the last word, `Store::search(&Query, Scope, limit)` replacing the string API, the quoted-words retry removed. The surfaces change only in that a query can no longer fail to parse.
+2. `feat(sync)!: index message bodies in idle time` — `fetch_structure`, `fetch_part`, `text_from_parts`, the backlog loop, `Indexing`, `Event::Indexed`, `index_bodies`, status on all three surfaces, `--bodies` removed, `search.md`.
 3. `feat(search): close matches` — the vocabulary, expansion, tiers, `match` on every surface, `--exact`/`exact`, the GUI divider.
 4. `feat(search): operators` — the filter set, `from:me`, dates, `account:`, the agent guide, the MCP description table.
 5. `feat(search): snippets` — the GUI second line and the JSON field, with the MCP scope rule.
