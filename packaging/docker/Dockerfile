@@ -1,6 +1,5 @@
-# Postvak's daemon in a container, from the release's Linux binaries; .github/workflows/docker.yml builds it. The build
-# context holds postvak-amd64, postvak-arm64 and an empty data/. No RUN step, so both architectures build without
-# emulation.
+# Postvak's daemon in a container; .github/workflows/docker.yml builds it. The build context holds postvak-amd64 and
+# postvak-arm64, built without the GUI, and an empty data/. No RUN step, so both architectures build without emulation.
 FROM debian:trixie-slim
 
 ARG TARGETARCH

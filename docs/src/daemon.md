@@ -25,7 +25,7 @@ Postvak runs headless on any Linux machine, such as a NAS, a VPS or a Raspberry 
 
 ### Docker
 
-The image `ghcr.io/postvak-app/postvak` runs the daemon on amd64 and arm64. On Unraid, use this file with the Compose Manager plugin:
+The image `ghcr.io/postvak-app/postvak` runs the daemon on amd64 and arm64. It holds the command line, the daemon and the MCP server, without the mail window. On Unraid, use this file with the Compose Manager plugin:
 
 ```yaml
 services:
