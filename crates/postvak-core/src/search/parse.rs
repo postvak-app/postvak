@@ -98,7 +98,10 @@ mod tests {
 
     #[test]
     fn control_characters_separate_words_and_blank_inside_phrases() {
-        assert_eq!(parse("a\0b\tc").terms, vec![word("a"), word("b"), word("c")]);
+        assert_eq!(
+            parse("a\0b\tc").terms,
+            vec![word("a"), word("b"), word("c")]
+        );
         assert_eq!(parse("\"a\0b\"").terms, vec![phrase("a b")]);
         assert!(parse("\0\x01").is_empty());
     }

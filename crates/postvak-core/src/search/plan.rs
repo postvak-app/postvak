@@ -12,10 +12,7 @@ const PREFIX_MIN_CHARS: usize = 3;
 pub fn plan(query: &Query, scope: Scope) -> Plan {
     let mut positive = Vec::new();
     let mut negative = Vec::new();
-    let last_positive = query
-        .terms
-        .iter()
-        .rposition(|t| !matches!(t, Term::Not(_)));
+    let last_positive = query.terms.iter().rposition(|t| !matches!(t, Term::Not(_)));
     for (i, term) in query.terms.iter().enumerate() {
         match term {
             Term::Not(inner) => negative.push(fts_term(inner, false)),
@@ -75,9 +72,19 @@ mod tests {
         assert_eq!(exact("invoice"), "\"invoice\"*");
         assert_eq!(exact("acme invoice"), "(\"acme\" AND \"invoice\"*)");
         assert_eq!(exact("\"status update\""), "\"status update\"");
-        assert_eq!(exact("invoice -\"status update\""), "\"invoice\"* NOT \"status update\"");
-        assert_eq!(exact("ab -cd efg -hi"), "(\"ab\" AND \"efg\"*) NOT \"cd\" NOT \"hi\"");
-        assert_eq!(exact("invoice -acme"), "\"invoice\"* NOT \"acme\"", "the prefix stays on the last positive word");
+        assert_eq!(
+            exact("invoice -\"status update\""),
+            "\"invoice\"* NOT \"status update\""
+        );
+        assert_eq!(
+            exact("ab -cd efg -hi"),
+            "(\"ab\" AND \"efg\"*) NOT \"cd\" NOT \"hi\""
+        );
+        assert_eq!(
+            exact("invoice -acme"),
+            "\"invoice\"* NOT \"acme\"",
+            "the prefix stays on the last positive word"
+        );
     }
 
     #[test]
@@ -95,8 +102,14 @@ mod tests {
     #[test]
     fn user_text_never_becomes_syntax() {
         // An opening quote runs to the end: the whole attempt is one phrase.
-        assert_eq!(exact("x\") OR body_text:secret"), "\"x) OR body_text:secret\"");
-        assert_eq!(exact("say \"hi\" there"), "(\"say\" AND \"hi\" AND \"there\"*)");
+        assert_eq!(
+            exact("x\") OR body_text:secret"),
+            "\"x) OR body_text:secret\""
+        );
+        assert_eq!(
+            exact("say \"hi\" there"),
+            "(\"say\" AND \"hi\" AND \"there\"*)"
+        );
         assert_eq!(exact("NEAR(a b)"), "(\"NEAR(a\" AND \"b)\")");
     }
 

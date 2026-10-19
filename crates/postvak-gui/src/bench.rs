@@ -167,7 +167,13 @@ fn run(scale: u32, runs: usize) {
         "rebuild_index",
         scale,
         (0..runs)
-            .map(|_| timed(|| stores.iter().for_each(|s| s.rebuild_search_index().unwrap())))
+            .map(|_| {
+                timed(|| {
+                    stores
+                        .iter()
+                        .for_each(|s| s.rebuild_search_index().unwrap())
+                })
+            })
             .collect(),
     );
     report(

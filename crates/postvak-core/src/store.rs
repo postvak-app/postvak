@@ -1009,8 +1009,16 @@ mod tests {
             .unwrap();
         }
         let s = Store::open(&path).unwrap();
-        assert_eq!(fts_hits(&s, "pineapple"), 1, "a body indexed before the rebuild");
-        assert_eq!(fts_hits(&s, "cafe"), 1, "the rebuilt index folds diacritics");
+        assert_eq!(
+            fts_hits(&s, "pineapple"),
+            1,
+            "a body indexed before the rebuild"
+        );
+        assert_eq!(
+            fts_hits(&s, "cafe"),
+            1,
+            "the rebuilt index folds diacritics"
+        );
         fts_integrity_check(&s);
     }
 
@@ -1191,13 +1199,27 @@ mod tests {
         assert_eq!(found(&s, "subject", all, None, 10), [2, 3, 1]);
         assert_eq!(found(&s, "subject", all, Some("INBOX"), 10), [2, 1]);
         assert_eq!(found(&s, "subject", all, None, 1), [2]);
-        assert_eq!(found(&s, "alice", all, None, 10), [2, 3, 1], "a sender's name");
-        assert_eq!(found(&s, "subj", all, None, 10), [2, 3, 1], "the last word is a prefix");
+        assert_eq!(
+            found(&s, "alice", all, None, 10),
+            [2, 3, 1],
+            "a sender's name"
+        );
+        assert_eq!(
+            found(&s, "subj", all, None, 10),
+            [2, 3, 1],
+            "the last word is a prefix"
+        );
         assert!(found(&s, "pineapple", all, None, 10).is_empty());
         assert!(found(&s, "   ", all, None, 10).is_empty());
-        assert!(found(&s, "-subject", all, None, 10).is_empty(), "nothing positive to match");
+        assert!(
+            found(&s, "-subject", all, None, 10).is_empty(),
+            "nothing positive to match"
+        );
         let hit = &s.search(&search::parse("subject"), all, None, 1).unwrap()[0];
-        assert_eq!((hit.matched, hit.snippet.as_deref()), (Matched::Exact, None));
+        assert_eq!(
+            (hit.matched, hit.snippet.as_deref()),
+            (Matched::Exact, None)
+        );
     }
 
     #[test]
@@ -1224,7 +1246,10 @@ mod tests {
         assert!(found(&s, "x) OR (body_text:secret", headers, None, 10).is_empty());
         assert!(found(&s, "x) OR body_text:secret", headers, None, 10).is_empty());
         assert!(found(&s, "body_text:secret", headers, None, 10).is_empty());
-        assert!(found(&s, "hello -secret", headers, None, 10) == [1], "a negated body word is not seen either");
+        assert!(
+            found(&s, "hello -secret", headers, None, 10) == [1],
+            "a negated body word is not seen either"
+        );
         assert_eq!(found(&s, "secret", Scope::All, None, 10), [1]);
     }
 
