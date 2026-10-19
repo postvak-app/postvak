@@ -28,6 +28,10 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # The same as packaging/macos/package.sh exports, for the builds that run before it with --skip-build: the oldest
+  # macOS the app supports, and the .dSYM it bundles for crash reports.
+  MACOSX_DEPLOYMENT_TARGET: '11.0'
+  CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: packed
 
 jobs:
   lint:
@@ -61,7 +65,9 @@ jobs:
         with:
           cache-targets: false
           save-if: false
-      - run: packaging/macos/package.sh --arch aarch64
+      # Built apart and packaged with --skip-build, as the release job does.
+      - run: cargo build --release --locked --target aarch64-apple-darwin
+      - run: packaging/macos/package.sh --arch aarch64 --skip-build
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: postvak-macos-dry-run
