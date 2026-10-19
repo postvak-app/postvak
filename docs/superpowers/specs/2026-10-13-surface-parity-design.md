@@ -19,7 +19,7 @@ One rule violation: `postvak account add` opens its own IMAP connection to test 
 
 ## Decisions
 
-- **Account add saves first and syncs through the daemon.** No login probe before saving. The daemon watches `config.toml`, starts the new account's thread; the CLI and MCP wait for it to list the account and request one sync, while the GUI shows the sync the daemon starts on its own. A wrong password surfaces as that sync's error; running add again with the same name replaces the account. The CLI's "Testing login..." line goes.
+- **Account add saves first and syncs through the daemon.** No login probe before saving. The daemon watches `config.toml`, starts the new account's thread; the CLI and MCP wait for it to list the account and request one sync, while the GUI shows the sync the daemon starts on its own. A wrong password surfaces as that sync's error; running add again with the same name replaces the account. The CLI's "Testing login..." line goes. (Superseded by `2026-10-19-account-login-test-design.md`: the daemon now tests the login before anything is saved.)
 - **Over MCP, account add takes a password command only.** A plain password would pass through the agent host's context and logs. Keyring passwords stay CLI and GUI.
 - **Account add gets its own scope, `accounts:write`.** Adding an account is neither mail nor rules, and a host should be able to grant everything else without it. It is not in the default scope set.
 - **`attachment_save` gets its own scope, `files:write`, not in the default set:** the file name and content come from the sender and the agent picks the directory, so a read-only grant must not write files.
@@ -71,7 +71,7 @@ Six tools. Arguments mirror the CLI flags.
 
 Three additions. Each is a `UiAction` carried out in `app.rs`; the view modules only draw.
 
-- **Account form.** Fields: name, host, port, username, password, address. The first-run screen in `startup.rs` shows it instead of pointing at the terminal, and a toolbar button opens the same form when accounts exist. Save runs `account::add` with a keyring secret on a worker thread, since the OS keyring may prompt, and the window adds the account to its list. The thread then runs `account::first_sync`, as the CLI does: a pass closes the form, a failure keeps it open with the error and the account saved, so saving again replaces it. Esc closes the form, during the first sync too.
+- **Account form.** Fields: name, host, port, username, password, address. The first-run screen in `startup.rs` shows it instead of pointing at the terminal, and a toolbar button opens the same form when accounts exist. Save runs `account::add` with a keyring secret on a worker thread, since the OS keyring may prompt. The daemon starts the new account from the saved config and syncs it itself, so the window only adds the account to its list and shows the sync on its status line. Esc closes the form. (Since `2026-10-19-account-login-test-design.md`, the thread first tests the login through the daemon.)
 - **Purge.** A "Purge" button in the Trash view with the retention days in its hover text. It runs `Trash::purge` for every account and shows the total removed in the status row.
 - **Apply to existing mail.** A button per enabled rule in the Rules view. It sends `ApplyRule` for each account the rule applies to and shows evaluated and action counts in the status row. No dry run in the GUI; the row text is the result.
 
@@ -105,4 +105,4 @@ Three PRs, each leaving the rule truer:
 
 - Editing or removing an account from the GUI or MCP; the CLI has neither either.
 - A GUI rules editor; `docs/superpowers/plans/2026-10-08-rules-editor.md` covers it.
-- Testing the login before saving.
+- Testing the login before saving; `2026-10-19-account-login-test-design.md` adds it.

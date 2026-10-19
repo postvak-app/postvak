@@ -7,7 +7,6 @@ use crate::config::{AccountConfig, Config, ConfigError, PasswordSource};
 use crate::credentials::{self, CredentialError, Secret};
 use crate::daemon::Client;
 use crate::paths::Paths;
-use crate::sync::{Command, Event};
 
 /// How often `await_started` asks the daemon again.
 const POLL: Duration = Duration::from_millis(100);
@@ -81,17 +80,25 @@ pub fn await_started(client: &Client, name: &str, timeout: Duration) -> anyhow::
     }
 }
 
-/// Waits for the daemon to run `name`, then syncs it once: the test of a saved account's login, as the CLI and the
-/// GUI run it. An error names what failed: the login, the connection, or the first folder error of the pass.
-pub fn first_sync(client: &Client, name: &str) -> anyhow::Result<()> {
-    await_started(client, name, START_TIMEOUT)?;
-    match client.request(name, Command::SyncNow)? {
-        Event::Synced { errors, .. } => match errors.into_iter().next() {
-            Some(first) => bail!(first),
-            None => Ok(()),
-        },
-        other => bail!("unexpected reply from the daemon: {other:?}"),
-    }
+/// Logs in as `account` through the daemon without saving anything, after checking it against `config`: the test a
+/// front end runs before `add`. Without `secret`, the account's own password source answers, as for a password
+/// command.
+pub fn test_login(
+    client: &Client,
+    config: &Config,
+    account: &AccountConfig,
+    secret: Option<&Secret>,
+) -> anyhow::Result<()> {
+    check(config, account)?;
+    let resolved;
+    let secret = match secret {
+        Some(secret) => secret,
+        None => {
+            resolved = credentials::resolve(account)?;
+            &resolved
+        }
+    };
+    client.test_login(account, secret)
 }
 
 #[cfg(test)]
@@ -256,22 +263,61 @@ mod tests {
     }
 
     #[test]
-    fn first_sync_passes_a_good_login_and_names_a_bad_one() {
+    fn test_login_saves_nothing_and_says_why_a_login_fails() {
         let home = tempfile::tempdir().unwrap();
         let paths = Paths::under(home.path());
         write_config(&paths);
-        let daemon = TestDaemon::serve(home, paths.clone(), options(port_one_fails(), None));
+        let before = std::fs::read_to_string(paths.config_file()).unwrap();
+        let daemon = TestDaemon::serve(home, paths.clone(), options(recording_connector(), None));
         let client = Client::connect_or_start(&daemon.paths).unwrap();
-        let mut config = Config::load(&paths.config_file()).unwrap();
-        let mut account = command_account("late");
-        account.port = 1;
-        add(&mut config, &paths, account.clone(), None).unwrap();
-        let err = first_sync(&client, "late").unwrap_err();
-        assert!(format!("{err:#}").contains("connection refused"), "{err:#}");
+        let config = Config::load(&paths.config_file()).unwrap();
+        let account = keyring_account("tested");
+        let good = Secret::new("hunter2".into());
+        test_login(&client, &config, &account, Some(&good)).unwrap();
+        let wrong = Secret::new("wrong".into());
+        let err = test_login(&client, &config, &account, Some(&wrong)).unwrap_err();
+        assert_eq!(
+            format!("{err:#}"),
+            "imap.example.com: login failed: [AUTHENTICATIONFAILED] Authentication failed."
+        );
+        assert_eq!(
+            std::fs::read_to_string(paths.config_file()).unwrap(),
+            before
+        );
+        assert!(
+            credentials::resolve(&account).is_err(),
+            "no password stored"
+        );
+        assert!(
+            !client
+                .status()
+                .unwrap()
+                .accounts
+                .iter()
+                .any(|a| a.name == "tested"),
+            "the daemon runs no account for a test"
+        );
+    }
 
-        account.port = 2;
-        add(&mut config, &paths, account, None).unwrap();
-        first_sync(&client, "late").unwrap();
+    #[test]
+    fn test_login_resolves_a_password_command_and_refuses_an_invalid_account() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::under(home.path());
+        write_config(&paths);
+        let daemon = TestDaemon::serve(home, paths.clone(), options(recording_connector(), None));
+        let client = Client::connect_or_start(&daemon.paths).unwrap();
+        let config = Config::load(&paths.config_file()).unwrap();
+        test_login(&client, &config, &command_account("cmd"), None).unwrap();
+        let mut wrong = command_account("cmd");
+        wrong.password = PasswordSource::Command {
+            command: "printf wrong".into(),
+        };
+        assert!(test_login(&client, &config, &wrong, None).is_err());
+        let err = test_login(&client, &config, &command_account("my cmd"), None).unwrap_err();
+        assert!(
+            err.to_string().contains("may only contain letters, digits"),
+            "{err}"
+        );
     }
 
     #[test]

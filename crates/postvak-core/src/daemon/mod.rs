@@ -14,8 +14,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow, bail};
 
-use crate::config::Config;
+use crate::config::{AccountConfig, Config};
+use crate::credentials::Secret;
 use crate::engine::{self, Connector, Engine};
+use crate::mail_ops::MailError;
+use crate::mail_ops::imap::ImapOps;
 use crate::message::clean;
 use crate::paths::{self, FileWatch, Paths};
 use crate::store::Store;
@@ -38,10 +41,19 @@ const FLUSH_GRACE: Duration = Duration::from_secs(1);
 const LOG_LIMIT: u64 = 1_048_576;
 const POLL: Duration = Duration::from_millis(200);
 
+/// Logs in and out again with the password given, for `TestLogin`.
+pub type Login = Arc<dyn Fn(&AccountConfig, &Secret) -> Result<(), MailError> + Send + Sync>;
+
+/// Logs in to the account's real IMAP server.
+pub fn imap_login() -> Login {
+    Arc::new(|account, secret| ImapOps::connect(account, secret).map(drop))
+}
+
 pub struct Options {
     /// Exit after this long without a connected client; None never idles out.
     pub idle_exit: Option<Duration>,
     pub connect: Connector,
+    pub login: Login,
     /// Sends desktop notifications; tests turn it off.
     pub notify: bool,
     /// Stops on SIGTERM and SIGINT as on `daemon stop`; tests, which run many daemons in one process, turn it off.
@@ -53,6 +65,7 @@ impl Options {
         Options {
             idle_exit: None,
             connect: engine::imap_connector(),
+            login: imap_login(),
             notify: true,
             signals: true,
         }
@@ -270,6 +283,7 @@ impl Hub {
 struct Shared {
     engine: Mutex<Option<Engine>>,
     hub: Mutex<Hub>,
+    login: Login,
     /// Set by a stop signal.
     signalled: Arc<AtomicBool>,
     watch: Mutex<Watch>,
@@ -293,6 +307,7 @@ fn serve(
     let shared = Arc::new(Shared {
         engine: Mutex::new(Some(engine)),
         hub: Mutex::new(Hub::new()),
+        login: options.login.clone(),
         signalled,
         watch: Mutex::new(watch),
     });
@@ -502,7 +517,7 @@ fn open_connection(
     })
 }
 
-fn serve_client(shared: &Shared, client: ClientId, stream: UnixStream) {
+fn serve_client(shared: &Arc<Shared>, client: ClientId, stream: UnixStream) {
     if let Err(e) = converse(shared, client, &stream) {
         log::debug!("client {client}: {e}");
     }
@@ -513,7 +528,7 @@ fn serve_client(shared: &Shared, client: ClientId, stream: UnixStream) {
     let _ = stream.shutdown(Shutdown::Both);
 }
 
-fn converse(shared: &Shared, client: ClientId, stream: &UnixStream) -> io::Result<()> {
+fn converse(shared: &Arc<Shared>, client: ClientId, stream: &UnixStream) -> io::Result<()> {
     let mut lines = BufReader::new(stream).lines();
     let Some(first) = lines.next().transpose()? else {
         return Ok(());
@@ -581,7 +596,7 @@ fn unregister(shared: &Shared, client: ClientId) -> Option<ClientConn> {
 }
 
 /// Answers one line; false when the connection should close.
-fn handle_line(shared: &Shared, client: ClientId, line: &str) -> bool {
+fn handle_line(shared: &Arc<Shared>, client: ClientId, line: &str) -> bool {
     let message = match serde_json::from_str::<ClientMessage>(line) {
         Ok(message) => message,
         Err(e) => {
@@ -617,8 +632,38 @@ fn handle_line(shared: &Shared, client: ClientId, line: &str) -> bool {
             account,
             command,
         } => submit(shared, client, id, &account, command),
+        ClientMessage::TestLogin {
+            id,
+            account,
+            password,
+        } => test_login(shared, client, id, *account, password),
     }
     true
+}
+
+/// Logs in on a thread of its own, as a login can take the connect timeout, and replies with the outcome.
+fn test_login(
+    shared: &Arc<Shared>,
+    client: ClientId,
+    id: u64,
+    account: AccountConfig,
+    password: wire::Password,
+) {
+    let answering = shared.clone();
+    let spawned = std::thread::Builder::new()
+        .name("daemon-login".into())
+        .spawn(move || {
+            let shared = answering;
+            let outcome = match (shared.login)(&account, &password.secret()) {
+                Ok(()) => Outcome::Ok(Payload::Done),
+                Err(e) => Outcome::Error(format!("{}: {e}", account.host)),
+            };
+            lock(&shared.hub).reply(client, id, outcome);
+        });
+    if let Err(e) = spawned {
+        let message = format!("could not start the login test: {e}");
+        lock(&shared.hub).reply(client, id, Outcome::Error(message));
+    }
 }
 
 /// The `id` of a message that did not parse, at its top level or inside its one variant.
