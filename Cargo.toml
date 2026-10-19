@@ -153,3 +153,27 @@ debug = "line-tables-only"
 
 [profile.dist]
 inherits = "release"
+
+# Slint 1.18.1 with its clipboard on the window's own Wayland connection, so copy and paste work on GNOME and in the
+# Flatpak, where arboard's data-control clipboard is missing (https://github.com/slint-ui/slint/pull/14248).
+# Every Slint crate comes from the fork, or two copies of i-slint-core meet. Removing it once a Slint release has the fix:
+# https://github.com/postvak-app/postvak/issues/233.
+[patch.crates-io]
+const-field-offset        = { git = "https://github.com/pataar/slint", branch = "clipboard-1.18.1" }
+const-field-offset-macro  = { git = "https://github.com/pataar/slint", branch = "clipboard-1.18.1" }
+i-slint-backend-linuxkms  = { git = "https://github.com/pataar/slint", branch = "clipboard-1.18.1" }
+i-slint-backend-selector  = { git = "https://github.com/pataar/slint", branch = "clipboard-1.18.1" }
+i-slint-backend-testing   = { git = "https://github.com/pataar/slint", branch = "clipboard-1.18.1" }
+i-slint-backend-winit     = { git = "https://github.com/pataar/slint", branch = "clipboard-1.18.1" }
+i-slint-common            = { git = "https://github.com/pataar/slint", branch = "clipboard-1.18.1" }
+i-slint-compiler          = { git = "https://github.com/pataar/slint", branch = "clipboard-1.18.1" }
+i-slint-core              = { git = "https://github.com/pataar/slint", branch = "clipboard-1.18.1" }
+i-slint-core-macros       = { git = "https://github.com/pataar/slint", branch = "clipboard-1.18.1" }
+i-slint-renderer-femtovg  = { git = "https://github.com/pataar/slint", branch = "clipboard-1.18.1" }
+i-slint-renderer-skia     = { git = "https://github.com/pataar/slint", branch = "clipboard-1.18.1" }
+i-slint-renderer-software = { git = "https://github.com/pataar/slint", branch = "clipboard-1.18.1" }
+slint                     = { git = "https://github.com/pataar/slint", branch = "clipboard-1.18.1" }
+slint-build               = { git = "https://github.com/pataar/slint", branch = "clipboard-1.18.1" }
+slint-macros              = { git = "https://github.com/pataar/slint", branch = "clipboard-1.18.1" }
+vtable                    = { git = "https://github.com/pataar/slint", branch = "clipboard-1.18.1" }
+vtable-macro              = { git = "https://github.com/pataar/slint", branch = "clipboard-1.18.1" }
