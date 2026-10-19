@@ -6,6 +6,7 @@ use std::net::Shutdown;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
@@ -43,6 +44,8 @@ pub struct Options {
     pub connect: Connector,
     /// Sends desktop notifications; tests turn it off.
     pub notify: bool,
+    /// Stops on SIGTERM and SIGINT as on `daemon stop`; tests, which run many daemons in one process, turn it off.
+    pub signals: bool,
 }
 
 impl Options {
@@ -51,6 +54,7 @@ impl Options {
             idle_exit: None,
             connect: engine::imap_connector(),
             notify: true,
+            signals: true,
         }
     }
 
@@ -70,7 +74,14 @@ pub fn run(paths: &Paths, options: Options) -> anyhow::Result<()> {
     truncate_large_log(&paths.daemon_log())?;
     let socket = paths.daemon_socket();
     let listener = bind_private(&socket)?;
-    let served = serve(paths, options, listener);
+    let signalled = Arc::new(AtomicBool::new(false));
+    let signals = if options.signals {
+        StopSignals::register(&signalled)?
+    } else {
+        StopSignals(Vec::new())
+    };
+    let served = serve(paths, options, listener, signalled);
+    drop(signals);
     let _ = fs::remove_file(&socket);
     served
 }
@@ -164,6 +175,37 @@ fn bind_private(socket: &Path) -> anyhow::Result<UnixListener> {
     Ok(listener)
 }
 
+/// SIGTERM (`docker stop`, `systemctl stop`, launchd) and SIGINT (Ctrl-C) set the stop flag, so the daemon stops as on
+/// `daemon stop`; a second one exits at once. PID 1 in a container ignores a signal it has no handler for, so without
+/// this `docker stop` waits out its timeout and kills the daemon.
+struct StopSignals(Vec<signal_hook::SigId>);
+
+impl StopSignals {
+    fn register(signalled: &Arc<AtomicBool>) -> io::Result<StopSignals> {
+        use signal_hook::consts::{SIGINT, SIGTERM};
+        use signal_hook::flag;
+        let mut ids = Vec::new();
+        for signal in [SIGTERM, SIGINT] {
+            // The shutdown goes first, so it sees the flag only from the second signal on.
+            ids.push(flag::register_conditional_shutdown(
+                signal,
+                128 + signal,
+                signalled.clone(),
+            )?);
+            ids.push(flag::register(signal, signalled.clone())?);
+        }
+        Ok(StopSignals(ids))
+    }
+}
+
+impl Drop for StopSignals {
+    fn drop(&mut self) {
+        for id in self.0.drain(..) {
+            signal_hook::low_level::unregister(id);
+        }
+    }
+}
+
 type ClientId = u64;
 
 struct ClientConn {
@@ -228,6 +270,8 @@ impl Hub {
 struct Shared {
     engine: Mutex<Option<Engine>>,
     hub: Mutex<Hub>,
+    /// Set by a stop signal.
+    signalled: Arc<AtomicBool>,
     watch: Mutex<Watch>,
 }
 
@@ -236,7 +280,12 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn serve(paths: &Paths, options: Options, listener: UnixListener) -> anyhow::Result<()> {
+fn serve(
+    paths: &Paths,
+    options: Options,
+    listener: UnixListener,
+    signalled: Arc<AtomicBool>,
+) -> anyhow::Result<()> {
     let watch = Watch::new(paths);
     let config = Config::load(&paths.config_file())?;
     migrate_stores(&config, paths);
@@ -244,6 +293,7 @@ fn serve(paths: &Paths, options: Options, listener: UnixListener) -> anyhow::Res
     let shared = Arc::new(Shared {
         engine: Mutex::new(Some(engine)),
         hub: Mutex::new(Hub::new()),
+        signalled,
         watch: Mutex::new(watch),
     });
     let notify: fn(&str, &str) = if options.notify {
@@ -360,6 +410,10 @@ fn accept_until_done(
 }
 
 fn done(shared: &Shared, idle_exit: Option<Duration>) -> bool {
+    if shared.signalled.load(Ordering::Acquire) {
+        log::info!("stopping on a signal");
+        return true;
+    }
     let hub = lock(&shared.hub);
     hub.shutdown
         || idle_exit

@@ -1129,4 +1129,66 @@ mod tests {
         assert!(!shows_html(&open));
         assert_eq!(open.find(part).len(), 1);
     }
+
+    fn reading_hello(fx: &Fixture) -> (crate::test_support::Open, Wires) {
+        fx.add("work", message("INBOX", 1, "hello there"));
+        let (open, wires) = fx.window();
+        open.tick();
+        (open, wires)
+    }
+
+    fn draft_conditions(open: &crate::test_support::Open) -> Vec<crate::draft::Condition> {
+        open.with(|live| live.app.rule_draft.clone().unwrap().conditions)
+    }
+
+    #[test]
+    fn the_rule_button_on_the_sender_opens_an_unsaved_draft_for_that_address() {
+        use crate::draft::{Condition, Field, Op};
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = reading_hello(&fx);
+        open.click("New rule for mail from this sender");
+        assert_eq!(open.with(|live| live.app.view.clone()), View::Rules);
+        assert_eq!(
+            draft_conditions(&open),
+            [Condition {
+                field: Field::From,
+                header: String::new(),
+                op: Op::Equals,
+                value: "sender1@example.com".into(),
+            }]
+        );
+        assert!(open.with(|live| live.app.rule_draft.clone().unwrap().original.is_none()));
+        assert!(
+            !fx.paths.rules_file().exists(),
+            "nothing is written before Save"
+        );
+    }
+
+    #[test]
+    fn the_rule_button_asks_before_replacing_an_edited_draft() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = reading_hello(&fx);
+        let inbox = open.with(|live| live.app.view.clone());
+        open.click("New rule for mail from this sender");
+        open.with(|live| {
+            live.app
+                .apply(UiAction::EditDraft(Box::new(crate::draft::Draft {
+                    name: "half done".into(),
+                    ..live.app.rule_draft.clone().unwrap()
+                })))
+        });
+        open.with(|live| live.app.select_view(inbox.clone()));
+        open.tick();
+        open.click("New rule for mail from this sender");
+        assert_eq!(open.find("This rule has unsaved changes.").len(), 1);
+        assert_eq!(
+            open.with(|live| live.app.view.clone()),
+            inbox,
+            "the prompt shows over the reader"
+        );
+        open.click("Discard");
+        assert_eq!(open.with(|live| live.app.view.clone()), View::Rules);
+        let name = open.with(|live| live.app.rule_draft.clone().unwrap().name);
+        assert_eq!(name, "from sender1@example.com");
+    }
 }

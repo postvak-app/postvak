@@ -7,6 +7,7 @@ use crate::config::{AccountConfig, Config, ConfigError, PasswordSource};
 use crate::credentials::{self, CredentialError, Secret};
 use crate::daemon::Client;
 use crate::paths::Paths;
+use crate::sync::{Command, Event};
 
 /// How often `await_started` asks the daemon again.
 const POLL: Duration = Duration::from_millis(100);
@@ -77,6 +78,19 @@ pub fn await_started(client: &Client, name: &str, timeout: Duration) -> anyhow::
             );
         }
         std::thread::sleep(POLL);
+    }
+}
+
+/// Waits for the daemon to run `name`, then syncs it once: the test of a saved account's login, as the CLI and the
+/// GUI run it. An error names what failed: the login, the connection, or the first folder error of the pass.
+pub fn first_sync(client: &Client, name: &str) -> anyhow::Result<()> {
+    await_started(client, name, START_TIMEOUT)?;
+    match client.request(name, Command::SyncNow)? {
+        Event::Synced { errors, .. } => match errors.into_iter().next() {
+            Some(first) => bail!(first),
+            None => Ok(()),
+        },
+        other => bail!("unexpected reply from the daemon: {other:?}"),
     }
 }
 
@@ -239,6 +253,25 @@ mod tests {
             matches!(second, Ok(crate::sync::Event::Synced { .. })),
             "{second:?}"
         );
+    }
+
+    #[test]
+    fn first_sync_passes_a_good_login_and_names_a_bad_one() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::under(home.path());
+        write_config(&paths);
+        let daemon = TestDaemon::serve(home, paths.clone(), options(port_one_fails(), None));
+        let client = Client::connect_or_start(&daemon.paths).unwrap();
+        let mut config = Config::load(&paths.config_file()).unwrap();
+        let mut account = command_account("late");
+        account.port = 1;
+        add(&mut config, &paths, account.clone(), None).unwrap();
+        let err = first_sync(&client, "late").unwrap_err();
+        assert!(format!("{err:#}").contains("connection refused"), "{err:#}");
+
+        account.port = 2;
+        add(&mut config, &paths, account, None).unwrap();
+        first_sync(&client, "late").unwrap();
     }
 
     #[test]

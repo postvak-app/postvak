@@ -221,6 +221,19 @@ fn rules() {
 }
 
 #[test]
+fn rule_editor() {
+    let fx = Fixture::mailbox("light");
+    std::fs::write(fx.paths.rules_file(), RULES).unwrap();
+    let (open, _wires) = open(&fx);
+    open.with(|live| live.app.select_view(View::Rules));
+    open.tick();
+    open.click("receipts");
+    open.tick();
+    assert_eq!(open.find("Save").len(), 1);
+    snapshot(&open, "gui_rule_editor");
+}
+
+#[test]
 fn apply_confirm() {
     let fx = Fixture::mailbox("light");
     let tidy = "[[rules]]\nname = \"tidy\"\naccount = \"work\"\nmatch.subject = { contains = \"a\" }\nactions = [\"delete\"]\n";

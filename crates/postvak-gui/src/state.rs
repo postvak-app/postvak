@@ -14,7 +14,7 @@ use postvak_core::daemon::client::NewerDaemon;
 use postvak_core::daemon::wire::AccountStatus;
 use postvak_core::message::{self, Attachment, HtmlBody, clean};
 use postvak_core::paths::{FileWatch, Paths};
-use postvak_core::rules::{self as rule_file, Action, RulesError};
+use postvak_core::rules::{self as rule_file, Action, Rule, RuleFile, RulesError};
 use postvak_core::store::{Filter, LogEntry, Message, Store, StoreError};
 use postvak_core::sync::{Activity, Command, Event};
 use postvak_core::trash::Trash;
@@ -22,6 +22,7 @@ use postvak_core::unsubscribe::{self, Method};
 
 use super::account::{self, AccountForm};
 use super::body;
+use super::draft::{self, Draft};
 use super::folders;
 use super::html::{self, Fetcher, HtmlState, Renderer, Reply, Wake};
 use super::list::{self, ListState, Optimistic, Row, RowKey};
@@ -67,6 +68,14 @@ pub(crate) type Waker = Box<dyn Fn() + Send>;
 /// Connects to the daemon, starting it when none answers.
 pub(crate) fn connect(paths: &Paths, wake: Waker) -> anyhow::Result<Connection> {
     session(Client::connect_or_start(paths)?, wake)
+}
+
+/// Syncs a saved account once through a connection of its own, starting the daemon if none runs, as
+/// `postvak account add` does: the add-account form's test of the login.
+pub(crate) fn first_sync(paths: &Paths, name: &str) -> Result<(), String> {
+    Client::connect_or_start(paths)
+        .and_then(|client| postvak_core::account::first_sync(&client, name))
+        .map_err(|e| clean(&format!("{e:#}"), false))
 }
 
 /// Subscribes before asking for the states, so no event between the two is lost.
@@ -252,6 +261,10 @@ pub(crate) enum UiAction {
     ApproveRule(String),
     /// Take every row out of the selection.
     ClearSelection,
+    /// The rule editor's form changed.
+    EditDraft(Box<Draft>),
+    /// Open a rule in the editor.
+    EditRule(String),
     Collapse,
     /// Move the targeted rows into a folder dropped on.
     DropOn(View),
@@ -287,6 +300,8 @@ pub(crate) enum UiAction {
     MoveCursor(isize),
     MoveFilter(String),
     MoveTo(String),
+    /// Open an empty rule in the editor.
+    NewRule,
     NextFocus,
     /// Open the add-account form.
     OpenAccountForm,
@@ -295,11 +310,21 @@ pub(crate) enum UiAction {
     OpenUrl(String),
     OpenRulesFile,
     OpenSource,
+    /// Count what a rule would do to the cached mail, without doing it.
+    PreviewRule(String),
     RejectRule(String),
+    /// Start a new rule for mail from the sender of the message shown, given its From.
+    RuleFrom(String),
+    /// Remove the open rule from rules.toml; unconfirmed, it asks first.
+    RemoveRule {
+        confirmed: bool,
+    },
     Restore(usize, PathBuf),
     /// Save the form's account, replacing one of the same name.
     SaveAccount(account::Fields),
     SaveAttachment(usize),
+    /// Write the open rule to rules.toml.
+    SaveDraft,
     SaveEml,
     /// Leave the shown message's mailing list: by one click, or by opening its page or address.
     Unsubscribe,
@@ -317,6 +342,8 @@ pub(crate) enum UiAction {
     SetTheme(Theme),
     StartSearch,
     StepFolder(isize),
+    /// Count what the open rule would do to the cached mail.
+    TestDraft,
     /// Remove each account's backups past its retention
     PurgeTrash,
     /// Run an enabled rule once over the stored mail of the accounts it covers; asks first when it would expunge mail
@@ -335,6 +362,10 @@ pub(crate) enum UiAction {
     ToggleRead,
     /// Cmd-click (Ctrl-click off macOS): add this row to the selection, which starts from the cursor row, or take it out.
     ToggleRowMark(usize),
+    /// The answers to "This rule has unsaved changes."
+    UnsavedCancel,
+    UnsavedDiscard,
+    UnsavedSave,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -371,6 +402,8 @@ pub struct App {
     pub(crate) retention: BTreeMap<String, u64>,
     pub(crate) events: Receiver<Event>,
     pub(crate) fetch_release: fn() -> anyhow::Result<String>,
+    /// Tests a saved account's login with its first sync; tests swap it so no daemon starts.
+    pub(crate) check_login: account::Check,
     /// Sends a one-click unsubscribe; tests swap it so nothing leaves the machine.
     pub(crate) post_unsubscribe: fn(&str) -> Result<(), String>,
     pub(crate) unsubscribing: Option<Unsubscribing>,
@@ -423,6 +456,14 @@ pub struct App {
     pub(crate) requested: HashSet<(usize, RowKey)>,
     pub(crate) rules: RulesState,
     pub(crate) rules_watch: FileWatch,
+    /// The rule open in the Rules view's editor; nothing in it is written until Save.
+    pub(crate) rule_draft: Option<Draft>,
+    /// What `rule_draft` was opened or last saved as, which tells an edit from a look.
+    pub(crate) rule_draft_opened: Option<Draft>,
+    /// The open rule changed in rules.toml while the editor had unsaved changes; the next Save says so instead.
+    pub(crate) rule_draft_stale: bool,
+    /// Opening another rule while the open one has unsaved changes: held until the prompt is answered.
+    pub(crate) leave_draft: Option<Box<UiAction>>,
     pub(crate) search: Option<String>,
     /// Which rows a folder's list keeps; search results ignore it.
     pub(crate) filter: Filter,
@@ -492,6 +533,7 @@ impl App {
             error: None,
             events,
             fetch_release: update::fetch,
+            check_login: first_sync,
             post_unsubscribe: |url| unsubscribe::one_click(url).map_err(|e| e.to_string()),
             unsubscribing: None,
             fetcher: None,
@@ -525,6 +567,10 @@ impl App {
             requested: HashSet::new(),
             rules,
             rules_watch: FileWatch::new(rules_path),
+            rule_draft: None,
+            rule_draft_opened: None,
+            rule_draft_stale: false,
+            leave_draft: None,
             search: None,
             filter: Filter::default(),
             search_focused: false,
@@ -553,6 +599,8 @@ impl App {
     /// Everything that happens with time: daemon events and render replies in, reconnects, the release check, reloads,
     /// file polling, the shown body and its read delay. The window calls it when woken, on its timer and after input.
     pub fn tick(&mut self, now: f64) {
+        // Before the events, so a new account is listed when its first sync reports.
+        self.receive_saved_account();
         self.receive(now);
         self.receive_html();
         self.receive_remote();
@@ -560,7 +608,6 @@ impl App {
         self.keep_daemon(now);
         self.check_release();
         self.receive_unsubscribe();
-        self.receive_saved_account();
         self.receive_list();
         if std::mem::take(&mut self.view_dirty) {
             self.refresh_view();
@@ -909,6 +956,11 @@ impl App {
 
     fn apply_action(&mut self, action: UiAction) {
         match action {
+            leave @ (UiAction::EditRule(_) | UiAction::NewRule | UiAction::RuleFrom(_))
+                if self.draft_edited() =>
+            {
+                self.leave_draft = Some(Box::new(leave));
+            }
             UiAction::Act(action) => self.act(action),
             UiAction::ApproveRule(name) => {
                 let accounts: Vec<String> = self.accounts.iter().map(|a| a.name.clone()).collect();
@@ -934,8 +986,9 @@ impl App {
                 if self.apply_confirm.is_some() {
                     self.apply_confirm = None;
                 } else if let Some(form) = &self.account_form {
-                    // A save in flight finishes first, so its account joins the window.
-                    if form.saving.is_none() {
+                    // A save in flight writes first, so its account joins the window; its first sync goes on, and
+                    // shows on the account's line.
+                    if form.saving.is_none() || form.testing {
                         self.account_form = None;
                     }
                 } else if self.move_picker.is_some() {
@@ -955,6 +1008,19 @@ impl App {
                     self.reload_view();
                 } else {
                     self.list.marked.clear();
+                }
+            }
+            UiAction::EditDraft(draft) => {
+                self.rule_draft = Some(Draft {
+                    error: None,
+                    tested: None,
+                    ..*draft
+                });
+            }
+            UiAction::EditRule(name) => {
+                let rule = self.rules.rules.iter().find(|rule| rule.name == name);
+                if let Some(draft) = rule.map(Draft::from_rule) {
+                    self.open_draft(Some(draft));
                 }
             }
             UiAction::Expand => self.expand(),
@@ -991,6 +1057,7 @@ impl App {
                 1 => self.move_picker = Some(String::new()),
                 _ => self.note_error(None, MOVE_ONE_ACCOUNT.into()),
             },
+            UiAction::NewRule => self.open_draft(Some(Draft::new())),
             UiAction::OpenSource => self.open_source(),
             UiAction::OpenUrl(url) => {
                 if let Err(e) = (self.launch)(url.as_ref(), false) {
@@ -998,8 +1065,49 @@ impl App {
                 }
             }
             UiAction::OpenRulesFile => self.open_rules_file(),
+            UiAction::PreviewRule(name) => {
+                if let Some(rule) = self.rules.rules.iter().find(|rule| rule.name == name) {
+                    let text = self.preview(rule.clone());
+                    self.rules.previews.insert(name, text);
+                }
+            }
             UiAction::RejectRule(name) => {
                 self.edit_rules(|path| rule_file::edit::reject(path, &name));
+            }
+            UiAction::RemoveRule { confirmed } => self.remove_draft(confirmed),
+            UiAction::RuleFrom(from) => {
+                if let Some(body) = &self.body {
+                    let draft =
+                        Draft::from_sender(&from, &self.accounts[body.account].name, &body.key.0);
+                    self.select_view(View::Rules);
+                    self.open_draft(Some(draft));
+                }
+            }
+            UiAction::SaveDraft => {
+                self.save_draft();
+            }
+            UiAction::TestDraft => {
+                let tested = self.rule_draft.as_ref().map(|draft| match draft.to_rule() {
+                    Ok(rule) => self.preview(rule),
+                    Err(e) => e,
+                });
+                if let Some(draft) = &mut self.rule_draft {
+                    draft.tested = tested;
+                }
+            }
+            UiAction::UnsavedCancel => self.leave_draft = None,
+            UiAction::UnsavedDiscard => {
+                if let Some(leave) = self.leave_draft.take() {
+                    self.open_draft(None);
+                    self.apply_action(*leave);
+                }
+            }
+            UiAction::UnsavedSave => {
+                if let Some(leave) = self.leave_draft.take()
+                    && self.save_draft()
+                {
+                    self.apply_action(*leave);
+                }
             }
             UiAction::Restore(account, file) => {
                 // A failed restore reloads the view, which lists the backup again.
@@ -2104,7 +2212,7 @@ impl App {
 
     /// Starts the save; a form that cannot make an account says why at once.
     fn save_account(&mut self, fields: &account::Fields) {
-        let wake = self.wake.clone();
+        let (wake, check) = (self.wake.clone(), self.check_login);
         let paths = self.paths.clone();
         let Some(form) = self
             .account_form
@@ -2113,7 +2221,7 @@ impl App {
         else {
             return;
         };
-        match account::save(paths, fields, wake) {
+        match account::save(paths, fields, wake, check) {
             Ok(answer) => {
                 form.error = None;
                 form.saving = Some(answer);
@@ -2122,28 +2230,37 @@ impl App {
         }
     }
 
-    /// Takes the save's answer: the account joins the window, or the form says why not.
+    /// Takes the save's steps: a saved account joins the window, a passed first sync closes the form, and a refusal or
+    /// a failed sync stays in the form with why.
     fn receive_saved_account(&mut self) {
-        let Some(form) = &mut self.account_form else {
-            return;
-        };
-        let Some(answer) = &form.saving else { return };
-        let saved = match answer.try_recv() {
-            Err(TryRecvError::Empty) => return,
-            Ok(saved) => saved,
-            Err(TryRecvError::Disconnected) => Err(account::STOPPED.into()),
-        };
-        form.saving = None;
-        match saved {
-            Ok(account) => self.account_added(account),
-            Err(message) => form.error = Some(message),
+        loop {
+            let Some(form) = &mut self.account_form else {
+                return;
+            };
+            let Some(answer) = &form.saving else { return };
+            let step = match answer.try_recv() {
+                Err(TryRecvError::Empty) => return,
+                Ok(step) => step,
+                Err(TryRecvError::Disconnected) => account::Step::Refused(account::STOPPED.into()),
+            };
+            match step {
+                account::Step::Saved(account) => {
+                    form.testing = true;
+                    self.account_added(account);
+                }
+                account::Step::Synced => self.account_form = None,
+                account::Step::Refused(why) | account::Step::Failed(why) => {
+                    form.saving = None;
+                    form.testing = false;
+                    form.error = Some(why);
+                }
+            }
         }
     }
 
     /// A new account joins the list and a replaced one keeps its place; the daemon starts it from config.toml and its
     /// events arrive by name, so its first sync shows on its line.
     fn account_added(&mut self, account: AccountConfig) {
-        self.account_form = None;
         // Absorbs this window's own write, so the poll does not take it for an outside edit.
         self.config_watch.changed();
         self.retention
@@ -2286,6 +2403,110 @@ impl App {
             &self.paths.rules_file(),
             std::mem::take(&mut self.rules.rules),
         );
+        let on_disk = self.rule_draft_opened.as_ref().and_then(|opened| {
+            let name = opened.original.as_deref()?;
+            let rule = self.rules.rules.iter().find(|rule| rule.name == name)?;
+            Some(Draft::from_rule(rule))
+        });
+        let Some(on_disk) = on_disk else { return };
+        if !self.draft_edited() {
+            // A rule only looked at shows the file as it now is, so Save writes nothing back.
+            let tested = self.rule_draft.as_mut().and_then(|d| d.tested.take());
+            self.open_draft(Some(Draft { tested, ..on_disk }));
+            return;
+        }
+        let Some(opened) = &mut self.rule_draft_opened else {
+            return;
+        };
+        // The edited rule follows its switch as the file now has it, from the list or from outside, unless the editor
+        // changed it; so a later Save does not turn it back. Any other change outside is not merged: Save says so first.
+        let switched = Draft {
+            enabled: opened.enabled,
+            ..on_disk.clone()
+        };
+        if switched.edited(opened) {
+            self.rule_draft_stale = true;
+        }
+        if let Some(draft) = self
+            .rule_draft
+            .as_mut()
+            .filter(|d| d.enabled == opened.enabled)
+        {
+            draft.enabled = on_disk.enabled;
+        }
+        *opened = on_disk;
+    }
+
+    fn open_draft(&mut self, draft: Option<Draft>) {
+        self.rule_draft_stale = false;
+        self.rule_draft_opened = draft.clone();
+        self.rule_draft = draft;
+    }
+
+    /// Whether the open rule has changes that Save has not written.
+    fn draft_edited(&self) -> bool {
+        (self.rule_draft.as_ref())
+            .zip(self.rule_draft_opened.as_ref())
+            .is_some_and(|(draft, opened)| draft.edited(opened))
+    }
+
+    /// Writes the open rule; on failure it stays open with the reason.
+    fn save_draft(&mut self) -> bool {
+        let path = self.paths.rules_file();
+        let edited = self.draft_edited();
+        let Some(draft) = &mut self.rule_draft else {
+            return false;
+        };
+        if std::mem::take(&mut self.rule_draft_stale) && edited {
+            let name = draft.original.as_deref().unwrap_or(&draft.name);
+            draft.error = Some(format!(
+                "'{name}' changed in rules.toml while you edited it. Save again to replace that change with this form, or discard your edits to see it."
+            ));
+            return false;
+        }
+        let saved = draft.to_rule().and_then(|rule| {
+            rule_file::edit::save_rule(&path, draft.original.as_deref(), &rule)
+                .map(|()| rule.name)
+                .map_err(|e| e.to_string())
+        });
+        match saved {
+            Ok(name) => {
+                draft.original = Some(name);
+                draft.error = None;
+                self.rule_draft_opened = Some(draft.clone());
+                self.rules_changed();
+                true
+            }
+            Err(e) => {
+                draft.error = Some(e);
+                false
+            }
+        }
+    }
+
+    /// Closes an unsaved rule; a saved one asks first, then leaves rules.toml.
+    fn remove_draft(&mut self, confirmed: bool) {
+        let Some(draft) = &mut self.rule_draft else {
+            return;
+        };
+        let Some(name) = draft.original.clone() else {
+            self.open_draft(None);
+            return;
+        };
+        if !confirmed {
+            draft.confirm_remove = true;
+            return;
+        }
+        match rule_file::edit::remove_rule(&self.paths.rules_file(), &name) {
+            Ok(()) => {
+                self.open_draft(None);
+                self.rules_changed();
+            }
+            Err(e) => {
+                draft.confirm_remove = false;
+                draft.error = Some(e.to_string());
+            }
+        }
     }
 
     fn edit_rules(&mut self, edit: impl FnOnce(&Path) -> Result<(), RulesError>) {
@@ -2293,6 +2514,53 @@ impl App {
             Ok(()) => self.rules_changed(),
             Err(e) => self.note_error(None, e.to_string()),
         }
+    }
+
+    /// What `rule` would do to every account's cached mail if it were enabled, as `postvak rules test` shows it. Reads
+    /// config.toml and the stores only. ponytail: scans the cache on the window thread; move it to a thread if large
+    /// stores stall the window.
+    fn preview(&self, mut rule: Rule) -> String {
+        rule.enabled = true;
+        let compiled = match rule_file::compile(&RuleFile {
+            rules: vec![rule.clone()],
+        }) {
+            Ok(compiled) => compiled,
+            Err(e) => return e.to_string(),
+        };
+        let config = match Config::load(&self.paths.config_file()) {
+            Ok(config) => config,
+            Err(e) => return e.to_string(),
+        };
+        let mut matched = HashSet::new();
+        for account in &self.accounts {
+            let Ok(store) = &account.store else { continue };
+            let Some(settings) = config.account(&account.name) else {
+                continue;
+            };
+            let planned = settings
+                .identity()
+                .map_err(|e| e.to_string())
+                .and_then(|identity| {
+                    postvak_core::actions::planned(
+                        &compiled,
+                        store,
+                        settings,
+                        &identity,
+                        postvak_core::time::now(),
+                    )
+                    .map_err(|e| e.to_string())
+                });
+            match planned {
+                Ok(planned) => matched.extend(
+                    planned
+                        .into_iter()
+                        .map(|p| (account.name.clone(), p.message.folder, p.message.uid)),
+                ),
+                Err(e) => return format!("{}: {e}", account.name),
+            }
+        }
+        let needs_body = compiled.iter().any(|compiled| compiled.needs_body());
+        draft::preview_text(&rule, matched.len(), needs_body)
     }
 
     fn open_rules_file(&mut self) {

@@ -20,27 +20,28 @@ This writes a launchd agent (`~/Library/LaunchAgents/io.github.postvak_app.postv
 
 Postvak runs headless on any Linux machine, such as a NAS, a VPS or a Raspberry Pi. Rules act on the IMAP server, so your phone and other mail clients see the sorted mailbox. Two things differ from a desktop:
 
-- **Passwords:** a server has no keyring, so write `config.toml` by hand (see [Accounts](accounts.md)) with `password = { command = "cat /path/to/secret" }` instead of `account add`. Set `notify = false`; there is no desktop to notify.
+- **Passwords:** a server has no keyring, so answer `c` (command) when `postvak account add` asks where the password goes, with a command such as `cat /path/to/secret`; or write `config.toml` by hand (see [Accounts](accounts.md)). Set `notify = false` in each account; there is no desktop to notify.
 - **Starting at boot:** `postvak service install` writes a systemd *user* unit, and user units only run while you are logged in. Run `loginctl enable-linger $USER` once to start it at boot.
 
 ### Docker
 
-There is no published image. To run Postvak in a container, mount the Linux binary from a [release](https://github.com/postvak-app/postvak/releases/latest) into a plain Debian container. On Unraid, use this file with the Compose Manager plugin:
+The image `ghcr.io/postvak-app/postvak` runs the daemon on amd64 and arm64. It holds the command line, the daemon and the MCP server, without the mail window. On Unraid, use this file with the Compose Manager plugin:
 
 ```yaml
 services:
   postvak:
-    image: debian:stable-slim
-    command: ["postvak", "run"]
-    environment:
-      POSTVAK_HOME: /data
+    image: ghcr.io/postvak-app/postvak:latest
+    container_name: postvak
     volumes:
-      - ./postvak:/usr/local/bin/postvak:ro  # the binary extracted from the release archive
       - ./data:/data
     restart: unless-stopped
 ```
 
-With `POSTVAK_HOME` set, `config.toml` and `rules.toml` go in `./data/config/`, and the mail store in `./data/state/`. Errors go to `docker compose logs postvak`. The binary sits in the `postvak-<target>/` folder of the release's `postvak-<target>.tar.xz`, for example `postvak-x86_64-unknown-linux-gnu`. Put the password in a file under `./data/`, for example `password = { command = "cat /data/imap-work" }`. To use the CLI against the running daemon, run `docker compose exec postvak postvak rules test`.
+- **Data:** the image runs `postvak run` as user 1000 with `POSTVAK_HOME=/data`, so `config.toml` and `rules.toml` go in `./data/config/`, and the mail store in `./data/state/`. Run `mkdir data` before the first `docker compose up`: a directory Docker creates itself belongs to root, and the daemon cannot write it. If `./data` belongs to another user, set `user:` to its owner (`user: "99:100"` on Unraid).
+- **Accounts:** put the password in a file under `./data/`, then run `docker compose exec postvak postvak account add` and answer `c` with `cat /data/imap-work`. Set `notify = false` in `./data/config/config.toml`. The daemon picks up config changes on its own.
+- **Command line:** `docker compose exec postvak postvak rules test`, and so on. Errors go to `docker compose logs postvak`.
+- **Agents:** `postvak mcp install` cannot reach a host outside the container, so add the server to the host's config by hand, with `docker` as the command (its absolute path, such as `/usr/local/bin/docker`, for a host started from the Dock) and `["exec", "-i", "postvak", "postvak", "mcp", "--scopes", "read,rules:propose"]` as its arguments. See [MCP](mcp.md) for the scopes.
+- **Upgrades:** tags follow releases: `latest`, `X.Y` and `X.Y.Z`. `docker compose pull && docker compose up -d` upgrades. `gh attestation verify oci://ghcr.io/postvak-app/postvak:latest --repo postvak-app/postvak` checks that an image was built from this repository.
 
 ## Status and stopping
 
@@ -49,7 +50,7 @@ postvak daemon status    # pid, version, uptime, clients and what each account i
 postvak daemon stop
 ```
 
-Both only look for a running daemon; they never start one, and say `no daemon running` when there is none (`status --json` prints `null`). After `stop`, the next command that needs the server starts it again, and an open mail window does so within 5 s. A service restarts it on its own.
+Both only look for a running daemon; they never start one, and say `no daemon running` when there is none (`status --json` prints `null`). SIGTERM (`docker stop`, `systemctl --user stop postvak`) and Ctrl-C stop it the same way as `daemon stop`; a second one exits at once. After `stop`, the next command that needs the server starts it again, and an open mail window does so within 5 s. A service restarts it on its own.
 
 ## Logs
 

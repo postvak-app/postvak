@@ -30,6 +30,7 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_rusqlite.workspace = true
+signal-hook.workspace = true
 socket2.workspace = true
 tempfile = { workspace = true, optional = true }     # the daemon test harness behind `testing`
 thiserror.workspace = true

@@ -1,0 +1,133 @@
+# Postvak's daemon as a container image on ghcr.io, for amd64 and arm64. The image holds a build without the GUI (the
+# CLI, the daemon and the MCP server), about a quarter of the release binary's size, so it builds that from the tag's
+# source on a native runner per architecture. Separate from release.yml, which dist generates and owns.
+name: Docker
+
+on:
+  # release-plz pushes the tag with its own token, so this fires; `release: published` covers a release published by
+  # hand.
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+*']
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build, e.g. v0.4.0
+        required: true
+  # A packaging change builds and smoke-tests the image from the pull request's source, without pushing it.
+  pull_request:
+    paths:
+      - packaging/docker/**
+      - .github/workflows/docker.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.tag || github.event.release.tag_name || github.ref_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+  # Empty on a pull request.
+  TAG: ${{ inputs.tag || github.event.release.tag_name || (github.event_name == 'push' && github.ref_name) || '' }}
+
+jobs:
+  binary:
+    name: Binary (${{ matrix.platform }})
+    strategy:
+      matrix:
+        include:
+          - platform: amd64
+            runner: ubuntu-24.04
+          - platform: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG || github.ref }}
+          persist-credentials: false
+      - run: rustup toolchain install
+      # No build cache: a release binary comes only from its own source.
+      - run: cargo build --release --locked -p postvak --no-default-features --features mcp
+      - env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          mkdir dist
+          mv target/release/postvak "dist/postvak-$PLATFORM"
+          "dist/postvak-$PLATFORM" --version
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: binary-${{ matrix.platform }}
+          path: dist/postvak-${{ matrix.platform }}
+          retention-days: 7
+          if-no-files-found: error
+
+  image:
+    needs: binary
+    runs-on: ubuntu-24.04
+    permissions:
+      attestations: write # build provenance for the pushed image
+      contents: read
+      id-token: write
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG || github.ref }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: binary-*
+          path: ${{ runner.temp }}/context
+          merge-multiple: true
+      - name: Lay out the build context
+        run: |
+          context="$RUNNER_TEMP/context"
+          mkdir "$context/data"
+          cp packaging/docker/Dockerfile "$context/"
+          echo "CONTEXT=$context" >>"$GITHUB_ENV"
+      - name: Set up a builder for both platforms
+        run: docker buildx create --use --driver docker-container
+      - name: Smoke test
+        run: |
+          docker buildx build --platform linux/amd64 --load --tag postvak:test "$CONTEXT"
+          docker run --rm postvak:test --version
+          docker volume create postvak-test
+          docker run --detach --name postvak-test --volume postvak-test:/data postvak:test
+          for _ in $(seq 20); do
+            docker exec postvak-test postvak daemon status --json | grep -qv '^null$' && break
+            sleep 1
+          done
+          docker exec postvak-test postvak daemon status
+          # The daemon stops on SIGTERM; a SIGKILL after the timeout would leave exit code 137.
+          docker stop --timeout 10 postvak-test
+          docker logs postvak-test
+          test "$(docker inspect --format '{{.State.ExitCode}}' postvak-test)" = 0
+      - name: Log in to ghcr.io
+        if: env.TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - name: Build and push
+        id: push
+        if: env.TAG != ''
+        run: |
+          version=${TAG#v}
+          tags=(--tag "$IMAGE:$version")
+          # A pre-release (v1.2.0-rc.1) gets only its own tag; a release also moves 1.2 and latest.
+          if [[ $version != *-* ]]; then
+            tags+=(--tag "$IMAGE:${version%.*}" --tag "$IMAGE:latest")
+          fi
+          docker buildx build --platform linux/amd64,linux/arm64 --push \
+            --label "org.opencontainers.image.version=$version" \
+            --metadata-file "$RUNNER_TEMP/metadata.json" "${tags[@]}" "$CONTEXT"
+          echo "digest=$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/metadata.json")" >>"$GITHUB_OUTPUT"
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        if: env.TAG != ''
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
