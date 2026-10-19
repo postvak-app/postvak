@@ -6,7 +6,7 @@ use crate::message::clean;
 use crate::rules::apply::{ApplyError, apply, ensure_raw, move_target};
 use crate::rules::engine::{Context, Mode, Plan, PlannedAction, evaluate};
 use crate::rules::{Action, CompiledRule};
-use crate::store::{Message, Store, StoreError};
+use crate::store::{Hit, Matched, Message, Store, StoreError};
 use crate::trash::Trash;
 
 /// The rule name the CLI logs direct actions under.
@@ -159,19 +159,26 @@ pub fn search_server(
 /// Local search results plus the server's hits the store knows, each once, newest first, at most `limit`.
 pub fn with_server_hits(
     store: &Store,
-    mut found: Vec<Message>,
+    mut found: Vec<Hit>,
     hits: &[(String, u32)],
     limit: u32,
-) -> Result<Vec<Message>, StoreError> {
+) -> Result<Vec<Hit>, StoreError> {
     for (folder, uid) in hits {
-        if found.iter().any(|m| m.folder == *folder && m.uid == *uid) {
+        if found
+            .iter()
+            .any(|hit| hit.message.folder == *folder && hit.message.uid == *uid)
+        {
             continue;
         }
         if let Some(message) = store.message(folder, *uid)? {
-            found.push(message);
+            found.push(Hit {
+                message,
+                matched: Matched::Exact,
+                snippet: None,
+            });
         }
     }
-    found.sort_by_key(|m| std::cmp::Reverse((m.internaldate, m.uid)));
+    found.sort_by_key(|hit| std::cmp::Reverse((hit.message.internaldate, hit.message.uid)));
     found.truncate(limit as usize);
     Ok(found)
 }
@@ -427,7 +434,14 @@ mod tests {
     fn fetch_bodies_indexes_only_missing_bodies() {
         let (mut ops, store, _trash, _dir) = setup();
         assert_eq!(fetch_bodies(&mut ops, &store, "INBOX").unwrap(), 1);
-        assert_eq!(store.search("body", None, 10).unwrap().len(), 1);
+        let body = crate::search::parse("body");
+        assert_eq!(
+            store
+                .search(&body, crate::search::Scope::All, None, 10)
+                .unwrap()
+                .len(),
+            1
+        );
         let calls = ops.calls.len();
         assert_eq!(fetch_bodies(&mut ops, &store, "INBOX").unwrap(), 0);
         assert_eq!(ops.calls.len(), calls, "nothing left to fetch");
@@ -510,14 +524,23 @@ mod tests {
             ..Default::default()
         };
         store.insert_message(&older).unwrap();
-        let local = store.message("INBOX", 5).unwrap().into_iter().collect();
+        let local = store
+            .message("INBOX", 5)
+            .unwrap()
+            .into_iter()
+            .map(|message| Hit {
+                message,
+                matched: Matched::Exact,
+                snippet: None,
+            })
+            .collect();
         let hits = [
             ("INBOX".to_string(), 2),
             ("INBOX".to_string(), 5),
             ("INBOX".to_string(), 77),
         ];
         let merged = with_server_hits(&store, local, &hits, 10).unwrap();
-        let uids: Vec<u32> = merged.iter().map(|m| m.uid).collect();
+        let uids: Vec<u32> = merged.iter().map(|hit| hit.message.uid).collect();
         assert_eq!(uids, [5, 2]);
         assert_eq!(
             with_server_hits(&store, Vec::new(), &hits, 1)

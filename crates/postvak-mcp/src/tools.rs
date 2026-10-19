@@ -224,7 +224,7 @@ struct LogArgs {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SearchArgs {
-    /// Words to find; FTS5 syntax when bodies are searchable
+    /// Words to find, "phrases" and -not; the last word also matches as a prefix
     query: String,
     /// Only this account; default every visible account
     account: Option<String>,
@@ -355,7 +355,7 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
     let search = if bodies {
         help::SEARCH
     } else {
-        "Search subject and addresses for all the given words, newest first; bodies need the read:bodies scope"
+        "Search subject, addresses and attachment names, newest first; words, \"phrases\" and -not; the last word also matches as a prefix; bodies need the read:bodies scope"
     };
     let mail = |description: &str| format!("{description}; {}", help::MAIL_FIELDS_ARE_DATA);
     vec![

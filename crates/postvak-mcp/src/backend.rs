@@ -12,6 +12,7 @@ use postvak_core::message;
 use postvak_core::output;
 use postvak_core::paths::Paths;
 use postvak_core::rules::{self, Action, Rule, RuleFile};
+use postvak_core::search::{self, Scope};
 /// The `list` filter, a plain value, so the tools need not name the store.
 pub(crate) use postvak_core::store::Filter;
 use postvak_core::store::{Message, Store};
@@ -177,7 +178,7 @@ impl Backend {
         Ok(rows)
     }
 
-    /// `bodies` searches stored body text too; without it the query matches subject and addresses as plain words.
+    /// `bodies` lets stored body text decide a match; without it only the header columns do.
     /// `server` asks the mail server as well, which searches bodies, so it needs `bodies`.
     pub fn search(
         &self,
@@ -192,20 +193,18 @@ impl Backend {
             bail!("a server search matches message bodies, which needs the read:bodies scope");
         }
         let limit = limit.min(MAX_LIMIT);
+        let parsed = search::parse(query);
+        let scope = if bodies { Scope::All } else { Scope::Headers };
         let mut rows = Vec::new();
         for acc in self.select(account)? {
             let store = self.store(&acc)?;
-            let mut found = if bodies {
-                store.search(query, folder, limit)?
-            } else {
-                store.search_headers(query, folder, limit)?
-            };
+            let mut found = store.search(&parsed, scope, folder, limit)?;
             if server {
                 let hits = self.daemon.search_server(&acc.name, folder, query)?;
                 found = actions::with_server_hits(&store, found, &hits, limit)?;
             }
-            for m in &found {
-                rows.push(message_row(&acc.name, m)?);
+            for hit in &found {
+                rows.push(message_row(&acc.name, &hit.message)?);
             }
         }
         Ok(rows)

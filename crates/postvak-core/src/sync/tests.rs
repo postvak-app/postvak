@@ -293,10 +293,15 @@ fn clean_pass_forgets_folders_the_server_no_longer_lists() {
     );
     assert!(
         store
-            .search("hello", None, 10)
+            .search(
+                &crate::search::parse("hello"),
+                crate::search::Scope::All,
+                None,
+                10
+            )
             .unwrap()
             .iter()
-            .all(|m| m.folder == "INBOX")
+            .all(|hit| hit.message.folder == "INBOX")
     );
     assert_eq!(store.messages_in_folder("INBOX").unwrap().len(), 2);
 }
