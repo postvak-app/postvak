@@ -155,7 +155,7 @@ debug = "line-tables-only"
 inherits = "release"
 
 # Slint 1.18.1 with its clipboard on the window's own Wayland connection, so copy and paste work on GNOME and in the
-# Flatpak, where arboard's data-control clipboard is missing (slint-ui/slint, branch winit-wayland-clipboard on the fork).
+# Flatpak, where arboard's data-control clipboard is missing (https://github.com/slint-ui/slint/pull/14248).
 # Every Slint crate comes from the fork, or two copies of i-slint-core meet. Drop once a Slint release has the fix.
 [patch.crates-io]
 const-field-offset        = { git = "https://github.com/pataar/slint", branch = "clipboard-1.18.1" }
