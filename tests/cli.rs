@@ -661,18 +661,31 @@ fn search_marks_close_matches_and_exact_turns_them_off() {
     let right = message(45, "billing@example.com", "Invoice for April");
     let (home, _store) = seeded_home(&[typo, right]);
     let out = postvak(home.path(), &["search", "invioce"]);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let lines: Vec<String> = String::from_utf8_lossy(&out.stdout)
         .lines()
         .map(str::to_string)
         .collect();
     assert_eq!(lines.len(), 2, "{lines:?}");
-    assert!(lines[0].contains("INBOX/44") && !lines[0].starts_with('~'), "{lines:?}");
-    assert!(lines[1].starts_with("~ ") && lines[1].contains("INBOX/45"), "{lines:?}");
+    assert!(
+        lines[0].contains("INBOX/44") && !lines[0].starts_with('~'),
+        "{lines:?}"
+    );
+    assert!(
+        lines[1].starts_with("~ ") && lines[1].contains("INBOX/45"),
+        "{lines:?}"
+    );
 
     let out = postvak(home.path(), &["search", "invioce", "--exact"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("INBOX/44") && !stdout.contains("INBOX/45"), "{stdout}");
+    assert!(
+        stdout.contains("INBOX/44") && !stdout.contains("INBOX/45"),
+        "{stdout}"
+    );
 
     let out = postvak(home.path(), &["search", "invioce", "--json"]);
     let rows: Vec<serde_json::Value> = String::from_utf8_lossy(&out.stdout)

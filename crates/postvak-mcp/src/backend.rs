@@ -180,6 +180,7 @@ impl Backend {
 
     /// `bodies` lets stored body text decide a match; without it only the header columns do.
     /// `server` asks the mail server as well, which searches bodies, so it needs `bodies`.
+    #[allow(clippy::too_many_arguments)] // the tool's own arguments, one per flag of `postvak search`
     pub fn search(
         &self,
         query: &str,

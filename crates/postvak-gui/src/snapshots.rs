@@ -203,7 +203,23 @@ fn search_close_matches(theme: &str) -> (Fixture, Open, Wires) {
     open.tick();
     open.press("/ offsite");
     open.tick();
-    assert_eq!(open.find("Close matches").len(), 1);
+    let shape: Vec<(String, bool)> = open.with(|live| {
+        live.app
+            .list
+            .rows
+            .iter()
+            .map(|row| (row.subject.clone(), row.close))
+            .collect()
+    });
+    assert_eq!(
+        shape,
+        [
+            ("Re: Planning the offsite".to_string(), false),
+            ("Planning the offsite".to_string(), false),
+            ("Ofsite budget".to_string(), true),
+        ]
+    );
+    assert_eq!(open.labels_containing("close match").len(), 1);
     (fx, open, wires)
 }
 
