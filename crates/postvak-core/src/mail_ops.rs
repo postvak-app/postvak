@@ -28,6 +28,26 @@ pub struct Envelope {
     pub headers: Vec<u8>,
 }
 
+/// A message's shape, as far as the indexer needs it: where its text is and what its attachments are called.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Structure {
+    pub text_parts: Vec<TextPart>,
+    pub attachment_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TextPart {
+    /// The IMAP section, e.g. "1" or "1.2"; "" for a message that is one text part, fetched as `BODY[TEXT]`.
+    pub section: String,
+    pub html: bool,
+    pub charset: Option<String>,
+    /// The Content-Transfer-Encoding as the server reports it, e.g. "base64"; None for 7bit.
+    pub transfer_encoding: Option<String>,
+    pub octets: u32,
+    /// The `multipart/alternative` this part belongs to, numbered per message, so the caller keeps one part of each.
+    pub alternative: Option<usize>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct FlagUpdate {
     pub uid: u32,
@@ -71,6 +91,10 @@ pub trait MailOps {
         changed_since: Option<u64>,
     ) -> MailResult<Vec<FlagUpdate>>;
     fn fetch_raw(&mut self, uid: u32) -> MailResult<Option<Vec<u8>>>;
+    /// The message's structure from `BODYSTRUCTURE`; `None` when the selected folder has no such uid.
+    fn fetch_structure(&mut self, uid: u32) -> MailResult<Option<Structure>>;
+    /// The bytes of one section as sent, transfer encoding included; `None` when the server returns nothing for it.
+    fn fetch_part(&mut self, uid: u32, section: &str) -> MailResult<Option<Vec<u8>>>;
     fn add_flags(&mut self, uid: u32, flags: &[&str]) -> MailResult<()>;
     fn remove_flags(&mut self, uid: u32, flags: &[&str]) -> MailResult<()>;
     fn expunge(&mut self, uid: u32) -> MailResult<()>;
@@ -101,11 +125,17 @@ mod recording {
         pub uidvalidity: HashMap<String, u32>,
         pub mail: HashMap<String, Vec<Envelope>>,
         pub raw: HashMap<(String, u32), Vec<u8>>,
+        /// A message's structure; without one, a message with `raw` is a single plain-text part.
+        pub structures: HashMap<(String, u32), Structure>,
+        /// The bytes of a section; without one, section "" is `raw` after its headers.
+        pub parts: HashMap<(String, u32, String), Vec<u8>>,
+        /// Answers every `fetch_structure` with None, like a server whose BODYSTRUCTURE cannot be read.
+        pub no_structure: bool,
         pub calls: Vec<String>,
         pub idle_outcomes: VecDeque<IdleOutcome>,
         /// Makes `fetch_envelopes` fail once this many calls succeeded, like a connection dropping mid-sync.
         pub fail_fetch_after: Option<usize>,
-        /// Makes the next `add_flags`, `append` or `fetch_raw` fail with this error, once.
+        /// Makes the next `add_flags`, `append`, `fetch_raw`, `fetch_structure` or `fetch_part` fail with this error, once.
         pub fail_next: Option<MailError>,
         /// Makes the next `expunge` fail with this error, once, like a server refusing it after a COPY.
         pub fail_next_expunge: Option<MailError>,
@@ -186,6 +216,19 @@ mod recording {
                 .and_then(|list| list.iter_mut().find(|e| e.uid == uid))
                 .ok_or_else(|| MailError::Protocol(format!("no uid {uid} in {folder}")))
         }
+    }
+
+    /// The body of a raw message: what follows the first blank line.
+    fn body_after_headers(raw: &[u8]) -> &[u8] {
+        raw.windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .map(|at| &raw[at + 4..])
+            .or_else(|| {
+                raw.windows(2)
+                    .position(|w| w == b"\n\n")
+                    .map(|at| &raw[at + 2..])
+            })
+            .unwrap_or(&[])
     }
 
     impl MailOps for RecordingOps {
@@ -322,6 +365,43 @@ mod recording {
                 .push(format!("fetch_raw {} {uid}", self.selected));
             self.fail_next.take().map_or(Ok(()), Err)?;
             Ok(self.raw.get(&(self.selected.clone(), uid)).cloned())
+        }
+
+        fn fetch_structure(&mut self, uid: u32) -> MailResult<Option<Structure>> {
+            self.calls
+                .push(format!("fetch_structure {} {uid}", self.selected));
+            self.fail_next.take().map_or(Ok(()), Err)?;
+            if self.no_structure {
+                return Ok(None);
+            }
+            let key = (self.selected.clone(), uid);
+            if let Some(structure) = self.structures.get(&key) {
+                return Ok(Some(structure.clone()));
+            }
+            Ok(self.raw.get(&key).map(|raw| Structure {
+                text_parts: vec![TextPart {
+                    octets: body_after_headers(raw).len() as u32,
+                    ..TextPart::default()
+                }],
+                attachment_names: Vec::new(),
+            }))
+        }
+
+        fn fetch_part(&mut self, uid: u32, section: &str) -> MailResult<Option<Vec<u8>>> {
+            self.calls
+                .push(format!("fetch_part {} {uid} {section}", self.selected));
+            self.fail_next.take().map_or(Ok(()), Err)?;
+            let key = (self.selected.clone(), uid, section.to_string());
+            if let Some(part) = self.parts.get(&key) {
+                return Ok(Some(part.clone()));
+            }
+            if !section.is_empty() {
+                return Ok(None);
+            }
+            Ok(self
+                .raw
+                .get(&(self.selected.clone(), uid))
+                .map(|raw| body_after_headers(raw).to_vec()))
         }
 
         fn add_flags(&mut self, uid: u32, flags: &[&str]) -> MailResult<()> {

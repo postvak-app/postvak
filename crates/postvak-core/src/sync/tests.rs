@@ -1988,6 +1988,19 @@ impl MailOps for QueuesCommandsOnSelect {
     fn fetch_raw(&mut self, uid: u32) -> crate::mail_ops::MailResult<Option<Vec<u8>>> {
         self.inner.fetch_raw(uid)
     }
+    fn fetch_structure(
+        &mut self,
+        uid: u32,
+    ) -> crate::mail_ops::MailResult<Option<crate::mail_ops::Structure>> {
+        self.inner.fetch_structure(uid)
+    }
+    fn fetch_part(
+        &mut self,
+        uid: u32,
+        section: &str,
+    ) -> crate::mail_ops::MailResult<Option<Vec<u8>>> {
+        self.inner.fetch_part(uid, section)
+    }
     fn add_flags(&mut self, uid: u32, flags: &[&str]) -> crate::mail_ops::MailResult<()> {
         self.inner.add_flags(uid, flags)
     }
