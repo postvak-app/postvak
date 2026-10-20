@@ -48,6 +48,8 @@ const HISTORY: usize = 50;
 
 /// Seconds between checks of rules.toml and config.toml for outside edits.
 pub(crate) const POLL: f64 = 2.0;
+/// How often an open search reloads while the indexer adds bodies, in seconds.
+const INDEX_RELOAD: f64 = 1.0;
 
 /// How long a message stays on screen before it is marked read.
 pub(crate) const READ_DELAY: f64 = 1.0;
@@ -175,7 +177,10 @@ impl Account {
         !matches!(
             self.activity,
             None | Some(
-                Activity::Idle { .. } | Activity::NotRunning { .. } | Activity::Offline { .. }
+                Activity::Idle { .. }
+                    | Activity::Indexing { .. }
+                    | Activity::NotRunning { .. }
+                    | Activity::Offline { .. }
             )
         )
     }
@@ -422,6 +427,8 @@ pub struct App {
     pub(crate) history_open: bool,
     /// Opens a file or URL with the desktop's app; tests record instead.
     pub(crate) launch: fn(&std::ffi::OsStr, bool) -> std::io::Result<()>,
+    /// When an open search last reloaded for `Event::Indexed`.
+    pub(crate) last_index_reload: f64,
     pub(crate) last_poll: f64,
     pub(crate) last_reconnect: f64,
     pub(crate) list: ListState,
@@ -546,6 +553,7 @@ impl App {
             history: VecDeque::new(),
             history_open: false,
             launch,
+            last_index_reload: 0.0,
             last_poll: 0.0,
             last_reconnect: 0.0,
             list: ListState::default(),
@@ -773,6 +781,7 @@ impl App {
             | Event::BodyReady { account, .. }
             | Event::CommandFailed { account, .. }
             | Event::Error { account, .. }
+            | Event::Indexed { account, .. }
             | Event::NewMail { account, .. }
             | Event::Restored { account, .. }
             | Event::RuleApplied { account, .. }
@@ -787,7 +796,9 @@ impl App {
                 // Progress lives on the status line; ticks would evict errors from the history.
                 if !matches!(
                     activity,
-                    Activity::FetchingBodies { .. } | Activity::FetchingHeaders { .. }
+                    Activity::FetchingBodies { .. }
+                        | Activity::FetchingHeaders { .. }
+                        | Activity::Indexing { .. }
                 ) {
                     let line = format!("{}: {activity}", self.accounts[index].name);
                     self.push_history(line);
@@ -800,6 +811,14 @@ impl App {
                 account.activity = Some(activity);
             }
             Event::NewMail { .. } => {}
+            // More bodies are searchable: an open search reloads, at most once a second, keeping its cursor as a
+            // sync event's reload does.
+            Event::Indexed { .. } => {
+                if self.search.is_some() && now - self.last_index_reload >= INDEX_RELOAD {
+                    self.last_index_reload = now;
+                    self.view_dirty = true;
+                }
+            }
             // Request 0 is this window's own outcome. A daemon id is another client's, or the broadcast copy of our own
             // failure; the client drops the copy of our own `ActionDone`.
             Event::CommandFailed { request, .. } if request != 0 => {}

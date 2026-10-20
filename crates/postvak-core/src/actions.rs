@@ -32,7 +32,11 @@ pub enum ActionError {
 pub type UidResult = (u32, Result<usize, ActionError>);
 
 /// Selects `folder`, refusing when the stored uids belong to another UIDVALIDITY and would hit unrelated messages.
-fn select_synced(ops: &mut dyn MailOps, store: &Store, folder: &str) -> Result<(), ActionError> {
+pub(crate) fn select_synced(
+    ops: &mut dyn MailOps,
+    store: &Store,
+    folder: &str,
+) -> Result<(), ActionError> {
     let stored = store
         .folder(folder)?
         .ok_or_else(|| ActionError::UnknownFolder(folder.to_string()))?;

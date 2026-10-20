@@ -113,6 +113,7 @@ pub fn report(event: &Event) {
         Event::ActionDone { .. }
         | Event::BodiesFetched { .. }
         | Event::BodyReady { .. }
+        | Event::Indexed { .. }
         | Event::Restored { .. }
         | Event::RuleApplied { .. }
         | Event::ServerSearchDone { .. } => {}

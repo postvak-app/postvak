@@ -250,6 +250,10 @@ pub struct Store {
     conn: Connection,
 }
 
+/// A message that awaits the indexer at `?1`: never tried, or tried and failed more than a day earlier. The first
+/// half reads the partial index `messages_unindexed`.
+const BACKLOG: &str = "(indexed_at IS NULL OR (body_text IS NULL AND indexed_at < ?1 - 86400))";
+
 const MESSAGE_COLUMNS: &str = "folder, uid, message_id, from_addr, to_addr, cc_addr, delivered_to, in_reply_to, refs, thread_id, subject, date, internaldate, flags, size, headers, body_text, attachment_names, indexed_at";
 
 impl Store {
@@ -678,6 +682,66 @@ impl Store {
         Ok(())
     }
 
+    /// How many messages still await an index pass at `now`, and how many messages there are.
+    pub fn backlog_count(&self, now: i64) -> Result<(u64, u64), StoreError> {
+        Ok(self.conn.query_row(
+            &format!("SELECT count(*) FILTER (WHERE {BACKLOG}), count(*) FROM messages"),
+            params![now],
+            |r| {
+                let count = |i| r.get::<_, i64>(i).map(|n| u64::try_from(n).unwrap_or(0));
+                Ok((count(0)?, count(1)?))
+            },
+        )?)
+    }
+
+    /// The next messages to index, newest first: never tried, or tried without text more than a day before `now`.
+    pub fn backlog(&self, now: i64, limit: u32) -> Result<Vec<Message>, StoreError> {
+        self.query_messages(
+            &format!("WHERE {BACKLOG} ORDER BY internaldate DESC, uid DESC LIMIT ?2"),
+            params![now, limit],
+        )
+    }
+
+    /// Records an index pass at `at`: `text` is None when the fetch failed, so the message is retried a day later,
+    /// and Some("") when the message has no text. Never touches `raw`.
+    pub fn set_indexed(
+        &self,
+        folder: &str,
+        uid: u32,
+        text: Option<&str>,
+        names: &[String],
+        at: i64,
+    ) -> Result<(), StoreError> {
+        let names = (!names.is_empty()).then(|| names.join("\n"));
+        self.conn
+            .prepare_cached(
+                "UPDATE messages SET indexed_at = ?3,
+                    body_text = CASE WHEN ?4 IS NULL THEN body_text ELSE ?4 END,
+                    attachment_names = CASE WHEN ?4 IS NULL THEN attachment_names ELSE ?5 END
+                 WHERE folder = ?1 AND uid = ?2",
+            )?
+            .execute(params![folder, uid, at, text, names])?;
+        Ok(())
+    }
+
+    /// Whether the message's raw bytes are stored, which is what the reader needs; an indexed message may lack them.
+    pub fn has_raw(&self, folder: &str, uid: u32) -> Result<bool, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM messages WHERE folder = ?1 AND uid = ?2 AND raw IS NOT NULL)",
+            params![folder, uid],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// FTS5's own check of the search index against the message rows; an error means it needs a rebuild.
+    pub fn check_search_index(&self) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO messages_fts(messages_fts) VALUES ('integrity-check')",
+            [],
+        )?;
+        Ok(())
+    }
+
     /// Rebuilds the search index from the message rows, as migration 011 did once; the cure for a failed
     /// integrity check.
     pub fn rebuild_search_index(&self) -> Result<(), StoreError> {
@@ -987,6 +1051,91 @@ mod tests {
         s.remove_message("INBOX", 1).unwrap();
         assert_eq!(fts_hits(&s, "pineapple"), 0);
         fts_integrity_check(&s);
+    }
+
+    #[test]
+    fn the_backlog_is_newest_first_across_folders_and_skips_indexed_rows() {
+        let s = store_with_inbox();
+        s.upsert_folder(&Folder {
+            name: "Archive".into(),
+            uidvalidity: 1,
+            last_uid: 0,
+            special_use: None,
+            delimiter: None,
+        })
+        .unwrap();
+        s.insert_message(&msg("INBOX", 1, 10)).unwrap();
+        s.insert_message(&msg("Archive", 2, 30)).unwrap();
+        s.insert_message(&msg("INBOX", 3, 20)).unwrap();
+        let uids = |rows: Vec<Message>| rows.iter().map(|m| m.uid).collect::<Vec<_>>();
+        assert_eq!(uids(s.backlog(1_000, 10).unwrap()), [2, 3, 1]);
+        assert_eq!(uids(s.backlog(1_000, 2).unwrap()), [2, 3]);
+        assert_eq!(s.backlog_count(1_000).unwrap(), (3, 3));
+        s.set_indexed("Archive", 2, Some("pineapple"), &[], 1_000)
+            .unwrap();
+        assert_eq!(uids(s.backlog(1_000, 10).unwrap()), [3, 1]);
+        assert_eq!(s.backlog_count(1_000).unwrap(), (2, 3));
+    }
+
+    #[test]
+    fn set_indexed_writes_text_and_names_the_index_follows_and_never_raw() {
+        let s = store_with_inbox();
+        s.insert_message(&msg("INBOX", 1, 10)).unwrap();
+        s.set_indexed(
+            "INBOX",
+            1,
+            Some("pineapple pie"),
+            &["Q3 report.pdf".into(), "notes.txt".into()],
+            50,
+        )
+        .unwrap();
+        let m = s.message("INBOX", 1).unwrap().unwrap();
+        assert_eq!(m.body_text.as_deref(), Some("pineapple pie"));
+        assert_eq!(
+            m.attachment_names.as_deref(),
+            Some("Q3 report.pdf\nnotes.txt")
+        );
+        assert_eq!(m.indexed_at, Some(50));
+        assert_eq!(fts_hits(&s, "pineapple"), 1);
+        assert_eq!(fts_hits(&s, "notes"), 1);
+        assert!(
+            !s.has_raw("INBOX", 1).unwrap(),
+            "the indexer never stores raw"
+        );
+        s.set_raw("INBOX", 1, b"raw", "pineapple pie").unwrap();
+        assert!(s.has_raw("INBOX", 1).unwrap());
+        fts_integrity_check(&s);
+    }
+
+    #[test]
+    fn a_failed_index_keeps_the_text_unknown_and_is_retried_after_a_day() {
+        let s = store_with_inbox();
+        s.insert_message(&msg("INBOX", 1, 10)).unwrap();
+        s.set_indexed("INBOX", 1, None, &[], 1_000).unwrap();
+        let m = s.message("INBOX", 1).unwrap().unwrap();
+        assert_eq!((m.body_text, m.indexed_at), (None, Some(1_000)));
+        assert!(s.backlog(1_000, 10).unwrap().is_empty());
+        assert_eq!(s.backlog_count(1_000 + 86_399).unwrap(), (0, 1));
+        assert_eq!(s.backlog(1_000 + 86_401, 10).unwrap().len(), 1);
+        // A message indexed without text is done, not failed.
+        s.set_indexed("INBOX", 1, Some(""), &["a.pdf".into()], 2_000)
+            .unwrap();
+        assert!(s.backlog(2_000 + 1_000_000, 10).unwrap().is_empty());
+        assert_eq!(
+            s.message("INBOX", 1).unwrap().unwrap().body_text.as_deref(),
+            Some("")
+        );
+    }
+
+    #[test]
+    fn the_search_index_check_passes_and_a_rebuild_keeps_the_hits() {
+        let s = store_with_inbox();
+        s.insert_message(&msg("INBOX", 1, 10)).unwrap();
+        s.set_raw("INBOX", 1, b"raw", "pineapple").unwrap();
+        s.check_search_index().unwrap();
+        s.rebuild_search_index().unwrap();
+        s.check_search_index().unwrap();
+        assert_eq!(fts_hits(&s, "pineapple"), 1);
     }
 
     #[test]

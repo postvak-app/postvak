@@ -22,6 +22,10 @@ use crate::store::{Folder, Message, Store, StoreError};
 use crate::time::{clock, now};
 use crate::trash::{RestoreError, Trash};
 
+mod index;
+
+pub use index::IndexOutcome;
+
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {
     #[error(transparent)]
@@ -83,6 +87,11 @@ pub enum Event {
         account: String,
         message: String,
     },
+    /// The indexer stored the text of `count` more messages, so a search may find more now.
+    Indexed {
+        account: String,
+        count: usize,
+    },
     NewMail {
         account: String,
         folder: String,
@@ -131,7 +140,10 @@ impl Event {
             | Event::RuleApplied { request, .. }
             | Event::ServerSearchDone { request, .. } => vec![*request],
             Event::Synced { requests, .. } => requests.clone(),
-            Event::Activity { .. } | Event::Error { .. } | Event::NewMail { .. } => Vec::new(),
+            Event::Activity { .. }
+            | Event::Error { .. }
+            | Event::Indexed { .. }
+            | Event::NewMail { .. } => Vec::new(),
         }
     }
 }
@@ -169,6 +181,11 @@ pub enum Activity {
     RunningCommand {
         what: String,
     },
+    /// Up to date, and indexing message bodies for search in the meantime: `done` of `total` messages.
+    Indexing {
+        done: u64,
+        total: u64,
+    },
     Idle {
         since: i64,
     },
@@ -205,6 +222,11 @@ impl fmt::Display for Activity {
                 format!("running rules on {}", clean(folder, false))
             }
             Activity::RunningCommand { what } => clean(what, false),
+            Activity::Indexing { done, total } => format!(
+                "up to date · indexing {} of {}",
+                group_digits(*done, ','),
+                group_digits(*total, ',')
+            ),
             Activity::Idle { since } => format!("up to date · {}", clock(*since)),
             Activity::Offline { reason, retry_at } => {
                 format!(
@@ -527,6 +549,17 @@ fn to_message(folder: &str, env: Envelope) -> Message {
         attachment_names: None,
         indexed_at: None,
     }
+}
+
+/// One index slice with an unlimited budget, for tests that index a fake server's mail.
+#[cfg(any(test, feature = "testing"))]
+pub fn index_slice(
+    ops: &mut dyn MailOps,
+    store: &Store,
+    account: &AccountConfig,
+    events: &Sender<Event>,
+) -> Result<IndexOutcome, SyncError> {
+    index::slice(ops, store, account, events, &mut || Duration::ZERO)
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -1609,10 +1642,16 @@ fn run_session(
     let mut full = true;
     let mut pass = true;
     let mut next = NextPass::None;
+    // When the next full pass is due; the long IDLE's timeout is that pass, the short ones between index slices check.
+    let mut next_full = now();
+    let mut indexer = index::Session::default();
 
     while !shutdown.load(Ordering::Acquire) {
         if pass {
             next = state.pass(ops.as_mut(), full, carried, events, commands, shutdown)?;
+            if full {
+                next_full = now() + interval.as_secs() as i64;
+            }
             if now() - last_purge > 3600 {
                 match state.trash.purge(account.trash_retention_days, now()) {
                     Ok(0) => {}
@@ -1636,6 +1675,30 @@ fn run_session(
         let wanted = drained.next.max(std::mem::take(&mut next));
         if wanted != NextPass::None {
             (full, pass) = (wanted == NextPass::Full, true);
+            continue;
+        }
+        if account.index_bodies
+            && indexer.slice(ops.as_mut(), &state.store, account, events)?
+                == IndexOutcome::Progressed
+        {
+            // Mail that arrived while another folder was selected, then a short wait so pushes and commands get
+            // their turn before the next slice; the full pass still runs on its interval.
+            if ops.select("INBOX")?.exists != state.store.message_count("INBOX")? {
+                (full, pass) = (false, true);
+                continue;
+            }
+            (full, pass) = match ops.idle(index::INTER_SLICE_IDLE, wake)? {
+                IdleOutcome::NewMail => (false, true),
+                IdleOutcome::Timeout => {
+                    let due = now() >= next_full;
+                    (due, due)
+                }
+                IdleOutcome::Interrupted if shutdown.load(Ordering::Acquire) => return Ok(()),
+                IdleOutcome::Interrupted => {
+                    wake.swap(false, Ordering::AcqRel);
+                    (full, false)
+                }
+            };
             continue;
         }
         let _ = events.send(Event::Activity {

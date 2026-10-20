@@ -31,7 +31,9 @@ use postvak_core::mail_ops::{
 };
 use postvak_core::rules::engine::Mode;
 use postvak_core::store::Store;
-use postvak_core::sync::{Event, RulesRun, load_rules_for, run_rules, sync_all, sync_folder};
+use postvak_core::sync::{
+    Event, IndexOutcome, RulesRun, index_slice, load_rules_for, run_rules, sync_all, sync_folder,
+};
 use postvak_core::trash::Trash;
 use proptest::prelude::*;
 use proptest::test_runner::{Config, TestRunner};
@@ -1041,6 +1043,37 @@ fn run_model(initial: &[ServerEvent], steps: &[Step]) {
     assert!(quiet, "rules still act after four quiet passes");
     h.check_rules_caught_up();
     h.check_backups_kept();
+    // The indexer catches up in idle time: every stored message gets its text, and the FTS index stays whole.
+    let (events, _) = std::sync::mpsc::channel();
+    let mut slices = 0;
+    while index_slice(&mut h, &store, &fixture.account, &events).unwrap()
+        == IndexOutcome::Progressed
+    {
+        slices += 1;
+        assert!(slices < 100, "the indexer never finishes");
+    }
+    assert_eq!(store.backlog_count(postvak_core::time::now()).unwrap().0, 0);
+    store
+        .check_search_index()
+        .expect("the search index matches the rows");
+    for folder in store.folders().unwrap() {
+        for m in store.messages_in_folder(&folder.name).unwrap() {
+            let text = m.body_text.as_deref().expect("every message was indexed");
+            let raw = h.ops.raw.get(&(folder.name.clone(), m.uid));
+            let server_has_body = raw.is_some_and(|raw| {
+                String::from_utf8_lossy(raw)
+                    .split_once("\r\n\r\n")
+                    .is_some_and(|(_, body)| !body.trim().is_empty())
+            });
+            assert_eq!(
+                !text.trim().is_empty(),
+                server_has_body,
+                "{}/{}",
+                folder.name,
+                m.uid
+            );
+        }
+    }
 }
 
 // ---- strategies --------------------------------------------------------------------------------------------------

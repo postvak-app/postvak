@@ -518,7 +518,7 @@ mod recording {
             Ok(())
         }
 
-        fn idle(&mut self, _timeout: Duration, interrupt: &AtomicBool) -> MailResult<IdleOutcome> {
+        fn idle(&mut self, timeout: Duration, interrupt: &AtomicBool) -> MailResult<IdleOutcome> {
             self.calls.push(format!("idle {}", self.selected));
             if interrupt.load(Ordering::Acquire) {
                 return Ok(IdleOutcome::Interrupted);
@@ -530,8 +530,12 @@ mod recording {
                 shutdown.store(true, Ordering::Relaxed);
                 return Ok(IdleOutcome::Interrupted);
             }
-            // Like a real server: wait until someone wakes the session.
+            // Like a real server: wait until someone wakes the session, or the timeout passes.
+            let deadline = std::time::Instant::now() + timeout;
             while !interrupt.load(Ordering::Acquire) {
+                if std::time::Instant::now() >= deadline {
+                    return Ok(IdleOutcome::Timeout);
+                }
                 std::thread::sleep(Duration::from_millis(10));
             }
             Ok(IdleOutcome::Interrupted)

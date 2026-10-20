@@ -96,7 +96,7 @@ pub(crate) fn account_line(account: &Account) -> String {
     line
 }
 
-/// How far a header or body fetch has come, 0 to 1, while one runs.
+/// How far a header or body fetch, or the indexer, has come, 0 to 1, while one runs.
 pub(crate) fn progress(activity: &Activity) -> Option<f32> {
     match activity {
         Activity::FetchingBodies { done, total, .. }
@@ -105,6 +105,7 @@ pub(crate) fn progress(activity: &Activity) -> Option<f32> {
         {
             Some(*done as f32 / *total as f32)
         }
+        Activity::Indexing { done, total } if *total > 0 => Some(*done as f32 / *total as f32),
         _ => None,
     }
 }
@@ -132,7 +133,7 @@ pub(crate) fn dot(account: &Account) -> Option<Dot> {
         return Some(Dot::Failed);
     }
     match account.activity {
-        Some(Activity::Idle { .. }) => Some(Dot::UpToDate),
+        Some(Activity::Idle { .. } | Activity::Indexing { .. }) => Some(Dot::UpToDate),
         Some(Activity::Offline { .. }) => Some(Dot::Offline),
         _ => None,
     }
