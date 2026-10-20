@@ -36,7 +36,16 @@ pub(super) fn fixture(accounts: &[&str]) -> Fixture {
 
 /// Like `fixture`, with an in-process daemon serving the home over `connector`.
 pub(super) fn fixture_with_daemon(accounts: &[&str], connector: Connector) -> Fixture {
-    let (dir, paths) = prepare(accounts);
+    fixture_with_daemon_and(accounts, connector, "")
+}
+
+/// Like `fixture_with_daemon`, with `extra` TOML lines in every account's entry.
+pub(super) fn fixture_with_daemon_and(
+    accounts: &[&str],
+    connector: Connector,
+    extra: &str,
+) -> Fixture {
+    let (dir, paths) = prepare_with(accounts, extra);
     let daemon = TestDaemon::serve(dir, paths.clone(), options(connector, None));
     Fixture {
         paths,
@@ -46,13 +55,17 @@ pub(super) fn fixture_with_daemon(accounts: &[&str], connector: Connector) -> Fi
 }
 
 fn prepare(accounts: &[&str]) -> (TempDir, Paths) {
+    prepare_with(accounts, "")
+}
+
+fn prepare_with(accounts: &[&str], extra: &str) -> (TempDir, Paths) {
     let dir = tempfile::tempdir().unwrap();
     let paths = Paths::under(dir.path());
     std::fs::create_dir_all(&paths.config_dir).unwrap();
     let mut config = String::new();
     for name in accounts {
         config.push_str(&format!(
-            "[[accounts]]\nname = \"{name}\"\nhost = \"127.0.0.1\"\nport = 1\nusername = \"{name}@example.com\"\npassword = {{ command = \"printf x\" }}\n\n"
+            "[[accounts]]\nname = \"{name}\"\nhost = \"127.0.0.1\"\nport = 1\nusername = \"{name}@example.com\"\npassword = {{ command = \"printf x\" }}\n{extra}\n"
         ));
     }
     std::fs::write(paths.config_file(), config).unwrap();
@@ -1012,7 +1025,8 @@ async fn unsubscribe_reports_the_page_to_open_and_a_dry_run_contacts_no_one() {
 
 #[tokio::test]
 async fn a_server_search_finds_a_body_not_downloaded_yet() {
-    let fx = fixture_with_daemon(&["work"], connector_with_mail());
+    // Without the indexer the body stays on the server, which is what `server: true` is for.
+    let fx = fixture_with_daemon_and(&["work"], connector_with_mail(), "index_bodies = false\n");
     let client = connect(&fx, "read, read:bodies", &[]).await;
     rows(&call(&client, "sync", json!({})).await);
     assert!(rows(&call(&client, "search", json!({ "query": "body" })).await).is_empty());
