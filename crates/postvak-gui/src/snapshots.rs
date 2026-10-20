@@ -190,8 +190,9 @@ fn search_close_matches(theme: &str) -> (Fixture, Open, Wires) {
     let fx = Fixture::mailbox(theme);
     fx.add(
         "work",
+        // A uid the mailbox does not use, since `add` ignores a duplicate; below 100, as `mail` dates it from there.
         crate::fixture::mail(
-            90,
+            97,
             "Linus Example <linus@example.com>",
             "Ofsite budget",
             "\\Seen",

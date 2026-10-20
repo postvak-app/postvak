@@ -67,7 +67,7 @@ A fast, simple mail client with automatic mailbox rules
 * `rules` — Inspect and test rules.toml
 * `folders` — List folders with message and unread counts
 * `list` — List recent messages, newest first
-* `search` — Search subject, addresses, attachment names and stored bodies, newest first; words, "phrases" and -not; the last word also matches as a prefix
+* `search` — Search subject, addresses, attachment names and stored bodies, newest first; words, "phrases" and -not; the last word also matches as a prefix; close matches such as corrected typos follow when exact hits are few
 * `show` — Show one message
 * `unsubscribe` — Leave a message's mailing list: by one-click POST when the sender offers it (RFC 8058), else print the page or address from its List-Unsubscribe header to open
 * `mark` — Mark messages read or unread, flagged or unflagged
@@ -398,7 +398,7 @@ List recent messages, newest first
 
 ## `postvak search`
 
-Search subject, addresses, attachment names and stored bodies, newest first; words, "phrases" and -not; the last word also matches as a prefix
+Search subject, addresses, attachment names and stored bodies, newest first; words, "phrases" and -not; the last word also matches as a prefix; close matches such as corrected typos follow when exact hits are few
 
 **Usage:** `postvak search [OPTIONS] <QUERY>`
 
@@ -412,6 +412,7 @@ Search subject, addresses, attachment names and stored bodies, newest first; wor
 * `--folder <FOLDER>`
 * `--bodies` — Fetch and index missing bodies first; slow on a large folder
 * `--server` — Ask the server too, which searches bodies not downloaded yet; each folder costs a round trip
+* `--exact` — Only what matches as typed: no close matches such as corrected typos
 * `--limit <LIMIT>`
 
   Default value: `50`
