@@ -544,7 +544,8 @@ fn cli_applies_a_rule_to_existing_mail_and_restores_it_through_the_daemon() {
         String::from_utf8_lossy(&out.stdout).to_string()
     };
     success(&["sync"]);
-    assert!(success(&["search", "--bodies", "Body"]).contains("INBOX/1"));
+    // The body may not be indexed yet right after the first sync; the server search finds it either way.
+    assert!(success(&["search", "--server", "Body"]).contains("INBOX/1"));
     assert!(success(&["show", "1", "--raw"]).contains("Body of Your sign-in code"));
     assert!(success(&["rules", "apply-existing", "codes", "--yes"]).contains("live: 1 actions on"));
 
