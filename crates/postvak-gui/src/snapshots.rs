@@ -185,6 +185,40 @@ fn inbox_with_marks_and_an_expanded_thread() {
     snapshot(&open, "gui_inbox_thread");
 }
 
+/// A search whose hits are two exact ones and one found through a close match, the strip between them.
+fn search_close_matches(theme: &str) -> (Fixture, Open, Wires) {
+    let fx = Fixture::mailbox(theme);
+    fx.add(
+        "work",
+        crate::fixture::mail(
+            90,
+            "Linus Example <linus@example.com>",
+            "Ofsite budget",
+            "\\Seen",
+            "Numbers for the ofsite.",
+        ),
+    );
+    let (open, wires) = open(&fx);
+    open.with(|live| live.app.select_view(work_inbox()));
+    open.tick();
+    open.press("/ offsite");
+    open.tick();
+    assert_eq!(open.find("Close matches").len(), 1);
+    (fx, open, wires)
+}
+
+#[test]
+fn search_close_matches_light() {
+    let (_fx, open, _wires) = search_close_matches("light");
+    snapshot(&open, "gui_search_close_light");
+}
+
+#[test]
+fn search_close_matches_dark() {
+    let (_fx, open, _wires) = search_close_matches("dark");
+    snapshot(&open, "gui_search_close_dark");
+}
+
 #[test]
 fn inbox_filtered() {
     let (_fx, open, _wires) = inbox("light");

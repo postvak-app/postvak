@@ -252,6 +252,24 @@ async fn list_threads_adds_depth() {
 }
 
 #[tokio::test]
+async fn search_adds_close_matches_after_exact_ones_unless_exact_is_asked() {
+    let fx = fixture(&["work"]);
+    fx.add("work", fixture_message("INBOX", 1, "Invioce for March", "x"));
+    fx.add("work", fixture_message("INBOX", 2, "Invoice for April", "y"));
+    let client = connect(&fx, "read", &[]).await;
+    let found = rows(&call(&client, "search", json!({ "query": "invioce" })).await);
+    let shape: Vec<(u64, &str)> = found
+        .iter()
+        .map(|row| (row["uid"].as_u64().unwrap(), row["match"].as_str().unwrap()))
+        .collect();
+    assert_eq!(shape, [(1, "exact"), (2, "close")]);
+    assert!(found[1].get("body_text").is_none());
+    let exact = rows(&call(&client, "search", json!({ "query": "invioce", "exact": true })).await);
+    assert_eq!(exact.len(), 1);
+    assert_eq!(exact[0]["uid"], 1);
+}
+
+#[tokio::test]
 async fn search_without_bodies_matches_headers_only() {
     let fx = fixture(&["work"]);
     fx.add(

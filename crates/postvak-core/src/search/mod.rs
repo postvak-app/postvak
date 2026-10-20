@@ -2,9 +2,11 @@
 //! expression the store runs. Nothing else in Postvak builds one, so user text reaches SQLite only as quoted FTS5
 //! strings and bound parameters (`tests/architecture.rs` checks the table name stays here and in `store.rs`).
 
+mod close;
 mod parse;
 mod plan;
 
+pub use close::{Candidate, Vocab, expansions};
 pub use parse::parse;
 pub use plan::plan;
 

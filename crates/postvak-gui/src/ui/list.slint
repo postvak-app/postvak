@@ -21,6 +21,8 @@ export struct RowData {
     arrived: bool,
     // The accessible name, from `list::row_text`.
     name: string,
+    // A label drawn above the row, on the first close match of a search; empty otherwise.
+    section: string,
     // The right-click menu's three groups, from `list::menu`.
     menu-read: [string],
     menu-move: [string],
@@ -68,14 +70,30 @@ component ListRow inherits Rectangle {
         root.unread-level = data.unread ? 1 : 0;
     }
 
-    height: Theme.list-row;
-    border-radius: Theme.pad;
-    // A marked row is a lighter shade of the cursor's, apart from the hover fill.
-    background: data.selected ? Theme.pane.selected : data.marked ? Theme.pane.selected.mix(Theme.pane.panel, 60%) : transparent;
+    property <length> strip: data.section == "" ? 0px : Theme.row;
+    height: Theme.list-row + root.strip;
     accessible-role: list-item;
     accessible-label: data.name;
     accessible-item-selected: data.selected;
     accessible-action-default => { root.clicked(false, false); }
+
+    // The "Close matches" strip above the first close hit.
+    if data.section != "": Text {
+        x: Theme.pad * 3 / 2;
+        y: 0;
+        height: Theme.row;
+        text: data.section;
+        font-size: Theme.small-size;
+        color: Theme.pane.muted;
+        vertical-alignment: center;
+    }
+
+    card := Rectangle {
+        y: root.strip;
+        height: Theme.list-row;
+        border-radius: Theme.pad;
+        // A marked row is a lighter shade of the cursor's, apart from the hover fill.
+        background: data.selected ? Theme.pane.selected : data.marked ? Theme.pane.selected.mix(Theme.pane.panel, 60%) : transparent;
 
     HoverFill {
         visible: !data.selected && !data.marked;
@@ -163,6 +181,7 @@ component ListRow inherits Rectangle {
                 vertical-alignment: center;
             }
         }
+    }
     }
 }
 

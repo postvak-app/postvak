@@ -4838,6 +4838,7 @@ dependencies = [
  "serde_rusqlite",
  "signal-hook",
  "socket2",
+ "strsim",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

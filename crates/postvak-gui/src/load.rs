@@ -6,7 +6,7 @@ use std::sync::mpsc::{self, Receiver};
 
 use postvak_core::paths::Paths;
 use postvak_core::search::{self, Scope};
-use postvak_core::store::{Filter, MessageSummary, Store, ThreadSummary};
+use postvak_core::store::{Filter, Matched, MessageSummary, Store, ThreadSummary};
 
 use super::html::Wake;
 use super::list::{self, Row, RowKey, THREAD_LIMIT};
@@ -46,12 +46,12 @@ pub(crate) fn load(stores: &[(usize, &str, &Store)], query: &ListQuery) -> Loade
         let parsed = search::parse(text);
         let mut hits = Vec::new();
         for &(account, name, store) in stores {
-            match store.search(&parsed, Scope::All, None, list::SEARCH_LIMIT) {
-                Ok(found) => hits.extend(
-                    found
-                        .iter()
-                        .map(|hit| Row::from_message(account, &hit.message)),
-                ),
+            match store.search(&parsed, Scope::All, None, list::SEARCH_LIMIT, true) {
+                Ok(found) => hits.extend(found.iter().map(|hit| {
+                    let mut row = Row::from_message(account, &hit.message);
+                    row.close = hit.matched == Matched::Close;
+                    row
+                })),
                 Err(e) => log::warn!("[{name}] search failed: {e}"),
             }
         }

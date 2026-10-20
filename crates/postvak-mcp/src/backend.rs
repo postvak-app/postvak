@@ -15,7 +15,7 @@ use postvak_core::rules::{self, Action, Rule, RuleFile};
 use postvak_core::search::{self, Scope};
 /// The `list` filter, a plain value, so the tools need not name the store.
 pub(crate) use postvak_core::store::Filter;
-use postvak_core::store::{Message, Store};
+use postvak_core::store::{Hit, Message, Store};
 use postvak_core::sync::{Command, Event};
 use postvak_core::time;
 use postvak_core::trash::Trash;
@@ -188,6 +188,7 @@ impl Backend {
         limit: u32,
         bodies: bool,
         server: bool,
+        exact: bool,
     ) -> Result<Vec<Value>> {
         if server && !bodies {
             bail!("a server search matches message bodies, which needs the read:bodies scope");
@@ -198,13 +199,13 @@ impl Backend {
         let mut rows = Vec::new();
         for acc in self.select(account)? {
             let store = self.store(&acc)?;
-            let mut found = store.search(&parsed, scope, folder, limit)?;
+            let mut found = store.search(&parsed, scope, folder, limit, !exact)?;
             if server {
                 let hits = self.daemon.search_server(&acc.name, folder, query)?;
                 found = actions::with_server_hits(&store, found, &hits, limit)?;
             }
             for hit in &found {
-                rows.push(message_row(&acc.name, &hit.message)?);
+                rows.push(hit_row(&acc.name, hit)?);
             }
         }
         Ok(rows)
@@ -616,6 +617,15 @@ fn refuse_body_rule(compiled: &[rules::CompiledRule], bodies: bool) -> Result<()
 }
 
 /// A message's listing row: the CLI's `--json` shape with its account, without the body.
+/// A search hit's row: the message row plus `match`.
+fn hit_row(account: &str, hit: &Hit) -> Result<Value> {
+    let mut row = output::with_account(account, hit)?;
+    if let Some(object) = row.as_object_mut() {
+        object.remove("body_text");
+    }
+    Ok(row)
+}
+
 fn message_row(account: &str, m: &Message) -> Result<Value> {
     let mut row = output::with_account(account, m)?;
     if let Some(object) = row.as_object_mut() {

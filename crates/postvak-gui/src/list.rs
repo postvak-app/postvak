@@ -37,6 +37,8 @@ pub struct Row {
     pub to: String,
     pub uid: u32,
     pub unread: bool,
+    /// A search hit that matched only through a close match, such as a corrected typo; listed after the exact ones.
+    pub close: bool,
 }
 
 impl Row {
@@ -63,6 +65,7 @@ impl Row {
             to: message.to_addr.clone().unwrap_or_default(),
             uid: message.uid,
             unread: !message.is_seen(),
+            close: false,
         }
     }
 
@@ -80,6 +83,7 @@ impl Row {
             to: message.to.clone(),
             uid: message.uid,
             unread: !message.is_seen(),
+            close: false,
         }
     }
 }
@@ -111,9 +115,13 @@ impl ListState {
     /// has reported its height.
     pub fn cursor_shown(&self) -> bool {
         let (offset, height) = self.viewport;
+        let above = match divider(&self.rows) {
+            Some(first) if first <= self.cursor => super::theme::ROW,
+            _ => 0.0,
+        };
         height > 0.0
             && (height < LIST_ROW
-                || offset_showing(self.cursor, LIST_ROW, offset, height) == offset)
+                || offset_showing(self.cursor, LIST_ROW, above, offset, height) == offset)
     }
 }
 
@@ -425,12 +433,16 @@ pub fn row_text(row: &Row, columns: &Columns) -> String {
         "{} — {}  ·  {}",
         columns.who, columns.subject, columns.date
     ));
+    if row.close {
+        text.push_str(" · close match");
+    }
     text
 }
 
-/// The scroll offset that shows the cursor row, moving the view as little as possible.
-pub fn offset_showing(cursor: usize, row_height: f32, offset: f32, height: f32) -> f32 {
-    let top = cursor as f32 * row_height;
+/// The scroll offset that shows the cursor row, moving the view as little as possible. `above` is what sits above
+/// the row besides whole rows: the "Close matches" strip, when the cursor is on or below it.
+pub fn offset_showing(cursor: usize, row_height: f32, above: f32, offset: f32, height: f32) -> f32 {
+    let top = cursor as f32 * row_height + above;
     let bottom = top + row_height;
     if top < offset {
         top
@@ -444,11 +456,20 @@ pub fn offset_showing(cursor: usize, row_height: f32, offset: f32, height: f32) 
 /// The folder All inboxes shows from each account; sync stores and queries it by this exact name.
 pub const INBOX: &str = "INBOX";
 
-/// Search hits of several accounts, newest first, at most `limit`; each account's own order is kept on equal dates.
+/// Search hits of several accounts: the exact ones newest first, then the close ones newest first, at most `limit`;
+/// each account's own order is kept on equal dates.
 pub fn merge_hits(mut hits: Vec<Row>, limit: u32) -> Vec<Row> {
-    hits.sort_by_key(|row| std::cmp::Reverse(row.date));
+    hits.sort_by_key(|row| (row.close, std::cmp::Reverse(row.date)));
     hits.truncate(limit as usize);
     hits
+}
+
+/// The label above the first close match, when the list has one.
+pub const CLOSE_MATCHES: &str = "Close matches";
+
+/// The row the "Close matches" strip sits on: the first close hit.
+pub fn divider(rows: &[Row]) -> Option<usize> {
+    rows.iter().position(|row| row.close)
 }
 
 /// Threads of several accounts in one list, the most recently active first, at most `limit`. The sort is stable, so
@@ -480,6 +501,30 @@ mod tests {
         let merged = merge_hits(vec![hit(0, 3), hit(0, 1), hit(1, 4), hit(1, 2)], 3);
         let shape: Vec<(usize, u32)> = merged.iter().map(|r| (r.account, r.uid)).collect();
         assert_eq!(shape, [(1, 4), (0, 3), (1, 2)]);
+    }
+
+    #[test]
+    fn close_matches_come_after_the_exact_ones_and_the_strip_sits_on_the_first() {
+        let hit = |uid, close| {
+            let mut row = Row::from_message(0, &message("INBOX", uid, "hit"));
+            row.close = close;
+            row
+        };
+        let merged = merge_hits(
+            vec![hit(5, true), hit(1, false), hit(9, true), hit(3, false)],
+            10,
+        );
+        let shape: Vec<(u32, bool)> = merged.iter().map(|r| (r.uid, r.close)).collect();
+        assert_eq!(shape, [(3, false), (1, false), (9, true), (5, true)]);
+        assert_eq!(divider(&merged), Some(2));
+        assert_eq!(divider(&merged[..2]), None);
+        assert!(
+            row_text(
+                &merged[2],
+                &columns(&merged[2], None, false, true, &Utc::now())
+            )
+            .ends_with(" · close match")
+        );
     }
 
     #[test]
@@ -634,10 +679,15 @@ mod tests {
 
     #[test]
     fn offset_showing_scrolls_only_as_far_as_needed() {
-        assert_eq!(offset_showing(0, 20.0, 0.0, 100.0), 0.0);
-        assert_eq!(offset_showing(4, 20.0, 0.0, 100.0), 0.0);
-        assert_eq!(offset_showing(5, 20.0, 0.0, 100.0), 20.0);
-        assert_eq!(offset_showing(1, 20.0, 60.0, 100.0), 20.0);
+        assert_eq!(offset_showing(0, 20.0, 0.0, 0.0, 100.0), 0.0);
+        assert_eq!(offset_showing(4, 20.0, 0.0, 0.0, 100.0), 0.0);
+        assert_eq!(offset_showing(5, 20.0, 0.0, 0.0, 100.0), 20.0);
+        assert_eq!(offset_showing(1, 20.0, 0.0, 60.0, 100.0), 20.0);
+        assert_eq!(
+            offset_showing(4, 20.0, 8.0, 0.0, 100.0),
+            8.0,
+            "the strip pushes the row down"
+        );
     }
 
     #[test]
@@ -655,6 +705,7 @@ mod tests {
             to: String::new(),
             uid: 1,
             unread: true,
+            close: false,
         };
         let now = Utc.with_ymd_and_hms(2026, 10, 6, 12, 0, 0).unwrap();
         let text = row_text(&row, &columns(&row, None, false, false, &now));

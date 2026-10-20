@@ -599,7 +599,7 @@ proptest! {
         let store = search_store();
         let query = search::parse(&text);
         for scope in [Scope::All, Scope::Headers] {
-            let result = store.search(&query, scope, None, 10);
+            let result = store.search(&query, scope, None, 10, true);
             prop_assert!(result.is_ok(), "{text:?}: {:?}", result.err());
         }
     }

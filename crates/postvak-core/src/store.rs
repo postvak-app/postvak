@@ -6,7 +6,7 @@ use rusqlite_migration::{M, Migrations};
 use serde::{Deserialize, Serialize};
 
 use crate::paths::Paths;
-use crate::search::{self, Query, Scope};
+use crate::search::{self, Candidate, Plan, Query, Scope, Vocab};
 
 /// In order; a new directory under `migrations/` needs its line here too.
 const MIGRATIONS: &[M<'static>] = &[
@@ -249,6 +249,9 @@ fn deserialize_blob<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<u8>, D
 pub struct Store {
     conn: Connection,
 }
+
+/// Close matches run when the exact tier returns fewer hits than this.
+const CLOSE_MATCHES_BELOW: usize = 10;
 
 const MESSAGE_COLUMNS: &str = "folder, uid, message_id, from_addr, to_addr, cc_addr, delivered_to, in_reply_to, refs, thread_id, subject, date, internaldate, flags, size, headers, body_text, attachment_names, indexed_at";
 
@@ -608,11 +611,42 @@ impl Store {
         scope: Scope,
         folder: Option<&str>,
         limit: u32,
+        close: bool,
     ) -> Result<Vec<Hit>, StoreError> {
-        let plan = search::plan(query, scope);
+        let plan = search::plan(query, scope, close.then_some(self as &dyn Vocab));
         if plan.exact.is_empty() {
             return Ok(Vec::new());
         }
+        let mut hits = self.search_tier(&plan.exact, None, folder, &plan, limit, Matched::Exact)?;
+        // The close tier only when the exact one is thin, and never a message the exact expression matches.
+        if let Some(widened) = &plan.close
+            && hits.len() < CLOSE_MATCHES_BELOW
+        {
+            let left = limit - hits.len() as u32;
+            hits.extend(self.search_tier(
+                widened,
+                Some(&plan.exact),
+                folder,
+                &plan,
+                left,
+                Matched::Close,
+            )?);
+        }
+        Ok(hits)
+    }
+
+    /// The messages `expression` matches and `exclude` does not, newest first, at most `limit`. The plan's
+    /// predicates follow the FTS match; their `?` parameters count on from the fixed ones, so the later placeholders
+    /// are numbered after them.
+    fn search_tier(
+        &self,
+        expression: &str,
+        exclude: Option<&str>,
+        folder: Option<&str>,
+        plan: &Plan,
+        limit: u32,
+        matched: Matched,
+    ) -> Result<Vec<Hit>, StoreError> {
         let mut tail = String::from(
             "WHERE id IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?1)
                AND (?2 IS NULL OR folder = ?2)",
@@ -622,20 +656,29 @@ impl Store {
             tail.push_str(predicate);
             tail.push(')');
         }
+        let mut next = 3 + plan.params.len();
+        let mut values: Vec<rusqlite::types::Value> = vec![
+            expression.to_owned().into(),
+            folder.map(str::to_owned).into(),
+        ];
+        values.extend(plan.params.iter().cloned());
+        if let Some(exclude) = exclude {
+            tail.push_str(&format!(
+                " AND id NOT IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?{next})"
+            ));
+            values.push(exclude.to_owned().into());
+            next += 1;
+        }
         tail.push_str(&format!(
-            " ORDER BY internaldate DESC, uid DESC LIMIT ?{}",
-            3 + plan.params.len()
+            " ORDER BY internaldate DESC, uid DESC LIMIT ?{next}"
         ));
-        let mut values: Vec<rusqlite::types::Value> =
-            vec![plan.exact.into(), folder.map(str::to_owned).into()];
-        values.extend(plan.params);
         values.push(limit.into());
         let found = self.query_messages(&tail, rusqlite::params_from_iter(values))?;
         Ok(found
             .into_iter()
             .map(|message| Hit {
                 message,
-                matched: Matched::Exact,
+                matched,
                 snippet: None,
             })
             .collect())
@@ -777,6 +820,77 @@ impl Store {
         ))?;
         let uids = stmt.query_map(params![folder], |r| r.get(0))?;
         Ok(uids.collect::<Result<_, _>>()?)
+    }
+}
+
+impl Vocab for Store {
+    /// Runs the word through the index's own tokenizer: a one-row FTS5 table in `temp`, read back through its
+    /// vocabulary, so the folding is exactly the index's. Anything failing here only disables close matches.
+    fn fold(&self, word: &str) -> Option<String> {
+        let prepared = self.conn.execute_batch(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS temp.query_tokens
+               USING fts5(w, tokenize=\"unicode61 remove_diacritics 2\");
+             CREATE VIRTUAL TABLE IF NOT EXISTS temp.query_vocab
+               USING fts5vocab('temp', 'query_tokens', 'row');
+             DELETE FROM temp.query_tokens;",
+        );
+        let folded = prepared
+            .and_then(|()| {
+                self.conn.execute(
+                    "INSERT INTO temp.query_tokens (w) VALUES (?1)",
+                    params![word],
+                )
+            })
+            .and_then(|_| {
+                let mut stmt = self
+                    .conn
+                    .prepare_cached("SELECT term FROM temp.query_vocab")?;
+                let terms = stmt.query_map([], |r| r.get::<_, String>(0))?;
+                terms.collect::<Result<Vec<_>, _>>()
+            });
+        match folded {
+            Ok(mut terms) if terms.len() == 1 => terms.pop(),
+            Ok(_) => None,
+            Err(e) => {
+                log::debug!("close matches off: {e}");
+                None
+            }
+        }
+    }
+
+    fn candidates(&self, first: char, min_len: usize, max_len: usize) -> Vec<Candidate> {
+        let found = self
+            .conn
+            .prepare_cached(
+                "SELECT term, sum(doc), max(col != 'body_text') FROM messages_vocab
+                 WHERE term >= ?1 AND term < ?2 AND length(term) BETWEEN ?3 AND ?4
+                 GROUP BY term",
+            )
+            .and_then(|mut stmt| {
+                let rows = stmt.query_map(
+                    params![
+                        first.to_string(),
+                        format!("{first}\u{10FFFF}"),
+                        min_len as i64,
+                        max_len as i64
+                    ],
+                    |r| {
+                        Ok(Candidate {
+                            term: r.get(0)?,
+                            docs: u64::try_from(r.get::<_, i64>(1)?).unwrap_or(0),
+                            in_headers: r.get::<_, i64>(2)? != 0,
+                        })
+                    },
+                )?;
+                rows.collect::<Result<Vec<_>, _>>()
+            });
+        match found {
+            Ok(candidates) => candidates,
+            Err(e) => {
+                log::debug!("close matches off: {e}");
+                Vec::new()
+            }
+        }
     }
 }
 
@@ -1174,11 +1288,114 @@ mod tests {
 
     /// The uids `text` finds, as a user would type it.
     fn found(s: &Store, text: &str, scope: Scope, folder: Option<&str>, limit: u32) -> Vec<u32> {
-        s.search(&search::parse(text), scope, folder, limit)
+        s.search(&search::parse(text), scope, folder, limit, false)
             .unwrap()
             .iter()
             .map(|hit| hit.message.uid)
             .collect()
+    }
+
+    /// Uids with how each matched, close matches on.
+    fn tiers(s: &Store, text: &str, folder: Option<&str>, limit: u32) -> Vec<(u32, Matched)> {
+        s.search(&search::parse(text), Scope::All, folder, limit, true)
+            .unwrap()
+            .iter()
+            .map(|hit| (hit.message.uid, hit.matched))
+            .collect()
+    }
+
+    #[test]
+    fn the_store_folds_words_as_its_tokenizer_does_and_lists_its_vocabulary() {
+        let s = store_with_inbox();
+        let mut m = msg("INBOX", 1, 10);
+        m.subject = Some("Café invoice".into());
+        s.insert_message(&m).unwrap();
+        s.set_raw("INBOX", 1, b"raw", "pineapple").unwrap();
+        assert_eq!(s.fold("CAFÉ").as_deref(), Some("cafe"));
+        assert_eq!(s.fold("pieter@x.nl"), None, "several tokens");
+        assert_eq!(s.fold("..."), None, "no token");
+        let mut found = s.candidates('i', 6, 8);
+        found.sort_by(|a, b| a.term.cmp(&b.term));
+        assert_eq!(
+            found,
+            [Candidate {
+                term: "invoice".into(),
+                docs: 1,
+                in_headers: true
+            }]
+        );
+        assert_eq!(
+            s.candidates('p', 9, 9),
+            [Candidate {
+                term: "pineapple".into(),
+                docs: 1,
+                in_headers: false
+            }]
+        );
+        assert!(s.candidates('p', 2, 3).is_empty());
+    }
+
+    #[test]
+    fn close_matches_follow_exact_ones_when_exact_finds_fewer_than_ten() {
+        let s = store_with_inbox();
+        let mut exact = msg("INBOX", 1, 10);
+        exact.subject = Some("invioce for March".into());
+        s.insert_message(&exact).unwrap();
+        let mut close = msg("INBOX", 2, 20);
+        close.subject = Some("Invoice for April".into());
+        s.insert_message(&close).unwrap();
+        s.insert_message(&msg("INBOX", 3, 30)).unwrap();
+        let close = Matched::Close;
+        assert_eq!(
+            tiers(&s, "invioce", None, 10),
+            [(1, Matched::Exact), (2, close)]
+        );
+        assert_eq!(
+            tiers(&s, "invioce", None, 1),
+            [(1, Matched::Exact)],
+            "the limit covers both tiers"
+        );
+        assert_eq!(tiers(&s, "invioce", Some("INBOX"), 10).len(), 2);
+        assert_eq!(
+            tiers(&s, "invioce", Some("Archive"), 10),
+            [],
+            "the folder filter applies to both tiers"
+        );
+        assert_eq!(
+            tiers(&s, "invoice", None, 10),
+            [(2, Matched::Exact), (1, close)],
+            "the other way round"
+        );
+        assert_eq!(
+            found(&s, "invioce", Scope::All, None, 10),
+            [1],
+            "close matches off"
+        );
+    }
+
+    #[test]
+    fn close_matches_are_skipped_at_ten_exact_hits_and_never_repeat_an_exact_hit() {
+        let s = store_with_inbox();
+        for uid in 1..=10 {
+            let mut m = msg("INBOX", uid, i64::from(uid) * 10);
+            m.subject = Some("invoice".into());
+            s.insert_message(&m).unwrap();
+        }
+        let mut typo = msg("INBOX", 11, 200);
+        typo.subject = Some("invoce".into());
+        s.insert_message(&typo).unwrap();
+        let hits = tiers(&s, "invoice", None, 50);
+        assert_eq!(hits.len(), 10, "ten exact hits, no close tier: {hits:?}");
+        assert!(hits.iter().all(|(_, m)| *m == Matched::Exact));
+        s.remove_message("INBOX", 10).unwrap();
+        let hits = tiers(&s, "invoice", None, 50);
+        assert_eq!(hits.len(), 10);
+        assert_eq!(hits[9], (11, Matched::Close));
+        assert_eq!(
+            hits.iter().filter(|(uid, _)| *uid == 1).count(),
+            1,
+            "an exact hit is not also a close one"
+        );
     }
 
     #[test]
@@ -1215,7 +1432,9 @@ mod tests {
             found(&s, "-subject", all, None, 10).is_empty(),
             "nothing positive to match"
         );
-        let hit = &s.search(&search::parse("subject"), all, None, 1).unwrap()[0];
+        let hit = &s
+            .search(&search::parse("subject"), all, None, 1, false)
+            .unwrap()[0];
         assert_eq!(
             (hit.matched, hit.snippet.as_deref()),
             (Matched::Exact, None)

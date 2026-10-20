@@ -437,7 +437,7 @@ mod tests {
         let body = crate::search::parse("body");
         assert_eq!(
             store
-                .search(&body, crate::search::Scope::All, None, 10)
+                .search(&body, crate::search::Scope::All, None, 10, false)
                 .unwrap()
                 .len(),
             1
