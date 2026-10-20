@@ -862,7 +862,7 @@ fn wire_samples() -> Vec<String> {
         ClientMessage::Command {
             id: 6,
             account: "home".into(),
-            command: Command::FetchBodies { folder: None },
+            command: Command::ApplyRule { name: "r".into() },
         },
         ClientMessage::Command {
             id: 7,

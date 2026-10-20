@@ -2846,55 +2846,6 @@ fn apply_rule_refuses_a_disabled_or_unknown_rule() {
 }
 
 #[test]
-fn fetch_bodies_reports_how_many_arrived() {
-    let (mut ops, store, dir) = synced();
-    let trash = Trash::new(dir.path().to_path_buf());
-    let fetch = Command::FetchBodies {
-        folder: Some("INBOX".into()),
-    };
-    let (run, events) = drain(&mut ops, &store, &trash, vec![fetch]);
-    assert!(run.unwrap().used_connection);
-    assert!(events.contains(&Event::BodiesFetched {
-        account: "work".into(),
-        request: 1,
-        fetched: 2
-    }));
-    assert!(
-        store
-            .message("INBOX", 1)
-            .unwrap()
-            .unwrap()
-            .body_text
-            .is_some()
-    );
-}
-
-#[test]
-fn fetch_bodies_without_a_folder_covers_every_stored_folder() {
-    let (mut ops, store, dir) = synced();
-    ops.add_mail(
-        "Trash",
-        1,
-        10 * H,
-        &headers("carol@x", "old", "t1@x"),
-        Some("From: carol@x\r\n\r\nbye"),
-    );
-    let trash = Trash::new(dir.path().to_path_buf());
-    sync_all(&mut ops, &store).unwrap();
-    let (_, events) = drain(
-        &mut ops,
-        &store,
-        &trash,
-        vec![Command::FetchBodies { folder: None }],
-    );
-    assert!(events.contains(&Event::BodiesFetched {
-        account: "work".into(),
-        request: 1,
-        fetched: 3
-    }));
-}
-
-#[test]
 fn search_server_reports_the_hits_of_every_synced_folder() {
     let (mut ops, store, dir) = synced();
     ops.add_mail(
@@ -3020,28 +2971,6 @@ fn request_ids_name_what_an_event_completes() {
     assert_eq!(synced.request_ids(), vec![1, 2]);
     assert_eq!(restored.request_ids(), vec![8]);
     assert!(new_mail.request_ids().is_empty());
-}
-
-#[test]
-fn fetch_bodies_for_a_named_folder_fails_when_that_folder_cannot_be_fetched() {
-    let (mut ops, store, dir) = synced();
-    let trash = Trash::new(dir.path().to_path_buf());
-    ops.uidvalidity.insert("INBOX".into(), 9);
-    let fetch = Command::FetchBodies {
-        folder: Some("INBOX".into()),
-    };
-    let (run, events) = drain(&mut ops, &store, &trash, vec![fetch]);
-    assert!(run.is_ok());
-    assert!(
-        events.iter().any(|e| matches!(e,
-            Event::CommandFailed { request: 1, message, .. } if message.contains("INBOX"))),
-        "{events:?}"
-    );
-    assert!(
-        !events
-            .iter()
-            .any(|e| matches!(e, Event::BodiesFetched { .. }))
-    );
 }
 
 #[test]

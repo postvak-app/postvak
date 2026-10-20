@@ -29,7 +29,7 @@ Drag a message onto a folder of its account to move it there; drag a marked mess
 | `u` | mark read or unread |
 | `s` | flag or unflag |
 | `v` | show HTML mail as text, or as HTML again |
-| `/` | search this account, or every account from All inboxes; mail whose body is not downloaded yet matches on sender, recipients and subject only, until Enter asks the server too, whose hits join the list as they arrive |
+| `/` | search this account, or every account from All inboxes (see [Search](search.md)); while the background index is incomplete, Enter asks the server too, whose hits join the list as they arrive |
 | Esc | close a popup, leave search, clear the selection |
 | Tab | next pane: folders, list, body |
 | Ctrl+R (Cmd+R on macOS) | sync every account now |
@@ -63,7 +63,7 @@ The funnel button beside the list's title shows All, Unread, Flagged or Attachme
 
 ## Sync status
 
-The foot of the folder pane has one line about sync: a failure when there is one, else an account that is offline and when it retries, else one that is syncing (which folder, how many headers or bodies of how many), else that the first account is up to date. Hover it for every account's line, click it for the last 50 lines. The button beside it syncs every account now (Ctrl+R, Cmd+R on macOS). View ▸ Theme picks the System, Light or Dark theme and saves it as `[ui] theme` in `config.toml`. Both themes put the panes in an ink-blue frame: warm paper in light mode, near-black in dark mode. Under the line, a link appears when a newer release is out; it opens that release's notes on GitHub. Postvak does not update itself, and the daily check runs only with `[ui] check_updates = true` in `config.toml` (see [Accounts](accounts.md#appearance)).
+The foot of the folder pane has one line about sync: a failure when there is one, else an account that is offline and when it retries, else one that is syncing (which folder, how many headers or bodies of how many), else that the first account is up to date, with how far its search index is while it builds. Hover it for every account's line, click it for the last 50 lines. The button beside it syncs every account now (Ctrl+R, Cmd+R on macOS). View ▸ Theme picks the System, Light or Dark theme and saves it as `[ui] theme` in `config.toml`. Both themes put the panes in an ink-blue frame: warm paper in light mode, near-black in dark mode. Under the line, a link appears when a newer release is out; it opens that release's notes on GitHub. Postvak does not update itself, and the daily check runs only with `[ui] check_updates = true` in `config.toml` (see [Accounts](accounts.md#appearance)).
 
 ## Rules, Activity and Backups
 

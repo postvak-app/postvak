@@ -777,7 +777,6 @@ impl App {
         let name = match &event {
             Event::Activity { account, .. }
             | Event::ActionDone { account, .. }
-            | Event::BodiesFetched { account, .. }
             | Event::BodyReady { account, .. }
             | Event::CommandFailed { account, .. }
             | Event::Error { account, .. }
@@ -868,7 +867,6 @@ impl App {
                 }
                 self.refresh(index);
             }
-            Event::BodiesFetched { .. } => self.refresh(index),
             Event::Synced { .. } => {
                 // A fresh sync result replaces the last notice, which would otherwise outrank every account line.
                 self.notice = None;
@@ -1531,6 +1529,8 @@ impl App {
         }
         if let Some(hits) = loaded.hits {
             self.list.hits = hits;
+            self.list.unindexed = loaded.unindexed;
+            self.list.covered = loaded.covered;
         } else {
             let found = loaded
                 .threads
@@ -1596,6 +1596,13 @@ impl App {
     }
 
     /// The message, its attachments and its HTML as stored now.
+    fn has_raw(&self, account: usize, key: &RowKey) -> bool {
+        self.accounts[account]
+            .store
+            .as_ref()
+            .is_ok_and(|store| store.has_raw(&key.0, key.1).unwrap_or(false))
+    }
+
     fn read_stored(&self, account: usize, key: &RowKey) -> Stored {
         let Ok(store) = &self.accounts[account].store else {
             return (None, Vec::new(), None);
@@ -1656,10 +1663,7 @@ impl App {
             .flatten()
             .filter_map(|index| self.list.rows.get(index))
             .filter(|row| match &self.accounts[row.account].store {
-                Ok(store) => matches!(
-                    store.message(&row.folder, row.uid),
-                    Ok(Some(m)) if m.body_text.is_none()
-                ),
+                Ok(store) => matches!(store.has_raw(&row.folder, row.uid), Ok(false)),
                 Err(_) => false,
             })
             .map(Row::id)
@@ -1672,7 +1676,8 @@ impl App {
     /// The stored message and its attachments; asks the sync thread for a missing body once per message.
     fn load_body(&mut self, account: usize, key: RowKey, now: f64, armed: bool) -> BodyState {
         let (stored, attachments, html) = self.read_stored(account, &key);
-        if stored.as_ref().is_some_and(|m| m.body_text.is_none()) {
+        // An indexed message has its text but not its raw bytes, which the HTML view and the attachments need.
+        if stored.is_some() && !self.has_raw(account, &key) {
             self.request_body(account, &key);
         }
         let text = body_text(stored.as_ref());

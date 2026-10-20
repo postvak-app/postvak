@@ -163,7 +163,7 @@ fn an_offline_account_refuses_commands_with_its_reason() {
     let daemon = TestDaemon::start_with(options(offline_connector(), None));
     let mut client = daemon.client();
     status_until(&mut client, work_is_offline);
-    match client.request(command(3, "work", Command::FetchBodies { folder: None })) {
+    match client.request(command(3, "work", Command::ApplyRule { name: "r".into() })) {
         Outcome::Error(message) => assert!(
             message.starts_with("work is offline (no route to host); retrying at "),
             "{message}"
@@ -675,11 +675,7 @@ mod client {
 
     #[test]
     fn long_commands_wait_for_their_reply_without_a_deadline() {
-        let unbounded = [
-            Command::ApplyRule { name: "r".into() },
-            Command::FetchBodies { folder: None },
-            Command::SyncNow,
-        ];
+        let unbounded = [Command::ApplyRule { name: "r".into() }, Command::SyncNow];
         for command in unbounded {
             assert_eq!(reply_timeout(&command), None, "{command:?}");
         }

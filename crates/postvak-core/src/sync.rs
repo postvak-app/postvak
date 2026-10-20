@@ -67,11 +67,6 @@ pub enum Event {
         results: EventResults,
         request: RequestId,
     },
-    BodiesFetched {
-        account: String,
-        request: RequestId,
-        fetched: usize,
-    },
     BodyReady {
         account: String,
         folder: String,
@@ -133,7 +128,6 @@ impl Event {
     pub fn request_ids(&self) -> Vec<RequestId> {
         match self {
             Event::ActionDone { request, .. }
-            | Event::BodiesFetched { request, .. }
             | Event::BodyReady { request, .. }
             | Event::CommandFailed { request, .. }
             | Event::Restored { request, .. }
@@ -277,9 +271,6 @@ pub enum Command {
     },
     ApplyRule {
         name: String,
-    },
-    FetchBodies {
-        folder: Option<String>,
     },
     FetchBody {
         folder: String,
@@ -1036,16 +1027,6 @@ fn run_command(
                     .collect(),
             })
         }
-        Command::FetchBodies { folder } => {
-            run.used_connection = true;
-            fetch_bodies_in(ops, store, folder.as_deref())
-                .map(|fetched| Event::BodiesFetched {
-                    account: name(),
-                    request,
-                    fetched,
-                })
-                .map_err(SyncError::from)
-        }
         Command::FetchBody { folder, uid } => {
             run.used_connection = true;
             context = format!("{folder}/{uid}: ");
@@ -1099,27 +1080,6 @@ fn run_command(
             }
         }
     }
-}
-
-/// Downloads the missing bodies of the named folder, failing if it cannot, or of every stored folder, skipping any
-/// that fail. Only a lost connection stops the walk.
-fn fetch_bodies_in(
-    ops: &mut dyn MailOps,
-    store: &Store,
-    folder: Option<&str>,
-) -> Result<usize, ActionError> {
-    if let Some(folder) = folder {
-        return actions::fetch_bodies(ops, store, folder);
-    }
-    let mut fetched = 0;
-    for folder in store.folders()? {
-        match actions::fetch_bodies(ops, store, &folder.name) {
-            Ok(count) => fetched += count,
-            Err(e) if connection_lost(&e) => return Err(e),
-            Err(e) => log::warn!("{}: body fetch skipped: {e}", folder.name),
-        }
-    }
-    Ok(fetched)
 }
 
 /// Searches the named folder on the server, failing if it cannot, or every synced folder, skipping any that fail. Only a

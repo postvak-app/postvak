@@ -22,8 +22,8 @@ postvak attachment list 42 --folder INBOX
 
 - UIDs are per folder. Always pass the `--folder` you listed with; without it, commands use INBOX.
 - `list`, `search` and `folders` cover every account and print the account. With more than one account, `show`, `attachment` and the direct actions need `--account`.
-- `search` matches words in the subject, the addresses, attachment names and stored bodies, newest first. A `"quoted phrase"` matches in order, `-word` excludes, and the last word also matches as a prefix. Nothing you type is read as query syntax, so a bare address or an unbalanced quote searches as words.
-- Only bodies Postvak already fetched are searched. `--server` also asks the mail server, which searches every body in a round trip per folder; `--bodies` instead fetches the missing ones first, which can take minutes on a large folder.
+- `search` matches words in the subject, the addresses, attachment names and bodies, newest first. A `"quoted phrase"` matches in order, `-word` excludes, and the last word also matches as a prefix. Nothing you type is read as query syntax, so a bare address or an unbalanced quote searches as words.
+- Bodies are searched once the background index has read them, which takes a while after an account is added. `--server` also asks the mail server, which searches every body in a round trip per folder.
 
 ## Writing a rule
 

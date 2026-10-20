@@ -583,10 +583,7 @@ impl Drop for Client {
 /// giving up early would drop the client and let an auto-started daemon idle out mid-run.
 pub(super) fn reply_timeout(command: &Command) -> Option<Duration> {
     match command {
-        Command::ApplyRule { .. }
-        | Command::FetchBodies { .. }
-        | Command::SearchServer { .. }
-        | Command::SyncNow => None,
+        Command::ApplyRule { .. } | Command::SearchServer { .. } | Command::SyncNow => None,
         Command::Apply { .. } | Command::FetchBody { .. } | Command::Restore { .. } => {
             Some(REPLY_TIMEOUT)
         }

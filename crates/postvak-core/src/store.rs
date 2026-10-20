@@ -586,23 +586,6 @@ impl Store {
         self.query_messages("WHERE folder = ?1 ORDER BY uid", params![folder])
     }
 
-    /// The messages in `folder` whose body is not downloaded yet, by uid.
-    pub fn messages_without_body(&self, folder: &str) -> Result<Vec<Message>, StoreError> {
-        self.query_messages(
-            "WHERE folder = ?1 AND body_text IS NULL ORDER BY uid",
-            params![folder],
-        )
-    }
-
-    /// Whether any message in `folder`, or in any folder, lacks its body.
-    pub fn lacks_bodies(&self, folder: Option<&str>) -> Result<bool, StoreError> {
-        Ok(self.conn.query_row(
-            "SELECT EXISTS (SELECT 1 FROM messages WHERE body_text IS NULL AND (?1 IS NULL OR folder = ?1))",
-            params![folder],
-            |r| r.get(0),
-        )?)
-    }
-
     /// The messages `query` matches, newest first, in `folder` or any folder, at most `limit`. The plan's
     /// predicates follow the FTS match; their `?` parameters count on from the three fixed ones, so the limit's
     /// placeholder is numbered after them.
@@ -731,6 +714,16 @@ impl Store {
             params![folder, uid],
             |r| r.get(0),
         )?)
+    }
+
+    /// Forgets every index pass and the text it stored, so a benchmark can index the same mail again.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn forget_indexing(&self) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE messages SET indexed_at = NULL, body_text = NULL, attachment_names = NULL",
+            [],
+        )?;
+        Ok(())
     }
 
     /// FTS5's own check of the search index against the message rows; an error means it needs a rebuild.

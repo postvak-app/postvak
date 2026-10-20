@@ -111,7 +111,6 @@ pub fn report(event: &Event) {
         | Event::Error { account, message } => report_error(account, message),
         Event::Activity { account, activity } => log::debug!("[{account}] {activity:?}"),
         Event::ActionDone { .. }
-        | Event::BodiesFetched { .. }
         | Event::BodyReady { .. }
         | Event::Indexed { .. }
         | Event::Restored { .. }
