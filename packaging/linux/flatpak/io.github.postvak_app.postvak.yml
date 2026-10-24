@@ -20,6 +20,9 @@ finish-args:
   # The password keyring (Secret Service) and new-mail notifications.
   - --talk-name=org.freedesktop.secrets
   - --talk-name=org.freedesktop.Notifications
+  # The tray icon (StatusNotifierItem). In a sandbox Slint's tray registers under its unique bus name instead of owning
+  # org.kde.StatusNotifierItem-<pid>-<n>, so talking to the watcher is enough; no --own-name.
+  - --talk-name=org.kde.StatusNotifierWatcher
   # Saved attachments go to the Downloads folder. No other host files: config and mail stay in
   # ~/.var/app/io.github.postvak_app.postvak, and rules.toml opens in the host's editor through the OpenURI portal.
   - --filesystem=xdg-download
