@@ -69,7 +69,7 @@ flatpak run io.github.postvak_app.postvak account add    # with arguments it is 
 
 An alias such as `alias postvak='flatpak run io.github.postvak_app.postvak'` saves typing. Each release also attaches the same app as a single file, `postvak-<arch>.flatpak`, for `flatpak install --user postvak-x86_64.flatpak`; that one does not update itself.
 
-The sandbox may use the network, the display, the password keyring (Secret Service), desktop notifications and your Downloads folder, where saved attachments go, and nothing else. It keeps its own config and state in `~/.var/app/io.github.postvak_app.postvak/`, so a Flatpak install does not share accounts, rules or the daemon with a `postvak` installed another way. A `password = { command = "..." }` runs inside the sandbox too, where tools such as `pass` or `op` are missing, so use the keyring there.
+The sandbox may use the network, the display, the password keyring (Secret Service), desktop notifications, the tray and your Downloads folder, where saved attachments go, and nothing else. It keeps its own config and state in `~/.var/app/io.github.postvak_app.postvak/`, so a Flatpak install does not share accounts, rules or the daemon with a `postvak` installed another way. A `password = { command = "..." }` runs inside the sandbox too, where tools such as `pass` or `op` are missing, so use the keyring there.
 
 Two commands work differently inside the sandbox, because it cannot write files for programs outside it:
 
