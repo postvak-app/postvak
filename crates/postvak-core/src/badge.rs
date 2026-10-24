@@ -15,11 +15,9 @@ const PATH: &str = "/io/github/postvak_app/postvak/LauncherEntry";
 pub struct Badge {
     /// The count the entry shows; None before the first.
     shown: Option<u32>,
+    /// Connected on the first count; None when that failed, since without a session bus there is no entry to badge.
     #[cfg(target_os = "linux")]
-    bus: Option<zbus::blocking::Connection>,
-    /// Connecting failed once; without a session bus there is no entry to badge.
-    #[cfg(target_os = "linux")]
-    no_bus: bool,
+    bus: std::cell::OnceCell<Option<zbus::blocking::Connection>>,
 }
 
 impl Badge {
@@ -38,17 +36,13 @@ impl Badge {
     }
 
     #[cfg(target_os = "linux")]
-    fn send(&mut self, unread: u32) {
-        if self.bus.is_none() && !self.no_bus {
-            match zbus::blocking::Connection::session() {
-                Ok(bus) => self.bus = Some(bus),
-                Err(e) => {
-                    log::debug!("no session bus for the unread count: {e}");
-                    self.no_bus = true;
-                }
-            }
-        }
-        let Some(bus) = &self.bus else { return };
+    fn send(&self, unread: u32) {
+        let bus = self.bus.get_or_init(|| {
+            zbus::blocking::Connection::session()
+                .inspect_err(|e| log::debug!("no session bus for the unread count: {e}"))
+                .ok()
+        });
+        let Some(bus) = bus else { return };
         let sent = bus.emit_signal(
             None::<&str>,
             PATH,

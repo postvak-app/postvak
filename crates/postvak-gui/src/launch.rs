@@ -43,37 +43,27 @@ pub(crate) fn safe_mode(asked: bool, failed_starts: u32) -> bool {
     asked || failed_starts >= SAFE_MODE_AFTER
 }
 
-/// The activation token the launcher gave this start: `XDG_ACTIVATION_TOKEN` on Wayland, `DESKTOP_STARTUP_ID` on X11.
-/// With it the first window may come to the front, and the launcher stops showing that the app is starting.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Token {
-    var: &'static str,
-    value: String,
-}
-
-const TOKEN_VARS: [&str; 2] = ["XDG_ACTIVATION_TOKEN", "DESKTOP_STARTUP_ID"];
-
-/// Takes the token out of the environment, so the daemon and the browser this process starts do not inherit one that
-/// was meant for it alone. Before any thread starts, since it changes the environment.
-pub(crate) fn take_token() -> Option<Token> {
+/// Takes the activation token the launcher gave this start out of the environment: `XDG_ACTIVATION_TOKEN` on Wayland,
+/// `DESKTOP_STARTUP_ID` on X11. With it the first window may come to the front, and the launcher stops showing that
+/// the app is starting; taken, the daemon and the browser this process starts do not inherit one that was meant for it
+/// alone. Before any thread starts, since it changes the environment.
+pub(crate) fn take_token() -> Option<String> {
     let token = token_from(|var| std::env::var(var).ok());
     #[cfg(target_os = "linux")]
     slint::winit_030::winit::platform::startup_notify::reset_activation_token_env();
     token
 }
 
-fn token_from(read: impl Fn(&str) -> Option<String>) -> Option<Token> {
-    TOKEN_VARS.into_iter().find_map(|var| {
-        read(var)
-            .filter(|value| !value.is_empty())
-            .map(|value| Token { var, value })
-    })
+fn token_from(read: impl Fn(&str) -> Option<String>) -> Option<String> {
+    postvak_core::paths::ACTIVATION_TOKEN_VARS
+        .into_iter()
+        .find_map(|var| read(var).filter(|value| !value.is_empty()))
 }
 
 /// Makes this process draw with `renderer`, then names its windows `app_id`; before the first window, after which
 /// Slint keeps the platform it has. Slint keeps the app id on the platform and drops it when there is none yet, so
 /// the platform comes first. The first window gets `token`.
-pub(crate) fn select(renderer: Renderer, app_id: &str, token: Option<Token>) {
+pub(crate) fn select(renderer: Renderer, app_id: &str, token: Option<String>) {
     let selector = match renderer {
         Renderer::Default => slint::BackendSelector::new(),
         Renderer::Software => slint::BackendSelector::new()
@@ -84,7 +74,7 @@ pub(crate) fn select(renderer: Renderer, app_id: &str, token: Option<Token>) {
     let selector = {
         use slint::winit_030::winit::platform::startup_notify::WindowAttributesExtStartupNotify;
         use slint::winit_030::winit::window::ActivationToken;
-        let token = std::cell::Cell::new(token.map(|token| ActivationToken::from_raw(token.value)));
+        let token = std::cell::Cell::new(token.map(ActivationToken::from_raw));
         selector.with_winit_window_attributes_hook(move |attributes| match token.take() {
             Some(token) => attributes.with_activation_token(token),
             None => attributes,
@@ -155,13 +145,13 @@ pub(crate) fn no_window(error: &anyhow::Error) -> bool {
 }
 
 /// Runs this program again with the same arguments, the software renderer and this start's token, and waits for it.
-pub(crate) fn retry_in_software(token: Option<&Token>) -> io::Result<ExitStatus> {
+pub(crate) fn retry_in_software(token: Option<&str>) -> io::Result<ExitStatus> {
     let mut command = Command::new(std::env::current_exe()?);
     command
         .args(std::env::args_os().skip(1))
         .env("SLINT_BACKEND", "winit-software");
     if let Some(token) = token {
-        command.env(token.var, &token.value);
+        command.envs(postvak_core::paths::ACTIVATION_TOKEN_VARS.map(|var| (var, token)));
     }
     command.status()
 }
@@ -189,7 +179,7 @@ pub(crate) fn report(window_error: &anyhow::Error, daemon_log: Option<&Path>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Marker, Renderer, Token, renderer, safe_mode, token_from};
+    use super::{Marker, Renderer, renderer, safe_mode, token_from};
 
     #[test]
     fn slint_backend_names_the_software_renderer_in_any_of_its_spellings() {
@@ -216,15 +206,9 @@ mod tests {
             ("DESKTOP_STARTUP_ID", "x11"),
             ("XDG_ACTIVATION_TOKEN", "wl"),
         ]);
-        assert_eq!(
-            token_from(both),
-            Some(Token {
-                var: "XDG_ACTIVATION_TOKEN",
-                value: "wl".into()
-            })
-        );
+        assert_eq!(token_from(both).as_deref(), Some("wl"));
         let x11 = env(&[("XDG_ACTIVATION_TOKEN", ""), ("DESKTOP_STARTUP_ID", "x11")]);
-        assert_eq!(token_from(x11).map(|t| t.var), Some("DESKTOP_STARTUP_ID"));
+        assert_eq!(token_from(x11).as_deref(), Some("x11"));
         assert_eq!(token_from(env(&[])), None);
     }
 

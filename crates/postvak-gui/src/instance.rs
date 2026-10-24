@@ -1,30 +1,22 @@
 //! One window per user. The first `postvak gui` holds `gui.lock` and, once its window shows, listens on `gui.sock`; a
 //! second one hands it what it was asked (show the window, open a message) and exits, so a click on the dock or a
 //! notification brings back the window that is already open instead of starting another.
-use std::fs::{self, File, TryLockError};
+use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use postvak_core::paths::Paths;
+use postvak_core::notify::Open;
+use postvak_core::paths::{self, Paths};
 
 /// How long a second start waits for the first window to listen, which it does once it shows.
 const WAIT_FOR_FIRST: Duration = Duration::from_secs(3);
 const TRY_EVERY: Duration = Duration::from_millis(100);
 /// How long either side waits on the other once connected.
 const ANSWER: Duration = Duration::from_secs(2);
-
-/// A message to open: the uid in an account's folder; no account means the first.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct Open {
-    pub account: Option<String>,
-    pub folder: String,
-    pub uid: u32,
-}
 
 /// What a second start asks the first window: to come to the front, and to open a message.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -71,17 +63,9 @@ pub(crate) fn claim(paths: &Paths, request: &Request) -> Claim {
 
 /// The lock, or None when another process holds it.
 fn take_lock(paths: &Paths) -> io::Result<Option<File>> {
-    postvak_core::paths::create_private_dir(&paths.state_dir)?;
-    let file = File::options()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(paths.gui_lock())?;
-    match file.try_lock() {
-        Ok(()) => Ok(Some(file)),
-        Err(TryLockError::WouldBlock) => Ok(None),
-        Err(TryLockError::Error(e)) => Err(e),
-    }
+    // The private state directory also guards the socket between `bind` and its chmod.
+    paths::create_private_dir(&paths.state_dir)?;
+    paths::try_lock_file(&paths.gui_lock())
 }
 
 /// Sends `request` and waits for the answer, trying to connect for up to `wait` while the first window starts.
@@ -115,12 +99,7 @@ impl Instance {
     /// Answers later starts on a thread of its own; `on_request` runs there for each one.
     pub(crate) fn listen(&self, on_request: impl Fn(Request) + Send + 'static) -> io::Result<()> {
         // The lock is ours, so a socket file left here is from a window that died.
-        match fs::remove_file(&self.socket) {
-            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-            _ => {}
-        }
-        let listener = UnixListener::bind(&self.socket)?;
-        fs::set_permissions(&self.socket, fs::Permissions::from_mode(0o600))?;
+        let listener = paths::bind_private(&self.socket)?;
         std::thread::Builder::new()
             .name("gui-instance".into())
             .spawn(move || {
@@ -208,7 +187,7 @@ mod tests {
         let Claim::First(first) = claim(&paths, &Request::default()) else {
             panic!("the first start did not take the lock");
         };
-        fs::write(paths.gui_socket(), b"").unwrap();
+        std::fs::write(paths.gui_socket(), b"").unwrap();
         first.listen(|_| {}).unwrap();
         hand_over(&paths.gui_socket(), &Request::default(), ANSWER).unwrap();
     }

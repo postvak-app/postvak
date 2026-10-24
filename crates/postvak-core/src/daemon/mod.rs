@@ -1,9 +1,8 @@
 //! The one process that owns the engine, serving it to the GUI, CLI and MCP over a private Unix socket.
-use std::collections::{BTreeMap, HashMap};
-use std::fs::{self, File, TryLockError};
-use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
+use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::net::Shutdown;
-use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,7 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, anyhow, bail};
+use anyhow::bail;
 
 use crate::config::{AccountConfig, Config};
 use crate::credentials::Secret;
@@ -146,44 +145,26 @@ fn truncate_large_log(log: &Path) -> io::Result<()> {
 
 /// Locks `path` and writes our pid there; held until the returned file drops.
 fn take_daemon_lock(path: &Path) -> anyhow::Result<File> {
-    let mut file = File::options()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)?;
-    match file.try_lock() {
-        Ok(()) => {
-            file.set_len(0)?;
-            write!(file, "{}", std::process::id())?;
-            Ok(file)
-        }
-        Err(TryLockError::WouldBlock) => {
-            let mut pid = String::new();
-            file.read_to_string(&mut pid)?;
-            let pid: Option<u32> = pid.trim().parse().ok();
-            bail!(
-                "already running (pid {})",
-                pid.map_or_else(|| "unknown".to_string(), |pid| pid.to_string())
-            )
-        }
-        Err(TryLockError::Error(e)) => Err(e.into()),
-    }
+    let Some(mut file) = paths::try_lock_file(path)? else {
+        let pid = fs::read_to_string(path)
+            .ok()
+            .and_then(|pid| pid.trim().parse::<u32>().ok());
+        bail!(
+            "already running (pid {})",
+            pid.map_or_else(|| "unknown".to_string(), |pid| pid.to_string())
+        )
+    };
+    file.set_len(0)?;
+    write!(file, "{}", std::process::id())?;
+    Ok(file)
 }
 
-/// Replaces a leftover socket file and binds a fresh one only we can open.
+/// Replaces a leftover socket file and binds a fresh, non-blocking one only we can open.
 fn bind_private(socket: &Path) -> anyhow::Result<UnixListener> {
-    match fs::remove_file(socket) {
-        Err(e) if e.kind() != io::ErrorKind::NotFound => {
-            return Err(e).with_context(|| format!("removing {}", socket.display()));
-        }
-        _ => {}
-    }
-    let listener = UnixListener::bind(socket).map_err(|e| match e.kind() {
-        io::ErrorKind::InvalidInput => anyhow!("socket path too long: {}", socket.display()),
+    let listener = paths::bind_private(socket).map_err(|e| match e.kind() {
+        io::ErrorKind::InvalidInput => anyhow::Error::new(e),
         _ => anyhow::Error::new(e).context(format!("binding {}", socket.display())),
     })?;
-    fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true)?;
     Ok(listener)
 }
@@ -290,7 +271,7 @@ struct Shared {
 }
 
 /// A panic elsewhere must not take the daemon down with a poisoned lock.
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -311,14 +292,14 @@ fn serve(
         signalled,
         watch: Mutex::new(watch),
     });
-    let mut notifier = options.notify.then(crate::notify::Notifier::new);
+    let notifier = options.notify.then(crate::notify::Notifier::new);
     let router = std::thread::Builder::new()
         .name("daemon-events".into())
         .spawn({
             let shared = shared.clone();
             move || {
                 route_events(&shared, events, io::stdout().is_terminal(), |mail| {
-                    if let Some(notifier) = &mut notifier {
+                    if let Some(notifier) = &notifier {
                         notifier.new_mail(mail);
                     }
                 });
@@ -473,36 +454,14 @@ fn route_events(
     terminal: bool,
     mut notify: impl FnMut(&[crate::notify::Mail]),
 ) {
-    // Each account's new mail, held until the pass that found it ends, so a burst becomes one notification.
-    let mut new_mail: BTreeMap<String, Vec<crate::notify::Mail>> = BTreeMap::new();
+    let mut batches = crate::notify::Batches::default();
     for event in events {
         if reported(&event, terminal) {
             report(&event);
         }
-        // The sync sends NewMail only for mail that should notify, rules included, and then the pass's Synced.
-        match &event {
-            Event::NewMail {
-                account,
-                folder,
-                uid,
-                from,
-                subject,
-            } => new_mail
-                .entry(account.clone())
-                .or_default()
-                .push(crate::notify::Mail {
-                    account: account.clone(),
-                    folder: folder.clone(),
-                    uid: *uid,
-                    from: from.clone(),
-                    subject: subject.clone(),
-                }),
-            Event::Synced { account, .. } => {
-                if let Some(batch) = new_mail.remove(account) {
-                    notify(&batch);
-                }
-            }
-            _ => {}
+        // The sync sends NewMail only for mail that should notify, rules included.
+        if let Some(batch) = batches.hear(&event) {
+            notify(&batch);
         }
         let mut hub = lock(&shared.hub);
         if let Event::Activity { account, activity } = &event {
@@ -515,8 +474,8 @@ fn route_events(
         }
         hub.broadcast(&event);
     }
-    for batch in new_mail.values() {
-        notify(batch);
+    for batch in batches.rest() {
+        notify(&batch);
     }
 }
 

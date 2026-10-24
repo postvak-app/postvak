@@ -2,7 +2,7 @@
 //! connection that also hears the server's signals: a click arrives as `ActivationToken` and then `ActionInvoked`, and
 //! servers send those only to the connection that sent the notification.
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use zbus::blocking::{Connection, MessageIterator};
 use zbus::message::Type;
@@ -10,6 +10,7 @@ use zbus::zvariant::Value;
 use zbus::{MatchRule, Message};
 
 use super::{Notice, escape_markup};
+use crate::daemon::lock;
 use crate::paths::APP_ID;
 
 const SERVER: &str = "org.freedesktop.Notifications";
@@ -20,13 +21,13 @@ const DEFAULT_ACTION: &str = "default";
 const REMEMBERED: usize = 64;
 
 /// What a click does: opens the notice's message, with the activation token the server gave for it.
-pub type Open = Box<dyn Fn(&Notice, Option<&str>) + Send + Sync>;
+pub type OnClick = Arc<dyn Fn(&Notice, Option<&str>) + Send + Sync>;
 
 pub struct Bus {
     /// Connected on the first notification; tried again on the next one while there is no notification server.
     session: Option<Session>,
     clicks: Arc<Mutex<Clicks>>,
-    open: Arc<Open>,
+    on_click: OnClick,
 }
 
 struct Session {
@@ -36,11 +37,11 @@ struct Session {
 }
 
 impl Bus {
-    pub fn new(open: Open) -> Bus {
+    pub fn new(on_click: OnClick) -> Bus {
         Bus {
             session: None,
             clicks: Arc::new(Mutex::new(Clicks::default())),
-            open: Arc::new(open),
+            on_click,
         }
     }
 
@@ -76,15 +77,15 @@ impl Bus {
             .path(PATH)?
             .build();
         let signals = MessageIterator::for_match_rule(rule, &connection, Some(REMEMBERED))?;
-        let (clicks, open) = (self.clicks.clone(), self.open.clone());
+        let (clicks, on_click) = (self.clicks.clone(), self.on_click.clone());
         std::thread::Builder::new()
             .name("notification-clicks".into())
             .spawn(move || {
                 for message in signals.flatten() {
-                    if let Some(signal) = Signal::read(&message)
-                        && let Some((notice, token)) = lock(&clicks).heard(signal)
+                    if let Some((from, signal)) = Signal::read(&message)
+                        && let Some((notice, token)) = lock(&clicks).heard(&from, signal)
                     {
-                        open(&notice, token.as_deref());
+                        on_click(&notice, token.as_deref());
                     }
                 }
             })
@@ -145,7 +146,10 @@ impl Request {
                 // From the sound theme; the server plays it, so Do Not Disturb and the volume apply.
                 ("sound-name", Value::from("message-new-email")),
                 // Plasma shows it beside the app's name, so you see which account the mail is for.
-                ("x-kde-origin-name", Value::from(notice.account.clone())),
+                (
+                    "x-kde-origin-name",
+                    Value::from(notice.open.account.clone().unwrap_or_default()),
+                ),
             ]),
         }
     }
@@ -154,42 +158,33 @@ impl Request {
 /// The server's signals about notifications.
 #[derive(Debug, PartialEq)]
 enum Signal {
-    ActionInvoked {
-        id: u32,
-        action: String,
-        from: String,
-    },
-    ActivationToken {
-        id: u32,
-        token: String,
-        from: String,
-    },
-    Closed {
-        id: u32,
-        from: String,
-    },
+    ActionInvoked { id: u32, action: String },
+    ActivationToken { id: u32, token: String },
+    Closed { id: u32 },
 }
 
 impl Signal {
-    fn read(message: &Message) -> Option<Signal> {
+    /// The signal, and the unique bus name it came from.
+    fn read(message: &Message) -> Option<(String, Signal)> {
         let header = message.header();
         let from = header.sender()?.to_string();
         let body = message.body();
-        Some(match header.member()?.as_str() {
+        let signal = match header.member()?.as_str() {
             "ActionInvoked" => {
                 let (id, action) = body.deserialize().ok()?;
-                Signal::ActionInvoked { id, action, from }
+                Signal::ActionInvoked { id, action }
             }
             "ActivationToken" => {
                 let (id, token) = body.deserialize().ok()?;
-                Signal::ActivationToken { id, token, from }
+                Signal::ActivationToken { id, token }
             }
             "NotificationClosed" => {
                 let (id, _reason): (u32, u32) = body.deserialize().ok()?;
-                Signal::Closed { id, from }
+                Signal::Closed { id }
             }
             _ => return None,
-        })
+        };
+        Some((from, signal))
     }
 }
 
@@ -212,14 +207,9 @@ impl Clicks {
         }
     }
 
-    /// The notice to open and its token, when `signal` is a click on one of ours.
-    fn heard(&mut self, signal: Signal) -> Option<(Notice, Option<String>)> {
-        let from = match &signal {
-            Signal::ActionInvoked { from, .. }
-            | Signal::ActivationToken { from, .. }
-            | Signal::Closed { from, .. } => from,
-        };
-        if self.server.as_ref() != Some(from) {
+    /// The notice to open and its token, when `signal`, from bus name `from`, is a click on one of ours.
+    fn heard(&mut self, from: &str, signal: Signal) -> Option<(Notice, Option<String>)> {
+        if self.server.as_deref() != Some(from) {
             return None;
         }
         match signal {
@@ -243,10 +233,6 @@ impl Clicks {
     }
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,9 +241,11 @@ mod tests {
         Notice {
             title: "Tom & Jerry".into(),
             body: "Cheese <today> & tomorrow".into(),
-            account: "work".into(),
-            folder: "INBOX".into(),
-            uid,
+            open: super::super::Open {
+                account: Some("work".into()),
+                folder: "INBOX".into(),
+                uid,
+            },
         }
     }
 
@@ -296,48 +284,36 @@ mod tests {
         let token = Signal::ActivationToken {
             id: 6,
             token: "tok".into(),
-            from: server(),
         };
-        assert_eq!(clicks.heard(token), None);
+        assert_eq!(clicks.heard(&server(), token), None);
         let click = || Signal::ActionInvoked {
             id: 6,
             action: "default".into(),
-            from: server(),
         };
-        assert_eq!(clicks.heard(click()), Some((mail(11), Some("tok".into()))));
-        assert_eq!(clicks.heard(click()), None);
+        assert_eq!(
+            clicks.heard(&server(), click()),
+            Some((mail(11), Some("tok".into())))
+        );
+        assert_eq!(clicks.heard(&server(), click()), None);
         // Opened without a token from a server that sends none.
         let click = Signal::ActionInvoked {
             id: 5,
             action: "Open".into(),
-            from: server(),
         };
-        assert_eq!(clicks.heard(click), Some((mail(10), None)));
+        assert_eq!(clicks.heard(&server(), click), Some((mail(10), None)));
     }
 
     #[test]
     fn signals_from_others_on_the_bus_and_closed_notifications_open_nothing() {
         let mut clicks = Clicks::default();
         clicks.sent(5, Some(server()), mail(10));
-        let forged = Signal::ActionInvoked {
+        let click = || Signal::ActionInvoked {
             id: 5,
             action: "default".into(),
-            from: ":1.99".into(),
         };
-        assert_eq!(clicks.heard(forged), None);
-        assert_eq!(
-            clicks.heard(Signal::Closed {
-                id: 5,
-                from: server()
-            }),
-            None
-        );
-        let click = Signal::ActionInvoked {
-            id: 5,
-            action: "default".into(),
-            from: server(),
-        };
-        assert_eq!(clicks.heard(click), None);
+        assert_eq!(clicks.heard(":1.99", click()), None);
+        assert_eq!(clicks.heard(&server(), Signal::Closed { id: 5 }), None);
+        assert_eq!(clicks.heard(&server(), click()), None);
     }
 
     /// Against a stand-in notification server on a private bus, so nothing reaches your desktop:
@@ -393,7 +369,7 @@ mod tests {
             }
         });
         let (opened, opens) = channel();
-        let mut bus = Bus::new(Box::new(move |mail, token| {
+        let mut bus = Bus::new(Arc::new(move |mail: &Notice, token: Option<&str>| {
             opened
                 .send((mail.clone(), token.map(str::to_string)))
                 .unwrap();

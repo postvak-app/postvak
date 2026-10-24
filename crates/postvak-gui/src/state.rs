@@ -319,7 +319,7 @@ pub(crate) enum UiAction {
     /// Open the add-account form.
     OpenAccountForm,
     /// Show a message a notification was about, or a later start asked for, in its folder.
-    OpenMessage(crate::Open),
+    OpenMessage(postvak_core::notify::Open),
     OpenMovePicker,
     /// Open a web page in the browser.
     OpenUrl(String),
@@ -1348,7 +1348,7 @@ impl App {
 
     /// Shows the message in its folder with the cursor on it. A filter that hides it gives way; a thread shows it when
     /// it is the newest message there.
-    fn open_message(&mut self, open: crate::Open) {
+    fn open_message(&mut self, open: postvak_core::notify::Open) {
         let account = match &open.account {
             Some(name) => self.accounts.iter().position(|a| &a.name == name),
             None => (!self.accounts.is_empty()).then_some(0),
@@ -3024,7 +3024,7 @@ mod tests {
             unread: true,
             ..Filter::default()
         }));
-        driver.apply(UiAction::OpenMessage(crate::Open {
+        driver.apply(UiAction::OpenMessage(postvak_core::notify::Open {
             account: Some("work".into()),
             folder: "Receipts".into(),
             uid: 4,
@@ -3048,7 +3048,7 @@ mod tests {
         inbox(&fx, &[1]);
         let (mut driver, _) = fx.driver();
         let view = driver.app.view.clone();
-        driver.apply(UiAction::OpenMessage(crate::Open {
+        driver.apply(UiAction::OpenMessage(postvak_core::notify::Open {
             account: Some("gone".into()),
             folder: "INBOX".into(),
             uid: 1,

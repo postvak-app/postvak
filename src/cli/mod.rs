@@ -437,7 +437,7 @@ pub fn run() -> Result<()> {
         folder,
     } = cli.command
     {
-        let open = open.map(|uid| GuiOpen {
+        let open = open.map(|uid| postvak_core::notify::Open {
             account,
             folder,
             uid,
@@ -450,6 +450,7 @@ pub fn run() -> Result<()> {
         Command::Run { idle_exit } => cmd_run(&paths, idle_exit),
         Command::Crashes { command } => cmd_crashes(command, &paths),
         Command::Daemon { command } => cmd_daemon(command, &paths),
+        // Handled above, before the config loads; kept for an exhaustive match.
         Command::Gui { safe_mode, .. } => cmd_gui(Ok(paths), safe_mode, None),
         Command::Service { command } => cmd_service(command, &paths),
         Command::Sync { account } => cmd_sync(&config, &paths, account.as_deref()),
@@ -997,35 +998,20 @@ fn opened_as_mac_app() -> bool {
 }
 
 #[cfg(feature = "gui")]
-use postvak_gui::Open as GuiOpen;
-
-/// The message `gui --open` asks for, in a build without the GUI.
-#[cfg(not(feature = "gui"))]
-struct GuiOpen {
-    #[allow(
-        dead_code,
-        reason = "a build without the GUI has no window to show it in"
-    )]
-    account: Option<String>,
-    #[allow(
-        dead_code,
-        reason = "a build without the GUI has no window to show it in"
-    )]
-    folder: String,
-    #[allow(
-        dead_code,
-        reason = "a build without the GUI has no window to show it in"
-    )]
-    uid: u32,
-}
-
-#[cfg(feature = "gui")]
-fn cmd_gui(paths: Result<Paths>, safe_mode: bool, open: Option<GuiOpen>) -> Result<()> {
+fn cmd_gui(
+    paths: Result<Paths>,
+    safe_mode: bool,
+    open: Option<postvak_core::notify::Open>,
+) -> Result<()> {
     postvak_gui::run(paths, safe_mode, open)
 }
 
 #[cfg(not(feature = "gui"))]
-fn cmd_gui(_paths: Result<Paths>, _safe_mode: bool, _open: Option<GuiOpen>) -> Result<()> {
+fn cmd_gui(
+    _paths: Result<Paths>,
+    _safe_mode: bool,
+    _open: Option<postvak_core::notify::Open>,
+) -> Result<()> {
     bail!("this postvak was built without the GUI; install it with the default features")
 }
 

@@ -57,11 +57,10 @@ use slint::winit_030::WinitWindowAccessor;
 use slint::{ComponentHandle, SharedString};
 
 use postvak_core::config::Config;
+use postvak_core::notify::Open;
 use postvak_core::paths::{APP_ID, Paths};
 
 use state::App;
-
-pub use instance::Open;
 
 /// Opens the window and returns when it closes. When it cannot start, a small window says why before the error is
 /// returned, since a launch from a desktop entry or Finder has no terminal for stderr. When no window can open, it
@@ -113,7 +112,7 @@ pub fn run(paths: Result<Paths>, safe_mode: bool, open: Option<Open>) -> Result<
         }
         // The retry is the first window now.
         drop(instance);
-        match launch::retry_in_software(token.as_ref()) {
+        match launch::retry_in_software(token.as_deref()) {
             Ok(status) if status.success() => return Ok(()),
             Ok(status) => bail!("the software renderer failed too ({status})"),
             Err(e) => log::warn!("could not start again: {e}"),
@@ -146,9 +145,8 @@ struct Start<'a> {
 impl Start<'_> {
     /// The mail window, or the window that says why it could not start.
     fn run(&self, paths: Result<Paths>) -> Result<(), Failure> {
-        let marker = self.marker;
         let (error, paths) = match paths {
-            Ok(paths) => match open(paths.clone(), self) {
+            Ok(paths) => match self.open(paths.clone()) {
                 Ok(()) => return Ok(()),
                 Err(e) => (e, Some(paths)),
             },
@@ -158,7 +156,7 @@ impl Start<'_> {
             let window = anyhow::anyhow!("{error:#}");
             return Err(Failure::NoWindow { error, window });
         }
-        match explain(&error, paths.as_ref(), marker) {
+        match explain(&error, paths.as_ref(), self.marker) {
             // The first-run form saved an account, so the mail window can open now.
             Ok(true) => self.run(paths.ok_or(error)),
             Ok(false) => Err(Failure::Explained(error)),
@@ -168,6 +166,61 @@ impl Start<'_> {
                 Err(Failure::Explained(error))
             }
         }
+    }
+
+    /// The mail window, until it closes: a config with an account, the daemon, then the window.
+    fn open(&self, paths: Paths) -> Result<()> {
+        let (safe_mode, marker) = (self.safe_mode, self.marker);
+        let config = Config::load(&paths.config_file())?;
+        if config.accounts.is_empty() {
+            bail!(startup::NoAccounts);
+        }
+        let (client, events, states) = state::connect(&paths, Box::new(wake))?;
+        let window = ui::MailWindow::new().context("could not open the window")?;
+        launch::watch(window.window(), marker.cloned());
+        let _scheme = follow_desktop_scheme(&window)?;
+        let layout = persist::path(&paths);
+        if !safe_mode {
+            restore(&window, persist::load(&layout));
+        }
+        let mut app = App::new(&config, paths, client, events, states);
+        app.wake = std::sync::Arc::new(wake);
+        window.show().context("could not show the window")?;
+        // Closing the window hides it. The tray keeps the event loop running only while the desktop shows it, so without
+        // one closing the window quits, as it always did.
+        let tray = ui::Tray::new()
+            .inspect_err(|e| log::debug!("no tray icon: {e}"))
+            .ok();
+        let started = Instant::now();
+        let clock = Box::new(move || started.elapsed().as_secs_f64());
+        Live::install(
+            app,
+            window,
+            tray,
+            Some(postvak_core::badge::Badge::new()),
+            clock,
+        );
+        if let Some(open) = self.open.clone() {
+            show_message(open);
+        }
+        if let Some(instance) = self.instance
+            && let Err(e) = instance.listen(|request| {
+                let _ = slint::invoke_from_event_loop(move || hand_over(request));
+            })
+        {
+            log::warn!("a second start will open a second window: {e}");
+        }
+        let ran = slint::run_event_loop();
+        if let Some(mut live) = LIVE.with_borrow_mut(Option::take) {
+            // Without the window there is nobody to keep the count current.
+            if let Some(badge) = &mut live.badge {
+                badge.show(0);
+            }
+            if let Err(e) = persist::save(&layout, &remember(&live.window)) {
+                log::warn!("could not save the window's layout: {e:#}");
+            }
+        }
+        ran.context("the window failed")
     }
 }
 
@@ -349,70 +402,20 @@ fn on_wayland(native: &slint::winit_030::winit::window::Window) -> bool {
         .is_ok_and(|handle| matches!(handle.as_raw(), RawWindowHandle::Wayland(_)))
 }
 
+/// Shows the message in the window.
+fn show_message(open: Open) {
+    on(Box::new(move |_| vec![state::UiAction::OpenMessage(open)]));
+}
+
 /// A later start's request: open its message, then bring the window to the front.
 fn hand_over(request: instance::Request) {
     if let Some(open) = request.open {
-        on(Box::new(move |_| vec![state::UiAction::OpenMessage(open)]));
+        show_message(open);
     }
     let window = with_live(|live| live.window.as_weak()).and_then(|weak| weak.upgrade());
     if let Some(window) = window {
         raise(&window);
     }
-}
-
-/// The mail window, until it closes: a config with an account, the daemon, then the window.
-fn open(paths: Paths, start: &Start) -> Result<()> {
-    let (safe_mode, marker) = (start.safe_mode, start.marker);
-    let config = Config::load(&paths.config_file())?;
-    if config.accounts.is_empty() {
-        bail!(startup::NoAccounts);
-    }
-    let (client, events, states) = state::connect(&paths, Box::new(wake))?;
-    let window = ui::MailWindow::new().context("could not open the window")?;
-    launch::watch(window.window(), marker.cloned());
-    let _scheme = follow_desktop_scheme(&window)?;
-    let layout = persist::path(&paths);
-    if !safe_mode {
-        restore(&window, persist::load(&layout));
-    }
-    let mut app = App::new(&config, paths, client, events, states);
-    app.wake = std::sync::Arc::new(wake);
-    window.show().context("could not show the window")?;
-    // Closing the window hides it. The tray keeps the event loop running only while the desktop shows it, so without
-    // one closing the window quits, as it always did.
-    let tray = ui::Tray::new()
-        .inspect_err(|e| log::debug!("no tray icon: {e}"))
-        .ok();
-    let started = Instant::now();
-    let clock = Box::new(move || started.elapsed().as_secs_f64());
-    Live::install(
-        app,
-        window,
-        tray,
-        Some(postvak_core::badge::Badge::new()),
-        clock,
-    );
-    if let Some(open) = start.open.clone() {
-        on(Box::new(move |_| vec![state::UiAction::OpenMessage(open)]));
-    }
-    if let Some(instance) = start.instance
-        && let Err(e) = instance.listen(|request| {
-            let _ = slint::invoke_from_event_loop(move || hand_over(request));
-        })
-    {
-        log::warn!("a second start will open a second window: {e}");
-    }
-    let ran = slint::run_event_loop();
-    if let Some(mut live) = LIVE.with_borrow_mut(Option::take) {
-        // Without the window there is nobody to keep the count current.
-        if let Some(badge) = &mut live.badge {
-            badge.show(0);
-        }
-        if let Err(e) = persist::save(&layout, &remember(&live.window)) {
-            log::warn!("could not save the window's layout: {e:#}");
-        }
-    }
-    ran.context("the window failed")
 }
 
 /// Tells the window whether the desktop is dark, now and whenever that changes, for the System theme. The probe

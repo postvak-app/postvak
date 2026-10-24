@@ -2,7 +2,13 @@
 #[cfg(target_os = "linux")]
 mod dbus;
 
+use std::collections::BTreeMap;
+use std::sync::mpsc;
+
+use serde::{Deserialize, Serialize};
+
 use crate::message::{clean, display_name};
+use crate::sync::Event;
 
 /// The new message a notification is about.
 #[derive(Clone, Debug, PartialEq)]
@@ -14,6 +20,27 @@ pub struct Mail {
     pub subject: String,
 }
 
+/// A message to show in the window: the uid in an account's folder; no account means the first. What
+/// `postvak gui --open` asks for and a notification click opens.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct Open {
+    pub account: Option<String>,
+    pub folder: String,
+    pub uid: u32,
+}
+
+impl Open {
+    /// The `postvak` arguments that show it: `gui --open <uid> [--account <account>] --folder <folder>`.
+    pub fn gui_args(&self) -> Vec<String> {
+        let mut args = vec!["gui".into(), "--open".into(), self.uid.to_string()];
+        if let Some(account) = &self.account {
+            args.extend(["--account".into(), account.clone()]);
+        }
+        args.extend(["--folder".into(), self.folder.clone()]);
+        args
+    }
+}
+
 /// What one notification says, and the message a click on it opens.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Notice {
@@ -21,9 +48,7 @@ pub struct Notice {
     pub title: String,
     /// Plain text; escaped where the server renders markup.
     pub body: String,
-    pub account: String,
-    pub folder: String,
-    pub uid: u32,
+    pub open: Open,
 }
 
 /// More new messages from one sync pass than this become one notification.
@@ -38,9 +63,11 @@ pub fn notices(batch: &[Mail]) -> Vec<Notice> {
     let notice = |mail: &Mail, title: String, body: String| Notice {
         title,
         body,
-        account: mail.account.clone(),
-        folder: mail.folder.clone(),
-        uid: mail.uid,
+        open: Open {
+            account: Some(mail.account.clone()),
+            folder: mail.folder.clone(),
+            uid: mail.uid,
+        },
     };
     let Some(newest) = batch.last().filter(|_| batch.len() > BURST) else {
         return batch
@@ -76,34 +103,80 @@ pub fn notices(batch: &[Mail]) -> Vec<Notice> {
     )]
 }
 
-/// Sends the notifications. On Linux it keeps one session bus connection, which also hears which ones were clicked.
+/// Each account's new mail, held until the sync pass that found it ends, so a burst becomes one notification. A pass
+/// sends its `NewMail` events right before its `Synced`.
+#[derive(Default)]
+pub struct Batches(BTreeMap<String, Vec<Mail>>);
+
+impl Batches {
+    /// The batch `event` completes: an account's new mail, once the pass that found it is `Synced`.
+    pub fn hear(&mut self, event: &Event) -> Option<Vec<Mail>> {
+        match event {
+            Event::NewMail {
+                account,
+                folder,
+                uid,
+                from,
+                subject,
+            } => {
+                self.0.entry(account.clone()).or_default().push(Mail {
+                    account: account.clone(),
+                    folder: folder.clone(),
+                    uid: *uid,
+                    from: from.clone(),
+                    subject: subject.clone(),
+                });
+                None
+            }
+            Event::Synced { account, .. } => self.0.remove(account),
+            _ => None,
+        }
+    }
+
+    /// The mail no pass's end claimed.
+    pub fn rest(self) -> impl Iterator<Item = Vec<Mail>> {
+        self.0.into_values()
+    }
+}
+
+/// Sends the notifications from a thread of its own, so a slow notification server never holds up the daemon's
+/// events. On Linux that thread keeps one session bus connection, which also hears which ones were clicked.
 pub struct Notifier {
-    #[cfg(target_os = "linux")]
-    bus: dbus::Bus,
+    batches: mpsc::Sender<Vec<Mail>>,
 }
 
 impl Notifier {
     pub fn new() -> Notifier {
-        Notifier {
-            #[cfg(target_os = "linux")]
-            bus: dbus::Bus::new(Box::new(open_in_window)),
+        let (batches, received) = mpsc::channel::<Vec<Mail>>();
+        let spawned = std::thread::Builder::new()
+            .name("notifications".into())
+            .spawn(move || {
+                #[cfg(target_os = "linux")]
+                let mut bus = dbus::Bus::new(std::sync::Arc::new(open_in_window));
+                for batch in received {
+                    for notice in notices(&batch) {
+                        #[cfg(target_os = "linux")]
+                        bus.notify(&notice);
+                        #[cfg(target_os = "macos")]
+                        {
+                            let _ = notify_rust::Notification::new()
+                                .summary(&notice.title)
+                                .body(&notice.body)
+                                .appname("Postvak")
+                                .show();
+                        }
+                    }
+                }
+            });
+        if let Err(e) = spawned {
+            log::warn!("no desktop notifications: {e}");
         }
+        Notifier { batches }
     }
 
     /// Notifies one account's new mail from one sync pass.
-    pub fn new_mail(&mut self, batch: &[Mail]) {
-        for notice in notices(batch) {
-            #[cfg(target_os = "linux")]
-            self.bus.notify(&notice);
-            #[cfg(target_os = "macos")]
-            {
-                let _ = notify_rust::Notification::new()
-                    .summary(&notice.title)
-                    .body(&notice.body)
-                    .appname("Postvak")
-                    .show();
-            }
-        }
+    pub fn new_mail(&self, batch: &[Mail]) {
+        let _ = self.batches.send(batch.to_vec());
     }
 }
 
@@ -137,39 +210,28 @@ fn open_in_window(notice: &Notice, token: Option<&str>) {
             return;
         }
     };
-    match window_command(&exe, notice, token).spawn() {
+    match window_command(&exe, &notice.open, token).spawn() {
         // Waited for, so it does not linger as a zombie of a daemon that runs for days.
-        Ok(mut child) => {
-            let _ = std::thread::Builder::new()
-                .name("open-window".into())
-                .spawn(move || child.wait());
-        }
+        Ok(child) => crate::daemon::client::reap(child),
         Err(e) => log::warn!("could not open the message: {e}"),
     }
 }
 
-/// `postvak gui --open <uid> --account <account> --folder <folder>`, with the token where Wayland (`XDG_ACTIVATION_TOKEN`)
-/// and X11 (`DESKTOP_STARTUP_ID`) look for it.
+/// `postvak gui --open …`, with the token where a launched app looks for it, or without an inherited one.
 #[cfg(target_os = "linux")]
 fn window_command(
     exe: &std::path::Path,
-    notice: &Notice,
+    open: &Open,
     token: Option<&str>,
 ) -> std::process::Command {
     use std::process::{Command, Stdio};
     let mut command = Command::new(exe);
     command
-        .arg("gui")
-        .arg("--open")
-        .arg(notice.uid.to_string())
-        .arg("--account")
-        .arg(&notice.account)
-        .arg("--folder")
-        .arg(&notice.folder)
+        .args(open.gui_args())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    for var in ["XDG_ACTIVATION_TOKEN", "DESKTOP_STARTUP_ID"] {
+    for var in crate::paths::ACTIVATION_TOKEN_VARS {
         match token {
             Some(token) => command.env(var, token),
             None => command.env_remove(var),
@@ -220,7 +282,7 @@ mod tests {
         assert_eq!(notices.len(), 3);
         assert_eq!(notices[1].title, "bob@x");
         assert_eq!(notices[1].body, "subject 2");
-        assert_eq!(notices[1].uid, 2);
+        assert_eq!(notices[1].open.uid, 2);
     }
 
     #[test]
@@ -236,9 +298,11 @@ mod tests {
             [Notice {
                 title: "4 new messages".into(),
                 body: "From Carol, Alice and Bob".into(),
-                account: "work".into(),
-                folder: "INBOX".into(),
-                uid: 4,
+                open: Open {
+                    account: Some("work".into()),
+                    folder: "INBOX".into(),
+                    uid: 4,
+                },
             }]
         );
         let many: Vec<_> = (1..=6)
@@ -249,17 +313,25 @@ mod tests {
         assert_eq!(notices(&one_sender)[0].body, "From Alice");
     }
 
+    #[test]
+    fn gui_args_name_the_account_only_when_there_is_one() {
+        let open = Open {
+            account: None,
+            folder: "INBOX".into(),
+            uid: 3,
+        };
+        assert_eq!(open.gui_args(), ["gui", "--open", "3", "--folder", "INBOX"]);
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn a_click_opens_the_message_in_the_window_with_the_token() {
-        let mail = Notice {
-            title: String::new(),
-            body: String::new(),
-            account: "work".into(),
+        let open = Open {
+            account: Some("work".into()),
             folder: "INBOX/Team".into(),
             uid: 42,
         };
-        let command = window_command(std::path::Path::new("/usr/bin/postvak"), &mail, Some("tok"));
+        let command = window_command(std::path::Path::new("/usr/bin/postvak"), &open, Some("tok"));
         let args: Vec<_> = command.get_args().collect();
         assert_eq!(
             args,
@@ -278,7 +350,7 @@ mod tests {
         assert!(envs.contains(&("DESKTOP_STARTUP_ID".as_ref(), Some("tok".as_ref()))));
 
         // Without one, a stale token the daemon inherited is not passed on.
-        let command = window_command(std::path::Path::new("/usr/bin/postvak"), &mail, None);
+        let command = window_command(std::path::Path::new("/usr/bin/postvak"), &open, None);
         let envs: Vec<_> = command.get_envs().collect();
         assert!(envs.contains(&("XDG_ACTIVATION_TOKEN".as_ref(), None)));
     }

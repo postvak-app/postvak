@@ -799,15 +799,20 @@ mod client {
     }
 }
 
-#[test]
-fn new_mail_notifies_even_on_an_account_with_notify_off() {
-    let shared = super::Shared {
+/// A daemon's shared state without an engine or clients.
+fn idle_shared() -> super::Shared {
+    super::Shared {
         engine: std::sync::Mutex::new(None),
         hub: std::sync::Mutex::new(super::Hub::new()),
         login: super::test_support::refuse_wrong(),
         signalled: Default::default(),
         watch: std::sync::Mutex::new(super::Watch::new(&Paths::under(Path::new("/nonexistent")))),
-    };
+    }
+}
+
+#[test]
+fn new_mail_notifies_even_on_an_account_with_notify_off() {
+    let shared = idle_shared();
     let (events, received) = std::sync::mpsc::channel();
     events
         .send(Event::NewMail {
@@ -838,13 +843,7 @@ fn new_mail_notifies_even_on_an_account_with_notify_off() {
 /// A pass's new mail goes to the notifier in one batch when the pass ends, each account's apart.
 #[test]
 fn new_mail_is_notified_per_account_when_its_pass_ends() {
-    let shared = super::Shared {
-        engine: std::sync::Mutex::new(None),
-        hub: std::sync::Mutex::new(super::Hub::new()),
-        login: super::test_support::refuse_wrong(),
-        signalled: Default::default(),
-        watch: std::sync::Mutex::new(super::Watch::new(&Paths::under(Path::new("/nonexistent")))),
-    };
+    let shared = idle_shared();
     let new_mail = |account: &str, uid| Event::NewMail {
         account: account.into(),
         folder: "INBOX".into(),
@@ -911,13 +910,7 @@ fn slow_connector(delay: Duration) -> crate::engine::Connector {
 
 #[test]
 fn a_command_while_stopping_says_the_daemon_is_stopping() {
-    let shared = super::Shared {
-        engine: std::sync::Mutex::new(None),
-        hub: std::sync::Mutex::new(super::Hub::new()),
-        login: super::test_support::refuse_wrong(),
-        signalled: Default::default(),
-        watch: std::sync::Mutex::new(super::Watch::new(&Paths::under(Path::new("/nonexistent")))),
-    };
+    let shared = idle_shared();
     let (out, lines) = std::sync::mpsc::channel();
     let conn = super::ClientConn {
         out,
