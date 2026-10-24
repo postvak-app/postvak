@@ -1154,3 +1154,31 @@ fn account_list_shows_configured_accounts_without_secrets() {
     assert_eq!(row["port"], 1);
     assert!(!String::from_utf8_lossy(&out.stdout).contains("printf"));
 }
+
+#[test]
+fn rules_check_warns_about_a_conflicting_copy_and_still_passes() {
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("rules.toml"),
+        "[[rules]]\nname = \"ok\"\naccount = \"work\"\nmatch.seen = true\nactions = [\"flag\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        config.join("rules.sync-conflict-20261024-101500-ABCDEFG.toml"),
+        "",
+    )
+    .unwrap();
+    let out = postvak(home.path(), &["rules", "check"]);
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("warning: rules.sync-conflict-20261024-101500-ABCDEFG.toml looks like"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("warning: rule 'ok' is for account 'work', which is not set up here"),
+        "{stderr}"
+    );
+}

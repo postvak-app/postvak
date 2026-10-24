@@ -480,6 +480,8 @@ pub struct App {
     pub(crate) requested: HashSet<(usize, RowKey)>,
     pub(crate) rules: RulesState,
     pub(crate) rules_watch: FileWatch,
+    /// The folder holding rules.toml, whose entries change when a file sync leaves a conflicting copy there.
+    pub(crate) config_dir_watch: FileWatch,
     /// The rule open in the Rules view's editor; nothing in it is written until Save.
     pub(crate) rule_draft: Option<Draft>,
     /// What `rule_draft` was opened or last saved as, which tells an edit from a look.
@@ -505,6 +507,11 @@ pub struct App {
     pub(crate) update: UpdateCheck,
     pub(crate) view: View,
     pub(crate) view_dirty: bool,
+}
+
+/// The accounts' names, for the rules' warnings.
+fn account_names(accounts: &[Account]) -> Vec<&str> {
+    accounts.iter().map(|a| a.name.as_str()).collect()
 }
 
 /// An account's window state over its store; `open_account` creates the store of an account just added.
@@ -550,9 +557,10 @@ impl App {
                 let identity = config.account(&name).and_then(|a| a.identity().ok());
                 account_state(&paths, name, activity, identity)
             })
-            .collect();
+            .collect::<Vec<Account>>();
         let rules_path = paths.rules_file();
-        let rules = RulesState::load(&rules_path, Vec::new());
+        let rules_dir = paths.config_dir.clone();
+        let rules = RulesState::load(&rules_path, Vec::new(), &account_names(&accounts));
         let mut app = App {
             accounts,
             activity_log: Vec::new(),
@@ -603,6 +611,7 @@ impl App {
             requested: HashSet::new(),
             rules,
             rules_watch: FileWatch::new(rules_path),
+            config_dir_watch: FileWatch::new(rules_dir),
             rule_draft: None,
             rule_draft_opened: None,
             rule_draft_stale: false,
@@ -2319,6 +2328,13 @@ impl App {
         self.last_poll = now;
         if self.rules_watch.changed() {
             self.rules_changed();
+        } else if self.config_dir_watch.changed() {
+            // A sync tool's conflicting copy appears beside rules.toml without changing it.
+            self.rules.warnings = rule_file::warnings(
+                &self.paths.rules_file(),
+                &self.rules.rules,
+                &account_names(&self.accounts),
+            );
         }
         let saving = self
             .account_form
@@ -2525,6 +2541,7 @@ impl App {
         self.rules = RulesState::load(
             &self.paths.rules_file(),
             std::mem::take(&mut self.rules.rules),
+            &account_names(&self.accounts),
         );
         let on_disk = self.rule_draft_opened.as_ref().and_then(|opened| {
             let name = opened.original.as_deref()?;

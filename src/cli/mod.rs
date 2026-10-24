@@ -1108,6 +1108,9 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
     match command {
         RulesCommand::Check => {
             println!("{} rules ok", compiled_rules(paths, None)?.len());
+            for warning in rules_warnings(paths, config)? {
+                eprintln!("warning: {}", clean(&warning, false));
+            }
             Ok(())
         }
         RulesCommand::List { json } => {
@@ -1226,6 +1229,17 @@ fn read_rule_json() -> Result<Rule> {
 
 /// Compiles rules with `first_seen_at` left at 0 and without touching any store, so previews are
 /// side-effect free and cover mail that predates the rule. A `name` that matches no rule is an error.
+/// What `rules check` warns about after the rules compiled.
+fn rules_warnings(paths: &Paths, config: &Config) -> Result<Vec<String>> {
+    let path = paths.rules_file();
+    let accounts: Vec<&str> = config.accounts.iter().map(|a| a.name.as_str()).collect();
+    Ok(postvak_core::rules::warnings(
+        &path,
+        &postvak_core::rules::load(&path)?.rules,
+        &accounts,
+    ))
+}
+
 fn compiled_rules(paths: &Paths, name: Option<&str>) -> Result<Vec<CompiledRule>> {
     let file = postvak_core::rules::load(&paths.rules_file())?;
     let compiled: Vec<CompiledRule> = postvak_core::rules::compile(&file)?

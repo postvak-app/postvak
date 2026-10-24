@@ -165,6 +165,21 @@ match.header = { name = "X-Spam-Level", regex = '^\*{2,}' }
 actions = [{ tag = "$SpamSuspect" }]
 ```
 
+## Sharing rules between devices
+
+`rules.toml` is a plain file, so a file sync such as Syncthing can keep it the same on every device; the daemon picks up a synced change within seconds. Sync that file alone: `config.toml` holds settings for this device, such as a `password = { command = "..." }`, and on macOS the mail stores live in the same folder. With Syncthing, share the folder that holds `rules.toml` (see [Accounts](accounts.md); `~/.var/app/io.github.postvak_app.postvak/config/postvak/` for the Flatpak) and give it this `.stignore`:
+
+```
+!/rules.toml
+*
+```
+
+A symlink from that folder to a `rules.toml` elsewhere works outside the Flatpak too, since Postvak writes through it; Syncthing does not follow symlinks, so the real file has to be in the synced folder. The Flatpak cannot reach a file outside its sandbox, so share its own folder instead.
+
+Every device that runs Postvak runs the rules itself. Moving or marking mail that another device already handled does nothing, but a deleted message's `.eml` backup is only on the device that deleted it.
+
+When two devices change the file before they sync, the sync keeps one version and leaves the other beside it, such as `rules.sync-conflict-20261024-101500-ABCDEFG.toml` from Syncthing or `rules (conflicted copy 2026-10-24 101500).toml` from Nextcloud. Postvak ignores that copy, so its changes are lost until you move them into `rules.toml`. `postvak rules check`, the Rules view, the MCP `rules_check` tool and the daemon's log warn about such a copy, and about a rule whose `account` is not set up on this device, since it never runs there; name each account the same on every device.
+
 ## Proposals
 
 Agents never edit `rules.toml`. They run `postvak rules propose`, which appends the rule with `enabled = false` and `proposed_by` set. To review a proposal:
