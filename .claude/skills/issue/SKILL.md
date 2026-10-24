@@ -92,9 +92,10 @@ On every CI result or review event, look at the whole PR on its current head:
 
 ## 7. Auto-merge
 
-Once the PR is open and the local checks passed, enable auto-merge with **squash** (`enable_pr_auto_merge`, or `gh pr merge --auto --squash`): GitHub then merges only when the required checks pass, which is the safety net.
+Once the PR is open and the local checks passed, enable auto-merge with **squash** (`enable_pr_auto_merge`, or `gh pr merge --auto --squash`). `main` has a merge queue with required checks (`lint`, `test (macos-latest)`, `test (ubuntu-latest)`): auto-merge puts the PR in the queue once they pass, and the queue runs CI again on top of the latest main before merging. That is the safety net.
 
-- If auto-merge can't be enabled (the repo doesn't allow it, or there are no required checks, so GitHub would merge at once), don't merge on your own: wait until CI is fully green on the head and no thread is open, then merge with squash and the PR title as the commit title.
+- If auto-merge can't be enabled, don't bypass the queue: wait until CI is fully green on the head and no thread is open, then add it to the queue (a squash merge through the API or `gh pr merge --squash`), with the PR title as the commit title.
+- If the queue rejects it (a conflict with what merged ahead of it, or CI red on the combined commit), that's step 6 again: fix, push, re-enable auto-merge.
 - Never merge a red, conflicted or changes-requested PR, and never bypass branch protection.
 - If the user says "don't merge" at any point, disable auto-merge and stop there.
 
