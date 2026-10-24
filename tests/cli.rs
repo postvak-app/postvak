@@ -757,6 +757,17 @@ fn search_works_offline_over_indexed_bodies() {
     assert!(out.status.success(), "{stderr}");
     assert!(String::from_utf8_lossy(&out.stdout).contains("INBOX/42"));
     assert!(!stderr.contains("offline"), "asked the daemon: {stderr}");
+    let json = postvak(home.path(), &["search", "total", "--json"]);
+    let row: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&json.stdout).trim()).unwrap();
+    assert!(
+        row["snippet"].as_str().is_some_and(|s| s.contains("total")),
+        "{row}"
+    );
+    let header = postvak(home.path(), &["search", "invoice", "--json"]);
+    let row: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&header.stdout).trim()).unwrap();
+    assert!(row.get("snippet").is_none(), "{row}");
     assert!(
         !Paths::under(home.path()).daemon_socket().exists(),
         "started a daemon for a local search"

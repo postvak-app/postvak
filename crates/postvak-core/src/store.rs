@@ -608,6 +608,7 @@ impl Store {
         if plan.is_empty() {
             return Ok(Vec::new());
         }
+        let snippets = scope == Scope::All;
         let mut hits = self.search_tier(
             &plan.exact,
             plan.exclude.as_deref(),
@@ -615,6 +616,7 @@ impl Store {
             &plan,
             limit,
             Matched::Exact,
+            snippets,
         )?;
         // The close tier only when the exact one is thin, and never a message the exact expression matches.
         if let Some(widened) = &plan.close
@@ -628,14 +630,17 @@ impl Store {
                 &plan,
                 left,
                 Matched::Close,
+                snippets,
             )?);
         }
         Ok(hits)
     }
 
     /// The messages `expression` matches and `exclude` does not, newest first, at most `limit`; an empty
-    /// expression matches every message, for a query of predicates alone. The plan's predicates follow the FTS
-    /// match; their `?` parameters count on from the fixed ones, so the later placeholders are numbered after them.
+    /// expression matches every message, for a query of predicates alone. With `snippets`, a hit whose body matched
+    /// carries the text around the match. The plan's predicates follow the FTS match; their `?` parameters count on
+    /// from the fixed ones, so the later placeholders are numbered after them.
+    #[allow(clippy::too_many_arguments)] // one per part of the query
     fn search_tier(
         &self,
         expression: &str,
@@ -644,17 +649,33 @@ impl Store {
         plan: &Plan,
         limit: u32,
         matched: Matched,
+        snippets: bool,
     ) -> Result<Vec<Hit>, StoreError> {
-        let mut tail = String::from(if expression.is_empty() {
-            "WHERE ?1 IS NULL AND (?2 IS NULL OR folder = ?2)"
+        // The body is column 6 of the FTS table; bm25 weighted on some columns is non-zero only when they matched.
+        let hit_columns = if snippets {
+            "snippet(messages_fts, 6, '', '', '…', 12) AS snip,
+             bm25(messages_fts, 1, 1, 1, 1, 1, 1, 0) AS header_score,
+             bm25(messages_fts, 0, 0, 0, 0, 0, 0, 1) AS body_score"
         } else {
-            "WHERE id IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?1)
-               AND (?2 IS NULL OR folder = ?2)"
-        });
+            "NULL AS snip, 0.0 AS header_score, 0.0 AS body_score"
+        };
+        let mut sql = if expression.is_empty() {
+            format!(
+                "SELECT {MESSAGE_COLUMNS}, NULL AS snip, 0.0 AS header_score, 0.0 AS body_score FROM messages
+                 WHERE ?1 IS NULL AND (?2 IS NULL OR folder = ?2)"
+            )
+        } else {
+            format!(
+                "SELECT {MESSAGE_COLUMNS}, snip, header_score, body_score FROM messages
+                 JOIN (SELECT rowid AS fts_id, {hit_columns} FROM messages_fts WHERE messages_fts MATCH ?1) AS hit
+                   ON hit.fts_id = messages.id
+                 WHERE (?2 IS NULL OR folder = ?2)"
+            )
+        };
         for predicate in &plan.sql {
-            tail.push_str(" AND (");
-            tail.push_str(predicate);
-            tail.push(')');
+            sql.push_str(" AND (");
+            sql.push_str(predicate);
+            sql.push(')');
         }
         let mut next = 3 + plan.params.len();
         let mut values: Vec<rusqlite::types::Value> = vec![
@@ -665,25 +686,42 @@ impl Store {
         ];
         values.extend(plan.params.iter().cloned());
         if let Some(exclude) = exclude {
-            tail.push_str(&format!(
-                " AND id NOT IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?{next})"
+            sql.push_str(&format!(
+                " AND messages.id NOT IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?{next})"
             ));
             values.push(exclude.to_owned().into());
             next += 1;
         }
-        tail.push_str(&format!(
+        sql.push_str(&format!(
             " ORDER BY internaldate DESC, uid DESC LIMIT ?{next}"
         ));
         values.push(limit.into());
-        let found = self.query_messages(&tail, rusqlite::params_from_iter(values))?;
-        Ok(found
-            .into_iter()
-            .map(|message| Hit {
+        let mut stmt = self.conn.prepare_cached(&sql)?;
+        let mut rows = stmt.query(rusqlite::params_from_iter(values))?;
+        let mut hits = Vec::new();
+        while let Some(row) = rows.next()? {
+            let message: Message = serde_rusqlite::from_row(row)?;
+            let header_score: f64 = row.get("header_score")?;
+            let body_score: f64 = row.get("body_score")?;
+            // Only a hit the headers did not make: the row shows them already. One line: a line break in the body
+            // becomes a space, and control characters go.
+            let snippet = if body_score < 0.0 && header_score == 0.0 {
+                row.get::<_, Option<String>>("snip")?.map(|text| {
+                    crate::message::clean(&text, true)
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+            } else {
+                None
+            };
+            hits.push(Hit {
                 message,
                 matched,
-                snippet: None,
-            })
-            .collect())
+                snippet,
+            });
+        }
+        Ok(hits)
     }
 
     pub fn message(&self, folder: &str, uid: u32) -> Result<Option<Message>, StoreError> {
@@ -1741,6 +1779,81 @@ mod tests {
         assert_eq!(with("to:me"), [3], "an alias with a wildcard");
         assert_eq!(with("-from:me subject"), [1, 3]);
         assert!(with("cc:me").is_empty());
+    }
+
+    /// The hits of `text` as (uid, snippet).
+    fn snippets(s: &Store, text: &str, scope: Scope) -> Vec<(u32, Option<String>)> {
+        s.search(&search::parse(text, NOW), scope, None, 10, true, None)
+            .unwrap()
+            .into_iter()
+            .map(|hit| (hit.message.uid, hit.snippet))
+            .collect()
+    }
+
+    #[test]
+    fn a_body_hit_carries_a_snippet_and_a_header_hit_does_not() {
+        let s = store_with_inbox();
+        let mut m = msg("INBOX", 1, 10);
+        m.body_text = Some(
+            "Dear Bob, the quick brown fox jumps over the lazy dog, as it does every single morning without fail."
+                .into(),
+        );
+        s.insert_message(&m).unwrap();
+        let [(uid, snippet)] = snippets(&s, "lazy dog", Scope::All).try_into().unwrap();
+        assert_eq!(uid, 1);
+        let snippet = snippet.unwrap();
+        assert!(snippet.contains("lazy dog"), "{snippet}");
+        assert!(
+            snippet.contains('…') && snippet.len() < m.body_text.unwrap().len(),
+            "a window of the body, not all of it: {snippet}"
+        );
+        assert!(snippet.split_whitespace().count() <= 13, "{snippet}");
+        assert_eq!(
+            snippets(&s, "subject", Scope::All),
+            [(1, None)],
+            "a hit in the headers shows them already"
+        );
+        assert_eq!(
+            snippets(&s, "subject fox", Scope::All),
+            [(1, None)],
+            "the headers matched too, and the row shows them"
+        );
+        assert_eq!(snippets(&s, "is:unread", Scope::All), [(1, None)]);
+    }
+
+    #[test]
+    fn snippets_are_never_built_in_the_headers_scope() {
+        let s = store_with_inbox();
+        let mut m = msg("INBOX", 1, 10);
+        m.subject = Some("fox".into());
+        m.body_text = Some("the fox again".into());
+        s.insert_message(&m).unwrap();
+        let mut in_body = msg("INBOX", 2, 20);
+        in_body.body_text = Some("a fox in the body only".into());
+        s.insert_message(&in_body).unwrap();
+        assert_eq!(
+            snippets(&s, "fox", Scope::Headers),
+            [(1, None)],
+            "the body hit is not even found"
+        );
+        let all = snippets(&s, "fox", Scope::All);
+        assert_eq!(all.len(), 2);
+        assert!(
+            all[0].1.as_deref().is_some_and(|t| t.contains("fox")),
+            "{all:?}"
+        );
+        assert_eq!(all[1], (1, None), "the subject shows the match");
+    }
+
+    #[test]
+    fn a_snippet_is_cleaned_of_control_characters() {
+        let s = store_with_inbox();
+        let mut m = msg("INBOX", 1, 10);
+        m.body_text = Some("fox\u{1b}[2J jumps\u{7} now,\nagain\ttomorrow".into());
+        s.insert_message(&m).unwrap();
+        let snippet = snippets(&s, "jumps", Scope::All)[0].1.clone().unwrap();
+        assert!(!snippet.chars().any(char::is_control), "{snippet:?}");
+        assert_eq!(snippet, "fox[2J jumps now, again tomorrow");
     }
 
     #[test]

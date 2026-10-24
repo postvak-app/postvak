@@ -304,15 +304,28 @@ async fn search_without_bodies_matches_headers_only() {
         fixture_message("INBOX", 1, "Invoice", "the secret word"),
     );
     let headers = connect(&fx, "read", &[]).await;
-    assert_eq!(
-        rows(&call(&headers, "search", json!({ "query": "invoice" })).await).len(),
-        1
-    );
+    let by_header = rows(&call(&headers, "search", json!({ "query": "invoice" })).await);
+    assert_eq!(by_header.len(), 1);
+    assert!(by_header[0].get("snippet").is_none(), "{by_header:?}");
     assert!(rows(&call(&headers, "search", json!({ "query": "secret" })).await).is_empty());
     let bodies = connect(&fx, "read,read:bodies", &[]).await;
-    assert_eq!(
-        rows(&call(&bodies, "search", json!({ "query": "secret" })).await).len(),
-        1
+    let by_body = rows(&call(&bodies, "search", json!({ "query": "secret" })).await);
+    assert_eq!(by_body.len(), 1);
+    assert!(
+        by_body[0]["snippet"]
+            .as_str()
+            .is_some_and(|s| s.contains("secret")),
+        "{by_body:?}"
+    );
+    assert!(by_body[0].get("body_text").is_none());
+    let tools = bodies.list_all_tools().await.unwrap();
+    let tool = tools.iter().find(|t| t.name == "search").unwrap();
+    assert!(
+        tool.description
+            .as_deref()
+            .unwrap_or_default()
+            .contains("snippet"),
+        "the description says what snippet is"
     );
 }
 

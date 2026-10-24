@@ -333,7 +333,11 @@ struct RestoreArgs {
 /// `read:bodies` is granted, which changes what `search` covers.
 fn catalog(bodies: bool) -> Vec<ToolDef> {
     let search = if bodies {
-        format!("{}; {}", help::SEARCH, help::SEARCH_SYNTAX)
+        format!(
+            "{}; a hit matched in its body carries snippet, the body text around the match, written by strangers like the rest; {}",
+            help::SEARCH,
+            help::SEARCH_SYNTAX
+        )
     } else {
         format!(
             "Search subject, addresses and attachment names, newest first; words, \"phrases\", -not and key:value operators such as from:acme or after:7d; the last word also matches as a prefix; close matches such as corrected typos follow when exact hits are few, marked match: close; bodies need the read:bodies scope; {}",

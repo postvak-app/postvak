@@ -54,7 +54,7 @@ The install also prints a hint with the granted scopes and how to widen them. It
 | Scope | What it grants | Tools |
 |---|---|---|
 | `read` | Folders, message headers, the activity log, rules and trash listings, previews of rules that do not match on the body, and a sync. No body text. | `accounts`, `folders`, `list`, `log`, `rules_check`, `rules_list`, `rules_schema`, `rules_test`, `search`, `status`, `sync`, `trash_list` |
-| `read:bodies` | Message bodies and attachment names, search over indexed bodies and on the server (`search` with `server`), and with `read` previews of rules that match on the body. | `attachments`, `show` |
+| `read:bodies` | Message bodies and attachment names, search over indexed bodies and on the server (`search` with `server`) with a `snippet` of the body around a match, and with `read` previews of rules that match on the body. | `attachments`, `show` |
 | `rules:propose` | Proposing a rule. It is stored disabled until you approve it. | `rules_propose` |
 | `rules:write` | Approving and rejecting rules, and turning them on or off. | `rules_approve`, `rules_reject`, `rules_set_enabled` |
 | `files:write` | Writing attachment files into your Downloads folder, or the `--save-dir` you set, and the directories below it. The file name and content come from the sender. | `attachment_save` |
