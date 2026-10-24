@@ -79,7 +79,7 @@ impl Fixture {
         let mut app = App::new(&config, self.paths.clone(), client, received, states);
         app.reconnect = |_, _| Err(anyhow::anyhow!("no daemon in tests"));
         app.fetch_release = || Err(anyhow::anyhow!("no network in tests"));
-        app.check_login = |_, _| Ok(());
+        app.check_login = |_, _, _, _| Ok(());
         app.logos.net = std::sync::Arc::new(Offline);
         // Reloads after events apply in the tick that started them, so tests see their rows at once; the tests of
         // reloads that outlast a frame set a budget of their own.

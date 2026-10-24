@@ -1338,9 +1338,12 @@ fn cmd_account_add(mut config: Config, paths: &Paths) -> Result<()> {
             Some(Secret::new(rpassword::prompt_password("Password: ")?))
         }
     };
+    let client = Client::connect_or_start(paths)?;
+    println!("testing the login to {host}…");
+    account::test_login(&client, &config, &account, secret.as_ref())
+        .context("the login failed, so nothing was saved")?;
     account::add(&mut config, paths, account, secret)?;
     println!("saved to {}", paths.config_file().display());
-    let client = Client::connect_or_start(paths)?;
     account::await_started(&client, &name, account::START_TIMEOUT)?;
     if !sync_account(&client, &name) {
         bail!(

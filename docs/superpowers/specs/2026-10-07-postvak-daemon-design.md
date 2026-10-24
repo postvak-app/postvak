@@ -91,7 +91,10 @@ Out of scope, recorded in §11: Windows, reads over the socket, remote or multi-
 {"command":{"id":8,"account":"work","command":{"Apply":{"folder":"INBOX","uids":[42],"action":"archive","by":"mcp:claude-ai"}}}}
 {"status":{"id":9}}
 {"shutdown":{"id":10}}
+{"test_login":{"id":11,"account":{"name":"work","host":"imap.example.com","username":"me@example.com","password":{"keyring":true}},"password":"…"}}
 ```
+
+`test_login` logs in as an account that is not saved and out again, and replies `done` or why not; see `2026-10-19-account-login-test-design.md`.
 
 **Daemon to client.**
 ```json

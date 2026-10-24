@@ -57,23 +57,25 @@ fn list_on_unknown_account_fails_and_empty_config_lists_nothing() {
 const ADD_ANSWERS: &str = "late\n127.0.0.1\n1\n\nme@example.com\n\nc\nprintf x\n";
 
 #[test]
-fn account_add_saves_then_reports_the_first_sync() {
+fn account_add_tests_the_login_first_and_saves_nothing_when_it_fails() {
     let (home, _store) = seeded_home(&[]);
+    let before = std::fs::read_to_string(home.path().join("config/config.toml")).ok();
     let out = postvak_stdin(home.path(), &["account", "add"], ADD_ANSWERS);
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stdout.contains("saved to"), "{stdout}");
-    assert!(!stdout.contains("Testing login"), "{stdout}");
-    let config = std::fs::read_to_string(home.path().join("config/config.toml")).unwrap();
-    assert!(config.contains("name = \"late\""), "{config}");
-    assert!(config.contains("command = \"printf x\""), "{config}");
-    // Port 1 refuses, so the first sync fails with the offline reason its connect left.
+    assert!(
+        stdout.contains("testing the login to 127.0.0.1…"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("saved to"), "{stdout}");
+    // Port 1 refuses, so the daemon's login test fails and nothing is written.
     assert!(!out.status.success(), "{stdout}\n{stderr}");
     assert!(
-        stderr.contains("[late] error: late is offline (")
-            && stderr.contains("the first sync of 'late' failed"),
+        stderr.contains("the login failed, so nothing was saved: 127.0.0.1: could not connect"),
         "{stderr}"
     );
+    let after = std::fs::read_to_string(home.path().join("config/config.toml")).ok();
+    assert_eq!(after, before);
 }
 
 #[test]
@@ -1014,6 +1016,10 @@ fn serve_fake_daemon(paths: &Paths, version: &'static str) -> std::thread::JoinH
                             requests: Vec::new(),
                             errors: vec![FAILED_PASS.into()],
                         })),
+                    },
+                    ClientMessage::TestLogin { id, .. } => DaemonMessage::Reply {
+                        id,
+                        outcome: Outcome::Error("no logins here".into()),
                     },
                     ClientMessage::Status { id } => DaemonMessage::Reply {
                         id,

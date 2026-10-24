@@ -753,3 +753,51 @@ async fn mcp_actions_run_from_a_blocking_pool_thread() {
     .unwrap();
     assert_eq!(report["done"], 1, "{report}");
 }
+
+/// `postvak account add` with a password command, answering the wizard in prompt order.
+fn account_add(home: &Path, host: &str, username: &str, password: &str) -> std::process::Output {
+    use std::io::Write;
+    let ca = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/dovecot/certs/ca.pem");
+    let answers = format!("live\n{host}\n{PORT}\n{ca}\n{username}\n\nc\nprintf {password}\n");
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_postvak"))
+        .args(["account", "add"])
+        .env("POSTVAK_HOME", home)
+        .env("POSTVAK_IDLE_EXIT_SECS", "1")
+        .env("RUST_LOG", "error")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(answers.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn account_add_tests_the_login_before_it_saves() {
+    let Some(host) = host() else { return };
+    let username = account(&host, PORT, "add-tested").username;
+    let home = tempfile::tempdir().unwrap();
+    let config = Paths::under(home.path()).config_file();
+    let refused = account_add(home.path(), &host, &username, "wrong");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(!refused.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("the login failed, so nothing was saved"),
+        "{stderr}"
+    );
+    assert!(!config.exists(), "nothing saved");
+    let added = account_add(home.path(), &host, &username, PASSWORD);
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    let saved = Config::load(&config).unwrap();
+    assert_eq!(saved.accounts[0].username, username);
+}

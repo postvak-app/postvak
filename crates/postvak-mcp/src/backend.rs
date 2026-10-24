@@ -372,6 +372,13 @@ impl Backend {
             bail!("this server is limited with --account and cannot add accounts");
         }
         let name = account.name.clone();
+        // Before the lock, as a login may take the 30 s connect timeout; a refused login saves nothing.
+        let current = Config::load(&self.paths.config_file())?;
+        if current.accounts.iter().any(|a| a.name == name) {
+            bail!("account '{name}' exists already; an agent can only add new accounts");
+        }
+        postvak_core::account::test_login(&*self.daemon.client()?, &current, &account, None)
+            .map_err(|e| e.context("the login failed, so nothing was saved"))?;
         {
             // Start from the file, not the start-up snapshot, or edits made since would be lost on save.
             let mut held = self.config.write().unwrap_or_else(PoisonError::into_inner);

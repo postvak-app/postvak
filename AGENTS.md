@@ -5,7 +5,7 @@ Spec: `docs/superpowers/specs/2026-10-06-postvak-core-design.md`. Read it before
 ## Module map
 Four crates in one workspace. `crates/postvak-core` holds every module below except `gui`, `update`, `mcp` and `main` + `cli/`; `crates/postvak-gui` holds `gui` (its crate root) and `update`; `crates/postvak-mcp` holds `mcp`; the root crate `postvak` is the binary, whose `gui` and `mcp` features turn the front-end crates on. Below the front ends nothing depends on Slint, Blitz or rmcp, and only `postvak-core` depends on rusqlite (the front ends only in tests), so nothing else can open a store. A published crate cannot reach files outside its directory, so what one embeds from `assets/` or `docs/src/` is a symlink inside it (`crates/postvak-gui/assets/`, `crates/postvak-core/src/agent-guide.md`).
 
-- `account` adding an account (validate, store the keyring secret, save config.toml) and waiting for the daemon to start it; the only code that adds one
+- `account` adding an account (validate, test the login through the daemon, store the keyring secret, save config.toml) and waiting for the daemon to start it; the only code that adds one
 - `actions` direct actions on chosen messages (mark, move, archive, delete); same `apply` as rules
 - `config` accounts and identity (address + aliases)
 - `credentials` keyring or password command; `Secret` has no Debug
@@ -33,6 +33,11 @@ Four crates in one workspace. `crates/postvak-core` holds every module below exc
 ## Surfaces
 - A feature ships on the CLI, MCP and GUI together unless its spec names the exception; `help` and `output` are shared so the texts and JSON rows stay identical
 - Logic lives in a library module. Anything that touches IMAP goes through the daemon as a `Command`. Front ends only call `postvak-core` and `daemon::Client`
+
+## Platforms
+- Postvak supports macOS and Linux. On Linux, KDE Plasma on Wayland comes first; GNOME, other desktops and X11 are supported wherever the desktop allows it
+- A desktop integration (notifications, tray, unread badge, keyring, `mailto:` handler, autostart, theme, opening links and files) ships on every supported platform, not only the one it was built on. Where a desktop lacks the mechanism, such as GNOME without a tray, fall back to what works there and say so in `docs/src/`; never leave it silently missing
+- The packages carry the integration too: the `.desktop` file and metainfo, Flatpak permissions and portals, the AppImage and `Info.plist` in the macOS app
 
 ## Definition of done
 - `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, `cargo machete` and `cargo deny check` all pass

@@ -646,14 +646,14 @@ Manage accounts
 
 ###### **Subcommands:**
 
-* `add` — Add an IMAP account; the daemon syncs it right away, and a wrong login shows as that sync's error
+* `add` — Add an IMAP account; the daemon tests the login first and nothing is saved when it fails, then syncs it once
 * `list` — Each configured account: name, username and server; never the password source
 
 
 
 ## `postvak account add`
 
-Add an IMAP account; the daemon syncs it right away, and a wrong login shows as that sync's error
+Add an IMAP account; the daemon tests the login first and nothing is saved when it fails, then syncs it once
 
 **Usage:** `postvak account add`
 

@@ -1,6 +1,11 @@
 //! The messages clients and the daemon exchange, one JSON object per line; these types are the protocol.
-use serde::{Deserialize, Serialize};
+use std::fmt;
 
+use serde::{Deserialize, Serialize};
+use zeroize::Zeroize;
+
+use crate::config::AccountConfig;
+use crate::credentials::Secret;
 use crate::sync::{Activity, Command, Event};
 
 pub const PROTOCOL: u32 = 1;
@@ -27,6 +32,40 @@ pub enum ClientMessage {
         account: String,
         command: Command,
     },
+    /// Logs in as `account` with `password` and logs out again; nothing is saved, so a front end can test an account
+    /// before it adds it.
+    TestLogin {
+        id: u64,
+        account: Box<AccountConfig>,
+        password: Password,
+    },
+}
+
+/// A password on its way to the daemon: its text on the wire, never shown by Debug, wiped on drop.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Password(String);
+
+impl Password {
+    pub fn new(secret: &Secret) -> Password {
+        Password(secret.expose().to_string())
+    }
+
+    pub fn secret(&self) -> Secret {
+        Secret::new(self.0.clone())
+    }
+}
+
+impl fmt::Debug for Password {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+impl Drop for Password {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -84,4 +123,31 @@ pub(crate) fn line(message: &impl Serialize) -> std::io::Result<String> {
     let mut text = serde_json::to_string(message)?;
     text.push('\n');
     Ok(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::PasswordSource;
+
+    #[test]
+    fn a_test_login_carries_its_password_but_debug_never_shows_it() {
+        let account = AccountConfig::new(
+            "work",
+            "imap.example.com",
+            "me@example.com",
+            PasswordSource::Keyring { keyring: true },
+        );
+        let message = ClientMessage::TestLogin {
+            id: 7,
+            account: Box::new(account),
+            password: Password::new(&Secret::new("hunter2".into())),
+        };
+        assert!(!format!("{message:?}").contains("hunter2"));
+        let line = line(&message).unwrap();
+        let ClientMessage::TestLogin { password, .. } = serde_json::from_str(&line).unwrap() else {
+            panic!("a test login");
+        };
+        assert_eq!(password.secret().expose(), "hunter2");
+    }
 }
