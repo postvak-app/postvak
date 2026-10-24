@@ -496,6 +496,7 @@ pub fn run() -> Result<()> {
             json,
         } => {
             let daemon = LazyClient::new(&paths);
+            let parsed = postvak_core::search::parse(&query);
             for acc in select_accounts(&config, account.as_deref())? {
                 let store = Store::open_account(&paths, &acc.name)?;
                 if bodies && store.lacks_bodies(folder.as_deref())? {
@@ -511,7 +512,12 @@ pub fn run() -> Result<()> {
                         );
                     }
                 }
-                let mut found = store.search(&query, folder.as_deref(), limit)?;
+                let mut found = store.search(
+                    &parsed,
+                    postvak_core::search::Scope::All,
+                    folder.as_deref(),
+                    limit,
+                )?;
                 if server {
                     match daemon.search_server(&acc.name, folder.as_deref(), &query) {
                         Ok(hits) => {
@@ -526,11 +532,11 @@ pub fn run() -> Result<()> {
                         ),
                     }
                 }
-                for m in found {
+                for hit in found {
                     if json {
-                        print_json(postvak_core::output::with_account(&acc.name, &m)?);
+                        print_json(postvak_core::output::with_account(&acc.name, &hit.message)?);
                     } else {
-                        println!("{}", message_line(&acc.name, &m, 0));
+                        println!("{}", message_line(&acc.name, &hit.message, 0));
                     }
                 }
             }

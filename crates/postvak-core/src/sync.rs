@@ -524,6 +524,8 @@ fn to_message(folder: &str, env: Envelope) -> Message {
         size: env.size,
         headers: env.headers,
         body_text: None,
+        attachment_names: None,
+        indexed_at: None,
     }
 }
 

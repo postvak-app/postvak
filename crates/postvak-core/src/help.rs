@@ -31,8 +31,7 @@ pub const RULES_SET_ENABLED: &str =
     "Turn a rule on or off; turning one on lets it act on new mail, deletes included";
 pub const RULES_TEST: &str =
     "Dry run: what this rule would do to the cached messages; previews subjects, never bodies";
-pub const SEARCH: &str =
-    "Full-text search (FTS5 syntax) over subject, addresses and fetched bodies, newest first";
+pub const SEARCH: &str = "Search subject, addresses, attachment names and stored bodies, newest first; words, \"phrases\" and -not; the last word also matches as a prefix";
 pub const SHOW: &str = "Show one message";
 pub const STATUS: &str =
     "The daemon's pid, version, uptime, client count and each account's activity";

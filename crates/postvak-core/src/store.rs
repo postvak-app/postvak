@@ -6,6 +6,7 @@ use rusqlite_migration::{M, Migrations};
 use serde::{Deserialize, Serialize};
 
 use crate::paths::Paths;
+use crate::search::{self, Query, Scope};
 
 /// In order; a new directory under `migrations/` needs its line here too.
 const MIGRATIONS: &[M<'static>] = &[
@@ -21,6 +22,7 @@ const MIGRATIONS: &[M<'static>] = &[
     M::up(include_str!("../migrations/008-has-attachment/up.sql")),
     M::up(include_str!("../migrations/009-folder-thread-index/up.sql")),
     M::up(include_str!("../migrations/010-unread-index/up.sql")),
+    M::up(include_str!("../migrations/011-search/up.sql")),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -67,6 +69,32 @@ pub struct Message {
     #[serde(skip_serializing, deserialize_with = "deserialize_blob")]
     pub headers: Vec<u8>,
     pub body_text: Option<String>,
+    /// Attachment file names, one per line, once the indexer has read the message's structure.
+    #[serde(skip_serializing, default)]
+    pub attachment_names: Option<String>,
+    /// When the indexer last tried this message; None until it has.
+    #[serde(skip_serializing, default)]
+    pub indexed_at: Option<i64>,
+}
+
+/// One search result: the message and how it matched.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Hit {
+    #[serde(flatten)]
+    pub message: Message,
+    #[serde(rename = "match")]
+    pub matched: Matched,
+    /// Context around a body match, once snippets exist; never for a headers-only search.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+}
+
+/// Whether the query matched as typed, or through a close match such as a corrected typo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Matched {
+    Exact,
+    Close,
 }
 
 /// Whether the space-separated `flags` contain `flag`.
@@ -222,7 +250,7 @@ pub struct Store {
     conn: Connection,
 }
 
-const MESSAGE_COLUMNS: &str = "folder, uid, message_id, from_addr, to_addr, cc_addr, delivered_to, in_reply_to, refs, thread_id, subject, date, internaldate, flags, size, headers, body_text";
+const MESSAGE_COLUMNS: &str = "folder, uid, message_id, from_addr, to_addr, cc_addr, delivered_to, in_reply_to, refs, thread_id, subject, date, internaldate, flags, size, headers, body_text, attachment_names, indexed_at";
 
 impl Store {
     pub fn migrations() -> Migrations<'static> {
@@ -399,7 +427,7 @@ impl Store {
 
     pub fn insert_message(&self, m: &Message) -> Result<(), StoreError> {
         let sql = format!(
-            "INSERT OR IGNORE INTO messages ({MESSAGE_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)"
+            "INSERT OR IGNORE INTO messages ({MESSAGE_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)"
         );
         self.conn.prepare_cached(&sql)?.execute(params![
             m.folder,
@@ -418,7 +446,9 @@ impl Store {
             m.flags,
             m.size,
             m.headers,
-            m.body_text
+            m.body_text,
+            m.attachment_names,
+            m.indexed_at
         ])?;
         Ok(())
     }
@@ -569,46 +599,46 @@ impl Store {
         )?)
     }
 
-    /// FTS5 search, newest first. A query FTS5 cannot parse, such as a bare email address, is retried with every word quoted.
+    /// The messages `query` matches, newest first, in `folder` or any folder, at most `limit`. The plan's
+    /// predicates follow the FTS match; their `?` parameters count on from the three fixed ones, so the limit's
+    /// placeholder is numbered after them.
     pub fn search(
         &self,
-        query: &str,
+        query: &Query,
+        scope: Scope,
         folder: Option<&str>,
         limit: u32,
-    ) -> Result<Vec<Message>, StoreError> {
-        if query.trim().is_empty() {
+    ) -> Result<Vec<Hit>, StoreError> {
+        let plan = search::plan(query, scope);
+        if plan.exact.is_empty() {
             return Ok(Vec::new());
         }
-        self.search_fts(query, folder, limit)
-            .or_else(|_| self.search_fts(&quote_words(query), folder, limit))
-    }
-
-    /// Search over subject and addresses only; every word is quoted, because FTS5 syntax could escape the column filter.
-    pub fn search_headers(
-        &self,
-        query: &str,
-        folder: Option<&str>,
-        limit: u32,
-    ) -> Result<Vec<Message>, StoreError> {
-        if query.trim().is_empty() {
-            return Ok(Vec::new());
-        }
-        let scoped = format!("{{subject from_addr to_addr}} : ({})", quote_words(query));
-        self.search_fts(&scoped, folder, limit)
-    }
-
-    fn search_fts(
-        &self,
-        query: &str,
-        folder: Option<&str>,
-        limit: u32,
-    ) -> Result<Vec<Message>, StoreError> {
-        self.query_messages(
+        let mut tail = String::from(
             "WHERE id IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?1)
-               AND (?2 IS NULL OR folder = ?2)
-             ORDER BY internaldate DESC, uid DESC LIMIT ?3",
-            params![query, folder, limit],
-        )
+               AND (?2 IS NULL OR folder = ?2)",
+        );
+        for predicate in &plan.sql {
+            tail.push_str(" AND (");
+            tail.push_str(predicate);
+            tail.push(')');
+        }
+        tail.push_str(&format!(
+            " ORDER BY internaldate DESC, uid DESC LIMIT ?{}",
+            3 + plan.params.len()
+        ));
+        let mut values: Vec<rusqlite::types::Value> =
+            vec![plan.exact.into(), folder.map(str::to_owned).into()];
+        values.extend(plan.params);
+        values.push(limit.into());
+        let found = self.query_messages(&tail, rusqlite::params_from_iter(values))?;
+        Ok(found
+            .into_iter()
+            .map(|message| Hit {
+                message,
+                matched: Matched::Exact,
+                snippet: None,
+            })
+            .collect())
     }
 
     pub fn message(&self, folder: &str, uid: u32) -> Result<Option<Message>, StoreError> {
@@ -644,6 +674,16 @@ impl Store {
         self.conn.execute(
             "UPDATE messages SET raw = ?3, body_text = ?4 WHERE folder = ?1 AND uid = ?2",
             params![folder, uid, raw, body_text],
+        )?;
+        Ok(())
+    }
+
+    /// Rebuilds the search index from the message rows, as migration 011 did once; the cure for a failed
+    /// integrity check.
+    pub fn rebuild_search_index(&self) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO messages_fts(messages_fts) VALUES ('rebuild')",
+            [],
         )?;
         Ok(())
     }
@@ -738,15 +778,6 @@ impl Store {
         let uids = stmt.query_map(params![folder], |r| r.get(0))?;
         Ok(uids.collect::<Result<_, _>>()?)
     }
-}
-
-/// Every whitespace-separated word as an FTS5 string, which FTS5 always parses.
-fn quote_words(query: &str) -> String {
-    query
-        .split_whitespace()
-        .map(|word| format!("\"{}\"", word.replace('"', "\"\"")))
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 #[cfg(test)]
@@ -959,6 +990,86 @@ mod tests {
     }
 
     #[test]
+    fn migration_011_rebuilds_the_index_of_an_older_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mail.db");
+        {
+            let mut conn = Connection::open(&path).unwrap();
+            Store::migrations().to_version(&mut conn, 10).unwrap();
+            conn.execute(
+                "INSERT INTO folders (name, uidvalidity) VALUES ('INBOX', 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO messages (folder, uid, thread_id, subject, from_addr, internaldate, flags, headers, body_text)
+                 VALUES ('INBOX', 1, 't', 'Café invoice', 'alice@x', 10, '', X'', 'pineapple pie')",
+                [],
+            )
+            .unwrap();
+        }
+        let s = Store::open(&path).unwrap();
+        assert_eq!(
+            fts_hits(&s, "pineapple"),
+            1,
+            "a body indexed before the rebuild"
+        );
+        assert_eq!(
+            fts_hits(&s, "cafe"),
+            1,
+            "the rebuilt index folds diacritics"
+        );
+        fts_integrity_check(&s);
+    }
+
+    #[test]
+    fn diacritics_fold_in_both_directions() {
+        let s = store_with_inbox();
+        let mut m = msg("INBOX", 1, 10);
+        m.subject = Some("Café Müller".into());
+        s.insert_message(&m).unwrap();
+        for query in ["cafe", "café", "muller", "MÜLLER"] {
+            assert_eq!(fts_hits(&s, query), 1, "{query}");
+        }
+    }
+
+    #[test]
+    fn cc_delivered_to_and_attachment_names_are_indexed() {
+        let s = store_with_inbox();
+        let mut m = msg("INBOX", 1, 10);
+        m.cc_addr = Some("bob@example.org".into());
+        m.delivered_to = Some("list@example.org".into());
+        s.insert_message(&m).unwrap();
+        s.conn
+            .execute(
+                "UPDATE messages SET attachment_names = 'Q3 report.pdf' WHERE uid = 1",
+                [],
+            )
+            .unwrap();
+        assert_eq!(fts_hits(&s, "bob"), 1);
+        assert_eq!(fts_hits(&s, "list"), 1);
+        assert_eq!(fts_hits(&s, "report"), 1);
+        assert_eq!(fts_hits(&s, "attachment_names:report"), 1);
+        fts_integrity_check(&s);
+    }
+
+    #[test]
+    fn the_vocab_table_lists_terms_per_column() {
+        let s = store_with_inbox();
+        s.insert_message(&msg("INBOX", 1, 10)).unwrap();
+        s.set_raw("INBOX", 1, b"raw", "pineapple").unwrap();
+        let (col, doc): (String, i64) = s
+            .conn
+            .query_row(
+                "SELECT col, doc FROM messages_vocab WHERE term = 'pineapple'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((col.as_str(), doc), ("body_text", 1));
+    }
+
+    #[test]
     fn insert_ignores_duplicate_folder_uid() {
         let s = store_with_inbox();
         s.insert_message(&msg("INBOX", 1, 10)).unwrap();
@@ -1061,6 +1172,15 @@ mod tests {
         assert_eq!(s.message_count("Other").unwrap(), 0);
     }
 
+    /// The uids `text` finds, as a user would type it.
+    fn found(s: &Store, text: &str, scope: Scope, folder: Option<&str>, limit: u32) -> Vec<u32> {
+        s.search(&search::parse(text), scope, folder, limit)
+            .unwrap()
+            .iter()
+            .map(|hit| hit.message.uid)
+            .collect()
+    }
+
     #[test]
     fn search_matches_words_newest_first_and_filters_by_folder() {
         let s = store_with_inbox();
@@ -1075,61 +1195,73 @@ mod tests {
         s.insert_message(&msg("INBOX", 1, 10)).unwrap();
         s.insert_message(&msg("INBOX", 2, 30)).unwrap();
         s.insert_message(&msg("Archive", 3, 20)).unwrap();
-        let uids = |found: Vec<Message>| found.iter().map(|m| m.uid).collect::<Vec<_>>();
-        assert_eq!(uids(s.search("subject", None, 10).unwrap()), [2, 3, 1]);
+        let all = Scope::All;
+        assert_eq!(found(&s, "subject", all, None, 10), [2, 3, 1]);
+        assert_eq!(found(&s, "subject", all, Some("INBOX"), 10), [2, 1]);
+        assert_eq!(found(&s, "subject", all, None, 1), [2]);
         assert_eq!(
-            uids(s.search("subject", Some("INBOX"), 10).unwrap()),
-            [2, 1]
+            found(&s, "alice", all, None, 10),
+            [2, 3, 1],
+            "a sender's name"
         );
-        assert_eq!(uids(s.search("subject", None, 1).unwrap()), [2]);
         assert_eq!(
-            uids(s.search("from_addr:alice", None, 10).unwrap()),
-            [2, 3, 1]
+            found(&s, "subj", all, None, 10),
+            [2, 3, 1],
+            "the last word is a prefix"
         );
-        assert!(s.search("pineapple", None, 10).unwrap().is_empty());
-        assert!(s.search("   ", None, 10).unwrap().is_empty());
+        assert!(found(&s, "pineapple", all, None, 10).is_empty());
+        assert!(found(&s, "   ", all, None, 10).is_empty());
+        assert!(
+            found(&s, "-subject", all, None, 10).is_empty(),
+            "nothing positive to match"
+        );
+        let hit = &s.search(&search::parse("subject"), all, None, 1).unwrap()[0];
+        assert_eq!(
+            (hit.matched, hit.snippet.as_deref()),
+            (Matched::Exact, None)
+        );
     }
 
     #[test]
-    fn search_retries_unparsable_queries_as_quoted_words() {
+    fn a_bare_address_and_an_unbalanced_quote_search_as_words() {
         let s = store_with_inbox();
         s.insert_message(&msg("INBOX", 1, 10)).unwrap();
-        assert_eq!(s.search("alice@x", None, 10).unwrap().len(), 1);
-        assert!(s.search("re: lunch", None, 10).unwrap().is_empty());
-        assert!(s.search("\"unbalanced", None, 10).unwrap().is_empty());
+        assert_eq!(found(&s, "alice@x", Scope::All, None, 10), [1]);
+        assert_eq!(found(&s, "\"alice@x", Scope::All, None, 10), [1]);
+        assert!(found(&s, "re: lunch", Scope::All, None, 10).is_empty());
+        assert!(found(&s, "\"unbalanced", Scope::All, None, 10).is_empty());
+        assert!(found(&s, "NEAR(subject, 1)", Scope::All, None, 10).is_empty());
     }
 
     #[test]
-    fn header_search_ignores_bodies_even_through_fts_syntax() {
-        let store = store_with_inbox();
+    fn a_headers_search_ignores_bodies_even_through_fts_syntax() {
+        let s = store_with_inbox();
         let mut m = msg("INBOX", 1, 100);
         m.subject = Some("hello".into());
         m.body_text = Some("secret word".into());
-        store.insert_message(&m).unwrap();
-        assert_eq!(store.search_headers("hello", None, 10).unwrap().len(), 1);
-        assert!(store.search_headers("secret", None, 10).unwrap().is_empty());
+        s.insert_message(&m).unwrap();
+        let headers = Scope::Headers;
+        assert_eq!(found(&s, "hello", headers, None, 10), [1]);
+        assert!(found(&s, "secret", headers, None, 10).is_empty());
+        assert!(found(&s, "x) OR (body_text:secret", headers, None, 10).is_empty());
+        assert!(found(&s, "x) OR body_text:secret", headers, None, 10).is_empty());
+        assert!(found(&s, "body_text:secret", headers, None, 10).is_empty());
         assert!(
-            store
-                .search_headers("x) OR (body_text:secret", None, 10)
-                .unwrap()
-                .is_empty()
+            found(&s, "hello -secret", headers, None, 10) == [1],
+            "a negated body word is not seen either"
         );
-        assert!(
-            store
-                .search_headers("x) OR body_text:secret", None, 10)
-                .unwrap()
-                .is_empty()
-        );
-        assert_eq!(store.search("secret", None, 10).unwrap().len(), 1);
+        assert_eq!(found(&s, "secret", Scope::All, None, 10), [1]);
     }
 
     #[test]
     fn search_covers_fetched_bodies() {
         let s = store_with_inbox();
         s.insert_message(&msg("INBOX", 1, 10)).unwrap();
-        assert!(s.search("pineapple", None, 10).unwrap().is_empty());
+        assert!(found(&s, "pineapple", Scope::All, None, 10).is_empty());
         s.set_raw("INBOX", 1, b"raw", "pineapple pie").unwrap();
-        assert_eq!(s.search("pineapple", None, 10).unwrap().len(), 1);
+        assert_eq!(found(&s, "pineapple", Scope::All, None, 10), [1]);
+        assert_eq!(found(&s, "\"pineapple pie\"", Scope::All, None, 10), [1]);
+        assert!(found(&s, "\"pie pineapple\"", Scope::All, None, 10).is_empty());
     }
 
     #[test]

@@ -14,6 +14,7 @@ pub mod notify;
 pub mod output;
 pub mod paths;
 pub mod rules;
+pub mod search;
 pub mod store;
 pub mod sync;
 pub mod time;

@@ -15,14 +15,14 @@ This page is for LLM agents that drive Postvak from a shell. `postvak guide` pri
 postvak folders --json
 postvak list --folder INBOX --limit 20 --json
 postvak list --threads --json
-postvak search 'invoice from_addr:acme' --json
+postvak search 'acme invoice' --json
 postvak show 42 --folder INBOX --json
 postvak attachment list 42 --folder INBOX
 ```
 
 - UIDs are per folder. Always pass the `--folder` you listed with; without it, commands use INBOX.
 - `list`, `search` and `folders` cover every account and print the account. With more than one account, `show`, `attachment` and the direct actions need `--account`.
-- `search` uses SQLite FTS5 syntax over `subject`, `from_addr`, `to_addr` and `body_text`, newest first. A query FTS5 cannot parse, such as a bare address, is searched as plain words instead.
+- `search` matches words in the subject, the addresses, attachment names and stored bodies, newest first. A `"quoted phrase"` matches in order, `-word` excludes, and the last word also matches as a prefix. Nothing you type is read as query syntax, so a bare address or an unbalanced quote searches as words.
 - Only bodies Postvak already fetched are searched. `--server` also asks the mail server, which searches every body in a round trip per folder; `--bodies` instead fetches the missing ones first, which can take minutes on a large folder.
 
 ## Writing a rule
