@@ -19,6 +19,7 @@ How Postvak behaves as a mailbox grows, measured on generated mail. User stores 
 | `sync_event` | The frame that takes a sync event in All inboxes: how long it waits for the reload |
 | `folder_counts` | One account's folders with their unread counts, read again on each of its sync events |
 | `search` | One word searched in All inboxes |
+| `search_keystroke` | The frame that takes a keystroke in the search field: how long it waits for the hits |
 | `search_close` | A misspelled word searched in All inboxes: no exact hit, so the vocabulary is consulted and the close tier runs |
 | `sync_pass` | One sync of an account after 200 messages arrived and 500 changed flags |
 
@@ -72,7 +73,7 @@ Migration 011 rebuilds the FTS index once per store, the first time the store op
 
 ## Reloads after a sync event
 
-The window reloads the shown list whenever sync reports changes. That reload runs on a thread of its own with its own store connections; the frame waits for it at most 2 ms (`LIST_BUDGET` in `state.rs`, a quarter of a 120 Hz frame), so a small mailbox's rows still show in the same frame, and a large one's show when the thread wakes the window. While a reload runs, the next waits for it and then starts once; the rows already loaded are rebuilt meanwhile only when edits changed, since rebuilding a large list costs milliseconds. A view change reads on the window thread, as before, and drops a reload still running.
+The window reloads the shown list whenever sync reports changes. That reload runs on a thread of its own with its own store connections; the frame waits for it at most 2 ms (`LIST_BUDGET` in `state.rs`, a quarter of a 120 Hz frame), so a small mailbox's rows still show in the same frame, and a large one's show when the thread wakes the window. While a reload runs, the next waits for it and then starts once; the rows already loaded are rebuilt meanwhile only when edits changed, since rebuilding a large list costs milliseconds. A view change reads on the window thread, as before, and drops a reload still running; a keystroke in the search field does not (below).
 
 An archive, move or delete hides its rows at once and its `ActionDone` arrives after the daemon changed the store. A reload that started before then still holds the old rows, so the edit stays on the rows until a reload that started after it is applied.
 
@@ -88,5 +89,18 @@ The same sync event also reads the account's folders and unread counts again, on
 | `folder_counts` | 0.06 (0.06–0.22) | 0.17 (0.15–0.39) |
 
 The frame now waits the budget at most for the list, however large the mailbox, and the counts no longer grow with the read mail. `open_window`, which reads the counts too, went from 48 to 28 ms at 100k.
+
+## Typing a search
+
+Each keystroke in the search field used to run the search on the window thread, for every account, so the frame that took the key waited for the whole query. Now a keystroke starts the same reload a sync event does: on a thread of its own, with the frame waiting at most `LIST_BUDGET`. While a search runs, further keystrokes only mark the list stale, and one search follows for the latest text, so fast typing never queues a search per key. The rows of the last query stay until the new hits come, and those show from the top.
+
+`search` is what the frame that took a keystroke waited before; `search_keystroke` is what it waits now. Release build, the same run of each: Linux container, 4 vCPUs of an Intel Xeon at 2.30 GHz, 15 GB, Rust 1.99.1. Both scales searched every account's bodies, as `index_all` ran first. Median in ms, with the range of five runs.
+
+| Phase | 10k | 100k |
+| --- | --- | --- |
+| `search` | 11 (11–13) | 88 (75–110) |
+| `search_keystroke` | 2.2 (2.1–2.2) | 2.1 (2.1–2.2) |
+
+The hits still take what `search` takes to arrive; only the window no longer waits for them.
 
 Not measured yet: drawing a frame of the list through the real window (`Fixture::window()`), and opening one message.
