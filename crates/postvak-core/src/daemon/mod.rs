@@ -1,9 +1,8 @@
 //! The one process that owns the engine, serving it to the GUI, CLI and MCP over a private Unix socket.
 use std::collections::HashMap;
-use std::fs::{self, File, TryLockError};
-use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
+use std::fs::{self, File};
+use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::net::Shutdown;
-use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,7 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, anyhow, bail};
+use anyhow::bail;
 
 use crate::config::{AccountConfig, Config};
 use crate::credentials::Secret;
@@ -146,44 +145,26 @@ fn truncate_large_log(log: &Path) -> io::Result<()> {
 
 /// Locks `path` and writes our pid there; held until the returned file drops.
 fn take_daemon_lock(path: &Path) -> anyhow::Result<File> {
-    let mut file = File::options()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)?;
-    match file.try_lock() {
-        Ok(()) => {
-            file.set_len(0)?;
-            write!(file, "{}", std::process::id())?;
-            Ok(file)
-        }
-        Err(TryLockError::WouldBlock) => {
-            let mut pid = String::new();
-            file.read_to_string(&mut pid)?;
-            let pid: Option<u32> = pid.trim().parse().ok();
-            bail!(
-                "already running (pid {})",
-                pid.map_or_else(|| "unknown".to_string(), |pid| pid.to_string())
-            )
-        }
-        Err(TryLockError::Error(e)) => Err(e.into()),
-    }
+    let Some(mut file) = paths::try_lock_file(path)? else {
+        let pid = fs::read_to_string(path)
+            .ok()
+            .and_then(|pid| pid.trim().parse::<u32>().ok());
+        bail!(
+            "already running (pid {})",
+            pid.map_or_else(|| "unknown".to_string(), |pid| pid.to_string())
+        )
+    };
+    file.set_len(0)?;
+    write!(file, "{}", std::process::id())?;
+    Ok(file)
 }
 
-/// Replaces a leftover socket file and binds a fresh one only we can open.
+/// Replaces a leftover socket file and binds a fresh, non-blocking one only we can open.
 fn bind_private(socket: &Path) -> anyhow::Result<UnixListener> {
-    match fs::remove_file(socket) {
-        Err(e) if e.kind() != io::ErrorKind::NotFound => {
-            return Err(e).with_context(|| format!("removing {}", socket.display()));
-        }
-        _ => {}
-    }
-    let listener = UnixListener::bind(socket).map_err(|e| match e.kind() {
-        io::ErrorKind::InvalidInput => anyhow!("socket path too long: {}", socket.display()),
+    let listener = paths::bind_private(socket).map_err(|e| match e.kind() {
+        io::ErrorKind::InvalidInput => anyhow::Error::new(e),
         _ => anyhow::Error::new(e).context(format!("binding {}", socket.display())),
     })?;
-    fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true)?;
     Ok(listener)
 }

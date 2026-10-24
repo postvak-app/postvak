@@ -1,7 +1,8 @@
 use std::ffi::OsString;
-use std::fs;
+use std::fs::{self, File, TryLockError};
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -66,6 +67,15 @@ impl Paths {
         self.state_dir.join("daemon.lock")
     }
 
+    /// Where the open window listens for a second `postvak gui`, which hands it what it was asked and exits.
+    pub fn gui_socket(&self) -> PathBuf {
+        self.state_dir.join("gui.sock")
+    }
+
+    pub fn gui_lock(&self) -> PathBuf {
+        self.state_dir.join("gui.lock")
+    }
+
     pub fn daemon_log(&self) -> PathBuf {
         self.state_dir.join("daemon.log")
     }
@@ -96,6 +106,39 @@ impl Paths {
         create_private_dir(&self.account_dir(name))?;
         create_private_dir(&self.trash_dir(name))
     }
+}
+
+/// Locks `path`, creating it; None when another process holds the lock. Held until the file drops.
+pub fn try_lock_file(path: &Path) -> io::Result<Option<File>> {
+    let file = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(TryLockError::Error(e)) => Err(e),
+    }
+}
+
+/// Replaces a leftover socket file and binds a fresh one only we can open. Its directory must be private, which
+/// guards the socket between `bind` and the chmod.
+pub fn bind_private(socket: &Path) -> io::Result<UnixListener> {
+    match fs::remove_file(socket) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    let listener = UnixListener::bind(socket).map_err(|e| match e.kind() {
+        io::ErrorKind::InvalidInput => io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("socket path too long: {}", socket.display()),
+        ),
+        _ => e,
+    })?;
+    fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
 }
 
 pub fn create_private_dir(dir: &Path) -> io::Result<()> {
