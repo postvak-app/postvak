@@ -20,6 +20,7 @@ mod logos;
 mod menu;
 mod numbers;
 mod persist;
+mod reader;
 mod rows;
 mod rules;
 #[cfg(test)]

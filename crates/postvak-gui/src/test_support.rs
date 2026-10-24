@@ -84,6 +84,7 @@ impl Fixture {
         // Reloads after events apply in the tick that started them, so tests see their rows at once; the tests of
         // reloads that outlast a frame set a budget of their own.
         app.list_budget = std::time::Duration::from_secs(60);
+        app.body_budget = std::time::Duration::from_secs(60);
         app.post_unsubscribe = |url| match url.contains("refuse") {
             true => Err("HTTP 500".into()),
             false => Ok(()),

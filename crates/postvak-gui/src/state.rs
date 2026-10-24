@@ -29,6 +29,7 @@ use super::html::{self, Fetcher, HtmlState, Renderer, Reply, Wake};
 use super::list::{self, ListState, Optimistic, Row, RowKey};
 use super::load::{self, ListQuery, LoadFn, Loaded, Loading};
 use super::logos::Logos;
+use super::reader::{self, Read, ReadFn, Reader};
 use super::rules::{self, RulesState, SheetSort, TrashRow};
 
 /// The status line when `m` is pressed with marked rows from more than one account.
@@ -61,6 +62,10 @@ const RECONNECT: f64 = 5.0;
 /// How long a frame waits for a list reload after a sync event: a quarter of a 120 Hz frame. A small mailbox's rows come
 /// in time and show in the same frame; a large one's show when they come.
 pub(crate) const LIST_BUDGET: Duration = Duration::from_millis(2);
+
+/// How long a frame waits for the opened message to be read: half a 60 Hz frame. Most mail comes in time and opens in
+/// the same frame; a large message shows "Loading…" until it comes, rather than freezing the window.
+pub(crate) const BODY_BUDGET: Duration = Duration::from_millis(8);
 
 /// A daemon client, its event subscription, and each account's state and activity when it connected.
 pub(crate) type Connection = (Client, Receiver<Event>, Vec<AccountStatus>);
@@ -134,11 +139,36 @@ pub(crate) struct BodyState {
     pub text_note: Option<&'static str>,
     /// The body text cleaned once on load, since the panel draws it every frame.
     pub text: Option<String>,
+    /// The read of this message running on the reader thread; the message shows as it was until it answers.
+    pub reading: Option<u64>,
     /// The links in `text` that open, found once with it.
     pub links: Vec<String>,
 }
 
 impl BodyState {
+    /// The message chosen, empty until `read_body` reads it.
+    fn chosen(account: usize, key: RowKey, now: f64, armed: bool) -> BodyState {
+        BodyState {
+            account,
+            brand: None,
+            armed,
+            attachments: Vec::new(),
+            text_note: None,
+            html: None,
+            html_view: None,
+            key,
+            message: None,
+            read_sent: false,
+            reading: None,
+            saved: None,
+            show_text: false,
+            shown_at: now,
+            source: None,
+            links: Vec::new(),
+            text: None,
+        }
+    }
+
     /// True when the panel shows the HTML view rather than the text.
     pub fn shows_html(&self) -> bool {
         self.html.is_some() && !self.show_text && self.text_note.is_none()
@@ -474,6 +504,14 @@ pub struct App {
     pub(crate) after_body: Option<UiAction>,
     /// The HTML render thread, started for the first HTML message.
     pub(crate) renderer: Option<Renderer>,
+    /// The thread that reads the opened message from its store, started for the first one.
+    pub(crate) reader: Option<Reader>,
+    /// How the reader reads a message; tests swap it to hold a read back.
+    pub(crate) read_body: ReadFn,
+    /// How long `tick` waits for the opened message to be read; tests wait as long as it takes.
+    pub(crate) body_budget: Duration,
+    /// Numbers the reads of the opened message, so an answer that a later read overtook is dropped.
+    pub(crate) body_generation: u64,
     pub(crate) reconnect: fn(&Paths, Waker) -> anyhow::Result<Connection>,
     /// The result of the reconnect attempt in flight; at most one runs.
     pub(crate) reconnecting: Option<Receiver<anyhow::Result<Connection>>>,
@@ -599,6 +637,10 @@ impl App {
             after_body: None,
             reconnect: connect,
             renderer: None,
+            reader: None,
+            read_body: reader::read,
+            body_budget: BODY_BUDGET,
+            body_generation: 0,
             reconnecting: None,
             requested: HashSet::new(),
             rules,
@@ -639,6 +681,7 @@ impl App {
         self.receive_saved_account();
         self.receive(now);
         self.receive_html();
+        self.receive_read(now);
         self.receive_remote();
         self.logos.receive();
         self.keep_daemon(now);
@@ -1688,58 +1731,98 @@ impl App {
             return;
         }
         let current = self.list.rows.get(self.list.cursor).map(Row::id);
-        self.body = current.map(|(account, key)| self.load_body(account, key, now, armed));
+        self.body = current.map(|(account, key)| BodyState::chosen(account, key, now, armed));
+        self.read_body(now);
         self.prefetch_neighbours();
     }
 
-    /// The message, its attachments and its HTML as stored now.
-    fn has_raw(&self, account: usize, key: &RowKey) -> bool {
-        self.accounts[account]
-            .store
-            .as_ref()
-            .is_ok_and(|store| store.has_raw(&key.0, key.1).unwrap_or(false))
-    }
-
-    fn read_stored(&self, account: usize, key: &RowKey) -> Stored {
-        let Ok(store) = &self.accounts[account].store else {
-            return (None, Vec::new(), None);
-        };
-        let raw = store.raw(&key.0, key.1).ok().flatten();
-        let (attachments, html) = raw
-            .as_deref()
-            .map(message::attachments_and_html)
-            .unwrap_or_default();
-        (
-            store.message(&key.0, key.1).ok().flatten(),
-            attachments,
-            html,
-        )
-    }
-
-    /// Refreshes the shown message after its body arrived; the read delay restarts when the text first appears.
+    /// Reads the shown message again after its body arrived; it shows as it was until the read answers.
     fn reload_body(&mut self, account: usize, key: RowKey, now: f64) {
         if self
             .body
             .as_ref()
-            .is_none_or(|b| b.account != account || b.key != key)
+            .is_some_and(|b| b.account == account && b.key == key)
         {
+            self.read_body(now);
+        }
+    }
+
+    /// Starts reading the shown message on the reader thread, and shows it when the read answers within `body_budget`.
+    fn read_body(&mut self, now: f64) {
+        let Some(body) = &mut self.body else {
+            return;
+        };
+        let account = &self.accounts[body.account];
+        if account.store.is_err() {
+            body.reading = None;
             return;
         }
-        let (message, attachments, html) = self.read_stored(account, &key);
-        if let Some(body) = &mut self.body {
-            let text = body_text(message.as_ref());
-            if body.text.is_none() && text.is_some() {
-                body.shown_at = now;
+        self.body_generation += 1;
+        let generation = self.body_generation;
+        body.reading = Some(generation);
+        let request = reader::Request {
+            generation,
+            account: account.name.clone(),
+            key: body.key.clone(),
+        };
+        let reader = self.reader.get_or_insert_with(|| {
+            Reader::start(self.paths.clone(), self.read_body, self.wake.clone())
+        });
+        reader.send(request);
+        if let Some(read) = reader.wait(generation, self.body_budget) {
+            self.show_read(read, now);
+        }
+    }
+
+    /// Shows the read the shown message waits for; answers it no longer waits for are dropped.
+    fn receive_read(&mut self, now: f64) {
+        let Some(reader) = &self.reader else {
+            return;
+        };
+        for (generation, read) in reader.replies() {
+            if self.body.as_ref().and_then(|b| b.reading) == Some(generation) {
+                self.show_read(read, now);
             }
-            body.links = body::links(text.as_deref());
-            body.text = text;
-            body.message = message;
-            body.attachments = attachments;
-            if body.html != html {
-                body.text_note = too_large(html.as_ref());
-                body.html = html;
-                body.html_view = None;
+        }
+    }
+
+    /// Fills the shown message from what the store holds; asks the sync thread for a missing body once. The read delay
+    /// restarts when the text first appears.
+    fn show_read(&mut self, read: Read, now: f64) {
+        let Some(body) = &mut self.body else {
+            return;
+        };
+        body.reading = None;
+        let Read {
+            message,
+            attachments,
+            html,
+            has_raw,
+        } = read;
+        let text = body_text(message.as_ref());
+        if body.text.is_none() && text.is_some() {
+            body.shown_at = now;
+        }
+        if body.brand.is_none() {
+            body.brand = message.as_ref().and_then(|m| self.logos.brand(&m.headers));
+            if let Some(brand) = &body.brand {
+                self.logos.want(brand, &self.wake);
             }
+        }
+        body.links = body::links(text.as_deref());
+        body.text = text;
+        body.attachments = attachments;
+        if body.html != html {
+            body.text_note = too_large(html.as_ref());
+            body.html = html;
+            body.html_view = None;
+        }
+        // An indexed message has its text but not its raw bytes, which the HTML view and the attachments need.
+        let missing = message.is_some() && !has_raw;
+        body.message = message;
+        let (account, key) = (body.account, body.key.clone());
+        if missing {
+            self.request_body(account, &key);
         }
     }
 
@@ -1767,38 +1850,6 @@ impl App {
             .collect();
         for (account, key) in missing {
             self.request_body(account, &key);
-        }
-    }
-
-    /// The stored message and its attachments; asks the sync thread for a missing body once per message.
-    fn load_body(&mut self, account: usize, key: RowKey, now: f64, armed: bool) -> BodyState {
-        let (stored, attachments, html) = self.read_stored(account, &key);
-        // An indexed message has its text but not its raw bytes, which the HTML view and the attachments need.
-        if stored.is_some() && !self.has_raw(account, &key) {
-            self.request_body(account, &key);
-        }
-        let text = body_text(stored.as_ref());
-        let brand = stored.as_ref().and_then(|m| self.logos.brand(&m.headers));
-        if let Some(brand) = &brand {
-            self.logos.want(brand, &self.wake);
-        }
-        BodyState {
-            account,
-            brand,
-            armed,
-            attachments,
-            text_note: too_large(html.as_ref()),
-            html,
-            html_view: None,
-            key,
-            message: stored,
-            read_sent: false,
-            saved: None,
-            show_text: false,
-            shown_at: now,
-            source: None,
-            links: body::links(text.as_deref()),
-            text,
         }
     }
 
@@ -2823,9 +2874,6 @@ impl App {
         entries
     }
 }
-
-/// A stored message, its attachments and its HTML.
-type Stored = (Option<Message>, Vec<Attachment>, Option<HtmlBody>);
 
 /// The note for HTML too large to lay out, which then shows as text.
 fn too_large(html: Option<&HtmlBody>) -> Option<&'static str> {
