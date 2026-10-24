@@ -1020,8 +1020,8 @@ async fn sync_reports_a_failed_connect_as_the_accounts_error() {
 #[tokio::test]
 async fn archive_goes_through_the_daemon_attributed_to_the_client() {
     let fx = fixture_with_daemon(&["work"], connector_with_mail());
-    let client = connect(&fx, "mail:modify", &[]).await;
-    call(&client, "sync", json!({})).await;
+    let client = connect(&fx, "read, mail:modify", &[]).await;
+    rows(&call(&client, "sync", json!({})).await);
     let report = call(&client, "archive", json!({ "uids": [1] })).await;
     let report = report.structured_content.unwrap();
     assert_eq!(report["done"], 1, "{report}");
@@ -1084,8 +1084,8 @@ async fn a_server_search_needs_the_bodies_scope() {
 #[tokio::test]
 async fn junk_with_not_goes_through_the_daemon() {
     let fx = fixture_with_daemon(&["work"], connector_with_mail());
-    let client = connect(&fx, "mail:modify", &[]).await;
-    call(&client, "sync", json!({})).await;
+    let client = connect(&fx, "read, mail:modify", &[]).await;
+    rows(&call(&client, "sync", json!({})).await);
     let report = call(&client, "junk", json!({ "uids": [1], "not": true })).await;
     let report = report.structured_content.unwrap();
     assert_eq!(report["done"], 1, "{report}");
@@ -1181,8 +1181,8 @@ async fn rules_apply_existing_goes_through_the_daemon() {
         "[[rules]]\nname = \"greet\"\nmatch.subject = { contains = \"Hi\" }\nactions = [\"flag\"]\n",
     )
     .unwrap();
-    let client = connect(&fx, "mail:modify", &[]).await;
-    call(&client, "sync", json!({})).await;
+    let client = connect(&fx, "read, mail:modify", &[]).await;
+    rows(&call(&client, "sync", json!({})).await);
     let report = rows(&call(&client, "rules_apply_existing", json!({ "name": "greet" })).await);
     assert_eq!(report.len(), 1, "{report:?}");
     assert_eq!(report[0]["account"], "work");
