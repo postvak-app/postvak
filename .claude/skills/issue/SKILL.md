@@ -15,8 +15,19 @@ The user wants to be asked when something is unclear, and wants pushback when th
 ## 1. Pick the issue
 
 - With an argument: read that issue, its comments, labels, linked PRs and sub-issues (`issue_read`).
-- Without one: list open issues (`list_issues`, newest first, a page of 10), skip ones that have an open PR or an assignee other than the user, and propose one or two with a one-line reason. Wait for the user to choose.
+- Without one: list open issues (`list_issues`, newest first, a page of 10), skip ones that have an open PR, the `in progress` label or an assignee other than the user, and propose one or two with a one-line reason. Wait for the user to choose.
 - If the issue is a pull request, or is closed, say so and stop.
+- If it carries `in progress`, another session has claimed it. Read the claim comment and check its branch (`git ls-remote origin <branch>`, then the last commit date). Say who claimed it and when, and ask the user whether to leave it or take it over; never take it over silently.
+
+### Claim it
+
+Every session acts as the user's GitHub account, so an assignee can't tell sessions apart; the label and a comment carry the claim.
+
+1. Add the `in progress` label. With `issue_write` (method `update`) the `labels` list replaces the issue's labels, so send its current labels plus `in progress`, never `in progress` alone. GitHub creates the label the first time it's applied; with `gh`, `gh issue edit <n> --add-label "in progress"`.
+2. Comment: `Claimed by a Claude Code session on branch <branch>.` (plus the attribution footer).
+3. Re-read the issue's comments. If another session's claim comment is older than yours (the two raced), that session has it: comment that you're backing off, leave the label on (it's theirs), and tell the user.
+
+Release the claim whenever this session stops working on the issue without a PR that closes it: the user drops it, the issue is closed in step 2, or it's split into other issues. Remove the label (current labels minus `in progress`) and comment that the claim is released. Once the PR merges and closes the issue, remove the label too, so closed issues don't show up as in progress.
 
 ## 2. Check what main already did
 
@@ -99,4 +110,4 @@ Once the PR is open and the local checks passed, enable auto-merge with **squash
 - Never merge a red, conflicted or changes-requested PR, and never bypass branch protection.
 - If the user says "don't merge" at any point, disable auto-merge and stop there.
 
-After the merge: confirm the issue closed (via `Closes #…`), close it by hand with a comment if it didn't, unsubscribe from the PR, and give the user a short summary: the issue, the PR, what changed, what was compiled vs run where, and anything left over worth a new issue.
+After the merge: confirm the issue closed (via `Closes #…`), close it by hand with a comment if it didn't, remove the `in progress` label, unsubscribe from the PR, and give the user a short summary: the issue, the PR, what changed, what was compiled vs run where, and anything left over worth a new issue.
