@@ -47,6 +47,17 @@ impl Paths {
         self.config_dir.join("rules.toml")
     }
 
+    /// The user's Downloads folder, or `downloads` under `POSTVAK_HOME`; None when the platform names none. Never the
+    /// home folder in its place: what an agent saves there could run at login.
+    pub fn downloads_dir(&self) -> Option<PathBuf> {
+        match &self.home {
+            Some(root) => Some(root.join("downloads")),
+            None => directories::UserDirs::new()?
+                .download_dir()
+                .map(Path::to_path_buf),
+        }
+    }
+
     pub fn daemon_socket(&self) -> PathBuf {
         self.state_dir.join("daemon.sock")
     }

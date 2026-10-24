@@ -1,6 +1,6 @@
 //! The only MCP code that touches the store, rules.toml or the daemon; the daemon owns every IMAP connection.
 use anyhow::{Context as _, Result, bail};
-use std::sync::{PoisonError, RwLock};
+use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
@@ -23,10 +23,12 @@ use postvak_core::trash::Trash;
 const MAX_LIMIT: u32 = 500;
 
 pub struct Backend {
-    /// Replaced by `account_add`, so a server outlives the config it started with.
-    config: RwLock<Config>,
+    config: Config,
     /// The `--account` filter; empty shows every account.
     only: Vec<String>,
+    /// The one folder `attachment_save` writes into, or below; None when there is no Downloads folder and no
+    /// `--save-dir`.
+    save_dir: Option<PathBuf>,
     daemon: LazyClient,
     paths: Paths,
 }
@@ -57,18 +59,24 @@ impl Backend {
             bail!("no account named '{name}'");
         }
         Ok(Backend {
-            config: RwLock::new(config.clone()),
+            config: config.clone(),
             only: only.to_vec(),
+            save_dir: paths.downloads_dir(),
             daemon,
             paths: paths.clone(),
         })
     }
 
+    /// Writes saved attachments into `dir` instead of the Downloads folder.
+    pub fn saving_into(self, dir: Option<PathBuf>) -> Backend {
+        Backend {
+            save_dir: dir,
+            ..self
+        }
+    }
+
     fn config(&self) -> Config {
-        self.config
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        self.config.clone()
     }
 
     /// Every configured account's name, visible or not: an approved rule's clock restarts in all of them.
@@ -93,7 +101,7 @@ impl Backend {
     fn select(&self, name: Option<&str>) -> Result<Vec<AccountConfig>> {
         let visible = self.visible();
         if visible.is_empty() {
-            bail!("no accounts configured; call account_add or run `postvak account add`");
+            bail!("no accounts configured; ask the human to run `postvak account add`");
         }
         match name {
             Some(name) => Ok(vec![
@@ -249,27 +257,56 @@ impl Backend {
             .collect()
     }
 
-    /// Saves attachment `n` into `dir`, which must be absolute: the server's working directory is the host's, not
-    /// the agent's.
+    /// Saves attachment `n` into the save folder, or into `dir` below it. The sender names the file and can steer the
+    /// agent, so a `dir` that resolves elsewhere, through `..` or a symlink, is refused: outside it a file could run at
+    /// login. `dir` must be absolute, as the server's working directory is the host's, not the agent's.
     pub fn attachment_save(
         &self,
         account: Option<&str>,
         folder: &str,
         uid: u32,
         n: usize,
-        dir: &std::path::Path,
+        dir: Option<&Path>,
     ) -> Result<Value> {
+        let dir = self.save_target(dir)?;
+        let (acc, store, msg) = self.message(account, folder, uid)?;
+        let raw = self.daemon.raw_message(&acc.name, &store, &msg)?;
+        let path = message::save_attachment(&raw, n, &dir)
+            .with_context(|| format!("saving attachment {n}"))?;
+        Ok(json!({ "account": acc.name, "folder": folder, "uid": uid, "n": n, "path": path }))
+    }
+
+    /// The existing directory `attachment_save` writes into, with symlinks resolved.
+    fn save_target(&self, dir: Option<&Path>) -> Result<PathBuf> {
+        let root = self
+            .save_dir
+            .as_deref()
+            .context("no folder to save into; the human can start the server with --save-dir")?;
+        let root = root
+            .canonicalize()
+            .with_context(|| format!("no save folder {}", root.display()))?;
+        let home = directories::BaseDirs::new().and_then(|d| d.home_dir().canonicalize().ok());
+        check_save_dir(&root, home.as_deref())?;
+        let Some(dir) = dir else {
+            return Ok(root);
+        };
         if !dir.is_absolute() {
             bail!("dir must be an absolute path");
         }
-        if !dir.is_dir() {
+        let resolved = dir
+            .canonicalize()
+            .with_context(|| format!("no directory {}", dir.display()))?;
+        if !resolved.starts_with(&root) {
+            bail!(
+                "{} is outside the save folder {}; leave dir out to save there",
+                dir.display(),
+                root.display()
+            );
+        }
+        if !resolved.is_dir() {
             bail!("no directory {}", dir.display());
         }
-        let (acc, store, msg) = self.message(account, folder, uid)?;
-        let raw = self.daemon.raw_message(&acc.name, &store, &msg)?;
-        let path = message::save_attachment(&raw, n, dir)
-            .with_context(|| format!("saving attachment {n}"))?;
-        Ok(json!({ "account": acc.name, "folder": folder, "uid": uid, "n": n, "path": path }))
+        Ok(resolved)
     }
 
     pub fn log(&self, account: Option<&str>, limit: u32) -> Result<Vec<Value>> {
@@ -371,45 +408,6 @@ impl Backend {
         }
         let folder = self.daemon.restore(&acc.name, path)?;
         Ok(json!({ "account": acc.name, "restored_to": folder }))
-    }
-
-    /// Saves the account and reports its first sync; refused while `--account` hides accounts, since the new one
-    /// would be invisible to this server.
-    pub fn account_add(&self, account: AccountConfig) -> Result<Value> {
-        if self.narrowed() {
-            bail!("this server is limited with --account and cannot add accounts");
-        }
-        let name = account.name.clone();
-        // Before the lock, as a login may take the 30 s connect timeout; a refused login saves nothing.
-        let current = Config::load(&self.paths.config_file())?;
-        if current.accounts.iter().any(|a| a.name == name) {
-            bail!("account '{name}' exists already; an agent can only add new accounts");
-        }
-        postvak_core::account::test_login(&*self.daemon.client()?, &current, &account, None)
-            .map_err(|e| e.context("the login failed, so nothing was saved"))?;
-        {
-            // Start from the file, not the start-up snapshot, or edits made since would be lost on save.
-            let mut held = self.config.write().unwrap_or_else(PoisonError::into_inner);
-            let mut config = Config::load(&self.paths.config_file())?;
-            // Replacing would let an agent point the user's account at a server it chose.
-            if config.accounts.iter().any(|a| a.name == name) {
-                bail!("account '{name}' exists already; an agent can only add new accounts");
-            }
-            postvak_core::account::add(&mut config, &self.paths, account.clone(), None)?;
-            *held = config;
-        }
-        postvak_core::account::await_started(
-            &*self.daemon.client()?,
-            &name,
-            postvak_core::account::START_TIMEOUT,
-        )
-        .map_err(|e| {
-            e.context(format!(
-                "account '{name}' was saved to config.toml and the daemon will start it"
-            ))
-        })?;
-        let sync = self.sync(Some(&name))?.swap_remove(0);
-        Ok(json!({ "account": output::account(&account), "sync": sync }))
     }
 
     /// Asks the daemon for one sync with rules per visible account; a refusal is that account's `error`.
@@ -648,4 +646,55 @@ fn message_row(account: &str, m: &Message) -> Result<Value> {
         object.remove("body_text");
     }
     Ok(row)
+}
+
+/// A save folder that holds home, or lies in a hidden folder or `Library` in it, would let the agent reach the places
+/// that run files at login (`~/.config/autostart`, `~/Library/LaunchAgents`) or that hold keys (`~/.ssh`).
+fn check_save_dir(root: &Path, home: Option<&Path>) -> Result<()> {
+    let Some(home) = home else {
+        return Ok(());
+    };
+    let hidden = root
+        .strip_prefix(home)
+        .ok()
+        .and_then(|rest| rest.components().next())
+        .map(|first| first.as_os_str().to_string_lossy().into_owned());
+    let unsafe_root = home.starts_with(root)
+        || hidden.is_some_and(|first| first.starts_with('.') || first == "Library");
+    if unsafe_root {
+        bail!(
+            "the save folder {} holds or sits among the files that run at login; choose a folder such as ~/Downloads with --save-dir",
+            root.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_save_dir;
+    use std::path::Path;
+
+    #[test]
+    fn a_save_folder_may_not_hold_home_or_its_hidden_folders() {
+        let home = Some(Path::new("/home/me"));
+        for fine in ["/home/me/Downloads", "/home/me/Mail/saved", "/srv/mail"] {
+            assert!(check_save_dir(Path::new(fine), home).is_ok(), "{fine}");
+        }
+        for refused in [
+            "/home/me",
+            "/home",
+            "/",
+            "/home/me/.config",
+            "/home/me/.config/autostart",
+            "/home/me/.ssh",
+            "/home/me/Library/LaunchAgents",
+        ] {
+            assert!(
+                check_save_dir(Path::new(refused), home).is_err(),
+                "{refused}"
+            );
+        }
+        assert!(check_save_dir(Path::new("/home/me"), None).is_ok());
+    }
 }

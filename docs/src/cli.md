@@ -726,10 +726,11 @@ Serve Postvak to an agent host over MCP on stdio; hosts start this, see `postvak
 
 ###### **Options:**
 
-* `--scopes <SCOPES>` — Comma-separated: read, read:bodies, rules:propose, rules:write, files:write, mail:modify, accounts:write
+* `--scopes <SCOPES>` — Comma-separated: read, read:bodies, rules:propose, rules:write, files:write, mail:modify
 
   Default value: `read,rules:propose`
 * `--account <ACCOUNT>` — Only this account; repeatable; default every account
+* `--save-dir <SAVE_DIR>` — The one folder files:write saves attachments into, or below; default your Downloads folder
 
 
 
@@ -748,10 +749,11 @@ Register `postvak mcp` with an agent host; re-run it to change the scopes
 
 ###### **Options:**
 
-* `--scopes <SCOPES>` — Comma-separated: read, read:bodies, rules:propose, rules:write, files:write, mail:modify, accounts:write
+* `--scopes <SCOPES>` — Comma-separated: read, read:bodies, rules:propose, rules:write, files:write, mail:modify
 
   Default value: `read,rules:propose`
 * `--account <ACCOUNT>` — Only this account; repeatable; default every account
+* `--save-dir <SAVE_DIR>` — The one folder files:write saves attachments into, or below; default your Downloads folder
 * `--remove` — Take the entry out again
 * `--dry-run` — Print the change and write nothing
 
