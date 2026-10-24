@@ -428,7 +428,7 @@ fn accept_until_done(
     let mut next_client: ClientId = 0;
     while !done(shared, idle_exit) {
         apply_file_changes(shared, true);
-        match accepted.recv_timeout(POLL) {
+        match wait_for_client(accepted) {
             Ok(Ok(stream)) => {
                 next_client += 1;
                 match open_connection(shared, stream, next_client) {
@@ -446,6 +446,42 @@ fn accept_until_done(
         connections.retain(|connection| !connection.reader.is_finished());
     }
     connections
+}
+
+/// The next accepted client, waiting up to `POLL`. On macOS the daemon's main thread runs its run loop meanwhile, in
+/// short slices so a client still connects at once: a click on a notification arrives there (see `notify::mac`).
+fn wait_for_client(
+    accepted: &Receiver<io::Result<UnixStream>>,
+) -> Result<io::Result<UnixStream>, RecvTimeoutError> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_core_foundation::{CFRunLoop, CFRunLoopRunResult, CFString};
+        const SLICE: Duration = Duration::from_millis(20);
+        // The name behind kCFRunLoopDefaultMode; modes match by name.
+        let mode = CFString::from_static_str("kCFRunLoopDefaultMode");
+        let until = Instant::now() + POLL;
+        loop {
+            match accepted.try_recv() {
+                Ok(client) => return Ok(client),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err(RecvTimeoutError::Disconnected);
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(RecvTimeoutError::Timeout);
+            }
+            // A run loop with nothing to wait on returns at once; then only clients are left to wait for.
+            if CFRunLoop::run_in_mode(Some(&mode), left.min(SLICE).as_secs_f64(), true)
+                == CFRunLoopRunResult::Finished
+            {
+                return accepted.recv_timeout(left);
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    accepted.recv_timeout(POLL)
 }
 
 fn done(shared: &Shared, idle_exit: Option<Duration>) -> bool {

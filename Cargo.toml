@@ -47,8 +47,12 @@ i-slint-common = "=1.18.1"                           # Slint's own fontique load
 keyring-core = "1"                                   # OS keyring API
 log = "0.4"                                          # logging facade
 mail-parser = "0.11"                                 # RFC 5322 header and body parsing
-notify-rust = "4"                                    # desktop notifications on macOS; Linux speaks D-Bus through zbus
+mac-notification-sys = "0.6"                         # desktop notifications on macOS, posted as Postvak once the app is installed, and their clicks; Linux speaks D-Bus through zbus
 image = { version = "0.25", default-features = false }  # HTML mail: read an image's size from its header to refuse decompression bombs; the decoders Blitz enables; already in the tree through Blitz
+objc2 = { version = "0.6", default-features = false, features = ["std"] }  # MainThreadMarker for the Dock badge; already in the tree through Slint's menus (muda)
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSDockTile", "NSResponder"] }  # the unread count on the Dock icon; already in the tree through muda
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFDate", "CFRunLoop", "CFString"] }  # the daemon runs its main run loop on macOS, where notification clicks arrive; already in the tree
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }  # the Dock badge's label; already in the tree through muda
 percent-encoding = "2"                               # HTML mail: decode cid: URLs; already in the tree through url
 png = "0.18"                                         # decodes the icons and reads and writes the GUI snapshots
 proptest = { version = "1", default-features = false, features = ["std"] }  # postvak-core's tests/fuzz.rs (hostile input never panics the parsers) and tests/sync_model.rs (random sync event sequences, shrunk)
