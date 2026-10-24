@@ -231,7 +231,7 @@ pub(crate) fn results(app: &App) -> String {
         "with what the server found".to_string()
     } else if app.list.unindexed > 0 {
         format!(
-            "Enter also searches the server, for the {} messages not indexed yet",
+            "Enter also searches the server for the {} not indexed yet",
             super::numbers::count(app.list.unindexed)
         )
     } else {

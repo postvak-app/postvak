@@ -272,10 +272,11 @@ export component ListPane inherits Rectangle {
                     accepted => { root.search-accepted(); }
                     changed has-focus => { root.search-focus(self.has-focus); }
                 }
+                // One line: a wrapped second line would sit under the first row, as the list's height does not follow it.
                 Text {
                     text: root.results;
                     color: Theme.pane.muted;
-                    wrap: word-wrap;
+                    overflow: elide;
                 }
             }
 
