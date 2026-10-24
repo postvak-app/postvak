@@ -396,15 +396,33 @@ fn accept_until_done(
                     Err(e) => log::warn!("could not serve a client: {e}"),
                 }
             }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => std::thread::sleep(POLL),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => wait_for_clients(),
             Err(e) => {
                 log::warn!("accept failed: {e}");
-                std::thread::sleep(POLL);
+                wait_for_clients();
             }
         }
         connections.retain(|connection| !connection.reader.is_finished());
     }
     connections
+}
+
+/// Waits `POLL` between accepts. On macOS the daemon's main thread runs its run loop meanwhile: a click on a
+/// notification arrives there (see `notify::mac`).
+fn wait_for_clients() {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_core_foundation::{CFRunLoop, CFRunLoopRunResult, CFString};
+        // The name behind kCFRunLoopDefaultMode; modes match by name.
+        let mode = CFString::from_static_str("kCFRunLoopDefaultMode");
+        // A run loop with nothing to wait on returns at once.
+        if CFRunLoop::run_in_mode(Some(&mode), POLL.as_secs_f64(), false)
+            != CFRunLoopRunResult::Finished
+        {
+            return;
+        }
+    }
+    std::thread::sleep(POLL);
 }
 
 fn done(shared: &Shared, idle_exit: Option<Duration>) -> bool {

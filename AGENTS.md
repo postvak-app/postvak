@@ -7,7 +7,7 @@ Four crates in one workspace. `crates/postvak-core` holds every module below exc
 
 - `account` adding an account (validate, test the login through the daemon, store the keyring secret, save config.toml) and waiting for the daemon to start it; the only code that adds one
 - `actions` direct actions on chosen messages (mark, move, archive, delete); same `apply` as rules
-- `badge` the unread count on the Linux task bar or dock entry (the Unity LauncherEntry signal over D-Bus); the GUI keeps it current while open
+- `badge` the unread count on the Linux task bar or dock entry (the Unity LauncherEntry signal over D-Bus) or the macOS Dock icon; the GUI keeps it current while open
 - `config` accounts and identity (address + aliases)
 - `credentials` keyring or password command; `Secret` has no Debug
 - `daemon` the background process that owns sync and IMAP: `mod.rs` the server (socket, lock, log, idle exit), `wire` the JSON-lines protocol, `client` what front ends use (CLI, GUI, MCP; auto-starts the daemon), `service` launchd and systemd
@@ -18,7 +18,7 @@ Four crates in one workspace. `crates/postvak-core` holds every module below exc
 - `main` + `cli/` clap only; no logic
 - `mcp` the MCP server (`postvak-mcp`, feature `mcp`, on by default): `tools` defines the tools and their scopes, `backend` is the only code touching store, rules or the daemon, `install` registers hosts
 - `message` header parsing, thread id, body text, the HTML part and its `cid:` images
-- `notify` desktop notifications for new mail; on Linux over D-Bus (`notify/dbus.rs`), where a click opens the message with `postvak gui --open`
+- `notify` desktop notifications for new mail, where a click opens the message with `postvak gui --open`; on Linux over D-Bus (`notify/dbus.rs`), on macOS through `mac-notification-sys` (`notify/mac.rs`), whose clicks arrive on the run loop the daemon's main thread runs between accepts
 - `output` JSON rows shared by `--json` and MCP results
 - `paths` platform dirs, atomic writes, `stable_exe` (the binary path that survives `brew upgrade` and AppImage mounts), whether this is the macOS app opened from Finder (`launched_as_app`)
 - `rules` parse + validate + schema (`mod.rs`), pure `evaluate` (`engine.rs`), side effects (`apply.rs`), the only writer of rules.toml (`edit.rs`)
