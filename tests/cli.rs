@@ -701,6 +701,53 @@ fn search_marks_close_matches_and_exact_turns_them_off() {
 }
 
 #[test]
+fn search_operators_narrow_by_column_flag_date_and_account() {
+    let mut read = message(42, "billing@example.com", "Your invoice");
+    read.flags = "\\Seen".into();
+    let (home, _store) = seeded_home(&[read, message(43, "friend@example.com", "Lunch invoice")]);
+    let uids = |args: &[&str]| -> Vec<String> {
+        let out = postvak(home.path(), args);
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|line| line.split("INBOX/").nth(1))
+            .map(|rest| {
+                rest.split_whitespace()
+                    .next()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect()
+    };
+    assert_eq!(uids(&["search", "invoice from:billing"]), ["42"]);
+    assert_eq!(uids(&["search", "is:read"]), ["42"]);
+    assert_eq!(uids(&["search", "invoice is:unread"]), ["43"]);
+    assert_eq!(uids(&["search", "before:1y"]), ["43", "42"], "newest first");
+    assert!(uids(&["search", "invoice after:1y"]).is_empty());
+    assert_eq!(uids(&["search", "invoice account:work"]), ["43", "42"]);
+    assert_eq!(
+        uids(&["search", "invoice account:work", "--account", "work"]),
+        ["43", "42"]
+    );
+    let out = postvak(
+        home.path(),
+        &["search", "invoice account:home", "--account", "work"],
+    );
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("names account 'home'"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let help = postvak(home.path(), &["search", "--help"]);
+    assert!(String::from_utf8_lossy(&help.stdout).contains("after:7d"));
+}
+
+#[test]
 fn search_works_offline_over_indexed_bodies() {
     let mut stored = message(42, "billing@example.com", "Your invoice");
     stored.body_text = Some("the total is due".into());

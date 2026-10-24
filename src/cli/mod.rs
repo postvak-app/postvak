@@ -123,11 +123,13 @@ enum Command {
         #[arg(long)]
         attachments: bool,
     },
-    #[command(about = postvak_core::help::SEARCH)]
+    #[command(about = postvak_core::help::SEARCH, after_help = postvak_core::help::SEARCH_SYNTAX)]
     Search {
         query: String,
+        /// Only this account; the same as account: in the query
         #[arg(long)]
         account: Option<String>,
+        /// Only this folder; the same as in: in the query
         #[arg(long)]
         folder: Option<String>,
         /// Ask the server too, which searches bodies not downloaded yet; each folder costs a round trip
@@ -496,8 +498,9 @@ pub fn run() -> Result<()> {
             json,
         } => {
             let daemon = LazyClient::new(&paths);
-            let parsed = postvak_core::search::parse(&query);
-            for acc in select_accounts(&config, account.as_deref())? {
+            let parsed = postvak_core::search::parse(&query, postvak_core::time::now());
+            let account = postvak_core::search::named_account(account.as_deref(), &parsed)?;
+            for acc in select_accounts(&config, account)? {
                 let store = Store::open_account(&paths, &acc.name)?;
                 let mut found = store.search(
                     &parsed,
@@ -505,6 +508,7 @@ pub fn run() -> Result<()> {
                     folder.as_deref(),
                     limit,
                     !exact,
+                    Some(&acc.identity()?),
                 )?;
                 if server {
                     match daemon.search_server(&acc.name, folder.as_deref(), &query) {

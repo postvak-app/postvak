@@ -294,11 +294,12 @@ fn clean_pass_forgets_folders_the_server_no_longer_lists() {
     assert!(
         store
             .search(
-                &crate::search::parse("hello"),
+                &crate::search::parse("hello", 0),
                 crate::search::Scope::All,
                 None,
                 10,
-                false
+                false,
+                None,
             )
             .unwrap()
             .iter()

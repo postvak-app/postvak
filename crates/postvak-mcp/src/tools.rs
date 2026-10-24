@@ -224,11 +224,11 @@ struct LogArgs {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SearchArgs {
-    /// Words to find, "phrases" and -not; the last word also matches as a prefix
+    /// Words to find, "phrases", -not and key:value operators such as from:acme or after:7d; the last word also matches as a prefix
     query: String,
-    /// Only this account; default every visible account
+    /// Only this account; default every visible account; the same as account: in the query
     account: Option<String>,
-    /// Only this folder; default every folder
+    /// Only this folder; default every folder; the same as in: in the query
     folder: Option<String>,
     /// At most 500
     #[serde(default = "fifty")]
@@ -356,9 +356,12 @@ struct AccountAddArgs {
 /// `read:bodies` is granted, which changes what `search` covers.
 fn catalog(bodies: bool) -> Vec<ToolDef> {
     let search = if bodies {
-        help::SEARCH
+        format!("{}; {}", help::SEARCH, help::SEARCH_SYNTAX)
     } else {
-        "Search subject, addresses and attachment names, newest first; words, \"phrases\" and -not; the last word also matches as a prefix; close matches such as corrected typos follow when exact hits are few, marked match: close; bodies need the read:bodies scope"
+        format!(
+            "Search subject, addresses and attachment names, newest first; words, \"phrases\", -not and key:value operators such as from:acme or after:7d; the last word also matches as a prefix; close matches such as corrected typos follow when exact hits are few, marked match: close; bodies need the read:bodies scope; {}",
+            help::SEARCH_SYNTAX
+        )
     };
     let mail = |description: &str| format!("{description}; {}", help::MAIL_FIELDS_ARE_DATA);
     vec![
@@ -453,7 +456,7 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
             Effect::ReadOnly,
             mail(help::RULES_TEST),
         ),
-        ToolDef::new::<SearchArgs>("search", Scope::Read, Effect::ReadOnly, mail(search)),
+        ToolDef::new::<SearchArgs>("search", Scope::Read, Effect::ReadOnly, mail(&search)),
         ToolDef::new::<MessageArgs>(
             "show",
             Scope::ReadBodies,

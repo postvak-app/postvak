@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::update;
 use postvak_core::bimi::Brand;
-use postvak_core::config::{self, AccountConfig, Config, Theme};
+use postvak_core::config::{self, AccountConfig, Config, Identity, Theme};
 use postvak_core::credentials::Secret;
 use postvak_core::daemon::Client;
 use postvak_core::daemon::client::NewerDaemon;
@@ -162,6 +162,8 @@ pub(crate) struct Account {
     pub settling: Vec<(RowKey, Optimistic, u64)>,
     pub queued: usize,
     pub store: Result<Store, String>,
+    /// Who the account is, for `from:me` in a search; None when its config could not say.
+    pub identity: Option<Identity>,
 }
 
 impl Account {
@@ -499,7 +501,12 @@ pub struct App {
 }
 
 /// An account's window state over its store; `open_account` creates the store of an account just added.
-fn account_state(paths: &Paths, name: String, activity: Option<Activity>) -> Account {
+fn account_state(
+    paths: &Paths,
+    name: String,
+    activity: Option<Activity>,
+    identity: Option<Identity>,
+) -> Account {
     let store =
         Store::open_account(paths, &name).map_err(|e| format!("could not open the store: {e}"));
     let mut account = Account {
@@ -511,6 +518,7 @@ fn account_state(paths: &Paths, name: String, activity: Option<Activity>) -> Acc
         settling: Vec::new(),
         queued: 0,
         store,
+        identity,
     };
     account.reload_folders();
     account
@@ -531,7 +539,10 @@ impl App {
             .collect();
         let accounts = states
             .into_iter()
-            .map(|AccountStatus { activity, name }| account_state(&paths, name, activity))
+            .map(|AccountStatus { activity, name }| {
+                let identity = config.account(&name).and_then(|a| a.identity().ok());
+                account_state(&paths, name, activity, identity)
+            })
             .collect();
         let rules_path = paths.rules_file();
         let rules = RulesState::load(&rules_path, Vec::new());
@@ -1426,16 +1437,19 @@ impl App {
             return;
         };
         // A store that failed to open shows its error in the folder pane and adds no rows.
-        let stores: Vec<(usize, &str, &Store)> = self
+        let stores: Vec<load::LoadStore<'_>> = self
             .covered_accounts()
             .into_iter()
             .filter_map(|index| {
                 let account = &self.accounts[index];
-                account
-                    .store
-                    .as_ref()
-                    .ok()
-                    .map(|store| (index, account.name.as_str(), store))
+                account.store.as_ref().ok().map(|store| {
+                    (
+                        index,
+                        account.name.as_str(),
+                        store,
+                        account.identity.as_ref(),
+                    )
+                })
             })
             .collect();
         let loaded = load::load(&stores, &query);
@@ -1461,7 +1475,10 @@ impl App {
             .covered_accounts()
             .into_iter()
             .filter(|&index| self.accounts[index].store.is_ok())
-            .map(|index| (index, self.accounts[index].name.clone()))
+            .map(|index| {
+                let account = &self.accounts[index];
+                (index, account.name.clone(), account.identity.clone())
+            })
             .collect();
         let answer = load::spawn(
             self.load_list,
@@ -2305,7 +2322,12 @@ impl App {
                 index
             }
             None => {
-                let state = account_state(&self.paths, account.name.clone(), None);
+                let state = account_state(
+                    &self.paths,
+                    account.name.clone(),
+                    None,
+                    account.identity().ok(),
+                );
                 self.accounts.push(state);
                 self.accounts.len() - 1
             }
@@ -2935,6 +2957,38 @@ mod tests {
     }
 
     #[test]
+    fn search_operators_narrow_folders_accounts_and_me_from_all_inboxes() {
+        let fx = Fixture::new(&["home", "work"]);
+        fx.folder("home", "Archive", Some("Archive"));
+        fx.add("home", message("INBOX", 1, "invoice march"));
+        fx.add("home", message("Archive", 3, "invoice april"));
+        fx.add("work", message("INBOX", 4, "invoice may"));
+        let mut mine = message("INBOX", 5, "notes to self");
+        mine.from_addr = Some("Me <home@example.com>".into());
+        fx.add("home", mine);
+        let (mut driver, _wires) = fx.driver();
+        driver.apply(UiAction::SelectView(View::AllInboxes));
+        let mut found = |query: &str| -> Vec<(usize, String, u32)> {
+            driver.apply(UiAction::SearchFor(query.into()));
+            driver
+                .app
+                .list
+                .rows
+                .iter()
+                .map(|r| (r.account, r.folder.clone(), r.uid))
+                .collect()
+        };
+        assert_eq!(found("invoice in:Archive"), [(0, "Archive".to_string(), 3)]);
+        assert_eq!(found("invoice account:work"), [(1, "INBOX".to_string(), 4)]);
+        assert_eq!(
+            found("from:me"),
+            [(0, "INBOX".to_string(), 5)],
+            "each account's own identity"
+        );
+        assert!(found("invoice from:me").is_empty());
+    }
+
+    #[test]
     fn archive_sends_the_cursor_row_hides_it_and_selects_the_next() {
         let fx = Fixture::new(&["work"]);
         inbox(&fx, &[1, 2, 3]);
@@ -3134,7 +3188,7 @@ mod tests {
     macro_rules! held_loads {
         ($gates:ident, $load:ident) => {
             static $gates: Mutex<VecDeque<Gate>> = Mutex::new(VecDeque::new());
-            fn $load(paths: &Paths, accounts: &[(usize, String)], query: &ListQuery) -> Loaded {
+            fn $load(paths: &Paths, accounts: &[load::LoadAccount], query: &ListQuery) -> Loaded {
                 let gate = $gates.lock().unwrap().pop_front();
                 let loaded = load::load_from_paths(paths, accounts, query);
                 if let Some((read, release)) = gate {

@@ -316,6 +316,49 @@ async fn search_without_bodies_matches_headers_only() {
 }
 
 #[tokio::test]
+async fn search_operators_narrow_the_rows_and_the_tool_lists_them() {
+    let fx = fixture(&["home", "work"]);
+    fx.add("home", fixture_message("INBOX", 1, "Invoice", "x"));
+    fx.add("work", fixture_message("INBOX", 2, "Invoice", "x"));
+    let client = connect(&fx, "read", &[]).await;
+    let found = |result: CallToolResult| -> Vec<(String, u64)> {
+        rows(&result)
+            .iter()
+            .map(|row| {
+                (
+                    row["account"].as_str().unwrap().to_string(),
+                    row["uid"].as_u64().unwrap(),
+                )
+            })
+            .collect()
+    };
+    let search = |query: &str| call(&client, "search", json!({ "query": query }));
+    assert_eq!(
+        found(search("invoice account:work").await),
+        [("work".to_string(), 2)]
+    );
+    assert!(found(search("invoice in:Archive").await).is_empty());
+    assert_eq!(
+        found(search("is:unread from:sender2").await),
+        [("work".to_string(), 2)]
+    );
+    let mismatch = call(
+        &client,
+        "search",
+        json!({ "query": "invoice account:home", "account": "work" }),
+    )
+    .await;
+    assert!(
+        error_text(&mismatch).contains("names account 'home'"),
+        "{mismatch:?}"
+    );
+    let tools = client.list_all_tools().await.unwrap();
+    let tool = tools.iter().find(|t| t.name == "search").unwrap();
+    let description = tool.description.as_deref().unwrap_or_default();
+    assert!(description.contains("after:7d"), "{description}");
+}
+
+#[tokio::test]
 async fn account_filter_hides_other_accounts_everywhere() {
     let fx = fixture(&["home", "work"]);
     fx.add("home", fixture_message("INBOX", 1, "Family", "x"));

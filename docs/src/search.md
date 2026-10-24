@@ -11,8 +11,18 @@ Every message's subject, sender, recipients (To, Cc and Delivered-To), attachmen
 | `invoice acme` | both words, anywhere in the message |
 | `"status update"` | the phrase, in that order |
 | `-newsletter` | without the word |
+| `from:acme`, `to:alice`, `cc:lists`, `subject:invoice`, `attachment:pdf` | the word in that column; `to:` covers To, Cc and Delivered-To; `subject:"status update"` is a phrase; `-from:acme` excludes |
+| `from:me`, `to:me`, `cc:me` | your own address or one of your aliases (see [Accounts](accounts.md#aliases)) |
+| `in:Archive`, `in:"Projects/Postvak"` | one folder |
+| `has:attachment` | with an attachment, as guessed from the headers |
+| `is:unread`, `is:read`, `is:flagged` | by flag |
+| `before:2026-01-15`, `after:2026-01-01` | by date, in local time; `before:` is exclusive of that day, `after:` inclusive |
+| `after:7d`, `before:3w`, `after:6m`, `after:1y` | days, weeks, months or years back from now |
+| `account:work` | one account, where several are searched: All inboxes in the window, and the CLI and MCP without `--account` |
 
-Nothing you type is read as query syntax: a bare address, a colon or an unbalanced quote all search as words. (Operators such as `from:` and `after:` are planned; see the design in the repository.)
+Operators combine with words in any order: `from:acme after:30d invoice` is the invoices Acme sent in the last month. A column operator's value is matched whole, never as a prefix and never widened to a close match. Nothing you type is read as query syntax: a bare address, an unbalanced quote, an unknown key such as `size:10` or a date that does not parse all search as words. A `-` before `in:`, `is:`, `has:`, `before:`, `after:` or `account:` is ignored.
+
+Keys are case-insensitive. A search of operators alone, such as `is:unread from:me`, lists every message they describe; `-newsletter` alone lists nothing, as there is nothing to exclude it from.
 
 ## The index
 

@@ -5,6 +5,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use rusqlite_migration::{M, Migrations};
 use serde::{Deserialize, Serialize};
 
+use crate::config::Identity;
 use crate::paths::Paths;
 use crate::search::{self, Candidate, Plan, Query, Scope, Vocab};
 
@@ -171,8 +172,8 @@ fn summary_from_row(row: &rusqlite::Row, offset: usize) -> rusqlite::Result<Mess
 }
 
 /// SQL conditions on a message row's space-separated `flags`.
-const UNSEEN: &str = r"instr(' ' || flags || ' ', ' \Seen ') = 0";
-const FLAGGED: &str = r"instr(' ' || flags || ' ', ' \Flagged ') > 0";
+pub(crate) const UNSEEN: &str = r"instr(' ' || flags || ' ', ' \Seen ') = 0";
+pub(crate) const FLAGGED: &str = r"instr(' ' || flags || ' ', ' \Flagged ') > 0";
 
 /// A folder's unread count, from the index of unread messages alone (migration 010). Without statistics SQLite would
 /// pick the covering folder index and read the whole folder; a condition other than the index's makes this an error.
@@ -589,9 +590,10 @@ impl Store {
         self.query_messages("WHERE folder = ?1 ORDER BY uid", params![folder])
     }
 
-    /// The messages `query` matches, newest first, in `folder` or any folder, at most `limit`. The plan's
-    /// predicates follow the FTS match; their `?` parameters count on from the three fixed ones, so the limit's
-    /// placeholder is numbered after them.
+    /// The messages `query` matches, newest first, in `folder` or any folder, at most `limit`. `close` adds the
+    /// close matches when the exact ones are few; `identity` resolves `from:me` and `to:me`. The plan's predicates
+    /// follow the FTS match; their `?` parameters count on from the fixed ones, so the later placeholders are
+    /// numbered after them.
     pub fn search(
         &self,
         query: &Query,
@@ -599,12 +601,20 @@ impl Store {
         folder: Option<&str>,
         limit: u32,
         close: bool,
+        identity: Option<&Identity>,
     ) -> Result<Vec<Hit>, StoreError> {
-        let plan = search::plan(query, scope, close.then_some(self as &dyn Vocab));
-        if plan.exact.is_empty() {
+        let plan = search::plan(query, scope, close.then_some(self as &dyn Vocab), identity);
+        if plan.is_empty() {
             return Ok(Vec::new());
         }
-        let mut hits = self.search_tier(&plan.exact, None, folder, &plan, limit, Matched::Exact)?;
+        let mut hits = self.search_tier(
+            &plan.exact,
+            plan.exclude.as_deref(),
+            folder,
+            &plan,
+            limit,
+            Matched::Exact,
+        )?;
         // The close tier only when the exact one is thin, and never a message the exact expression matches.
         if let Some(widened) = &plan.close
             && hits.len() < CLOSE_MATCHES_BELOW
@@ -622,9 +632,9 @@ impl Store {
         Ok(hits)
     }
 
-    /// The messages `expression` matches and `exclude` does not, newest first, at most `limit`. The plan's
-    /// predicates follow the FTS match; their `?` parameters count on from the fixed ones, so the later placeholders
-    /// are numbered after them.
+    /// The messages `expression` matches and `exclude` does not, newest first, at most `limit`; an empty
+    /// expression matches every message, for a query of predicates alone. The plan's predicates follow the FTS
+    /// match; their `?` parameters count on from the fixed ones, so the later placeholders are numbered after them.
     fn search_tier(
         &self,
         expression: &str,
@@ -634,10 +644,12 @@ impl Store {
         limit: u32,
         matched: Matched,
     ) -> Result<Vec<Hit>, StoreError> {
-        let mut tail = String::from(
+        let mut tail = String::from(if expression.is_empty() {
+            "WHERE ?1 IS NULL AND (?2 IS NULL OR folder = ?2)"
+        } else {
             "WHERE id IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?1)
-               AND (?2 IS NULL OR folder = ?2)",
-        );
+               AND (?2 IS NULL OR folder = ?2)"
+        });
         for predicate in &plan.sql {
             tail.push_str(" AND (");
             tail.push_str(predicate);
@@ -645,7 +657,9 @@ impl Store {
         }
         let mut next = 3 + plan.params.len();
         let mut values: Vec<rusqlite::types::Value> = vec![
-            expression.to_owned().into(),
+            (!expression.is_empty())
+                .then(|| expression.to_owned())
+                .into(),
             folder.map(str::to_owned).into(),
         ];
         values.extend(plan.params.iter().cloned());
@@ -1428,9 +1442,12 @@ mod tests {
         assert_eq!(s.message_count("Other").unwrap(), 0);
     }
 
+    /// A fixed `now` for the queries: 2026-10-24 12:00 UTC.
+    const NOW: i64 = 1_792_843_200;
+
     /// The uids `text` finds, as a user would type it.
     fn found(s: &Store, text: &str, scope: Scope, folder: Option<&str>, limit: u32) -> Vec<u32> {
-        s.search(&search::parse(text), scope, folder, limit, false)
+        s.search(&search::parse(text, NOW), scope, folder, limit, false, None)
             .unwrap()
             .iter()
             .map(|hit| hit.message.uid)
@@ -1439,11 +1456,18 @@ mod tests {
 
     /// Uids with how each matched, close matches on.
     fn tiers(s: &Store, text: &str, folder: Option<&str>, limit: u32) -> Vec<(u32, Matched)> {
-        s.search(&search::parse(text), Scope::All, folder, limit, true)
-            .unwrap()
-            .iter()
-            .map(|hit| (hit.message.uid, hit.matched))
-            .collect()
+        s.search(
+            &search::parse(text, NOW),
+            Scope::All,
+            folder,
+            limit,
+            true,
+            None,
+        )
+        .unwrap()
+        .iter()
+        .map(|hit| (hit.message.uid, hit.matched))
+        .collect()
     }
 
     #[test]
@@ -1575,7 +1599,7 @@ mod tests {
             "nothing positive to match"
         );
         let hit = &s
-            .search(&search::parse("subject"), all, None, 1, false)
+            .search(&search::parse("subject", NOW), all, None, 1, false, None)
             .unwrap()[0];
         assert_eq!(
             (hit.matched, hit.snippet.as_deref()),
@@ -1592,6 +1616,90 @@ mod tests {
         assert!(found(&s, "re: lunch", Scope::All, None, 10).is_empty());
         assert!(found(&s, "\"unbalanced", Scope::All, None, 10).is_empty());
         assert!(found(&s, "NEAR(subject, 1)", Scope::All, None, 10).is_empty());
+    }
+
+    #[test]
+    fn operators_narrow_by_folder_flags_attachment_date_column_and_me() {
+        let s = store_with_inbox();
+        s.upsert_folder(&Folder {
+            name: "Archive".into(),
+            uidvalidity: 1,
+            last_uid: 0,
+            special_use: None,
+            delimiter: None,
+        })
+        .unwrap();
+        let mut read = msg("INBOX", 1, NOW - 10 * 86_400);
+        read.flags = "\\Seen \\Flagged".into();
+        read.headers =
+            b"From: alice@x\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n".to_vec();
+        s.insert_message(&read).unwrap();
+        let mut from_me = msg("INBOX", 2, NOW - 2 * 86_400);
+        from_me.from_addr = Some("Me <me@example.com>".into());
+        s.insert_message(&from_me).unwrap();
+        let mut archived = msg("Archive", 3, NOW - 100 * 86_400);
+        archived.to_addr = Some("orders@shop.example.com".into());
+        s.insert_message(&archived).unwrap();
+        let all = Scope::All;
+        assert_eq!(found(&s, "subject in:Archive", all, None, 10), [3]);
+        assert_eq!(
+            found(&s, "in:Archive", all, None, 10),
+            [3],
+            "operators alone list what they describe"
+        );
+        assert_eq!(found(&s, "is:read", all, None, 10), [1]);
+        assert_eq!(found(&s, "is:unread", all, None, 10), [2, 3]);
+        assert_eq!(found(&s, "is:flagged", all, None, 10), [1]);
+        assert_eq!(found(&s, "has:attachment", all, None, 10), [1]);
+        assert_eq!(found(&s, "after:7d", all, None, 10), [2]);
+        assert_eq!(found(&s, "before:7d", all, None, 10), [1, 3]);
+        assert_eq!(found(&s, "subject from:alice", all, None, 10), [1, 3]);
+        assert_eq!(found(&s, "subject -from:alice", all, None, 10), [2]);
+        assert_eq!(
+            found(&s, "-from:alice is:unread", all, None, 10),
+            [2],
+            "excluded from what the predicates list"
+        );
+        assert_eq!(
+            found(&s, "subject", all, Some("INBOX"), 10),
+            [2, 1],
+            "the folder argument still applies"
+        );
+        assert_eq!(
+            found(&s, "from:me", all, None, 10),
+            [2],
+            "without an identity, me is the word, which this sender's name happens to hold"
+        );
+        let identity = {
+            let mut account = crate::config::AccountConfig::new(
+                "work",
+                "imap.example.com",
+                "Me@example.com",
+                crate::config::PasswordSource::Command {
+                    command: "x".into(),
+                },
+            );
+            account.aliases = vec!["*@shop.example.com".into()];
+            account.identity().unwrap()
+        };
+        let with = |text: &str| -> Vec<u32> {
+            s.search(
+                &search::parse(text, NOW),
+                all,
+                None,
+                10,
+                false,
+                Some(&identity),
+            )
+            .unwrap()
+            .iter()
+            .map(|hit| hit.message.uid)
+            .collect()
+        };
+        assert_eq!(with("from:me"), [2], "the address, case-insensitively");
+        assert_eq!(with("to:me"), [3], "an alias with a wildcard");
+        assert_eq!(with("-from:me subject"), [1, 3]);
+        assert!(with("cc:me").is_empty());
     }
 
     #[test]

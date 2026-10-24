@@ -67,7 +67,7 @@ A fast, simple mail client with automatic mailbox rules
 * `rules` — Inspect and test rules.toml
 * `folders` — List folders with message and unread counts
 * `list` — List recent messages, newest first
-* `search` — Search subject, addresses, attachment names and bodies, newest first; words, "phrases" and -not; the last word also matches as a prefix; close matches such as corrected typos follow when exact hits are few
+* `search` — Search subject, addresses, attachment names and bodies, newest first; words, "phrases", -not and key:value operators such as from:acme, in:Archive, is:unread or after:7d; the last word also matches as a prefix; close matches such as corrected typos follow when exact hits are few
 * `show` — Show one message
 * `unsubscribe` — Leave a message's mailing list: by one-click POST when the sender offers it (RFC 8058), else print the page or address from its List-Unsubscribe header to open
 * `mark` — Mark messages read or unread, flagged or unflagged
@@ -398,9 +398,20 @@ List recent messages, newest first
 
 ## `postvak search`
 
-Search subject, addresses, attachment names and bodies, newest first; words, "phrases" and -not; the last word also matches as a prefix; close matches such as corrected typos follow when exact hits are few
+Search subject, addresses, attachment names and bodies, newest first; words, "phrases", -not and key:value operators such as from:acme, in:Archive, is:unread or after:7d; the last word also matches as a prefix; close matches such as corrected typos follow when exact hits are few
 
 **Usage:** `postvak search [OPTIONS] <QUERY>`
+
+Operators:
+  from:acme, to:x, cc:x, subject:x, attachment:x  the word in that column; to: covers To, Cc and Delivered-To; a quoted value is a phrase; -from:x excludes
+  from:me, to:me, cc:me                           your address or an alias, from the account's config
+  in:Archive, in:"Projects/Postvak"              one folder
+  has:attachment                                  with an attachment, as guessed from the headers
+  is:unread, is:read, is:flagged                  by flag
+  before:2026-01-15, after:2026-01-01             by date, in local time; before: is exclusive, after: inclusive
+  after:7d, before:3w, after:6m, after:1y         days, weeks, months or years back from now
+  account:work                                    one account, where several are searched
+Anything else, such as an unknown key or a date that does not parse, searches as a word.
 
 ###### **Arguments:**
 
@@ -408,8 +419,8 @@ Search subject, addresses, attachment names and bodies, newest first; words, "ph
 
 ###### **Options:**
 
-* `--account <ACCOUNT>`
-* `--folder <FOLDER>`
+* `--account <ACCOUNT>` — Only this account; the same as account: in the query
+* `--folder <FOLDER>` — Only this folder; the same as in: in the query
 * `--server` — Ask the server too, which searches bodies not downloaded yet; each folder costs a round trip
 * `--exact` — Only what matches as typed: no close matches such as corrected typos
 * `--limit <LIMIT>`

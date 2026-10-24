@@ -195,12 +195,20 @@ impl Backend {
             bail!("a server search matches message bodies, which needs the read:bodies scope");
         }
         let limit = limit.min(MAX_LIMIT);
-        let parsed = search::parse(query);
+        let parsed = search::parse(query, postvak_core::time::now());
+        let account = search::named_account(account, &parsed)?;
         let scope = if bodies { Scope::All } else { Scope::Headers };
         let mut rows = Vec::new();
         for acc in self.select(account)? {
             let store = self.store(&acc)?;
-            let mut found = store.search(&parsed, scope, folder, limit, !exact)?;
+            let mut found = store.search(
+                &parsed,
+                scope,
+                folder,
+                limit,
+                !exact,
+                Some(&acc.identity()?),
+            )?;
             if server {
                 let hits = self.daemon.search_server(&acc.name, folder, query)?;
                 found = actions::with_server_hits(&store, found, &hits, limit)?;
