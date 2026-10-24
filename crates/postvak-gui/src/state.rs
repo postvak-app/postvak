@@ -1490,7 +1490,9 @@ impl App {
         let Some(query) = self.list_query() else {
             match self.view {
                 View::Activity => self.activity_log = rules::activity_log(&self.accounts),
-                View::Trash => self.trash = rules::trash_rows(&self.accounts, &self.paths),
+                View::Trash => {
+                    self.trash = rules::trash_rows(&self.accounts, &self.paths, &self.trash)
+                }
                 _ => {}
             }
             return;

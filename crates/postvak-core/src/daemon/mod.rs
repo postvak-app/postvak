@@ -6,7 +6,7 @@ use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -38,6 +38,8 @@ const FILE_POLL: Duration = Duration::from_secs(2);
 /// How long exit waits for clients to take their last replies before closing their connections.
 const FLUSH_GRACE: Duration = Duration::from_secs(1);
 const LOG_LIMIT: u64 = 1_048_576;
+/// How often the accept loop checks for a stop and for edited files while no client connects; a client that connects is
+/// served at once.
 const POLL: Duration = Duration::from_millis(200);
 
 /// Logs in and out again with the password given, for `TestLogin`.
@@ -159,13 +161,12 @@ fn take_daemon_lock(path: &Path) -> anyhow::Result<File> {
     Ok(file)
 }
 
-/// Replaces a leftover socket file and binds a fresh, non-blocking one only we can open.
+/// Replaces a leftover socket file and binds a fresh one only we can open.
 fn bind_private(socket: &Path) -> anyhow::Result<UnixListener> {
     let listener = paths::bind_private(socket).map_err(|e| match e.kind() {
         io::ErrorKind::InvalidInput => anyhow::Error::new(e),
         _ => anyhow::Error::new(e).context(format!("binding {}", socket.display())),
     })?;
-    listener.set_nonblocking(true)?;
     Ok(listener)
 }
 
@@ -305,11 +306,50 @@ fn serve(
                 });
             }
         })?;
-    let connections = accept_until_done(&shared, &listener, options.idle_exit);
+    let (accepted, acceptor) = acceptor(listener)?;
+    let connections = accept_until_done(&shared, &accepted, options.idle_exit);
     // Connects fail at once from here on instead of waiting out the hello timeout; the socket file and lock remain.
-    drop(listener);
+    drop(accepted);
+    wake_acceptor(&paths.daemon_socket(), acceptor);
     stop(&shared, router, connections);
     Ok(())
+}
+
+/// Accepts clients on a thread of its own, which blocks in `accept`, so a client is served the moment it connects
+/// while the accept loop still wakes every `POLL` for its checks. The thread ends once the loop dropped the receiver and
+/// the next connect, `wake_acceptor`'s own, wakes it.
+fn acceptor(
+    listener: UnixListener,
+) -> io::Result<(Receiver<io::Result<UnixStream>>, JoinHandle<()>)> {
+    let (sender, accepted) = mpsc::channel();
+    let thread = std::thread::Builder::new()
+        .name("daemon-accept".into())
+        .spawn(move || {
+            for stream in listener.incoming() {
+                let failed = stream.is_err();
+                if sender.send(stream).is_err() {
+                    return;
+                }
+                // An error such as too many open files repeats at once; waiting keeps it from spinning.
+                if failed {
+                    std::thread::sleep(POLL);
+                }
+            }
+        })?;
+    Ok((accepted, thread))
+}
+
+/// Ends the accept thread: a connect returns it from `accept`, and it finds the loop gone.
+fn wake_acceptor(socket: &Path, acceptor: JoinHandle<()>) {
+    match UnixStream::connect(socket) {
+        Ok(stream) => {
+            drop(stream);
+            let _ = acceptor.join();
+        }
+        // A client that connected after the loop ended woke it already.
+        Err(_) if acceptor.is_finished() => drop(acceptor.join()),
+        Err(e) => log::warn!("could not stop the accept thread: {e}"),
+    }
 }
 
 /// Clients open the stores as soon as the daemon answers, so every migration has to be done before it does; a store
@@ -381,25 +421,26 @@ fn apply_file_changes(shared: &Shared, poll: bool) {
 
 fn accept_until_done(
     shared: &Arc<Shared>,
-    listener: &UnixListener,
+    accepted: &Receiver<io::Result<UnixStream>>,
     idle_exit: Option<Duration>,
 ) -> Vec<Connection> {
     let mut connections: Vec<Connection> = Vec::new();
     let mut next_client: ClientId = 0;
     while !done(shared, idle_exit) {
         apply_file_changes(shared, true);
-        match listener.accept() {
-            Ok((stream, _)) => {
+        match wait_for_client(accepted) {
+            Ok(Ok(stream)) => {
                 next_client += 1;
                 match open_connection(shared, stream, next_client) {
                     Ok(connection) => connections.push(connection),
                     Err(e) => log::warn!("could not serve a client: {e}"),
                 }
             }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => wait_for_clients(),
-            Err(e) => {
-                log::warn!("accept failed: {e}");
-                wait_for_clients();
+            Ok(Err(e)) => log::warn!("accept failed: {e}"),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                log::error!("the accept thread stopped; no new clients can connect");
+                std::thread::sleep(POLL);
             }
         }
         connections.retain(|connection| !connection.reader.is_finished());
@@ -407,22 +448,40 @@ fn accept_until_done(
     connections
 }
 
-/// Waits `POLL` between accepts. On macOS the daemon's main thread runs its run loop meanwhile: a click on a
-/// notification arrives there (see `notify::mac`).
-fn wait_for_clients() {
+/// The next accepted client, waiting up to `POLL`. On macOS the daemon's main thread runs its run loop meanwhile, in
+/// short slices so a client still connects at once: a click on a notification arrives there (see `notify::mac`).
+fn wait_for_client(
+    accepted: &Receiver<io::Result<UnixStream>>,
+) -> Result<io::Result<UnixStream>, RecvTimeoutError> {
     #[cfg(target_os = "macos")]
     {
         use objc2_core_foundation::{CFRunLoop, CFRunLoopRunResult, CFString};
+        const SLICE: Duration = Duration::from_millis(20);
         // The name behind kCFRunLoopDefaultMode; modes match by name.
         let mode = CFString::from_static_str("kCFRunLoopDefaultMode");
-        // A run loop with nothing to wait on returns at once.
-        if CFRunLoop::run_in_mode(Some(&mode), POLL.as_secs_f64(), false)
-            != CFRunLoopRunResult::Finished
-        {
-            return;
+        let until = Instant::now() + POLL;
+        loop {
+            match accepted.try_recv() {
+                Ok(client) => return Ok(client),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err(RecvTimeoutError::Disconnected);
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(RecvTimeoutError::Timeout);
+            }
+            // A run loop with nothing to wait on returns at once; then only clients are left to wait for.
+            if CFRunLoop::run_in_mode(Some(&mode), left.min(SLICE).as_secs_f64(), true)
+                == CFRunLoopRunResult::Finished
+            {
+                return accepted.recv_timeout(left);
+            }
         }
     }
-    std::thread::sleep(POLL);
+    #[cfg(not(target_os = "macos"))]
+    accepted.recv_timeout(POLL)
 }
 
 fn done(shared: &Shared, idle_exit: Option<Duration>) -> bool {
@@ -509,8 +568,6 @@ fn open_connection(
     stream: UnixStream,
     client: ClientId,
 ) -> io::Result<Connection> {
-    // macOS hands out accepted sockets with the listener's non-blocking flag.
-    stream.set_nonblocking(false)?;
     let kept = stream.try_clone()?;
     let shared = shared.clone();
     let reader = std::thread::Builder::new()

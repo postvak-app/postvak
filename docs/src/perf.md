@@ -22,6 +22,8 @@ How Postvak behaves as a mailbox grows, measured on generated mail. User stores 
 | `search_keystroke` | The frame that takes a keystroke in the search field: how long it waits for the hits |
 | `search_close` | A misspelled word searched in All inboxes: no exact hit, so the vocabulary is consulted and the close tier runs |
 | `sync_pass` | One sync of an account after 200 messages arrived and 500 changed flags |
+| `rules_read_with_body` | Reading one INBOX whole, with 4 kB of indexed body text per message, as the rules pass did for every folder |
+| `rules_read` | Reading the same INBOX without the body text, as the rules pass does for a folder whose rules test no body |
 
 ```sh
 POSTVAK_BENCH_SCALE=10000 cargo test --release -p postvak-gui --lib bench::bench -- --ignored --nocapture
@@ -71,11 +73,32 @@ Migration 011 rebuilds the FTS index once per store, the first time the store op
 
 `index_all` covers the first account's third of the mail, so about 3,400 messages a second go through the structure fetch, the text decode and the store; against a real server each message costs a round trip or two on top, which is what the five-second slices and the newest-first order are for. Rebuilding three stores that hold 100k header-only messages takes a quarter of a second, far under the five seconds the search design allows; stored bodies add to it in proportion to their text. `search` runs its last word as a prefix now (`invoice*`), which costs more than the exact word did, and this machine is not the baseline's M1, so the two `search` rows are not comparable. `search_close` searches `invioce`: the exact tier finds nothing, the vocabulary lookup and the close tier run, and the whole query still costs what an exact one does (the `search` row of the same run was 12 ms).
 
+## The rules pass
+
+Rules look at every message of each folder they watch, so the pass after each new mail, IDLE push or move reads those folders whole. It read every column, and since bodies are indexed in idle time (`body_text`), that included each message's text; the text sits behind the stored raw message in the row, so reading it also walked the raw message's overflow pages wherever one was stored. A folder none of whose rules tests the body is now read without the text and the index columns (`Store::messages_without_body`), and the check for new mail to notify about reads only INBOX rows above the last notified uid.
+
+Release build, the same machine as the search table, 100k messages over three accounts; the INBOX read holds about 16.7k messages. Median in ms, with the range of five runs.
+
+| Phase | 100k |
+| --- | --- |
+| `rules_read_with_body` | 89 (82–148) |
+| `rules_read` | 35 (33–36) |
+
+`sync_pass` did not move (37 ms against 40): `RecordingOps` scans each folder on every select, and that dominates it.
+
+## The daemon
+
+- **Connecting.** The accept loop slept 200 ms whenever no client was waiting, so every CLI command, MCP tool call and window start waited up to 200 ms before the daemon read its hello. A thread of its own now blocks in `accept` and hands each connection over at once; the loop still wakes every 200 ms for its stop, idle and file checks.
+- **Actions on many messages.** Archiving, moving, flagging or deleting chosen messages sent one IMAP command per message: 200 archived messages were 200 round trips. They now go as one `UID MOVE`, `UID STORE` or `UID EXPUNGE` per batch of up to 500 uids, written as ranges where they run (`1:3,7`). A delete still downloads each message it has no copy of, for its `.eml` backup, before expunging them together. Junk and not-junk, which also swap keywords, still run per message.
+- **The index backlog.** The indexer counts what is left before each slice, and kept doing so on every idle turn once all was indexed; the count read every row, behind each stored raw message. It now reads two partial indexes, `messages_unindexed` and `messages_retry` (migration 013), which are empty once indexing is done.
+
 ## Reloads after a sync event
 
 The window reloads the shown list whenever sync reports changes. That reload runs on a thread of its own with its own store connections; the frame waits for it at most 2 ms (`LIST_BUDGET` in `state.rs`, a quarter of a 120 Hz frame), so a small mailbox's rows still show in the same frame, and a large one's show when the thread wakes the window. While a reload runs, the next waits for it and then starts once; the rows already loaded are rebuilt meanwhile only when edits changed, since rebuilding a large list costs milliseconds. A view change reads on the window thread, as before, and drops a reload still running; a keystroke in the search field does not (below).
 
 An archive, move or delete hides its rows at once and its `ActionDone` arrives after the daemon changed the store. A reload that started before then still holds the old rows, so the edit stays on the rows until a reload that started after it is applied.
+
+While the Trash view is open, each sync event lists the backups again on the window thread; a backup's sender and subject are read once, and later lists open only new files.
 
 The same sync event also reads the account's folders and unread counts again, on the window thread. Each count reads the partial index `messages_unread` (migration 010), which holds only unread mail; the covering folder index SQLite chose before read every message in the folder. The query names the index (`INDEXED BY`), since without statistics SQLite does not know it is the smaller one, and a test checks that the plan uses it.
 

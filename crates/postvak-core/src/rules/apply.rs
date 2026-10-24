@@ -1,7 +1,7 @@
 use std::io;
 
 use crate::actions::RULE_NAME;
-use crate::mail_ops::{MailError, MailOps, delete_message};
+use crate::mail_ops::{MailError, MailOps, delete_message, delete_messages};
 use crate::message::body_text;
 use crate::rules::engine::{Context, Plan, PlannedAction, evaluate};
 use crate::rules::{Action, CompiledRule};
@@ -163,6 +163,210 @@ pub fn apply(
     Ok(executed)
 }
 
+/// One message's outcome from `apply_many`: how many actions ran, or why none did.
+pub type Applied = (u32, Result<usize, ApplyError>);
+
+/// What `apply` does with a plan of one action, for many messages of one folder at once: a flag change or a move goes to
+/// the server as one command per batch of uids rather than one per message. A delete, which saves each message before
+/// expunging it, fetches each one but expunges them together. Junk and not-junk, which also swap keywords, and any
+/// action whose target cannot be resolved, run per message through `apply`, which says why.
+pub fn apply_many(
+    planned: &PlannedAction,
+    msgs: &[Message],
+    ops: &mut dyn MailOps,
+    store: &Store,
+    trash: &Trash,
+    now: i64,
+) -> Vec<Applied> {
+    let plan = Plan {
+        actions: vec![planned.clone()],
+        notify: false,
+    };
+    let per_message = |ops: &mut dyn MailOps| -> Vec<Applied> {
+        msgs.iter()
+            .map(|msg| (msg.uid, apply(&plan, msg, ops, store, trash, now)))
+            .collect()
+    };
+    let Some(folder) = msgs.first().map(|msg| msg.folder.clone()) else {
+        return Vec::new();
+    };
+    match &planned.action {
+        Action::Tag(keyword) if crate::rules::check_keyword(keyword).is_err() => per_message(ops),
+        Action::Flag | Action::MarkRead | Action::MarkUnread | Action::Unflag | Action::Tag(_) => {
+            set_flag_many(planned, msgs, ops, store, now)
+        }
+        Action::Move(_) | Action::Archive => {
+            let target = match &planned.action {
+                Action::Move(target) => Ok(target.clone()),
+                _ => archive_folder(store),
+            };
+            match target {
+                // A move into the messages' own folder does nothing, as in `apply`.
+                Ok(target) if target == folder => msgs.iter().map(|msg| (msg.uid, Ok(0))).collect(),
+                Ok(target) => move_many(planned, msgs, &target, ops, store, now),
+                Err(_) => per_message(ops),
+            }
+        }
+        // Without a Trash folder, or inside it, trashing deletes, as in `apply`.
+        Action::Trash => match move_target(store, &folder, &Action::Trash) {
+            Ok(Some(target)) => move_many(planned, msgs, &target, ops, store, now),
+            Ok(None) => delete_many(planned, msgs, ops, store, trash, now),
+            Err(_) => per_message(ops),
+        },
+        Action::Delete => delete_many(planned, msgs, ops, store, trash, now),
+        _ => per_message(ops),
+    }
+}
+
+/// Logs `planned` for each message; one whose row cannot be written fails alone and is left out.
+fn log_each<'a>(
+    planned: &PlannedAction,
+    msgs: impl IntoIterator<Item = &'a Message>,
+    store: &Store,
+    now: i64,
+    results: &mut Vec<Applied>,
+) -> Vec<&'a Message> {
+    let mut logged = Vec::new();
+    for msg in msgs {
+        match store.log_action(&log_entry(planned, msg, now)) {
+            Ok(()) => logged.push(msg),
+            Err(e) => results.push((msg.uid, Err(e.into()))),
+        }
+    }
+    logged
+}
+
+fn uids_of(msgs: &[&Message]) -> Vec<u32> {
+    msgs.iter().map(|msg| msg.uid).collect()
+}
+
+/// A failed batch command failed for every message in it.
+fn fail_all(msgs: &[&Message], error: &MailError, results: &mut Vec<Applied>) {
+    results.extend(
+        msgs.iter()
+            .map(|msg| (msg.uid, Err(ApplyError::Mail(error.clone())))),
+    );
+}
+
+fn set_flag_many(
+    planned: &PlannedAction,
+    msgs: &[Message],
+    ops: &mut dyn MailOps,
+    store: &Store,
+    now: i64,
+) -> Vec<Applied> {
+    let (flag, wanted) = match &planned.action {
+        Action::Flag => ("\\Flagged", true),
+        Action::MarkRead => ("\\Seen", true),
+        Action::MarkUnread => ("\\Seen", false),
+        Action::Unflag => ("\\Flagged", false),
+        Action::Tag(keyword) => (keyword.as_str(), true),
+        _ => return Vec::new(),
+    };
+    let mut results = Vec::new();
+    // A flag already in the wanted state is skipped without a log row, as in `apply`.
+    let (changing, unchanged): (Vec<&Message>, Vec<&Message>) = msgs
+        .iter()
+        .partition(|msg| has_flag(&msg.flags, flag) != wanted);
+    results.extend(unchanged.iter().map(|msg| (msg.uid, Ok(0))));
+    let changing = log_each(planned, changing, store, now, &mut results);
+    if changing.is_empty() {
+        return results;
+    }
+    let uids = uids_of(&changing);
+    let sent = if wanted {
+        ops.add_flags_to(&uids, &[flag])
+    } else {
+        ops.remove_flags_from(&uids, &[flag])
+    };
+    if let Err(e) = sent {
+        fail_all(&changing, &e, &mut results);
+        return results;
+    }
+    for msg in changing {
+        let flags = with_flag(&msg.flags, flag, wanted);
+        let stored = store.update_flags(&msg.folder, msg.uid, &flags);
+        results.push((msg.uid, stored.map(|()| 1).map_err(ApplyError::from)));
+    }
+    results
+}
+
+fn move_many(
+    planned: &PlannedAction,
+    msgs: &[Message],
+    target: &str,
+    ops: &mut dyn MailOps,
+    store: &Store,
+    now: i64,
+) -> Vec<Applied> {
+    let mut results = Vec::new();
+    let moving = log_each(planned, msgs, store, now, &mut results);
+    if moving.is_empty() {
+        return results;
+    }
+    let known = match store.folder(target) {
+        Ok(folder) => folder.is_some(),
+        Err(e) => {
+            log::warn!("{target}: could not read the folder ({e}); creating it if missing");
+            false
+        }
+    };
+    // The folder may exist on the server before our first sync of it; a real create failure surfaces in the move.
+    if !known && let Err(e) = ops.create_folder(target) {
+        log::debug!("{target}: create failed ({e}), trying the move anyway");
+    }
+    if let Err(e) = ops.move_messages(&uids_of(&moving), target) {
+        fail_all(&moving, &e, &mut results);
+        return results;
+    }
+    if !known && let Err(e) = store.upsert_folder(&new_folder(target)) {
+        log::warn!("{target}: could not record the folder; the next sync adds it: {e}");
+    }
+    for msg in moving {
+        let mut done = store.remove_message(&msg.folder, msg.uid);
+        // After the move: a failed one must not keep the rule from trying again. A trash is no rule move.
+        if done.is_ok()
+            && planned.rule != RULE_NAME
+            && matches!(planned.action, Action::Move(_) | Action::Archive)
+        {
+            done = store.record_rule_move(msg);
+        }
+        results.push((msg.uid, done.map(|()| 1).map_err(ApplyError::from)));
+    }
+    results
+}
+
+fn delete_many(
+    planned: &PlannedAction,
+    msgs: &[Message],
+    ops: &mut dyn MailOps,
+    store: &Store,
+    trash: &Trash,
+    now: i64,
+) -> Vec<Applied> {
+    let mut results = Vec::new();
+    let mut saved = Vec::new();
+    for msg in msgs {
+        match back_up(planned, msg, ops, store, trash, now) {
+            Ok(()) => saved.push(msg),
+            Err(e) => results.push((msg.uid, Err(e))),
+        }
+    }
+    if saved.is_empty() {
+        return results;
+    }
+    let uids = uids_of(&saved);
+    if let Err(e) = delete_messages(ops, &uids) {
+        fail_all(&saved, &e, &mut results);
+        return results;
+    }
+    for msg in saved {
+        let removed = store.remove_message(&msg.folder, msg.uid);
+        results.push((msg.uid, removed.map(|()| 1).map_err(ApplyError::from)));
+    }
+    results
+}
+
 /// The first move or archive in the plan with its resolved target. Resolved before anything runs so a failure leaves no
 /// partial effects; a move into the message's own folder is dropped because the next sync would re-add and re-move it.
 fn first_move<'a>(
@@ -234,6 +438,21 @@ fn delete(
     trash: &Trash,
     now: i64,
 ) -> Result<(), ApplyError> {
+    back_up(planned, msg, ops, store, trash, now)?;
+    delete_message(ops, msg.uid)?;
+    store.remove_message(&msg.folder, msg.uid)?;
+    Ok(())
+}
+
+/// Saves the message as an `.eml` in the trash directory and logs the delete with that file, before anything is expunged.
+fn back_up(
+    planned: &PlannedAction,
+    msg: &Message,
+    ops: &mut dyn MailOps,
+    store: &Store,
+    trash: &Trash,
+    now: i64,
+) -> Result<(), ApplyError> {
     let raw = ensure_raw(msg, ops, store)?;
     let path = trash.save(&msg.folder, msg.uid, &raw, now)?;
     let mut entry = log_entry(planned, msg, now);
@@ -241,9 +460,19 @@ fn delete(
     entry.action = Action::Delete.label();
     entry.trash_file = Some(path.to_string_lossy().into_owned());
     store.log_action(&entry)?;
-    delete_message(ops, msg.uid)?;
-    store.remove_message(&msg.folder, msg.uid)?;
     Ok(())
+}
+
+/// `flags` with `flag` added or removed.
+fn with_flag(flags: &str, flag: &str, wanted: bool) -> String {
+    let mut kept: Vec<&str> = flags
+        .split(' ')
+        .filter(|f| !f.is_empty() && *f != flag)
+        .collect();
+    if wanted {
+        kept.push(flag);
+    }
+    kept.join(" ")
 }
 
 fn set_flag(
@@ -258,15 +487,7 @@ fn set_flag(
     } else {
         ops.remove_flags(current.uid, &[flag])?;
     }
-    let mut flags: Vec<&str> = current
-        .flags
-        .split(' ')
-        .filter(|f| !f.is_empty() && *f != flag)
-        .collect();
-    if wanted {
-        flags.push(flag);
-    }
-    current.flags = flags.join(" ");
+    current.flags = with_flag(&current.flags, flag, wanted);
     store.update_flags(&current.folder, current.uid, &current.flags)?;
     Ok(())
 }
@@ -304,6 +525,17 @@ fn junk_folder(store: &Store) -> Result<String, ApplyError> {
     special_folder(store, "Junk")?.ok_or(ApplyError::NoJunkFolder)
 }
 
+/// A folder a move created, until its first sync fills in the rest.
+fn new_folder(name: &str) -> Folder {
+    Folder {
+        name: name.to_string(),
+        uidvalidity: 0,
+        last_uid: 0,
+        special_use: None,
+        delimiter: None,
+    }
+}
+
 /// The new uid is not known, so the local row goes and the next sync of the target folder adds it.
 fn move_to(
     current: &Message,
@@ -318,13 +550,7 @@ fn move_to(
     }
     ops.move_message(current.uid, target)?;
     if !known {
-        store.upsert_folder(&Folder {
-            name: target.to_string(),
-            uidvalidity: 0,
-            last_uid: 0,
-            special_use: None,
-            delimiter: None,
-        })?;
+        store.upsert_folder(&new_folder(target))?;
     }
     store.remove_message(&current.folder, current.uid)?;
     Ok(())

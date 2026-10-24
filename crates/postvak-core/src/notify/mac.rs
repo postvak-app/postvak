@@ -1,6 +1,6 @@
 //! Notifications on macOS through `NSUserNotificationCenter` (`mac-notification-sys`), posted as Postvak when the app
 //! is installed where Launch Services finds it. A click arrives on the main thread's run loop, which the daemon runs
-//! between accepts (`daemon::wait_for_clients`), and wakes the thread that waits on that notification.
+//! while it waits for clients (`daemon::wait_for_client`), and wakes the thread that waits on that notification.
 use std::sync::Arc;
 
 use mac_notification_sys::{Notification, NotificationResponse};
