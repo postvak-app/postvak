@@ -4,6 +4,7 @@
 
 use std::sync::mpsc::{self, Receiver};
 
+use postvak_core::config::Identity;
 use postvak_core::paths::Paths;
 use postvak_core::search::{self, Scope};
 use postvak_core::store::{Filter, Matched, MessageSummary, Store, ThreadSummary};
@@ -41,15 +42,30 @@ pub(crate) struct Loaded {
     pub members: Vec<(ThreadKey, Option<Vec<MessageSummary>>)>,
 }
 
-/// Reads `query` from `stores`, given as account index, name and store.
-pub(crate) fn load(stores: &[(usize, &str, &Store)], query: &ListQuery) -> Loaded {
+/// A store a load reads: the account's index, name, store and, for `from:me`, its identity.
+pub(crate) type LoadStore<'a> = (usize, &'a str, &'a Store, Option<&'a Identity>);
+
+/// Reads `query` from `stores`. A search with `account:` reads only that account's store.
+pub(crate) fn load(stores: &[LoadStore<'_>], query: &ListQuery) -> Loaded {
     let folder = query.folder.as_str();
     let mut loaded = Loaded::default();
     if let Some(text) = &query.search {
-        let parsed = search::parse(text);
+        let now = postvak_core::time::now();
+        let parsed = search::parse(text, now);
+        let searched: Vec<&LoadStore<'_>> = stores
+            .iter()
+            .filter(|(_, name, ..)| parsed.account().is_none_or(|named| named == *name))
+            .collect();
         let mut hits = Vec::new();
-        for &(account, name, store) in stores {
-            match store.search(&parsed, Scope::All, None, list::SEARCH_LIMIT, true) {
+        for &&(account, name, store, identity) in &searched {
+            match store.search(
+                &parsed,
+                Scope::All,
+                None,
+                list::SEARCH_LIMIT,
+                true,
+                identity,
+            ) {
                 Ok(found) => hits.extend(found.iter().map(|hit| {
                     let mut row = Row::from_message(account, &hit.message);
                     row.close = hit.matched == Matched::Close;
@@ -65,7 +81,7 @@ pub(crate) fn load(stores: &[(usize, &str, &Store)], query: &ListQuery) -> Loade
             let store = stores
                 .iter()
                 .find(|(index, ..)| index == account)
-                .map(|(.., store)| store);
+                .map(|(_, _, store, _)| store);
             if let (false, Some(store)) = (known, store)
                 && let Ok(Some(message)) = store.message(hit_folder, *uid)
             {
@@ -73,8 +89,7 @@ pub(crate) fn load(stores: &[(usize, &str, &Store)], query: &ListQuery) -> Loade
             }
         }
         loaded.hits = Some(list::merge_hits(hits, list::SEARCH_LIMIT));
-        let now = postvak_core::time::now();
-        for &(_, name, store) in stores {
+        for &&(_, name, store, _) in &searched {
             match store.backlog_count(now) {
                 Ok((unindexed, total)) => {
                     loaded.unindexed += unindexed;
@@ -85,7 +100,7 @@ pub(crate) fn load(stores: &[(usize, &str, &Store)], query: &ListQuery) -> Loade
         }
         return loaded;
     }
-    for &(account, name, store) in stores {
+    for &(account, name, store, _) in stores {
         match store.thread_summaries(folder, THREAD_LIMIT, query.filter) {
             Ok(threads) => loaded.threads.push((account, Some(threads))),
             Err(e) => {
@@ -98,7 +113,7 @@ pub(crate) fn load(stores: &[(usize, &str, &Store)], query: &ListQuery) -> Loade
         let members = stores
             .iter()
             .find(|(account, ..)| *account == key.0)
-            .and_then(|(.., store)| store.thread_members(folder, &key.1).ok())
+            .and_then(|(_, _, store, _)| store.thread_members(folder, &key.1).ok())
             .filter(|members| members.len() > 1);
         loaded.members.push((key.clone(), members));
     }
@@ -108,23 +123,23 @@ pub(crate) fn load(stores: &[(usize, &str, &Store)], query: &ListQuery) -> Loade
 /// [`load`] over connections of its own, opened by account name; an account whose store does not open keeps its rows.
 pub(crate) fn load_from_paths(
     paths: &Paths,
-    accounts: &[(usize, String)],
+    accounts: &[LoadAccount],
     query: &ListQuery,
 ) -> Loaded {
     let mut opened = Vec::new();
     let mut failed = Vec::new();
-    for (index, name) in accounts {
+    for (index, name, identity) in accounts {
         match Store::open(&paths.mail_db(name)) {
-            Ok(store) => opened.push((*index, name.as_str(), store)),
+            Ok(store) => opened.push((*index, name.as_str(), store, identity.as_ref())),
             Err(e) => {
                 log::warn!("[{name}] could not open the store to reload the list: {e}");
                 failed.push(*index);
             }
         }
     }
-    let stores: Vec<(usize, &str, &Store)> = opened
+    let stores: Vec<LoadStore<'_>> = opened
         .iter()
-        .map(|(index, name, store)| (*index, *name, store))
+        .map(|(index, name, store, identity)| (*index, *name, store, *identity))
         .collect();
     let mut loaded = load(&stores, query);
     if loaded.hits.is_none() {
@@ -135,8 +150,11 @@ pub(crate) fn load_from_paths(
     loaded
 }
 
+/// An account a load opens: its index, name and, for `from:me`, its identity.
+pub(crate) type LoadAccount = (usize, String, Option<Identity>);
+
 /// How a load opens its own connections and reads; tests swap it to hold a load back.
-pub(crate) type LoadFn = fn(&Paths, &[(usize, String)], &ListQuery) -> Loaded;
+pub(crate) type LoadFn = fn(&Paths, &[LoadAccount], &ListQuery) -> Loaded;
 
 /// A load running on its own thread, numbered so a result that a later load overtook is dropped.
 pub(crate) struct Loading {
@@ -149,7 +167,7 @@ pub(crate) struct Loading {
 pub(crate) fn spawn(
     load_fn: LoadFn,
     paths: Paths,
-    accounts: Vec<(usize, String)>,
+    accounts: Vec<LoadAccount>,
     query: ListQuery,
     wake: Wake,
 ) -> Receiver<Loaded> {
@@ -182,7 +200,7 @@ mod tests {
         fx.add("work", message("INBOX", 1, "hello"));
         // A directory where the database should be: SQLite cannot open it.
         std::fs::create_dir_all(fx.paths.mail_db("gone")).unwrap();
-        let accounts = [(0, "work".to_string()), (1, "gone".to_string())];
+        let accounts = [(0, "work".to_string(), None), (1, "gone".to_string(), None)];
         let loaded = load_from_paths(&fx.paths, &accounts, &inbox());
         assert!(loaded.hits.is_none());
         assert_eq!(loaded.threads.len(), 2);
@@ -199,7 +217,7 @@ mod tests {
             search: Some("invoice".into()),
             ..inbox()
         };
-        let loaded = load_from_paths(&fx.paths, &[(0, "work".to_string())], &query);
+        let loaded = load_from_paths(&fx.paths, &[(0, "work".to_string(), None)], &query);
         let uids: Vec<u32> = loaded.hits.unwrap().iter().map(|row| row.uid).collect();
         assert_eq!(uids, [1]);
         assert!(loaded.threads.is_empty());

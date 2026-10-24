@@ -21,7 +21,7 @@ Four crates in one workspace. `crates/postvak-core` holds every module below exc
 - `output` JSON rows shared by `--json` and MCP results
 - `paths` platform dirs, atomic writes, `stable_exe` (the binary path that survives `brew upgrade` and AppImage mounts), whether this is the macOS app opened from Finder (`launched_as_app`)
 - `rules` parse + validate + schema (`mod.rs`), pure `evaluate` (`engine.rs`), side effects (`apply.rs`), the only writer of rules.toml (`edit.rs`)
-- `search` the query syntax: `parse` reads what the user typed and never fails, `plan` builds the one FTS5 expression `Store::search` runs; nothing else names the FTS table
+- `search` the query syntax: `parse` reads what the user typed and never fails, `plan` builds the one FTS5 expression and the SQL predicates `Store::search` runs (operators such as `from:` and `after:` are column terms and predicates there); nothing else names the FTS table
 - `store` one SQLite file per account; migrations in `crates/postvak-core/migrations/`
 - `sync` per-account loop: sync folders in chunks, run rules, run commands, IDLE
 - `time` the current Unix time, and timestamps shown in local time

@@ -183,7 +183,7 @@ pub(crate) mod tests {
     #[test]
     fn phrases_negations_and_words_that_split_are_never_expanded() {
         let vocab = Fixed::of(&[("invoice", 40, true)]);
-        let query = crate::search::parse("\"invioce due\" -invioce invioce");
+        let query = crate::search::parse("\"invioce due\" -invioce invioce", 0);
         assert_eq!(
             expanded_words(&query, &vocab),
             [("invioce".to_string(), vec!["invoice".to_string()])]

@@ -58,4 +58,4 @@ theme = "system"
 
 ## Aliases
 
-`address` plus `aliases` define "me". Rules use them through `to_me` and `alias`.
+`address` plus `aliases` define "me". Rules use them through `to_me` and `alias`, and a search through `from:me`, `to:me` and `cc:me`.

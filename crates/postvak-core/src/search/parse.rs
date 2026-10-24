@@ -1,13 +1,18 @@
-//! The query syntax: words, `"phrases"` and `-not`. Anything else is a word, so parsing cannot fail.
+//! The query syntax: words, `"phrases"`, `-not` and `key:value` operators. Anything else is a word, so parsing
+//! cannot fail.
 
-use super::{Query, Term};
+use chrono::TimeZone;
 
-/// Reads a query. Whitespace separates terms; a term with a `"` in it is a phrase that runs to the next `"` or the
-/// end, spaces included; a leading `-` negates. A term without a letter or digit is dropped, since FTS5 would
-/// tokenize it to nothing. Control characters count as whitespace: FTS5 reads the expression as a C string, so a
-/// NUL would end it early.
-pub fn parse(text: &str) -> Query {
-    let mut terms = Vec::new();
+use super::{Column, Filter, Query, Term};
+
+/// Reads a query. Whitespace separates tokens; a token with a `"` in it is a phrase that runs to the next `"` or the
+/// end, spaces included; a leading `-` negates. A token `key:value` with a known key is a filter (`in:"Projects/A"`
+/// quotes a value with spaces); with an unknown key, or a value the key cannot read, it stays a word. A token
+/// without a letter or digit is dropped, since FTS5 would tokenize it to nothing. Control characters count as
+/// whitespace: FTS5 reads the expression as a C string, so a NUL would end it early. `now` resolves relative dates
+/// such as `after:7d`.
+pub fn parse(text: &str, now: i64) -> Query {
+    let mut query = Query::default();
     let mut token = String::new();
     let mut quoted = false;
     let mut in_quote = false;
@@ -21,12 +26,16 @@ pub fn parse(text: &str) -> Query {
         if !body.chars().any(char::is_alphanumeric) {
             return;
         }
+        if let Some(filter) = filter(body, was_quoted, negated, now) {
+            query.filters.push(filter);
+            return;
+        }
         let term = if was_quoted {
             Term::Phrase(body.to_string())
         } else {
             Term::Word(body.to_string())
         };
-        terms.push(if negated {
+        query.terms.push(if negated {
             Term::Not(Box::new(term))
         } else {
             term
@@ -46,15 +55,106 @@ pub fn parse(text: &str) -> Query {
         }
     }
     flush(&mut token, &mut quoted);
-    Query {
-        terms,
-        filters: Vec::new(),
+    query
+}
+
+/// The filter a `key:value` token means, if its key is known and its value readable. A `-` before a text key
+/// excludes the column term; before any other key it is ignored, since `-is:read` has no clear meaning.
+fn filter(body: &str, quoted: bool, negated: bool, now: i64) -> Option<Filter> {
+    let (key, value) = body.split_once(':')?;
+    if value.is_empty() {
+        return None;
     }
+    let column = match key.to_ascii_lowercase().as_str() {
+        "from" => Column::From,
+        "to" => Column::To,
+        "cc" => Column::Cc,
+        "subject" => Column::Subject,
+        "attachment" => Column::Attachment,
+        "in" => return Some(Filter::In(value.to_string())),
+        "account" => return Some(Filter::Account(value.to_string())),
+        "has" => {
+            return matches!(
+                value.to_ascii_lowercase().as_str(),
+                "attachment" | "attachments"
+            )
+            .then_some(Filter::HasAttachment);
+        }
+        "is" => {
+            return match value.to_ascii_lowercase().as_str() {
+                "unread" => Some(Filter::Unread),
+                "read" => Some(Filter::Read),
+                "flagged" => Some(Filter::Flagged),
+                _ => None,
+            };
+        }
+        "before" => return date(value, now).map(Filter::Before),
+        "after" => return date(value, now).map(Filter::After),
+        _ => return None,
+    };
+    if !quoted
+        && matches!(column, Column::From | Column::To | Column::Cc)
+        && value.eq_ignore_ascii_case("me")
+    {
+        return Some(Filter::Me { column, negated });
+    }
+    let term = if quoted {
+        Term::Phrase(value.to_string())
+    } else {
+        Term::Word(value.to_string())
+    };
+    Some(Filter::Text(
+        column,
+        if negated {
+            Term::Not(Box::new(term))
+        } else {
+            term
+        },
+    ))
+}
+
+/// A date value: `YYYY-MM-DD` is local midnight of that day; `7d`, `3w`, `6m` and `1y` count back from `now`.
+fn date(value: &str, now: i64) -> Option<i64> {
+    if let Some(count) = value.strip_suffix(['d', 'w', 'm', 'y'])
+        && !count.is_empty()
+        && count.bytes().all(|b| b.is_ascii_digit())
+    {
+        let count: u32 = count.parse().ok()?;
+        let days = |n: u32| Some(now - i64::from(count) * i64::from(n) * 86_400);
+        return match value.as_bytes()[value.len() - 1] {
+            b'd' => days(1),
+            b'w' => days(7),
+            b'm' => months_back(now, count),
+            _ => months_back(now, count.checked_mul(12)?),
+        };
+    }
+    let date = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").ok()?;
+    local_midnight(date)
+}
+
+/// The same clock time `months` months before `now`, in local time: the calendar moves, not a fixed day count.
+fn months_back(now: i64, months: u32) -> Option<i64> {
+    let at = chrono::Local.timestamp_opt(now, 0).single()?;
+    // A day the earlier month lacks becomes its last day.
+    let earlier = at.checked_sub_months(chrono::Months::new(months))?;
+    Some(earlier.timestamp())
+}
+
+/// The start of `date` in local time; a day whose midnight falls in a DST gap starts at the first instant after it.
+fn local_midnight(date: chrono::NaiveDate) -> Option<i64> {
+    let midnight = date.and_hms_opt(0, 0, 0)?;
+    chrono::Local
+        .from_local_datetime(&midnight)
+        .earliest()
+        .map(|at| at.timestamp())
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// A fixed `now` for the tests: 2026-10-24 12:00 UTC.
+    pub(crate) const NOW: i64 = 1_792_843_200;
 
     fn word(s: &str) -> Term {
         Term::Word(s.into())
@@ -66,6 +166,14 @@ mod tests {
 
     fn not(t: Term) -> Term {
         Term::Not(Box::new(t))
+    }
+
+    fn terms(text: &str) -> Vec<Term> {
+        parse(text, NOW).terms
+    }
+
+    fn filters(text: &str) -> Vec<Filter> {
+        parse(text, NOW).filters
     }
 
     #[test]
@@ -85,29 +193,146 @@ mod tests {
             ("alice@x.nl", vec![word("alice@x.nl")]),
         ];
         for (text, expected) in cases {
-            assert_eq!(parse(text).terms, expected, "{text:?}");
+            assert_eq!(terms(text), expected, "{text:?}");
         }
     }
 
     #[test]
     fn nothing_to_match_is_dropped() {
         for text in ["", "   ", "\"\"", "-", "--", "- -", "...", "\" \"", "-\"\""] {
-            assert!(parse(text).is_empty(), "{text:?}");
+            assert!(parse(text, NOW).is_empty(), "{text:?}");
         }
     }
 
     #[test]
     fn control_characters_separate_words_and_blank_inside_phrases() {
-        assert_eq!(
-            parse("a\0b\tc").terms,
-            vec![word("a"), word("b"), word("c")]
-        );
-        assert_eq!(parse("\"a\0b\"").terms, vec![phrase("a b")]);
-        assert!(parse("\0\x01").is_empty());
+        assert_eq!(terms("a\0b\tc"), vec![word("a"), word("b"), word("c")]);
+        assert_eq!(terms("\"a\0b\""), vec![phrase("a b")]);
+        assert!(parse("\0\x01", NOW).is_empty());
     }
 
     #[test]
     fn a_second_dash_stays_in_the_word() {
-        assert_eq!(parse("--x").terms, vec![not(word("-x"))]);
+        assert_eq!(terms("--x"), vec![not(word("-x"))]);
+    }
+
+    #[test]
+    fn column_operators_take_words_phrases_and_negation() {
+        use Column::*;
+        let cases: [(&str, Filter); 8] = [
+            ("from:acme", Filter::Text(From, word("acme"))),
+            ("FROM:acme", Filter::Text(From, word("acme"))),
+            ("to:alice@x.nl", Filter::Text(To, word("alice@x.nl"))),
+            ("cc:lists", Filter::Text(Cc, word("lists"))),
+            (
+                "subject:\"status update\"",
+                Filter::Text(Subject, phrase("status update")),
+            ),
+            ("attachment:pdf", Filter::Text(Attachment, word("pdf"))),
+            ("-from:acme", Filter::Text(From, not(word("acme")))),
+            (
+                "-subject:\"status update",
+                Filter::Text(Subject, not(phrase("status update"))),
+            ),
+        ];
+        for (text, expected) in cases {
+            let query = parse(text, NOW);
+            assert_eq!(query.filters, [expected], "{text:?}");
+            assert!(query.terms.is_empty(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn me_is_the_identity_in_the_address_columns_only() {
+        use Column::*;
+        for (text, column, negated) in [
+            ("from:me", From, false),
+            ("to:ME", To, false),
+            ("cc:me", Cc, false),
+            ("-from:me", From, true),
+        ] {
+            assert_eq!(filters(text), [Filter::Me { column, negated }], "{text:?}");
+        }
+        assert_eq!(
+            filters("subject:me"),
+            [Filter::Text(Subject, word("me"))],
+            "a subject can be about me"
+        );
+        assert_eq!(
+            filters("from:\"me\""),
+            [Filter::Text(From, phrase("me"))],
+            "quoted, it is the word"
+        );
+    }
+
+    #[test]
+    fn folder_flag_and_account_operators() {
+        let cases: [(&str, Filter); 9] = [
+            ("in:Archive", Filter::In("Archive".into())),
+            (
+                "in:\"Projects/Old explorations\"",
+                Filter::In("Projects/Old explorations".into()),
+            ),
+            ("-in:Archive", Filter::In("Archive".into())),
+            ("has:attachment", Filter::HasAttachment),
+            ("has:Attachments", Filter::HasAttachment),
+            ("is:unread", Filter::Unread),
+            ("is:READ", Filter::Read),
+            ("is:flagged", Filter::Flagged),
+            ("account:work", Filter::Account("work".into())),
+        ];
+        for (text, expected) in cases {
+            assert_eq!(filters(text), [expected], "{text:?}");
+        }
+        assert_eq!(parse("account:work", NOW).account(), Some("work"));
+        assert_eq!(parse("work", NOW).account(), None);
+    }
+
+    #[test]
+    fn dates_are_local_midnights_and_relative_ones_count_back_from_now() {
+        let jan15 = local_midnight(chrono::NaiveDate::from_ymd_opt(2026, 1, 15).unwrap()).unwrap();
+        assert_eq!(filters("before:2026-01-15"), [Filter::Before(jan15)]);
+        assert_eq!(filters("after:2026-01-15"), [Filter::After(jan15)]);
+        assert_eq!(filters("after:7d"), [Filter::After(NOW - 7 * 86_400)]);
+        assert_eq!(filters("before:3w"), [Filter::Before(NOW - 21 * 86_400)]);
+        let six_months = months_back(NOW, 6).unwrap();
+        assert_eq!(filters("after:6m"), [Filter::After(six_months)]);
+        assert_eq!(
+            filters("after:1y"),
+            [Filter::After(months_back(NOW, 12).unwrap())]
+        );
+        assert!(NOW - six_months > 180 * 86_400 && NOW - six_months < 186 * 86_400);
+    }
+
+    #[test]
+    fn unknown_keys_and_unreadable_values_stay_words() {
+        for text in [
+            "size:10",
+            "from:",
+            "has:photo",
+            "is:starred",
+            "before:yesterday",
+            "after:2026-13-01",
+            "after:7x",
+            "after:d",
+            "re:lunch",
+        ] {
+            let query = parse(text, NOW);
+            assert_eq!(query.terms, [word(text)], "{text:?}");
+            assert!(query.filters.is_empty(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn operators_and_words_mix_in_any_order() {
+        let query = parse("from:acme invoice after:7d -spam", NOW);
+        assert_eq!(query.terms, [word("invoice"), not(word("spam"))]);
+        assert_eq!(
+            query.filters,
+            [
+                Filter::Text(Column::From, word("acme")),
+                Filter::After(NOW - 7 * 86_400)
+            ]
+        );
     }
 }
