@@ -57,23 +57,25 @@ fn list_on_unknown_account_fails_and_empty_config_lists_nothing() {
 const ADD_ANSWERS: &str = "late\n127.0.0.1\n1\n\nme@example.com\n\nc\nprintf x\n";
 
 #[test]
-fn account_add_saves_then_reports_the_first_sync() {
+fn account_add_tests_the_login_first_and_saves_nothing_when_it_fails() {
     let (home, _store) = seeded_home(&[]);
+    let before = std::fs::read_to_string(home.path().join("config/config.toml")).ok();
     let out = postvak_stdin(home.path(), &["account", "add"], ADD_ANSWERS);
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stdout.contains("saved to"), "{stdout}");
-    assert!(!stdout.contains("Testing login"), "{stdout}");
-    let config = std::fs::read_to_string(home.path().join("config/config.toml")).unwrap();
-    assert!(config.contains("name = \"late\""), "{config}");
-    assert!(config.contains("command = \"printf x\""), "{config}");
-    // Port 1 refuses, so the first sync fails with the offline reason its connect left.
+    assert!(
+        stdout.contains("testing the login to 127.0.0.1…"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("saved to"), "{stdout}");
+    // Port 1 refuses, so the daemon's login test fails and nothing is written.
     assert!(!out.status.success(), "{stdout}\n{stderr}");
     assert!(
-        stderr.contains("[late] error: late is offline (")
-            && stderr.contains("the first sync of 'late' failed"),
+        stderr.contains("the login failed, so nothing was saved: 127.0.0.1: could not connect"),
         "{stderr}"
     );
+    let after = std::fs::read_to_string(home.path().join("config/config.toml")).ok();
+    assert_eq!(after, before);
 }
 
 #[test]
@@ -656,32 +658,62 @@ fn agent_proposes_and_a_human_approves_or_rejects() {
 }
 
 #[test]
-fn search_bodies_works_offline() {
+fn search_marks_close_matches_and_exact_turns_them_off() {
+    let typo = message(44, "billing@example.com", "Invioce for March");
+    let right = message(45, "billing@example.com", "Invoice for April");
+    let (home, _store) = seeded_home(&[typo, right]);
+    let out = postvak(home.path(), &["search", "invioce"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let lines: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(
+        lines[0].contains("INBOX/44") && !lines[0].starts_with('~'),
+        "{lines:?}"
+    );
+    assert!(
+        lines[1].starts_with("~ ") && lines[1].contains("INBOX/45"),
+        "{lines:?}"
+    );
+
+    let out = postvak(home.path(), &["search", "invioce", "--exact"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("INBOX/44") && !stdout.contains("INBOX/45"),
+        "{stdout}"
+    );
+
+    let out = postvak(home.path(), &["search", "invioce", "--json"]);
+    let rows: Vec<serde_json::Value> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(rows[0]["match"], "exact");
+    assert_eq!(rows[1]["match"], "close");
+    assert_eq!(rows[1]["uid"], 45);
+    assert!(rows[1].get("snippet").is_none());
+}
+
+#[test]
+fn search_works_offline_over_indexed_bodies() {
     let mut stored = message(42, "billing@example.com", "Your invoice");
     stored.body_text = Some("the total is due".into());
     let (home, _store) = seeded_home(&[stored]);
-    let out = postvak(home.path(), &["search", "--bodies", "invoice"]);
+    let out = postvak(home.path(), &["search", "total"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{stderr}");
-    assert!(
-        !stderr.contains("offline"),
-        "asked the daemon with nothing to fetch: {stderr}"
-    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("INBOX/42"));
+    assert!(!stderr.contains("offline"), "asked the daemon: {stderr}");
     assert!(
         !Paths::under(home.path()).daemon_socket().exists(),
-        "started a daemon with nothing to fetch"
+        "started a daemon for a local search"
     );
-
-    let (home, _store) = seeded_home(&[message(43, "friend@example.com", "Lunch?")]);
-    let out = postvak(home.path(), &["search", "--bodies", "Lunch"]);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "{stderr}");
-    assert!(
-        stderr.contains("work: work is offline (")
-            && stderr.contains("searching the bodies already stored"),
-        "{stderr}"
-    );
-    assert!(String::from_utf8_lossy(&out.stdout).contains("INBOX/43"));
 }
 
 #[cfg(feature = "mcp")]
@@ -971,6 +1003,10 @@ fn serve_fake_daemon(paths: &Paths, version: &'static str) -> std::thread::JoinH
                             requests: Vec::new(),
                             errors: vec![FAILED_PASS.into()],
                         })),
+                    },
+                    ClientMessage::TestLogin { id, .. } => DaemonMessage::Reply {
+                        id,
+                        outcome: Outcome::Error("no logins here".into()),
                     },
                     ClientMessage::Status { id } => DaemonMessage::Reply {
                         id,

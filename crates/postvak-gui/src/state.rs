@@ -9,6 +9,7 @@ use std::time::Duration;
 use crate::update;
 use postvak_core::bimi::Brand;
 use postvak_core::config::{self, AccountConfig, Config, Theme};
+use postvak_core::credentials::Secret;
 use postvak_core::daemon::Client;
 use postvak_core::daemon::client::NewerDaemon;
 use postvak_core::daemon::wire::AccountStatus;
@@ -48,6 +49,8 @@ const HISTORY: usize = 50;
 
 /// Seconds between checks of rules.toml and config.toml for outside edits.
 pub(crate) const POLL: f64 = 2.0;
+/// How often an open search reloads while the indexer adds bodies, in seconds.
+const INDEX_RELOAD: f64 = 1.0;
 
 /// How long a message stays on screen before it is marked read.
 pub(crate) const READ_DELAY: f64 = 1.0;
@@ -70,11 +73,18 @@ pub(crate) fn connect(paths: &Paths, wake: Waker) -> anyhow::Result<Connection> 
     session(Client::connect_or_start(paths)?, wake)
 }
 
-/// Syncs a saved account once through a connection of its own, starting the daemon if none runs, as
-/// `postvak account add` does: the add-account form's test of the login.
-pub(crate) fn first_sync(paths: &Paths, name: &str) -> Result<(), String> {
+/// Logs in as an account not saved yet through a connection of its own, starting the daemon if none runs, as
+/// `postvak account add` does: the add-account form's test before it saves.
+pub(crate) fn test_login(
+    paths: &Paths,
+    config: &Config,
+    account: &AccountConfig,
+    secret: &Secret,
+) -> Result<(), String> {
     Client::connect_or_start(paths)
-        .and_then(|client| postvak_core::account::first_sync(&client, name))
+        .and_then(|client| {
+            postvak_core::account::test_login(&client, config, account, Some(secret))
+        })
         .map_err(|e| clean(&format!("{e:#}"), false))
 }
 
@@ -175,7 +185,10 @@ impl Account {
         !matches!(
             self.activity,
             None | Some(
-                Activity::Idle { .. } | Activity::NotRunning { .. } | Activity::Offline { .. }
+                Activity::Idle { .. }
+                    | Activity::Indexing { .. }
+                    | Activity::NotRunning { .. }
+                    | Activity::Offline { .. }
             )
         )
     }
@@ -404,7 +417,7 @@ pub struct App {
     pub(crate) retention: BTreeMap<String, u64>,
     pub(crate) events: Receiver<Event>,
     pub(crate) fetch_release: fn() -> anyhow::Result<String>,
-    /// Tests a saved account's login with its first sync; tests swap it so no daemon starts.
+    /// Tests an account's login before the form saves it; tests swap it so no daemon starts.
     pub(crate) check_login: account::Check,
     /// Sends a one-click unsubscribe; tests swap it so nothing leaves the machine.
     pub(crate) post_unsubscribe: fn(&str) -> Result<(), String>,
@@ -424,6 +437,8 @@ pub struct App {
     pub(crate) history_open: bool,
     /// Opens a file or URL with the desktop's app; tests record instead.
     pub(crate) launch: fn(&std::ffi::OsStr, bool) -> std::io::Result<()>,
+    /// When an open search last reloaded for `Event::Indexed`.
+    pub(crate) last_index_reload: f64,
     pub(crate) last_poll: f64,
     pub(crate) last_reconnect: f64,
     pub(crate) list: ListState,
@@ -535,7 +550,7 @@ impl App {
             error: None,
             events,
             fetch_release: update::fetch,
-            check_login: first_sync,
+            check_login: test_login,
             post_unsubscribe: |url| unsubscribe::one_click(url).map_err(|e| e.to_string()),
             unsubscribing: None,
             fetcher: None,
@@ -548,6 +563,7 @@ impl App {
             history: VecDeque::new(),
             history_open: false,
             launch,
+            last_index_reload: 0.0,
             last_poll: 0.0,
             last_reconnect: 0.0,
             list: ListState::default(),
@@ -771,10 +787,10 @@ impl App {
         let name = match &event {
             Event::Activity { account, .. }
             | Event::ActionDone { account, .. }
-            | Event::BodiesFetched { account, .. }
             | Event::BodyReady { account, .. }
             | Event::CommandFailed { account, .. }
             | Event::Error { account, .. }
+            | Event::Indexed { account, .. }
             | Event::NewMail { account, .. }
             | Event::Restored { account, .. }
             | Event::RuleApplied { account, .. }
@@ -789,7 +805,9 @@ impl App {
                 // Progress lives on the status line; ticks would evict errors from the history.
                 if !matches!(
                     activity,
-                    Activity::FetchingBodies { .. } | Activity::FetchingHeaders { .. }
+                    Activity::FetchingBodies { .. }
+                        | Activity::FetchingHeaders { .. }
+                        | Activity::Indexing { .. }
                 ) {
                     let line = format!("{}: {activity}", self.accounts[index].name);
                     self.push_history(line);
@@ -802,6 +820,14 @@ impl App {
                 account.activity = Some(activity);
             }
             Event::NewMail { .. } => {}
+            // More bodies are searchable: an open search reloads, at most once a second, keeping its cursor as a
+            // sync event's reload does.
+            Event::Indexed { .. } => {
+                if self.search.is_some() && now - self.last_index_reload >= INDEX_RELOAD {
+                    self.last_index_reload = now;
+                    self.view_dirty = true;
+                }
+            }
             // Request 0 is this window's own outcome. A daemon id is another client's, or the broadcast copy of our own
             // failure; the client drops the copy of our own `ActionDone`.
             Event::CommandFailed { request, .. } if request != 0 => {}
@@ -851,7 +877,6 @@ impl App {
                 }
                 self.refresh(index);
             }
-            Event::BodiesFetched { .. } => self.refresh(index),
             Event::Synced { .. } => {
                 // A fresh sync result replaces the last notice, which would otherwise outrank every account line.
                 self.notice = None;
@@ -988,8 +1013,8 @@ impl App {
                 if self.apply_confirm.is_some() {
                     self.apply_confirm = None;
                 } else if let Some(form) = &self.account_form {
-                    // A save in flight writes first, so its account joins the window; its first sync goes on, and
-                    // shows on the account's line.
+                    // During the login test nothing is saved yet and the save gives up; once it writes, it finishes
+                    // first, so its account joins the window.
                     if form.saving.is_none() || form.testing {
                         self.account_form = None;
                     }
@@ -1554,6 +1579,8 @@ impl App {
         }
         if let Some(hits) = loaded.hits {
             self.list.hits = hits;
+            self.list.unindexed = loaded.unindexed;
+            self.list.covered = loaded.covered;
         } else {
             let found = loaded
                 .threads
@@ -1619,6 +1646,13 @@ impl App {
     }
 
     /// The message, its attachments and its HTML as stored now.
+    fn has_raw(&self, account: usize, key: &RowKey) -> bool {
+        self.accounts[account]
+            .store
+            .as_ref()
+            .is_ok_and(|store| store.has_raw(&key.0, key.1).unwrap_or(false))
+    }
+
     fn read_stored(&self, account: usize, key: &RowKey) -> Stored {
         let Ok(store) = &self.accounts[account].store else {
             return (None, Vec::new(), None);
@@ -1679,10 +1713,7 @@ impl App {
             .flatten()
             .filter_map(|index| self.list.rows.get(index))
             .filter(|row| match &self.accounts[row.account].store {
-                Ok(store) => matches!(
-                    store.message(&row.folder, row.uid),
-                    Ok(Some(m)) if m.body_text.is_none()
-                ),
+                Ok(store) => matches!(store.has_raw(&row.folder, row.uid), Ok(false)),
                 Err(_) => false,
             })
             .map(Row::id)
@@ -1695,7 +1726,8 @@ impl App {
     /// The stored message and its attachments; asks the sync thread for a missing body once per message.
     fn load_body(&mut self, account: usize, key: RowKey, now: f64, armed: bool) -> BodyState {
         let (stored, attachments, html) = self.read_stored(account, &key);
-        if stored.as_ref().is_some_and(|m| m.body_text.is_none()) {
+        // An indexed message has its text but not its raw bytes, which the HTML view and the attachments need.
+        if stored.is_some() && !self.has_raw(account, &key) {
             self.request_body(account, &key);
         }
         let text = body_text(stored.as_ref());
@@ -2267,13 +2299,14 @@ impl App {
             Ok(answer) => {
                 form.error = None;
                 form.saving = Some(answer);
+                form.testing = true;
             }
             Err(message) => form.error = Some(message),
         }
     }
 
-    /// Takes the save's steps: a saved account joins the window, a passed first sync closes the form, and a refusal or
-    /// a failed sync stays in the form with why.
+    /// Takes the save's steps: a saved account joins the window and closes the form, and a refusal, of the login or of
+    /// the save, stays in the form with why.
     fn receive_saved_account(&mut self) {
         loop {
             let Some(form) = &mut self.account_form else {
@@ -2286,12 +2319,9 @@ impl App {
                 Err(TryRecvError::Disconnected) => account::Step::Refused(account::STOPPED.into()),
             };
             match step {
-                account::Step::Saved(account) => {
-                    form.testing = true;
-                    self.account_added(account);
-                }
-                account::Step::Synced => self.account_form = None,
-                account::Step::Refused(why) | account::Step::Failed(why) => {
+                account::Step::Tested => form.testing = false,
+                account::Step::Saved(account) => return self.account_added(account),
+                account::Step::Refused(why) => {
                     form.saving = None;
                     form.testing = false;
                     form.error = Some(why);
@@ -2303,6 +2333,7 @@ impl App {
     /// A new account joins the list and a replaced one keeps its place; the daemon starts it from config.toml and its
     /// events arrive by name, so its first sync shows on its line.
     fn account_added(&mut self, account: AccountConfig) {
+        self.account_form = None;
         // Absorbs this window's own write, so the poll does not take it for an outside edit.
         self.config_watch.changed();
         self.retention

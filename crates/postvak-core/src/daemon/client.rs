@@ -19,6 +19,8 @@ use super::lock;
 use super::wire::{
     self, ClientMessage, DaemonMessage, Outcome, PROTOCOL, Payload, Status, VERSION,
 };
+use crate::config::AccountConfig;
+use crate::credentials::Secret;
 use crate::paths::{self, Paths};
 use crate::rules::Action;
 use crate::store::{Message, Store};
@@ -488,6 +490,18 @@ impl Client {
         }
     }
 
+    /// Asks the daemon to log in as `account` with `secret` and out again, saving nothing; the error says why it could
+    /// not. Waits as long as a request, past the 30 s a connection may take.
+    pub fn test_login(&self, account: &AccountConfig, secret: &Secret) -> anyhow::Result<()> {
+        let message = |id| ClientMessage::TestLogin {
+            id,
+            account: Box::new(account.clone()),
+            password: wire::Password::new(secret),
+        };
+        self.call(message, Some(REPLY_TIMEOUT))?;
+        Ok(())
+    }
+
     pub fn shutdown(&self) -> anyhow::Result<()> {
         self.call(|id| ClientMessage::Shutdown { id }, Some(REPLY_TIMEOUT))?;
         Ok(())
@@ -583,10 +597,7 @@ impl Drop for Client {
 /// giving up early would drop the client and let an auto-started daemon idle out mid-run.
 pub(super) fn reply_timeout(command: &Command) -> Option<Duration> {
     match command {
-        Command::ApplyRule { .. }
-        | Command::FetchBodies { .. }
-        | Command::SearchServer { .. }
-        | Command::SyncNow => None,
+        Command::ApplyRule { .. } | Command::SearchServer { .. } | Command::SyncNow => None,
         Command::Apply { .. } | Command::FetchBody { .. } | Command::Restore { .. } => {
             Some(REPLY_TIMEOUT)
         }

@@ -1,6 +1,6 @@
 # Accounts
 
-`postvak account add` asks for the details (including an extra CA file, if your server needs one), writes `config.toml`, keeping your comments and leaving out settings at their default, and syncs the account once through the background daemon. A wrong login shows as that sync's error; running it again with the same name replaces the account. Agents with the `accounts:write` scope can add an account through the MCP `account_add` tool, with a password command and never a plain password; see [MCP](mcp.md). In the window, Mailbox ▸ Add account… does the same, with the password in the OS keyring, and keeps the form open with the error when that first sync fails; with no account set up yet, the window that opens in place of the mail window holds the same form. You can also edit the file by hand:
+`postvak account add` asks for the details (including an extra CA file, if your server needs one), has the background daemon test the login, and only when it passes writes `config.toml`, keeping your comments and leaving out settings at their default, and syncs the account once. A wrong login saves nothing; running it again with the same name replaces the account. Agents with the `accounts:write` scope can add an account through the MCP `account_add` tool, with a password command and never a plain password; see [MCP](mcp.md). In the window, Mailbox ▸ Add account… does the same, with the password in the OS keyring, and keeps the form open with the error when the login fails; with no account set up yet, the window that opens in place of the mail window holds the same form. You can also edit the file by hand:
 
 | | Linux | macOS |
 |---|---|---|
@@ -32,6 +32,7 @@ notify = true
 | `sync_interval_secs` | 120 | Full sync interval, at least 10. New INBOX mail arrives sooner through IMAP IDLE. |
 | `trash_retention_days` | 30 | How long deleted mail is kept as `.eml`. |
 | `notify` | true | Desktop notification for new INBOX mail that no rule moved, archived, deleted or silenced (see [Notifications](rules.md#notifications)). |
+| `index_bodies` | true | Download and index the text of every message in the background, so search covers bodies (see [Search](search.md)). Off, only the subject, addresses and the bodies of mail you opened are searched. |
 | `ca_file` | none | Absolute path to a PEM file with an extra trusted root certificate, for a server with a private CA. Postvak trusts the public web roots it ships with, not the system's certificate store, so a CA you installed on your system goes here too. |
 
 ## Appearance

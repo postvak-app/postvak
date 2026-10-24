@@ -139,12 +139,12 @@ enum Command {
         account: Option<String>,
         #[arg(long)]
         folder: Option<String>,
-        /// Fetch and index missing bodies first; slow on a large folder
-        #[arg(long)]
-        bodies: bool,
         /// Ask the server too, which searches bodies not downloaded yet; each folder costs a round trip
         #[arg(long)]
         server: bool,
+        /// Only what matches as typed: no close matches such as corrected typos
+        #[arg(long)]
+        exact: bool,
         #[arg(long, default_value_t = 50)]
         limit: u32,
         #[arg(long)]
@@ -515,28 +515,22 @@ pub fn run() -> Result<()> {
             query,
             account,
             folder,
-            bodies,
             server,
+            exact,
             limit,
             json,
         } => {
             let daemon = LazyClient::new(&paths);
+            let parsed = postvak_core::search::parse(&query);
             for acc in select_accounts(&config, account.as_deref())? {
                 let store = Store::open_account(&paths, &acc.name)?;
-                if bodies && store.lacks_bodies(folder.as_deref())? {
-                    eprintln!(
-                        "{}: fetching missing bodies; this can take a while on a large folder",
-                        acc.name
-                    );
-                    if let Err(e) = fetch_bodies(&daemon, &acc.name, folder.as_deref()) {
-                        eprintln!(
-                            "{}: {}; searching the bodies already stored",
-                            acc.name,
-                            clean(&format!("{e:#}"), false)
-                        );
-                    }
-                }
-                let mut found = store.search(&query, folder.as_deref(), limit)?;
+                let mut found = store.search(
+                    &parsed,
+                    postvak_core::search::Scope::All,
+                    folder.as_deref(),
+                    limit,
+                    !exact,
+                )?;
                 if server {
                     match daemon.search_server(&acc.name, folder.as_deref(), &query) {
                         Ok(hits) => {
@@ -551,11 +545,15 @@ pub fn run() -> Result<()> {
                         ),
                     }
                 }
-                for m in found {
+                for hit in found {
                     if json {
-                        print_json(postvak_core::output::with_account(&acc.name, &m)?);
+                        print_json(postvak_core::output::with_account(&acc.name, &hit)?);
                     } else {
-                        println!("{}", message_line(&acc.name, &m, 0));
+                        let line = message_line(&acc.name, &hit.message, 0);
+                        match hit.matched {
+                            postvak_core::store::Matched::Exact => println!("{line}"),
+                            postvak_core::store::Matched::Close => println!("~ {line}"),
+                        }
                     }
                 }
             }
@@ -743,17 +741,6 @@ fn unsubscribe_line(report: &postvak_core::unsubscribe::Report) -> String {
         ("mail", false) => format!("send a mail to unsubscribe: {url}"),
         _ => format!("open this page to unsubscribe: {url}"),
     }
-}
-
-/// Asks the daemon to fetch the missing bodies.
-fn fetch_bodies(daemon: &LazyClient, account: &str, folder: Option<&str>) -> Result<()> {
-    let fetch = sync::Command::FetchBodies {
-        folder: folder.map(str::to_string),
-    };
-    daemon.request(account, fetch, |reply| match reply {
-        Event::BodiesFetched { .. } => Ok(()),
-        other => Err(other),
-    })
 }
 
 fn cmd_sync(config: &Config, paths: &Paths, account: Option<&str>) -> Result<()> {
@@ -1371,9 +1358,12 @@ fn cmd_account_add(mut config: Config, paths: &Paths) -> Result<()> {
             Some(Secret::new(rpassword::prompt_password("Password: ")?))
         }
     };
+    let client = Client::connect_or_start(paths)?;
+    println!("testing the login to {host}…");
+    account::test_login(&client, &config, &account, secret.as_ref())
+        .context("the login failed, so nothing was saved")?;
     account::add(&mut config, paths, account, secret)?;
     println!("saved to {}", paths.config_file().display());
-    let client = Client::connect_or_start(paths)?;
     account::await_started(&client, &name, account::START_TIMEOUT)?;
     if !sync_account(&client, &name) {
         bail!(

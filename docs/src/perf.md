@@ -10,6 +10,8 @@ How Postvak behaves as a mailbox grows, measured on generated mail. User stores 
 | --- | --- |
 | `first_sync` | Syncing every account into empty stores, once |
 | `open_store` | Opening one account's store |
+| `rebuild_index` | Rebuilding every account's search index, what migration 011 does once per store when it opens |
+| `index_all` | Indexing every message of one account from the fake server, as the daemon does in idle time: structure, text parts and the store's writes, without a network |
 | `open_window` | Building the mail window's state over all accounts, with its first list |
 | `thread_grouping` | `thread_summaries` on one INBOX: the query that groups the list into threads |
 | `folder_list` | Reloading one account's INBOX list: the query plus the rows |
@@ -17,6 +19,7 @@ How Postvak behaves as a mailbox grows, measured on generated mail. User stores 
 | `sync_event` | The frame that takes a sync event in All inboxes: how long it waits for the reload |
 | `folder_counts` | One account's folders with their unread counts, read again on each of its sync events |
 | `search` | One word searched in All inboxes |
+| `search_close` | A misspelled word searched in All inboxes: no exact hit, so the vocabulary is consulted and the close tier runs |
 | `sync_pass` | One sync of an account after 200 messages arrived and 500 changed flags |
 
 ```sh
@@ -53,6 +56,19 @@ What this shows:
 - A list reload runs `thread_summaries`, which groups every message in the folder, however few rows fit on screen. At 100k messages (about 17k per INBOX) All inboxes takes 33 ms, two frames at 60 Hz. A view change still waits for it; a reload after a sync event no longer does (below).
 - `open_window` grows with the mail too, so the window opens more slowly on big mailboxes. It includes the first list load and per-folder counts.
 - `sync_pass` includes the fake server's own work: `RecordingOps` scans each folder on every select. A real server's time is not in these numbers, and the fake's is.
+
+## The search index
+
+Migration 011 rebuilds the FTS index once per store, the first time the store opens after the upgrade; `rebuild_index` times that rebuild for all three stores together. Release build: Linux container, 4 vCPUs of an Intel Xeon at 2.80 GHz, Rust 1.99.1; another build was running during the 10k run. Median in ms, with the range of five runs.
+
+| Phase | 10k | 100k |
+| --- | --- | --- |
+| `rebuild_index` | 30 (26–31) | 235 (219–251) |
+| `search` | 10 (9.9–23) | 62 (60–70) |
+| `search_close` | 12 (12–14) | |
+| `index_all` | 977 (918–1,117) | |
+
+`index_all` covers the first account's third of the mail, so about 3,400 messages a second go through the structure fetch, the text decode and the store; against a real server each message costs a round trip or two on top, which is what the five-second slices and the newest-first order are for. Rebuilding three stores that hold 100k header-only messages takes a quarter of a second, far under the five seconds the search design allows; stored bodies add to it in proportion to their text. `search` runs its last word as a prefix now (`invoice*`), which costs more than the exact word did, and this machine is not the baseline's M1, so the two `search` rows are not comparable. `search_close` searches `invioce`: the exact tier finds nothing, the vocabulary lookup and the close tier run, and the whole query still costs what an exact one does (the `search` row of the same run was 12 ms).
 
 ## Reloads after a sync event
 

@@ -5,7 +5,8 @@
 use std::sync::mpsc::{self, Receiver};
 
 use postvak_core::paths::Paths;
-use postvak_core::store::{Filter, MessageSummary, Store, ThreadSummary};
+use postvak_core::search::{self, Scope};
+use postvak_core::store::{Filter, Matched, MessageSummary, Store, ThreadSummary};
 
 use super::html::Wake;
 use super::list::{self, Row, RowKey, THREAD_LIMIT};
@@ -31,6 +32,9 @@ pub(crate) struct ListQuery {
 pub(crate) struct Loaded {
     /// The search hits, merged; `None` when the query listed threads.
     pub hits: Option<Vec<Row>>,
+    /// With hits: how many messages of the searched stores lack an indexed body, and how many there are.
+    pub unindexed: u64,
+    pub covered: u64,
     /// Each account's threads, `None` where its store could not list them, so the ones shown stay.
     pub threads: Vec<(usize, Option<Vec<ThreadSummary>>)>,
     /// The members of each expanded thread, `None` where it has no more than one left.
@@ -42,10 +46,15 @@ pub(crate) fn load(stores: &[(usize, &str, &Store)], query: &ListQuery) -> Loade
     let folder = query.folder.as_str();
     let mut loaded = Loaded::default();
     if let Some(text) = &query.search {
+        let parsed = search::parse(text);
         let mut hits = Vec::new();
         for &(account, name, store) in stores {
-            match store.search(text, None, list::SEARCH_LIMIT) {
-                Ok(found) => hits.extend(found.iter().map(|m| Row::from_message(account, m))),
+            match store.search(&parsed, Scope::All, None, list::SEARCH_LIMIT, true) {
+                Ok(found) => hits.extend(found.iter().map(|hit| {
+                    let mut row = Row::from_message(account, &hit.message);
+                    row.close = hit.matched == Matched::Close;
+                    row
+                })),
                 Err(e) => log::warn!("[{name}] search failed: {e}"),
             }
         }
@@ -64,6 +73,16 @@ pub(crate) fn load(stores: &[(usize, &str, &Store)], query: &ListQuery) -> Loade
             }
         }
         loaded.hits = Some(list::merge_hits(hits, list::SEARCH_LIMIT));
+        let now = postvak_core::time::now();
+        for &(_, name, store) in stores {
+            match store.backlog_count(now) {
+                Ok((unindexed, total)) => {
+                    loaded.unindexed += unindexed;
+                    loaded.covered += total;
+                }
+                Err(e) => log::warn!("[{name}] backlog count failed: {e}"),
+            }
+        }
         return loaded;
     }
     for &(account, name, store) in stores {

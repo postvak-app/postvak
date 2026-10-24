@@ -30,6 +30,8 @@ use postvak_core::message::{
     header_value, parse_headers, save_attachment, thread_id,
 };
 use postvak_core::rules::{self, Action, HeaderMatch, Match, OneOrMany, Rule, RuleFile, TextMatch};
+use postvak_core::search::{self, Scope};
+use postvak_core::store::{Folder, Message, Store};
 use postvak_core::sync::{Activity, Command, Event};
 
 /// Cases per property unless `PROPTEST_CASES` is set.
@@ -554,6 +556,55 @@ proptest! {
     }
 }
 
+/// A store with three messages, so a search runs against real rows.
+fn search_store() -> Store {
+    let store = Store::open_in_memory().unwrap();
+    store
+        .upsert_folder(&Folder {
+            name: "INBOX".into(),
+            uidvalidity: 1,
+            last_uid: 3,
+            special_use: None,
+            delimiter: None,
+        })
+        .unwrap();
+    for (uid, subject, body) in [
+        (1, "Café invoice", Some("pineapple pie")),
+        (2, "Re: lunch \"quoted\"", None),
+        (3, "NEAR(a b) OR * -x", Some("")),
+    ] {
+        store
+            .insert_message(&Message {
+                folder: "INBOX".into(),
+                uid,
+                thread_id: format!("t{uid}"),
+                subject: Some(subject.into()),
+                from_addr: Some("Alice <alice@example.org>".into()),
+                internaldate: i64::from(uid),
+                headers: b"From: alice@example.org\r\n\r\n".to_vec(),
+                body_text: body.map(str::to_string),
+                ..Default::default()
+            })
+            .unwrap();
+    }
+    store
+}
+
+proptest! {
+    #![proptest_config(config())]
+
+    /// Whatever is typed, the planned expression is one FTS5 accepts: an `Err` here is a syntax error.
+    #[test]
+    fn any_text_parses_and_plans_into_an_expression_fts5_accepts(text in prop_oneof![".{0,128}", hostile_text()]) {
+        let store = search_store();
+        let query = search::parse(&text);
+        for scope in [Scope::All, Scope::Headers] {
+            let result = store.search(&query, scope, None, 10, true);
+            prop_assert!(result.is_ok(), "{text:?}: {:?}", result.err());
+        }
+    }
+}
+
 /// Strings aimed at regex, humantime and glob syntax as well as plain junk.
 fn hostile_text() -> BoxedStrategy<String> {
     prop_oneof![
@@ -811,7 +862,7 @@ fn wire_samples() -> Vec<String> {
         ClientMessage::Command {
             id: 6,
             account: "home".into(),
-            command: Command::FetchBodies { folder: None },
+            command: Command::ApplyRule { name: "r".into() },
         },
         ClientMessage::Command {
             id: 7,

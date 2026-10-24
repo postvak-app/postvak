@@ -6,7 +6,7 @@ use crate::message::clean;
 use crate::rules::apply::{ApplyError, apply, ensure_raw, move_target};
 use crate::rules::engine::{Context, Mode, Plan, PlannedAction, evaluate};
 use crate::rules::{Action, CompiledRule};
-use crate::store::{Message, Store, StoreError};
+use crate::store::{Hit, Matched, Message, Store, StoreError};
 use crate::trash::Trash;
 
 /// The rule name the CLI logs direct actions under.
@@ -32,7 +32,11 @@ pub enum ActionError {
 pub type UidResult = (u32, Result<usize, ActionError>);
 
 /// Selects `folder`, refusing when the stored uids belong to another UIDVALIDITY and would hit unrelated messages.
-fn select_synced(ops: &mut dyn MailOps, store: &Store, folder: &str) -> Result<(), ActionError> {
+pub(crate) fn select_synced(
+    ops: &mut dyn MailOps,
+    store: &Store,
+    folder: &str,
+) -> Result<(), ActionError> {
     let stored = store
         .folder(folder)?
         .ok_or_else(|| ActionError::UnknownFolder(folder.to_string()))?;
@@ -76,28 +80,6 @@ pub fn run(
         results.push((uid, result));
     }
     Ok(results)
-}
-
-/// Downloads and indexes every body `folder` lacks. Returns how many arrived; a message that cannot be fetched is
-/// logged and skipped.
-pub fn fetch_bodies(
-    ops: &mut dyn MailOps,
-    store: &Store,
-    folder: &str,
-) -> Result<usize, ActionError> {
-    let missing = store.messages_without_body(folder)?;
-    if missing.is_empty() {
-        return Ok(0);
-    }
-    select_synced(ops, store, folder)?;
-    let mut fetched = 0;
-    for msg in &missing {
-        match ensure_raw(msg, ops, store) {
-            Ok(_) => fetched += 1,
-            Err(e) => log::warn!("{}/{}: body fetch failed: {e}", msg.folder, msg.uid),
-        }
-    }
-    Ok(fetched)
 }
 
 /// Downloads and indexes one message body, refusing when the folder changed on the server since the last sync.
@@ -159,19 +141,26 @@ pub fn search_server(
 /// Local search results plus the server's hits the store knows, each once, newest first, at most `limit`.
 pub fn with_server_hits(
     store: &Store,
-    mut found: Vec<Message>,
+    mut found: Vec<Hit>,
     hits: &[(String, u32)],
     limit: u32,
-) -> Result<Vec<Message>, StoreError> {
+) -> Result<Vec<Hit>, StoreError> {
     for (folder, uid) in hits {
-        if found.iter().any(|m| m.folder == *folder && m.uid == *uid) {
+        if found
+            .iter()
+            .any(|hit| hit.message.folder == *folder && hit.message.uid == *uid)
+        {
             continue;
         }
         if let Some(message) = store.message(folder, *uid)? {
-            found.push(message);
+            found.push(Hit {
+                message,
+                matched: Matched::Exact,
+                snippet: None,
+            });
         }
     }
-    found.sort_by_key(|m| std::cmp::Reverse((m.internaldate, m.uid)));
+    found.sort_by_key(|hit| std::cmp::Reverse((hit.message.internaldate, hit.message.uid)));
     found.truncate(limit as usize);
     Ok(found)
 }
@@ -424,16 +413,6 @@ mod tests {
     }
 
     #[test]
-    fn fetch_bodies_indexes_only_missing_bodies() {
-        let (mut ops, store, _trash, _dir) = setup();
-        assert_eq!(fetch_bodies(&mut ops, &store, "INBOX").unwrap(), 1);
-        assert_eq!(store.search("body", None, 10).unwrap().len(), 1);
-        let calls = ops.calls.len();
-        assert_eq!(fetch_bodies(&mut ops, &store, "INBOX").unwrap(), 0);
-        assert_eq!(ops.calls.len(), calls, "nothing left to fetch");
-    }
-
-    #[test]
     fn search_server_returns_the_hits_the_store_knows() {
         let (mut ops, store, _trash, _dir) = setup();
         let mut ops = {
@@ -510,14 +489,23 @@ mod tests {
             ..Default::default()
         };
         store.insert_message(&older).unwrap();
-        let local = store.message("INBOX", 5).unwrap().into_iter().collect();
+        let local = store
+            .message("INBOX", 5)
+            .unwrap()
+            .into_iter()
+            .map(|message| Hit {
+                message,
+                matched: Matched::Exact,
+                snippet: None,
+            })
+            .collect();
         let hits = [
             ("INBOX".to_string(), 2),
             ("INBOX".to_string(), 5),
             ("INBOX".to_string(), 77),
         ];
         let merged = with_server_hits(&store, local, &hits, 10).unwrap();
-        let uids: Vec<u32> = merged.iter().map(|m| m.uid).collect();
+        let uids: Vec<u32> = merged.iter().map(|hit| hit.message.uid).collect();
         assert_eq!(uids, [5, 2]);
         assert_eq!(
             with_server_hits(&store, Vec::new(), &hits, 1)

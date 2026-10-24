@@ -1,7 +1,7 @@
 //! Help texts shared by the CLI and the MCP tool descriptions.
 /// What `postvak guide` prints and the MCP server sends as its instructions: how an agent should use Postvak.
 pub const AGENT_GUIDE: &str = include_str!("agent-guide.md");
-pub const ACCOUNT_ADD: &str = "Add an IMAP account; the daemon syncs it right away, and a wrong login shows as that sync's error";
+pub const ACCOUNT_ADD: &str = "Add an IMAP account; the daemon tests the login first and nothing is saved when it fails, then syncs it once";
 pub const ACCOUNT_LIST: &str =
     "Each configured account: name, username and server; never the password source";
 pub const ARCHIVE: &str = "Move messages to the Archive folder";
@@ -31,8 +31,7 @@ pub const RULES_SET_ENABLED: &str =
     "Turn a rule on or off; turning one on lets it act on new mail, deletes included";
 pub const RULES_TEST: &str =
     "Dry run: what this rule would do to the cached messages; previews subjects, never bodies";
-pub const SEARCH: &str =
-    "Full-text search (FTS5 syntax) over subject, addresses and fetched bodies, newest first";
+pub const SEARCH: &str = "Search subject, addresses, attachment names and bodies, newest first; words, \"phrases\" and -not; the last word also matches as a prefix; close matches such as corrected typos follow when exact hits are few";
 pub const SHOW: &str = "Show one message";
 pub const STATUS: &str =
     "The daemon's pid, version, uptime, client count and each account's activity";

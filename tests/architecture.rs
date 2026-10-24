@@ -440,10 +440,32 @@ fn check_gui_views(source: &Source) -> Vec<String> {
     out
 }
 
+/// User text must reach FTS5 only through `search::plan`, so no other code may name the FTS table, string
+/// literals included.
+fn check_search_expressions(source: &Source) -> Vec<String> {
+    const RULE: &str = "search is the only code that builds FTS5 expressions, and store.rs the only code that runs them";
+    if source.path.starts_with("crates/postvak-core/src/search/")
+        || source.path == "crates/postvak-core/src/store.rs"
+    {
+        return Vec::new();
+    }
+    find_all(&source.text, "messages_fts")
+        .into_iter()
+        .map(|at| {
+            source.violation(
+                at,
+                RULE,
+                "names `messages_fts`; go through `search::parse` and `Store::search`",
+            )
+        })
+        .collect()
+}
+
 fn check(source: &Source) -> Vec<String> {
     let mut out = check_mcp(source);
     out.extend(check_rules_writes(source));
     out.extend(check_gui_views(source));
+    out.extend(check_search_expressions(source));
     out
 }
 

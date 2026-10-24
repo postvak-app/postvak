@@ -22,6 +22,10 @@ use crate::store::{Folder, Message, Store, StoreError};
 use crate::time::{clock, now};
 use crate::trash::{RestoreError, Trash};
 
+mod index;
+
+pub use index::IndexOutcome;
+
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {
     #[error(transparent)]
@@ -63,11 +67,6 @@ pub enum Event {
         results: EventResults,
         request: RequestId,
     },
-    BodiesFetched {
-        account: String,
-        request: RequestId,
-        fetched: usize,
-    },
     BodyReady {
         account: String,
         folder: String,
@@ -82,6 +81,11 @@ pub enum Event {
     Error {
         account: String,
         message: String,
+    },
+    /// The indexer stored the text of `count` more messages, so a search may find more now.
+    Indexed {
+        account: String,
+        count: usize,
     },
     NewMail {
         account: String,
@@ -124,14 +128,16 @@ impl Event {
     pub fn request_ids(&self) -> Vec<RequestId> {
         match self {
             Event::ActionDone { request, .. }
-            | Event::BodiesFetched { request, .. }
             | Event::BodyReady { request, .. }
             | Event::CommandFailed { request, .. }
             | Event::Restored { request, .. }
             | Event::RuleApplied { request, .. }
             | Event::ServerSearchDone { request, .. } => vec![*request],
             Event::Synced { requests, .. } => requests.clone(),
-            Event::Activity { .. } | Event::Error { .. } | Event::NewMail { .. } => Vec::new(),
+            Event::Activity { .. }
+            | Event::Error { .. }
+            | Event::Indexed { .. }
+            | Event::NewMail { .. } => Vec::new(),
         }
     }
 }
@@ -169,6 +175,11 @@ pub enum Activity {
     RunningCommand {
         what: String,
     },
+    /// Up to date, and indexing message bodies for search in the meantime: `done` of `total` messages.
+    Indexing {
+        done: u64,
+        total: u64,
+    },
     Idle {
         since: i64,
     },
@@ -205,6 +216,11 @@ impl fmt::Display for Activity {
                 format!("running rules on {}", clean(folder, false))
             }
             Activity::RunningCommand { what } => clean(what, false),
+            Activity::Indexing { done, total } => format!(
+                "up to date · indexing {} of {}",
+                group_digits(*done, ','),
+                group_digits(*total, ',')
+            ),
             Activity::Idle { since } => format!("up to date · {}", clock(*since)),
             Activity::Offline { reason, retry_at } => {
                 format!(
@@ -255,9 +271,6 @@ pub enum Command {
     },
     ApplyRule {
         name: String,
-    },
-    FetchBodies {
-        folder: Option<String>,
     },
     FetchBody {
         folder: String,
@@ -524,7 +537,20 @@ fn to_message(folder: &str, env: Envelope) -> Message {
         size: env.size,
         headers: env.headers,
         body_text: None,
+        attachment_names: None,
+        indexed_at: None,
     }
+}
+
+/// One index slice with an unlimited budget, for tests that index a fake server's mail.
+#[cfg(any(test, feature = "testing"))]
+pub fn index_slice(
+    ops: &mut dyn MailOps,
+    store: &Store,
+    account: &AccountConfig,
+    events: &Sender<Event>,
+) -> Result<IndexOutcome, SyncError> {
+    index::slice(ops, store, account, events, &mut || Duration::ZERO)
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -1001,16 +1027,6 @@ fn run_command(
                     .collect(),
             })
         }
-        Command::FetchBodies { folder } => {
-            run.used_connection = true;
-            fetch_bodies_in(ops, store, folder.as_deref())
-                .map(|fetched| Event::BodiesFetched {
-                    account: name(),
-                    request,
-                    fetched,
-                })
-                .map_err(SyncError::from)
-        }
         Command::FetchBody { folder, uid } => {
             run.used_connection = true;
             context = format!("{folder}/{uid}: ");
@@ -1064,27 +1080,6 @@ fn run_command(
             }
         }
     }
-}
-
-/// Downloads the missing bodies of the named folder, failing if it cannot, or of every stored folder, skipping any
-/// that fail. Only a lost connection stops the walk.
-fn fetch_bodies_in(
-    ops: &mut dyn MailOps,
-    store: &Store,
-    folder: Option<&str>,
-) -> Result<usize, ActionError> {
-    if let Some(folder) = folder {
-        return actions::fetch_bodies(ops, store, folder);
-    }
-    let mut fetched = 0;
-    for folder in store.folders()? {
-        match actions::fetch_bodies(ops, store, &folder.name) {
-            Ok(count) => fetched += count,
-            Err(e) if connection_lost(&e) => return Err(e),
-            Err(e) => log::warn!("{}: body fetch skipped: {e}", folder.name),
-        }
-    }
-    Ok(fetched)
 }
 
 /// Searches the named folder on the server, failing if it cannot, or every synced folder, skipping any that fail. Only a
@@ -1607,10 +1602,16 @@ fn run_session(
     let mut full = true;
     let mut pass = true;
     let mut next = NextPass::None;
+    // When the next full pass is due; the long IDLE's timeout is that pass, the short ones between index slices check.
+    let mut next_full = now();
+    let mut indexer = index::Session::default();
 
     while !shutdown.load(Ordering::Acquire) {
         if pass {
             next = state.pass(ops.as_mut(), full, carried, events, commands, shutdown)?;
+            if full {
+                next_full = now() + interval.as_secs() as i64;
+            }
             if now() - last_purge > 3600 {
                 match state.trash.purge(account.trash_retention_days, now()) {
                     Ok(0) => {}
@@ -1634,6 +1635,30 @@ fn run_session(
         let wanted = drained.next.max(std::mem::take(&mut next));
         if wanted != NextPass::None {
             (full, pass) = (wanted == NextPass::Full, true);
+            continue;
+        }
+        if account.index_bodies
+            && indexer.slice(ops.as_mut(), &state.store, account, events)?
+                == IndexOutcome::Progressed
+        {
+            // Mail that arrived while another folder was selected, then a short wait so pushes and commands get
+            // their turn before the next slice; the full pass still runs on its interval.
+            if ops.select("INBOX")?.exists != state.store.message_count("INBOX")? {
+                (full, pass) = (false, true);
+                continue;
+            }
+            (full, pass) = match ops.idle(index::INTER_SLICE_IDLE, wake)? {
+                IdleOutcome::NewMail => (false, true),
+                IdleOutcome::Timeout => {
+                    let due = now() >= next_full;
+                    (due, due)
+                }
+                IdleOutcome::Interrupted if shutdown.load(Ordering::Acquire) => return Ok(()),
+                IdleOutcome::Interrupted => {
+                    wake.swap(false, Ordering::AcqRel);
+                    (full, false)
+                }
+            };
             continue;
         }
         let _ = events.send(Event::Activity {

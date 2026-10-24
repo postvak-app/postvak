@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 
 use mail_parser::{Address, HeaderForm, HeaderValue, MessageParser, MimeHeaders};
 
+use crate::mail_ops::TextPart;
+
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Parsed {
     pub message_id: Option<String>,
@@ -66,6 +68,52 @@ pub fn body_text(raw: &[u8]) -> String {
     msg.body_text(0)
         .map(|text| text.into_owned())
         .unwrap_or_default()
+}
+
+/// The plain text of fetched text parts, in order, for the search index. Inside a `multipart/alternative` the
+/// plain part wins over the HTML one, as `body_text` chooses; parts outside one all count. Each part is decoded by
+/// wrapping it as a one-part message, so the transfer encoding and charset go through the same path as a body.
+pub fn text_from_parts(parts: &[(TextPart, Vec<u8>)]) -> String {
+    let mut chosen: Vec<&(TextPart, Vec<u8>)> = Vec::new();
+    for part in parts {
+        let Some(group) = part.0.alternative else {
+            chosen.push(part);
+            continue;
+        };
+        match chosen
+            .iter()
+            .position(|(p, _)| p.alternative == Some(group))
+        {
+            // A plain part replaces the HTML one chosen before it; anything else in the group is dropped.
+            Some(at) if chosen[at].0.html && !part.0.html => chosen[at] = part,
+            Some(_) => {}
+            None => chosen.push(part),
+        }
+    }
+    let texts: Vec<String> = chosen
+        .iter()
+        .map(|(part, bytes)| part_text(part, bytes))
+        .filter(|text| !text.trim().is_empty())
+        .collect();
+    texts.join("\n\n")
+}
+
+fn part_text(part: &TextPart, bytes: &[u8]) -> String {
+    let mut raw = format!(
+        "Content-Type: text/{}",
+        if part.html { "html" } else { "plain" }
+    );
+    if let Some(charset) = &part.charset {
+        raw.push_str(&format!("; charset=\"{}\"", charset.replace('"', "")));
+    }
+    raw.push_str("\r\n");
+    if let Some(encoding) = &part.transfer_encoding {
+        raw.push_str(&format!("Content-Transfer-Encoding: {encoding}\r\n"));
+    }
+    raw.push_str("\r\n");
+    let mut raw = raw.into_bytes();
+    raw.extend_from_slice(bytes);
+    body_text(&raw)
 }
 
 /// The HTML of a message and the parts its `cid:` URLs can name.
@@ -181,6 +229,24 @@ pub struct Attachment {
     pub name: Option<String>,
     pub content_type: String,
     pub size: usize,
+}
+
+/// The value of `key` among MIME parameters as a server's BODYSTRUCTURE lists them, decoded as a header would be:
+/// RFC 2231 continuations and charsets (`filename*0*=utf-8''r%C3%A9sum%C3%A9; filename*1=.pdf`) and RFC 2047
+/// encoded words both go through mail-parser. None when the key is absent or decodes to nothing.
+pub fn param(params: &[(String, String)], key: &str) -> Option<String> {
+    if params.is_empty() {
+        return None;
+    }
+    let mut header = String::from("Content-Type: x/y");
+    for (name, value) in params {
+        let value = value.replace('\\', "\\\\").replace('"', "\\\"");
+        header.push_str(&format!("; {name}=\"{value}\""));
+    }
+    header.push_str("\r\n\r\n");
+    let msg = MessageParser::default().parse(header.as_bytes())?;
+    let name = msg.content_type()?.attribute(key)?.trim().to_string();
+    (!name.is_empty()).then_some(name)
 }
 
 pub fn attachments(raw: &[u8]) -> Vec<Attachment> {
@@ -496,6 +562,92 @@ List-Id: Dev <dev.lists.example.com>\r\n\
             thread_id(&p, "INBOX", 42),
             synthetic_message_id("INBOX", 42)
         );
+    }
+
+    #[test]
+    fn param_decodes_names_as_headers_are() {
+        let p = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        assert_eq!(
+            param(&p(&[("FILENAME", "Q3 report.pdf")]), "filename").as_deref(),
+            Some("Q3 report.pdf")
+        );
+        assert_eq!(
+            param(
+                &p(&[("filename", "=?utf-8?Q?r=C3=A9sum=C3=A9.pdf?=")]),
+                "filename"
+            )
+            .as_deref(),
+            Some("résumé.pdf")
+        );
+        assert_eq!(
+            param(
+                &p(&[
+                    ("filename*0*", "utf-8''r%C3%A9sum"),
+                    ("filename*1*", "%C3%A9.pdf")
+                ]),
+                "filename"
+            )
+            .as_deref(),
+            Some("résumé.pdf")
+        );
+        assert_eq!(
+            param(&p(&[("name", "a \"quoted\" name.txt")]), "name").as_deref(),
+            Some("a \"quoted\" name.txt")
+        );
+        assert_eq!(param(&p(&[("name", "x")]), "filename"), None);
+        assert_eq!(param(&p(&[("name", "  ")]), "name"), None);
+        assert_eq!(param(&[], "name"), None);
+    }
+
+    #[test]
+    fn text_from_parts_prefers_plain_within_an_alternative_and_keeps_the_rest() {
+        let part = |section: &str, html: bool, alternative: Option<usize>| TextPart {
+            section: section.into(),
+            html,
+            alternative,
+            ..TextPart::default()
+        };
+        let parts = vec![
+            (part("1.1", true, Some(1)), b"<p>rich</p>".to_vec()),
+            (part("1.2", false, Some(1)), b"plain".to_vec()),
+            (part("2", false, None), b"second".to_vec()),
+            (part("3.1", true, Some(2)), b"<b>only html</b>".to_vec()),
+        ];
+        assert_eq!(text_from_parts(&parts), "plain\n\nsecond\n\nonly html");
+        assert_eq!(text_from_parts(&[]), "");
+        assert_eq!(
+            text_from_parts(&[(part("", false, None), b"   \r\n".to_vec())]),
+            ""
+        );
+    }
+
+    #[test]
+    fn text_from_parts_decodes_base64_latin1_html() {
+        let part = TextPart {
+            html: true,
+            charset: Some("iso-8859-1".into()),
+            transfer_encoding: Some("base64".into()),
+            ..TextPart::default()
+        };
+        // "<p>caf\xe9</p>" in base64
+        let bytes = b"PHA+Y2Fm6TwvcD4=".to_vec();
+        assert_eq!(text_from_parts(&[(part, bytes)]).trim(), "café");
+    }
+
+    #[test]
+    fn text_from_parts_decodes_quoted_printable() {
+        let part = TextPart {
+            charset: Some("utf-8".into()),
+            transfer_encoding: Some("quoted-printable".into()),
+            ..TextPart::default()
+        };
+        let bytes = b"caf=C3=A9 =\r\nau lait".to_vec();
+        assert_eq!(text_from_parts(&[(part, bytes)]).trim(), "café au lait");
     }
 
     #[test]

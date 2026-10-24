@@ -12,9 +12,10 @@ use postvak_core::message;
 use postvak_core::output;
 use postvak_core::paths::Paths;
 use postvak_core::rules::{self, Action, Rule, RuleFile};
+use postvak_core::search::{self, Scope};
 /// The `list` filter, a plain value, so the tools need not name the store.
 pub(crate) use postvak_core::store::Filter;
-use postvak_core::store::{Message, Store};
+use postvak_core::store::{Hit, Message, Store};
 use postvak_core::sync::{Command, Event};
 use postvak_core::time;
 use postvak_core::trash::Trash;
@@ -177,8 +178,9 @@ impl Backend {
         Ok(rows)
     }
 
-    /// `bodies` searches stored body text too; without it the query matches subject and addresses as plain words.
+    /// `bodies` lets stored body text decide a match; without it only the header columns do.
     /// `server` asks the mail server as well, which searches bodies, so it needs `bodies`.
+    #[allow(clippy::too_many_arguments)] // the tool's own arguments, one per flag of `postvak search`
     pub fn search(
         &self,
         query: &str,
@@ -187,25 +189,24 @@ impl Backend {
         limit: u32,
         bodies: bool,
         server: bool,
+        exact: bool,
     ) -> Result<Vec<Value>> {
         if server && !bodies {
             bail!("a server search matches message bodies, which needs the read:bodies scope");
         }
         let limit = limit.min(MAX_LIMIT);
+        let parsed = search::parse(query);
+        let scope = if bodies { Scope::All } else { Scope::Headers };
         let mut rows = Vec::new();
         for acc in self.select(account)? {
             let store = self.store(&acc)?;
-            let mut found = if bodies {
-                store.search(query, folder, limit)?
-            } else {
-                store.search_headers(query, folder, limit)?
-            };
+            let mut found = store.search(&parsed, scope, folder, limit, !exact)?;
             if server {
                 let hits = self.daemon.search_server(&acc.name, folder, query)?;
                 found = actions::with_server_hits(&store, found, &hits, limit)?;
             }
-            for m in &found {
-                rows.push(message_row(&acc.name, m)?);
+            for hit in &found {
+                rows.push(hit_row(&acc.name, hit)?);
             }
         }
         Ok(rows)
@@ -371,6 +372,13 @@ impl Backend {
             bail!("this server is limited with --account and cannot add accounts");
         }
         let name = account.name.clone();
+        // Before the lock, as a login may take the 30 s connect timeout; a refused login saves nothing.
+        let current = Config::load(&self.paths.config_file())?;
+        if current.accounts.iter().any(|a| a.name == name) {
+            bail!("account '{name}' exists already; an agent can only add new accounts");
+        }
+        postvak_core::account::test_login(&*self.daemon.client()?, &current, &account, None)
+            .map_err(|e| e.context("the login failed, so nothing was saved"))?;
         {
             // Start from the file, not the start-up snapshot, or edits made since would be lost on save.
             let mut held = self.config.write().unwrap_or_else(PoisonError::into_inner);
@@ -617,6 +625,15 @@ fn refuse_body_rule(compiled: &[rules::CompiledRule], bodies: bool) -> Result<()
 }
 
 /// A message's listing row: the CLI's `--json` shape with its account, without the body.
+/// A search hit's row: the message row plus `match`.
+fn hit_row(account: &str, hit: &Hit) -> Result<Value> {
+    let mut row = output::with_account(account, hit)?;
+    if let Some(object) = row.as_object_mut() {
+        object.remove("body_text");
+    }
+    Ok(row)
+}
+
 fn message_row(account: &str, m: &Message) -> Result<Value> {
     let mut row = output::with_account(account, m)?;
     if let Some(object) = row.as_object_mut() {

@@ -5,6 +5,9 @@ use std::time::{Duration, Instant};
 
 use async_imap::Session;
 use async_imap::extensions::idle::IdleResponse;
+use async_imap::imap_proto::{
+    BodyContentCommon, BodyStructure, ContentEncoding, MessageSection, SectionPath,
+};
 use async_imap::types::{Capabilities, Fetch, Flag, NameAttribute};
 use futures_util::TryStreamExt;
 use rustls::pki_types::{CertificateDer, pem::PemObject};
@@ -16,6 +19,7 @@ use crate::config::AccountConfig;
 use crate::credentials::Secret;
 use crate::mail_ops::{
     Envelope, FlagUpdate, IdleOutcome, MailError, MailOps, MailResult, RemoteFolder, SelectInfo,
+    Structure, TextPart,
 };
 
 type ImapSession = Session<TlsStream<TcpStream>>;
@@ -191,6 +195,146 @@ fn enable_keepalive(tcp: &TcpStream) -> std::io::Result<()> {
     socket2::SockRef::from(tcp).set_tcp_keepalive(&params)
 }
 
+/// The FETCH item for a section and the path its reply is filed under: `BODY.PEEK[1.2]`, or `BODY.PEEK[TEXT]` for
+/// the whole body of a single-part message (section "").
+fn section_fetch(section: &str) -> MailResult<(String, SectionPath)> {
+    if section.is_empty() {
+        return Ok((
+            "BODY.PEEK[TEXT]".to_string(),
+            SectionPath::Full(MessageSection::Text),
+        ));
+    }
+    let numbers = section
+        .split('.')
+        .map(str::parse::<u32>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| MailError::Protocol(format!("not a body section: {section}")))?;
+    Ok((
+        format!("BODY.PEEK[{section}]"),
+        SectionPath::Part(numbers, None),
+    ))
+}
+
+/// What the indexer needs from a BODYSTRUCTURE: its plain and HTML text parts, grouped by the
+/// `multipart/alternative` that holds them, and the names of its attachments. A shape this does not understand
+/// yields no text parts, and the caller falls back to the whole message.
+fn structure_of(body: &BodyStructure<'_>) -> Structure {
+    let mut structure = Structure::default();
+    let mut groups = 0;
+    walk_structure(body, &mut Vec::new(), None, &mut groups, &mut structure);
+    structure
+}
+
+fn walk_structure(
+    body: &BodyStructure<'_>,
+    path: &mut Vec<u32>,
+    alternative: Option<usize>,
+    groups: &mut usize,
+    out: &mut Structure,
+) {
+    match body {
+        BodyStructure::Text { common, other, .. } => {
+            let subtype = common.ty.subtype.to_ascii_lowercase();
+            let text = matches!(subtype.as_str(), "plain" | "html") && !is_attachment(common);
+            if text {
+                out.text_parts.push(TextPart {
+                    section: path
+                        .iter()
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join("."),
+                    html: subtype == "html",
+                    charset: params_of(common)
+                        .iter()
+                        .find(|(k, _)| k.eq_ignore_ascii_case("charset"))
+                        .map(|(_, v)| v.clone()),
+                    transfer_encoding: encoding_name(&other.transfer_encoding),
+                    octets: other.octets,
+                    alternative,
+                });
+            } else if let Some(name) = attachment_name(common) {
+                out.attachment_names.push(name);
+            }
+        }
+        BodyStructure::Basic { common, .. } => {
+            if let Some(name) = attachment_name(common) {
+                out.attachment_names.push(name);
+            }
+        }
+        BodyStructure::Message { common, body, .. } => {
+            if let Some(name) = attachment_name(common) {
+                out.attachment_names.push(name);
+            }
+            // The parts of an enclosed message are numbered under this part; a single-part one is its part 1.
+            if matches!(**body, BodyStructure::Multipart { .. }) {
+                walk_structure(body, path, alternative, groups, out);
+            } else {
+                path.push(1);
+                walk_structure(body, path, alternative, groups, out);
+                path.pop();
+            }
+        }
+        BodyStructure::Multipart { common, bodies, .. } => {
+            let group = if common.ty.subtype.eq_ignore_ascii_case("alternative") {
+                *groups += 1;
+                Some(*groups)
+            } else {
+                alternative
+            };
+            for (i, part) in bodies.iter().enumerate() {
+                path.push(i as u32 + 1);
+                walk_structure(part, path, group, groups, out);
+                path.pop();
+            }
+        }
+    }
+}
+
+fn is_attachment(common: &BodyContentCommon<'_>) -> bool {
+    common
+        .disposition
+        .as_ref()
+        .is_some_and(|d| d.ty.eq_ignore_ascii_case("attachment"))
+}
+
+fn params_of(common: &BodyContentCommon<'_>) -> Vec<(String, String)> {
+    common
+        .ty
+        .params
+        .iter()
+        .flatten()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
+/// The part's file name: the disposition's `filename`, else the content type's `name`, decoded as headers are.
+fn attachment_name(common: &BodyContentCommon<'_>) -> Option<String> {
+    let disposition: Vec<(String, String)> = common
+        .disposition
+        .as_ref()
+        .and_then(|d| d.params.as_ref())
+        .into_iter()
+        .flatten()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    crate::message::param(&disposition, "filename")
+        .or_else(|| crate::message::param(&params_of(common), "name"))
+}
+
+fn encoding_name(encoding: &ContentEncoding<'_>) -> Option<String> {
+    Some(
+        match encoding {
+            ContentEncoding::SevenBit => return None,
+            ContentEncoding::EightBit => "8bit",
+            ContentEncoding::Binary => "binary",
+            ContentEncoding::Base64 => "base64",
+            ContentEncoding::QuotedPrintable => "quoted-printable",
+            ContentEncoding::Other(other) => other.as_ref(),
+        }
+        .to_string(),
+    )
+}
+
 fn proto(e: async_imap::error::Error) -> MailError {
     match e {
         async_imap::error::Error::Io(e) => MailError::Io(e.to_string()),
@@ -356,6 +500,40 @@ impl MailOps for ImapOps {
                 .iter()
                 .find(|f| f.uid == Some(uid))
                 .and_then(|f| f.body().map(<[u8]>::to_vec)))
+        })
+    }
+
+    fn fetch_structure(&mut self, uid: u32) -> MailResult<Option<Structure>> {
+        self.run(self.command_timeout, async |session| {
+            let fetches: Vec<Fetch> = session
+                .uid_fetch(uid.to_string(), "(UID BODYSTRUCTURE)")
+                .await
+                .map_err(proto)?
+                .try_collect()
+                .await
+                .map_err(proto)?;
+            Ok(fetches
+                .iter()
+                .find(|f| f.uid == Some(uid))
+                .and_then(Fetch::bodystructure)
+                .map(structure_of))
+        })
+    }
+
+    fn fetch_part(&mut self, uid: u32, section: &str) -> MailResult<Option<Vec<u8>>> {
+        let (item, path) = section_fetch(section)?;
+        self.run(self.bulk_timeout(), async |session| {
+            let fetches: Vec<Fetch> = session
+                .uid_fetch(uid.to_string(), format!("(UID {item})"))
+                .await
+                .map_err(proto)?
+                .try_collect()
+                .await
+                .map_err(proto)?;
+            Ok(fetches
+                .iter()
+                .find(|f| f.uid == Some(uid))
+                .and_then(|f| f.section(&path).map(<[u8]>::to_vec)))
         })
     }
 
@@ -561,6 +739,121 @@ mod tests {
     use super::*;
     use crate::config::PasswordSource;
     use crate::mail_ops::RecordingOps;
+    use async_imap::imap_proto::{AttributeValue, Response};
+
+    /// The structure a server's BODYSTRUCTURE reply describes.
+    fn structure(bodystructure: &str) -> Structure {
+        let line = format!("* 1 FETCH (UID 1 BODYSTRUCTURE {bodystructure})\r\n");
+        let (_, response) = Response::parse(line.as_bytes()).unwrap_or_else(|e| panic!("{e}"));
+        let Response::Fetch(_, attrs) = response else {
+            panic!("not a fetch: {response:?}");
+        };
+        attrs
+            .iter()
+            .find_map(|attr| match attr {
+                AttributeValue::BodyStructure(body) => Some(structure_of(body)),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    fn sections(structure: &Structure) -> Vec<(&str, bool, Option<usize>)> {
+        structure
+            .text_parts
+            .iter()
+            .map(|p| (p.section.as_str(), p.html, p.alternative))
+            .collect()
+    }
+
+    const PLAIN: &str =
+        r#"("TEXT" "PLAIN" ("CHARSET" "utf-8") NIL NIL "7BIT" 12 1 NIL NIL NIL NIL)"#;
+    const HTML: &str =
+        r#"("TEXT" "HTML" ("CHARSET" "utf-8") NIL NIL "QUOTED-PRINTABLE" 30 1 NIL NIL NIL NIL)"#;
+    const PDF: &str = r#"("APPLICATION" "PDF" ("NAME" "Q3 report.pdf") NIL NIL "BASE64" 1024 NIL ("ATTACHMENT" ("FILENAME" "Q3 report.pdf")) NIL NIL)"#;
+
+    #[test]
+    fn a_single_text_part_is_the_whole_body() {
+        let s = structure(
+            r#"("TEXT" "HTML" ("CHARSET" "iso-8859-1") NIL NIL "BASE64" 40 1 NIL NIL NIL NIL)"#,
+        );
+        assert_eq!(sections(&s), [("", true, None)]);
+        assert_eq!(s.text_parts[0].charset.as_deref(), Some("iso-8859-1"));
+        assert_eq!(s.text_parts[0].transfer_encoding.as_deref(), Some("base64"));
+        assert_eq!(s.text_parts[0].octets, 40);
+        assert!(s.attachment_names.is_empty());
+    }
+
+    #[test]
+    fn an_alternative_groups_its_parts_and_mixed_names_its_attachments() {
+        let s = structure(&format!(
+            r#"({PLAIN}{HTML} "ALTERNATIVE" ("BOUNDARY" "b1") NIL NIL NIL)"#
+        ));
+        assert_eq!(sections(&s), [("1", false, Some(1)), ("2", true, Some(1))]);
+        assert_eq!(
+            s.text_parts[0].transfer_encoding, None,
+            "7bit is the default"
+        );
+
+        let s = structure(&format!(
+            r#"({PLAIN}{PDF} "MIXED" ("BOUNDARY" "b2") NIL NIL NIL)"#
+        ));
+        assert_eq!(sections(&s), [("1", false, None)]);
+        assert_eq!(s.attachment_names, ["Q3 report.pdf"]);
+
+        let s = structure(&format!(
+            r#"(({PLAIN}{HTML} "ALTERNATIVE" ("BOUNDARY" "b1") NIL NIL NIL)("IMAGE" "PNG" ("NAME" "x.png") NIL NIL "BASE64" 10 NIL NIL NIL NIL) "MIXED" ("BOUNDARY" "b2") NIL NIL NIL)"#
+        ));
+        assert_eq!(
+            sections(&s),
+            [("1.1", false, Some(1)), ("1.2", true, Some(1))]
+        );
+        assert_eq!(
+            s.attachment_names,
+            ["x.png"],
+            "a name without a disposition still counts"
+        );
+    }
+
+    #[test]
+    fn a_message_without_text_has_only_names_and_a_text_attachment_is_not_body() {
+        let s = structure(PDF);
+        assert!(s.text_parts.is_empty());
+        assert_eq!(s.attachment_names, ["Q3 report.pdf"]);
+
+        let s = structure(&format!(
+            r#"({PLAIN}("TEXT" "PLAIN" ("CHARSET" "utf-8" "NAME" "notes.txt") NIL NIL "7BIT" 99 4 NIL ("ATTACHMENT" ("FILENAME" "notes.txt")) NIL NIL) "MIXED" ("BOUNDARY" "b") NIL NIL NIL)"#
+        ));
+        assert_eq!(sections(&s), [("1", false, None)]);
+        assert_eq!(s.attachment_names, ["notes.txt"]);
+    }
+
+    #[test]
+    fn encoded_file_names_are_decoded() {
+        let s = structure(
+            r#"("APPLICATION" "PDF" NIL NIL NIL "BASE64" 10 NIL ("ATTACHMENT" ("FILENAME" "=?utf-8?Q?r=C3=A9sum=C3=A9.pdf?=")) NIL NIL)"#,
+        );
+        assert_eq!(s.attachment_names, ["résumé.pdf"]);
+        let s = structure(
+            r#"("APPLICATION" "PDF" NIL NIL NIL "BASE64" 10 NIL ("ATTACHMENT" ("FILENAME*0*" "utf-8''r%C3%A9sum" "FILENAME*1*" "%C3%A9.pdf")) NIL NIL)"#,
+        );
+        assert_eq!(s.attachment_names, ["résumé.pdf"]);
+    }
+
+    #[test]
+    fn section_fetches_name_the_part() {
+        assert_eq!(
+            section_fetch("").unwrap(),
+            (
+                "BODY.PEEK[TEXT]".into(),
+                SectionPath::Full(MessageSection::Text)
+            )
+        );
+        assert_eq!(
+            section_fetch("1.2").unwrap(),
+            ("BODY.PEEK[1.2]".into(), SectionPath::Part(vec![1, 2], None))
+        );
+        assert!(section_fetch("1.TEXT").is_err());
+    }
 
     #[test]
     fn a_refused_expunge_after_the_copy_clears_deleted_again() {

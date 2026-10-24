@@ -29,7 +29,7 @@ allow = [
 ]
 
 [sources]
-allow-git = []
+allow-git = ["https://github.com/pataar/slint"]  # Slint with the Wayland clipboard fix, until a release has it (Cargo.toml [patch.crates-io])
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 unknown-git = "deny"
 unknown-registry = "deny"

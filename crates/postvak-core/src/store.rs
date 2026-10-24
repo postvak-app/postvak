@@ -6,6 +6,7 @@ use rusqlite_migration::{M, Migrations};
 use serde::{Deserialize, Serialize};
 
 use crate::paths::Paths;
+use crate::search::{self, Candidate, Plan, Query, Scope, Vocab};
 
 /// In order; a new directory under `migrations/` needs its line here too.
 const MIGRATIONS: &[M<'static>] = &[
@@ -21,6 +22,7 @@ const MIGRATIONS: &[M<'static>] = &[
     M::up(include_str!("../migrations/008-has-attachment/up.sql")),
     M::up(include_str!("../migrations/009-folder-thread-index/up.sql")),
     M::up(include_str!("../migrations/010-unread-index/up.sql")),
+    M::up(include_str!("../migrations/011-search/up.sql")),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -67,6 +69,32 @@ pub struct Message {
     #[serde(skip_serializing, deserialize_with = "deserialize_blob")]
     pub headers: Vec<u8>,
     pub body_text: Option<String>,
+    /// Attachment file names, one per line, once the indexer has read the message's structure.
+    #[serde(skip_serializing, default)]
+    pub attachment_names: Option<String>,
+    /// When the indexer last tried this message; None until it has.
+    #[serde(skip_serializing, default)]
+    pub indexed_at: Option<i64>,
+}
+
+/// One search result: the message and how it matched.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Hit {
+    #[serde(flatten)]
+    pub message: Message,
+    #[serde(rename = "match")]
+    pub matched: Matched,
+    /// Context around a body match, once snippets exist; never for a headers-only search.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+}
+
+/// Whether the query matched as typed, or through a close match such as a corrected typo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Matched {
+    Exact,
+    Close,
 }
 
 /// Whether the space-separated `flags` contain `flag`.
@@ -222,7 +250,14 @@ pub struct Store {
     conn: Connection,
 }
 
-const MESSAGE_COLUMNS: &str = "folder, uid, message_id, from_addr, to_addr, cc_addr, delivered_to, in_reply_to, refs, thread_id, subject, date, internaldate, flags, size, headers, body_text";
+/// Close matches run when the exact tier returns fewer hits than this.
+const CLOSE_MATCHES_BELOW: usize = 10;
+
+/// A message that awaits the indexer at `?1`: never tried, or tried and failed more than a day earlier. The first
+/// half reads the partial index `messages_unindexed`.
+const BACKLOG: &str = "(indexed_at IS NULL OR (body_text IS NULL AND indexed_at < ?1 - 86400))";
+
+const MESSAGE_COLUMNS: &str = "folder, uid, message_id, from_addr, to_addr, cc_addr, delivered_to, in_reply_to, refs, thread_id, subject, date, internaldate, flags, size, headers, body_text, attachment_names, indexed_at";
 
 impl Store {
     pub fn migrations() -> Migrations<'static> {
@@ -399,7 +434,7 @@ impl Store {
 
     pub fn insert_message(&self, m: &Message) -> Result<(), StoreError> {
         let sql = format!(
-            "INSERT OR IGNORE INTO messages ({MESSAGE_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)"
+            "INSERT OR IGNORE INTO messages ({MESSAGE_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)"
         );
         self.conn.prepare_cached(&sql)?.execute(params![
             m.folder,
@@ -418,7 +453,9 @@ impl Store {
             m.flags,
             m.size,
             m.headers,
-            m.body_text
+            m.body_text,
+            m.attachment_names,
+            m.indexed_at
         ])?;
         Ok(())
     }
@@ -552,63 +589,86 @@ impl Store {
         self.query_messages("WHERE folder = ?1 ORDER BY uid", params![folder])
     }
 
-    /// The messages in `folder` whose body is not downloaded yet, by uid.
-    pub fn messages_without_body(&self, folder: &str) -> Result<Vec<Message>, StoreError> {
-        self.query_messages(
-            "WHERE folder = ?1 AND body_text IS NULL ORDER BY uid",
-            params![folder],
-        )
-    }
-
-    /// Whether any message in `folder`, or in any folder, lacks its body.
-    pub fn lacks_bodies(&self, folder: Option<&str>) -> Result<bool, StoreError> {
-        Ok(self.conn.query_row(
-            "SELECT EXISTS (SELECT 1 FROM messages WHERE body_text IS NULL AND (?1 IS NULL OR folder = ?1))",
-            params![folder],
-            |r| r.get(0),
-        )?)
-    }
-
-    /// FTS5 search, newest first. A query FTS5 cannot parse, such as a bare email address, is retried with every word quoted.
+    /// The messages `query` matches, newest first, in `folder` or any folder, at most `limit`. The plan's
+    /// predicates follow the FTS match; their `?` parameters count on from the three fixed ones, so the limit's
+    /// placeholder is numbered after them.
     pub fn search(
         &self,
-        query: &str,
+        query: &Query,
+        scope: Scope,
         folder: Option<&str>,
         limit: u32,
-    ) -> Result<Vec<Message>, StoreError> {
-        if query.trim().is_empty() {
+        close: bool,
+    ) -> Result<Vec<Hit>, StoreError> {
+        let plan = search::plan(query, scope, close.then_some(self as &dyn Vocab));
+        if plan.exact.is_empty() {
             return Ok(Vec::new());
         }
-        self.search_fts(query, folder, limit)
-            .or_else(|_| self.search_fts(&quote_words(query), folder, limit))
-    }
-
-    /// Search over subject and addresses only; every word is quoted, because FTS5 syntax could escape the column filter.
-    pub fn search_headers(
-        &self,
-        query: &str,
-        folder: Option<&str>,
-        limit: u32,
-    ) -> Result<Vec<Message>, StoreError> {
-        if query.trim().is_empty() {
-            return Ok(Vec::new());
+        let mut hits = self.search_tier(&plan.exact, None, folder, &plan, limit, Matched::Exact)?;
+        // The close tier only when the exact one is thin, and never a message the exact expression matches.
+        if let Some(widened) = &plan.close
+            && hits.len() < CLOSE_MATCHES_BELOW
+        {
+            let left = limit - hits.len() as u32;
+            hits.extend(self.search_tier(
+                widened,
+                Some(&plan.exact),
+                folder,
+                &plan,
+                left,
+                Matched::Close,
+            )?);
         }
-        let scoped = format!("{{subject from_addr to_addr}} : ({})", quote_words(query));
-        self.search_fts(&scoped, folder, limit)
+        Ok(hits)
     }
 
-    fn search_fts(
+    /// The messages `expression` matches and `exclude` does not, newest first, at most `limit`. The plan's
+    /// predicates follow the FTS match; their `?` parameters count on from the fixed ones, so the later placeholders
+    /// are numbered after them.
+    fn search_tier(
         &self,
-        query: &str,
+        expression: &str,
+        exclude: Option<&str>,
         folder: Option<&str>,
+        plan: &Plan,
         limit: u32,
-    ) -> Result<Vec<Message>, StoreError> {
-        self.query_messages(
+        matched: Matched,
+    ) -> Result<Vec<Hit>, StoreError> {
+        let mut tail = String::from(
             "WHERE id IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?1)
-               AND (?2 IS NULL OR folder = ?2)
-             ORDER BY internaldate DESC, uid DESC LIMIT ?3",
-            params![query, folder, limit],
-        )
+               AND (?2 IS NULL OR folder = ?2)",
+        );
+        for predicate in &plan.sql {
+            tail.push_str(" AND (");
+            tail.push_str(predicate);
+            tail.push(')');
+        }
+        let mut next = 3 + plan.params.len();
+        let mut values: Vec<rusqlite::types::Value> = vec![
+            expression.to_owned().into(),
+            folder.map(str::to_owned).into(),
+        ];
+        values.extend(plan.params.iter().cloned());
+        if let Some(exclude) = exclude {
+            tail.push_str(&format!(
+                " AND id NOT IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?{next})"
+            ));
+            values.push(exclude.to_owned().into());
+            next += 1;
+        }
+        tail.push_str(&format!(
+            " ORDER BY internaldate DESC, uid DESC LIMIT ?{next}"
+        ));
+        values.push(limit.into());
+        let found = self.query_messages(&tail, rusqlite::params_from_iter(values))?;
+        Ok(found
+            .into_iter()
+            .map(|message| Hit {
+                message,
+                matched,
+                snippet: None,
+            })
+            .collect())
     }
 
     pub fn message(&self, folder: &str, uid: u32) -> Result<Option<Message>, StoreError> {
@@ -644,6 +704,86 @@ impl Store {
         self.conn.execute(
             "UPDATE messages SET raw = ?3, body_text = ?4 WHERE folder = ?1 AND uid = ?2",
             params![folder, uid, raw, body_text],
+        )?;
+        Ok(())
+    }
+
+    /// How many messages still await an index pass at `now`, and how many messages there are.
+    pub fn backlog_count(&self, now: i64) -> Result<(u64, u64), StoreError> {
+        Ok(self.conn.query_row(
+            &format!("SELECT count(*) FILTER (WHERE {BACKLOG}), count(*) FROM messages"),
+            params![now],
+            |r| {
+                let count = |i| r.get::<_, i64>(i).map(|n| u64::try_from(n).unwrap_or(0));
+                Ok((count(0)?, count(1)?))
+            },
+        )?)
+    }
+
+    /// The next messages to index, newest first: never tried, or tried without text more than a day before `now`.
+    pub fn backlog(&self, now: i64, limit: u32) -> Result<Vec<Message>, StoreError> {
+        self.query_messages(
+            &format!("WHERE {BACKLOG} ORDER BY internaldate DESC, uid DESC LIMIT ?2"),
+            params![now, limit],
+        )
+    }
+
+    /// Records an index pass at `at`: `text` is None when the fetch failed, so the message is retried a day later,
+    /// and Some("") when the message has no text. Never touches `raw`.
+    pub fn set_indexed(
+        &self,
+        folder: &str,
+        uid: u32,
+        text: Option<&str>,
+        names: &[String],
+        at: i64,
+    ) -> Result<(), StoreError> {
+        let names = (!names.is_empty()).then(|| names.join("\n"));
+        self.conn
+            .prepare_cached(
+                "UPDATE messages SET indexed_at = ?3,
+                    body_text = CASE WHEN ?4 IS NULL THEN body_text ELSE ?4 END,
+                    attachment_names = CASE WHEN ?4 IS NULL THEN attachment_names ELSE ?5 END
+                 WHERE folder = ?1 AND uid = ?2",
+            )?
+            .execute(params![folder, uid, at, text, names])?;
+        Ok(())
+    }
+
+    /// Whether the message's raw bytes are stored, which is what the reader needs; an indexed message may lack them.
+    pub fn has_raw(&self, folder: &str, uid: u32) -> Result<bool, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM messages WHERE folder = ?1 AND uid = ?2 AND raw IS NOT NULL)",
+            params![folder, uid],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Forgets every index pass and the text it stored, so a benchmark can index the same mail again.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn forget_indexing(&self) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE messages SET indexed_at = NULL, body_text = NULL, attachment_names = NULL",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// FTS5's own check of the search index against the message rows; an error means it needs a rebuild.
+    pub fn check_search_index(&self) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO messages_fts(messages_fts) VALUES ('integrity-check')",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Rebuilds the search index from the message rows, as migration 011 did once; the cure for a failed
+    /// integrity check.
+    pub fn rebuild_search_index(&self) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO messages_fts(messages_fts) VALUES ('rebuild')",
+            [],
         )?;
         Ok(())
     }
@@ -740,13 +880,75 @@ impl Store {
     }
 }
 
-/// Every whitespace-separated word as an FTS5 string, which FTS5 always parses.
-fn quote_words(query: &str) -> String {
-    query
-        .split_whitespace()
-        .map(|word| format!("\"{}\"", word.replace('"', "\"\"")))
-        .collect::<Vec<_>>()
-        .join(" ")
+impl Vocab for Store {
+    /// Runs the word through the index's own tokenizer: a one-row FTS5 table in `temp`, read back through its
+    /// vocabulary, so the folding is exactly the index's. Anything failing here only disables close matches.
+    fn fold(&self, word: &str) -> Option<String> {
+        let prepared = self.conn.execute_batch(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS temp.query_tokens
+               USING fts5(w, tokenize=\"unicode61 remove_diacritics 2\");
+             CREATE VIRTUAL TABLE IF NOT EXISTS temp.query_vocab
+               USING fts5vocab('temp', 'query_tokens', 'row');
+             DELETE FROM temp.query_tokens;",
+        );
+        let folded = prepared
+            .and_then(|()| {
+                self.conn.execute(
+                    "INSERT INTO temp.query_tokens (w) VALUES (?1)",
+                    params![word],
+                )
+            })
+            .and_then(|_| {
+                let mut stmt = self
+                    .conn
+                    .prepare_cached("SELECT term FROM temp.query_vocab")?;
+                let terms = stmt.query_map([], |r| r.get::<_, String>(0))?;
+                terms.collect::<Result<Vec<_>, _>>()
+            });
+        match folded {
+            Ok(mut terms) if terms.len() == 1 => terms.pop(),
+            Ok(_) => None,
+            Err(e) => {
+                log::debug!("close matches off: {e}");
+                None
+            }
+        }
+    }
+
+    fn candidates(&self, first: char, min_len: usize, max_len: usize) -> Vec<Candidate> {
+        let found = self
+            .conn
+            .prepare_cached(
+                "SELECT term, sum(doc), max(col != 'body_text') FROM messages_vocab
+                 WHERE term >= ?1 AND term < ?2 AND length(term) BETWEEN ?3 AND ?4
+                 GROUP BY term",
+            )
+            .and_then(|mut stmt| {
+                let rows = stmt.query_map(
+                    params![
+                        first.to_string(),
+                        format!("{first}\u{10FFFF}"),
+                        min_len as i64,
+                        max_len as i64
+                    ],
+                    |r| {
+                        Ok(Candidate {
+                            term: r.get(0)?,
+                            docs: u64::try_from(r.get::<_, i64>(1)?).unwrap_or(0),
+                            in_headers: r.get::<_, i64>(2)? != 0,
+                        })
+                    },
+                )?;
+                rows.collect::<Result<Vec<_>, _>>()
+            });
+        match found {
+            Ok(candidates) => candidates,
+            Err(e) => {
+                log::debug!("close matches off: {e}");
+                Vec::new()
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -959,6 +1161,171 @@ mod tests {
     }
 
     #[test]
+    fn the_backlog_is_newest_first_across_folders_and_skips_indexed_rows() {
+        let s = store_with_inbox();
+        s.upsert_folder(&Folder {
+            name: "Archive".into(),
+            uidvalidity: 1,
+            last_uid: 0,
+            special_use: None,
+            delimiter: None,
+        })
+        .unwrap();
+        s.insert_message(&msg("INBOX", 1, 10)).unwrap();
+        s.insert_message(&msg("Archive", 2, 30)).unwrap();
+        s.insert_message(&msg("INBOX", 3, 20)).unwrap();
+        let uids = |rows: Vec<Message>| rows.iter().map(|m| m.uid).collect::<Vec<_>>();
+        assert_eq!(uids(s.backlog(1_000, 10).unwrap()), [2, 3, 1]);
+        assert_eq!(uids(s.backlog(1_000, 2).unwrap()), [2, 3]);
+        assert_eq!(s.backlog_count(1_000).unwrap(), (3, 3));
+        s.set_indexed("Archive", 2, Some("pineapple"), &[], 1_000)
+            .unwrap();
+        assert_eq!(uids(s.backlog(1_000, 10).unwrap()), [3, 1]);
+        assert_eq!(s.backlog_count(1_000).unwrap(), (2, 3));
+    }
+
+    #[test]
+    fn set_indexed_writes_text_and_names_the_index_follows_and_never_raw() {
+        let s = store_with_inbox();
+        s.insert_message(&msg("INBOX", 1, 10)).unwrap();
+        s.set_indexed(
+            "INBOX",
+            1,
+            Some("pineapple pie"),
+            &["Q3 report.pdf".into(), "notes.txt".into()],
+            50,
+        )
+        .unwrap();
+        let m = s.message("INBOX", 1).unwrap().unwrap();
+        assert_eq!(m.body_text.as_deref(), Some("pineapple pie"));
+        assert_eq!(
+            m.attachment_names.as_deref(),
+            Some("Q3 report.pdf\nnotes.txt")
+        );
+        assert_eq!(m.indexed_at, Some(50));
+        assert_eq!(fts_hits(&s, "pineapple"), 1);
+        assert_eq!(fts_hits(&s, "notes"), 1);
+        assert!(
+            !s.has_raw("INBOX", 1).unwrap(),
+            "the indexer never stores raw"
+        );
+        s.set_raw("INBOX", 1, b"raw", "pineapple pie").unwrap();
+        assert!(s.has_raw("INBOX", 1).unwrap());
+        fts_integrity_check(&s);
+    }
+
+    #[test]
+    fn a_failed_index_keeps_the_text_unknown_and_is_retried_after_a_day() {
+        let s = store_with_inbox();
+        s.insert_message(&msg("INBOX", 1, 10)).unwrap();
+        s.set_indexed("INBOX", 1, None, &[], 1_000).unwrap();
+        let m = s.message("INBOX", 1).unwrap().unwrap();
+        assert_eq!((m.body_text, m.indexed_at), (None, Some(1_000)));
+        assert!(s.backlog(1_000, 10).unwrap().is_empty());
+        assert_eq!(s.backlog_count(1_000 + 86_399).unwrap(), (0, 1));
+        assert_eq!(s.backlog(1_000 + 86_401, 10).unwrap().len(), 1);
+        // A message indexed without text is done, not failed.
+        s.set_indexed("INBOX", 1, Some(""), &["a.pdf".into()], 2_000)
+            .unwrap();
+        assert!(s.backlog(2_000 + 1_000_000, 10).unwrap().is_empty());
+        assert_eq!(
+            s.message("INBOX", 1).unwrap().unwrap().body_text.as_deref(),
+            Some("")
+        );
+    }
+
+    #[test]
+    fn the_search_index_check_passes_and_a_rebuild_keeps_the_hits() {
+        let s = store_with_inbox();
+        s.insert_message(&msg("INBOX", 1, 10)).unwrap();
+        s.set_raw("INBOX", 1, b"raw", "pineapple").unwrap();
+        s.check_search_index().unwrap();
+        s.rebuild_search_index().unwrap();
+        s.check_search_index().unwrap();
+        assert_eq!(fts_hits(&s, "pineapple"), 1);
+    }
+
+    #[test]
+    fn migration_011_rebuilds_the_index_of_an_older_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mail.db");
+        {
+            let mut conn = Connection::open(&path).unwrap();
+            Store::migrations().to_version(&mut conn, 10).unwrap();
+            conn.execute(
+                "INSERT INTO folders (name, uidvalidity) VALUES ('INBOX', 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO messages (folder, uid, thread_id, subject, from_addr, internaldate, flags, headers, body_text)
+                 VALUES ('INBOX', 1, 't', 'Café invoice', 'alice@x', 10, '', X'', 'pineapple pie')",
+                [],
+            )
+            .unwrap();
+        }
+        let s = Store::open(&path).unwrap();
+        assert_eq!(
+            fts_hits(&s, "pineapple"),
+            1,
+            "a body indexed before the rebuild"
+        );
+        assert_eq!(
+            fts_hits(&s, "cafe"),
+            1,
+            "the rebuilt index folds diacritics"
+        );
+        fts_integrity_check(&s);
+    }
+
+    #[test]
+    fn diacritics_fold_in_both_directions() {
+        let s = store_with_inbox();
+        let mut m = msg("INBOX", 1, 10);
+        m.subject = Some("Café Müller".into());
+        s.insert_message(&m).unwrap();
+        for query in ["cafe", "café", "muller", "MÜLLER"] {
+            assert_eq!(fts_hits(&s, query), 1, "{query}");
+        }
+    }
+
+    #[test]
+    fn cc_delivered_to_and_attachment_names_are_indexed() {
+        let s = store_with_inbox();
+        let mut m = msg("INBOX", 1, 10);
+        m.cc_addr = Some("bob@example.org".into());
+        m.delivered_to = Some("list@example.org".into());
+        s.insert_message(&m).unwrap();
+        s.conn
+            .execute(
+                "UPDATE messages SET attachment_names = 'Q3 report.pdf' WHERE uid = 1",
+                [],
+            )
+            .unwrap();
+        assert_eq!(fts_hits(&s, "bob"), 1);
+        assert_eq!(fts_hits(&s, "list"), 1);
+        assert_eq!(fts_hits(&s, "report"), 1);
+        assert_eq!(fts_hits(&s, "attachment_names:report"), 1);
+        fts_integrity_check(&s);
+    }
+
+    #[test]
+    fn the_vocab_table_lists_terms_per_column() {
+        let s = store_with_inbox();
+        s.insert_message(&msg("INBOX", 1, 10)).unwrap();
+        s.set_raw("INBOX", 1, b"raw", "pineapple").unwrap();
+        let (col, doc): (String, i64) = s
+            .conn
+            .query_row(
+                "SELECT col, doc FROM messages_vocab WHERE term = 'pineapple'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((col.as_str(), doc), ("body_text", 1));
+    }
+
+    #[test]
     fn insert_ignores_duplicate_folder_uid() {
         let s = store_with_inbox();
         s.insert_message(&msg("INBOX", 1, 10)).unwrap();
@@ -1061,6 +1428,118 @@ mod tests {
         assert_eq!(s.message_count("Other").unwrap(), 0);
     }
 
+    /// The uids `text` finds, as a user would type it.
+    fn found(s: &Store, text: &str, scope: Scope, folder: Option<&str>, limit: u32) -> Vec<u32> {
+        s.search(&search::parse(text), scope, folder, limit, false)
+            .unwrap()
+            .iter()
+            .map(|hit| hit.message.uid)
+            .collect()
+    }
+
+    /// Uids with how each matched, close matches on.
+    fn tiers(s: &Store, text: &str, folder: Option<&str>, limit: u32) -> Vec<(u32, Matched)> {
+        s.search(&search::parse(text), Scope::All, folder, limit, true)
+            .unwrap()
+            .iter()
+            .map(|hit| (hit.message.uid, hit.matched))
+            .collect()
+    }
+
+    #[test]
+    fn the_store_folds_words_as_its_tokenizer_does_and_lists_its_vocabulary() {
+        let s = store_with_inbox();
+        let mut m = msg("INBOX", 1, 10);
+        m.subject = Some("Café invoice".into());
+        s.insert_message(&m).unwrap();
+        s.set_raw("INBOX", 1, b"raw", "pineapple").unwrap();
+        assert_eq!(s.fold("CAFÉ").as_deref(), Some("cafe"));
+        assert_eq!(s.fold("pieter@x.nl"), None, "several tokens");
+        assert_eq!(s.fold("..."), None, "no token");
+        let mut found = s.candidates('i', 6, 8);
+        found.sort_by(|a, b| a.term.cmp(&b.term));
+        assert_eq!(
+            found,
+            [Candidate {
+                term: "invoice".into(),
+                docs: 1,
+                in_headers: true
+            }]
+        );
+        assert_eq!(
+            s.candidates('p', 9, 9),
+            [Candidate {
+                term: "pineapple".into(),
+                docs: 1,
+                in_headers: false
+            }]
+        );
+        assert!(s.candidates('p', 2, 3).is_empty());
+    }
+
+    #[test]
+    fn close_matches_follow_exact_ones_when_exact_finds_fewer_than_ten() {
+        let s = store_with_inbox();
+        let mut exact = msg("INBOX", 1, 10);
+        exact.subject = Some("invioce for March".into());
+        s.insert_message(&exact).unwrap();
+        let mut close = msg("INBOX", 2, 20);
+        close.subject = Some("Invoice for April".into());
+        s.insert_message(&close).unwrap();
+        s.insert_message(&msg("INBOX", 3, 30)).unwrap();
+        let close = Matched::Close;
+        assert_eq!(
+            tiers(&s, "invioce", None, 10),
+            [(1, Matched::Exact), (2, close)]
+        );
+        assert_eq!(
+            tiers(&s, "invioce", None, 1),
+            [(1, Matched::Exact)],
+            "the limit covers both tiers"
+        );
+        assert_eq!(tiers(&s, "invioce", Some("INBOX"), 10).len(), 2);
+        assert_eq!(
+            tiers(&s, "invioce", Some("Archive"), 10),
+            [],
+            "the folder filter applies to both tiers"
+        );
+        assert_eq!(
+            tiers(&s, "invoice", None, 10),
+            [(2, Matched::Exact), (1, close)],
+            "the other way round"
+        );
+        assert_eq!(
+            found(&s, "invioce", Scope::All, None, 10),
+            [1],
+            "close matches off"
+        );
+    }
+
+    #[test]
+    fn close_matches_are_skipped_at_ten_exact_hits_and_never_repeat_an_exact_hit() {
+        let s = store_with_inbox();
+        for uid in 1..=10 {
+            let mut m = msg("INBOX", uid, i64::from(uid) * 10);
+            m.subject = Some("invoice".into());
+            s.insert_message(&m).unwrap();
+        }
+        let mut typo = msg("INBOX", 11, 200);
+        typo.subject = Some("invoce".into());
+        s.insert_message(&typo).unwrap();
+        let hits = tiers(&s, "invoice", None, 50);
+        assert_eq!(hits.len(), 10, "ten exact hits, no close tier: {hits:?}");
+        assert!(hits.iter().all(|(_, m)| *m == Matched::Exact));
+        s.remove_message("INBOX", 10).unwrap();
+        let hits = tiers(&s, "invoice", None, 50);
+        assert_eq!(hits.len(), 10);
+        assert_eq!(hits[9], (11, Matched::Close));
+        assert_eq!(
+            hits.iter().filter(|(uid, _)| *uid == 1).count(),
+            1,
+            "an exact hit is not also a close one"
+        );
+    }
+
     #[test]
     fn search_matches_words_newest_first_and_filters_by_folder() {
         let s = store_with_inbox();
@@ -1075,61 +1554,75 @@ mod tests {
         s.insert_message(&msg("INBOX", 1, 10)).unwrap();
         s.insert_message(&msg("INBOX", 2, 30)).unwrap();
         s.insert_message(&msg("Archive", 3, 20)).unwrap();
-        let uids = |found: Vec<Message>| found.iter().map(|m| m.uid).collect::<Vec<_>>();
-        assert_eq!(uids(s.search("subject", None, 10).unwrap()), [2, 3, 1]);
+        let all = Scope::All;
+        assert_eq!(found(&s, "subject", all, None, 10), [2, 3, 1]);
+        assert_eq!(found(&s, "subject", all, Some("INBOX"), 10), [2, 1]);
+        assert_eq!(found(&s, "subject", all, None, 1), [2]);
         assert_eq!(
-            uids(s.search("subject", Some("INBOX"), 10).unwrap()),
-            [2, 1]
+            found(&s, "alice", all, None, 10),
+            [2, 3, 1],
+            "a sender's name"
         );
-        assert_eq!(uids(s.search("subject", None, 1).unwrap()), [2]);
         assert_eq!(
-            uids(s.search("from_addr:alice", None, 10).unwrap()),
-            [2, 3, 1]
+            found(&s, "subj", all, None, 10),
+            [2, 3, 1],
+            "the last word is a prefix"
         );
-        assert!(s.search("pineapple", None, 10).unwrap().is_empty());
-        assert!(s.search("   ", None, 10).unwrap().is_empty());
+        assert!(found(&s, "pineapple", all, None, 10).is_empty());
+        assert!(found(&s, "   ", all, None, 10).is_empty());
+        assert!(
+            found(&s, "-subject", all, None, 10).is_empty(),
+            "nothing positive to match"
+        );
+        let hit = &s
+            .search(&search::parse("subject"), all, None, 1, false)
+            .unwrap()[0];
+        assert_eq!(
+            (hit.matched, hit.snippet.as_deref()),
+            (Matched::Exact, None)
+        );
     }
 
     #[test]
-    fn search_retries_unparsable_queries_as_quoted_words() {
+    fn a_bare_address_and_an_unbalanced_quote_search_as_words() {
         let s = store_with_inbox();
         s.insert_message(&msg("INBOX", 1, 10)).unwrap();
-        assert_eq!(s.search("alice@x", None, 10).unwrap().len(), 1);
-        assert!(s.search("re: lunch", None, 10).unwrap().is_empty());
-        assert!(s.search("\"unbalanced", None, 10).unwrap().is_empty());
+        assert_eq!(found(&s, "alice@x", Scope::All, None, 10), [1]);
+        assert_eq!(found(&s, "\"alice@x", Scope::All, None, 10), [1]);
+        assert!(found(&s, "re: lunch", Scope::All, None, 10).is_empty());
+        assert!(found(&s, "\"unbalanced", Scope::All, None, 10).is_empty());
+        assert!(found(&s, "NEAR(subject, 1)", Scope::All, None, 10).is_empty());
     }
 
     #[test]
-    fn header_search_ignores_bodies_even_through_fts_syntax() {
-        let store = store_with_inbox();
+    fn a_headers_search_ignores_bodies_even_through_fts_syntax() {
+        let s = store_with_inbox();
         let mut m = msg("INBOX", 1, 100);
         m.subject = Some("hello".into());
         m.body_text = Some("secret word".into());
-        store.insert_message(&m).unwrap();
-        assert_eq!(store.search_headers("hello", None, 10).unwrap().len(), 1);
-        assert!(store.search_headers("secret", None, 10).unwrap().is_empty());
+        s.insert_message(&m).unwrap();
+        let headers = Scope::Headers;
+        assert_eq!(found(&s, "hello", headers, None, 10), [1]);
+        assert!(found(&s, "secret", headers, None, 10).is_empty());
+        assert!(found(&s, "x) OR (body_text:secret", headers, None, 10).is_empty());
+        assert!(found(&s, "x) OR body_text:secret", headers, None, 10).is_empty());
+        assert!(found(&s, "body_text:secret", headers, None, 10).is_empty());
         assert!(
-            store
-                .search_headers("x) OR (body_text:secret", None, 10)
-                .unwrap()
-                .is_empty()
+            found(&s, "hello -secret", headers, None, 10) == [1],
+            "a negated body word is not seen either"
         );
-        assert!(
-            store
-                .search_headers("x) OR body_text:secret", None, 10)
-                .unwrap()
-                .is_empty()
-        );
-        assert_eq!(store.search("secret", None, 10).unwrap().len(), 1);
+        assert_eq!(found(&s, "secret", Scope::All, None, 10), [1]);
     }
 
     #[test]
     fn search_covers_fetched_bodies() {
         let s = store_with_inbox();
         s.insert_message(&msg("INBOX", 1, 10)).unwrap();
-        assert!(s.search("pineapple", None, 10).unwrap().is_empty());
+        assert!(found(&s, "pineapple", Scope::All, None, 10).is_empty());
         s.set_raw("INBOX", 1, b"raw", "pineapple pie").unwrap();
-        assert_eq!(s.search("pineapple", None, 10).unwrap().len(), 1);
+        assert_eq!(found(&s, "pineapple", Scope::All, None, 10), [1]);
+        assert_eq!(found(&s, "\"pineapple pie\"", Scope::All, None, 10), [1]);
+        assert!(found(&s, "\"pie pineapple\"", Scope::All, None, 10).is_empty());
     }
 
     #[test]

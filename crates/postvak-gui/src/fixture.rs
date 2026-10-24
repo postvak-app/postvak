@@ -56,8 +56,17 @@ impl Home {
         self.store(account).upsert_folder(&folder).unwrap();
     }
 
+    /// Stores the message; one with body text also gets raw bytes, as a message the reader fetched has both.
     pub fn add(&self, account: &str, message: Message) {
-        self.store(account).insert_message(&message).unwrap();
+        let store = self.store(account);
+        store.insert_message(&message).unwrap();
+        if let Some(text) = &message.body_text {
+            let mut raw = message.headers.clone();
+            raw.extend_from_slice(text.as_bytes());
+            store
+                .set_raw(&message.folder, message.uid, &raw, text)
+                .unwrap();
+        }
     }
 }
 

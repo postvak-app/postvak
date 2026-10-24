@@ -36,7 +36,16 @@ pub(super) fn fixture(accounts: &[&str]) -> Fixture {
 
 /// Like `fixture`, with an in-process daemon serving the home over `connector`.
 pub(super) fn fixture_with_daemon(accounts: &[&str], connector: Connector) -> Fixture {
-    let (dir, paths) = prepare(accounts);
+    fixture_with_daemon_and(accounts, connector, "")
+}
+
+/// Like `fixture_with_daemon`, with `extra` TOML lines in every account's entry.
+pub(super) fn fixture_with_daemon_and(
+    accounts: &[&str],
+    connector: Connector,
+    extra: &str,
+) -> Fixture {
+    let (dir, paths) = prepare_with(accounts, extra);
     let daemon = TestDaemon::serve(dir, paths.clone(), options(connector, None));
     Fixture {
         paths,
@@ -46,13 +55,17 @@ pub(super) fn fixture_with_daemon(accounts: &[&str], connector: Connector) -> Fi
 }
 
 fn prepare(accounts: &[&str]) -> (TempDir, Paths) {
+    prepare_with(accounts, "")
+}
+
+fn prepare_with(accounts: &[&str], extra: &str) -> (TempDir, Paths) {
     let dir = tempfile::tempdir().unwrap();
     let paths = Paths::under(dir.path());
     std::fs::create_dir_all(&paths.config_dir).unwrap();
     let mut config = String::new();
     for name in accounts {
         config.push_str(&format!(
-            "[[accounts]]\nname = \"{name}\"\nhost = \"127.0.0.1\"\nport = 1\nusername = \"{name}@example.com\"\npassword = {{ command = \"printf x\" }}\n\n"
+            "[[accounts]]\nname = \"{name}\"\nhost = \"127.0.0.1\"\nport = 1\nusername = \"{name}@example.com\"\npassword = {{ command = \"printf x\" }}\n{extra}\n"
         ));
     }
     std::fs::write(paths.config_file(), config).unwrap();
@@ -249,6 +262,37 @@ async fn list_threads_adds_depth() {
     let client = connect(&fx, "read", &[]).await;
     let list = rows(&call(&client, "list", json!({ "threads": true })).await);
     assert_eq!(list[0]["depth"], 0);
+}
+
+#[tokio::test]
+async fn search_adds_close_matches_after_exact_ones_unless_exact_is_asked() {
+    let fx = fixture(&["work"]);
+    fx.add(
+        "work",
+        fixture_message("INBOX", 1, "Invioce for March", "x"),
+    );
+    fx.add(
+        "work",
+        fixture_message("INBOX", 2, "Invoice for April", "y"),
+    );
+    let client = connect(&fx, "read", &[]).await;
+    let found = rows(&call(&client, "search", json!({ "query": "invioce" })).await);
+    let shape: Vec<(u64, &str)> = found
+        .iter()
+        .map(|row| (row["uid"].as_u64().unwrap(), row["match"].as_str().unwrap()))
+        .collect();
+    assert_eq!(shape, [(1, "exact"), (2, "close")]);
+    assert!(found[1].get("body_text").is_none());
+    let exact = rows(
+        &call(
+            &client,
+            "search",
+            json!({ "query": "invioce", "exact": true }),
+        )
+        .await,
+    );
+    assert_eq!(exact.len(), 1);
+    assert_eq!(exact[0]["uid"], 1);
 }
 
 #[tokio::test]
@@ -1012,7 +1056,8 @@ async fn unsubscribe_reports_the_page_to_open_and_a_dry_run_contacts_no_one() {
 
 #[tokio::test]
 async fn a_server_search_finds_a_body_not_downloaded_yet() {
-    let fx = fixture_with_daemon(&["work"], connector_with_mail());
+    // Without the indexer the body stays on the server, which is what `server: true` is for.
+    let fx = fixture_with_daemon_and(&["work"], connector_with_mail(), "index_bodies = false\n");
     let client = connect(&fx, "read, read:bodies", &[]).await;
     rows(&call(&client, "sync", json!({})).await);
     assert!(rows(&call(&client, "search", json!({ "query": "body" })).await).is_empty());
@@ -1178,8 +1223,14 @@ async fn rules_apply_existing_refuses_disabled_and_hidden_rules() {
 #[tokio::test]
 async fn trash_restore_goes_through_the_daemon() {
     let fx = fixture_with_daemon(&["work"], recording_connector());
+    // Saved now: the daemon purges backups past the retention after its first pass, which races the restore.
     let backup = postvak_core::trash::Trash::new(fx.paths.trash_dir("work"))
-        .save("INBOX", 7, b"Subject: Back\r\n\r\nbody", 1_790_000_000)
+        .save(
+            "INBOX",
+            7,
+            b"Subject: Back\r\n\r\nbody",
+            postvak_core::time::now(),
+        )
         .unwrap();
     let file = backup.file_name().unwrap().to_string_lossy().into_owned();
     let client = connect(&fx, "mail:modify", &[]).await;
@@ -1492,6 +1543,25 @@ async fn account_add_rejects_a_plain_password_and_a_narrowed_server() {
     )
     .await;
     assert!(error_text(&refused).contains("--account"), "{refused:?}");
+}
+
+#[tokio::test]
+async fn account_add_tests_the_login_and_saves_nothing_when_it_fails() {
+    let fx = fixture_with_daemon(&["work"], recording_connector());
+    let client = connect(&fx, "accounts:write", &[]).await;
+    let refused = call(
+        &client,
+        "account_add",
+        json!({ "name": "late", "host": "127.0.0.1", "username": "me@example.org", "password_command": "printf wrong" }),
+    )
+    .await;
+    let why = error_text(&refused);
+    assert!(
+        why.contains("the login failed, so nothing was saved"),
+        "{why}"
+    );
+    assert!(why.contains("Authentication failed"), "{why}");
+    assert!(!fx.config().accounts.iter().any(|a| a.name == "late"));
 }
 
 #[tokio::test]
