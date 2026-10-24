@@ -454,6 +454,8 @@ pub struct App {
     pub(crate) list_loading: Option<Loading>,
     /// Set when the view changed again while `list_loading` ran, so another reload follows it.
     pub(crate) list_again: bool,
+    /// The first load that reads the query typed last; its hits show from the top, not at the row the cursor was on.
+    pub(crate) search_reset: Option<u64>,
     /// Set when edits went or settled since the rows were built, so a reload that runs on rebuilds them from the
     /// threads already loaded; rebuilding a large list costs milliseconds, so not on every sync event.
     pub(crate) edits_changed: bool,
@@ -582,6 +584,7 @@ impl App {
             list_applied: 0,
             list_loading: None,
             list_again: false,
+            search_reset: None,
             edits_changed: false,
             load_list: load::load_from_paths,
             move_picker: None,
@@ -1165,14 +1168,16 @@ impl App {
                 self.filter = filter;
                 self.reload_view();
             }
+            // The hits load on a thread of their own, as after a sync event, so a keystroke never waits for the store
+            // and fast typing runs one search at a time, for the latest text. The last query's rows stay until then.
             UiAction::SearchFor(query) => {
                 self.search = Some(query);
                 self.list.cursor = 0;
-                self.list.rows.clear();
                 self.list.server_hits.clear();
                 self.list.server_searching = 0;
                 self.list.server_asked = false;
-                self.reload_view();
+                self.search_reset = Some(self.list_generation + 1);
+                self.view_dirty = true;
             }
             UiAction::ExtendSelection(index) if index < self.list.rows.len() => {
                 let (low, high) = (self.list.cursor.min(index), self.list.cursor.max(index));
@@ -1547,6 +1552,11 @@ impl App {
             return;
         }
         self.list_applied = generation;
+        if self.search_reset.is_some_and(|first| generation >= first) {
+            self.search_reset = None;
+            self.list.rows.clear();
+            self.list.cursor = 0;
+        }
         for account in &mut self.accounts {
             account
                 .settling
@@ -3348,6 +3358,56 @@ mod tests {
         assert_eq!(driver.uids(), [3, 2, 1], "a refusal drops every edit");
         release.release();
         tick_until(&mut driver, 0.0, |app| app.list_loading.is_none());
+    }
+
+    #[test]
+    fn typing_a_search_does_not_wait_for_the_store() {
+        held_loads!(GATES, held);
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2, 3]);
+        let (mut driver, _wires) = fx.driver();
+        driver.press("/");
+        driver.app.list_budget = Duration::ZERO;
+        driver.app.load_list = held;
+        let first = hold(&GATES);
+        let second = hold(&GATES);
+        let shown = driver.uids();
+        driver.apply(UiAction::SearchFor("subject 1".into()));
+        assert!(driver.app.list_loading.is_some());
+        assert_eq!(
+            driver.uids(),
+            shown,
+            "the keystroke does not wait for the hits"
+        );
+        first.wait_read();
+        driver.apply(UiAction::SearchFor("subject 2".into()));
+        assert!(
+            driver.app.list_again,
+            "the next keystroke waits for the search running"
+        );
+        first.release();
+        second.release();
+        tick_until(&mut driver, 0.0, |app| {
+            app.list_loading.is_none() && !app.view_dirty && !app.list_again
+        });
+        assert_eq!(driver.uids(), [2]);
+    }
+
+    #[test]
+    fn the_hits_of_a_new_query_start_at_the_top() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2, 3]);
+        let (mut driver, _wires) = fx.driver();
+        driver.press("/");
+        driver.apply(UiAction::SearchFor("subject".into()));
+        assert_eq!(driver.uids(), [3, 2, 1]);
+        driver.app.list.cursor = 2;
+        driver.apply(UiAction::SearchFor("subjec".into()));
+        assert_eq!(driver.uids(), [3, 2, 1]);
+        assert_eq!(
+            driver.app.list.cursor, 0,
+            "the cursor does not follow message 1"
+        );
     }
 
     #[test]

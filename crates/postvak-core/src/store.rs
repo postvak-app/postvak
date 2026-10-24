@@ -24,6 +24,7 @@ const MIGRATIONS: &[M<'static>] = &[
     M::up(include_str!("../migrations/009-folder-thread-index/up.sql")),
     M::up(include_str!("../migrations/010-unread-index/up.sql")),
     M::up(include_str!("../migrations/011-search/up.sql")),
+    M::up(include_str!("../migrations/012-rule-moves/up.sql")),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -871,6 +872,24 @@ impl Store {
         Ok(())
     }
 
+    /// Remembers that a rule moved `msg` out of its folder.
+    pub fn record_rule_move(&self, msg: &Message) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO rule_moves (folder, message_id, internaldate) VALUES (?1, ?2, ?3)",
+            params![msg.folder, msg.message_id.as_deref().unwrap_or(""), msg.internaldate],
+        )?;
+        Ok(())
+    }
+
+    /// Whether a rule moved `msg` out of its folder before, so it came back.
+    pub fn rule_moved_out(&self, msg: &Message) -> Result<bool, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM rule_moves WHERE folder = ?1 AND message_id = ?2 AND internaldate = ?3)",
+            params![msg.folder, msg.message_id.as_deref().unwrap_or(""), msg.internaldate],
+            |r| r.get(0),
+        )?)
+    }
+
     /// Moves `rules_uid` up to `last_uid` in every folder not in `except`, so their mail stops counting as fresh.
     pub fn mark_rules_seen_except(&self, except: &[String]) -> Result<(), StoreError> {
         let except = serde_json::to_string(except)?;
@@ -1405,6 +1424,28 @@ mod tests {
             .map(|m| m.uid)
             .collect();
         assert_eq!(left, vec![1, 3]);
+    }
+
+    #[test]
+    fn a_rule_move_is_remembered_per_folder_message_id_and_internaldate() {
+        let s = Store::open_in_memory().unwrap();
+        let msg = |folder: &str, id: Option<&str>, internaldate| Message {
+            folder: folder.into(),
+            message_id: id.map(Into::into),
+            internaldate,
+            ..Default::default()
+        };
+        s.record_rule_move(&msg("INBOX", Some("a@x"), 10)).unwrap();
+        s.record_rule_move(&msg("INBOX", None, 20)).unwrap();
+        s.record_rule_move(&msg("INBOX", Some("a@x"), 10)).unwrap();
+        assert!(s.rule_moved_out(&msg("INBOX", Some("a@x"), 10)).unwrap());
+        assert!(s.rule_moved_out(&msg("INBOX", None, 20)).unwrap());
+        assert!(!s.rule_moved_out(&msg("Lists", Some("a@x"), 10)).unwrap());
+        assert!(
+            !s.rule_moved_out(&msg("INBOX", Some("a@x"), 11)).unwrap(),
+            "another copy"
+        );
+        assert!(!s.rule_moved_out(&msg("INBOX", Some("b@x"), 10)).unwrap());
     }
 
     #[test]

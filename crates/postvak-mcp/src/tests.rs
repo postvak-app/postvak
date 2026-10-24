@@ -189,11 +189,12 @@ fn files_write_is_a_scope_outside_the_default_set() {
 fn scopes_parse_and_unknown_ones_name_the_valid_ones() {
     let scopes = parse_scopes("read, rules:propose").unwrap();
     assert_eq!(scopes.len(), 2);
-    assert!(
-        parse_scopes("accounts:write")
-            .unwrap()
-            .contains(&super::Scope::AccountsWrite)
+    // Removed: a host config written by an older version still starts, without the scope.
+    assert_eq!(
+        parse_scopes("read,accounts:write").unwrap(),
+        parse_scopes("read").unwrap()
     );
+    assert!(parse_scopes("accounts:write").is_err());
     for empty in ["", ","] {
         let err = parse_scopes(empty).unwrap_err().to_string();
         assert!(err.contains("read:bodies"), "{err}");
@@ -719,10 +720,28 @@ fn add_attached(fx: &Fixture, account: &str, uid: u32) {
 }
 
 #[tokio::test]
-async fn attachment_save_writes_the_file_and_returns_its_path() {
+async fn attachment_save_writes_into_the_save_folder_by_default() {
     let fx = fixture(&["work"]);
     add_attached(&fx, "work", 1);
-    let dir = fx.paths.cache_dir.join("saved");
+    let downloads = fx.paths.downloads_dir().unwrap();
+    std::fs::create_dir_all(&downloads).unwrap();
+    let client = connect(&fx, "files:write", &[]).await;
+    let report = call(&client, "attachment_save", json!({ "uid": 1, "n": 1 })).await;
+    let report = report.structured_content.unwrap();
+    let path = std::path::PathBuf::from(report["path"].as_str().unwrap());
+    assert!(
+        path.starts_with(downloads.canonicalize().unwrap()),
+        "{report}"
+    );
+    assert!(path.is_file());
+    assert_eq!(report["account"], "work");
+}
+
+#[tokio::test]
+async fn attachment_save_writes_below_the_save_folder() {
+    let fx = fixture(&["work"]);
+    add_attached(&fx, "work", 1);
+    let dir = fx.paths.downloads_dir().unwrap().join("invoices");
     std::fs::create_dir_all(&dir).unwrap();
     let client = connect(&fx, "files:write", &[]).await;
     let report = call(
@@ -733,16 +752,52 @@ async fn attachment_save_writes_the_file_and_returns_its_path() {
     .await;
     let report = report.structured_content.unwrap();
     let path = std::path::PathBuf::from(report["path"].as_str().unwrap());
-    assert!(path.starts_with(&dir), "{report}");
+    assert!(path.starts_with(dir.canonicalize().unwrap()), "{report}");
     assert!(path.is_file());
-    assert_eq!(report["account"], "work");
 }
 
 #[tokio::test]
-async fn attachment_save_needs_an_absolute_dir() {
+async fn attachment_save_refuses_a_dir_outside_the_save_folder() {
+    let fx = fixture(&["work"]);
+    add_attached(&fx, "work", 1);
+    let downloads = fx.paths.downloads_dir().unwrap();
+    std::fs::create_dir_all(&downloads).unwrap();
+    // Where a prompt-injected agent would put a file that runs at login.
+    let autostart = fx.paths.config_dir.join("autostart");
+    std::fs::create_dir_all(&autostart).unwrap();
+    std::os::unix::fs::symlink(&autostart, downloads.join("link")).unwrap();
+    let client = connect(&fx, "files:write", &[]).await;
+    for dir in [
+        autostart.clone(),
+        downloads.join("..").join("config").join("autostart"),
+        downloads.join("link"),
+    ] {
+        let refused = call(
+            &client,
+            "attachment_save",
+            json!({ "uid": 1, "n": 1, "dir": dir }),
+        )
+        .await;
+        assert!(
+            error_text(&refused).contains("outside the save folder"),
+            "{dir:?}: {refused:?}"
+        );
+    }
+    assert_eq!(std::fs::read_dir(&autostart).unwrap().count(), 0);
+}
+
+#[tokio::test]
+async fn attachment_save_needs_an_absolute_existing_dir_and_a_save_folder() {
     let fx = fixture(&["work"]);
     add_attached(&fx, "work", 1);
     let client = connect(&fx, "files:write", &[]).await;
+    let no_folder = call(&client, "attachment_save", json!({ "uid": 1, "n": 1 })).await;
+    assert!(
+        error_text(&no_folder).contains("no save folder"),
+        "{no_folder:?}"
+    );
+    let downloads = fx.paths.downloads_dir().unwrap();
+    std::fs::create_dir_all(&downloads).unwrap();
     let relative = call(
         &client,
         "attachment_save",
@@ -750,7 +805,7 @@ async fn attachment_save_needs_an_absolute_dir() {
     )
     .await;
     assert!(error_text(&relative).contains("absolute"), "{relative:?}");
-    let missing = fx.paths.cache_dir.join("nowhere");
+    let missing = downloads.join("nowhere");
     let gone = call(
         &client,
         "attachment_save",
@@ -758,6 +813,18 @@ async fn attachment_save_needs_an_absolute_dir() {
     )
     .await;
     assert!(error_text(&gone).contains("nowhere"), "{gone:?}");
+}
+
+#[test]
+fn attachment_save_without_a_downloads_folder_says_to_set_one() {
+    let fx = fixture(&["work"]);
+    let backend = Backend::new(&fx.config(), &fx.paths, &[])
+        .unwrap()
+        .saving_into(None);
+    let err = backend
+        .attachment_save(None, "INBOX", 1, 1, None)
+        .unwrap_err();
+    assert!(err.to_string().contains("--save-dir"), "{err}");
 }
 
 #[tokio::test]
@@ -825,8 +892,7 @@ fn wrap_body_cuts_inside_a_multibyte_character_without_panicking() {
 #[tokio::test]
 async fn tools_list_per_scope_set_is_exact_and_alphabetical() {
     let fx = fixture(&["work"]);
-    let cases: [(&str, &[&str]); 6] = [
-        ("accounts:write", &["account_add"]),
+    let cases: [(&str, &[&str]); 5] = [
         (
             "read,rules:propose",
             &[
@@ -884,7 +950,7 @@ async fn annotations_mark_reads_and_destructive_tools() {
     let fx = fixture(&["work"]);
     let client = connect(
         &fx,
-        "read,read:bodies,rules:propose,rules:write,files:write,mail:modify,accounts:write",
+        "read,read:bodies,rules:propose,rules:write,files:write,mail:modify",
         &[],
     )
     .await;
@@ -892,7 +958,6 @@ async fn annotations_mark_reads_and_destructive_tools() {
         let hints = tool.annotations.clone().unwrap();
         let name = tool.name.as_ref();
         let destructive = [
-            "account_add",
             "delete",
             "rules_apply_existing",
             "rules_approve",
@@ -1076,8 +1141,8 @@ async fn sync_reports_a_failed_connect_as_the_accounts_error() {
 #[tokio::test]
 async fn archive_goes_through_the_daemon_attributed_to_the_client() {
     let fx = fixture_with_daemon(&["work"], connector_with_mail());
-    let client = connect(&fx, "mail:modify", &[]).await;
-    call(&client, "sync", json!({})).await;
+    let client = connect(&fx, "read, mail:modify", &[]).await;
+    rows(&call(&client, "sync", json!({})).await);
     let report = call(&client, "archive", json!({ "uids": [1] })).await;
     let report = report.structured_content.unwrap();
     assert_eq!(report["done"], 1, "{report}");
@@ -1140,8 +1205,8 @@ async fn a_server_search_needs_the_bodies_scope() {
 #[tokio::test]
 async fn junk_with_not_goes_through_the_daemon() {
     let fx = fixture_with_daemon(&["work"], connector_with_mail());
-    let client = connect(&fx, "mail:modify", &[]).await;
-    call(&client, "sync", json!({})).await;
+    let client = connect(&fx, "read, mail:modify", &[]).await;
+    rows(&call(&client, "sync", json!({})).await);
     let report = call(&client, "junk", json!({ "uids": [1], "not": true })).await;
     let report = report.structured_content.unwrap();
     assert_eq!(report["done"], 1, "{report}");
@@ -1237,8 +1302,8 @@ async fn rules_apply_existing_goes_through_the_daemon() {
         "[[rules]]\nname = \"greet\"\nmatch.subject = { contains = \"Hi\" }\nactions = [\"flag\"]\n",
     )
     .unwrap();
-    let client = connect(&fx, "mail:modify", &[]).await;
-    call(&client, "sync", json!({})).await;
+    let client = connect(&fx, "read, mail:modify", &[]).await;
+    rows(&call(&client, "sync", json!({})).await);
     let report = rows(&call(&client, "rules_apply_existing", json!({ "name": "greet" })).await);
     assert_eq!(report.len(), 1, "{report:?}");
     assert_eq!(report[0]["account"], "work");
@@ -1553,114 +1618,6 @@ async fn status_reports_the_daemon_and_the_visible_accounts() {
         .map(|a| a["name"].as_str().unwrap())
         .collect();
     assert_eq!(names, ["work"]);
-}
-
-#[tokio::test]
-async fn account_add_returns_the_account_and_its_first_sync() {
-    let fx = fixture_with_daemon(&["work"], recording_connector());
-    let client = connect(&fx, "accounts:write", &[]).await;
-    let report = call(
-        &client,
-        "account_add",
-        json!({ "name": "late", "host": "127.0.0.1", "port": 1, "username": "me@example.org", "password_command": "printf x" }),
-    )
-    .await;
-    let report = report.structured_content.unwrap();
-    assert_eq!(report["account"]["account"], "late", "{report}");
-    assert!(report["account"].get("password").is_none());
-    assert!(!report.to_string().contains("printf"), "{report}");
-    assert_eq!(report["sync"]["account"], "late", "{report}");
-    assert!(fx.config().accounts.iter().any(|a| a.name == "late"));
-    let client = connect(&fx, "read", &[]).await;
-    let report = rows(&call(&client, "accounts", json!({})).await);
-    assert_eq!(report.len(), 2);
-}
-
-#[tokio::test]
-async fn account_add_rejects_a_plain_password_and_a_narrowed_server() {
-    let fx = fixture_with_daemon(&["work"], recording_connector());
-    let client = connect(&fx, "accounts:write", &[]).await;
-    let refused = call(
-        &client,
-        "account_add",
-        json!({ "name": "x", "host": "h", "username": "u@example.com", "password_command": "printf x", "password": "hunter2" }),
-    )
-    .await;
-    assert!(
-        error_text(&refused).contains("unknown field"),
-        "{refused:?}"
-    );
-    assert!(!fx.config().accounts.iter().any(|a| a.name == "x"));
-    let narrowed = connect(&fx, "accounts:write", &["work"]).await;
-    let refused = call(
-        &narrowed,
-        "account_add",
-        json!({ "name": "y", "host": "h", "username": "u@example.com", "password_command": "printf x" }),
-    )
-    .await;
-    assert!(error_text(&refused).contains("--account"), "{refused:?}");
-}
-
-#[tokio::test]
-async fn account_add_tests_the_login_and_saves_nothing_when_it_fails() {
-    let fx = fixture_with_daemon(&["work"], recording_connector());
-    let client = connect(&fx, "accounts:write", &[]).await;
-    let refused = call(
-        &client,
-        "account_add",
-        json!({ "name": "late", "host": "127.0.0.1", "username": "me@example.org", "password_command": "printf wrong" }),
-    )
-    .await;
-    let why = error_text(&refused);
-    assert!(
-        why.contains("the login failed, so nothing was saved"),
-        "{why}"
-    );
-    assert!(why.contains("Authentication failed"), "{why}");
-    assert!(!fx.config().accounts.iter().any(|a| a.name == "late"));
-}
-
-#[tokio::test]
-async fn account_add_refuses_to_replace_an_existing_account() {
-    let fx = fixture_with_daemon(&["work"], recording_connector());
-    let client = connect(&fx, "accounts:write", &[]).await;
-    let refused = call(
-        &client,
-        "account_add",
-        json!({ "name": "work", "host": "evil.example", "username": "u@example.com", "password_command": "printf x" }),
-    )
-    .await;
-    assert!(
-        error_text(&refused).contains("exists already"),
-        "{refused:?}"
-    );
-    assert_ne!(fx.config().accounts[0].host, "evil.example");
-}
-
-#[tokio::test]
-async fn account_add_keeps_accounts_added_to_config_toml_since_the_server_started() {
-    let fx = fixture_with_daemon(&["work"], recording_connector());
-    let client = connect(&fx, "accounts:write", &[]).await;
-    let mut config = fx.config();
-    config
-        .accounts
-        .push(postvak_core::config::AccountConfig::new(
-            "edited",
-            "127.0.0.1",
-            "edited@example.org",
-            postvak_core::config::PasswordSource::Command {
-                command: "printf x".into(),
-            },
-        ));
-    config.save(&fx.paths.config_file()).unwrap();
-    call(
-        &client,
-        "account_add",
-        json!({ "name": "late", "host": "127.0.0.1", "port": 1, "username": "me@example.org", "password_command": "printf x" }),
-    )
-    .await;
-    let names: Vec<String> = fx.config().accounts.into_iter().map(|a| a.name).collect();
-    assert_eq!(names, ["work", "edited", "late"]);
 }
 
 /// `text` as Unicode tag characters: invisible on screen, readable to a model ("ASCII smuggling").

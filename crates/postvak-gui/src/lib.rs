@@ -902,4 +902,17 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn the_flatpak_may_show_the_tray() {
+        let manifest =
+            include_str!("../../../packaging/linux/flatpak/io.github.postvak_app.postvak.yml");
+        let args: Vec<&str> = manifest.lines().map(str::trim).collect();
+        assert!(
+            args.contains(&"- --talk-name=org.kde.StatusNotifierWatcher"),
+            "without the watcher the tray never registers, so closing the window quits"
+        );
+        // Slint's tray skips its well-known name in a sandbox, so no broad --own-name is needed.
+        assert!(!args.iter().any(|a| a.starts_with("- --own-name")));
+    }
 }

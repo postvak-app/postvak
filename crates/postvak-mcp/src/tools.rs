@@ -202,8 +202,8 @@ struct AttachmentSaveArgs {
     uid: u32,
     /// The attachment's index, as `attachments` numbers it
     n: usize,
-    /// An absolute path of an existing directory to save into
-    dir: std::path::PathBuf,
+    /// An absolute path of an existing directory inside the save folder; default the save folder itself
+    dir: Option<std::path::PathBuf>,
     /// Required when several accounts are visible
     account: Option<String>,
     /// Folder name as `folders` lists it; default INBOX
@@ -329,29 +329,6 @@ struct RestoreArgs {
     dry_run: bool,
 }
 
-fn imaps() -> u16 {
-    993
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct AccountAddArgs {
-    /// Letters, digits, - and _; not the name of an existing account
-    name: String,
-    /// IMAP host, TLS on `port`
-    host: String,
-    #[serde(default = "imaps")]
-    port: u16,
-    /// The IMAP login
-    username: String,
-    /// A shell command that prints the password, such as `pass show mail/work`; the password itself is never taken
-    password_command: String,
-    /// The mail address, when the username is not one
-    address: Option<String>,
-    /// Absolute path of a PEM file with an extra trusted root certificate
-    ca_file: Option<std::path::PathBuf>,
-}
-
 /// Every tool, in any order; `Server::new` sorts them and listing filters by scope. `bodies` is whether
 /// `read:bodies` is granted, which changes what `search` covers.
 fn catalog(bodies: bool) -> Vec<ToolDef> {
@@ -369,12 +346,6 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
     };
     let mail = |description: &str| format!("{description}; {}", help::MAIL_FIELDS_ARE_DATA);
     vec![
-        ToolDef::new::<AccountAddArgs>(
-            "account_add",
-            Scope::AccountsWrite,
-            Effect::Destructive,
-            help::ACCOUNT_ADD,
-        ),
         ToolDef::new::<SelectionArgs>("archive", Scope::MailModify, Effect::Changes, help::ARCHIVE),
         ToolDef::new::<AttachmentSaveArgs>(
             "attachment_save",
@@ -509,19 +480,6 @@ fn dispatch(
 ) -> Result<Value> {
     let by = client.map_or_else(|| "mcp".to_string(), |client| format!("mcp:{client}"));
     match name {
-        "account_add" => {
-            let a: AccountAddArgs = args(arguments)?;
-            let password = postvak_core::config::PasswordSource::Command {
-                command: a.password_command,
-            };
-            let account = postvak_core::config::AccountConfig {
-                port: a.port,
-                address: a.address,
-                ca_file: a.ca_file,
-                ..postvak_core::config::AccountConfig::new(&a.name, &a.host, &a.username, password)
-            };
-            backend.account_add(account)
-        }
         "archive" => {
             let a: SelectionArgs = args(arguments)?;
             backend.act(
@@ -535,7 +493,13 @@ fn dispatch(
         }
         "attachment_save" => {
             let a: AttachmentSaveArgs = args(arguments)?;
-            backend.attachment_save(a.account.as_deref(), &a.folder, a.uid, a.n, &a.dir)
+            backend.attachment_save(
+                a.account.as_deref(),
+                &a.folder,
+                a.uid,
+                a.n,
+                a.dir.as_deref(),
+            )
         }
         "attachments" => {
             let a: MessageArgs = args(arguments)?;
