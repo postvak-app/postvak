@@ -11,7 +11,8 @@ use postvak_core::store::{Filter, Store};
 use postvak_core::sync::{IndexOutcome, index_slice, sync_all};
 
 use super::list::THREAD_LIMIT;
-use super::state::{LIST_BUDGET, UiAction, View};
+use super::reader;
+use super::state::{BODY_BUDGET, LIST_BUDGET, UiAction, View};
 use super::test_support::Fixture;
 
 const ACCOUNTS: [&str; 3] = ["home", "lists", "work"];
@@ -33,6 +34,46 @@ const RUNS: usize = 5;
 const ARRIVING: u32 = 200;
 const RETAGGED: usize = 500;
 const T0: i64 = 1_700_000_000;
+
+/// A 5 MB message: a 200 kB HTML newsletter and a 4.8 MB attachment, as mail with a scan or a slide deck is.
+fn large_message() -> Vec<u8> {
+    let row = "<tr><td><a href=\"https://example.com/item\">An item</a></td><td>A line of newsletter text</td></tr>\n";
+    let html = format!(
+        "<html><body><table>{}</table></body></html>",
+        row.repeat(200_000 / row.len())
+    );
+    let bytes: Vec<u8> = (0..3_600_000u32)
+        .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
+        .collect();
+    let encoded = base64(&bytes);
+    let lines: Vec<&str> = encoded
+        .as_bytes()
+        .chunks(76)
+        .map(|line| std::str::from_utf8(line).unwrap())
+        .collect();
+    format!(
+        "From: Sender <sender@example.com>\r\nTo: me@example.com\r\nSubject: large\r\nMIME-Version: 1.0\r\n\
+         Content-Type: multipart/mixed; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: text/html; charset=utf-8\r\n\r\n\
+         {html}\r\n--b\r\nContent-Type: application/pdf; name=\"scan.pdf\"\r\n\
+         Content-Disposition: attachment; filename=\"scan.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\r\n\
+         {}\r\n--b--\r\n",
+        lines.join("\r\n")
+    )
+    .into_bytes()
+}
+
+/// Base64 without padding concerns: `bytes` is a multiple of three long.
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len() / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let n = u32::from(chunk[0]) << 16 | u32::from(chunk[1]) << 8 | u32::from(chunk[2]);
+        for shift in [18, 12, 6, 0] {
+            out.push(char::from(ALPHABET[(n >> shift & 63) as usize]));
+        }
+    }
+    out
+}
 
 /// xorshift64: the same mail on every run without a dependency.
 struct Rng(u64);
@@ -227,6 +268,41 @@ fn run(scale: u32, runs: usize) {
             .collect(),
     );
     assert!(!driver.app.list.rows.is_empty());
+
+    // Opening a large message: what reading and parsing it costs on the reader thread, and how long the frame that
+    // chose it waits now. The top two rows get the same 5 MB message, and each run steps between them.
+    let large = large_message();
+    let keys: Vec<_> = driver.app.list.rows[..2]
+        .iter()
+        .map(|row| (row.folder.clone(), row.uid))
+        .collect();
+    for (folder, uid) in &keys {
+        stores[0].set_raw(folder, *uid, &large, "large").unwrap();
+    }
+    report(
+        "open_message",
+        scale,
+        (0..runs)
+            .map(|_| timed(|| drop(reader::read(&stores[0], &keys[0]))))
+            .collect(),
+    );
+    driver.app.body_budget = BODY_BUDGET;
+    let frames = (0..runs).map(|run| {
+        let ms = timed(|| driver.press(if run % 2 == 0 { "j" } else { "k" }));
+        while driver
+            .app
+            .body
+            .as_ref()
+            .is_some_and(|b| b.reading.is_some())
+        {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            driver.tick();
+        }
+        ms
+    });
+    report("open_message_frame", scale, frames.collect());
+    driver.app.body_budget = std::time::Duration::from_secs(60);
+    assert!(driver.app.body.as_ref().is_some_and(|b| b.html.is_some()));
 
     driver.apply(UiAction::SelectView(View::AllInboxes));
     report(

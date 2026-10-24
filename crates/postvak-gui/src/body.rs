@@ -70,7 +70,10 @@ pub(crate) fn pane(app: &App) -> Pane {
     };
     let Some(message) = &body.message else {
         return Pane {
-            empty: Some("This message is no longer in the local store."),
+            empty: Some(match body.reading {
+                Some(_) => "Loading…",
+                None => "This message is no longer in the local store.",
+            }),
             ..Pane::default()
         };
     };

@@ -20,6 +20,8 @@ How Postvak behaves as a mailbox grows, measured on generated mail. User stores 
 | `folder_counts` | One account's folders with their unread counts, read again on each of its sync events |
 | `search` | One word searched in All inboxes |
 | `search_keystroke` | The frame that takes a keystroke in the search field: how long it waits for the hits |
+| `open_message` | Reading a 5 MB message from the store and parsing it, as the reader thread does |
+| `open_message_frame` | The frame that opens that message: how long it waits for the read |
 | `search_close` | A misspelled word searched in All inboxes: no exact hit, so the vocabulary is consulted and the close tier runs |
 | `sync_pass` | One sync of an account after 200 messages arrived and 500 changed flags |
 
@@ -103,4 +105,17 @@ Each keystroke in the search field used to run the search on the window thread, 
 
 The hits still take what `search` takes to arrive; only the window no longer waits for them.
 
-Not measured yet: drawing a frame of the list through the real window (`Fixture::window()`), and opening one message.
+## Opening a message
+
+Opening a message reads its row and raw bytes from the store and parses its MIME structure for the attachments and the HTML. That ran on the window thread, so the frame that chose a message with a large attachment waited for all of it. Now a thread of its own reads it (`reader.rs`), with its own connection, and the frame waits at most `BODY_BUDGET` (8 ms, half a 60 Hz frame): ordinary mail still opens in the frame that chose it, and a larger message shows "Loading…" until it comes. The thread reads only the newest request, so holding `j` through the list reads only where the cursor stops.
+
+`open_message` is the read on its own, what the frame waited before; `open_message_frame` is what the frame waits now. The message is a 200 kB HTML newsletter with a base64 attachment. Release build, 10k messages, the same machine as the search table above. Median in ms, with the range of five runs.
+
+| Message | `open_message` | `open_message_frame` |
+| --- | --- | --- |
+| 5 MB | 8.9 (8.9–11) | 8.2 (8.1–8.2) |
+| 25 MB | 65 (64–78) | 8.2 (8.2–8.2) |
+
+The bench keeps the 5 MB message; the 25 MB row is one run with a larger attachment. Below the budget nothing changes; above it the frame no longer grows with the message.
+
+Not measured yet: drawing a frame of the list through the real window (`Fixture::window()`).
