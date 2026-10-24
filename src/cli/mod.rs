@@ -133,6 +133,9 @@ enum Command {
         /// Ask the server too, which searches bodies not downloaded yet; each folder costs a round trip
         #[arg(long)]
         server: bool,
+        /// Only what matches as typed: no close matches such as corrected typos
+        #[arg(long)]
+        exact: bool,
         #[arg(long, default_value_t = 50)]
         limit: u32,
         #[arg(long)]
@@ -488,6 +491,7 @@ pub fn run() -> Result<()> {
             account,
             folder,
             server,
+            exact,
             limit,
             json,
         } => {
@@ -500,6 +504,7 @@ pub fn run() -> Result<()> {
                     postvak_core::search::Scope::All,
                     folder.as_deref(),
                     limit,
+                    !exact,
                 )?;
                 if server {
                     match daemon.search_server(&acc.name, folder.as_deref(), &query) {
@@ -517,9 +522,13 @@ pub fn run() -> Result<()> {
                 }
                 for hit in found {
                     if json {
-                        print_json(postvak_core::output::with_account(&acc.name, &hit.message)?);
+                        print_json(postvak_core::output::with_account(&acc.name, &hit)?);
                     } else {
-                        println!("{}", message_line(&acc.name, &hit.message, 0));
+                        let line = message_line(&acc.name, &hit.message, 0);
+                        match hit.matched {
+                            postvak_core::store::Matched::Exact => println!("{line}"),
+                            postvak_core::store::Matched::Close => println!("~ {line}"),
+                        }
                     }
                 }
             }

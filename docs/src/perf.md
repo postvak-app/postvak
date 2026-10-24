@@ -19,6 +19,7 @@ How Postvak behaves as a mailbox grows, measured on generated mail. User stores 
 | `sync_event` | The frame that takes a sync event in All inboxes: how long it waits for the reload |
 | `folder_counts` | One account's folders with their unread counts, read again on each of its sync events |
 | `search` | One word searched in All inboxes |
+| `search_close` | A misspelled word searched in All inboxes: no exact hit, so the vocabulary is consulted and the close tier runs |
 | `sync_pass` | One sync of an account after 200 messages arrived and 500 changed flags |
 
 ```sh
@@ -64,9 +65,10 @@ Migration 011 rebuilds the FTS index once per store, the first time the store op
 | --- | --- | --- |
 | `rebuild_index` | 30 (26–31) | 235 (219–251) |
 | `search` | 10 (9.9–23) | 62 (60–70) |
+| `search_close` | 12 (12–14) | |
 | `index_all` | 977 (918–1,117) | |
 
-`index_all` covers the first account's third of the mail, so about 3,400 messages a second go through the structure fetch, the text decode and the store; against a real server each message costs a round trip or two on top, which is what the five-second slices and the newest-first order are for. Rebuilding three stores that hold 100k header-only messages takes a quarter of a second, far under the five seconds the search design allows; stored bodies add to it in proportion to their text. `search` runs its last word as a prefix now (`invoice*`), which costs more than the exact word did, and this machine is not the baseline's M1, so the two `search` rows are not comparable.
+`index_all` covers the first account's third of the mail, so about 3,400 messages a second go through the structure fetch, the text decode and the store; against a real server each message costs a round trip or two on top, which is what the five-second slices and the newest-first order are for. Rebuilding three stores that hold 100k header-only messages takes a quarter of a second, far under the five seconds the search design allows; stored bodies add to it in proportion to their text. `search` runs its last word as a prefix now (`invoice*`), which costs more than the exact word did, and this machine is not the baseline's M1, so the two `search` rows are not comparable. `search_close` searches `invioce`: the exact tier finds nothing, the vocabulary lookup and the close tier run, and the whole query still costs what an exact one does (the `search` row of the same run was 12 ms).
 
 ## Reloads after a sync event
 

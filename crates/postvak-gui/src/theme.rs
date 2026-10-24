@@ -5,6 +5,8 @@
 pub(crate) const CONTROL: f32 = 28.0;
 /// Height of a message in the list: the sender and date, then the subject.
 pub(crate) const LIST_ROW: f32 = 72.0;
+/// Height of one line of text in the grid: the "Close matches" strip above a search row.
+pub(crate) const ROW: f32 = 24.0;
 /// How many avatar fills each mode has.
 pub(crate) const TINTS: usize = 6;
 
@@ -56,6 +58,7 @@ mod tests {
         let theme = window.global::<Theme>();
         assert_eq!(theme.get_control(), CONTROL);
         assert_eq!(theme.get_list_row(), LIST_ROW);
+        assert_eq!(theme.get_row(), ROW);
     }
 
     #[test]

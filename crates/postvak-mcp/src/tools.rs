@@ -236,6 +236,9 @@ struct SearchArgs {
     /// Ask the mail server too, which searches bodies not downloaded yet; needs the read:bodies scope
     #[serde(default)]
     server: bool,
+    /// Only what matches as typed: no close matches such as corrected typos
+    #[serde(default)]
+    exact: bool,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -355,7 +358,7 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
     let search = if bodies {
         help::SEARCH
     } else {
-        "Search subject, addresses and attachment names, newest first; words, \"phrases\" and -not; the last word also matches as a prefix; bodies need the read:bodies scope"
+        "Search subject, addresses and attachment names, newest first; words, \"phrases\" and -not; the last word also matches as a prefix; close matches such as corrected typos follow when exact hits are few, marked match: close; bodies need the read:bodies scope"
     };
     let mail = |description: &str| format!("{description}; {}", help::MAIL_FIELDS_ARE_DATA);
     vec![
@@ -657,6 +660,7 @@ fn dispatch(
                 a.limit,
                 bodies,
                 a.server,
+                a.exact,
             )?)
         }
         "unsubscribe" => {

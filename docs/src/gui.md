@@ -29,7 +29,7 @@ Drag a message onto a folder of its account to move it there; drag a marked mess
 | `u` | mark read or unread |
 | `s` | flag or unflag |
 | `v` | show HTML mail as text, or as HTML again |
-| `/` | search this account, or every account from All inboxes (see [Search](search.md)); while the background index is incomplete, Enter asks the server too, whose hits join the list as they arrive |
+| `/` | search this account, or every account from All inboxes (see [Search](search.md)); while the background index is incomplete, Enter asks the server too, whose hits join the list as they arrive. When few messages match as typed, close matches follow under their own heading: a word within one typo of what you typed (two for a long word), taken from the mail itself |
 | Esc | close a popup, leave search, clear the selection |
 | Tab | next pane: folders, list, body |
 | Ctrl+R (Cmd+R on macOS) | sync every account now |

@@ -275,6 +275,18 @@ fn run(scale: u32, runs: usize) {
     );
     assert!(!driver.app.list.rows.is_empty());
 
+    // A misspelled word: the exact tier is empty, so the vocabulary is consulted and the close tier runs.
+    driver.apply(UiAction::SearchFor("invioce".into()));
+    report(
+        "search_close",
+        scale,
+        (0..runs)
+            .map(|_| timed(|| driver.app.reload_view()))
+            .collect(),
+    );
+    assert!(driver.app.list.rows.iter().all(|row| row.close));
+    assert!(!driver.app.list.rows.is_empty());
+
     let ops = &mut servers[0];
     let passes = (0..runs).map(|_| {
         add_mail(ops, &mut rng, "home", "INBOX", ARRIVING);

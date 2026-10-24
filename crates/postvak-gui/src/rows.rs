@@ -179,6 +179,11 @@ impl Model for ListModel {
             .map(String::as_str);
         let marked = shown.marked.contains(&row.id());
         let arrived = shown.arrived.contains(&row.id());
+        let section = if list::divider(&shown.rows) == Some(index) {
+            list::CLOSE_MATCHES
+        } else {
+            ""
+        };
         let now = Local::now();
         let columns = list::columns(row, account, shown.recipient, shown.search, &now);
         let mut name = list::row_text(row, &columns);
@@ -214,6 +219,7 @@ impl Model for ListModel {
             marked,
             arrived,
             name: name.into(),
+            section: section.into(),
         })
     }
 

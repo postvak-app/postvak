@@ -208,6 +208,61 @@ fn inbox_with_marks_and_an_expanded_thread() {
     snapshot(&open, "gui_inbox_thread");
 }
 
+/// A search whose hits are two exact ones and one found through a close match, the strip between them.
+fn search_close_matches(theme: &str) -> (Fixture, Open, Wires) {
+    let fx = Fixture::mailbox(theme);
+    fx.add(
+        "work",
+        // A uid the mailbox does not use, since `add` ignores a duplicate; below 100, as `mail` dates it from there.
+        crate::fixture::mail(
+            97,
+            "Linus Example <linus@example.com>",
+            "Ofsite budget",
+            "\\Seen",
+            "Numbers for the ofsite.",
+        ),
+    );
+    let (open, wires) = open(&fx);
+    open.with(|live| live.app.select_view(work_inbox()));
+    open.tick();
+    open.press("/ offsite");
+    open.tick();
+    let shape: Vec<(String, bool)> = open.with(|live| {
+        live.app
+            .list
+            .rows
+            .iter()
+            .map(|row| (row.subject.clone(), row.close))
+            .collect()
+    });
+    assert_eq!(
+        shape,
+        [
+            ("Re: Planning the offsite".to_string(), false),
+            ("Planning the offsite".to_string(), false),
+            ("Ofsite budget".to_string(), true),
+        ]
+    );
+    assert_eq!(open.labels_containing("close match").len(), 1);
+    // The search field has focus; an inactive window draws no text cursor, whose blink phase differs between
+    // platforms (the merge queue's macOS run drew the opposite phase to Linux).
+    slint::ComponentHandle::window(&open.window())
+        .dispatch_event(slint::platform::WindowEvent::WindowActiveChanged(false));
+    (fx, open, wires)
+}
+
+#[test]
+fn search_close_matches_light() {
+    let (_fx, open, _wires) = search_close_matches("light");
+    snapshot(&open, "gui_search_close_light");
+}
+
+#[test]
+fn search_close_matches_dark() {
+    let (_fx, open, _wires) = search_close_matches("dark");
+    snapshot(&open, "gui_search_close_dark");
+}
+
 #[test]
 fn inbox_filtered() {
     let (_fx, open, _wires) = inbox("light");

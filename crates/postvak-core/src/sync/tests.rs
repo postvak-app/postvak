@@ -297,7 +297,8 @@ fn clean_pass_forgets_folders_the_server_no_longer_lists() {
                 &crate::search::parse("hello"),
                 crate::search::Scope::All,
                 None,
-                10
+                10,
+                false
             )
             .unwrap()
             .iter()
