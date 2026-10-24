@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/postvak-app/postvak/compare/v0.5.0...v0.6.0) - 2026-10-24
+
+### Added
+
+- *(sync)* [**breaking**] index message bodies in idle time ([#237](https://github.com/postvak-app/postvak/pull/237))
+- *(search)* [**breaking**] rebuild the search index and one query syntax on every surface ([#235](https://github.com/postvak-app/postvak/pull/235))
+- *(gui)* a sync progress hairline under the status line ([#236](https://github.com/postvak-app/postvak/pull/236))
+- test an account's login through the daemon before saving it ([#231](https://github.com/postvak-app/postvak/pull/231))
+- *(gui)* rules editor ([#215](https://github.com/postvak-app/postvak/pull/215))
+- *(gui)* test the login with a first sync when adding an account ([#229](https://github.com/postvak-app/postvak/pull/229))
+
+### Fixed
+
+- *(deps)* ctutils, rustls-webpki and webpki-roots past RUSTSEC-2026-0381, -0382 and -0385 ([#239](https://github.com/postvak-app/postvak/pull/239))
+- *(gui)* copy and paste on Wayland without X11, through Slint's patched clipboard ([#232](https://github.com/postvak-app/postvak/pull/232))
+- *(gui)* sharp text in the rounded panes ([#230](https://github.com/postvak-app/postvak/pull/230))
+- *(flatpak)* share X11 under Wayland so copy and paste work ([#228](https://github.com/postvak-app/postvak/pull/228))
+- *(gui)* set the Wayland app id after the platform exists ([#227](https://github.com/postvak-app/postvak/pull/227))
+
+### Other
+
+- *(mcp)* trash restore saves its backup now, so the daemon's purge cannot race it ([#240](https://github.com/postvak-app/postvak/pull/240))
+- *(agents)* platforms and desktop integrations everywhere ([#234](https://github.com/postvak-app/postvak/pull/234))
+- *(deps)* bump the cargo group with 7 updates ([#223](https://github.com/postvak-app/postvak/pull/223))
+- link the Docker image from the README ([#225](https://github.com/postvak-app/postvak/pull/225))
+- link the README's claims to the pages that explain them ([#224](https://github.com/postvak-app/postvak/pull/224))
+
 ## [0.5.0](https://github.com/postvak-app/postvak/compare/v0.4.0...v0.5.0) - 2026-10-19
 
 ### Added
