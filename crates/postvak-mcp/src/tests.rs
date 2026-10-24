@@ -1192,8 +1192,14 @@ async fn rules_apply_existing_refuses_disabled_and_hidden_rules() {
 #[tokio::test]
 async fn trash_restore_goes_through_the_daemon() {
     let fx = fixture_with_daemon(&["work"], recording_connector());
+    // Saved now: the daemon purges backups past the retention after its first pass, which races the restore.
     let backup = postvak_core::trash::Trash::new(fx.paths.trash_dir("work"))
-        .save("INBOX", 7, b"Subject: Back\r\n\r\nbody", 1_790_000_000)
+        .save(
+            "INBOX",
+            7,
+            b"Subject: Back\r\n\r\nbody",
+            postvak_core::time::now(),
+        )
         .unwrap();
     let file = backup.file_name().unwrap().to_string_lossy().into_owned();
     let client = connect(&fx, "mail:modify", &[]).await;

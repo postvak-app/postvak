@@ -1,6 +1,5 @@
 // The foot of the folder pane: the sync line that matters most, the sync button and the update link. `status.rs` picks
 // and words the line.
-import { ProgressIndicator } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { IconButton, TextButton } from "common.slint";
 
@@ -12,6 +11,54 @@ export struct StatusLine {
     failed: bool,
     // 0 to 1 while headers or bodies are fetched, else below 0.
     progress: float,
+}
+
+// A hairline under the status text while headers or bodies come in: vermilion on the chrome's border colour, gliding
+// between chunks. It fades out holding its last value, and a new fetch starts from its own value without rewinding.
+component Meter inherits Rectangle {
+    // 0 to 1, or below 0 when nothing is fetched.
+    in property <float> progress;
+    property <bool> active: root.progress >= 0;
+    property <float> shown: max(root.progress, 0);
+    // False while the fill jumps back for a new fetch.
+    property <bool> glide: true;
+    changed progress => {
+        if root.progress >= 0 {
+            root.glide = root.progress >= root.shown;
+            root.shown = root.progress;
+        }
+    }
+
+    height: 3px;
+    border-radius: self.height / 2;
+    background: Theme.frame.border;
+    opacity: root.active ? 1 : 0;
+    animate opacity {
+        duration: Theme.state-fade;
+        easing: ease-out;
+    }
+
+    Rectangle {
+        x: 0;
+        // At least a dot, so a fetch that has just begun shows.
+        width: max(parent.height, parent.width * min(root.shown, 1));
+        height: parent.height;
+        border-radius: parent.border-radius;
+        background: @linear-gradient(90deg, Theme.frame.highlight.transparentize(45%) 0%, Theme.frame.highlight 100%);
+        animate width {
+            duration: root.glide ? Theme.progress-glide : 0ms;
+            easing: ease-out;
+        }
+    }
+
+    // For screen readers, only while a fetch runs.
+    if root.active: Rectangle {
+        accessible-role: progress-indicator;
+        accessible-value: round(root.progress * 100) + "%";
+        accessible-value-minimum: 0;
+        accessible-value-maximum: 100;
+        accessible-value-step: 1;
+    }
 }
 
 export component StatusBar inherits VerticalLayout {
@@ -42,6 +89,13 @@ export component StatusBar inherits VerticalLayout {
             accessible-description: root.detail;
             accessible-action-default => { root.toggle-history(); }
             Tooltip { text: @markdown("\{root.detail}"); }
+            // Under the text, in the room the row leaves below it, so the line does not move when a fetch starts.
+            Meter {
+                x: 2 * Theme.pad;
+                y: parent.height - self.height - Theme.pad / 4;
+                width: parent.width - self.x;
+                progress: root.line.progress;
+            }
             HorizontalLayout {
                 spacing: Theme.pad;
                 Rectangle {
@@ -78,15 +132,6 @@ export component StatusBar inherits VerticalLayout {
             name: "Sync now";
             hint: root.sync-hint;
             clicked => { root.sync(); }
-        }
-    }
-
-    if root.line.progress >= 0: HorizontalLayout {
-        padding-left: Theme.pad;
-        padding-right: Theme.pad;
-        ProgressIndicator {
-            height: Theme.pad / 2;
-            progress: root.line.progress;
         }
     }
 
