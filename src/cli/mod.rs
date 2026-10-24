@@ -228,12 +228,15 @@ enum Command {
     /// Serve Postvak to an agent host over MCP on stdio; hosts start this, see `postvak mcp install`
     #[command(args_conflicts_with_subcommands = true)]
     Mcp {
-        /// Comma-separated: read, read:bodies, rules:propose, rules:write, files:write, mail:modify, accounts:write
+        /// Comma-separated: read, read:bodies, rules:propose, rules:write, files:write, mail:modify
         #[arg(long, default_value = postvak_core::help::MCP_DEFAULT_SCOPES)]
         scopes: String,
         /// Only this account; repeatable; default every account
         #[arg(long)]
         account: Vec<String>,
+        /// The one folder files:write saves attachments into, or below; default your Downloads folder
+        #[arg(long)]
+        save_dir: Option<PathBuf>,
         #[command(subcommand)]
         command: Option<McpCommand>,
     },
@@ -278,12 +281,15 @@ enum McpCommand {
     Install {
         #[arg(value_enum)]
         target: InstallTarget,
-        /// Comma-separated: read, read:bodies, rules:propose, rules:write, files:write, mail:modify, accounts:write
+        /// Comma-separated: read, read:bodies, rules:propose, rules:write, files:write, mail:modify
         #[arg(long, default_value = postvak_core::help::MCP_DEFAULT_SCOPES)]
         scopes: String,
         /// Only this account; repeatable; default every account
         #[arg(long)]
         account: Vec<String>,
+        /// The one folder files:write saves attachments into, or below; default your Downloads folder
+        #[arg(long)]
+        save_dir: Option<PathBuf>,
         /// Take the entry out again
         #[arg(long)]
         remove: bool,
@@ -652,8 +658,16 @@ pub fn run() -> Result<()> {
         Command::Mcp {
             scopes,
             account,
+            save_dir,
             command,
-        } => cmd_mcp(&config, &paths, &scopes, &account, command),
+        } => cmd_mcp(
+            &config,
+            &paths,
+            &scopes,
+            &account,
+            save_dir.as_deref(),
+            command,
+        ),
     }
 }
 
@@ -987,14 +1001,16 @@ fn cmd_mcp(
     paths: &Paths,
     scopes: &str,
     accounts: &[String],
+    save_dir: Option<&Path>,
     command: Option<McpCommand>,
 ) -> Result<()> {
     match command {
-        None => postvak_mcp::run(config, paths, scopes, accounts),
+        None => postvak_mcp::run(config, paths, scopes, accounts, save_dir),
         Some(McpCommand::Install {
             target,
             scopes,
             account,
+            save_dir,
             remove,
             dry_run,
         }) => {
@@ -1007,7 +1023,14 @@ fn cmd_mcp(
                 InstallTarget::ClaudeDesktop => Target::ClaudeDesktop,
                 InstallTarget::Json => Target::Json,
             };
-            let (stdout, hint) = install(target, &scopes, &account, remove, dry_run)?;
+            let (stdout, hint) = install(
+                target,
+                &scopes,
+                &account,
+                save_dir.as_deref(),
+                remove,
+                dry_run,
+            )?;
             print!("{stdout}");
             if let Some(hint) = hint {
                 eprint!("{hint}");
@@ -1023,6 +1046,7 @@ fn cmd_mcp(
     _paths: &Paths,
     _scopes: &str,
     _accounts: &[String],
+    _save_dir: Option<&Path>,
     _command: Option<McpCommand>,
 ) -> Result<()> {
     bail!("this postvak was built without the MCP server; install it with the default features")

@@ -74,6 +74,7 @@ fn mcp_page_snippet_matches_install_json() {
         std::path::Path::new("/opt/homebrew/bin/postvak"),
         "read,rules:propose",
         &[],
+        None,
     );
     let page = read("docs/src/mcp.md");
     let snippet = fenced(&page, "json")
