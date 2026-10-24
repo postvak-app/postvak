@@ -75,32 +75,21 @@ impl Fields {
     }
 }
 
-/// What a save in flight reports, in order: `Saved` once config.toml holds the account, then whether its first sync
-/// passed; or `Refused` when nothing was saved.
+/// What a save in flight reports, in order: `Tested` once the login passed, then `Saved` once config.toml holds the
+/// account; or `Refused` with why, when nothing was saved.
 #[derive(Debug)]
 pub(crate) enum Step {
     Refused(String),
+    Tested,
     Saved(AccountConfig),
-    Synced,
-    /// The account stays saved, as with `postvak account add`; saving again replaces it.
-    Failed(String),
-}
-
-impl Step {
-    /// What the form says about a failed first sync of `name`.
-    pub fn failed(name: &str, why: &str) -> String {
-        let why = why.trim_end_matches('.');
-        format!(
-            "'{name}' is saved, but its first sync failed: {why}. Fix the fields and save again to replace it."
-        )
-    }
 }
 
 /// The steps of a save in flight.
 pub(crate) type Saving = Receiver<Step>;
 
-/// Tests a saved account's login by name; tests swap it so no daemon starts.
-pub(crate) type Check = fn(&Paths, &str) -> Result<(), String>;
+/// Logs in as the account through the daemon, checking it against the config, and saves nothing; tests swap it so no
+/// daemon starts.
+pub(crate) type Check = fn(&Paths, &Config, &AccountConfig, &Secret) -> Result<(), String>;
 
 /// The mail window's form while it is open.
 #[derive(Default)]
@@ -108,7 +97,7 @@ pub(crate) struct AccountForm {
     /// Why the last save was refused, shown under the fields.
     pub error: Option<String>,
     pub saving: Option<Saving>,
-    /// The save in flight has written the account and now tests its login.
+    /// The save in flight tests the login and has saved nothing yet, so Esc may close the form.
     pub testing: bool,
 }
 
@@ -120,8 +109,9 @@ pub(crate) fn progress(testing: bool) -> &'static str {
     }
 }
 
-/// Checks the fields, then on a thread saves and runs `check`, the first sync that tests the login; `wake` runs once
-/// it answered. The daemon notices config.toml and starts the account itself.
+/// Checks the fields, then on a thread runs `check`, the login test, and saves only once it passed, as
+/// `postvak account add` does; `wake` runs after each step. A form closed during the test saves nothing. The daemon
+/// notices config.toml and starts the account itself.
 pub(crate) fn save(
     paths: Paths,
     fields: &Fields,
@@ -131,6 +121,23 @@ pub(crate) fn save(
     let (account, secret) = fields.account()?;
     let (done, answer) = mpsc::channel();
     std::thread::spawn(move || {
+        let tested = Config::load(&paths.config_file())
+            .map_err(|e| e.to_string())
+            .and_then(|config| {
+                postvak_core::account::check(&config, &account).map_err(|e| e.to_string())?;
+                check(&paths, &config, &account, &secret)
+                    .map_err(|why| format!("the login failed, so nothing was saved: {why}"))
+            });
+        if let Err(why) = tested {
+            let _ = done.send(Step::Refused(clean(&why, false)));
+            return wake();
+        }
+        // Nobody waits once the form closed, so the account the user gave up on stays unsaved.
+        if done.send(Step::Tested).is_err() {
+            return;
+        }
+        wake();
+        // Read again, so an edit made during the test is kept.
         let saved = Config::load(&paths.config_file())
             .map_err(|e| e.to_string())
             .and_then(|mut config| {
@@ -138,16 +145,9 @@ pub(crate) fn save(
                     .map_err(|e| e.to_string())
             })
             .map_err(|e| clean(&e, false));
-        if let Err(why) = saved {
-            let _ = done.send(Step::Refused(why));
-            return wake();
-        }
-        let name = account.name.clone();
-        let _ = done.send(Step::Saved(account));
-        wake();
-        let _ = done.send(match check(&paths, &name) {
-            Ok(()) => Step::Synced,
-            Err(why) => Step::Failed(Step::failed(&name, &why)),
+        let _ = done.send(match saved {
+            Ok(()) => Step::Saved(account),
+            Err(why) => Step::Refused(why),
         });
         wake();
     });
@@ -240,43 +240,46 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_first_sync_keeps_the_form_open_with_the_account_listed() {
-        let fx = Fixture::new(&["work"]);
-        let (open, _wires) = fx.window();
-        open.with(|live| live.app.check_login = |_, _| Err("login failed".into()));
-        open.window().invoke_menu_item(MenuAction::AddAccount);
-        fill_window(&open, "home", "imap.example.com");
-        save_in(&open);
-        let why = "'home' is saved, but its first sync failed: login failed. Fix the fields and save again to replace it.";
-        assert_eq!(open.find(why).len(), 1);
-        assert_eq!(names(&open), ["work", "home"], "saved, as with the CLI");
-        open.press("escape");
-        assert!(open.find("Add account").is_empty());
-        assert_eq!(names(&open), ["work", "home"]);
-    }
-
-    #[test]
-    fn escape_during_the_first_sync_closes_the_form_and_keeps_the_account() {
+    fn a_failed_login_keeps_the_form_open_and_saves_nothing() {
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = fx.window();
         open.with(|live| {
-            live.app.check_login = |_, _| {
-                std::thread::sleep(Duration::from_secs(60));
+            live.app.check_login = |_, _, _, _| Err("imap.example.com: login failed".into())
+        });
+        open.window().invoke_menu_item(MenuAction::AddAccount);
+        fill_window(&open, "home", "imap.example.com");
+        save_in(&open);
+        let why = "the login failed, so nothing was saved: imap.example.com: login failed";
+        assert_eq!(open.find(why).len(), 1);
+        assert_eq!(names(&open), ["work"]);
+        let config = Config::load(&fx.paths.config_file()).unwrap();
+        assert!(!config.accounts.iter().any(|a| a.name == "home"));
+    }
+
+    #[test]
+    fn escape_during_the_login_test_closes_the_form_and_saves_nothing() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        open.with(|live| {
+            live.app.check_login = |_, _, _, _| {
+                std::thread::sleep(Duration::from_millis(300));
                 Ok(())
             }
         });
         open.window().invoke_menu_item(MenuAction::AddAccount);
         fill_window(&open, "home", "imap.example.com");
         open.click("Save account");
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while open.find("Testing the login…").is_empty() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-            open.tick();
-        }
         assert_eq!(open.find("Testing the login…").len(), 1);
-        assert_eq!(names(&open), ["work", "home"]);
         open.press("escape");
         assert!(open.find("Add account").is_empty());
+        std::thread::sleep(Duration::from_millis(600));
+        open.tick();
+        assert_eq!(names(&open), ["work"]);
+        let config = Config::load(&fx.paths.config_file()).unwrap();
+        assert!(
+            !config.accounts.iter().any(|a| a.name == "home"),
+            "the save gave up"
+        );
     }
 
     #[test]
@@ -423,50 +426,48 @@ mod tests {
     }
 
     #[test]
-    fn save_adds_the_account_to_config_toml_then_tests_it() {
+    fn save_tests_the_login_before_it_adds_the_account_to_config_toml() {
         let (_dir, paths) = home();
         let answer = save(
             paths.clone(),
             &filled("work"),
             Arc::new(|| {}),
-            |paths, name| {
-                // The check runs once config.toml holds the account, as the daemon starts it from there.
-                let config = Config::load(&paths.config_file()).map_err(|e| e.to_string())?;
-                match config.accounts.iter().any(|a| a.name == name) {
-                    true => Ok(()),
-                    false => Err("not saved yet".into()),
-                }
+            |paths, _, account, secret| {
+                // Nothing is saved while the login is tested, and the test gets the password typed.
+                assert!(!paths.config_file().exists());
+                assert_eq!(secret.expose(), "hunter2");
+                assert_eq!(account.name, "work");
+                Ok(())
             },
         )
         .unwrap();
+        assert!(matches!(step(&answer), Step::Tested));
         let Step::Saved(saved) = step(&answer) else {
-            panic!("the account is saved first");
+            panic!("the account is saved after the test");
         };
         assert_eq!(saved.name, "work");
-        assert!(matches!(step(&answer), Step::Synced));
         let config = Config::load(&paths.config_file()).unwrap();
         assert_eq!(config.accounts, [saved]);
     }
 
     #[test]
-    fn a_failed_check_names_the_saved_account_and_why() {
+    fn a_failed_login_is_refused_and_saves_nothing() {
         let (_dir, paths) = home();
-        let answer = save(paths.clone(), &filled("work"), Arc::new(|| {}), |_, _| {
-            Err("login failed.".into())
-        })
+        let answer = save(
+            paths.clone(),
+            &filled("work"),
+            Arc::new(|| {}),
+            |_, _, _, _| Err("imap.example.com: login failed".into()),
+        )
         .unwrap();
-        assert!(matches!(step(&answer), Step::Saved(_)));
-        let Step::Failed(why) = step(&answer) else {
-            panic!("the check failed");
+        let Step::Refused(why) = step(&answer) else {
+            panic!("the login failed");
         };
         assert_eq!(
             why,
-            "'work' is saved, but its first sync failed: login failed. Fix the fields and save again to replace it."
+            "the login failed, so nothing was saved: imap.example.com: login failed"
         );
-        assert_eq!(
-            Config::load(&paths.config_file()).unwrap().accounts.len(),
-            1
-        );
+        assert!(!paths.config_file().exists());
     }
 
     #[test]
@@ -476,7 +477,7 @@ mod tests {
             paths.clone(),
             &filled("my work"),
             Arc::new(|| {}),
-            |_, _| panic!("nothing saved, so nothing to test"),
+            |_, _, _, _| panic!("an invalid account is refused before the login test"),
         )
         .unwrap();
         let Step::Refused(why) = step(&answer) else {

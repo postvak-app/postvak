@@ -1495,6 +1495,25 @@ async fn account_add_rejects_a_plain_password_and_a_narrowed_server() {
 }
 
 #[tokio::test]
+async fn account_add_tests_the_login_and_saves_nothing_when_it_fails() {
+    let fx = fixture_with_daemon(&["work"], recording_connector());
+    let client = connect(&fx, "accounts:write", &[]).await;
+    let refused = call(
+        &client,
+        "account_add",
+        json!({ "name": "late", "host": "127.0.0.1", "username": "me@example.org", "password_command": "printf wrong" }),
+    )
+    .await;
+    let why = error_text(&refused);
+    assert!(
+        why.contains("the login failed, so nothing was saved"),
+        "{why}"
+    );
+    assert!(why.contains("Authentication failed"), "{why}");
+    assert!(!fx.config().accounts.iter().any(|a| a.name == "late"));
+}
+
+#[tokio::test]
 async fn account_add_refuses_to_replace_an_existing_account() {
     let fx = fixture_with_daemon(&["work"], recording_connector());
     let client = connect(&fx, "accounts:write", &[]).await;

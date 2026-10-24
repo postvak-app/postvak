@@ -349,7 +349,6 @@ dependencies = [
  "parking_lot",
  "percent-encoding",
  "windows-sys 0.52.0",
- "wl-clipboard-rs",
  "x11rb",
 ]
 
@@ -1161,8 +1160,7 @@ dependencies = [
 [[package]]
 name = "const-field-offset"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d535c69e75b4e3c69e17205b5b37a91936c54086cecd339b70071500786acb9c"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#c6149cc7ec33c11dd360f122c9bd9ead4ce0301f"
 dependencies = [
  "const-field-offset-macro",
  "field-offset",
@@ -1171,8 +1169,7 @@ dependencies = [
 [[package]]
 name = "const-field-offset-macro"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93d5848843a221ac268cfdd6bfd14e68d5d3dfa79d52c880aafab93f9517fb74"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#c6149cc7ec33c11dd360f122c9bd9ead4ce0301f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1744,7 +1741,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1880,12 +1877,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fixedbitset"
-version = "0.5.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
-
-[[package]]
 name = "flate2"
 version = "1.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1907,12 +1898,6 @@ name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
-
-[[package]]
-name = "foldhash"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 
 [[package]]
 name = "foldhash"
@@ -2227,7 +2212,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f1218dedd5348c1b166ec3b8b3cbca49d2f527bd43b3fa072ea5123c523ed3f"
 dependencies = [
  "bytemuck",
- "foldhash 0.2.0",
+ "foldhash",
  "hashbrown 0.17.1",
  "log",
  "peniko",
@@ -2381,22 +2366,13 @@ checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
 
 [[package]]
 name = "hashbrown"
-version = "0.15.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
-dependencies = [
- "foldhash 0.1.5",
-]
-
-[[package]]
-name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 dependencies = [
  "allocator-api2",
  "equivalent",
- "foldhash 0.2.0",
+ "foldhash",
 ]
 
 [[package]]
@@ -2405,7 +2381,7 @@ version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 dependencies = [
- "foldhash 0.2.0",
+ "foldhash",
 ]
 
 [[package]]
@@ -2598,8 +2574,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-linuxkms"
 version = "1.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f519a8611a4982921e46e391015e5e40ceac5cc63813333ef91ada77df180d8"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#c6149cc7ec33c11dd360f122c9bd9ead4ce0301f"
 dependencies = [
  "bytemuck",
  "calloop 0.14.5",
@@ -2622,8 +2597,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-selector"
 version = "1.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb974705d61ba56034f6129ff61f3e6282a2c0c07752f25e6cb417d81c0f0958"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#c6149cc7ec33c11dd360f122c9bd9ead4ce0301f"
 dependencies = [
  "cfg-if",
  "cfg_aliases",
@@ -2639,8 +2613,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-testing"
 version = "1.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01943d6c5ea5bc913d497bdaa423c309e7627afff47a6794bfd13be5c564209f"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#c6149cc7ec33c11dd360f122c9bd9ead4ce0301f"
 dependencies = [
  "cfg_aliases",
  "i-slint-common",
@@ -2652,8 +2625,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-winit"
 version = "1.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dae4fcf1b19e9cb109984d2af87d2b9485388c619265bff71dd523133888bee2"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#c6149cc7ec33c11dd360f122c9bd9ead4ce0301f"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -2684,6 +2656,7 @@ dependencies = [
  "rgb",
  "scoped-tls-hkt",
  "scopeguard",
+ "smithay-clipboard",
  "softbuffer",
  "strum",
  "vtable",
@@ -2698,8 +2671,7 @@ dependencies = [
 [[package]]
 name = "i-slint-common"
 version = "1.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68a578f3e4b681b2b9cbd326d3be19716e2fac51d00a8a5b00c0ef4ae923b5e6"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#c6149cc7ec33c11dd360f122c9bd9ead4ce0301f"
 dependencies = [
  "derive_more",
  "fontique 0.11.1",
@@ -2715,8 +2687,7 @@ dependencies = [
 [[package]]
 name = "i-slint-compiler"
 version = "1.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f55d48ebef05e2bf09ba5a1fc67bcb11033b9e12a2a50ed3105c7d25e2b539d0"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#c6149cc7ec33c11dd360f122c9bd9ead4ce0301f"
 dependencies = [
  "annotate-snippets",
  "by_address",
@@ -2749,8 +2720,7 @@ dependencies = [
 [[package]]
 name = "i-slint-core"
 version = "1.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed2ea15059d70bc31b1a8b1eb4c34f2c5df04cb7e53f36179b43c0261231d646"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#c6149cc7ec33c11dd360f122c9bd9ead4ce0301f"
 dependencies = [
  "accesskit",
  "async-channel 2.5.0",
@@ -2804,8 +2774,7 @@ dependencies = [
 [[package]]
 name = "i-slint-core-macros"
 version = "1.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73f5a8a076de52f53be80caa826599ed2107b54c9d4a421e66dc06cf893a984c"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#c6149cc7ec33c11dd360f122c9bd9ead4ce0301f"
 dependencies = [
  "quote",
  "serde_json",
@@ -2815,8 +2784,7 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-femtovg"
 version = "1.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb0de504d57cdadf80c2abf7bcb8b7135a3716aee1f41b6ebb90ea93e3649d7c"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#c6149cc7ec33c11dd360f122c9bd9ead4ce0301f"
 dependencies = [
  "cfg-if",
  "const-field-offset",
@@ -2836,8 +2804,7 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-skia"
 version = "1.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc9c1cf02385f1d26fc1f423544e52390a8e5c2d89420a8042aa94b4fe109d1f"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#c6149cc7ec33c11dd360f122c9bd9ead4ce0301f"
 dependencies = [
  "bytemuck",
  "cfg-if",
@@ -2875,8 +2842,7 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-software"
 version = "1.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f8c641e138a2cc96537cac4481f5c7c8bb8dcc66d09acaed269329c8738628a"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#c6149cc7ec33c11dd360f122c9bd9ead4ce0301f"
 dependencies = [
  "bytemuck",
  "clru",
@@ -4407,16 +4373,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "os_pipe"
-version = "1.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
-dependencies = [
- "libc",
- "windows-sys 0.48.0",
-]
-
-[[package]]
 name = "owned_ttf_parser"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4565,17 +4521,6 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
-
-[[package]]
-name = "petgraph"
-version = "0.8.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8701b58ea97060d5e5b155d383a69952a60943f0e6dfe30b04c287beb0b27455"
-dependencies = [
- "fixedbitset",
- "hashbrown 0.15.5",
- "indexmap",
-]
 
 [[package]]
 name = "phf"
@@ -5432,7 +5377,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5836,8 +5781,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "slint"
 version = "1.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15e477d5ff6fec20909100ff8f7062432ebfbda7a62a0f37d0252aa126f38c83"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#c6149cc7ec33c11dd360f122c9bd9ead4ce0301f"
 dependencies = [
  "const-field-offset",
  "i-slint-backend-linuxkms",
@@ -5859,8 +5803,7 @@ dependencies = [
 [[package]]
 name = "slint-build"
 version = "1.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ea28d4e1ad47d829b91e227f17037fac07a8001668a93fee47ac04f88718ebc"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#c6149cc7ec33c11dd360f122c9bd9ead4ce0301f"
 dependencies = [
  "derive_more",
  "fontique 0.11.1",
@@ -5872,8 +5815,7 @@ dependencies = [
 [[package]]
 name = "slint-macros"
 version = "1.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35e74b13d20884dc480ce37d0fabbf02cb4bc0df2a595434feac96ca7c2a0f15"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#c6149cc7ec33c11dd360f122c9bd9ead4ce0301f"
 dependencies = [
  "i-slint-compiler",
  "proc-macro2",
@@ -5925,6 +5867,17 @@ dependencies = [
  "wayland-protocols-wlr",
  "wayland-scanner",
  "xkeysym",
+]
+
+[[package]]
+name = "smithay-clipboard"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc8216eec463674a0e90f29e0ae41a4db573ec5b56b1c6c1c71615d249b6d846"
+dependencies = [
+ "libc",
+ "smithay-client-toolkit",
+ "wayland-backend",
 ]
 
 [[package]]
@@ -6449,7 +6402,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.5",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6797,17 +6750,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tree_magic_mini"
-version = "3.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8765b90061cba6c22b5831f675da109ae5561588290f9fa2317adab2714d5a6"
-dependencies = [
- "memchr",
- "nom 8.0.0",
- "petgraph",
-]
-
-[[package]]
 name = "ttf-parser"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7081,8 +7023,7 @@ checksum = "6a02e4885ed3bc0f2de90ea6dd45ebcbb66dacffe03547fadbb0eeae2770887d"
 [[package]]
 name = "vtable"
 version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "515a4b5b1399cc46fb0dc4081436cb40a3852a2d3e94fd1fa50bb68a334896eb"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#c6149cc7ec33c11dd360f122c9bd9ead4ce0301f"
 dependencies = [
  "const-field-offset",
  "portable-atomic",
@@ -7093,8 +7034,7 @@ dependencies = [
 [[package]]
 name = "vtable-macro"
 version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8191d73ececf73fc94e65809bf0e667525a0bcff9aeeb8d042a4173a508332a1"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#c6149cc7ec33c11dd360f122c9bd9ead4ce0301f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7859,24 +7799,6 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
-
-[[package]]
-name = "wl-clipboard-rs"
-version = "0.9.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d7888ccd4896447b2d14d3a9350a85df2aeb6f181e2e7a31349d104ac46cac1"
-dependencies = [
- "libc",
- "log",
- "os_pipe",
- "rustix 1.1.5",
- "thiserror 2.0.21",
- "tree_magic_mini",
- "wayland-backend",
- "wayland-client",
- "wayland-protocols",
- "wayland-protocols-wlr",
-]
 
 [[package]]
 name = "write-fonts"

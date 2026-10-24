@@ -1,7 +1,7 @@
 //! Help texts shared by the CLI and the MCP tool descriptions.
 /// What `postvak guide` prints and the MCP server sends as its instructions: how an agent should use Postvak.
 pub const AGENT_GUIDE: &str = include_str!("agent-guide.md");
-pub const ACCOUNT_ADD: &str = "Add an IMAP account; the daemon syncs it right away, and a wrong login shows as that sync's error";
+pub const ACCOUNT_ADD: &str = "Add an IMAP account; the daemon tests the login first and nothing is saved when it fails, then syncs it once";
 pub const ACCOUNT_LIST: &str =
     "Each configured account: name, username and server; never the password source";
 pub const ARCHIVE: &str = "Move messages to the Archive folder";

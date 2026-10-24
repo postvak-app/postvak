@@ -48,10 +48,21 @@ pub fn offline_connector() -> Connector {
     Arc::new(|_| Err(SyncError::Io(std::io::Error::other("no route to host"))))
 }
 
+/// Logs in unless the password is "wrong".
+pub fn refuse_wrong() -> super::Login {
+    std::sync::Arc::new(|_, secret| match secret.expose() {
+        "wrong" => Err(crate::mail_ops::MailError::Auth(
+            "[AUTHENTICATIONFAILED] Authentication failed.".into(),
+        )),
+        _ => Ok(()),
+    })
+}
+
 pub fn options(connect: Connector, idle_exit: Option<Duration>) -> Options {
     Options {
         idle_exit,
         connect,
+        login: refuse_wrong(),
         notify: false,
         signals: false,
     }
@@ -214,7 +225,8 @@ impl TestClient {
             ClientMessage::Command { id, .. }
             | ClientMessage::Shutdown { id }
             | ClientMessage::Status { id }
-            | ClientMessage::Subscribe { id } => *id,
+            | ClientMessage::Subscribe { id }
+            | ClientMessage::TestLogin { id, .. } => *id,
             ClientMessage::Hello { .. } => panic!("hello has no reply"),
         };
         self.send(&message);
