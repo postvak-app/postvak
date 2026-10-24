@@ -16,6 +16,9 @@ export enum Pane { body, folders, list }
 // The menu items that act on the app; `menu.rs` says what each does.
 export enum MenuAction { about, add-account, add-to-selection, archive, delete, documentation, flag, history, junk, keys, mark-folder-read, move, open-at-login, read-or-unread, save-eml, save-eml-as, search, select-all, sync-now, text-or-html, theme-dark, theme-light, theme-system, view-source }
 
+// A dialog that closes; the same names as `state::Dialog`.
+export enum Dialog { help, unsaved, apply-confirm, account, about, source, move, history }
+
 // Which menu items would do something now; the others are disabled.
 export struct MenuState {
     save-eml: bool,
@@ -158,7 +161,6 @@ export component MailWindow inherits Window {
     callback pinned-clicked(int);
     callback sync();
     callback toggle-history();
-    callback toggle-help();
     callback open-update();
     callback row-clicked(int, bool, bool);
     callback row-menu(int, int, int);
@@ -172,6 +174,7 @@ export component MailWindow inherits Window {
     callback move-chosen(int);
     callback save-account(AccountFields);
     callback escape();
+    callback close-dialog(Dialog);
     callback toggle-html();
     callback save-eml();
     callback unsubscribe();
@@ -593,7 +596,7 @@ export component MailWindow inherits Window {
         y: root.height - self.height - Theme.top-bar - Theme.inset;
         lines: root.history;
         close-icon: root.close-icon;
-        close => { root.toggle-history(); }
+        close => { root.close-dialog(Dialog.history); }
     }
 
     if root.move-open: MoveDialog {
@@ -604,7 +607,7 @@ export component MailWindow inherits Window {
         filter-edited(text) => { root.move-filter(text); }
         accepted => { root.move-accepted(); }
         chosen(i) => { root.move-chosen(i); }
-        close => { root.escape(); }
+        close => { root.close-dialog(Dialog.move); }
     }
 
     if root.source-open: SourceDialog {
@@ -614,7 +617,7 @@ export component MailWindow inherits Window {
         text: root.source-text;
         widest: root.source-widest;
         close-icon: root.close-icon;
-        close => { root.escape(); }
+        close => { root.close-dialog(Dialog.source); }
     }
 
     if root.about-open: AboutDialog {
@@ -626,7 +629,7 @@ export component MailWindow inherits Window {
         repository: root.repository;
         homepage: root.homepage;
         close-icon: root.close-icon;
-        close => { root.menu-item(MenuAction.about); }
+        close => { root.close-dialog(Dialog.about); }
         open-url(url) => { root.open-link(url); }
     }
 
@@ -638,7 +641,7 @@ export component MailWindow inherits Window {
         progress: root.account-progress;
         close-icon: root.close-icon;
         save(fields) => { root.save-account(fields); }
-        close => { root.escape(); }
+        close => { root.close-dialog(Dialog.account); }
     }
 
     if root.apply-confirm != "": ApplyConfirmDialog {
@@ -647,14 +650,14 @@ export component MailWindow inherits Window {
         warning: root.apply-confirm;
         close-icon: root.close-icon;
         confirm => { root.confirm-apply-rule(); }
-        close => { root.escape(); }
+        close => { root.close-dialog(Dialog.apply-confirm); }
     }
 
     // Dims the panes behind the keys; a click on it closes them.
     if root.help-open: Rectangle {
         background: Theme.frame.background.transparentize(85%);
         TouchArea {
-            clicked => { root.toggle-help(); }
+            clicked => { root.close-dialog(Dialog.help); }
         }
     }
 
@@ -670,7 +673,7 @@ export component MailWindow inherits Window {
         room: root.height - 2 * (Theme.top-bar + Theme.inset);
         keys: root.keys;
         close-icon: root.close-icon;
-        close => { root.toggle-help(); }
+        close => { root.close-dialog(Dialog.help); }
     }
     }
 }
