@@ -3,6 +3,9 @@ pub mod edit;
 
 pub use edit::rule_toml;
 pub mod engine;
+mod warnings;
+
+pub use warnings::warnings;
 
 use std::io;
 use std::path::Path;

@@ -282,8 +282,9 @@ fn serve(
     listener: UnixListener,
     signalled: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
-    let watch = Watch::new(paths);
+    let mut watch = Watch::new(paths);
     let config = Config::load(&paths.config_file())?;
+    watch.warn(&config);
     migrate_stores(&config, paths);
     let (engine, events) = Engine::start(&config, paths, options.connect.clone());
     let shared = Arc::new(Shared {
@@ -366,16 +367,45 @@ fn migrate_stores(config: &Config, paths: &Paths) {
 struct Watch {
     config: FileWatch,
     rules: FileWatch,
+    /// The folder holding rules.toml, whose entries change when a file sync leaves a conflicting copy there.
+    dir: FileWatch,
+    /// The configured accounts, for the rules' warnings.
+    accounts: Vec<String>,
+    /// The rules' warnings last logged, so each is logged once rather than on every change.
+    warned: Vec<String>,
     checked: Instant,
 }
 
 impl Watch {
     fn new(paths: &Paths) -> Watch {
+        let rules = paths.rules_file();
         Watch {
             config: FileWatch::new(paths.config_file()),
-            rules: FileWatch::new(paths.rules_file()),
+            dir: FileWatch::new(rules.parent().map(Path::to_path_buf).unwrap_or_default()),
+            rules: FileWatch::new(rules),
+            accounts: Vec::new(),
+            warned: Vec::new(),
             checked: Instant::now(),
         }
+    }
+
+    /// Logs the rules' warnings that were not logged before, for `config`'s accounts.
+    fn warn(&mut self, config: &Config) {
+        self.accounts = config.accounts.iter().map(|a| a.name.clone()).collect();
+        self.check_rules();
+    }
+
+    fn check_rules(&mut self) {
+        // A file that does not load is reported by each account's sync.
+        let Ok(file) = crate::rules::load(&self.rules.path) else {
+            return;
+        };
+        let accounts: Vec<&str> = self.accounts.iter().map(String::as_str).collect();
+        let warnings = crate::rules::warnings(&self.rules.path, &file.rules, &accounts);
+        for warning in warnings.iter().filter(|w| !self.warned.contains(w)) {
+            log::warn!("rules.toml: {}", crate::message::clean(warning, false));
+        }
+        self.warned = warnings;
     }
 
     /// The config, loaded again once it changed, and whether the rules file changed; `poll` skips the check until
@@ -390,7 +420,15 @@ impl Watch {
                 .inspect_err(|e| log::error!("{e}; keeping the running accounts"))
                 .ok()
         });
-        (config.flatten(), self.rules.changed())
+        let config = config.flatten();
+        let rules = self.rules.changed();
+        let dir = self.dir.changed();
+        if let Some(config) = &config {
+            self.warn(config);
+        } else if rules || dir {
+            self.check_rules();
+        }
+        (config, rules)
     }
 }
 
