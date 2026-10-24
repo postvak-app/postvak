@@ -72,6 +72,15 @@ enum Command {
         /// entered by itself after two starts in a row that died before the window showed
         #[arg(long)]
         safe_mode: bool,
+        /// Show this message (a uid in --folder, as `list` prints it); with a window already open, that window shows it
+        #[arg(long, value_name = "UID")]
+        open: Option<u32>,
+        /// The account of the message to show; the first account when left out
+        #[arg(long, requires = "open")]
+        account: Option<String>,
+        /// The folder of the message to show
+        #[arg(long, default_value = "INBOX", requires = "open")]
+        folder: String,
     },
     /// Start the daemon at login: a launchd agent on macOS, a systemd user unit on Linux
     Service {
@@ -411,7 +420,12 @@ enum AccountCommand {
 pub fn run() -> Result<()> {
     let cli = if opened_as_mac_app() {
         Cli {
-            command: Command::Gui { safe_mode: false },
+            command: Command::Gui {
+                safe_mode: false,
+                open: None,
+                account: None,
+                folder: "INBOX".into(),
+            },
         }
     } else {
         Cli::parse()
@@ -424,8 +438,19 @@ pub fn run() -> Result<()> {
         postvak_core::crash::install(paths.crash_dir(), process(&cli.command));
     }
     // The window explains its own startup errors, since it may have no terminal to print them in.
-    if let Command::Gui { safe_mode } = cli.command {
-        return cmd_gui(paths, safe_mode);
+    if let Command::Gui {
+        safe_mode,
+        open,
+        account,
+        folder,
+    } = cli.command
+    {
+        let open = open.map(|uid| postvak_core::notify::Open {
+            account,
+            folder,
+            uid,
+        });
+        return cmd_gui(paths, safe_mode, open);
     }
     let paths = paths?;
     let config = Config::load(&paths.config_file())?;
@@ -433,7 +458,8 @@ pub fn run() -> Result<()> {
         Command::Run { idle_exit } => cmd_run(&paths, idle_exit),
         Command::Crashes { command } => cmd_crashes(command, &paths),
         Command::Daemon { command } => cmd_daemon(command, &paths),
-        Command::Gui { safe_mode } => cmd_gui(Ok(paths), safe_mode),
+        // Handled above, before the config loads; kept for an exhaustive match.
+        Command::Gui { safe_mode, .. } => cmd_gui(Ok(paths), safe_mode, None),
         Command::Service { command } => cmd_service(command, &paths),
         Command::Sync { account } => cmd_sync(&config, &paths, account.as_deref()),
         Command::Attachment { command } => cmd_attachment(command, &config, &paths),
@@ -990,12 +1016,20 @@ fn opened_as_mac_app() -> bool {
 }
 
 #[cfg(feature = "gui")]
-fn cmd_gui(paths: Result<Paths>, safe_mode: bool) -> Result<()> {
-    postvak_gui::run(paths, safe_mode)
+fn cmd_gui(
+    paths: Result<Paths>,
+    safe_mode: bool,
+    open: Option<postvak_core::notify::Open>,
+) -> Result<()> {
+    postvak_gui::run(paths, safe_mode, open)
 }
 
 #[cfg(not(feature = "gui"))]
-fn cmd_gui(_paths: Result<Paths>, _safe_mode: bool) -> Result<()> {
+fn cmd_gui(
+    _paths: Result<Paths>,
+    _safe_mode: bool,
+    _open: Option<postvak_core::notify::Open>,
+) -> Result<()> {
     bail!("this postvak was built without the GUI; install it with the default features")
 }
 

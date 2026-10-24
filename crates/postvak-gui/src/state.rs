@@ -320,6 +320,8 @@ pub(crate) enum UiAction {
     NextFocus,
     /// Open the add-account form.
     OpenAccountForm,
+    /// Show a message a notification was about, or a later start asked for, in its folder.
+    OpenMessage(postvak_core::notify::Open),
     OpenMovePicker,
     /// Open a web page in the browser.
     OpenUrl(String),
@@ -1289,6 +1291,7 @@ impl App {
             UiAction::OpenAccountForm => {
                 self.account_form.get_or_insert_with(AccountForm::default);
             }
+            UiAction::OpenMessage(open) => self.open_message(open),
             UiAction::SaveAccount(fields) => self.save_account(&fields),
             UiAction::ToggleHtml => {
                 if let Some(body) = self.body.as_mut().filter(|b| b.html.is_some()) {
@@ -1369,6 +1372,45 @@ impl App {
             return;
         }
         self.apply_action(UiAction::MoveTo(folder));
+    }
+
+    /// Shows the message in its folder with the cursor on it. A filter that hides it gives way; a thread shows it when
+    /// it is the newest message there.
+    fn open_message(&mut self, open: postvak_core::notify::Open) {
+        let account = match &open.account {
+            Some(name) => self.accounts.iter().position(|a| &a.name == name),
+            None => (!self.accounts.is_empty()).then_some(0),
+        };
+        let Some(account) = account else {
+            let name = open.account.unwrap_or_default();
+            self.note_error(
+                None,
+                format!("no account named {name} to open a message in"),
+            );
+            return;
+        };
+        let view = View::Folder {
+            account,
+            folder: open.folder.clone(),
+        };
+        if self.view == view && self.search.is_none() {
+            // The rows may not have the new message yet.
+            self.reload_view();
+        } else {
+            self.select_view(view);
+        }
+        let find = |rows: &[Row]| {
+            rows.iter().position(|row| {
+                row.account == account && row.folder == open.folder && row.uid == open.uid
+            })
+        };
+        if find(&self.list.rows).is_none() && self.filter != Filter::default() {
+            self.filter = Filter::default();
+            self.reload_view();
+        }
+        if let Some(index) = find(&self.list.rows) {
+            self.apply_action(UiAction::SelectRow(index));
+        }
     }
 
     pub(crate) fn select_view(&mut self, view: View) {
@@ -3047,6 +3089,59 @@ mod tests {
                 apply(&[1], Action::Junk),
                 command("work", "Junk", &[2], Action::NotJunk)
             ]
+        );
+    }
+
+    #[test]
+    fn opening_a_message_shows_its_folder_with_the_cursor_on_it() {
+        let fx = Fixture::new(&["home", "work"]);
+        fx.folder("work", "Receipts", None);
+        inbox(&fx, &[1, 2]);
+        for uid in [3, 4, 5] {
+            fx.add("work", message("Receipts", uid, "receipt"));
+        }
+        let (mut driver, _) = fx.driver();
+        // The fixture's mail is read, so this filter hides it all.
+        driver.apply(UiAction::SetFilter(Filter {
+            unread: true,
+            ..Filter::default()
+        }));
+        driver.apply(UiAction::OpenMessage(postvak_core::notify::Open {
+            account: Some("work".into()),
+            folder: "Receipts".into(),
+            uid: 4,
+        }));
+        let work = driver.app.accounts.iter().position(|a| a.name == "work");
+        assert_eq!(
+            driver.app.view,
+            View::Folder {
+                account: work.unwrap(),
+                folder: "Receipts".into()
+            }
+        );
+        assert_eq!(driver.app.filter, Filter::default());
+        assert_eq!(driver.app.list.rows[driver.app.list.cursor].uid, 4);
+        assert_eq!(driver.app.focus, Focus::List);
+    }
+
+    #[test]
+    fn opening_a_message_of_an_unknown_account_says_so_and_stays() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1]);
+        let (mut driver, _) = fx.driver();
+        let view = driver.app.view.clone();
+        driver.apply(UiAction::OpenMessage(postvak_core::notify::Open {
+            account: Some("gone".into()),
+            folder: "INBOX".into(),
+            uid: 1,
+        }));
+        assert_eq!(driver.app.view, view);
+        assert!(
+            driver
+                .app
+                .history
+                .iter()
+                .any(|line| line.text.contains("no account named gone"))
         );
     }
 

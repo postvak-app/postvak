@@ -799,15 +799,20 @@ mod client {
     }
 }
 
-#[test]
-fn new_mail_notifies_even_on_an_account_with_notify_off() {
-    let shared = super::Shared {
+/// A daemon's shared state without an engine or clients.
+fn idle_shared() -> super::Shared {
+    super::Shared {
         engine: std::sync::Mutex::new(None),
         hub: std::sync::Mutex::new(super::Hub::new()),
         login: super::test_support::refuse_wrong(),
         signalled: Default::default(),
         watch: std::sync::Mutex::new(super::Watch::new(&Paths::under(Path::new("/nonexistent")))),
-    };
+    }
+}
+
+#[test]
+fn new_mail_notifies_even_on_an_account_with_notify_off() {
+    let shared = idle_shared();
     let (events, received) = std::sync::mpsc::channel();
     events
         .send(Event::NewMail {
@@ -820,15 +825,75 @@ fn new_mail_notifies_even_on_an_account_with_notify_off() {
         .unwrap();
     drop(events);
     let notified = std::sync::Mutex::new(Vec::new());
-    super::route_events(&shared, received, false, |from, subject| {
-        notified
-            .lock()
-            .unwrap()
-            .push((from.to_string(), subject.to_string()))
+    super::route_events(&shared, received, false, |batch| {
+        notified.lock().unwrap().push(batch.to_vec())
     });
     assert_eq!(
         notified.into_inner().unwrap(),
-        [("bob@example.com".to_string(), "hi".to_string())]
+        [[crate::notify::Mail {
+            account: "work".into(),
+            folder: "INBOX".into(),
+            uid: 1,
+            from: "bob@example.com".into(),
+            subject: "hi".into(),
+        }]]
+    );
+}
+
+/// A pass's new mail goes to the notifier in one batch when the pass ends, each account's apart.
+#[test]
+fn new_mail_is_notified_per_account_when_its_pass_ends() {
+    let shared = idle_shared();
+    let new_mail = |account: &str, uid| Event::NewMail {
+        account: account.into(),
+        folder: "INBOX".into(),
+        uid,
+        from: "bob@example.com".into(),
+        subject: "hi".into(),
+    };
+    let synced = |account: &str| Event::Synced {
+        account: account.into(),
+        new_messages: 0,
+        actions: 0,
+        requests: Vec::new(),
+        errors: Vec::new(),
+    };
+    let (events, received) = std::sync::mpsc::channel();
+    for event in [
+        new_mail("work", 1),
+        new_mail("home", 7),
+        new_mail("work", 2),
+        synced("work"),
+        new_mail("work", 3),
+        synced("home"),
+        synced("work"),
+        // A pass that never ended is still notified.
+        new_mail("home", 8),
+    ] {
+        events.send(event).unwrap();
+    }
+    drop(events);
+    let notified = std::sync::Mutex::new(Vec::new());
+    super::route_events(&shared, received, false, |batch| {
+        let batch = batch
+            .iter()
+            .map(|m| (m.account.clone(), m.uid))
+            .collect::<Vec<_>>();
+        notified.lock().unwrap().push(batch)
+    });
+    let account = |name: &str, uids: &[u32]| {
+        uids.iter()
+            .map(|&uid| (name.to_string(), uid))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        notified.into_inner().unwrap(),
+        [
+            account("work", &[1, 2]),
+            account("home", &[7]),
+            account("work", &[3]),
+            account("home", &[8]),
+        ]
     );
 }
 
@@ -845,13 +910,7 @@ fn slow_connector(delay: Duration) -> crate::engine::Connector {
 
 #[test]
 fn a_command_while_stopping_says_the_daemon_is_stopping() {
-    let shared = super::Shared {
-        engine: std::sync::Mutex::new(None),
-        hub: std::sync::Mutex::new(super::Hub::new()),
-        login: super::test_support::refuse_wrong(),
-        signalled: Default::default(),
-        watch: std::sync::Mutex::new(super::Watch::new(&Paths::under(Path::new("/nonexistent")))),
-    };
+    let shared = idle_shared();
     let (out, lines) = std::sync::mpsc::channel();
     let conn = super::ClientConn {
         out,

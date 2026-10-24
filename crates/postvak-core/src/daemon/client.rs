@@ -782,8 +782,8 @@ fn spawn_daemon(paths: &Paths, exe: &Path) -> anyhow::Result<Child> {
         .with_context(|| format!("starting {}", exe.display()))
 }
 
-/// Waits on the daemon in the background so it does not linger as a zombie.
-fn reap(mut child: Child) {
+/// Waits on a child in the background so it does not linger as a zombie.
+pub(crate) fn reap(mut child: Child) {
     std::thread::spawn(move || child.wait());
 }
 
