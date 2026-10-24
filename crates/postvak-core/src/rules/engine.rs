@@ -12,12 +12,15 @@ pub enum Mode {
     ApplyExisting,
 }
 
+#[derive(Clone, Copy)]
 pub struct Context<'a> {
     pub account: &'a str,
     pub identity: &'a Identity,
     pub now: i64,
     pub mode: Mode,
     pub notify_default: bool,
+    /// The message came back to a folder a rule moved it out of: no rule moves or archives it again.
+    pub keep_in_folder: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -67,6 +70,7 @@ pub fn evaluate(rules: &[CompiledRule], msg: &Message, ctx: &Context) -> Plan {
                 Action::Notify => explicit_notify = Some(true),
                 Action::Silent => explicit_notify = Some(false),
                 Action::Stop => stop = true,
+                Action::Move(_) | Action::Archive if ctx.keep_in_folder => {}
                 _ => plan.actions.push(PlannedAction {
                     rule: rule.rule.name.clone(),
                     action: action.clone(),
@@ -233,6 +237,7 @@ mod tests {
             now,
             mode: Mode::Normal,
             notify_default: true,
+            keep_in_folder: false,
         }
     }
 
@@ -316,6 +321,28 @@ actions = ["delete"]
         let mut c = ctx(&id, now);
         c.mode = Mode::ApplyExisting;
         assert_eq!(evaluate(&rules, &before_rule, &c).actions.len(), 1);
+    }
+
+    #[test]
+    fn mail_kept_in_its_folder_gets_every_action_but_a_move_and_notifies() {
+        let id = identity();
+        let toml = "[[rules]]\nname = \"lists\"\nmatch.from = { contains = \"alice\" }\nactions = [{ move = \"Lists\" }, \"mark_read\"]\n\n[[rules]]\nname = \"old\"\nmatch.from = { contains = \"alice\" }\nactions = [\"archive\"]\n";
+        let rules = rules(toml, 0);
+        let m = msg("alice@x", "pieter@example.com", "hi", HOUR, false);
+        let moved = evaluate(&rules, &m, &ctx(&id, 2 * HOUR));
+        assert_eq!(moved.actions.len(), 3);
+        assert!(!moved.notify);
+        let kept = evaluate(
+            &rules,
+            &m,
+            &Context {
+                keep_in_folder: true,
+                ..ctx(&id, 2 * HOUR)
+            },
+        );
+        let actions: Vec<_> = kept.actions.iter().map(|a| &a.action).collect();
+        assert_eq!(actions, [&Action::MarkRead]);
+        assert!(kept.notify);
     }
 
     #[test]
