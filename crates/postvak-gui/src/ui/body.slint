@@ -330,6 +330,7 @@ export component BodyPane inherits Rectangle {
     callback open-source();
     callback unsubscribe();
     callback save-attachment(int);
+    callback save-attachment-as(int);
     callback open-link(string);
     // Start a rule for mail from this sender.
     callback rule-from();
@@ -575,6 +576,13 @@ export component BodyPane inherits Rectangle {
                     palette: Theme.pane;
                     accessible-label: "Save " + attachment;
                     clicked => { root.save-attachment(i); }
+                }
+                TextButton {
+                    text: "Save as…";
+                    framed: true;
+                    palette: Theme.pane;
+                    accessible-label: "Save " + attachment + " as";
+                    clicked => { root.save-attachment-as(i); }
                 }
                 Rectangle { horizontal-stretch: 1; }
             }

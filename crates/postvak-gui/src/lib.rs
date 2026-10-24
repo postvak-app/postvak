@@ -23,6 +23,7 @@ mod persist;
 mod reader;
 mod rows;
 mod rules;
+mod save_as;
 #[cfg(test)]
 mod snapshots;
 mod startup;

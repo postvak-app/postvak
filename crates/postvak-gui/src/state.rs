@@ -31,6 +31,7 @@ use super::load::{self, ListQuery, LoadFn, Loaded, Loading};
 use super::logos::Logos;
 use super::reader::{self, Read, ReadFn, Reader};
 use super::rules::{self, RulesState, SheetSort, TrashRow};
+use super::save_as;
 
 /// The status line when `m` is pressed with marked rows from more than one account.
 pub(crate) const MOVE_ONE_ACCOUNT: &str =
@@ -111,6 +112,15 @@ pub(crate) struct Unsubscribing {
     account: usize,
     key: RowKey,
     answer: Receiver<Result<(), String>>,
+}
+
+/// A Save as… waiting for the user to pick the file, for the message it came from.
+pub(crate) struct SavingAs {
+    account: usize,
+    key: RowKey,
+    /// What goes in the file.
+    bytes: Vec<u8>,
+    answer: Receiver<save_as::Chosen>,
 }
 
 pub(crate) struct BodyState {
@@ -370,9 +380,12 @@ pub(crate) enum UiAction {
     /// Save the form's account, replacing one of the same name.
     SaveAccount(account::Fields),
     SaveAttachment(usize),
+    /// Save as… for attachment `index`: the save dialog picks where.
+    SaveAttachmentAs(usize),
     /// Write the open rule to rules.toml.
     SaveDraft,
     SaveEml,
+    SaveEmlAs,
     /// Leave the shown message's mailing list: by one click, or by opening its page or address.
     Unsubscribe,
     /// Enter in the search field: ask the servers too, and open the first hit.
@@ -479,6 +492,9 @@ pub struct App {
     /// Sends a one-click unsubscribe; tests swap it so nothing leaves the machine.
     pub(crate) post_unsubscribe: fn(&str) -> Result<(), String>,
     pub(crate) unsubscribing: Option<Unsubscribing>,
+    pub(crate) saving_as: Option<SavingAs>,
+    /// Opens the save dialog; tests swap it so no dialog opens.
+    pub(crate) ask_save_path: fn(&str, &Path, Wake) -> Receiver<save_as::Chosen>,
     /// Downloads remote content for HTML mail, started the first time the user asks.
     pub(crate) fetcher: Option<Fetcher>,
     pub(crate) focus: Focus,
@@ -643,6 +659,8 @@ impl App {
             check_login: test_login,
             post_unsubscribe: |url| unsubscribe::one_click(url).map_err(|e| e.to_string()),
             unsubscribing: None,
+            saving_as: None,
+            ask_save_path: save_as::ask,
             fetcher: None,
             focus: Focus::List,
             about_open: false,
@@ -725,6 +743,7 @@ impl App {
         self.check_release();
         self.receive_open_at_login();
         self.receive_unsubscribe();
+        self.receive_save_as();
         self.receive_list();
         if std::mem::take(&mut self.view_dirty) {
             self.refresh_view();
@@ -1214,7 +1233,9 @@ impl App {
                 _ => self.note_error(None, MOVE_ONE_ACCOUNT.into()),
             },
             UiAction::NewRule => self.open_draft(Some(Draft::new())),
-            action @ (UiAction::OpenSource | UiAction::SaveEml) if !self.body_follows_cursor() => {
+            action @ (UiAction::OpenSource | UiAction::SaveEml | UiAction::SaveEmlAs)
+                if !self.body_follows_cursor() =>
+            {
                 self.after_body = Some(action);
             }
             UiAction::OpenSource => self.open_source(),
@@ -1277,7 +1298,21 @@ impl App {
                 }
             }
             UiAction::SaveAttachment(index) => self.save_attachment(index),
+            UiAction::SaveAttachmentAs(index) => {
+                let raw = self.shown_raw();
+                let file = raw.map(|raw| message::attachment(&raw, index));
+                self.save_as(file);
+            }
             UiAction::SaveEml => self.save_eml(),
+            UiAction::SaveEmlAs => {
+                let raw = self.shown_raw();
+                let subject = self
+                    .body
+                    .as_ref()
+                    .and_then(|b| b.message.as_ref()?.subject.clone());
+                let file = raw.map(|raw| Ok((message::eml_name(subject.as_deref()), raw)));
+                self.save_as(file);
+            }
             UiAction::Unsubscribe => self.unsubscribe(),
             UiAction::SearchFocused(focused) => self.search_focused = focused,
             UiAction::SearchAccepted => {
@@ -1998,6 +2033,55 @@ impl App {
             Some(saved_note(raw.map(|raw| {
                 message::save_eml(&raw, subject, &self.downloads)
             })));
+    }
+
+    /// Opens the save dialog for `file` (its suggested name and contents), starting in Downloads. One at a time.
+    fn save_as(&mut self, file: Option<std::io::Result<(String, Vec<u8>)>>) {
+        if self.saving_as.is_some() {
+            return;
+        }
+        let Some(body) = &mut self.body else { return };
+        let (name, bytes) = match file {
+            Some(Ok(file)) => file,
+            failed => {
+                body.saved = Some(saved_note(failed.map(|f| f.map(|_| PathBuf::new()))));
+                return;
+            }
+        };
+        let (account, key) = (body.account, body.key.clone());
+        let answer = (self.ask_save_path)(&name, &self.downloads, self.wake.clone());
+        self.saving_as = Some(SavingAs {
+            account,
+            key,
+            bytes,
+            answer,
+        });
+    }
+
+    /// Writes the file once the dialog picked where; a cancelled dialog saves nothing and says nothing.
+    fn receive_save_as(&mut self) {
+        let Some(saving) = &self.saving_as else {
+            return;
+        };
+        let note = match saving.answer.try_recv() {
+            Err(TryRecvError::Empty) => return,
+            Ok(Ok(None)) => None,
+            Ok(Ok(Some(path))) => Some(saved_note(Some(
+                message::write_chosen(&path, &saving.bytes).map(|()| path),
+            ))),
+            Ok(Err(e)) => Some(format!("Could not save: {e:#}")),
+            Err(TryRecvError::Disconnected) => {
+                Some("Could not save: the save dialog stopped".into())
+            }
+        };
+        if let Some(note) = note
+            && let Some(body) = &mut self.body
+            && body.account == saving.account
+            && body.key == saving.key
+        {
+            body.saved = Some(note);
+        }
+        self.saving_as = None;
     }
 
     fn unsubscribe(&mut self) {

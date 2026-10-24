@@ -81,6 +81,10 @@ impl Fixture {
         app.fetch_release = || Err(anyhow::anyhow!("no network in tests"));
         app.read_open_at_login = |_| Ok(false);
         app.set_open_at_login = |_, _| Ok(String::new());
+        app.ask_save_path = |_, _, _| {
+            let (_, answer) = std::sync::mpsc::channel();
+            answer
+        };
         app.check_login = |_, _, _, _| Ok(());
         app.logos.net = std::sync::Arc::new(Offline);
         // Reloads after events apply in the tick that started them, so tests see their rows at once; the tests of

@@ -39,6 +39,11 @@ tokio.workspace = true
 toml.workspace = true
 ureq.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+objc2-app-kit.workspace = true
+objc2-foundation.workspace = true
+
 [target.'cfg(target_os = "linux")'.dependencies]
 fontique = { workspace = true, features = ["fontconfig-dlopen"] }  # load fontconfig at runtime, as the window loads X11 and Wayland, instead of linking it
 i-slint-common = { workspace = true, features = ["fontconfig-dlopen"] }
