@@ -314,6 +314,37 @@ fn run(scale: u32, runs: usize) {
         timed(|| drop(sync_all(ops, &stores[0]).unwrap()))
     });
     report("sync_pass", scale, passes.collect());
+
+    // What the rules pass reads of INBOX on every pass, once the indexer stored each body's text: the generated mail has
+    // no bodies, so each message gets 4 kB of text, about a plain newsletter's. With the text, as before for a folder
+    // whose rules test no body, and without it, as now.
+    let text =
+        "A line of newsletter text with a link to https://example.com/item.\n".repeat(4096 / 64);
+    let inbox: Vec<u32> = stores[0]
+        .messages_without_body("INBOX", 0)
+        .unwrap()
+        .iter()
+        .map(|m| m.uid)
+        .collect();
+    for uid in inbox {
+        stores[0]
+            .set_indexed("INBOX", uid, Some(&text), &[], T0)
+            .unwrap();
+    }
+    report(
+        "rules_read_with_body",
+        scale,
+        (0..runs)
+            .map(|_| timed(|| drop(stores[0].messages_in_folder("INBOX").unwrap())))
+            .collect(),
+    );
+    report(
+        "rules_read",
+        scale,
+        (0..runs)
+            .map(|_| timed(|| drop(stores[0].messages_without_body("INBOX", 0).unwrap())))
+            .collect(),
+    );
 }
 
 #[test]

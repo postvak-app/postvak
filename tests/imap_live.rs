@@ -274,6 +274,48 @@ fn move_falls_back_to_copy_without_move() {
 }
 
 #[test]
+fn many_messages_move_in_one_command() {
+    let Some(host) = host() else { return };
+    for (port, test) in [(PORT, "batch-move"), (PORT_WITHOUT_MOVE, "batch-copy")] {
+        let mut ops = connect(&account(&host, port, test));
+        for subject in ["one", "two", "three"] {
+            ops.append("INBOX", &mail(subject), &[]).unwrap();
+        }
+        ops.select("INBOX").unwrap();
+        let uids: Vec<u32> = all_envelopes(&mut ops).iter().map(|e| e.uid).collect();
+        ops.move_messages(&uids[..2], "Archive").unwrap();
+        let left: Vec<u32> = all_envelopes(&mut ops).iter().map(|e| e.uid).collect();
+        assert_eq!(left, vec![uids[2]], "{test}");
+        ops.select("Archive").unwrap();
+        assert_eq!(all_envelopes(&mut ops).len(), 2, "{test}");
+    }
+}
+
+#[test]
+fn many_messages_take_flags_and_expunge_in_one_command() {
+    let Some(host) = host() else { return };
+    for (port, test) in [(PORT, "batch-uidplus"), (PORT_WITHOUT_MOVE, "batch-plain")] {
+        let mut ops = connect(&account(&host, port, test));
+        for subject in ["one", "two", "three"] {
+            ops.append("INBOX", &mail(subject), &[]).unwrap();
+        }
+        ops.select("INBOX").unwrap();
+        let uids: Vec<u32> = all_envelopes(&mut ops).iter().map(|e| e.uid).collect();
+        ops.add_flags_to(&uids, &["\\Seen"]).unwrap();
+        ops.remove_flags_from(&uids[..1], &["\\Seen"]).unwrap();
+        let seen: Vec<bool> = all_envelopes(&mut ops)
+            .iter()
+            .map(|e| e.flags.iter().any(|f| f == "\\Seen"))
+            .collect();
+        assert_eq!(seen, [false, true, true], "{test}");
+        ops.add_flags_to(&uids[1..], &["\\Deleted"]).unwrap();
+        ops.expunge_all(&uids[1..]).unwrap();
+        let left: Vec<u32> = all_envelopes(&mut ops).iter().map(|e| e.uid).collect();
+        assert_eq!(left, vec![uids[0]], "{test}");
+    }
+}
+
+#[test]
 fn expunge_removes_only_the_deleted_message() {
     let Some(host) = host() else { return };
     for (port, test) in [

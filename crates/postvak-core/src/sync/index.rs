@@ -82,10 +82,11 @@ pub(crate) fn slice(
     elapsed: &mut dyn FnMut() -> Duration,
 ) -> Result<IndexOutcome, SyncError> {
     let at = now();
-    let (remaining, total) = store.backlog_count(at)?;
-    if remaining == 0 {
+    // Checked every idle turn, also once all is indexed; the total counts every row, so only when there is work.
+    if store.backlog_remaining(at)? == 0 {
         return Ok(IndexOutcome::Done);
     }
+    let (remaining, total) = store.backlog_count(at)?;
     let _ = events.send(Event::Activity {
         account: account.name.clone(),
         activity: Activity::Indexing {

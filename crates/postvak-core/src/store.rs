@@ -25,6 +25,7 @@ const MIGRATIONS: &[M<'static>] = &[
     M::up(include_str!("../migrations/010-unread-index/up.sql")),
     M::up(include_str!("../migrations/011-search/up.sql")),
     M::up(include_str!("../migrations/012-rule-moves/up.sql")),
+    M::up(include_str!("../migrations/013-backlog-index/up.sql")),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -258,8 +259,13 @@ const CLOSE_MATCHES_BELOW: usize = 10;
 /// A message that awaits the indexer at `?1`: never tried, or tried and failed more than a day earlier. The first
 /// half reads the partial index `messages_unindexed`.
 const BACKLOG: &str = "(indexed_at IS NULL OR (body_text IS NULL AND indexed_at < ?1 - 86400))";
+/// The tried messages of `BACKLOG`, spelled as the partial index `messages_retry` (migration 013) so a count reads it.
+const RETRY: &str = "body_text IS NULL AND indexed_at IS NOT NULL AND indexed_at < ?1 - 86400";
 
 const MESSAGE_COLUMNS: &str = "folder, uid, message_id, from_addr, to_addr, cc_addr, delivered_to, in_reply_to, refs, thread_id, subject, date, internaldate, flags, size, headers, body_text, attachment_names, indexed_at";
+/// `MESSAGE_COLUMNS` without the body text and the index columns. Those sit behind `raw` in the row, so reading them walks
+/// a stored message's overflow pages, and an indexed body's text is the largest column read.
+const BODILESS_COLUMNS: &str = "folder, uid, message_id, from_addr, to_addr, cc_addr, delivered_to, in_reply_to, refs, thread_id, subject, date, internaldate, flags, size, headers, NULL AS body_text, NULL AS attachment_names, NULL AS indexed_at";
 
 impl Store {
     pub fn migrations() -> Migrations<'static> {
@@ -591,6 +597,20 @@ impl Store {
         self.query_messages("WHERE folder = ?1 ORDER BY uid", params![folder])
     }
 
+    /// The messages in `folder` with a uid above `after`, oldest first, read without their body text: what the rules
+    /// read of a folder none of whose rules tests the body.
+    pub fn messages_without_body(
+        &self,
+        folder: &str,
+        after: u32,
+    ) -> Result<Vec<Message>, StoreError> {
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT {BODILESS_COLUMNS} FROM messages WHERE folder = ?1 AND uid > ?2 ORDER BY uid"
+        ))?;
+        let rows = serde_rusqlite::from_rows::<Message>(stmt.query(params![folder, after])?);
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
     /// The messages `query` matches, newest first, in `folder` or any folder, at most `limit`. `close` adds the
     /// close matches when the exact ones are few; `identity` resolves `from:me` and `to:me`. The plan's predicates
     /// follow the FTS match; their `?` parameters count on from the fixed ones, so the later placeholders are
@@ -763,14 +783,27 @@ impl Store {
 
     /// How many messages still await an index pass at `now`, and how many messages there are.
     pub fn backlog_count(&self, now: i64) -> Result<(u64, u64), StoreError> {
-        Ok(self.conn.query_row(
-            &format!("SELECT count(*) FILTER (WHERE {BACKLOG}), count(*) FROM messages"),
+        let remaining = self.backlog_remaining(now)?;
+        let total: i64 = self
+            .conn
+            .query_row("SELECT count(*) FROM messages", [], |r| r.get(0))?;
+        Ok((remaining, u64::try_from(total).unwrap_or(0)))
+    }
+
+    /// How many messages wait for the indexer, from the two partial indexes rather than every row: once indexing is done
+    /// both are empty, so the check each idle turn makes costs nothing.
+    pub fn backlog_remaining(&self, now: i64) -> Result<u64, StoreError> {
+        let never: i64 = self.conn.query_row(
+            "SELECT count(*) FROM messages WHERE indexed_at IS NULL",
+            [],
+            |r| r.get(0),
+        )?;
+        let retry: i64 = self.conn.query_row(
+            &format!("SELECT count(*) FROM messages WHERE {RETRY}"),
             params![now],
-            |r| {
-                let count = |i| r.get::<_, i64>(i).map(|n| u64::try_from(n).unwrap_or(0));
-                Ok((count(0)?, count(1)?))
-            },
-        )?)
+            |r| r.get(0),
+        )?;
+        Ok(u64::try_from(never + retry).unwrap_or(0))
     }
 
     /// The next messages to index, newest first: never tried, or tried without text more than a day before `now`.
@@ -1934,7 +1967,7 @@ mod tests {
     }
 
     #[test]
-    fn the_thread_list_reads_only_the_covering_index_and_the_unread_count_only_unread_mail() {
+    fn the_thread_list_unread_count_and_index_backlog_read_their_indexes() {
         let s = store_with_inbox();
         // Without statistics an empty table plans differently; a few hundred rows plan like a real folder.
         for uid in 1..=500 {
@@ -1958,6 +1991,37 @@ mod tests {
         );
         let unread = plan(&unread_count_sql().replace("?1", "'INBOX'"));
         assert!(unread.contains("INDEX messages_unread"), "{unread}");
+        let never = plan("SELECT count(*) FROM messages WHERE indexed_at IS NULL");
+        assert!(never.contains("INDEX messages_unindexed"), "{never}");
+        let retry = plan(&format!(
+            "SELECT count(*) FROM messages WHERE {}",
+            RETRY.replace("?1", "1000")
+        ));
+        assert!(retry.contains("INDEX messages_retry"), "{retry}");
+    }
+
+    #[test]
+    fn messages_without_body_leave_out_the_text_and_start_after_a_uid() {
+        let s = store_with_inbox();
+        for uid in 1..=3 {
+            s.insert_message(&msg("INBOX", uid, i64::from(uid)))
+                .unwrap();
+            s.set_raw("INBOX", uid, b"Subject: x\r\n\r\nbody", "body")
+                .unwrap();
+        }
+        let read = s.messages_without_body("INBOX", 1).unwrap();
+        assert_eq!(read.iter().map(|m| m.uid).collect::<Vec<_>>(), [2, 3]);
+        assert!(read.iter().all(|m| m.body_text.is_none()));
+        let full = s.messages_in_folder("INBOX").unwrap();
+        assert_eq!(full[1].body_text.as_deref(), Some("body"));
+        assert_eq!(
+            Message {
+                body_text: None,
+                ..full[1].clone()
+            },
+            read[0],
+            "every other column is read"
+        );
     }
 
     #[test]
