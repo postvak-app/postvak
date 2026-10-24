@@ -244,6 +244,10 @@ fn search_close_matches(theme: &str) -> (Fixture, Open, Wires) {
         ]
     );
     assert_eq!(open.labels_containing("close match").len(), 1);
+    // The search field has focus; an inactive window draws no text cursor, whose blink phase differs between
+    // platforms (the merge queue's macOS run drew the opposite phase to Linux).
+    slint::ComponentHandle::window(&open.window())
+        .dispatch_event(slint::platform::WindowEvent::WindowActiveChanged(false));
     (fx, open, wires)
 }
 
