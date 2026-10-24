@@ -68,7 +68,12 @@ use state::App;
 /// tries once more with the software renderer. Safe mode, asked for or after two starts in a row that died before
 /// the window showed, draws in software and ignores the saved layout. With a window already open, this start hands
 /// it `open` and returns: that window comes to the front, showing the message.
-pub fn run(paths: Result<Paths>, safe_mode: bool, open: Option<Open>) -> Result<()> {
+pub fn run(
+    paths: Result<Paths>,
+    safe_mode: bool,
+    open: Option<Open>,
+    background: bool,
+) -> Result<()> {
     let token = launch::take_token();
     let instance = match &paths {
         Ok(paths) => match instance::claim(paths, &instance::Request { open: open.clone() }) {
@@ -98,6 +103,8 @@ pub fn run(paths: Result<Paths>, safe_mode: bool, open: Option<Open>) -> Result<
         safe_mode,
         marker: marker.as_ref(),
         instance: instance.as_ref(),
+        // A message to show wants the window in front.
+        background: background && open.is_none(),
         open,
     };
     let (error, window_error) = match start.run(paths) {
@@ -141,6 +148,8 @@ struct Start<'a> {
     instance: Option<&'a instance::Instance>,
     /// The message to show once the window opens.
     open: Option<Open>,
+    /// Started at login: in the tray, or minimized on macOS (`launch::showing`).
+    background: bool,
 }
 
 impl Start<'_> {
@@ -186,12 +195,24 @@ impl Start<'_> {
         }
         let mut app = App::new(&config, paths, client, events, states);
         app.wake = std::sync::Arc::new(wake);
-        window.show().context("could not show the window")?;
         // Closing the window hides it. The tray keeps the event loop running only while the desktop shows it, so without
         // one closing the window quits, as it always did.
         let tray = ui::Tray::new()
             .inspect_err(|e| log::debug!("no tray icon: {e}"))
             .ok();
+        match launch::showing(self.background, tray.is_some(), cfg!(target_os = "macos")) {
+            launch::Showing::Front => window.show().context("could not show the window")?,
+            launch::Showing::Minimized => {
+                window.show().context("could not show the window")?;
+                window.window().set_minimized(true);
+            }
+            launch::Showing::Hidden => {
+                // No window to fail, so this start counts as one that worked.
+                if let Some(marker) = marker {
+                    marker.clear();
+                }
+            }
+        }
         let started = Instant::now();
         let clock = Box::new(move || started.elapsed().as_secs_f64());
         Live::install(
@@ -217,7 +238,10 @@ impl Start<'_> {
             if let Some(badge) = &mut live.badge {
                 badge.show(0);
             }
-            if let Err(e) = persist::save(&layout, &remember(&live.window)) {
+            // A window that stayed in the tray has no layout of its own to keep.
+            if launch::shown()
+                && let Err(e) = persist::save(&layout, &remember(&live.window))
+            {
                 log::warn!("could not save the window's layout: {e:#}");
             }
         }

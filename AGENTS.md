@@ -7,6 +7,7 @@ Four crates in one workspace. `crates/postvak-core` holds every module below exc
 
 - `account` adding an account (validate, test the login through the daemon, store the keyring secret, save config.toml) and waiting for the daemon to start it; the only code that adds one
 - `actions` direct actions on chosen messages (mark, move, archive, delete); same `apply` as rules
+- `autostart` opening the window at login (`gui --background`): a launch agent on macOS, an XDG autostart entry on Linux, the Background portal in a Flatpak (`autostart/portal.rs`); the only code that turns it on or off
 - `badge` the unread count on the Linux task bar or dock entry (the Unity LauncherEntry signal over D-Bus) or the macOS Dock icon; the GUI keeps it current while open
 - `config` accounts and identity (address + aliases)
 - `credentials` keyring or password command; `Secret` has no Debug
