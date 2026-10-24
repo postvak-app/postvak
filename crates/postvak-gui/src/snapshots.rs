@@ -119,6 +119,29 @@ fn inbox_dark() {
     snapshot(&open, "gui_inbox_dark");
 }
 
+/// `work` fetching INBOX's headers part of the way, so the status bar shows its progress.
+fn syncing(theme: &str) -> (Fixture, Open, Wires) {
+    let (fx, open, wires) = inbox(theme);
+    home_up_to_date(&wires);
+    fetching(&wires, 12_500, 48_213);
+    open.tick();
+    // The fill glides to its value.
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_secs(1));
+    (fx, open, wires)
+}
+
+#[test]
+fn syncing_light() {
+    let (_fx, open, _wires) = syncing("light");
+    snapshot(&open, "gui_syncing_light");
+}
+
+#[test]
+fn syncing_dark() {
+    let (_fx, open, _wires) = syncing("dark");
+    snapshot(&open, "gui_syncing_dark");
+}
+
 /// With sender images on, GitHub's DMARC-passing mail shows its logo in the reader instead of the initials.
 #[test]
 fn a_sender_logo() {
@@ -551,6 +574,54 @@ fn unread_dot(open: &Open, label: &str) -> slint::Color {
     )
 }
 
+/// Brings `home` back online, so the status bar shows `work`'s line rather than the offline one.
+fn home_up_to_date(wires: &Wires) {
+    let event = Event::Activity {
+        account: "home".into(),
+        activity: Activity::Idle { since: AT },
+    };
+    wires.events.send(event).unwrap();
+}
+
+/// Tells the window that `work` has fetched `done` of INBOX's `total` headers.
+fn fetching(wires: &Wires, done: usize, total: usize) {
+    let activity = Activity::FetchingHeaders {
+        folder: "INBOX".into(),
+        done,
+        total,
+    };
+    let event = Event::Activity {
+        account: "work".into(),
+        activity,
+    };
+    wires.events.send(event).unwrap();
+}
+
+/// What the status bar's progress hairline tells a screen reader, while it says anything.
+fn meter_value(open: &Open) -> Option<String> {
+    use i_slint_backend_testing::{AccessibleRole, ElementHandle};
+    let meters = ElementHandle::find_by_element_type_name(&open.window(), "Meter").collect();
+    let meter = super::test_support::once(meters).remove(0);
+    let found = meter
+        .query_descendants()
+        .match_predicate(|e| e.accessible_role() == Some(AccessibleRole::ProgressIndicator))
+        .find_all();
+    super::test_support::once(found)
+        .pop()?
+        .accessible_value()
+        .map(String::from)
+}
+
+/// The colour on the status bar's progress hairline, `share` of the way along it.
+fn meter_at(open: &Open, share: f32) -> slint::Color {
+    let meter = one(open, "Meter");
+    pixel(
+        open,
+        meter.left + meter.width * share,
+        meter.top + meter.height / 2.0,
+    )
+}
+
 /// The full label of the one row containing `text`.
 fn row(open: &Open, text: &str) -> String {
     open.labels_containing(text).remove(0)
@@ -585,6 +656,66 @@ fn hovering_a_row_fades_in_and_selecting_it_shows_at_once() {
         pane.selected,
         "selection does not wait for a fade"
     );
+}
+
+#[test]
+fn the_sync_progress_glides_forward_jumps_back_and_fades_out() {
+    let (_fx, open, wires) = inbox("light");
+    home_up_to_date(&wires);
+    open.tick();
+    let hidden = meter_at(&open, 0.75);
+
+    fetching(&wires, 100, 1000);
+    open.tick();
+    open.advance(1.0);
+    let track = meter_at(&open, 0.75);
+    assert_ne!(track, hidden, "a fetch shows the track");
+    let filled = meter_at(&open, 0.05);
+    assert_ne!(filled, track, "and fills its start");
+    assert_eq!(meter_value(&open).as_deref(), Some("10%"));
+
+    fetching(&wires, 900, 1000);
+    open.tick();
+    assert_eq!(meter_at(&open, 0.75), track, "the fill glides forward");
+    open.advance(1.0);
+    assert_ne!(meter_at(&open, 0.75), track, "and arrives");
+
+    fetching(&wires, 0, 1000);
+    open.tick();
+    assert_eq!(
+        meter_at(&open, 0.75),
+        track,
+        "a new fetch starts empty without rewinding"
+    );
+    assert_eq!(meter_value(&open).as_deref(), Some("0%"));
+
+    fetching(&wires, 1000, 1000);
+    open.tick();
+    open.advance(1.0);
+    let filled_end = meter_at(&open, 0.75);
+    let syncing = Event::Activity {
+        account: "work".into(),
+        activity: Activity::SyncingFolder {
+            folder: "Archive".into(),
+            index: 2,
+            of: 3,
+        },
+    };
+    wires.events.send(syncing).unwrap();
+    open.tick();
+    assert_eq!(
+        meter_value(&open),
+        None,
+        "screen readers hear the line only"
+    );
+    assert_eq!(
+        meter_at(&open, 0.75),
+        filled_end,
+        "the bar fades out holding its last value"
+    );
+    open.advance(1.0);
+    assert_eq!(meter_at(&open, 0.75), hidden, "and ends hidden");
+    assert_eq!(meter_at(&open, 0.05), hidden);
 }
 
 #[test]

@@ -130,9 +130,6 @@ enum Command {
         account: Option<String>,
         #[arg(long)]
         folder: Option<String>,
-        /// Fetch and index missing bodies first; slow on a large folder
-        #[arg(long)]
-        bodies: bool,
         /// Ask the server too, which searches bodies not downloaded yet; each folder costs a round trip
         #[arg(long)]
         server: bool,
@@ -493,7 +490,6 @@ pub fn run() -> Result<()> {
             query,
             account,
             folder,
-            bodies,
             server,
             exact,
             limit,
@@ -503,19 +499,6 @@ pub fn run() -> Result<()> {
             let parsed = postvak_core::search::parse(&query);
             for acc in select_accounts(&config, account.as_deref())? {
                 let store = Store::open_account(&paths, &acc.name)?;
-                if bodies && store.lacks_bodies(folder.as_deref())? {
-                    eprintln!(
-                        "{}: fetching missing bodies; this can take a while on a large folder",
-                        acc.name
-                    );
-                    if let Err(e) = fetch_bodies(&daemon, &acc.name, folder.as_deref()) {
-                        eprintln!(
-                            "{}: {}; searching the bodies already stored",
-                            acc.name,
-                            clean(&format!("{e:#}"), false)
-                        );
-                    }
-                }
                 let mut found = store.search(
                     &parsed,
                     postvak_core::search::Scope::All,
@@ -733,17 +716,6 @@ fn unsubscribe_line(report: &postvak_core::unsubscribe::Report) -> String {
         ("mail", false) => format!("send a mail to unsubscribe: {url}"),
         _ => format!("open this page to unsubscribe: {url}"),
     }
-}
-
-/// Asks the daemon to fetch the missing bodies.
-fn fetch_bodies(daemon: &LazyClient, account: &str, folder: Option<&str>) -> Result<()> {
-    let fetch = sync::Command::FetchBodies {
-        folder: folder.map(str::to_string),
-    };
-    daemon.request(account, fetch, |reply| match reply {
-        Event::BodiesFetched { .. } => Ok(()),
-        other => Err(other),
-    })
 }
 
 fn cmd_sync(config: &Config, paths: &Paths, account: Option<&str>) -> Result<()> {

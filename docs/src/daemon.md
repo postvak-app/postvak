@@ -16,6 +16,8 @@ postvak service install
 
 This writes a launchd agent (`~/Library/LaunchAgents/io.github.postvak_app.postvak.plist`) on macOS or a systemd user unit (`~/.config/systemd/user/postvak.service`) on Linux, and starts it. A daemon that was already running is stopped first, so the service's daemon takes over. Running the command again is safe. `--dry-run` shows the file and the commands and changes nothing. `postvak service remove` stops the service and deletes the file. The service runs the postvak binary from the path it was installed from: for Homebrew that is the `opt/` link, so `brew upgrade` needs nothing more, and for an AppImage it is the `.AppImage` file. After moving postvak or the AppImage, run `postvak service install` again. With `POSTVAK_HOME` set, the service file passes it on, so the service's daemon uses that home too.
 
+The service also lets the [search index](search.md#the-index) finish: the daemon indexes message bodies in its idle time, and a daemon that only runs while a window or a CLI command is open gets less of it.
+
 ## On a server
 
 Postvak runs headless on any Linux machine, such as a NAS, a VPS or a Raspberry Pi. Rules act on the IMAP server, so your phone and other mail clients see the sorted mailbox. Two things differ from a desktop:

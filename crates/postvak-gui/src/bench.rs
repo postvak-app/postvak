@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use postvak_core::mail_ops::RecordingOps;
 use postvak_core::store::{Filter, Store};
-use postvak_core::sync::sync_all;
+use postvak_core::sync::{IndexOutcome, index_slice, sync_all};
 
 use super::list::THREAD_LIMIT;
 use super::state::{LIST_BUDGET, UiAction, View};
@@ -154,6 +154,25 @@ fn run(scale: u32, runs: usize) {
             }
         })],
     );
+
+    // The indexer's throughput against the fake: every message of the first account in one unlimited slice. The
+    // store keeps the text, so each run indexes the same mail again after a reset.
+    let indexed = (0..runs).map(|_| {
+        stores[0].forget_indexing().unwrap();
+        let (events, _) = std::sync::mpsc::channel();
+        let account = postvak_core::config::AccountConfig::new(
+            "home",
+            "h",
+            "u",
+            postvak_core::config::PasswordSource::Keyring { keyring: true },
+        );
+        timed(|| {
+            while index_slice(&mut servers[0], &stores[0], &account, &events).unwrap()
+                == IndexOutcome::Progressed
+            {}
+        })
+    });
+    report("index_all", scale, indexed.collect());
 
     report(
         "open_store",

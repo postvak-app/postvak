@@ -43,6 +43,9 @@ pub struct AccountConfig {
     pub trash_retention_days: u64,
     #[serde(default = "default_true")]
     pub notify: bool,
+    /// Download and index the text of every message in the background, so search covers bodies.
+    #[serde(default = "default_true")]
+    pub index_bodies: bool,
     /// Extra trusted root certificate (PEM), for servers with a private CA.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ca_file: Option<PathBuf>,
@@ -304,6 +307,7 @@ impl AccountConfig {
             sync_interval_secs: default_sync_interval(),
             trash_retention_days: default_retention(),
             notify: default_true(),
+            index_bodies: default_true(),
             ca_file: None,
         }
     }

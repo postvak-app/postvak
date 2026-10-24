@@ -32,7 +32,11 @@ pub enum ActionError {
 pub type UidResult = (u32, Result<usize, ActionError>);
 
 /// Selects `folder`, refusing when the stored uids belong to another UIDVALIDITY and would hit unrelated messages.
-fn select_synced(ops: &mut dyn MailOps, store: &Store, folder: &str) -> Result<(), ActionError> {
+pub(crate) fn select_synced(
+    ops: &mut dyn MailOps,
+    store: &Store,
+    folder: &str,
+) -> Result<(), ActionError> {
     let stored = store
         .folder(folder)?
         .ok_or_else(|| ActionError::UnknownFolder(folder.to_string()))?;
@@ -76,28 +80,6 @@ pub fn run(
         results.push((uid, result));
     }
     Ok(results)
-}
-
-/// Downloads and indexes every body `folder` lacks. Returns how many arrived; a message that cannot be fetched is
-/// logged and skipped.
-pub fn fetch_bodies(
-    ops: &mut dyn MailOps,
-    store: &Store,
-    folder: &str,
-) -> Result<usize, ActionError> {
-    let missing = store.messages_without_body(folder)?;
-    if missing.is_empty() {
-        return Ok(0);
-    }
-    select_synced(ops, store, folder)?;
-    let mut fetched = 0;
-    for msg in &missing {
-        match ensure_raw(msg, ops, store) {
-            Ok(_) => fetched += 1,
-            Err(e) => log::warn!("{}/{}: body fetch failed: {e}", msg.folder, msg.uid),
-        }
-    }
-    Ok(fetched)
 }
 
 /// Downloads and indexes one message body, refusing when the folder changed on the server since the last sync.
@@ -428,23 +410,6 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, ActionError::UnknownFolder(_)));
         assert!(ops.calls.is_empty());
-    }
-
-    #[test]
-    fn fetch_bodies_indexes_only_missing_bodies() {
-        let (mut ops, store, _trash, _dir) = setup();
-        assert_eq!(fetch_bodies(&mut ops, &store, "INBOX").unwrap(), 1);
-        let body = crate::search::parse("body");
-        assert_eq!(
-            store
-                .search(&body, crate::search::Scope::All, None, 10, false)
-                .unwrap()
-                .len(),
-            1
-        );
-        let calls = ops.calls.len();
-        assert_eq!(fetch_bodies(&mut ops, &store, "INBOX").unwrap(), 0);
-        assert_eq!(ops.calls.len(), calls, "nothing left to fetch");
     }
 
     #[test]

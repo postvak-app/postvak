@@ -103,6 +103,9 @@ pub(crate) struct ListState {
     pub server_searching: usize,
     /// Whether the servers were asked for the current query.
     pub server_asked: bool,
+    /// Over the accounts the current search covers: messages whose body is not indexed yet, and messages in all.
+    pub unindexed: u64,
+    pub covered: u64,
     pub rows: Vec<Row>,
     /// Each thread with the account it is in.
     pub threads: Vec<(usize, ThreadSummary)>,
@@ -223,11 +226,16 @@ pub(crate) fn search_hint(view: &View) -> &'static str {
 pub(crate) fn results(app: &App) -> String {
     let count = super::numbers::count(app.list.rows.len() as u64);
     let note = if app.list.server_searching > 0 {
-        "searching the server…"
+        "searching the server…".to_string()
     } else if app.list.server_asked {
-        "with what the server found"
+        "with what the server found".to_string()
+    } else if app.list.unindexed > 0 {
+        format!(
+            "Enter also searches the server, for the {} messages not indexed yet",
+            super::numbers::count(app.list.unindexed)
+        )
     } else {
-        "Enter also searches the server, for mail whose body is not downloaded"
+        format!("in {} messages", super::numbers::count(app.list.covered))
     };
     format!("{count} results · {note}")
 }

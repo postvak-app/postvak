@@ -701,32 +701,19 @@ fn search_marks_close_matches_and_exact_turns_them_off() {
 }
 
 #[test]
-fn search_bodies_works_offline() {
+fn search_works_offline_over_indexed_bodies() {
     let mut stored = message(42, "billing@example.com", "Your invoice");
     stored.body_text = Some("the total is due".into());
     let (home, _store) = seeded_home(&[stored]);
-    let out = postvak(home.path(), &["search", "--bodies", "invoice"]);
+    let out = postvak(home.path(), &["search", "total"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{stderr}");
-    assert!(
-        !stderr.contains("offline"),
-        "asked the daemon with nothing to fetch: {stderr}"
-    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("INBOX/42"));
+    assert!(!stderr.contains("offline"), "asked the daemon: {stderr}");
     assert!(
         !Paths::under(home.path()).daemon_socket().exists(),
-        "started a daemon with nothing to fetch"
+        "started a daemon for a local search"
     );
-
-    let (home, _store) = seeded_home(&[message(43, "friend@example.com", "Lunch?")]);
-    let out = postvak(home.path(), &["search", "--bodies", "Lunch"]);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "{stderr}");
-    assert!(
-        stderr.contains("work: work is offline (")
-            && stderr.contains("searching the bodies already stored"),
-        "{stderr}"
-    );
-    assert!(String::from_utf8_lossy(&out.stdout).contains("INBOX/43"));
 }
 
 #[cfg(feature = "mcp")]
