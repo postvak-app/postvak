@@ -14,7 +14,7 @@ import { ListPane, RowData } from "list.slint";
 export enum Pane { body, folders, list }
 
 // The menu items that act on the app; `menu.rs` says what each does.
-export enum MenuAction { about, add-account, add-to-selection, archive, delete, documentation, flag, history, junk, keys, mark-folder-read, move, read-or-unread, save-eml, search, select-all, sync-now, text-or-html, theme-dark, theme-light, theme-system, view-source }
+export enum MenuAction { about, add-account, add-to-selection, archive, delete, documentation, flag, history, junk, keys, mark-folder-read, move, open-at-login, read-or-unread, save-eml, search, select-all, sync-now, text-or-html, theme-dark, theme-light, theme-system, view-source }
 
 // Which menu items would do something now; the others are disabled.
 export struct MenuState {
@@ -24,6 +24,8 @@ export struct MenuState {
     message: bool,
     text-or-html: bool,
     mark-folder-read: bool,
+    open-at-login: bool,
+    opens-at-login: bool,
 }
 
 // The edge between two panes, over both; dragging it sets `size`, the width of the pane on its left.
@@ -262,6 +264,14 @@ export component MailWindow inherits Window {
                 title: "View source";
                 enabled: root.menu.view-source;
                 activated => { root.menu-item(MenuAction.view-source); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Open at login";
+                checkable: true;
+                checked: root.menu.opens-at-login;
+                enabled: root.menu.open-at-login;
+                activated => { root.menu-item(MenuAction.open-at-login); }
             }
             MenuSeparator { }
             MenuItem {

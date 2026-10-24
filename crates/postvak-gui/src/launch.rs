@@ -113,7 +113,7 @@ impl Marker {
         }
     }
 
-    fn clear(&self) {
+    pub(crate) fn clear(&self) {
         match fs::remove_file(&self.0) {
             Err(e) if e.kind() != io::ErrorKind::NotFound => {
                 log::warn!("could not remove {}: {e}", self.0.display());
@@ -134,6 +134,32 @@ pub(crate) fn watch(window: &slint::Window, marker: Option<Marker>) {
         }
         EventResult::Propagate
     });
+}
+
+/// Whether a window of this process has shown; a start at login in the tray may never show one.
+pub(crate) fn shown() -> bool {
+    SHOWN.load(Ordering::Relaxed)
+}
+
+/// How a start shows its mail window.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Showing {
+    Front,
+    /// At login on macOS: a click on the Dock icon brings a minimized window back, which AppKit does by itself.
+    Minimized,
+    /// At login, in the tray, until the tray or a later start opens it.
+    Hidden,
+}
+
+/// A start at login (`background`) stays out of the way: in the tray where there is one, minimized on macOS. Without a
+/// tray a hidden window could not be reached, so it shows.
+pub(crate) fn showing(background: bool, tray: bool, macos: bool) -> Showing {
+    match (background, macos, tray) {
+        (false, _, _) => Showing::Front,
+        (true, true, _) => Showing::Minimized,
+        (true, false, true) => Showing::Hidden,
+        (true, false, false) => Showing::Front,
+    }
 }
 
 /// True when `error` is Slint failing to make or show a window and none has shown yet.
@@ -179,7 +205,17 @@ pub(crate) fn report(window_error: &anyhow::Error, daemon_log: Option<&Path>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Marker, Renderer, renderer, safe_mode, token_from};
+    use super::{Marker, Renderer, Showing, renderer, safe_mode, showing, token_from};
+
+    #[test]
+    fn a_start_at_login_stays_in_the_tray_is_minimized_on_macos_and_shows_without_a_tray() {
+        assert_eq!(showing(false, true, false), Showing::Front);
+        assert_eq!(showing(false, false, true), Showing::Front);
+        assert_eq!(showing(true, true, false), Showing::Hidden);
+        assert_eq!(showing(true, false, false), Showing::Front);
+        assert_eq!(showing(true, true, true), Showing::Minimized);
+        assert_eq!(showing(true, false, true), Showing::Minimized);
+    }
 
     #[test]
     fn slint_backend_names_the_software_renderer_in_any_of_its_spellings() {

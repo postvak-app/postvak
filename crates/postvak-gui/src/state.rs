@@ -387,6 +387,8 @@ pub(crate) enum UiAction {
     SetRuleEnabled(String, bool),
     SortSheet(SheetSort),
     SetTheme(Theme),
+    /// File ▸ Open at login, turned on or off.
+    SetOpenAtLogin(bool),
     StartSearch,
     StepFolder(isize),
     /// Count what the open rule would do to the cached mail.
@@ -430,6 +432,25 @@ pub(crate) enum UpdateCheck {
     Done(Option<String>),
 }
 
+/// Whether the window opens at login: read at the first tick, after the test fixture has swapped the hooks, and
+/// changed on a thread of its own, since in a Flatpak the desktop may ask the user first.
+pub(crate) enum OpenAtLogin {
+    Unknown,
+    Known(bool),
+    /// Turning it on (true) or off; the answer is what changed, or why not.
+    Changing(bool, Receiver<anyhow::Result<String>>),
+}
+
+impl OpenAtLogin {
+    /// What File ▸ Open at login shows: the setting, or the one it is changing to.
+    pub(crate) fn checked(&self) -> bool {
+        match self {
+            OpenAtLogin::Known(on) | OpenAtLogin::Changing(on, _) => *on,
+            OpenAtLogin::Unknown => false,
+        }
+    }
+}
+
 pub struct App {
     pub(crate) accounts: Vec<Account>,
     pub(crate) activity_log: Vec<(String, LogEntry)>,
@@ -449,6 +470,10 @@ pub struct App {
     pub(crate) retention: BTreeMap<String, u64>,
     pub(crate) events: Receiver<Event>,
     pub(crate) fetch_release: fn() -> anyhow::Result<String>,
+    pub(crate) open_at_login: OpenAtLogin,
+    /// Read and change opening at login (`autostart`); tests swap them so nothing outside the test changes.
+    pub(crate) read_open_at_login: fn(&Paths) -> anyhow::Result<bool>,
+    pub(crate) set_open_at_login: fn(&Paths, bool) -> anyhow::Result<String>,
     /// Tests an account's login before the form saves it; tests swap it so no daemon starts.
     pub(crate) check_login: account::Check,
     /// Sends a one-click unsubscribe; tests swap it so nothing leaves the machine.
@@ -604,6 +629,9 @@ impl App {
             error: None,
             events,
             fetch_release: update::fetch,
+            open_at_login: OpenAtLogin::Unknown,
+            read_open_at_login: postvak_core::autostart::is_on,
+            set_open_at_login: postvak_core::autostart::set,
             check_login: test_login,
             post_unsubscribe: |url| unsubscribe::one_click(url).map_err(|e| e.to_string()),
             unsubscribing: None,
@@ -686,6 +714,7 @@ impl App {
         self.logos.receive();
         self.keep_daemon(now);
         self.check_release();
+        self.receive_open_at_login();
         self.receive_unsubscribe();
         self.receive_list();
         if std::mem::take(&mut self.view_dirty) {
@@ -808,6 +837,31 @@ impl App {
         if let Some(next) = next {
             self.update = next;
         }
+    }
+
+    /// Reads whether the window opens at login, once, then takes the answer of a change.
+    fn receive_open_at_login(&mut self) {
+        let next = match &self.open_at_login {
+            OpenAtLogin::Unknown => match (self.read_open_at_login)(&self.paths) {
+                Ok(on) => OpenAtLogin::Known(on),
+                Err(e) => {
+                    log::debug!("cannot tell whether Postvak opens at login: {e:#}");
+                    OpenAtLogin::Known(false)
+                }
+            },
+            OpenAtLogin::Changing(on, answer) => match answer.try_recv() {
+                Ok(Ok(_)) => OpenAtLogin::Known(*on),
+                Ok(Err(e)) => {
+                    let (on, text) = (*on, format!("{e:#}"));
+                    self.note_error(None, format!("could not change opening at login: {text}"));
+                    OpenAtLogin::Known(!on)
+                }
+                Err(TryRecvError::Disconnected) => OpenAtLogin::Known(!*on),
+                Err(TryRecvError::Empty) => return,
+            },
+            OpenAtLogin::Known(_) => return,
+        };
+        self.open_at_login = next;
     }
 
     /// The newer release to announce, once the check has found one.
@@ -1284,6 +1338,19 @@ impl App {
                     }
                     Err(e) => self.note_error(None, format!("could not save the theme: {e}")),
                 }
+            }
+            UiAction::SetOpenAtLogin(on) => {
+                let (done, answer) = mpsc::channel();
+                let (paths, set, wake) = (
+                    self.paths.clone(),
+                    self.set_open_at_login,
+                    self.wake.clone(),
+                );
+                std::thread::spawn(move || {
+                    let _ = done.send(set(&paths, on));
+                    wake();
+                });
+                self.open_at_login = OpenAtLogin::Changing(on, answer);
             }
             UiAction::StartSearch => {
                 if self.view.lists_mail() {

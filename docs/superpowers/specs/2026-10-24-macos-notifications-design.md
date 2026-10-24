@@ -1,6 +1,6 @@
 # macOS notifications and Dock badge — design
 
-Status: implemented, 2026-10-24. The macOS side of `2026-10-19-linux-desktop-integration-design.md`, which the Platforms rule in `AGENTS.md` asks for. Reopening a hidden window from the Dock is not here: winit 0.30 has no hook for it, and it goes upstream first rather than into unsafe code in Postvak.
+Status: implemented, 2026-10-24. The macOS side of `2026-10-19-linux-desktop-integration-design.md`, which the Platforms rule in `AGENTS.md` asks for. Reopening a hidden window from the Dock is not here. winit 0.30 has no hook for it and registers its own application delegate, panicking when another replaces it; winit 0.31 lets an app register its own, so it waits for Slint to move to 0.31.
 
 ## Goal
 

@@ -114,6 +114,8 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
         message: toolbar::enabled(app),
         text_or_html: enabled(MenuAction::TextOrHtml),
         mark_folder_read: enabled(MenuAction::MarkFolderRead),
+        open_at_login: enabled(MenuAction::OpenAtLogin),
+        opens_at_login: app.open_at_login.checked(),
     });
     window.set_about_open(app.about_open);
     let apply_confirm = app.apply_confirm.as_ref().map(|c| c.warning.as_str());

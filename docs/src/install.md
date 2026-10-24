@@ -76,6 +76,8 @@ Two commands work differently inside the sandbox, because it cannot write files 
 - `mcp install json` prints an entry that runs `flatpak run io.github.postvak_app.postvak mcp`; add it to your MCP host yourself. `mcp install claude-code` prints the `claude mcp add` commands to run, and `mcp install claude-desktop` says which `mcp install json` to run instead.
 - `service install` prints a systemd user unit that runs `flatpak run io.github.postvak_app.postvak run`, and the commands to enable it; `service remove` prints the commands to undo that.
 
+Opening at login (File ▸ Open at login, or `autostart on`) works in the sandbox too: Postvak asks the desktop through its Background portal, which writes the host's autostart entry and may ask you first.
+
 ## Desktop entry on Linux
 
 Apart from the macOS app, the AppImage and the Flatpak, the channels above install only the binary. To get Postvak into your app launcher with its icon, run this from a checkout:
