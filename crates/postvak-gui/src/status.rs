@@ -168,6 +168,7 @@ mod tests {
             settling: Vec::new(),
             queued: 0,
             store: Err("no store".into()),
+            identity: None,
         }
     }
 

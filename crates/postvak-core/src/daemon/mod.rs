@@ -1,18 +1,17 @@
 //! The one process that owns the engine, serving it to the GUI, CLI and MCP over a private Unix socket.
 use std::collections::HashMap;
-use std::fs::{self, File, TryLockError};
-use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
+use std::fs::{self, File};
+use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::net::Shutdown;
-use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, anyhow, bail};
+use anyhow::bail;
 
 use crate::config::{AccountConfig, Config};
 use crate::credentials::Secret;
@@ -42,8 +41,6 @@ const LOG_LIMIT: u64 = 1_048_576;
 /// How often the accept loop checks for a stop and for edited files while no client connects; a client that connects is
 /// served at once.
 const POLL: Duration = Duration::from_millis(200);
-/// Desktop notifications waiting for the notification server; more are dropped while it does not answer.
-const NOTIFY_QUEUE: usize = 32;
 
 /// Logs in and out again with the password given, for `TestLogin`.
 pub type Login = Arc<dyn Fn(&AccountConfig, &Secret) -> Result<(), MailError> + Send + Sync>;
@@ -150,44 +147,26 @@ fn truncate_large_log(log: &Path) -> io::Result<()> {
 
 /// Locks `path` and writes our pid there; held until the returned file drops.
 fn take_daemon_lock(path: &Path) -> anyhow::Result<File> {
-    let mut file = File::options()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)?;
-    match file.try_lock() {
-        Ok(()) => {
-            file.set_len(0)?;
-            write!(file, "{}", std::process::id())?;
-            Ok(file)
-        }
-        Err(TryLockError::WouldBlock) => {
-            let mut pid = String::new();
-            file.read_to_string(&mut pid)?;
-            let pid: Option<u32> = pid.trim().parse().ok();
-            bail!(
-                "already running (pid {})",
-                pid.map_or_else(|| "unknown".to_string(), |pid| pid.to_string())
-            )
-        }
-        Err(TryLockError::Error(e)) => Err(e.into()),
-    }
+    let Some(mut file) = paths::try_lock_file(path)? else {
+        let pid = fs::read_to_string(path)
+            .ok()
+            .and_then(|pid| pid.trim().parse::<u32>().ok());
+        bail!(
+            "already running (pid {})",
+            pid.map_or_else(|| "unknown".to_string(), |pid| pid.to_string())
+        )
+    };
+    file.set_len(0)?;
+    write!(file, "{}", std::process::id())?;
+    Ok(file)
 }
 
 /// Replaces a leftover socket file and binds a fresh one only we can open.
 fn bind_private(socket: &Path) -> anyhow::Result<UnixListener> {
-    match fs::remove_file(socket) {
-        Err(e) if e.kind() != io::ErrorKind::NotFound => {
-            return Err(e).with_context(|| format!("removing {}", socket.display()));
-        }
-        _ => {}
-    }
-    let listener = UnixListener::bind(socket).map_err(|e| match e.kind() {
-        io::ErrorKind::InvalidInput => anyhow!("socket path too long: {}", socket.display()),
+    let listener = paths::bind_private(socket).map_err(|e| match e.kind() {
+        io::ErrorKind::InvalidInput => anyhow::Error::new(e),
         _ => anyhow::Error::new(e).context(format!("binding {}", socket.display())),
     })?;
-    fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
     Ok(listener)
 }
 
@@ -293,7 +272,7 @@ struct Shared {
 }
 
 /// A panic elsewhere must not take the daemon down with a poisoned lock.
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -314,23 +293,17 @@ fn serve(
         signalled,
         watch: Mutex::new(watch),
     });
-    let notifier = options.notify.then(notifier).transpose()?;
+    let notifier = options.notify.then(crate::notify::Notifier::new);
     let router = std::thread::Builder::new()
         .name("daemon-events".into())
         .spawn({
             let shared = shared.clone();
             move || {
-                route_events(
-                    &shared,
-                    events,
-                    io::stdout().is_terminal(),
-                    |from, subject| {
-                        if let Some(notifier) = &notifier {
-                            // A full queue means the notification server stopped answering; replies and events go on.
-                            let _ = notifier.try_send((from.to_string(), subject.to_string()));
-                        }
-                    },
-                )
+                route_events(&shared, events, io::stdout().is_terminal(), |mail| {
+                    if let Some(notifier) = &notifier {
+                        notifier.new_mail(mail);
+                    }
+                });
             }
         })?;
     let (accepted, acceptor) = acceptor(listener)?;
@@ -340,20 +313,6 @@ fn serve(
     wake_acceptor(&paths.daemon_socket(), acceptor);
     stop(&shared, router, connections);
     Ok(())
-}
-
-/// Shows desktop notifications on a thread of their own: the call waits for the desktop's notification server, which
-/// must not hold up the replies and events the router delivers.
-fn notifier() -> io::Result<SyncSender<(String, String)>> {
-    let (notes, queue) = mpsc::sync_channel::<(String, String)>(NOTIFY_QUEUE);
-    std::thread::Builder::new()
-        .name("daemon-notify".into())
-        .spawn(move || {
-            for (from, subject) in queue {
-                crate::notify::new_mail(&from, &subject);
-            }
-        })?;
-    Ok(notes)
 }
 
 /// Accepts clients on a thread of its own, which blocks in `accept`, so a client is served the moment it connects
@@ -534,15 +493,16 @@ fn route_events(
     shared: &Shared,
     events: Receiver<Event>,
     terminal: bool,
-    notify: impl Fn(&str, &str),
+    mut notify: impl FnMut(&[crate::notify::Mail]),
 ) {
+    let mut batches = crate::notify::Batches::default();
     for event in events {
         if reported(&event, terminal) {
             report(&event);
         }
         // The sync sends NewMail only for mail that should notify, rules included.
-        if let Event::NewMail { from, subject, .. } = &event {
-            notify(from, subject);
+        if let Some(batch) = batches.hear(&event) {
+            notify(&batch);
         }
         let mut hub = lock(&shared.hub);
         if let Event::Activity { account, activity } = &event {
@@ -554,6 +514,9 @@ fn route_events(
             }
         }
         hub.broadcast(&event);
+    }
+    for batch in batches.rest() {
+        notify(&batch);
     }
 }
 

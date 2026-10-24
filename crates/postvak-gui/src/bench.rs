@@ -275,6 +275,21 @@ fn run(scale: u32, runs: usize) {
     );
     assert!(!driver.app.list.rows.is_empty());
 
+    // A keystroke in the search field with the window's own budget: how long the frame that takes it waits. The
+    // search that outlasts the budget finishes before the next run.
+    driver.app.list_budget = LIST_BUDGET;
+    let keystrokes = (0..runs).map(|_| {
+        let ms = timed(|| driver.apply(UiAction::SearchFor("invoice".into())));
+        while driver.app.list_loading.is_some() {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            driver.tick();
+        }
+        ms
+    });
+    report("search_keystroke", scale, keystrokes.collect());
+    driver.app.list_budget = std::time::Duration::from_secs(60);
+    assert!(!driver.app.list.rows.is_empty());
+
     // A misspelled word: the exact tier is empty, so the vocabulary is consulted and the close tier runs.
     driver.apply(UiAction::SearchFor("invioce".into()));
     report(

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::update;
 use postvak_core::bimi::Brand;
-use postvak_core::config::{self, AccountConfig, Config, Theme};
+use postvak_core::config::{self, AccountConfig, Config, Identity, Theme};
 use postvak_core::credentials::Secret;
 use postvak_core::daemon::Client;
 use postvak_core::daemon::client::NewerDaemon;
@@ -162,6 +162,8 @@ pub(crate) struct Account {
     pub settling: Vec<(RowKey, Optimistic, u64)>,
     pub queued: usize,
     pub store: Result<Store, String>,
+    /// Who the account is, for `from:me` in a search; None when its config could not say.
+    pub identity: Option<Identity>,
 }
 
 impl Account {
@@ -318,6 +320,8 @@ pub(crate) enum UiAction {
     NextFocus,
     /// Open the add-account form.
     OpenAccountForm,
+    /// Show a message a notification was about, or a later start asked for, in its folder.
+    OpenMessage(postvak_core::notify::Open),
     OpenMovePicker,
     /// Open a web page in the browser.
     OpenUrl(String),
@@ -452,6 +456,8 @@ pub struct App {
     pub(crate) list_loading: Option<Loading>,
     /// Set when the view changed again while `list_loading` ran, so another reload follows it.
     pub(crate) list_again: bool,
+    /// The first load that reads the query typed last; its hits show from the top, not at the row the cursor was on.
+    pub(crate) search_reset: Option<u64>,
     /// Set when edits went or settled since the rows were built, so a reload that runs on rebuilds them from the
     /// threads already loaded; rebuilding a large list costs milliseconds, so not on every sync event.
     pub(crate) edits_changed: bool,
@@ -463,6 +469,9 @@ pub struct App {
     pub(crate) paths: Paths,
     /// Set by the user's own navigation; the next body `sync_body` loads is armed.
     pub(crate) pending_arm: bool,
+    /// View source or Save .eml asked for while the body still shows another message than the cursor's, as after a
+    /// row menu's `TargetRow`; it runs once `sync_body` has caught up.
+    pub(crate) after_body: Option<UiAction>,
     /// The HTML render thread, started for the first HTML message.
     pub(crate) renderer: Option<Renderer>,
     pub(crate) reconnect: fn(&Paths, Waker) -> anyhow::Result<Connection>,
@@ -499,7 +508,12 @@ pub struct App {
 }
 
 /// An account's window state over its store; `open_account` creates the store of an account just added.
-fn account_state(paths: &Paths, name: String, activity: Option<Activity>) -> Account {
+fn account_state(
+    paths: &Paths,
+    name: String,
+    activity: Option<Activity>,
+    identity: Option<Identity>,
+) -> Account {
     let store =
         Store::open_account(paths, &name).map_err(|e| format!("could not open the store: {e}"));
     let mut account = Account {
@@ -511,6 +525,7 @@ fn account_state(paths: &Paths, name: String, activity: Option<Activity>) -> Acc
         settling: Vec::new(),
         queued: 0,
         store,
+        identity,
     };
     account.reload_folders();
     account
@@ -531,7 +546,10 @@ impl App {
             .collect();
         let accounts = states
             .into_iter()
-            .map(|AccountStatus { activity, name }| account_state(&paths, name, activity))
+            .map(|AccountStatus { activity, name }| {
+                let identity = config.account(&name).and_then(|a| a.identity().ok());
+                account_state(&paths, name, activity, identity)
+            })
             .collect();
         let rules_path = paths.rules_file();
         let rules = RulesState::load(&rules_path, Vec::new());
@@ -571,12 +589,14 @@ impl App {
             list_applied: 0,
             list_loading: None,
             list_again: false,
+            search_reset: None,
             edits_changed: false,
             load_list: load::load_from_paths,
             move_picker: None,
             account_form: None,
             paths,
             pending_arm: false,
+            after_body: None,
             reconnect: connect,
             renderer: None,
             reconnecting: None,
@@ -631,6 +651,11 @@ impl App {
         self.poll_files(now);
         let typing_search = self.search_focused;
         self.sync_body(now, typing_search);
+        if let Some(action) = self.after_body.take()
+            && self.body_follows_cursor()
+        {
+            self.apply_action(action);
+        }
         // The window reports the HTML view's width only when it changes; laying out at the last one starts a newly
         // shown message, and lays out again once a new width has held still.
         if let Some((scale, width)) = self.html_size {
@@ -1083,6 +1108,9 @@ impl App {
                 _ => self.note_error(None, MOVE_ONE_ACCOUNT.into()),
             },
             UiAction::NewRule => self.open_draft(Some(Draft::new())),
+            action @ (UiAction::OpenSource | UiAction::SaveEml) if !self.body_follows_cursor() => {
+                self.after_body = Some(action);
+            }
             UiAction::OpenSource => self.open_source(),
             UiAction::OpenUrl(url) => {
                 if let Err(e) = (self.launch)(url.as_ref(), false) {
@@ -1154,14 +1182,16 @@ impl App {
                 self.filter = filter;
                 self.reload_view();
             }
+            // The hits load on a thread of their own, as after a sync event, so a keystroke never waits for the store
+            // and fast typing runs one search at a time, for the latest text. The last query's rows stay until then.
             UiAction::SearchFor(query) => {
                 self.search = Some(query);
                 self.list.cursor = 0;
-                self.list.rows.clear();
                 self.list.server_hits.clear();
                 self.list.server_searching = 0;
                 self.list.server_asked = false;
-                self.reload_view();
+                self.search_reset = Some(self.list_generation + 1);
+                self.view_dirty = true;
             }
             UiAction::ExtendSelection(index) if index < self.list.rows.len() => {
                 let (low, high) = (self.list.cursor.min(index), self.list.cursor.max(index));
@@ -1261,6 +1291,7 @@ impl App {
             UiAction::OpenAccountForm => {
                 self.account_form.get_or_insert_with(AccountForm::default);
             }
+            UiAction::OpenMessage(open) => self.open_message(open),
             UiAction::SaveAccount(fields) => self.save_account(&fields),
             UiAction::ToggleHtml => {
                 if let Some(body) = self.body.as_mut().filter(|b| b.html.is_some()) {
@@ -1341,6 +1372,45 @@ impl App {
             return;
         }
         self.apply_action(UiAction::MoveTo(folder));
+    }
+
+    /// Shows the message in its folder with the cursor on it. A filter that hides it gives way; a thread shows it when
+    /// it is the newest message there.
+    fn open_message(&mut self, open: postvak_core::notify::Open) {
+        let account = match &open.account {
+            Some(name) => self.accounts.iter().position(|a| &a.name == name),
+            None => (!self.accounts.is_empty()).then_some(0),
+        };
+        let Some(account) = account else {
+            let name = open.account.unwrap_or_default();
+            self.note_error(
+                None,
+                format!("no account named {name} to open a message in"),
+            );
+            return;
+        };
+        let view = View::Folder {
+            account,
+            folder: open.folder.clone(),
+        };
+        if self.view == view && self.search.is_none() {
+            // The rows may not have the new message yet.
+            self.reload_view();
+        } else {
+            self.select_view(view);
+        }
+        let find = |rows: &[Row]| {
+            rows.iter().position(|row| {
+                row.account == account && row.folder == open.folder && row.uid == open.uid
+            })
+        };
+        if find(&self.list.rows).is_none() && self.filter != Filter::default() {
+            self.filter = Filter::default();
+            self.reload_view();
+        }
+        if let Some(index) = find(&self.list.rows) {
+            self.apply_action(UiAction::SelectRow(index));
+        }
     }
 
     pub(crate) fn select_view(&mut self, view: View) {
@@ -1428,16 +1498,19 @@ impl App {
             return;
         };
         // A store that failed to open shows its error in the folder pane and adds no rows.
-        let stores: Vec<(usize, &str, &Store)> = self
+        let stores: Vec<load::LoadStore<'_>> = self
             .covered_accounts()
             .into_iter()
             .filter_map(|index| {
                 let account = &self.accounts[index];
-                account
-                    .store
-                    .as_ref()
-                    .ok()
-                    .map(|store| (index, account.name.as_str(), store))
+                account.store.as_ref().ok().map(|store| {
+                    (
+                        index,
+                        account.name.as_str(),
+                        store,
+                        account.identity.as_ref(),
+                    )
+                })
             })
             .collect();
         let loaded = load::load(&stores, &query);
@@ -1463,7 +1536,10 @@ impl App {
             .covered_accounts()
             .into_iter()
             .filter(|&index| self.accounts[index].store.is_ok())
-            .map(|index| (index, self.accounts[index].name.clone()))
+            .map(|index| {
+                let account = &self.accounts[index];
+                (index, account.name.clone(), account.identity.clone())
+            })
             .collect();
         let answer = load::spawn(
             self.load_list,
@@ -1532,6 +1608,11 @@ impl App {
             return;
         }
         self.list_applied = generation;
+        if self.search_reset.is_some_and(|first| generation >= first) {
+            self.search_reset = None;
+            self.list.rows.clear();
+            self.list.cursor = 0;
+        }
         for account in &mut self.accounts {
             account
                 .settling
@@ -1590,6 +1671,12 @@ impl App {
         }
     }
 
+    /// Whether the body shows the cursor's message, or nothing when there is no row.
+    fn body_follows_cursor(&self) -> bool {
+        self.list.rows.get(self.list.cursor).map(Row::id)
+            == self.body.as_ref().map(|b| (b.account, b.key.clone()))
+    }
+
     /// Loads the cursor's message when the cursor moved to another one; nothing while a search query is typed.
     fn sync_body(&mut self, now: f64, typing_search: bool) {
         if typing_search {
@@ -1597,10 +1684,10 @@ impl App {
             return;
         }
         let armed = std::mem::take(&mut self.pending_arm);
-        let current = self.list.rows.get(self.list.cursor).map(Row::id);
-        if current == self.body.as_ref().map(|b| (b.account, b.key.clone())) {
+        if self.body_follows_cursor() {
             return;
         }
+        let current = self.list.rows.get(self.list.cursor).map(Row::id);
         self.body = current.map(|(account, key)| self.load_body(account, key, now, armed));
         self.prefetch_neighbours();
     }
@@ -2307,7 +2394,12 @@ impl App {
                 index
             }
             None => {
-                let state = account_state(&self.paths, account.name.clone(), None);
+                let state = account_state(
+                    &self.paths,
+                    account.name.clone(),
+                    None,
+                    account.identity().ok(),
+                );
                 self.accounts.push(state);
                 self.accounts.len() - 1
             }
@@ -2937,6 +3029,38 @@ mod tests {
     }
 
     #[test]
+    fn search_operators_narrow_folders_accounts_and_me_from_all_inboxes() {
+        let fx = Fixture::new(&["home", "work"]);
+        fx.folder("home", "Archive", Some("Archive"));
+        fx.add("home", message("INBOX", 1, "invoice march"));
+        fx.add("home", message("Archive", 3, "invoice april"));
+        fx.add("work", message("INBOX", 4, "invoice may"));
+        let mut mine = message("INBOX", 5, "notes to self");
+        mine.from_addr = Some("Me <home@example.com>".into());
+        fx.add("home", mine);
+        let (mut driver, _wires) = fx.driver();
+        driver.apply(UiAction::SelectView(View::AllInboxes));
+        let mut found = |query: &str| -> Vec<(usize, String, u32)> {
+            driver.apply(UiAction::SearchFor(query.into()));
+            driver
+                .app
+                .list
+                .rows
+                .iter()
+                .map(|r| (r.account, r.folder.clone(), r.uid))
+                .collect()
+        };
+        assert_eq!(found("invoice in:Archive"), [(0, "Archive".to_string(), 3)]);
+        assert_eq!(found("invoice account:work"), [(1, "INBOX".to_string(), 4)]);
+        assert_eq!(
+            found("from:me"),
+            [(0, "INBOX".to_string(), 5)],
+            "each account's own identity"
+        );
+        assert!(found("invoice from:me").is_empty());
+    }
+
+    #[test]
     fn archive_sends_the_cursor_row_hides_it_and_selects_the_next() {
         let fx = Fixture::new(&["work"]);
         inbox(&fx, &[1, 2, 3]);
@@ -2967,6 +3091,59 @@ mod tests {
                 apply(&[1], Action::Junk),
                 command("work", "Junk", &[2], Action::NotJunk)
             ]
+        );
+    }
+
+    #[test]
+    fn opening_a_message_shows_its_folder_with_the_cursor_on_it() {
+        let fx = Fixture::new(&["home", "work"]);
+        fx.folder("work", "Receipts", None);
+        inbox(&fx, &[1, 2]);
+        for uid in [3, 4, 5] {
+            fx.add("work", message("Receipts", uid, "receipt"));
+        }
+        let (mut driver, _) = fx.driver();
+        // The fixture's mail is read, so this filter hides it all.
+        driver.apply(UiAction::SetFilter(Filter {
+            unread: true,
+            ..Filter::default()
+        }));
+        driver.apply(UiAction::OpenMessage(postvak_core::notify::Open {
+            account: Some("work".into()),
+            folder: "Receipts".into(),
+            uid: 4,
+        }));
+        let work = driver.app.accounts.iter().position(|a| a.name == "work");
+        assert_eq!(
+            driver.app.view,
+            View::Folder {
+                account: work.unwrap(),
+                folder: "Receipts".into()
+            }
+        );
+        assert_eq!(driver.app.filter, Filter::default());
+        assert_eq!(driver.app.list.rows[driver.app.list.cursor].uid, 4);
+        assert_eq!(driver.app.focus, Focus::List);
+    }
+
+    #[test]
+    fn opening_a_message_of_an_unknown_account_says_so_and_stays() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1]);
+        let (mut driver, _) = fx.driver();
+        let view = driver.app.view.clone();
+        driver.apply(UiAction::OpenMessage(postvak_core::notify::Open {
+            account: Some("gone".into()),
+            folder: "INBOX".into(),
+            uid: 1,
+        }));
+        assert_eq!(driver.app.view, view);
+        assert!(
+            driver
+                .app
+                .history
+                .iter()
+                .any(|line| line.text.contains("no account named gone"))
         );
     }
 
@@ -3136,7 +3313,7 @@ mod tests {
     macro_rules! held_loads {
         ($gates:ident, $load:ident) => {
             static $gates: Mutex<VecDeque<Gate>> = Mutex::new(VecDeque::new());
-            fn $load(paths: &Paths, accounts: &[(usize, String)], query: &ListQuery) -> Loaded {
+            fn $load(paths: &Paths, accounts: &[load::LoadAccount], query: &ListQuery) -> Loaded {
                 let gate = $gates.lock().unwrap().pop_front();
                 let loaded = load::load_from_paths(paths, accounts, query);
                 if let Some((read, release)) = gate {
@@ -3296,6 +3473,56 @@ mod tests {
         assert_eq!(driver.uids(), [3, 2, 1], "a refusal drops every edit");
         release.release();
         tick_until(&mut driver, 0.0, |app| app.list_loading.is_none());
+    }
+
+    #[test]
+    fn typing_a_search_does_not_wait_for_the_store() {
+        held_loads!(GATES, held);
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2, 3]);
+        let (mut driver, _wires) = fx.driver();
+        driver.press("/");
+        driver.app.list_budget = Duration::ZERO;
+        driver.app.load_list = held;
+        let first = hold(&GATES);
+        let second = hold(&GATES);
+        let shown = driver.uids();
+        driver.apply(UiAction::SearchFor("subject 1".into()));
+        assert!(driver.app.list_loading.is_some());
+        assert_eq!(
+            driver.uids(),
+            shown,
+            "the keystroke does not wait for the hits"
+        );
+        first.wait_read();
+        driver.apply(UiAction::SearchFor("subject 2".into()));
+        assert!(
+            driver.app.list_again,
+            "the next keystroke waits for the search running"
+        );
+        first.release();
+        second.release();
+        tick_until(&mut driver, 0.0, |app| {
+            app.list_loading.is_none() && !app.view_dirty && !app.list_again
+        });
+        assert_eq!(driver.uids(), [2]);
+    }
+
+    #[test]
+    fn the_hits_of_a_new_query_start_at_the_top() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2, 3]);
+        let (mut driver, _wires) = fx.driver();
+        driver.press("/");
+        driver.apply(UiAction::SearchFor("subject".into()));
+        assert_eq!(driver.uids(), [3, 2, 1]);
+        driver.app.list.cursor = 2;
+        driver.apply(UiAction::SearchFor("subjec".into()));
+        assert_eq!(driver.uids(), [3, 2, 1]);
+        assert_eq!(
+            driver.app.list.cursor, 0,
+            "the cursor does not follow message 1"
+        );
     }
 
     #[test]

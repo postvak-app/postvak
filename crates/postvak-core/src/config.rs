@@ -322,6 +322,7 @@ impl AccountConfig {
         Ok(Identity {
             address: self.address().to_ascii_lowercase(),
             aliases,
+            patterns: self.aliases.clone(),
         })
     }
 }
@@ -335,12 +336,24 @@ pub(crate) fn alias_regex(pattern: &str) -> String {
 pub struct Identity {
     address: String,
     aliases: regex::RegexSet,
+    /// The alias patterns as configured, for code that matches them outside this type, such as a search.
+    patterns: Vec<String>,
 }
 
 impl Identity {
     pub fn is_me(&self, addr: &str) -> bool {
         let addr = addr.trim().to_ascii_lowercase();
         addr == self.address || self.aliases.is_match(&addr)
+    }
+
+    /// The account's own address, lower-cased.
+    pub fn address(&self) -> &str {
+        &self.address
+    }
+
+    /// The alias patterns as configured: whole addresses, with `*` for anything.
+    pub fn alias_patterns(&self) -> &[String] {
+        &self.patterns
     }
 }
 

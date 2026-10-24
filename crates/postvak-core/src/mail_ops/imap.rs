@@ -694,18 +694,9 @@ fn move_batch(ops: &mut ImapOps, uids: &[u32], to: &str) -> MailResult<()> {
 }
 
 fn delete_copied(ops: &mut impl MailOps, uids: &[u32], to: &str) -> MailResult<()> {
-    let Err(err) = ops
-        .add_flags_to(uids, &["\\Deleted"])
-        .and_then(|()| ops.expunge_all(uids))
-    else {
+    let Err(err) = super::delete_messages(ops, uids) else {
         return Ok(());
     };
-    if let Err(undo) = ops.remove_flags_from(uids, &["\\Deleted"]) {
-        log::warn!(
-            "uids {}: could not clear \\Deleted after a failed move to {to}: {undo}",
-            uid_set(uids)
-        );
-    }
     let kept = |reason: String| format!("copied to {to}, original kept: {reason}");
     Err(match err {
         MailError::Connect(reason) => MailError::Connect(kept(reason)),

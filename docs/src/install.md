@@ -21,7 +21,7 @@ mise install rust         # the pinned Rust toolchain; rustup works too
 cargo install --path .
 ```
 
-On Linux the password keyring is the Secret Service (KDE Wallet or GNOME Keyring), reached over D-Bus. On macOS it is the login Keychain; a new, unsigned binary (every upgrade) asks again for Keychain access, so choose "Always Allow".
+On Linux the password keyring is the Secret Service (KDE Wallet or GNOME Keyring), reached over D-Bus. KDE Wallet offers the Secret Service from KDE Frameworks 5.97 on; with an older Plasma, use a password command instead (see [Accounts](accounts.md)). On macOS it is the login Keychain; a new, unsigned binary (every upgrade) asks again for Keychain access, so choose "Always Allow".
 
 ## macOS app
 

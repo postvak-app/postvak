@@ -1,7 +1,7 @@
 use std::io;
 
 use crate::actions::RULE_NAME;
-use crate::mail_ops::{MailError, MailOps};
+use crate::mail_ops::{MailError, MailOps, delete_message, delete_messages};
 use crate::message::body_text;
 use crate::rules::engine::{Context, Plan, PlannedAction, evaluate};
 use crate::rules::{Action, CompiledRule};
@@ -356,10 +356,7 @@ fn delete_many(
         return results;
     }
     let uids = uids_of(&saved);
-    if let Err(e) = ops
-        .add_flags_to(&uids, &["\\Deleted"])
-        .and_then(|()| ops.expunge_all(&uids))
-    {
+    if let Err(e) = delete_messages(ops, &uids) {
         fail_all(&saved, &e, &mut results);
         return results;
     }
@@ -442,8 +439,7 @@ fn delete(
     now: i64,
 ) -> Result<(), ApplyError> {
     back_up(planned, msg, ops, store, trash, now)?;
-    ops.add_flags(msg.uid, &["\\Deleted"])?;
-    ops.expunge(msg.uid)?;
+    delete_message(ops, msg.uid)?;
     store.remove_message(&msg.folder, msg.uid)?;
     Ok(())
 }
@@ -680,6 +676,24 @@ mod tests {
         assert!(matches!(err, ApplyError::RawUnavailable { .. }));
         assert!(!ops.calls.iter().any(|c| c.starts_with("expunge")));
         assert_eq!(ops.mail["INBOX"].len(), 1);
+    }
+
+    #[test]
+    fn a_refused_expunge_clears_deleted_again() {
+        let (mut ops, store, trash, _dir, msg) = setup();
+        ops.fail_next_expunge = Some(MailError::Protocol("refused".into()));
+        let err = apply(
+            &plan(vec![Action::Delete]),
+            &msg,
+            &mut ops,
+            &store,
+            &trash,
+            500,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("refused"), "{err}");
+        assert!(ops.mail["INBOX"][0].flags.is_empty(), "{:?}", ops.calls);
+        assert!(store.message("INBOX", 5).unwrap().is_some());
     }
 
     #[test]

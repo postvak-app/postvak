@@ -124,6 +124,30 @@ pub trait MailOps {
     fn idle(&mut self, timeout: Duration, interrupt: &AtomicBool) -> MailResult<IdleOutcome>;
 }
 
+/// Marks `uid` `\\Deleted` and expunges it; on failure clears `\\Deleted` again, so the message stays as it was. Left
+/// behind, the flag would make every later expunge in the folder refuse on a server without UIDPLUS.
+pub fn delete_message(ops: &mut (impl MailOps + ?Sized), uid: u32) -> MailResult<()> {
+    delete_messages(ops, &[uid])
+}
+
+/// `delete_message` for many messages, one command per batch of uids for each step.
+pub fn delete_messages(ops: &mut (impl MailOps + ?Sized), uids: &[u32]) -> MailResult<()> {
+    let Err(err) = ops
+        .add_flags_to(uids, &["\\Deleted"])
+        .and_then(|()| ops.expunge_all(uids))
+    else {
+        return Ok(());
+    };
+    if let Err(undo) = ops.remove_flags_from(uids, &["\\Deleted"]) {
+        let uids: Vec<String> = uids.iter().map(u32::to_string).collect();
+        log::warn!(
+            "uid {}: could not clear \\Deleted after a failed delete: {undo}",
+            uids.join(",")
+        );
+    }
+    Err(err)
+}
+
 #[cfg(any(test, feature = "testing"))]
 pub use recording::RecordingOps;
 

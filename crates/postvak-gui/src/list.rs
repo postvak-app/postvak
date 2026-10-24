@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Datelike, TimeZone};
 
-use postvak_core::message::clean;
+use postvak_core::message::{clean, display_name};
 use postvak_core::rules::Action;
 use postvak_core::store::{Message, MessageSummary, ThreadSummary};
 
@@ -39,6 +39,8 @@ pub struct Row {
     pub unread: bool,
     /// A search hit that matched only through a close match, such as a corrected typo; listed after the exact ones.
     pub close: bool,
+    /// For a search hit that matched in its body: the text around the match, shown in place of the subject.
+    pub snippet: Option<String>,
 }
 
 impl Row {
@@ -66,6 +68,7 @@ impl Row {
             uid: message.uid,
             unread: !message.is_seen(),
             close: false,
+            snippet: None,
         }
     }
 
@@ -84,6 +87,7 @@ impl Row {
             uid: message.uid,
             unread: !message.is_seen(),
             close: false,
+            snippet: None,
         }
     }
 }
@@ -237,7 +241,12 @@ pub(crate) fn results(app: &App) -> String {
     } else {
         format!("in {} messages", super::numbers::count(app.list.covered))
     };
-    format!("{count} results · {note}")
+    let noun = if app.list.rows.len() == 1 {
+        "result"
+    } else {
+        "results"
+    };
+    format!("{count} {noun} · {note}")
 }
 
 /// What an empty list says instead of rows; nothing before a search query is typed.
@@ -342,29 +351,6 @@ pub(crate) fn menu(row: &Row, in_junk: bool) -> [Vec<(&'static str, UiAction)>; 
     ]
 }
 
-/// "Alice <alice@x>, bob@y" is "Alice"; without a name, the first address.
-pub fn display_name(field: &str) -> String {
-    let field = field.trim();
-    if let Some(rest) = field.strip_prefix('"')
-        && let Some((name, _)) = rest.split_once('"')
-        && !name.trim().is_empty()
-    {
-        return name.trim().to_string();
-    }
-    let first = field.split(',').next().unwrap_or("").trim();
-    match first.split_once('<') {
-        Some((name, address)) => {
-            let name = name.trim().trim_matches('"').trim();
-            if name.is_empty() {
-                address.trim_end_matches('>').trim().to_string()
-            } else {
-                name.to_string()
-            }
-        }
-        None => first.to_string(),
-    }
-}
-
 /// The time today, weekday and time within the past week, day and month this year, else day, month and year.
 pub fn list_date<Tz: TimeZone>(ts: i64, now: &DateTime<Tz>) -> String
 where
@@ -413,7 +399,8 @@ where
     if in_search {
         subject.push_str(&format!("[{}] ", folders::label(&row.folder)));
     }
-    subject.push_str(&row.subject);
+    // A body hit shows where it matched; the subject did not, or it would have matched there.
+    subject.push_str(row.snippet.as_deref().unwrap_or(&row.subject));
     if row.count > 1 {
         subject.push_str(&format!(" ({})", row.count));
     }
@@ -671,21 +658,6 @@ mod tests {
     }
 
     #[test]
-    fn display_name_prefers_the_name_then_the_address() {
-        assert_eq!(display_name("Alice <alice@example.com>"), "Alice");
-        assert_eq!(
-            display_name("\"Doe, John\" <john@example.com>, bob@example.com"),
-            "Doe, John"
-        );
-        assert_eq!(display_name("<bare@example.com>"), "bare@example.com");
-        assert_eq!(
-            display_name("plain@example.com, other@example.com"),
-            "plain@example.com"
-        );
-        assert_eq!(display_name(""), "");
-    }
-
-    #[test]
     fn offset_showing_scrolls_only_as_far_as_needed() {
         assert_eq!(offset_showing(0, 20.0, 0.0, 0.0, 100.0), 0.0);
         assert_eq!(offset_showing(4, 20.0, 0.0, 0.0, 100.0), 0.0);
@@ -695,6 +667,23 @@ mod tests {
             offset_showing(4, 20.0, 8.0, 0.0, 100.0),
             8.0,
             "the strip pushes the row down"
+        );
+    }
+
+    #[test]
+    fn a_body_hits_snippet_takes_the_subjects_place_on_the_second_line() {
+        let mut row = Row::from_message(0, &message("Archive", 7, "Lunch on Friday?"));
+        row.snippet = Some("…the menu is at example.com and they take bookings…".into());
+        let now = Utc.with_ymd_and_hms(2026, 10, 24, 12, 0, 0).unwrap();
+        let shown = columns(&row, None, false, true, &now);
+        assert_eq!(
+            shown.subject,
+            "[Archive] …the menu is at example.com and they take bookings…"
+        );
+        row.snippet = None;
+        assert_eq!(
+            columns(&row, None, false, true, &now).subject,
+            "[Archive] Lunch on Friday?"
         );
     }
 
@@ -714,6 +703,7 @@ mod tests {
             uid: 1,
             unread: true,
             close: false,
+            snippet: None,
         };
         let now = Utc.with_ymd_and_hms(2026, 10, 6, 12, 0, 0).unwrap();
         let text = row_text(&row, &columns(&row, None, false, false, &now));
@@ -1029,6 +1019,37 @@ mod tests {
         open.press("x");
         open.window().invoke_row_menu(2, 1, 2);
         assert_eq!(wires.sent(), [apply("INBOX", &[1], Action::Trash)]);
+    }
+
+    #[test]
+    fn view_source_on_another_row_shows_that_row() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "older"));
+        fx.add("work", message("INBOX", 2, "newer"));
+        let (open, _wires) = fx.window();
+        open.window().invoke_row_menu(1, 2, 0);
+        let shown = open.with(|live| {
+            let body = live.app.body.as_ref().unwrap();
+            (body.key.1, body.source.as_ref().map(|s| s.text.clone()))
+        });
+        assert_eq!(shown.0, 1);
+        assert!(shown.1.unwrap().contains("Subject: older"));
+    }
+
+    #[test]
+    fn save_eml_on_another_row_saves_that_row() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "older"));
+        fx.add("work", message("INBOX", 2, "newer"));
+        let (open, _wires) = fx.window();
+        open.window().invoke_row_menu(1, 2, 1);
+        let downloads = fx.paths.cache_dir.join("downloads");
+        let saved: Vec<_> = std::fs::read_dir(downloads)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(saved, ["older.eml"]);
+        assert!(open.with(|live| live.app.body.as_ref().unwrap().saved.is_some()));
     }
 
     /// The label of the row of message `uid`.

@@ -31,7 +31,19 @@ pub const RULES_SET_ENABLED: &str =
     "Turn a rule on or off; turning one on lets it act on new mail, deletes included";
 pub const RULES_TEST: &str =
     "Dry run: what this rule would do to the cached messages; previews subjects, never bodies";
-pub const SEARCH: &str = "Search subject, addresses, attachment names and bodies, newest first; words, \"phrases\" and -not; the last word also matches as a prefix; close matches such as corrected typos follow when exact hits are few";
+pub const SEARCH: &str = "Search subject, addresses, attachment names and bodies, newest first; words, \"phrases\", -not and key:value operators such as from:acme, in:Archive, is:unread or after:7d; the last word also matches as a prefix; close matches such as corrected typos follow when exact hits are few";
+/// The operators `search` takes, one line each; the CLI prints it after `postvak search --help` and the MCP tool
+/// description carries it.
+pub const SEARCH_SYNTAX: &str = "Operators:
+  from:acme, to:x, cc:x, subject:x, attachment:x  the word in that column; to: covers To, Cc and Delivered-To; a quoted value is a phrase; -from:x excludes
+  from:me, to:me, cc:me                           your address or an alias, from the account's config
+  in:Archive, in:\"Projects/Postvak\"              one folder
+  has:attachment                                  with an attachment, as guessed from the headers
+  is:unread, is:read, is:flagged                  by flag
+  before:2026-01-15, after:2026-01-01             by date, in local time; before: is exclusive, after: inclusive
+  after:7d, before:3w, after:6m, after:1y         days, weeks, months or years back from now
+  account:work                                    one account, where several are searched
+Anything else, such as an unknown key or a date that does not parse, searches as a word.";
 pub const SHOW: &str = "Show one message";
 pub const STATUS: &str =
     "The daemon's pid, version, uptime, client count and each account's activity";

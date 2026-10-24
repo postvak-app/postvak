@@ -8,6 +8,7 @@ use crate::message::clean;
 use crate::rules::apply::{ApplyError, apply_many, ensure_raw, move_target, plan_for};
 use crate::rules::engine::{Context, Mode, PlannedAction};
 use crate::rules::{Action, CompiledRule};
+use crate::search::Term;
 use crate::store::{Hit, Matched, Message, Store, StoreError};
 use crate::trash::Trash;
 
@@ -116,9 +117,13 @@ const SERVER_HITS_PER_FOLDER: usize = 500;
 
 /// The words of a search query that a server search needs all of; control characters cannot go into IMAP.
 pub fn search_words(query: &str) -> Vec<String> {
-    query
-        .split_whitespace()
-        .map(|word| clean(word, false))
+    crate::search::parse(query, crate::time::now())
+        .terms
+        .iter()
+        .filter_map(|term| match term {
+            Term::Word(text) | Term::Phrase(text) => Some(clean(text, false)),
+            Term::Not(_) => None,
+        })
         .filter(|word| !word.is_empty())
         .collect()
 }
