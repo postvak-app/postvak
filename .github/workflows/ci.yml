@@ -47,7 +47,7 @@ jobs:
           # Paths no build or test reads. docs/src, README.md and the .desktop file are read by tests, and ci.yml is this workflow, so they still build.
           only_unread() {
             ! grep -qE '^(\.github/workflows/ci\.yml$|docs/src/|packaging/.*\.desktop$|README\.md$)' <<<"$1" &&
-              ! grep -qvE '^(\.coderabbit\.yaml$|\.github/|\.mise\.toml$|dist-workspace\.toml$|docs/|LICENSE|packaging/|release-plz\.toml$|[^/]+\.md$)' <<<"$1"
+              ! grep -qvE '^(\.claude/|\.coderabbit\.yaml$|\.github/|\.mise\.toml$|dist-workspace\.toml$|docs/|LICENSE|packaging/|release-plz\.toml$|[^/]+\.md$)' <<<"$1"
           }
           build=true
           warm=false
