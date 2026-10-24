@@ -3,8 +3,8 @@
 use crate::config::{AccountConfig, Identity};
 use crate::mail_ops::{MailError, MailOps};
 use crate::message::clean;
-use crate::rules::apply::{ApplyError, apply, ensure_raw, move_target};
-use crate::rules::engine::{Context, Mode, Plan, PlannedAction, evaluate};
+use crate::rules::apply::{ApplyError, apply, ensure_raw, move_target, plan_for};
+use crate::rules::engine::{Context, Mode, Plan, PlannedAction};
 use crate::rules::{Action, CompiledRule};
 use crate::store::{Hit, Matched, Message, Store, StoreError};
 use crate::trash::Trash;
@@ -199,11 +199,12 @@ pub fn planned(
         now,
         mode: Mode::ApplyExisting,
         notify_default: false,
+        keep_in_folder: false,
     };
     let mut planned = Vec::new();
     for folder in store.folders()? {
         for message in store.messages_in_folder(&folder.name)? {
-            for PlannedAction { rule, action } in evaluate(rules, &message, &ctx).actions {
+            for PlannedAction { rule, action } in plan_for(rules, &message, &ctx, store)?.actions {
                 planned.push(Planned {
                     rule,
                     message: message.clone(),

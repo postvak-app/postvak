@@ -233,6 +233,8 @@ struct Harness<'a> {
     deleted: HashSet<String>,
     /// Messages a rule moved or deleted in the current pass.
     moved_or_deleted: HashSet<String>,
+    /// (folder, message) for every message a rule moved out of that folder; if it comes back, it stays.
+    moved_out: HashSet<(String, String)>,
     // Connection state.
     selected: Option<String>,
     failure: Option<Failure>,
@@ -265,6 +267,7 @@ impl<'a> Harness<'a> {
             applied: HashMap::new(),
             deleted: HashSet::new(),
             moved_or_deleted: HashSet::new(),
+            moved_out: HashSet::new(),
             selected: None,
             failure: None,
             calls: 0,
@@ -541,6 +544,11 @@ impl<'a> Harness<'a> {
         };
         let meta = &self.metas[&id];
         assert_eq!(meta.sender, sender, "{rule} acted on {id}");
+        // Invariant (spec section 8): a rule moves a message out of a folder once; when it comes back, it stays.
+        assert!(
+            !(what.starts_with("move:") && self.came_back(&folder, &id)),
+            "{rule} moved {id} out of {folder} again after it came back"
+        );
         // Invariant (spec section 6): a rule only acts on mail whose internaldate is at or after its first_seen_at.
         let first_seen = *self
             .first_seen
@@ -573,6 +581,12 @@ impl<'a> Harness<'a> {
         }
     }
 
+    /// Whether a rule moved `id` out of `folder` before, so it came back.
+    fn came_back(&self, folder: &str, id: &str) -> bool {
+        self.moved_out
+            .contains(&(folder.to_string(), id.to_string()))
+    }
+
     /// Records a rule command the server accepted. Invariant: within one epoch of a message, each action succeeds once.
     fn record(&mut self, folder: &str, uid: u32, what: &str, id: Option<String>) {
         let Some(id) = id else { return };
@@ -588,6 +602,9 @@ impl<'a> Harness<'a> {
         );
         if what == "expunge" {
             self.deleted.insert(id.clone());
+        }
+        if what.starts_with("move:") {
+            self.moved_out.insert((folder.to_string(), id.clone()));
         }
         if what == "expunge" || what.starts_with("move:") {
             self.moved_or_deleted.insert(id);
@@ -721,7 +738,8 @@ impl<'a> Harness<'a> {
             let meta = &self.metas[&id];
             assert!(
                 !(meta.sender == Sender::News
-                    && meta.internaldate >= self.first_seen["newsletters"]),
+                    && meta.internaldate >= self.first_seen["newsletters"]
+                    && !self.came_back("INBOX", &id)),
                 "notified {id}, which the newsletters rule moves"
             );
         }
@@ -741,11 +759,13 @@ impl<'a> Harness<'a> {
                         .is_some_and(|&t| meta.internaldate >= t)
                 };
                 let seen = env.flags.iter().any(|f| f == "\\Seen");
+                let flagged = env.flags.iter().any(|f| f == "\\Flagged");
+                let came_back = self.came_back(folder, &id);
                 let stuck = match (folder.as_str(), meta.sender) {
-                    ("INBOX", Sender::News) => after("newsletters"),
+                    ("INBOX", Sender::News) => after("newsletters") && !came_back,
                     ("INBOX", Sender::Bot) => after("ci-read") && !seen,
                     ("Newsletters", Sender::News) => after("news-read") && !seen,
-                    ("INBOX", Sender::Alerts) => after("alerts"),
+                    ("INBOX", Sender::Alerts) => after("alerts") && !(came_back && flagged),
                     ("INBOX", Sender::Codes) => {
                         after("codes") && self.now - meta.internaldate >= HOUR
                     }

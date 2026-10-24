@@ -45,6 +45,12 @@ services:
 - **Agents:** `postvak mcp install` cannot reach a host outside the container, so add the server to the host's config by hand, with `docker` as the command (its absolute path, such as `/usr/local/bin/docker`, for a host started from the Dock) and `["exec", "-i", "postvak", "postvak", "mcp", "--scopes", "read,rules:propose"]` as its arguments. See [MCP](mcp.md) for the scopes.
 - **Upgrades:** tags follow releases: `latest`, `X.Y` and `X.Y.Z`. `docker compose pull && docker compose up -d` upgrades. `gh attestation verify oci://ghcr.io/postvak-app/postvak:latest --repo postvak-app/postvak` checks that an image was built from this repository.
 
+## Other mail clients
+
+IMAP has no lock, so your phone, other mail clients and postvak on another machine all change the mailbox while the daemon syncs it. Postvak picks up their changes on the next sync, and an action on mail another client already moved or deleted does nothing, at most leaving an error in the log. Running the same rules on two machines works: whichever syncs first acts, and both may notify.
+
+A delete, and a move on a server without `MOVE`, removes the message with `EXPUNGE`. Without `UIDPLUS` the server has only a plain `EXPUNGE`, which removes every message in the folder marked deleted, not just this one. Postvak refuses it while any other message there carries that mark. Another client that marks one in the moment between that check and the `EXPUNGE` still loses it. Most servers, including Dovecot, Fastmail and Gmail, offer `UIDPLUS`, and there this cannot happen.
+
 ## Status and stopping
 
 ```sh

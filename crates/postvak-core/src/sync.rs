@@ -15,7 +15,7 @@ use crate::mail_ops::imap::ImapOps;
 use crate::mail_ops::{Envelope, IdleOutcome, MailError, MailOps, RemoteFolder};
 use crate::message::{clean, parse_headers, thread_id};
 use crate::paths::Paths;
-use crate::rules::apply::{ApplyError, apply, ensure_body_text};
+use crate::rules::apply::{ApplyError, apply, ensure_body_text, plan_for};
 use crate::rules::engine::{Context, Mode, evaluate, folder_needs_body};
 use crate::rules::{Action, CompiledRule, RulesError};
 use crate::store::{Folder, Message, Store, StoreError};
@@ -692,6 +692,7 @@ pub fn run_rules_with(
         now,
         mode,
         notify_default: account.notify,
+        keep_in_folder: false,
     };
     let mut folders: Vec<String> = rules
         .iter()
@@ -791,7 +792,7 @@ pub fn run_rules_with(
                 }
                 bodies_done += 1;
             }
-            let plan = evaluate(rules, &msg, &ctx);
+            let plan = plan_for(rules, &msg, &ctx, store)?;
             run.evaluated += 1;
             if !plan.actions.is_empty() {
                 match apply(&plan, &msg, ops, store, trash, now) {
@@ -1292,6 +1293,7 @@ fn notify_unruled(
         now: now(),
         mode: Mode::Normal,
         notify_default: account.notify,
+        keep_in_folder: false,
     };
     let messages = store.messages_in_folder("INBOX")?;
     let events = messages

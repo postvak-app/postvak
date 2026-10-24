@@ -3730,3 +3730,127 @@ fn index_bodies_off_indexes_nothing() {
         }
     )));
 }
+
+fn moves(ops: &RecordingOps) -> Vec<&str> {
+    ops.calls
+        .iter()
+        .filter(|c| c.starts_with("move "))
+        .map(String::as_str)
+        .collect()
+}
+
+#[test]
+fn opposing_move_rules_on_two_machines_stop_after_one_round() {
+    let mut ops = RecordingOps::default()
+        .with_folder("INBOX", None)
+        .with_folder("Lists", None);
+    let dir = tempfile::tempdir().unwrap();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let acc = account();
+    let identity = acc.identity().unwrap();
+    let (a, b) = (
+        Store::open_in_memory().unwrap(),
+        Store::open_in_memory().unwrap(),
+    );
+    let to_lists = rules_from(
+        "[[rules]]\nname = \"a\"\nmatch.from = { contains = \"alice\" }\nactions = [{ move = \"Lists\" }]\n",
+        &a,
+        0,
+    );
+    let to_inbox = rules_from(
+        "[[rules]]\nname = \"b\"\nfolder = \"Lists\"\nmatch.from = { contains = \"alice\" }\nactions = [{ move = \"INBOX\" }]\n",
+        &b,
+        0,
+    );
+    sync_all(&mut ops, &a).unwrap();
+    sync_all(&mut ops, &b).unwrap();
+    ops.add_mail(
+        "INBOX",
+        1,
+        10 * H,
+        &headers("alice@x", "hi", "m1@x"),
+        Some("x"),
+    );
+    for _ in 0..4 {
+        for (store, rules) in [(&a, &to_lists), (&b, &to_inbox)] {
+            sync_all(&mut ops, store).unwrap();
+            run_rules(
+                &mut ops,
+                store,
+                &trash,
+                rules,
+                &acc,
+                &identity,
+                Mode::Normal,
+                11 * H,
+            )
+            .unwrap();
+        }
+    }
+    assert_eq!(
+        moves(&ops),
+        ["move INBOX 1 -> Lists", "move Lists 1 -> INBOX"]
+    );
+    assert_eq!(ops.mail["INBOX"].len(), 1, "it stays where it came back to");
+}
+
+#[test]
+fn mail_dragged_back_out_of_a_rule_folder_stays() {
+    let mut ops = RecordingOps::default()
+        .with_folder("INBOX", None)
+        .with_folder("Lists", None);
+    let dir = tempfile::tempdir().unwrap();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let store = Store::open_in_memory().unwrap();
+    let acc = account();
+    let identity = acc.identity().unwrap();
+    let rules = rules_from(
+        "[[rules]]\nname = \"a\"\nmatch.from = { contains = \"alice\" }\nactions = [{ move = \"Lists\" }, \"flag\"]\n",
+        &store,
+        0,
+    );
+    sync_all(&mut ops, &store).unwrap();
+    ops.add_mail(
+        "INBOX",
+        1,
+        10 * H,
+        &headers("alice@x", "hi", "m1@x"),
+        Some("x"),
+    );
+    let pass = |ops: &mut RecordingOps| {
+        sync_all(ops, &store).unwrap();
+        run_rules(
+            ops,
+            &store,
+            &trash,
+            &rules,
+            &acc,
+            &identity,
+            Mode::Normal,
+            11 * H,
+        )
+        .unwrap()
+    };
+    pass(&mut ops);
+    ops.select("Lists").unwrap();
+    ops.remove_flags(1, &["\\Flagged"]).unwrap();
+    ops.move_message(1, "INBOX").unwrap();
+    let back = pass(&mut ops);
+    pass(&mut ops);
+    assert_eq!(
+        moves(&ops),
+        ["move INBOX 1 -> Lists", "move Lists 1 -> INBOX"]
+    );
+    let inbox = &ops.mail["INBOX"];
+    assert_eq!(inbox.len(), 1);
+    assert!(
+        inbox[0].flags.iter().any(|f| f == "\\Flagged"),
+        "the rule's other actions still run"
+    );
+    assert!(
+        back.events
+            .iter()
+            .any(|e| matches!(e, Event::NewMail { .. })),
+        "mail that stays notifies like any other"
+    );
+}
