@@ -32,6 +32,9 @@ pub(crate) struct ListQuery {
 pub(crate) struct Loaded {
     /// The search hits, merged; `None` when the query listed threads.
     pub hits: Option<Vec<Row>>,
+    /// With hits: how many messages of the searched stores lack an indexed body, and how many there are.
+    pub unindexed: u64,
+    pub covered: u64,
     /// Each account's threads, `None` where its store could not list them, so the ones shown stay.
     pub threads: Vec<(usize, Option<Vec<ThreadSummary>>)>,
     /// The members of each expanded thread, `None` where it has no more than one left.
@@ -70,6 +73,16 @@ pub(crate) fn load(stores: &[(usize, &str, &Store)], query: &ListQuery) -> Loade
             }
         }
         loaded.hits = Some(list::merge_hits(hits, list::SEARCH_LIMIT));
+        let now = postvak_core::time::now();
+        for &(_, name, store) in stores {
+            match store.backlog_count(now) {
+                Ok((unindexed, total)) => {
+                    loaded.unindexed += unindexed;
+                    loaded.covered += total;
+                }
+                Err(e) => log::warn!("[{name}] backlog count failed: {e}"),
+            }
+        }
         return loaded;
     }
     for &(account, name, store) in stores {

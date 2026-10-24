@@ -1,0 +1,18 @@
+From: Sender <sender@example.com>
+To: user@example.com
+Subject: alternative
+Message-ID: <alt@example.com>
+Date: Tue, 06 Oct 2026 10:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="b1"
+
+--b1
+Content-Type: text/plain; charset=utf-8
+
+plain pineapple
+--b1
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+<p>rich <b>pineapple</b></p>
+--b1--

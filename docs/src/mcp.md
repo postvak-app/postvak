@@ -53,7 +53,7 @@ The install also prints a hint with the granted scopes and how to widen them. It
 | Scope | What it grants | Tools |
 |---|---|---|
 | `read` | Folders, message headers, the activity log, rules and trash listings, previews of rules that do not match on the body, and a sync. No body text. | `accounts`, `folders`, `list`, `log`, `rules_check`, `rules_list`, `rules_schema`, `rules_test`, `search`, `status`, `sync`, `trash_list` |
-| `read:bodies` | Message bodies and attachment names, search over stored bodies and on the server (`search` with `server`), and with `read` previews of rules that match on the body. | `attachments`, `show` |
+| `read:bodies` | Message bodies and attachment names, search over indexed bodies and on the server (`search` with `server`), and with `read` previews of rules that match on the body. | `attachments`, `show` |
 | `rules:propose` | Proposing a rule. It is stored disabled until you approve it. | `rules_propose` |
 | `rules:write` | Approving and rejecting rules, and turning them on or off. | `rules_approve`, `rules_reject`, `rules_set_enabled` |
 | `files:write` | Writing attachment files into a directory the agent names. The file name and content come from the sender, so a prompt-injected email could make the agent write them anywhere you can. | `attachment_save` |
@@ -92,7 +92,7 @@ The names follow the CLI commands. A tool that lists things returns the CLI's `-
 `read:bodies`:
 
 - `attachments` lists attachment names, types and sizes. It does not save them; use `attachment_save` for that.
-- `show` returns the headers and the body. With this scope, `search` also covers stored bodies, and `server: true` asks the mail server too, which searches every body. Otherwise `search` and `dry_run` never connect to the server. `show` and `attachments` fetch a message you have not stored yet, once.
+- `show` returns the headers and the body. With this scope, `search` also covers the bodies the background index has read (see [Search](search.md)), and `server: true` asks the mail server too, which searches every body. Otherwise `search` and `dry_run` never connect to the server. `show` and `attachments` fetch a message you have not stored yet, once.
 
 `rules:propose`:
 

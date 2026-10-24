@@ -96,7 +96,7 @@ pub(crate) fn account_line(account: &Account) -> String {
     line
 }
 
-/// How far a header or body fetch has come, 0 to 1, while one runs.
+/// How far a header or body fetch, or the indexer, has come, 0 to 1, while one runs.
 pub(crate) fn progress(activity: &Activity) -> Option<f32> {
     match activity {
         Activity::FetchingBodies { done, total, .. }
@@ -105,6 +105,7 @@ pub(crate) fn progress(activity: &Activity) -> Option<f32> {
         {
             Some(*done as f32 / *total as f32)
         }
+        Activity::Indexing { done, total } if *total > 0 => Some(*done as f32 / *total as f32),
         _ => None,
     }
 }
@@ -132,7 +133,7 @@ pub(crate) fn dot(account: &Account) -> Option<Dot> {
         return Some(Dot::Failed);
     }
     match account.activity {
-        Some(Activity::Idle { .. }) => Some(Dot::UpToDate),
+        Some(Activity::Idle { .. } | Activity::Indexing { .. }) => Some(Dot::UpToDate),
         Some(Activity::Offline { .. }) => Some(Dot::Offline),
         _ => None,
     }
@@ -347,21 +348,14 @@ mod tests {
     }
 
     #[test]
-    fn a_rule_applied_or_bodies_fetched_reloads_the_shown_folder() {
-        let completions = [
-            Event::BodiesFetched {
-                account: "work".into(),
-                request: 1,
-                fetched: 1,
-            },
-            Event::RuleApplied {
-                account: "work".into(),
-                request: 2,
-                evaluated: 1,
-                actions: 1,
-                errors: vec![],
-            },
-        ];
+    fn a_rule_applied_reloads_the_shown_folder() {
+        let completions = [Event::RuleApplied {
+            account: "work".into(),
+            request: 2,
+            evaluated: 1,
+            actions: 1,
+            errors: vec![],
+        }];
         for (uid, completion) in (1..).zip(completions) {
             let fx = Fixture::new(&["work"]);
             let (mut driver, wires) = fx.driver();
@@ -415,6 +409,77 @@ mod tests {
         assert!(
             config.starts_with("# test accounts\n") && config.contains("theme = \"dark\""),
             "{config}"
+        );
+    }
+
+    #[test]
+    fn indexing_counts_as_up_to_date_and_its_ticks_stay_out_of_the_history() {
+        let fx = Fixture::new(&["work"]);
+        let (mut driver, wires) = fx.driver();
+        let indexing = |done| {
+            activity(Activity::Indexing {
+                done,
+                total: 48_210,
+            })
+        };
+        for event in [indexing(0), indexing(12_345)] {
+            wires.events.send(event).unwrap();
+        }
+        driver.tick();
+        let line = lines(&driver.app).pop().unwrap();
+        assert_eq!(line.text, "work: up to date · indexing 12,345 of 48,210");
+        assert_eq!(line.dot, Some(Dot::UpToDate));
+        assert!(!line.failed);
+        let progress = line.progress.unwrap();
+        assert!((progress - 0.256).abs() < 0.001, "{progress}");
+        assert!(!driver.app.accounts[0].busy(), "indexing shows no spinner");
+        assert!(
+            !driver
+                .app
+                .history
+                .iter()
+                .any(|h| h.text.contains("indexing")),
+            "{:?}",
+            driver
+                .app
+                .history
+                .iter()
+                .map(|h| &h.text)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn an_open_search_reloads_for_indexed_mail_at_most_once_a_second() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "invoice"));
+        let (mut driver, wires) = fx.driver();
+        let indexed = || Event::Indexed {
+            account: "work".into(),
+            count: 10,
+        };
+        driver.at(10.0);
+        wires.events.send(indexed()).unwrap();
+        driver.tick();
+        assert_eq!(driver.app.last_index_reload, 0.0, "no search open");
+        driver.press("/ invoice");
+        driver.at(20.0);
+        wires.events.send(indexed()).unwrap();
+        wires.events.send(indexed()).unwrap();
+        driver.tick();
+        assert_eq!(driver.app.last_index_reload, 20.0);
+        driver.at(20.5);
+        wires.events.send(indexed()).unwrap();
+        driver.tick();
+        assert_eq!(driver.app.last_index_reload, 20.0, "within the second");
+        driver.at(21.2);
+        wires.events.send(indexed()).unwrap();
+        driver.tick();
+        assert_eq!(driver.app.last_index_reload, 21.2);
+        assert_eq!(
+            driver.app.list.rows.len(),
+            1,
+            "the search still shows its hit"
         );
     }
 

@@ -125,6 +125,88 @@ fn append_fetch_and_flags_round_trip() {
     assert_eq!(ops.fetch_raw(uid).unwrap().unwrap(), mail("hello"));
 }
 
+/// Appends a fixture under `tests/fixtures/structure/`, then fetches its structure and the text of its parts.
+fn structure_round_trip(port: u16, name: &str) -> (postvak_core::mail_ops::Structure, String) {
+    let Some(host) = host() else {
+        return (postvak_core::mail_ops::Structure::default(), String::new());
+    };
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/structure")
+        .join(format!("{name}.eml"));
+    let raw = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let mut ops = connect(&account(&host, port, &format!("structure-{name}")));
+    ops.append("INBOX", &raw, &[]).unwrap();
+    ops.select("INBOX").unwrap();
+    let uid = all_envelopes(&mut ops)[0].uid;
+    let structure = ops.fetch_structure(uid).unwrap().expect("a structure");
+    let parts: Vec<_> = structure
+        .text_parts
+        .iter()
+        .map(|part| {
+            let bytes = ops
+                .fetch_part(uid, &part.section)
+                .unwrap()
+                .unwrap_or_else(|| panic!("no bytes for section {:?}", part.section));
+            (part.clone(), bytes)
+        })
+        .collect();
+    (structure, postvak_core::message::text_from_parts(&parts))
+}
+
+#[test]
+fn structure_of_an_alternative_message_yields_its_plain_text() {
+    for port in [PORT, PORT_WITHOUT_MOVE] {
+        let (structure, text) = structure_round_trip(port, "alternative");
+        if host().is_none() {
+            return;
+        }
+        let sections: Vec<_> = structure
+            .text_parts
+            .iter()
+            .map(|p| (p.section.as_str(), p.html, p.alternative))
+            .collect();
+        assert_eq!(sections, [("1", false, Some(1)), ("2", true, Some(1))]);
+        assert_eq!(text.trim(), "plain pineapple");
+        assert!(structure.attachment_names.is_empty());
+    }
+}
+
+#[test]
+fn structure_of_a_mixed_message_names_its_attachment() {
+    let (structure, text) = structure_round_trip(PORT, "mixed");
+    if host().is_none() {
+        return;
+    }
+    assert_eq!(structure.attachment_names, ["Q3 report.pdf"]);
+    assert_eq!(structure.text_parts.len(), 1);
+    assert_eq!(text.trim(), "see attached");
+}
+
+#[test]
+fn structure_of_a_single_part_decodes_its_charset_and_encoding() {
+    let (structure, text) = structure_round_trip(PORT, "latin1");
+    if host().is_none() {
+        return;
+    }
+    assert_eq!(structure.text_parts[0].section, "");
+    assert_eq!(
+        structure.text_parts[0].charset.as_deref(),
+        Some("iso-8859-1")
+    );
+    assert_eq!(text.trim(), "café");
+}
+
+#[test]
+fn structure_of_a_message_without_text_has_only_names() {
+    let (structure, text) = structure_round_trip(PORT, "pdf-only");
+    if host().is_none() {
+        return;
+    }
+    assert!(structure.text_parts.is_empty());
+    assert_eq!(structure.attachment_names, ["a.pdf"]);
+    assert_eq!(text, "");
+}
+
 #[test]
 fn search_text_needs_every_word_in_headers_or_body() {
     let Some(host) = host() else { return };
@@ -462,7 +544,8 @@ fn cli_applies_a_rule_to_existing_mail_and_restores_it_through_the_daemon() {
         String::from_utf8_lossy(&out.stdout).to_string()
     };
     success(&["sync"]);
-    assert!(success(&["search", "--bodies", "Body"]).contains("INBOX/1"));
+    // The body may not be indexed yet right after the first sync; the server search finds it either way.
+    assert!(success(&["search", "--server", "Body"]).contains("INBOX/1"));
     assert!(success(&["show", "1", "--raw"]).contains("Body of Your sign-in code"));
     assert!(success(&["rules", "apply-existing", "codes", "--yes"]).contains("live: 1 actions on"));
 

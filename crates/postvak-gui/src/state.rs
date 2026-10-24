@@ -49,6 +49,8 @@ const HISTORY: usize = 50;
 
 /// Seconds between checks of rules.toml and config.toml for outside edits.
 pub(crate) const POLL: f64 = 2.0;
+/// How often an open search reloads while the indexer adds bodies, in seconds.
+const INDEX_RELOAD: f64 = 1.0;
 
 /// How long a message stays on screen before it is marked read.
 pub(crate) const READ_DELAY: f64 = 1.0;
@@ -183,7 +185,10 @@ impl Account {
         !matches!(
             self.activity,
             None | Some(
-                Activity::Idle { .. } | Activity::NotRunning { .. } | Activity::Offline { .. }
+                Activity::Idle { .. }
+                    | Activity::Indexing { .. }
+                    | Activity::NotRunning { .. }
+                    | Activity::Offline { .. }
             )
         )
     }
@@ -430,6 +435,8 @@ pub struct App {
     pub(crate) history_open: bool,
     /// Opens a file or URL with the desktop's app; tests record instead.
     pub(crate) launch: fn(&std::ffi::OsStr, bool) -> std::io::Result<()>,
+    /// When an open search last reloaded for `Event::Indexed`.
+    pub(crate) last_index_reload: f64,
     pub(crate) last_poll: f64,
     pub(crate) last_reconnect: f64,
     pub(crate) list: ListState,
@@ -554,6 +561,7 @@ impl App {
             history: VecDeque::new(),
             history_open: false,
             launch,
+            last_index_reload: 0.0,
             last_poll: 0.0,
             last_reconnect: 0.0,
             list: ListState::default(),
@@ -777,10 +785,10 @@ impl App {
         let name = match &event {
             Event::Activity { account, .. }
             | Event::ActionDone { account, .. }
-            | Event::BodiesFetched { account, .. }
             | Event::BodyReady { account, .. }
             | Event::CommandFailed { account, .. }
             | Event::Error { account, .. }
+            | Event::Indexed { account, .. }
             | Event::NewMail { account, .. }
             | Event::Restored { account, .. }
             | Event::RuleApplied { account, .. }
@@ -795,7 +803,9 @@ impl App {
                 // Progress lives on the status line; ticks would evict errors from the history.
                 if !matches!(
                     activity,
-                    Activity::FetchingBodies { .. } | Activity::FetchingHeaders { .. }
+                    Activity::FetchingBodies { .. }
+                        | Activity::FetchingHeaders { .. }
+                        | Activity::Indexing { .. }
                 ) {
                     let line = format!("{}: {activity}", self.accounts[index].name);
                     self.push_history(line);
@@ -808,6 +818,14 @@ impl App {
                 account.activity = Some(activity);
             }
             Event::NewMail { .. } => {}
+            // More bodies are searchable: an open search reloads, at most once a second, keeping its cursor as a
+            // sync event's reload does.
+            Event::Indexed { .. } => {
+                if self.search.is_some() && now - self.last_index_reload >= INDEX_RELOAD {
+                    self.last_index_reload = now;
+                    self.view_dirty = true;
+                }
+            }
             // Request 0 is this window's own outcome. A daemon id is another client's, or the broadcast copy of our own
             // failure; the client drops the copy of our own `ActionDone`.
             Event::CommandFailed { request, .. } if request != 0 => {}
@@ -857,7 +875,6 @@ impl App {
                 }
                 self.refresh(index);
             }
-            Event::BodiesFetched { .. } => self.refresh(index),
             Event::Synced { .. } => {
                 // A fresh sync result replaces the last notice, which would otherwise outrank every account line.
                 self.notice = None;
@@ -1520,6 +1537,8 @@ impl App {
         }
         if let Some(hits) = loaded.hits {
             self.list.hits = hits;
+            self.list.unindexed = loaded.unindexed;
+            self.list.covered = loaded.covered;
         } else {
             let found = loaded
                 .threads
@@ -1585,6 +1604,13 @@ impl App {
     }
 
     /// The message, its attachments and its HTML as stored now.
+    fn has_raw(&self, account: usize, key: &RowKey) -> bool {
+        self.accounts[account]
+            .store
+            .as_ref()
+            .is_ok_and(|store| store.has_raw(&key.0, key.1).unwrap_or(false))
+    }
+
     fn read_stored(&self, account: usize, key: &RowKey) -> Stored {
         let Ok(store) = &self.accounts[account].store else {
             return (None, Vec::new(), None);
@@ -1645,10 +1671,7 @@ impl App {
             .flatten()
             .filter_map(|index| self.list.rows.get(index))
             .filter(|row| match &self.accounts[row.account].store {
-                Ok(store) => matches!(
-                    store.message(&row.folder, row.uid),
-                    Ok(Some(m)) if m.body_text.is_none()
-                ),
+                Ok(store) => matches!(store.has_raw(&row.folder, row.uid), Ok(false)),
                 Err(_) => false,
             })
             .map(Row::id)
@@ -1661,7 +1684,8 @@ impl App {
     /// The stored message and its attachments; asks the sync thread for a missing body once per message.
     fn load_body(&mut self, account: usize, key: RowKey, now: f64, armed: bool) -> BodyState {
         let (stored, attachments, html) = self.read_stored(account, &key);
-        if stored.as_ref().is_some_and(|m| m.body_text.is_none()) {
+        // An indexed message has its text but not its raw bytes, which the HTML view and the attachments need.
+        if stored.is_some() && !self.has_raw(account, &key) {
             self.request_body(account, &key);
         }
         let text = body_text(stored.as_ref());
