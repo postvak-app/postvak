@@ -800,6 +800,60 @@ mod tests {
     }
 
     #[test]
+    fn save_as_writes_where_the_dialog_chose_and_replaces_that_file() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "report"));
+        fx.store("work")
+            .set_raw("INBOX", 1, WITH_ATTACHMENT_RAW, "See attached")
+            .unwrap();
+        let (open, _wires) = fx.window();
+        // The dialog offered the attachment's own name, and the user picked a file that exists.
+        open.with(|live| {
+            live.app.ask_save_path = |name, folder, _| {
+                let (chosen, answer) = std::sync::mpsc::channel();
+                let _ = chosen.send(Ok(Some(folder.join(format!("picked-{name}")))));
+                answer
+            }
+        });
+        let picked = fx
+            .paths
+            .cache_dir
+            .join("downloads")
+            .join("picked-report.txt");
+        std::fs::write(&picked, "old").unwrap();
+        let label = open.labels_containing("report.txt (").remove(0);
+        open.click(&format!("Save {label} as"));
+        assert_eq!(
+            std::fs::read_to_string(&picked).unwrap().trim_end(),
+            "quarterly numbers"
+        );
+        assert_eq!(open.labels_containing("Saved to").len(), 1);
+    }
+
+    #[test]
+    fn a_cancelled_save_as_writes_nothing_and_says_nothing() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "report"));
+        fx.store("work")
+            .set_raw("INBOX", 1, WITH_ATTACHMENT_RAW, "See attached")
+            .unwrap();
+        let (open, _wires) = fx.window();
+        open.with(|live| {
+            live.app.ask_save_path = |_, _, _| {
+                let (chosen, answer) = std::sync::mpsc::channel();
+                let _ = chosen.send(Ok(None));
+                answer
+            }
+        });
+        let label = open.labels_containing("report.txt (").remove(0);
+        open.click(&format!("Save {label} as"));
+        let downloads = fx.paths.cache_dir.join("downloads");
+        assert_eq!(std::fs::read_dir(downloads).unwrap().count(), 0);
+        assert!(open.labels_containing("Saved to").is_empty());
+        assert!(open.labels_containing("Could not save").is_empty());
+    }
+
+    #[test]
     fn a_sync_that_adds_newer_mail_keeps_the_cursor_on_its_message() {
         let fx = Fixture::new(&["work"]);
         fx.add("work", message("INBOX", 1, "old"));

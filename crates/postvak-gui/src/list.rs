@@ -347,6 +347,7 @@ pub(crate) fn menu(row: &Row, in_junk: bool) -> [Vec<(&'static str, UiAction)>; 
         vec![
             ("View source", UiAction::OpenSource),
             ("Save .eml", UiAction::SaveEml),
+            ("Save .eml as…", UiAction::SaveEmlAs),
         ],
     ]
 }

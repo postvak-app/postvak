@@ -823,6 +823,13 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
             Some(UiAction::SaveAttachment(attachment.index))
         }));
     });
+    window.on_save_attachment_as(move |i| {
+        on(one(move |app| {
+            let body = app.body.as_ref()?;
+            let attachment = nth(&body.attachments, i)?;
+            Some(UiAction::SaveAttachmentAs(attachment.index))
+        }));
+    });
     window.on_open_link(move |url| {
         on(one(move |_| {
             body::has_target(&url).then(|| UiAction::OpenUrl(url.into()))

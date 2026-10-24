@@ -14,7 +14,7 @@ import { ListPane, RowData } from "list.slint";
 export enum Pane { body, folders, list }
 
 // The menu items that act on the app; `menu.rs` says what each does.
-export enum MenuAction { about, add-account, add-to-selection, archive, delete, documentation, flag, history, junk, keys, mark-folder-read, move, open-at-login, read-or-unread, save-eml, search, select-all, sync-now, text-or-html, theme-dark, theme-light, theme-system, view-source }
+export enum MenuAction { about, add-account, add-to-selection, archive, delete, documentation, flag, history, junk, keys, mark-folder-read, move, open-at-login, read-or-unread, save-eml, save-eml-as, search, select-all, sync-now, text-or-html, theme-dark, theme-light, theme-system, view-source }
 
 // Which menu items would do something now; the others are disabled.
 export struct MenuState {
@@ -177,6 +177,7 @@ export component MailWindow inherits Window {
     callback unsubscribe();
     callback open-source();
     callback save-attachment(int);
+    callback save-attachment-as(int);
     callback open-link(string);
     callback page-width(length);
     callback page-visible(length, length);
@@ -259,6 +260,11 @@ export component MailWindow inherits Window {
                 title: "Save .eml";
                 enabled: root.menu.save-eml;
                 activated => { root.menu-item(MenuAction.save-eml); }
+            }
+            MenuItem {
+                title: "Save .eml as…";
+                enabled: root.menu.save-eml;
+                activated => { root.menu-item(MenuAction.save-eml-as); }
             }
             MenuItem {
                 title: "View source";
@@ -517,6 +523,7 @@ export component MailWindow inherits Window {
                         unsubscribe => { root.unsubscribe(); }
                         open-source => { root.open-source(); }
                         save-attachment(i) => { root.save-attachment(i); }
+                        save-attachment-as(i) => { root.save-attachment-as(i); }
                         open-link(url) => { root.open-link(url); }
                         rule-icon: root.rule-icon;
                         rule-from => { root.rule-from(); }
