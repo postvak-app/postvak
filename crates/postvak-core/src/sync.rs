@@ -742,7 +742,13 @@ pub fn run_rules_with(
         let (rules_uid, notified_uid) = (store.rules_uid(&folder)?, store.notified_uid(&folder)?);
         let unseen = unseen_by_rules(store, &stored)?;
         let fresh = |uid: u32| mode == Mode::Normal && unseen(uid);
-        let messages = store.messages_in_folder(&folder)?;
+        // Rules look at every message, so a folder of 100k is read on each pass; without a body condition the indexed
+        // bodies stay unread.
+        let messages = if needs_body {
+            store.messages_in_folder(&folder)?
+        } else {
+            store.messages_without_body(&folder, 0)?
+        };
         let highest_uid = messages.last().map(|m| m.uid.min(stored.last_uid));
         // A rule's body condition does not download a message larger than this; such mail counts as body unknown.
         let wants_body = |m: &Message| {
@@ -1295,7 +1301,8 @@ fn notify_unruled(
         notify_default: account.notify,
         keep_in_folder: false,
     };
-    let messages = store.messages_in_folder("INBOX")?;
+    // Only mail above `notified_uid` can notify, and the highest of it is all the rest needs.
+    let messages = store.messages_without_body("INBOX", notified_uid)?;
     let events = messages
         .iter()
         .filter(|msg| unseen(msg.uid) && msg.uid > notified_uid && evaluate(&[], msg, &ctx).notify)

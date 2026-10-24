@@ -1,5 +1,5 @@
 //! The Rules, Activity and Trash views: what replaces the list and body columns.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use postvak_core::help;
@@ -260,18 +260,33 @@ pub(crate) fn activity_log(accounts: &[Account]) -> Vec<(String, LogEntry)> {
     entries
 }
 
-/// Every account's `.eml` backups, newest first, with sender and subject from their headers.
-pub(crate) fn trash_rows(accounts: &[Account], paths: &Paths) -> Vec<TrashRow> {
+/// Every account's `.eml` backups, newest first, with sender and subject from their headers. The view reloads on every
+/// sync event, so a backup in `known` keeps the sender and subject read before: a backup is never rewritten, and only
+/// new files are opened.
+pub(crate) fn trash_rows(accounts: &[Account], paths: &Paths, known: &[TrashRow]) -> Vec<TrashRow> {
+    let known: HashMap<&Path, &TrashRow> = known
+        .iter()
+        .map(|row| (row.entry.path.as_path(), row))
+        .collect();
     let mut rows = Vec::new();
     for (index, account) in accounts.iter().enumerate() {
         match Trash::new(paths.trash_dir(&account.name)).list() {
             Ok(entries) => rows.extend(entries.into_iter().map(|entry| {
-                let headers = entry.headers();
+                let (from, subject) = match known.get(entry.path.as_path()) {
+                    Some(row) => (row.from.clone(), row.subject.clone()),
+                    None => {
+                        let headers = entry.headers();
+                        (
+                            headers.from.unwrap_or_default(),
+                            headers.subject.unwrap_or_default(),
+                        )
+                    }
+                };
                 TrashRow {
                     account: index,
                     entry,
-                    from: headers.from.unwrap_or_default(),
-                    subject: headers.subject.unwrap_or_default(),
+                    from,
+                    subject,
                 }
             })),
             Err(e) => log::warn!("[{}] could not list the trash: {e}", account.name),
@@ -795,6 +810,41 @@ mod tests {
             wires.sent(),
             [("work".to_string(), Command::Restore { file })]
         );
+    }
+
+    #[test]
+    fn a_trash_reload_reads_only_new_backups() {
+        let fx = Fixture::new(&["work"]);
+        let file = backup(&fx);
+        let (open, wires) = view(&fx, View::Trash);
+        assert_eq!(open.find("your receipt").len(), 1);
+        // A backup is never rewritten; changing this one shows whether a reload opens it again.
+        std::fs::write(
+            &file,
+            "From: x@example.com\r\nSubject: read again\r\n\r\nx\r\n",
+        )
+        .unwrap();
+        let later = Trash::new(fx.paths.trash_dir("work"))
+            .save(
+                "INBOX",
+                9,
+                b"From: y@example.com\r\nSubject: new backup\r\n\r\nx\r\n",
+                2_000_000_000,
+            )
+            .unwrap();
+        let synced = Event::Synced {
+            account: "work".into(),
+            new_messages: 0,
+            actions: 0,
+            requests: vec![],
+            errors: vec![],
+        };
+        wires.events.send(synced).unwrap();
+        open.tick();
+        assert_eq!(open.find("your receipt").len(), 1);
+        assert!(open.find("read again").is_empty());
+        assert_eq!(open.find("new backup").len(), 1);
+        assert!(later.exists());
     }
 
     #[test]

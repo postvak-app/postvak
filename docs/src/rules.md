@@ -81,6 +81,8 @@ New INBOX mail notifies unless a rule moved, archived or deleted it, or a matchi
 
 On Linux a notification shows the sender and the subject with Postvak's icon, and asks the desktop for its new-mail sound, which follows Do Not Disturb and your volume; your desktop's notification settings list Postvak, so you can turn the sound or the popups off there. When one sync finds more than three new messages for an account, they come as one notification ("12 new messages", naming the senders), which opens the newest. Plasma shows the account beside Postvak's name. Clicking a notification opens the message in the window, which starts if it is not open. On Wayland an open window cannot bring itself to the front, so Plasma highlights it on the task bar and GNOME says "Postvak is ready".
 
+On macOS a notification shows the sender and the subject as Postvak's once Postvak.app is installed (the DMG or `brew install --cask postvak`); with only the `postvak` command installed, macOS shows them under its default sender. Bursts of new mail come as one notification, as on Linux. Clicking a notification opens the message in the window, which starts if it is not open. Notification Center keeps notifications until you clear them, so only the latest 64 open their message; a click on an older one just brings Postvak to the front. System Settings › Notifications › Postvak turns the sound or the banners off.
+
 ## Examples
 
 Delete sign-in codes and magic links an hour after you read them:

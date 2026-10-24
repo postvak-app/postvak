@@ -1,5 +1,5 @@
-//! The unread count on Postvak's task bar or dock entry, through the `com.canonical.Unity.LauncherEntry` D-Bus signal
-//! that Plasma's task manager, Ubuntu's dock and Dash to Dock read. Linux only; elsewhere it does nothing.
+//! The unread count on Postvak's task bar or dock entry. On Linux through the `com.canonical.Unity.LauncherEntry`
+//! D-Bus signal that Plasma's task manager, Ubuntu's dock and Dash to Dock read; on macOS on the Dock icon.
 #[cfg(target_os = "linux")]
 use std::collections::HashMap;
 
@@ -33,6 +33,8 @@ impl Badge {
         self.shown = Some(unread);
         #[cfg(target_os = "linux")]
         self.send(unread);
+        #[cfg(target_os = "macos")]
+        dock(unread);
     }
 
     #[cfg(target_os = "linux")]
@@ -56,6 +58,28 @@ impl Badge {
     }
 }
 
+/// Shows `unread` on the Dock icon, or no badge at 0. AppKit takes it only on the main thread, where the window runs.
+#[cfg(target_os = "macos")]
+fn dock(unread: u32) {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSApplication;
+    use objc2_foundation::NSString;
+    let Some(main) = MainThreadMarker::new() else {
+        log::debug!("the Dock badge is set from the main thread only");
+        return;
+    };
+    let label = dock_label(unread).map(|label| NSString::from_str(&label));
+    NSApplication::sharedApplication(main)
+        .dockTile()
+        .setBadgeLabel(label.as_deref());
+}
+
+/// The Dock badge's text: the count, or none at 0.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn dock_label(unread: u32) -> Option<String> {
+    (unread > 0).then(|| unread.to_string())
+}
+
 /// The desktop entry the count belongs to.
 #[cfg(target_os = "linux")]
 fn app_uri() -> String {
@@ -68,6 +92,17 @@ fn properties(unread: u32) -> HashMap<&'static str, Value<'static>> {
         ("count", Value::from(i64::from(unread))),
         ("count-visible", Value::from(unread > 0)),
     ])
+}
+
+#[cfg(test)]
+mod dock_tests {
+    use super::dock_label;
+
+    #[test]
+    fn the_dock_shows_the_count_and_no_badge_at_zero() {
+        assert_eq!(dock_label(7).as_deref(), Some("7"));
+        assert_eq!(dock_label(0), None);
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]

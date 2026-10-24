@@ -60,6 +60,27 @@ fn hello_is_answered_with_protocol_version_and_pid() {
 }
 
 #[test]
+fn a_client_is_served_as_it_connects_not_at_the_next_poll() {
+    let daemon = TestDaemon::start();
+    for _ in 0..5 {
+        // Long enough for the accept loop to be between its checks.
+        std::thread::sleep(super::POLL + Duration::from_millis(30));
+        let started = Instant::now();
+        let mut client = TestClient::connect(&daemon.paths.daemon_socket());
+        client.send(&ClientMessage::Hello {
+            protocol: wire::PROTOCOL,
+            version: wire::VERSION.into(),
+        });
+        assert!(matches!(client.recv(), Some(DaemonMessage::Hello { .. })));
+        assert!(
+            started.elapsed() < super::POLL / 2,
+            "hello took {:?}",
+            started.elapsed()
+        );
+    }
+}
+
+#[test]
 fn a_first_message_other_than_hello_closes_the_connection() {
     let daemon = TestDaemon::start();
     let mut client = TestClient::connect(&daemon.paths.daemon_socket());

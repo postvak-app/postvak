@@ -1,9 +1,12 @@
-//! Desktop notifications for new mail, sent by the daemon. On Linux a click on one opens the message in the window.
+//! Desktop notifications for new mail, sent by the daemon. A click on one opens the message in the window.
 #[cfg(target_os = "linux")]
 mod dbus;
+#[cfg(target_os = "macos")]
+mod mac;
 
 use std::collections::BTreeMap;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, mpsc};
 
 use serde::{Deserialize, Serialize};
 
@@ -153,18 +156,14 @@ impl Notifier {
             .spawn(move || {
                 #[cfg(target_os = "linux")]
                 let mut bus = dbus::Bus::new(std::sync::Arc::new(open_in_window));
+                #[cfg(target_os = "macos")]
+                let center = mac::Center::new();
                 for batch in received {
                     for notice in notices(&batch) {
                         #[cfg(target_os = "linux")]
                         bus.notify(&notice);
                         #[cfg(target_os = "macos")]
-                        {
-                            let _ = notify_rust::Notification::new()
-                                .summary(&notice.title)
-                                .body(&notice.body)
-                                .appname("Postvak")
-                                .show();
-                        }
+                        center.notify(&notice);
                     }
                 }
             });
@@ -199,9 +198,43 @@ pub fn escape_markup(text: &str) -> String {
         .replace('>', "&gt;")
 }
 
+/// Notifications that wait for a click, each on a thread of its own until it is clicked or dismissed. macOS keeps them
+/// in Notification Center until the user clears it, so only `MAX_WAITING` wait; later ones still show, and a click on
+/// one brings Postvak to the front without opening its message.
+#[derive(Default)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+struct Waiting(AtomicUsize);
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const MAX_WAITING: usize = 64;
+
+/// One waiting notification, counted until it drops.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+struct Slot(Arc<Waiting>);
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+impl Waiting {
+    /// A slot, or None when `MAX_WAITING` are taken.
+    fn take(waiting: &Arc<Waiting>) -> Option<Slot> {
+        waiting
+            .0
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < MAX_WAITING).then_some(n + 1)
+            })
+            .ok()
+            .map(|_| Slot(Arc::clone(waiting)))
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 /// Opens the notice's message in the window: a running window shows it, else a new one starts. `token` is the
 /// notification server's activation token, which lets the window come to the front.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn open_in_window(notice: &Notice, token: Option<&str>) {
     let exe = match crate::paths::stable_exe() {
         Ok(exe) => exe,
@@ -218,7 +251,7 @@ fn open_in_window(notice: &Notice, token: Option<&str>) {
 }
 
 /// `postvak gui --open …`, with the token where a launched app looks for it, or without an inherited one.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn window_command(
     exe: &std::path::Path,
     open: &Open,
@@ -323,7 +356,18 @@ mod tests {
         assert_eq!(open.gui_args(), ["gui", "--open", "3", "--folder", "INBOX"]);
     }
 
-    #[cfg(target_os = "linux")]
+    #[test]
+    fn only_max_waiting_notifications_wait_and_a_slot_frees_when_it_drops() {
+        let waiting = Arc::new(Waiting::default());
+        let slots: Vec<Slot> = (0..MAX_WAITING)
+            .map(|_| Waiting::take(&waiting).unwrap())
+            .collect();
+        assert!(Waiting::take(&waiting).is_none());
+        drop(slots);
+        assert!(Waiting::take(&waiting).is_some());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_click_opens_the_message_in_the_window_with_the_token() {
         let open = Open {
