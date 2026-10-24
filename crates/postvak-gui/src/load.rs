@@ -69,6 +69,7 @@ pub(crate) fn load(stores: &[LoadStore<'_>], query: &ListQuery) -> Loaded {
                 Ok(found) => hits.extend(found.iter().map(|hit| {
                     let mut row = Row::from_message(account, &hit.message);
                     row.close = hit.matched == Matched::Close;
+                    row.snippet = hit.snippet.clone();
                     row
                 })),
                 Err(e) => log::warn!("[{name}] search failed: {e}"),

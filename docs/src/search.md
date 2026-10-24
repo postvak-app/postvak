@@ -24,6 +24,14 @@ Operators combine with words in any order: `from:acme after:30d invoice` is the 
 
 Keys are case-insensitive. A search of operators alone, such as `is:unread from:me`, lists every message they describe; `-newsletter` alone lists nothing, as there is nothing to exclude it from.
 
+## Close matches
+
+When fewer than ten messages match as typed, close matches follow: for each word of four letters or more, the terms in the mail itself within one typo of it (two for a word of eight or more), so `invioce` still finds the invoice. They come after the exact hits, under their own heading in the window, with `~` before the line on the CLI and `match: close` in `--json` and MCP rows; `--exact` and `exact: true` leave them out. A phrase, an excluded word and an operator's value are never widened.
+
+## Snippets
+
+A hit that matched in its body shows the text around the match: in the window on the row's second line in place of the subject, and as `snippet` in `--json` and MCP rows. A hit that matched in its headers shows none, since the row already shows them, and over MCP without `read:bodies` no row ever has one.
+
 ## The index
 
 Bodies are searchable once the background sync has read them. After an account is added, the daemon indexes its messages in idle time, newest first: for each message it fetches the structure and only the text parts, and stores the text and the attachment names. It never downloads attachments for the index, and it keeps the raw message only for mail you open. A slice of indexing lasts at most five seconds; between slices the daemon checks INBOX and waits a second for new mail, so notifications arrive as before, at most a few seconds later while the first index builds. `postvak status` and the window's status line show how far it is: "up to date · indexing 12,345 of 48,210".

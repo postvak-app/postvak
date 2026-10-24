@@ -263,6 +263,47 @@ fn search_close_matches_dark() {
     snapshot(&open, "gui_search_close_dark");
 }
 
+/// INBOX of `work`, searching a word only the lunch mail's body holds, so its row shows the snippet.
+fn search_snippet(theme: &str) -> (Fixture, Open, Wires) {
+    let fx = Fixture::mailbox(theme);
+    let (open, wires) = open(&fx);
+    open.with(|live| live.app.select_view(work_inbox()));
+    open.tick();
+    open.press("/ menu");
+    open.tick();
+    let rows: Vec<(String, Option<String>)> = open.with(|live| {
+        live.app
+            .list
+            .rows
+            .iter()
+            .map(|row| (row.subject.clone(), row.snippet.clone()))
+            .collect()
+    });
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].0, "Lunch on Friday?");
+    assert!(
+        rows[0].1.as_deref().is_some_and(|s| s.contains("menu")),
+        "{rows:?}"
+    );
+    // The search field has focus; an inactive window draws no text cursor, whose blink phase differs between
+    // platforms.
+    slint::ComponentHandle::window(&open.window())
+        .dispatch_event(slint::platform::WindowEvent::WindowActiveChanged(false));
+    (fx, open, wires)
+}
+
+#[test]
+fn search_snippet_light() {
+    let (_fx, open, _wires) = search_snippet("light");
+    snapshot(&open, "gui_search_snippet_light");
+}
+
+#[test]
+fn search_snippet_dark() {
+    let (_fx, open, _wires) = search_snippet("dark");
+    snapshot(&open, "gui_search_snippet_dark");
+}
+
 #[test]
 fn inbox_filtered() {
     let (_fx, open, _wires) = inbox("light");

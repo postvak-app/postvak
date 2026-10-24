@@ -39,6 +39,8 @@ pub struct Row {
     pub unread: bool,
     /// A search hit that matched only through a close match, such as a corrected typo; listed after the exact ones.
     pub close: bool,
+    /// For a search hit that matched in its body: the text around the match, shown in place of the subject.
+    pub snippet: Option<String>,
 }
 
 impl Row {
@@ -66,6 +68,7 @@ impl Row {
             uid: message.uid,
             unread: !message.is_seen(),
             close: false,
+            snippet: None,
         }
     }
 
@@ -84,6 +87,7 @@ impl Row {
             uid: message.uid,
             unread: !message.is_seen(),
             close: false,
+            snippet: None,
         }
     }
 }
@@ -237,7 +241,12 @@ pub(crate) fn results(app: &App) -> String {
     } else {
         format!("in {} messages", super::numbers::count(app.list.covered))
     };
-    format!("{count} results · {note}")
+    let noun = if app.list.rows.len() == 1 {
+        "result"
+    } else {
+        "results"
+    };
+    format!("{count} {noun} · {note}")
 }
 
 /// What an empty list says instead of rows; nothing before a search query is typed.
@@ -413,7 +422,8 @@ where
     if in_search {
         subject.push_str(&format!("[{}] ", folders::label(&row.folder)));
     }
-    subject.push_str(&row.subject);
+    // A body hit shows where it matched; the subject did not, or it would have matched there.
+    subject.push_str(row.snippet.as_deref().unwrap_or(&row.subject));
     if row.count > 1 {
         subject.push_str(&format!(" ({})", row.count));
     }
@@ -699,6 +709,23 @@ mod tests {
     }
 
     #[test]
+    fn a_body_hits_snippet_takes_the_subjects_place_on_the_second_line() {
+        let mut row = Row::from_message(0, &message("Archive", 7, "Lunch on Friday?"));
+        row.snippet = Some("…the menu is at example.com and they take bookings…".into());
+        let now = Utc.with_ymd_and_hms(2026, 10, 24, 12, 0, 0).unwrap();
+        let shown = columns(&row, None, false, true, &now);
+        assert_eq!(
+            shown.subject,
+            "[Archive] …the menu is at example.com and they take bookings…"
+        );
+        row.snippet = None;
+        assert_eq!(
+            columns(&row, None, false, true, &now).subject,
+            "[Archive] Lunch on Friday?"
+        );
+    }
+
+    #[test]
     fn row_text_strips_control_characters_from_headers() {
         let row = Row {
             account: 0,
@@ -714,6 +741,7 @@ mod tests {
             uid: 1,
             unread: true,
             close: false,
+            snippet: None,
         };
         let now = Utc.with_ymd_and_hms(2026, 10, 6, 12, 0, 0).unwrap();
         let text = row_text(&row, &columns(&row, None, false, false, &now));

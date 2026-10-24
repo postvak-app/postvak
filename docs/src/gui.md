@@ -57,7 +57,7 @@ The top of the reading pane has buttons for Archive, Move, Delete, Junk, Flag an
 
 ## Message list
 
-Each row shows a dot when it is unread, then on its first line the sender (the recipient in Sent and Drafts), darker when unread, a flag (or a check when marked) and the date, and on its second line the subject with the thread's message count. In All inboxes the account name comes before the sender, and in search results the folder before the subject, as "[Archive] …". Dates read "09:30" today, "Sun 18:00" within the past week, "3 Sep" earlier this year and "10 Dec 2025" before that. A long sender or subject is cut off with "…".
+Each row shows a dot when it is unread, then on its first line the sender (the recipient in Sent and Drafts), darker when unread, a flag (or a check when marked) and the date, and on its second line the subject with the thread's message count. In All inboxes the account name comes before the sender, and in search results the folder before the subject, as "[Archive] …"; a search hit that matched in its body shows the text around the match in place of the subject. Dates read "09:30" today, "Sun 18:00" within the past week, "3 Sep" earlier this year and "10 Dec 2025" before that. A long sender or subject is cut off with "…".
 
 The funnel button beside the list's title shows All, Unread, Flagged or Attachments: a thread stays when one of its messages fits. Any choice but All shows as a chip beside the title, which clears it, and as a dot on the funnel. Attachments is a guess from the headers (mail sent as `multipart/mixed`), the same guess Thunderbird makes. The choice holds as you change folders; search results ignore it. On the CLI and over MCP, `list` takes `--unread`, `--flagged` and `--attachments`.
 
