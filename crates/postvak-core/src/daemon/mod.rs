@@ -7,7 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -39,7 +39,11 @@ const FILE_POLL: Duration = Duration::from_secs(2);
 /// How long exit waits for clients to take their last replies before closing their connections.
 const FLUSH_GRACE: Duration = Duration::from_secs(1);
 const LOG_LIMIT: u64 = 1_048_576;
+/// How often the accept loop checks for a stop and for edited files while no client connects; a client that connects is
+/// served at once.
 const POLL: Duration = Duration::from_millis(200);
+/// Desktop notifications waiting for the notification server; more are dropped while it does not answer.
+const NOTIFY_QUEUE: usize = 32;
 
 /// Logs in and out again with the password given, for `TestLogin`.
 pub type Login = Arc<dyn Fn(&AccountConfig, &Secret) -> Result<(), MailError> + Send + Sync>;
@@ -184,7 +188,6 @@ fn bind_private(socket: &Path) -> anyhow::Result<UnixListener> {
         _ => anyhow::Error::new(e).context(format!("binding {}", socket.display())),
     })?;
     fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
-    listener.set_nonblocking(true)?;
     Ok(listener)
 }
 
@@ -311,22 +314,83 @@ fn serve(
         signalled,
         watch: Mutex::new(watch),
     });
-    let notify: fn(&str, &str) = if options.notify {
-        crate::notify::new_mail
-    } else {
-        |_, _| {}
-    };
+    let notifier = options.notify.then(notifier).transpose()?;
     let router = std::thread::Builder::new()
         .name("daemon-events".into())
         .spawn({
             let shared = shared.clone();
-            move || route_events(&shared, events, io::stdout().is_terminal(), notify)
+            move || {
+                route_events(
+                    &shared,
+                    events,
+                    io::stdout().is_terminal(),
+                    |from, subject| {
+                        if let Some(notifier) = &notifier {
+                            // A full queue means the notification server stopped answering; replies and events go on.
+                            let _ = notifier.try_send((from.to_string(), subject.to_string()));
+                        }
+                    },
+                )
+            }
         })?;
-    let connections = accept_until_done(&shared, &listener, options.idle_exit);
+    let (accepted, acceptor) = acceptor(listener)?;
+    let connections = accept_until_done(&shared, &accepted, options.idle_exit);
     // Connects fail at once from here on instead of waiting out the hello timeout; the socket file and lock remain.
-    drop(listener);
+    drop(accepted);
+    wake_acceptor(&paths.daemon_socket(), acceptor);
     stop(&shared, router, connections);
     Ok(())
+}
+
+/// Shows desktop notifications on a thread of their own: the call waits for the desktop's notification server, which
+/// must not hold up the replies and events the router delivers.
+fn notifier() -> io::Result<SyncSender<(String, String)>> {
+    let (notes, queue) = mpsc::sync_channel::<(String, String)>(NOTIFY_QUEUE);
+    std::thread::Builder::new()
+        .name("daemon-notify".into())
+        .spawn(move || {
+            for (from, subject) in queue {
+                crate::notify::new_mail(&from, &subject);
+            }
+        })?;
+    Ok(notes)
+}
+
+/// Accepts clients on a thread of its own, which blocks in `accept`, so a client is served the moment it connects
+/// while the accept loop still wakes every `POLL` for its checks. The thread ends once the loop dropped the receiver and
+/// the next connect, `wake_acceptor`'s own, wakes it.
+fn acceptor(
+    listener: UnixListener,
+) -> io::Result<(Receiver<io::Result<UnixStream>>, JoinHandle<()>)> {
+    let (sender, accepted) = mpsc::channel();
+    let thread = std::thread::Builder::new()
+        .name("daemon-accept".into())
+        .spawn(move || {
+            for stream in listener.incoming() {
+                let failed = stream.is_err();
+                if sender.send(stream).is_err() {
+                    return;
+                }
+                // An error such as too many open files repeats at once; waiting keeps it from spinning.
+                if failed {
+                    std::thread::sleep(POLL);
+                }
+            }
+        })?;
+    Ok((accepted, thread))
+}
+
+/// Ends the accept thread: a connect returns it from `accept`, and it finds the loop gone.
+fn wake_acceptor(socket: &Path, acceptor: JoinHandle<()>) {
+    match UnixStream::connect(socket) {
+        Ok(stream) => {
+            drop(stream);
+            let _ = acceptor.join();
+        }
+        // A client that connected after the loop ended woke it already.
+        Err(_) if acceptor.is_finished() => drop(acceptor.join()),
+        Err(e) => log::warn!("could not stop the accept thread: {e}"),
+    }
 }
 
 /// Clients open the stores as soon as the daemon answers, so every migration has to be done before it does; a store
@@ -398,24 +462,25 @@ fn apply_file_changes(shared: &Shared, poll: bool) {
 
 fn accept_until_done(
     shared: &Arc<Shared>,
-    listener: &UnixListener,
+    accepted: &Receiver<io::Result<UnixStream>>,
     idle_exit: Option<Duration>,
 ) -> Vec<Connection> {
     let mut connections: Vec<Connection> = Vec::new();
     let mut next_client: ClientId = 0;
     while !done(shared, idle_exit) {
         apply_file_changes(shared, true);
-        match listener.accept() {
-            Ok((stream, _)) => {
+        match accepted.recv_timeout(POLL) {
+            Ok(Ok(stream)) => {
                 next_client += 1;
                 match open_connection(shared, stream, next_client) {
                     Ok(connection) => connections.push(connection),
                     Err(e) => log::warn!("could not serve a client: {e}"),
                 }
             }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => std::thread::sleep(POLL),
-            Err(e) => {
-                log::warn!("accept failed: {e}");
+            Ok(Err(e)) => log::warn!("accept failed: {e}"),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                log::error!("the accept thread stopped; no new clients can connect");
                 std::thread::sleep(POLL);
             }
         }
@@ -504,8 +569,6 @@ fn open_connection(
     stream: UnixStream,
     client: ClientId,
 ) -> io::Result<Connection> {
-    // macOS hands out accepted sockets with the listener's non-blocking flag.
-    stream.set_nonblocking(false)?;
     let kept = stream.try_clone()?;
     let shared = shared.clone();
     let reader = std::thread::Builder::new()

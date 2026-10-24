@@ -1,10 +1,12 @@
-//! Direct actions on chosen messages: mark, move, archive and delete, through the same `apply` as rules, which the
+//! Direct actions on chosen messages, each sent to the server for all of them at once: mark, move, archive and delete, through the same `apply` as rules, which the
 //! daemon's sync loop runs; plus the dry-run and rule preview helpers the CLI and the MCP server share.
+use std::collections::HashSet;
+
 use crate::config::{AccountConfig, Identity};
 use crate::mail_ops::{MailError, MailOps};
 use crate::message::clean;
-use crate::rules::apply::{ApplyError, apply, ensure_raw, move_target, plan_for};
-use crate::rules::engine::{Context, Mode, Plan, PlannedAction};
+use crate::rules::apply::{ApplyError, apply_many, ensure_raw, move_target, plan_for};
+use crate::rules::engine::{Context, Mode, PlannedAction};
 use crate::rules::{Action, CompiledRule};
 use crate::store::{Hit, Matched, Message, Store, StoreError};
 use crate::trash::Trash;
@@ -46,8 +48,8 @@ pub(crate) fn select_synced(
     Ok(())
 }
 
-/// Runs `action` on each uid in `folder`, logged under `rule_name`. One result per uid, so a missing message does not
-/// stop the others.
+/// Runs `action` on each uid in `folder`, logged under `rule_name`, as one server command per batch where it can. One
+/// result per uid, so a missing message does not stop the others.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     ops: &mut dyn MailOps,
@@ -60,25 +62,34 @@ pub fn run(
     now: i64,
 ) -> Result<Vec<UidResult>, ActionError> {
     select_synced(ops, store, folder)?;
-    let plan = Plan {
-        actions: vec![PlannedAction {
-            rule: rule_name.to_string(),
-            action: action.clone(),
-        }],
-        notify: false,
+    let planned = PlannedAction {
+        rule: rule_name.to_string(),
+        action: action.clone(),
     };
-    let mut results = Vec::new();
-    for &uid in uids {
-        let result = match store.message(folder, uid) {
-            Ok(Some(msg)) => apply(&plan, &msg, ops, store, trash, now).map_err(ActionError::from),
-            Ok(None) => Err(ActionError::NotFound {
-                folder: folder.to_string(),
+    let mut results: Vec<UidResult> = Vec::new();
+    let mut found = Vec::new();
+    let mut seen = HashSet::new();
+    for &uid in uids.iter().filter(|&&uid| seen.insert(uid)) {
+        match store.message(folder, uid) {
+            Ok(Some(msg)) => found.push(msg),
+            Ok(None) => results.push((
                 uid,
-            }),
-            Err(e) => Err(e.into()),
-        };
-        results.push((uid, result));
+                Err(ActionError::NotFound {
+                    folder: folder.to_string(),
+                    uid,
+                }),
+            )),
+            Err(e) => results.push((uid, Err(e.into()))),
+        }
     }
+    let applied = apply_many(&planned, &found, ops, store, trash, now);
+    results.extend(
+        applied
+            .into_iter()
+            .map(|(uid, result)| (uid, result.map_err(ActionError::from))),
+    );
+    // In the order asked, so a caller can pair them with what it sent.
+    results.sort_by_key(|(uid, _)| uids.iter().position(|asked| asked == uid));
     Ok(results)
 }
 
@@ -251,7 +262,7 @@ pub fn expunge_warning(
 mod tests {
     use super::*;
     use crate::mail_ops::RecordingOps;
-    use crate::store::{Folder, Message};
+    use crate::store::{Folder, Message, has_flag};
 
     fn setup() -> (RecordingOps, Store, Trash, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -350,6 +361,131 @@ mod tests {
             )
         );
         assert_eq!(warning("\"flag\""), None);
+    }
+
+    /// `setup` with messages 5, 6 and 7 in INBOX, 6 already read, and an Archive folder.
+    fn three_in_inbox() -> (RecordingOps, Store, Trash, tempfile::TempDir) {
+        let (mut ops, store, trash, dir) = setup();
+        for uid in [6, 7] {
+            ops.add_mail(
+                "INBOX",
+                uid,
+                100,
+                "Subject: hi\r\n\r\n",
+                Some("Subject: hi\r\n\r\nbody"),
+            );
+            store
+                .insert_message(&Message {
+                    folder: "INBOX".into(),
+                    uid,
+                    thread_id: "t".into(),
+                    flags: if uid == 6 {
+                        "\\Seen".into()
+                    } else {
+                        String::new()
+                    },
+                    internaldate: 100,
+                    headers: b"Subject: hi\r\n\r\n".to_vec(),
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+        ops = ops.with_folder("Archive", Some("\\Archive"));
+        store
+            .upsert_folder(&Folder {
+                name: "Archive".into(),
+                uidvalidity: 1,
+                last_uid: 0,
+                special_use: Some("Archive".into()),
+                delimiter: None,
+            })
+            .unwrap();
+        (ops, store, trash, dir)
+    }
+
+    fn run_on(
+        ops: &mut RecordingOps,
+        store: &Store,
+        trash: &Trash,
+        uids: &[u32],
+        action: Action,
+    ) -> Vec<UidResult> {
+        ops.calls.clear();
+        run(ops, store, trash, "INBOX", uids, &action, RULE_NAME, 500).unwrap()
+    }
+
+    fn counts(results: &[UidResult]) -> Vec<(u32, usize)> {
+        results
+            .iter()
+            .map(|(uid, result)| (*uid, *result.as_ref().unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn archiving_many_messages_moves_them_in_one_command() {
+        let (mut ops, store, trash, _dir) = three_in_inbox();
+        let results = run_on(&mut ops, &store, &trash, &[7, 5, 6], Action::Archive);
+        assert_eq!(ops.calls, ["select INBOX", "move INBOX 7,5,6 -> Archive"]);
+        assert_eq!(counts(&results), [(7, 1), (5, 1), (6, 1)]);
+        assert_eq!(store.message_count("INBOX").unwrap(), 0);
+        assert_eq!(ops.mail["Archive"].len(), 3);
+    }
+
+    #[test]
+    fn marking_many_read_stores_the_flag_once_and_skips_those_already_read() {
+        let (mut ops, store, trash, _dir) = three_in_inbox();
+        let results = run_on(&mut ops, &store, &trash, &[5, 6, 7], Action::MarkRead);
+        assert_eq!(ops.calls, ["select INBOX", "add_flags INBOX 5,7 \\Seen"]);
+        assert_eq!(counts(&results), [(5, 1), (6, 0), (7, 1)]);
+        for uid in [5, 6, 7] {
+            let flags = store.message("INBOX", uid).unwrap().unwrap().flags;
+            assert!(has_flag(&flags, "\\Seen"), "{uid}: {flags}");
+        }
+    }
+
+    #[test]
+    fn deleting_many_backs_each_up_then_expunges_them_together() {
+        let (mut ops, store, trash, _dir) = three_in_inbox();
+        let results = run_on(&mut ops, &store, &trash, &[5, 6], Action::Delete);
+        assert_eq!(
+            ops.calls,
+            [
+                "select INBOX",
+                "fetch_raw INBOX 5",
+                "fetch_raw INBOX 6",
+                "add_flags INBOX 5,6 \\Deleted",
+                "expunge INBOX 5,6"
+            ]
+        );
+        assert_eq!(counts(&results), [(5, 1), (6, 1)]);
+        assert_eq!(trash.list().unwrap().len(), 2);
+        assert_eq!(store.message_count("INBOX").unwrap(), 1);
+    }
+
+    #[test]
+    fn archiving_without_an_archive_folder_says_so_for_each_message() {
+        let (mut ops, store, trash, _dir) = setup();
+        let results = run_on(&mut ops, &store, &trash, &[5], Action::Archive);
+        assert!(
+            matches!(
+                &results[0].1,
+                Err(ActionError::Apply(ApplyError::NoArchiveFolder))
+            ),
+            "{results:?}"
+        );
+        assert_eq!(ops.calls, ["select INBOX"]);
+    }
+
+    #[test]
+    fn a_refused_batch_fails_every_message_in_it_and_keeps_their_rows() {
+        let (mut ops, store, trash, _dir) = three_in_inbox();
+        ops.mail.remove("Archive");
+        let results = run_on(&mut ops, &store, &trash, &[5, 7], Action::Archive);
+        assert!(
+            results.iter().all(|(_, result)| result.is_err()),
+            "{results:?}"
+        );
+        assert_eq!(store.message_count("INBOX").unwrap(), 3);
     }
 
     #[test]

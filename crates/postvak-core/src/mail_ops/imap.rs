@@ -91,6 +91,15 @@ impl ImapOps {
         self.command_timeout * 5
     }
 
+    /// A command on one message gets the usual limit; one on a batch the bulk one.
+    fn batch_timeout(&self, uids: &[u32]) -> Duration {
+        if uids.len() > 1 {
+            self.bulk_timeout()
+        } else {
+            self.command_timeout
+        }
+    }
+
     /// Runs one command, giving up after `limit` as a lost connection so the sync loop reconnects.
     fn run<T>(
         &mut self,
@@ -538,53 +547,39 @@ impl MailOps for ImapOps {
     }
 
     fn add_flags(&mut self, uid: u32, flags: &[&str]) -> MailResult<()> {
-        store_flags(self, uid, '+', flags)
+        self.add_flags_to(&[uid], flags)
     }
 
     fn remove_flags(&mut self, uid: u32, flags: &[&str]) -> MailResult<()> {
-        store_flags(self, uid, '-', flags)
+        self.remove_flags_from(&[uid], flags)
     }
 
     fn expunge(&mut self, uid: u32) -> MailResult<()> {
-        let has_uidplus = self.has_uidplus;
-        self.run(self.command_timeout, async |session| {
-            if has_uidplus {
-                let _: Vec<_> = session
-                    .uid_expunge(uid.to_string())
-                    .await
-                    .map_err(proto)?
-                    .try_collect()
-                    .await
-                    .map_err(proto)?;
-            } else {
-                refuse_if_others_deleted(session, uid).await?;
-                let _: Vec<_> = session
-                    .expunge()
-                    .await
-                    .map_err(proto)?
-                    .try_collect()
-                    .await
-                    .map_err(proto)?;
-            }
-            Ok(())
-        })
+        self.expunge_all(&[uid])
     }
 
     fn move_message(&mut self, uid: u32, to: &str) -> MailResult<()> {
-        let (has_move, has_uidplus) = (self.has_move, self.has_uidplus);
-        if has_move {
-            return self.run(self.command_timeout, async |session| {
-                session.uid_mv(uid.to_string(), to).await.map_err(proto)
-            });
-        }
-        self.run(self.command_timeout, async |session| {
-            // Before the copy: once copied, a refused expunge would leave the message in both folders.
-            if !has_uidplus {
-                refuse_if_others_deleted(session, uid).await?;
-            }
-            session.uid_copy(uid.to_string(), to).await.map_err(proto)
-        })?;
-        delete_copied(self, uid, to)
+        self.move_messages(&[uid], to)
+    }
+
+    fn add_flags_to(&mut self, uids: &[u32], flags: &[&str]) -> MailResult<()> {
+        uids.chunks(UID_BATCH)
+            .try_for_each(|batch| store_flags(self, batch, '+', flags))
+    }
+
+    fn remove_flags_from(&mut self, uids: &[u32], flags: &[&str]) -> MailResult<()> {
+        uids.chunks(UID_BATCH)
+            .try_for_each(|batch| store_flags(self, batch, '-', flags))
+    }
+
+    fn expunge_all(&mut self, uids: &[u32]) -> MailResult<()> {
+        uids.chunks(UID_BATCH)
+            .try_for_each(|batch| expunge(self, batch))
+    }
+
+    fn move_messages(&mut self, uids: &[u32], to: &str) -> MailResult<()> {
+        uids.chunks(UID_BATCH)
+            .try_for_each(|batch| move_batch(self, batch, to))
     }
 
     fn create_folder(&mut self, name: &str) -> MailResult<()> {
@@ -654,15 +649,62 @@ impl MailOps for ImapOps {
 }
 
 /// Removes the source of a COPY; on failure clears `\\Deleted` again, so the source stays as it was next to the copy.
-fn delete_copied(ops: &mut impl MailOps, uid: u32, to: &str) -> MailResult<()> {
+fn expunge(ops: &mut ImapOps, uids: &[u32]) -> MailResult<()> {
+    let has_uidplus = ops.has_uidplus;
+    let set = uid_set(uids);
+    ops.run(ops.batch_timeout(uids), async |session| {
+        if has_uidplus {
+            let _: Vec<_> = session
+                .uid_expunge(set)
+                .await
+                .map_err(proto)?
+                .try_collect()
+                .await
+                .map_err(proto)?;
+        } else {
+            refuse_if_others_deleted(session, uids).await?;
+            let _: Vec<_> = session
+                .expunge()
+                .await
+                .map_err(proto)?
+                .try_collect()
+                .await
+                .map_err(proto)?;
+        }
+        Ok(())
+    })
+}
+
+fn move_batch(ops: &mut ImapOps, uids: &[u32], to: &str) -> MailResult<()> {
+    let (has_move, has_uidplus) = (ops.has_move, ops.has_uidplus);
+    let set = uid_set(uids);
+    if has_move {
+        return ops.run(ops.batch_timeout(uids), async |session| {
+            session.uid_mv(set, to).await.map_err(proto)
+        });
+    }
+    ops.run(ops.batch_timeout(uids), async |session| {
+        // Before the copy: once copied, a refused expunge would leave the messages in both folders.
+        if !has_uidplus {
+            refuse_if_others_deleted(session, uids).await?;
+        }
+        session.uid_copy(set, to).await.map_err(proto)
+    })?;
+    delete_copied(ops, uids, to)
+}
+
+fn delete_copied(ops: &mut impl MailOps, uids: &[u32], to: &str) -> MailResult<()> {
     let Err(err) = ops
-        .add_flags(uid, &["\\Deleted"])
-        .and_then(|()| ops.expunge(uid))
+        .add_flags_to(uids, &["\\Deleted"])
+        .and_then(|()| ops.expunge_all(uids))
     else {
         return Ok(());
     };
-    if let Err(undo) = ops.remove_flags(uid, &["\\Deleted"]) {
-        log::warn!("uid {uid}: could not clear \\Deleted after a failed move to {to}: {undo}");
+    if let Err(undo) = ops.remove_flags_from(uids, &["\\Deleted"]) {
+        log::warn!(
+            "uids {}: could not clear \\Deleted after a failed move to {to}: {undo}",
+            uid_set(uids)
+        );
     }
     let kept = |reason: String| format!("copied to {to}, original kept: {reason}");
     Err(match err {
@@ -676,16 +718,50 @@ fn delete_copied(ops: &mut impl MailOps, uid: u32, to: &str) -> MailResult<()> {
 /// Without UIDPLUS only a plain EXPUNGE exists, which would also remove every other message marked deleted here.
 ///
 /// ponytail: another client can still flag a message between this search and the EXPUNGE.
-async fn refuse_if_others_deleted(session: &mut ImapSession, uid: u32) -> MailResult<()> {
+async fn refuse_if_others_deleted(session: &mut ImapSession, uids: &[u32]) -> MailResult<()> {
     let deleted = session.uid_search("DELETED").await.map_err(proto)?;
-    let others = deleted.iter().filter(|&&other| other != uid).count();
+    let others = deleted.iter().filter(|other| !uids.contains(other)).count();
     if others > 0 {
         return Err(MailError::Protocol(format!(
-            "refusing to expunge uid {uid}: the server lacks UIDPLUS, so EXPUNGE would also remove {others} other \
-             message(s) marked deleted in this folder"
+            "refusing to expunge uid {}: the server lacks UIDPLUS, so EXPUNGE would also remove {others} other \
+             message(s) marked deleted in this folder",
+            uid_set(uids)
         )));
     }
     Ok(())
+}
+
+/// Uids per command: a set of this many stays far below the command lengths servers accept, even when no two are
+/// adjacent.
+const UID_BATCH: usize = 500;
+
+/// A uid set for a command: ascending, with runs written as ranges, `1:3,7,9:10`.
+fn uid_set(uids: &[u32]) -> String {
+    let mut sorted = uids.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    let mut parts: Vec<String> = Vec::new();
+    let mut run: Option<(u32, u32)> = None;
+    for uid in sorted {
+        run = match run {
+            Some((first, last)) if last.checked_add(1) == Some(uid) => Some((first, uid)),
+            Some(done) => {
+                parts.push(range(done));
+                Some((uid, uid))
+            }
+            None => Some((uid, uid)),
+        };
+    }
+    parts.extend(run.map(range));
+    parts.join(",")
+}
+
+fn range((first, last): (u32, u32)) -> String {
+    if first == last {
+        first.to_string()
+    } else {
+        format!("{first}:{last}")
+    }
 }
 
 /// The timer loop for servers without IDLE: sleeps in short ticks so shutdown stays responsive.
@@ -703,11 +779,12 @@ fn sleep_until(timeout: Duration, interrupt: &AtomicBool) -> IdleOutcome {
     }
 }
 
-fn store_flags(ops: &mut ImapOps, uid: u32, sign: char, flags: &[&str]) -> MailResult<()> {
-    ops.run(ops.command_timeout, async |session| {
+fn store_flags(ops: &mut ImapOps, uids: &[u32], sign: char, flags: &[&str]) -> MailResult<()> {
+    let set = uid_set(uids);
+    ops.run(ops.batch_timeout(uids), async |session| {
         let query = format!("{sign}FLAGS.SILENT ({})", flags.join(" "));
         let _: Vec<_> = session
-            .uid_store(uid.to_string(), query)
+            .uid_store(set, query)
             .await
             .map_err(proto)?
             .try_collect()
@@ -737,6 +814,16 @@ fn text_query(words: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_uid_set_writes_runs_as_ranges_in_order() {
+        assert_eq!(uid_set(&[7]), "7");
+        assert_eq!(uid_set(&[9, 1, 2, 3, 7, 10, 2]), "1:3,7,9:10");
+        assert_eq!(
+            uid_set(&[u32::MAX, u32::MAX - 1]),
+            format!("{}:{}", u32::MAX - 1, u32::MAX)
+        );
+    }
     use crate::config::PasswordSource;
     use crate::mail_ops::RecordingOps;
     use async_imap::imap_proto::{AttributeValue, Response};
@@ -861,7 +948,7 @@ mod tests {
         ops.add_mail("INBOX", 1, 0, "Subject: a\r\n\r\n", None);
         ops.select("INBOX").unwrap();
         ops.fail_next_expunge = Some(MailError::Protocol("refused".into()));
-        let err = delete_copied(&mut ops, 1, "Archive")
+        let err = delete_copied(&mut ops, &[1], "Archive")
             .unwrap_err()
             .to_string();
         assert!(err.contains("copied to Archive, original kept"), "{err}");

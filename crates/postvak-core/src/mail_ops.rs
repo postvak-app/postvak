@@ -61,7 +61,7 @@ pub enum IdleOutcome {
     Interrupted,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum MailError {
     #[error("could not connect: {0}")]
     Connect(String),
@@ -103,6 +103,23 @@ pub trait MailOps {
     fn create_folder(&mut self, name: &str) -> MailResult<()>;
     /// Appends a message carrying `flags`, e.g. a keyword.
     fn append(&mut self, folder: &str, raw: &[u8], flags: &[&str]) -> MailResult<()>;
+    /// `add_flags` for many messages; a server does it in one command per batch of uids.
+    fn add_flags_to(&mut self, uids: &[u32], flags: &[&str]) -> MailResult<()> {
+        uids.iter().try_for_each(|&uid| self.add_flags(uid, flags))
+    }
+    /// `remove_flags` for many messages; a server does it in one command per batch of uids.
+    fn remove_flags_from(&mut self, uids: &[u32], flags: &[&str]) -> MailResult<()> {
+        uids.iter()
+            .try_for_each(|&uid| self.remove_flags(uid, flags))
+    }
+    /// `expunge` for many messages; a server does it in one command per batch of uids.
+    fn expunge_all(&mut self, uids: &[u32]) -> MailResult<()> {
+        uids.iter().try_for_each(|&uid| self.expunge(uid))
+    }
+    /// `move_message` for many messages; a server does it in one command per batch of uids.
+    fn move_messages(&mut self, uids: &[u32], to: &str) -> MailResult<()> {
+        uids.iter().try_for_each(|&uid| self.move_message(uid, to))
+    }
     /// Waits for new mail in the selected folder, the timeout, or `interrupt` becoming true.
     fn idle(&mut self, timeout: Duration, interrupt: &AtomicBool) -> MailResult<IdleOutcome>;
 }
@@ -209,6 +226,19 @@ mod recording {
             *highest
         }
 
+        /// Runs a batch command as the single ones it stands for, recorded as one call, as a server gets it.
+        fn batch(
+            &mut self,
+            record: String,
+            run: impl FnOnce(&mut RecordingOps) -> MailResult<()>,
+        ) -> MailResult<()> {
+            let before = self.calls.len();
+            let result = run(self);
+            self.calls.truncate(before);
+            self.calls.push(record);
+            result
+        }
+
         fn envelope_mut(&mut self, uid: u32) -> MailResult<&mut Envelope> {
             let folder = self.selected.clone();
             self.mail
@@ -219,6 +249,14 @@ mod recording {
     }
 
     /// The body of a raw message: what follows the first blank line.
+    /// Uids as a recorded call lists them: `3` for one, `1,2,5` for many.
+    fn uid_list(uids: &[u32]) -> String {
+        uids.iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
     fn body_after_headers(raw: &[u8]) -> &[u8] {
         raw.windows(4)
             .position(|w| w == b"\r\n\r\n")
@@ -516,6 +554,45 @@ mod recording {
             self.raw.insert((folder.into(), uid), raw.to_vec());
             self.next_uid.insert(folder.into(), uid + 1);
             Ok(())
+        }
+
+        fn add_flags_to(&mut self, uids: &[u32], flags: &[&str]) -> MailResult<()> {
+            let record = format!(
+                "add_flags {} {} {}",
+                self.selected,
+                uid_list(uids),
+                flags.join(" ")
+            );
+            self.batch(record, |ops| {
+                uids.iter().try_for_each(|&uid| ops.add_flags(uid, flags))
+            })
+        }
+
+        fn remove_flags_from(&mut self, uids: &[u32], flags: &[&str]) -> MailResult<()> {
+            let record = format!(
+                "remove_flags {} {} {}",
+                self.selected,
+                uid_list(uids),
+                flags.join(" ")
+            );
+            self.batch(record, |ops| {
+                uids.iter()
+                    .try_for_each(|&uid| ops.remove_flags(uid, flags))
+            })
+        }
+
+        fn expunge_all(&mut self, uids: &[u32]) -> MailResult<()> {
+            let record = format!("expunge {} {}", self.selected, uid_list(uids));
+            self.batch(record, |ops| {
+                uids.iter().try_for_each(|&uid| ops.expunge(uid))
+            })
+        }
+
+        fn move_messages(&mut self, uids: &[u32], to: &str) -> MailResult<()> {
+            let record = format!("move {} {} -> {to}", self.selected, uid_list(uids));
+            self.batch(record, |ops| {
+                uids.iter().try_for_each(|&uid| ops.move_message(uid, to))
+            })
         }
 
         fn idle(&mut self, timeout: Duration, interrupt: &AtomicBool) -> MailResult<IdleOutcome> {
