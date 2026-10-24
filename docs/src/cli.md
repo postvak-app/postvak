@@ -100,14 +100,14 @@ Inspect or stop the daemon that syncs your accounts; other commands start it whe
 
 ###### **Subcommands:**
 
-* `status` — The daemon's pid, version, uptime, client count and each account's activity
+* `status` — The daemon's pid, version, uptime, client count and each account's activity, and whether its server offers UIDPLUS, without which a delete can also remove mail another app marks deleted at that moment
 * `stop` — Stop the daemon; it starts again when a command needs it
 
 
 
 ## `postvak daemon status`
 
-The daemon's pid, version, uptime, client count and each account's activity
+The daemon's pid, version, uptime, client count and each account's activity, and whether its server offers UIDPLUS, without which a delete can also remove mail another app marks deleted at that moment
 
 **Usage:** `postvak daemon status [OPTIONS]`
 

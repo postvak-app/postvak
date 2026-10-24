@@ -76,6 +76,11 @@ pub enum MailError {
 pub type MailResult<T> = Result<T, MailError>;
 
 pub trait MailOps {
+    /// Whether the server offers UIDPLUS, so an expunge removes only the uids asked; without it a plain EXPUNGE also
+    /// takes every other message marked deleted in the folder.
+    fn has_uidplus(&self) -> bool {
+        true
+    }
     fn list_folders(&mut self) -> MailResult<Vec<RemoteFolder>>;
     fn select(&mut self, folder: &str) -> MailResult<SelectInfo>;
     /// Uids >= `from_uid` in the selected folder, ascending.
@@ -190,6 +195,8 @@ mod recording {
         pub next_inbox_uidvalidity: Option<Arc<AtomicU32>>,
         /// Reports no HIGHESTMODSEQ and ignores CHANGEDSINCE, unlike a CONDSTORE server.
         pub no_condstore: bool,
+        /// Reports no UIDPLUS, like an older server.
+        pub no_uidplus: bool,
         /// Per message the flags last seen and the modseq they got, so tests may edit `mail` directly.
         modseqs: HashMap<(String, u32), (Vec<String>, u64)>,
         highest_modseq: HashMap<String, u64>,
@@ -294,6 +301,10 @@ mod recording {
     }
 
     impl MailOps for RecordingOps {
+        fn has_uidplus(&self) -> bool {
+            !self.no_uidplus
+        }
+
         fn list_folders(&mut self) -> MailResult<Vec<RemoteFolder>> {
             self.calls.push("list_folders".into());
             if let Some(shutdown) = &self.shutdown_on_list_folders {

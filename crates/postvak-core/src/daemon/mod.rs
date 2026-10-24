@@ -124,8 +124,13 @@ pub fn report(event: &Event) {
         }
         | Event::Error { account, message } => report_error(account, message),
         Event::Activity { account, activity } => log::debug!("[{account}] {activity:?}"),
+        Event::Connected {
+            account,
+            uidplus: false,
+        } => println!("[{account}] note: {}", crate::help::NO_UIDPLUS),
         Event::ActionDone { .. }
         | Event::BodyReady { .. }
+        | Event::Connected { .. }
         | Event::Indexed { .. }
         | Event::Restored { .. }
         | Event::RuleApplied { .. }
@@ -211,6 +216,8 @@ struct ClientConn {
 
 struct Hub {
     activity: HashMap<String, Activity>,
+    /// Per account, whether its server offered UIDPLUS at the last login.
+    uidplus: HashMap<String, bool>,
     clients: HashMap<ClientId, ClientConn>,
     last_client_left: Instant,
     next_request: RequestId,
@@ -225,6 +232,7 @@ impl Hub {
         let started = Instant::now();
         Hub {
             activity: HashMap::new(),
+            uidplus: HashMap::new(),
             clients: HashMap::new(),
             last_client_left: started,
             next_request: 0,
@@ -486,7 +494,13 @@ fn stop(shared: &Shared, router: JoinHandle<()>, connections: Vec<Connection>) {
 
 /// Senders and subjects only go to a terminal, never into daemon.log; errors go to both.
 fn reported(event: &Event, terminal: bool) -> bool {
-    terminal || matches!(event, Event::CommandFailed { .. } | Event::Error { .. })
+    terminal
+        || matches!(
+            event,
+            Event::CommandFailed { .. }
+                | Event::Connected { uidplus: false, .. }
+                | Event::Error { .. }
+        )
 }
 
 fn route_events(
@@ -505,8 +519,14 @@ fn route_events(
             notify(&batch);
         }
         let mut hub = lock(&shared.hub);
-        if let Event::Activity { account, activity } = &event {
-            hub.activity.insert(account.clone(), activity.clone());
+        match &event {
+            Event::Activity { account, activity } => {
+                hub.activity.insert(account.clone(), activity.clone());
+            }
+            Event::Connected { account, uidplus } => {
+                hub.uidplus.insert(account.clone(), *uidplus);
+            }
+            _ => {}
         }
         for request in event.request_ids() {
             if let Some((client, id)) = hub.pending.remove(&request) {
@@ -714,6 +734,7 @@ fn status(shared: &Shared) -> Status {
             .into_iter()
             .map(|name| AccountStatus {
                 activity: hub.activity.get(&name).cloned(),
+                uidplus: hub.uidplus.get(&name).copied(),
                 name,
             })
             .collect(),

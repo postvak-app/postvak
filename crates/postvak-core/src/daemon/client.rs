@@ -621,6 +621,7 @@ fn memory_status(accounts: &[String]) -> Status {
             .map(|name| AccountStatus {
                 name: name.clone(),
                 activity: None,
+                uidplus: None,
             })
             .collect(),
     }

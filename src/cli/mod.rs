@@ -834,6 +834,9 @@ fn print_status(status: &Status) {
             .as_ref()
             .map_or("starting".into(), ToString::to_string);
         println!("{}  {activity}", account.name);
+        if account.uidplus == Some(false) {
+            println!("  note: {}", postvak_core::help::NO_UIDPLUS);
+        }
     }
 }
 
@@ -1383,6 +1386,9 @@ fn cmd_account_add(mut config: Config, paths: &Paths) -> Result<()> {
         bail!(
             "the first sync of '{name}' failed; check the login and run `postvak account add` again"
         );
+    }
+    if client.status()?.lacks_uidplus(&name) {
+        println!("note: {}", postvak_core::help::NO_UIDPLUS);
     }
     Ok(())
 }

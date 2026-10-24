@@ -449,6 +449,7 @@ fn wire_messages_round_trip() {
                 accounts: vec![AccountStatus {
                     name: "work".into(),
                     activity: Some(Activity::Idle { since: 7 }),
+                    uidplus: Some(false),
                 }],
             })),
         },
@@ -519,6 +520,48 @@ fn reporting_errors_leaves_senders_and_subjects_out_of_the_log() {
     assert!(!super::reported(&synced, false));
     assert!(super::reported(&error, false));
     assert!(super::reported(&failed, false));
+}
+
+#[test]
+fn the_log_notes_a_server_without_uidplus_and_not_one_with_it() {
+    let connected = |uidplus| Event::Connected {
+        account: "work".into(),
+        uidplus,
+    };
+    assert!(super::reported(&connected(false), false));
+    assert!(!super::reported(&connected(true), false));
+}
+
+#[test]
+fn status_says_which_servers_lack_uidplus() {
+    let connector: crate::engine::Connector = std::sync::Arc::new(|account| {
+        let mut ops = crate::mail_ops::RecordingOps::default().with_folder("INBOX", None);
+        ops.no_uidplus = account.name == "work";
+        Ok(Box::new(ops) as Box<dyn crate::mail_ops::MailOps>)
+    });
+    let daemon = TestDaemon::start_with(options(connector, None));
+    let mut client = daemon.client();
+    status_until(&mut client, |status| {
+        status
+            .accounts
+            .iter()
+            .all(|account| account.uidplus.is_some())
+    });
+    let status = status_of(&mut client);
+    let uidplus = |name: &str| {
+        status
+            .accounts
+            .iter()
+            .find(|account| account.name == name)
+            .and_then(|account| account.uidplus)
+    };
+    assert_eq!(
+        (uidplus("work"), uidplus("play")),
+        (Some(false), Some(true))
+    );
+    assert!(status.lacks_uidplus("work"));
+    assert!(!status.lacks_uidplus("play"));
+    assert!(!status.lacks_uidplus("nobody"));
 }
 
 mod client {

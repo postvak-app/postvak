@@ -78,6 +78,11 @@ pub enum Event {
         request: RequestId,
         message: String,
     },
+    /// The sync thread logged in; `uidplus` says whether the server can expunge just the messages asked.
+    Connected {
+        account: String,
+        uidplus: bool,
+    },
     Error {
         account: String,
         message: String,
@@ -135,6 +140,7 @@ impl Event {
             | Event::ServerSearchDone { request, .. } => vec![*request],
             Event::Synced { requests, .. } => requests.clone(),
             Event::Activity { .. }
+            | Event::Connected { .. }
             | Event::Error { .. }
             | Event::Indexed { .. }
             | Event::NewMail { .. } => Vec::new(),
@@ -1605,6 +1611,10 @@ fn run_session(
         activity: Activity::Connecting,
     });
     let mut ops = connect()?;
+    let _ = events.send(Event::Connected {
+        account: account.name.clone(),
+        uidplus: ops.has_uidplus(),
+    });
     let mut state = AccountSync::open(account, paths)?;
     let interval = Duration::from_secs(account.sync_interval_secs.max(10));
     let mut last_purge = 0i64;
