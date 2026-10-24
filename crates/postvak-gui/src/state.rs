@@ -467,6 +467,9 @@ pub struct App {
     pub(crate) paths: Paths,
     /// Set by the user's own navigation; the next body `sync_body` loads is armed.
     pub(crate) pending_arm: bool,
+    /// View source or Save .eml asked for while the body still shows another message than the cursor's, as after a
+    /// row menu's `TargetRow`; it runs once `sync_body` has caught up.
+    pub(crate) after_body: Option<UiAction>,
     /// The HTML render thread, started for the first HTML message.
     pub(crate) renderer: Option<Renderer>,
     pub(crate) reconnect: fn(&Paths, Waker) -> anyhow::Result<Connection>,
@@ -591,6 +594,7 @@ impl App {
             account_form: None,
             paths,
             pending_arm: false,
+            after_body: None,
             reconnect: connect,
             renderer: None,
             reconnecting: None,
@@ -645,6 +649,11 @@ impl App {
         self.poll_files(now);
         let typing_search = self.search_focused;
         self.sync_body(now, typing_search);
+        if let Some(action) = self.after_body.take()
+            && self.body_follows_cursor()
+        {
+            self.apply_action(action);
+        }
         // The window reports the HTML view's width only when it changes; laying out at the last one starts a newly
         // shown message, and lays out again once a new width has held still.
         if let Some((scale, width)) = self.html_size {
@@ -1097,6 +1106,9 @@ impl App {
                 _ => self.note_error(None, MOVE_ONE_ACCOUNT.into()),
             },
             UiAction::NewRule => self.open_draft(Some(Draft::new())),
+            action @ (UiAction::OpenSource | UiAction::SaveEml) if !self.body_follows_cursor() => {
+                self.after_body = Some(action);
+            }
             UiAction::OpenSource => self.open_source(),
             UiAction::OpenUrl(url) => {
                 if let Err(e) = (self.launch)(url.as_ref(), false) {
@@ -1615,6 +1627,12 @@ impl App {
         }
     }
 
+    /// Whether the body shows the cursor's message, or nothing when there is no row.
+    fn body_follows_cursor(&self) -> bool {
+        self.list.rows.get(self.list.cursor).map(Row::id)
+            == self.body.as_ref().map(|b| (b.account, b.key.clone()))
+    }
+
     /// Loads the cursor's message when the cursor moved to another one; nothing while a search query is typed.
     fn sync_body(&mut self, now: f64, typing_search: bool) {
         if typing_search {
@@ -1622,10 +1640,10 @@ impl App {
             return;
         }
         let armed = std::mem::take(&mut self.pending_arm);
-        let current = self.list.rows.get(self.list.cursor).map(Row::id);
-        if current == self.body.as_ref().map(|b| (b.account, b.key.clone())) {
+        if self.body_follows_cursor() {
             return;
         }
+        let current = self.list.rows.get(self.list.cursor).map(Row::id);
         self.body = current.map(|(account, key)| self.load_body(account, key, now, armed));
         self.prefetch_neighbours();
     }

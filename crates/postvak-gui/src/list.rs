@@ -1031,6 +1031,37 @@ mod tests {
         assert_eq!(wires.sent(), [apply("INBOX", &[1], Action::Trash)]);
     }
 
+    #[test]
+    fn view_source_on_another_row_shows_that_row() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "older"));
+        fx.add("work", message("INBOX", 2, "newer"));
+        let (open, _wires) = fx.window();
+        open.window().invoke_row_menu(1, 2, 0);
+        let shown = open.with(|live| {
+            let body = live.app.body.as_ref().unwrap();
+            (body.key.1, body.source.as_ref().map(|s| s.text.clone()))
+        });
+        assert_eq!(shown.0, 1);
+        assert!(shown.1.unwrap().contains("Subject: older"));
+    }
+
+    #[test]
+    fn save_eml_on_another_row_saves_that_row() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "older"));
+        fx.add("work", message("INBOX", 2, "newer"));
+        let (open, _wires) = fx.window();
+        open.window().invoke_row_menu(1, 2, 1);
+        let downloads = fx.paths.cache_dir.join("downloads");
+        let saved: Vec<_> = std::fs::read_dir(downloads)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(saved, ["older.eml"]);
+        assert!(open.with(|live| live.app.body.as_ref().unwrap().saved.is_some()));
+    }
+
     /// The label of the row of message `uid`.
     fn row_of(open: &crate::test_support::Open, uid: u32) -> String {
         open.labels_containing(&format!("Sender {uid} ")).remove(0)
