@@ -316,6 +316,8 @@ pub(crate) enum UiAction {
     ApproveRule(String),
     /// Take every row out of the selection.
     ClearSelection,
+    /// Dismiss this dialog without answering it; its close button, Escape and the toggles that open it all come here.
+    Close(Dialog),
     /// The rule editor's form changed.
     EditDraft(Box<Draft>),
     /// Open a rule in the editor.
@@ -323,6 +325,7 @@ pub(crate) enum UiAction {
     Collapse,
     /// Move the targeted rows into a folder dropped on.
     DropOn(View),
+    /// Close the topmost open dialog; with none open, leave the search, else clear the selection.
     Escape,
     Expand,
     /// Shift-click: mark the rows from the cursor to this one, and move the cursor there.
@@ -428,6 +431,32 @@ pub(crate) enum UiAction {
     UnsavedCancel,
     UnsavedDiscard,
     UnsavedSave,
+}
+
+/// The window's dialogs, topmost first: the order `ui/window.slint` draws them in reverse.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Dialog {
+    Help,
+    Unsaved,
+    ApplyConfirm,
+    Account,
+    About,
+    Source,
+    Move,
+    History,
+}
+
+impl Dialog {
+    const TOP_FIRST: [Dialog; 8] = [
+        Dialog::Help,
+        Dialog::Unsaved,
+        Dialog::ApplyConfirm,
+        Dialog::Account,
+        Dialog::About,
+        Dialog::Source,
+        Dialog::Move,
+        Dialog::History,
+    ];
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1157,25 +1186,10 @@ impl App {
             UiAction::HtmlWidth { scale, width } => self.html_size = Some((scale, width)),
             UiAction::LoadRemote => self.load_remote(),
             UiAction::ClearSelection => self.list.marked.clear(),
+            UiAction::Close(dialog) => self.close(dialog),
             UiAction::Escape => {
-                if self.apply_confirm.is_some() {
-                    self.apply_confirm = None;
-                } else if let Some(form) = &self.account_form {
-                    // During the login test nothing is saved yet and the save gives up; once it writes, it finishes
-                    // first, so its account joins the window.
-                    if form.saving.is_none() || form.testing {
-                        self.account_form = None;
-                    }
-                } else if self.move_picker.is_some() {
-                    self.move_picker = None;
-                } else if let Some(body) = self.body.as_mut().filter(|b| b.source.is_some()) {
-                    body.source = None;
-                } else if self.help_open {
-                    self.help_open = false;
-                } else if self.about_open {
-                    self.about_open = false;
-                } else if self.history_open {
-                    self.history_open = false;
+                if let Some(dialog) = self.top_dialog() {
+                    self.close(dialog);
                 } else if self.search.is_some() {
                     self.search = None;
                     self.search_focused = false;
@@ -1275,7 +1289,7 @@ impl App {
                     draft.tested = tested;
                 }
             }
-            UiAction::UnsavedCancel => self.leave_draft = None,
+            UiAction::UnsavedCancel => self.close(Dialog::Unsaved),
             UiAction::UnsavedDiscard => {
                 if let Some(leave) = self.leave_draft.take() {
                     self.open_draft(None);
@@ -1440,8 +1454,10 @@ impl App {
                     });
                 }
             }
-            UiAction::ToggleHelp => self.help_open = !self.help_open,
-            UiAction::About => self.about_open = !self.about_open,
+            UiAction::ToggleHelp if self.help_open => self.close(Dialog::Help),
+            UiAction::ToggleHelp => self.help_open = true,
+            UiAction::About if self.about_open => self.close(Dialog::About),
+            UiAction::About => self.about_open = true,
             UiAction::OpenAccountForm => {
                 self.account_form.get_or_insert_with(AccountForm::default);
             }
@@ -1459,8 +1475,10 @@ impl App {
                     self.send_apply_rule(&confirm.rule);
                 }
             }
+            UiAction::ToggleHistory if self.history_open => self.close(Dialog::History),
             UiAction::ToggleHistory => {
-                self.history_open = !self.history_open;
+                self.history_open = true;
+                // The history shows them; the status line need not any more.
                 self.error = None;
                 self.notice = None;
             }
@@ -2733,6 +2751,58 @@ impl App {
         }
     }
 
+    fn dialog_open(&self, dialog: Dialog) -> bool {
+        match dialog {
+            Dialog::Help => self.help_open,
+            Dialog::Unsaved => self.leave_draft.is_some(),
+            Dialog::ApplyConfirm => self.apply_confirm.is_some(),
+            Dialog::Account => self.account_form.is_some(),
+            Dialog::About => self.about_open,
+            Dialog::Source => self.body.as_ref().is_some_and(|b| b.source.is_some()),
+            Dialog::Move => self.move_picker.is_some(),
+            Dialog::History => self.history_open,
+        }
+    }
+
+    fn top_dialog(&self) -> Option<Dialog> {
+        Dialog::TOP_FIRST.into_iter().find(|&d| self.dialog_open(d))
+    }
+
+    /// Dismisses a dialog, however the user asked; an answer (Move, Save, Apply) closes its own. A closed one stays closed.
+    fn close(&mut self, dialog: Dialog) {
+        match dialog {
+            Dialog::Help => self.help_open = false,
+            Dialog::Unsaved => self.leave_draft = None,
+            Dialog::ApplyConfirm => self.apply_confirm = None,
+            Dialog::Account => {
+                // During the login test nothing is saved yet and the save gives up; once it writes, it finishes
+                // first, so its account joins the window.
+                if self
+                    .account_form
+                    .as_ref()
+                    .is_some_and(|form| form.saving.is_none() || form.testing)
+                {
+                    self.account_form = None;
+                }
+            }
+            Dialog::About => self.about_open = false,
+            Dialog::Source => {
+                if let Some(body) = self.body.as_mut() {
+                    body.source = None;
+                }
+            }
+            Dialog::Move => self.move_picker = None,
+            Dialog::History => {
+                if self.history_open {
+                    self.history_open = false;
+                    // Whatever arrived while it was open was shown there.
+                    self.error = None;
+                    self.notice = None;
+                }
+            }
+        }
+    }
+
     /// A result for the status row and the history.
     fn notice(&mut self, text: String) {
         self.push_history(text.clone());
@@ -3784,6 +3854,79 @@ mod tests {
         receive(&mut driver, &wires, [done("work", vec![(1, Ok(1))], 0)]);
         assert!(driver.app.list.rows[0].flagged);
         assert_eq!(driver.app.accounts[0].queued, 1);
+    }
+
+    #[test]
+    fn escape_closes_the_topmost_dialog_first() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Archive", Some("Archive"));
+        inbox(&fx, &[1]);
+        let (mut driver, _wires) = fx.driver();
+        driver.apply(UiAction::ToggleHistory);
+        driver.press("m");
+        driver.apply(UiAction::About);
+        driver.app.apply_confirm = Some(ApplyConfirm {
+            rule: "r".into(),
+            warning: "w".into(),
+        });
+        driver.apply(UiAction::ToggleHelp);
+        let open = |app: &App| {
+            Dialog::TOP_FIRST
+                .into_iter()
+                .filter(|&d| app.dialog_open(d))
+                .collect::<Vec<_>>()
+        };
+        use Dialog::{About, ApplyConfirm as Confirm, Help, History, Move};
+        assert_eq!(open(&driver.app), [Help, Confirm, About, Move, History]);
+        for left in [
+            &[Confirm, About, Move, History][..],
+            &[About, Move, History],
+            &[Move, History],
+            &[History],
+            &[],
+        ] {
+            driver.press("escape");
+            assert_eq!(open(&driver.app), left);
+        }
+    }
+
+    #[test]
+    fn closing_a_closed_dialog_leaves_it_closed() {
+        let fx = Fixture::new(&["work"]);
+        let (mut driver, _wires) = fx.driver();
+        driver.apply(UiAction::About);
+        driver.apply(UiAction::ToggleHelp);
+        driver.apply(UiAction::ToggleHistory);
+        // A double click on a close button.
+        for dialog in [Dialog::About, Dialog::Help, Dialog::History] {
+            driver.apply(UiAction::Close(dialog));
+            driver.apply(UiAction::Close(dialog));
+            assert!(!driver.app.dialog_open(dialog), "{dialog:?}");
+        }
+    }
+
+    #[test]
+    fn escape_and_the_close_button_both_clear_the_status_line_with_the_history() {
+        let fx = Fixture::new(&["work"]);
+        let (mut driver, _wires) = fx.driver();
+        for close in [UiAction::Escape, UiAction::Close(Dialog::History)] {
+            driver.apply(UiAction::ToggleHistory);
+            driver.app.error = Some("work: boom".into());
+            driver.app.notice = Some("removed 1 backup".into());
+            driver.apply(close.clone());
+            assert!(!driver.app.history_open, "{close:?}");
+            assert_eq!((&driver.app.error, &driver.app.notice), (&None, &None));
+        }
+    }
+
+    #[test]
+    fn escape_cancels_the_unsaved_changes_question() {
+        let fx = Fixture::new(&["work"]);
+        let (mut driver, _wires) = fx.driver();
+        driver.app.leave_draft = Some(Box::new(UiAction::SelectView(View::Rules)));
+        driver.press("escape");
+        assert!(driver.app.leave_draft.is_none());
+        assert_ne!(driver.app.view, View::Rules);
     }
 
     #[test]

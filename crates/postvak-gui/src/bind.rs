@@ -12,11 +12,11 @@ use super::html::{self, HtmlState};
 use super::keys::{self, Key, Named, Press};
 use super::rows::{ListModel, PageModel, model, sync, synced};
 use super::rules::SheetSort;
-use super::state::{App, Focus, UiAction, View};
+use super::state::{self, App, Focus, UiAction, View};
 use super::ui::{
-    AccountFields, ActionData, BodyInfo, ConditionData, Dot, FolderItem, FolderKind, KeyHelp,
-    MailWindow, MenuAction, MenuChoice, MenuState, PageInfo, Pane, ProposalData, Remote, RuleData,
-    RuleEditor, SelectedData, Sheet, StatusLine, Theme, ThemePreference, ToolButton,
+    AccountFields, ActionData, BodyInfo, ConditionData, Dialog, Dot, FolderItem, FolderKind,
+    KeyHelp, MailWindow, MenuAction, MenuChoice, MenuState, PageInfo, Pane, ProposalData, Remote,
+    RuleData, RuleEditor, SelectedData, Sheet, StatusLine, Theme, ThemePreference, ToolButton,
 };
 use super::{account, body, icons, list, menu, rules, status, theme, toolbar};
 use postvak_core::message::clean;
@@ -720,9 +720,6 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     window.on_toggle_history(move || {
         act(UiAction::ToggleHistory);
     });
-    window.on_toggle_help(move || {
-        act(UiAction::ToggleHelp);
-    });
     window.on_row_clicked(move |i, extend, toggle| {
         let row = usize::try_from(i).unwrap_or_default();
         act(match (extend, toggle) {
@@ -803,6 +800,9 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     });
     window.on_escape(move || {
         act(UiAction::Escape);
+    });
+    window.on_close_dialog(move |dialog| {
+        act(UiAction::Close(dialog_of(dialog)));
     });
     window.on_toggle_html(move || {
         act(UiAction::ToggleHtml);
@@ -1106,6 +1106,19 @@ fn preference(theme: config::Theme) -> ThemePreference {
         config::Theme::Dark => ThemePreference::Dark,
         config::Theme::Light => ThemePreference::Light,
         config::Theme::System => ThemePreference::System,
+    }
+}
+
+fn dialog_of(dialog: Dialog) -> state::Dialog {
+    match dialog {
+        Dialog::Help => state::Dialog::Help,
+        Dialog::Unsaved => state::Dialog::Unsaved,
+        Dialog::ApplyConfirm => state::Dialog::ApplyConfirm,
+        Dialog::Account => state::Dialog::Account,
+        Dialog::About => state::Dialog::About,
+        Dialog::Source => state::Dialog::Source,
+        Dialog::Move => state::Dialog::Move,
+        Dialog::History => state::Dialog::History,
     }
 }
 

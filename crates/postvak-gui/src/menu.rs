@@ -204,6 +204,20 @@ mod tests {
         assert_eq!(launched(), [env!("CARGO_PKG_REPOSITORY")]);
         open.press("escape");
         assert!(open.find("About Postvak").is_empty());
+        open.window().invoke_menu_item(MenuAction::About);
+        open.click("Close");
+        assert!(open.find("About Postvak").is_empty());
+    }
+
+    #[test]
+    fn closing_the_keys_twice_leaves_them_closed() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        open.window().invoke_menu_item(MenuAction::Keys);
+        assert!(open.with(|live| live.app.help_open));
+        open.window().invoke_close_dialog(crate::ui::Dialog::Help);
+        open.window().invoke_close_dialog(crate::ui::Dialog::Help);
+        assert!(!open.with(|live| live.app.help_open));
     }
 
     #[test]
