@@ -22,7 +22,7 @@ pub struct Entry {
 }
 
 impl Entry {
-    pub fn new(exe: &Path, scopes: &str, accounts: &[String]) -> Entry {
+    pub fn new(exe: &Path, scopes: &str, accounts: &[String], save_dir: Option<&Path>) -> Entry {
         let mut args = vec![
             "mcp".to_string(),
             "--scopes".to_string(),
@@ -31,6 +31,10 @@ impl Entry {
         for account in accounts {
             args.push("--account".to_string());
             args.push(account.clone());
+        }
+        if let Some(dir) = save_dir {
+            args.push("--save-dir".to_string());
+            args.push(dir.display().to_string());
         }
         Entry {
             command: exe.to_path_buf(),
@@ -179,6 +183,7 @@ pub fn install(
     target: Target,
     scopes: &str,
     accounts: &[String],
+    save_dir: Option<&Path>,
     remove: bool,
     dry_run: bool,
 ) -> Result<(String, Option<String>)> {
@@ -186,6 +191,7 @@ pub fn install(
         target,
         scopes,
         accounts,
+        save_dir,
         remove,
         dry_run,
         flatpak_id().as_deref(),
@@ -197,6 +203,7 @@ fn install_from(
     target: Target,
     scopes: &str,
     accounts: &[String],
+    save_dir: Option<&Path>,
     remove: bool,
     dry_run: bool,
     flatpak: Option<&str>,
@@ -205,8 +212,15 @@ fn install_from(
         .into_iter()
         .map(|s| s.as_str())
         .collect();
+    // Absolute, as the host starts the server in a working directory of its own.
+    let save_dir = save_dir
+        .map(|dir| {
+            dir.canonicalize()
+                .with_context(|| format!("no directory {}", dir.display()))
+        })
+        .transpose()?;
     let exe = stable_exe().context("finding the postvak binary")?;
-    let entry = Entry::new(&exe, &granted.join(","), accounts);
+    let entry = Entry::new(&exe, &granted.join(","), accounts, save_dir.as_deref());
     let entry = match flatpak {
         Some(id) => entry.through_flatpak(id),
         None => entry,
@@ -228,6 +242,9 @@ fn install_from(
             .to_vec();
             for account in accounts {
                 json.extend(["--account".to_string(), account.clone()]);
+            }
+            if let Some(dir) = &save_dir {
+                json.extend(["--save-dir".to_string(), dir.display().to_string()]);
             }
             bail!(
                 "the Flatpak cannot edit Claude Desktop's config; run `{}` and add that entry to \
@@ -304,6 +321,7 @@ mod tests {
             Path::new("/opt/homebrew/bin/postvak"),
             "read,rules:propose",
             &["work".into()],
+            None,
         )
     }
 
@@ -335,6 +353,7 @@ mod tests {
             Target::Json,
             "read",
             &[],
+            None,
             false,
             false,
             Some("io.github.postvak_app.postvak"),
@@ -348,15 +367,24 @@ mod tests {
     fn in_a_flatpak_claude_desktop_says_what_to_run_with_the_same_flags() {
         let accounts = ["work".to_string()];
         let id = Some("io.github.postvak_app.postvak");
-        let error =
-            install_from(Target::ClaudeDesktop, "read", &accounts, false, false, id).unwrap_err();
+        let error = install_from(
+            Target::ClaudeDesktop,
+            "read",
+            &accounts,
+            None,
+            false,
+            false,
+            id,
+        )
+        .unwrap_err();
         assert!(
             error
                 .to_string()
                 .contains("`flatpak run io.github.postvak_app.postvak mcp install json --scopes read --account work`"),
             "{error}"
         );
-        let error = install_from(Target::ClaudeDesktop, "read", &[], true, false, id).unwrap_err();
+        let error =
+            install_from(Target::ClaudeDesktop, "read", &[], None, true, false, id).unwrap_err();
         assert!(
             error.to_string().contains("remove mcpServers.postvak"),
             "{error}"
@@ -465,6 +493,7 @@ mod tests {
             Path::new("/opt/homebrew/bin/postvak"),
             "read,read:bodies",
             &[],
+            None,
         );
         edit_claude_desktop(&path, Some(&wider), false).unwrap();
         assert_eq!(std::fs::read_to_string(&bak).unwrap(), original);
@@ -525,18 +554,19 @@ mod tests {
 
     #[test]
     fn shell_quoting_survives_spaces() {
-        let e = Entry::new(Path::new("/Users/me/My Tools/postvak"), "read", &[]);
+        let e = Entry::new(Path::new("/Users/me/My Tools/postvak"), "read", &[], None);
         assert!(shell_words(&e.argv()).starts_with("'/Users/me/My Tools/postvak' mcp"));
     }
 
     #[test]
     fn install_json_validates_scopes_and_lists_them() {
-        let (text, hint) = install(Target::Json, "read,rules:propose", &[], false, false).unwrap();
+        let (text, hint) =
+            install(Target::Json, "read,rules:propose", &[], None, false, false).unwrap();
         assert!(text.contains("mcpServers") && serde_json::from_str::<Value>(&text).is_ok());
         assert!(hint.unwrap().contains("read, rules:propose"));
-        let (_, removed_hint) = install(Target::Json, "read", &[], true, false).unwrap();
+        let (_, removed_hint) = install(Target::Json, "read", &[], None, true, false).unwrap();
         assert!(removed_hint.is_none());
-        assert!(install(Target::Json, "read,everything", &[], false, false).is_err());
+        assert!(install(Target::Json, "read,everything", &[], None, false, false).is_err());
     }
 
     #[test]

@@ -21,7 +21,7 @@ mise install rust         # the pinned Rust toolchain; rustup works too
 cargo install --path .
 ```
 
-On Linux the password keyring is the Secret Service (KDE Wallet or GNOME Keyring), reached over D-Bus. On macOS it is the login Keychain; a new, unsigned binary (every upgrade) asks again for Keychain access, so choose "Always Allow".
+On Linux the password keyring is the Secret Service (KDE Wallet or GNOME Keyring), reached over D-Bus. KDE Wallet offers the Secret Service from KDE Frameworks 5.97 on; with an older Plasma, use a password command instead (see [Accounts](accounts.md)). On macOS it is the login Keychain; a new, unsigned binary (every upgrade) asks again for Keychain access, so choose "Always Allow".
 
 ## macOS app
 
@@ -69,7 +69,7 @@ flatpak run io.github.postvak_app.postvak account add    # with arguments it is 
 
 An alias such as `alias postvak='flatpak run io.github.postvak_app.postvak'` saves typing. Each release also attaches the same app as a single file, `postvak-<arch>.flatpak`, for `flatpak install --user postvak-x86_64.flatpak`; that one does not update itself.
 
-The sandbox may use the network, the display, the password keyring (Secret Service), desktop notifications and your Downloads folder, where saved attachments go, and nothing else. It keeps its own config and state in `~/.var/app/io.github.postvak_app.postvak/`, so a Flatpak install does not share accounts, rules or the daemon with a `postvak` installed another way. A `password = { command = "..." }` runs inside the sandbox too, where tools such as `pass` or `op` are missing, so use the keyring there.
+The sandbox may use the network, the display, the password keyring (Secret Service), desktop notifications, the tray and your Downloads folder, where saved attachments go, and nothing else. It keeps its own config and state in `~/.var/app/io.github.postvak_app.postvak/`, so a Flatpak install does not share accounts, rules or the daemon with a `postvak` installed another way. A `password = { command = "..." }` runs inside the sandbox too, where tools such as `pass` or `op` are missing, so use the keyring there.
 
 Two commands work differently inside the sandbox, because it cannot write files for programs outside it:
 

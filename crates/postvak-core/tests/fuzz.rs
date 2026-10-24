@@ -597,12 +597,29 @@ proptest! {
     #[test]
     fn any_text_parses_and_plans_into_an_expression_fts5_accepts(text in prop_oneof![".{0,128}", hostile_text()]) {
         let store = search_store();
-        let query = search::parse(&text);
+        let query = search::parse(&text, 1_792_843_200);
+        let identity = identity();
         for scope in [Scope::All, Scope::Headers] {
-            let result = store.search(&query, scope, None, 10, true);
-            prop_assert!(result.is_ok(), "{text:?}: {:?}", result.err());
+            for identity in [None, Some(&identity)] {
+                let result = store.search(&query, scope, None, 10, true, identity);
+                prop_assert!(result.is_ok(), "{text:?}: {:?}", result.err());
+            }
         }
     }
+}
+
+/// An identity with a wildcard alias, so `from:me` plans its LIKE predicates.
+fn identity() -> postvak_core::config::Identity {
+    let mut account = postvak_core::config::AccountConfig::new(
+        "work",
+        "imap.example.com",
+        "me@example.com",
+        postvak_core::config::PasswordSource::Command {
+            command: "x".into(),
+        },
+    );
+    account.aliases = vec!["*@shop.example.com".into(), "a_b%c".into()];
+    account.identity().unwrap()
 }
 
 /// Strings aimed at regex, humantime and glob syntax as well as plain junk.

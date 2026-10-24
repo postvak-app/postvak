@@ -655,15 +655,9 @@ impl MailOps for ImapOps {
 
 /// Removes the source of a COPY; on failure clears `\\Deleted` again, so the source stays as it was next to the copy.
 fn delete_copied(ops: &mut impl MailOps, uid: u32, to: &str) -> MailResult<()> {
-    let Err(err) = ops
-        .add_flags(uid, &["\\Deleted"])
-        .and_then(|()| ops.expunge(uid))
-    else {
+    let Err(err) = super::delete_message(ops, uid) else {
         return Ok(());
     };
-    if let Err(undo) = ops.remove_flags(uid, &["\\Deleted"]) {
-        log::warn!("uid {uid}: could not clear \\Deleted after a failed move to {to}: {undo}");
-    }
     let kept = |reason: String| format!("copied to {to}, original kept: {reason}");
     Err(match err {
         MailError::Connect(reason) => MailError::Connect(kept(reason)),

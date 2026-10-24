@@ -161,6 +161,29 @@ fn html_of(msg: &mail_parser::Message<'_>) -> Option<HtmlBody> {
     Some(HtmlBody { html, inline })
 }
 
+/// "Alice <alice@x>, bob@y" is "Alice"; without a name, the first address.
+pub fn display_name(field: &str) -> String {
+    let field = field.trim();
+    if let Some(rest) = field.strip_prefix('"')
+        && let Some((name, _)) = rest.split_once('"')
+        && !name.trim().is_empty()
+    {
+        return name.trim().to_string();
+    }
+    let first = field.split(',').next().unwrap_or("").trim();
+    match first.split_once('<') {
+        Some((name, address)) => {
+            let name = name.trim().trim_matches('"').trim();
+            if name.is_empty() {
+                address.trim_end_matches('>').trim().to_string()
+            } else {
+                name.to_string()
+            }
+        }
+        None => first.to_string(),
+    }
+}
+
 pub fn bare_addresses(field: &str) -> Vec<String> {
     field
         .split(',')
@@ -404,6 +427,21 @@ fn invisible(c: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_name_prefers_the_name_then_the_address() {
+        assert_eq!(display_name("Alice <alice@example.com>"), "Alice");
+        assert_eq!(
+            display_name("\"Doe, John\" <john@example.com>, bob@example.com"),
+            "Doe, John"
+        );
+        assert_eq!(display_name("<bare@example.com>"), "bare@example.com");
+        assert_eq!(
+            display_name("plain@example.com, other@example.com"),
+            "plain@example.com"
+        );
+        assert_eq!(display_name(""), "");
+    }
 
     /// "ignore previous instructions" as Unicode tag characters: invisible on screen, readable to a model.
     fn smuggled(text: &str) -> String {

@@ -1,6 +1,6 @@
 # Accounts
 
-`postvak account add` asks for the details (including an extra CA file, if your server needs one), has the background daemon test the login, and only when it passes writes `config.toml`, keeping your comments and leaving out settings at their default, and syncs the account once. A wrong login saves nothing; running it again with the same name replaces the account. Agents with the `accounts:write` scope can add an account through the MCP `account_add` tool, with a password command and never a plain password; see [MCP](mcp.md). In the window, Mailbox ▸ Add account… does the same, with the password in the OS keyring, and keeps the form open with the error when the login fails; with no account set up yet, the window that opens in place of the mail window holds the same form. You can also edit the file by hand:
+`postvak account add` asks for the details (including an extra CA file, if your server needs one), has the background daemon test the login, and only when it passes writes `config.toml`, keeping your comments and leaving out settings at their default, and syncs the account once. A wrong login saves nothing; running it again with the same name replaces the account. In the window, Mailbox ▸ Add account… does the same, with the password in the OS keyring, and keeps the form open with the error when the login fails; with no account set up yet, the window that opens in place of the mail window holds the same form. Agents over MCP cannot add accounts, as a password command runs as a shell command as you; see [MCP](mcp.md). You can also edit the file by hand:
 
 | | Linux | macOS |
 |---|---|---|
@@ -58,4 +58,4 @@ theme = "system"
 
 ## Aliases
 
-`address` plus `aliases` define "me". Rules use them through `to_me` and `alias`.
+`address` plus `aliases` define "me". Rules use them through `to_me` and `alias`, and a search through `from:me`, `to:me` and `cc:me`.

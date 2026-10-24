@@ -72,6 +72,15 @@ enum Command {
         /// entered by itself after two starts in a row that died before the window showed
         #[arg(long)]
         safe_mode: bool,
+        /// Show this message (a uid in --folder, as `list` prints it); with a window already open, that window shows it
+        #[arg(long, value_name = "UID")]
+        open: Option<u32>,
+        /// The account of the message to show; the first account when left out
+        #[arg(long, requires = "open")]
+        account: Option<String>,
+        /// The folder of the message to show
+        #[arg(long, default_value = "INBOX", requires = "open")]
+        folder: String,
     },
     /// Start the daemon at login: a launchd agent on macOS, a systemd user unit on Linux
     Service {
@@ -123,11 +132,13 @@ enum Command {
         #[arg(long)]
         attachments: bool,
     },
-    #[command(about = postvak_core::help::SEARCH)]
+    #[command(about = postvak_core::help::SEARCH, after_help = postvak_core::help::SEARCH_SYNTAX)]
     Search {
         query: String,
+        /// Only this account; the same as account: in the query
         #[arg(long)]
         account: Option<String>,
+        /// Only this folder; the same as in: in the query
         #[arg(long)]
         folder: Option<String>,
         /// Ask the server too, which searches bodies not downloaded yet; each folder costs a round trip
@@ -228,12 +239,15 @@ enum Command {
     /// Serve Postvak to an agent host over MCP on stdio; hosts start this, see `postvak mcp install`
     #[command(args_conflicts_with_subcommands = true)]
     Mcp {
-        /// Comma-separated: read, read:bodies, rules:propose, rules:write, files:write, mail:modify, accounts:write
+        /// Comma-separated: read, read:bodies, rules:propose, rules:write, files:write, mail:modify
         #[arg(long, default_value = postvak_core::help::MCP_DEFAULT_SCOPES)]
         scopes: String,
         /// Only this account; repeatable; default every account
         #[arg(long)]
         account: Vec<String>,
+        /// The one folder files:write saves attachments into, or below; default your Downloads folder
+        #[arg(long)]
+        save_dir: Option<PathBuf>,
         #[command(subcommand)]
         command: Option<McpCommand>,
     },
@@ -278,12 +292,15 @@ enum McpCommand {
     Install {
         #[arg(value_enum)]
         target: InstallTarget,
-        /// Comma-separated: read, read:bodies, rules:propose, rules:write, files:write, mail:modify, accounts:write
+        /// Comma-separated: read, read:bodies, rules:propose, rules:write, files:write, mail:modify
         #[arg(long, default_value = postvak_core::help::MCP_DEFAULT_SCOPES)]
         scopes: String,
         /// Only this account; repeatable; default every account
         #[arg(long)]
         account: Vec<String>,
+        /// The one folder files:write saves attachments into, or below; default your Downloads folder
+        #[arg(long)]
+        save_dir: Option<PathBuf>,
         /// Take the entry out again
         #[arg(long)]
         remove: bool,
@@ -403,7 +420,12 @@ enum AccountCommand {
 pub fn run() -> Result<()> {
     let cli = if opened_as_mac_app() {
         Cli {
-            command: Command::Gui { safe_mode: false },
+            command: Command::Gui {
+                safe_mode: false,
+                open: None,
+                account: None,
+                folder: "INBOX".into(),
+            },
         }
     } else {
         Cli::parse()
@@ -416,8 +438,19 @@ pub fn run() -> Result<()> {
         postvak_core::crash::install(paths.crash_dir(), process(&cli.command));
     }
     // The window explains its own startup errors, since it may have no terminal to print them in.
-    if let Command::Gui { safe_mode } = cli.command {
-        return cmd_gui(paths, safe_mode);
+    if let Command::Gui {
+        safe_mode,
+        open,
+        account,
+        folder,
+    } = cli.command
+    {
+        let open = open.map(|uid| postvak_core::notify::Open {
+            account,
+            folder,
+            uid,
+        });
+        return cmd_gui(paths, safe_mode, open);
     }
     let paths = paths?;
     let config = Config::load(&paths.config_file())?;
@@ -425,7 +458,8 @@ pub fn run() -> Result<()> {
         Command::Run { idle_exit } => cmd_run(&paths, idle_exit),
         Command::Crashes { command } => cmd_crashes(command, &paths),
         Command::Daemon { command } => cmd_daemon(command, &paths),
-        Command::Gui { safe_mode } => cmd_gui(Ok(paths), safe_mode),
+        // Handled above, before the config loads; kept for an exhaustive match.
+        Command::Gui { safe_mode, .. } => cmd_gui(Ok(paths), safe_mode, None),
         Command::Service { command } => cmd_service(command, &paths),
         Command::Sync { account } => cmd_sync(&config, &paths, account.as_deref()),
         Command::Attachment { command } => cmd_attachment(command, &config, &paths),
@@ -496,8 +530,9 @@ pub fn run() -> Result<()> {
             json,
         } => {
             let daemon = LazyClient::new(&paths);
-            let parsed = postvak_core::search::parse(&query);
-            for acc in select_accounts(&config, account.as_deref())? {
+            let parsed = postvak_core::search::parse(&query, postvak_core::time::now());
+            let account = postvak_core::search::named_account(account.as_deref(), &parsed)?;
+            for acc in select_accounts(&config, account)? {
                 let store = Store::open_account(&paths, &acc.name)?;
                 let mut found = store.search(
                     &parsed,
@@ -505,6 +540,7 @@ pub fn run() -> Result<()> {
                     folder.as_deref(),
                     limit,
                     !exact,
+                    Some(&acc.identity()?),
                 )?;
                 if server {
                     match daemon.search_server(&acc.name, folder.as_deref(), &query) {
@@ -652,8 +688,16 @@ pub fn run() -> Result<()> {
         Command::Mcp {
             scopes,
             account,
+            save_dir,
             command,
-        } => cmd_mcp(&config, &paths, &scopes, &account, command),
+        } => cmd_mcp(
+            &config,
+            &paths,
+            &scopes,
+            &account,
+            save_dir.as_deref(),
+            command,
+        ),
     }
 }
 
@@ -972,12 +1016,20 @@ fn opened_as_mac_app() -> bool {
 }
 
 #[cfg(feature = "gui")]
-fn cmd_gui(paths: Result<Paths>, safe_mode: bool) -> Result<()> {
-    postvak_gui::run(paths, safe_mode)
+fn cmd_gui(
+    paths: Result<Paths>,
+    safe_mode: bool,
+    open: Option<postvak_core::notify::Open>,
+) -> Result<()> {
+    postvak_gui::run(paths, safe_mode, open)
 }
 
 #[cfg(not(feature = "gui"))]
-fn cmd_gui(_paths: Result<Paths>, _safe_mode: bool) -> Result<()> {
+fn cmd_gui(
+    _paths: Result<Paths>,
+    _safe_mode: bool,
+    _open: Option<postvak_core::notify::Open>,
+) -> Result<()> {
     bail!("this postvak was built without the GUI; install it with the default features")
 }
 
@@ -987,14 +1039,16 @@ fn cmd_mcp(
     paths: &Paths,
     scopes: &str,
     accounts: &[String],
+    save_dir: Option<&Path>,
     command: Option<McpCommand>,
 ) -> Result<()> {
     match command {
-        None => postvak_mcp::run(config, paths, scopes, accounts),
+        None => postvak_mcp::run(config, paths, scopes, accounts, save_dir),
         Some(McpCommand::Install {
             target,
             scopes,
             account,
+            save_dir,
             remove,
             dry_run,
         }) => {
@@ -1007,7 +1061,14 @@ fn cmd_mcp(
                 InstallTarget::ClaudeDesktop => Target::ClaudeDesktop,
                 InstallTarget::Json => Target::Json,
             };
-            let (stdout, hint) = install(target, &scopes, &account, remove, dry_run)?;
+            let (stdout, hint) = install(
+                target,
+                &scopes,
+                &account,
+                save_dir.as_deref(),
+                remove,
+                dry_run,
+            )?;
             print!("{stdout}");
             if let Some(hint) = hint {
                 eprint!("{hint}");
@@ -1023,6 +1084,7 @@ fn cmd_mcp(
     _paths: &Paths,
     _scopes: &str,
     _accounts: &[String],
+    _save_dir: Option<&Path>,
     _command: Option<McpCommand>,
 ) -> Result<()> {
     bail!("this postvak was built without the MCP server; install it with the default features")

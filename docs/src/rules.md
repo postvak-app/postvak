@@ -72,11 +72,14 @@ A `delete` wins: when any matching rule deletes a message, no other rule's actio
 - A rule acts only on mail that arrived after the rule was enabled, so adding a rule never touches your history. `postvak rules apply-existing NAME` is the explicit opt-in. Run it with `--dry-run` first. When the rule would delete mail from the server for good (`delete`), it prints how many messages per account and how long their `.eml` backups are kept, then asks you to type `yes`; without a terminal it refuses unless you pass `--yes`. Moves and flags run without asking.
 - A rule approved with `postvak rules approve` acts on mail that arrives after the approval. A rule you add or enable by editing the file acts on mail that arrives after the next sync picks it up.
 - Renaming a rule, editing its account, folder, match or actions, or disabling and enabling it again, restarts that clock.
+- Rules move a message out of a folder once. When it comes back, because you moved it back or a rule on another machine did, no rule moves or archives it again; the other actions still run. So two rules that move mail between two folders stop after one round. Postvak tells messages apart by Message-ID and arrival time, which servers keep when mail moves.
 - Mail restored with `postvak trash restore` carries the `$PostvakRestored` keyword. Rules never act on it again. This needs a server that accepts custom keywords; without one, the same rule can delete restored mail again.
 
 ## Notifications
 
 New INBOX mail notifies unless a rule moved, archived or deleted it, or a matching rule says `silent`; marking, flagging and tagging still notify. `notify` forces a notification for moved mail. When several matching rules say `notify` or `silent`, the last one wins. Only INBOX mail notifies, so `notify` on a rule for another folder does nothing. With `notify = false` on the account, only rules that say `notify` notify. Deleted mail, and mail found by the first sync of a folder, never notifies.
+
+On Linux a notification shows the sender and the subject with Postvak's icon, and asks the desktop for its new-mail sound, which follows Do Not Disturb and your volume; your desktop's notification settings list Postvak, so you can turn the sound or the popups off there. When one sync finds more than three new messages for an account, they come as one notification ("12 new messages", naming the senders), which opens the newest. Plasma shows the account beside Postvak's name. Clicking a notification opens the message in the window, which starts if it is not open. On Wayland an open window cannot bring itself to the front, so Plasma highlights it on the task bar and GNOME says "Postvak is ready".
 
 ## Examples
 

@@ -47,7 +47,7 @@ i-slint-common = "=1.18.1"                           # Slint's own fontique load
 keyring-core = "1"                                   # OS keyring API
 log = "0.4"                                          # logging facade
 mail-parser = "0.11"                                 # RFC 5322 header and body parsing
-notify-rust = "4"                                    # desktop notifications from `run`
+notify-rust = "4"                                    # desktop notifications on macOS; Linux speaks D-Bus through zbus
 image = { version = "0.25", default-features = false }  # HTML mail: read an image's size from its header to refuse decompression bombs; the decoders Blitz enables; already in the tree through Blitz
 percent-encoding = "2"                               # HTML mail: decode cid: URLs; already in the tree through url
 png = "0.18"                                         # decodes the icons and reads and writes the GUI snapshots
@@ -77,6 +77,7 @@ toml_edit = "0.25"                                   # approve/reject edit rules
 ureq = { version = "3", default-features = false, features = ["rustls"] }  # HTTP over the same rustls and ring: remote images in HTML mail when the user asks, the update check, and one-click unsubscribe
 url = "2"                                            # parse URLs to check their host before Postvak contacts it; already in the tree through Blitz and webbrowser
 webpki-roots = "1"                                   # root certificates
+zbus = "5"                                           # Linux notifications on one session bus connection, which also hears clicks and activation tokens; already in the tree through the Secret Service store
 zbus-secret-service-keyring-store = { version = "1", features = ["rt-tokio-crypto-rust"] }  # Secret Service backend for keyring-core
 zeroize = "1"                                        # wipe secrets on drop
 
@@ -156,7 +157,8 @@ debug = "line-tables-only"
 inherits = "release"
 
 # Slint 1.18.1 with its clipboard on the window's own Wayland connection, so copy and paste work on GNOME and in the
-# Flatpak, where arboard's data-control clipboard is missing (https://github.com/slint-ui/slint/pull/14248).
+# Flatpak, where arboard's data-control clipboard is missing (https://github.com/slint-ui/slint/pull/14248), and with
+# the tray icon registering without its own D-Bus name in a Flatpak (https://github.com/slint-ui/slint/pull/14204).
 # Every Slint crate comes from the fork, or two copies of i-slint-core meet. Removing it once a Slint release has the fix:
 # https://github.com/postvak-app/postvak/issues/233.
 [patch.crates-io]

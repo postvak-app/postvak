@@ -1,9 +1,10 @@
 use std::io;
 
-use crate::mail_ops::{MailError, MailOps};
+use crate::actions::RULE_NAME;
+use crate::mail_ops::{MailError, MailOps, delete_message};
 use crate::message::body_text;
-use crate::rules::Action;
-use crate::rules::engine::{Plan, PlannedAction};
+use crate::rules::engine::{Context, Plan, PlannedAction, evaluate};
+use crate::rules::{Action, CompiledRule};
 use crate::store::{Folder, LogEntry, Message, Store, StoreError, has_flag};
 use crate::trash::Trash;
 
@@ -63,6 +64,30 @@ fn download(
     let text = body_text(&raw);
     store.set_raw(&msg.folder, msg.uid, &raw, &text)?;
     Ok((raw, text))
+}
+
+/// What the rules do to `msg`, as `evaluate` says, except that mail a rule moved out of its folder before is not moved
+/// again. So a message that comes back, dragged by hand or moved by another client's rule, stays, and rules moving it
+/// between two folders, on one machine or two, stop after one round.
+pub fn plan_for(
+    rules: &[CompiledRule],
+    msg: &Message,
+    ctx: &Context,
+    store: &Store,
+) -> Result<Plan, StoreError> {
+    let plan = evaluate(rules, msg, ctx);
+    let moves = plan
+        .actions
+        .iter()
+        .any(|planned| matches!(planned.action, Action::Move(_) | Action::Archive));
+    if !moves || !store.rule_moved_out(msg)? {
+        return Ok(plan);
+    }
+    let kept = Context {
+        keep_in_folder: true,
+        ..*ctx
+    };
+    Ok(evaluate(rules, msg, &kept))
 }
 
 /// A delete or user delete wins over everything else in the plan. Otherwise flag actions run first, then only the first
@@ -129,6 +154,10 @@ pub fn apply(
     if let Some((planned, target)) = first_move {
         store.log_action(&log_entry(planned, msg, now))?;
         move_to(&current, &target, ops, store)?;
+        // After the move: a failed one must not keep the rule from trying again.
+        if planned.rule != RULE_NAME {
+            store.record_rule_move(msg)?;
+        }
         executed += 1;
     }
     Ok(executed)
@@ -212,8 +241,7 @@ fn delete(
     entry.action = Action::Delete.label();
     entry.trash_file = Some(path.to_string_lossy().into_owned());
     store.log_action(&entry)?;
-    ops.add_flags(msg.uid, &["\\Deleted"])?;
-    ops.expunge(msg.uid)?;
+    delete_message(ops, msg.uid)?;
     store.remove_message(&msg.folder, msg.uid)?;
     Ok(())
 }
@@ -425,6 +453,24 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_expunge_clears_deleted_again() {
+        let (mut ops, store, trash, _dir, msg) = setup();
+        ops.fail_next_expunge = Some(MailError::Protocol("refused".into()));
+        let err = apply(
+            &plan(vec![Action::Delete]),
+            &msg,
+            &mut ops,
+            &store,
+            &trash,
+            500,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("refused"), "{err}");
+        assert!(ops.mail["INBOX"][0].flags.is_empty(), "{:?}", ops.calls);
+        assert!(store.message("INBOX", 5).unwrap().is_some());
+    }
+
+    #[test]
     fn delete_wins_over_other_actions() {
         let (mut ops, store, trash, _dir, msg) = setup();
         apply(
@@ -515,6 +561,47 @@ mod tests {
                 .contains(&"\\Seen".to_string()),
             "mark_read runs before the move, so the server copy carries it"
         );
+    }
+
+    #[test]
+    fn a_rule_move_is_remembered_and_a_direct_one_or_a_failed_one_is_not() {
+        let (mut ops, store, trash, _dir, msg) = setup();
+        let mut direct = plan(vec![Action::Archive]);
+        direct.actions[0].rule = RULE_NAME.into();
+        apply(&direct, &msg, &mut ops, &store, &trash, 500).unwrap();
+        assert!(
+            !store.rule_moved_out(&msg).unwrap(),
+            "the user may move it back and forth"
+        );
+
+        let (mut ops, store, trash, _dir, msg) = setup();
+        let archive = ops.mail.remove("Archive").unwrap();
+        assert!(
+            apply(
+                &plan(vec![Action::Archive]),
+                &msg,
+                &mut ops,
+                &store,
+                &trash,
+                500
+            )
+            .is_err()
+        );
+        assert!(
+            !store.rule_moved_out(&msg).unwrap(),
+            "the next pass tries again"
+        );
+        ops.mail.insert("Archive".into(), archive);
+        apply(
+            &plan(vec![Action::Archive]),
+            &msg,
+            &mut ops,
+            &store,
+            &trash,
+            500,
+        )
+        .unwrap();
+        assert!(store.rule_moved_out(&msg).unwrap());
     }
 
     #[test]
