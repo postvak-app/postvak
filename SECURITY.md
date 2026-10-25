@@ -21,3 +21,4 @@ Only the latest release gets security fixes.
 - Skipping the `.eml` backup before a rule deletes mail
 - TLS verification problems when talking to the IMAP server
 - Crafted messages that crash Postvak or corrupt the local store
+- Running a `password_command` from a `config.toml` that another user can write; Postvak refuses unless the file and its folder belong to you or root and are not group- or world-writable ([Passwords](docs/src/accounts.md#passwords))

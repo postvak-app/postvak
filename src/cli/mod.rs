@@ -1429,7 +1429,7 @@ fn cmd_account_add(mut config: Config, paths: &Paths) -> Result<()> {
     };
     let client = Client::connect_or_start(paths)?;
     println!("testing the login to {host}…");
-    account::test_login(&client, &config, &account, secret.as_ref())
+    account::test_login(&client, paths, &config, &account, secret.as_ref())
         .context("the login failed, so nothing was saved")?;
     account::add(&mut config, paths, account, secret)?;
     println!("saved to {}", paths.config_file().display());

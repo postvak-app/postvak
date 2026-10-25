@@ -24,6 +24,7 @@ mail-parser.workspace = true
 regex.workspace = true
 rusqlite.workspace = true
 rusqlite_migration.workspace = true
+rustix.workspace = true
 rustls.workspace = true
 schemars.workspace = true
 serde.workspace = true

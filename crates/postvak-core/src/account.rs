@@ -85,6 +85,7 @@ pub fn await_started(client: &Client, name: &str, timeout: Duration) -> anyhow::
 /// command.
 pub fn test_login(
     client: &Client,
+    paths: &Paths,
     config: &Config,
     account: &AccountConfig,
     secret: Option<&Secret>,
@@ -94,6 +95,7 @@ pub fn test_login(
     let secret = match secret {
         Some(secret) => secret,
         None => {
+            credentials::check_command_trusted(account, &paths.config_file())?;
             resolved = credentials::resolve(account)?;
             &resolved
         }
@@ -281,6 +283,28 @@ mod tests {
     }
 
     #[test]
+    fn test_login_refuses_a_password_command_from_a_config_others_can_write() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::under(home.path());
+        write_config(&paths);
+        let daemon = TestDaemon::serve(home, paths.clone(), options(recording_connector(), None));
+        let client = Client::connect_or_start(&daemon.paths).unwrap();
+        let config = Config::load(&paths.config_file()).unwrap();
+        let account = command_account("cmd");
+        std::fs::set_permissions(paths.config_file(), std::fs::Permissions::from_mode(0o666))
+            .unwrap();
+        let err = test_login(&client, &paths, &config, &account, None).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("refusing to run the password command"),
+            "{err:#}"
+        );
+        std::fs::set_permissions(paths.config_file(), std::fs::Permissions::from_mode(0o600))
+            .unwrap();
+        test_login(&client, &paths, &config, &account, None).unwrap();
+    }
+
+    #[test]
     fn test_login_saves_nothing_and_says_why_a_login_fails() {
         let home = tempfile::tempdir().unwrap();
         let paths = Paths::under(home.path());
@@ -291,9 +315,9 @@ mod tests {
         let config = Config::load(&paths.config_file()).unwrap();
         let account = keyring_account("tested");
         let good = Secret::new("hunter2".into());
-        test_login(&client, &config, &account, Some(&good)).unwrap();
+        test_login(&client, &paths, &config, &account, Some(&good)).unwrap();
         let wrong = Secret::new("wrong".into());
-        let err = test_login(&client, &config, &account, Some(&wrong)).unwrap_err();
+        let err = test_login(&client, &paths, &config, &account, Some(&wrong)).unwrap_err();
         assert_eq!(
             format!("{err:#}"),
             "imap.example.com: login failed: [AUTHENTICATIONFAILED] Authentication failed."
@@ -325,13 +349,14 @@ mod tests {
         let daemon = TestDaemon::serve(home, paths.clone(), options(recording_connector(), None));
         let client = Client::connect_or_start(&daemon.paths).unwrap();
         let config = Config::load(&paths.config_file()).unwrap();
-        test_login(&client, &config, &command_account("cmd"), None).unwrap();
+        test_login(&client, &paths, &config, &command_account("cmd"), None).unwrap();
         let mut wrong = command_account("cmd");
         wrong.password = PasswordSource::Command {
             command: "printf wrong".into(),
         };
-        assert!(test_login(&client, &config, &wrong, None).is_err());
-        let err = test_login(&client, &config, &command_account("my cmd"), None).unwrap_err();
+        assert!(test_login(&client, &paths, &config, &wrong, None).is_err());
+        let err =
+            test_login(&client, &paths, &config, &command_account("my cmd"), None).unwrap_err();
         assert!(
             err.to_string().contains("may only contain letters, digits"),
             "{err}"

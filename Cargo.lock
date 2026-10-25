@@ -4797,6 +4797,7 @@ dependencies = [
  "regex",
  "rusqlite",
  "rusqlite_migration",
+ "rustix 1.1.5",
  "rustls",
  "schemars",
  "serde",
