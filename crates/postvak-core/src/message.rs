@@ -276,6 +276,14 @@ fn attachments_of(msg: &mail_parser::Message<'_>) -> Vec<Attachment> {
 
 /// Writes attachment `index` (1-based) into `dir` under its own file name, stripped of any path; never overwrites.
 pub fn save_attachment(raw: &[u8], index: usize, dir: &Path) -> io::Result<PathBuf> {
+    let (name, contents) = attachment(raw, index)?;
+    let path = dir.join(name);
+    write_new(&path, &contents)?;
+    Ok(path)
+}
+
+/// Attachment `index` (1-based): the file name `save_attachment` gives it, and its contents.
+pub fn attachment(raw: &[u8], index: usize) -> io::Result<(String, Vec<u8>)> {
     let msg = MessageParser::default()
         .parse(raw)
         .ok_or_else(|| io::Error::other("the message could not be parsed"))?;
@@ -283,9 +291,22 @@ pub fn save_attachment(raw: &[u8], index: usize, dir: &Path) -> io::Result<PathB
         .checked_sub(1)
         .and_then(|i| msg.attachment(u32::try_from(i).ok()?))
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("no attachment {index}")))?;
-    let path = dir.join(safe_file_name(part.attachment_name(), index));
-    write_new(&path, part.contents())?;
-    Ok(path)
+    Ok((
+        safe_file_name(part.attachment_name(), index),
+        part.contents().to_vec(),
+    ))
+}
+
+/// The file name Save .eml gives a message: `<subject>.eml`.
+pub fn eml_name(subject: Option<&str>) -> String {
+    format!("{}.eml", eml_stem(subject))
+}
+
+/// Writes `bytes` to `path`, replacing what is there: for a path the user chose in a save dialog, which asked before
+/// replacing a file. In place rather than through a temporary file, since a Flatpak's document portal shows only the
+/// chosen file in its folder.
+pub fn write_chosen(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    std::fs::write(path, bytes)
 }
 
 /// The sender picks the name: keep only its last path segment, without control characters or leading dots, so it
@@ -818,5 +839,19 @@ JVBERi0=\r\n\
         let dir = tempfile::tempdir().unwrap();
         let err = save_eml(b"x", None, &dir.path().join("gone")).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn save_as_suggests_the_safe_names_and_replaces_the_chosen_file() {
+        let (name, contents) = attachment(WITH_ATTACHMENTS, 1).unwrap();
+        assert_eq!(name, "evil.txt");
+        assert_eq!(String::from_utf8(contents).unwrap().trim_end(), "not evil");
+        assert_eq!(eml_name(Some("Re: lunch")), "Re- lunch.eml");
+        let dir = tempfile::tempdir().unwrap();
+        let chosen = dir.path().join("mine.txt");
+        std::fs::write(&chosen, b"old").unwrap();
+        // The dialog asked before replacing it.
+        write_chosen(&chosen, b"new").unwrap();
+        assert_eq!(std::fs::read(&chosen).unwrap(), b"new");
     }
 }

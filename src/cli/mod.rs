@@ -81,6 +81,14 @@ enum Command {
         /// The folder of the message to show
         #[arg(long, default_value = "INBOX", requires = "open")]
         folder: String,
+        /// Start out of the way, as at login: in the tray, minimized on macOS, or shown where there is no tray
+        #[arg(long, conflicts_with = "open")]
+        background: bool,
+    },
+    /// Open the window at login, hidden in the tray: a launch agent on macOS, an autostart entry on Linux
+    Autostart {
+        #[command(subcommand)]
+        command: AutostartCommand,
     },
     /// Start the daemon at login: a launchd agent on macOS, a systemd user unit on Linux
     Service {
@@ -271,6 +279,16 @@ enum DaemonCommand {
 }
 
 #[derive(Subcommand)]
+enum AutostartCommand {
+    /// Open the window at login; in a Flatpak the desktop may ask first
+    On,
+    /// Stop opening the window at login
+    Off,
+    /// Say whether the window opens at login
+    Status,
+}
+
+#[derive(Subcommand)]
 enum ServiceCommand {
     /// Install and start the service; stops a daemon that is already running so the service's takes over
     Install {
@@ -425,6 +443,7 @@ pub fn run() -> Result<()> {
                 open: None,
                 account: None,
                 folder: "INBOX".into(),
+                background: false,
             },
         }
     } else {
@@ -443,6 +462,7 @@ pub fn run() -> Result<()> {
         open,
         account,
         folder,
+        background,
     } = cli.command
     {
         let open = open.map(|uid| postvak_core::notify::Open {
@@ -450,7 +470,7 @@ pub fn run() -> Result<()> {
             folder,
             uid,
         });
-        return cmd_gui(paths, safe_mode, open);
+        return cmd_gui(paths, safe_mode, open, background);
     }
     let paths = paths?;
     let config = Config::load(&paths.config_file())?;
@@ -459,7 +479,12 @@ pub fn run() -> Result<()> {
         Command::Crashes { command } => cmd_crashes(command, &paths),
         Command::Daemon { command } => cmd_daemon(command, &paths),
         // Handled above, before the config loads; kept for an exhaustive match.
-        Command::Gui { safe_mode, .. } => cmd_gui(Ok(paths), safe_mode, None),
+        Command::Gui {
+            safe_mode,
+            background,
+            ..
+        } => cmd_gui(Ok(paths), safe_mode, None, background),
+        Command::Autostart { command } => cmd_autostart(command, &paths),
         Command::Service { command } => cmd_service(command, &paths),
         Command::Sync { account } => cmd_sync(&config, &paths, account.as_deref()),
         Command::Attachment { command } => cmd_attachment(command, &config, &paths),
@@ -863,6 +888,19 @@ fn cmd_daemon(command: DaemonCommand, paths: &Paths) -> Result<()> {
     Ok(())
 }
 
+fn cmd_autostart(command: AutostartCommand, paths: &Paths) -> Result<()> {
+    let text = match command {
+        AutostartCommand::On => postvak_core::autostart::set(paths, true)?,
+        AutostartCommand::Off => postvak_core::autostart::set(paths, false)?,
+        AutostartCommand::Status => match postvak_core::autostart::is_on(paths)? {
+            true => "on".to_string(),
+            false => "off".to_string(),
+        },
+    };
+    println!("{text}");
+    Ok(())
+}
+
 fn cmd_service(command: ServiceCommand, paths: &Paths) -> Result<()> {
     let text = match command {
         ServiceCommand::Install { dry_run } => {
@@ -1023,8 +1061,9 @@ fn cmd_gui(
     paths: Result<Paths>,
     safe_mode: bool,
     open: Option<postvak_core::notify::Open>,
+    background: bool,
 ) -> Result<()> {
-    postvak_gui::run(paths, safe_mode, open)
+    postvak_gui::run(paths, safe_mode, open, background)
 }
 
 #[cfg(not(feature = "gui"))]
@@ -1032,6 +1071,7 @@ fn cmd_gui(
     _paths: Result<Paths>,
     _safe_mode: bool,
     _open: Option<postvak_core::notify::Open>,
+    _background: bool,
 ) -> Result<()> {
     bail!("this postvak was built without the GUI; install it with the default features")
 }
@@ -1111,6 +1151,9 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
     match command {
         RulesCommand::Check => {
             println!("{} rules ok", compiled_rules(paths, None)?.len());
+            for warning in rules_warnings(paths, config)? {
+                eprintln!("warning: {}", clean(&warning, false));
+            }
             Ok(())
         }
         RulesCommand::List { json } => {
@@ -1229,6 +1272,17 @@ fn read_rule_json() -> Result<Rule> {
 
 /// Compiles rules with `first_seen_at` left at 0 and without touching any store, so previews are
 /// side-effect free and cover mail that predates the rule. A `name` that matches no rule is an error.
+/// What `rules check` warns about after the rules compiled.
+fn rules_warnings(paths: &Paths, config: &Config) -> Result<Vec<String>> {
+    let path = paths.rules_file();
+    let accounts: Vec<&str> = config.accounts.iter().map(|a| a.name.as_str()).collect();
+    Ok(postvak_core::rules::warnings(
+        &path,
+        &postvak_core::rules::load(&path)?.rules,
+        &accounts,
+    ))
+}
+
 fn compiled_rules(paths: &Paths, name: Option<&str>) -> Result<Vec<CompiledRule>> {
     let file = postvak_core::rules::load(&paths.rules_file())?;
     let compiled: Vec<CompiledRule> = postvak_core::rules::compile(&file)?

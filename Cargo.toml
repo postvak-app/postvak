@@ -5,7 +5,7 @@ default-members = [".", "crates/*"]
 resolver = "3"
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT OR Apache-2.0"
@@ -18,9 +18,9 @@ categories = ["command-line-utilities", "email"]
 
 [workspace.dependencies]
 # Pinned exactly: their APIs are internal and change between patch releases, so a published binary builds only with its own.
-postvak-core = { version = "=0.5.0", path = "crates/postvak-core" }  # sync, store, rules and the daemon: everything below the front ends
-postvak-gui = { version = "=0.5.0", path = "crates/postvak-gui" }    # the Slint window, behind the `gui` feature
-postvak-mcp = { version = "=0.5.0", path = "crates/postvak-mcp" }    # the MCP server, behind the `mcp` feature
+postvak-core = { version = "=0.6.0", path = "crates/postvak-core" }  # sync, store, rules and the daemon: everything below the front ends
+postvak-gui = { version = "=0.6.0", path = "crates/postvak-gui" }    # the Slint window, behind the `gui` feature
+postvak-mcp = { version = "=0.6.0", path = "crates/postvak-mcp" }    # the MCP server, behind the `mcp` feature
 
 anyhow = "1"                                         # error context in the binary and sync loop
 anyrender = "=0.14.0"                                # the drawing trait Blitz paints into; pinned to the version blitz-paint uses
@@ -47,8 +47,12 @@ i-slint-common = "=1.18.1"                           # Slint's own fontique load
 keyring-core = "1"                                   # OS keyring API
 log = "0.4"                                          # logging facade
 mail-parser = "0.11"                                 # RFC 5322 header and body parsing
-notify-rust = "4"                                    # desktop notifications on macOS; Linux speaks D-Bus through zbus
+mac-notification-sys = "0.6"                         # desktop notifications on macOS, posted as Postvak once the app is installed, and their clicks; Linux speaks D-Bus through zbus
 image = { version = "0.25", default-features = false }  # HTML mail: read an image's size from its header to refuse decompression bombs; the decoders Blitz enables; already in the tree through Blitz
+objc2 = { version = "0.6", default-features = false, features = ["std"] }  # MainThreadMarker for the Dock badge; already in the tree through Slint's menus (muda)
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSDockTile", "NSPanel", "NSResponder", "NSSavePanel", "NSWindow"] }  # the unread count on the Dock icon and the Save as… panel; already in the tree through muda
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFDate", "CFRunLoop", "CFString"] }  # the daemon runs its main run loop on macOS, where notification clicks arrive; already in the tree
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSURL"] }  # the Dock badge's label and the Save as… panel's paths; already in the tree through muda
 percent-encoding = "2"                               # HTML mail: decode cid: URLs; already in the tree through url
 png = "0.18"                                         # decodes the icons and reads and writes the GUI snapshots
 proptest = { version = "1", default-features = false, features = ["std"] }  # postvak-core's tests/fuzz.rs (hostile input never panics the parsers) and tests/sync_model.rs (random sync event sequences, shrunk)

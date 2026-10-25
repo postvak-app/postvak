@@ -10,6 +10,10 @@ This document contains the help content for the `postvak` command-line program.
 * [`postvak daemon status`↴](#postvak-daemon-status)
 * [`postvak daemon stop`↴](#postvak-daemon-stop)
 * [`postvak gui`↴](#postvak-gui)
+* [`postvak autostart`↴](#postvak-autostart)
+* [`postvak autostart on`↴](#postvak-autostart-on)
+* [`postvak autostart off`↴](#postvak-autostart-off)
+* [`postvak autostart status`↴](#postvak-autostart-status)
 * [`postvak service`↴](#postvak-service)
 * [`postvak service install`↴](#postvak-service-install)
 * [`postvak service remove`↴](#postvak-service-remove)
@@ -61,6 +65,7 @@ A fast, simple mail client with automatic mailbox rules
 * `run` — Run the daemon in the foreground: sync all accounts continuously and apply rules; fails when a daemon already runs; Ctrl-C stops
 * `daemon` — Inspect or stop the daemon that syncs your accounts; other commands start it when needed
 * `gui` — Open the mail window; starts the daemon when needed
+* `autostart` — Open the window at login, hidden in the tray: a launch agent on macOS, an autostart entry on Linux
 * `service` — Start the daemon at login: a launchd agent on macOS, a systemd user unit on Linux
 * `sync` — Ask the daemon to sync now and apply rules; reports new messages and actions per account, or why one could not sync
 * `attachment` — List or save a message's attachments
@@ -139,6 +144,45 @@ Open the mail window; starts the daemon when needed
 * `--folder <FOLDER>` — The folder of the message to show
 
   Default value: `INBOX`
+* `--background` — Start out of the way, as at login: in the tray, minimized on macOS, or shown where there is no tray
+
+
+
+## `postvak autostart`
+
+Open the window at login, hidden in the tray: a launch agent on macOS, an autostart entry on Linux
+
+**Usage:** `postvak autostart <COMMAND>`
+
+###### **Subcommands:**
+
+* `on` — Open the window at login; in a Flatpak the desktop may ask first
+* `off` — Stop opening the window at login
+* `status` — Say whether the window opens at login
+
+
+
+## `postvak autostart on`
+
+Open the window at login; in a Flatpak the desktop may ask first
+
+**Usage:** `postvak autostart on`
+
+
+
+## `postvak autostart off`
+
+Stop opening the window at login
+
+**Usage:** `postvak autostart off`
+
+
+
+## `postvak autostart status`
+
+Say whether the window opens at login
+
+**Usage:** `postvak autostart status`
 
 
 
@@ -255,7 +299,7 @@ Inspect and test rules.toml
 
 ###### **Subcommands:**
 
-* `check` — Validate rules.toml
+* `check` — Validate rules.toml, and warn about conflicting copies a file sync left beside it and rules for accounts not set up here
 * `test` — Dry run: print what each rule would do to the cached messages; naming a rule previews it even while disabled
 * `schema` — JSON Schema for rules.toml; a proposal is one entry of `rules`
 * `propose` — Read one rule as JSON on stdin and add it disabled, for a human to approve
@@ -268,7 +312,7 @@ Inspect and test rules.toml
 
 ## `postvak rules check`
 
-Validate rules.toml
+Validate rules.toml, and warn about conflicting copies a file sync left beside it and rules for accounts not set up here
 
 **Usage:** `postvak rules check`
 

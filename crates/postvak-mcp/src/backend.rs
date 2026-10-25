@@ -486,9 +486,18 @@ impl Backend {
             .collect())
     }
 
+    /// The number of rules, and what leaves the file valid but not doing what was meant. A server narrowed with
+    /// `--account` warns only about the rules it may see, so a warning cannot reveal a hidden account.
     pub fn rules_check(&self) -> Result<Value> {
-        let count = rules::compile(&rules::load(&self.paths.rules_file())?)?.len();
-        Ok(json!({ "rules": count }))
+        let path = self.paths.rules_file();
+        let mut file = rules::load(&path)?;
+        let count = rules::compile(&file)?.len();
+        file.rules
+            .retain(|r| !self.narrowed() || self.is_visible(r.account.as_deref()));
+        let names = self.all_accounts();
+        let accounts: Vec<&str> = names.iter().map(String::as_str).collect();
+        let warnings = rules::warnings(&path, &file.rules, &accounts);
+        Ok(json!({ "rules": count, "warnings": warnings }))
     }
 
     pub fn rules_schema(&self) -> Result<Value> {

@@ -19,6 +19,8 @@ const LOG_LIMIT: u32 = 500;
 
 pub(crate) struct RulesState {
     pub error: Option<String>,
+    /// What leaves the file valid but not doing what was meant, from `rules::warnings`.
+    pub warnings: Vec<String>,
     /// "Preview on cached mail" results by proposal name; a reload drops them.
     pub previews: BTreeMap<String, String>,
     pub rules: Vec<Rule>,
@@ -30,7 +32,7 @@ pub(crate) struct RulesState {
 impl RulesState {
     /// The file's rules, or the previous ones when it does not parse. A rule that does not compile is reported but
     /// still listed, so it can be switched off.
-    pub fn load(path: &Path, previous: Vec<Rule>) -> RulesState {
+    pub fn load(path: &Path, previous: Vec<Rule>, accounts: &[&str]) -> RulesState {
         let (error, rules) = match rules::load(path) {
             Ok(file) => (
                 rules::compile(&file).err().map(|e| e.to_string()),
@@ -40,6 +42,7 @@ impl RulesState {
         };
         RulesState {
             error,
+            warnings: rules::warnings(path, &rules, accounts),
             previews: BTreeMap::new(),
             proposals: proposals(&rules),
             lines: rule_lines(&rules),
@@ -88,13 +91,19 @@ pub(crate) fn is_proposal(rule: &Rule) -> bool {
     !rule.enabled && rule.proposed_by.is_some()
 }
 
-/// The line above the Rules view when rules.toml does not load.
+/// The lines above the Rules view when rules.toml does not load, or loads but warns.
 pub(crate) fn banner(state: &RulesState) -> Option<String> {
-    let error = state.error.as_deref()?;
-    Some(format!(
-        "{} — sync keeps the previous rules until this is fixed",
-        clean(error, false)
-    ))
+    let error = state.error.as_deref().map(|error| {
+        format!(
+            "{} — sync keeps the previous rules until this is fixed",
+            clean(error, false)
+        )
+    });
+    let lines: Vec<String> = error
+        .into_iter()
+        .chain(state.warnings.iter().map(|w| clean(w, false)))
+        .collect();
+    (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
 fn proposals(rules: &[Rule]) -> Vec<Proposal> {
@@ -313,7 +322,11 @@ mod tests {
     const RULES: &str = "# keep me\n[[rules]]\nname = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions = [\"archive\"]\n\n[[rules]]\nname = \"codes\"\nenabled = false\nproposed_by = \"agent\"\nmatch.subject = { contains = \"code\" }\nactions = [\"delete\"]\n";
 
     fn touch(path: &Path) {
-        let file = std::fs::File::options().write(true).open(path).unwrap();
+        let file = if path.is_dir() {
+            std::fs::File::open(path).unwrap()
+        } else {
+            std::fs::File::options().write(true).open(path).unwrap()
+        };
         file.set_modified(SystemTime::now() + Duration::from_secs(5))
             .unwrap();
     }
@@ -629,6 +642,28 @@ mod tests {
                 .len(),
             1
         );
+        assert_eq!(open.find("newsletters").len(), 1);
+    }
+
+    #[test]
+    fn a_conflicting_copy_and_a_rule_for_a_missing_account_show_in_the_banner() {
+        let fx = Fixture::new(&["work"]);
+        let gone = "[[rules]]\nname = \"old\"\naccount = \"gone\"\nmatch.seen = true\nactions = [\"flag\"]\n";
+        std::fs::write(fx.paths.rules_file(), format!("{RULES}{gone}")).unwrap();
+        let (open, _wires) = view(&fx, View::Rules);
+        assert_eq!(open.labels_containing("account 'gone'").len(), 1);
+        assert!(open.labels_containing("conflicting copy").is_empty());
+        // Syncthing adds the copy without touching rules.toml.
+        let copy = fx
+            .paths
+            .rules_file()
+            .with_file_name("rules.sync-conflict-20261024-101500-ABCDEFG.toml");
+        std::fs::write(copy, "").unwrap();
+        touch(&fx.paths.config_dir);
+        open.advance(5.0);
+        let banner = open.labels_containing("conflicting copy");
+        assert_eq!(banner.len(), 1);
+        assert!(banner[0].contains("account 'gone'"), "{banner:?}");
         assert_eq!(open.find("newsletters").len(), 1);
     }
 

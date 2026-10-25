@@ -527,6 +527,33 @@ async fn rules_list_check_and_schema() {
 }
 
 #[tokio::test]
+async fn rules_check_warns_without_revealing_a_hidden_account() {
+    let fx = fixture(&["work", "home"]);
+    let gone =
+        "[[rules]]\nname = \"old\"\naccount = \"gone\"\nmatch.seen = true\nactions = [\"flag\"]\n";
+    std::fs::write(fx.paths.rules_file(), format!("{RULES}{gone}")).unwrap();
+    let copy = "rules.sync-conflict-20261024-101500-ABCDEFG.toml";
+    std::fs::write(fx.paths.rules_file().with_file_name(copy), "").unwrap();
+    let warnings = |result: CallToolResult| {
+        result.structured_content.unwrap()["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w.as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let all = warnings(call(&connect(&fx, "read", &[]).await, "rules_check", json!({})).await);
+    assert_eq!(all.len(), 2, "{all:?}");
+    assert!(all[0].starts_with(copy));
+    assert!(all[1].contains("account 'gone'"));
+    // Narrowed to work, "home" and "gone" look alike: neither is visible, so neither is named.
+    let narrowed = connect(&fx, "read", &["work"]).await;
+    let only = warnings(call(&narrowed, "rules_check", json!({})).await);
+    assert_eq!(only.len(), 1, "{only:?}");
+    assert!(only[0].starts_with(copy));
+}
+
+#[tokio::test]
 async fn rules_write_approves_rejects_and_toggles() {
     let fx = fixture(&["work"]);
     let propose = connect(&fx, "rules:propose", &[]).await;

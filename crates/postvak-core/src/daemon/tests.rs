@@ -1158,3 +1158,36 @@ fn a_command_for_an_account_between_threads_says_it_is_restarting() {
         }
     );
 }
+
+#[test]
+fn the_watch_warns_once_about_a_conflicting_copy_that_appears_beside_the_rules() {
+    let home = tempfile::tempdir().unwrap();
+    let paths = Paths::under(home.path());
+    write_config(&paths);
+    let dir = paths.config_dir.clone();
+    fs::write(
+        paths.rules_file(),
+        "[[rules]]\nname = \"old\"\naccount = \"werk\"\nmatch.seen = true\nactions = [\"flag\"]\n",
+    )
+    .unwrap();
+    let mut watch = super::Watch::new(&paths);
+    watch.warn(&crate::config::Config::parse(super::test_support::CONFIG).unwrap());
+    assert_eq!(
+        watch.warned,
+        ["rule 'old' is for account 'werk', which is not set up here, so it never runs"]
+    );
+    // Syncthing keeps the winner in rules.toml untouched and only adds the copy.
+    fs::write(
+        dir.join("rules.sync-conflict-20261024-101500-ABCDEFG.toml"),
+        "",
+    )
+    .unwrap();
+    fs::File::open(&dir)
+        .unwrap()
+        .set_modified(SystemTime::now() + Duration::from_secs(5))
+        .unwrap();
+    let (config, rules) = watch.changed(false);
+    assert!(config.is_none() && !rules);
+    assert_eq!(watch.warned.len(), 2);
+    assert!(watch.warned[0].starts_with("rules.sync-conflict-"));
+}

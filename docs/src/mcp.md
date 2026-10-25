@@ -82,7 +82,7 @@ The names follow the CLI commands. A tool that lists things returns the CLI's `-
 - `folders` lists folders with total and unread counts.
 - `list` lists the newest messages in a folder, or threads. `folder` defaults to INBOX; `limit` defaults to 50 and is at most 500. With `threads: true` it counts threads, and each thread comes with all its messages. `unread`, `flagged` and `attachments` keep only the messages, or threads, that have one.
 - `log` shows the rule and action log.
-- `rules_check` validates `rules.toml`.
+- `rules_check` validates `rules.toml` and lists `warnings`: a conflicting copy a file sync left beside it, and a rule for an account that is not set up. A server started with `--account` leaves out rules for the accounts it hides.
 - `rules_list` lists rules and their state.
 - `rules_schema` returns the JSON Schema for a rule.
 - `rules_test` previews a rule, given as JSON, against the local store. It reports subjects, never bodies. A rule that matches on the body needs `read:bodies` too, since its matches would reveal what bodies contain.

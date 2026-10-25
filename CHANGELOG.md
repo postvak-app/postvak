@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/postvak-app/postvak/compare/v0.5.0...v0.6.0) - 2026-10-24
+
+### Added
+
+- *(rules)* warn about a file sync's conflicting copy and rules for missing accounts ([#284](https://github.com/postvak-app/postvak/pull/284))
+- open the window at login, out of the way ([#283](https://github.com/postvak-app/postvak/pull/283))
+- *(macos)* notifications as Postvak that open the message, and the Dock badge ([#282](https://github.com/postvak-app/postvak/pull/282))
+- desktop notifications that open the message, and one window ([#241](https://github.com/postvak-app/postvak/pull/241))
+- *(search)* snippets for body hits in the window and JSON ([#244](https://github.com/postvak-app/postvak/pull/244))
+- *(search)* operators on the CLI, MCP and the window ([#242](https://github.com/postvak-app/postvak/pull/242))
+- *(search)* close matches on the CLI, MCP and the window ([#238](https://github.com/postvak-app/postvak/pull/238))
+- *(sync)* [**breaking**] index message bodies in idle time ([#237](https://github.com/postvak-app/postvak/pull/237))
+- *(search)* [**breaking**] rebuild the search index and one query syntax on every surface ([#235](https://github.com/postvak-app/postvak/pull/235))
+- *(gui)* a sync progress hairline under the status line ([#236](https://github.com/postvak-app/postvak/pull/236))
+- test an account's login through the daemon before saving it ([#231](https://github.com/postvak-app/postvak/pull/231))
+- *(gui)* rules editor ([#215](https://github.com/postvak-app/postvak/pull/215))
+- *(gui)* test the login with a first sync when adding an account ([#229](https://github.com/postvak-app/postvak/pull/229))
+
+### Fixed
+
+- *(rules)* clear \Deleted again when a delete's expunge fails ([#247](https://github.com/postvak-app/postvak/pull/247))
+- *(gui)* view source and save .eml from a row menu act on that row ([#248](https://github.com/postvak-app/postvak/pull/248))
+- *(mcp)* drop account_add and confine attachment_save to one save folder ([#249](https://github.com/postvak-app/postvak/pull/249))
+- *(flatpak)* show the tray icon in the sandbox ([#246](https://github.com/postvak-app/postvak/pull/246))
+- *(rules)* move mail out of a folder once, so opposing move rules and drag-backs settle ([#245](https://github.com/postvak-app/postvak/pull/245))
+- *(deps)* ctutils, rustls-webpki and webpki-roots past RUSTSEC-2026-0381, -0382 and -0385 ([#239](https://github.com/postvak-app/postvak/pull/239))
+- *(gui)* copy and paste on Wayland without X11, through Slint's patched clipboard ([#232](https://github.com/postvak-app/postvak/pull/232))
+- *(gui)* sharp text in the rounded panes ([#230](https://github.com/postvak-app/postvak/pull/230))
+- *(flatpak)* share X11 under Wayland so copy and paste work ([#228](https://github.com/postvak-app/postvak/pull/228))
+- *(gui)* set the Wayland app id after the platform exists ([#227](https://github.com/postvak-app/postvak/pull/227))
+
+### Other
+
+- *(gui)* open a message without stalling the window ([#257](https://github.com/postvak-app/postvak/pull/257))
+- batch IMAP actions, lean rules reads and a quicker daemon ([#280](https://github.com/postvak-app/postvak/pull/280))
+- *(mcp)* the daemon tests that act on synced mail ask for the read scope, so their sync runs ([#243](https://github.com/postvak-app/postvak/pull/243))
+- *(gui)* search as you type without stalling the window ([#256](https://github.com/postvak-app/postvak/pull/256))
+- *(mcp)* trash restore saves its backup now, so the daemon's purge cannot race it ([#240](https://github.com/postvak-app/postvak/pull/240))
+- *(agents)* platforms and desktop integrations everywhere ([#234](https://github.com/postvak-app/postvak/pull/234))
+- *(deps)* bump the cargo group with 7 updates ([#223](https://github.com/postvak-app/postvak/pull/223))
+- link the Docker image from the README ([#225](https://github.com/postvak-app/postvak/pull/225))
+- link the README's claims to the pages that explain them ([#224](https://github.com/postvak-app/postvak/pull/224))
+
 ## [0.5.0](https://github.com/postvak-app/postvak/compare/v0.4.0...v0.5.0) - 2026-10-19
 
 ### Added

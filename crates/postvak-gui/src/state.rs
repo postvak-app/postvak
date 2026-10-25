@@ -32,6 +32,7 @@ use super::load::{self, ListQuery, LoadFn, Loaded, Loading};
 use super::logos::Logos;
 use super::reader::{self, Read, ReadFn, Reader};
 use super::rules::{self, RulesState, SheetSort, TrashRow};
+use super::save_as;
 
 /// The status line when `m` is pressed with marked rows from more than one account.
 pub(crate) const MOVE_ONE_ACCOUNT: &str =
@@ -112,6 +113,15 @@ pub(crate) struct Unsubscribing {
     account: usize,
     key: RowKey,
     answer: Receiver<Result<(), String>>,
+}
+
+/// A Save as… waiting for the user to pick the file, for the message it came from.
+pub(crate) struct SavingAs {
+    account: usize,
+    key: RowKey,
+    /// What goes in the file.
+    bytes: Vec<u8>,
+    answer: Receiver<save_as::Chosen>,
 }
 
 pub(crate) struct BodyState {
@@ -309,6 +319,8 @@ pub(crate) enum UiAction {
     ApproveRule(String),
     /// Take every row out of the selection.
     ClearSelection,
+    /// Dismiss this dialog without answering it; its close button, Escape and the toggles that open it all come here.
+    Close(Dialog),
     /// The rule editor's form changed.
     EditDraft(Box<Draft>),
     /// Open a rule in the editor.
@@ -316,6 +328,7 @@ pub(crate) enum UiAction {
     Collapse,
     /// Move the targeted rows into a folder dropped on.
     DropOn(View),
+    /// Close the topmost open dialog; with none open, leave the search, else clear the selection.
     Escape,
     Expand,
     /// Shift-click: mark the rows from the cursor to this one, and move the cursor there.
@@ -373,9 +386,12 @@ pub(crate) enum UiAction {
     /// Save the form's account, replacing one of the same name.
     SaveAccount(account::Fields),
     SaveAttachment(usize),
+    /// Save as… for attachment `index`: the save dialog picks where.
+    SaveAttachmentAs(usize),
     /// Write the open rule to rules.toml.
     SaveDraft,
     SaveEml,
+    SaveEmlAs,
     /// Leave the shown message's mailing list: by one click, or by opening its page or address.
     Unsubscribe,
     /// Enter in the search field: ask the servers too, and open the first hit.
@@ -390,6 +406,8 @@ pub(crate) enum UiAction {
     SetRuleEnabled(String, bool),
     SortSheet(SheetSort),
     SetTheme(Theme),
+    /// File ▸ Open at login, turned on or off.
+    SetOpenAtLogin(bool),
     StartSearch,
     StepFolder(isize),
     /// Count what the open rule would do to the cached mail.
@@ -418,6 +436,32 @@ pub(crate) enum UiAction {
     UnsavedSave,
 }
 
+/// The window's dialogs, topmost first: the order `ui/window.slint` draws them in reverse.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Dialog {
+    Help,
+    Unsaved,
+    ApplyConfirm,
+    Account,
+    About,
+    Source,
+    Move,
+    History,
+}
+
+impl Dialog {
+    const TOP_FIRST: [Dialog; 8] = [
+        Dialog::Help,
+        Dialog::Unsaved,
+        Dialog::ApplyConfirm,
+        Dialog::Account,
+        Dialog::About,
+        Dialog::Source,
+        Dialog::Move,
+        Dialog::History,
+    ];
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Focus {
     Body,
@@ -431,6 +475,25 @@ pub(crate) enum UpdateCheck {
     Waiting,
     Running(Receiver<Option<String>>),
     Done(Option<String>),
+}
+
+/// Whether the window opens at login: read at the first tick, after the test fixture has swapped the hooks, and
+/// changed on a thread of its own, since in a Flatpak the desktop may ask the user first.
+pub(crate) enum OpenAtLogin {
+    Unknown,
+    Known(bool),
+    /// Turning it on (true) or off; the answer is what changed, or why not.
+    Changing(bool, Receiver<anyhow::Result<String>>),
+}
+
+impl OpenAtLogin {
+    /// What File ▸ Open at login shows: the setting, or the one it is changing to.
+    pub(crate) fn checked(&self) -> bool {
+        match self {
+            OpenAtLogin::Known(on) | OpenAtLogin::Changing(on, _) => *on,
+            OpenAtLogin::Unknown => false,
+        }
+    }
 }
 
 pub struct App {
@@ -452,11 +515,18 @@ pub struct App {
     pub(crate) retention: BTreeMap<String, u64>,
     pub(crate) events: Receiver<Event>,
     pub(crate) fetch_release: fn() -> anyhow::Result<String>,
+    pub(crate) open_at_login: OpenAtLogin,
+    /// Read and change opening at login (`autostart`); tests swap them so nothing outside the test changes.
+    pub(crate) read_open_at_login: fn(&Paths) -> anyhow::Result<bool>,
+    pub(crate) set_open_at_login: fn(&Paths, bool) -> anyhow::Result<String>,
     /// Tests an account's login before the form saves it; tests swap it so no daemon starts.
     pub(crate) check_login: account::Check,
     /// Sends a one-click unsubscribe; tests swap it so nothing leaves the machine.
     pub(crate) post_unsubscribe: fn(&str) -> Result<(), String>,
     pub(crate) unsubscribing: Option<Unsubscribing>,
+    pub(crate) saving_as: Option<SavingAs>,
+    /// Opens the save dialog; tests swap it so no dialog opens.
+    pub(crate) ask_save_path: fn(&str, &Path, Wake) -> Receiver<save_as::Chosen>,
     /// Downloads remote content for HTML mail, started the first time the user asks.
     pub(crate) fetcher: Option<Fetcher>,
     pub(crate) focus: Focus,
@@ -521,6 +591,8 @@ pub struct App {
     pub(crate) requested: HashSet<(usize, RowKey)>,
     pub(crate) rules: RulesState,
     pub(crate) rules_watch: FileWatch,
+    /// The folder holding rules.toml, whose entries change when a file sync leaves a conflicting copy there.
+    pub(crate) config_dir_watch: FileWatch,
     /// The rule open in the Rules view's editor; nothing in it is written until Save.
     pub(crate) rule_draft: Option<Draft>,
     /// What `rule_draft` was opened or last saved as, which tells an edit from a look.
@@ -546,6 +618,11 @@ pub struct App {
     pub(crate) update: UpdateCheck,
     pub(crate) view: View,
     pub(crate) view_dirty: bool,
+}
+
+/// The accounts' names, for the rules' warnings.
+fn account_names(accounts: &[Account]) -> Vec<&str> {
+    accounts.iter().map(|a| a.name.as_str()).collect()
 }
 
 /// An account's window state over its store; `open_account` creates the store of an account just added.
@@ -601,9 +678,10 @@ impl App {
                     }
                 },
             )
-            .collect();
+            .collect::<Vec<Account>>();
         let rules_path = paths.rules_file();
-        let rules = RulesState::load(&rules_path, Vec::new());
+        let rules_dir = paths.config_dir.clone();
+        let rules = RulesState::load(&rules_path, Vec::new(), &account_names(&accounts));
         let mut app = App {
             accounts,
             activity_log: Vec::new(),
@@ -617,9 +695,14 @@ impl App {
             error: None,
             events,
             fetch_release: update::fetch,
+            open_at_login: OpenAtLogin::Unknown,
+            read_open_at_login: postvak_core::autostart::is_on,
+            set_open_at_login: postvak_core::autostart::set,
             check_login: test_login,
             post_unsubscribe: |url| unsubscribe::one_click(url).map_err(|e| e.to_string()),
             unsubscribing: None,
+            saving_as: None,
+            ask_save_path: save_as::ask,
             fetcher: None,
             focus: Focus::List,
             about_open: false,
@@ -658,6 +741,7 @@ impl App {
             requested: HashSet::new(),
             rules,
             rules_watch: FileWatch::new(rules_path),
+            config_dir_watch: FileWatch::new(rules_dir),
             rule_draft: None,
             rule_draft_opened: None,
             rule_draft_stale: false,
@@ -699,7 +783,9 @@ impl App {
         self.logos.receive();
         self.keep_daemon(now);
         self.check_release();
+        self.receive_open_at_login();
         self.receive_unsubscribe();
+        self.receive_save_as();
         self.receive_list();
         if std::mem::take(&mut self.view_dirty) {
             self.refresh_view();
@@ -821,6 +907,31 @@ impl App {
         if let Some(next) = next {
             self.update = next;
         }
+    }
+
+    /// Reads whether the window opens at login, once, then takes the answer of a change.
+    fn receive_open_at_login(&mut self) {
+        let next = match &self.open_at_login {
+            OpenAtLogin::Unknown => match (self.read_open_at_login)(&self.paths) {
+                Ok(on) => OpenAtLogin::Known(on),
+                Err(e) => {
+                    log::debug!("cannot tell whether Postvak opens at login: {e:#}");
+                    OpenAtLogin::Known(false)
+                }
+            },
+            OpenAtLogin::Changing(on, answer) => match answer.try_recv() {
+                Ok(Ok(_)) => OpenAtLogin::Known(*on),
+                Ok(Err(e)) => {
+                    let (on, text) = (*on, format!("{e:#}"));
+                    self.note_error(None, format!("could not change opening at login: {text}"));
+                    OpenAtLogin::Known(!on)
+                }
+                Err(TryRecvError::Disconnected) => OpenAtLogin::Known(!*on),
+                Err(TryRecvError::Empty) => return,
+            },
+            OpenAtLogin::Known(_) => return,
+        };
+        self.open_at_login = next;
     }
 
     /// The newer release to announce, once the check has found one.
@@ -1097,25 +1208,10 @@ impl App {
             UiAction::HtmlWidth { scale, width } => self.html_size = Some((scale, width)),
             UiAction::LoadRemote => self.load_remote(),
             UiAction::ClearSelection => self.list.marked.clear(),
+            UiAction::Close(dialog) => self.close(dialog),
             UiAction::Escape => {
-                if self.apply_confirm.is_some() {
-                    self.apply_confirm = None;
-                } else if let Some(form) = &self.account_form {
-                    // During the login test nothing is saved yet and the save gives up; once it writes, it finishes
-                    // first, so its account joins the window.
-                    if form.saving.is_none() || form.testing {
-                        self.account_form = None;
-                    }
-                } else if self.move_picker.is_some() {
-                    self.move_picker = None;
-                } else if let Some(body) = self.body.as_mut().filter(|b| b.source.is_some()) {
-                    body.source = None;
-                } else if self.help_open {
-                    self.help_open = false;
-                } else if self.about_open {
-                    self.about_open = false;
-                } else if self.history_open {
-                    self.history_open = false;
+                if let Some(dialog) = self.top_dialog() {
+                    self.close(dialog);
                 } else if self.search.is_some() {
                     self.search = None;
                     self.search_focused = false;
@@ -1173,7 +1269,9 @@ impl App {
                 _ => self.note_error(None, MOVE_ONE_ACCOUNT.into()),
             },
             UiAction::NewRule => self.open_draft(Some(Draft::new())),
-            action @ (UiAction::OpenSource | UiAction::SaveEml) if !self.body_follows_cursor() => {
+            action @ (UiAction::OpenSource | UiAction::SaveEml | UiAction::SaveEmlAs)
+                if !self.body_follows_cursor() =>
+            {
                 self.after_body = Some(action);
             }
             UiAction::OpenSource => self.open_source(),
@@ -1213,7 +1311,7 @@ impl App {
                     draft.tested = tested;
                 }
             }
-            UiAction::UnsavedCancel => self.leave_draft = None,
+            UiAction::UnsavedCancel => self.close(Dialog::Unsaved),
             UiAction::UnsavedDiscard => {
                 if let Some(leave) = self.leave_draft.take() {
                     self.open_draft(None);
@@ -1236,7 +1334,21 @@ impl App {
                 }
             }
             UiAction::SaveAttachment(index) => self.save_attachment(index),
+            UiAction::SaveAttachmentAs(index) => {
+                let raw = self.shown_raw();
+                let file = raw.map(|raw| message::attachment(&raw, index));
+                self.save_as(file);
+            }
             UiAction::SaveEml => self.save_eml(),
+            UiAction::SaveEmlAs => {
+                let raw = self.shown_raw();
+                let subject = self
+                    .body
+                    .as_ref()
+                    .and_then(|b| b.message.as_ref()?.subject.clone());
+                let file = raw.map(|raw| Ok((message::eml_name(subject.as_deref()), raw)));
+                self.save_as(file);
+            }
             UiAction::Unsubscribe => self.unsubscribe(),
             UiAction::SearchFocused(focused) => self.search_focused = focused,
             UiAction::SearchAccepted => {
@@ -1307,6 +1419,19 @@ impl App {
                     Err(e) => self.note_error(None, format!("could not save the theme: {e}")),
                 }
             }
+            UiAction::SetOpenAtLogin(on) => {
+                let (done, answer) = mpsc::channel();
+                let (paths, set, wake) = (
+                    self.paths.clone(),
+                    self.set_open_at_login,
+                    self.wake.clone(),
+                );
+                std::thread::spawn(move || {
+                    let _ = done.send(set(&paths, on));
+                    wake();
+                });
+                self.open_at_login = OpenAtLogin::Changing(on, answer);
+            }
             UiAction::StartSearch => {
                 if self.view.lists_mail() {
                     self.search = Some(String::new());
@@ -1351,8 +1476,10 @@ impl App {
                     });
                 }
             }
-            UiAction::ToggleHelp => self.help_open = !self.help_open,
-            UiAction::About => self.about_open = !self.about_open,
+            UiAction::ToggleHelp if self.help_open => self.close(Dialog::Help),
+            UiAction::ToggleHelp => self.help_open = true,
+            UiAction::About if self.about_open => self.close(Dialog::About),
+            UiAction::About => self.about_open = true,
             UiAction::OpenAccountForm => {
                 self.account_form.get_or_insert_with(AccountForm::default);
             }
@@ -1370,8 +1497,10 @@ impl App {
                     self.send_apply_rule(&confirm.rule);
                 }
             }
+            UiAction::ToggleHistory if self.history_open => self.close(Dialog::History),
             UiAction::ToggleHistory => {
-                self.history_open = !self.history_open;
+                self.history_open = true;
+                // The history shows them; the status line need not any more.
                 self.error = None;
                 self.notice = None;
             }
@@ -1946,6 +2075,55 @@ impl App {
             })));
     }
 
+    /// Opens the save dialog for `file` (its suggested name and contents), starting in Downloads. One at a time.
+    fn save_as(&mut self, file: Option<std::io::Result<(String, Vec<u8>)>>) {
+        if self.saving_as.is_some() {
+            return;
+        }
+        let Some(body) = &mut self.body else { return };
+        let (name, bytes) = match file {
+            Some(Ok(file)) => file,
+            failed => {
+                body.saved = Some(saved_note(failed.map(|f| f.map(|_| PathBuf::new()))));
+                return;
+            }
+        };
+        let (account, key) = (body.account, body.key.clone());
+        let answer = (self.ask_save_path)(&name, &self.downloads, self.wake.clone());
+        self.saving_as = Some(SavingAs {
+            account,
+            key,
+            bytes,
+            answer,
+        });
+    }
+
+    /// Writes the file once the dialog picked where; a cancelled dialog saves nothing and says nothing.
+    fn receive_save_as(&mut self) {
+        let Some(saving) = &self.saving_as else {
+            return;
+        };
+        let note = match saving.answer.try_recv() {
+            Err(TryRecvError::Empty) => return,
+            Ok(Ok(None)) => None,
+            Ok(Ok(Some(path))) => Some(saved_note(Some(
+                message::write_chosen(&path, &saving.bytes).map(|()| path),
+            ))),
+            Ok(Err(e)) => Some(format!("Could not save: {e:#}")),
+            Err(TryRecvError::Disconnected) => {
+                Some("Could not save: the save dialog stopped".into())
+            }
+        };
+        if let Some(note) = note
+            && let Some(body) = &mut self.body
+            && body.account == saving.account
+            && body.key == saving.key
+        {
+            body.saved = Some(note);
+        }
+        self.saving_as = None;
+    }
+
     fn unsubscribe(&mut self) {
         let Some(body) = &mut self.body else { return };
         let method = body
@@ -2394,6 +2572,13 @@ impl App {
         self.last_poll = now;
         if self.rules_watch.changed() {
             self.rules_changed();
+        } else if self.config_dir_watch.changed() {
+            // A sync tool's conflicting copy appears beside rules.toml without changing it.
+            self.rules.warnings = rule_file::warnings(
+                &self.paths.rules_file(),
+                &self.rules.rules,
+                &account_names(&self.accounts),
+            );
         }
         let saving = self
             .account_form
@@ -2589,6 +2774,58 @@ impl App {
         }
     }
 
+    fn dialog_open(&self, dialog: Dialog) -> bool {
+        match dialog {
+            Dialog::Help => self.help_open,
+            Dialog::Unsaved => self.leave_draft.is_some(),
+            Dialog::ApplyConfirm => self.apply_confirm.is_some(),
+            Dialog::Account => self.account_form.is_some(),
+            Dialog::About => self.about_open,
+            Dialog::Source => self.body.as_ref().is_some_and(|b| b.source.is_some()),
+            Dialog::Move => self.move_picker.is_some(),
+            Dialog::History => self.history_open,
+        }
+    }
+
+    fn top_dialog(&self) -> Option<Dialog> {
+        Dialog::TOP_FIRST.into_iter().find(|&d| self.dialog_open(d))
+    }
+
+    /// Dismisses a dialog, however the user asked; an answer (Move, Save, Apply) closes its own. A closed one stays closed.
+    fn close(&mut self, dialog: Dialog) {
+        match dialog {
+            Dialog::Help => self.help_open = false,
+            Dialog::Unsaved => self.leave_draft = None,
+            Dialog::ApplyConfirm => self.apply_confirm = None,
+            Dialog::Account => {
+                // During the login test nothing is saved yet and the save gives up; once it writes, it finishes
+                // first, so its account joins the window.
+                if self
+                    .account_form
+                    .as_ref()
+                    .is_some_and(|form| form.saving.is_none() || form.testing)
+                {
+                    self.account_form = None;
+                }
+            }
+            Dialog::About => self.about_open = false,
+            Dialog::Source => {
+                if let Some(body) = self.body.as_mut() {
+                    body.source = None;
+                }
+            }
+            Dialog::Move => self.move_picker = None,
+            Dialog::History => {
+                if self.history_open {
+                    self.history_open = false;
+                    // Whatever arrived while it was open was shown there.
+                    self.error = None;
+                    self.notice = None;
+                }
+            }
+        }
+    }
+
     /// A result for the status row and the history.
     fn notice(&mut self, text: String) {
         self.push_history(text.clone());
@@ -2601,6 +2838,7 @@ impl App {
         self.rules = RulesState::load(
             &self.paths.rules_file(),
             std::mem::take(&mut self.rules.rules),
+            &account_names(&self.accounts),
         );
         let on_disk = self.rule_draft_opened.as_ref().and_then(|opened| {
             let name = opened.original.as_deref()?;
@@ -3639,6 +3877,79 @@ mod tests {
         receive(&mut driver, &wires, [done("work", vec![(1, Ok(1))], 0)]);
         assert!(driver.app.list.rows[0].flagged);
         assert_eq!(driver.app.accounts[0].queued, 1);
+    }
+
+    #[test]
+    fn escape_closes_the_topmost_dialog_first() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Archive", Some("Archive"));
+        inbox(&fx, &[1]);
+        let (mut driver, _wires) = fx.driver();
+        driver.apply(UiAction::ToggleHistory);
+        driver.press("m");
+        driver.apply(UiAction::About);
+        driver.app.apply_confirm = Some(ApplyConfirm {
+            rule: "r".into(),
+            warning: "w".into(),
+        });
+        driver.apply(UiAction::ToggleHelp);
+        let open = |app: &App| {
+            Dialog::TOP_FIRST
+                .into_iter()
+                .filter(|&d| app.dialog_open(d))
+                .collect::<Vec<_>>()
+        };
+        use Dialog::{About, ApplyConfirm as Confirm, Help, History, Move};
+        assert_eq!(open(&driver.app), [Help, Confirm, About, Move, History]);
+        for left in [
+            &[Confirm, About, Move, History][..],
+            &[About, Move, History],
+            &[Move, History],
+            &[History],
+            &[],
+        ] {
+            driver.press("escape");
+            assert_eq!(open(&driver.app), left);
+        }
+    }
+
+    #[test]
+    fn closing_a_closed_dialog_leaves_it_closed() {
+        let fx = Fixture::new(&["work"]);
+        let (mut driver, _wires) = fx.driver();
+        driver.apply(UiAction::About);
+        driver.apply(UiAction::ToggleHelp);
+        driver.apply(UiAction::ToggleHistory);
+        // A double click on a close button.
+        for dialog in [Dialog::About, Dialog::Help, Dialog::History] {
+            driver.apply(UiAction::Close(dialog));
+            driver.apply(UiAction::Close(dialog));
+            assert!(!driver.app.dialog_open(dialog), "{dialog:?}");
+        }
+    }
+
+    #[test]
+    fn escape_and_the_close_button_both_clear_the_status_line_with_the_history() {
+        let fx = Fixture::new(&["work"]);
+        let (mut driver, _wires) = fx.driver();
+        for close in [UiAction::Escape, UiAction::Close(Dialog::History)] {
+            driver.apply(UiAction::ToggleHistory);
+            driver.app.error = Some("work: boom".into());
+            driver.app.notice = Some("removed 1 backup".into());
+            driver.apply(close.clone());
+            assert!(!driver.app.history_open, "{close:?}");
+            assert_eq!((&driver.app.error, &driver.app.notice), (&None, &None));
+        }
+    }
+
+    #[test]
+    fn escape_cancels_the_unsaved_changes_question() {
+        let fx = Fixture::new(&["work"]);
+        let (mut driver, _wires) = fx.driver();
+        driver.app.leave_draft = Some(Box::new(UiAction::SelectView(View::Rules)));
+        driver.press("escape");
+        assert!(driver.app.leave_draft.is_none());
+        assert_ne!(driver.app.view, View::Rules);
     }
 
     #[test]

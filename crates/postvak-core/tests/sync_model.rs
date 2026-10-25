@@ -875,8 +875,14 @@ impl MailOps for Harness<'_> {
         Ok(())
     }
 
-    fn remove_flags(&mut self, _uid: u32, flags: &[&str]) -> MailResult<()> {
-        panic!("no rule removes flags, yet {flags:?} was removed");
+    fn remove_flags(&mut self, uid: u32, flags: &[&str]) -> MailResult<()> {
+        // A delete whose expunge failed clears `\Deleted` again; no rule removes any other flag.
+        assert_eq!(
+            flags,
+            ["\\Deleted"],
+            "no rule removes flags, yet {flags:?} was removed"
+        );
+        self.run_selected(|ops| ops.remove_flags(uid, flags))
     }
 
     fn expunge(&mut self, uid: u32) -> MailResult<()> {
@@ -1210,4 +1216,35 @@ fn seen_cleared_on_the_server_after_a_rule_marked_it_read() {
         }),
     ];
     run_model(&initial, &steps);
+}
+
+/// The connection drops at a rule delete's expunge: the delete clears `\Deleted` again (#247), on a connection that
+/// is gone, and the model must take that undo rather than treat it as a rule removing a flag.
+#[test]
+fn a_delete_whose_expunge_is_lost_clears_deleted_again() {
+    let steps = [
+        Step::Pass {
+            full: false,
+            failure: None,
+            mid: None,
+        },
+        Step::Tick { minutes: 21 },
+        Step::Server(ServerEvent::Arrive {
+            sender: Sender::Codes,
+            folder: 0,
+            age_min: 4,
+            seen: false,
+        }),
+        Step::Tick { minutes: 56 },
+        Step::Server(ServerEvent::Reset { folder: 0 }),
+        Step::Pass {
+            full: false,
+            failure: Some(Failure::Lost {
+                after: 5,
+                effect: false,
+            }),
+            mid: None,
+        },
+    ];
+    run_model(&[], &steps);
 }

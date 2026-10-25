@@ -3,7 +3,7 @@
 use postvak_core::config::Theme;
 use postvak_core::rules::Action;
 
-use super::state::{App, UiAction, View};
+use super::state::{App, OpenAtLogin, UiAction, View};
 use super::toolbar;
 use super::ui::MenuAction;
 
@@ -31,9 +31,14 @@ pub(crate) fn action(item: MenuAction, app: &App) -> Option<UiAction> {
         MenuAction::Junk => act(message, UiAction::Act(Action::Junk)),
         MenuAction::Keys => Some(UiAction::ToggleHelp),
         MenuAction::MarkFolderRead => mark_folder_read(app),
+        MenuAction::OpenAtLogin => match app.open_at_login {
+            OpenAtLogin::Known(on) => Some(UiAction::SetOpenAtLogin(!on)),
+            OpenAtLogin::Unknown | OpenAtLogin::Changing(..) => None,
+        },
         MenuAction::Move => act(message, UiAction::OpenMovePicker),
         MenuAction::ReadOrUnread => act(message, UiAction::ToggleRead),
         MenuAction::SaveEml => act(downloaded, UiAction::SaveEml),
+        MenuAction::SaveEmlAs => act(downloaded, UiAction::SaveEmlAs),
         MenuAction::Search => act(app.view.lists_mail(), UiAction::StartSearch),
         MenuAction::SelectAll => act(message, UiAction::SelectAll),
         MenuAction::SyncNow => Some(UiAction::SyncNow),
@@ -89,8 +94,10 @@ mod tests {
             Some(UiAction::ToggleHelp),
             Some(inbox()),
             Some(UiAction::OpenMovePicker),
+            Some(UiAction::SetOpenAtLogin(true)),
             Some(UiAction::ToggleRead),
             Some(UiAction::SaveEml),
+            Some(UiAction::SaveEmlAs),
             Some(UiAction::StartSearch),
             Some(UiAction::SelectAll),
             Some(UiAction::SyncNow),
@@ -113,8 +120,10 @@ mod tests {
             MenuAction::Keys,
             MenuAction::MarkFolderRead,
             MenuAction::Move,
+            MenuAction::OpenAtLogin,
             MenuAction::ReadOrUnread,
             MenuAction::SaveEml,
+            MenuAction::SaveEmlAs,
             MenuAction::Search,
             MenuAction::SelectAll,
             MenuAction::SyncNow,
@@ -195,5 +204,71 @@ mod tests {
         assert_eq!(launched(), [env!("CARGO_PKG_REPOSITORY")]);
         open.press("escape");
         assert!(open.find("About Postvak").is_empty());
+        open.window().invoke_menu_item(MenuAction::About);
+        open.click("Close");
+        assert!(open.find("About Postvak").is_empty());
+    }
+
+    #[test]
+    fn closing_the_keys_twice_leaves_them_closed() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        open.window().invoke_menu_item(MenuAction::Keys);
+        assert!(open.with(|live| live.app.help_open));
+        open.window().invoke_close_dialog(crate::ui::Dialog::Help);
+        open.window().invoke_close_dialog(crate::ui::Dialog::Help);
+        assert!(!open.with(|live| live.app.help_open));
+    }
+
+    #[test]
+    fn open_at_login_turns_on_and_shows_the_change_at_once() {
+        let fx = Fixture::new(&["work"]);
+        let (mut driver, _wires) = fx.driver();
+        driver.tick();
+        assert!(!driver.app.open_at_login.checked());
+        driver.apply(UiAction::SetOpenAtLogin(true));
+        // Checked while the change runs, and off limits until it is done.
+        assert!(driver.app.open_at_login.checked());
+        assert_eq!(action(MenuAction::OpenAtLogin, &driver.app), None);
+        wait_for(&mut driver, |app| {
+            matches!(app.open_at_login, OpenAtLogin::Known(true))
+        });
+        assert_eq!(
+            action(MenuAction::OpenAtLogin, &driver.app),
+            Some(UiAction::SetOpenAtLogin(false))
+        );
+    }
+
+    #[test]
+    fn a_change_the_platform_refuses_goes_back_and_says_why() {
+        let fx = Fixture::new(&["work"]);
+        let (mut driver, _wires) = fx.driver();
+        driver.app.set_open_at_login = |_, _| Err(anyhow::anyhow!("cancelled"));
+        driver.tick();
+        driver.apply(UiAction::SetOpenAtLogin(true));
+        wait_for(&mut driver, |app| {
+            matches!(app.open_at_login, OpenAtLogin::Known(false))
+        });
+        assert!(
+            driver
+                .app
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("cancelled")),
+            "{:?}",
+            driver.app.error
+        );
+    }
+
+    /// Ticks until `done`, since the change runs on a thread of its own.
+    fn wait_for(driver: &mut crate::test_support::Driver, done: impl Fn(&App) -> bool) {
+        for _ in 0..500 {
+            driver.tick();
+            if done(&driver.app) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the change did not finish");
     }
 }

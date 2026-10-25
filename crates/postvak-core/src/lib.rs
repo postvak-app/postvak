@@ -1,5 +1,6 @@
 pub mod account;
 pub mod actions;
+pub mod autostart;
 pub mod badge;
 pub mod bimi;
 pub mod config;
@@ -14,6 +15,8 @@ pub mod net;
 pub mod notify;
 pub mod output;
 pub mod paths;
+#[cfg(target_os = "linux")]
+pub mod portal;
 pub mod rules;
 pub mod search;
 pub mod store;
