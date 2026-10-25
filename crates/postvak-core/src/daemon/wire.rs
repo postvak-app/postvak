@@ -111,6 +111,17 @@ pub struct Status {
 pub struct AccountStatus {
     pub name: String,
     pub activity: Option<Activity>,
+    /// Whether the server offered UIDPLUS at the account's last login; None before its first.
+    pub uidplus: Option<bool>,
+}
+
+impl Status {
+    /// Whether `account`'s server lacked UIDPLUS at its last login; false while that is not known yet.
+    pub fn lacks_uidplus(&self, account: &str) -> bool {
+        self.accounts
+            .iter()
+            .any(|a| a.name == account && a.uidplus == Some(false))
+    }
 }
 
 /// One message per line.

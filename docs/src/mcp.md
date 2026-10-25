@@ -87,7 +87,7 @@ The names follow the CLI commands. A tool that lists things returns the CLI's `-
 - `rules_schema` returns the JSON Schema for a rule.
 - `rules_test` previews a rule, given as JSON, against the local store. It reports subjects, never bodies. A rule that matches on the body needs `read:bodies` too, since its matches would reveal what bodies contain.
 - `search` finds messages by subject, addresses and attachment names. It matches all the given words, `"phrases"` in order, `-word` excludes, and the last word also as a prefix; the operators of [Search](search.md) (`from:`, `in:`, `is:unread`, `after:7d` and the rest) narrow it, and the tool's description lists them. When fewer than ten messages match as typed, close matches follow, each row's `match` being `exact` or `close`; `exact: true` leaves them out. Searching bodies, and `server: true`, need `read:bodies`.
-- `status` is `postvak daemon status --json`: the daemon's pid, version, uptime and each visible account's activity.
+- `status` is `postvak daemon status --json`: the daemon's pid, version, uptime and each visible account's activity, and whether its server offers `UIDPLUS` (see [Other mail clients](daemon.md#other-mail-clients)).
 - `sync` asks the daemon to sync and run rules once per account and reports its result: `new_messages`, `actions` and `errors`, or an `error` when the account could not sync (offline, for example). It is in the `read` scope, but it writes the store and applies approved rules, so hosts see it as a changing tool.
 - `trash_list` lists the `.eml` backups.
 

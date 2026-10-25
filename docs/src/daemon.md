@@ -49,7 +49,7 @@ services:
 
 IMAP has no lock, so your phone, other mail clients and postvak on another machine all change the mailbox while the daemon syncs it. Postvak picks up their changes on the next sync, and an action on mail another client already moved or deleted does nothing, at most leaving an error in the log. Running the same rules on two machines works: whichever syncs first acts, and both may notify.
 
-A delete, and a move on a server without `MOVE`, removes the message with `EXPUNGE`. Without `UIDPLUS` the server has only a plain `EXPUNGE`, which removes every message in the folder marked deleted, not just this one. Postvak refuses it while any other message there carries that mark. Another client that marks one in the moment between that check and the `EXPUNGE` still loses it. Most servers, including Dovecot, Fastmail and Gmail, offer `UIDPLUS`, and there this cannot happen.
+A delete, and a move on a server without `MOVE`, removes the message with `EXPUNGE`. Without `UIDPLUS` the server has only a plain `EXPUNGE`, which removes every message in the folder marked deleted, not just this one. Postvak refuses it while any other message there carries that mark. Another client that marks one in the moment between that check and the `EXPUNGE` still loses it. Most servers, including Dovecot, Fastmail and Gmail, offer `UIDPLUS`, and there this cannot happen. When an account's server does not, `postvak daemon status` adds a note under its line (`"uidplus": false` in `--json` and the MCP `status` tool), `postvak account add` says so after the first sync, the daemon log notes it at each login, and the mail window's sync line for that account ends in `server lacks UIDPLUS`.
 
 ## Status and stopping
 

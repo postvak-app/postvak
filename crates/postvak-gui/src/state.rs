@@ -13,6 +13,7 @@ use postvak_core::credentials::Secret;
 use postvak_core::daemon::Client;
 use postvak_core::daemon::client::NewerDaemon;
 use postvak_core::daemon::wire::AccountStatus;
+use postvak_core::help;
 use postvak_core::message::{self, Attachment, HtmlBody, clean};
 use postvak_core::paths::{FileWatch, Paths};
 use postvak_core::rules::{self as rule_file, Action, Rule, RuleFile, RulesError};
@@ -202,6 +203,8 @@ pub(crate) struct Account {
     pub settling: Vec<(RowKey, Optimistic, u64)>,
     pub queued: usize,
     pub store: Result<Store, String>,
+    /// Whether the server offered UIDPLUS at the sync thread's last login; None before it logged in.
+    pub uidplus: Option<bool>,
     /// Who the account is, for `from:me` in a search; None when its config could not say.
     pub identity: Option<Identity>,
 }
@@ -640,6 +643,7 @@ fn account_state(
         settling: Vec::new(),
         queued: 0,
         store,
+        uidplus: None,
         identity,
     };
     account.reload_folders();
@@ -661,10 +665,19 @@ impl App {
             .collect();
         let accounts = states
             .into_iter()
-            .map(|AccountStatus { activity, name }| {
-                let identity = config.account(&name).and_then(|a| a.identity().ok());
-                account_state(&paths, name, activity, identity)
-            })
+            .map(
+                |AccountStatus {
+                     activity,
+                     name,
+                     uidplus,
+                 }| {
+                    let identity = config.account(&name).and_then(|a| a.identity().ok());
+                    Account {
+                        uidplus,
+                        ..account_state(&paths, name, activity, identity)
+                    }
+                },
+            )
             .collect::<Vec<Account>>();
         let rules_path = paths.rules_file();
         let rules_dir = paths.config_dir.clone();
@@ -946,6 +959,7 @@ impl App {
         for account in &mut self.accounts {
             if let Some(status) = states.iter().find(|status| status.name == account.name) {
                 account.activity = status.activity.clone();
+                account.uidplus = status.uidplus;
             }
             if account.error.as_deref() == Some(DAEMON_LOST) {
                 account.error = None;
@@ -966,6 +980,7 @@ impl App {
             | Event::ActionDone { account, .. }
             | Event::BodyReady { account, .. }
             | Event::CommandFailed { account, .. }
+            | Event::Connected { account, .. }
             | Event::Error { account, .. }
             | Event::Indexed { account, .. }
             | Event::NewMail { account, .. }
@@ -995,6 +1010,13 @@ impl App {
                     account.error = None;
                 }
                 account.activity = Some(activity);
+            }
+            Event::Connected { uidplus, .. } => {
+                if !uidplus && self.accounts[index].uidplus != Some(false) {
+                    let line = format!("{}: {}", self.accounts[index].name, help::NO_UIDPLUS);
+                    self.push_history(line);
+                }
+                self.accounts[index].uidplus = Some(uidplus);
             }
             Event::NewMail { .. } => {}
             // More bodies are searchable: an open search reloads, at most once a second, keeping its cursor as a
@@ -2627,6 +2649,7 @@ impl App {
                 let replaced = &mut self.accounts[index];
                 replaced.error = None;
                 replaced.activity = None;
+                replaced.uidplus = None;
                 index
             }
             None => {
@@ -4050,6 +4073,7 @@ mod tests {
             activity: Some(Activity::Idle {
                 since: 1_790_000_000,
             }),
+            uidplus: None,
         }
     }
 
