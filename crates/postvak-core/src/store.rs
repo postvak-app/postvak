@@ -26,6 +26,7 @@ const MIGRATIONS: &[M<'static>] = &[
     M::up(include_str!("../migrations/011-search/up.sql")),
     M::up(include_str!("../migrations/012-rule-moves/up.sql")),
     M::up(include_str!("../migrations/013-backlog-index/up.sql")),
+    M::up(include_str!("../migrations/014-newest-index/up.sql")),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -256,16 +257,85 @@ pub struct Store {
 /// Close matches run when the exact tier returns fewer hits than this.
 const CLOSE_MATCHES_BELOW: usize = 10;
 
-/// A message that awaits the indexer at `?1`: never tried, or tried and failed more than a day earlier. The first
-/// half reads the partial index `messages_unindexed`.
-const BACKLOG: &str = "(indexed_at IS NULL OR (body_text IS NULL AND indexed_at < ?1 - 86400))";
-/// The tried messages of `BACKLOG`, spelled as the partial index `messages_retry` (migration 013) so a count reads it.
+/// The messages the indexer never tried, spelled as the partial index `messages_unindexed` (migration 014) so a
+/// count and the backlog read it.
+const NEVER: &str = "indexed_at IS NULL";
+/// The messages the indexer tried without finding text more than a day before `?1`, spelled as the partial index
+/// `messages_retry` (migration 014) so a count and the backlog read it. Together with `NEVER` these are the backlog.
 const RETRY: &str = "body_text IS NULL AND indexed_at IS NOT NULL AND indexed_at < ?1 - 86400";
 
 const MESSAGE_COLUMNS: &str = "folder, uid, message_id, from_addr, to_addr, cc_addr, delivered_to, in_reply_to, refs, thread_id, subject, date, internaldate, flags, size, headers, body_text, attachment_names, indexed_at";
 /// `MESSAGE_COLUMNS` without the body text and the index columns. Those sit behind `raw` in the row, so reading them walks
 /// a stored message's overflow pages, and an indexed body's text is the largest column read.
 const BODILESS_COLUMNS: &str = "folder, uid, message_id, from_addr, to_addr, cc_addr, delivered_to, in_reply_to, refs, thread_id, subject, date, internaldate, flags, size, headers, NULL AS body_text, NULL AS attachment_names, NULL AS indexed_at";
+
+/// The SQL of one search tier: `?1` the FTS expression (NULL when empty), `?2` the folder (NULL for all), then the
+/// plan's parameters, the excluded expression when `exclude`, and the limit. The folder is its own condition only
+/// when there is one: through `?2 IS NULL OR folder = ?2` the planner cannot use the folder's index, and without a
+/// match to drive the join it would read every message.
+fn search_sql(
+    expression: &str,
+    exclude: bool,
+    folder: Option<&str>,
+    plan: &Plan,
+    snippets: bool,
+) -> String {
+    // The body is column 6 of the FTS table; bm25 weighted on some columns is non-zero only when they matched.
+    let hit_columns = if snippets {
+        "snippet(messages_fts, 6, '', '', '…', 12) AS snip,
+         bm25(messages_fts, 1, 1, 1, 1, 1, 1, 0) AS header_score,
+         bm25(messages_fts, 0, 0, 0, 0, 0, 0, 1) AS body_score"
+    } else {
+        "NULL AS snip, 0.0 AS header_score, 0.0 AS body_score"
+    };
+    let in_folder = if folder.is_some() {
+        "folder = ?2"
+    } else {
+        "?2 IS NULL"
+    };
+    let mut sql = if expression.is_empty() {
+        format!(
+            "SELECT {MESSAGE_COLUMNS}, NULL AS snip, 0.0 AS header_score, 0.0 AS body_score FROM messages
+             WHERE ?1 IS NULL AND {in_folder}"
+        )
+    } else {
+        format!(
+            "SELECT {MESSAGE_COLUMNS}, snip, header_score, body_score FROM messages
+             JOIN (SELECT rowid AS fts_id, {hit_columns} FROM messages_fts WHERE messages_fts MATCH ?1) AS hit
+               ON hit.fts_id = messages.id
+             WHERE {in_folder}"
+        )
+    };
+    for predicate in &plan.sql {
+        sql.push_str(" AND (");
+        sql.push_str(predicate);
+        sql.push(')');
+    }
+    let mut next = 3 + plan.params.len();
+    if exclude {
+        sql.push_str(&format!(
+            " AND messages.id NOT IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?{next})"
+        ));
+        next += 1;
+    }
+    sql.push_str(&format!(
+        " ORDER BY internaldate DESC, uid DESC LIMIT ?{next}"
+    ));
+    sql
+}
+
+/// The index backlog at `?1`, newest first, at most `?2`: each half read from its own partial index up to the
+/// limit, then the newest of both. One condition over both halves would read every row.
+fn backlog_sql() -> String {
+    format!(
+        "SELECT * FROM (SELECT {MESSAGE_COLUMNS} FROM messages WHERE {NEVER}
+                        ORDER BY internaldate DESC, uid DESC LIMIT ?2)
+         UNION ALL
+         SELECT * FROM (SELECT {MESSAGE_COLUMNS} FROM messages WHERE {RETRY}
+                        ORDER BY internaldate DESC, uid DESC LIMIT ?2)
+         ORDER BY internaldate DESC, uid DESC LIMIT ?2"
+    )
+}
 
 impl Store {
     pub fn migrations() -> Migrations<'static> {
@@ -671,33 +741,7 @@ impl Store {
         matched: Matched,
         snippets: bool,
     ) -> Result<Vec<Hit>, StoreError> {
-        // The body is column 6 of the FTS table; bm25 weighted on some columns is non-zero only when they matched.
-        let hit_columns = if snippets {
-            "snippet(messages_fts, 6, '', '', '…', 12) AS snip,
-             bm25(messages_fts, 1, 1, 1, 1, 1, 1, 0) AS header_score,
-             bm25(messages_fts, 0, 0, 0, 0, 0, 0, 1) AS body_score"
-        } else {
-            "NULL AS snip, 0.0 AS header_score, 0.0 AS body_score"
-        };
-        let mut sql = if expression.is_empty() {
-            format!(
-                "SELECT {MESSAGE_COLUMNS}, NULL AS snip, 0.0 AS header_score, 0.0 AS body_score FROM messages
-                 WHERE ?1 IS NULL AND (?2 IS NULL OR folder = ?2)"
-            )
-        } else {
-            format!(
-                "SELECT {MESSAGE_COLUMNS}, snip, header_score, body_score FROM messages
-                 JOIN (SELECT rowid AS fts_id, {hit_columns} FROM messages_fts WHERE messages_fts MATCH ?1) AS hit
-                   ON hit.fts_id = messages.id
-                 WHERE (?2 IS NULL OR folder = ?2)"
-            )
-        };
-        for predicate in &plan.sql {
-            sql.push_str(" AND (");
-            sql.push_str(predicate);
-            sql.push(')');
-        }
-        let mut next = 3 + plan.params.len();
+        let sql = search_sql(expression, exclude.is_some(), folder, plan, snippets);
         let mut values: Vec<rusqlite::types::Value> = vec![
             (!expression.is_empty())
                 .then(|| expression.to_owned())
@@ -706,15 +750,8 @@ impl Store {
         ];
         values.extend(plan.params.iter().cloned());
         if let Some(exclude) = exclude {
-            sql.push_str(&format!(
-                " AND messages.id NOT IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?{next})"
-            ));
             values.push(exclude.to_owned().into());
-            next += 1;
         }
-        sql.push_str(&format!(
-            " ORDER BY internaldate DESC, uid DESC LIMIT ?{next}"
-        ));
         values.push(limit.into());
         let mut stmt = self.conn.prepare_cached(&sql)?;
         let mut rows = stmt.query(rusqlite::params_from_iter(values))?;
@@ -794,7 +831,7 @@ impl Store {
     /// both are empty, so the check each idle turn makes costs nothing.
     pub fn backlog_remaining(&self, now: i64) -> Result<u64, StoreError> {
         let never: i64 = self.conn.query_row(
-            "SELECT count(*) FROM messages WHERE indexed_at IS NULL",
+            &format!("SELECT count(*) FROM messages WHERE {NEVER}"),
             [],
             |r| r.get(0),
         )?;
@@ -808,10 +845,9 @@ impl Store {
 
     /// The next messages to index, newest first: never tried, or tried without text more than a day before `now`.
     pub fn backlog(&self, now: i64, limit: u32) -> Result<Vec<Message>, StoreError> {
-        self.query_messages(
-            &format!("WHERE {BACKLOG} ORDER BY internaldate DESC, uid DESC LIMIT ?2"),
-            params![now, limit],
-        )
+        let mut stmt = self.conn.prepare_cached(&backlog_sql())?;
+        let rows = serde_rusqlite::from_rows::<Message>(stmt.query(params![now, limit])?);
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
     /// Records an index pass at `at`: `text` is None when the fetch failed, so the message is retried a day later,
@@ -1998,6 +2034,55 @@ mod tests {
             RETRY.replace("?1", "1000")
         ));
         assert!(retry.contains("INDEX messages_retry"), "{retry}");
+        let backlog = plan(&backlog_sql().replace("?1", "1000").replace("?2", "200"));
+        assert!(
+            backlog.contains("INDEX messages_unindexed")
+                && backlog.contains("INDEX messages_retry")
+                && !backlog.lines().any(|line| line.trim() == "SCAN messages"),
+            "{backlog}"
+        );
+    }
+
+    /// A search of predicates alone has no match to drive the join, so it walks an index newest first and stops at
+    /// the limit: `messages_newest` across folders, and the folder's own index in one folder.
+    #[test]
+    fn a_search_without_words_reads_an_index_newest_first() {
+        let s = store_with_inbox();
+        for uid in 1..=500 {
+            s.insert_message(&msg("INBOX", uid, i64::from(uid)))
+                .unwrap();
+        }
+        let plan_of = |folder: Option<&str>| -> String {
+            let query = search::parse("after:2024-01-01", 1_700_000_000);
+            let planned = search::plan(&query, Scope::All, None, None);
+            let sql = search_sql(&planned.exact, false, folder, &planned, true);
+            let mut stmt = s
+                .conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap();
+            let values: Vec<rusqlite::types::Value> = vec![
+                rusqlite::types::Null.into(),
+                folder.map(str::to_owned).into(),
+                1_000.into(),
+                100.into(),
+            ];
+            let rows = stmt
+                .query_map(rusqlite::params_from_iter(values), |r| {
+                    r.get::<_, String>(3)
+                })
+                .unwrap();
+            rows.collect::<Result<Vec<_>, _>>().unwrap().join("\n")
+        };
+        let all = plan_of(None);
+        assert!(
+            all.contains("INDEX messages_newest") && !all.contains("TEMP B-TREE"),
+            "{all}"
+        );
+        let one = plan_of(Some("INBOX"));
+        assert!(
+            one.contains("INDEX messages_internaldate (folder=? AND internaldate>?)"),
+            "{one}"
+        );
     }
 
     #[test]
