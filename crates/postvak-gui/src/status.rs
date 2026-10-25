@@ -113,9 +113,13 @@ pub(crate) fn progress(activity: &Activity) -> Option<f32> {
     }
 }
 
-/// An error, or a sync thread that is not running: the line shows in the error colour.
+/// An error, a sync thread that is not running, or a rejected login: the line shows in the error colour.
 pub(crate) fn failed(account: &Account) -> bool {
-    account.error.is_some() || matches!(account.activity, Some(Activity::NotRunning { .. }))
+    account.error.is_some()
+        || matches!(
+            account.activity,
+            Some(Activity::NotRunning { .. } | Activity::LoginRejected { .. })
+        )
 }
 
 /// The mark before an account's line.
@@ -316,6 +320,44 @@ mod tests {
             1
         );
         assert!(!open.with(|live| live.app.accounts[0].busy()));
+    }
+
+    #[test]
+    fn a_rejected_login_shows_as_a_failure_with_its_retry() {
+        let fx = Fixture::new(&["home", "work"]);
+        let (open, wires) = fx.window();
+        let idle = Activity::Idle {
+            since: 1_790_000_000,
+        };
+        let rejected = Activity::LoginRejected {
+            reason: "login failed: bad password".into(),
+            retry_at: 1_790_003_600,
+        };
+        let events = [
+            Event::Activity {
+                account: "home".into(),
+                activity: idle,
+            },
+            Event::Error {
+                account: "work".into(),
+                message: "login failed: bad password".into(),
+            },
+            Event::Activity {
+                account: "work".into(),
+                activity: rejected,
+            },
+        ];
+        send(&open, &wires, events);
+        let line = format!(
+            "work: login rejected (login failed: bad password) · retry {}",
+            clock(1_790_003_600)
+        );
+        assert_eq!(open.find(&line).len(), 1, "it beats home's up to date");
+        open.with(|live| {
+            let work = &live.app.accounts[1];
+            assert_eq!(dot(work), Some(Dot::Failed));
+            assert!(!work.busy());
+        });
     }
 
     #[test]

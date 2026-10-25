@@ -234,6 +234,7 @@ impl Account {
                     | Activity::Indexing { .. }
                     | Activity::NotRunning { .. }
                     | Activity::Offline { .. }
+                    | Activity::LoginRejected { .. }
             )
         )
     }

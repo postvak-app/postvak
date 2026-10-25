@@ -1737,6 +1737,95 @@ fn backoff_grows_caps_and_resets_after_a_full_cycle() {
     assert_eq!(sleeps, vec![5, 10, 20, 40, 80, 160, 300, 300, 300, 5]);
 }
 
+#[test]
+fn a_rejected_login_waits_an_hour_and_does_not_grow_the_backoff() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::under(dir.path());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let stop = shutdown.clone();
+    let mut connects = 0;
+    let mut sleeps = Vec::new();
+    run_loop_with(
+        account(),
+        paths,
+        tx,
+        shutdown,
+        std::sync::mpsc::channel::<Job>().1,
+        Arc::new(AtomicBool::new(false)),
+        || {
+            connects += 1;
+            Err(SyncError::Mail(match connects {
+                1 | 3 => MailError::Auth("[AUTHENTICATIONFAILED] no".into()),
+                _ => MailError::Connect("refused".into()),
+            }))
+        },
+        |delay| {
+            sleeps.push(delay.as_secs());
+            if sleeps.len() == 5 {
+                stop.store(true, Ordering::Relaxed);
+            }
+        },
+    );
+    assert_eq!(connects, 5);
+    // A network error after a rejection starts the back-off afresh.
+    assert_eq!(sleeps, vec![3600, 5, 3600, 5, 10]);
+    let rejected: Vec<Activity> = rx
+        .try_iter()
+        .filter_map(|e| match e {
+            Event::Activity {
+                activity: activity @ Activity::LoginRejected { .. },
+                ..
+            } => Some(activity),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rejected.len(), 2, "{rejected:?}");
+    assert!(
+        rejected[0]
+            .to_string()
+            .starts_with("login rejected (login failed: [AUTHENTICATIONFAILED] no) · retry "),
+        "{}",
+        rejected[0]
+    );
+}
+
+#[test]
+fn a_request_held_when_the_login_is_rejected_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::under(dir.path());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (commands_tx, commands) = std::sync::mpsc::channel();
+    commands_tx.send(mark_read(7)).unwrap();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let stop = shutdown.clone();
+    run_loop_with(
+        account(),
+        paths,
+        tx,
+        shutdown,
+        commands,
+        Arc::new(AtomicBool::new(false)),
+        || Err(SyncError::Mail(MailError::Auth("bad password".into()))),
+        |_| stop.store(true, Ordering::Relaxed),
+    );
+    let failed = rx.try_iter().find_map(|e| match e {
+        Event::CommandFailed {
+            request: 7,
+            message,
+            ..
+        } => Some(message),
+        _ => None,
+    });
+    let failed = failed.expect("the queued request is answered");
+    assert!(
+        failed.starts_with(
+            "work: login rejected (login failed: bad password); fix the password, then sync, or it retries at "
+        ),
+        "{failed}"
+    );
+}
+
 /// Receives until `wanted` matches, keeping every event in `log`.
 fn wait_for(
     rx: &std::sync::mpsc::Receiver<Event>,
