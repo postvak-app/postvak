@@ -273,9 +273,11 @@ impl Store {
     }
 
     pub fn open(path: &Path) -> Result<Store, StoreError> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
+        // The migrator reads the schema version before its transaction, so two processes opening an old store at
+        // once would both run the same migration; the lock makes the second see the first one's result. Taking it
+        // creates the folder, private.
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("store");
+        let _lock = crate::paths::lock_beside(path, &format!(".{name}.lock"))?;
         let conn = Connection::open(path)?;
         Store::init(conn)
     }
@@ -1137,6 +1139,20 @@ mod tests {
         let s = Store::open(&path).unwrap();
         assert!(path.exists());
         assert!(s.folders().unwrap().is_empty());
+    }
+
+    #[test]
+    fn opening_a_new_store_from_threads_at_once_migrates_it_once() {
+        let dir = tempfile::tempdir().unwrap();
+        for round in 0..20 {
+            let path = dir.path().join(format!("{round}.db"));
+            std::thread::scope(|scope| {
+                for _ in 0..4 {
+                    let path = &path;
+                    scope.spawn(move || Store::open(path).unwrap());
+                }
+            });
+        }
     }
 
     #[test]
