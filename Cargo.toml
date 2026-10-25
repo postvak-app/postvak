@@ -61,6 +61,7 @@ rmcp = { version = "3.5", default-features = false, features = ["server", "trans
 rpassword = "7"                                      # hidden password prompt in `account add`
 rusqlite = { version = "0.40", features = ["bundled"] }       # SQLite, bundled build includes FTS5
 rusqlite_migration = "2"                               # numbered SQL migrations
+rustix = { version = "1", default-features = false, features = ["std", "process"] }  # geteuid without unsafe, to tell whose files config.toml and its folder are; already in the tree
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }  # TLS without a C toolchain
 schemars = "1"                                       # JSON Schema for rules.toml, generated from the rule types
 serde = { version = "1", features = ["derive"] }     # config, rules, rows

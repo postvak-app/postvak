@@ -90,7 +90,7 @@ pub(crate) fn test_login(
 ) -> Result<(), String> {
     Client::connect_or_start(paths)
         .and_then(|client| {
-            postvak_core::account::test_login(&client, config, account, Some(secret))
+            postvak_core::account::test_login(&client, paths, config, account, Some(secret))
         })
         .map_err(|e| clean(&format!("{e:#}"), false))
 }

@@ -1,3 +1,6 @@
+use std::fs;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -34,8 +37,20 @@ pub enum CredentialError {
     CommandEmpty(String),
     #[error("password command could not be started: {0}")]
     CommandSpawn(String),
+    #[error(
+        "refusing to run the password command for account '{account}': {} {why}; fix it with `{fix}`",
+        path.display()
+    )]
+    ConfigUntrusted {
+        account: String,
+        path: PathBuf,
+        why: &'static str,
+        fix: String,
+    },
 }
 
+/// The account's password. A password command runs as it is given: callers check the file it came from first, with
+/// `check_command_trusted`.
 pub fn resolve(account: &AccountConfig) -> Result<Secret, CredentialError> {
     match &account.password {
         PasswordSource::Command { command } => run_command(&account.name, command),
@@ -57,6 +72,74 @@ pub fn resolve(account: &AccountConfig) -> Result<Secret, CredentialError> {
                 Err(e) => Err(map_keyring_error(e, &account.name)),
             }
         }
+    }
+}
+
+/// Refuses to go on with an account whose password command sits in a `config_file` another user could have written,
+/// the way OpenSSH treats `~/.ssh/config`: the
+/// file and the folder it sits in (after following symlinks, so a file kept in dotfiles is judged where it lives)
+/// must belong to the current user or root, and not be writable by group or others. A folder with the sticky bit
+/// (such as `/nix/store`) keeps others from replacing the file, so its write bits do not count. A missing file has
+/// no command to distrust. A keyring account has no command, so it always passes.
+pub fn check_command_trusted(
+    account: &AccountConfig,
+    config_file: &Path,
+) -> Result<(), CredentialError> {
+    if !matches!(account.password, PasswordSource::Command { .. }) {
+        return Ok(());
+    }
+    // A file that cannot be resolved cannot be read either, so the config load reports it.
+    let Ok(file) = fs::canonicalize(config_file) else {
+        return Ok(());
+    };
+    check_trusted_as(rustix::process::geteuid().as_raw(), &account.name, &file)
+}
+
+fn check_trusted_as(uid: u32, account: &str, file: &Path) -> Result<(), CredentialError> {
+    let untrusted = |path: &Path, why, fix: String| CredentialError::ConfigUntrusted {
+        account: account.to_string(),
+        path: path.to_path_buf(),
+        why,
+        fix,
+    };
+    let folder = file.parent();
+    for path in std::iter::once(file).chain(folder) {
+        let meta = fs::metadata(path).map_err(|_| {
+            untrusted(
+                path,
+                "cannot be inspected",
+                format!("chmod go-w {}", path.display()),
+            )
+        })?;
+        let shown = shell_quote(path);
+        if meta.uid() != uid && meta.uid() != 0 {
+            return Err(untrusted(
+                path,
+                "belongs to another user",
+                format!("chown $USER {shown}"),
+            ));
+        }
+        let sticky = meta.is_dir() && meta.mode() & 0o1000 != 0;
+        if meta.mode() & 0o022 != 0 && !sticky {
+            return Err(untrusted(
+                path,
+                "can be written by other users",
+                format!("chmod go-w {shown}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn shell_quote(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    if text
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "/._-+@:,".contains(c))
+    {
+        text.into_owned()
+    } else {
+        format!("'{}'", text.replace('\'', "'\\''"))
     }
 }
 
@@ -215,6 +298,105 @@ mod tests {
             resolve(&account("exit 3")),
             Err(CredentialError::CommandFailed { status: 3, .. })
         ));
+    }
+
+    fn config_in(dir: &Path, file_mode: u32, dir_mode: u32) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let file = dir.join("config.toml");
+        fs::write(&file, "").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(file_mode)).unwrap();
+        fs::set_permissions(dir, fs::Permissions::from_mode(dir_mode)).unwrap();
+        file
+    }
+
+    fn reason(result: Result<(), CredentialError>) -> String {
+        match result {
+            Err(e @ CredentialError::ConfigUntrusted { .. }) => e.to_string(),
+            other => panic!("expected the config to be refused, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_config_only_its_owner_can_write_may_run_its_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = config_in(dir.path(), 0o600, 0o755);
+        assert!(check_command_trusted(&account("true"), &file).is_ok());
+        let file = config_in(dir.path(), 0o644, 0o700);
+        assert!(check_command_trusted(&account("true"), &file).is_ok());
+    }
+
+    #[test]
+    fn a_config_others_can_write_is_refused_with_the_fix() {
+        let dir = tempfile::tempdir().unwrap();
+        for mode in [0o620, 0o602, 0o666] {
+            let file = config_in(dir.path(), mode, 0o700);
+            let message = reason(check_command_trusted(&account("true"), &file));
+            let path = fs::canonicalize(&file).unwrap();
+            assert!(
+                message.contains("can be written by other users"),
+                "{message}"
+            );
+            assert!(
+                message.ends_with(&format!("`chmod go-w {}`", path.display())),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_config_in_a_folder_others_can_write_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = config_in(dir.path(), 0o600, 0o770);
+        let message = reason(check_command_trusted(&account("true"), &file));
+        let folder = fs::canonicalize(dir.path()).unwrap();
+        assert!(message.contains(&folder.display().to_string()), "{message}");
+        assert!(
+            message.contains("can be written by other users"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_sticky_folder_keeps_others_from_replacing_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = config_in(dir.path(), 0o600, 0o1777);
+        assert!(check_command_trusted(&account("true"), &file).is_ok());
+    }
+
+    #[test]
+    fn a_symlinked_config_is_judged_where_it_lives() {
+        let dotfiles = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let target = config_in(dotfiles.path(), 0o666, 0o700);
+        let link = home.path().join("config.toml");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        reason(check_command_trusted(&account("true"), &link));
+    }
+
+    #[test]
+    fn a_config_of_another_user_is_refused() {
+        let me = rustix::process::geteuid().as_raw();
+        if me == 0 {
+            return; // root owns the files it makes, and root-owned files pass
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let file = config_in(dir.path(), 0o600, 0o700);
+        let message = reason(check_trusted_as(me + 1, "t", &file));
+        assert!(message.contains("belongs to another user"), "{message}");
+    }
+
+    #[test]
+    fn a_missing_config_and_a_keyring_account_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let loose = config_in(dir.path(), 0o666, 0o777);
+        let keyring = AccountConfig::new(
+            "k",
+            "h",
+            "u@example.com",
+            PasswordSource::Keyring { keyring: true },
+        );
+        assert!(check_command_trusted(&keyring, &loose).is_ok());
+        assert!(check_command_trusted(&account("true"), &dir.path().join("missing.toml")).is_ok());
     }
 
     #[test]

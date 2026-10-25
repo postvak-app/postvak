@@ -5,6 +5,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 
 use crate::config::{AccountConfig, Config};
+use crate::credentials;
 use crate::mail_ops::MailOps;
 use crate::paths::Paths;
 use crate::sync::{self, Activity, Command, Event, Job, RequestId, SyncError};
@@ -69,6 +70,7 @@ impl Spawner {
                 let connect = self.connect.clone();
                 move || {
                     let target = account.clone();
+                    let config_file = paths.config_file();
                     sync::run_loop(
                         account,
                         paths,
@@ -76,7 +78,10 @@ impl Spawner {
                         shutdown,
                         commands,
                         wake,
-                        move || connect(&target),
+                        move || {
+                            credentials::check_command_trusted(&target, &config_file)?;
+                            connect(&target)
+                        },
                     )
                 }
             });
@@ -281,6 +286,34 @@ mod tests {
             Err(mpsc::TryRecvError::Disconnected),
             "every sync thread has ended"
         );
+    }
+
+    #[test]
+    fn a_password_command_in_a_config_others_can_write_never_connects() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        std::fs::create_dir_all(&paths.config_dir).unwrap();
+        std::fs::write(paths.config_file(), "").unwrap();
+        std::fs::set_permissions(paths.config_file(), std::fs::Permissions::from_mode(0o666))
+            .unwrap();
+        let config = config_of(&["work"]);
+        let (connector, connected) = recording_connector();
+        let (_engine, events) = Engine::start(&config, &paths, connector);
+        loop {
+            if let Event::Activity {
+                activity: Activity::Offline { reason, .. },
+                ..
+            } = events.recv_timeout(WAIT).unwrap()
+            {
+                assert!(
+                    reason.contains("refusing to run the password command"),
+                    "{reason}"
+                );
+                break;
+            }
+        }
+        assert!(connected.try_recv().is_err(), "the command was never run");
     }
 
     #[test]

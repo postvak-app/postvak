@@ -56,6 +56,8 @@ theme = "system"
 
 `{ command = "..." }` runs the command with `sh -c` and uses its output, without trailing newlines. A non-zero exit or an empty output is an error. The command's own error output goes where the daemon's output goes (see [Logs](daemon.md#logs)), or to your terminal under `postvak run`.
 
+A password command is code that runs as you, so Postvak checks `config.toml` first, the way OpenSSH checks `~/.ssh/config`: the file and the folder it sits in (after following symlinks, so a file kept in your dotfiles is checked where it lives) must belong to you or to root, and must not be writable by group or others. A folder with the sticky bit, such as `/tmp`, passes on its write bits. If a check fails, the account does not connect and the status line says which path and the fix, for example ``chmod go-w ~/.config/postvak/config.toml``. Fix it and the account connects on its next retry, without a restart. The check covers only accounts that use a command; a keyring account never runs one.
+
 ## Aliases
 
 `address` plus `aliases` define "me". Rules use them through `to_me` and `alias`, and a search through `from:me`, `to:me` and `cc:me`.
