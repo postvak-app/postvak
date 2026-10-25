@@ -1,5 +1,6 @@
 pub mod imap;
 
+use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
@@ -17,6 +18,14 @@ pub struct SelectInfo {
     pub exists: u32,
     /// HIGHESTMODSEQ when the server supports CONDSTORE for this folder.
     pub highest_modseq: Option<u64>,
+}
+
+/// What `STATUS` says about a folder without selecting it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StatusInfo {
+    /// Messages in the folder (MESSAGES).
+    pub messages: u32,
+    pub uidnext: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -83,6 +92,9 @@ pub trait MailOps {
     }
     fn list_folders(&mut self) -> MailResult<Vec<RemoteFolder>>;
     fn select(&mut self, folder: &str) -> MailResult<SelectInfo>;
+    /// Message count and next uid of a folder other than the selected one, which a server may refuse to answer for;
+    /// nothing is selected, so the selected folder stays selected.
+    fn status(&mut self, folder: &str) -> MailResult<StatusInfo>;
     /// Uids >= `from_uid` in the selected folder, ascending.
     fn search_uids(&mut self, from_uid: u32) -> MailResult<Vec<u32>>;
     /// Uids in the selected folder whose headers or body contain every word, ignoring case, ascending.
@@ -96,8 +108,9 @@ pub trait MailOps {
         changed_since: Option<u64>,
     ) -> MailResult<Vec<FlagUpdate>>;
     fn fetch_raw(&mut self, uid: u32) -> MailResult<Option<Vec<u8>>>;
-    /// The message's structure from `BODYSTRUCTURE`; `None` when the selected folder has no such uid.
-    fn fetch_structure(&mut self, uid: u32) -> MailResult<Option<Structure>>;
+    /// The structures from `BODYSTRUCTURE` of `uids` in the selected folder, in one command. A uid the folder does not
+    /// have, or whose structure the server does not give, is left out.
+    fn fetch_structures(&mut self, uids: &[u32]) -> MailResult<HashMap<u32, Structure>>;
     /// The bytes of one section as sent, transfer encoding included; `None` when the server returns nothing for it.
     fn fetch_part(&mut self, uid: u32, section: &str) -> MailResult<Option<Vec<u8>>>;
     fn add_flags(&mut self, uid: u32, flags: &[&str]) -> MailResult<()>;
@@ -175,14 +188,16 @@ mod recording {
         pub structures: HashMap<(String, u32), Structure>,
         /// The bytes of a section; without one, section "" is `raw` after its headers.
         pub parts: HashMap<(String, u32, String), Vec<u8>>,
-        /// Answers every `fetch_structure` with None, like a server whose BODYSTRUCTURE cannot be read.
+        /// Answers every `fetch_structures` with nothing, like a server whose BODYSTRUCTURE cannot be read.
         pub no_structure: bool,
         pub calls: Vec<String>,
         pub idle_outcomes: VecDeque<IdleOutcome>,
         /// Makes `fetch_envelopes` fail once this many calls succeeded, like a connection dropping mid-sync.
         pub fail_fetch_after: Option<usize>,
-        /// Makes the next `add_flags`, `append`, `fetch_raw`, `fetch_structure` or `fetch_part` fail with this error, once.
+        /// Makes the next `add_flags`, `append`, `fetch_raw`, `fetch_structures` or `fetch_part` fail with this error, once.
         pub fail_next: Option<MailError>,
+        /// Makes every `fetch_part` of this message fail, like a server that cannot produce its text.
+        pub unreadable: Option<(String, u32)>,
         /// Makes the next `expunge` fail with this error, once, like a server refusing it after a COPY.
         pub fail_next_expunge: Option<MailError>,
         /// Makes `add_flags` panic, like a bug in a command.
@@ -338,6 +353,25 @@ mod recording {
             })
         }
 
+        fn status(&mut self, folder: &str) -> MailResult<StatusInfo> {
+            self.calls.push(format!("status {folder}"));
+            if folder == self.selected {
+                return Err(MailError::Protocol(format!(
+                    "STATUS of the selected folder {folder}"
+                )));
+            }
+            let list = self
+                .mail
+                .get(folder)
+                .filter(|_| self.uidvalidity.contains_key(folder))
+                .ok_or_else(|| MailError::Protocol(format!("no folder {folder}")))?;
+            let uidnext = list.iter().map(|m| m.uid).max().map_or(1, |uid| uid + 1);
+            Ok(StatusInfo {
+                messages: list.len() as u32,
+                uidnext: uidnext.max(self.next_uid.get(folder).copied().unwrap_or(1)),
+            })
+        }
+
         fn search_uids(&mut self, from_uid: u32) -> MailResult<Vec<u32>> {
             self.calls
                 .push(format!("search_uids {} {from_uid}", self.selected));
@@ -440,30 +474,45 @@ mod recording {
             Ok(self.raw.get(&(self.selected.clone(), uid)).cloned())
         }
 
-        fn fetch_structure(&mut self, uid: u32) -> MailResult<Option<Structure>> {
-            self.calls
-                .push(format!("fetch_structure {} {uid}", self.selected));
+        fn fetch_structures(&mut self, uids: &[u32]) -> MailResult<HashMap<u32, Structure>> {
+            let list: Vec<String> = uids.iter().map(u32::to_string).collect();
+            self.calls.push(format!(
+                "fetch_structures {} {}",
+                self.selected,
+                list.join(",")
+            ));
             self.fail_next.take().map_or(Ok(()), Err)?;
             if self.no_structure {
-                return Ok(None);
+                return Ok(HashMap::new());
             }
-            let key = (self.selected.clone(), uid);
-            if let Some(structure) = self.structures.get(&key) {
-                return Ok(Some(structure.clone()));
+            let mut found = HashMap::new();
+            for &uid in uids {
+                let key = (self.selected.clone(), uid);
+                if let Some(structure) = self.structures.get(&key) {
+                    found.insert(uid, structure.clone());
+                } else if let Some(raw) = self.raw.get(&key) {
+                    found.insert(
+                        uid,
+                        Structure {
+                            text_parts: vec![TextPart {
+                                octets: body_after_headers(raw).len() as u32,
+                                ..TextPart::default()
+                            }],
+                            attachment_names: Vec::new(),
+                        },
+                    );
+                }
             }
-            Ok(self.raw.get(&key).map(|raw| Structure {
-                text_parts: vec![TextPart {
-                    octets: body_after_headers(raw).len() as u32,
-                    ..TextPart::default()
-                }],
-                attachment_names: Vec::new(),
-            }))
+            Ok(found)
         }
 
         fn fetch_part(&mut self, uid: u32, section: &str) -> MailResult<Option<Vec<u8>>> {
             self.calls
                 .push(format!("fetch_part {} {uid} {section}", self.selected));
             self.fail_next.take().map_or(Ok(()), Err)?;
+            if self.unreadable.as_ref() == Some(&(self.selected.clone(), uid)) {
+                return Err(MailError::Protocol("no such part".into()));
+            }
             let key = (self.selected.clone(), uid, section.to_string());
             if let Some(part) = self.parts.get(&key) {
                 return Ok(Some(part.clone()));

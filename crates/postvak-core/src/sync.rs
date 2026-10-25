@@ -569,7 +569,9 @@ pub fn index_slice(
     account: &AccountConfig,
     events: &Sender<Event>,
 ) -> Result<IndexOutcome, SyncError> {
-    index::slice(ops, store, account, events, &mut || Duration::ZERO)
+    index::slice(ops, store, account, events, &mut None, &mut || {
+        Duration::ZERO
+    })
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -1720,6 +1722,7 @@ fn run_session(
     while !shutdown.load(Ordering::Acquire) {
         if pass {
             next = state.pass(ops.as_mut(), full, carried, events, commands, shutdown)?;
+            indexer.forget_selection();
             if full {
                 next_full = now() + interval.as_secs() as i64;
             }
@@ -1743,6 +1746,9 @@ fn run_session(
             carried,
             events,
         )?;
+        if drained.used_connection {
+            indexer.forget_selection();
+        }
         let wanted = drained.next.max(std::mem::take(&mut next));
         if wanted != NextPass::None {
             (full, pass) = (wanted == NextPass::Full, true);
@@ -1752,15 +1758,26 @@ fn run_session(
             && indexer.slice(ops.as_mut(), &state.store, account, events)?
                 == IndexOutcome::Progressed
         {
-            // Mail that arrived while another folder was selected, then a short wait so pushes and commands get
-            // their turn before the next slice; the full pass still runs on its interval.
-            if ops.select("INBOX")?.exists != state.store.message_count("INBOX")? {
+            // Mail that arrived while the backlog folder was selected, then a short wait so pushes and commands get
+            // their turn before the next slice; the full pass still runs on its interval. STATUS leaves that folder
+            // selected for the next slice, and is not allowed on the selected folder itself, so INBOX as backlog
+            // folder is selected again, as it always was.
+            let in_inbox = indexer.selected().is_none_or(|folder| folder == "INBOX");
+            let count = state.store.message_count("INBOX")?;
+            let arrived = if in_inbox {
+                ops.select("INBOX")?.exists != count
+            } else {
+                ops.status("INBOX")?.messages != count
+            };
+            if arrived {
+                indexer.forget_selection();
                 (full, pass) = (false, true);
                 continue;
             }
             (full, pass) = match ops.idle(index::INTER_SLICE_IDLE, wake)? {
-                IdleOutcome::NewMail => (false, true),
-                IdleOutcome::Timeout => {
+                // The wait is in the backlog folder; INBOX is the next check's to find.
+                IdleOutcome::NewMail if in_inbox => (false, true),
+                IdleOutcome::NewMail | IdleOutcome::Timeout => {
                     let due = now() >= next_full;
                     (due, due)
                 }
@@ -1777,6 +1794,7 @@ fn run_session(
             activity: Activity::Idle { since: now() },
         });
         ops.select("INBOX")?;
+        indexer.forget_selection();
         let outcome = ops.idle(interval, wake)?;
         (full, pass) = match outcome {
             IdleOutcome::NewMail => (false, true),

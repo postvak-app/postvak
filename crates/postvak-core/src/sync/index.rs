@@ -1,6 +1,7 @@
 //! Indexing message bodies for search in the account's idle time. A slice takes the newest messages the store has
 //! not indexed, fetches each one's structure and only its text parts, and stores the text and the attachment names,
-//! never the raw message. It stops after `SLICE_BUDGET`, so pushes and commands wait at most that long.
+//! never the raw message. It fetches the structures of a run of messages of one folder in one command, and keeps the
+//! folder selected for the next slice. It stops after `SLICE_BUDGET`, so pushes and commands wait at most that long.
 
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
@@ -10,7 +11,7 @@ use crate::config::AccountConfig;
 use crate::mail_ops::{MailOps, Structure, TextPart};
 use crate::message;
 use crate::store::{Message, Store};
-use crate::sync::{Activity, Event, SyncError, connection_lost};
+use crate::sync::{Activity, Event, SyncError, connection_lost, is_connection_error};
 use crate::time::now;
 
 /// How long one slice fetches before the loop checks INBOX and waits.
@@ -21,6 +22,8 @@ pub(crate) const INTER_SLICE_IDLE: Duration = Duration::from_secs(1);
 pub(crate) const FALLBACK_RAW_LIMIT: u32 = 2 * 1024 * 1024;
 /// Rows read per slice; the budget usually ends a slice first.
 const SLICE_CANDIDATES: u32 = 200;
+/// Messages of one folder whose `BODYSTRUCTURE` is fetched in one command.
+const STRUCTURE_BATCH: usize = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexOutcome {
@@ -31,14 +34,25 @@ pub enum IndexOutcome {
 }
 
 /// The indexer's state for one connection: the index is checked once per session, and given up on when a rebuild
-/// fails too.
+/// fails too. It also knows which folder its last slice left selected, so the next slice need not select it again.
 #[derive(Default)]
 pub(crate) struct Session {
     checked: bool,
     broken: bool,
+    selected: Option<String>,
 }
 
 impl Session {
+    /// The folder the last slice left selected on the connection, as long as nothing else selected another.
+    pub(crate) fn selected(&self) -> Option<&str> {
+        self.selected.as_deref()
+    }
+
+    /// Call when anything but a slice may have selected a folder: a pass, or a command that used the connection.
+    pub(crate) fn forget_selection(&mut self) {
+        self.selected = None;
+    }
+
     /// Runs one slice when the store has a backlog, after checking the search index once.
     pub(crate) fn slice(
         &mut self,
@@ -68,17 +82,21 @@ impl Session {
             }
         }
         let started = Instant::now();
-        slice(ops, store, account, events, &mut || started.elapsed())
+        slice(ops, store, account, events, &mut self.selected, &mut || {
+            started.elapsed()
+        })
     }
 }
 
 /// Indexes the newest unindexed messages for at most `SLICE_BUDGET` of `elapsed`, always at least one. A message
 /// whose fetch fails is marked tried and retried a day later; only a lost connection ends the slice early.
+/// `selected` is the folder selected on the connection, if known; it is updated to the one this slice leaves.
 pub(crate) fn slice(
     ops: &mut dyn MailOps,
     store: &Store,
     account: &AccountConfig,
     events: &Sender<Event>,
+    selected: &mut Option<String>,
     elapsed: &mut dyn FnMut() -> Duration,
 ) -> Result<IndexOutcome, SyncError> {
     let at = now();
@@ -94,48 +112,95 @@ pub(crate) fn slice(
             total,
         },
     });
-    let mut selected: Option<String> = None;
     let mut unselectable: Option<String> = None;
     let mut done = 0;
-    for msg in store.backlog(at, SLICE_CANDIDATES)? {
+    let candidates = store.backlog(at, SLICE_CANDIDATES)?;
+    let mut rest = candidates.as_slice();
+    while let Some(first) = rest.first() {
         if done > 0 && elapsed() >= SLICE_BUDGET {
             break;
         }
-        let selectable = if unselectable.as_deref() == Some(msg.folder.as_str()) {
+        let run = rest
+            .iter()
+            .take(STRUCTURE_BATCH)
+            .take_while(|m| m.folder == first.folder)
+            .count();
+        let (batch, tail) = rest.split_at(run);
+        rest = tail;
+        let folder = first.folder.as_str();
+        let selectable = if unselectable.as_deref() == Some(folder) {
             false
-        } else if selected.as_deref() == Some(msg.folder.as_str()) {
+        } else if selected.as_deref() == Some(folder) {
             true
         } else {
-            match actions::select_synced(ops, store, &msg.folder) {
+            *selected = None;
+            match actions::select_synced(ops, store, folder) {
                 Ok(()) => {
-                    selected = Some(msg.folder.clone());
+                    *selected = Some(folder.to_string());
                     true
                 }
                 Err(e) if connection_lost(&e) => return Err(e.into()),
                 Err(e) => {
-                    log::warn!("{}: indexing skipped: {e}", msg.folder);
-                    unselectable = Some(msg.folder.clone());
+                    log::warn!("{folder}: indexing skipped: {e}");
+                    unselectable = Some(folder.to_string());
                     false
                 }
             }
         };
-        let indexed = if selectable {
-            index_one(ops, &msg)
+        let uids: Vec<u32> = batch.iter().map(|m| m.uid).collect();
+        let mut structures = if selectable {
+            match ops.fetch_structures(&uids) {
+                Ok(found) => Some(found),
+                Err(e) if is_connection_error(&e) => return Err(ActionError::from(e).into()),
+                // One message the server chokes on must not fail its neighbours: ask for each on its own.
+                Err(e) => {
+                    log::warn!(
+                        "{folder}: structures of {} messages failed: {e}",
+                        uids.len()
+                    );
+                    None
+                }
+            }
         } else {
-            Err(ActionError::UnknownFolder(msg.folder.clone()))
+            None
         };
-        match indexed {
-            Ok((text, names)) => {
-                store.set_indexed(&msg.folder, msg.uid, Some(&text), &names, at)?
+        for (n, msg) in batch.iter().enumerate() {
+            if n > 0 && elapsed() >= SLICE_BUDGET {
+                return finish(events, account, done);
             }
-            Err(e) if connection_lost(&e) => return Err(e.into()),
-            Err(e) => {
-                log::warn!("{}/{}: indexing failed: {e}", msg.folder, msg.uid);
-                store.set_indexed(&msg.folder, msg.uid, None, &[], at)?;
+            let indexed = if selectable {
+                let structure = match structures.as_mut() {
+                    Some(found) => Ok(found.remove(&msg.uid)),
+                    None => ops
+                        .fetch_structures(&[msg.uid])
+                        .map(|mut found| found.remove(&msg.uid))
+                        .map_err(ActionError::from),
+                };
+                structure.and_then(|structure| index_one(ops, msg, structure))
+            } else {
+                Err(ActionError::UnknownFolder(msg.folder.clone()))
+            };
+            match indexed {
+                Ok((text, names)) => {
+                    store.set_indexed(&msg.folder, msg.uid, Some(&text), &names, at)?
+                }
+                Err(e) if connection_lost(&e) => return Err(e.into()),
+                Err(e) => {
+                    log::warn!("{}/{}: indexing failed: {e}", msg.folder, msg.uid);
+                    store.set_indexed(&msg.folder, msg.uid, None, &[], at)?;
+                }
             }
+            done += 1;
         }
-        done += 1;
     }
+    finish(events, account, done)
+}
+
+fn finish(
+    events: &Sender<Event>,
+    account: &AccountConfig,
+    done: usize,
+) -> Result<IndexOutcome, SyncError> {
     let _ = events.send(Event::Indexed {
         account: account.name.clone(),
         count: done,
@@ -145,8 +210,12 @@ pub(crate) fn slice(
 
 /// The message's text and attachment names: from its text parts, or from the whole message when the server gives
 /// no structure and the message is small enough; headers only otherwise.
-fn index_one(ops: &mut dyn MailOps, msg: &Message) -> Result<(String, Vec<String>), ActionError> {
-    let Some(structure) = ops.fetch_structure(msg.uid)? else {
+fn index_one(
+    ops: &mut dyn MailOps,
+    msg: &Message,
+    structure: Option<Structure>,
+) -> Result<(String, Vec<String>), ActionError> {
+    let Some(structure) = structure else {
         if msg.size.is_some_and(|size| size > FALLBACK_RAW_LIMIT) {
             return Ok((String::new(), Vec::new()));
         }
