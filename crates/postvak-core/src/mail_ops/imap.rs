@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 use async_imap::Session;
 use async_imap::extensions::idle::IdleResponse;
 use async_imap::imap_proto::{
-    BodyContentCommon, BodyContentSinglePart, BodyStructure, ContentEncoding, MessageSection,
-    SectionPath,
+    BodyContentCommon, BodyContentSinglePart, BodyStructure, ContentEncoding, MailboxDatum,
+    MessageSection, Response, SectionPath, StatusAttribute,
 };
 use async_imap::types::{Capabilities, Fetch, Flag, NameAttribute};
 use futures_util::TryStreamExt;
@@ -41,6 +41,9 @@ pub struct ImapOps {
     has_move: bool,
     has_uidplus: bool,
     has_condstore: bool,
+    has_list_status: bool,
+    has_special_use: bool,
+    selected: Option<String>,
     command_timeout: Duration,
 }
 
@@ -84,6 +87,9 @@ impl ImapOps {
             has_uidplus: caps.has_str("UIDPLUS"),
             // QRESYNC implies CONDSTORE (RFC 7162).
             has_condstore: caps.has_str("CONDSTORE") || caps.has_str("QRESYNC"),
+            has_list_status: caps.has_str("LIST-STATUS"),
+            has_special_use: caps.has_str("SPECIAL-USE"),
+            selected: None,
             command_timeout: COMMAND_TIMEOUT,
         })
     }
@@ -136,6 +142,20 @@ impl ImapOps {
             uids.sort_unstable();
             Ok(uids)
         })
+    }
+
+    /// The STATUS items a sync compares: HIGHESTMODSEQ only where the server has CONDSTORE.
+    fn status_items(&self) -> &'static str {
+        if self.has_condstore {
+            "(MESSAGES UIDNEXT UIDVALIDITY HIGHESTMODSEQ)"
+        } else {
+            "(MESSAGES UIDNEXT UIDVALIDITY)"
+        }
+    }
+
+    #[cfg(any(test, feature = "testing"))]
+    pub fn has_list_status(&self) -> bool {
+        self.has_list_status
     }
 
     #[cfg(any(test, feature = "testing"))]
@@ -447,6 +467,42 @@ fn special_use(attrs: &[NameAttribute<'_>]) -> Option<String> {
     })
 }
 
+/// The folder a LIST answer names, or None for one that cannot be selected.
+fn listed_folder(
+    attrs: &[NameAttribute<'_>],
+    delimiter: Option<&str>,
+    name: &str,
+) -> Option<RemoteFolder> {
+    if attrs.iter().any(|a| matches!(a, NameAttribute::NoSelect)) {
+        return None;
+    }
+    Some(RemoteFolder {
+        name: name.to_string(),
+        special_use: special_use(attrs),
+        delimiter: delimiter.map(str::to_string),
+    })
+}
+
+/// A folder's status from the items of a STATUS answer; a missing number is 0.
+fn status_from(attributes: &[StatusAttribute]) -> StatusInfo {
+    let mut status = StatusInfo {
+        messages: 0,
+        uidnext: 0,
+        uidvalidity: 0,
+        highest_modseq: None,
+    };
+    for attribute in attributes {
+        match attribute {
+            StatusAttribute::Messages(n) => status.messages = *n,
+            StatusAttribute::UidNext(n) => status.uidnext = *n,
+            StatusAttribute::UidValidity(n) => status.uidvalidity = *n,
+            StatusAttribute::HighestModSeq(n) => status.highest_modseq = Some(*n),
+            _ => {}
+        }
+    }
+    status
+}
+
 /// None for partial responses such as an unsolicited FLAGS-only FETCH, which would otherwise store an empty message.
 fn envelope_from(fetch: &Fetch) -> Option<Envelope> {
     Some(Envelope {
@@ -474,15 +530,63 @@ impl MailOps for ImapOps {
                 .map_err(proto)?;
             Ok(names
                 .iter()
-                .filter(|n| {
-                    !n.attributes()
-                        .iter()
-                        .any(|a| matches!(a, NameAttribute::NoSelect))
-                })
-                .map(|n| RemoteFolder {
-                    name: n.name().to_string(),
-                    special_use: special_use(n.attributes()),
-                    delimiter: n.delimiter().map(str::to_string),
+                .filter_map(|n| listed_folder(n.attributes(), n.delimiter(), n.name()))
+                .collect())
+        })
+    }
+
+    fn list_folders_status(&mut self) -> MailResult<Vec<(RemoteFolder, Option<StatusInfo>)>> {
+        if !self.has_list_status {
+            let folders = self.list_folders()?;
+            return Ok(folders.into_iter().map(|f| (f, None)).collect());
+        }
+        let special_use = if self.has_special_use {
+            "SPECIAL-USE "
+        } else {
+            ""
+        };
+        let command = format!(
+            "LIST \"\" \"*\" RETURN ({special_use}STATUS {})",
+            self.status_items()
+        );
+        self.run(self.command_timeout, async |session| {
+            let tag = session.run_command(&command).await.map_err(proto)?;
+            let mut folders = Vec::new();
+            let mut statuses = HashMap::new();
+            loop {
+                let response = session
+                    .read_response()
+                    .await
+                    .map_err(|e| MailError::Io(e.to_string()))?
+                    .ok_or_else(|| MailError::Io("connection closed during LIST".into()))?;
+                match response.parsed() {
+                    Response::MailboxData(MailboxDatum::List(list)) => folders.extend(
+                        listed_folder(&list.name_attributes, list.delimiter.as_deref(), &list.name),
+                    ),
+                    Response::MailboxData(MailboxDatum::Status { mailbox, status }) => {
+                        statuses.insert(mailbox.to_string(), status_from(status));
+                    }
+                    Response::Done {
+                        tag: done,
+                        status,
+                        outcome,
+                    } if *done == tag => {
+                        if *status != async_imap::imap_proto::Status::Ok {
+                            return Err(MailError::Protocol(format!(
+                                "LIST: {status:?} {}",
+                                outcome.information.as_deref().unwrap_or_default()
+                            )));
+                        }
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(folders
+                .into_iter()
+                .map(|folder| {
+                    let status = statuses.remove(&folder.name);
+                    (folder, status)
                 })
                 .collect())
         })
@@ -490,7 +594,7 @@ impl MailOps for ImapOps {
 
     fn select(&mut self, folder: &str) -> MailResult<SelectInfo> {
         let condstore = self.has_condstore;
-        self.run(self.command_timeout, async |session| {
+        let selected = self.run(self.command_timeout, async |session| {
             let mailbox = if condstore {
                 session.select_condstore(folder).await
             } else {
@@ -501,19 +605,27 @@ impl MailOps for ImapOps {
                 uidvalidity: mailbox.uid_validity.unwrap_or(0),
                 exists: mailbox.exists,
                 highest_modseq: mailbox.highest_modseq,
+                uidnext: mailbox.uid_next,
             })
-        })
+        });
+        // A failed SELECT leaves no folder selected (RFC 3501 6.3.1).
+        self.selected = selected.is_ok().then(|| folder.to_string());
+        selected
+    }
+
+    fn selected(&self) -> Option<&str> {
+        self.selected.as_deref()
     }
 
     fn status(&mut self, folder: &str) -> MailResult<StatusInfo> {
+        let items = self.status_items();
         self.run(self.command_timeout, async |session| {
-            let mailbox = session
-                .status(folder, "(MESSAGES UIDNEXT)")
-                .await
-                .map_err(proto)?;
+            let mailbox = session.status(folder, items).await.map_err(proto)?;
             Ok(StatusInfo {
                 messages: mailbox.exists,
                 uidnext: mailbox.uid_next.unwrap_or(0),
+                uidvalidity: mailbox.uid_validity.unwrap_or(0),
+                highest_modseq: mailbox.highest_modseq,
             })
         })
     }

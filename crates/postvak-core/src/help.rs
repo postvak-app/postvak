@@ -12,6 +12,8 @@ pub const DELETE: &str =
 pub const JUNK: &str = "Report messages as junk: tag them $Junk, which trains server spam filters, and move them to the Junk folder; --not tags them $NotJunk and moves them to INBOX";
 pub const UNSUBSCRIBE: &str = "Leave a message's mailing list: by one-click POST when the sender offers it (RFC 8058), else print the page or address from its List-Unsubscribe header to open";
 pub const FOLDERS: &str = "List folders with message and unread counts";
+pub const HEADERS: &str =
+    "Every header of one message, in order, unfolded and decoded as header rules see it; no body";
 pub const LIST: &str = "List recent messages, newest first";
 pub const LOG: &str = "Show what rules did, newest first";
 pub const MARK: &str = "Mark messages read or unread, flagged or unflagged";

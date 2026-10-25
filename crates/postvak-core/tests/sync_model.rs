@@ -1,11 +1,12 @@
 //! Model-based tests for sync and rules against `RecordingOps` (issue #24).
 //!
 //! Proptest generates bounded runs of server-side events (new mail, deletes, moves, flag changes, UIDVALIDITY
-//! resets), clock ticks, a rule added later, and sync passes. A pass may get one injected failure (a NO answer, or a
-//! dropped connection, optionally after the server already ran the command) and one server event between its sync and
-//! its rules. The test drives the same public steps a daemon pass takes (`load_rules_for`, `sync_all` or
-//! `sync_folder` on INBOX, then `run_rules`) through `Harness`, a `MailOps` wrapper around the fake that injects the
-//! failures and checks every command the code sends. All mail is made up.
+//! resets), clock ticks, a rule added later, and sync passes, on a server with or without LIST-STATUS. The server
+//! events happen without the client noticing, so a full pass must find them through STATUS (#297). A pass may get one
+//! injected failure (a NO answer, or a dropped connection, optionally after the server already ran the command) and
+//! one server event between its sync and its rules. The test drives the same public steps a daemon pass takes
+//! (`load_rules_for`, `sync_all` or `sync_folder` on INBOX, then `run_rules`) through `Harness`, a `MailOps` wrapper
+//! around the fake that injects the failures and checks every command the code sends. All mail is made up.
 //!
 //! Not modelled: the daemon's command queue and IDLE (the checkpoint closure is a no-op here), body rules, restore
 //! from trash, user deletes, folders deleted on the server, and more than one account.
@@ -806,6 +807,14 @@ impl MailOps for Harness<'_> {
         self.run(|ops| ops.list_folders())
     }
 
+    fn list_folders_status(&mut self) -> MailResult<Vec<(RemoteFolder, Option<StatusInfo>)>> {
+        self.run(|ops| ops.list_folders_status())
+    }
+
+    fn selected(&self) -> Option<&str> {
+        self.selected.as_deref()
+    }
+
     fn select(&mut self, folder: &str) -> MailResult<SelectInfo> {
         let result = self.run(|ops| ops.select(folder));
         self.selected = result.is_ok().then(|| folder.to_string());
@@ -1036,9 +1045,15 @@ impl Fixture {
 }
 
 fn run_model(initial: &[ServerEvent], steps: &[Step]) {
+    run_model_on(false, initial, steps);
+}
+
+/// `list_status` gives the fake LIST-STATUS, so a pass learns every folder's status from its LIST.
+fn run_model_on(list_status: bool, initial: &[ServerEvent], steps: &[Step]) {
     let (fixture, trash_dir) = Fixture::new();
     let store = Store::open_in_memory().unwrap();
     let mut h = Harness::new(&store, trash_dir);
+    h.ops.list_status = list_status;
     // Mail already on the server before the first pass: older than every rule, so no rule may touch it.
     for event in initial {
         h.server(event);
@@ -1175,9 +1190,13 @@ fn config() -> Config {
 #[test]
 fn sync_and_rules_keep_their_invariants() {
     let mut runner = TestRunner::new(config());
-    let strategy = (initial_mail(), prop::collection::vec(step(), 1..30));
-    let result = runner.run(&strategy, |(initial, steps)| {
-        run_model(&initial, &steps);
+    let strategy = (
+        any::<bool>(),
+        initial_mail(),
+        prop::collection::vec(step(), 1..30),
+    );
+    let result = runner.run(&strategy, |(list_status, initial, steps)| {
+        run_model_on(list_status, &initial, &steps);
         Ok(())
     });
     if let Err(e) = result {

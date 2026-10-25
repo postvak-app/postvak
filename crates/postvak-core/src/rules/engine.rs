@@ -495,6 +495,32 @@ actions = [{ move = "Shopping" }]
     }
 
     #[test]
+    fn matches_header_counts_header_conditions_at_any_depth_only() {
+        let r = rules(
+            r#"
+[[rules]]
+name = "plain"
+match.from = { contains = "a" }
+match.subject = { contains = "b" }
+actions = ["flag"]
+
+[[rules]]
+name = "top"
+match.header = { name = "List-Id", contains = "x" }
+actions = ["flag"]
+
+[[rules]]
+name = "nested"
+match.any = [{ seen = true }, { none = [{ header = { name = "X-Spam", regex = "." } }] }]
+actions = ["flag"]
+"#,
+            0,
+        );
+        let found: Vec<bool> = r.iter().map(CompiledRule::matches_header).collect();
+        assert_eq!(found, [false, true, true]);
+    }
+
+    #[test]
     fn body_rule_needs_body_and_matches_when_present() {
         let id = identity();
         let toml = r#"

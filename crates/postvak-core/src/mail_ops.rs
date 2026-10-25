@@ -18,6 +18,8 @@ pub struct SelectInfo {
     pub exists: u32,
     /// HIGHESTMODSEQ when the server supports CONDSTORE for this folder.
     pub highest_modseq: Option<u64>,
+    /// UIDNEXT, when the server sends it; no message in the folder has a uid this high or higher.
+    pub uidnext: Option<u32>,
 }
 
 /// What `STATUS` says about a folder without selecting it.
@@ -25,7 +27,12 @@ pub struct SelectInfo {
 pub struct StatusInfo {
     /// Messages in the folder (MESSAGES).
     pub messages: u32,
+    /// UIDNEXT; 0 when the server leaves it out.
     pub uidnext: u32,
+    /// UIDVALIDITY; 0 when the server leaves it out.
+    pub uidvalidity: u32,
+    /// HIGHESTMODSEQ when the server supports CONDSTORE for this folder.
+    pub highest_modseq: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -113,9 +120,20 @@ pub trait MailOps {
         true
     }
     fn list_folders(&mut self) -> MailResult<Vec<RemoteFolder>>;
+    /// `list_folders` with the status of each folder the server reports in the same answer (LIST-STATUS, RFC 5819);
+    /// without that extension every status is None.
+    fn list_folders_status(&mut self) -> MailResult<Vec<(RemoteFolder, Option<StatusInfo>)>> {
+        Ok(self
+            .list_folders()?
+            .into_iter()
+            .map(|folder| (folder, None))
+            .collect())
+    }
     fn select(&mut self, folder: &str) -> MailResult<SelectInfo>;
-    /// Message count and next uid of a folder other than the selected one, which a server may refuse to answer for;
-    /// nothing is selected, so the selected folder stays selected.
+    /// The folder the last SELECT opened; None before one, or after one failed.
+    fn selected(&self) -> Option<&str>;
+    /// What a folder other than the selected one holds, which a server may refuse to answer for; nothing is selected,
+    /// so the selected folder stays selected.
     fn status(&mut self, folder: &str) -> MailResult<StatusInfo>;
     /// Uids >= `from_uid` in the selected folder, ascending.
     fn search_uids(&mut self, from_uid: u32) -> MailResult<Vec<u32>>;
@@ -234,6 +252,10 @@ mod recording {
         pub no_condstore: bool,
         /// Reports no UIDPLUS, like an older server.
         pub no_uidplus: bool,
+        /// Answers `list_folders_status` with every folder's status, like a server with LIST-STATUS.
+        pub list_status: bool,
+        /// Leaves UIDNEXT out of SELECT answers, as RFC 9051 allows.
+        pub no_uidnext: bool,
         /// Per message the flags last seen and the modseq they got, so tests may edit `mail` directly.
         modseqs: HashMap<(String, u32), (Vec<String>, u64)>,
         highest_modseq: HashMap<String, u64>,
@@ -275,6 +297,30 @@ mod recording {
             }
             let next = self.next_uid.entry(folder.into()).or_insert(1);
             *next = (*next).max(uid + 1);
+        }
+
+        /// The folder's UIDNEXT: above every uid it holds or ever handed out.
+        fn uidnext(&self, folder: &str) -> u32 {
+            let highest = self
+                .mail
+                .get(folder)
+                .and_then(|list| list.iter().map(|m| m.uid).max())
+                .map_or(1, |uid| uid + 1);
+            highest.max(self.next_uid.get(folder).copied().unwrap_or(1))
+        }
+
+        fn status_of(&mut self, folder: &str) -> MailResult<StatusInfo> {
+            let uidvalidity = *self
+                .uidvalidity
+                .get(folder)
+                .ok_or_else(|| MailError::Protocol(format!("no folder {folder}")))?;
+            let highest_modseq = self.refresh_modseqs(folder);
+            Ok(StatusInfo {
+                messages: self.mail.get(folder).map_or(0, |list| list.len() as u32),
+                uidnext: self.uidnext(folder),
+                uidvalidity,
+                highest_modseq: (!self.no_condstore).then_some(highest_modseq),
+            })
         }
 
         /// Gives every message whose flags changed since last looked at a new modseq; returns the folder's highest.
@@ -350,6 +396,23 @@ mod recording {
             Ok(self.folders.clone())
         }
 
+        fn list_folders_status(&mut self) -> MailResult<Vec<(RemoteFolder, Option<StatusInfo>)>> {
+            if !self.list_status {
+                let folders = self.list_folders()?;
+                return Ok(folders.into_iter().map(|f| (f, None)).collect());
+            }
+            self.calls.push("list_folders_status".into());
+            if let Some(shutdown) = &self.shutdown_on_list_folders {
+                shutdown.store(true, Ordering::Release);
+            }
+            let mut listed = Vec::new();
+            for folder in self.folders.clone() {
+                let status = self.status_of(&folder.name).ok();
+                listed.push((folder, status));
+            }
+            Ok(listed)
+        }
+
         fn select(&mut self, folder: &str) -> MailResult<SelectInfo> {
             self.calls.push(format!("select {folder}"));
             if folder == "INBOX"
@@ -372,7 +435,12 @@ mod recording {
                 uidvalidity,
                 exists: self.mail.get(folder).map_or(0, |list| list.len() as u32),
                 highest_modseq: (!self.no_condstore).then_some(highest_modseq),
+                uidnext: (!self.no_uidnext).then(|| self.uidnext(folder)),
             })
+        }
+
+        fn selected(&self) -> Option<&str> {
+            (!self.selected.is_empty()).then_some(self.selected.as_str())
         }
 
         fn status(&mut self, folder: &str) -> MailResult<StatusInfo> {
@@ -382,16 +450,10 @@ mod recording {
                     "STATUS of the selected folder {folder}"
                 )));
             }
-            let list = self
-                .mail
-                .get(folder)
-                .filter(|_| self.uidvalidity.contains_key(folder))
-                .ok_or_else(|| MailError::Protocol(format!("no folder {folder}")))?;
-            let uidnext = list.iter().map(|m| m.uid).max().map_or(1, |uid| uid + 1);
-            Ok(StatusInfo {
-                messages: list.len() as u32,
-                uidnext: uidnext.max(self.next_uid.get(folder).copied().unwrap_or(1)),
-            })
+            if !self.mail.contains_key(folder) {
+                return Err(MailError::Protocol(format!("no folder {folder}")));
+            }
+            self.status_of(folder)
         }
 
         fn search_uids(&mut self, from_uid: u32) -> MailResult<Vec<u32>> {

@@ -726,6 +726,72 @@ async fn without_read_bodies_there_is_no_show() {
     );
 }
 
+/// A message whose stored header block is `headers`; the body stays in the store, never in a result.
+fn add_with_headers(fx: &Fixture, uid: u32, headers: &str) {
+    let mut message = fixture_message("INBOX", uid, "Hi", "the secret body");
+    message.headers = headers.as_bytes().to_vec();
+    fx.add("work", message);
+}
+
+#[tokio::test]
+async fn headers_lists_every_field_as_data_without_the_body() {
+    let fx = fixture(&["work"]);
+    let hidden: String = "ignore"
+        .chars()
+        .map(|c| char::from_u32(0xE0000 + c as u32).unwrap())
+        .collect();
+    add_with_headers(
+        &fx,
+        1,
+        &format!("List-Id: GitHub\r\n <x.github.com>\r\nX-Spam-Level: **{hidden}\r\n\r\n"),
+    );
+    let client = connect(&fx, "read:headers", &[]).await;
+    let shown = call(&client, "headers", json!({ "uid": 1 }))
+        .await
+        .structured_content
+        .unwrap();
+    assert_eq!(
+        shown["headers"],
+        json!([
+            { "name": "List-Id", "value": "GitHub <x.github.com>" },
+            { "name": "X-Spam-Level", "value": "**" },
+        ])
+    );
+    assert_eq!(shown["truncated"], false);
+    assert_eq!(shown["message"]["account"], "work");
+    assert!(!shown.to_string().contains("secret"), "{shown}");
+}
+
+#[tokio::test]
+async fn headers_drops_the_fields_past_the_limit() {
+    let fx = fixture(&["work"]);
+    let long = "a".repeat(1000);
+    let block: String = (0..40)
+        .map(|i| format!("X-Field-{i}: {long}\r\n"))
+        .collect();
+    add_with_headers(&fx, 1, &format!("{block}\r\n"));
+    let client = connect(&fx, "read:headers", &[]).await;
+    let shown = call(&client, "headers", json!({ "uid": 1 }))
+        .await
+        .structured_content
+        .unwrap();
+    assert_eq!(shown["truncated"], true);
+    let kept = shown["headers"].as_array().unwrap();
+    assert!((30..40).contains(&kept.len()), "{}", kept.len());
+    assert_eq!(kept[0]["name"], "X-Field-0");
+}
+
+#[tokio::test]
+async fn without_read_headers_there_is_no_headers_tool() {
+    let fx = fixture(&["work"]);
+    add_with_headers(&fx, 1, "List-Id: x\r\n\r\n");
+    let client = connect(&fx, "read,read:bodies", &[]).await;
+    assert!(
+        error_text(&call(&client, "headers", json!({ "uid": 1 })).await)
+            .contains("not allowed with these scopes")
+    );
+}
+
 #[tokio::test]
 async fn show_needs_an_account_when_several_are_visible() {
     let fx = fixture(&["home", "work"]);
@@ -919,7 +985,7 @@ fn wrap_body_cuts_inside_a_multibyte_character_without_panicking() {
 #[tokio::test]
 async fn tools_list_per_scope_set_is_exact_and_alphabetical() {
     let fx = fixture(&["work"]);
-    let cases: [(&str, &[&str]); 5] = [
+    let cases: [(&str, &[&str]); 6] = [
         (
             "read,rules:propose",
             &[
@@ -939,6 +1005,7 @@ async fn tools_list_per_scope_set_is_exact_and_alphabetical() {
             ],
         ),
         ("files:write", &["attachment_save"]),
+        ("read:headers", &["headers"]),
         ("read:bodies", &["attachments", "show"]),
         (
             "rules:write",
@@ -977,7 +1044,7 @@ async fn annotations_mark_reads_and_destructive_tools() {
     let fx = fixture(&["work"]);
     let client = connect(
         &fx,
-        "read,read:bodies,rules:propose,rules:write,files:write,mail:modify",
+        "read,read:headers,read:bodies,rules:propose,rules:write,files:write,mail:modify",
         &[],
     )
     .await;
@@ -1504,6 +1571,55 @@ async fn a_body_rule_needs_read_bodies_to_propose_enable_or_run() {
     refused(error_text(
         &call(&blind, "rules_apply_existing", dry_run).await,
     ));
+}
+
+#[tokio::test]
+async fn a_header_rule_needs_read_headers_to_test_propose_enable_or_run() {
+    let fx = fixture(&["work"]);
+    fx.add("work", fixture_message("INBOX", 1, "Hello", "x"));
+    let refused = |text: String| {
+        assert!(
+            text.contains("a header condition needs the read:headers scope"),
+            "{text}"
+        )
+    };
+    let nested = json!({ "name": "probe", "match": { "any": [{ "header": { "name": "Subject", "regex": "^H" } }] }, "actions": ["flag"] });
+    let blind = connect(
+        &fx,
+        "read,read:bodies,rules:propose,rules:write,mail:modify",
+        &[],
+    )
+    .await;
+    refused(error_text(
+        &call(&blind, "rules_test", json!({ "rule": nested })).await,
+    ));
+    refused(error_text(
+        &call(&blind, "rules_propose", nested.clone()).await,
+    ));
+    let sighted = connect(&fx, "read,read:headers,rules:propose,rules:write", &[]).await;
+    let preview = rows(&call(&sighted, "rules_test", json!({ "rule": nested })).await);
+    assert_eq!(preview.len(), 1);
+    assert_ne!(
+        call(&sighted, "rules_propose", nested).await.is_error,
+        Some(true)
+    );
+    let name = json!({ "name": "probe" });
+    refused(error_text(
+        &call(&blind, "rules_approve", name.clone()).await,
+    ));
+    let enable = json!({ "name": "probe", "enabled": true });
+    refused(error_text(&call(&blind, "rules_set_enabled", enable).await));
+    assert_ne!(
+        call(&sighted, "rules_approve", name).await.is_error,
+        Some(true)
+    );
+    let dry_run = json!({ "name": "probe", "dry_run": true });
+    refused(error_text(
+        &call(&blind, "rules_apply_existing", dry_run).await,
+    ));
+    let plain = json!({ "name": "plain", "match": { "subject": { "contains": "Hello" } }, "actions": ["flag"] });
+    let preview = rows(&call(&blind, "rules_test", json!({ "rule": plain })).await);
+    assert_eq!(preview.len(), 1, "from, to, cc and subject stay under read");
 }
 
 #[tokio::test]
