@@ -252,10 +252,17 @@ pub(crate) fn initials(from: &str) -> String {
 }
 
 pub(crate) fn missing_text(account: &Account) -> String {
-    if matches!(account.activity, Some(Activity::Offline { .. })) {
-        format!("Not downloaded; loads when {} reconnects.", account.name)
-    } else {
-        "Loading…".into()
+    match account.activity {
+        Some(Activity::Offline { .. }) => {
+            format!("Not downloaded; loads when {} reconnects.", account.name)
+        }
+        Some(Activity::LoginRejected { .. }) => {
+            format!(
+                "Not downloaded; the server rejected {}'s login.",
+                account.name
+            )
+        }
+        _ => "Loading…".into(),
     }
 }
 
@@ -631,6 +638,28 @@ mod tests {
         open.tick();
         assert_eq!(
             open.find("Not downloaded; loads when work reconnects.")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_rejected_login_says_why_the_body_does_not_load() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", not_downloaded(message("INBOX", 1, "later")));
+        let (open, wires) = fx.window();
+        let rejected = Activity::LoginRejected {
+            reason: "login failed: bad password".into(),
+            retry_at: 1_790_003_600,
+        };
+        let event = Event::Activity {
+            account: "work".into(),
+            activity: rejected,
+        };
+        wires.events.send(event).unwrap();
+        open.tick();
+        assert_eq!(
+            open.find("Not downloaded; the server rejected work's login.")
                 .len(),
             1
         );

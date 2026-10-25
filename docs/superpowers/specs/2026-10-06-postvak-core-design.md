@@ -218,7 +218,7 @@ The timer stays even with push, because `older_than` rules fire without new mail
 
 Bodies are fetched on demand with `UID FETCH n BODY.PEEK[]` and stored in `messages.raw`, with `body_text` extracted at the same time: when a rule has a `body` condition, when the CLI shows a message, when `search` is asked to include bodies, and before any delete. A removal costs one `UID SEARCH` of the folder, O(folder size) in UIDs only; ponytail: QRESYNC `VANISHED` would make that O(changes).
 
-Per-account failures log with the account name and retry with exponential backoff capped at 5 minutes. One account failing never stops the others.
+Per-account failures log with the account name and retry with exponential backoff capped at 5 minutes. One account failing never stops the others. A login the server rejects is the exception, since every retry is another failed login and servers lock the account or ban the address after a run of them: the account shows `LoginRejected` and waits an hour before trying again, unless a sync request or a change to its config wakes it sooner; meanwhile other commands for it are refused. Only a NO to LOGIN counts, and not one whose code (`UNAVAILABLE`, `SERVERBUG`, `LIMIT`, `INUSE`) says the server cannot check the credentials now; those keep the backoff.
 
 ## 8. Rules engine
 

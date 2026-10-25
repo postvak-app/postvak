@@ -224,6 +224,49 @@ fn sync_now_on_an_offline_account_retries_at_once() {
     );
 }
 
+/// work's first login is rejected and every later one succeeds, as after the user fixed its password.
+#[test]
+fn a_rejected_login_refuses_commands_until_sync_now_retries_it() {
+    let work_connects = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let connector: crate::engine::Connector = std::sync::Arc::new({
+        let work_connects = work_connects.clone();
+        move |account: &crate::config::AccountConfig| {
+            if account.name == "work"
+                && work_connects.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0
+            {
+                return Err(crate::sync::SyncError::Mail(
+                    crate::mail_ops::MailError::Auth("[AUTHENTICATIONFAILED] no".into()),
+                ));
+            }
+            recording_connector()(account)
+        }
+    });
+    let daemon = TestDaemon::start_with(options(connector, None));
+    let mut client = daemon.client();
+    status_until(&mut client, |status| {
+        status.accounts.iter().any(|account| {
+            account.name == "work"
+                && matches!(account.activity, Some(Activity::LoginRejected { .. }))
+        })
+    });
+    match client.request(command(3, "work", Command::ApplyRule { name: "r".into() })) {
+        Outcome::Error(message) => assert!(
+            message.starts_with("work: login rejected (login failed: [AUTHENTICATIONFAILED] no); fix the password, then sync"),
+            "{message}"
+        ),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    match client.request(command(4, "work", Command::SyncNow)) {
+        Outcome::Ok(Payload::Event(Event::Synced { .. })) => {}
+        other => panic!("expected the retried sync, got {other:?}"),
+    }
+    assert_eq!(
+        work_connects.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "SyncNow connected again well before the hour's wait ended"
+    );
+}
+
 #[test]
 fn a_second_daemon_on_the_same_home_exits_already_running() {
     let daemon = TestDaemon::start();

@@ -187,6 +187,12 @@ pub enum Activity {
         reason: String,
         retry_at: i64,
     },
+    /// The server refused the login, so the account waits an hour, or for a sync request, before trying again: each
+    /// retry is a failed login, and servers lock the account or ban the address after a run of them.
+    LoginRejected {
+        reason: String,
+        retry_at: i64,
+    },
     /// The account has no sync thread, so it never syncs until the daemon restarts or its config changes.
     NotRunning {
         reason: String,
@@ -225,6 +231,13 @@ impl fmt::Display for Activity {
             Activity::Offline { reason, retry_at } => {
                 format!(
                     "offline ({}) · retry {}",
+                    clean(reason, false),
+                    clock(*retry_at)
+                )
+            }
+            Activity::LoginRejected { reason, retry_at } => {
+                format!(
+                    "login rejected ({}) · retry {}",
                     clean(reason, false),
                     clock(*retry_at)
                 )
@@ -1532,15 +1545,27 @@ pub fn run_loop_with(
                     account: account.name.clone(),
                     message: e.to_string(),
                 });
-                let (reason, retry_at) = (e.to_string(), now() + backoff.as_secs() as i64);
-                let offline = offline_message(&account.name, &reason, retry_at);
+                let rejected = matches!(e, SyncError::Mail(MailError::Auth(_)));
+                let delay = if rejected { LOGIN_RETRY } else { backoff };
+                let (reason, retry_at) = (e.to_string(), now() + delay.as_secs() as i64);
+                let (message, activity) = if rejected {
+                    let message = rejected_message(&account.name, &reason, retry_at);
+                    (message, Activity::LoginRejected { reason, retry_at })
+                } else {
+                    let message = offline_message(&account.name, &reason, retry_at);
+                    (message, Activity::Offline { reason, retry_at })
+                };
                 let _ = events.send(Event::Activity {
                     account: account.name.clone(),
-                    activity: Activity::Offline { reason, retry_at },
+                    activity,
                 });
-                fail_requests(&account, &events, &commands, &mut carried, &offline);
-                sleep(backoff);
-                backoff = (backoff * 2).min(Duration::from_secs(300));
+                fail_requests(&account, &events, &commands, &mut carried, &message);
+                sleep(delay);
+                backoff = if rejected {
+                    Duration::from_secs(5)
+                } else {
+                    (backoff * 2).min(Duration::from_secs(300))
+                };
             }
         }
     }
@@ -1554,6 +1579,18 @@ fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
         .map(|text| text.to_string())
         .or_else(|| panic.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "unknown panic".into())
+}
+
+/// How long an account whose login the server rejected waits before trying again on its own.
+pub const LOGIN_RETRY: Duration = Duration::from_secs(3600);
+
+/// Why an account whose login was rejected cannot run a command: `<account>: login rejected (<reason>); fix the
+/// password, then sync, or it retries at <HH:MM>`, local time.
+pub fn rejected_message(account: &str, reason: &str, retry_at: i64) -> String {
+    format!(
+        "{account}: login rejected ({reason}); fix the password, then sync, or it retries at {}",
+        clock(retry_at)
+    )
 }
 
 /// Why an offline account cannot run a command: `<account> is offline (<reason>); retrying at <HH:MM>`, local time.

@@ -191,7 +191,7 @@ async fn open_session(
     let mut session = client
         .login(&account.username, secret.expose())
         .await
-        .map_err(|(e, _)| MailError::Auth(e.to_string()))?;
+        .map_err(|(e, _)| login_error(e))?;
     let caps = session.capabilities().await.map_err(proto)?;
     Ok((session, caps))
 }
@@ -342,6 +342,23 @@ fn encoding_name(encoding: &ContentEncoding<'_>) -> Option<String> {
         }
         .to_string(),
     )
+}
+
+/// `Auth` only when the server refused these credentials: a NO to LOGIN, unless its code (RFC 5530) says the server
+/// cannot check them now. Anything else, such as a dropped connection or a BYE for too many connections, is passing.
+fn login_error(e: async_imap::error::Error) -> MailError {
+    match e {
+        async_imap::error::Error::No(text) if !login_unavailable(&text) => MailError::Auth(text),
+        other => MailError::Connect(format!("during login: {other}")),
+    }
+}
+
+/// Whether a NO to LOGIN carries a code for a passing state rather than wrong credentials.
+fn login_unavailable(text: &str) -> bool {
+    let text = text.to_ascii_uppercase();
+    ["UNAVAILABLE", "SERVERBUG", "LIMIT", "INUSE"]
+        .iter()
+        .any(|code| text.contains(&format!("[{code}")))
 }
 
 fn proto(e: async_imap::error::Error) -> MailError {
@@ -805,6 +822,31 @@ fn text_query(words: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_plain_no_to_login_means_rejected_credentials() {
+        use async_imap::error::Error;
+        let no = |info: &str| Error::No(format!("code: None, info: Some({info:?})"));
+        for rejected in [
+            no("[AUTHENTICATIONFAILED] Authentication failed."),
+            no("Invalid credentials"),
+            no("[ALERT] Application-specific password required"),
+        ] {
+            assert!(matches!(login_error(rejected), MailError::Auth(_)));
+        }
+        for passing in [
+            no("[UNAVAILABLE] Temporary authentication failure."),
+            no("[unavailable] backend down"),
+            no("[SERVERBUG] Internal error"),
+            no("[LIMIT] Too many connections"),
+            no("[INUSE] Mailbox in use"),
+            Error::ConnectionLost,
+            Error::Bad("code: None, info: Some(\"LOGIN disabled\")".into()),
+            Error::Io(std::io::Error::other("reset")),
+        ] {
+            assert!(matches!(login_error(passing), MailError::Connect(_)));
+        }
+    }
 
     #[test]
     fn a_uid_set_writes_runs_as_ranges_in_order() {

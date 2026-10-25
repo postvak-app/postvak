@@ -70,6 +70,7 @@ A daemon started by a command, or by the launchd service on macOS, writes `daemo
 - `socket path too long`: the state directory is nested too deep for a Unix socket. Shorten `POSTVAK_HOME`.
 - `the daemon stopped; see <log>`: the daemon quit while a command was waiting. The log says why.
 - `<account> is offline (<reason>); retrying at HH:MM`: that account could not reach its server. Everything else keeps syncing. `postvak sync` tries it again at once.
+- `<account>: login rejected (<reason>); fix the password, then sync, or it retries at HH:MM`: the server refused that account's username or password. Postvak tries again only once an hour, since repeated failed logins can lock the account or get your address banned. Fix the password (`postvak account add` with the same name replaces it; see [Accounts](accounts.md#passwords)), then `postvak sync` tries it again at once.
 - `<account> is restarting`: `config.toml` changed that account and its old sync thread is still finishing. Try again in a moment.
 - After an upgrade, the next command notices the old daemon, stops it and starts the new one. A daemon started by the service is restarted by launchd or systemd.
 - `the daemon is version X, newer than this postvak (Y); restart this program`: a window or MCP server from before an upgrade is still open. It leaves the newer daemon alone; restart it.

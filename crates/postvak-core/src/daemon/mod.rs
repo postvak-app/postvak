@@ -837,8 +837,8 @@ fn submit(shared: &Shared, client: ClientId, id: u64, account: &str, command: Co
     }
 }
 
-/// Why a command for `account` cannot run now, if it cannot. SyncNow is never refused for an offline account: it
-/// wakes the thread from its back-off to connect again at once.
+/// Why a command for `account` cannot run now, if it cannot. SyncNow is never refused for an offline account, or one
+/// whose login was rejected: it wakes the thread from its wait to connect again at once.
 fn refusal(
     account: &str,
     command: &Command,
@@ -852,6 +852,9 @@ fn refusal(
         (true, _) if matches!(command, Command::SyncNow) => None,
         (true, Some(Activity::Offline { reason, retry_at })) => {
             Some(sync::offline_message(account, reason, *retry_at))
+        }
+        (true, Some(Activity::LoginRejected { reason, retry_at })) => {
+            Some(sync::rejected_message(account, reason, *retry_at))
         }
         (true, _) => None,
     }
