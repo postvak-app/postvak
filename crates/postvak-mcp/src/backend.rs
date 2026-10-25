@@ -517,16 +517,16 @@ impl Backend {
     }
 
     /// Previews one rule as if enabled, on the cached mail of the visible accounts; rows never carry mail text.
-    /// Without `bodies` a body condition is refused, since its matches would reveal body text.
+    /// A condition on text `sight` does not cover is refused, since its matches would reveal that text.
     pub fn rules_test(
         &self,
         mut rule: Rule,
         account: Option<&str>,
-        bodies: bool,
+        sight: Sight,
     ) -> Result<Vec<Value>> {
         rule.enabled = true;
         let compiled = rules::compile(&RuleFile { rules: vec![rule] })?;
-        refuse_body_rule(&compiled, bodies)?;
+        refuse_unseen(&compiled, sight)?;
         let mut rows = Vec::new();
         for acc in self.select(account)? {
             let store = self.store(&acc)?;
@@ -546,11 +546,11 @@ impl Backend {
         account: Option<&str>,
         dry_run: bool,
         yes: bool,
-        bodies: bool,
+        sight: Sight,
     ) -> Result<Vec<Value>> {
         self.ensure_rule_visible(name, false)?;
         let compiled = vec![rules::enabled_rule(&self.paths.rules_file(), name)?];
-        refuse_body_rule(&compiled, bodies)?;
+        refuse_unseen(&compiled, sight)?;
         let accounts: Vec<_> = self
             .select(account)?
             .into_iter()
@@ -593,12 +593,12 @@ impl Backend {
     }
 
     /// While accounts are hidden, a rule without `account` gets the only visible one, or is refused.
-    pub fn propose(&self, mut rule: Rule, by: &str, bodies: bool) -> Result<Value> {
-        refuse_body_rule(
+    pub fn propose(&self, mut rule: Rule, by: &str, sight: Sight) -> Result<Value> {
+        refuse_unseen(
             &rules::compile(&RuleFile {
                 rules: vec![rule.clone()],
             })?,
-            bodies,
+            sight,
         )?;
         match rule.account.as_deref() {
             Some(account) if !self.is_visible(Some(account)) => {
@@ -613,9 +613,9 @@ impl Backend {
     }
 
     /// Enables the rule and restarts its clock in every account, so it acts only on mail that arrives from now on.
-    pub fn approve(&self, name: &str, bodies: bool) -> Result<Value> {
+    pub fn approve(&self, name: &str, sight: Sight) -> Result<Value> {
         self.ensure_rule_visible(name, true)?;
-        refuse_named_body_rule(&self.paths, name, bodies)?;
+        refuse_named_unseen(&self.paths, name, sight)?;
         rules::edit::approve_from_now(&self.paths, name, time::now())?;
         Ok(json!({ "rule": name, "enabled": true }))
     }
@@ -626,27 +626,37 @@ impl Backend {
         Ok(json!({ "rejected": name }))
     }
 
-    pub fn set_enabled(&self, name: &str, enabled: bool, bodies: bool) -> Result<Value> {
+    pub fn set_enabled(&self, name: &str, enabled: bool, sight: Sight) -> Result<Value> {
         self.ensure_rule_visible(name, enabled)?;
         if enabled {
-            refuse_named_body_rule(&self.paths, name, bodies)?;
+            refuse_named_unseen(&self.paths, name, sight)?;
         }
         rules::edit::set_enabled(&self.paths.rules_file(), name, enabled)?;
         Ok(json!({ "rule": name, "enabled": enabled }))
     }
 }
 
-fn refuse_named_body_rule(paths: &Paths, name: &str, bodies: bool) -> Result<()> {
+fn refuse_named_unseen(paths: &Paths, name: &str, sight: Sight) -> Result<()> {
     let file = rules::load(&paths.rules_file())?;
     let named: Vec<Rule> = file.rules.into_iter().filter(|r| r.name == name).collect();
-    refuse_body_rule(&rules::compile(&RuleFile { rules: named })?, bodies)
+    refuse_unseen(&rules::compile(&RuleFile { rules: named })?, sight)
 }
 
-/// Without read:bodies an agent may not propose, enable or run a rule that matches on the body: which mail it acts on,
-/// or a dry run lists, would reveal body text.
-fn refuse_body_rule(compiled: &[rules::CompiledRule], bodies: bool) -> Result<()> {
-    if !bodies && compiled.iter().any(|r| r.needs_body()) {
+/// Which mail text the granted scopes show the agent: `read:bodies` and `read:headers`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Sight {
+    pub bodies: bool,
+    pub headers: bool,
+}
+
+/// An agent may not propose, enable or run a rule that matches on text it cannot see: which mail the rule acts on, or
+/// a dry run lists, would reveal that text. Bodies need read:bodies, `header` conditions read:headers.
+fn refuse_unseen(compiled: &[rules::CompiledRule], sight: Sight) -> Result<()> {
+    if !sight.bodies && compiled.iter().any(|r| r.needs_body()) {
         bail!("matching on the body needs the read:bodies scope");
+    }
+    if !sight.headers && compiled.iter().any(|r| r.matches_header()) {
+        bail!("a header condition needs the read:headers scope");
     }
     Ok(())
 }

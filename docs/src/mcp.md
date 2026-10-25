@@ -53,8 +53,8 @@ The install also prints a hint with the granted scopes and how to widen them. It
 
 | Scope | What it grants | Tools |
 |---|---|---|
-| `read` | Folders, message headers, the activity log, rules and trash listings, previews of rules that do not match on the body, and a sync. No body text. | `accounts`, `folders`, `list`, `log`, `rules_check`, `rules_list`, `rules_schema`, `rules_test`, `search`, `status`, `sync`, `trash_list` |
-| `read:headers` | Every header of a message, such as `List-Id`, `Authentication-Results` or a spam score, from the local store, so an agent can write `header` rules. No body text. | `headers` |
+| `read` | Folders, each message's sender, recipients, subject and date, the activity log, rules and trash listings, previews of rules that match on neither the body nor a `header` condition, and a sync. No body text and no other headers. | `accounts`, `folders`, `list`, `log`, `rules_check`, `rules_list`, `rules_schema`, `rules_test`, `search`, `status`, `sync`, `trash_list` |
+| `read:headers` | Every header of a message, such as `List-Id`, `Authentication-Results` or a spam score, from the local store, and with `read` previews of rules with a `header` condition; proposing, enabling or running such a rule needs it too. No body text. | `headers` |
 | `read:bodies` | Message bodies and attachment names, search over indexed bodies and on the server (`search` with `server`) with a `snippet` of the body around a match, and with `read` previews of rules that match on the body. | `attachments`, `show` |
 | `rules:propose` | Proposing a rule. It is stored disabled until you approve it. | `rules_propose` |
 | `rules:write` | Approving and rejecting rules, and turning them on or off. | `rules_approve`, `rules_reject`, `rules_set_enabled` |
@@ -64,8 +64,8 @@ The install also prints a hint with the granted scopes and how to widen them. It
 The default is `read,rules:propose`. Four example grants:
 
 - Read-only: `--scopes read`. `sync` is in this scope and still runs your approved rules.
-- Rule author: the default. The agent proposes, you approve in the window or with `postvak rules approve`.
-- Rule author who sees headers: `--scopes read,read:headers,rules:propose`. The agent can read `List-Id` or a spam score before it proposes a `header` rule, but no bodies.
+- Rule author: the default. The agent proposes, you approve in the window or with `postvak rules approve`. It can match on sender, recipients, subject, age, size and flags, but not on a `header` condition such as `List-Id`.
+- Rule author who sees headers: `--scopes read,read:headers,rules:propose`. The agent can read `List-Id` or a spam score, then preview and propose a `header` rule, but sees no bodies.
 - Inbox assistant: `--scopes read,read:headers,read:bodies,rules:propose,mail:modify`.
 
 `rules:write` lets the agent approve its own rules, and an approved rule can delete mail. Leave it off. `files:write` lets the agent save a stranger's file into your save folder; leave it off too unless you need it.
@@ -87,7 +87,7 @@ The names follow the CLI commands. A tool that lists things returns the CLI's `-
 - `rules_check` validates `rules.toml` and lists `warnings`: a conflicting copy a file sync left beside it, and a rule for an account that is not set up. A server started with `--account` leaves out rules for the accounts it hides.
 - `rules_list` lists rules and their state.
 - `rules_schema` returns the JSON Schema for a rule.
-- `rules_test` previews a rule, given as JSON, against the local store. It reports subjects, never bodies. A rule that matches on the body needs `read:bodies` too, since its matches would reveal what bodies contain.
+- `rules_test` previews a rule, given as JSON, against the local store. It reports subjects, never bodies. A rule that matches on the body needs `read:bodies` too, and one with a `header` condition `read:headers`, since their matches would reveal what bodies or headers contain. `rules_propose`, `rules_approve`, `rules_set_enabled` and `rules_apply_existing` refuse such rules on the same terms. `from`, `to`, `cc` and `subject` conditions need only `read`, as `list` already shows those fields.
 - `search` finds messages by subject, addresses and attachment names. It matches all the given words, `"phrases"` in order, `-word` excludes, and the last word also as a prefix; the operators of [Search](search.md) (`from:`, `in:`, `is:unread`, `after:7d` and the rest) narrow it, and the tool's description lists them. When fewer than ten messages match as typed, close matches follow, each row's `match` being `exact` or `close`; `exact: true` leaves them out. Searching bodies, and `server: true`, need `read:bodies`.
 - `status` is `postvak daemon status --json`: the daemon's pid, version, uptime and each visible account's activity, and whether its server offers `UIDPLUS` (see [Other mail clients](daemon.md#other-mail-clients)).
 - `sync` asks the daemon to sync and run rules once per account and reports its result: `new_messages`, `actions` and `errors`, or an `error` when the account could not sync (offline, for example). It is in the `read` scope, but it writes the store and applies approved rules, so hosts see it as a changing tool.
@@ -134,6 +134,7 @@ With more than one visible account, every tool that acts on one message needs `a
 - Except `trash_purge`, the `mail:modify` tools take `dry_run`. It reports what would happen from the local store and does not ask the daemon.
 - `--account` hides other accounts from every tool. Rule writes refuse rules scoped to a hidden account, and so does proposing one. A rule without `account` applies to every account, hidden ones too, so while an account is hidden `rules_approve` and `rules_set_enabled` refuse to turn such a rule on; turning it off and rejecting it still work.
 - Without `read:bodies`, no tool returns or reveals body text: `search` covers subject, addresses and attachment names only, and `rules_test` refuses a rule that matches on the body.
+- Without `read:headers`, no tool returns or reveals a header beyond sender, recipients, subject, date and the threading ids: `rules_test` and the other rule tools refuse a rule with a `header` condition, at any depth of `any` and `none`.
 - A call outside the granted scopes fails with "not allowed with these scopes". Hosts only see the tools you granted, so they should not make such a call.
 
 ## Alongside the window and the CLI

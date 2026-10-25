@@ -1,5 +1,5 @@
 //! The MCP tools: definitions, scope filtering, and results cleaned for an agent.
-use super::backend::Filter;
+use super::backend::{Filter, Sight};
 use std::collections::BTreeSet;
 use std::sync::{Arc, LazyLock};
 
@@ -331,6 +331,10 @@ struct RestoreArgs {
     dry_run: bool,
 }
 
+/// What the rule tools refuse, so an agent can tell before it writes such a rule.
+const UNSEEN_CONDITIONS: &str =
+    "a header condition needs the read:headers scope and a body condition read:bodies";
+
 /// Every tool, in any order; `Server::new` sorts them and listing filters by scope. `bodies` is whether
 /// `read:bodies` is granted, which changes what `search` covers.
 fn catalog(bodies: bool) -> Vec<ToolDef> {
@@ -416,7 +420,7 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
             "rules_propose",
             Scope::RulesPropose,
             Effect::Changes,
-            help::RULES_PROPOSE,
+            format!("{}; {UNSEEN_CONDITIONS}", help::RULES_PROPOSE),
         ),
         ToolDef::new::<NameArgs>(
             "rules_reject",
@@ -440,7 +444,7 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
             "rules_test",
             Scope::Read,
             Effect::ReadOnly,
-            mail(help::RULES_TEST),
+            mail(&format!("{}; {UNSEEN_CONDITIONS}", help::RULES_TEST)),
         ),
         ToolDef::new::<SearchArgs>("search", Scope::Read, Effect::ReadOnly, mail(&search)),
         ToolDef::new::<MessageArgs>(
@@ -484,7 +488,7 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
 /// Runs one tool the caller has checked against the scopes; list results come back as `{"rows": [...]}`.
 fn dispatch(
     backend: &Backend,
-    bodies: bool,
+    sight: Sight,
     client: Option<&str>,
     name: &str,
     arguments: Option<JsonObject>,
@@ -607,12 +611,12 @@ fn dispatch(
                 a.account.as_deref(),
                 a.dry_run,
                 a.yes,
-                bodies,
+                sight,
             )?)
         }
         "rules_approve" => {
             let a: NameArgs = args(arguments)?;
-            backend.approve(&a.name, bodies)
+            backend.approve(&a.name, sight)
         }
         "rules_check" => {
             let _: NoArgs = args(arguments)?;
@@ -624,7 +628,7 @@ fn dispatch(
         }
         "rules_propose" => {
             let rule: postvak_core::rules::Rule = args(arguments)?;
-            backend.propose(rule, &by, bodies)
+            backend.propose(rule, &by, sight)
         }
         "rules_reject" => {
             let a: NameArgs = args(arguments)?;
@@ -636,11 +640,11 @@ fn dispatch(
         }
         "rules_set_enabled" => {
             let a: SetEnabledArgs = args(arguments)?;
-            backend.set_enabled(&a.name, a.enabled, bodies)
+            backend.set_enabled(&a.name, a.enabled, sight)
         }
         "rules_test" => {
             let a: RulesTestArgs = args(arguments)?;
-            rows(backend.rules_test(a.rule, a.account.as_deref(), bodies)?)
+            rows(backend.rules_test(a.rule, a.account.as_deref(), sight)?)
         }
         "search" => {
             let a: SearchArgs = args(arguments)?;
@@ -649,7 +653,7 @@ fn dispatch(
                 a.account.as_deref(),
                 a.folder.as_deref(),
                 a.limit,
-                bodies,
+                sight.bodies,
                 a.server,
                 a.exact,
             )?)
@@ -791,13 +795,13 @@ impl ServerHandler for Server {
             return Ok(error_result("not allowed with these scopes").into());
         }
         let client = context.client_info().map(|info| info.name);
-        let (backend, bodies, arguments) = (
-            self.backend.clone(),
-            self.scopes.contains(&Scope::ReadBodies),
-            request.arguments,
-        );
+        let sight = Sight {
+            bodies: self.scopes.contains(&Scope::ReadBodies),
+            headers: self.scopes.contains(&Scope::ReadHeaders),
+        };
+        let (backend, arguments) = (self.backend.clone(), request.arguments);
         let outcome = tokio::task::spawn_blocking(move || {
-            dispatch(&backend, bodies, client.as_deref(), &name, arguments)
+            dispatch(&backend, sight, client.as_deref(), &name, arguments)
         })
         .await
         .map_err(|e| McpError::internal_error(e.to_string(), None))?;

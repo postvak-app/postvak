@@ -1574,6 +1574,55 @@ async fn a_body_rule_needs_read_bodies_to_propose_enable_or_run() {
 }
 
 #[tokio::test]
+async fn a_header_rule_needs_read_headers_to_test_propose_enable_or_run() {
+    let fx = fixture(&["work"]);
+    fx.add("work", fixture_message("INBOX", 1, "Hello", "x"));
+    let refused = |text: String| {
+        assert!(
+            text.contains("a header condition needs the read:headers scope"),
+            "{text}"
+        )
+    };
+    let nested = json!({ "name": "probe", "match": { "any": [{ "header": { "name": "Subject", "regex": "^H" } }] }, "actions": ["flag"] });
+    let blind = connect(
+        &fx,
+        "read,read:bodies,rules:propose,rules:write,mail:modify",
+        &[],
+    )
+    .await;
+    refused(error_text(
+        &call(&blind, "rules_test", json!({ "rule": nested })).await,
+    ));
+    refused(error_text(
+        &call(&blind, "rules_propose", nested.clone()).await,
+    ));
+    let sighted = connect(&fx, "read,read:headers,rules:propose,rules:write", &[]).await;
+    let preview = rows(&call(&sighted, "rules_test", json!({ "rule": nested })).await);
+    assert_eq!(preview.len(), 1);
+    assert_ne!(
+        call(&sighted, "rules_propose", nested).await.is_error,
+        Some(true)
+    );
+    let name = json!({ "name": "probe" });
+    refused(error_text(
+        &call(&blind, "rules_approve", name.clone()).await,
+    ));
+    let enable = json!({ "name": "probe", "enabled": true });
+    refused(error_text(&call(&blind, "rules_set_enabled", enable).await));
+    assert_ne!(
+        call(&sighted, "rules_approve", name).await.is_error,
+        Some(true)
+    );
+    let dry_run = json!({ "name": "probe", "dry_run": true });
+    refused(error_text(
+        &call(&blind, "rules_apply_existing", dry_run).await,
+    ));
+    let plain = json!({ "name": "plain", "match": { "subject": { "contains": "Hello" } }, "actions": ["flag"] });
+    let preview = rows(&call(&blind, "rules_test", json!({ "rule": plain })).await);
+    assert_eq!(preview.len(), 1, "from, to, cc and subject stay under read");
+}
+
+#[tokio::test]
 async fn rules_test_leaves_out_mail_of_hidden_accounts() {
     let fx = fixture(&["home", "work"]);
     fx.add("home", fixture_message("INBOX", 1, "Your code", "x"));
