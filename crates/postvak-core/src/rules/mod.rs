@@ -30,6 +30,12 @@ pub enum RulesError {
     Store(#[from] crate::store::StoreError),
 }
 
+impl From<toml_edit::TomlError> for RulesError {
+    fn from(e: toml_edit::TomlError) -> Self {
+        RulesError::Parse(e.to_string())
+    }
+}
+
 pub(crate) fn invalid(rule: &str, reason: impl Into<String>) -> RulesError {
     RulesError::Invalid {
         rule: rule.to_string(),

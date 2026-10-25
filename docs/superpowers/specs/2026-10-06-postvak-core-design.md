@@ -54,7 +54,7 @@ One Cargo workspace, edition 2024, `rust-version` pinned in `rust-toolchain.toml
 crates/postvak-core/src/
   lib.rs            pub mod for everything below
   paths.rs          ProjectDirs split into config/state/cache; `Paths::under(root)` for tests
-  config.rs         accounts: load config.toml
+  config.rs         accounts: load config.toml; each write locks `.config.lock` and merges into the file as it reads then
   credentials.rs    Secret type (no Debug), keyring and command backends, error enum
   rules/
     mod.rs          RuleFile parsing and validation, regex compiled once
