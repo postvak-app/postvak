@@ -4,11 +4,13 @@ use std::collections::HashSet;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, PoisonError};
+use std::sync::{Arc, LazyLock, PoisonError};
 
 use anyrender::ImageRenderer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
-use blitz_dom::{BaseDocument, DEFAULT_CSS, DocumentConfig, FontContext, QualName, local_name, ns};
+use blitz_dom::{
+    BaseDocument, DocumentConfig, FontContext, QualName, UserAgentStylesheet, local_name, ns,
+};
 use blitz_traits::shell::{ColorScheme, Viewport};
 use fontique::{Blob, Collection, CollectionOptions, FallbackKey, Script, SourceCache};
 
@@ -29,6 +31,10 @@ const BASE: &str = "postvak://mail/";
 
 /// Mail is written for a 600 px column and assumes nothing about the window: keep images and long words inside it.
 const MAIL_CSS: &str = "img { max-width: 100%; height: auto; } body { overflow-wrap: anywhere; }";
+
+/// `MAIL_CSS` parsed once, as Blitz parses its default sheet.
+static MAIL_SHEET: LazyLock<UserAgentStylesheet> =
+    LazyLock::new(|| UserAgentStylesheet::parse(MAIL_CSS));
 
 /// The render thread and its two channels. Dropping it ends the thread once it finishes its current job.
 pub struct Renderer {
@@ -184,7 +190,7 @@ fn layout(load: Load) -> Option<(Current, Reply)> {
             ColorScheme::Light,
         )),
         base_url: Some(BASE.into()),
-        ua_stylesheets: Some(vec![DEFAULT_CSS.into(), MAIL_CSS.into()]),
+        ua_stylesheets: vec![UserAgentStylesheet::default_sheet(), MAIL_SHEET.clone()],
         net_provider: Some(Arc::new(provider)),
         font_ctx: fonts(),
         ..Default::default()
