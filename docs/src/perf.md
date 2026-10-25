@@ -105,6 +105,8 @@ While the Trash view is open, each sync event lists the backups again on the win
 
 The same sync event also reads the account's folders and unread counts again, on the window thread. Each count reads the partial index `messages_unread` (migration 010), which holds only unread mail; the covering folder index SQLite chose before read every message in the folder. The query names the index (`INDEXED BY`), since without statistics SQLite does not know it is the smaller one, and a test checks that the plan uses it.
 
+The thread list reads the covering index `messages_folder_thread` (migration 009) alone, whichever filter is on, except that the attachments filter read every message's headers to make its guess (`has_attachment`, a generated column). Migration 015 adds the column to the index, which SQLite fills once per row written, so that filter reads the index like the others; the plan does not say so (it says `USING INDEX`, not `COVERING INDEX`, since the column is resolved while the code is generated), so the test checks the bytecode for a read of the table instead. On a 20k-message folder in SQLite directly, the filtered list fell from 136 ms to 33 ms, the unfiltered list's cost.
+
 `all_inboxes` is what the frame that took a sync event waited for the list before; `sync_event` is what it waits now. Release build, the same run of each: Linux container, 4 vCPUs of an Intel Xeon at 2.10 GHz, 15 GB, Rust 1.99.1, shared (load average about 3), so the ranges are wider than on a quiet machine. Median in ms, with the range of five runs.
 
 | Phase | 10k | 100k |

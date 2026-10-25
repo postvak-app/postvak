@@ -27,6 +27,9 @@ const MIGRATIONS: &[M<'static>] = &[
     M::up(include_str!("../migrations/012-rule-moves/up.sql")),
     M::up(include_str!("../migrations/013-backlog-index/up.sql")),
     M::up(include_str!("../migrations/014-newest-index/up.sql")),
+    M::up(include_str!(
+        "../migrations/015-attachment-in-thread-index/up.sql"
+    )),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -322,6 +325,18 @@ fn search_sql(
         " ORDER BY internaldate DESC, uid DESC LIMIT ?{next}"
     ));
     sql
+}
+
+/// The thread list of folder `?1`, at most `?2` threads, read from the covering index `messages_folder_thread`
+/// alone. With exactly one MAX() in the query, SQLite fills the bare columns from the row holding it: the thread's
+/// latest message. A second MAX() anywhere breaks that.
+fn thread_summaries_sql(filter: Filter) -> String {
+    format!(
+        "SELECT thread_id, {SUMMARY_COLUMNS}, MAX(internaldate) AS latest, COUNT(*), SUM({UNSEEN}), SUM({FLAGGED})
+          FROM messages WHERE folder = ?1 GROUP BY thread_id HAVING SUM({}) > 0
+          ORDER BY latest DESC, uid DESC LIMIT ?2",
+        filter.sql()
+    )
 }
 
 /// The index backlog at `?1`, newest first, at most `?2`: each half read from its own partial index up to the
@@ -625,20 +640,14 @@ impl Store {
             .collect()
     }
 
-    /// One row per thread in `folder` with a member `filter` keeps, the most recently active first. With exactly one MAX() in the query, SQLite fills
-    /// the bare columns from the row holding it: the thread's latest message. A second MAX() anywhere breaks that.
+    /// One row per thread in `folder` with a member `filter` keeps, the most recently active first.
     pub fn thread_summaries(
         &self,
         folder: &str,
         limit: u32,
         filter: Filter,
     ) -> Result<Vec<ThreadSummary>, StoreError> {
-        let mut stmt = self.conn.prepare(&format!(
-            "SELECT thread_id, {SUMMARY_COLUMNS}, MAX(internaldate) AS latest, COUNT(*), SUM({UNSEEN}), SUM({FLAGGED})
-              FROM messages WHERE folder = ?1 GROUP BY thread_id HAVING SUM({}) > 0
-              ORDER BY latest DESC, uid DESC LIMIT ?2",
-            filter.sql()
-        ))?;
+        let mut stmt = self.conn.prepare(&thread_summaries_sql(filter))?;
         let rows = stmt.query_map(params![folder, limit], |r| {
             Ok(ThreadSummary {
                 thread_id: r.get(0)?,
@@ -2018,13 +2027,56 @@ mod tests {
             let rows = stmt.query_map([], |r| r.get::<_, String>(3)).unwrap();
             rows.collect::<Result<Vec<_>, _>>().unwrap().join("\n")
         };
-        let thread_list = plan(&format!(
-            "SELECT thread_id, {SUMMARY_COLUMNS}, MAX(internaldate) FROM messages WHERE folder = 'INBOX' GROUP BY thread_id"
-        ));
-        assert!(
-            thread_list.contains("COVERING INDEX messages_folder_thread"),
-            "{thread_list}"
-        );
+        // Whether the statement reads a column of the table itself, rather than of an index or a sorter. The plan
+        // says COVERING INDEX only when it can tell before generating code; with `has_attachment`, a generated
+        // column, it decides while generating it and opens the table with a seek it then never follows.
+        let reads_table = |sql: &str| -> bool {
+            let root: i64 = s
+                .conn
+                .query_row(
+                    "SELECT rootpage FROM sqlite_master WHERE type = 'table' AND name = 'messages'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let mut stmt = s.conn.prepare(&format!("EXPLAIN {sql}")).unwrap();
+            let ops: Vec<(String, i64, i64)> = stmt
+                .query_map([], |r| Ok((r.get(1)?, r.get(2)?, r.get(3)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            let table_cursors: Vec<i64> = ops
+                .iter()
+                .filter(|(op, _, p2)| op == "OpenRead" && *p2 == root)
+                .map(|(_, p1, _)| *p1)
+                .collect();
+            ops.iter()
+                .any(|(op, p1, _)| op == "Column" && table_cursors.contains(p1))
+        };
+        for filter in [
+            Filter::default(),
+            Filter {
+                unread: true,
+                ..Filter::default()
+            },
+            Filter {
+                flagged: true,
+                ..Filter::default()
+            },
+            Filter {
+                attachments: true,
+                ..Filter::default()
+            },
+        ] {
+            let sql = thread_summaries_sql(filter)
+                .replace("?1", "'INBOX'")
+                .replace("?2", "200");
+            let thread_list = plan(&sql);
+            assert!(
+                thread_list.contains("INDEX messages_folder_thread") && !reads_table(&sql),
+                "{filter:?}: {thread_list}"
+            );
+        }
         let unread = plan(&unread_count_sql().replace("?1", "'INBOX'"));
         assert!(unread.contains("INDEX messages_unread"), "{unread}");
         let never = plan("SELECT count(*) FROM messages WHERE indexed_at IS NULL");
