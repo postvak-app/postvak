@@ -227,7 +227,7 @@ pub struct InlinePart {
 }
 
 /// Bytes as one base64 string, a third larger, where serde would write a JSON number per byte.
-mod base64_bytes {
+pub(crate) mod base64_bytes {
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD;
     use serde::{Deserialize, Deserializer, Serializer};
@@ -391,6 +391,23 @@ pub fn save_attachment(raw: &[u8], index: usize, dir: &Path) -> io::Result<PathB
     let path = dir.join(name);
     write_new(&path, &contents)?;
     Ok(path)
+}
+
+/// Writes attachment `index`, fetched on its own as `name` and `contents`, into `dir` as `save_attachment` would.
+pub fn save_fetched_attachment(
+    name: Option<&str>,
+    index: usize,
+    contents: &[u8],
+    dir: &Path,
+) -> io::Result<PathBuf> {
+    let path = dir.join(attachment_file_name(name, index));
+    write_new(&path, contents)?;
+    Ok(path)
+}
+
+/// The file name `save_attachment` gives attachment `index` called `name` by its sender.
+pub fn attachment_file_name(name: Option<&str>, index: usize) -> String {
+    safe_file_name(name, index)
 }
 
 /// Attachment `index` (1-based): the file name `save_attachment` gives it, and its contents.

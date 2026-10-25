@@ -74,7 +74,20 @@ pub enum Event {
         uid: u32,
         request: RequestId,
     },
-    /// What a reader shows of a large message while the rest of it downloads; `BodyReady` follows once it is stored.
+    /// Attachment `index` of a message, fetched on its own for a reader that asked for it.
+    AttachmentFetched {
+        account: String,
+        folder: String,
+        uid: u32,
+        index: usize,
+        /// As the sender named it; `message::attachment_file_name` makes it safe.
+        name: Option<String>,
+        #[serde(with = "crate::message::base64_bytes")]
+        contents: Vec<u8>,
+        request: RequestId,
+    },
+    /// What a reader shows of a large message while the rest of it downloads; `BodyReady` follows, once the message is
+    /// stored or, when `preview.whole` is false, at once.
     BodyPreview {
         account: String,
         folder: String,
@@ -141,6 +154,7 @@ impl Event {
     pub fn request_ids(&self) -> Vec<RequestId> {
         match self {
             Event::ActionDone { request, .. }
+            | Event::AttachmentFetched { request, .. }
             | Event::BodyReady { request, .. }
             | Event::CommandFailed { request, .. }
             | Event::Restored { request, .. }
@@ -306,6 +320,12 @@ pub enum Command {
         /// Sends a large message's `BodyPreview` before fetching the whole of it, for a reader.
         #[serde(default)]
         preview: bool,
+    },
+    /// Attachment `index` (1-based, as the reader lists it), from the stored message or fetched on its own.
+    FetchAttachment {
+        folder: String,
+        uid: u32,
+        index: usize,
     },
     Restore {
         file: PathBuf,
@@ -1166,6 +1186,22 @@ fn run_command(
                     account: name(),
                     folder,
                     uid,
+                    request,
+                })
+                .map_err(SyncError::from)
+        }
+        Command::FetchAttachment { folder, uid, index } => {
+            run.used_connection = true;
+            context = format!("{folder}/{uid}: ");
+            let account = name();
+            actions::fetch_attachment(ops, store, &folder, uid, index)
+                .map(|(name, contents)| Event::AttachmentFetched {
+                    account,
+                    folder,
+                    uid,
+                    index,
+                    name,
+                    contents,
                     request,
                 })
                 .map_err(SyncError::from)

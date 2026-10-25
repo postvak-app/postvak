@@ -2786,8 +2786,13 @@ fn fetch_body_stores_the_body_and_reports_it() {
 
 /// INBOX uid 3: a 300 KB message of a plain and an HTML alternative, the HTML with a `cid:` logo, and a PDF.
 fn large_message() -> (RecordingOps, Store, tempfile::TempDir) {
+    message_of(300 * 1024)
+}
+
+/// As `large_message`, with a PDF of `pdf_size` bytes as sent.
+fn message_of(pdf_size: usize) -> (RecordingOps, Store, tempfile::TempDir) {
     let mut ops = ops_with_inbox();
-    let pdf = "A".repeat(300 * 1024);
+    let pdf = "A".repeat(pdf_size);
     let raw = format!(
         "From: bob@x\r\nSubject: scan\r\nContent-Type: multipart/mixed; boundary=m\r\n\r\n--m\r\n\
          Content-Type: text/plain\r\n\r\nthe two lines\r\n--m\r\nContent-Type: application/pdf\r\n\
@@ -2832,6 +2837,7 @@ fn large_message() -> (RecordingOps, Store, tempfile::TempDir) {
         ("1.1", "the two lines"),
         ("1.2.1", "<p>the two lines</p><img src=\"cid:logo@x\">"),
         ("1.2.2", "UE5H"),
+        ("2", "UERG"),
     ] {
         ops.parts.insert(
             ("INBOX".into(), 3, section.into()),
@@ -2850,6 +2856,103 @@ fn fetch_with_preview(uid: u32) -> Command {
         uid,
         preview: true,
     }
+}
+
+#[test]
+fn a_message_above_five_megabytes_is_previewed_and_left_on_the_server() {
+    let (mut ops, store, dir) = message_of(6 * 1024 * 1024);
+    let trash = Trash::new(dir.path().to_path_buf());
+    let (run, events) = drain(&mut ops, &store, &trash, vec![fetch_with_preview(3)]);
+    run.unwrap();
+    assert!(
+        !ops.calls.iter().any(|c| c.starts_with("fetch_raw")),
+        "{:?}",
+        ops.calls
+    );
+    let whole: Vec<bool> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::BodyPreview { preview, .. } => Some(preview.whole),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(whole, [false]);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::BodyReady { uid: 3, .. }))
+    );
+    assert!(store.raw("INBOX", 3).unwrap().is_none());
+    let msg = store.message("INBOX", 3).unwrap().unwrap();
+    assert_eq!(msg.body_text.as_deref(), Some("the two lines"));
+
+    // Save .eml asks for it whole.
+    let whole = Command::FetchBody {
+        folder: "INBOX".into(),
+        uid: 3,
+        preview: false,
+    };
+    drain(&mut ops, &store, &trash, vec![whole]).0.unwrap();
+    assert!(store.raw("INBOX", 3).unwrap().is_some());
+}
+
+#[test]
+fn an_attachment_is_fetched_on_its_own_until_the_message_is_stored() {
+    let (mut ops, store, dir) = message_of(6 * 1024 * 1024);
+    let trash = Trash::new(dir.path().to_path_buf());
+    let fetch = |index| Command::FetchAttachment {
+        folder: "INBOX".into(),
+        uid: 3,
+        index,
+    };
+    let (run, events) = drain(&mut ops, &store, &trash, vec![fetch(2), fetch(9)]);
+    run.unwrap();
+    let parts: Vec<&str> = ops
+        .calls
+        .iter()
+        .filter(|c| c.starts_with("fetch_"))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        parts,
+        [
+            "fetch_structures INBOX 3",
+            "fetch_part INBOX 3 2",
+            "fetch_structures INBOX 3"
+        ]
+    );
+    assert!(events.contains(&Event::AttachmentFetched {
+        account: "work".into(),
+        folder: "INBOX".into(),
+        uid: 3,
+        index: 2,
+        name: Some("scan.pdf".into()),
+        contents: b"PDF".to_vec(),
+        request: 1,
+    }));
+    assert!(
+        events.iter().any(|e| matches!(e,
+            Event::CommandFailed { request: 2, message, .. } if message.contains("no such attachment"))),
+        "{events:?}"
+    );
+
+    // Once the message is stored, its attachments come from the store.
+    store
+        .set_raw("INBOX", 3, b"Subject: s\r\nContent-Type: multipart/mixed; boundary=m\r\n\r\n--m\r\nContent-Type: text/plain\r\n\r\nhi\r\n--m\r\nContent-Type: application/pdf; name=a.pdf\r\n\r\nstored\r\n--m--\r\n", "hi")
+        .unwrap();
+    ops.calls.clear();
+    let (_, events) = drain(&mut ops, &store, &trash, vec![fetch(1)]);
+    assert!(
+        ops.calls.iter().all(|c| !c.starts_with("fetch_")),
+        "{:?}",
+        ops.calls
+    );
+    assert!(
+        events.iter().any(|e| matches!(e,
+        Event::AttachmentFetched { index: 1, name: Some(name), contents, .. }
+            if name == "a.pdf" && contents.starts_with(b"stored"))),
+        "{events:?}"
+    );
 }
 
 #[test]

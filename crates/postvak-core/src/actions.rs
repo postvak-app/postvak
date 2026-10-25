@@ -31,6 +31,13 @@ pub enum ActionError {
     Store(#[from] StoreError),
     #[error("{0} has not been synced yet; run `postvak sync` first")]
     UnknownFolder(String),
+    #[error("attachment {index} of {folder}/{uid}: {reason}")]
+    Attachment {
+        folder: String,
+        uid: u32,
+        index: usize,
+        reason: String,
+    },
 }
 
 /// The outcome for one uid: how many actions ran, or why none did.
@@ -98,6 +105,9 @@ pub fn run(
 
 /// Below this size a message is fetched whole at once: one round trip beats the several a preview takes.
 pub const PREVIEW_MIN_SIZE: u32 = 256 * 1024;
+/// Above this size a previewed message is not fetched whole until something needs it whole; its attachments are
+/// fetched one by one when asked.
+pub const ON_DEMAND_MIN_SIZE: u32 = 5 * 1024 * 1024;
 
 /// What the reader shows of a message before the whole of it is here: its HTML and what its attachments are. Its text
 /// is in the store by then, as the indexer would have stored it.
@@ -105,11 +115,13 @@ pub const PREVIEW_MIN_SIZE: u32 = 256 * 1024;
 pub struct Preview {
     pub html: Option<HtmlBody>,
     pub attachments: Vec<Attachment>,
+    /// The whole message follows; above `ON_DEMAND_MIN_SIZE` it waits until asked, and so do its attachments.
+    pub whole: bool,
 }
 
 /// Downloads and indexes one message body, refusing when the folder changed on the server since the last sync. With
 /// `preview`, a large message's text, HTML and `cid:` images are fetched first and handed to it, so a reader can show
-/// them while the rest arrives.
+/// them while the rest arrives; above `ON_DEMAND_MIN_SIZE` the rest is left on the server.
 pub fn fetch_body(
     ops: &mut dyn MailOps,
     store: &Store,
@@ -129,6 +141,10 @@ pub fn fetch_body(
         && !store.has_raw(folder, uid)?
     {
         match fetch_preview(ops, store, &msg) {
+            Ok(Some(preview)) if !preview.whole => {
+                show(preview);
+                return Ok(());
+            }
             Ok(Some(preview)) => show(preview),
             Ok(None) => {}
             Err(e) if crate::sync::connection_lost(&e) => return Err(e),
@@ -195,7 +211,53 @@ fn fetch_preview(
     Ok(Some(Preview {
         html,
         attachments: message::attachments_of_structure(&structure.attachments),
+        whole: msg.size.is_none_or(|size| size <= ON_DEMAND_MIN_SIZE),
     }))
+}
+
+/// Attachment `index` (1-based, as the reader lists it) of a message: its name as the sender gave it, and its contents.
+/// From the stored message when there is one, else fetched from the server on its own.
+pub fn fetch_attachment(
+    ops: &mut dyn MailOps,
+    store: &Store,
+    folder: &str,
+    uid: u32,
+    index: usize,
+) -> Result<(Option<String>, Vec<u8>), ActionError> {
+    let failed = |reason: String| ActionError::Attachment {
+        folder: folder.to_string(),
+        uid,
+        index,
+        reason,
+    };
+    if let Some(raw) = store.raw(folder, uid)? {
+        let name = message::attachments(&raw)
+            .into_iter()
+            .find(|a| a.index == index)
+            .and_then(|a| a.name);
+        let (_, contents) = message::attachment(&raw, index).map_err(|e| failed(e.to_string()))?;
+        return Ok((name, contents));
+    }
+    select_synced(ops, store, folder)?;
+    if store.message(folder, uid)?.is_none() {
+        return Err(ActionError::NotFound {
+            folder: folder.to_string(),
+            uid,
+        });
+    }
+    let mut structure = ops
+        .fetch_structures(&[uid])?
+        .remove(&uid)
+        .ok_or_else(|| failed("the server gave no structure".into()))?;
+    let part = index
+        .checked_sub(1)
+        .filter(|&i| i < structure.attachments.len())
+        .map(|i| structure.attachments.swap_remove(i))
+        .ok_or_else(|| failed("no such attachment".into()))?;
+    let bytes = ops
+        .fetch_part(uid, &part.section)?
+        .ok_or_else(|| failed("the server sent nothing for it".into()))?;
+    Ok((part.name.clone(), message::part_contents(&part, &bytes)))
 }
 
 /// `html` with the parts its `cid:` URLs name, each fetched once.
