@@ -1,6 +1,6 @@
 # Reader: text first — design
 
-Status: implemented, 2026-10-25. Issue #318, first of two stacked PRs; the second downloads large attachments only when asked.
+Status: implemented, 2026-10-25. Issue #318, in two PRs: text first, then attachments on demand.
 
 ## Goal
 
@@ -21,6 +21,15 @@ GUI only. This is a named exception to the surface parity rule: the CLI's `show`
 - **Only on request.** `FetchBody` carries `preview: true` from the window; the CLI and MCP send `false` and get one `fetch_raw`.
 - **Rules and backups unchanged.** Anything that needs the whole message still calls `ensure_raw`.
 
+### Attachments on demand
+
+- **When.** A previewed message larger than 5 MB is not fetched whole after its preview: `BodyPreview` says so (`whole: false`), and `BodyReady` follows at once. The window keeps the preview until the message is stored.
+- **Attachments.** Save and Save as… stay enabled. Each sends `FetchAttachment` with the attachment's number as the reader lists it; the daemon fetches the structure and that one part, undoes its transfer encoding, and answers `AttachmentFetched` with its name and contents (base64 on the wire). Nothing of it is stored. A stored message answers from the store without the server.
+- **The whole message.** Save .eml, Save .eml as… and View source send `FetchBody` without preview, say "Downloading the message…", and do what was asked once it is stored.
+- **Names.** The window makes the sender's file name safe, as for a stored message.
+- **Evicted previews.** A preview pushed out of the window's four is asked for again when its message shows again.
+- The CLI's `attachment save` and the MCP tools keep reading the whole message.
+
 ## Tests
 
 - `RecordingOps`: a large multipart message sends `BodyPreview` with its HTML and `cid:` image after `BODYSTRUCTURE` and part fetches, before any `fetch_raw`; then `BodyReady`.
@@ -29,3 +38,4 @@ GUI only. This is a named exception to the surface parity rule: the CLI's `show`
 - The structure: `cid:` parts, nested text parts and the attachment list from real `BODYSTRUCTURE` replies.
 - The window: a preview shows the HTML and lists the attachments with Save greyed out; `BodyReady` shows the stored message and enables it.
 - `imap_live.rs`: a message with a large attachment opens with only its text transferred first.
+- Above 5 MB: no `fetch_raw` after the preview; `FetchAttachment` fetches only that part, or reads a stored message; an unknown number fails. In the window, Save fetches the attachment and writes it to Downloads, and Save .eml downloads the whole message first. Live: a 10 MB message's attachment fetched on its own equals the one in the whole message.

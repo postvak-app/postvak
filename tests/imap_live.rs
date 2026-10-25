@@ -992,10 +992,10 @@ fn account_add_tests_the_login_before_it_saves() {
     assert_eq!(saved.accounts[0].username, username);
 }
 
-/// A newsletter with a `cid:` logo and a 10 MB attachment.
-fn large_newsletter() -> Vec<u8> {
+/// A newsletter with a `cid:` logo and an attachment of about `mb` MB as sent.
+fn large_newsletter(mb: usize) -> Vec<u8> {
     // Base64 in lines of 76, as mail clients send it.
-    let pdf = format!("{}\r\n", "QUFB".repeat(19)).repeat(10 * 1024 * 1024 / 78);
+    let pdf = format!("{}\r\n", "QUFB".repeat(19)).repeat(mb * 1024 * 1024 / 78);
     format!(
         "From: Sender <sender@example.com>\r\nTo: user@example.com\r\nSubject: scan\r\n\
          Message-ID: <scan@example.com>\r\nDate: Tue, 06 Oct 2026 10:00:00 +0000\r\nMIME-Version: 1.0\r\n\
@@ -1016,7 +1016,7 @@ fn large_newsletter() -> Vec<u8> {
 fn a_large_message_opens_with_its_text_before_the_attachment_arrives() {
     let Some(host) = host() else { return };
     let mut ops = connect(&account(&host, PORT, "preview"));
-    let raw = large_newsletter();
+    let raw = large_newsletter(2);
     ops.append("INBOX", &raw, &[]).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(&dir.path().join("mail.db")).unwrap();
@@ -1058,5 +1058,35 @@ fn a_large_message_opens_with_its_text_before_the_attachment_arrives() {
     assert!(
         (estimated / actual - 1.0).abs() < 0.05,
         "{estimated} vs {actual}"
+    );
+}
+
+#[test]
+fn a_message_too_large_to_download_unasked_fetches_one_attachment_when_asked() {
+    let Some(host) = host() else { return };
+    let mut ops = connect(&account(&host, PORT, "on-demand"));
+    let raw = large_newsletter(10);
+    ops.append("INBOX", &raw, &[]).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("mail.db")).unwrap();
+    sync::sync_all(&mut ops, &store).unwrap();
+    let uid = store.messages_in_folder("INBOX").unwrap()[0].uid;
+    let mut previews = Vec::new();
+    let mut show = |preview| previews.push(preview);
+    postvak_core::actions::fetch_body(&mut ops, &store, "INBOX", uid, Some(&mut show)).unwrap();
+    let [preview] = previews.as_slice() else {
+        panic!("{} previews", previews.len());
+    };
+    assert!(!preview.whole);
+    assert!(!store.has_raw("INBOX", uid).unwrap(), "left on the server");
+    let (name, contents) =
+        postvak_core::actions::fetch_attachment(&mut ops, &store, "INBOX", uid, 2).unwrap();
+    assert_eq!(name.as_deref(), Some("scan.pdf"));
+    postvak_core::actions::fetch_body(&mut ops, &store, "INBOX", uid, None).unwrap();
+    let stored = store.raw("INBOX", uid).unwrap().expect("the whole message");
+    assert_eq!(stored, raw);
+    assert_eq!(
+        postvak_core::message::attachment(&stored, 2).unwrap(),
+        ("scan.pdf".to_string(), contents)
     );
 }

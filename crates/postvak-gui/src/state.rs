@@ -129,6 +129,15 @@ pub(crate) struct SavingAs {
     answer: Receiver<save_as::Chosen>,
 }
 
+/// An attachment asked of the daemon on its own, and what to do with it once it comes.
+pub(crate) struct Fetching {
+    pub account: usize,
+    pub key: RowKey,
+    pub index: usize,
+    /// Save as… rather than Save.
+    pub save_as: bool,
+}
+
 pub(crate) struct BodyState {
     pub account: usize,
     /// The sender's logo record, when sender images are on and the message passed DMARC.
@@ -139,6 +148,11 @@ pub(crate) struct BodyState {
     pub attachments: Vec<Attachment>,
     /// The attachments are listed from the message's structure and cannot be saved until the whole message is here.
     pub attachments_pending: bool,
+    /// The message is too large to download whole unasked: each attachment is fetched when saved, and the whole
+    /// message when Save .eml or View source needs it.
+    pub on_demand: bool,
+    /// Save .eml, Save .eml as… or View source, waiting for the whole message.
+    pub after_download: Option<UiAction>,
     /// The message's HTML, when it has some.
     pub html: Option<HtmlBody>,
     /// The HTML view, once the panel asked for a layout; `None` while the text view shows.
@@ -172,6 +186,8 @@ impl BodyState {
             armed,
             attachments: Vec::new(),
             attachments_pending: false,
+            on_demand: false,
+            after_download: None,
             text_note: None,
             html: None,
             html_view: None,
@@ -534,6 +550,8 @@ pub struct App {
     pub(crate) post_unsubscribe: fn(&str) -> Result<(), String>,
     pub(crate) unsubscribing: Option<Unsubscribing>,
     pub(crate) saving_as: Option<SavingAs>,
+    /// Attachments of messages too large to download whole, asked of the daemon one by one, until they arrive.
+    pub(crate) fetching: Vec<Fetching>,
     /// Opens the save dialog; tests swap it so no dialog opens.
     pub(crate) ask_save_path: fn(&str, &Path, Wake) -> Receiver<save_as::Chosen>,
     /// Downloads remote content for HTML mail, started the first time the user asks.
@@ -713,6 +731,7 @@ impl App {
             post_unsubscribe: |url| unsubscribe::one_click(url).map_err(|e| e.to_string()),
             unsubscribing: None,
             saving_as: None,
+            fetching: Vec::new(),
             ask_save_path: save_as::ask,
             fetcher: None,
             focus: Focus::List,
@@ -990,6 +1009,7 @@ impl App {
         let name = match &event {
             Event::Activity { account, .. }
             | Event::ActionDone { account, .. }
+            | Event::AttachmentFetched { account, .. }
             | Event::BodyPreview { account, .. }
             | Event::BodyReady { account, .. }
             | Event::CommandFailed { account, .. }
@@ -1138,16 +1158,33 @@ impl App {
                 let key = (index, (folder, uid));
                 self.previews.retain(|(held, _)| *held != key);
                 if self.previews.len() >= MAX_PREVIEWS {
-                    self.previews.remove(0);
+                    let (gone, _) = self.previews.remove(0);
+                    // Shown again without its preview, it is asked for again.
+                    self.requested.remove(&gone);
                 }
                 self.previews.push((key.clone(), *preview));
                 self.reload_body(key.0, key.1, now);
             }
             Event::BodyReady { folder, uid, .. } => {
                 let key = (index, (folder, uid));
-                self.previews.retain(|(held, _)| *held != key);
+                // A message too large to download unasked keeps its preview until it is stored.
+                let stored = match &self.accounts[index].store {
+                    Ok(store) => matches!(store.has_raw(&key.1.0, key.1.1), Ok(true)),
+                    Err(_) => false,
+                };
+                if stored {
+                    self.previews.retain(|(held, _)| *held != key);
+                }
                 self.reload_body(key.0, key.1, now);
             }
+            Event::AttachmentFetched {
+                folder,
+                uid,
+                index: attachment,
+                name,
+                contents,
+                ..
+            } => self.attachment_fetched(index, (folder, uid), attachment, name, contents),
             Event::Restored { folder, .. } => {
                 let line = format!(
                     "{}: restored to {}",
@@ -1177,6 +1214,7 @@ impl App {
             Some(index) => {
                 // A body fetch that failed is retried the next time its message is shown.
                 self.requested.retain(|(account, _)| *account != index);
+                self.fetching.retain(|fetch| fetch.account != index);
                 self.accounts[index].error = Some(message.clone());
                 format!("{}: {message}", self.accounts[index].name)
             }
@@ -1295,6 +1333,11 @@ impl App {
             },
             UiAction::NewRule => self.open_draft(Some(Draft::new())),
             action @ (UiAction::OpenSource | UiAction::SaveEml | UiAction::SaveEmlAs)
+                if self.body_follows_cursor() && self.shown_on_demand() =>
+            {
+                self.download_whole(action);
+            }
+            action @ (UiAction::OpenSource | UiAction::SaveEml | UiAction::SaveEmlAs)
                 if !self.body_follows_cursor() =>
             {
                 self.after_body = Some(action);
@@ -1359,6 +1402,9 @@ impl App {
                 }
             }
             UiAction::SaveAttachment(index) => self.save_attachment(index),
+            UiAction::SaveAttachmentAs(index) if self.shown_on_demand() => {
+                self.fetch_attachment(index, true);
+            }
             UiAction::SaveAttachmentAs(index) => {
                 let raw = self.shown_raw();
                 let file = raw.map(|raw| message::attachment(&raw, index));
@@ -1982,11 +2028,17 @@ impl App {
                     .find(|(key, _)| key.0 == body.account && key.1 == body.key)
             })
             .flatten();
-        body.attachments_pending = preview.is_some();
+        body.attachments_pending = preview.is_some_and(|(_, p)| p.whole);
+        body.on_demand = preview.is_some_and(|(_, p)| !p.whole);
         if let Some((_, preview)) = preview {
             attachments = preview.attachments.clone();
             html = preview.html.clone();
         }
+        let after_download = if has_raw {
+            body.after_download.take()
+        } else {
+            None
+        };
         let text = body_text(message.as_ref());
         if body.text.is_none() && text.is_some() {
             body.shown_at = now;
@@ -2013,6 +2065,9 @@ impl App {
         let (account, key) = (body.account, body.key.clone());
         if missing {
             self.request_body(account, &key);
+        }
+        if let Some(action) = after_download {
+            self.apply_action(action);
         }
     }
 
@@ -2100,7 +2155,105 @@ impl App {
         store.raw(&body.key.0, body.key.1).ok().flatten()
     }
 
+    /// Whether the shown message is one too large to download unasked, and is not stored whole yet.
+    fn shown_on_demand(&self) -> bool {
+        let Some(body) = &self.body else { return false };
+        body.on_demand
+            && match &self.accounts[body.account].store {
+                Ok(store) => matches!(store.has_raw(&body.key.0, body.key.1), Ok(false)),
+                Err(_) => false,
+            }
+    }
+
+    /// Asks the daemon for the whole shown message, and runs `action` once it is stored.
+    fn download_whole(&mut self, action: UiAction) {
+        let Some(body) = &mut self.body else { return };
+        let (account, (folder, uid)) = (body.account, body.key.clone());
+        body.after_download = Some(action);
+        body.saved = Some("Downloading the message…".into());
+        let command = Command::FetchBody {
+            folder,
+            uid,
+            preview: false,
+        };
+        self.send(account, command);
+    }
+
+    /// Asks the daemon for attachment `index` of the shown message on its own; it is saved when it comes.
+    fn fetch_attachment(&mut self, index: usize, save_as: bool) {
+        let Some(body) = &mut self.body else { return };
+        let asked = |f: &Fetching| {
+            f.account == body.account
+                && f.key == body.key
+                && f.index == index
+                && f.save_as == save_as
+        };
+        // A second click while it downloads would save it twice.
+        if self.fetching.iter().any(asked) {
+            return;
+        }
+        let name = body
+            .attachments
+            .iter()
+            .find(|a| a.index == index)
+            .and_then(|a| a.name.as_deref())
+            .map(|name| clean(name, false))
+            .unwrap_or_else(|| format!("attachment {index}"));
+        body.saved = Some(format!("Downloading {name}…"));
+        let (account, key) = (body.account, body.key.clone());
+        self.fetching.push(Fetching {
+            account,
+            key: key.clone(),
+            index,
+            save_as,
+        });
+        let (folder, uid) = key;
+        self.send(account, Command::FetchAttachment { folder, uid, index });
+    }
+
+    /// Saves an attachment that came on its own as each asker wanted it: Save into Downloads, and Save as… through the
+    /// dialog while its message still shows.
+    fn attachment_fetched(
+        &mut self,
+        account: usize,
+        key: RowKey,
+        index: usize,
+        name: Option<String>,
+        contents: Vec<u8>,
+    ) {
+        let (wanted, rest): (Vec<Fetching>, Vec<Fetching>) = std::mem::take(&mut self.fetching)
+            .into_iter()
+            .partition(|f| f.account == account && f.key == key && f.index == index);
+        self.fetching = rest;
+        let shown = self
+            .body
+            .as_ref()
+            .is_some_and(|b| b.account == account && b.key == key);
+        for fetch in wanted {
+            if fetch.save_as {
+                if shown {
+                    let file = message::attachment_file_name(name.as_deref(), index);
+                    self.save_as(Some(Ok((file, contents.clone()))));
+                }
+                continue;
+            }
+            let saved = message::save_fetched_attachment(
+                name.as_deref(),
+                index,
+                &contents,
+                &self.downloads,
+            );
+            if shown && let Some(body) = &mut self.body {
+                body.saved = Some(saved_note(Some(saved)));
+            }
+        }
+    }
+
     fn save_attachment(&mut self, index: usize) {
+        if self.shown_on_demand() {
+            self.fetch_attachment(index, false);
+            return;
+        }
         let raw = self.shown_raw();
         let note =
             saved_note(raw.map(|raw| message::save_attachment(&raw, index, &self.downloads)));
