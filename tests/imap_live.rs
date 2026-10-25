@@ -247,6 +247,72 @@ fn condstore_fetches_only_flags_changed_since_a_modseq() {
     assert!(ops.select("INBOX").unwrap().highest_modseq > Some(since));
 }
 
+#[test]
+fn list_status_and_status_report_what_select_does() {
+    let Some(host) = host() else { return };
+    for (port, list_status) in [(PORT, true), (PORT_WITHOUT_MOVE, false)] {
+        let mut ops = connect(&account(&host, port, "status"));
+        assert_eq!(ops.has_list_status(), list_status, "port {port}");
+        ops.create_folder("Lists").unwrap();
+        ops.append("Lists", &mail("one"), &[]).unwrap();
+        ops.append("Lists", &mail("two"), &[]).unwrap();
+        ops.select("INBOX").unwrap();
+        let listed = ops.list_folders_status().unwrap();
+        let (_, from_list) = listed
+            .iter()
+            .find(|(f, _)| f.name == "Lists")
+            .unwrap_or_else(|| panic!("{listed:?}"));
+        assert_eq!(from_list.is_some(), list_status, "port {port}: {listed:?}");
+        let status = ops.status("Lists").unwrap();
+        if let Some(from_list) = from_list {
+            assert_eq!(from_list, &status);
+        }
+        let selected = ops.select("Lists").unwrap();
+        assert_eq!(ops.selected(), Some("Lists"));
+        assert_eq!(status.messages, selected.exists);
+        assert_eq!(status.uidvalidity, selected.uidvalidity);
+        assert_eq!(Some(status.uidnext), selected.uidnext);
+        assert_eq!(status.highest_modseq, selected.highest_modseq);
+        assert!(status.highest_modseq.is_some(), "Dovecot has CONDSTORE");
+        assert!(ops.select("Nope").is_err());
+        assert_eq!(ops.selected(), None, "a failed SELECT selects nothing");
+    }
+}
+
+/// Mail another client adds to a folder the pass skips by its status still shows up, with or without LIST-STATUS.
+#[test]
+fn a_pass_finds_changes_another_client_made_in_a_skipped_folder() {
+    let Some(host) = host() else { return };
+    for port in [PORT, PORT_WITHOUT_MOVE] {
+        let account = account(&host, port, "skip");
+        let mut ops = connect(&account);
+        let mut other = connect(&account);
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("mail.db")).unwrap();
+        ops.create_folder("Lists").unwrap();
+        ops.append("Lists", &mail("first"), &[]).unwrap();
+        sync::sync_all(&mut ops, &store).unwrap();
+        ops.select("INBOX").unwrap();
+        let uid_next = store.uid_next("Lists").unwrap();
+        assert_ne!(uid_next, 0, "port {port}");
+
+        let (_, errors) = sync::sync_all(&mut ops, &store).unwrap();
+        assert!(errors.is_empty(), "port {port}: {errors:?}");
+        assert_eq!(store.uid_next("Lists").unwrap(), uid_next, "port {port}");
+
+        other.append("Lists", &mail("second"), &[]).unwrap();
+        other.select("Lists").unwrap();
+        let first = all_envelopes(&mut other)[0].uid;
+        other.add_flags(first, &["\\Seen"]).unwrap();
+        ops.select("INBOX").unwrap();
+        let (new, errors) = sync::sync_all(&mut ops, &store).unwrap();
+        assert!(errors.is_empty(), "port {port}: {errors:?}");
+        assert_eq!(new, 1, "port {port}");
+        assert_eq!(store.message_count("Lists").unwrap(), 2);
+        assert!(store.message("Lists", first).unwrap().unwrap().is_seen());
+    }
+}
+
 fn move_round_trip(port: u16, test: &str, expect_move: bool) {
     let Some(host) = host() else { return };
     let mut ops = connect(&account(&host, port, test));
@@ -924,4 +990,103 @@ fn account_add_tests_the_login_before_it_saves() {
     );
     let saved = Config::load(&config).unwrap();
     assert_eq!(saved.accounts[0].username, username);
+}
+
+/// A newsletter with a `cid:` logo and an attachment of about `mb` MB as sent.
+fn large_newsletter(mb: usize) -> Vec<u8> {
+    // Base64 in lines of 76, as mail clients send it.
+    let pdf = format!("{}\r\n", "QUFB".repeat(19)).repeat(mb * 1024 * 1024 / 78);
+    format!(
+        "From: Sender <sender@example.com>\r\nTo: user@example.com\r\nSubject: scan\r\n\
+         Message-ID: <scan@example.com>\r\nDate: Tue, 06 Oct 2026 10:00:00 +0000\r\nMIME-Version: 1.0\r\n\
+         Content-Type: multipart/mixed; boundary=m\r\n\r\n--m\r\n\
+         Content-Type: multipart/alternative; boundary=a\r\n\r\n--a\r\n\
+         Content-Type: text/plain; charset=utf-8\r\n\r\nthe two lines\r\n--a\r\n\
+         Content-Type: multipart/related; boundary=r\r\n\r\n--r\r\n\
+         Content-Type: text/html; charset=utf-8\r\n\r\n<p>the two lines</p><img src=\"cid:logo@example.com\">\r\n--r\r\n\
+         Content-Type: image/png\r\nContent-ID: <logo@example.com>\r\nContent-Transfer-Encoding: base64\r\n\r\nUE5H\r\n\
+         --r--\r\n--a--\r\n--m\r\n\
+         Content-Type: application/pdf; name=\"scan.pdf\"\r\nContent-Disposition: attachment; filename=\"scan.pdf\"\r\n\
+         Content-Transfer-Encoding: base64\r\n\r\n{pdf}--m--\r\n"
+    )
+    .into_bytes()
+}
+
+#[test]
+fn a_large_message_opens_with_its_text_before_the_attachment_arrives() {
+    let Some(host) = host() else { return };
+    let mut ops = connect(&account(&host, PORT, "preview"));
+    let raw = large_newsletter(2);
+    ops.append("INBOX", &raw, &[]).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("mail.db")).unwrap();
+    sync::sync_all(&mut ops, &store).unwrap();
+    let uid = store.messages_in_folder("INBOX").unwrap()[0].uid;
+    let mut previews = Vec::new();
+    let mut show = |preview| {
+        let msg = store.message("INBOX", uid).unwrap().unwrap();
+        previews.push((preview, msg.body_text, store.has_raw("INBOX", uid).unwrap()));
+    };
+    postvak_core::actions::fetch_body(&mut ops, &store, "INBOX", uid, Some(&mut show)).unwrap();
+    let [(preview, text, had_raw)] = previews.as_slice() else {
+        panic!("{} previews", previews.len());
+    };
+    assert!(!had_raw, "the preview came before the whole message");
+    assert_eq!(text.as_deref().map(str::trim), Some("the two lines"));
+    let html = preview.html.as_ref().expect("its HTML");
+    assert!(html.html.contains("cid:logo@example.com"), "{}", html.html);
+    assert_eq!(html.inline.len(), 1);
+    assert_eq!(html.inline[0].bytes, b"PNG");
+    let stored = store
+        .raw("INBOX", uid)
+        .unwrap()
+        .expect("then the whole message");
+    assert_eq!(stored, raw);
+    let whole = postvak_core::message::attachments(&stored);
+    let listed: Vec<_> = preview
+        .attachments
+        .iter()
+        .map(|a| (a.index, a.name.clone(), a.content_type.clone()))
+        .collect();
+    let expected: Vec<_> = whole
+        .iter()
+        .map(|a| (a.index, a.name.clone(), a.content_type.clone()))
+        .collect();
+    assert_eq!(listed, expected);
+    let estimated = preview.attachments[1].size as f64;
+    let actual = whole[1].size as f64;
+    assert!(
+        (estimated / actual - 1.0).abs() < 0.05,
+        "{estimated} vs {actual}"
+    );
+}
+
+#[test]
+fn a_message_too_large_to_download_unasked_fetches_one_attachment_when_asked() {
+    let Some(host) = host() else { return };
+    let mut ops = connect(&account(&host, PORT, "on-demand"));
+    let raw = large_newsletter(10);
+    ops.append("INBOX", &raw, &[]).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("mail.db")).unwrap();
+    sync::sync_all(&mut ops, &store).unwrap();
+    let uid = store.messages_in_folder("INBOX").unwrap()[0].uid;
+    let mut previews = Vec::new();
+    let mut show = |preview| previews.push(preview);
+    postvak_core::actions::fetch_body(&mut ops, &store, "INBOX", uid, Some(&mut show)).unwrap();
+    let [preview] = previews.as_slice() else {
+        panic!("{} previews", previews.len());
+    };
+    assert!(!preview.whole);
+    assert!(!store.has_raw("INBOX", uid).unwrap(), "left on the server");
+    let (name, contents) =
+        postvak_core::actions::fetch_attachment(&mut ops, &store, "INBOX", uid, 2).unwrap();
+    assert_eq!(name.as_deref(), Some("scan.pdf"));
+    postvak_core::actions::fetch_body(&mut ops, &store, "INBOX", uid, None).unwrap();
+    let stored = store.raw("INBOX", uid).unwrap().expect("the whole message");
+    assert_eq!(stored, raw);
+    assert_eq!(
+        postvak_core::message::attachment(&stored, 2).unwrap(),
+        ("scan.pdf".to_string(), contents)
+    );
 }

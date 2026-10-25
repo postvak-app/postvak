@@ -228,6 +228,7 @@ fn present_body(app: &App, window: &MailWindow) {
         shows_html: pane.shows_html,
         text_note: pane.text_note.unwrap_or_default().into(),
         attachments: strings(shown.attachments.clone(), pane.attachments),
+        attachments_pending: pane.attachments_pending,
         saved: text(pane.saved),
         unsubscribe: pane.unsubscribe,
         links: strings(shown.links.clone(), pane.links),

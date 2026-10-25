@@ -1,9 +1,11 @@
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
+use mail_parser::parsers::MessageStream;
 use mail_parser::{Address, HeaderForm, HeaderValue, MessageParser, MimeHeaders};
+use serde::Serialize;
 
-use crate::mail_ops::TextPart;
+use crate::mail_ops::{PartRef, TextPart};
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Parsed {
@@ -45,6 +47,39 @@ pub fn header_text(raw_headers: &[u8], name: &str) -> Option<String> {
     let msg = MessageParser::default().parse_headers(raw_headers)?;
     let value = msg.header_as(name, HeaderForm::Text).pop()?;
     value.as_text().map(|text| text.trim().to_string())
+}
+
+/// One header as `header` rules see it: unfolded, with encoded words decoded.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct HeaderField {
+    pub name: String,
+    pub value: String,
+}
+
+/// Every header in the block, in order, repeats included; a rule matches the last copy of a repeated one.
+pub fn header_fields(raw_headers: &[u8]) -> Vec<HeaderField> {
+    let Some(msg) = MessageParser::default().parse_headers(raw_headers) else {
+        return Vec::new();
+    };
+    msg.headers()
+        .iter()
+        .map(|h| {
+            let bytes = raw_headers
+                .get(h.offset_start as usize..h.offset_end as usize)
+                .unwrap_or_default();
+            let value = match MessageStream::new(bytes).parse_unstructured() {
+                HeaderValue::Text(text) => text.trim().to_string(),
+                _ => String::new(),
+            };
+            // The name as the message spells it; mail-parser's own spells known names its way, such as `List-ID`.
+            let name = raw_headers
+                .get(h.offset_field as usize..h.offset_start as usize)
+                .and_then(|field| field.split(|&b| b == b':').next())
+                .map(|name| String::from_utf8_lossy(name).trim().to_string())
+                .unwrap_or_else(|| h.name.as_str().to_string());
+            HeaderField { name, value }
+        })
+        .collect()
 }
 
 fn synthetic_message_id(folder: &str, uid: u32) -> String {
@@ -99,36 +134,112 @@ pub fn text_from_parts(parts: &[(TextPart, Vec<u8>)]) -> String {
 }
 
 fn part_text(part: &TextPart, bytes: &[u8]) -> String {
-    let mut raw = format!(
-        "Content-Type: text/{}",
-        if part.html { "html" } else { "plain" }
+    body_text(&text_part_message(part, bytes))
+}
+
+/// The HTML of one fetched `text/html` part, decoded as `attachments_and_html` decodes it from the whole message.
+pub fn part_html(part: &TextPart, bytes: &[u8]) -> Option<String> {
+    let raw = text_part_message(part, bytes);
+    let msg = MessageParser::default().parse(&raw)?;
+    let html = msg.html_part(0).filter(|part| part.is_text_html())?;
+    Some(html.text_contents()?.to_string())
+}
+
+/// The contents of one fetched part, its transfer encoding undone.
+pub fn part_contents(part: &PartRef, bytes: &[u8]) -> Vec<u8> {
+    let raw = one_part_message(
+        &part.content_type,
+        None,
+        part.transfer_encoding.as_deref(),
+        bytes,
     );
-    if let Some(charset) = &part.charset {
+    MessageParser::default()
+        .parse(&raw)
+        .and_then(|msg| msg.parts.first().map(|p| p.contents().to_vec()))
+        .unwrap_or_default()
+}
+
+/// The attachments `attachments` will list once the whole message is here, from its structure: the size is the
+/// transferred size, less base64's overhead.
+pub fn attachments_of_structure(parts: &[PartRef]) -> Vec<Attachment> {
+    parts
+        .iter()
+        .enumerate()
+        .map(|(i, part)| Attachment {
+            index: i + 1,
+            name: part.name.clone(),
+            content_type: part.content_type.clone(),
+            size: match part.transfer_encoding.as_deref() {
+                Some(e) if e.eq_ignore_ascii_case("base64") => part.octets as usize / 4 * 3,
+                _ => part.octets as usize,
+            },
+        })
+        .collect()
+}
+
+fn text_part_message(part: &TextPart, bytes: &[u8]) -> Vec<u8> {
+    let content_type = if part.html { "text/html" } else { "text/plain" };
+    one_part_message(
+        content_type,
+        part.charset.as_deref(),
+        part.transfer_encoding.as_deref(),
+        bytes,
+    )
+}
+
+/// One fetched part wrapped as a message of that one part, so its transfer encoding and charset go through the same
+/// path as a whole message's.
+fn one_part_message(
+    content_type: &str,
+    charset: Option<&str>,
+    transfer_encoding: Option<&str>,
+    bytes: &[u8],
+) -> Vec<u8> {
+    let mut raw = format!("Content-Type: {}", content_type.replace(['\r', '\n'], ""));
+    if let Some(charset) = charset {
         raw.push_str(&format!("; charset=\"{}\"", charset.replace('"', "")));
     }
     raw.push_str("\r\n");
-    if let Some(encoding) = &part.transfer_encoding {
+    if let Some(encoding) = transfer_encoding {
+        let encoding = encoding.replace(['\r', '\n'], "");
         raw.push_str(&format!("Content-Transfer-Encoding: {encoding}\r\n"));
     }
     raw.push_str("\r\n");
     let mut raw = raw.into_bytes();
     raw.extend_from_slice(bytes);
-    body_text(&raw)
+    raw
 }
 
 /// The HTML of a message and the parts its `cid:` URLs can name.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct HtmlBody {
     pub html: String,
     pub inline: Vec<InlinePart>,
 }
 
 /// A part with a `Content-ID`, which the HTML shows as `<img src="cid:…">`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct InlinePart {
     /// The Content-ID without its angle brackets.
     pub cid: String,
+    #[serde(with = "base64_bytes")]
     pub bytes: Vec<u8>,
+}
+
+/// Bytes as one base64 string, a third larger, where serde would write a JSON number per byte.
+pub(crate) mod base64_bytes {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        STANDARD.decode(text).map_err(serde::de::Error::custom)
+    }
 }
 
 /// `attachments`, and the first `text/html` part with every `Content-ID` part (`None` when there is no HTML part), from
@@ -222,7 +333,7 @@ fn text_list(value: &HeaderValue<'_>) -> Vec<String> {
         _ => vec![],
     }
 }
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Attachment {
     /// 1-based, as `attachment save` takes it.
     pub index: usize,
@@ -280,6 +391,23 @@ pub fn save_attachment(raw: &[u8], index: usize, dir: &Path) -> io::Result<PathB
     let path = dir.join(name);
     write_new(&path, &contents)?;
     Ok(path)
+}
+
+/// Writes attachment `index`, fetched on its own as `name` and `contents`, into `dir` as `save_attachment` would.
+pub fn save_fetched_attachment(
+    name: Option<&str>,
+    index: usize,
+    contents: &[u8],
+    dir: &Path,
+) -> io::Result<PathBuf> {
+    let path = dir.join(attachment_file_name(name, index));
+    write_new(&path, contents)?;
+    Ok(path)
+}
+
+/// The file name `save_attachment` gives attachment `index` called `name` by its sender.
+pub fn attachment_file_name(name: Option<&str>, index: usize) -> String {
+    safe_file_name(name, index)
 }
 
 /// Attachment `index` (1-based): the file name `save_attachment` gives it, and its contents.
@@ -448,6 +576,27 @@ fn invisible(c: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn header_fields_unfold_decode_and_keep_order_and_repeats() {
+        let raw = b"Received: from a\r\nReceived: from b\r\nList-Id: GitHub\r\n <x.github.com>\r\nSubject: =?UTF-8?Q?caf=C3=A9?=\r\nX-Empty:\r\n\r\n";
+        let fields: Vec<(String, String)> = header_fields(raw)
+            .into_iter()
+            .map(|f| (f.name, f.value))
+            .collect();
+        let pair = |n: &str, v: &str| (n.to_string(), v.to_string());
+        assert_eq!(
+            fields,
+            vec![
+                pair("Received", "from a"),
+                pair("Received", "from b"),
+                pair("List-Id", "GitHub <x.github.com>"),
+                pair("Subject", "café"),
+                pair("X-Empty", ""),
+            ]
+        );
+        assert!(header_fields(b"").is_empty());
+    }
 
     #[test]
     fn display_name_prefers_the_name_then_the_address() {
@@ -669,6 +818,92 @@ List-Id: Dev <dev.lists.example.com>\r\n\
         };
         let bytes = b"caf=C3=A9 =\r\nau lait".to_vec();
         assert_eq!(text_from_parts(&[(part, bytes)]).trim(), "café au lait");
+    }
+
+    #[test]
+    fn a_fetched_html_part_decodes_as_the_whole_message_would() {
+        let part = TextPart {
+            html: true,
+            charset: Some("iso-8859-1".into()),
+            transfer_encoding: Some("base64".into()),
+            ..TextPart::default()
+        };
+        // "<p>caf\xe9</p>" in base64
+        assert_eq!(
+            part_html(&part, b"PHA+Y2Fm6TwvcD4=").as_deref(),
+            Some("<p>café</p>")
+        );
+        let plain = TextPart::default();
+        assert_eq!(part_html(&plain, b"not html"), None);
+    }
+
+    #[test]
+    fn a_fetched_part_loses_its_transfer_encoding() {
+        let png = PartRef {
+            content_type: "image/png".into(),
+            transfer_encoding: Some("base64".into()),
+            ..PartRef::default()
+        };
+        assert_eq!(part_contents(&png, b"UE5H\r\n"), b"PNG");
+        let qp = PartRef {
+            content_type: "text/calendar".into(),
+            transfer_encoding: Some("quoted-printable".into()),
+            ..PartRef::default()
+        };
+        assert_eq!(part_contents(&qp, b"caf=C3=A9"), "café".as_bytes());
+        let raw = PartRef {
+            content_type: "application/octet-stream\r\nX: y".into(),
+            ..PartRef::default()
+        };
+        assert_eq!(part_contents(&raw, b"\x00\x01"), b"\x00\x01");
+    }
+
+    #[test]
+    fn the_attachments_of_a_structure_are_numbered_as_the_whole_message_numbers_them() {
+        let parts = [
+            PartRef {
+                content_type: "image/png".into(),
+                transfer_encoding: Some("BASE64".into()),
+                octets: 4000,
+                ..PartRef::default()
+            },
+            PartRef {
+                content_type: "application/pdf".into(),
+                name: Some("a.pdf".into()),
+                octets: 10,
+                ..PartRef::default()
+            },
+        ];
+        let listed: Vec<_> = attachments_of_structure(&parts)
+            .into_iter()
+            .map(|a| (a.index, a.name, a.content_type, a.size))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                (1, None, "image/png".to_string(), 3000),
+                (
+                    2,
+                    Some("a.pdf".to_string()),
+                    "application/pdf".to_string(),
+                    10
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn inline_parts_cross_the_wire_as_base64() {
+        let body = HtmlBody {
+            html: "<img src=cid:x>".into(),
+            inline: vec![InlinePart {
+                cid: "x".into(),
+                bytes: vec![0, 255, 1],
+            }],
+        };
+        let json = serde_json::to_string(&body).unwrap();
+        assert!(json.contains(r#""bytes":"AP8B""#), "{json}");
+        assert_eq!(serde_json::from_str::<HtmlBody>(&json).unwrap(), body);
     }
 
     #[test]

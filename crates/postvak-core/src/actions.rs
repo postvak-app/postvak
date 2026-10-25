@@ -2,9 +2,11 @@
 //! daemon's sync loop runs; plus the dry-run and rule preview helpers the CLI and the MCP server share.
 use std::collections::HashSet;
 
+use serde::{Deserialize, Serialize};
+
 use crate::config::{AccountConfig, Identity};
-use crate::mail_ops::{MailError, MailOps};
-use crate::message::clean;
+use crate::mail_ops::{MailError, MailOps, Structure};
+use crate::message::{self, Attachment, HtmlBody, InlinePart, clean};
 use crate::rules::apply::{ApplyError, apply_many, ensure_raw, move_target, plan_for};
 use crate::rules::engine::{Context, Mode, PlannedAction};
 use crate::rules::{Action, CompiledRule};
@@ -29,6 +31,13 @@ pub enum ActionError {
     Store(#[from] StoreError),
     #[error("{0} has not been synced yet; run `postvak sync` first")]
     UnknownFolder(String),
+    #[error("attachment {index} of {folder}/{uid}: {reason}")]
+    Attachment {
+        folder: String,
+        uid: u32,
+        index: usize,
+        reason: String,
+    },
 }
 
 /// The outcome for one uid: how many actions ran, or why none did.
@@ -94,12 +103,31 @@ pub fn run(
     Ok(results)
 }
 
-/// Downloads and indexes one message body, refusing when the folder changed on the server since the last sync.
+/// Below this size a message is fetched whole at once: one round trip beats the several a preview takes.
+pub const PREVIEW_MIN_SIZE: u32 = 256 * 1024;
+/// Above this size a previewed message is not fetched whole until something needs it whole; its attachments are
+/// fetched one by one when asked.
+pub const ON_DEMAND_MIN_SIZE: u32 = 5 * 1024 * 1024;
+
+/// What the reader shows of a message before the whole of it is here: its HTML and what its attachments are. Its text
+/// is in the store by then, as the indexer would have stored it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Preview {
+    pub html: Option<HtmlBody>,
+    pub attachments: Vec<Attachment>,
+    /// The whole message follows; above `ON_DEMAND_MIN_SIZE` it waits until asked, and so do its attachments.
+    pub whole: bool,
+}
+
+/// Downloads and indexes one message body, refusing when the folder changed on the server since the last sync. With
+/// `preview`, a large message's text, HTML and `cid:` images are fetched first and handed to it, so a reader can show
+/// them while the rest arrives; above `ON_DEMAND_MIN_SIZE` the rest is left on the server.
 pub fn fetch_body(
     ops: &mut dyn MailOps,
     store: &Store,
     folder: &str,
     uid: u32,
+    preview: Option<&mut dyn FnMut(Preview)>,
 ) -> Result<(), ActionError> {
     select_synced(ops, store, folder)?;
     let msg = store
@@ -108,8 +136,154 @@ pub fn fetch_body(
             folder: folder.to_string(),
             uid,
         })?;
+    if let Some(show) = preview
+        && msg.size.is_some_and(|size| size > PREVIEW_MIN_SIZE)
+        && !store.has_raw(folder, uid)?
+    {
+        match fetch_preview(ops, store, &msg) {
+            Ok(Some(preview)) if !preview.whole => {
+                show(preview);
+                return Ok(());
+            }
+            Ok(Some(preview)) => show(preview),
+            Ok(None) => {}
+            Err(e) if crate::sync::connection_lost(&e) => return Err(e),
+            // The whole message follows anyway.
+            Err(e) => log::warn!("{folder}/{uid}: preview failed: {e}"),
+        }
+    }
     ensure_raw(&msg, ops, store)?;
     Ok(())
+}
+
+/// Fetches the structure of `msg` and the parts a reader shows; stores its text as the indexer would, unless the
+/// indexer already did. `None` when the structure names no text, so there is nothing to show before the whole message.
+fn fetch_preview(
+    ops: &mut dyn MailOps,
+    store: &Store,
+    msg: &Message,
+) -> Result<Option<Preview>, ActionError> {
+    let Some(structure) = ops.fetch_structures(&[msg.uid])?.remove(&msg.uid) else {
+        return Ok(None);
+    };
+    if structure.text_parts.is_empty() {
+        return Ok(None);
+    }
+    let shown_html = structure
+        .text_parts
+        .iter()
+        .find(|part| part.html && !part.nested);
+    let text_known = msg.body_text.is_some();
+    let mut wanted = if text_known {
+        Vec::new()
+    } else {
+        crate::sync::index::wanted_parts(&structure)
+    };
+    if let Some(html) = shown_html
+        && !wanted.contains(&html)
+    {
+        wanted.push(html);
+    }
+    let mut parts = Vec::new();
+    for part in wanted {
+        if let Some(bytes) = ops.fetch_part(msg.uid, &part.section)? {
+            parts.push((part.clone(), bytes));
+        }
+    }
+    let html = shown_html.and_then(|shown| {
+        let (part, bytes) = parts.iter().find(|(part, _)| part == shown)?;
+        message::part_html(part, bytes)
+    });
+    let html = match html {
+        Some(html) => Some(with_inline_parts(ops, msg.uid, &structure, html)?),
+        None => None,
+    };
+    if !text_known {
+        // Within an alternative the plain part wins, so the HTML fetched for the reader leaves the text as indexed.
+        store.set_indexed(
+            &msg.folder,
+            msg.uid,
+            Some(&message::text_from_parts(&parts)),
+            &structure.attachment_names,
+            crate::time::now(),
+        )?;
+    }
+    Ok(Some(Preview {
+        html,
+        attachments: message::attachments_of_structure(&structure.attachments),
+        whole: msg.size.is_none_or(|size| size <= ON_DEMAND_MIN_SIZE),
+    }))
+}
+
+/// Attachment `index` (1-based, as the reader lists it) of a message: its name as the sender gave it, and its contents.
+/// From the stored message when there is one, else fetched from the server on its own.
+pub fn fetch_attachment(
+    ops: &mut dyn MailOps,
+    store: &Store,
+    folder: &str,
+    uid: u32,
+    index: usize,
+) -> Result<(Option<String>, Vec<u8>), ActionError> {
+    let failed = |reason: String| ActionError::Attachment {
+        folder: folder.to_string(),
+        uid,
+        index,
+        reason,
+    };
+    if let Some(raw) = store.raw(folder, uid)? {
+        let name = message::attachments(&raw)
+            .into_iter()
+            .find(|a| a.index == index)
+            .and_then(|a| a.name);
+        let (_, contents) = message::attachment(&raw, index).map_err(|e| failed(e.to_string()))?;
+        return Ok((name, contents));
+    }
+    select_synced(ops, store, folder)?;
+    if store.message(folder, uid)?.is_none() {
+        return Err(ActionError::NotFound {
+            folder: folder.to_string(),
+            uid,
+        });
+    }
+    let mut structure = ops
+        .fetch_structures(&[uid])?
+        .remove(&uid)
+        .ok_or_else(|| failed("the server gave no structure".into()))?;
+    let part = index
+        .checked_sub(1)
+        .filter(|&i| i < structure.attachments.len())
+        .map(|i| structure.attachments.swap_remove(i))
+        .ok_or_else(|| failed("no such attachment".into()))?;
+    let bytes = ops
+        .fetch_part(uid, &part.section)?
+        .ok_or_else(|| failed("the server sent nothing for it".into()))?;
+    Ok((part.name.clone(), message::part_contents(&part, &bytes)))
+}
+
+/// `html` with the parts its `cid:` URLs name, each fetched once.
+fn with_inline_parts(
+    ops: &mut dyn MailOps,
+    uid: u32,
+    structure: &Structure,
+    html: String,
+) -> Result<HtmlBody, ActionError> {
+    let lower = html.to_ascii_lowercase();
+    let mut inline = Vec::new();
+    for part in &structure.attachments {
+        let Some(cid) = &part.content_id else {
+            continue;
+        };
+        if !lower.contains(&format!("cid:{}", cid.to_ascii_lowercase())) {
+            continue;
+        }
+        if let Some(bytes) = ops.fetch_part(uid, &part.section)? {
+            inline.push(InlinePart {
+                cid: cid.clone(),
+                bytes: message::part_contents(part, &bytes),
+            });
+        }
+    }
+    Ok(HtmlBody { html, inline })
 }
 
 /// The most hits one folder adds to a server search, the highest uids first.

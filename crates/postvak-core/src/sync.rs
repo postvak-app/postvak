@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -12,7 +13,7 @@ use crate::actions::{self, ActionError};
 use crate::config::{AccountConfig, ConfigError, Identity};
 use crate::credentials::{self, CredentialError};
 use crate::mail_ops::imap::ImapOps;
-use crate::mail_ops::{Envelope, IdleOutcome, MailError, MailOps, RemoteFolder};
+use crate::mail_ops::{Envelope, IdleOutcome, MailError, MailOps, RemoteFolder, StatusInfo};
 use crate::message::{clean, parse_headers, thread_id};
 use crate::paths::Paths;
 use crate::rules::apply::{ApplyError, apply, ensure_body_text, plan_for};
@@ -22,7 +23,7 @@ use crate::store::{Folder, Message, Store, StoreError};
 use crate::time::{clock, now};
 use crate::trash::{RestoreError, Trash};
 
-mod index;
+pub(crate) mod index;
 
 pub use index::IndexOutcome;
 
@@ -72,6 +73,26 @@ pub enum Event {
         folder: String,
         uid: u32,
         request: RequestId,
+    },
+    /// Attachment `index` of a message, fetched on its own for a reader that asked for it.
+    AttachmentFetched {
+        account: String,
+        folder: String,
+        uid: u32,
+        index: usize,
+        /// As the sender named it; `message::attachment_file_name` makes it safe.
+        name: Option<String>,
+        #[serde(with = "crate::message::base64_bytes")]
+        contents: Vec<u8>,
+        request: RequestId,
+    },
+    /// What a reader shows of a large message while the rest of it downloads; `BodyReady` follows, once the message is
+    /// stored or, when `preview.whole` is false, at once.
+    BodyPreview {
+        account: String,
+        folder: String,
+        uid: u32,
+        preview: Box<actions::Preview>,
     },
     CommandFailed {
         account: String,
@@ -133,6 +154,7 @@ impl Event {
     pub fn request_ids(&self) -> Vec<RequestId> {
         match self {
             Event::ActionDone { request, .. }
+            | Event::AttachmentFetched { request, .. }
             | Event::BodyReady { request, .. }
             | Event::CommandFailed { request, .. }
             | Event::Restored { request, .. }
@@ -140,6 +162,7 @@ impl Event {
             | Event::ServerSearchDone { request, .. } => vec![*request],
             Event::Synced { requests, .. } => requests.clone(),
             Event::Activity { .. }
+            | Event::BodyPreview { .. }
             | Event::Connected { .. }
             | Event::Error { .. }
             | Event::Indexed { .. }
@@ -294,6 +317,15 @@ pub enum Command {
     FetchBody {
         folder: String,
         uid: u32,
+        /// Sends a large message's `BodyPreview` before fetching the whole of it, for a reader.
+        #[serde(default)]
+        preview: bool,
+    },
+    /// Attachment `index` (1-based, as the reader lists it), from the stored message or fetched on its own.
+    FetchAttachment {
+        folder: String,
+        uid: u32,
+        index: usize,
     },
     Restore {
         file: PathBuf,
@@ -415,11 +447,15 @@ pub fn sync_folder_with(
         FlagFetch::All => ops.fetch_flags(last_uid, None)?,
         FlagFetch::ChangedSince(modseq) => ops.fetch_flags(last_uid, Some(modseq))?,
     };
-    let uids: Vec<u32> = ops
-        .search_uids(last_uid + 1)?
-        .into_iter()
-        .filter(|&uid| uid > last_uid)
-        .collect();
+    // Every uid is below UIDNEXT, so one no higher than last_uid + 1 means nothing new.
+    let uids: Vec<u32> = if info.uidnext.is_some_and(|next| next <= last_uid + 1) {
+        Vec::new()
+    } else {
+        ops.search_uids(last_uid + 1)?
+            .into_iter()
+            .filter(|&uid| uid > last_uid)
+            .collect()
+    };
     // Without an expunge, the server holds exactly the stored messages plus the new ones.
     let present: Option<Vec<u32>> = if flag_fetch == FlagFetch::All {
         Some(updates.iter().map(|u| u.uid).collect())
@@ -443,6 +479,8 @@ pub fn sync_folder_with(
             store.reset_folder(&folder.name, info.uidvalidity)?;
         }
         store.upsert_folder(&row(last_uid))?;
+        // Unknown until this sync completes, so a pass cut short never looks unchanged to the next.
+        store.set_uid_next(&folder.name, 0)?;
         if starts_tracking {
             store.set_initial_uid_next(&folder.name, uids.last().map_or(0, |uid| uid + 1))?;
             store.set_rules_uid(&folder.name, 0)?;
@@ -464,6 +502,7 @@ pub fn sync_folder_with(
     let total = uids.len();
     let mut done = 0;
     let mut new = 0;
+    let mut complete = true;
     for chunk in uids.chunks(chunk_size()) {
         let progress = Activity::FetchingHeaders {
             folder: folder.name.clone(),
@@ -480,6 +519,7 @@ pub fn sync_folder_with(
                     info.uidvalidity,
                     uidvalidity
                 );
+                complete = false;
                 break;
             }
         }
@@ -493,6 +533,9 @@ pub fn sync_folder_with(
             store.upsert_folder(&row(last))
         })?;
         done += chunk.len();
+    }
+    if complete {
+        store.set_uid_next(&folder.name, info.uidnext.unwrap_or(0))?;
     }
     if total > 0 {
         checkpoint(
@@ -587,7 +630,17 @@ pub fn sync_all_with(
     checkpoint: &mut Checkpoint<'_>,
 ) -> Result<(usize, Vec<String>), SyncError> {
     checkpoint(ops, Activity::ListingFolders)?;
-    let mut folders = ops.list_folders()?;
+    let selected_at_list = ops.selected().map(str::to_string);
+    let mut statuses = HashMap::new();
+    let mut folders = Vec::new();
+    for (folder, status) in ops.list_folders_status()? {
+        if let Some(status) = status
+            && selected_at_list.as_deref() != Some(folder.name.as_str())
+        {
+            statuses.insert(folder.name.clone(), status);
+        }
+        folders.push(folder);
+    }
     // Gmail's All Mail, Starred and Important hold copies of messages in other folders; syncing them doubles the traffic.
     folders.retain(|f| {
         !matches!(
@@ -608,7 +661,12 @@ pub fn sync_all_with(
             of,
         };
         checkpoint(ops, syncing)?;
-        match sync_folder_with(ops, store, folder, checkpoint) {
+        let synced = match unchanged(ops, store, folder, statuses.remove(&folder.name)) {
+            Ok(true) => Ok(0),
+            Ok(false) => sync_folder_with(ops, store, folder, checkpoint),
+            Err(e) => Err(e),
+        };
+        match synced {
             Ok(found) => new += found,
             Err(e) if matches!(e, SyncError::Stopped) || is_lost_connection(&e) => return Err(e),
             Err(e) => errors.push(format!("{}: {e}; skipped this pass", folder.name)),
@@ -616,6 +674,58 @@ pub fn sync_all_with(
     }
     forget_unlisted_folders(store, &folders)?;
     Ok((new, errors))
+}
+
+/// Whether `folder` is as its last complete sync left it, by `listed` (its status from LIST-STATUS) or else a STATUS,
+/// so the pass can skip its SELECT. INBOX, which IDLE watches, always syncs, and so does the selected folder, since
+/// RFC 3501 6.3.10 forbids STATUS as a new-mail check there. Without CONDSTORE the full flag fetch, when due, needs the
+/// SELECT too. A server refusing the STATUS gets the SELECT instead.
+fn unchanged(
+    ops: &mut dyn MailOps,
+    store: &Store,
+    folder: &RemoteFolder,
+    listed: Option<StatusInfo>,
+) -> Result<bool, SyncError> {
+    if folder.name.eq_ignore_ascii_case("INBOX") || ops.selected() == Some(folder.name.as_str()) {
+        return Ok(false);
+    }
+    let Some(stored) = store.folder(&folder.name)? else {
+        return Ok(false);
+    };
+    let uid_next = store.uid_next(&folder.name)?;
+    // uidvalidity 0 is a rule move's placeholder, uid_next 0 a folder whose last sync did not complete.
+    if stored.uidvalidity == 0 || uid_next == 0 {
+        return Ok(false);
+    }
+    let status = match listed {
+        Some(status) => status,
+        None => match ops.status(&folder.name) {
+            Ok(status) => status,
+            Err(e) if is_connection_error(&e) => return Err(e.into()),
+            Err(e) => {
+                log::debug!("{}: STATUS failed, selecting it instead: {e}", folder.name);
+                return Ok(false);
+            }
+        },
+    };
+    let same = status.uidvalidity == stored.uidvalidity
+        && status.uidnext == uid_next
+        && status.messages == store.message_count(&folder.name)?
+        && flag_fetch(
+            store.flags_synced(&folder.name)?,
+            status.highest_modseq,
+            now(),
+        ) == FlagFetch::None;
+    let listing_changed = stored.special_use != folder.special_use
+        || (folder.delimiter.is_some() && stored.delimiter != folder.delimiter);
+    if same && listing_changed {
+        store.upsert_folder(&Folder {
+            special_use: folder.special_use.clone(),
+            delimiter: folder.delimiter.clone(),
+            ..stored
+        })?;
+    }
+    Ok(same)
 }
 
 /// Drops store folders this pass did not sync, with their messages; rule-move placeholders wait for the server to list them.
@@ -1055,14 +1165,43 @@ fn run_command(
                     .collect(),
             })
         }
-        Command::FetchBody { folder, uid } => {
+        Command::FetchBody {
+            folder,
+            uid,
+            preview,
+        } => {
             run.used_connection = true;
             context = format!("{folder}/{uid}: ");
-            actions::fetch_body(ops, store, &folder, uid)
+            let mut show = |preview| {
+                let _ = events.send(Event::BodyPreview {
+                    account: name(),
+                    folder: folder.clone(),
+                    uid,
+                    preview: Box::new(preview),
+                });
+            };
+            let show: Option<&mut dyn FnMut(actions::Preview)> = preview.then_some(&mut show);
+            actions::fetch_body(ops, store, &folder, uid, show)
                 .map(|()| Event::BodyReady {
                     account: name(),
                     folder,
                     uid,
+                    request,
+                })
+                .map_err(SyncError::from)
+        }
+        Command::FetchAttachment { folder, uid, index } => {
+            run.used_connection = true;
+            context = format!("{folder}/{uid}: ");
+            let account = name();
+            actions::fetch_attachment(ops, store, &folder, uid, index)
+                .map(|(name, contents)| Event::AttachmentFetched {
+                    account,
+                    folder,
+                    uid,
+                    index,
+                    name,
+                    contents,
                     request,
                 })
                 .map_err(SyncError::from)
@@ -1152,7 +1291,7 @@ fn is_lost_connection(e: &SyncError) -> bool {
     }
 }
 
-fn connection_lost(e: &ActionError) -> bool {
+pub(crate) fn connection_lost(e: &ActionError) -> bool {
     match e {
         ActionError::Mail(e) | ActionError::Apply(ApplyError::Mail(e)) => is_connection_error(e),
         _ => false,

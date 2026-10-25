@@ -33,6 +33,7 @@ This document contains the help content for the `postvak` command-line program.
 * [`postvak folders`↴](#postvak-folders)
 * [`postvak list`↴](#postvak-list)
 * [`postvak search`↴](#postvak-search)
+* [`postvak headers`↴](#postvak-headers)
 * [`postvak show`↴](#postvak-show)
 * [`postvak unsubscribe`↴](#postvak-unsubscribe)
 * [`postvak mark`↴](#postvak-mark)
@@ -73,6 +74,7 @@ A fast, simple mail client with automatic mailbox rules
 * `folders` — List folders with message and unread counts
 * `list` — List recent messages, newest first
 * `search` — Search subject, addresses, attachment names and bodies, newest first; words, "phrases", -not and key:value operators such as from:acme, in:Archive, is:unread or after:7d; the last word also matches as a prefix; close matches such as corrected typos follow when exact hits are few
+* `headers` — Every header of one message, in order, unfolded and decoded as header rules see it; no body
 * `show` — Show one message
 * `unsubscribe` — Leave a message's mailing list: by one-click POST when the sender offers it (RFC 8058), else print the page or address from its List-Unsubscribe header to open
 * `mark` — Mark messages read or unread, flagged or unflagged
@@ -479,6 +481,26 @@ Anything else, such as an unknown key or a date that does not parse, searches as
 
 
 
+## `postvak headers`
+
+Every header of one message, in order, unfolded and decoded as header rules see it; no body
+
+**Usage:** `postvak headers [OPTIONS] <UID>`
+
+###### **Arguments:**
+
+* `<UID>`
+
+###### **Options:**
+
+* `--account <ACCOUNT>`
+* `--folder <FOLDER>`
+
+  Default value: `INBOX`
+* `--json`
+
+
+
 ## `postvak show`
 
 Show one message
@@ -775,7 +797,7 @@ Serve Postvak to an agent host over MCP on stdio; hosts start this, see `postvak
 
 ###### **Options:**
 
-* `--scopes <SCOPES>` — Comma-separated: read, read:bodies, rules:propose, rules:write, files:write, mail:modify
+* `--scopes <SCOPES>` — Comma-separated: read, read:headers, read:bodies, rules:propose, rules:write, files:write, mail:modify
 
   Default value: `read,rules:propose`
 * `--account <ACCOUNT>` — Only this account; repeatable; default every account
@@ -798,7 +820,7 @@ Register `postvak mcp` with an agent host; re-run it to change the scopes
 
 ###### **Options:**
 
-* `--scopes <SCOPES>` — Comma-separated: read, read:bodies, rules:propose, rules:write, files:write, mail:modify
+* `--scopes <SCOPES>` — Comma-separated: read, read:headers, read:bodies, rules:propose, rules:write, files:write, mail:modify
 
   Default value: `read,rules:propose`
 * `--account <ACCOUNT>` — Only this account; repeatable; default every account

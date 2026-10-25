@@ -129,6 +129,8 @@ pub fn report(event: &Event) {
             uidplus: false,
         } => println!("[{account}] note: {}", crate::help::NO_UIDPLUS),
         Event::ActionDone { .. }
+        | Event::AttachmentFetched { .. }
+        | Event::BodyPreview { .. }
         | Event::BodyReady { .. }
         | Event::Connected { .. }
         | Event::Indexed { .. }

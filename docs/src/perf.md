@@ -146,6 +146,8 @@ Opening a message reads its row and raw bytes from the store and parses its MIME
 
 The bench keeps the 5 MB message; the 25 MB row is one run with a larger attachment. Below the budget nothing changes; above it the frame no longer grows with the message.
 
+Downloading a message the store has no copy of was one `fetch_raw`: the reader showed nothing until every attachment had arrived, so a mail with a 20 MB scan took as long to show its two lines as it took to download 20 MB. A message larger than 256 KB now comes in two steps: its `BODYSTRUCTURE` and the parts the reader shows (the text, the HTML and the images it names as `cid:`), one round trip each, then the whole message. Below 256 KB one round trip still beats several. Not measured over a slow link yet.
+
 ## Startup and memory
 
 What a user notices first: how long until the window shows a list, and how much memory the GUI and the daemon use. With `POSTVAK_STARTUP_METRICS=1` the GUI prints one JSON line per startup phase on stderr, `{"startup":"<phase>","ms":<ms>}`, in milliseconds since it started measuring; nothing otherwise.

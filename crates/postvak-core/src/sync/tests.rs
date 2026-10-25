@@ -1,6 +1,6 @@
 use super::*;
 use crate::config::PasswordSource;
-use crate::mail_ops::{RecordingOps, Structure, TextPart};
+use crate::mail_ops::{PartRef, RecordingOps, Structure, TextPart};
 use crate::rules::{compile, parse};
 
 const H: i64 = 3600;
@@ -219,6 +219,8 @@ fn second_sync_only_fetches_new_and_updates_flags_and_removals() {
 #[test]
 fn sync_ignores_uids_below_last_uid() {
     let mut ops = ops_with_inbox();
+    // Without UIDNEXT the sync must search, and the server answers 3:* with uid 2.
+    ops.no_uidnext = true;
     let store = Store::open_in_memory().unwrap();
     sync_all(&mut ops, &store).unwrap();
     let new = sync_all(&mut ops, &store).unwrap().0;
@@ -1629,6 +1631,201 @@ fn a_full_pass_syncs_inbox_first() {
     assert_eq!(selects, ["select INBOX", "select Archive"]);
 }
 
+/// INBOX, Archive (3 messages) and Lists (empty), synced once, with the calls cleared.
+fn synced_three_folders(list_status: bool) -> (RecordingOps, Store) {
+    let mut ops = ops_with_inbox()
+        .with_folder("Archive", Some("Archive"))
+        .with_folder("Lists", None);
+    ops.list_status = list_status;
+    for uid in 1..=3 {
+        let id = format!("a{uid}@x");
+        ops.add_mail("Archive", uid, H, &headers("bob@x", "old", &id), None);
+    }
+    let store = Store::open_in_memory().unwrap();
+    sync_all(&mut ops, &store).unwrap();
+    // As the daemon leaves it, to IDLE.
+    ops.select("INBOX").unwrap();
+    ops.calls.clear();
+    (ops, store)
+}
+
+fn calls_starting(ops: &RecordingOps, prefix: &str) -> Vec<String> {
+    ops.calls
+        .iter()
+        .filter(|c| c.starts_with(prefix))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn a_pass_selects_only_inbox_when_status_shows_nothing_changed() {
+    let (mut ops, store) = synced_three_folders(false);
+    sync_all(&mut ops, &store).unwrap();
+    assert_eq!(calls_starting(&ops, "select"), ["select INBOX"]);
+    assert_eq!(
+        calls_starting(&ops, "status"),
+        ["status Trash", "status Archive", "status Lists"]
+    );
+    // SELECT's UIDNEXT already says INBOX has nothing new.
+    assert_eq!(calls_starting(&ops, "search_uids"), Vec::<String>::new());
+}
+
+#[test]
+fn list_status_answers_every_folder_in_one_command() {
+    let (mut ops, store) = synced_three_folders(true);
+    sync_all(&mut ops, &store).unwrap();
+    assert_eq!(
+        ops.calls,
+        ["list_folders_status", "select INBOX"],
+        "nothing changed, so INBOX is the only folder selected"
+    );
+}
+
+#[test]
+fn a_change_made_elsewhere_selects_that_folder_only() {
+    for list_status in [false, true] {
+        let (mut ops, store) = synced_three_folders(list_status);
+        ops.add_mail("Lists", 1, H, &headers("list@x", "news", "l1@x"), None);
+        ops.mail.get_mut("Archive").unwrap()[0]
+            .flags
+            .push("\\Seen".into());
+        let new = sync_all(&mut ops, &store).unwrap().0;
+        assert_eq!(new, 1);
+        assert_eq!(
+            calls_starting(&ops, "select"),
+            ["select INBOX", "select Archive", "select Lists"]
+        );
+        assert!(store.message("Archive", 1).unwrap().unwrap().is_seen());
+        assert!(store.message("Lists", 1).unwrap().is_some());
+
+        // Removing a message changes MESSAGES only.
+        ops.mail.get_mut("Archive").unwrap().retain(|m| m.uid != 2);
+        ops.calls.clear();
+        sync_all(&mut ops, &store).unwrap();
+        assert_eq!(
+            calls_starting(&ops, "select"),
+            ["select INBOX", "select Archive"]
+        );
+        assert_eq!(store.message("Archive", 2).unwrap(), None);
+    }
+}
+
+#[test]
+fn a_new_uidvalidity_selects_the_folder_and_resyncs_it() {
+    let (mut ops, store) = synced_three_folders(false);
+    *ops.uidvalidity.get_mut("Archive").unwrap() += 1;
+    sync_all(&mut ops, &store).unwrap();
+    assert!(ops.calls.contains(&"select Archive".to_string()));
+    assert_eq!(store.folder("Archive").unwrap().unwrap().uidvalidity, 2);
+}
+
+#[test]
+fn without_condstore_a_skipped_folder_still_gets_its_flags_every_30_minutes() {
+    let mut ops = ops_with_inbox().with_folder("Archive", Some("Archive"));
+    ops.no_condstore = true;
+    ops.add_mail("Archive", 1, H, &headers("bob@x", "old", "a1@x"), None);
+    let store = Store::open_in_memory().unwrap();
+    sync_all(&mut ops, &store).unwrap();
+    ops.mail.get_mut("Archive").unwrap()[0]
+        .flags
+        .push("\\Seen".into());
+    ops.calls.clear();
+    sync_all(&mut ops, &store).unwrap();
+    assert_eq!(calls_starting(&ops, "select"), ["select INBOX"]);
+    assert!(!store.message("Archive", 1).unwrap().unwrap().is_seen());
+
+    store
+        .set_flags_synced("Archive", 0, now() - FULL_FLAGS_EVERY_SECS)
+        .unwrap();
+    ops.calls.clear();
+    sync_all(&mut ops, &store).unwrap();
+    assert_eq!(
+        calls_starting(&ops, "select"),
+        ["select INBOX", "select Archive"]
+    );
+    assert!(store.message("Archive", 1).unwrap().unwrap().is_seen());
+}
+
+#[test]
+fn a_folder_selected_when_listed_gets_a_status_of_its_own() {
+    let (mut ops, store) = synced_three_folders(true);
+    ops.select("Lists").unwrap();
+    ops.calls.clear();
+    sync_all(&mut ops, &store).unwrap();
+    // INBOX syncs first, so by its turn Lists is no longer selected.
+    assert_eq!(
+        ops.calls,
+        ["list_folders_status", "select INBOX", "status Lists"]
+    );
+}
+
+#[test]
+fn a_folder_a_command_just_selected_is_selected_rather_than_asked_for_its_status() {
+    for list_status in [false, true] {
+        let (mut ops, store) = synced_three_folders(list_status);
+        let mut checkpoint = |ops: &mut dyn MailOps, step: Activity| {
+            if matches!(&step, Activity::SyncingFolder { folder, .. } if folder == "Lists") {
+                ops.select("Lists")?;
+                return Ok(true);
+            }
+            Ok(false)
+        };
+        sync_all_with(&mut ops, &store, &mut checkpoint).unwrap();
+        assert!(!ops.calls.contains(&"status Lists".to_string()));
+        assert_eq!(
+            calls_starting(&ops, "select"),
+            ["select INBOX", "select Lists", "select Lists"]
+        );
+    }
+}
+
+#[test]
+fn a_refused_status_selects_the_folder_instead() {
+    let (mut ops, store) = synced_three_folders(false);
+    ops.uidvalidity.remove("Lists");
+    let (_, errors) = sync_all(&mut ops, &store).unwrap();
+    assert!(ops.calls.contains(&"status Lists".to_string()));
+    assert!(ops.calls.contains(&"select Lists".to_string()));
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].starts_with("Lists: "), "{errors:?}");
+}
+
+#[test]
+fn a_folder_whose_sync_was_cut_short_is_selected_next_pass() {
+    let (mut ops, store) = synced_three_folders(false);
+    ops.add_mail("Lists", 1, H, &headers("list@x", "news", "l1@x"), None);
+    ops.fail_fetch_after = Some(0);
+    assert!(sync_all(&mut ops, &store).is_err());
+    assert_eq!(store.uid_next("Lists").unwrap(), 0);
+    ops.fail_fetch_after = None;
+    ops.calls.clear();
+    sync_all(&mut ops, &store).unwrap();
+    assert!(ops.calls.contains(&"select Lists".to_string()));
+    assert!(store.message("Lists", 1).unwrap().is_some());
+    assert_eq!(store.uid_next("Lists").unwrap(), 2);
+}
+
+#[test]
+fn a_skipped_folder_still_takes_a_new_special_use() {
+    let (mut ops, store) = synced_three_folders(false);
+    ops.folders
+        .iter_mut()
+        .find(|f| f.name == "Lists")
+        .unwrap()
+        .special_use = Some("Junk".into());
+    sync_all(&mut ops, &store).unwrap();
+    assert!(!ops.calls.contains(&"select Lists".to_string()));
+    assert_eq!(
+        store
+            .folder("Lists")
+            .unwrap()
+            .unwrap()
+            .special_use
+            .as_deref(),
+        Some("Junk")
+    );
+}
+
 #[test]
 fn changed_uidvalidity_blocks_rules_on_stale_rows() {
     let mut ops = RecordingOps::default()
@@ -2090,6 +2287,9 @@ struct QueuesCommandsOnSelect {
 impl MailOps for QueuesCommandsOnSelect {
     fn list_folders(&mut self) -> crate::mail_ops::MailResult<Vec<RemoteFolder>> {
         self.inner.list_folders()
+    }
+    fn selected(&self) -> Option<&str> {
+        self.inner.selected()
     }
     fn select(&mut self, folder: &str) -> crate::mail_ops::MailResult<crate::mail_ops::SelectInfo> {
         if folder != self.folder {
@@ -2571,6 +2771,7 @@ fn fetch_body_stores_the_body_and_reports_it() {
         vec![Command::FetchBody {
             folder: "INBOX".into(),
             uid: 1,
+            preview: false,
         }],
     );
     assert!(run.unwrap().used_connection);
@@ -2581,6 +2782,364 @@ fn fetch_body_stores_the_body_and_reports_it() {
         uid: 1,
         request: 1
     }));
+}
+
+/// INBOX uid 3: a 300 KB message of a plain and an HTML alternative, the HTML with a `cid:` logo, and a PDF.
+fn large_message() -> (RecordingOps, Store, tempfile::TempDir) {
+    message_of(300 * 1024)
+}
+
+/// As `large_message`, with a PDF of `pdf_size` bytes as sent.
+fn message_of(pdf_size: usize) -> (RecordingOps, Store, tempfile::TempDir) {
+    let mut ops = ops_with_inbox();
+    let pdf = "A".repeat(pdf_size);
+    let raw = format!(
+        "From: bob@x\r\nSubject: scan\r\nContent-Type: multipart/mixed; boundary=m\r\n\r\n--m\r\n\
+         Content-Type: text/plain\r\n\r\nthe two lines\r\n--m\r\nContent-Type: application/pdf\r\n\
+         Content-Transfer-Encoding: base64\r\n\r\n{pdf}\r\n--m--\r\n"
+    );
+    ops.add_mail(
+        "INBOX",
+        3,
+        12 * H,
+        &headers("bob@x", "scan", "m3@x"),
+        Some(&raw),
+    );
+    let text = |section: &str, html: bool| TextPart {
+        section: section.into(),
+        html,
+        alternative: Some(1),
+        ..TextPart::default()
+    };
+    let part = |section: &str, content_type: &str, content_id: Option<&str>| PartRef {
+        section: section.into(),
+        content_type: content_type.into(),
+        content_id: content_id.map(str::to_string),
+        transfer_encoding: Some("base64".into()),
+        octets: 400,
+        ..PartRef::default()
+    };
+    ops.structures.insert(
+        ("INBOX".into(), 3),
+        Structure {
+            text_parts: vec![text("1.1", false), text("1.2.1", true)],
+            attachment_names: vec!["scan.pdf".into()],
+            attachments: vec![
+                part("1.2.2", "image/png", Some("logo@x")),
+                PartRef {
+                    name: Some("scan.pdf".into()),
+                    ..part("2", "application/pdf", None)
+                },
+            ],
+        },
+    );
+    for (section, bytes) in [
+        ("1.1", "the two lines"),
+        ("1.2.1", "<p>the two lines</p><img src=\"cid:logo@x\">"),
+        ("1.2.2", "UE5H"),
+        ("2", "UERG"),
+    ] {
+        ops.parts.insert(
+            ("INBOX".into(), 3, section.into()),
+            bytes.as_bytes().to_vec(),
+        );
+    }
+    let store = Store::open_in_memory().unwrap();
+    sync_all(&mut ops, &store).unwrap();
+    ops.calls.clear();
+    (ops, store, tempfile::tempdir().unwrap())
+}
+
+fn fetch_with_preview(uid: u32) -> Command {
+    Command::FetchBody {
+        folder: "INBOX".into(),
+        uid,
+        preview: true,
+    }
+}
+
+#[test]
+fn a_message_above_five_megabytes_is_previewed_and_left_on_the_server() {
+    let (mut ops, store, dir) = message_of(6 * 1024 * 1024);
+    let trash = Trash::new(dir.path().to_path_buf());
+    let (run, events) = drain(&mut ops, &store, &trash, vec![fetch_with_preview(3)]);
+    run.unwrap();
+    assert!(
+        !ops.calls.iter().any(|c| c.starts_with("fetch_raw")),
+        "{:?}",
+        ops.calls
+    );
+    let whole: Vec<bool> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::BodyPreview { preview, .. } => Some(preview.whole),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(whole, [false]);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::BodyReady { uid: 3, .. }))
+    );
+    assert!(store.raw("INBOX", 3).unwrap().is_none());
+    let msg = store.message("INBOX", 3).unwrap().unwrap();
+    assert_eq!(msg.body_text.as_deref(), Some("the two lines"));
+
+    // Save .eml asks for it whole.
+    let whole = Command::FetchBody {
+        folder: "INBOX".into(),
+        uid: 3,
+        preview: false,
+    };
+    drain(&mut ops, &store, &trash, vec![whole]).0.unwrap();
+    assert!(store.raw("INBOX", 3).unwrap().is_some());
+}
+
+#[test]
+fn an_attachment_is_fetched_on_its_own_until_the_message_is_stored() {
+    let (mut ops, store, dir) = message_of(6 * 1024 * 1024);
+    let trash = Trash::new(dir.path().to_path_buf());
+    let fetch = |index| Command::FetchAttachment {
+        folder: "INBOX".into(),
+        uid: 3,
+        index,
+    };
+    let (run, events) = drain(&mut ops, &store, &trash, vec![fetch(2), fetch(9)]);
+    run.unwrap();
+    let parts: Vec<&str> = ops
+        .calls
+        .iter()
+        .filter(|c| c.starts_with("fetch_"))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        parts,
+        [
+            "fetch_structures INBOX 3",
+            "fetch_part INBOX 3 2",
+            "fetch_structures INBOX 3"
+        ]
+    );
+    assert!(events.contains(&Event::AttachmentFetched {
+        account: "work".into(),
+        folder: "INBOX".into(),
+        uid: 3,
+        index: 2,
+        name: Some("scan.pdf".into()),
+        contents: b"PDF".to_vec(),
+        request: 1,
+    }));
+    assert!(
+        events.iter().any(|e| matches!(e,
+            Event::CommandFailed { request: 2, message, .. } if message.contains("no such attachment"))),
+        "{events:?}"
+    );
+
+    // Once the message is stored, its attachments come from the store.
+    store
+        .set_raw("INBOX", 3, b"Subject: s\r\nContent-Type: multipart/mixed; boundary=m\r\n\r\n--m\r\nContent-Type: text/plain\r\n\r\nhi\r\n--m\r\nContent-Type: application/pdf; name=a.pdf\r\n\r\nstored\r\n--m--\r\n", "hi")
+        .unwrap();
+    ops.calls.clear();
+    let (_, events) = drain(&mut ops, &store, &trash, vec![fetch(1)]);
+    assert!(
+        ops.calls.iter().all(|c| !c.starts_with("fetch_")),
+        "{:?}",
+        ops.calls
+    );
+    assert!(
+        events.iter().any(|e| matches!(e,
+        Event::AttachmentFetched { index: 1, name: Some(name), contents, .. }
+            if name == "a.pdf" && contents.starts_with(b"stored"))),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn a_large_message_shows_its_text_and_html_before_the_whole_of_it() {
+    let (mut ops, store, dir) = large_message();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let (run, events) = drain(&mut ops, &store, &trash, vec![fetch_with_preview(3)]);
+    run.unwrap();
+    let fetches: Vec<&str> = ops
+        .calls
+        .iter()
+        .filter(|c| c.starts_with("fetch_"))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        fetches,
+        [
+            "fetch_structures INBOX 3",
+            "fetch_part INBOX 3 1.1",
+            "fetch_part INBOX 3 1.2.1",
+            "fetch_part INBOX 3 1.2.2",
+            "fetch_raw INBOX 3",
+        ],
+        "the PDF is not fetched on its own"
+    );
+    let shown = events
+        .iter()
+        .position(|e| matches!(e, Event::BodyPreview { uid: 3, .. }))
+        .expect("a preview");
+    let ready = events
+        .iter()
+        .position(|e| matches!(e, Event::BodyReady { uid: 3, .. }))
+        .expect("the whole message");
+    assert!(shown < ready, "{events:?}");
+    let Event::BodyPreview { preview, .. } = &events[shown] else {
+        panic!("not a preview");
+    };
+    let html = preview.html.as_ref().expect("its HTML");
+    assert!(
+        html.html.contains("<img src=\"cid:logo@x\">"),
+        "{}",
+        html.html
+    );
+    assert_eq!(html.inline.len(), 1);
+    assert_eq!(
+        (html.inline[0].cid.as_str(), html.inline[0].bytes.as_slice()),
+        ("logo@x", &b"PNG"[..])
+    );
+    let names: Vec<_> = preview
+        .attachments
+        .iter()
+        .map(|a| (a.index, a.name.as_deref(), a.content_type.as_str(), a.size))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            (1, None, "image/png", 300),
+            (2, Some("scan.pdf"), "application/pdf", 300)
+        ]
+    );
+    assert!(store.raw("INBOX", 3).unwrap().is_some());
+}
+
+#[test]
+fn a_preview_stores_the_text_as_the_indexer_would() {
+    let (mut ops, store, dir) = large_message();
+    let trash = Trash::new(dir.path().to_path_buf());
+    // The whole message never comes, so the store keeps what the preview put there.
+    ops.raw.remove(&("INBOX".to_string(), 3));
+    let (_, events) = drain(&mut ops, &store, &trash, vec![fetch_with_preview(3)]);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::BodyPreview { .. }))
+    );
+    let msg = store.message("INBOX", 3).unwrap().unwrap();
+    assert_eq!(msg.body_text.as_deref(), Some("the two lines"));
+    assert_eq!(msg.attachment_names.as_deref(), Some("scan.pdf"));
+    assert!(store.raw("INBOX", 3).unwrap().is_none());
+}
+
+#[test]
+fn an_indexed_message_fetches_only_its_html_for_the_preview() {
+    let (mut ops, store, dir) = large_message();
+    let trash = Trash::new(dir.path().to_path_buf());
+    store
+        .set_indexed("INBOX", 3, Some("indexed text"), &[], 0)
+        .unwrap();
+    let (_, events) = drain(&mut ops, &store, &trash, vec![fetch_with_preview(3)]);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::BodyPreview { .. }))
+    );
+    let parts: Vec<&str> = ops
+        .calls
+        .iter()
+        .filter(|c| c.starts_with("fetch_part"))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        parts,
+        ["fetch_part INBOX 3 1.2.1", "fetch_part INBOX 3 1.2.2"]
+    );
+}
+
+#[test]
+fn a_small_message_or_one_fetched_without_preview_comes_whole() {
+    let (mut ops, store, dir) = large_message();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let commands = vec![
+        fetch_with_preview(1),
+        Command::FetchBody {
+            folder: "INBOX".into(),
+            uid: 3,
+            preview: false,
+        },
+    ];
+    let (run, events) = drain(&mut ops, &store, &trash, commands);
+    run.unwrap();
+    let fetches: Vec<&str> = ops
+        .calls
+        .iter()
+        .filter(|c| c.starts_with("fetch_"))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(fetches, ["fetch_raw INBOX 1", "fetch_raw INBOX 3"]);
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, Event::BodyPreview { .. }))
+    );
+}
+
+#[test]
+fn a_stored_message_is_not_previewed_again() {
+    let (mut ops, store, dir) = large_message();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let fetches = vec![fetch_with_preview(3), fetch_with_preview(3)];
+    let (_, events) = drain(&mut ops, &store, &trash, fetches);
+    let previews = events
+        .iter()
+        .filter(|e| matches!(e, Event::BodyPreview { .. }))
+        .count();
+    assert_eq!(previews, 1);
+    assert_eq!(
+        ops.calls
+            .iter()
+            .filter(|c| c.starts_with("fetch_raw"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_preview_whose_part_fetch_fails_falls_back_to_the_whole_message() {
+    let (mut ops, store, dir) = large_message();
+    let trash = Trash::new(dir.path().to_path_buf());
+    ops.unreadable = Some(("INBOX".into(), 3));
+    let (run, events) = drain(&mut ops, &store, &trash, vec![fetch_with_preview(3)]);
+    run.unwrap();
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, Event::BodyPreview { .. }))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::BodyReady { uid: 3, .. }))
+    );
+    assert!(store.raw("INBOX", 3).unwrap().is_some());
+}
+
+#[test]
+fn a_lost_connection_during_a_preview_ends_the_drain() {
+    let (mut ops, store, dir) = large_message();
+    let trash = Trash::new(dir.path().to_path_buf());
+    ops.fail_next = Some(MailError::Io("reset".into()));
+    let (run, events) = drain(&mut ops, &store, &trash, vec![fetch_with_preview(3)]);
+    assert!(matches!(run, Err(SyncError::Action(ref e)) if e.to_string().contains("reset")));
+    assert!(!ops.calls.iter().any(|c| c.starts_with("fetch_raw")));
+    assert!(
+        events.iter().any(|e| matches!(e,
+            Event::CommandFailed { request: 1, message, .. } if message.contains("reset"))),
+        "{events:?}"
+    );
 }
 
 #[test]
@@ -2658,6 +3217,7 @@ fn a_lost_connection_during_apply_reports_then_ends_the_drain() {
     let next = Command::FetchBody {
         folder: "INBOX".into(),
         uid: 2,
+        preview: false,
     };
     let (run, events) = drain(&mut ops, &store, &trash, vec![apply, next]);
     assert!(matches!(run, Err(SyncError::Action(ref e)) if e.to_string().contains("reset")));
@@ -2678,6 +3238,7 @@ fn a_lost_connection_during_fetch_body_ends_the_drain() {
     let fetch = Command::FetchBody {
         folder: "INBOX".into(),
         uid: 1,
+        preview: false,
     };
     let (run, events) = drain(&mut ops, &store, &trash, vec![fetch]);
     assert!(matches!(run, Err(SyncError::Action(ref e)) if e.to_string().contains("reset")));
@@ -2723,10 +3284,12 @@ fn a_protocol_error_is_reported_and_the_next_command_runs() {
         Command::FetchBody {
             folder: "INBOX".into(),
             uid: 1,
+            preview: false,
         },
         Command::FetchBody {
             folder: "INBOX".into(),
             uid: 2,
+            preview: false,
         },
     ];
     let (run, events) = drain(&mut ops, &store, &trash, commands);
@@ -2750,10 +3313,12 @@ fn a_command_for_a_vanished_message_reports_and_the_next_runs() {
         Command::FetchBody {
             folder: "INBOX".into(),
             uid: 1,
+            preview: false,
         },
         Command::FetchBody {
             folder: "INBOX".into(),
             uid: 2,
+            preview: false,
         },
     ];
     let (run, events) = drain(&mut ops, &store, &trash, commands);
@@ -2861,6 +3426,7 @@ fn queued_jobs_fail_when_the_account_goes_offline() {
     let fetch = Command::FetchBody {
         folder: "INBOX".into(),
         uid: 1,
+        preview: false,
     };
     commands_tx
         .send(Job {
@@ -3162,6 +3728,7 @@ fn a_lost_connection_later_in_a_drain_still_fails_the_sync_now_drained_before_it
     let fetch = Command::FetchBody {
         folder: "INBOX".into(),
         uid: 1,
+        preview: false,
     };
     let fetch = Job {
         request: 8,
@@ -3563,6 +4130,7 @@ fn a_structure_without_text_indexes_headers_and_names_and_html_waits_for_plain()
         Structure {
             text_parts: Vec::new(),
             attachment_names: vec!["a.pdf".into()],
+            attachments: Vec::new(),
         },
     );
     let part = |section: &str, html: bool| TextPart {
@@ -3576,6 +4144,7 @@ fn a_structure_without_text_indexes_headers_and_names_and_html_waits_for_plain()
         Structure {
             text_parts: vec![part("1", true), part("2", false)],
             attachment_names: Vec::new(),
+            attachments: Vec::new(),
         },
     );
     ops.parts
@@ -3688,6 +4257,8 @@ fn crowded_inbox(n: u32) -> (RecordingOps, Store) {
     }
     let store = Store::open_in_memory().unwrap();
     sync_all(&mut ops, &store).unwrap();
+    // As the daemon leaves it, to IDLE.
+    ops.select("INBOX").unwrap();
     ops.calls.clear();
     (ops, store)
 }
@@ -3871,6 +4442,9 @@ impl Drop for Returning {
 impl MailOps for Returning {
     fn list_folders(&mut self) -> crate::mail_ops::MailResult<Vec<RemoteFolder>> {
         self.ops.list_folders()
+    }
+    fn selected(&self) -> Option<&str> {
+        self.ops.selected()
     }
     fn select(&mut self, folder: &str) -> crate::mail_ops::MailResult<crate::mail_ops::SelectInfo> {
         self.ops.select(folder)

@@ -160,6 +160,16 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    #[command(about = postvak_core::help::HEADERS)]
+    Headers {
+        uid: u32,
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long, default_value = "INBOX")]
+        folder: String,
+        #[arg(long)]
+        json: bool,
+    },
     #[command(about = postvak_core::help::SHOW)]
     Show {
         uid: u32,
@@ -247,7 +257,7 @@ enum Command {
     /// Serve Postvak to an agent host over MCP on stdio; hosts start this, see `postvak mcp install`
     #[command(args_conflicts_with_subcommands = true)]
     Mcp {
-        /// Comma-separated: read, read:bodies, rules:propose, rules:write, files:write, mail:modify
+        /// Comma-separated: read, read:headers, read:bodies, rules:propose, rules:write, files:write, mail:modify
         #[arg(long, default_value = postvak_core::help::MCP_DEFAULT_SCOPES)]
         scopes: String,
         /// Only this account; repeatable; default every account
@@ -310,7 +320,7 @@ enum McpCommand {
     Install {
         #[arg(value_enum)]
         target: InstallTarget,
-        /// Comma-separated: read, read:bodies, rules:propose, rules:write, files:write, mail:modify
+        /// Comma-separated: read, read:headers, read:bodies, rules:propose, rules:write, files:write, mail:modify
         #[arg(long, default_value = postvak_core::help::MCP_DEFAULT_SCOPES)]
         scopes: String,
         /// Only this account; repeatable; default every account
@@ -609,6 +619,28 @@ pub fn run() -> Result<()> {
                 print_json(postvak_core::output::with_account(&acc.name, &report)?);
             } else {
                 println!("{}", unsubscribe_line(&report));
+            }
+            Ok(())
+        }
+        Command::Headers {
+            uid,
+            account,
+            folder,
+            json,
+        } => {
+            let (acc, _store, msg) =
+                open_message(&config, &paths, account.as_deref(), &folder, uid)?;
+            let fields = postvak_core::message::header_fields(&msg.headers);
+            if json {
+                print_json(postvak_core::output::headers(&acc.name, &msg, &fields)?);
+            } else {
+                for field in fields {
+                    println!(
+                        "{}: {}",
+                        clean(&field.name, false),
+                        clean(&field.value, false)
+                    );
+                }
             }
             Ok(())
         }

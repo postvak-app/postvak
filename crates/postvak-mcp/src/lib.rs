@@ -25,13 +25,15 @@ pub enum Scope {
     MailModify,
     Read,
     ReadBodies,
+    ReadHeaders,
     RulesPropose,
     RulesWrite,
 }
 
 impl Scope {
-    pub const ALL: [Scope; 6] = [
+    pub const ALL: [Scope; 7] = [
         Scope::Read,
+        Scope::ReadHeaders,
         Scope::ReadBodies,
         Scope::RulesPropose,
         Scope::RulesWrite,
@@ -45,6 +47,7 @@ impl Scope {
             Scope::MailModify => "mail:modify",
             Scope::Read => "read",
             Scope::ReadBodies => "read:bodies",
+            Scope::ReadHeaders => "read:headers",
             Scope::RulesPropose => "rules:propose",
             Scope::RulesWrite => "rules:write",
         }

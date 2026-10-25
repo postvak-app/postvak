@@ -299,6 +299,7 @@ impl LazyClient {
         let fetch = Command::FetchBody {
             folder: msg.folder.clone(),
             uid: msg.uid,
+            preview: false,
         };
         self.request(account, fetch, Ok)?;
         store
@@ -598,9 +599,10 @@ impl Drop for Client {
 pub(super) fn reply_timeout(command: &Command) -> Option<Duration> {
     match command {
         Command::ApplyRule { .. } | Command::SearchServer { .. } | Command::SyncNow => None,
-        Command::Apply { .. } | Command::FetchBody { .. } | Command::Restore { .. } => {
-            Some(REPLY_TIMEOUT)
-        }
+        Command::Apply { .. }
+        | Command::FetchAttachment { .. }
+        | Command::FetchBody { .. }
+        | Command::Restore { .. } => Some(REPLY_TIMEOUT),
     }
 }
 

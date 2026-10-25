@@ -435,6 +435,25 @@ fn show_json_carries_the_account() {
     assert_eq!(line["account"], "work");
 }
 
+#[test]
+fn headers_lists_every_field_from_the_store_without_the_body() {
+    let mut stored = message(42, "a@example.com", "Hello");
+    stored.headers = b"List-Id: GitHub\r\n <x.github.com>\r\nX-Spam-Level: ***\r\n\r\n".to_vec();
+    stored.body_text = Some("secret".into());
+    let (home, _store) = seeded_home(&[stored]);
+    let out = postvak(home.path(), &["headers", "42"]);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "List-Id: GitHub <x.github.com>\nX-Spam-Level: ***\n"
+    );
+    let out = postvak(home.path(), &["headers", "42", "--json"]);
+    let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(line["message"]["account"], "work");
+    assert!(line["message"].get("body_text").is_none());
+    assert_eq!(line["headers"][1]["name"], "X-Spam-Level");
+    assert_eq!(line["headers"][1]["value"], "***");
+}
+
 /// Text hidden as Unicode tag characters, read by a model but not by a person.
 fn tags(text: &str) -> String {
     text.chars()
