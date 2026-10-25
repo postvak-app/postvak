@@ -4,6 +4,7 @@ use std::path::Path;
 
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
 
+use crate::config::Config;
 use crate::paths::{Paths, edit_toml};
 use crate::rules::{Rule, RuleFile, RulesError, compile, invalid, parse};
 use crate::store::Store;
@@ -39,17 +40,14 @@ fn approve(path: &Path, name: &str) -> Result<(), RulesError> {
     })
 }
 
-/// Approves `name` and restarts its clock in each account's store, so it acts only on mail that arrives from now on,
-/// even where an older clock of the rule survived.
-pub fn approve_from_now(
-    paths: &Paths,
-    accounts: &[String],
-    name: &str,
-    now: i64,
-) -> Result<(), RulesError> {
+/// Approves `name` and restarts its clock in the store of every account in config.toml, read here rather than taken
+/// from the caller, so it acts only on mail that arrives from now on, even where an older clock of the rule survived
+/// and whichever front end added the account. An unreadable config.toml refuses before the rule is enabled.
+pub fn approve_from_now(paths: &Paths, name: &str, now: i64) -> Result<(), RulesError> {
+    let config = Config::load(&paths.config_file())?;
     approve(&paths.rules_file(), name)?;
-    for account in accounts {
-        Store::open_account(paths, account)?.restart_rule_clock(name, now)?;
+    for account in &config.accounts {
+        Store::open_account(paths, &account.name)?.restart_rule_clock(name, now)?;
     }
     Ok(())
 }
@@ -364,6 +362,49 @@ mod tests {
         assert!(parse(&text).unwrap().rules.iter().all(|r| r.enabled));
         assert!(approve(&path, "codes").is_err(), "already enabled");
         assert!(approve(&path, "missing").is_err());
+    }
+
+    const TWO_ACCOUNTS: &str = "[[accounts]]\nname = \"work\"\nhost = \"imap.example.com\"\nusername = \"w@example.com\"\npassword = { keyring = true }\n\n[[accounts]]\nname = \"home\"\nhost = \"mail.home.test\"\nusername = \"h\"\naddress = \"h@home.test\"\npassword = { keyring = true }\n";
+
+    fn first_seen(paths: &Paths, account: &str, name: &str, at: i64) -> i64 {
+        Store::open_account(paths, account)
+            .unwrap()
+            .rule_first_seen(name, "definition", at)
+            .unwrap()
+    }
+
+    #[test]
+    fn approve_from_now_restarts_the_clock_of_every_account_in_config_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        std::fs::create_dir_all(&paths.config_dir).unwrap();
+        std::fs::write(paths.config_file(), TWO_ACCOUNTS).unwrap();
+        std::fs::write(paths.rules_file(), HUMAN).unwrap();
+        propose(&paths.rules_file(), proposal("codes"), "cli").unwrap();
+        // An older clock survives in both stores, as when the rule ran before and was disabled again.
+        for account in ["work", "home"] {
+            assert_eq!(first_seen(&paths, account, "codes", 1), 1);
+        }
+        approve_from_now(&paths, "codes", 500).unwrap();
+        for account in ["work", "home"] {
+            assert_eq!(first_seen(&paths, account, "codes", 900), 500, "{account}");
+        }
+        assert!(load(&paths.rules_file()).unwrap().rules[1].enabled);
+    }
+
+    #[test]
+    fn approve_from_now_with_an_unreadable_config_leaves_the_rule_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        std::fs::create_dir_all(&paths.config_dir).unwrap();
+        std::fs::write(paths.config_file(), "accounts = [").unwrap();
+        std::fs::write(paths.rules_file(), HUMAN).unwrap();
+        propose(&paths.rules_file(), proposal("codes"), "cli").unwrap();
+        assert!(matches!(
+            approve_from_now(&paths, "codes", 500),
+            Err(RulesError::Config(_))
+        ));
+        assert!(!load(&paths.rules_file()).unwrap().rules[1].enabled);
     }
 
     #[test]

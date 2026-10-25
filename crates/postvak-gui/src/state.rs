@@ -1190,15 +1190,9 @@ impl App {
             }
             UiAction::Act(action) => self.act(action),
             UiAction::ApproveRule(name) => {
-                let accounts: Vec<String> = self.accounts.iter().map(|a| a.name.clone()).collect();
                 let paths = self.paths.clone();
                 self.edit_rules(|_| {
-                    rule_file::edit::approve_from_now(
-                        &paths,
-                        &accounts,
-                        &name,
-                        postvak_core::time::now(),
-                    )
+                    rule_file::edit::approve_from_now(&paths, &name, postvak_core::time::now())
                 });
             }
             UiAction::Collapse => self.collapse(),

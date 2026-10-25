@@ -604,7 +604,7 @@ impl Backend {
     pub fn approve(&self, name: &str, bodies: bool) -> Result<Value> {
         self.ensure_rule_visible(name, true)?;
         refuse_named_body_rule(&self.paths, name, bodies)?;
-        rules::edit::approve_from_now(&self.paths, &self.all_accounts(), name, time::now())?;
+        rules::edit::approve_from_now(&self.paths, name, time::now())?;
         Ok(json!({ "rule": name, "enabled": true }))
     }
 

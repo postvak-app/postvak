@@ -1249,9 +1249,7 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             Ok(())
         }
         RulesCommand::Approve { name } => {
-            let accounts: Vec<String> =
-                config.accounts.iter().map(|acc| acc.name.clone()).collect();
-            postvak_core::rules::edit::approve_from_now(paths, &accounts, &name, time::now())?;
+            postvak_core::rules::edit::approve_from_now(paths, &name, time::now())?;
             println!(
                 "enabled '{}'; it acts on mail that arrives from now on",
                 clean(&name, false)
