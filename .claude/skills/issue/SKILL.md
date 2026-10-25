@@ -1,7 +1,7 @@
 ---
 name: issue
-description: Take a Postvak GitHub issue from open to merged. Reads the issue, asks the user what is unclear, checks whether main already changed anything related, updates or closes the issue when that is warranted, implements it, opens a PR, fixes CI and review findings, and enables auto-merge. Use when the user says "/issue 123", "pick up issue #123", "work on the next issue" or similar.
-argument-hint: "[issue number or URL; empty = suggest one]"
+description: Take a Postvak GitHub issue from open to merged. Reads the issue, asks the user what is unclear, checks whether main already changed anything related, updates or closes the issue when that is warranted, implements it, opens a PR, fixes CI and review findings, and enables auto-merge. Use when the user says "/issue 123", "pick up issue #123", "work on the next issue", "pick the best issue" or similar.
+argument-hint: "[issue number or URL; empty = pick the clearest, most valuable one]"
 ---
 
 # Work an issue end to end
@@ -15,9 +15,25 @@ The user wants to be asked when something is unclear, and wants pushback when th
 ## 1. Pick the issue
 
 - With an argument: read that issue, its comments, labels, linked PRs and sub-issues (`issue_read`).
-- Without one: list open issues (`list_issues`, newest first, a page of 10), skip ones that have an open PR, the `in progress` label or an assignee other than the user, and propose one or two with a one-line reason. Wait for the user to choose.
+- Without one: choose the issue yourself, as below, and carry on with it.
 - If the issue is a pull request, or is closed, say so and stop.
 - If it carries `in progress`, another session has claimed it. Read the claim comment and check its branch (`git ls-remote origin <branch>`, then the last commit date). Say who claimed it and when, and ask the user whether to leave it or take it over; never take it over silently.
+
+### Choosing without a number
+
+List every open issue (`list_issues`, state open, only the fields you need). Leave out:
+
+- issues with an open PR that addresses them (`search_pull_requests`), the `in progress` label, or an assignee other than the user;
+- umbrella issues that only track sub-issues;
+- issues waiting on something outside this repo (an upstream release, a person) or on another open issue ("do this after #…");
+- issues whose body says "Decision needed" when no decision is recorded in a comment or a parent issue.
+
+Rank the rest on two things:
+
+- **Clear path:** the issue names the cause and the code, proposes a fix and a regression test, and the fix stays in one or two modules. Check the cause still holds on `origin/main` (read the code it points at) before counting it.
+- **Gain:** a bug before an enhancement. Then how bad it is (data loss or a security gap, then something that stops a common action working, then wrong output, then cosmetic) and how often users hit it. If a parent issue gives an order, such as "bugs first", follow it.
+
+Pick the issue that scores best on both together; a small issue with a clear fix beats a large one with a bigger but vaguer gain. Tell the user which one you picked, why, and the next two with one line each. Then go on to claim it and to step 2 without waiting; if the user names another, release the claim and switch.
 
 ### Claim it
 
