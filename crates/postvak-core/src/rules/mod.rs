@@ -28,6 +28,8 @@ pub enum RulesError {
     Io(#[from] io::Error),
     #[error(transparent)]
     Store(#[from] crate::store::StoreError),
+    #[error(transparent)]
+    Config(#[from] crate::config::ConfigError),
 }
 
 impl From<toml_edit::TomlError> for RulesError {
