@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use crate::actions::Planned;
 use crate::config::AccountConfig;
 use crate::daemon::wire::Status;
-use crate::message::clean_for_agent;
+use crate::message::{HeaderField, clean_for_agent};
 use crate::rules::Rule;
 use crate::store::{Folder, Message};
 
@@ -32,6 +32,20 @@ pub fn depths(thread: &[Message]) -> Vec<usize> {
         .iter()
         .map(|m| (m.thread_depth() - base).min(4))
         .collect()
+}
+
+/// A message's headers: its row without body text, and every header field in order; `headers --json` and the MCP
+/// `headers` tool share it.
+pub fn headers(
+    account: &str,
+    message: &Message,
+    fields: &[HeaderField],
+) -> serde_json::Result<Value> {
+    let mut row = with_account(account, message)?;
+    if let Some(object) = row.as_object_mut() {
+        object.remove("body_text");
+    }
+    Ok(json!({ "message": row, "headers": fields }))
 }
 
 /// A rule's listing row; `account` is the rule's own scope, `null` for every account.
@@ -103,6 +117,27 @@ mod tests {
             message(3, Some("a b c d e f g")),
         ];
         assert_eq!(depths(&thread), vec![0, 1, 4]);
+    }
+
+    #[test]
+    fn headers_rows_leave_out_the_body_and_list_every_field() {
+        let message = Message {
+            uid: 4,
+            body_text: Some("secret".into()),
+            ..Default::default()
+        };
+        let fields = [HeaderField {
+            name: "List-Id".into(),
+            value: "x.github.com".into(),
+        }];
+        let row = headers("work", &message, &fields).unwrap();
+        assert_eq!(row["message"]["account"], "work");
+        assert_eq!(row["message"]["uid"], 4);
+        assert!(row["message"].get("body_text").is_none());
+        assert_eq!(
+            row["headers"],
+            serde_json::json!([{ "name": "List-Id", "value": "x.github.com" }])
+        );
     }
 
     #[test]

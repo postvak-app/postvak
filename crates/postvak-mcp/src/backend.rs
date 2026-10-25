@@ -235,6 +235,18 @@ impl Backend {
         Ok((message_row(&acc.name, &msg)?, message::body_text(&raw)))
     }
 
+    /// The message and every field of its stored header block; nothing is fetched.
+    pub fn headers(
+        &self,
+        account: Option<&str>,
+        folder: &str,
+        uid: u32,
+    ) -> Result<(String, Message, Vec<message::HeaderField>)> {
+        let (acc, _store, msg) = self.message(account, folder, uid)?;
+        let fields = message::header_fields(&msg.headers);
+        Ok((acc.name.clone(), msg, fields))
+    }
+
     /// Unsubscribes by one click where the message allows it; otherwise the row names the page or address to open.
     pub fn unsubscribe(
         &self,

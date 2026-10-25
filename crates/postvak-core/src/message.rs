@@ -1,7 +1,9 @@
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
+use mail_parser::parsers::MessageStream;
 use mail_parser::{Address, HeaderForm, HeaderValue, MessageParser, MimeHeaders};
+use serde::Serialize;
 
 use crate::mail_ops::TextPart;
 
@@ -45,6 +47,39 @@ pub fn header_text(raw_headers: &[u8], name: &str) -> Option<String> {
     let msg = MessageParser::default().parse_headers(raw_headers)?;
     let value = msg.header_as(name, HeaderForm::Text).pop()?;
     value.as_text().map(|text| text.trim().to_string())
+}
+
+/// One header as `header` rules see it: unfolded, with encoded words decoded.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct HeaderField {
+    pub name: String,
+    pub value: String,
+}
+
+/// Every header in the block, in order, repeats included; a rule matches the last copy of a repeated one.
+pub fn header_fields(raw_headers: &[u8]) -> Vec<HeaderField> {
+    let Some(msg) = MessageParser::default().parse_headers(raw_headers) else {
+        return Vec::new();
+    };
+    msg.headers()
+        .iter()
+        .map(|h| {
+            let bytes = raw_headers
+                .get(h.offset_start as usize..h.offset_end as usize)
+                .unwrap_or_default();
+            let value = match MessageStream::new(bytes).parse_unstructured() {
+                HeaderValue::Text(text) => text.trim().to_string(),
+                _ => String::new(),
+            };
+            // The name as the message spells it; mail-parser's own spells known names its way, such as `List-ID`.
+            let name = raw_headers
+                .get(h.offset_field as usize..h.offset_start as usize)
+                .and_then(|field| field.split(|&b| b == b':').next())
+                .map(|name| String::from_utf8_lossy(name).trim().to_string())
+                .unwrap_or_else(|| h.name.as_str().to_string());
+            HeaderField { name, value }
+        })
+        .collect()
 }
 
 fn synthetic_message_id(folder: &str, uid: u32) -> String {
@@ -448,6 +483,27 @@ fn invisible(c: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn header_fields_unfold_decode_and_keep_order_and_repeats() {
+        let raw = b"Received: from a\r\nReceived: from b\r\nList-Id: GitHub\r\n <x.github.com>\r\nSubject: =?UTF-8?Q?caf=C3=A9?=\r\nX-Empty:\r\n\r\n";
+        let fields: Vec<(String, String)> = header_fields(raw)
+            .into_iter()
+            .map(|f| (f.name, f.value))
+            .collect();
+        let pair = |n: &str, v: &str| (n.to_string(), v.to_string());
+        assert_eq!(
+            fields,
+            vec![
+                pair("Received", "from a"),
+                pair("Received", "from b"),
+                pair("List-Id", "GitHub <x.github.com>"),
+                pair("Subject", "café"),
+                pair("X-Empty", ""),
+            ]
+        );
+        assert!(header_fields(b"").is_empty());
+    }
 
     #[test]
     fn display_name_prefers_the_name_then_the_address() {

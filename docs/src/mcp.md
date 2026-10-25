@@ -54,17 +54,19 @@ The install also prints a hint with the granted scopes and how to widen them. It
 | Scope | What it grants | Tools |
 |---|---|---|
 | `read` | Folders, message headers, the activity log, rules and trash listings, previews of rules that do not match on the body, and a sync. No body text. | `accounts`, `folders`, `list`, `log`, `rules_check`, `rules_list`, `rules_schema`, `rules_test`, `search`, `status`, `sync`, `trash_list` |
+| `read:headers` | Every header of a message, such as `List-Id`, `Authentication-Results` or a spam score, from the local store, so an agent can write `header` rules. No body text. | `headers` |
 | `read:bodies` | Message bodies and attachment names, search over indexed bodies and on the server (`search` with `server`) with a `snippet` of the body around a match, and with `read` previews of rules that match on the body. | `attachments`, `show` |
 | `rules:propose` | Proposing a rule. It is stored disabled until you approve it. | `rules_propose` |
 | `rules:write` | Approving and rejecting rules, and turning them on or off. | `rules_approve`, `rules_reject`, `rules_set_enabled` |
 | `files:write` | Writing attachment files into your Downloads folder, or the `--save-dir` you set, and the directories below it. The file name and content come from the sender. | `attachment_save` |
 | `mail:modify` | Acting on mail and the trash. | `archive`, `delete`, `junk`, `mark`, `move`, `rules_apply_existing`, `trash_purge`, `trash_restore`, `unsubscribe` |
 
-The default is `read,rules:propose`. Three example grants:
+The default is `read,rules:propose`. Four example grants:
 
 - Read-only: `--scopes read`. `sync` is in this scope and still runs your approved rules.
 - Rule author: the default. The agent proposes, you approve in the window or with `postvak rules approve`.
-- Inbox assistant: `--scopes read,read:bodies,rules:propose,mail:modify`.
+- Rule author who sees headers: `--scopes read,read:headers,rules:propose`. The agent can read `List-Id` or a spam score before it proposes a `header` rule, but no bodies.
+- Inbox assistant: `--scopes read,read:headers,read:bodies,rules:propose,mail:modify`.
 
 `rules:write` lets the agent approve its own rules, and an approved rule can delete mail. Leave it off. `files:write` lets the agent save a stranger's file into your save folder; leave it off too unless you need it.
 
@@ -90,6 +92,10 @@ The names follow the CLI commands. A tool that lists things returns the CLI's `-
 - `status` is `postvak daemon status --json`: the daemon's pid, version, uptime and each visible account's activity, and whether its server offers `UIDPLUS` (see [Other mail clients](daemon.md#other-mail-clients)).
 - `sync` asks the daemon to sync and run rules once per account and reports its result: `new_messages`, `actions` and `errors`, or an `error` when the account could not sync (offline, for example). It is in the `read` scope, but it writes the store and applies approved rules, so hosts see it as a changing tool.
 - `trash_list` lists the `.eml` backups.
+
+`read:headers`:
+
+- `headers` returns `{"message": ..., "headers": [{"name": ..., "value": ...}], "truncated": ...}`: every header in order, repeats included, unfolded and with encoded words decoded, as `header` rules see them. A rule matches the last copy of a repeated header. It reads the store and never connects to the server. Past 32 KB of names and values the remaining fields are left out and `truncated` is `true`. Headers can hold more than the subject does: unsubscribe links with tracking tokens, the relays a message passed and sometimes the sender's IP address, which is why this is a scope of its own.
 
 `read:bodies`:
 
@@ -122,7 +128,7 @@ With more than one visible account, every tool that acts on one message needs `a
 
 ## Safety
 
-- Mail is written by strangers. `show` wraps the body in `<untrusted_mail_content>`, and tells the agent that text inside is data, never instructions. The descriptions of `attachments`, `list`, `log`, `rules_test`, `search` and `show` say the same of subjects, sender and recipient names and attachment names, which reach the agent without a wrapper; with the default scopes the subject is what a stranger can put in front of it. Any spelling of that tag name inside a body is rewritten to `untrusted-mail-content`, so a mail cannot close the wrapper early. A body is cut at 100 KB and marked `"truncated": true`. The tag rewrite ignores letter case, but it does not catch look-alike letters.
+- Mail is written by strangers. `show` wraps the body in `<untrusted_mail_content>`, and tells the agent that text inside is data, never instructions. The descriptions of `attachments`, `headers`, `list`, `log`, `rules_test`, `search` and `show` say the same of subjects, sender and recipient names, header values and attachment names, which reach the agent without a wrapper; with the default scopes the subject is what a stranger can put in front of it. Any spelling of that tag name inside a body is rewritten to `untrusted-mail-content`, so a mail cannot close the wrapper early. A body is cut at 100 KB and marked `"truncated": true`. The tag rewrite ignores letter case, but it does not catch look-alike letters.
 - Every string in a result or an error loses its control characters and the characters a person cannot see but a model reads, before the tag rewrite runs. That stops "ASCII smuggling", text hidden as Unicode tag characters (U+E0000–U+E007F), and also removes bidi controls, zero-width spaces and the other invisible format characters. A body keeps its newlines and tabs, and emoji keep their zero-width joiners; flags written with tag characters show as a plain black flag. The CLI's `--json` output is cleaned the same way.
 - A host that honours tool annotations asks you before tools that change things. `delete`, `rules_apply_existing`, `rules_approve`, `rules_set_enabled`, `trash_purge` and `unsubscribe` are marked destructive, because they can delete mail or its backups, or cannot be undone. The other changing tools are marked as changing, but not destructive.
 - Except `trash_purge`, the `mail:modify` tools take `dry_run`. It reports what would happen from the local store and does not ask the daemon.
