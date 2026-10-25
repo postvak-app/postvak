@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -12,7 +13,7 @@ use crate::actions::{self, ActionError};
 use crate::config::{AccountConfig, ConfigError, Identity};
 use crate::credentials::{self, CredentialError};
 use crate::mail_ops::imap::ImapOps;
-use crate::mail_ops::{Envelope, IdleOutcome, MailError, MailOps, RemoteFolder};
+use crate::mail_ops::{Envelope, IdleOutcome, MailError, MailOps, RemoteFolder, StatusInfo};
 use crate::message::{clean, parse_headers, thread_id};
 use crate::paths::Paths;
 use crate::rules::apply::{ApplyError, apply, ensure_body_text, plan_for};
@@ -415,11 +416,15 @@ pub fn sync_folder_with(
         FlagFetch::All => ops.fetch_flags(last_uid, None)?,
         FlagFetch::ChangedSince(modseq) => ops.fetch_flags(last_uid, Some(modseq))?,
     };
-    let uids: Vec<u32> = ops
-        .search_uids(last_uid + 1)?
-        .into_iter()
-        .filter(|&uid| uid > last_uid)
-        .collect();
+    // Every uid is below UIDNEXT, so one no higher than last_uid + 1 means nothing new.
+    let uids: Vec<u32> = if info.uidnext.is_some_and(|next| next <= last_uid + 1) {
+        Vec::new()
+    } else {
+        ops.search_uids(last_uid + 1)?
+            .into_iter()
+            .filter(|&uid| uid > last_uid)
+            .collect()
+    };
     // Without an expunge, the server holds exactly the stored messages plus the new ones.
     let present: Option<Vec<u32>> = if flag_fetch == FlagFetch::All {
         Some(updates.iter().map(|u| u.uid).collect())
@@ -443,6 +448,8 @@ pub fn sync_folder_with(
             store.reset_folder(&folder.name, info.uidvalidity)?;
         }
         store.upsert_folder(&row(last_uid))?;
+        // Unknown until this sync completes, so a pass cut short never looks unchanged to the next.
+        store.set_uid_next(&folder.name, 0)?;
         if starts_tracking {
             store.set_initial_uid_next(&folder.name, uids.last().map_or(0, |uid| uid + 1))?;
             store.set_rules_uid(&folder.name, 0)?;
@@ -464,6 +471,7 @@ pub fn sync_folder_with(
     let total = uids.len();
     let mut done = 0;
     let mut new = 0;
+    let mut complete = true;
     for chunk in uids.chunks(chunk_size()) {
         let progress = Activity::FetchingHeaders {
             folder: folder.name.clone(),
@@ -480,6 +488,7 @@ pub fn sync_folder_with(
                     info.uidvalidity,
                     uidvalidity
                 );
+                complete = false;
                 break;
             }
         }
@@ -493,6 +502,9 @@ pub fn sync_folder_with(
             store.upsert_folder(&row(last))
         })?;
         done += chunk.len();
+    }
+    if complete {
+        store.set_uid_next(&folder.name, info.uidnext.unwrap_or(0))?;
     }
     if total > 0 {
         checkpoint(
@@ -587,7 +599,17 @@ pub fn sync_all_with(
     checkpoint: &mut Checkpoint<'_>,
 ) -> Result<(usize, Vec<String>), SyncError> {
     checkpoint(ops, Activity::ListingFolders)?;
-    let mut folders = ops.list_folders()?;
+    let selected_at_list = ops.selected().map(str::to_string);
+    let mut statuses = HashMap::new();
+    let mut folders = Vec::new();
+    for (folder, status) in ops.list_folders_status()? {
+        if let Some(status) = status
+            && selected_at_list.as_deref() != Some(folder.name.as_str())
+        {
+            statuses.insert(folder.name.clone(), status);
+        }
+        folders.push(folder);
+    }
     // Gmail's All Mail, Starred and Important hold copies of messages in other folders; syncing them doubles the traffic.
     folders.retain(|f| {
         !matches!(
@@ -608,7 +630,12 @@ pub fn sync_all_with(
             of,
         };
         checkpoint(ops, syncing)?;
-        match sync_folder_with(ops, store, folder, checkpoint) {
+        let synced = match unchanged(ops, store, folder, statuses.remove(&folder.name)) {
+            Ok(true) => Ok(0),
+            Ok(false) => sync_folder_with(ops, store, folder, checkpoint),
+            Err(e) => Err(e),
+        };
+        match synced {
             Ok(found) => new += found,
             Err(e) if matches!(e, SyncError::Stopped) || is_lost_connection(&e) => return Err(e),
             Err(e) => errors.push(format!("{}: {e}; skipped this pass", folder.name)),
@@ -616,6 +643,58 @@ pub fn sync_all_with(
     }
     forget_unlisted_folders(store, &folders)?;
     Ok((new, errors))
+}
+
+/// Whether `folder` is as its last complete sync left it, by `listed` (its status from LIST-STATUS) or else a STATUS,
+/// so the pass can skip its SELECT. INBOX, which IDLE watches, always syncs, and so does the selected folder, since
+/// RFC 3501 6.3.10 forbids STATUS as a new-mail check there. Without CONDSTORE the full flag fetch, when due, needs the
+/// SELECT too. A server refusing the STATUS gets the SELECT instead.
+fn unchanged(
+    ops: &mut dyn MailOps,
+    store: &Store,
+    folder: &RemoteFolder,
+    listed: Option<StatusInfo>,
+) -> Result<bool, SyncError> {
+    if folder.name.eq_ignore_ascii_case("INBOX") || ops.selected() == Some(folder.name.as_str()) {
+        return Ok(false);
+    }
+    let Some(stored) = store.folder(&folder.name)? else {
+        return Ok(false);
+    };
+    let uid_next = store.uid_next(&folder.name)?;
+    // uidvalidity 0 is a rule move's placeholder, uid_next 0 a folder whose last sync did not complete.
+    if stored.uidvalidity == 0 || uid_next == 0 {
+        return Ok(false);
+    }
+    let status = match listed {
+        Some(status) => status,
+        None => match ops.status(&folder.name) {
+            Ok(status) => status,
+            Err(e) if is_connection_error(&e) => return Err(e.into()),
+            Err(e) => {
+                log::debug!("{}: STATUS failed, selecting it instead: {e}", folder.name);
+                return Ok(false);
+            }
+        },
+    };
+    let same = status.uidvalidity == stored.uidvalidity
+        && status.uidnext == uid_next
+        && status.messages == store.message_count(&folder.name)?
+        && flag_fetch(
+            store.flags_synced(&folder.name)?,
+            status.highest_modseq,
+            now(),
+        ) == FlagFetch::None;
+    let listing_changed = stored.special_use != folder.special_use
+        || (folder.delimiter.is_some() && stored.delimiter != folder.delimiter);
+    if same && listing_changed {
+        store.upsert_folder(&Folder {
+            special_use: folder.special_use.clone(),
+            delimiter: folder.delimiter.clone(),
+            ..stored
+        })?;
+    }
+    Ok(same)
 }
 
 /// Drops store folders this pass did not sync, with their messages; rule-move placeholders wait for the server to list them.
