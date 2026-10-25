@@ -4,6 +4,7 @@ use std::io;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 /// The Wayland app id and X11 WM class; the Linux desktop entry and icons are named after it, so the compositor and the
@@ -183,7 +184,7 @@ where
 }
 
 /// An exclusive lock on the private file `name` beside `path`, held until the file drops.
-fn lock_beside(path: &Path, name: &str) -> io::Result<File> {
+pub(crate) fn lock_beside(path: &Path, name: &str) -> io::Result<File> {
     let dir = path
         .parent()
         .ok_or_else(|| io::Error::other("path has no parent"))?;
@@ -301,10 +302,13 @@ fn write_file_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let dir = path
         .parent()
         .ok_or_else(|| io::Error::other("path has no parent"))?;
+    // The counter keeps two threads of one process off each other's temporary file.
+    static NEXT: AtomicU64 = AtomicU64::new(0);
     let tmp = dir.join(format!(
-        ".{}.{}.tmp",
+        ".{}.{}.{}.tmp",
         path.file_name().and_then(|n| n.to_str()).unwrap_or("file"),
-        std::process::id()
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     let mut file = fs::File::create(&tmp)?;
     file.set_permissions(fs::Permissions::from_mode(0o600))?;
@@ -444,6 +448,29 @@ mod tests {
         assert_eq!(fs::read(&file).unwrap(), b"two");
         let leftovers: Vec<_> = fs::read_dir(root.path()).unwrap().collect();
         assert_eq!(leftovers.len(), 1);
+    }
+
+    #[test]
+    fn write_atomic_from_threads_at_once_leaves_one_whole_file() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("a.txt");
+        let contents: Vec<Vec<u8>> = (0..8u8).map(|i| vec![b'a' + i; 64 * 1024]).collect();
+        std::thread::scope(|scope| {
+            for content in &contents {
+                let file = &file;
+                scope.spawn(move || {
+                    for _ in 0..20 {
+                        write_atomic(file, content).unwrap();
+                    }
+                });
+            }
+        });
+        assert!(contents.contains(&fs::read(&file).unwrap()));
+        assert_eq!(
+            fs::read_dir(root.path()).unwrap().count(),
+            1,
+            "no temporary file left"
+        );
     }
 
     #[test]
