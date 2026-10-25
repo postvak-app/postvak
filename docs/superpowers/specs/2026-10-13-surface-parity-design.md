@@ -38,7 +38,7 @@ pub fn add(config: &mut Config, paths: &Paths, account: AccountConfig, secret: O
 
 - Validates the account through `Config::validate` after replacing any account of the same name.
 - With `PasswordSource::Keyring` a `secret` is required and is stored through `credentials::store` before config is saved, so the daemon never reads a half-added account. With `PasswordSource::Command` no secret is taken; the command is not run here.
-- Saves config through `Config::save`.
+- Saves config through `config::save_account`, which locks `.config.lock`, reads config.toml again and merges only this account into it, so an account or setting another front end saved since `config` was loaded stays; `config` then becomes what the file holds.
 - `AddError` wraps `ConfigError` and `CredentialError`, and names a missing secret.
 
 The CLI wizard keeps only its prompts and calls `add`, then `sync_account` for the new account, which already prints the daemon's errors.

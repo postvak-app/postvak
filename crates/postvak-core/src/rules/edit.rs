@@ -1,13 +1,10 @@
 //! The only code that writes rules.toml: proposals, approvals, rejections, and rules saved or removed by the window.
 //! Each edit is validated as a whole file before it replaces the old one.
-use std::fs::{File, OpenOptions};
-use std::io;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
 
-use crate::paths::{Paths, create_private_dir, read_or_empty, write_atomic};
+use crate::paths::{Paths, edit_toml};
 use crate::rules::{Rule, RuleFile, RulesError, compile, invalid, parse};
 use crate::store::Store;
 
@@ -85,11 +82,10 @@ pub fn reject(path: &Path, name: &str) -> Result<(), RulesError> {
 pub fn save_rule(path: &Path, replacing: Option<&str>, rule: &Rule) -> Result<(), RulesError> {
     let new = rule_table(rule)?;
     let Some(name) = replacing else {
-        let _lock = lock(path)?;
-        let text = read_or_empty(path)?;
-        let mut doc = parse_doc(&text)?;
-        append(&mut doc, new, !text.trim().is_empty())?;
-        return save(path, &doc.to_string());
+        return edit_file(path, |doc| {
+            let after_text = !doc.to_string().trim().is_empty();
+            append(doc, new, after_text)
+        });
     };
     edit(path, name, |rules, index| {
         let old = rules
@@ -258,48 +254,39 @@ fn edit(
     name: &str,
     change: impl FnOnce(&mut ArrayOfTables, usize) -> Result<Option<String>, RulesError>,
 ) -> Result<(), RulesError> {
-    let _lock = lock(path)?;
-    let mut doc = parse_doc(&read_or_empty(path)?)?;
-    let rules = doc
-        .get_mut("rules")
-        .and_then(|item| item.as_array_of_tables_mut())
-        .ok_or_else(|| invalid(name, "no such rule"))?;
-    let index = rules
-        .iter()
-        .position(|t| t.get("name").and_then(|v| v.as_str()) == Some(name))
-        .ok_or_else(|| invalid(name, "no such rule"))?;
-    if let Some(orphaned) = change(rules, index)? {
-        let trailing = format!("{orphaned}{}", doc.trailing().as_str().unwrap_or(""));
-        doc.set_trailing(trailing);
-    }
-    save(path, &doc.to_string())
+    edit_file(path, |doc| {
+        let rules = doc
+            .get_mut("rules")
+            .and_then(|item| item.as_array_of_tables_mut())
+            .ok_or_else(|| invalid(name, "no such rule"))?;
+        let index = rules
+            .iter()
+            .position(|t| t.get("name").and_then(|v| v.as_str()) == Some(name))
+            .ok_or_else(|| invalid(name, "no such rule"))?;
+        if let Some(orphaned) = change(rules, index)? {
+            let trailing = format!("{orphaned}{}", doc.trailing().as_str().unwrap_or(""));
+            doc.set_trailing(trailing);
+        }
+        Ok(())
+    })
 }
 
-/// An exclusive lock on `.rules.lock` beside rules.toml, held until dropped, so concurrent edits cannot lose each other's.
-fn lock(path: &Path) -> Result<File, RulesError> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| io::Error::other("path has no parent"))?;
-    create_private_dir(dir)?;
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(dir.join(".rules.lock"))?;
-    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    file.lock()?;
-    Ok(file)
+/// Edits rules.toml under `.rules.lock`, so concurrent edits cannot lose each other's; the edited file must validate
+/// as a whole, or nothing is written.
+fn edit_file(
+    path: &Path,
+    change: impl FnOnce(&mut DocumentMut) -> Result<(), RulesError>,
+) -> Result<(), RulesError> {
+    edit_toml(path, ".rules.lock", |doc| {
+        change(doc)?;
+        compile(&parse(&doc.to_string())?)?;
+        Ok(())
+    })
 }
 
 fn parse_doc(text: &str) -> Result<DocumentMut, RulesError> {
     text.parse()
         .map_err(|e: toml_edit::TomlError| RulesError::Parse(e.to_string()))
-}
-
-fn save(path: &Path, text: &str) -> Result<(), RulesError> {
-    compile(&parse(text)?)?;
-    write_atomic(path, text.as_bytes())?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -460,17 +447,6 @@ mod tests {
             text.contains("enabled = true # waiting for review\n"),
             "{text}"
         );
-    }
-
-    #[test]
-    fn lock_file_is_private() {
-        let (_dir, path) = rules_file("");
-        let lock_path = path.parent().unwrap().join(".rules.lock");
-        std::fs::write(&lock_path, "").unwrap();
-        std::fs::set_permissions(&lock_path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        drop(lock(&path).unwrap());
-        let mode = std::fs::metadata(&lock_path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
     }
 
     #[test]

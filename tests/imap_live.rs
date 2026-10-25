@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use postvak_core::config::{AccountConfig, Config, PasswordSource};
+use postvak_core::config::{self, AccountConfig, Config, PasswordSource};
 use postvak_core::credentials::Secret;
 use postvak_core::engine::{Engine, imap_connector};
 use postvak_core::mail_ops::imap::ImapOps;
@@ -426,12 +426,7 @@ fn postvak(home: &Path, args: &[&str]) -> std::process::Output {
 fn home_with(account: &AccountConfig, rules: &str) -> tempfile::TempDir {
     let home = tempfile::tempdir().unwrap();
     let paths = Paths::under(home.path());
-    Config {
-        accounts: vec![account.clone()],
-        ..Default::default()
-    }
-    .save(&paths.config_file())
-    .unwrap();
+    config::save_account(&paths.config_file(), account).unwrap();
     if !rules.is_empty() {
         std::fs::write(paths.rules_file(), rules).unwrap();
     }
