@@ -37,11 +37,31 @@ pub struct Envelope {
     pub headers: Vec<u8>,
 }
 
-/// A message's shape, as far as the indexer needs it: where its text is and what its attachments are called.
+/// A message's shape, as far as the indexer and the reader need it: where its text is, what its attachments are
+/// called, and where they are.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Structure {
     pub text_parts: Vec<TextPart>,
+    /// Every named part that is not body text, also inside an enclosed message, for the search index.
     pub attachment_names: Vec<String>,
+    /// The parts `message::attachments` lists, in its order: every part outside an enclosed message that is not body
+    /// text, with an enclosed message as one.
+    pub attachments: Vec<PartRef>,
+}
+
+/// One part that is not body text, as the reader lists it before the whole message is here.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PartRef {
+    /// The IMAP section, as `TextPart::section`.
+    pub section: String,
+    /// "type/subtype", lowercase.
+    pub content_type: String,
+    pub name: Option<String>,
+    /// The Content-ID without its angle brackets, which an HTML part names as `cid:`.
+    pub content_id: Option<String>,
+    /// As `TextPart::transfer_encoding`.
+    pub transfer_encoding: Option<String>,
+    pub octets: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -55,6 +75,8 @@ pub struct TextPart {
     pub octets: u32,
     /// The `multipart/alternative` this part belongs to, numbered per message, so the caller keeps one part of each.
     pub alternative: Option<usize>,
+    /// Inside an enclosed message, which the reader lists as an attachment rather than showing as the body.
+    pub nested: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -498,7 +520,7 @@ mod recording {
                                 octets: body_after_headers(raw).len() as u32,
                                 ..TextPart::default()
                             }],
-                            attachment_names: Vec::new(),
+                            ..Structure::default()
                         },
                     );
                 }

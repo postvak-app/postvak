@@ -22,7 +22,7 @@ use crate::store::{Folder, Message, Store, StoreError};
 use crate::time::{clock, now};
 use crate::trash::{RestoreError, Trash};
 
-mod index;
+pub(crate) mod index;
 
 pub use index::IndexOutcome;
 
@@ -72,6 +72,13 @@ pub enum Event {
         folder: String,
         uid: u32,
         request: RequestId,
+    },
+    /// What a reader shows of a large message while the rest of it downloads; `BodyReady` follows once it is stored.
+    BodyPreview {
+        account: String,
+        folder: String,
+        uid: u32,
+        preview: Box<actions::Preview>,
     },
     CommandFailed {
         account: String,
@@ -140,6 +147,7 @@ impl Event {
             | Event::ServerSearchDone { request, .. } => vec![*request],
             Event::Synced { requests, .. } => requests.clone(),
             Event::Activity { .. }
+            | Event::BodyPreview { .. }
             | Event::Connected { .. }
             | Event::Error { .. }
             | Event::Indexed { .. }
@@ -294,6 +302,9 @@ pub enum Command {
     FetchBody {
         folder: String,
         uid: u32,
+        /// Sends a large message's `BodyPreview` before fetching the whole of it, for a reader.
+        #[serde(default)]
+        preview: bool,
     },
     Restore {
         file: PathBuf,
@@ -1055,10 +1066,23 @@ fn run_command(
                     .collect(),
             })
         }
-        Command::FetchBody { folder, uid } => {
+        Command::FetchBody {
+            folder,
+            uid,
+            preview,
+        } => {
             run.used_connection = true;
             context = format!("{folder}/{uid}: ");
-            actions::fetch_body(ops, store, &folder, uid)
+            let mut show = |preview| {
+                let _ = events.send(Event::BodyPreview {
+                    account: name(),
+                    folder: folder.clone(),
+                    uid,
+                    preview: Box::new(preview),
+                });
+            };
+            let show: Option<&mut dyn FnMut(actions::Preview)> = preview.then_some(&mut show);
+            actions::fetch_body(ops, store, &folder, uid, show)
                 .map(|()| Event::BodyReady {
                     account: name(),
                     folder,
@@ -1152,7 +1176,7 @@ fn is_lost_connection(e: &SyncError) -> bool {
     }
 }
 
-fn connection_lost(e: &ActionError) -> bool {
+pub(crate) fn connection_lost(e: &ActionError) -> bool {
     match e {
         ActionError::Mail(e) | ActionError::Apply(ApplyError::Mail(e)) => is_connection_error(e),
         _ => false,

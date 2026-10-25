@@ -1,6 +1,6 @@
 use super::*;
 use crate::config::PasswordSource;
-use crate::mail_ops::{RecordingOps, Structure, TextPart};
+use crate::mail_ops::{PartRef, RecordingOps, Structure, TextPart};
 use crate::rules::{compile, parse};
 
 const H: i64 = 3600;
@@ -2571,6 +2571,7 @@ fn fetch_body_stores_the_body_and_reports_it() {
         vec![Command::FetchBody {
             folder: "INBOX".into(),
             uid: 1,
+            preview: false,
         }],
     );
     assert!(run.unwrap().used_connection);
@@ -2581,6 +2582,261 @@ fn fetch_body_stores_the_body_and_reports_it() {
         uid: 1,
         request: 1
     }));
+}
+
+/// INBOX uid 3: a 300 KB message of a plain and an HTML alternative, the HTML with a `cid:` logo, and a PDF.
+fn large_message() -> (RecordingOps, Store, tempfile::TempDir) {
+    let mut ops = ops_with_inbox();
+    let pdf = "A".repeat(300 * 1024);
+    let raw = format!(
+        "From: bob@x\r\nSubject: scan\r\nContent-Type: multipart/mixed; boundary=m\r\n\r\n--m\r\n\
+         Content-Type: text/plain\r\n\r\nthe two lines\r\n--m\r\nContent-Type: application/pdf\r\n\
+         Content-Transfer-Encoding: base64\r\n\r\n{pdf}\r\n--m--\r\n"
+    );
+    ops.add_mail(
+        "INBOX",
+        3,
+        12 * H,
+        &headers("bob@x", "scan", "m3@x"),
+        Some(&raw),
+    );
+    let text = |section: &str, html: bool| TextPart {
+        section: section.into(),
+        html,
+        alternative: Some(1),
+        ..TextPart::default()
+    };
+    let part = |section: &str, content_type: &str, content_id: Option<&str>| PartRef {
+        section: section.into(),
+        content_type: content_type.into(),
+        content_id: content_id.map(str::to_string),
+        transfer_encoding: Some("base64".into()),
+        octets: 400,
+        ..PartRef::default()
+    };
+    ops.structures.insert(
+        ("INBOX".into(), 3),
+        Structure {
+            text_parts: vec![text("1.1", false), text("1.2.1", true)],
+            attachment_names: vec!["scan.pdf".into()],
+            attachments: vec![
+                part("1.2.2", "image/png", Some("logo@x")),
+                PartRef {
+                    name: Some("scan.pdf".into()),
+                    ..part("2", "application/pdf", None)
+                },
+            ],
+        },
+    );
+    for (section, bytes) in [
+        ("1.1", "the two lines"),
+        ("1.2.1", "<p>the two lines</p><img src=\"cid:logo@x\">"),
+        ("1.2.2", "UE5H"),
+    ] {
+        ops.parts.insert(
+            ("INBOX".into(), 3, section.into()),
+            bytes.as_bytes().to_vec(),
+        );
+    }
+    let store = Store::open_in_memory().unwrap();
+    sync_all(&mut ops, &store).unwrap();
+    ops.calls.clear();
+    (ops, store, tempfile::tempdir().unwrap())
+}
+
+fn fetch_with_preview(uid: u32) -> Command {
+    Command::FetchBody {
+        folder: "INBOX".into(),
+        uid,
+        preview: true,
+    }
+}
+
+#[test]
+fn a_large_message_shows_its_text_and_html_before_the_whole_of_it() {
+    let (mut ops, store, dir) = large_message();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let (run, events) = drain(&mut ops, &store, &trash, vec![fetch_with_preview(3)]);
+    run.unwrap();
+    let fetches: Vec<&str> = ops
+        .calls
+        .iter()
+        .filter(|c| c.starts_with("fetch_"))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        fetches,
+        [
+            "fetch_structures INBOX 3",
+            "fetch_part INBOX 3 1.1",
+            "fetch_part INBOX 3 1.2.1",
+            "fetch_part INBOX 3 1.2.2",
+            "fetch_raw INBOX 3",
+        ],
+        "the PDF is not fetched on its own"
+    );
+    let shown = events
+        .iter()
+        .position(|e| matches!(e, Event::BodyPreview { uid: 3, .. }))
+        .expect("a preview");
+    let ready = events
+        .iter()
+        .position(|e| matches!(e, Event::BodyReady { uid: 3, .. }))
+        .expect("the whole message");
+    assert!(shown < ready, "{events:?}");
+    let Event::BodyPreview { preview, .. } = &events[shown] else {
+        panic!("not a preview");
+    };
+    let html = preview.html.as_ref().expect("its HTML");
+    assert!(
+        html.html.contains("<img src=\"cid:logo@x\">"),
+        "{}",
+        html.html
+    );
+    assert_eq!(html.inline.len(), 1);
+    assert_eq!(
+        (html.inline[0].cid.as_str(), html.inline[0].bytes.as_slice()),
+        ("logo@x", &b"PNG"[..])
+    );
+    let names: Vec<_> = preview
+        .attachments
+        .iter()
+        .map(|a| (a.index, a.name.as_deref(), a.content_type.as_str(), a.size))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            (1, None, "image/png", 300),
+            (2, Some("scan.pdf"), "application/pdf", 300)
+        ]
+    );
+    assert!(store.raw("INBOX", 3).unwrap().is_some());
+}
+
+#[test]
+fn a_preview_stores_the_text_as_the_indexer_would() {
+    let (mut ops, store, dir) = large_message();
+    let trash = Trash::new(dir.path().to_path_buf());
+    // The whole message never comes, so the store keeps what the preview put there.
+    ops.raw.remove(&("INBOX".to_string(), 3));
+    let (_, events) = drain(&mut ops, &store, &trash, vec![fetch_with_preview(3)]);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::BodyPreview { .. }))
+    );
+    let msg = store.message("INBOX", 3).unwrap().unwrap();
+    assert_eq!(msg.body_text.as_deref(), Some("the two lines"));
+    assert_eq!(msg.attachment_names.as_deref(), Some("scan.pdf"));
+    assert!(store.raw("INBOX", 3).unwrap().is_none());
+}
+
+#[test]
+fn an_indexed_message_fetches_only_its_html_for_the_preview() {
+    let (mut ops, store, dir) = large_message();
+    let trash = Trash::new(dir.path().to_path_buf());
+    store
+        .set_indexed("INBOX", 3, Some("indexed text"), &[], 0)
+        .unwrap();
+    let (_, events) = drain(&mut ops, &store, &trash, vec![fetch_with_preview(3)]);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::BodyPreview { .. }))
+    );
+    let parts: Vec<&str> = ops
+        .calls
+        .iter()
+        .filter(|c| c.starts_with("fetch_part"))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        parts,
+        ["fetch_part INBOX 3 1.2.1", "fetch_part INBOX 3 1.2.2"]
+    );
+}
+
+#[test]
+fn a_small_message_or_one_fetched_without_preview_comes_whole() {
+    let (mut ops, store, dir) = large_message();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let commands = vec![
+        fetch_with_preview(1),
+        Command::FetchBody {
+            folder: "INBOX".into(),
+            uid: 3,
+            preview: false,
+        },
+    ];
+    let (run, events) = drain(&mut ops, &store, &trash, commands);
+    run.unwrap();
+    let fetches: Vec<&str> = ops
+        .calls
+        .iter()
+        .filter(|c| c.starts_with("fetch_"))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(fetches, ["fetch_raw INBOX 1", "fetch_raw INBOX 3"]);
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, Event::BodyPreview { .. }))
+    );
+}
+
+#[test]
+fn a_stored_message_is_not_previewed_again() {
+    let (mut ops, store, dir) = large_message();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let fetches = vec![fetch_with_preview(3), fetch_with_preview(3)];
+    let (_, events) = drain(&mut ops, &store, &trash, fetches);
+    let previews = events
+        .iter()
+        .filter(|e| matches!(e, Event::BodyPreview { .. }))
+        .count();
+    assert_eq!(previews, 1);
+    assert_eq!(
+        ops.calls
+            .iter()
+            .filter(|c| c.starts_with("fetch_raw"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_preview_whose_part_fetch_fails_falls_back_to_the_whole_message() {
+    let (mut ops, store, dir) = large_message();
+    let trash = Trash::new(dir.path().to_path_buf());
+    ops.unreadable = Some(("INBOX".into(), 3));
+    let (run, events) = drain(&mut ops, &store, &trash, vec![fetch_with_preview(3)]);
+    run.unwrap();
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, Event::BodyPreview { .. }))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::BodyReady { uid: 3, .. }))
+    );
+    assert!(store.raw("INBOX", 3).unwrap().is_some());
+}
+
+#[test]
+fn a_lost_connection_during_a_preview_ends_the_drain() {
+    let (mut ops, store, dir) = large_message();
+    let trash = Trash::new(dir.path().to_path_buf());
+    ops.fail_next = Some(MailError::Io("reset".into()));
+    let (run, events) = drain(&mut ops, &store, &trash, vec![fetch_with_preview(3)]);
+    assert!(matches!(run, Err(SyncError::Action(ref e)) if e.to_string().contains("reset")));
+    assert!(!ops.calls.iter().any(|c| c.starts_with("fetch_raw")));
+    assert!(
+        events.iter().any(|e| matches!(e,
+            Event::CommandFailed { request: 1, message, .. } if message.contains("reset"))),
+        "{events:?}"
+    );
 }
 
 #[test]
@@ -2658,6 +2914,7 @@ fn a_lost_connection_during_apply_reports_then_ends_the_drain() {
     let next = Command::FetchBody {
         folder: "INBOX".into(),
         uid: 2,
+        preview: false,
     };
     let (run, events) = drain(&mut ops, &store, &trash, vec![apply, next]);
     assert!(matches!(run, Err(SyncError::Action(ref e)) if e.to_string().contains("reset")));
@@ -2678,6 +2935,7 @@ fn a_lost_connection_during_fetch_body_ends_the_drain() {
     let fetch = Command::FetchBody {
         folder: "INBOX".into(),
         uid: 1,
+        preview: false,
     };
     let (run, events) = drain(&mut ops, &store, &trash, vec![fetch]);
     assert!(matches!(run, Err(SyncError::Action(ref e)) if e.to_string().contains("reset")));
@@ -2723,10 +2981,12 @@ fn a_protocol_error_is_reported_and_the_next_command_runs() {
         Command::FetchBody {
             folder: "INBOX".into(),
             uid: 1,
+            preview: false,
         },
         Command::FetchBody {
             folder: "INBOX".into(),
             uid: 2,
+            preview: false,
         },
     ];
     let (run, events) = drain(&mut ops, &store, &trash, commands);
@@ -2750,10 +3010,12 @@ fn a_command_for_a_vanished_message_reports_and_the_next_runs() {
         Command::FetchBody {
             folder: "INBOX".into(),
             uid: 1,
+            preview: false,
         },
         Command::FetchBody {
             folder: "INBOX".into(),
             uid: 2,
+            preview: false,
         },
     ];
     let (run, events) = drain(&mut ops, &store, &trash, commands);
@@ -2861,6 +3123,7 @@ fn queued_jobs_fail_when_the_account_goes_offline() {
     let fetch = Command::FetchBody {
         folder: "INBOX".into(),
         uid: 1,
+        preview: false,
     };
     commands_tx
         .send(Job {
@@ -3162,6 +3425,7 @@ fn a_lost_connection_later_in_a_drain_still_fails_the_sync_now_drained_before_it
     let fetch = Command::FetchBody {
         folder: "INBOX".into(),
         uid: 1,
+        preview: false,
     };
     let fetch = Job {
         request: 8,
@@ -3563,6 +3827,7 @@ fn a_structure_without_text_indexes_headers_and_names_and_html_waits_for_plain()
         Structure {
             text_parts: Vec::new(),
             attachment_names: vec!["a.pdf".into()],
+            attachments: Vec::new(),
         },
     );
     let part = |section: &str, html: bool| TextPart {
@@ -3576,6 +3841,7 @@ fn a_structure_without_text_indexes_headers_and_names_and_html_waits_for_plain()
         Structure {
             text_parts: vec![part("1", true), part("2", false)],
             attachment_names: Vec::new(),
+            attachments: Vec::new(),
         },
     );
     ops.parts

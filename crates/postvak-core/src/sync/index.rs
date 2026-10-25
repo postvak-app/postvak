@@ -241,7 +241,7 @@ fn index_one(
 
 /// The parts worth fetching: every text part outside a `multipart/alternative`, and of each alternative its first
 /// plain part, else its first HTML part, so the HTML is not downloaded when the plain text exists.
-fn wanted_parts(structure: &Structure) -> Vec<&TextPart> {
+pub(crate) fn wanted_parts(structure: &Structure) -> Vec<&TextPart> {
     let mut wanted: Vec<&TextPart> = Vec::new();
     for part in &structure.text_parts {
         let Some(group) = part.alternative else {

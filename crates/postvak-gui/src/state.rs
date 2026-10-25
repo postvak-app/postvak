@@ -7,6 +7,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::time::Duration;
 
 use crate::update;
+use postvak_core::actions::Preview;
 use postvak_core::bimi::Brand;
 use postvak_core::config::{self, AccountConfig, Config, Identity, Theme};
 use postvak_core::credentials::Secret;
@@ -68,6 +69,10 @@ pub(crate) const LIST_BUDGET: Duration = Duration::from_millis(2);
 /// How long a frame waits for the opened message to be read: half a 60 Hz frame. Most mail comes in time and opens in
 /// the same frame; a large message shows "Loading…" until it comes, rather than freezing the window.
 pub(crate) const BODY_BUDGET: Duration = Duration::from_millis(8);
+
+/// Previews kept for messages still downloading: the shown one and its neighbours, with room to spare. Their HTML and
+/// images can be megabytes, and one whose download failed is not stored, so the oldest go.
+const MAX_PREVIEWS: usize = 4;
 
 /// A daemon client, its event subscription, and each account's state and activity when it connected.
 pub(crate) type Connection = (Client, Receiver<Event>, Vec<AccountStatus>);
@@ -132,6 +137,8 @@ pub(crate) struct BodyState {
     /// become read.
     pub armed: bool,
     pub attachments: Vec<Attachment>,
+    /// The attachments are listed from the message's structure and cannot be saved until the whole message is here.
+    pub attachments_pending: bool,
     /// The message's HTML, when it has some.
     pub html: Option<HtmlBody>,
     /// The HTML view, once the panel asked for a layout; `None` while the text view shows.
@@ -164,6 +171,7 @@ impl BodyState {
             brand: None,
             armed,
             attachments: Vec::new(),
+            attachments_pending: false,
             text_note: None,
             html: None,
             html_view: None,
@@ -590,6 +598,8 @@ pub struct App {
     /// The result of the reconnect attempt in flight; at most one runs.
     pub(crate) reconnecting: Option<Receiver<anyhow::Result<Connection>>>,
     pub(crate) requested: HashSet<(usize, RowKey)>,
+    /// What large messages show while the rest of them downloads, newest last, until each is stored.
+    pub(crate) previews: Vec<((usize, RowKey), Preview)>,
     pub(crate) rules: RulesState,
     pub(crate) rules_watch: FileWatch,
     /// The folder holding rules.toml, whose entries change when a file sync leaves a conflicting copy there.
@@ -740,6 +750,7 @@ impl App {
             body_generation: 0,
             reconnecting: None,
             requested: HashSet::new(),
+            previews: Vec::new(),
             rules,
             rules_watch: FileWatch::new(rules_path),
             config_dir_watch: FileWatch::new(rules_dir),
@@ -979,6 +990,7 @@ impl App {
         let name = match &event {
             Event::Activity { account, .. }
             | Event::ActionDone { account, .. }
+            | Event::BodyPreview { account, .. }
             | Event::BodyReady { account, .. }
             | Event::CommandFailed { account, .. }
             | Event::Connected { account, .. }
@@ -1117,7 +1129,25 @@ impl App {
                 }
                 self.refresh(index);
             }
-            Event::BodyReady { folder, uid, .. } => self.reload_body(index, (folder, uid), now),
+            Event::BodyPreview {
+                folder,
+                uid,
+                preview,
+                ..
+            } => {
+                let key = (index, (folder, uid));
+                self.previews.retain(|(held, _)| *held != key);
+                if self.previews.len() >= MAX_PREVIEWS {
+                    self.previews.remove(0);
+                }
+                self.previews.push((key.clone(), *preview));
+                self.reload_body(key.0, key.1, now);
+            }
+            Event::BodyReady { folder, uid, .. } => {
+                let key = (index, (folder, uid));
+                self.previews.retain(|(held, _)| *held != key);
+                self.reload_body(key.0, key.1, now);
+            }
             Event::Restored { folder, .. } => {
                 let line = format!(
                     "{}: restored to {}",
@@ -1941,10 +1971,22 @@ impl App {
         body.reading = None;
         let Read {
             message,
-            attachments,
-            html,
+            mut attachments,
+            mut html,
             has_raw,
         } = read;
+        let preview = (message.is_some() && !has_raw)
+            .then(|| {
+                self.previews
+                    .iter()
+                    .find(|(key, _)| key.0 == body.account && key.1 == body.key)
+            })
+            .flatten();
+        body.attachments_pending = preview.is_some();
+        if let Some((_, preview)) = preview {
+            attachments = preview.attachments.clone();
+            html = preview.html.clone();
+        }
         let text = body_text(message.as_ref());
         if body.text.is_none() && text.is_some() {
             body.shown_at = now;
@@ -1958,11 +2000,13 @@ impl App {
         body.links = body::links(text.as_deref());
         body.text = text;
         body.attachments = attachments;
-        if body.html != html {
+        // The whole message brings the page its preview showed: keep the laid-out view and where it was scrolled.
+        let same_page = html.as_ref().map(|h| &h.html) == body.html.as_ref().map(|h| &h.html);
+        if !same_page {
             body.text_note = too_large(html.as_ref());
-            body.html = html;
             body.html_view = None;
         }
+        body.html = html;
         // An indexed message has its text but not its raw bytes, which the HTML view and the attachments need.
         let missing = message.is_some() && !has_raw;
         body.message = message;
@@ -1976,7 +2020,12 @@ impl App {
     fn request_body(&mut self, account: usize, key: &RowKey) {
         if self.requested.insert((account, key.clone())) {
             let (folder, uid) = key.clone();
-            self.send(account, Command::FetchBody { folder, uid });
+            let command = Command::FetchBody {
+                folder,
+                uid,
+                preview: true,
+            };
+            self.send(account, command);
         }
     }
 
@@ -3984,6 +4033,7 @@ mod tests {
         let fetch = Command::FetchBody {
             folder: "INBOX".into(),
             uid: 2,
+            preview: true,
         };
         assert_eq!(wires.sent(), [("work".to_string(), fetch)]);
         driver.press("j");
