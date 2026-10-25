@@ -226,7 +226,8 @@ mod tests {
         let (mut driver, _wires) = fx.driver();
         driver.tick();
         assert!(!driver.app.open_at_login.checked());
-        driver.apply(UiAction::SetOpenAtLogin(true));
+        // Without the tick `driver.apply` adds, which could already take the thread's answer.
+        driver.app.apply(UiAction::SetOpenAtLogin(true));
         // Checked while the change runs, and off limits until it is done.
         assert!(driver.app.open_at_login.checked());
         assert_eq!(action(MenuAction::OpenAtLogin, &driver.app), None);
