@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/postvak-app/postvak/compare/v0.6.0...v0.7.0) - 2026-10-25
+
+### Added
+
+- say when an account's server lacks UIDPLUS ([#294](https://github.com/postvak-app/postvak/pull/294))
+- *(gui)* Save as… in the desktop's own save dialog ([#286](https://github.com/postvak-app/postvak/pull/286))
+
+### Fixed
+
+- *(core)* keep two writers of one file or store from tripping over each other ([#305](https://github.com/postvak-app/postvak/pull/305))
+- *(sync)* back off a flaky connection and jitter the delays ([#308](https://github.com/postvak-app/postvak/pull/308))
+- *(credentials)* refuse a password command from a config.toml others can write ([#307](https://github.com/postvak-app/postvak/pull/307))
+- *(rules)* restart an approved rule's clock in every account in config.toml ([#306](https://github.com/postvak-app/postvak/pull/306))
+- *(sync)* stop retrying a login the server rejected ([#301](https://github.com/postvak-app/postvak/pull/301))
+- *(gui)* open stores through the private account directory ([#302](https://github.com/postvak-app/postvak/pull/302))
+- *(config)* lock config.toml writes and merge into the file as it reads ([#300](https://github.com/postvak-app/postvak/pull/300))
+- *(gui)* close every dialog through one action ([#293](https://github.com/postvak-app/postvak/pull/293))
+
+### Other
+
+- *(store)* read the index backlog, filter-only searches and the attachments filter from indexes ([#304](https://github.com/postvak-app/postvak/pull/304))
+- let the /issue skill pick the clearest, most valuable issue itself ([#295](https://github.com/postvak-app/postvak/pull/295))
+- *(deps)* update dependencies and Blitz to 0.3.0-beta.4 ([#292](https://github.com/postvak-app/postvak/pull/292))
+- let the /issue skill claim an issue with an in progress label ([#291](https://github.com/postvak-app/postvak/pull/291))
+- skip the build for changes only under .claude/ ([#290](https://github.com/postvak-app/postvak/pull/290))
+- add /issue skill to take an issue from open to merged ([#289](https://github.com/postvak-app/postvak/pull/289))
+- *(sync)* let the model take a failed delete's \Deleted undo ([#287](https://github.com/postvak-app/postvak/pull/287))
+
 ## [0.6.0](https://github.com/postvak-app/postvak/compare/v0.5.0...v0.6.0) - 2026-10-24
 
 ### Added
