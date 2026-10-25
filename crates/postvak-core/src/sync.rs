@@ -836,7 +836,7 @@ pub fn run_rules_with(
 
     let mut run = RulesRun::default();
     'folders: for folder in folders.iter().cloned() {
-        // Before the select, so a command run here leaves nothing to select again.
+        // Before any select, so a command run here leaves nothing to select again.
         checkpoint(
             ops,
             Activity::RunningRules {
@@ -846,27 +846,8 @@ pub fn run_rules_with(
         let Some(stored) = store.folder(&folder)? else {
             continue;
         };
-        let info = match ops.select(&folder) {
-            Ok(info) => info,
-            Err(e) => {
-                run.events.push(account_error(
-                    account,
-                    format!("{folder}: {e}; skipping its rules"),
-                ));
-                continue;
-            }
-        };
-        // Stored uids belong to another UIDVALIDITY: acting on them would hit unrelated server messages.
-        if info.uidvalidity != stored.uidvalidity {
-            // uidvalidity 0 is a placeholder from a rule move; the next full sync adopts the server value.
-            if stored.uidvalidity != 0 {
-                run.events.push(account_error(
-                    account,
-                    format!(
-                        "{folder}: folder changed on server; resync needed, skipping its rules"
-                    ),
-                ));
-            }
+        // A rule move's placeholder has no server uids to act on until the next full sync adopts the folder.
+        if stored.uidvalidity == 0 {
             continue;
         }
         let needs_body = folder_needs_body(rules, &account.name, &folder);
@@ -896,6 +877,8 @@ pub fn run_rules_with(
         let mut bodies_done = 0;
         // Set once a command used the connection; from then on each row is read again, as it may have moved or changed.
         let mut commands_ran = false;
+        // Rules are evaluated from the store; the folder is selected only once a message needs the server.
+        let mut selected = false;
         for mut msg in messages {
             let is_fresh = fresh(msg.uid);
             // Mail found by a first sync or resync already sat on the server; fetching it would download the whole folder.
@@ -907,13 +890,7 @@ pub fn run_rules_with(
                 };
                 if checkpoint(ops, progress)? {
                     commands_ran = true;
-                    if ops.select(&folder)?.uidvalidity != info.uidvalidity {
-                        let message = format!(
-                            "{folder}: folder changed on server; resync needed, skipping its rules"
-                        );
-                        run.events.push(account_error(account, message));
-                        continue 'folders;
-                    }
+                    selected = false;
                 }
             }
             if commands_ran {
@@ -923,6 +900,9 @@ pub fn run_rules_with(
                 }
             }
             if wants_body(&msg) {
+                if !select_for_rules(ops, &stored, &mut selected, account, &mut run.events) {
+                    continue 'folders;
+                }
                 match ensure_body_text(&msg, ops, store) {
                     Ok(text) => msg.body_text = Some(text),
                     Err(e) => log::warn!("{}/{}: body fetch failed: {e}", msg.folder, msg.uid),
@@ -931,6 +911,13 @@ pub fn run_rules_with(
             }
             let plan = plan_for(rules, &msg, &ctx, store)?;
             run.evaluated += 1;
+            let notifies = is_fresh && msg.uid > notified_uid && plan.notify && folder == "INBOX";
+            // A notification waits for the SELECT too: mail a resync finds never notifies.
+            if (notifies || !plan.actions.is_empty())
+                && !select_for_rules(ops, &stored, &mut selected, account, &mut run.events)
+            {
+                continue 'folders;
+            }
             if !plan.actions.is_empty() {
                 match apply(&plan, &msg, ops, store, trash, now) {
                     Ok(executed) => run.actions += executed,
@@ -943,7 +930,7 @@ pub fn run_rules_with(
                     }
                 }
             }
-            if is_fresh && msg.uid > notified_uid && plan.notify && folder == "INBOX" {
+            if notifies {
                 run.events.push(new_mail(account, &msg));
             }
         }
@@ -964,6 +951,32 @@ pub fn run_rules_with(
         store.mark_rules_seen_except(&folders)?;
     }
     Ok(run)
+}
+
+/// Selects the folder of `stored` unless `selected` says it still is, and checks it is the folder the store holds.
+/// False, with an error event, when the folder's rules must stop: the SELECT failed, or the server's UIDVALIDITY is no
+/// longer the stored one, so the stored uids would name unrelated server messages.
+fn select_for_rules(
+    ops: &mut dyn MailOps,
+    stored: &Folder,
+    selected: &mut bool,
+    account: &AccountConfig,
+    events: &mut Vec<Event>,
+) -> bool {
+    let folder = &stored.name;
+    if *selected && ops.selected() == Some(folder.as_str()) {
+        return true;
+    }
+    let message = match ops.select(folder) {
+        Ok(info) if info.uidvalidity == stored.uidvalidity => {
+            *selected = true;
+            return true;
+        }
+        Ok(_) => format!("{folder}: folder changed on server; resync needed, skipping its rules"),
+        Err(e) => format!("{folder}: {e}; skipping its rules"),
+    };
+    events.push(account_error(account, message));
+    false
 }
 
 /// The largest message, in bytes, a rule's body condition downloads by itself.
