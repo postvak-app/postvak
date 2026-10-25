@@ -39,6 +39,8 @@ pub(crate) struct Pane {
     pub text_note: Option<&'static str>,
     /// "report.txt (2 KB)" per attachment.
     pub attachments: Vec<String>,
+    /// The attachments are listed before the whole message is here, so they cannot be saved yet.
+    pub attachments_pending: bool,
     pub saved: Option<String>,
     /// The message has a List-Unsubscribe header: the Unsubscribe button shows.
     pub unsubscribe: bool,
@@ -114,6 +116,7 @@ pub(crate) fn pane(app: &App) -> Pane {
         shows_html: body.shows_html(),
         text_note: body.text_note,
         attachments,
+        attachments_pending: body.attachments_pending,
         saved: body.saved.as_deref().map(|s| clean(s, false)),
         unsubscribe: postvak_core::unsubscribe::method(&message.headers).is_some(),
         links: body.links.clone(),
@@ -442,6 +445,7 @@ mod tests {
         let command = Command::FetchBody {
             folder: "INBOX".into(),
             uid,
+            preview: true,
         };
         ("work".to_string(), command)
     }
@@ -826,6 +830,87 @@ mod tests {
             "quarterly numbers"
         );
         assert_eq!(open.labels_containing("Saved to").len(), 1);
+    }
+
+    #[test]
+    fn a_preview_shows_the_html_and_its_attachments_save_once_the_whole_message_is_here() {
+        use postvak_core::actions::Preview;
+        use postvak_core::message::{Attachment, HtmlBody};
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", not_downloaded(message("INBOX", 1, "report")));
+        let (open, wires) = fx.window();
+        let preview = Preview {
+            html: Some(HtmlBody {
+                html: "<p>See attached</p>".into(),
+                inline: Vec::new(),
+            }),
+            attachments: vec![Attachment {
+                index: 1,
+                name: Some("report.txt".into()),
+                content_type: "text/plain".into(),
+                size: 18,
+            }],
+        };
+        let shown = Event::BodyPreview {
+            account: "work".into(),
+            folder: "INBOX".into(),
+            uid: 1,
+            preview: Box::new(preview),
+        };
+        wires.events.send(shown).unwrap();
+        open.tick();
+        assert!(shows_html(&open));
+        let label = open.labels_containing("report.txt (").remove(0);
+        let save = open.get(&format!("Save {label}"));
+        assert_eq!(save.accessible_enabled(), Some(false));
+        assert_eq!(
+            save.accessible_description().as_deref(),
+            Some("Downloading the message…")
+        );
+        assert_eq!(
+            open.get(&format!("Save {label} as")).accessible_enabled(),
+            Some(false)
+        );
+
+        fx.store("work")
+            .set_raw("INBOX", 1, WITH_ATTACHMENT_RAW, "See attached")
+            .unwrap();
+        wires.events.send(ready(1)).unwrap();
+        open.tick();
+        assert!(open.with(|live| live.app.previews.is_empty()));
+        let label = open.labels_containing("report.txt (").remove(0);
+        open.click(&format!("Save {label}"));
+        let saved = fx.paths.cache_dir.join("downloads").join("report.txt");
+        assert_eq!(
+            std::fs::read_to_string(&saved).unwrap().trim_end(),
+            "quarterly numbers"
+        );
+    }
+
+    #[test]
+    fn previews_of_messages_still_downloading_are_capped() {
+        use postvak_core::actions::Preview;
+        let fx = Fixture::new(&["work"]);
+        let (mut driver, wires) = fx.driver();
+        for uid in 1..=10 {
+            let shown = Event::BodyPreview {
+                account: "work".into(),
+                folder: "INBOX".into(),
+                uid,
+                preview: Box::new(Preview {
+                    html: None,
+                    attachments: Vec::new(),
+                }),
+            };
+            send(&mut driver, &wires, shown);
+        }
+        let held: Vec<u32> = driver
+            .app
+            .previews
+            .iter()
+            .map(|((_, key), _)| key.1)
+            .collect();
+        assert_eq!(held, [7, 8, 9, 10], "the newest stay");
     }
 
     #[test]

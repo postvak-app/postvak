@@ -789,6 +789,7 @@ mod client {
         let fetch = Command::FetchBody {
             folder: "INBOX".into(),
             uid: 1,
+            preview: false,
         };
         assert_eq!(reply_timeout(&fetch), Some(Duration::from_secs(120)));
     }

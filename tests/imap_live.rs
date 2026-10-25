@@ -991,3 +991,72 @@ fn account_add_tests_the_login_before_it_saves() {
     let saved = Config::load(&config).unwrap();
     assert_eq!(saved.accounts[0].username, username);
 }
+
+/// A newsletter with a `cid:` logo and a 10 MB attachment.
+fn large_newsletter() -> Vec<u8> {
+    // Base64 in lines of 76, as mail clients send it.
+    let pdf = format!("{}\r\n", "QUFB".repeat(19)).repeat(10 * 1024 * 1024 / 78);
+    format!(
+        "From: Sender <sender@example.com>\r\nTo: user@example.com\r\nSubject: scan\r\n\
+         Message-ID: <scan@example.com>\r\nDate: Tue, 06 Oct 2026 10:00:00 +0000\r\nMIME-Version: 1.0\r\n\
+         Content-Type: multipart/mixed; boundary=m\r\n\r\n--m\r\n\
+         Content-Type: multipart/alternative; boundary=a\r\n\r\n--a\r\n\
+         Content-Type: text/plain; charset=utf-8\r\n\r\nthe two lines\r\n--a\r\n\
+         Content-Type: multipart/related; boundary=r\r\n\r\n--r\r\n\
+         Content-Type: text/html; charset=utf-8\r\n\r\n<p>the two lines</p><img src=\"cid:logo@example.com\">\r\n--r\r\n\
+         Content-Type: image/png\r\nContent-ID: <logo@example.com>\r\nContent-Transfer-Encoding: base64\r\n\r\nUE5H\r\n\
+         --r--\r\n--a--\r\n--m\r\n\
+         Content-Type: application/pdf; name=\"scan.pdf\"\r\nContent-Disposition: attachment; filename=\"scan.pdf\"\r\n\
+         Content-Transfer-Encoding: base64\r\n\r\n{pdf}--m--\r\n"
+    )
+    .into_bytes()
+}
+
+#[test]
+fn a_large_message_opens_with_its_text_before_the_attachment_arrives() {
+    let Some(host) = host() else { return };
+    let mut ops = connect(&account(&host, PORT, "preview"));
+    let raw = large_newsletter();
+    ops.append("INBOX", &raw, &[]).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("mail.db")).unwrap();
+    sync::sync_all(&mut ops, &store).unwrap();
+    let uid = store.messages_in_folder("INBOX").unwrap()[0].uid;
+    let mut previews = Vec::new();
+    let mut show = |preview| {
+        let msg = store.message("INBOX", uid).unwrap().unwrap();
+        previews.push((preview, msg.body_text, store.has_raw("INBOX", uid).unwrap()));
+    };
+    postvak_core::actions::fetch_body(&mut ops, &store, "INBOX", uid, Some(&mut show)).unwrap();
+    let [(preview, text, had_raw)] = previews.as_slice() else {
+        panic!("{} previews", previews.len());
+    };
+    assert!(!had_raw, "the preview came before the whole message");
+    assert_eq!(text.as_deref().map(str::trim), Some("the two lines"));
+    let html = preview.html.as_ref().expect("its HTML");
+    assert!(html.html.contains("cid:logo@example.com"), "{}", html.html);
+    assert_eq!(html.inline.len(), 1);
+    assert_eq!(html.inline[0].bytes, b"PNG");
+    let stored = store
+        .raw("INBOX", uid)
+        .unwrap()
+        .expect("then the whole message");
+    assert_eq!(stored, raw);
+    let whole = postvak_core::message::attachments(&stored);
+    let listed: Vec<_> = preview
+        .attachments
+        .iter()
+        .map(|a| (a.index, a.name.clone(), a.content_type.clone()))
+        .collect();
+    let expected: Vec<_> = whole
+        .iter()
+        .map(|a| (a.index, a.name.clone(), a.content_type.clone()))
+        .collect();
+    assert_eq!(listed, expected);
+    let estimated = preview.attachments[1].size as f64;
+    let actual = whole[1].size as f64;
+    assert!(
+        (estimated / actual - 1.0).abs() < 0.05,
+        "{estimated} vs {actual}"
+    );
+}

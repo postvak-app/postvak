@@ -299,6 +299,7 @@ impl LazyClient {
         let fetch = Command::FetchBody {
             folder: msg.folder.clone(),
             uid: msg.uid,
+            preview: false,
         };
         self.request(account, fetch, Ok)?;
         store

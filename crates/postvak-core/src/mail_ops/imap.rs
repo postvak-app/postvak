@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 use async_imap::Session;
 use async_imap::extensions::idle::IdleResponse;
 use async_imap::imap_proto::{
-    BodyContentCommon, BodyStructure, ContentEncoding, MailboxDatum, MessageSection, Response,
-    SectionPath, StatusAttribute,
+    BodyContentCommon, BodyContentSinglePart, BodyStructure, ContentEncoding, MailboxDatum,
+    MessageSection, Response, SectionPath, StatusAttribute,
 };
 use async_imap::types::{Capabilities, Fetch, Flag, NameAttribute};
 use futures_util::TryStreamExt;
@@ -20,8 +20,8 @@ use tokio_rustls::client::TlsStream;
 use crate::config::AccountConfig;
 use crate::credentials::Secret;
 use crate::mail_ops::{
-    Envelope, FlagUpdate, IdleOutcome, MailError, MailOps, MailResult, RemoteFolder, SelectInfo,
-    StatusInfo, Structure, TextPart,
+    Envelope, FlagUpdate, IdleOutcome, MailError, MailOps, MailResult, PartRef, RemoteFolder,
+    SelectInfo, StatusInfo, Structure, TextPart,
 };
 
 type ImapSession = Session<TlsStream<TcpStream>>;
@@ -246,78 +246,124 @@ fn section_fetch(section: &str) -> MailResult<(String, SectionPath)> {
     ))
 }
 
-/// What the indexer needs from a BODYSTRUCTURE: its plain and HTML text parts, grouped by the
-/// `multipart/alternative` that holds them, and the names of its attachments. A shape this does not understand
-/// yields no text parts, and the caller falls back to the whole message.
+/// What the indexer and the reader need from a BODYSTRUCTURE: its plain and HTML text parts, grouped by the
+/// `multipart/alternative` that holds them, the names of its attachments, and where its attachments are. A shape this
+/// does not understand yields no text parts, and the caller falls back to the whole message.
 fn structure_of(body: &BodyStructure<'_>) -> Structure {
     let mut structure = Structure::default();
-    let mut groups = 0;
-    walk_structure(body, &mut Vec::new(), None, &mut groups, &mut structure);
+    let mut walk = Walk {
+        path: Vec::new(),
+        alternative: None,
+        nested: false,
+        groups: 0,
+    };
+    walk.part(body, &mut structure);
     structure
 }
 
-fn walk_structure(
-    body: &BodyStructure<'_>,
-    path: &mut Vec<u32>,
+/// Where `structure_of` is in the tree.
+struct Walk {
+    path: Vec<u32>,
     alternative: Option<usize>,
-    groups: &mut usize,
-    out: &mut Structure,
-) {
-    match body {
-        BodyStructure::Text { common, other, .. } => {
-            let subtype = common.ty.subtype.to_ascii_lowercase();
-            let text = matches!(subtype.as_str(), "plain" | "html") && !is_attachment(common);
-            if text {
-                out.text_parts.push(TextPart {
-                    section: path
-                        .iter()
-                        .map(u32::to_string)
-                        .collect::<Vec<_>>()
-                        .join("."),
-                    html: subtype == "html",
-                    charset: params_of(common)
-                        .iter()
-                        .find(|(k, _)| k.eq_ignore_ascii_case("charset"))
-                        .map(|(_, v)| v.clone()),
-                    transfer_encoding: encoding_name(&other.transfer_encoding),
-                    octets: other.octets,
-                    alternative,
-                });
-            } else if let Some(name) = attachment_name(common) {
-                out.attachment_names.push(name);
+    /// Inside an enclosed message.
+    nested: bool,
+    groups: usize,
+}
+
+impl Walk {
+    fn section(&self) -> String {
+        self.path
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(".")
+    }
+
+    fn part(&mut self, body: &BodyStructure<'_>, out: &mut Structure) {
+        match body {
+            BodyStructure::Text { common, other, .. } => {
+                let subtype = common.ty.subtype.to_ascii_lowercase();
+                let text = matches!(subtype.as_str(), "plain" | "html") && !is_attachment(common);
+                if text {
+                    out.text_parts.push(TextPart {
+                        section: self.section(),
+                        html: subtype == "html",
+                        charset: params_of(common)
+                            .iter()
+                            .find(|(k, _)| k.eq_ignore_ascii_case("charset"))
+                            .map(|(_, v)| v.clone()),
+                        transfer_encoding: encoding_name(&other.transfer_encoding),
+                        octets: other.octets,
+                        alternative: self.alternative,
+                        nested: self.nested,
+                    });
+                } else {
+                    self.attachment(common, other, out);
+                }
+            }
+            BodyStructure::Basic { common, other, .. } => self.attachment(common, other, out),
+            BodyStructure::Message {
+                common,
+                other,
+                body,
+                ..
+            } => {
+                self.attachment(common, other, out);
+                let nested = std::mem::replace(&mut self.nested, true);
+                // The parts of an enclosed message are numbered under this part; a single-part one is its part 1.
+                if matches!(**body, BodyStructure::Multipart { .. }) {
+                    self.part(body, out);
+                } else {
+                    self.path.push(1);
+                    self.part(body, out);
+                    self.path.pop();
+                }
+                self.nested = nested;
+            }
+            BodyStructure::Multipart { common, bodies, .. } => {
+                let outer = self.alternative;
+                if common.ty.subtype.eq_ignore_ascii_case("alternative") {
+                    self.groups += 1;
+                    self.alternative = Some(self.groups);
+                }
+                for (i, part) in bodies.iter().enumerate() {
+                    self.path.push(i as u32 + 1);
+                    self.part(part, out);
+                    self.path.pop();
+                }
+                self.alternative = outer;
             }
         }
-        BodyStructure::Basic { common, .. } => {
-            if let Some(name) = attachment_name(common) {
-                out.attachment_names.push(name);
-            }
+    }
+
+    /// A part that is not body text: its name for the index, and outside an enclosed message, the part itself.
+    fn attachment(
+        &self,
+        common: &BodyContentCommon<'_>,
+        other: &BodyContentSinglePart<'_>,
+        out: &mut Structure,
+    ) {
+        let name = attachment_name(common);
+        if let Some(name) = &name {
+            out.attachment_names.push(name.clone());
         }
-        BodyStructure::Message { common, body, .. } => {
-            if let Some(name) = attachment_name(common) {
-                out.attachment_names.push(name);
-            }
-            // The parts of an enclosed message are numbered under this part; a single-part one is its part 1.
-            if matches!(**body, BodyStructure::Multipart { .. }) {
-                walk_structure(body, path, alternative, groups, out);
-            } else {
-                path.push(1);
-                walk_structure(body, path, alternative, groups, out);
-                path.pop();
-            }
+        if self.nested {
+            return;
         }
-        BodyStructure::Multipart { common, bodies, .. } => {
-            let group = if common.ty.subtype.eq_ignore_ascii_case("alternative") {
-                *groups += 1;
-                Some(*groups)
-            } else {
-                alternative
-            };
-            for (i, part) in bodies.iter().enumerate() {
-                path.push(i as u32 + 1);
-                walk_structure(part, path, group, groups, out);
-                path.pop();
-            }
-        }
+        let content_id = other
+            .id
+            .as_deref()
+            .map(|id| id.trim().trim_start_matches('<').trim_end_matches('>'))
+            .filter(|id| !id.is_empty())
+            .map(str::to_string);
+        out.attachments.push(PartRef {
+            section: self.section(),
+            content_type: format!("{}/{}", common.ty.ty, common.ty.subtype).to_ascii_lowercase(),
+            name,
+            content_id,
+            transfer_encoding: encoding_name(&other.transfer_encoding),
+            octets: other.octets,
+        });
     }
 }
 
@@ -1090,6 +1136,54 @@ mod tests {
             r#"("APPLICATION" "PDF" NIL NIL NIL "BASE64" 10 NIL ("ATTACHMENT" ("FILENAME*0*" "utf-8''r%C3%A9sum" "FILENAME*1*" "%C3%A9.pdf")) NIL NIL)"#,
         );
         assert_eq!(s.attachment_names, ["résumé.pdf"]);
+    }
+
+    #[test]
+    fn attachments_are_every_part_but_the_body_text_with_an_enclosed_message_as_one() {
+        let logo = r#"("IMAGE" "PNG" NIL "<logo@x>" NIL "BASE64" 400 NIL ("INLINE" NIL) NIL NIL)"#;
+        let inner = r#"("MESSAGE" "RFC822" NIL NIL NIL "7BIT" 90 (NIL "inner" NIL NIL NIL NIL NIL NIL NIL NIL) (("TEXT" "PLAIN" NIL NIL NIL "7BIT" 10 1 NIL NIL NIL NIL)("TEXT" "HTML" NIL NIL NIL "7BIT" 20 1 NIL NIL NIL NIL) "ALTERNATIVE" ("BOUNDARY" "i") NIL NIL NIL) 4 NIL NIL NIL NIL)"#;
+        let s = structure(&format!(
+            r#"((({HTML}{logo} "RELATED" ("BOUNDARY" "r") NIL NIL NIL){PLAIN} "ALTERNATIVE" ("BOUNDARY" "a") NIL NIL NIL){PDF}{inner} "MIXED" ("BOUNDARY" "m") NIL NIL NIL)"#
+        ));
+        let parts: Vec<_> = s
+            .attachments
+            .iter()
+            .map(|p| {
+                (
+                    p.section.as_str(),
+                    p.content_type.as_str(),
+                    p.name.as_deref(),
+                    p.content_id.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            parts,
+            [
+                ("1.1.2", "image/png", None, Some("logo@x")),
+                ("2", "application/pdf", Some("Q3 report.pdf"), None),
+                ("3", "message/rfc822", None, None),
+            ]
+        );
+        assert_eq!(
+            s.attachments[0].transfer_encoding.as_deref(),
+            Some("base64")
+        );
+        assert_eq!(s.attachments[0].octets, 400);
+        let text: Vec<_> = s
+            .text_parts
+            .iter()
+            .map(|p| (p.section.as_str(), p.html, p.alternative, p.nested))
+            .collect();
+        assert_eq!(
+            text,
+            [
+                ("1.1.1", true, Some(1), false),
+                ("1.2", false, Some(1), false),
+                ("3.1", false, Some(2), true),
+                ("3.2", true, Some(2), true),
+            ]
+        );
     }
 
     #[test]

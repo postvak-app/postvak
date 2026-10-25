@@ -44,6 +44,8 @@ export struct BodyInfo {
     shows-html: bool,
     text-note: string,
     attachments: [string],
+    // Listed before the whole message is here: Save waits for it.
+    attachments-pending: bool,
     saved: string,
     unsubscribe: bool,
     links: [string],
@@ -574,6 +576,8 @@ export component BodyPane inherits Rectangle {
                     text: "Save";
                     framed: true;
                     palette: Theme.pane;
+                    enabled: !root.info.attachments-pending;
+                    disabled-hint: "Downloading the message…";
                     accessible-label: "Save " + attachment;
                     clicked => { root.save-attachment(i); }
                 }
@@ -581,6 +585,8 @@ export component BodyPane inherits Rectangle {
                     text: "Save as…";
                     framed: true;
                     palette: Theme.pane;
+                    enabled: !root.info.attachments-pending;
+                    disabled-hint: "Downloading the message…";
                     accessible-label: "Save " + attachment + " as";
                     clicked => { root.save-attachment-as(i); }
                 }
