@@ -93,6 +93,7 @@ Release build, the same machine as the search table, 100k messages over three ac
 - **Connecting.** The accept loop slept 200 ms whenever no client was waiting, so every CLI command, MCP tool call and window start waited up to 200 ms before the daemon read its hello. A thread of its own now blocks in `accept` and hands each connection over at once; the loop still wakes every 200 ms for its stop, idle and file checks.
 - **Actions on many messages.** Archiving, moving, flagging or deleting chosen messages sent one IMAP command per message: 200 archived messages were 200 round trips. They now go as one `UID MOVE`, `UID STORE` or `UID EXPUNGE` per batch of up to 500 uids, written as ranges where they run (`1:3,7`). A delete still downloads each message it has no copy of, for its `.eml` backup, before expunging them together. Junk and not-junk, which also swap keywords, still run per message.
 - **The index backlog.** The indexer counts what is left before each slice, and kept doing so on every idle turn once all was indexed; the count read every row, behind each stored raw message. It now reads two partial indexes, `messages_unindexed` and `messages_retry` (migration 013), which are empty once indexing is done.
+- **Reading the backlog.** Each slice then read its candidates with one condition over both halves of the backlog, which no index serves: every row, sorted, for the newest 200, once per five-second slice for as long as a large store is being indexed. The two halves are now read apart, each from its partial index, which migration 014 orders as the indexer takes them (`internaldate DESC, uid DESC`), so a slice reads its candidates and no more. On 60k messages in SQLite directly, the read fell from 150 ms to 2 ms.
 
 ## Reloads after a sync event
 
@@ -103,6 +104,8 @@ An archive, move or delete hides its rows at once and its `ActionDone` arrives a
 While the Trash view is open, each sync event lists the backups again on the window thread; a backup's sender and subject are read once, and later lists open only new files.
 
 The same sync event also reads the account's folders and unread counts again, on the window thread. Each count reads the partial index `messages_unread` (migration 010), which holds only unread mail; the covering folder index SQLite chose before read every message in the folder. The query names the index (`INDEXED BY`), since without statistics SQLite does not know it is the smaller one, and a test checks that the plan uses it.
+
+The thread list reads the covering index `messages_folder_thread` (migration 009) alone, whichever filter is on, except that the attachments filter read every message's headers to make its guess (`has_attachment`, a generated column). Migration 015 adds the column to the index, which SQLite fills once per row written, so that filter reads the index like the others; the plan does not say so (it says `USING INDEX`, not `COVERING INDEX`, since the column is resolved while the code is generated), so the test checks the bytecode for a read of the table instead. On a 20k-message folder in SQLite directly, the filtered list fell from 136 ms to 33 ms, the unfiltered list's cost.
 
 `all_inboxes` is what the frame that took a sync event waited for the list before; `sync_event` is what it waits now. Release build, the same run of each: Linux container, 4 vCPUs of an Intel Xeon at 2.10 GHz, 15 GB, Rust 1.99.1, shared (load average about 3), so the ranges are wider than on a quiet machine. Median in ms, with the range of five runs.
 
@@ -127,6 +130,8 @@ Each keystroke in the search field used to run the search on the window thread, 
 | `search_keystroke` | 2.2 (2.1–2.2) | 2.1 (2.1–2.2) |
 
 The hits still take what `search` takes to arrive; only the window no longer waits for them.
+
+A search of filters alone, such as `after:2026-01-01` or `is:unread` without a word, has no match to drive the join, so it read every message of the store into a sort for its newest 100. It now walks `messages_newest` (migration 014), every message newest first, and stops at the limit; a search in one folder walks that folder's own index, since the folder is now its own condition in the SQL rather than `?2 IS NULL OR folder = ?2`, which the planner cannot serve from an index. A test checks both plans.
 
 ## Opening a message
 
