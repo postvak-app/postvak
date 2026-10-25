@@ -1487,7 +1487,7 @@ pub fn run_loop(
 ) {
     let name = account.name.clone();
     let (stop, woken) = (shutdown.clone(), wake.clone());
-    run_loop_with(
+    run_loop_paced(
         account,
         paths,
         events,
@@ -1495,6 +1495,8 @@ pub fn run_loop(
         commands,
         wake,
         connect,
+        HEALTHY_AFTER,
+        |delay| jittered(delay, random_u64()),
         |delay| {
             log::warn!("{name}: reconnecting in {}s", delay.as_secs());
             // Stop or a new command cuts this wait short; clearing the flag keeps later waits at full length.
@@ -1509,7 +1511,27 @@ pub fn run_loop(
     );
 }
 
-/// The loop body, with connection and back-off sleeping injected so tests can drive it with the fake.
+/// How long a connection must stay up before the back-off starts over: a server that drops every IDLE keeps
+/// doubling it instead of getting a full pass every minute.
+const HEALTHY_AFTER: Duration = Duration::from_secs(300);
+
+/// `delay` moved by up to a fifth either way, `r` picking where, so accounts on one server that lost the network
+/// together do not retry in lockstep.
+fn jittered(delay: Duration, r: u64) -> Duration {
+    let span = (delay.as_millis() / 5) as u64;
+    let offset = if span == 0 { 0 } else { r % (2 * span + 1) };
+    delay - Duration::from_millis(span) + Duration::from_millis(offset)
+}
+
+fn random_u64() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish()
+}
+
+/// The loop body, with connection and back-off sleeping injected so tests can drive it with the fake; the delays
+/// are exact, and a connection counts as healthy once it has stayed up `HEALTHY_AFTER`.
 #[allow(clippy::too_many_arguments)]
 pub fn run_loop_with(
     account: AccountConfig,
@@ -1518,13 +1540,41 @@ pub fn run_loop_with(
     shutdown: Arc<AtomicBool>,
     commands: Receiver<Job>,
     wake: Arc<AtomicBool>,
+    connect: impl FnMut() -> Result<Box<dyn MailOps>, SyncError>,
+    sleep: impl FnMut(Duration),
+) {
+    run_loop_paced(
+        account,
+        paths,
+        events,
+        shutdown,
+        commands,
+        wake,
+        connect,
+        HEALTHY_AFTER,
+        |delay| delay,
+        sleep,
+    );
+}
+
+/// `run_loop_with` with the uptime that counts as healthy and the jitter on each back-off delay as parameters.
+#[allow(clippy::too_many_arguments)]
+fn run_loop_paced(
+    account: AccountConfig,
+    paths: Paths,
+    events: Sender<Event>,
+    shutdown: Arc<AtomicBool>,
+    commands: Receiver<Job>,
+    wake: Arc<AtomicBool>,
     mut connect: impl FnMut() -> Result<Box<dyn MailOps>, SyncError>,
+    healthy_after: Duration,
+    mut jitter: impl FnMut(Duration) -> Duration,
     mut sleep: impl FnMut(Duration),
 ) {
     let mut backoff = Duration::from_secs(5);
     let mut carried = Carried::default();
     while !shutdown.load(Ordering::Acquire) {
-        let mut completed_cycle = false;
+        let mut connected_at = None;
         // A bug in one session must still answer its requests and leave the account retrying, not silently dead.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             run_session(
@@ -1536,11 +1586,11 @@ pub fn run_loop_with(
                 &wake,
                 &mut carried,
                 &mut connect,
-                &mut completed_cycle,
+                &mut connected_at,
             )
         }))
         .unwrap_or_else(|panic| Err(SyncError::Crashed(panic_message(&*panic))));
-        if completed_cycle {
+        if connected_at.is_some_and(|at: std::time::Instant| at.elapsed() >= healthy_after) {
             backoff = Duration::from_secs(5);
         }
         match result {
@@ -1552,7 +1602,11 @@ pub fn run_loop_with(
                     message: e.to_string(),
                 });
                 let rejected = matches!(e, SyncError::Mail(MailError::Auth(_)));
-                let delay = if rejected { LOGIN_RETRY } else { backoff };
+                let delay = if rejected {
+                    LOGIN_RETRY
+                } else {
+                    jitter(backoff)
+                };
                 let (reason, retry_at) = (e.to_string(), now() + delay.as_secs() as i64);
                 let (message, activity) = if rejected {
                     let message = rejected_message(&account.name, &reason, retry_at);
@@ -1641,13 +1695,14 @@ fn run_session(
     wake: &AtomicBool,
     carried: &mut Carried,
     connect: &mut impl FnMut() -> Result<Box<dyn MailOps>, SyncError>,
-    completed_cycle: &mut bool,
+    connected_at: &mut Option<std::time::Instant>,
 ) -> Result<(), SyncError> {
     let _ = events.send(Event::Activity {
         account: account.name.clone(),
         activity: Activity::Connecting,
     });
     let mut ops = connect()?;
+    *connected_at = Some(std::time::Instant::now());
     let _ = events.send(Event::Connected {
         account: account.name.clone(),
         uidplus: ops.has_uidplus(),
@@ -1723,8 +1778,6 @@ fn run_session(
         });
         ops.select("INBOX")?;
         let outcome = ops.idle(interval, wake)?;
-        // A pass plus a wait means the connection is healthy; a pass alone does not, e.g. when IDLE always fails.
-        *completed_cycle = true;
         (full, pass) = match outcome {
             IdleOutcome::NewMail => (false, true),
             IdleOutcome::Timeout => (true, true),
