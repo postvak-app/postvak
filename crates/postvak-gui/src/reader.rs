@@ -120,7 +120,7 @@ fn run(
 ) {
     while let Ok(first) = jobs.recv() {
         let request = jobs.try_iter().last().unwrap_or(first);
-        let found = match Store::open(&paths.mail_db(&request.account)) {
+        let found = match Store::open_account(paths, &request.account) {
             Ok(store) => read(&store, &request.key),
             Err(e) => {
                 log::warn!(
@@ -244,5 +244,21 @@ mod tests {
             body::pane(&driver.app).empty,
             Some("This message is no longer in the local store.")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reading_for_an_account_with_no_directory_yet_makes_it_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let fx = Fixture::new(&["work"]);
+        let mut reader = Reader::start(fx.paths.clone(), read, std::sync::Arc::new(|| {}));
+        reader.send(Request {
+            generation: 1,
+            account: "new".into(),
+            key: ("INBOX".into(), 1),
+        });
+        assert!(reader.wait(1, Duration::from_secs(5)).is_some());
+        let meta = std::fs::metadata(fx.paths.account_dir("new")).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o700);
     }
 }
