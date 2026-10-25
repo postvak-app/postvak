@@ -1693,8 +1693,23 @@ fn changed_uidvalidity_blocks_rules_on_stale_rows() {
     );
 }
 
-#[test]
-fn backoff_grows_caps_and_resets_after_a_full_cycle() {
+/// Connects 1..=8 are refused; every later one is accepted, completes a pass and an IDLE, then fails.
+fn flaky_connect(connects: &mut u32) -> Result<Box<dyn MailOps>, SyncError> {
+    *connects += 1;
+    if *connects <= 8 {
+        return Err(SyncError::Mail(MailError::Connect("refused".into())));
+    }
+    // INBOX is selectable but not listed, so the full pass completes; after an IDLE wake the INBOX-only pass fails.
+    let mut ops = RecordingOps::default().with_folder("INBOX", None);
+    ops.folders.clear();
+    ops.add_mail("INBOX", 1, 0, "Subject: a\r\n\r\n", None);
+    ops.fail_fetch_after = Some(0);
+    ops.idle_outcomes.push_back(IdleOutcome::NewMail);
+    Ok(Box::new(ops))
+}
+
+/// Runs the loop over `flaky_connect` and returns the back-off delays of its first ten failures, in seconds.
+fn flaky_sleeps(healthy_after: Duration, jitter: impl FnMut(Duration) -> Duration) -> Vec<u64> {
     let dir = tempfile::tempdir().unwrap();
     let paths = Paths::under(dir.path());
     let (tx, _rx) = std::sync::mpsc::channel();
@@ -1702,30 +1717,16 @@ fn backoff_grows_caps_and_resets_after_a_full_cycle() {
     let stop = shutdown.clone();
     let mut connects = 0;
     let mut sleeps = Vec::new();
-    run_loop_with(
+    run_loop_paced(
         account(),
         paths,
         tx,
         shutdown,
         std::sync::mpsc::channel::<Job>().1,
         Arc::new(AtomicBool::new(false)),
-        || {
-            connects += 1;
-            match connects {
-                1..=8 => Err(SyncError::Mail(MailError::Connect("refused".into()))),
-                // No folders: the pass completes, then selecting INBOX before IDLE fails.
-                9 => Ok(Box::new(RecordingOps::default()) as Box<dyn MailOps>),
-                // INBOX is selectable but not listed, so the full pass completes; after an IDLE wake the INBOX-only pass fails.
-                _ => {
-                    let mut ops = RecordingOps::default().with_folder("INBOX", None);
-                    ops.folders.clear();
-                    ops.add_mail("INBOX", 1, 0, "Subject: a\r\n\r\n", None);
-                    ops.fail_fetch_after = Some(0);
-                    ops.idle_outcomes.push_back(IdleOutcome::NewMail);
-                    Ok(Box::new(ops) as Box<dyn MailOps>)
-                }
-            }
-        },
+        || flaky_connect(&mut connects),
+        healthy_after,
+        jitter,
         |delay| {
             sleeps.push(delay.as_secs());
             if sleeps.len() == 10 {
@@ -1733,8 +1734,54 @@ fn backoff_grows_caps_and_resets_after_a_full_cycle() {
             }
         },
     );
-    assert_eq!(connects, 10);
-    assert_eq!(sleeps, vec![5, 10, 20, 40, 80, 160, 300, 300, 300, 5]);
+    sleeps
+}
+
+#[test]
+fn a_server_that_drops_every_idle_keeps_the_backoff_growing() {
+    // Each connection completes a pass and an IDLE, then drops at once: never up for HEALTHY_AFTER.
+    assert_eq!(
+        flaky_sleeps(HEALTHY_AFTER, |delay| delay),
+        vec![5, 10, 20, 40, 80, 160, 300, 300, 300, 300]
+    );
+}
+
+#[test]
+fn backoff_starts_over_after_a_connection_that_stayed_up() {
+    assert_eq!(
+        flaky_sleeps(Duration::ZERO, |delay| delay),
+        vec![5, 10, 20, 40, 80, 160, 300, 300, 5, 5]
+    );
+}
+
+#[test]
+fn backoff_delays_are_jittered_and_the_growth_ignores_the_jitter() {
+    let mut calls = 0;
+    let sleeps = flaky_sleeps(HEALTHY_AFTER, |delay| {
+        calls += 1;
+        delay + Duration::from_secs(calls % 2)
+    });
+    assert_eq!(sleeps, vec![6, 10, 21, 40, 81, 160, 301, 300, 301, 300]);
+}
+
+#[test]
+fn jitter_stays_within_a_fifth_of_the_delay() {
+    for secs in [5u64, 10, 300] {
+        let delay = Duration::from_secs(secs);
+        let (low, high) = (delay * 4 / 5, delay * 6 / 5);
+        assert_eq!(jittered(delay, 0), low);
+        for r in (0..100_000u64).step_by(37).chain([u64::MAX]) {
+            let got = jittered(delay, r);
+            assert!(low <= got && got <= high, "{secs}s, r={r}: {got:?}");
+        }
+        assert_eq!(jittered(delay, 2 * (delay.as_millis() as u64 / 5)), high);
+    }
+    assert_eq!(jittered(Duration::ZERO, 7), Duration::ZERO);
+}
+
+#[test]
+fn two_draws_of_the_random_source_differ() {
+    assert_ne!(random_u64(), random_u64());
 }
 
 #[test]
