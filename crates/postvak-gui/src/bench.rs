@@ -166,12 +166,11 @@ fn report(phase: &str, scale: u32, mut ms: Vec<f64>) {
     println!("{line}");
 }
 
-/// Generates `scale` messages over every account and times each phase `runs` times.
-fn run(scale: u32, runs: usize) {
-    let fx = Fixture::new(&ACCOUNTS);
+/// A fake server per account with `scale` messages over all of them, and the generator for more mail.
+fn servers(scale: u32) -> (Vec<RecordingOps>, Rng) {
     let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
     let per_account = scale / ACCOUNTS.len() as u32;
-    let mut servers: Vec<RecordingOps> = ACCOUNTS
+    let servers = ACCOUNTS
         .iter()
         .map(|account| {
             let mut ops = FOLDERS
@@ -185,6 +184,13 @@ fn run(scale: u32, runs: usize) {
             ops
         })
         .collect();
+    (servers, rng)
+}
+
+/// Generates `scale` messages over every account and times each phase `runs` times.
+fn run(scale: u32, runs: usize) {
+    let fx = Fixture::new(&ACCOUNTS);
+    let (mut servers, mut rng) = servers(scale);
     let stores: Vec<Store> = ACCOUNTS.iter().map(|account| fx.store(account)).collect();
     report(
         "first_sync",
@@ -433,4 +439,123 @@ fn bench_runs_at_a_small_scale() {
 fn bench() {
     let scale = std::env::var("POSTVAK_BENCH_SCALE").map_or(10_000, |scale| scale.parse().unwrap());
     run(scale, RUNS);
+}
+
+/// The uids of the two messages `home` adds to the `home` account's INBOX, which `scripts/startup.py` opens.
+const NEWSLETTER_UID: u32 = 1_000_000;
+const PLAIN_UID: u32 = 1_000_001;
+
+/// A mail home under `root` for `scripts/startup.py`: the benchmark's mail synced into the stores, an HTML newsletter
+/// with an inline image and a plain message in `home`'s INBOX. The accounts reach no server: the host is this
+/// machine's port 1 and the password command fails, so the daemon only ever retries.
+fn write_home(root: &std::path::Path, scale: u32) {
+    let home = super::fixture::Home::new(root, &ACCOUNTS);
+    let config: String = ACCOUNTS
+        .iter()
+        .map(|name| {
+            format!(
+                "[[accounts]]\nname = \"{name}\"\nhost = \"127.0.0.1\"\nport = 1\nusername = \"{name}@example.com\"\n\
+                 password = {{ command = \"false\" }}\n\n"
+            )
+        })
+        .collect();
+    std::fs::write(home.paths.config_file(), config).unwrap();
+    let (mut servers, _) = servers(scale);
+    for (ops, account) in servers.iter_mut().zip(ACCOUNTS) {
+        sync_all(ops, &home.store(account)).unwrap();
+    }
+    let store = home.store("home");
+    for (uid, subject, raw, text) in [
+        (NEWSLETTER_UID, "The weekly newsletter", newsletter(), "newsletter"),
+        (
+            PLAIN_UID,
+            "A plain message",
+            b"Subject: A plain message\r\nContent-Type: text/plain\r\n\r\nA few lines of plain text.\r\n".to_vec(),
+            "A few lines of plain text.",
+        ),
+    ] {
+        let message = super::fixture::message("INBOX", uid, subject);
+        store.insert_message(&message).unwrap();
+        store.set_raw("INBOX", uid, &raw, text).unwrap();
+    }
+}
+
+/// An HTML newsletter: a style sheet, a 600 × 200 banner as a `cid:` image, and 30 sections laid out in tables, as
+/// mailing tools write them. Short enough to stay under the 32,767 physical pixels at which the software renderer
+/// panics (#321) even at 2x: 150 sections were over it at 1x.
+fn newsletter() -> Vec<u8> {
+    let section = |i: usize| {
+        format!(
+            "<table width=\"600\" cellpadding=\"12\"><tr><td class=\"card\">\
+             <h2>{i}. {} and {}</h2><p>{}</p><p>{}</p>\
+             <a class=\"button\" href=\"https://example.com/story/{i}\">Read more</a></td></tr></table>\n",
+            WORDS[i % WORDS.len()],
+            WORDS[(i * 7 + 3) % WORDS.len()],
+            "A paragraph of newsletter text, long enough to wrap over a few lines in the reader. ".repeat(6),
+            "<b>Bold</b>, <i>italic</i> and <a href=\"https://example.com/link\">a link</a> in a second paragraph. "
+                .repeat(4),
+        )
+    };
+    let html = format!(
+        "<html><head><style>body {{ font-family: sans-serif; background: #f4f4f4; }} \
+         .card {{ background: #fff; border-radius: 8px; }} h2 {{ color: #234; }} \
+         .button {{ background: #2a6; color: #fff; padding: 8px 16px; text-decoration: none; }}</style></head>\
+         <body><center><img src=\"cid:banner\" width=\"600\" height=\"200\" alt=\"Banner\">{}</center></body></html>",
+        (1..=30).map(section).collect::<String>()
+    );
+    let mut png = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png, 600, 200);
+        encoder.set_color(png::ColorType::Rgb);
+        let mut writer = encoder.write_header().unwrap();
+        let pixels: Vec<u8> = (0..200u32)
+            .flat_map(|y| {
+                (0..600u32).flat_map(move |x| [(x * 255 / 600) as u8, (y * 255 / 200) as u8, 160])
+            })
+            .collect();
+        writer.write_image_data(&pixels).unwrap();
+    }
+    // The base64 helper takes whole groups of three bytes.
+    png.resize(png.len().div_ceil(3) * 3, 0);
+    let image = base64(&png);
+    let lines: Vec<&str> = image
+        .as_bytes()
+        .chunks(76)
+        .map(|line| std::str::from_utf8(line).unwrap())
+        .collect();
+    format!(
+        "From: News <news@example.com>\r\nTo: me@example.com\r\nSubject: The weekly newsletter\r\nMIME-Version: 1.0\r\n\
+         Content-Type: multipart/related; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: text/html; charset=utf-8\r\n\r\n\
+         {html}\r\n--b\r\nContent-Type: image/png\r\nContent-ID: <banner>\r\nContent-Transfer-Encoding: base64\r\n\r\n\
+         {}\r\n--b--\r\n",
+        lines.join("\r\n")
+    )
+    .into_bytes()
+}
+
+#[test]
+fn a_written_home_has_the_mail_and_the_two_messages() {
+    let dir = tempfile::tempdir().unwrap();
+    write_home(dir.path(), 300);
+    let paths = postvak_core::paths::Paths::under(dir.path());
+    let config = postvak_core::config::Config::load(&paths.config_file()).unwrap();
+    assert_eq!(config.accounts.len(), ACCOUNTS.len());
+    let store = Store::open(&paths.mail_db("home")).unwrap();
+    assert!(store.message_count("INBOX").unwrap() > 2);
+    let newsletter = reader::read(&store, &("INBOX".to_string(), NEWSLETTER_UID))
+        .html
+        .unwrap();
+    assert!(newsletter.html.len() > 20_000);
+    assert_eq!(newsletter.inline.len(), 1, "the banner");
+    let plain = reader::read(&store, &("INBOX".to_string(), PLAIN_UID));
+    assert!(plain.message.is_some() && plain.html.is_none());
+}
+
+#[test]
+#[ignore = "writes a mail home for scripts/startup.py into POSTVAK_PERF_HOME"]
+fn home() {
+    let root =
+        std::env::var("POSTVAK_PERF_HOME").expect("POSTVAK_PERF_HOME names the directory to write");
+    let scale = std::env::var("POSTVAK_BENCH_SCALE").map_or(10_000, |scale| scale.parse().unwrap());
+    write_home(std::path::Path::new(&root), scale);
 }

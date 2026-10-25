@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use slint::winit_030::winit::event::WindowEvent;
 use slint::winit_030::{EventResult, WinitWindowAccessor};
 
 /// Failed starts in a row after which the next start is in safe mode.
@@ -13,6 +14,8 @@ const SAFE_MODE_AFTER: u32 = 2;
 
 /// Whether a window of this process has shown.
 static SHOWN: AtomicBool = AtomicBool::new(false);
+/// Whether a window of this process has been asked to draw.
+static DRAWN: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Renderer {
@@ -123,14 +126,21 @@ impl Marker {
     }
 }
 
-/// Counts this start as one that showed a window once `window`'s native window has its first event.
+/// Counts this start as one that showed a window once `window`'s native window has its first event. Reports the
+/// `first_frame` phase once that frame is drawn.
 pub(crate) fn watch(window: &slint::Window, marker: Option<Marker>) {
     // ponytail: the first event comes before the first frame, so a crash while drawing that frame is not counted.
-    window.on_winit_window_event(move |_, _| {
+    window.on_winit_window_event(move |_, event| {
         if !SHOWN.swap(true, Ordering::Relaxed)
             && let Some(marker) = &marker
         {
             marker.clear();
+        }
+        // Slint draws right after this filter returns, so the next turn of the event loop comes after the frame.
+        if matches!(event, WindowEvent::RedrawRequested) && !DRAWN.swap(true, Ordering::Relaxed) {
+            slint::Timer::single_shot(std::time::Duration::ZERO, || {
+                crate::phases::mark("first_frame");
+            });
         }
         EventResult::Propagate
     });

@@ -20,6 +20,7 @@ mod logos;
 mod menu;
 mod numbers;
 mod persist;
+mod phases;
 mod reader;
 mod rows;
 mod rules;
@@ -75,6 +76,7 @@ pub fn run(
     open: Option<Open>,
     background: bool,
 ) -> Result<()> {
+    phases::start();
     let token = launch::take_token();
     let instance = match &paths {
         Ok(paths) => match instance::claim(paths, &instance::Request { open: open.clone() }) {
@@ -99,6 +101,7 @@ pub fn run(
     let backend = std::env::var("SLINT_BACKEND").ok();
     let renderer = launch::renderer(safe_mode, backend.as_deref());
     launch::select(renderer, APP_ID, token.clone());
+    phases::mark("backend_selected");
     let daemon_log = paths.as_ref().ok().map(Paths::daemon_log);
     let start = Start {
         safe_mode,
@@ -183,10 +186,12 @@ impl Start<'_> {
     fn open(&self, paths: Paths) -> Result<()> {
         let (safe_mode, marker) = (self.safe_mode, self.marker);
         let config = Config::load(&paths.config_file())?;
+        phases::mark("config_loaded");
         if config.accounts.is_empty() {
             bail!(startup::NoAccounts);
         }
         let (client, events, states) = state::connect(&paths, Box::new(wake))?;
+        phases::mark("daemon_connected");
         let window = ui::MailWindow::new().context("could not open the window")?;
         launch::watch(window.window(), marker.cloned());
         let _scheme = follow_desktop_scheme(&window)?;

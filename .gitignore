@@ -10,3 +10,4 @@ mise.lock
 /tests/snapshots/*.diff.png
 /tests/snapshots/*.old.png
 /dist/
+__pycache__/
