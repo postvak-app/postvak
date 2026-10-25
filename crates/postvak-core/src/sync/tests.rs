@@ -1086,7 +1086,47 @@ fn missing_rule_folder_is_skipped() {
     )
     .unwrap();
     assert_eq!(run.evaluated, 2, "INBOX still processed");
-    assert_eq!(run.events.len(), 1);
+    assert!(run.events.is_empty(), "{:?}", run.events);
+    assert!(
+        !ops.calls.contains(&"select Gone".to_string()),
+        "nothing in Gone to act on, so it is not selected: {:?}",
+        ops.calls
+    );
+}
+
+#[test]
+fn a_rule_folder_the_server_lost_is_reported_once_a_rule_would_act() {
+    let mut ops = ops_with_inbox().with_folder("Gone", None);
+    ops.add_mail("Gone", 1, H, &headers("bob@x", "old", "g1@x"), None);
+    ops.mail.get_mut("Gone").unwrap()[0]
+        .flags
+        .push("\\Seen".into());
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open_in_memory().unwrap();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let acc = account();
+    let identity = acc.identity().unwrap();
+    let rules = rules_from(
+        "[[rules]]\nname = \"old\"\nfolder = \"Gone\"\nmatch.seen = true\nactions = [\"flag\"]\n",
+        &store,
+        0,
+    );
+    sync_all(&mut ops, &store).unwrap();
+    // Deleted on the server after the sync.
+    ops.uidvalidity.remove("Gone");
+    let run = run_rules(
+        &mut ops,
+        &store,
+        &trash,
+        &rules,
+        &acc,
+        &identity,
+        Mode::Normal,
+        12 * H,
+    )
+    .unwrap();
+    assert_eq!(run.actions, 0);
+    assert_eq!(run.events.len(), 1, "{:?}", run.events);
     assert!(
         matches!(&run.events[0], Event::Error { message, .. } if message.contains("Gone")),
         "{:?}",
@@ -1127,6 +1167,89 @@ fn rules_run_selects_each_folder_once() {
         "{:?}",
         ops.calls
     );
+}
+
+#[test]
+fn a_rules_pass_with_nothing_to_do_selects_no_folder() {
+    let mut ops = ops_with_inbox().with_folder("Lists", None);
+    ops.add_mail("Lists", 1, H, &headers("list@x", "news", "l1@x"), None);
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open_in_memory().unwrap();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let acc = account();
+    let identity = acc.identity().unwrap();
+    let rules = rules_from(
+        "[[rules]]\nname = \"news\"\nfolder = \"Lists\"\nmatch.from = { equals = \"nobody@x\" }\nactions = [\"flag\"]\n",
+        &store,
+        0,
+    );
+    sync_all(&mut ops, &store).unwrap();
+    let run = |ops: &mut RecordingOps| {
+        run_rules(
+            ops,
+            &store,
+            &trash,
+            &rules,
+            &acc,
+            &identity,
+            Mode::Normal,
+            12 * H,
+        )
+        .unwrap()
+    };
+    run(&mut ops);
+    ops.calls.clear();
+    let quiet = run(&mut ops);
+    assert_eq!(quiet.evaluated, 3, "every message is still evaluated");
+    assert!(quiet.events.is_empty(), "{:?}", quiet.events);
+    assert_eq!(
+        calls_starting(&ops, "select"),
+        Vec::<String>::new(),
+        "{:?}",
+        ops.calls
+    );
+}
+
+#[test]
+fn fresh_inbox_mail_selects_inbox_before_it_notifies() {
+    let mut ops = ops_with_inbox();
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open_in_memory().unwrap();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let acc = account();
+    let identity = acc.identity().unwrap();
+    sync_all(&mut ops, &store).unwrap();
+    run_rules(
+        &mut ops,
+        &store,
+        &trash,
+        &[],
+        &acc,
+        &identity,
+        Mode::Normal,
+        12 * H,
+    )
+    .unwrap();
+    ops.add_mail("INBOX", 3, 12 * H, &headers("bob@x", "new", "m3@x"), None);
+    sync_all(&mut ops, &store).unwrap();
+    ops.calls.clear();
+    let run = run_rules(
+        &mut ops,
+        &store,
+        &trash,
+        &[],
+        &acc,
+        &identity,
+        Mode::Normal,
+        12 * H,
+    )
+    .unwrap();
+    assert!(
+        matches!(&run.events[..], [Event::NewMail { uid: 3, .. }]),
+        "{:?}",
+        run.events
+    );
+    assert_eq!(calls_starting(&ops, "select"), ["select INBOX"]);
 }
 
 #[test]
