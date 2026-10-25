@@ -30,6 +30,7 @@ const MIGRATIONS: &[M<'static>] = &[
     M::up(include_str!(
         "../migrations/015-attachment-in-thread-index/up.sql"
     )),
+    M::up(include_str!("../migrations/016-folder-uid-next/up.sql")),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -439,6 +440,15 @@ impl Store {
         self.set_folder_uid(folder, "initial_uid_next", uid_next)
     }
 
+    /// The UIDNEXT the last complete sync of `folder` saw; 0 when unknown.
+    pub fn uid_next(&self, folder: &str) -> Result<u32, StoreError> {
+        self.folder_uid(folder, "uid_next")
+    }
+
+    pub fn set_uid_next(&self, folder: &str, uid_next: u32) -> Result<(), StoreError> {
+        self.set_folder_uid(folder, "uid_next", uid_next)
+    }
+
     /// The highest uid the rules have evaluated in `folder`; above it mail is fresh. 0 when unknown.
     pub fn rules_uid(&self, folder: &str) -> Result<u32, StoreError> {
         self.folder_uid(folder, "rules_uid")
@@ -514,7 +524,7 @@ impl Store {
         self.conn
             .execute("DELETE FROM messages WHERE folder = ?1", params![name])?;
         self.conn.execute(
-            "UPDATE folders SET uidvalidity = ?2, last_uid = 0 WHERE name = ?1",
+            "UPDATE folders SET uidvalidity = ?2, last_uid = 0, uid_next = 0 WHERE name = ?1",
             params![name, uidvalidity],
         )?;
         Ok(())
@@ -1213,9 +1223,11 @@ mod tests {
         })
         .unwrap();
         assert_eq!(s.folder("INBOX").unwrap().unwrap().last_uid, 1);
+        s.set_uid_next("INBOX", 2).unwrap();
         s.reset_folder("INBOX", 2).unwrap();
         let f = s.folder("INBOX").unwrap().unwrap();
         assert_eq!((f.uidvalidity, f.last_uid), (2, 0));
+        assert_eq!(s.uid_next("INBOX").unwrap(), 0, "a reset forgets UIDNEXT");
         assert!(s.messages_in_folder("INBOX").unwrap().is_empty());
     }
 
@@ -2244,6 +2256,23 @@ mod tests {
         })
         .unwrap();
         assert_eq!(s.initial_uid_next("INBOX").unwrap(), 1201);
+    }
+
+    #[test]
+    fn uid_next_round_trips_and_survives_upsert() {
+        let s = store_with_inbox();
+        assert_eq!(s.uid_next("INBOX").unwrap(), 0);
+        assert_eq!(s.uid_next("Nope").unwrap(), 0);
+        s.set_uid_next("INBOX", 42).unwrap();
+        s.upsert_folder(&Folder {
+            name: "INBOX".into(),
+            uidvalidity: 1,
+            last_uid: 41,
+            special_use: None,
+            delimiter: None,
+        })
+        .unwrap();
+        assert_eq!(s.uid_next("INBOX").unwrap(), 42);
     }
 
     /// uid 1 read, 2 unread, 3 flagged and read, 4 read with a multipart/mixed Content-Type folded onto a second line.

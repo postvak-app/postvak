@@ -29,7 +29,7 @@ notify = true
 | `password` | required | `{ keyring = true }` or `{ command = "pass show mail/work" }`. |
 | `address` | the username | Your address. Required when the username is not an email address. |
 | `aliases` | none | Other addresses that are you. `*` is a wildcard over the whole address. |
-| `sync_interval_secs` | 120 | Full sync interval, at least 10. New INBOX mail arrives sooner through IMAP IDLE. |
+| `sync_interval_secs` | 120 | Full sync interval, at least 10. New INBOX mail arrives sooner through IMAP IDLE. A pass opens only the folders whose status shows a change, so a short interval costs little. |
 | `trash_retention_days` | 30 | How long deleted mail is kept as `.eml`. |
 | `notify` | true | Desktop notification for new INBOX mail that no rule moved, archived, deleted or silenced (see [Notifications](rules.md#notifications)). |
 | `index_bodies` | true | Download and index the text of every message in the background, so search covers bodies (see [Search](search.md)). Off, only the subject, addresses and the bodies of mail you opened are searched. |

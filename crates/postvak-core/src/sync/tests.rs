@@ -219,6 +219,8 @@ fn second_sync_only_fetches_new_and_updates_flags_and_removals() {
 #[test]
 fn sync_ignores_uids_below_last_uid() {
     let mut ops = ops_with_inbox();
+    // Without UIDNEXT the sync must search, and the server answers 3:* with uid 2.
+    ops.no_uidnext = true;
     let store = Store::open_in_memory().unwrap();
     sync_all(&mut ops, &store).unwrap();
     let new = sync_all(&mut ops, &store).unwrap().0;
@@ -1629,6 +1631,201 @@ fn a_full_pass_syncs_inbox_first() {
     assert_eq!(selects, ["select INBOX", "select Archive"]);
 }
 
+/// INBOX, Archive (3 messages) and Lists (empty), synced once, with the calls cleared.
+fn synced_three_folders(list_status: bool) -> (RecordingOps, Store) {
+    let mut ops = ops_with_inbox()
+        .with_folder("Archive", Some("Archive"))
+        .with_folder("Lists", None);
+    ops.list_status = list_status;
+    for uid in 1..=3 {
+        let id = format!("a{uid}@x");
+        ops.add_mail("Archive", uid, H, &headers("bob@x", "old", &id), None);
+    }
+    let store = Store::open_in_memory().unwrap();
+    sync_all(&mut ops, &store).unwrap();
+    // As the daemon leaves it, to IDLE.
+    ops.select("INBOX").unwrap();
+    ops.calls.clear();
+    (ops, store)
+}
+
+fn calls_starting(ops: &RecordingOps, prefix: &str) -> Vec<String> {
+    ops.calls
+        .iter()
+        .filter(|c| c.starts_with(prefix))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn a_pass_selects_only_inbox_when_status_shows_nothing_changed() {
+    let (mut ops, store) = synced_three_folders(false);
+    sync_all(&mut ops, &store).unwrap();
+    assert_eq!(calls_starting(&ops, "select"), ["select INBOX"]);
+    assert_eq!(
+        calls_starting(&ops, "status"),
+        ["status Trash", "status Archive", "status Lists"]
+    );
+    // SELECT's UIDNEXT already says INBOX has nothing new.
+    assert_eq!(calls_starting(&ops, "search_uids"), Vec::<String>::new());
+}
+
+#[test]
+fn list_status_answers_every_folder_in_one_command() {
+    let (mut ops, store) = synced_three_folders(true);
+    sync_all(&mut ops, &store).unwrap();
+    assert_eq!(
+        ops.calls,
+        ["list_folders_status", "select INBOX"],
+        "nothing changed, so INBOX is the only folder selected"
+    );
+}
+
+#[test]
+fn a_change_made_elsewhere_selects_that_folder_only() {
+    for list_status in [false, true] {
+        let (mut ops, store) = synced_three_folders(list_status);
+        ops.add_mail("Lists", 1, H, &headers("list@x", "news", "l1@x"), None);
+        ops.mail.get_mut("Archive").unwrap()[0]
+            .flags
+            .push("\\Seen".into());
+        let new = sync_all(&mut ops, &store).unwrap().0;
+        assert_eq!(new, 1);
+        assert_eq!(
+            calls_starting(&ops, "select"),
+            ["select INBOX", "select Archive", "select Lists"]
+        );
+        assert!(store.message("Archive", 1).unwrap().unwrap().is_seen());
+        assert!(store.message("Lists", 1).unwrap().is_some());
+
+        // Removing a message changes MESSAGES only.
+        ops.mail.get_mut("Archive").unwrap().retain(|m| m.uid != 2);
+        ops.calls.clear();
+        sync_all(&mut ops, &store).unwrap();
+        assert_eq!(
+            calls_starting(&ops, "select"),
+            ["select INBOX", "select Archive"]
+        );
+        assert_eq!(store.message("Archive", 2).unwrap(), None);
+    }
+}
+
+#[test]
+fn a_new_uidvalidity_selects_the_folder_and_resyncs_it() {
+    let (mut ops, store) = synced_three_folders(false);
+    *ops.uidvalidity.get_mut("Archive").unwrap() += 1;
+    sync_all(&mut ops, &store).unwrap();
+    assert!(ops.calls.contains(&"select Archive".to_string()));
+    assert_eq!(store.folder("Archive").unwrap().unwrap().uidvalidity, 2);
+}
+
+#[test]
+fn without_condstore_a_skipped_folder_still_gets_its_flags_every_30_minutes() {
+    let mut ops = ops_with_inbox().with_folder("Archive", Some("Archive"));
+    ops.no_condstore = true;
+    ops.add_mail("Archive", 1, H, &headers("bob@x", "old", "a1@x"), None);
+    let store = Store::open_in_memory().unwrap();
+    sync_all(&mut ops, &store).unwrap();
+    ops.mail.get_mut("Archive").unwrap()[0]
+        .flags
+        .push("\\Seen".into());
+    ops.calls.clear();
+    sync_all(&mut ops, &store).unwrap();
+    assert_eq!(calls_starting(&ops, "select"), ["select INBOX"]);
+    assert!(!store.message("Archive", 1).unwrap().unwrap().is_seen());
+
+    store
+        .set_flags_synced("Archive", 0, now() - FULL_FLAGS_EVERY_SECS)
+        .unwrap();
+    ops.calls.clear();
+    sync_all(&mut ops, &store).unwrap();
+    assert_eq!(
+        calls_starting(&ops, "select"),
+        ["select INBOX", "select Archive"]
+    );
+    assert!(store.message("Archive", 1).unwrap().unwrap().is_seen());
+}
+
+#[test]
+fn a_folder_selected_when_listed_gets_a_status_of_its_own() {
+    let (mut ops, store) = synced_three_folders(true);
+    ops.select("Lists").unwrap();
+    ops.calls.clear();
+    sync_all(&mut ops, &store).unwrap();
+    // INBOX syncs first, so by its turn Lists is no longer selected.
+    assert_eq!(
+        ops.calls,
+        ["list_folders_status", "select INBOX", "status Lists"]
+    );
+}
+
+#[test]
+fn a_folder_a_command_just_selected_is_selected_rather_than_asked_for_its_status() {
+    for list_status in [false, true] {
+        let (mut ops, store) = synced_three_folders(list_status);
+        let mut checkpoint = |ops: &mut dyn MailOps, step: Activity| {
+            if matches!(&step, Activity::SyncingFolder { folder, .. } if folder == "Lists") {
+                ops.select("Lists")?;
+                return Ok(true);
+            }
+            Ok(false)
+        };
+        sync_all_with(&mut ops, &store, &mut checkpoint).unwrap();
+        assert!(!ops.calls.contains(&"status Lists".to_string()));
+        assert_eq!(
+            calls_starting(&ops, "select"),
+            ["select INBOX", "select Lists", "select Lists"]
+        );
+    }
+}
+
+#[test]
+fn a_refused_status_selects_the_folder_instead() {
+    let (mut ops, store) = synced_three_folders(false);
+    ops.uidvalidity.remove("Lists");
+    let (_, errors) = sync_all(&mut ops, &store).unwrap();
+    assert!(ops.calls.contains(&"status Lists".to_string()));
+    assert!(ops.calls.contains(&"select Lists".to_string()));
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].starts_with("Lists: "), "{errors:?}");
+}
+
+#[test]
+fn a_folder_whose_sync_was_cut_short_is_selected_next_pass() {
+    let (mut ops, store) = synced_three_folders(false);
+    ops.add_mail("Lists", 1, H, &headers("list@x", "news", "l1@x"), None);
+    ops.fail_fetch_after = Some(0);
+    assert!(sync_all(&mut ops, &store).is_err());
+    assert_eq!(store.uid_next("Lists").unwrap(), 0);
+    ops.fail_fetch_after = None;
+    ops.calls.clear();
+    sync_all(&mut ops, &store).unwrap();
+    assert!(ops.calls.contains(&"select Lists".to_string()));
+    assert!(store.message("Lists", 1).unwrap().is_some());
+    assert_eq!(store.uid_next("Lists").unwrap(), 2);
+}
+
+#[test]
+fn a_skipped_folder_still_takes_a_new_special_use() {
+    let (mut ops, store) = synced_three_folders(false);
+    ops.folders
+        .iter_mut()
+        .find(|f| f.name == "Lists")
+        .unwrap()
+        .special_use = Some("Junk".into());
+    sync_all(&mut ops, &store).unwrap();
+    assert!(!ops.calls.contains(&"select Lists".to_string()));
+    assert_eq!(
+        store
+            .folder("Lists")
+            .unwrap()
+            .unwrap()
+            .special_use
+            .as_deref(),
+        Some("Junk")
+    );
+}
+
 #[test]
 fn changed_uidvalidity_blocks_rules_on_stale_rows() {
     let mut ops = RecordingOps::default()
@@ -2090,6 +2287,9 @@ struct QueuesCommandsOnSelect {
 impl MailOps for QueuesCommandsOnSelect {
     fn list_folders(&mut self) -> crate::mail_ops::MailResult<Vec<RemoteFolder>> {
         self.inner.list_folders()
+    }
+    fn selected(&self) -> Option<&str> {
+        self.inner.selected()
     }
     fn select(&mut self, folder: &str) -> crate::mail_ops::MailResult<crate::mail_ops::SelectInfo> {
         if folder != self.folder {
@@ -3688,6 +3888,8 @@ fn crowded_inbox(n: u32) -> (RecordingOps, Store) {
     }
     let store = Store::open_in_memory().unwrap();
     sync_all(&mut ops, &store).unwrap();
+    // As the daemon leaves it, to IDLE.
+    ops.select("INBOX").unwrap();
     ops.calls.clear();
     (ops, store)
 }
@@ -3871,6 +4073,9 @@ impl Drop for Returning {
 impl MailOps for Returning {
     fn list_folders(&mut self) -> crate::mail_ops::MailResult<Vec<RemoteFolder>> {
         self.ops.list_folders()
+    }
+    fn selected(&self) -> Option<&str> {
+        self.ops.selected()
     }
     fn select(&mut self, folder: &str) -> crate::mail_ops::MailResult<crate::mail_ops::SelectInfo> {
         self.ops.select(folder)
