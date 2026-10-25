@@ -411,6 +411,10 @@ fn envelope_from(fetch: &Fetch) -> Option<Envelope> {
 }
 
 impl MailOps for ImapOps {
+    fn has_uidplus(&self) -> bool {
+        self.has_uidplus
+    }
+
     fn list_folders(&mut self) -> MailResult<Vec<RemoteFolder>> {
         self.run(self.command_timeout, async |session| {
             let names: Vec<_> = session

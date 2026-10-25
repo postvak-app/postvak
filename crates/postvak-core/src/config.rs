@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::paths::{read_or_empty, write_atomic};
+use crate::paths::{edit_toml, read_or_empty};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -14,6 +14,15 @@ pub enum ConfigError {
     #[error(transparent)]
     Io(#[from] io::Error),
 }
+
+impl From<toml_edit::TomlError> for ConfigError {
+    fn from(e: toml_edit::TomlError) -> Self {
+        ConfigError::Parse(e.to_string())
+    }
+}
+
+/// Beside config.toml; every write holds it, so two front ends saving at once keep each other's change.
+const LOCK: &str = ".config.lock";
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -120,44 +129,6 @@ impl Config {
         Config::parse(&read_or_empty(path)?)
     }
 
-    /// Writes the accounts and `[ui]` into the file in place: comments, untouched keys and their order stay, and a
-    /// setting the file leaves out is only written once it differs from its default.
-    pub fn save(&self, path: &Path) -> Result<(), ConfigError> {
-        let mut doc = read_document(path)?;
-        let old_accounts = doc
-            .remove("accounts")
-            .and_then(|item| item.into_array_of_tables().ok())
-            .unwrap_or_default();
-        let account_defaults = account_defaults()?;
-        let mut accounts = toml_edit::ArrayOfTables::new();
-        for account in &self.accounts {
-            let mut table = old_accounts
-                .iter()
-                .find(|old| old.get("name").and_then(|n| n.as_str()) == Some(account.name.as_str()))
-                .cloned()
-                .unwrap_or_default();
-            merge_table(&mut table, &to_table(account)?, &account_defaults);
-            accounts.push(table);
-        }
-        if !accounts.is_empty() {
-            doc.insert("accounts", toml_edit::Item::ArrayOfTables(accounts));
-        }
-        let mut ui = doc
-            .remove("ui")
-            .and_then(|item| item.into_table().ok())
-            .unwrap_or_default();
-        merge_table(
-            &mut ui,
-            &to_table(&self.ui)?,
-            &to_table(&UiConfig::default())?,
-        );
-        if !ui.is_empty() {
-            doc.insert("ui", toml_edit::Item::Table(ui));
-        }
-        write_atomic(path, doc.to_string().as_bytes())?;
-        Ok(())
-    }
-
     pub fn account(&self, name: &str) -> Option<&AccountConfig> {
         self.accounts.iter().find(|a| a.name == name)
     }
@@ -208,30 +179,63 @@ impl Config {
     }
 }
 
-/// Sets `[ui] theme`, keeping the rest of the file's text and comments.
-pub fn save_theme(path: &Path, theme: Theme) -> Result<(), ConfigError> {
-    let mut doc = read_document(path)?;
-    let ui = doc
-        .entry("ui")
-        .or_insert_with(toml_edit::table)
-        .as_table_like_mut()
-        .ok_or_else(|| ConfigError::Invalid("`ui` must be a table".into()))?;
-    ui.insert("theme", toml_edit::value(theme.as_str()));
-    write_atomic(path, doc.to_string().as_bytes())?;
-    Ok(())
+/// Writes `account` into config.toml as the file reads now, in place of the account of the same name or added after
+/// the others. The rest stays as it is on disk: comments, the other accounts and `[ui]`, so a front end holding an
+/// older `Config` cannot drop what another one saved since. A key the account leaves at its default is only written
+/// when the file already had it. Nothing is written unless the whole file validates; returns the config it now holds.
+pub fn save_account(path: &Path, account: &AccountConfig) -> Result<Config, ConfigError> {
+    let new = to_table(account)?;
+    let defaults = account_defaults()?;
+    edit_toml(path, LOCK, |doc| {
+        let item = doc
+            .entry("accounts")
+            .or_insert(toml_edit::Item::ArrayOfTables(Default::default()));
+        // `accounts = [{ … }]` holds the same tables inline; editing it as `[[accounts]]` blocks keeps every key.
+        if item.is_value() {
+            let inline = std::mem::take(item);
+            let tables = match inline.as_array() {
+                Some(list) if list.is_empty() => Ok(toml_edit::ArrayOfTables::new()),
+                _ => inline.into_array_of_tables(),
+            };
+            *item =
+                toml_edit::Item::ArrayOfTables(tables.map_err(|_| {
+                    ConfigError::Invalid("`accounts` must be a list of tables".into())
+                })?);
+        }
+        let accounts = item
+            .as_array_of_tables_mut()
+            .ok_or_else(|| ConfigError::Invalid("`accounts` must be a list of tables".into()))?;
+        let index = accounts
+            .iter()
+            .position(|t| t.get("name").and_then(|n| n.as_str()) == Some(account.name.as_str()));
+        match index.and_then(|index| accounts.get_mut(index)) {
+            Some(table) => merge_table(table, &new, &defaults),
+            None => {
+                let mut table = toml_edit::Table::new();
+                merge_table(&mut table, &new, &defaults);
+                accounts.push(table);
+            }
+        }
+        Config::parse(&doc.to_string())
+    })
 }
 
-fn read_document(path: &Path) -> Result<toml_edit::DocumentMut, ConfigError> {
-    read_or_empty(path)?
-        .parse()
-        .map_err(|e: toml_edit::TomlError| ConfigError::Parse(e.to_string()))
+/// Sets `[ui] theme`, keeping the rest of the file's text and comments.
+pub fn save_theme(path: &Path, theme: Theme) -> Result<(), ConfigError> {
+    edit_toml(path, LOCK, |doc| {
+        let ui = doc
+            .entry("ui")
+            .or_insert_with(toml_edit::table)
+            .as_table_like_mut()
+            .ok_or_else(|| ConfigError::Invalid("`ui` must be a table".into()))?;
+        ui.insert("theme", toml_edit::value(theme.as_str()));
+        Ok(())
+    })
 }
 
 fn to_table(value: &impl Serialize) -> Result<toml_edit::Table, ConfigError> {
     let text = toml::to_string(value).map_err(|e| ConfigError::Invalid(e.to_string()))?;
-    let doc: toml_edit::DocumentMut = text
-        .parse()
-        .map_err(|e: toml_edit::TomlError| ConfigError::Parse(e.to_string()))?;
+    let doc: toml_edit::DocumentMut = text.parse()?;
     Ok(doc.as_table().clone())
 }
 
@@ -518,9 +522,11 @@ notify = false
         let cfg = Config::load(&path).unwrap();
         assert!(cfg.accounts.is_empty());
         let cfg = Config::parse(SAMPLE).unwrap();
-        cfg.save(&path).unwrap();
+        for account in &cfg.accounts {
+            save_account(&path, account).unwrap();
+        }
         let again = Config::load(&path).unwrap();
-        assert_eq!(again.accounts.len(), 2);
+        assert_eq!(again.accounts, cfg.accounts);
     }
 
     #[test]
@@ -559,25 +565,20 @@ notify = false
     }
 
     #[test]
-    fn save_keeps_comments_and_writes_only_what_changed() {
+    fn save_account_keeps_comments_and_writes_only_what_changed() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         let text = "# my accounts\n\n# the day job\n[[accounts]]\nname = \"work\"\nhost = \"imap.example.com\" # via the VPN\nport = 993\nusername = \"pieter@example.com\"\npassword = { keyring = true }\n\n[[accounts]]\nname = \"home\"\nhost = \"mail.home.test\"\nusername = \"pieter@home.test\"\npassword = { keyring = true }\n";
         std::fs::write(&path, text).unwrap();
-        let mut cfg = Config::load(&path).unwrap();
-        cfg.accounts[0].port = 994;
-        cfg.accounts[0].aliases = vec!["p@example.org".into()];
-        cfg.accounts.retain(|a| a.name != "home");
+        let mut work = Config::load(&path).unwrap().accounts[0].clone();
+        work.port = 994;
+        work.aliases = vec!["p@example.org".into()];
+        save_account(&path, &work).unwrap();
         let password = PasswordSource::Command {
             command: "pass show mail/extra".into(),
         };
-        cfg.accounts.push(AccountConfig::new(
-            "extra",
-            "imap.extra.test",
-            "me@extra.test",
-            password,
-        ));
-        cfg.save(&path).unwrap();
+        let extra = AccountConfig::new("extra", "imap.extra.test", "me@extra.test", password);
+        let cfg = save_account(&path, &extra).unwrap();
 
         let saved = std::fs::read_to_string(&path).unwrap();
         for kept in [
@@ -588,7 +589,9 @@ notify = false
             assert!(saved.contains(kept), "lost {kept:?}:\n{saved}");
         }
         assert!(
-            saved.contains("port = 994") && !saved.contains("home"),
+            saved.contains("port = 994")
+                && saved.contains("aliases = [\"p@example.org\"]")
+                && saved.contains("name = \"home\"\nhost = \"mail.home.test\"\n"),
             "{saved}"
         );
         assert!(
@@ -601,14 +604,99 @@ notify = false
         );
         let again = Config::load(&path).unwrap();
         assert_eq!(again.accounts, cfg.accounts);
+        let names: Vec<&str> = cfg.accounts.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["work", "home", "extra"]);
+        assert_eq!(cfg.accounts[0], work);
     }
 
     #[test]
-    fn save_round_trip_leaves_out_a_default_ui_table() {
+    fn save_account_leaves_out_a_default_ui_table() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        Config::parse(SAMPLE).unwrap().save(&path).unwrap();
+        save_account(&path, &Config::parse(SAMPLE).unwrap().accounts[0]).unwrap();
         assert!(!std::fs::read_to_string(&path).unwrap().contains("[ui]"));
+    }
+
+    #[test]
+    fn save_account_keeps_an_account_saved_since_the_config_was_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, SAMPLE).unwrap();
+        let stale = Config::load(&path).unwrap();
+        let password = PasswordSource::Keyring { keyring: true };
+        let added = AccountConfig::new("added", "imap.added.test", "me@added.test", password);
+        save_account(&path, &added).unwrap();
+        save_theme(&path, Theme::Light).unwrap();
+
+        let mut changed = stale.accounts[0].clone();
+        changed.port = 1993;
+        let saved = save_account(&path, &changed).unwrap();
+        assert!(saved.account("added").is_some(), "{saved:?}");
+        assert_eq!(saved.ui.theme, Theme::Light);
+        assert_eq!(saved.accounts[0].port, 1993);
+        assert_eq!(Config::load(&path).unwrap().accounts, saved.accounts);
+    }
+
+    #[test]
+    fn concurrent_saves_keep_every_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::thread::scope(|scope| {
+            for i in 0..8 {
+                let path = &path;
+                scope.spawn(move || {
+                    let password = PasswordSource::Keyring { keyring: true };
+                    let account = AccountConfig::new(
+                        &format!("a{i}"),
+                        "imap.test",
+                        "me@test.example",
+                        password,
+                    );
+                    save_account(path, &account).unwrap();
+                });
+            }
+            scope.spawn(|| save_theme(&path, Theme::Dark).unwrap());
+        });
+        let saved = Config::load(&path).unwrap();
+        assert_eq!(saved.accounts.len(), 8);
+        assert_eq!(saved.ui.theme, Theme::Dark);
+    }
+
+    #[test]
+    fn save_account_writes_nothing_when_the_file_would_not_validate() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, SAMPLE).unwrap();
+        let mut bad = Config::parse(SAMPLE).unwrap().accounts[0].clone();
+        bad.trash_retention_days = 0;
+        assert!(matches!(
+            save_account(&path, &bad),
+            Err(ConfigError::Invalid(_))
+        ));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), SAMPLE);
+    }
+
+    #[test]
+    fn save_account_into_a_file_with_only_ui_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[ui]\ntheme = \"dark\"\n").unwrap();
+        let account = Config::parse(SAMPLE).unwrap().accounts[0].clone();
+        let saved = save_account(&path, &account).unwrap();
+        assert_eq!(
+            (saved.accounts, saved.ui.theme),
+            (vec![account], Theme::Dark)
+        );
+    }
+
+    #[test]
+    fn save_account_edits_an_inline_accounts_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "accounts = []\n").unwrap();
+        let account = Config::parse(SAMPLE).unwrap().accounts[0].clone();
+        let saved = save_account(&path, &account).unwrap();
+        assert_eq!(saved.accounts, [account]);
     }
 
     #[test]

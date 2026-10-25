@@ -93,6 +93,9 @@ pub(crate) fn account_line(account: &Account) -> String {
     if account.queued > 0 {
         line.push_str(&format!(" · {} queued", account.queued));
     }
+    if account.uidplus == Some(false) {
+        line.push_str(" · server lacks UIDPLUS");
+    }
     line
 }
 
@@ -172,6 +175,7 @@ mod tests {
             settling: Vec::new(),
             queued: 0,
             store: Err("no store".into()),
+            uidplus: None,
             identity: None,
         }
     }
@@ -206,6 +210,50 @@ mod tests {
             account_line(&account),
             "work: INBOX headers 12,500 / 48,213 · 2 queued"
         );
+    }
+
+    #[test]
+    fn a_server_without_uidplus_says_so_on_the_line() {
+        let mut account = account();
+        account.activity = Some(Activity::Idle {
+            since: 1_790_000_000,
+        });
+        let up_to_date = format!("work: up to date · {}", clock(1_790_000_000));
+        account.uidplus = Some(true);
+        assert_eq!(account_line(&account), up_to_date);
+        account.uidplus = Some(false);
+        assert_eq!(
+            account_line(&account),
+            format!("{up_to_date} · server lacks UIDPLUS")
+        );
+    }
+
+    #[test]
+    fn a_login_without_uidplus_explains_it_once_in_the_history() {
+        let fx = Fixture::new(&["work"]);
+        let (mut driver, wires) = fx.driver();
+        let connected = |uidplus| Event::Connected {
+            account: "work".into(),
+            uidplus,
+        };
+        let explained = format!("work: {}", postvak_core::help::NO_UIDPLUS);
+        let count = |driver: &crate::test_support::Driver| {
+            driver
+                .app
+                .history
+                .iter()
+                .filter(|line| line.text == explained)
+                .count()
+        };
+        wires.events.send(connected(true)).unwrap();
+        driver.tick();
+        assert_eq!(count(&driver), 0);
+        for _ in 0..2 {
+            wires.events.send(connected(false)).unwrap();
+            driver.tick();
+        }
+        assert_eq!(driver.app.accounts[0].uidplus, Some(false));
+        assert_eq!(count(&driver), 1, "a reconnect does not repeat it");
     }
 
     #[test]

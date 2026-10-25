@@ -164,6 +164,40 @@ pub fn read_or_empty(path: &Path) -> io::Result<String> {
     }
 }
 
+/// Edits the TOML file at `path` under an exclusive lock on the private file `lock_name` beside it: reads the file
+/// again under the lock (a missing one is empty), lets `change` edit it, and writes it atomically only when `change`
+/// succeeds. So two writers, in this process or another, never lose each other's edit, and comments stay.
+pub fn edit_toml<T, E>(
+    path: &Path,
+    lock_name: &str,
+    change: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<T, E>,
+) -> Result<T, E>
+where
+    E: From<io::Error> + From<toml_edit::TomlError>,
+{
+    let _lock = lock_beside(path, lock_name)?;
+    let mut doc: toml_edit::DocumentMut = read_or_empty(path)?.parse()?;
+    let value = change(&mut doc)?;
+    write_atomic(path, doc.to_string().as_bytes())?;
+    Ok(value)
+}
+
+/// An exclusive lock on the private file `name` beside `path`, held until the file drops.
+fn lock_beside(path: &Path, name: &str) -> io::Result<File> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| io::Error::other("path has no parent"))?;
+    create_private_dir(dir)?;
+    let file = File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(name))?;
+    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    file.lock()?;
+    Ok(file)
+}
+
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     write_atomic_in(path, bytes, true)
 }
@@ -539,5 +573,71 @@ mod tests {
                 .file_type()
                 .is_symlink()
         );
+    }
+
+    #[test]
+    fn edit_toml_keeps_the_file_when_the_change_fails_and_makes_the_lock_private() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config").join("x.toml");
+        create_private_dir(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            "# mine
+a = 1
+",
+        )
+        .unwrap();
+        let lock = path.parent().unwrap().join(".x.lock");
+        fs::write(&lock, "").unwrap();
+        fs::set_permissions(&lock, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let failed: Result<(), ParseOrIo> = edit_toml(&path, ".x.lock", |doc| {
+            doc["a"] = toml_edit::value(2);
+            Err(ParseOrIo::Io)
+        });
+        assert!(failed.is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "# mine\na = 1\n");
+        assert_eq!(
+            fs::metadata(&lock).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        edit_toml::<_, ParseOrIo>(&path, ".x.lock", |doc| {
+            doc["b"] = toml_edit::value(true);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "# mine\na = 1\nb = true\n"
+        );
+    }
+
+    #[test]
+    fn edit_toml_reports_a_file_that_is_not_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.toml");
+        fs::write(&path, "a = ").unwrap();
+        let err = edit_toml::<(), ParseOrIo>(&path, ".x.lock", |_| Ok(())).unwrap_err();
+        assert!(matches!(err, ParseOrIo::Parse), "{err:?}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "a = ");
+    }
+
+    #[derive(Debug)]
+    enum ParseOrIo {
+        Parse,
+        Io,
+    }
+
+    impl From<io::Error> for ParseOrIo {
+        fn from(_: io::Error) -> Self {
+            ParseOrIo::Io
+        }
+    }
+
+    impl From<toml_edit::TomlError> for ParseOrIo {
+        fn from(_: toml_edit::TomlError) -> Self {
+            ParseOrIo::Parse
+        }
     }
 }

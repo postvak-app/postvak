@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::bail;
 
-use crate::config::{AccountConfig, Config, ConfigError, PasswordSource};
+use crate::config::{self, AccountConfig, Config, ConfigError, PasswordSource};
 use crate::credentials::{self, CredentialError, Secret};
 use crate::daemon::Client;
 use crate::paths::Paths;
@@ -40,7 +40,9 @@ pub fn check(config: &Config, account: &AccountConfig) -> Result<(), ConfigError
 }
 
 /// Validates the account, stores a keyring password, then saves config.toml; an account of the same name is replaced.
-/// The daemon watches config.toml and starts the account's sync itself, so a wrong login shows as that sync's error.
+/// The save merges into the file as it reads then, so what another front end saved since `config` was loaded stays,
+/// and `config` becomes what the file holds. The daemon watches config.toml and starts the account's sync itself, so
+/// a wrong login shows as that sync's error.
 pub fn add(
     config: &mut Config,
     paths: &Paths,
@@ -52,9 +54,7 @@ pub fn add(
         let secret = secret.ok_or_else(|| AddError::MissingSecret(account.name.clone()))?;
         credentials::store(&account.name, &secret)?;
     }
-    let candidate = with_account(config, &account);
-    candidate.save(&paths.config_file())?;
-    *config = candidate;
+    *config = config::save_account(&paths.config_file(), &account)?;
     Ok(())
 }
 
@@ -106,7 +106,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::config::{AccountConfig, Config, PasswordSource};
+    use crate::config::{self, AccountConfig, Config, PasswordSource};
     use crate::credentials::{self, Secret};
     use crate::daemon::Client;
     use crate::daemon::test_support::{TestDaemon, options, recording_connector, write_config};
@@ -193,6 +193,24 @@ mod tests {
         let names: Vec<&str> = config.accounts.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(names, ["work", "home"], "replaced in place");
         assert_eq!(config.accounts[0].port, 1993);
+    }
+
+    #[test]
+    fn add_from_a_stale_config_keeps_what_another_front_end_saved() {
+        let (_dir, paths) = home();
+        let mut window = Config::load(&paths.config_file()).unwrap();
+        let mut cli = Config::load(&paths.config_file()).unwrap();
+        add(&mut cli, &paths, command_account("work"), None).unwrap();
+        config::save_theme(&paths.config_file(), config::Theme::Dark).unwrap();
+        add(&mut window, &paths, command_account("home"), None).unwrap();
+        let saved = Config::load(&paths.config_file()).unwrap();
+        let names: Vec<&str> = saved.accounts.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["work", "home"]);
+        assert_eq!(saved.ui.theme, config::Theme::Dark);
+        assert_eq!(
+            window.accounts, saved.accounts,
+            "the caller's config is refreshed"
+        );
     }
 
     #[test]

@@ -130,7 +130,7 @@ pub(crate) fn load_from_paths(
     let mut opened = Vec::new();
     let mut failed = Vec::new();
     for (index, name, identity) in accounts {
-        match Store::open(&paths.mail_db(name)) {
+        match Store::open_account(paths, name) {
             Ok(store) => opened.push((*index, name.as_str(), store, identity.as_ref())),
             Err(e) => {
                 log::warn!("[{name}] could not open the store to reload the list: {e}");
@@ -222,5 +222,15 @@ mod tests {
         let uids: Vec<u32> = loaded.hits.unwrap().iter().map(|row| row.uid).collect();
         assert_eq!(uids, [1]);
         assert!(loaded.threads.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn loading_an_account_with_no_directory_yet_makes_it_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let fx = Fixture::new(&["work"]);
+        load_from_paths(&fx.paths, &[(0, "new".to_string(), None)], &inbox());
+        let meta = std::fs::metadata(fx.paths.account_dir("new")).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o700);
     }
 }
