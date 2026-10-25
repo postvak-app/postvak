@@ -146,4 +146,57 @@ Opening a message reads its row and raw bytes from the store and parses its MIME
 
 The bench keeps the 5 MB message; the 25 MB row is one run with a larger attachment. Below the budget nothing changes; above it the frame no longer grows with the message.
 
+## Startup and memory
+
+What a user notices first: how long until the window shows a list, and how much memory the GUI and the daemon use. With `POSTVAK_STARTUP_METRICS=1` the GUI prints one JSON line per startup phase on stderr, `{"startup":"<phase>","ms":<ms>}`, in milliseconds since it started measuring; nothing otherwise.
+
+| Phase | When |
+| --- | --- |
+| `start` | The GUI's code starts running, 0 ms |
+| `backend_selected` | Slint's platform is up: connected to the display, its libraries loaded |
+| `config_loaded` | config.toml is read |
+| `daemon_connected` | The daemon answered, after starting it when none ran |
+| `stores_opened` | Every account's store is open, with its folders |
+| `first_list` | The first list's rows are loaded |
+| `first_frame` | The window has drawn its first frame |
+
+`scripts/startup.py` (Python 3, standard library only) runs the GUI against generated mail: the ignored test `bench::home` writes the benchmark's mail into a mail home, with an HTML newsletter (30 sections in tables and a `cid:` banner) and a plain message. Its accounts reach no server, so nothing but the stores is read. The script starts the GUI on a fresh copy of that home `--runs` times, stopping it and its daemon after each run, and records:
+
+- each phase, in the GUI's own milliseconds and in milliseconds since the script started the process (`median_wall_ms`, which adds loading the binary);
+- RSS, PSS and USS (private memory) of the GUI and of the daemon, which are separate processes: from `/proc/<pid>/smaps_rollup` on Linux, RSS from `ps` and the physical footprint from `footprint` on macOS. Once the window is idle, with the newsletter open (`postvak gui --open`), and after the plain message replaced it, which catches a renderer that never frees. Each reading waits `--settle` seconds (3 by default).
+
+```sh
+cargo build --release
+SLINT_BACKEND=winit-software scripts/startup.py run --runs 5 --out startup.json   # needs a display
+scripts/startup.py show startup.json                  # as Markdown tables
+scripts/startup.py compare main.json branch.json      # two reports, metric by metric
+```
+
+`--scale` sets the number of messages (10,000 by default) and `--home` uses a home written before. The script runs on the display and renderer it is given; leave `SLINT_BACKEND` out for femtovg. CI runs it on every pull request and every merge to `main` (the `startup` job in `ci.yml`), on Linux under Xvfb with the software renderer so runs compare, writes the tables to the job's summary and uploads the report as `startup-report`. It sets no limits yet; once a few runs show the noise, it should fail on a regression beyond a threshold. The script was written for macOS too, but only Linux has run it.
+
+Release build of `main` at d9b804b with this measurement added, Linux container under Xvfb (1920 × 1080), 4 vCPUs of an Intel Xeon at 2.80 GHz, software renderer, 10,000 messages. Median of five runs; in one of them the platform took 151 ms instead of about 28, and every later phase moved with it.
+
+| Phase | ms | Since the process started |
+| --- | --- | --- |
+| `backend_selected` | 28 | 33 |
+| `config_loaded` | 29 | 33 |
+| `daemon_connected` | 133 | 137 |
+| `stores_opened` | 141 | 146 |
+| `first_list` | 144 | 149 |
+| `first_frame` | 191 | 197 |
+
+| | GUI RSS | GUI PSS | GUI USS | Daemon RSS | Daemon PSS |
+| --- | --- | --- | --- | --- | --- |
+| Idle | 47 MB | 37 MB | 30 MB | 16 MB | 8 MB |
+| Newsletter open | 64 MB | 54 MB | 46 MB | 16 MB | 8 MB |
+| After the plain message | 64 MB | 54 MB | 46 MB | 16 MB | 8 MB |
+
+What this shows:
+
+- Starting the daemon and waiting for its answer is more than half of the time to the first frame: about 105 ms. With a daemon already running it falls away.
+- Slint's platform takes about 28 ms, and is the noisiest phase; reading config.toml takes under a millisecond.
+- The stores and the first list take about 10 ms together at this scale, the first frame about 45 ms more.
+- The newsletter adds 17 MB to the GUI, and replacing it with a plain message gives none of that back. Whether that is the HTML renderer's cache, the strips or the allocator keeping freed memory is not known yet.
+- A longer newsletter, taller than 32,767 physical pixels, panics the software renderer (#321), which is why the generated one has 30 sections.
+
 Not measured yet: drawing a frame of the list through the real window (`Fixture::window()`).

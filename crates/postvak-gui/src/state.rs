@@ -680,6 +680,7 @@ impl App {
                 },
             )
             .collect::<Vec<Account>>();
+        super::phases::mark("stores_opened");
         let rules_path = paths.rules_file();
         let rules_dir = paths.config_dir.clone();
         let rules = RulesState::load(&rules_path, Vec::new(), &account_names(&accounts));
@@ -769,6 +770,7 @@ impl App {
             notice: None,
         };
         app.reload_view();
+        super::phases::mark("first_list");
         app
     }
 
