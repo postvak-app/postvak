@@ -2126,11 +2126,15 @@ impl MailOps for QueuesCommandsOnSelect {
     fn fetch_raw(&mut self, uid: u32) -> crate::mail_ops::MailResult<Option<Vec<u8>>> {
         self.inner.fetch_raw(uid)
     }
-    fn fetch_structure(
+    fn fetch_structures(
         &mut self,
-        uid: u32,
-    ) -> crate::mail_ops::MailResult<Option<crate::mail_ops::Structure>> {
-        self.inner.fetch_structure(uid)
+        uids: &[u32],
+    ) -> crate::mail_ops::MailResult<std::collections::HashMap<u32, crate::mail_ops::Structure>>
+    {
+        self.inner.fetch_structures(uids)
+    }
+    fn status(&mut self, folder: &str) -> crate::mail_ops::MailResult<crate::mail_ops::StatusInfo> {
+        self.inner.status(folder)
     }
     fn fetch_part(
         &mut self,
@@ -3485,7 +3489,7 @@ fn a_slice_indexes_newest_first_and_stops_at_its_budget() {
             Duration::ZERO
         }
     };
-    let outcome = index::slice(&mut ops, &store, &account(), &tx, &mut clock).unwrap();
+    let outcome = index::slice(&mut ops, &store, &account(), &tx, &mut None, &mut clock).unwrap();
     assert_eq!(outcome, IndexOutcome::Progressed);
     assert_eq!(body_of(&store, "Archive", 1).as_deref(), Some("body three"));
     assert_eq!(body_of(&store, "INBOX", 2).as_deref(), Some("body two"));
@@ -3498,14 +3502,14 @@ fn a_slice_indexes_newest_first_and_stops_at_its_budget() {
     let calls: Vec<&String> = ops
         .calls
         .iter()
-        .filter(|c| c.starts_with("fetch_structure") || c.starts_with("fetch_part"))
+        .filter(|c| c.starts_with("fetch_structures") || c.starts_with("fetch_part"))
         .collect();
     assert_eq!(
         calls,
         [
-            "fetch_structure Archive 1",
+            "fetch_structures Archive 1",
             "fetch_part Archive 1 ",
-            "fetch_structure INBOX 2",
+            "fetch_structures INBOX 2",
             "fetch_part INBOX 2 "
         ]
     );
@@ -3523,7 +3527,10 @@ fn a_slice_indexes_newest_first_and_stops_at_its_budget() {
             },
         ]
     );
-    let outcome = index::slice(&mut ops, &store, &account(), &tx, &mut || Duration::ZERO).unwrap();
+    let outcome = index::slice(&mut ops, &store, &account(), &tx, &mut None, &mut || {
+        Duration::ZERO
+    })
+    .unwrap();
     assert_eq!(outcome, IndexOutcome::Progressed);
     assert_eq!(store.backlog_count(now()).unwrap(), (0, 4));
     let second: Vec<Event> = rx.try_iter().collect();
@@ -3540,7 +3547,10 @@ fn a_slice_indexes_newest_first_and_stops_at_its_budget() {
             },
         ]
     );
-    let outcome = index::slice(&mut ops, &store, &account(), &tx, &mut || Duration::ZERO).unwrap();
+    let outcome = index::slice(&mut ops, &store, &account(), &tx, &mut None, &mut || {
+        Duration::ZERO
+    })
+    .unwrap();
     assert_eq!(outcome, IndexOutcome::Done);
     assert!(rx.try_iter().next().is_none(), "a done slice sends nothing");
 }
@@ -3571,7 +3581,10 @@ fn a_structure_without_text_indexes_headers_and_names_and_html_waits_for_plain()
     ops.parts
         .insert(("INBOX".into(), 2, "2".into()), b"the plain one".to_vec());
     let (tx, _rx) = std::sync::mpsc::channel();
-    index::slice(&mut ops, &store, &account(), &tx, &mut || Duration::ZERO).unwrap();
+    index::slice(&mut ops, &store, &account(), &tx, &mut None, &mut || {
+        Duration::ZERO
+    })
+    .unwrap();
     let archived = store.message("Archive", 1).unwrap().unwrap();
     assert_eq!(archived.body_text.as_deref(), Some(""));
     assert_eq!(archived.attachment_names.as_deref(), Some("a.pdf"));
@@ -3608,7 +3621,10 @@ fn without_a_structure_small_mail_is_fetched_whole_and_large_mail_indexed_from_h
     let store = Store::open_in_memory().unwrap();
     sync_all(&mut ops, &store).unwrap();
     let (tx, _rx) = std::sync::mpsc::channel();
-    index::slice(&mut ops, &store, &account(), &tx, &mut || Duration::ZERO).unwrap();
+    index::slice(&mut ops, &store, &account(), &tx, &mut None, &mut || {
+        Duration::ZERO
+    })
+    .unwrap();
     assert_eq!(body_of(&store, "INBOX", 1).as_deref(), Some("small body"));
     assert_eq!(body_of(&store, "INBOX", 2).as_deref(), Some(""));
     assert!(ops.calls.iter().any(|c| c == "fetch_raw INBOX 1"));
@@ -3622,9 +3638,12 @@ fn without_a_structure_small_mail_is_fetched_whole_and_large_mail_indexed_from_h
 #[test]
 fn a_failed_fetch_marks_the_message_tried_and_the_slice_goes_on() {
     let (mut ops, store) = indexable();
-    ops.fail_next = Some(MailError::Protocol("no such part".into()));
+    ops.unreadable = Some(("Archive".into(), 1));
     let (tx, _rx) = std::sync::mpsc::channel();
-    index::slice(&mut ops, &store, &account(), &tx, &mut || Duration::ZERO).unwrap();
+    index::slice(&mut ops, &store, &account(), &tx, &mut None, &mut || {
+        Duration::ZERO
+    })
+    .unwrap();
     let failed = store.message("Archive", 1).unwrap().unwrap();
     assert_eq!(failed.body_text, None);
     assert!(
@@ -3640,7 +3659,10 @@ fn a_lost_connection_ends_the_slice_with_the_error() {
     let (mut ops, store) = indexable();
     ops.fail_next = Some(MailError::Io("reset".into()));
     let (tx, _rx) = std::sync::mpsc::channel();
-    let err = index::slice(&mut ops, &store, &account(), &tx, &mut || Duration::ZERO).unwrap_err();
+    let err = index::slice(&mut ops, &store, &account(), &tx, &mut None, &mut || {
+        Duration::ZERO
+    })
+    .unwrap_err();
     assert!(
         matches!(err, SyncError::Action(ActionError::Mail(MailError::Io(_)))),
         "{err}"
@@ -3652,13 +3674,119 @@ fn a_lost_connection_ends_the_slice_with_the_error() {
     );
 }
 
+/// `n` messages in INBOX, uid 1..=n, the higher the newer.
+fn crowded_inbox(n: u32) -> (RecordingOps, Store) {
+    let mut ops = RecordingOps::default().with_folder("INBOX", None);
+    for uid in 1..=n {
+        ops.add_mail(
+            "INBOX",
+            uid,
+            i64::from(uid) * H,
+            &headers("alice@x", "hi", &format!("m{uid}@x")),
+            Some(&format!("From: alice@x\r\n\r\nbody {uid}")),
+        );
+    }
+    let store = Store::open_in_memory().unwrap();
+    sync_all(&mut ops, &store).unwrap();
+    ops.calls.clear();
+    (ops, store)
+}
+
+#[test]
+fn a_slice_fetches_the_structures_of_a_folders_messages_in_batches() {
+    let (mut ops, store) = crowded_inbox(120);
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut selected = None;
+    index::slice(
+        &mut ops,
+        &store,
+        &account(),
+        &tx,
+        &mut selected,
+        &mut || Duration::ZERO,
+    )
+    .unwrap();
+    let structures: Vec<usize> = ops
+        .calls
+        .iter()
+        .filter_map(|c| c.strip_prefix("fetch_structures INBOX "))
+        .map(|uids| uids.split(',').count())
+        .collect();
+    assert_eq!(structures, [50, 50, 20], "{:?}", ops.calls);
+    assert_eq!(
+        ops.calls.iter().filter(|c| c.starts_with("select")).count(),
+        1,
+        "one select for the whole run"
+    );
+    assert_eq!(selected.as_deref(), Some("INBOX"));
+    assert_eq!(body_of(&store, "INBOX", 120).as_deref(), Some("body 120"));
+    assert_eq!(body_of(&store, "INBOX", 1).as_deref(), Some("body 1"));
+}
+
+#[test]
+fn a_folder_known_to_be_selected_is_not_selected_again() {
+    let (mut ops, store) = crowded_inbox(3);
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut selected = Some("INBOX".to_string());
+    index::slice(
+        &mut ops,
+        &store,
+        &account(),
+        &tx,
+        &mut selected,
+        &mut || Duration::ZERO,
+    )
+    .unwrap();
+    assert!(
+        !ops.calls.iter().any(|c| c.starts_with("select")),
+        "{:?}",
+        ops.calls
+    );
+    assert_eq!(body_of(&store, "INBOX", 3).as_deref(), Some("body 3"));
+}
+
+#[test]
+fn a_failed_batch_is_retried_message_by_message() {
+    let (mut ops, store) = crowded_inbox(3);
+    ops.fail_next = Some(MailError::Protocol("BAD".into()));
+    let (tx, _rx) = std::sync::mpsc::channel();
+    index::slice(&mut ops, &store, &account(), &tx, &mut None, &mut || {
+        Duration::ZERO
+    })
+    .unwrap();
+    let structures: Vec<&String> = ops
+        .calls
+        .iter()
+        .filter(|c| c.starts_with("fetch_structures"))
+        .collect();
+    assert_eq!(
+        structures,
+        [
+            "fetch_structures INBOX 3,2,1",
+            "fetch_structures INBOX 3",
+            "fetch_structures INBOX 2",
+            "fetch_structures INBOX 1"
+        ]
+    );
+    assert_eq!(store.backlog_count(now()).unwrap(), (0, 3));
+    for uid in 1..=3 {
+        assert_eq!(
+            body_of(&store, "INBOX", uid).as_deref(),
+            Some(format!("body {uid}").as_str())
+        );
+    }
+}
+
 #[test]
 fn an_unselectable_folder_is_skipped_for_the_slice() {
     let (mut ops, store) = indexable();
     ops.uidvalidity.insert("Archive".into(), 99);
     ops.calls.clear();
     let (tx, _rx) = std::sync::mpsc::channel();
-    index::slice(&mut ops, &store, &account(), &tx, &mut || Duration::ZERO).unwrap();
+    index::slice(&mut ops, &store, &account(), &tx, &mut None, &mut || {
+        Duration::ZERO
+    })
+    .unwrap();
     assert_eq!(body_of(&store, "Archive", 1), None);
     assert_eq!(body_of(&store, "INBOX", 2).as_deref(), Some("body two"));
     assert_eq!(
@@ -3673,10 +3801,22 @@ fn an_unselectable_folder_is_skipped_for_the_slice() {
     );
 }
 
+/// Something to do to the fake once.
+type AfterPart = Box<dyn FnOnce(&mut RecordingOps)>;
+
 /// Runs the session loop against `ops` until its idle outcomes run out, with `index_bodies` as given.
 fn run_session_until_idle(
+    ops: RecordingOps,
+    index_bodies: bool,
+) -> (RecordingOps, Vec<Event>, Store) {
+    run_session_with(ops, index_bodies, None)
+}
+
+/// `run_session_until_idle`, running `after_part` on the fake once, right after the first part is fetched.
+fn run_session_with(
     mut ops: RecordingOps,
     index_bodies: bool,
+    mut after_part: Option<AfterPart>,
 ) -> (RecordingOps, Vec<Event>, Store) {
     let dir = tempfile::tempdir().unwrap();
     let paths = Paths::under(dir.path());
@@ -3702,6 +3842,7 @@ fn run_session_until_idle(
             Ok(Box::new(Returning {
                 ops: slot.take().unwrap(),
                 back: keep.clone(),
+                after_part: after_part.take(),
             }) as Box<dyn MailOps>)
         },
         |_| stop.store(true, Ordering::Relaxed),
@@ -3718,6 +3859,7 @@ fn run_session_until_idle(
 struct Returning {
     ops: RecordingOps,
     back: Arc<std::sync::Mutex<Option<RecordingOps>>>,
+    after_part: Option<AfterPart>,
 }
 
 impl Drop for Returning {
@@ -3756,15 +3898,25 @@ impl MailOps for Returning {
     fn fetch_raw(&mut self, uid: u32) -> crate::mail_ops::MailResult<Option<Vec<u8>>> {
         self.ops.fetch_raw(uid)
     }
-    fn fetch_structure(&mut self, uid: u32) -> crate::mail_ops::MailResult<Option<Structure>> {
-        self.ops.fetch_structure(uid)
+    fn fetch_structures(
+        &mut self,
+        uids: &[u32],
+    ) -> crate::mail_ops::MailResult<std::collections::HashMap<u32, Structure>> {
+        self.ops.fetch_structures(uids)
+    }
+    fn status(&mut self, folder: &str) -> crate::mail_ops::MailResult<crate::mail_ops::StatusInfo> {
+        self.ops.status(folder)
     }
     fn fetch_part(
         &mut self,
         uid: u32,
         section: &str,
     ) -> crate::mail_ops::MailResult<Option<Vec<u8>>> {
-        self.ops.fetch_part(uid, section)
+        let part = self.ops.fetch_part(uid, section);
+        if let Some(hook) = self.after_part.take() {
+            hook(&mut self.ops);
+        }
+        part
     }
     fn add_flags(&mut self, uid: u32, flags: &[&str]) -> crate::mail_ops::MailResult<()> {
         self.ops.add_flags(uid, flags)
@@ -3849,12 +4001,84 @@ fn the_session_slices_between_short_idles_until_the_backlog_is_done() {
     );
 }
 
+/// An INBOX with no mail and an Archive of two unindexed messages, so the backlog is not in INBOX.
+fn backlog_in_archive() -> RecordingOps {
+    let mut ops = RecordingOps::default()
+        .with_folder("INBOX", None)
+        .with_folder("Archive", Some("Archive"));
+    for uid in 1..=2 {
+        ops.add_mail(
+            "Archive",
+            uid,
+            i64::from(uid) * H,
+            &headers("alice@x", "old", &format!("a{uid}@x")),
+            Some("From: alice@x\r\n\r\nold body"),
+        );
+    }
+    ops.idle_outcomes.push_back(IdleOutcome::Timeout);
+    ops
+}
+
+#[test]
+fn between_slices_inbox_is_checked_with_status_and_the_backlog_folder_stays_selected() {
+    let (ops, _events, store) = run_session_until_idle(backlog_in_archive(), true);
+    assert_eq!(store.backlog_count(now()).unwrap(), (0, 2));
+    // From the select that opens the slice, after the pass that synced Archive.
+    let first = ops
+        .calls
+        .iter()
+        .position(|c| c.starts_with("fetch_structures"))
+        .unwrap();
+    let after_pass: Vec<&str> = ops.calls[first - 1..].iter().map(String::as_str).collect();
+    assert_eq!(
+        after_pass
+            .iter()
+            .filter(|c| **c == "select Archive")
+            .count(),
+        1,
+        "{after_pass:?}"
+    );
+    let status = after_pass.iter().position(|c| *c == "status INBOX");
+    let idle = after_pass.iter().position(|c| *c == "idle Archive");
+    assert!(status.is_some() && status < idle, "{after_pass:?}");
+    assert!(
+        !after_pass[..idle.unwrap()].contains(&"select INBOX"),
+        "{after_pass:?}"
+    );
+}
+
+#[test]
+fn mail_that_arrives_during_a_backlog_is_found_by_the_status_check() {
+    let arrive: AfterPart = Box::new(|ops| {
+        ops.add_mail(
+            "INBOX",
+            1,
+            50 * H,
+            &headers("bob@x", "new", "new@x"),
+            Some("From: bob@x\r\n\r\nnew body"),
+        );
+    });
+    let (ops, _events, store) = run_session_with(backlog_in_archive(), true, Some(arrive));
+    assert!(
+        store.message("INBOX", 1).unwrap().is_some(),
+        "{:?}",
+        ops.calls
+    );
+    let status = ops.calls.iter().position(|c| c == "status INBOX").unwrap();
+    let synced = ops
+        .calls
+        .iter()
+        .rposition(|c| c.starts_with("fetch_envelopes INBOX"))
+        .unwrap();
+    assert!(status < synced, "{:?}", ops.calls);
+}
+
 #[test]
 fn index_bodies_off_indexes_nothing() {
     let (ops, _) = indexable();
     let (ops, events, store) = run_session_until_idle(ops, false);
     assert!(
-        !ops.calls.iter().any(|c| c.starts_with("fetch_structure")),
+        !ops.calls.iter().any(|c| c.starts_with("fetch_structures")),
         "{:?}",
         ops.calls
     );

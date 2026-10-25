@@ -138,7 +138,11 @@ fn structure_round_trip(port: u16, name: &str) -> (postvak_core::mail_ops::Struc
     ops.append("INBOX", &raw, &[]).unwrap();
     ops.select("INBOX").unwrap();
     let uid = all_envelopes(&mut ops)[0].uid;
-    let structure = ops.fetch_structure(uid).unwrap().expect("a structure");
+    let structure = ops
+        .fetch_structures(&[uid])
+        .unwrap()
+        .remove(&uid)
+        .expect("a structure");
     let parts: Vec<_> = structure
         .text_parts
         .iter()

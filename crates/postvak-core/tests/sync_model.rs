@@ -27,7 +27,7 @@ use std::time::Duration;
 use postvak_core::config::{AccountConfig, Identity, PasswordSource};
 use postvak_core::mail_ops::{
     Envelope, FlagUpdate, IdleOutcome, MailError, MailOps, MailResult, RecordingOps, RemoteFolder,
-    SelectInfo, Structure,
+    SelectInfo, StatusInfo, Structure,
 };
 use postvak_core::rules::engine::Mode;
 use postvak_core::store::Store;
@@ -850,8 +850,12 @@ impl MailOps for Harness<'_> {
         self.run_selected(|ops| ops.fetch_raw(uid))
     }
 
-    fn fetch_structure(&mut self, uid: u32) -> MailResult<Option<Structure>> {
-        self.run_selected(|ops| ops.fetch_structure(uid))
+    fn fetch_structures(&mut self, uids: &[u32]) -> MailResult<HashMap<u32, Structure>> {
+        self.run_selected(|ops| ops.fetch_structures(uids))
+    }
+
+    fn status(&mut self, folder: &str) -> MailResult<StatusInfo> {
+        self.run(|ops| ops.status(folder))
     }
 
     fn fetch_part(&mut self, uid: u32, section: &str) -> MailResult<Option<Vec<u8>>> {

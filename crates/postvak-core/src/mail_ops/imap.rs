@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,7 +20,7 @@ use crate::config::AccountConfig;
 use crate::credentials::Secret;
 use crate::mail_ops::{
     Envelope, FlagUpdate, IdleOutcome, MailError, MailOps, MailResult, RemoteFolder, SelectInfo,
-    Structure, TextPart,
+    StatusInfo, Structure, TextPart,
 };
 
 type ImapSession = Session<TlsStream<TcpStream>>;
@@ -457,6 +458,19 @@ impl MailOps for ImapOps {
         })
     }
 
+    fn status(&mut self, folder: &str) -> MailResult<StatusInfo> {
+        self.run(self.command_timeout, async |session| {
+            let mailbox = session
+                .status(folder, "(MESSAGES UIDNEXT)")
+                .await
+                .map_err(proto)?;
+            Ok(StatusInfo {
+                messages: mailbox.exists,
+                uidnext: mailbox.uid_next.unwrap_or(0),
+            })
+        })
+    }
+
     fn search_uids(&mut self, from_uid: u32) -> MailResult<Vec<u32>> {
         self.uid_search_sorted(format!("UID {from_uid}:*"))
     }
@@ -533,10 +547,13 @@ impl MailOps for ImapOps {
         })
     }
 
-    fn fetch_structure(&mut self, uid: u32) -> MailResult<Option<Structure>> {
-        self.run(self.command_timeout, async |session| {
+    fn fetch_structures(&mut self, uids: &[u32]) -> MailResult<HashMap<u32, Structure>> {
+        if uids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        self.run(self.batch_timeout(uids), async |session| {
             let fetches: Vec<Fetch> = session
-                .uid_fetch(uid.to_string(), "(UID BODYSTRUCTURE)")
+                .uid_fetch(uid_set(uids), "(UID BODYSTRUCTURE)")
                 .await
                 .map_err(proto)?
                 .try_collect()
@@ -544,9 +561,8 @@ impl MailOps for ImapOps {
                 .map_err(proto)?;
             Ok(fetches
                 .iter()
-                .find(|f| f.uid == Some(uid))
-                .and_then(Fetch::bodystructure)
-                .map(structure_of))
+                .filter_map(|f| Some((f.uid?, structure_of(f.bodystructure()?))))
+                .collect())
         })
     }
 
