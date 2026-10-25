@@ -386,6 +386,12 @@ impl Conditions {
             || self.none.iter().any(Conditions::needs_body)
             || self.any.iter().any(Conditions::needs_body)
     }
+
+    fn matches_header(&self) -> bool {
+        !self.headers.is_empty()
+            || self.none.iter().any(Conditions::matches_header)
+            || self.any.iter().any(Conditions::matches_header)
+    }
 }
 
 impl CompiledRule {
@@ -399,6 +405,11 @@ impl CompiledRule {
 
     pub fn needs_body(&self) -> bool {
         self.conditions.needs_body()
+    }
+
+    /// Whether a `header` condition, at any depth, decides the match; `from`, `to`, `cc` and `subject` are not counted.
+    pub fn matches_header(&self) -> bool {
+        self.conditions.matches_header()
     }
 }
 

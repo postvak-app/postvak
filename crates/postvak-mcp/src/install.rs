@@ -257,7 +257,7 @@ fn install_from(
     };
     let hint = (!remove).then(|| {
         format!(
-            "Scopes: {}. For an inbox assistant: --scopes read,read:bodies,rules:propose,mail:modify\n",
+            "Scopes: {}. For an inbox assistant: --scopes read,read:headers,read:bodies,rules:propose,mail:modify\n",
             granted.join(", ")
         )
     });
