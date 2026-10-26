@@ -105,13 +105,9 @@ pub enum Matched {
     Close,
 }
 
-/// Whether the space-separated `flags` contain `flag`.
+/// Whether the space-separated `flags` contain `flag`. Flags compare
+/// case-insensitively (RFC 3501), so every check and edit agrees with matching.
 pub fn has_flag(flags: &str, flag: &str) -> bool {
-    flags.split_whitespace().any(|f| f == flag)
-}
-
-/// Keywords compare case-insensitively (RFC 3501).
-pub fn has_flag_ignore_case(flags: &str, flag: &str) -> bool {
     flags
         .split_whitespace()
         .any(|f| f.eq_ignore_ascii_case(flag))

@@ -467,7 +467,7 @@ fn back_up(
 fn with_flag(flags: &str, flag: &str, wanted: bool) -> String {
     let mut kept: Vec<&str> = flags
         .split(' ')
-        .filter(|f| !f.is_empty() && *f != flag)
+        .filter(|f| !f.is_empty() && !f.eq_ignore_ascii_case(flag))
         .collect();
     if wanted {
         kept.push(flag);
@@ -620,6 +620,31 @@ mod tests {
                 .collect(),
             notify: false,
         }
+    }
+
+    #[test]
+    fn a_tag_differing_only_in_case_is_already_set() {
+        let (mut ops, store, trash, _dir, mut msg) = setup();
+        msg.flags = "Work".into();
+        store.update_flags("INBOX", 5, "Work").unwrap();
+        let tag = plan(vec![Action::Tag("work".into())]);
+        let n = apply(&tag, &msg, &mut ops, &store, &trash, 500).unwrap();
+        assert_eq!(n, 0);
+        assert!(
+            !ops.calls.iter().any(|c| c.contains("flags")),
+            "{:?}",
+            ops.calls
+        );
+        assert!(store.log(10).unwrap().is_empty());
+        assert_eq!(store.message("INBOX", 5).unwrap().unwrap().flags, "Work");
+        let applied = apply_many(&tag.actions[0], &[msg], &mut ops, &store, &trash, 500);
+        assert!(matches!(applied[..], [(5, Ok(0))]));
+        assert!(store.log(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn removing_a_flag_ignores_case() {
+        assert_eq!(with_flag("\\Seen Work", "work", false), "\\Seen");
     }
 
     #[test]
