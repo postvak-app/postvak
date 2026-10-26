@@ -4845,6 +4845,7 @@ dependencies = [
  "blitz-paint",
  "blitz-traits",
  "chrono",
+ "color",
  "data-url",
  "directories",
  "fontique 0.12.0",

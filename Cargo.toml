@@ -35,6 +35,7 @@ blitz-traits = "=0.3.0-beta.4"                       # HTML mail: the net provid
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }         # INTERNALDATE comes back as chrono; also list output
 clap = { version = "4", features = ["derive"] }      # CLI
 clap-markdown = "0.1"                                # docs/src/cli.md generated from the clap definitions
+color = "0.3"                                        # HTML mail: colour names for legacy `bgcolor`; the version Blitz uses, already in the tree
 data-url = "0.3"                                     # data: URIs in HTML mail; already in the tree through usvg
 directories = "6"                                    # platform config/state/cache dirs
 env_logger = "0.11"                                  # log output to stderr, RUST_LOG filter
