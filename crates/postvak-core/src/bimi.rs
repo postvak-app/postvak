@@ -32,17 +32,16 @@ impl Brand {
 /// `Authentication-Results`, the one the receiving server added last. A `BIMI-Selector` header picks the selector.
 pub fn brand(raw_headers: &[u8]) -> Option<Brand> {
     let msg = MessageParser::default().parse_headers(raw_headers)?;
-    let from: Vec<_> = msg.from()?.iter().collect();
+    let from: Vec<_> = msg.from()?.mailboxes().collect();
     let [from] = from.as_slice() else {
         return None;
     };
     let (_, domain) = from.address()?.rsplit_once('@')?;
     let domain = domain_name(domain)?;
-    // `header_raw` gives the last of a repeated header; the topmost is the first.
+    // `Headers::get` gives the last of a repeated header; the topmost is the first.
     let first = |name: &str| {
-        msg.headers_raw()
-            .find(|(header, _)| header.eq_ignore_ascii_case(name))
-            .map(|(_, value)| value)
+        let header = msg.headers().all(name).next()?;
+        std::str::from_utf8(header.raw_value()).ok()
     };
     if !dmarc_passed(first("Authentication-Results")?, &domain) {
         return None;
