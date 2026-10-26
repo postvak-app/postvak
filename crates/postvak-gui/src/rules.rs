@@ -78,11 +78,10 @@ pub(crate) struct RuleLine {
 
 /// "1 rule · 2 proposals", beside the Rules title.
 pub(crate) fn counts(rules: usize, proposals: usize) -> String {
-    let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
     format!(
         "{} · {}",
-        plural(rules, "rule"),
-        plural(proposals, "proposal")
+        super::numbers::counted(rules as u64, "rule", "rules"),
+        super::numbers::counted(proposals as u64, "proposal", "proposals")
     )
 }
 

@@ -228,7 +228,6 @@ pub(crate) fn search_hint(view: &View) -> &'static str {
 
 /// The line under the search field.
 pub(crate) fn results(app: &App) -> String {
-    let count = super::numbers::count(app.list.rows.len() as u64);
     let note = if app.list.server_searching > 0 {
         "searching the server…".to_string()
     } else if app.list.server_asked {
@@ -239,14 +238,13 @@ pub(crate) fn results(app: &App) -> String {
             super::numbers::count(app.list.unindexed)
         )
     } else {
-        format!("in {} messages", super::numbers::count(app.list.covered))
+        format!(
+            "in {}",
+            super::numbers::counted(app.list.covered, "message", "messages")
+        )
     };
-    let noun = if app.list.rows.len() == 1 {
-        "result"
-    } else {
-        "results"
-    };
-    format!("{count} {noun} · {note}")
+    let count = super::numbers::counted(app.list.rows.len() as u64, "result", "results");
+    format!("{count} · {note}")
 }
 
 /// What an empty list says instead of rows; nothing before a search query is typed.
@@ -309,7 +307,7 @@ pub(crate) const FILTERS: [(&str, Filter); 4] = [
 pub(crate) fn drag_label(marked: usize, subject: &str) -> String {
     const LONGEST: usize = 40;
     if marked > 1 {
-        format!("{} messages", super::numbers::count(marked as u64))
+        super::numbers::counted(marked as u64, "message", "messages")
     } else if subject.chars().count() > LONGEST {
         format!("{}…", subject.chars().take(LONGEST - 1).collect::<String>())
     } else {

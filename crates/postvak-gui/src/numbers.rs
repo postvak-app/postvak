@@ -28,9 +28,26 @@ pub(crate) fn count(n: u64) -> String {
     )
 }
 
+/// `n` grouped, then the noun in the singular for one and the plural otherwise: "1 message", "12,345 messages".
+pub(crate) fn counted(n: u64, singular: &str, plural: &str) -> String {
+    format!("{} {}", count(n), noun(n, singular, plural))
+}
+
+/// The noun alone, for a sentence that puts a word between the number and it: "3 cached messages".
+pub(crate) fn noun<'a>(n: u64, singular: &'a str, plural: &'a str) -> &'a str {
+    if n == 1 { singular } else { plural }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn counted_picks_the_singular_only_for_one() {
+        assert_eq!(counted(0, "message", "messages"), "0 messages");
+        assert_eq!(counted(1, "message", "messages"), "1 message");
+        assert_eq!(counted(2, "message", "messages"), "2 messages");
+    }
 
     #[test]
     fn locales_pick_their_separator_and_unknown_ones_none() {
