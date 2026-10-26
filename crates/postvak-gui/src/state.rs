@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::time::Duration;
 
-use crate::update;
+use crate::{numbers, update};
 use postvak_core::actions::Preview;
 use postvak_core::bimi::Brand;
 use postvak_core::config::{self, AccountConfig, Config, Identity, Theme};
@@ -1095,15 +1095,11 @@ impl App {
                 ..
             } => {
                 // Accounts report one by one; the status row shows the latest and the history keeps them all.
-                let action_noun = if actions == 1 { "action" } else { "actions" };
-                let message_noun = if evaluated == 1 {
-                    "message"
-                } else {
-                    "messages"
-                };
                 let line = format!(
-                    "{}: {actions} {action_noun} on {evaluated} {message_noun}",
-                    self.accounts[index].name
+                    "{}: {} on {}",
+                    self.accounts[index].name,
+                    numbers::counted(actions as u64, "action", "actions"),
+                    numbers::counted(evaluated as u64, "message", "messages")
                 );
                 self.notice(line);
                 for message in errors {
@@ -1143,9 +1139,9 @@ impl App {
                     .collect();
                 if let Some(first) = failed.first() {
                     let line = format!(
-                        "{} of {} messages failed: {first}",
-                        failed.len(),
-                        results.len()
+                        "{} of {} failed: {first}",
+                        numbers::count(failed.len() as u64),
+                        numbers::counted(results.len() as u64, "message", "messages")
                     );
                     self.note_error(Some(index), line);
                 }
@@ -2884,12 +2880,13 @@ impl App {
                 Err(e) => failures.push(format!("{name}: {e}")),
             }
         }
-        let noun = if removed == 1 { "backup" } else { "backups" };
-        let mut notice = format!("removed {removed} {noun} older than the retention period");
+        let mut notice = format!(
+            "removed {} older than the retention period",
+            numbers::counted(removed as u64, "backup", "backups")
+        );
         if !failures.is_empty() {
-            let count = failures.len();
-            let accounts = if count == 1 { "account" } else { "accounts" };
-            notice.push_str(&format!("; {count} {accounts} failed"));
+            let accounts = numbers::counted(failures.len() as u64, "account", "accounts");
+            notice.push_str(&format!("; {accounts} failed"));
             self.note_error(None, format!("could not purge: {}", failures.join("; ")));
         }
         self.notice(notice);
@@ -3755,6 +3752,19 @@ mod tests {
         assert_eq!(driver.uids(), [3, 2, 1]);
     }
 
+    /// #268: the line under the search field said "1 results · in 1 messages".
+    #[test]
+    fn one_result_in_one_message_reads_in_the_singular() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1]);
+        let (mut driver, _wires) = fx.driver();
+        driver.app.list.covered = 1;
+        driver.app.list.unindexed = 0;
+        assert_eq!(list::results(&driver.app), "1 result · in 1 message");
+        driver.app.list.covered = 2;
+        assert_eq!(list::results(&driver.app), "1 result · in 2 messages");
+    }
+
     #[test]
     fn enter_again_while_the_server_search_runs_asks_nothing_more() {
         let fx = Fixture::new(&["work"]);
@@ -3778,7 +3788,7 @@ mod tests {
         assert_eq!(driver.uids(), [3, 2, 1]);
         assert_eq!(
             driver.status()[0],
-            "work: 1 of 1 messages failed: NO [SERVERBUG] try later"
+            "work: 1 of 1 message failed: NO [SERVERBUG] try later"
         );
         assert_eq!(driver.app.accounts[0].queued, 0);
     }

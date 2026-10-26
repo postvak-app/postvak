@@ -137,7 +137,9 @@ pub(crate) fn preview_text(rule: &Rule, matched: usize, needs_body: bool) -> Str
             _ => None,
         })
         .unwrap_or_default();
-    let noun = if matched == 1 { "message" } else { "messages" };
+    let matched = matched as u64;
+    let count = super::numbers::count(matched);
+    let noun = super::numbers::noun(matched, "message", "messages");
     let body = if needs_body {
         "; only mail whose body is downloaded is checked"
     } else {
@@ -145,7 +147,7 @@ pub(crate) fn preview_text(rule: &Rule, matched: usize, needs_body: bool) -> Str
     };
     clean(
         &format!(
-            "would {} {matched} cached {noun}{target}{body}",
+            "would {} {count} cached {noun}{target}{body}",
             verbs.join(" and ")
         ),
         false,

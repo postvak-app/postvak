@@ -154,8 +154,8 @@ pub(crate) fn selection(app: &App) -> Option<(String, Vec<Selected>)> {
         })
         .collect();
     let title = format!(
-        "{} messages selected",
-        super::numbers::count(rows.len() as u64)
+        "{} selected",
+        super::numbers::counted(rows.len() as u64, "message", "messages")
     );
     Some((title, selected))
 }
