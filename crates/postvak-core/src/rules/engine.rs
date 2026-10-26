@@ -631,6 +631,18 @@ actions = [{ move = "Shopping" }]
     }
 
     #[test]
+    fn to_me_ignores_an_address_inside_a_quoted_name() {
+        let id = identity();
+        let r = rules(
+            "[[rules]]\nname = \"lists\"\nmatch.to_me = false\nactions = [{ move = \"Lists\" }]\n",
+            0,
+        );
+        let mut m = msg("a@x", "pieter@example.com", "s", 100, false);
+        m.to_addr = Some("\"Hi, pieter@example.com\" <list@lists.example>".into());
+        assert_eq!(evaluate(&r, &m, &ctx(&id, 200)).actions.len(), 1);
+    }
+
+    #[test]
     fn older_than_boundary_is_inclusive() {
         let id = identity();
         let toml = "[[rules]]\nname = \"age\"\nmatch.older_than = \"1h\"\nactions = [\"flag\"]\n";

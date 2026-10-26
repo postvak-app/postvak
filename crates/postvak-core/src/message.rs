@@ -343,9 +343,28 @@ pub fn display_name(field: &str) -> String {
     }
 }
 
+/// The lowercase addresses of an address field as `format_address` writes it. A comma inside a quoted name or
+/// inside `<…>` does not separate addresses.
 pub fn bare_addresses(field: &str) -> Vec<String> {
-    field
-        .split(',')
+    let mut parts = Vec::new();
+    let (mut start, mut quoted, mut escaped, mut angle) = (0, false, false, false);
+    for (i, c) in field.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            '<' if !quoted => angle = true,
+            '>' if !quoted => angle = false,
+            ',' if !quoted && !angle => {
+                parts.push(&field[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&field[start..]);
+    parts
+        .into_iter()
         .filter_map(|part| {
             let part = part.trim();
             if part.is_empty() {
@@ -360,11 +379,21 @@ pub fn bare_addresses(field: &str) -> Vec<String> {
         .collect()
 }
 
+/// A display name as an address field carries it: quoted when it holds a character that would end the name
+/// or the address (`,` `<` `>` `"`), so `bare_addresses` reads the field back.
+fn quote_name(name: &str) -> String {
+    if name.contains([',', '<', '>', '"']) {
+        format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        name.to_string()
+    }
+}
+
 fn format_address(address: AddressList<'_>) -> String {
     address
         .mailboxes()
         .map(|a| match (a.name(), a.address()) {
-            (Some(name), Some(addr)) => format!("{name} <{addr}>"),
+            (Some(name), Some(addr)) => format!("{} <{addr}>", quote_name(name)),
             (None, Some(addr)) => addr.to_string(),
             (Some(name), None) => name.to_string(),
             (None, None) => String::new(),
@@ -1064,6 +1093,18 @@ Content-Transfer-Encoding: base64\r\n\r\niVBORw==\r\n--r--\r\n\
         let (found, html) = attachments_and_html(raw);
         assert!(found.is_empty());
         assert_eq!(html.unwrap().html.trim(), "<b>rich</b>");
+    }
+
+    #[test]
+    fn a_display_name_with_a_comma_is_one_address() {
+        let raw = b"To: \"Doe, John\" <me@x>, Bob <bob@y>\r\nCc: \"A \\\"b, c\\\"\" <cc@x>\r\n\r\n";
+        let parsed = parse_headers(raw);
+        let to = parsed.to.unwrap();
+        assert_eq!(bare_addresses(&to), vec!["me@x", "bob@y"], "{to}");
+        assert_eq!(display_name(&to), "Doe, John");
+        let cc = parsed.cc.unwrap();
+        assert_eq!(bare_addresses(&cc), vec!["cc@x"], "{cc}");
+        assert_eq!(bare_addresses("\"Doe, John\" <j@x>"), vec!["j@x"]);
     }
 
     #[test]
