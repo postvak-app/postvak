@@ -88,6 +88,11 @@ component HtmlView inherits VerticalLayout {
 
     spacing: Theme.pad;
 
+    property <length> page-width: max(root.page.width, flick.width);
+    // The part of the page in view, in page points.
+    property <length> view-top: min(max(0px, -flick.viewport-y), root.page.height);
+    property <length> view-height: max(0px, min(root.page.height, -flick.viewport-y + flick.height) - root.view-top);
+
     if root.page.remote == Remote.loading: Text {
         text: "Loading remote content…";
         color: Theme.pane.muted;
@@ -127,12 +132,42 @@ component HtmlView inherits VerticalLayout {
         changed height => { root.shown(-self.content-y, -self.content-y + self.height); }
         changed content-y => { root.shown(-self.content-y, -self.content-y + self.height); }
 
+        // The page's white and its border, drawn only where the view shows them: the software renderer casts every
+        // rectangle to 16 bits, so one as tall as a very long message would panic it.
         if root.page.ready: Rectangle {
-            width: max(root.page.width, flick.width);
-            height: root.page.height;
+            x: 0;
+            y: root.view-top;
+            width: root.page-width;
+            height: root.view-height;
             background: white;
-            border-width: 1px;
-            border-color: Theme.pane.border;
+        }
+        if root.page.ready: Rectangle {
+            x: 0;
+            y: root.view-top;
+            width: 1px;
+            height: root.view-height;
+            background: Theme.pane.border;
+        }
+        if root.page.ready: Rectangle {
+            x: root.page-width - 1px;
+            y: root.view-top;
+            width: 1px;
+            height: root.view-height;
+            background: Theme.pane.border;
+        }
+        if root.page.ready: Rectangle {
+            x: 0;
+            y: 0;
+            width: root.page-width;
+            height: 1px;
+            background: Theme.pane.border;
+        }
+        if root.page.ready: Rectangle {
+            x: 0;
+            y: root.page.height - 1px;
+            width: root.page-width;
+            height: 1px;
+            background: Theme.pane.border;
         }
         for strip in root.strips: Image {
             x: 0;
