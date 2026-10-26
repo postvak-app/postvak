@@ -444,6 +444,15 @@ fn add_account_dark() {
 
 /// INBOX of `work` with the newsletter open as HTML, in a window `width` points wide, once it is painted.
 fn newsletter(theme: &str, width: f32) -> (Fixture, Open, Wires) {
+    html_message(
+        theme,
+        width,
+        include_str!("../../../tests/fixtures/newsletter.html"),
+    )
+}
+
+/// INBOX of `work` with a message whose HTML part is `html` open, once it is painted.
+fn html_message(theme: &str, width: f32, html: &str) -> (Fixture, Open, Wires) {
     use std::time::{Duration, Instant};
 
     use slint::ComponentHandle;
@@ -459,7 +468,7 @@ fn newsletter(theme: &str, width: f32) -> (Fixture, Open, Wires) {
     );
     news.headers = b"Subject: Your October roundup\r\nList-Unsubscribe: <https://news.example.org/leave>\r\n\r\n".to_vec();
     fx.add("work", news);
-    let raw = super::test_support::raw(include_str!("../../../tests/fixtures/newsletter.html"));
+    let raw = super::test_support::raw(html);
     fx.store("work")
         .set_raw("INBOX", 99, &raw, "Your October roundup")
         .unwrap();
@@ -500,6 +509,23 @@ fn html_light() {
 fn html_dark() {
     let (_fx, open, _wires) = newsletter("dark", 1280.0);
     snapshot(&open, "gui_html_dark");
+}
+
+/// The software renderer casts every rectangle to `i16`, so a page background as tall as a very long message
+/// panicked the window (#321). Opens a page of 50,000 px and draws it.
+#[test]
+fn a_very_tall_page_draws() {
+    let html = format!(
+        "<html><body>{}</body></html>",
+        "<div style=\"height:1000px;background:#eee\">card</div>".repeat(50)
+    );
+    let (_fx, open, _wires) = html_message("light", 1280.0, &html);
+    let height = open.with(|live| {
+        let view = live.app.body.as_ref().and_then(|b| b.html_view.as_ref());
+        view.and_then(|v| v.page).map_or(0.0, |(_, h)| h)
+    });
+    assert!(height > 40_000.0, "page is {height} tall");
+    assert!(!open.png().is_empty());
 }
 
 /// A body pane narrower than the newsletter's 600 px table: its media query stacks the columns.
