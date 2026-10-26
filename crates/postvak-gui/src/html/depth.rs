@@ -10,6 +10,8 @@ use html5ever::tendril::{StrTendril, TendrilSink};
 use html5ever::tree_builder::{ElementFlags, NodeOrText, QuirksMode, TreeBuilderOpts, TreeSink};
 use html5ever::{Attribute, QualName};
 
+use super::legacy;
+
 /// How much markup the parser takes between checks: past the limit, one chunk adds at most a few thousand levels.
 const CHUNK: usize = 4096;
 
@@ -109,7 +111,25 @@ impl<'m, 'doc> TreeSink for Bounded<'_, 'm, 'doc> {
         self.inner.elem_name(target)
     }
 
-    fn create_element(&self, name: QualName, attrs: Vec<Attribute>, flags: ElementFlags) -> NodeId {
+    fn create_element(
+        &self,
+        name: QualName,
+        mut attrs: Vec<Attribute>,
+        flags: ElementFlags,
+    ) -> NodeId {
+        // Legacy colours go to Blitz as `#rrggbb`; the stored markup is untouched.
+        attrs.retain_mut(|attr| {
+            if !legacy::is_colour_attribute(&name.local, &attr.name.local) {
+                return true;
+            }
+            match legacy::parse(&attr.value) {
+                Some(hex) => {
+                    attr.value = StrTendril::from_slice(&hex);
+                    true
+                }
+                None => false,
+            }
+        });
         self.inner.create_element(name, attrs, flags)
     }
 

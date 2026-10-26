@@ -2,6 +2,7 @@
 //! and which strips to ask for. `state.rs` owns `HtmlState` and talks to the render thread; the window draws it.
 mod depth;
 mod fetch;
+mod legacy;
 mod net;
 mod render;
 

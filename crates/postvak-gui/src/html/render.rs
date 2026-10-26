@@ -30,7 +30,29 @@ const THREAD: &str = "html-render";
 const BASE: &str = "postvak://mail/";
 
 /// Mail is written for a 600 px column and assumes nothing about the window: keep images and long words inside it.
-const MAIL_CSS: &str = "img { max-width: 100%; height: auto; } body { overflow-wrap: anywhere; }";
+/// The rest is the HTML spec's rendering section for the presentational attributes Blitz lacks (`border`, `valign`,
+/// `align` on a table or image, `size` on `<font>`); a user-agent sheet, so author CSS wins, as it does over real
+/// presentational hints. Relative sizes (`size="+1"`) and `align` on other elements are not mapped.
+const MAIL_CSS: &str = concat!(
+    "img { max-width: 100%; height: auto; } body { overflow-wrap: anywhere; } ",
+    // A border on every cell of a table that asks for one, but not of a table nested in it.
+    "table[border]:not([border=\"0\"]) > :is(thead, tbody, tfoot) > tr > :is(td, th), ",
+    "table[border]:not([border=\"0\"]) > tr > :is(td, th) { border: 1px solid gray; } ",
+    "table[align=\"center\" i] { margin-inline: auto; } ",
+    "img[align=\"left\" i] { float: left; } img[align=\"right\" i] { float: right; } ",
+    "font[size=\"1\"] { font-size: x-small; } font[size=\"2\"] { font-size: small; } ",
+    "font[size=\"3\"] { font-size: medium; } font[size=\"4\"] { font-size: large; } ",
+    "font[size=\"5\"] { font-size: x-large; } font[size=\"6\"] { font-size: xx-large; } ",
+    "font[size=\"7\"] { font-size: xxx-large; } ",
+    ":is(td, th, tr)[valign=\"top\" i] { vertical-align: top; } ",
+    ":is(td, th, tr)[valign=\"middle\" i] { vertical-align: middle; } ",
+    ":is(td, th, tr)[valign=\"bottom\" i] { vertical-align: bottom; } ",
+    ":is(td, th, tr)[valign=\"baseline\" i] { vertical-align: baseline; } ",
+    "tr[valign=\"top\" i] > :is(td, th):not([valign]) { vertical-align: top; } ",
+    "tr[valign=\"bottom\" i] > :is(td, th):not([valign]) { vertical-align: bottom; } ",
+    "tr[valign=\"middle\" i] > :is(td, th):not([valign]) { vertical-align: middle; } ",
+    "tr[valign=\"baseline\" i] > :is(td, th):not([valign]) { vertical-align: baseline; }",
+);
 
 /// `MAIL_CSS` parsed once, as Blitz parses its default sheet.
 static MAIL_SHEET: LazyLock<UserAgentStylesheet> =
@@ -794,6 +816,140 @@ mod tests {
             panic!("blitz fell over")
         });
         assert!(matches!(got[..], [Reply::Failed { generation: 7 }]));
+    }
+
+    /// The first strip of `html` laid out at `width`, as colours.
+    fn strip(html: &str, width: f32) -> Strip {
+        let mut current = None;
+        handle(&mut current, load(1, html, width));
+        let Some(Reply::Strip { image, .. }) = handle(
+            &mut current,
+            Request::Paint {
+                generation: 1,
+                strip: 0,
+            },
+        ) else {
+            panic!("no strip");
+        };
+        colours(&image)
+    }
+
+    /// Where, as (x, y), the pixels of `strip` that `test` accepts are.
+    fn at(strip: &Strip, test: impl Fn(Colour) -> bool) -> Vec<(usize, usize)> {
+        let width = strip.size[0];
+        (0..strip.pixels.len())
+            .filter(|&i| test(strip.pixels[i]))
+            .map(|i| (i % width, i / width))
+            .collect()
+    }
+
+    /// Painted, whatever the colour: the strip is transparent where nothing is.
+    fn is_ink(p: Colour) -> bool {
+        p.0[3] > 0
+    }
+
+    fn is_red(p: Colour) -> bool {
+        p.r() > 200 && p.g() < 60 && p.b() < 60
+    }
+
+    /// A 100 x 100 cell with a legacy `bgcolor`, and the colour it paints at its middle.
+    fn cell(bgcolor: &str) -> [u8; 3] {
+        let html = format!(
+            "<body bgcolor=\"#ffffff\"><table cellpadding=0 cellspacing=0><tr><td width=100 height=100 bgcolor=\"{bgcolor}\"></td></tr></table></body>"
+        );
+        let image = strip(&html, 400.0);
+        let p = image.pixels[58 * image.size[0] + 58];
+        [p.r(), p.g(), p.b()]
+    }
+
+    #[test]
+    fn a_legacy_background_colour_is_read_as_the_spec_says() {
+        // Three digits are doubled; Blitz alone reads "#ddd" as 0x0d0d0d, near black.
+        assert_eq!(cell("#ddd"), [0xdd; 3]);
+        assert_eq!(cell("red"), [255, 0, 0]);
+        assert_eq!(cell("RED"), [255, 0, 0]);
+        assert_eq!(cell("ff0000"), [255, 0, 0]);
+        assert_eq!(cell(" #00f "), [0, 0, 255]);
+        assert_eq!(cell("#123456"), [0x12, 0x34, 0x56]);
+        // Junk is read leniently, never as an error that drops the colour.
+        assert_ne!(cell("chucknorris"), [255; 3]);
+    }
+
+    #[test]
+    fn a_table_border_attribute_draws_cell_borders() {
+        let table = |border: &str| {
+            format!(
+                "<table {border} cellpadding=0 cellspacing=0><tr><td width=50 height=50></td></tr></table>"
+            )
+        };
+        let inked = |html: &str| at(&strip(html, 400.0), is_ink).len();
+        assert!(inked(&table("border=1")) > 100);
+        assert_eq!(inked(&table("border=0")), 0);
+        assert_eq!(inked(&table("")), 0);
+    }
+
+    #[test]
+    fn a_cell_valign_places_its_content() {
+        let cell = |valign: &str| {
+            let html = format!(
+                "<table cellpadding=0 cellspacing=0><tr><td height=100 {valign}><div style=\"width:10px;height:10px;background:#f00\"></div></td></tr></table>"
+            );
+            let reds = at(&strip(&html, 400.0), is_red);
+            assert!(!reds.is_empty(), "nothing painted for {valign}");
+            reds.iter().map(|p| p.1).max().unwrap_or(0)
+        };
+        assert!(cell("valign=bottom") > 80);
+        assert!(cell("valign=top") < 30);
+    }
+
+    #[test]
+    fn a_table_with_align_center_is_centred() {
+        let html = "<table align=center width=100 cellpadding=0><tr><td height=20 style=\"background:#f00\"></td></tr></table>";
+        let reds = at(&strip(html, 400.0), is_red);
+        let left = reds.iter().map(|p| p.0).min().unwrap_or(0);
+        assert!((140..160).contains(&left), "left edge {left}");
+    }
+
+    #[test]
+    fn an_image_with_align_floats() {
+        let png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+        let image = |align: &str| {
+            let html = format!(
+                "<img {align} width=40 height=40 src=\"{png}\"><p>some text beside the picture</p>"
+            );
+            let reds = at(&strip(&html, 400.0), is_red);
+            assert!(!reds.is_empty(), "image not painted for {align}");
+            reds.iter().map(|p| p.0).min().unwrap_or(0)
+        };
+        assert!(image("align=right") > 300);
+        assert!(image("align=left") < 20);
+    }
+
+    #[test]
+    fn a_font_size_attribute_sizes_the_text() {
+        let size = |attrs: &str| {
+            at(
+                &strip(
+                    &format!("<font {attrs} color=\"#ff0000\">HELLO</font>"),
+                    400.0,
+                ),
+                is_red,
+            )
+            .len()
+        };
+        let normal = size("");
+        assert!(size("size=5") > normal * 3 / 2);
+        assert!(size("size=2") < normal);
+    }
+
+    #[test]
+    fn legacy_attributes_give_way_to_author_css() {
+        let html = "<table border=1 cellpadding=0 cellspacing=0><tr><td width=50 height=50 valign=bottom style=\"border:0\"></td></tr></table><style>td { vertical-align: top }</style>";
+        assert!(at(&strip(html, 400.0), is_ink).is_empty());
+        let img = "<table cellspacing=0 cellpadding=0><tr><td height=100 valign=bottom style=\"vertical-align:top\"><div style=\"width:10px;height:10px;background:#f00\"></div></td></tr></table>";
+        let reds = at(&strip(img, 400.0), is_red);
+        assert!(reds.iter().all(|p| p.1 < 30));
+        assert!(!reds.is_empty());
     }
 
     /// Responsive mail stacks its columns below about 600 px with `td { display: block }`; Blitz lays such a cell
