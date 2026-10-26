@@ -668,7 +668,7 @@ pub fn sync_all_with(
         };
         match synced {
             Ok(found) => new += found,
-            Err(e) if matches!(e, SyncError::Stopped) || is_lost_connection(&e) => return Err(e),
+            Err(e) if matches!(e, SyncError::Stopped) || e.is_lost_connection() => return Err(e),
             Err(e) => errors.push(format!("{}: {e}; skipped this pass", folder.name)),
         }
     }
@@ -701,7 +701,7 @@ fn unchanged(
         Some(status) => status,
         None => match ops.status(&folder.name) {
             Ok(status) => status,
-            Err(e) if is_connection_error(&e) => return Err(e.into()),
+            Err(e) if e.is_lost_connection() => return Err(e.into()),
             Err(e) => {
                 log::debug!("{}: STATUS failed, selecting it instead: {e}", folder.name);
                 return Ok(false);
@@ -900,11 +900,12 @@ pub fn run_rules_with(
                 }
             }
             if wants_body(&msg) {
-                if !select_for_rules(ops, &stored, &mut selected, account, &mut run.events) {
+                if !select_for_rules(ops, &stored, &mut selected, account, &mut run.events)? {
                     continue 'folders;
                 }
                 match ensure_body_text(&msg, ops, store) {
                     Ok(text) => msg.body_text = Some(text),
+                    Err(e) if e.is_lost_connection() => return Err(e.into()),
                     Err(e) => log::warn!("{}/{}: body fetch failed: {e}", msg.folder, msg.uid),
                 }
                 bodies_done += 1;
@@ -914,13 +915,15 @@ pub fn run_rules_with(
             let notifies = is_fresh && msg.uid > notified_uid && plan.notify && folder == "INBOX";
             // A notification waits for the SELECT too: mail a resync finds never notifies.
             if (notifies || !plan.actions.is_empty())
-                && !select_for_rules(ops, &stored, &mut selected, account, &mut run.events)
+                && !select_for_rules(ops, &stored, &mut selected, account, &mut run.events)?
             {
                 continue 'folders;
             }
             if !plan.actions.is_empty() {
                 match apply(&plan, &msg, ops, store, trash, now) {
                     Ok(executed) => run.actions += executed,
+                    // The rest of the pass would fail the same way; end it so the engine reconnects.
+                    Err(e) if e.is_lost_connection() => return Err(e.into()),
                     Err(e) => {
                         run.events.push(account_error(
                             account,
@@ -955,28 +958,29 @@ pub fn run_rules_with(
 
 /// Selects the folder of `stored` unless `selected` says it still is, and checks it is the folder the store holds.
 /// False, with an error event, when the folder's rules must stop: the SELECT failed, or the server's UIDVALIDITY is no
-/// longer the stored one, so the stored uids would name unrelated server messages.
+/// longer the stored one, so the stored uids would name unrelated server messages. A lost connection is an error.
 fn select_for_rules(
     ops: &mut dyn MailOps,
     stored: &Folder,
     selected: &mut bool,
     account: &AccountConfig,
     events: &mut Vec<Event>,
-) -> bool {
+) -> Result<bool, SyncError> {
     let folder = &stored.name;
     if *selected && ops.selected() == Some(folder.as_str()) {
-        return true;
+        return Ok(true);
     }
     let message = match ops.select(folder) {
         Ok(info) if info.uidvalidity == stored.uidvalidity => {
             *selected = true;
-            return true;
+            return Ok(true);
         }
         Ok(_) => format!("{folder}: folder changed on server; resync needed, skipping its rules"),
+        Err(e) if e.is_lost_connection() => return Err(e.into()),
         Err(e) => format!("{folder}: {e}; skipping its rules"),
     };
     events.push(account_error(account, message));
-    false
+    Ok(false)
 }
 
 /// The largest message, in bytes, a rule's body condition downloads by itself.
@@ -1110,7 +1114,7 @@ fn run_command(
                 Ok(results) => split_lost(results),
                 Err(e) => (
                     uids.iter().map(|&uid| (uid, Err(e.to_string()))).collect(),
-                    connection_lost(&e).then_some(e),
+                    e.is_lost_connection().then_some(e),
                 ),
             };
             /* A move only drops the source row, so the target is synced before `ActionDone` makes the GUI reload. The
@@ -1253,7 +1257,7 @@ fn run_command(
         }
         Err(e) => {
             let _ = events.send(failed(request, format!("{context}{e}")));
-            if is_lost_connection(&e) {
+            if e.is_lost_connection() {
                 Err(e)
             } else {
                 Ok(run)
@@ -1285,29 +1289,55 @@ fn search_server_in(
     for name in folders {
         match actions::search_server(ops, store, &name, &words) {
             Ok(uids) => hits.extend(uids.into_iter().map(|uid| (name.clone(), uid))),
-            Err(e) if folder.is_some() || connection_lost(&e) => return Err(e),
+            Err(e) if folder.is_some() || e.is_lost_connection() => return Err(e),
             Err(e) => log::warn!("{name}: server search skipped: {e}"),
         }
     }
     Ok(hits)
 }
 
-fn is_connection_error(e: &MailError) -> bool {
-    matches!(e, MailError::Io(_) | MailError::Connect(_))
+/// Whether an error means the connection is gone, so a pass ends at once and the engine reconnects.
+pub(crate) trait LostConnection {
+    fn is_lost_connection(&self) -> bool;
 }
 
-fn is_lost_connection(e: &SyncError) -> bool {
-    match e {
-        SyncError::Action(e) => connection_lost(e),
-        SyncError::Mail(e) | SyncError::Restore(RestoreError::Mail(e)) => is_connection_error(e),
-        _ => false,
+impl LostConnection for MailError {
+    fn is_lost_connection(&self) -> bool {
+        matches!(self, MailError::Io(_) | MailError::Connect(_))
     }
 }
 
-pub(crate) fn connection_lost(e: &ActionError) -> bool {
-    match e {
-        ActionError::Mail(e) | ActionError::Apply(ApplyError::Mail(e)) => is_connection_error(e),
-        _ => false,
+impl LostConnection for ApplyError {
+    fn is_lost_connection(&self) -> bool {
+        matches!(self, ApplyError::Mail(e) if e.is_lost_connection())
+    }
+}
+
+impl LostConnection for ActionError {
+    fn is_lost_connection(&self) -> bool {
+        match self {
+            ActionError::Mail(e) => e.is_lost_connection(),
+            ActionError::Apply(e) => e.is_lost_connection(),
+            _ => false,
+        }
+    }
+}
+
+impl LostConnection for RestoreError {
+    fn is_lost_connection(&self) -> bool {
+        matches!(self, RestoreError::Mail(e) if e.is_lost_connection())
+    }
+}
+
+impl LostConnection for SyncError {
+    fn is_lost_connection(&self) -> bool {
+        match self {
+            SyncError::Action(e) => e.is_lost_connection(),
+            SyncError::Restore(e) => e.is_lost_connection(),
+            SyncError::Mail(e) => e.is_lost_connection(),
+            SyncError::Apply(e) => e.is_lost_connection(),
+            _ => false,
+        }
     }
 }
 
@@ -1322,7 +1352,7 @@ fn split_lost(results: Vec<actions::UidResult>) -> (EventResults, Option<ActionE
             Ok(count) => (uid, Ok(count)),
             Err(e) => {
                 let message = e.to_string();
-                if lost.is_none() && connection_lost(&e) {
+                if lost.is_none() && e.is_lost_connection() {
                     lost = Some(e);
                 }
                 (uid, Err(message))

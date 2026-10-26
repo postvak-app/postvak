@@ -1666,6 +1666,46 @@ fn rules_report_running_and_body_progress() {
 }
 
 #[test]
+fn a_dropped_connection_ends_the_rules_pass_at_once() {
+    let (mut ops, store, dir) = synced();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let acc = account();
+    let identity = acc.identity().unwrap();
+    for uid in 3..13 {
+        let id = format!("m{uid}@x");
+        ops.add_mail("INBOX", uid, 12 * H, &headers("bob@x", "hi", &id), None);
+    }
+    sync_all(&mut ops, &store).unwrap();
+    let rules = rules_from(
+        "[[rules]]\nname = \"all\"\nmatch.from = { contains = \"bob\" }\nactions = [\"flag\"]\n",
+        &store,
+        0,
+    );
+    ops.fail_add_flags_after = Some(1);
+    let result = run_rules_with(
+        &mut ops,
+        &store,
+        &trash,
+        &rules,
+        &acc,
+        &identity,
+        Mode::Normal,
+        13 * H,
+        &mut |_, _| Ok(false),
+    );
+    let Err(e) = result else {
+        panic!("the pass should end with the lost connection");
+    };
+    assert!(e.is_lost_connection(), "{e}");
+    let stores = ops
+        .calls
+        .iter()
+        .filter(|c| c.starts_with("add_flags"))
+        .count();
+    assert_eq!(stores, 2, "{:?}", ops.calls);
+}
+
+#[test]
 fn rules_let_commands_run_between_body_fetches_and_skip_mail_they_moved() {
     let (mut ops, store, dir) = synced();
     let trash = Trash::new(dir.path().to_path_buf());

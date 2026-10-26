@@ -240,6 +240,8 @@ mod recording {
         pub unreadable: Option<(String, u32)>,
         /// Makes the next `expunge` fail with this error, once, like a server refusing it after a COPY.
         pub fail_next_expunge: Option<MailError>,
+        /// Makes every `add_flags` fail with an I/O error once this many have succeeded, like a connection that dropped.
+        pub fail_add_flags_after: Option<usize>,
         /// Makes `add_flags` panic, like a bug in a command.
         pub panic_on_add_flags: bool,
         /// With no queued outcome, `idle` sets this flag and returns instead of waiting for a wake-up.
@@ -260,6 +262,7 @@ mod recording {
         modseqs: HashMap<(String, u32), (Vec<String>, u64)>,
         highest_modseq: HashMap<String, u64>,
         envelope_fetches: usize,
+        add_flags_calls: usize,
         selected: String,
         next_uid: HashMap<String, u32>,
     }
@@ -618,6 +621,13 @@ mod recording {
             ));
             assert!(!self.panic_on_add_flags, "add_flags panicked");
             self.fail_next.take().map_or(Ok(()), Err)?;
+            if self
+                .fail_add_flags_after
+                .is_some_and(|n| self.add_flags_calls >= n)
+            {
+                return Err(MailError::Io("connection reset".into()));
+            }
+            self.add_flags_calls += 1;
             let env = self.envelope_mut(uid)?;
             for f in flags {
                 if !env.flags.iter().any(|x| x == f) {

@@ -12,6 +12,7 @@ use crate::rules::engine::{Context, Mode, PlannedAction};
 use crate::rules::{Action, CompiledRule};
 use crate::search::Term;
 use crate::store::{Hit, Matched, Message, Store, StoreError};
+use crate::sync::LostConnection;
 use crate::trash::Trash;
 
 /// The rule name the CLI logs direct actions under.
@@ -147,7 +148,7 @@ pub fn fetch_body(
             }
             Ok(Some(preview)) => show(preview),
             Ok(None) => {}
-            Err(e) if crate::sync::connection_lost(&e) => return Err(e),
+            Err(e) if e.is_lost_connection() => return Err(e),
             // The whole message follows anyway.
             Err(e) => log::warn!("{folder}/{uid}: preview failed: {e}"),
         }
