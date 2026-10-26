@@ -1025,7 +1025,7 @@ impl Fixture {
             h.server(event);
         }
         let now = h.now;
-        let run = run_rules(
+        let run = match run_rules(
             h,
             store,
             &self.trash,
@@ -1034,8 +1034,20 @@ impl Fixture {
             &self.identity,
             Mode::Normal,
             now,
-        )
-        .expect("store errors are not modelled");
+        ) {
+            Ok(run) => run,
+            // A lost connection ends the pass at once, as in a sync; the run loop reconnects.
+            Err(e) => {
+                assert!(
+                    e.to_string().contains("connection lost (injected)"),
+                    "store errors are not modelled: {e:?}"
+                );
+                h.check_rule_log();
+                h.check_rows_name_their_messages();
+                h.disarm();
+                return None;
+            }
+        };
         h.check_events(&run.events);
         h.check_rule_log();
         h.check_rows_name_their_messages();
