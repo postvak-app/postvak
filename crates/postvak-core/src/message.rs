@@ -1,8 +1,7 @@
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
-use mail_parser::parsers::MessageStream;
-use mail_parser::{Address, HeaderForm, HeaderValue, MessageParser, MimeHeaders};
+use mail_parser::{AddressList, HeaderForm, MessageParser, MessagePart, PartKind, TextList};
 use serde::Serialize;
 
 use crate::mail_ops::{PartRef, TextPart};
@@ -29,24 +28,36 @@ pub fn parse_headers(raw: &[u8]) -> Parsed {
         from: msg.from().map(format_address),
         to: msg.to().map(format_address),
         cc: msg.cc().map(format_address),
-        delivered_to: msg.header_raw("Delivered-To").map(|v| v.trim().to_string()),
+        delivered_to: raw_header(&msg, "Delivered-To"),
         subject: msg.subject().map(str::to_string),
         date: msg.date().map(|d| d.to_timestamp()),
-        in_reply_to: text_list(msg.in_reply_to()).into_iter().next(),
+        in_reply_to: msg
+            .in_reply_to()
+            .and_then(|list| list.first().map(str::to_string)),
         references: text_list(msg.references()),
     }
 }
 
 pub fn header_value(raw_headers: &[u8], name: &str) -> Option<String> {
     let msg = MessageParser::default().parse_headers(raw_headers)?;
-    msg.header_raw(name).map(|v| v.trim().to_string())
+    raw_header(&msg, name)
+}
+
+/// The last copy of a header as the message has it, trimmed.
+fn raw_header(msg: &mail_parser::Message<'_>, name: &str) -> Option<String> {
+    let header = msg.headers().get(name)?;
+    Some(
+        String::from_utf8_lossy(header.raw_value())
+            .trim()
+            .to_string(),
+    )
 }
 
 /// The last copy of a header as text: unfolded, with encoded words (`=?UTF-8?…?=`) decoded.
 pub fn header_text(raw_headers: &[u8], name: &str) -> Option<String> {
     let msg = MessageParser::default().parse_headers(raw_headers)?;
-    let value = msg.header_as(name, HeaderForm::Text).pop()?;
-    value.as_text().map(|text| text.trim().to_string())
+    let parsed = msg.headers().get(name)?.parse_as(HeaderForm::Text);
+    parsed.value().as_text().map(|text| text.trim().to_string())
 }
 
 /// One header as `header` rules see it: unfolded, with encoded words decoded.
@@ -64,19 +75,15 @@ pub fn header_fields(raw_headers: &[u8]) -> Vec<HeaderField> {
     msg.headers()
         .iter()
         .map(|h| {
-            let bytes = raw_headers
-                .get(h.offset_start as usize..h.offset_end as usize)
-                .unwrap_or_default();
-            let value = match MessageStream::new(bytes).parse_unstructured() {
-                HeaderValue::Text(text) => text.trim().to_string(),
-                _ => String::new(),
-            };
+            let parsed = h.parse_as(HeaderForm::Text);
+            let value = parsed
+                .value()
+                .as_text()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
             // The name as the message spells it; mail-parser's own spells known names its way, such as `List-ID`.
-            let name = raw_headers
-                .get(h.offset_field as usize..h.offset_start as usize)
-                .and_then(|field| field.split(|&b| b == b':').next())
-                .map(|name| String::from_utf8_lossy(name).trim().to_string())
-                .unwrap_or_else(|| h.name.as_str().to_string());
+            let name = h.raw_name().trim().to_string();
             HeaderField { name, value }
         })
         .collect()
@@ -141,8 +148,7 @@ fn part_text(part: &TextPart, bytes: &[u8]) -> String {
 pub fn part_html(part: &TextPart, bytes: &[u8]) -> Option<String> {
     let raw = text_part_message(part, bytes);
     let msg = MessageParser::default().parse(&raw)?;
-    let html = msg.html_part(0).filter(|part| part.is_text_html())?;
-    Some(html.text_contents()?.to_string())
+    Some(html_text(&msg)?.into_owned())
 }
 
 /// The contents of one fetched part, its transfer encoding undone.
@@ -155,7 +161,7 @@ pub fn part_contents(part: &PartRef, bytes: &[u8]) -> Vec<u8> {
     );
     MessageParser::default()
         .parse(&raw)
-        .and_then(|msg| msg.parts.first().map(|p| p.contents().to_vec()))
+        .and_then(|msg| msg.parts().next().map(|p| p.decoded().into_owned()))
         .unwrap_or_default()
 }
 
@@ -252,11 +258,9 @@ pub fn attachments_and_html(raw: &[u8]) -> (Vec<Attachment>, Option<HtmlBody>) {
 }
 
 fn html_of(msg: &mail_parser::Message<'_>) -> Option<HtmlBody> {
-    let part = msg.html_part(0).filter(|part| part.is_text_html())?;
-    let html = part.text_contents()?.to_string();
+    let html = html_text(msg)?.into_owned();
     let inline = msg
-        .parts
-        .iter()
+        .parts()
         .filter_map(|part| {
             let cid = part
                 .content_id()?
@@ -265,11 +269,55 @@ fn html_of(msg: &mail_parser::Message<'_>) -> Option<HtmlBody> {
                 .trim_end_matches('>');
             (!cid.is_empty()).then(|| InlinePart {
                 cid: cid.to_string(),
-                bytes: part.contents().to_vec(),
+                bytes: part.decoded().into_owned(),
             })
         })
         .collect();
     Some(HtmlBody { html, inline })
+}
+
+/// The text of the first `text/html` part of the body, the one the reader shows.
+fn html_text<'m>(msg: &'m mail_parser::Message<'_>) -> Option<std::borrow::Cow<'m, str>> {
+    let (body, _) = sorted_parts(msg);
+    body.into_iter()
+        .find(|part| matches!(part.kind(), PartKind::Html))?
+        .text()
+}
+
+/// The top-level message's leaf parts, sorted as `mail_ops::imap` sorts a server's BODYSTRUCTURE, so a message read
+/// whole shows the same HTML and numbers its attachments as one read in parts: body text is every `text/plain` and
+/// `text/html` part not marked as an attachment, and every other part is an attachment, an enclosed message counting
+/// as one. mail-parser's own `attachments()` follows RFC 8621 instead, which lists no photo sent next to plain text.
+fn sorted_parts<'m>(
+    msg: &'m mail_parser::Message<'_>,
+) -> (Vec<MessagePart<'m>>, Vec<MessagePart<'m>>) {
+    let mut body = Vec::new();
+    let mut attachments = Vec::new();
+    let mut pending = vec![msg.root_part()];
+    while let Some(part) = pending.pop() {
+        if matches!(part.kind(), PartKind::Multipart) {
+            pending.extend(part.children().rev());
+        } else if is_body_text(&part) {
+            body.push(part);
+        } else {
+            attachments.push(part);
+        }
+    }
+    (body, attachments)
+}
+
+fn is_body_text(part: &MessagePart<'_>) -> bool {
+    let (ctype, subtype) = match part.content_type() {
+        Some(ct) => (ct.ctype(), ct.subtype().unwrap_or_default()),
+        None => ("text", "plain"),
+    };
+    ctype.eq_ignore_ascii_case("text")
+        && ["plain", "html"]
+            .iter()
+            .any(|s| subtype.eq_ignore_ascii_case(s))
+        && !part
+            .content_disposition()
+            .is_some_and(|disposition| disposition.is_attachment())
 }
 
 /// "Alice <alice@x>, bob@y" is "Alice"; without a name, the first address.
@@ -312,9 +360,9 @@ pub fn bare_addresses(field: &str) -> Vec<String> {
         .collect()
 }
 
-fn format_address(address: &Address<'_>) -> String {
+fn format_address(address: AddressList<'_>) -> String {
     address
-        .iter()
+        .mailboxes()
         .map(|a| match (a.name(), a.address()) {
             (Some(name), Some(addr)) => format!("{name} <{addr}>"),
             (None, Some(addr)) => addr.to_string(),
@@ -326,12 +374,9 @@ fn format_address(address: &Address<'_>) -> String {
         .join(", ")
 }
 
-fn text_list(value: &HeaderValue<'_>) -> Vec<String> {
-    match value {
-        HeaderValue::Text(t) => vec![t.to_string()],
-        HeaderValue::TextList(list) => list.iter().map(|t| t.to_string()).collect(),
-        _ => vec![],
-    }
+fn text_list(list: Option<TextList<'_>>) -> Vec<String> {
+    list.map(|list| list.iter().map(str::to_string).collect())
+        .unwrap_or_default()
 }
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Attachment {
@@ -368,7 +413,9 @@ pub fn attachments(raw: &[u8]) -> Vec<Attachment> {
 }
 
 fn attachments_of(msg: &mail_parser::Message<'_>) -> Vec<Attachment> {
-    msg.attachments()
+    let (_, attachments) = sorted_parts(msg);
+    attachments
+        .into_iter()
         .enumerate()
         .map(|(i, part)| Attachment {
             index: i + 1,
@@ -380,7 +427,7 @@ fn attachments_of(msg: &mail_parser::Message<'_>) -> Vec<Attachment> {
                     None => ct.ctype().to_string(),
                 })
                 .unwrap_or_else(|| "application/octet-stream".into()),
-            size: part.contents().len(),
+            size: part.decoded_len(),
         })
         .collect()
 }
@@ -417,11 +464,11 @@ pub fn attachment(raw: &[u8], index: usize) -> io::Result<(String, Vec<u8>)> {
         .ok_or_else(|| io::Error::other("the message could not be parsed"))?;
     let part = index
         .checked_sub(1)
-        .and_then(|i| msg.attachment(u32::try_from(i).ok()?))
+        .and_then(|i| sorted_parts(&msg).1.into_iter().nth(i))
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("no attachment {index}")))?;
     Ok((
         safe_file_name(part.attachment_name(), index),
-        part.contents().to_vec(),
+        part.decoded().into_owned(),
     ))
 }
 
@@ -952,6 +999,71 @@ List-Id: Dev <dev.lists.example.com>\r\n\
             cids,
             [("logo@x", b"\x89PNG".to_vec()), ("sig", b"GIF89a".to_vec())]
         );
+    }
+
+    #[test]
+    fn a_photo_sent_next_to_plain_text_is_an_attachment() {
+        // mail-parser 1.0 follows RFC 8621 and puts such a photo in the body lists only, leaving nothing to save.
+        let raw = b"From: a@b\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"m\"\r\n\r\n\
+--m\r\nContent-Type: text/plain\r\n\r\nlook\r\n\
+--m\r\nContent-Type: image/jpeg; name=IMG_0001.jpg\r\nContent-Disposition: inline; filename=IMG_0001.jpg\r\n\
+Content-Transfer-Encoding: base64\r\n\r\n/9j/\r\n\
+--m\r\nContent-Type: image/png\r\nContent-Transfer-Encoding: base64\r\n\r\niVBORw==\r\n--m--\r\n";
+        let found: Vec<_> = attachments(raw)
+            .into_iter()
+            .map(|a| (a.index, a.name, a.content_type))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (1, Some("IMG_0001.jpg".into()), "image/jpeg".into()),
+                (2, None, "image/png".into())
+            ]
+        );
+        let (name, contents) = attachment(raw, 1).unwrap();
+        assert_eq!(
+            (name.as_str(), contents),
+            ("IMG_0001.jpg", b"\xff\xd8\xff".to_vec())
+        );
+    }
+
+    #[test]
+    fn attachments_are_numbered_as_the_server_structure_numbers_them() {
+        // The layout of `mail_ops::imap`'s `attachments_are_every_part_but_the_body_text_with_an_enclosed_message_as_one`.
+        let raw = b"From: a@b\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"m\"\r\n\r\n\
+--m\r\nContent-Type: multipart/alternative; boundary=\"a\"\r\n\r\n\
+--a\r\nContent-Type: multipart/related; boundary=\"r\"\r\n\r\n\
+--r\r\nContent-Type: text/html\r\n\r\n<img src=\"cid:logo@x\">\r\n\
+--r\r\nContent-Type: image/png\r\nContent-ID: <logo@x>\r\nContent-Disposition: inline\r\n\
+Content-Transfer-Encoding: base64\r\n\r\niVBORw==\r\n--r--\r\n\
+--a\r\nContent-Type: text/plain\r\n\r\nplain\r\n--a--\r\n\
+--m\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=\"Q3 report.pdf\"\r\n\r\n%PDF-\r\n\
+--m\r\nContent-Type: message/rfc822\r\n\r\nSubject: inner\r\nContent-Type: text/plain\r\n\r\ninner\r\n--m--\r\n";
+        let (found, html) = attachments_and_html(raw);
+        let found: Vec<_> = found
+            .into_iter()
+            .map(|a| (a.index, a.name, a.content_type))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (1, None, "image/png".into()),
+                (2, Some("Q3 report.pdf".into()), "application/pdf".into()),
+                (3, None, "message/rfc822".into())
+            ]
+        );
+        assert_eq!(html.unwrap().html.trim(), "<img src=\"cid:logo@x\">");
+    }
+
+    #[test]
+    fn a_named_html_alternative_is_still_the_html_body() {
+        // RFC 8621, which mail-parser 1.0 follows, makes it an attachment; a server's structure calls it body text.
+        let raw = b"From: a@b\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=\"b\"\r\n\r\n\
+--b\r\nContent-Type: text/plain\r\n\r\nplain\r\n\
+--b\r\nContent-Type: text/html; name=page.html\r\n\r\n<b>rich</b>\r\n--b--\r\n";
+        let (found, html) = attachments_and_html(raw);
+        assert!(found.is_empty());
+        assert_eq!(html.unwrap().html.trim(), "<b>rich</b>");
     }
 
     #[test]
