@@ -11,7 +11,7 @@ use crate::config::AccountConfig;
 use crate::mail_ops::{MailOps, Structure, TextPart};
 use crate::message;
 use crate::store::{Message, Store};
-use crate::sync::{Activity, Event, SyncError, connection_lost, is_connection_error};
+use crate::sync::{Activity, Event, LostConnection, SyncError};
 use crate::time::now;
 
 /// How long one slice fetches before the loop checks INBOX and waits.
@@ -139,7 +139,7 @@ pub(crate) fn slice(
                     *selected = Some(folder.to_string());
                     true
                 }
-                Err(e) if connection_lost(&e) => return Err(e.into()),
+                Err(e) if e.is_lost_connection() => return Err(e.into()),
                 Err(e) => {
                     log::warn!("{folder}: indexing skipped: {e}");
                     unselectable = Some(folder.to_string());
@@ -151,7 +151,7 @@ pub(crate) fn slice(
         let mut structures = if selectable {
             match ops.fetch_structures(&uids) {
                 Ok(found) => Some(found),
-                Err(e) if is_connection_error(&e) => return Err(ActionError::from(e).into()),
+                Err(e) if e.is_lost_connection() => return Err(ActionError::from(e).into()),
                 // One message the server chokes on must not fail its neighbours: ask for each on its own.
                 Err(e) => {
                     log::warn!(
@@ -184,7 +184,7 @@ pub(crate) fn slice(
                 Ok((text, names)) => {
                     store.set_indexed(&msg.folder, msg.uid, Some(&text), &names, at)?
                 }
-                Err(e) if connection_lost(&e) => return Err(e.into()),
+                Err(e) if e.is_lost_connection() => return Err(e.into()),
                 Err(e) => {
                     log::warn!("{}/{}: indexing failed: {e}", msg.folder, msg.uid);
                     store.set_indexed(&msg.folder, msg.uid, None, &[], at)?;
