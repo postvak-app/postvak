@@ -22,6 +22,11 @@ use super::{depth, net};
 const MAX_DEPTH: usize = 512;
 const STACK: usize = 64 * 1024 * 1024;
 
+/// The narrowest width a page is laid out at. Responsive mail stacks its columns below 600 px with
+/// `td { display: block }`, and Blitz paints nothing of such a cell (#313): at 601 px the media queries never match, and
+/// a narrower pane scrolls sideways instead of showing blank columns. Remove it once a pinned Blitz paints block cells.
+const MIN_WIDTH: f32 = 601.0;
+
 /// The thread's name, which the panic hook uses to keep Blitz's panic messages, which can quote the mail, off stderr.
 const THREAD: &str = "html-render";
 
@@ -202,7 +207,9 @@ fn handle(current: &mut Option<Current>, request: Request) -> Option<Reply> {
 /// The laid-out document and its reply; None for markup nested too deep to lay out safely.
 fn layout(load: Load) -> Option<(Current, Reply)> {
     let scale = load.scale.max(0.5);
-    let width = physical(load.width, scale).max(1);
+    // Never narrower than `MIN_WIDTH`: see there. A narrower pane scrolls sideways.
+    let wide = load.width.max(MIN_WIDTH);
+    let width = physical(wide, scale).max(1);
     let (provider, remote) = net::Inline::new(load.inline, load.fetched);
     let config = DocumentConfig {
         viewport: Some(Viewport::new(
@@ -228,7 +235,7 @@ fn layout(load: Load) -> Option<(Current, Reply)> {
     doc.resolve(0.0);
     let layout = doc.root_element().final_layout();
     let overflow = layout.scrollable_overflow_rect;
-    let laid_width = overflow.right.max(load.width);
+    let laid_width = overflow.right.max(wide);
     let height = layout.size.height.max(overflow.bottom);
     let current = Current {
         doc,
@@ -605,7 +612,7 @@ mod tests {
     fn a_strip_is_plain_premultiplied_rgba() {
         let html = "<p style=\"font-size:40px;margin:0\">HELLO WORLD</p>";
         let mut current = None;
-        handle(&mut current, load(1, html, 600.0));
+        handle(&mut current, load(1, html, 700.0));
         let paint = Request::Paint {
             generation: 1,
             strip: 0,
@@ -613,7 +620,7 @@ mod tests {
         let Some(Reply::Strip { image, .. }) = handle(&mut current, paint) else {
             panic!("no strip");
         };
-        assert_eq!(image.width(), 600);
+        assert_eq!(image.width(), 700);
         let len = usize::try_from(image.width() * image.height() * 4).unwrap();
         assert_eq!(image.rgba().len(), len);
         // Premultiplied: no channel exceeds its pixel's alpha.
@@ -905,9 +912,9 @@ mod tests {
     #[test]
     fn a_table_with_align_center_is_centred() {
         let html = "<table align=center width=100 cellpadding=0><tr><td height=20 style=\"background:#f00\"></td></tr></table>";
-        let reds = at(&strip(html, 400.0), is_red);
+        let reds = at(&strip(html, 700.0), is_red);
         let left = reds.iter().map(|p| p.0).min().unwrap_or(0);
-        assert!((140..160).contains(&left), "left edge {left}");
+        assert!((290..310).contains(&left), "left edge {left}");
     }
 
     #[test]
@@ -952,10 +959,63 @@ mod tests {
         assert!(!reds.is_empty());
     }
 
-    /// Responsive mail stacks its columns below about 600 px with `td { display: block }`; Blitz lays such a cell
-    /// out but paints nothing of it, so in a narrow body pane those columns vanish.
+    /// The stacking rule responsive mail ships for narrow screens, on two columns with a colour and a text each.
+    const STACKING: &str = "<style>@media (max-width: 600px) { td.col { display: block !important; width: 100% !important } }</style><table width=100% cellpadding=0 cellspacing=0><tr><td class=col style=\"background:#ff0000;color:#00ff00\">one</td><td class=col style=\"background:#0000ff;color:#ffff00\">two</td></tr></table>";
+
+    /// Below 600 px Blitz paints nothing of a cell the mail's media query makes a block, so the page is laid out at
+    /// 601 px or more, where the query never matches, and the pane scrolls sideways.
     #[test]
-    #[ignore = "BUG: Blitz 0.3.0-beta.2 does not paint a <td> with display: block"]
+    fn responsive_mail_in_a_narrow_pane_keeps_both_columns() {
+        let mut current = None;
+        let Some(Reply::Laid { width, .. }) = handle(&mut current, load(1, STACKING, 400.0)) else {
+            panic!("no layout");
+        };
+        assert!(width >= 601.0, "laid out {width} wide");
+        let Some(Reply::Strip { image, .. }) = handle(
+            &mut current,
+            Request::Paint {
+                generation: 1,
+                strip: 0,
+            },
+        ) else {
+            panic!("no strip");
+        };
+        let image = colours(&image);
+        let has = |r, g, b| {
+            image
+                .pixels
+                .iter()
+                .any(|p| [p.r(), p.g(), p.b()] == [r, g, b])
+        };
+        assert!(has(255, 0, 0), "first column background");
+        assert!(has(0, 0, 255), "second column background");
+        // Text is anti-aliased, so look for strongly coloured pixels rather than the exact colour.
+        let count = |keep: fn(&Colour) -> bool| image.pixels.iter().filter(|p| keep(p)).count();
+        assert!(
+            count(|p| p.g() > 200 && p.r() < 60 && p.b() < 60) > 10,
+            "first column text"
+        );
+        assert!(
+            count(|p| p.r() > 200 && p.g() > 200 && p.b() < 60) > 10,
+            "second column text"
+        );
+    }
+
+    #[test]
+    fn a_pane_wider_than_the_minimum_keeps_its_own_width() {
+        let mut current = None;
+        let Some(Reply::Laid { width, .. }) = handle(&mut current, load(1, "<p>hi</p>", 900.0))
+        else {
+            panic!("no layout");
+        };
+        assert!((900.0..901.0).contains(&width), "laid out {width} wide");
+    }
+
+    /// Blitz lays a `<td>` with `display: block` out but paints nothing of it. `MIN_WIDTH` keeps responsive mail's
+    /// media queries from making one; an inline `display: block` still does, hence this stays ignored until a
+    /// pinned Blitz fixes it (#313, upstream report still to be filed).
+    #[test]
+    #[ignore = "BUG: Blitz 0.3.0-beta.4 does not paint a <td> with display: block (#313)"]
     fn a_table_cell_shown_as_a_block_is_painted() {
         let html = "<table width=100%><tr><td style=\"display:block;background:#ff0000\">one</td></tr></table>";
         let mut current = None;

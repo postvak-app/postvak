@@ -67,7 +67,7 @@ src/message.rs   html_body(raw) -> Option<HtmlBody { html, inline: Vec<InlinePar
 
 ## 5. Rendering
 
-- **Width.** The body panel's inner width in points, at least 320. A width change re-lays out once the width has held still for 100 ms; meanwhile the old strips are drawn as they are, clipped or padded. A page wider than the panel (a fixed 600 px table in a 550 px panel) is laid out at its own width and scrolls sideways.
+- **Width.** The body panel's inner width in points, at least 320; the page itself is laid out at no less than 601 (see Known gap). A width change re-lays out once the width has held still for 100 ms; meanwhile the old strips are drawn as they are, clipped or padded. A page wider than the panel (a fixed 600 px table in a 550 px panel) is laid out at its own width and scrolls sideways.
 - **Scale.** `pixels_per_point` becomes Blitz's hidpi scale; strips are painted at physical pixels and drawn at points.
 - **Strips.** 512 physical pixels tall, the full width, each painted with Blitz's viewport scrolled to its top; Blitz's paint offsets only place the document on the canvas. The view asks for the strips intersecting the visible rect plus one screen above and below, and drops textures more than three screens away. A strip not yet painted draws as white.
 - **Page.** A white rectangle the width of the panel, a 1 px border from the egui theme, the document painted over it with `ColorScheme::Light`. The rest of the panel follows the app theme.
@@ -114,7 +114,7 @@ src/message.rs   html_body(raw) -> Option<HtmlBody { html, inline: Vec<InlinePar
 
 **Legacy attributes:** old mail leans on presentational attributes Blitz 0.3.0-beta.4 reads wrongly or not at all. `html/depth.rs` rewrites `bgcolor` (and `<font color>`) to `#rrggbb` while parsing, by the HTML "rules for parsing a legacy colour value" (`html/legacy.rs`: names, `#rgb` doubled, bare hex, the lenient fallback for junk; empty and `transparent` drop the attribute), since Blitz reads `#ddd` as near black and ignores names and bare hex. `MAIL_CSS` maps `border` on a table to 1px cell borders (not `border="0"`), `valign` on `td`/`th`/`tr`, `align="center"` on a table, `align="left|right"` on an image and `size="1".."7"` on `<font>` (not `+1`/`-1`) as user-agent CSS, so author CSS wins. Drop each once a pinned Blitz does the same. Tests: one pixel test per attribute in `render.rs`, unit tests for the colour rules.
 
-**Known gap:** Blitz 0.3.0-beta.2 does not paint a `<td>` with `display: block`, which responsive mail uses below about 600 px to stack its columns; in a narrow panel those cells are blank. `a_table_cell_shown_as_a_block_is_painted` is ignored until Blitz fixes it.
+**Known gap:** Blitz 0.3.0-beta.4 does not paint a `<td>` with `display: block`, which responsive mail uses below about 600 px to stack its columns. Interim mitigation (#313): a page is laid out at 601 px or wider (`MIN_WIDTH` in `render.rs`), so the mail's `max-width: 600px` queries never match, and a narrower pane scrolls sideways (see Width above) instead of showing blank columns; the cost is that simple mail no longer reflows below 601 px. A `display: block` set inline, or by a rule without a media query, still vanishes. `a_table_cell_shown_as_a_block_is_painted` stays ignored until Blitz fixes it, and `MIN_WIDTH` goes with it; the upstream Blitz report is still to be filed.
 
 Ran on Linux (CPU raster needs no GPU, so CI covers it); macOS reported separately as compiled on or ran on.
 
