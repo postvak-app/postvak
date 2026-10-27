@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/postvak-app/postvak/compare/v0.7.0...v0.8.0) - 2026-10-27
+
+### Added
+
+- *(gui)* measure startup phases and memory, and report them in CI ([#325](https://github.com/postvak-app/postvak/pull/325))
+- *(gui)* fetch a large message's attachments only when saved ([#324](https://github.com/postvak-app/postvak/pull/324))
+- *(gui)* show a large message's text and HTML before its attachments download ([#323](https://github.com/postvak-app/postvak/pull/323))
+- *(mcp)* add a read:headers scope, and gate header rule conditions on it ([#319](https://github.com/postvak-app/postvak/pull/319))
+
+### Fixed
+
+- *(cli)* [**breaking**] show --json returns the MCP shape ([#339](https://github.com/postvak-app/postvak/pull/339))
+- *(actions)* say a placeholder folder is not synced yet ([#338](https://github.com/postvak-app/postvak/pull/338))
+- *(gui)* clicking a folder while typing a search ends the typing ([#337](https://github.com/postvak-app/postvak/pull/337))
+- *(sync)* end the rules pass when the connection drops ([#334](https://github.com/postvak-app/postvak/pull/334))
+- *(gui)* say "1 result · in 1 message" and group every count shown in the window ([#336](https://github.com/postvak-app/postvak/pull/336))
+- *(gui)* lay HTML mail out at 601 px or wider so responsive columns stay visible ([#335](https://github.com/postvak-app/postvak/pull/335))
+- *(gui)* draw a very tall HTML page without panicking the software renderer ([#333](https://github.com/postvak-app/postvak/pull/333))
+- *(gui)* render legacy table attributes in HTML mail ([#332](https://github.com/postvak-app/postvak/pull/332))
+- *(message)* keep a comma in a display name from splitting an address field ([#331](https://github.com/postvak-app/postvak/pull/331))
+- *(rules)* compare flags case-insensitively when acting ([#330](https://github.com/postvak-app/postvak/pull/330))
+
+### Other
+
+- *(deps)* bump the actions group with 3 updates ([#340](https://github.com/postvak-app/postvak/pull/340))
+- *(deps)* mail-parser 1.0 ([#329](https://github.com/postvak-app/postvak/pull/329))
+- *(gui)* stop the open-at-login test racing its own change ([#328](https://github.com/postvak-app/postvak/pull/328))
+- *(rules)* select a rule folder only when a message needs the server ([#327](https://github.com/postvak-app/postvak/pull/327))
+- *(imap)* let the Dovecot test servers start without IPv6 ([#326](https://github.com/postvak-app/postvak/pull/326))
+- *(sync)* skip the SELECT of folders whose STATUS shows no change ([#322](https://github.com/postvak-app/postvak/pull/322))
+- *(sync)* batch BODYSTRUCTURE fetches and keep the backlog folder selected while indexing ([#311](https://github.com/postvak-app/postvak/pull/311))
+
 ## [0.7.0](https://github.com/postvak-app/postvak/compare/v0.6.0...v0.7.0) - 2026-10-25
 
 ### Added
