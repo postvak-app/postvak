@@ -1370,7 +1370,12 @@ mod tests {
         use crate::html::MAX_HTML;
         use crate::test_support::add_html;
         let fx = Fixture::new(&["work"]);
-        add_html(&fx, 1, &"x".repeat(MAX_HTML + 1), "plain words");
+        add_html(
+            &fx,
+            1,
+            &format!("<p>{}</p>", "x".repeat(MAX_HTML)),
+            "plain words",
+        );
         let (open, _wires) = fx.window();
         assert_eq!(open.get("HTML").accessible_enabled(), Some(false));
         assert_eq!(open.get("Text").accessible_enabled(), Some(true));

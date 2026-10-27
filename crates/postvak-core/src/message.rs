@@ -103,13 +103,44 @@ pub fn thread_id(parsed: &Parsed, folder: &str, uid: u32) -> String {
         .unwrap_or_else(|| synthetic_message_id(folder, uid))
 }
 
+/// The first body part as text. An HTML part without markup is taken as written, keeping its line breaks, where
+/// converting it as HTML would run its lines together.
 pub fn body_text(raw: &[u8]) -> String {
     let Some(msg) = MessageParser::default().parse(raw) else {
         return String::new();
     };
+    if let Some(part) = msg.text_body().next()
+        && matches!(part.kind(), PartKind::Html)
+        && let Some(text) = part.text()
+        && !has_markup(&text)
+    {
+        return text.into_owned();
+    }
     msg.body_text(0)
         .map(|text| text.into_owned())
         .unwrap_or_default()
+}
+
+/// Whether text sent as `text/html` holds any markup: a tag such as `<p>` or `</div>`, a comment or a doctype. An
+/// address in angle brackets (`<alice@example.com>`, `<https://…>`) is not a tag. Without markup the part is plain
+/// text under the wrong type, and the reader shows it as text.
+fn has_markup(text: &str) -> bool {
+    text.match_indices('<').any(|(at, _)| {
+        let rest = &text.as_bytes()[at + 1..];
+        let rest = rest.strip_prefix(b"/").unwrap_or(rest);
+        if rest.first() == Some(&b'!') {
+            return true;
+        }
+        let name = rest
+            .iter()
+            .take_while(|b| b.is_ascii_alphanumeric())
+            .count();
+        rest.first().is_some_and(u8::is_ascii_alphabetic)
+            && matches!(
+                rest.get(name),
+                None | Some(b'>' | b'/' | b' ' | b'\t' | b'\r' | b'\n')
+            )
+    })
 }
 
 /// The plain text of fetched text parts, in order, for the search index. Inside a `multipart/alternative` the
@@ -276,12 +307,14 @@ fn html_of(msg: &mail_parser::Message<'_>) -> Option<HtmlBody> {
     Some(HtmlBody { html, inline })
 }
 
-/// The text of the first `text/html` part of the body, the one the reader shows.
+/// The text of the first `text/html` part of the body, the one the reader shows; `None` when it holds no markup, so
+/// the reader shows the text instead.
 fn html_text<'m>(msg: &'m mail_parser::Message<'_>) -> Option<std::borrow::Cow<'m, str>> {
     let (body, _) = sorted_parts(msg);
     body.into_iter()
         .find(|part| matches!(part.kind(), PartKind::Html))?
         .text()
+        .filter(|text| has_markup(text))
 }
 
 /// The top-level message's leaf parts, sorted as `mail_ops::imap` sorts a server's BODYSTRUCTURE, so a message read
@@ -999,6 +1032,50 @@ List-Id: Dev <dev.lists.example.com>\r\n\
         let plain = b"From: a@b\r\nContent-Type: text/plain\r\n\r\n<p>not html</p>\r\n";
         assert_eq!(attachments_and_html(plain).1, None);
         assert_eq!(attachments_and_html(b"").1, None);
+    }
+
+    #[test]
+    fn html_without_markup_shows_as_text_with_its_line_breaks() {
+        let raw = b"From: a@b\r\nContent-Type: text/html\r\n\r\nHi,\r\n\r\nsee you at 3 <alice@example.com>\r\n";
+        assert_eq!(attachments_and_html(raw).1, None);
+        let plain = b"From: a@b\r\nContent-Type: text/plain\r\n\r\nHi,\r\n\r\nsee you at 3 <alice@example.com>\r\n";
+        assert_eq!(body_text(raw), body_text(plain));
+        let part = TextPart {
+            html: true,
+            ..TextPart::default()
+        };
+        assert_eq!(part_html(&part, b"just words\r\n"), None);
+        assert_eq!(
+            part_html(&part, b"<p>words</p>").as_deref().map(str::trim),
+            Some("<p>words</p>")
+        );
+    }
+
+    #[test]
+    fn markup_is_a_tag_comment_or_doctype_not_an_address() {
+        for html in [
+            "<p>x</p>",
+            "a<br>b",
+            "a<br/>b",
+            "x</div>",
+            "<!-- note -->",
+            "<!DOCTYPE html>",
+            "<div\nclass=a>",
+            "<table",
+        ] {
+            assert!(has_markup(html), "{html}");
+        }
+        for text in [
+            "plain",
+            "Alice <alice@example.com> wrote:",
+            "see <https://example.com>",
+            "I <3 you",
+            "a < b",
+            "a <",
+            "",
+        ] {
+            assert!(!has_markup(text), "{text}");
+        }
     }
 
     #[test]
