@@ -971,11 +971,18 @@ fn select_for_rules(
         return Ok(true);
     }
     let message = match ops.select(folder) {
-        Ok(info) if info.uidvalidity == stored.uidvalidity => {
-            *selected = true;
-            return Ok(true);
-        }
-        Ok(_) => format!("{folder}: folder changed on server; resync needed, skipping its rules"),
+        Ok(info) => match actions::check_selected(stored, &info) {
+            actions::Selected::Synced => {
+                *selected = true;
+                return Ok(true);
+            }
+            actions::Selected::Placeholder => {
+                format!("{folder}: not synced yet, skipping its rules")
+            }
+            actions::Selected::Changed => {
+                format!("{folder}: folder changed on server; resync needed, skipping its rules")
+            }
+        },
         Err(e) if e.is_lost_connection() => return Err(e.into()),
         Err(e) => format!("{folder}: {e}; skipping its rules"),
     };
