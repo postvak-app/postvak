@@ -664,9 +664,9 @@ fn dispatch(
         }
         "show" => {
             let a: MessageArgs = args(arguments)?;
-            let (row, body) = backend.show(a.account.as_deref(), &a.folder, a.uid)?;
+            let (account, msg, body) = backend.show(a.account.as_deref(), &a.folder, a.uid)?;
             let (body, truncated) = wrap_body(&body);
-            Ok(json!({ "message": row, "body": body, "truncated": truncated }))
+            Ok(output::show(&account, &msg, &body, truncated)?)
         }
         "status" => {
             let _: NoArgs = args(arguments)?;
