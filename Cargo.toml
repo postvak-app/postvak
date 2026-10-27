@@ -165,7 +165,9 @@ inherits = "release"
 
 # Slint 1.18.1 with its clipboard on the window's own Wayland connection, so copy and paste work on GNOME and in the
 # Flatpak, where arboard's data-control clipboard is missing (https://github.com/slint-ui/slint/pull/14248), and with
-# the tray icon registering without its own D-Bus name in a Flatpak (https://github.com/slint-ui/slint/pull/14204).
+# the tray icon registering without its own D-Bus name in a Flatpak (https://github.com/slint-ui/slint/pull/14204), and
+# with femtovg drawing a rounded clip on whole pixels, so a context menu opened at Wayland's fractional pointer position
+# is not blurry (https://github.com/pataar/slint/tree/femtovg-clip-layer-pixel-align, #343).
 # Every Slint crate comes from the fork, or two copies of i-slint-core meet. Removing it once a Slint release has the fix:
 # https://github.com/postvak-app/postvak/issues/233.
 [patch.crates-io]
