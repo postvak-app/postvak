@@ -5,13 +5,13 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{AccountConfig, Identity};
-use crate::mail_ops::{MailError, MailOps, Structure};
+use crate::mail_ops::{MailError, MailOps, SelectInfo, Structure};
 use crate::message::{self, Attachment, HtmlBody, InlinePart, clean};
 use crate::rules::apply::{ApplyError, apply_many, ensure_raw, move_target, plan_for};
 use crate::rules::engine::{Context, Mode, PlannedAction};
 use crate::rules::{Action, CompiledRule};
 use crate::search::Term;
-use crate::store::{Hit, Matched, Message, Store, StoreError};
+use crate::store::{Folder, Hit, Matched, Message, Store, StoreError};
 use crate::sync::LostConnection;
 use crate::trash::Trash;
 
@@ -44,6 +44,29 @@ pub enum ActionError {
 /// The outcome for one uid: how many actions ran, or why none did.
 pub type UidResult = (u32, Result<usize, ActionError>);
 
+/// How a folder the server just selected compares with the store's copy of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Selected {
+    /// The stored uids name this folder's messages.
+    Synced,
+    /// The store only holds a placeholder (UIDVALIDITY 0), as a rule move into a folder never synced leaves; it has no
+    /// uids to act on until a sync adopts it.
+    Placeholder,
+    /// The server's UIDVALIDITY is not the stored one, so the stored uids would name unrelated messages.
+    Changed,
+}
+
+/// The one UIDVALIDITY check before acting on stored uids; `info` is what SELECTing `stored`'s folder answered.
+pub(crate) fn check_selected(stored: &Folder, info: &SelectInfo) -> Selected {
+    if stored.uidvalidity == 0 {
+        Selected::Placeholder
+    } else if stored.uidvalidity == info.uidvalidity {
+        Selected::Synced
+    } else {
+        Selected::Changed
+    }
+}
+
 /// Selects `folder`, refusing when the stored uids belong to another UIDVALIDITY and would hit unrelated messages.
 pub(crate) fn select_synced(
     ops: &mut dyn MailOps,
@@ -53,10 +76,11 @@ pub(crate) fn select_synced(
     let stored = store
         .folder(folder)?
         .ok_or_else(|| ActionError::UnknownFolder(folder.to_string()))?;
-    if ops.select(folder)?.uidvalidity != stored.uidvalidity {
-        return Err(ActionError::FolderChanged(folder.to_string()));
+    match check_selected(&stored, &ops.select(folder)?) {
+        Selected::Synced => Ok(()),
+        Selected::Placeholder => Err(ActionError::UnknownFolder(folder.to_string())),
+        Selected::Changed => Err(ActionError::FolderChanged(folder.to_string())),
     }
-    Ok(())
 }
 
 /// Runs `action` on each uid in `folder`, logged under `rule_name`, as one server command per batch where it can. One
@@ -709,6 +733,55 @@ mod tests {
         assert!(matches!(err, ActionError::FolderChanged(_)));
         assert_eq!(ops.mail["INBOX"].len(), 1);
         assert_eq!(ops.calls, ["select INBOX"]);
+    }
+
+    #[test]
+    fn a_placeholder_folder_is_not_synced_yet_not_changed() {
+        let (mut ops, store, trash, _dir) = setup();
+        ops = ops.with_folder("Receipts", None);
+        // What a rule move into a folder never synced leaves behind.
+        store
+            .upsert_folder(&Folder {
+                name: "Receipts".into(),
+                uidvalidity: 0,
+                last_uid: 0,
+                special_use: None,
+                delimiter: None,
+            })
+            .unwrap();
+        let err = run(
+            &mut ops,
+            &store,
+            &trash,
+            "Receipts",
+            &[5],
+            &Action::Flag,
+            RULE_NAME,
+            500,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ActionError::UnknownFolder(_)), "{err}");
+        assert!(err.to_string().contains("not been synced yet"), "{err}");
+    }
+
+    #[test]
+    fn check_selected_tells_synced_placeholder_and_changed_apart() {
+        let info = |uidvalidity| SelectInfo {
+            uidvalidity,
+            exists: 0,
+            highest_modseq: None,
+            uidnext: None,
+        };
+        let stored = |uidvalidity| Folder {
+            name: "X".into(),
+            uidvalidity,
+            last_uid: 0,
+            special_use: None,
+            delimiter: None,
+        };
+        assert_eq!(check_selected(&stored(7), &info(7)), Selected::Synced);
+        assert_eq!(check_selected(&stored(7), &info(8)), Selected::Changed);
+        assert_eq!(check_selected(&stored(0), &info(8)), Selected::Placeholder);
     }
 
     #[test]
