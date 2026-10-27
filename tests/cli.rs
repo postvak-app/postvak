@@ -432,7 +432,28 @@ fn show_json_carries_the_account() {
         .unwrap();
     let out = postvak(home.path(), &["show", "42", "--json"]);
     let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(line["account"], "work");
+    // The MCP `show` shape: the account sits inside `message`, the text is `body`.
+    assert_eq!(line["message"]["account"], "work");
+    assert!(line.get("account").is_none());
+    assert_eq!(line["body"], "hi");
+    assert_eq!(line["truncated"], false);
+    assert!(line.get("body_text").is_none());
+}
+
+#[test]
+fn list_json_rows_carry_no_body_text() {
+    let mut stored = message(42, "a@example.com", "Hello");
+    stored.body_text = Some("secret".into());
+    let (home, _store) = seeded_home(&[stored]);
+    for args in [
+        &["list", "--json"][..],
+        &["list", "--threads", "--json"][..],
+    ] {
+        let out = postvak(home.path(), args);
+        let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(line["account"], "work", "{args:?}");
+        assert!(line.get("body_text").is_none(), "{args:?}: {line}");
+    }
 }
 
 #[test]
@@ -483,7 +504,7 @@ fn json_output_carries_no_hidden_characters() {
     }
     let out = postvak(home.path(), &["show", "42", "--json"]);
     let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    let body = line["body_text"].as_str().unwrap();
+    let body = line["body"].as_str().unwrap();
     assert!(body.contains("line one\n\tline two"), "{body:?}");
 }
 

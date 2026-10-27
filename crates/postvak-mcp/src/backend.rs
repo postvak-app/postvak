@@ -15,7 +15,7 @@ use postvak_core::rules::{self, Action, Rule, RuleFile};
 use postvak_core::search::{self, Scope};
 /// The `list` filter, a plain value, so the tools need not name the store.
 pub(crate) use postvak_core::store::Filter;
-use postvak_core::store::{Hit, Message, Store};
+use postvak_core::store::{Message, Store};
 use postvak_core::sync::{Command, Event};
 use postvak_core::time;
 use postvak_core::trash::Trash;
@@ -172,14 +172,12 @@ impl Backend {
             if threads {
                 for thread in store.threads(folder, limit, filter)? {
                     for (m, depth) in thread.iter().zip(output::depths(&thread)) {
-                        let mut row = message_row(&acc.name, m)?;
-                        row["depth"] = depth.into();
-                        rows.push(row);
+                        rows.push(output::message(&acc.name, m, Some(depth))?);
                     }
                 }
             } else {
                 for m in store.messages(folder, limit, filter)? {
-                    rows.push(message_row(&acc.name, &m)?);
+                    rows.push(output::message(&acc.name, &m, None)?);
                 }
             }
         }
@@ -222,17 +220,22 @@ impl Backend {
                 found = actions::with_server_hits(&store, found, &hits, limit)?;
             }
             for hit in &found {
-                rows.push(hit_row(&acc.name, hit)?);
+                rows.push(output::message(&acc.name, hit, None)?);
             }
         }
         Ok(rows)
     }
 
-    /// The message row and its plain body text, fetched once if not stored yet.
-    pub fn show(&self, account: Option<&str>, folder: &str, uid: u32) -> Result<(Value, String)> {
+    /// The account name, the message and its plain body text, fetched once if not stored yet.
+    pub fn show(
+        &self,
+        account: Option<&str>,
+        folder: &str,
+        uid: u32,
+    ) -> Result<(String, Message, String)> {
         let (acc, store, msg) = self.message(account, folder, uid)?;
         let raw = self.daemon.raw_message(&acc.name, &store, &msg)?;
-        Ok((message_row(&acc.name, &msg)?, message::body_text(&raw)))
+        Ok((acc.name, msg, message::body_text(&raw)))
     }
 
     /// The message and every field of its stored header block; nothing is fetched.
@@ -659,24 +662,6 @@ fn refuse_unseen(compiled: &[rules::CompiledRule], sight: Sight) -> Result<()> {
         bail!("a header condition needs the read:headers scope");
     }
     Ok(())
-}
-
-/// A message's listing row: the CLI's `--json` shape with its account, without the body.
-/// A search hit's row: the message row plus `match`.
-fn hit_row(account: &str, hit: &Hit) -> Result<Value> {
-    let mut row = output::with_account(account, hit)?;
-    if let Some(object) = row.as_object_mut() {
-        object.remove("body_text");
-    }
-    Ok(row)
-}
-
-fn message_row(account: &str, m: &Message) -> Result<Value> {
-    let mut row = output::with_account(account, m)?;
-    if let Some(object) = row.as_object_mut() {
-        object.remove("body_text");
-    }
-    Ok(row)
 }
 
 /// A save folder that holds home, or lies in a hidden folder or `Library` in it, would let the agent reach the places

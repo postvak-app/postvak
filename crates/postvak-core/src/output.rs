@@ -34,18 +34,37 @@ pub fn depths(thread: &[Message]) -> Vec<usize> {
         .collect()
 }
 
-/// A message's headers: its row without body text, and every header field in order; `headers --json` and the MCP
-/// `headers` tool share it.
-pub fn headers(
+/// A message's row (or a search hit's, which is a message plus `match`): its account, never its body text, and in a
+/// thread view its `depth`. Every `--json` listing and MCP tool that shows messages builds its rows with this.
+pub fn message(
     account: &str,
-    message: &Message,
-    fields: &[HeaderField],
+    message: &impl serde::Serialize,
+    depth: Option<usize>,
 ) -> serde_json::Result<Value> {
     let mut row = with_account(account, message)?;
     if let Some(object) = row.as_object_mut() {
         object.remove("body_text");
+        if let Some(depth) = depth {
+            object.insert("depth".into(), depth.into());
+        }
     }
-    Ok(json!({ "message": row, "headers": fields }))
+    Ok(row)
+}
+
+/// A message's headers: its row without body text, and every header field in order; `headers --json` and the MCP
+/// `headers` tool share it.
+pub fn headers(account: &str, msg: &Message, fields: &[HeaderField]) -> serde_json::Result<Value> {
+    Ok(json!({ "message": message(account, msg, None)?, "headers": fields }))
+}
+
+/// What `show --json` and the MCP `show` tool return: the message row, its plain `body` and whether the body was cut.
+pub fn show(
+    account: &str,
+    msg: &Message,
+    body: &str,
+    truncated: bool,
+) -> serde_json::Result<Value> {
+    Ok(json!({ "message": message(account, msg, None)?, "body": body, "truncated": truncated }))
 }
 
 /// A rule's listing row; `account` is the rule's own scope, `null` for every account.
@@ -107,6 +126,46 @@ mod tests {
     fn with_account_adds_the_account_key() {
         let row = with_account("work", &serde_json::json!({ "uid": 1 })).unwrap();
         assert_eq!(row, serde_json::json!({ "account": "work", "uid": 1 }));
+    }
+
+    #[test]
+    fn message_rows_carry_the_account_and_depth_but_no_body() {
+        let msg = Message {
+            uid: 4,
+            body_text: Some("secret".into()),
+            ..Default::default()
+        };
+        let row = super::message("work", &msg, Some(2)).unwrap();
+        assert_eq!(
+            (row["account"].as_str(), row["uid"].as_u64()),
+            (Some("work"), Some(4))
+        );
+        assert_eq!(row["depth"], 2);
+        assert!(row.get("body_text").is_none());
+        assert!(
+            super::message("work", &msg, None)
+                .unwrap()
+                .get("depth")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn show_has_the_message_with_its_account_a_body_and_truncated() {
+        let msg = Message {
+            uid: 4,
+            body_text: Some("indexed".into()),
+            ..Default::default()
+        };
+        let shown = show("work", &msg, "hello", false).unwrap();
+        assert_eq!(
+            shown["message"],
+            super::message("work", &msg, None).unwrap()
+        );
+        assert_eq!(shown["message"]["account"], "work");
+        assert_eq!(shown["body"], "hello");
+        assert_eq!(shown["truncated"], false);
+        assert_eq!(shown.as_object().unwrap().len(), 3);
     }
 
     #[test]

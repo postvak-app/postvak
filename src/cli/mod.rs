@@ -535,9 +535,11 @@ pub fn run() -> Result<()> {
                     for thread in store.threads(&folder, limit, filter)? {
                         for (m, depth) in thread.iter().zip(postvak_core::output::depths(&thread)) {
                             if json {
-                                let mut value = serde_json::to_value(m)?;
-                                value["depth"] = depth.into();
-                                print_json(postvak_core::output::with_account(&acc.name, &value)?);
+                                print_json(postvak_core::output::message(
+                                    &acc.name,
+                                    m,
+                                    Some(depth),
+                                )?);
                             } else {
                                 println!("{}", message_line(&acc.name, m, depth));
                             }
@@ -547,7 +549,7 @@ pub fn run() -> Result<()> {
                 }
                 for m in store.messages(&folder, limit, filter)? {
                     if json {
-                        print_json(postvak_core::output::with_account(&acc.name, &m)?);
+                        print_json(postvak_core::output::message(&acc.name, &m, None)?);
                     } else {
                         println!("{}", message_line(&acc.name, &m, 0));
                     }
@@ -593,7 +595,7 @@ pub fn run() -> Result<()> {
                 }
                 for hit in found {
                     if json {
-                        print_json(postvak_core::output::with_account(&acc.name, &hit)?);
+                        print_json(postvak_core::output::message(&acc.name, &hit, None)?);
                     } else {
                         let line = message_line(&acc.name, &hit.message, 0);
                         match hit.matched {
@@ -657,9 +659,8 @@ pub fn run() -> Result<()> {
             if raw {
                 io::stdout().write_all(&body)?;
             } else if json {
-                print_json(
-                    serde_json::json!({ "account": acc.name, "message": msg, "body_text": postvak_core::message::body_text(&body) }),
-                );
+                let text = postvak_core::message::body_text(&body);
+                print_json(postvak_core::output::show(&acc.name, &msg, &text, false)?);
             } else {
                 println!(
                     "From: {}\nTo: {}\nSubject: {}\n",
