@@ -1274,9 +1274,7 @@ impl App {
                 if let Some(dialog) = self.top_dialog() {
                     self.close(dialog);
                 } else if self.search.is_some() {
-                    self.search = None;
-                    self.search_focused = false;
-                    self.list = ListState::default();
+                    self.reset_list(None, false);
                     self.reload_view();
                 } else {
                     self.list.marked.clear();
@@ -1431,11 +1429,9 @@ impl App {
             // The hits load on a thread of their own, as after a sync event, so a keystroke never waits for the store
             // and fast typing runs one search at a time, for the latest text. The last query's rows stay until then.
             UiAction::SearchFor(query) => {
-                self.search = Some(query);
-                self.list.cursor = 0;
-                self.list.server_hits.clear();
-                self.list.server_searching = 0;
-                self.list.server_asked = false;
+                let rows = std::mem::take(&mut self.list.rows);
+                self.reset_list(Some(query), self.search_focused);
+                self.list.rows = rows;
                 self.search_reset = Some(self.list_generation + 1);
                 self.view_dirty = true;
             }
@@ -1503,10 +1499,8 @@ impl App {
             }
             UiAction::StartSearch => {
                 if self.view.lists_mail() {
-                    self.search = Some(String::new());
                     // The field takes the keyboard as it appears.
-                    self.search_focused = true;
-                    self.list = ListState::default();
+                    self.reset_list(Some(String::new()), true);
                     self.reload_view();
                 }
             }
@@ -1679,10 +1673,18 @@ impl App {
     pub(crate) fn select_view(&mut self, view: View) {
         self.view = view;
         self.sheet_sort = None;
-        self.move_picker = None;
-        self.search = None;
-        self.list = ListState::default();
+        self.reset_list(None, false);
         self.reload_view();
+    }
+
+    /// Starts the list over for `search` (None leaves search), with the search field focused or not: the one place
+    /// the list, the search and what depends on them are reset. A search field that goes away is not unfocused by
+    /// Slint, so leaving search must clear `search_focused` here.
+    fn reset_list(&mut self, search: Option<String>, focused: bool) {
+        self.move_picker = None;
+        self.search = search;
+        self.search_focused = focused;
+        self.list = ListState::default();
     }
 
     pub(crate) fn view_account(&self) -> Option<usize> {
@@ -3991,6 +3993,44 @@ mod tests {
         assert_eq!(driver.uids(), [3, 2, 1], "a refusal drops every edit");
         release.release();
         tick_until(&mut driver, 0.0, |app| app.list_loading.is_none());
+    }
+
+    /// #263: clicking a folder while typing a search removed the field without unfocusing it, so letter keys stayed
+    /// typing and the body stayed hidden.
+    #[test]
+    fn choosing_a_folder_while_typing_a_search_ends_the_typing() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Archive", Some("Archive"));
+        inbox(&fx, &[1, 2, 3]);
+        let (mut driver, wires) = fx.driver();
+        driver.press("/ he");
+        assert!(driver.app.search_focused);
+        driver.apply(UiAction::SelectView(View::Folder {
+            account: 0,
+            folder: "Archive".into(),
+        }));
+        assert_eq!(driver.app.search, None);
+        assert!(!driver.app.search_focused);
+        assert!(!driver.app.typing());
+        driver.apply(UiAction::SelectView(View::Folder {
+            account: 0,
+            folder: "INBOX".into(),
+        }));
+        driver.press("e");
+        assert_eq!(wires.sent(), [apply(&[3], Action::Archive)]);
+    }
+
+    /// #263: the menu's Search closes the move picker, as choosing a folder does.
+    #[test]
+    fn starting_a_search_closes_the_move_picker() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1]);
+        let (mut driver, _wires) = fx.driver();
+        driver.press("m");
+        assert!(driver.app.move_picker.is_some());
+        driver.apply(UiAction::StartSearch);
+        assert!(driver.app.move_picker.is_none());
+        assert!(driver.app.search_focused);
     }
 
     #[test]
