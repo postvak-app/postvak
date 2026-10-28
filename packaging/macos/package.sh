@@ -164,7 +164,8 @@ ln -s /Applications "$stage/Applications"
 rm -f "$dmg"
 # makehybrid + convert instead of `hdiutil create -srcfolder`, which fails intermittently on CI runners.
 hdiutil makehybrid -hfs -hfs-volume-name Postvak -hfs-openfolder "$stage" -o "$raw" "$stage"
-hdiutil convert "$raw" -format UDZO -o "$dmg"
+# ULMO (LZMA, macOS 10.15+) instead of UDZO (zlib): a third smaller, the most of it on the bundled dSYM.
+hdiutil convert "$raw" -format ULMO -o "$dmg"
 
 if [ "$identity" != - ]; then
     codesign --force --timestamp --sign "$identity" ${keychain_args[@]+"${keychain_args[@]}"} "$dmg"
