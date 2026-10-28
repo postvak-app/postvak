@@ -9,7 +9,7 @@ use std::time::Duration;
 use crate::{numbers, update};
 use postvak_core::actions::Preview;
 use postvak_core::bimi::Brand;
-use postvak_core::config::{self, AccountConfig, Config, Identity, Theme};
+use postvak_core::config::{self, AccountConfig, Config, HtmlColours, Identity, Theme};
 use postvak_core::credentials::Secret;
 use postvak_core::daemon::Client;
 use postvak_core::daemon::client::NewerDaemon;
@@ -166,6 +166,8 @@ pub(crate) struct BodyState {
     pub shown_at: f64,
     /// Set by `v`: the text view for this message even though it has HTML.
     pub show_text: bool,
+    /// Show original colours: this message's HTML in the sender's colours on a white page, also in the dark theme.
+    pub original_colours: bool,
     /// The raw message, while the source window shows it.
     pub source: Option<body::Source>,
     /// Why the HTML could not be shown; the text view shows instead, under this note.
@@ -198,6 +200,7 @@ impl BodyState {
             reading: None,
             saved: None,
             show_text: false,
+            original_colours: false,
             shown_at: now,
             source: None,
             links: Vec::new(),
@@ -452,6 +455,10 @@ pub(crate) enum UiAction {
     ToggleHelp,
     ToggleHistory,
     ToggleHtml,
+    /// The open message's HTML in its sender's colours, or adapted to the dark theme again.
+    ToggleOriginalColours,
+    /// Whether the window shows the dark theme, which decides how HTML mail is styled.
+    HtmlDark(bool),
     ToggleMark,
     ToggleRead,
     /// Cmd-click (Ctrl-click off macOS): add this row to the selection, which starts from the cursor row, or take it out.
@@ -566,6 +573,10 @@ pub struct App {
     pub(crate) html_generation: u64,
     /// The scale and width the window last gave the HTML view, so the next HTML message lays out at once.
     pub(crate) html_size: Option<(f32, f32)>,
+    /// `[ui] html_colours`: whether HTML mail is adapted to the dark theme.
+    pub(crate) html_colours: HtmlColours,
+    /// Whether the window shows the dark theme; System follows the desktop, which only the window knows.
+    pub(crate) html_dark: bool,
     pub(crate) history: VecDeque<HistoryLine>,
     pub(crate) history_open: bool,
     /// Opens a file or URL with the desktop's app; tests record instead.
@@ -799,6 +810,9 @@ impl App {
             next_tick: None,
             wake: Arc::new(|| {}),
             theme: config.ui.theme,
+            html_colours: config.ui.html_colours,
+            // The window says whether the System theme is dark once it shows (`UiAction::HtmlDark`).
+            html_dark: config.ui.theme == Theme::Dark,
             trash: Vec::new(),
             sheet_sort: None,
             update: if config.ui.check_updates {
@@ -1548,6 +1562,19 @@ impl App {
                     body.show_text = !body.show_text;
                 }
             }
+            UiAction::ToggleOriginalColours => {
+                if self.offers_original_colours()
+                    && let Some(body) = self.body.as_mut()
+                {
+                    body.original_colours = !body.original_colours;
+                    self.restyle_html();
+                }
+            }
+            UiAction::HtmlDark(dark) if dark != self.html_dark => {
+                self.html_dark = dark;
+                self.restyle_html();
+            }
+            UiAction::HtmlDark(_) => {}
             UiAction::PurgeTrash => self.purge_trash(),
             UiAction::ApplyRule(name) => self.apply_rule(&name),
             UiAction::ConfirmApplyRule => {
@@ -2471,6 +2498,7 @@ impl App {
 
     /// Sends the shown message's HTML to the render thread, at `width` points and `scale`.
     fn lay_out(&mut self, scale: f32, width: f32) {
+        let dark = self.html_dark_page();
         let Some(body) = self.body.as_mut() else {
             return;
         };
@@ -2485,6 +2513,7 @@ impl App {
             .map(|view| view.fetched.clone())
             .unwrap_or_default();
         let load = html::Load {
+            dark,
             fetched,
             generation,
             html: source.html.clone(),
@@ -2497,12 +2526,53 @@ impl App {
                 view.generation = generation;
                 view.sent = (scale, width);
                 view.wanted = None;
+                view.dark = dark;
             }
-            None => body.html_view = Some(HtmlState::new(generation, scale, width)),
+            None => {
+                let mut view = HtmlState::new(generation, scale, width);
+                view.dark = dark;
+                body.html_view = Some(view);
+            }
         }
         self.renderer
             .get_or_insert_with(|| Renderer::start(self.wake.clone()))
             .send(html::Request::Load(load));
+    }
+
+    /// Whether HTML mail may be adapted to the dark theme: the window is dark and `[ui] html_colours` allows it.
+    pub(crate) fn adapts_html(&self) -> bool {
+        self.html_dark && self.html_colours == HtmlColours::Adapt
+    }
+
+    /// Whether "Show original colours" applies: the shown message's HTML is on screen and would be adapted.
+    pub(crate) fn offers_original_colours(&self) -> bool {
+        self.adapts_html() && self.body.as_ref().is_some_and(BodyState::shows_html)
+    }
+
+    /// Whether the shown message's HTML is styled dark: adapted, unless the user asked for its original colours.
+    pub(crate) fn html_dark_page(&self) -> bool {
+        self.adapts_html() && !self.body.as_ref().is_some_and(|b| b.original_colours)
+    }
+
+    /// Styles the laid-out page again when the theme or the colours choice changed; the render thread keeps the
+    /// parsed document, and answers with a layout under a new generation.
+    fn restyle_html(&mut self) {
+        let dark = self.html_dark_page();
+        let Some(view) = self.body.as_mut().and_then(|b| b.html_view.as_mut()) else {
+            return;
+        };
+        if view.dark == dark {
+            return;
+        }
+        self.html_generation += 1;
+        view.generation = self.html_generation;
+        view.dark = dark;
+        self.renderer
+            .get_or_insert_with(|| Renderer::start(self.wake.clone()))
+            .send(html::Request::Restyle {
+                generation: view.generation,
+                dark,
+            });
     }
 
     /// Starts downloading what the shown page asked for; the tag is a fresh layout number, unique to this request.
