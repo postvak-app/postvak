@@ -564,7 +564,14 @@ impl Backend {
             .retain(|r| !self.narrowed() || self.is_visible(r.account.as_deref()));
         let names = self.all_accounts();
         let accounts: Vec<&str> = names.iter().map(String::as_str).collect();
-        let warnings = rules::warnings(&path, &file.rules, &accounts);
+        let config = self.config();
+        let untrusting: Vec<&str> = config
+            .accounts
+            .iter()
+            .filter(|a| !a.can_authenticate())
+            .map(|a| a.name.as_str())
+            .collect();
+        let warnings = rules::warnings(&path, &file.rules, &accounts, &untrusting);
         Ok(json!({ "rules": count, "warnings": warnings }))
     }
 

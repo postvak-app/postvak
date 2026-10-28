@@ -31,8 +31,13 @@ pub(crate) struct RulesState {
 
 impl RulesState {
     /// The file's rules, or the previous ones when it does not parse. A rule that does not compile is reported but
-    /// still listed, so it can be switched off.
-    pub fn load(path: &Path, previous: Vec<Rule>, accounts: &[&str]) -> RulesState {
+    /// still listed, so it can be switched off. `untrusting` are the accounts that trust no authserv-id.
+    pub fn load(
+        path: &Path,
+        previous: Vec<Rule>,
+        accounts: &[&str],
+        untrusting: &[&str],
+    ) -> RulesState {
         let (error, rules) = match rules::load(path) {
             Ok(file) => (
                 rules::compile(&file).err().map(|e| e.to_string()),
@@ -42,7 +47,7 @@ impl RulesState {
         };
         RulesState {
             error,
-            warnings: rules::warnings(path, &rules, accounts),
+            warnings: rules::warnings(path, &rules, accounts, untrusting),
             previews: BTreeMap::new(),
             proposals: proposals(&rules),
             lines: rule_lines(&rules),
