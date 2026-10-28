@@ -107,6 +107,7 @@ On macOS a notification shows the sender and the subject as Postvak's once Postv
 - [Delete sign-in codes](#delete-sign-in-codes): `from`, `subject`, `older_than`, `seen`
 - [Move list mail out of the inbox](#move-list-mail-out-of-the-inbox): `to_me`, `header`, `silent`
 - [Give an alias its own folder](#give-an-alias-its-own-folder): `alias`, `notify`
+- [Move shop mail after notifying](#move-shop-mail-after-notifying): `older_than`, `move`
 - [Tag shop mail except receipts](#tag-shop-mail-except-receipts): `none`, `tag`
 - [Flag certain people or topics](#flag-certain-people-or-topics): `any`, `flag`
 - [Set large mail aside](#set-large-mail-aside): `larger_than`, `flagged`, `stop`
@@ -148,6 +149,18 @@ Give a shop alias its own folder, but still notify:
 name = "shop alias"
 match.alias = "*@shop.example.com"
 actions = [{ move = "Shopping" }, "notify"]
+```
+
+### Move shop mail after notifying
+
+Leave shop mail in INBOX for 15 minutes before moving it, so mail apps on your other devices, which mostly notify only for INBOX, see it first. Postvak notifies too, since nothing moved the message when it arrived. The move runs on the first full sync after those 15 minutes, so up to `sync_interval_secs` later:
+
+```toml
+[[rules]]
+name = "shop mail, after notifying"
+match.from = { contains = "shop.example.com" }
+match.older_than = "15m"
+actions = [{ move = "Shopping" }]
 ```
 
 ### Tag shop mail except receipts
