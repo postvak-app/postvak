@@ -135,6 +135,16 @@ match.alias = "*@shop.example.com"
 actions = [{ move = "Shopping" }, "notify"]
 ```
 
+Leave shop mail in INBOX for 15 minutes before moving it, so mail apps on your other devices, which mostly notify only for INBOX, see it first. Postvak notifies too, since nothing moved the message when it arrived. The move runs on the first full sync after those 15 minutes, so up to `sync_interval_secs` later:
+
+```toml
+[[rules]]
+name = "shop mail, after notifying"
+match.from = { contains = "shop.example.com" }
+match.older_than = "15m"
+actions = [{ move = "Shopping" }]
+```
+
 Tag shop mail as Important (Thunderbird's `$label1`), except receipts and invoices:
 
 ```toml
