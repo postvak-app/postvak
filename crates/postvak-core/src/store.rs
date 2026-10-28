@@ -993,11 +993,12 @@ impl Store {
         if let Some(widened) = &plan.close
             && left > 0
         {
-            // Without a position, a page that is not full holds every exact match.
-            let thin = if after.is_none() {
-                hits.len() < CLOSE_MATCHES_BELOW
-            } else {
-                self.exact_is_thin(request, &plan)?
+            // Without a position, a page that is not full holds every exact match. A position in the close tier
+            // means an earlier page showed it, so mail that arrived since does not hide the rest.
+            let thin = match after {
+                None => hits.len() < CLOSE_MATCHES_BELOW,
+                Some((Matched::Close, _)) => true,
+                Some((Matched::Exact, _)) => self.exact_is_thin(request, &plan)?,
             };
             if thin {
                 let position = match after {
