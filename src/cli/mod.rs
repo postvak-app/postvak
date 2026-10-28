@@ -24,7 +24,7 @@ use postvak_core::trash::Trash;
 #[command(
     name = "postvak",
     version,
-    about = "A fast, simple mail client with automatic mailbox rules"
+    about = "Your inbox, organized by rules you write"
 )]
 struct Cli {
     #[command(subcommand)]

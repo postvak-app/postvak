@@ -8,7 +8,10 @@
     <rect x="27" y="80" width="26" height="5" rx="2.5" fill="#0a0e1b"/>
   </g>
   <text x="392" y="442" font-family="Bricolage Grotesque" font-weight="600" font-size="150" letter-spacing="-3" fill="#f3eee4">Postvak</text>
-  <text x="160" y="700" font-family="Hanken Grotesk" font-weight="500" font-size="80" fill="#f3eee4">Rules for your IMAP inbox.</text>
+  <g font-family="Hanken Grotesk" font-weight="500" font-size="80" fill="#f3eee4">
+    <text x="160" y="610">Your inbox, organized</text>
+    <text x="160" y="700">by rules you write.</text>
+  </g>
   <g font-family="Hanken Grotesk" font-weight="500" font-size="54" fill="#a8adbd">
     <text x="160" y="800">Test every rule with a dry run. Undo any delete.</text>
     <text x="160" y="872">Runs in the background, on any IMAP server.</text>
