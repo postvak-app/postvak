@@ -15,13 +15,13 @@ actions = [{ move = "Lists/GitHub" }, "mark_read"]
 |---|---|---|
 | `name` | required | Unique. Renaming a rule makes it a new rule. |
 | `account` | every account | Only for this account. |
-| `folder` | `INBOX` | The folder the rule watches. |
+| `folder` | `INBOX` | The folder the rule watches. `INBOX` matches in any case; other names match exactly. |
 | `enabled` | `true` | `false` skips the rule. Proposals start disabled. |
 | `proposed_by` | none | Set by `postvak rules propose`. |
 | `match` | required | Conditions that must all hold. At least one. |
 | `actions` | required | What to do. At least one. |
 
-A tag is printable ASCII without spaces, backslashes or `( ) { % * " ]`, and `$PostvakRestored` is reserved. `name`, `account`, `folder` and `move` folders must not be blank, may not contain control characters, and are at most 255 characters.
+A tag is printable ASCII without spaces, backslashes or `( ) { % * " ]`, and `$PostvakRestored` is reserved. `name`, `account`, `folder` and `move` folders must not be blank, may not contain control characters, and are at most 255 characters. On a server that ignores case in folder names, such as Gmail or Exchange, a `move` to `lists` while `Lists` exists goes to `Lists`; a server that respects case, such as Dovecot, creates `lists` beside it.
 
 ## Conditions
 
