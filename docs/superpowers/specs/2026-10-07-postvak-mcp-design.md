@@ -27,7 +27,7 @@ Out of scope, recorded in §10: the daemon and socket, saving attachments to dis
 | Bodies | Their own scope, `read:bodies`; `read` sees headers only | `read` includes bodies |
 | Scopes | `read`, `read:bodies`, `rules:propose`, `rules:write`, `mail:modify`; default `read,rules:propose` | Per-session grants (the protocol is stateless) |
 | Hidden tools | Tools outside the granted scopes are left out of `tools/list` | Listed but refused |
-| Texts | One source: the agent guide's ground rules are the server description and the documentation pages come from the `docs` tool, the CLI help strings are the tool descriptions, `rules schema` is the propose input schema, CLI `--json` rows are the result rows | MCP-only docs |
+| Texts | One source: the server description is a short form of the agent guide's ground rules, kept in step with them by a test, and the documentation pages come from the `docs` tool, the CLI help strings are the tool descriptions, `rules schema` is the propose input schema, CLI `--json` rows are the result rows | MCP-only docs |
 | Install | `postvak mcp install claude-desktop|claude-code|json`, re-runnable, `--remove`, `--dry-run` | Manual setup only |
 | Concurrency gap | GUI polls SQLite `data_version` with its 2 s file poll | Accept stale GUI rows until the next sync |
 
@@ -77,7 +77,7 @@ Tool names follow the CLI commands so the agent guide's examples carry over. Res
 | `read:bodies` | `show` | headers plus the body, wrapped (§7) |
 | `read:bodies` | `attachments` | names, types, sizes; no saving |
 | `rules:propose` | `rules_propose` | stored disabled with `proposed_by = "mcp:<client>"` |
-| `rules:write` | `rules_approve`, `rules_reject`, `rules_set_enabled` | |
+| `rules:write` | `rules_approve`, `rules_reject`, `rules_set_enabled` | The instructions let the agent use these only when the human asks it to: granting the scope is how a human opts out of approving each proposal by hand. The CLI has no such scope, so the guide tells a shell agent never to run `rules approve` or `reject` itself |
 | `mail:modify` | `mark`, `move`, `archive`, `delete`, `trash_restore` | each takes `dry_run` |
 
 - `tools/list` returns the granted tools in alphabetical order, with `ttlMs` and `cacheScope` set, since the list depends only on the server's arguments.

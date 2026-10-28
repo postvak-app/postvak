@@ -285,7 +285,7 @@ postvak rules schema                         JSON Schema for rules.toml, from th
 postvak rules propose [--by WHO]             read one rule as JSON on stdin, append with enabled = false
 postvak rules approve NAME | reject NAME     flip enabled, or remove the proposal
 postvak rules list [--json]                  name, enabled, proposed_by
-postvak guide                                print docs/src/agent-guide.md
+postvak guide [PAGE]                         print a page of docs/src/: agent-guide (default), rules, search or cli
 postvak folders [--account NAME] [--json]
 postvak list [--account NAME] [--folder INBOX] [--limit 50] [--threads] [--json]
 postvak show UID [--account NAME] [--folder INBOX] [--raw] [--json]
@@ -384,7 +384,7 @@ docs/
 ```
 
 Rules for keeping it truthful:
-- `postvak guide` and the MCP server print `help::AGENT_GUIDE`, an `include_str!` of `crates/postvak-core/src/agent-guide.md`, which is a symlink to `docs/src/agent-guide.md`. The binary and the site can't drift.
+- `postvak guide [PAGE]` and the MCP `docs` tool print `help::DOC_PAGES` (the agent guide, `rules.md`, `search.md` and `cli.md`), each an `include_str!` of a symlink in `crates/postvak-core/src/docs/` to its page in `docs/src/`. The binary and the site can't drift. The MCP server's instructions are `help::MCP_INSTRUCTIONS`, a short form of the guide's ground rules kept in step with them by a test.
 - `README.md` is `docs/src/index.md` plus badges; a CI check diffs them.
 - Every ```toml block in `index.md`, `rules.md` and `accounts.md` is extracted by a test and run through the rules or config parser, and the JSON proposal examples in `agent-guide.md` through the rule validator. A broken example fails the build.
 - `cli.md` is regenerated in CI from `--help` output and the job fails on a diff, so flag changes force a docs commit.
@@ -398,7 +398,7 @@ Docs site: GitHub Pages from `mdbook build`, enabled when there is something wor
 
 **GUI (phase 2).** Two channels between UI and core: `Command` into the sync side, `Event` out, every event calls `request_repaint`. Views emit `Action`s applied by `app.rs` after the frame. Message list via `ScrollArea::show_rows`. The body panel is one widget taking a `Message` so a `wry` webview can replace it. Headless egui layout tests via `Context::run_ui`. Only `http`, `https`, `mailto` links are passed to the OS opener. SQLCipher: decided against; see `2026-10-06-postvak-gui-design.md` §2.
 
-**MCP server (phase 3).** Spec revision 2026-07-28 via `rmcp` 3.x. The server description in `server/discover` is `agent-guide.md`; tool descriptions are the same clap doc comments the CLI uses; the propose tool's `inputSchema` is the `rules schema` output. One source, three renderings. stdio transport only, no listener. The protocol is stateless, so scopes come from server configuration (`postvak mcp --scopes read,rules:propose`), not from a session. Must implement `server/discover`. Tools carry `readOnlyHint`/`destructiveHint` annotations; `tools/list` returns a deterministic order with `ttlMs`/`cacheScope`. No MCP logging feature; log to stderr. Rule creation tools write `enabled = false` proposals; `rules:write` scope is needed to write enabled rules; `mail:modify` for direct move/delete/flag tools. Message bodies in tool results are wrapped as untrusted data. The multi-round-trip pattern is the later option for "confirm this rule" through the host UI; the proposal file stays the source of truth.
+**MCP server (phase 3).** Spec revision 2026-07-28 via `rmcp` 3.x. The server description in `server/discover` is the guide's ground rules (`help::MCP_INSTRUCTIONS`), and the `docs` tool serves the pages; tool descriptions are the same clap doc comments the CLI uses; the propose tool's `inputSchema` is the `rules schema` output. One source, three renderings. stdio transport only, no listener. The protocol is stateless, so scopes come from server configuration (`postvak mcp --scopes read,rules:propose`), not from a session. Must implement `server/discover`. Tools carry `readOnlyHint`/`destructiveHint` annotations; `tools/list` returns a deterministic order with `ttlMs`/`cacheScope`. No MCP logging feature; log to stderr. Rule creation tools write `enabled = false` proposals; `rules:write` scope is needed to write enabled rules; `mail:modify` for direct move/delete/flag tools. Message bodies in tool results are wrapped as untrusted data. The multi-round-trip pattern is the later option for "confirm this rule" through the host UI; the proposal file stays the source of truth.
 
 **Daemon split.** `run` becomes the daemon; GUI and CLI talk to it over a Unix socket with 0600 permissions. The `Command`/`Event` types from phase 2 become the wire protocol. Designed in `2026-10-07-postvak-daemon-design.md`.
 
