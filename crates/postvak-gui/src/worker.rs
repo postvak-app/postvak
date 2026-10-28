@@ -17,17 +17,39 @@ pub(crate) fn spawn(name: &str, f: impl FnOnce() + Send + 'static) -> bool {
 }
 
 /// Runs `f` once on a thread called `name`; its answer arrives on the receiver, and `wake` runs once it has. When the
-/// thread cannot start, the receiver reads as stopped.
+/// thread cannot start, the receiver reads as stopped and `wake` runs at once, so the window reads it.
 pub(crate) fn oneshot<T: Send + 'static>(
     name: &str,
     wake: Wake,
     f: impl FnOnce() -> T + Send + 'static,
 ) -> Receiver<T> {
+    oneshot_on(|name, job: Job| spawn(name, job), name, wake, f)
+}
+
+/// The work a thread runs, boxed so a test can stand in for the thread start.
+type Job = Box<dyn FnOnce() + Send + 'static>;
+
+/// [`oneshot`] with `start` in place of [`spawn`].
+fn oneshot_on<T: Send + 'static>(
+    start: impl FnOnce(&str, Job) -> bool,
+    name: &str,
+    wake: Wake,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> Receiver<T> {
     let (done, answer) = mpsc::channel();
-    spawn(name, move || {
-        let _ = done.send(f());
+    let woken = wake.clone();
+    // The send comes before the wake, so the tick the wake causes finds the answer in.
+    let started = start(
+        name,
+        Box::new(move || {
+            let _ = done.send(f());
+            woken();
+        }),
+    );
+    if !started {
+        // `start` dropped the job, and with it the sender: the receiver reads as stopped.
         wake();
-    });
+    }
     answer
 }
 
@@ -90,8 +112,8 @@ impl<J, R> Worker<J, R> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use super::*;
@@ -113,8 +135,45 @@ mod tests {
         let (wake, woken) = counting();
         let answer = oneshot("test-oneshot", wake, || 42);
         assert_eq!(answer.recv_timeout(Duration::from_secs(5)), Ok(42));
-        // The wake runs after the send.
         wait_until(|| woken.load(Ordering::SeqCst) == 1);
+    }
+
+    #[test]
+    fn a_oneshot_wakes_only_once_its_answer_is_in() {
+        // The thread start is held back until the receiver is where the wake can look at it.
+        let job: Arc<Mutex<Option<Job>>> = Arc::default();
+        let held = job.clone();
+        let shared: Arc<Mutex<Option<Receiver<i32>>>> = Arc::default();
+        type Polls = Vec<Option<Result<i32, Stopped>>>;
+        let seen: Arc<Mutex<Polls>> = Arc::default();
+        let (look, record) = (shared.clone(), seen.clone());
+        let wake: Wake = Arc::new(move || {
+            let answer = look.lock().unwrap();
+            record.lock().unwrap().push(answer.as_ref().and_then(poll));
+        });
+        let answer = oneshot_on(
+            move |_, f| {
+                *held.lock().unwrap() = Some(f);
+                true
+            },
+            "test-oneshot",
+            wake,
+            || 42,
+        );
+        *shared.lock().unwrap() = Some(answer);
+        let Some(f) = job.lock().unwrap().take() else {
+            panic!("the job was not handed to the thread start");
+        };
+        f();
+        assert_eq!(*seen.lock().unwrap(), [Some(Ok(42))]);
+    }
+
+    #[test]
+    fn a_oneshot_that_cannot_start_wakes_the_window_to_read_stopped() {
+        let (wake, woken) = counting();
+        let answer = oneshot_on(|_, _| false, "test-oneshot", wake, || 42);
+        assert_eq!(woken.load(Ordering::SeqCst), 1);
+        assert_eq!(poll(&answer), Some(Err(Stopped)));
     }
 
     #[test]
