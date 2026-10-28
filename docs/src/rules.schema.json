@@ -331,7 +331,7 @@
           "type": "string"
         },
         "proposed_by": {
-          "description": "Who proposed the rule; set by `rules propose`",
+          "description": "Who proposed the rule; set by `rules propose` and removed when a human approves it",
           "type": [
             "string",
             "null"

@@ -304,6 +304,80 @@ async fn folders_and_list_rows_carry_the_account_and_no_body() {
 }
 
 #[tokio::test]
+async fn list_and_search_page_with_a_cursor_keep_fields_and_count() {
+    let fx = fixture(&["work", "home"]);
+    for uid in 1..=3 {
+        fx.add("work", fixture_message("INBOX", uid, "Invoice", "x"));
+        fx.add("home", fixture_message("INBOX", uid, "Invoice", "x"));
+    }
+    let client = connect(&fx, "read", &[]).await;
+    for (tool, base) in [
+        ("list", json!({ "limit": 4 })),
+        ("search", json!({ "query": "invoice", "limit": 4 })),
+    ] {
+        let first = call(&client, tool, base.clone()).await;
+        let next = first.structured_content.as_ref().unwrap()["next"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let mut second_args = base.clone();
+        second_args["cursor"] = next.into();
+        let second = call(&client, tool, second_args).await;
+        assert!(
+            second
+                .structured_content
+                .as_ref()
+                .unwrap()
+                .get("next")
+                .is_none(),
+            "{tool}: the last page has no next"
+        );
+        let seen: Vec<String> = rows(&first)
+            .iter()
+            .chain(rows(&second).iter())
+            .map(|row| format!("{}/{}", row["account"], row["uid"]))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                "\"work\"/3",
+                "\"home\"/3",
+                "\"work\"/2",
+                "\"home\"/2",
+                "\"work\"/1",
+                "\"home\"/1"
+            ],
+            "{tool}"
+        );
+        let mut count_args = base.clone();
+        count_args["count_only"] = true.into();
+        let count = call(&client, tool, count_args.clone()).await;
+        assert_eq!(
+            count.structured_content,
+            Some(json!({ "count": 6 })),
+            "{tool}"
+        );
+        count_args["fields"] = json!(["uid"]);
+        assert!(error_text(&call(&client, tool, count_args).await).contains("count_only"));
+        let mut fields_args = base.clone();
+        fields_args["fields"] = json!(["uid", "subject"]);
+        assert_eq!(
+            rows(&call(&client, tool, fields_args.clone()).await)[0],
+            json!({ "account": "work", "uid": 3, "subject": "Invoice" }),
+            "{tool}: account always stays"
+        );
+        fields_args["fields"] = json!(["body_text"]);
+        assert!(
+            error_text(&call(&client, tool, fields_args).await)
+                .contains("unknown field 'body_text'")
+        );
+        let mut bad = base.clone();
+        bad["cursor"] = "garbage".into();
+        assert!(error_text(&call(&client, tool, bad).await).contains("cursor"));
+    }
+}
+
+#[tokio::test]
 async fn list_threads_adds_depth() {
     let fx = fixture(&["work"]);
     fx.add("work", fixture_message("INBOX", 1, "Hi", "x"));
@@ -514,6 +588,125 @@ async fn rules_propose_stores_a_disabled_rule_attributed_to_the_host() {
     assert_eq!(file.rules[0].proposed_by.as_deref(), Some("mcp:test-host"));
 }
 
+fn named_rule(name: &str) -> Value {
+    json!({ "name": name, "match": { "subject": { "contains": name } }, "actions": ["flag"] })
+}
+
+fn rule_names(fx: &Fixture) -> Vec<String> {
+    postvak_core::rules::load(&fx.paths.rules_file())
+        .unwrap()
+        .rules
+        .into_iter()
+        .map(|r| r.name)
+        .collect()
+}
+
+#[tokio::test]
+async fn rules_propose_takes_a_batch_in_order_all_or_none() {
+    let fx = fixture(&["work"]);
+    std::fs::write(fx.paths.rules_file(), RULES).unwrap();
+    let client = connect(&fx, "rules:propose", &[]).await;
+    let batch = json!({ "rules": [named_rule("a"), named_rule("b"), named_rule("c")] });
+    let result = call(&client, "rules_propose", batch).await;
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    let content = result.structured_content.unwrap();
+    assert_eq!(content["proposed"][2]["name"], "c");
+    assert_eq!(content["proposed_by"], "mcp:test-host");
+    assert_eq!(rule_names(&fx), ["codes", "a", "b", "c"]);
+
+    let mut bad = named_rule("e");
+    bad["actions"] = json!([]);
+    let refused = json!({ "rules": [named_rule("d"), bad, named_rule("codes")], "before": "a" });
+    let text = error_text(&call(&client, "rules_propose", refused).await);
+    for part in ["rule 1 'e'", "rule 2 'codes'"] {
+        assert!(text.contains(part), "{part}: {text}");
+    }
+    assert_eq!(rule_names(&fx), ["codes", "a", "b", "c"]);
+
+    let placed = json!({ "rules": [named_rule("d")], "before": "a" });
+    let result = call(&client, "rules_propose", placed).await;
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    assert_eq!(rule_names(&fx), ["codes", "d", "a", "b", "c"]);
+}
+
+#[tokio::test]
+async fn rules_list_returns_each_rule_whole_with_its_file_position() {
+    let fx = fixture(&["work"]);
+    std::fs::write(fx.paths.rules_file(), RULES).unwrap();
+    let client = connect(&fx, "read,rules:propose", &[]).await;
+    for name in ["a", "b", "c"] {
+        call(&client, "rules_propose", named_rule(name)).await;
+    }
+    let listed = rows(&call(&client, "rules_list", json!({})).await);
+    let names: Vec<&str> = listed.iter().map(|r| r["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["codes", "a", "b", "c"]);
+    let positions: Vec<u64> = listed
+        .iter()
+        .map(|r| r["position"].as_u64().unwrap())
+        .collect();
+    assert_eq!(positions, [0, 1, 2, 3]);
+    assert_eq!(
+        listed[0]["match"],
+        json!({ "subject": { "contains": "code" } })
+    );
+    assert_eq!(listed[0]["actions"], json!(["delete"]));
+    assert_eq!(listed[3]["proposed_by"], "mcp:test-host");
+    assert_eq!(listed[3]["enabled"], false);
+}
+
+#[tokio::test]
+async fn rules_withdraw_and_replace_touch_only_the_callers_own_proposals() {
+    let fx = fixture(&["work"]);
+    std::fs::write(
+        fx.paths.rules_file(),
+        format!("{RULES}\n{}", unscoped_rule("theirs")),
+    )
+    .unwrap();
+    let client = connect(&fx, "rules:propose", &[]).await;
+    call(&client, "rules_propose", named_rule("mine")).await;
+    for name in ["codes", "theirs", "missing"] {
+        let text = error_text(&call(&client, "rules_withdraw", json!({ "name": name })).await);
+        assert!(text.contains(name), "{text}");
+    }
+    let mut changed = named_rule("mine");
+    changed["replace"] = json!(true);
+    changed["match"] = json!({ "seen": true });
+    let result = call(&client, "rules_propose", changed.clone()).await;
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    let file = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
+    assert_eq!(file.rules[2].matches.seen, Some(true));
+    changed["name"] = json!("theirs");
+    let text = error_text(&call(&client, "rules_propose", changed).await);
+    assert!(text.contains("not your pending proposal"), "{text}");
+
+    let result = call(&client, "rules_withdraw", json!({ "name": "mine" })).await;
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    assert_eq!(rule_names(&fx), ["codes", "theirs"]);
+}
+
+#[tokio::test]
+async fn rules_propose_schema_offers_one_rule_or_a_batch() {
+    let fx = fixture(&["work"]);
+    let client = connect(&fx, "rules:propose", &[]).await;
+    let tools = client.list_all_tools().await.unwrap();
+    let propose = tools.iter().find(|t| t.name == "rules_propose").unwrap();
+    let schema = serde_json::to_value(&*propose.input_schema).unwrap();
+    assert_eq!(schema["type"], "object");
+    assert!(
+        schema.get("anyOf").is_none() && schema.get("oneOf").is_none(),
+        "{schema}"
+    );
+    for key in [
+        "name", "match", "actions", "rules", "before", "after", "replace",
+    ] {
+        assert!(schema["properties"][key].is_object(), "{key}: {schema}");
+    }
+    assert!(
+        schema["required"].as_array().is_none_or(|r| r.is_empty()),
+        "{schema}"
+    );
+}
+
 #[tokio::test]
 async fn a_bad_rule_returns_the_rules_check_error() {
     let fx = fixture(&["work"]);
@@ -690,6 +883,45 @@ async fn rule_writes_refuse_rules_of_hidden_accounts_and_leave_the_file_alone() 
     let text = error_text(&call(&client, "rules_propose", rule).await);
     assert!(text.contains("no account named 'home'"), "{text}");
     assert_eq!(rule_file(&fx), before);
+}
+
+#[tokio::test]
+async fn withdraw_replace_and_placement_treat_a_hidden_accounts_proposal_as_absent() {
+    let fx = fixture(&["home", "work"]);
+    // The caller's own pending proposal, but scoped to an account this server does not see.
+    let own = scoped_rule("for-home", "home").replace("\"mcp\"", "\"mcp:test-host\"");
+    std::fs::write(fx.paths.rules_file(), own).unwrap();
+    let before = rule_file(&fx);
+    let client = connect(&fx, "rules:propose", &["work"]).await;
+    let rule = |name: &str| json!({ "name": name, "match": { "subject": { "contains": "x" } }, "actions": ["flag"] });
+    let mut replacing = rule("for-home");
+    replacing["replace"] = json!(true);
+    let mut placed = rule("p");
+    placed["before"] = json!("for-home");
+    for (tool, arguments) in [
+        ("rules_withdraw", json!({ "name": "for-home" })),
+        ("rules_propose", replacing),
+        ("rules_propose", placed),
+    ] {
+        let text = error_text(&call(&client, tool, arguments.clone()).await);
+        assert!(
+            text.contains("no rule named 'for-home'"),
+            "{tool} {arguments}: {text}"
+        );
+    }
+    assert_eq!(rule_file(&fx), before);
+
+    // Every optional key sent, the unset ones as null, still proposes one rule and answers as one.
+    let mut nulls = rule("q");
+    for key in ["rules", "before", "after", "replace"] {
+        nulls[key] = Value::Null;
+    }
+    let proposed = call(&client, "rules_propose", nulls)
+        .await
+        .structured_content
+        .unwrap();
+    assert_eq!(proposed["proposed"], "q");
+    assert_eq!(proposed["account"], "work");
 }
 
 fn add_with_raw(fx: &Fixture, account: &str, uid: u32, subject: &str, body: &str) {
@@ -1047,6 +1279,7 @@ async fn tools_list_per_scope_set_is_exact_and_alphabetical() {
                 "rules_propose",
                 "rules_schema",
                 "rules_test",
+                "rules_withdraw",
                 "search",
                 "senders",
                 "status",
@@ -1118,6 +1351,7 @@ async fn annotations_mark_reads_and_destructive_tools() {
             "move",
             "rules_propose",
             "rules_reject",
+            "rules_withdraw",
             "sync",
             "trash_restore",
         ]

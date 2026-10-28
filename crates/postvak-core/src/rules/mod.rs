@@ -23,6 +23,9 @@ pub enum RulesError {
     Invalid { rule: String, reason: String },
     #[error("no rule named '{0}'")]
     NotFound(String),
+    /// A batch of proposals refused as a whole; each failing rule is named by its index.
+    #[error("nothing proposed: {0}")]
+    Batch(String),
     #[error("rule '{0}' is disabled; approve or enable it first")]
     Disabled(String),
     #[error(transparent)]
@@ -67,7 +70,7 @@ pub struct Rule {
     /// Disabled rules are skipped; proposals start disabled
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Who proposed the rule; set by `rules propose`
+    /// Who proposed the rule; set by `rules propose` and removed when a human approves it
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposed_by: Option<String>,
     /// Conditions that must all hold; at least one

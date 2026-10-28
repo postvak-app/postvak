@@ -275,6 +275,61 @@ fn list_and_log_show_the_account() {
     }
 }
 
+/// The JSON lines of `out`'s stdout.
+fn json_lines(out: &std::process::Output) -> Vec<serde_json::Value> {
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+#[test]
+fn list_and_search_json_end_with_next_while_more_follow() {
+    let (home, _store) = seeded_home(&[
+        message(1, "a@example.com", "Invoice one"),
+        message(2, "b@example.com", "Invoice two"),
+        message(3, "c@example.com", "Invoice three"),
+    ]);
+    for command in [&["list"][..], &["search", "invoice"][..]] {
+        let args = |extra: &[&str]| -> Vec<String> {
+            command.iter().chain(extra).map(|s| s.to_string()).collect()
+        };
+        let run = |extra: &[&str]| {
+            let args = args(extra);
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            postvak(home.path(), &args)
+        };
+        let first = json_lines(&run(&["--json", "--limit", "2", "--fields", "uid,subject"]));
+        assert_eq!(first.len(), 3, "{command:?}: two rows and the next");
+        assert_eq!(
+            first[0],
+            serde_json::json!({ "account": "work", "uid": 3, "subject": "Invoice three" })
+        );
+        let next = first[2]["next"].as_str().unwrap();
+        assert_eq!(first[2].as_object().unwrap().len(), 1);
+        let second = json_lines(&run(&["--json", "--limit", "2", "--cursor", next]));
+        assert_eq!(second.len(), 1, "{command:?}: the last row and no next");
+        assert_eq!(second[0]["uid"], 1);
+        let count = json_lines(&run(&["--json", "--count-only"]));
+        assert_eq!(count, [serde_json::json!({ "count": 3 })]);
+        let unknown = run(&["--json", "--fields", "nope"]);
+        assert!(!unknown.status.success());
+        assert!(
+            String::from_utf8_lossy(&unknown.stderr).contains("unknown field 'nope'"),
+            "{command:?}"
+        );
+        let plain = run(&["--limit", "1"]);
+        let stderr = String::from_utf8_lossy(&plain.stderr);
+        assert!(stderr.contains("--cursor "), "{command:?}: {stderr}");
+        assert_eq!(String::from_utf8_lossy(&plain.stdout).lines().count(), 1);
+    }
+}
+
 #[test]
 fn trash_list_shows_subjects() {
     let (home, _store) = seeded_home(&[]);
@@ -717,6 +772,84 @@ fn agent_proposes_and_a_human_approves_or_rejects() {
 
     let out = postvak(home.path(), &["rules", "schema"]);
     serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap();
+}
+
+#[test]
+fn an_agent_proposes_a_batch_reads_it_back_in_order_and_withdraws_its_own() {
+    let (home, _store) = seeded_home(&[message(42, "noreply@example.com", "Your code")]);
+    let rule = |name: &str| {
+        format!(
+            r#"{{"name": "{name}", "match": {{"subject": {{"contains": "{name}"}}}}, "actions": ["flag"]}}"#
+        )
+    };
+    let ok = |out: std::process::Output| {
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let listed = |home: &std::path::Path| -> Vec<serde_json::Value> {
+        String::from_utf8_lossy(&postvak(home, &["rules", "list", "--json"]).stdout)
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    };
+    let names = |home: &std::path::Path| -> Vec<String> {
+        listed(home)
+            .iter()
+            .map(|r| r["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    ok(postvak_stdin(
+        home.path(),
+        &["rules", "propose", "--by", "bot"],
+        &format!("[{}, {}]", rule("a"), rule("b")),
+    ));
+    ok(postvak_stdin(
+        home.path(),
+        &["rules", "propose", "--by", "bot", "--before", "a"],
+        &format!(r#"{{"rules": [{}]}}"#, rule("c")),
+    ));
+    assert_eq!(names(home.path()), ["c", "a", "b"]);
+    let rows = listed(home.path());
+    assert_eq!(rows[1]["position"], 1);
+    assert_eq!(rows[1]["match"]["subject"]["contains"], "a");
+    assert_eq!(rows[1]["proposed_by"], "cli:bot");
+
+    let out = postvak_stdin(
+        home.path(),
+        &["rules", "propose", "--by", "bot"],
+        &format!("[{}, {}]", rule("d"), rule("a")),
+    );
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("rule 1 'a'"));
+    assert_eq!(names(home.path()), ["c", "a", "b"], "all or none");
+
+    ok(postvak_stdin(
+        home.path(),
+        &["rules", "propose", "--by", "bot", "--replace"],
+        &rule("a").replace(r#""contains": "a""#, r#""contains": "aa""#),
+    ));
+    assert_eq!(listed(home.path())[1]["match"]["subject"]["contains"], "aa");
+
+    assert!(
+        !postvak(home.path(), &["rules", "withdraw", "a", "--by", "other"])
+            .status
+            .success()
+    );
+    assert!(
+        !postvak(home.path(), &["rules", "withdraw", "a"])
+            .status
+            .success()
+    );
+    ok(postvak(
+        home.path(),
+        &["rules", "withdraw", "a", "--by", "bot"],
+    ));
+    assert_eq!(names(home.path()), ["c", "b"]);
 }
 
 #[test]

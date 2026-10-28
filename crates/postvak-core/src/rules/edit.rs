@@ -10,10 +10,335 @@ use crate::rules::{Rule, RuleFile, RulesError, compile, invalid, parse};
 use crate::store::Store;
 
 /// Appends `rule` disabled and attributed to `by`, so it only acts once a human approves it.
-pub fn propose(path: &Path, mut rule: Rule, by: &str) -> Result<(), RulesError> {
-    rule.enabled = false;
-    rule.proposed_by = Some(by.to_string());
-    save_rule(path, None, &rule)
+pub fn propose(path: &Path, rule: Rule, by: &str) -> Result<(), RulesError> {
+    propose_all(
+        path,
+        Proposals {
+            rules: vec![rule],
+            ..Proposals::default()
+        },
+        by,
+    )
+}
+
+/// Where proposals go in rules.toml: after the last rule, or right before or after a rule already there.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Place {
+    #[default]
+    End,
+    Before(String),
+    After(String),
+}
+
+/// One or more rules an agent proposes at once, and where they go.
+#[derive(Debug, Clone, Default)]
+pub struct Proposals {
+    pub rules: Vec<Rule>,
+    pub place: Place,
+    /// A rule whose name is taken by the caller's own pending proposal replaces it, instead of being refused.
+    pub replace: bool,
+}
+
+/// What `rules propose` reads on stdin and `rules_propose` takes: one rule, an array of rules, or `{"rules": [...]}`.
+/// Either object may also carry `before` or `after` (a rule's name) and `replace`. A rule that does not parse is named
+/// by its index in the batch.
+pub fn read_proposals(value: serde_json::Value) -> Result<Proposals, RulesError> {
+    use serde_json::Value as Json;
+    let (items, mut object) = match value {
+        Json::Array(items) => (items, serde_json::Map::new()),
+        Json::Object(mut object) => match object.remove("rules") {
+            Some(Json::Array(items)) => (items, object),
+            Some(Json::Null) | None => {
+                let mut rule = serde_json::Map::new();
+                for key in ["before", "after", "replace"] {
+                    if let Some(value) = object.remove(key) {
+                        rule.insert(key.to_string(), value);
+                    }
+                }
+                (vec![Json::Object(object)], rule)
+            }
+            Some(_) => {
+                return Err(RulesError::Parse(
+                    "`rules` must be an array of rules".into(),
+                ));
+            }
+        },
+        _ => {
+            return Err(RulesError::Parse(
+                "expected a rule, an array of rules or {\"rules\": [...]}".into(),
+            ));
+        }
+    };
+    let text = |key: &str, object: &mut serde_json::Map<String, Json>| match object.remove(key) {
+        None | Some(Json::Null) => Ok(None),
+        Some(Json::String(name)) => Ok(Some(name)),
+        Some(_) => Err(RulesError::Parse(format!("`{key}` must be a rule's name"))),
+    };
+    let place = match (text("before", &mut object)?, text("after", &mut object)?) {
+        (Some(_), Some(_)) => {
+            return Err(RulesError::Parse(
+                "give `before` or `after`, not both".into(),
+            ));
+        }
+        (Some(name), None) => Place::Before(name),
+        (None, Some(name)) => Place::After(name),
+        (None, None) => Place::End,
+    };
+    let replace = match object.remove("replace") {
+        None | Some(Json::Null) => false,
+        Some(Json::Bool(replace)) => replace,
+        Some(_) => return Err(RulesError::Parse("`replace` must be true or false".into())),
+    };
+    if let Some(key) = object.keys().next() {
+        return Err(RulesError::Parse(format!("unknown field `{key}`")));
+    }
+    let single = items.len() == 1;
+    let mut rules = Vec::new();
+    let mut errors = Vec::new();
+    for (index, item) in items.into_iter().enumerate() {
+        let name = item
+            .get("name")
+            .and_then(Json::as_str)
+            .unwrap_or("")
+            .to_string();
+        match serde_json::from_value::<Rule>(item) {
+            Ok(rule) => rules.push(rule),
+            Err(e) if single => return Err(RulesError::Parse(e.to_string())),
+            Err(e) => errors.push(format!("rule {index} '{name}': {e}")),
+        }
+    }
+    if !errors.is_empty() {
+        return Err(RulesError::Batch(errors.join("; ")));
+    }
+    Ok(Proposals {
+        rules,
+        place,
+        replace,
+    })
+}
+
+/// Stores every rule of `proposals` disabled and attributed to `by`, in the order given, or none of them: the whole
+/// batch is checked first, and each rule that fails is named by its index. A name already in the file is refused,
+/// unless `replace` is set and that rule is `by`'s own pending proposal; a replaced rule keeps its place unless the
+/// batch names one.
+pub fn propose_all(path: &Path, proposals: Proposals, by: &str) -> Result<(), RulesError> {
+    let Proposals {
+        mut rules,
+        place,
+        replace,
+    } = proposals;
+    if rules.is_empty() {
+        return Err(RulesError::Batch("no rules to propose".into()));
+    }
+    for rule in &mut rules {
+        rule.enabled = false;
+        rule.proposed_by = Some(by.to_string());
+    }
+    let tables = rules
+        .iter()
+        .map(rule_table)
+        .collect::<Result<Vec<_>, _>>()?;
+    edit_file(path, |doc| {
+        let existing = parse(&doc.to_string())?.rules;
+        check_batch(&existing, &rules, by, replace, &place)?;
+        place_tables(doc, tables, &place)
+    })
+}
+
+/// Every reason the batch cannot be stored as a whole, each rule's named by its index; a lone rule's error stays as
+/// `rules check` words it.
+fn check_batch(
+    existing: &[Rule],
+    batch: &[Rule],
+    by: &str,
+    replace: bool,
+    place: &Place,
+) -> Result<(), RulesError> {
+    let mut errors: Vec<(usize, RulesError)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (index, rule) in batch.iter().enumerate() {
+        if let Err(e) = compile(&RuleFile {
+            rules: vec![rule.clone()],
+        }) {
+            errors.push((index, e));
+            continue;
+        }
+        if !seen.insert(rule.name.as_str()) {
+            errors.push((index, invalid(&rule.name, "named twice in this batch")));
+            continue;
+        }
+        match existing.iter().find(|r| r.name == rule.name) {
+            None => {}
+            Some(_) if !replace => errors.push((
+                index,
+                invalid(
+                    &rule.name,
+                    "duplicate rule name; to change your own pending proposal, propose it again with replace",
+                ),
+            )),
+            Some(old) if !is_own_proposal(old, by) => errors.push((
+                index,
+                invalid(&rule.name, "is not your pending proposal, so it cannot be replaced"),
+            )),
+            Some(_) => {}
+        }
+    }
+    if let Place::Before(anchor) | Place::After(anchor) = place
+        && (!existing.iter().any(|r| &r.name == anchor) || seen.contains(anchor.as_str()))
+    {
+        errors.push((
+            usize::MAX,
+            RulesError::Parse(format!(
+                "no rule named '{anchor}' outside this batch to place the proposals next to"
+            )),
+        ));
+    }
+    if batch.len() == 1 && errors.len() == 1 {
+        return Err(errors.remove(0).1);
+    }
+    if errors.is_empty() {
+        return Ok(());
+    }
+    let words: Vec<String> = errors
+        .into_iter()
+        .map(|(index, e)| match e {
+            _ if index == usize::MAX => e.to_string(),
+            RulesError::Invalid { rule, reason } => format!("rule {index} '{rule}': {reason}"),
+            other => format!("rule {index} '{}': {other}", batch[index].name),
+        })
+        .collect();
+    Err(RulesError::Batch(words.join("; ")))
+}
+
+/// A rule `by` proposed that no human has approved yet: the only kind an agent may replace or withdraw.
+fn is_own_proposal(rule: &Rule, by: &str) -> bool {
+    !rule.enabled && rule.proposed_by.as_deref() == Some(by)
+}
+
+/// Puts `tables` into the document. A table whose name is already there replaces that rule: in place when `place` is
+/// the end, moved with the others otherwise. The rest go together, in order, at `place`.
+fn place_tables(
+    doc: &mut DocumentMut,
+    tables: Vec<Table>,
+    place: &Place,
+) -> Result<(), RulesError> {
+    let name_of = |table: &Table| {
+        table
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let mut rest = Vec::new();
+    for table in tables {
+        let name = name_of(&table);
+        let found = doc
+            .get_mut("rules")
+            .and_then(|item| item.as_array_of_tables_mut())
+            .and_then(|rules| {
+                let index = rules.iter().position(|t| name_of(t) == name)?;
+                Some((rules, index))
+            });
+        let orphaned = match found {
+            Some((rules, index)) if *place == Place::End => {
+                if let Some(old) = rules.get_mut(index) {
+                    merge(old, &table);
+                }
+                None
+            }
+            Some((rules, index)) => {
+                rest.push(table);
+                remove_at(rules, index)
+            }
+            None => {
+                rest.push(table);
+                None
+            }
+        };
+        if let Some(orphaned) = orphaned {
+            let trailing = format!("{orphaned}{}", doc.trailing().as_str().unwrap_or(""));
+            doc.set_trailing(trailing);
+        }
+    }
+    let anchor = match place {
+        Place::End => {
+            for table in rest {
+                let after_text = !doc.to_string().trim().is_empty();
+                append(doc, table, after_text)?;
+            }
+            return Ok(());
+        }
+        Place::Before(anchor) | Place::After(anchor) => anchor,
+    };
+    let rules = doc
+        .get_mut("rules")
+        .and_then(|item| item.as_array_of_tables_mut())
+        .ok_or_else(|| RulesError::NotFound(anchor.clone()))?;
+    let found = rules
+        .iter()
+        .position(|t| name_of(t) == *anchor)
+        .ok_or_else(|| RulesError::NotFound(anchor.clone()))?;
+    let at = match place {
+        Place::After(_) => found + 1,
+        _ => found,
+    };
+    // Before the first rule, the comments that head the file (up to its last blank line) stay at the top; the ones
+    // right above that rule stay with it.
+    let mut head = String::new();
+    if at == 0
+        && let Some(first) = rules.get_mut(0)
+    {
+        let prefix = first
+            .decor()
+            .prefix()
+            .and_then(|p| p.as_str())
+            .unwrap_or("")
+            .to_string();
+        if let Some(split) = prefix.rfind("\n\n") {
+            head = prefix[..split + 2].to_string();
+            first
+                .decor_mut()
+                .set_prefix(prefix[split + 2..].to_string());
+        }
+    }
+    let count = rest.len();
+    for (offset, mut table) in rest.into_iter().enumerate() {
+        let prefix = if offset == 0 && at == 0 {
+            std::mem::take(&mut head)
+        } else {
+            "\n".to_string()
+        };
+        table.decor_mut().set_prefix(prefix);
+        rules.insert(at + offset, table);
+    }
+    // The rule that now follows the batch starts a blank line below it, its comments still above it.
+    if let Some(next) = rules.get_mut(at + count) {
+        let prefix = next.decor().prefix().and_then(|p| p.as_str()).unwrap_or("");
+        if !prefix.starts_with('\n') {
+            let prefix = format!("\n{prefix}");
+            next.decor_mut().set_prefix(prefix);
+        }
+    }
+    Ok(())
+}
+
+/// Removes `name` when it is `by`'s own pending proposal: disabled, and proposed by `by`. Anything else, an approved
+/// rule or another proposer's, is left for a human.
+pub fn withdraw(path: &Path, name: &str, by: &str) -> Result<(), RulesError> {
+    edit(path, name, |rules, index| {
+        let table = rules
+            .get(index)
+            .ok_or_else(|| invalid(name, "no such rule"))?;
+        let own =
+            is_disabled(table) && table.get("proposed_by").and_then(|v| v.as_str()) == Some(by);
+        if !own {
+            return Err(invalid(
+                name,
+                format!("is not a pending proposal by {by}; only a human can remove it"),
+            ));
+        }
+        Ok(remove_at(rules, index))
+    })
 }
 
 /// Turns a rule on or off, keeping the file's comments and layout.
@@ -36,6 +361,9 @@ fn approve(path: &Path, name: &str) -> Result<(), RulesError> {
             return Err(invalid(name, "is already enabled"));
         }
         write_enabled(table, true);
+        // Approved, the rule is no longer anyone's proposal: turned off later, it must not read as pending again, which
+        // would let its proposer replace or withdraw it.
+        table.remove("proposed_by");
         Ok(None)
     })
 }
@@ -146,6 +474,9 @@ fn rule_table(rule: &Rule) -> Result<Table, RulesError> {
         .filter(|rules| !rules.is_empty())
         .map(|mut rules| rules.remove(0))
         .ok_or_else(|| invalid(&rule.name, "could not be written as TOML"))?;
+    // The position is the table's place in the one-rule document above; kept, toml_edit would write the table at
+    // that place in rules.toml rather than where it is added.
+    table.set_position(None);
     for (_, item) in table.iter_mut() {
         match item {
             Item::Table(nested) => {
@@ -364,6 +695,26 @@ mod tests {
         assert!(approve(&path, "missing").is_err());
     }
 
+    #[test]
+    fn an_approved_rule_turned_off_is_not_its_proposers_to_replace_or_withdraw() {
+        let (_dir, path) = rules_file(HUMAN);
+        propose(&path, proposal("codes"), "mcp:host").unwrap();
+        approve(&path, "codes").unwrap();
+        set_enabled(&path, "codes", false).unwrap();
+        let paused = std::fs::read_to_string(&path).unwrap();
+        assert!(!paused.contains("proposed_by"), "{paused}");
+
+        let mut replacing = batch(&["codes"]);
+        replacing.replace = true;
+        assert!(
+            propose_all(&path, replacing, "mcp:host").is_err(),
+            "replace"
+        );
+        assert!(withdraw(&path, "codes", "mcp:host").is_err(), "withdraw");
+        assert!(reject(&path, "codes").is_err(), "reject");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), paused);
+    }
+
     const TWO_ACCOUNTS: &str = "[[accounts]]\nname = \"work\"\nhost = \"imap.example.com\"\nusername = \"w@example.com\"\npassword = { keyring = true }\n\n[[accounts]]\nname = \"home\"\nhost = \"mail.home.test\"\nusername = \"h\"\naddress = \"h@home.test\"\npassword = { keyring = true }\n";
 
     fn first_seen(paths: &Paths, account: &str, name: &str, at: i64) -> i64 {
@@ -457,6 +808,228 @@ mod tests {
             "{text}"
         );
         assert_eq!(parse(&text).unwrap().rules.len(), 1);
+    }
+
+    /// Regression (#350): each appended table kept the position it had in the one-rule document it was built in, so
+    /// toml_edit wrote the second and later proposals above the ones before them.
+    #[test]
+    fn sequential_proposals_keep_their_order() {
+        let (_dir, path) = rules_file(HUMAN);
+        for i in 0..5 {
+            propose(&path, proposal(&format!("p{i}")), "cli").unwrap();
+        }
+        assert_eq!(names(&path), ["keep", "p0", "p1", "p2", "p3", "p4"]);
+    }
+
+    fn names(path: &Path) -> Vec<String> {
+        load(path)
+            .unwrap()
+            .rules
+            .into_iter()
+            .map(|r| r.name)
+            .collect()
+    }
+
+    fn batch(names: &[&str]) -> Proposals {
+        Proposals {
+            rules: names.iter().map(|n| proposal(n)).collect(),
+            ..Proposals::default()
+        }
+    }
+
+    #[test]
+    fn a_batch_is_appended_in_order_disabled() {
+        let (_dir, path) = rules_file(HUMAN);
+        propose_all(&path, batch(&["a", "b", "c"]), "mcp:host").unwrap();
+        let file = load(&path).unwrap();
+        assert_eq!(names(&path), ["keep", "a", "b", "c"]);
+        assert!(
+            file.rules[1..]
+                .iter()
+                .all(|r| !r.enabled && r.proposed_by.as_deref() == Some("mcp:host"))
+        );
+        assert!(std::fs::read_to_string(&path).unwrap().starts_with(HUMAN));
+    }
+
+    #[test]
+    fn a_batch_with_any_bad_rule_stores_nothing_and_names_each_by_index() {
+        let (_dir, path) = rules_file(HUMAN);
+        let mut proposals = batch(&["a", "keep", "b", "a"]);
+        proposals.rules[2].actions.clear();
+        let err = propose_all(&path, proposals, "cli")
+            .unwrap_err()
+            .to_string();
+        assert!(err.starts_with("nothing proposed: "), "{err}");
+        for part in [
+            "rule 1 'keep': duplicate rule name",
+            "rule 2 'b': actions must not be empty",
+            "rule 3 'a': named twice in this batch",
+        ] {
+            assert!(err.contains(part), "{part} in {err}");
+        }
+        assert!(!err.contains("rule 0"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), HUMAN);
+        assert!(propose_all(&path, batch(&[]), "cli").is_err());
+    }
+
+    #[test]
+    fn a_lone_rule_keeps_the_rules_check_wording() {
+        let (_dir, path) = rules_file(HUMAN);
+        let err = propose(&path, proposal("keep"), "cli")
+            .unwrap_err()
+            .to_string();
+        assert!(err.starts_with("rule 'keep': duplicate rule name"), "{err}");
+    }
+
+    #[test]
+    fn a_batch_goes_before_or_after_a_named_rule() {
+        let (_dir, path) = rules_file(TWO);
+        let mut proposals = batch(&["a", "b"]);
+        proposals.place = Place::After("codes".into());
+        propose_all(&path, proposals, "cli").unwrap();
+        assert_eq!(names(&path), ["codes", "a", "b", "keep"]);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.starts_with("# my rules\n\n# codes go after an hour\n"),
+            "{text}"
+        );
+        assert!(text.ends_with(KEEP), "{text}");
+
+        let mut proposals = batch(&["c"]);
+        proposals.place = Place::Before("codes".into());
+        propose_all(&path, proposals, "cli").unwrap();
+        assert_eq!(names(&path), ["c", "codes", "a", "b", "keep"]);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.starts_with("# my rules\n\n[[rules]]\nname = \"c\"\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("\n\n# codes go after an hour\n[[rules]]\nname = \"codes\""),
+            "{text}"
+        );
+
+        let mut proposals = batch(&["d"]);
+        proposals.place = Place::Before("missing".into());
+        assert!(propose_all(&path, proposals, "cli").is_err());
+        let mut proposals = batch(&["e"]);
+        proposals.place = Place::After("e".into());
+        assert!(
+            propose_all(&path, proposals, "cli").is_err(),
+            "anchor in the batch"
+        );
+    }
+
+    #[test]
+    fn replace_swaps_only_the_callers_own_pending_proposal() {
+        let (_dir, path) = rules_file(HUMAN);
+        propose_all(&path, batch(&["a", "b"]), "cli:me").unwrap();
+        propose(&path, proposal("theirs"), "cli:other").unwrap();
+
+        let mut changed = proposal("a");
+        changed.matches.seen = Some(true);
+        let again = Proposals {
+            rules: vec![changed.clone()],
+            ..Proposals::default()
+        };
+        assert!(
+            propose_all(&path, again.clone(), "cli:me").is_err(),
+            "without replace"
+        );
+
+        let replacing = Proposals {
+            replace: true,
+            ..again
+        };
+        propose_all(&path, replacing.clone(), "cli:me").unwrap();
+        assert_eq!(names(&path), ["keep", "a", "b", "theirs"], "in place");
+        assert_eq!(load(&path).unwrap().rules[1].matches.seen, Some(true));
+
+        assert!(
+            propose_all(&path, replacing.clone(), "cli:other").is_err(),
+            "not theirs"
+        );
+        let mut human = replacing.clone();
+        human.rules[0].name = "keep".into();
+        assert!(propose_all(&path, human, "cli:me").is_err(), "a human rule");
+
+        let moved = Proposals {
+            place: Place::Before("keep".into()),
+            ..replacing
+        };
+        propose_all(&path, moved, "cli:me").unwrap();
+        assert_eq!(names(&path), ["a", "keep", "b", "theirs"], "moved");
+        set_enabled(&path, "b", true).unwrap();
+        let mut approved = batch(&["b"]);
+        approved.replace = true;
+        assert!(propose_all(&path, approved, "cli:me").is_err(), "approved");
+    }
+
+    #[test]
+    fn withdraw_removes_only_the_callers_own_pending_proposal() {
+        let (_dir, path) = rules_file(HUMAN);
+        propose(&path, proposal("mine"), "mcp:me").unwrap();
+        propose(&path, proposal("theirs"), "mcp:other").unwrap();
+        propose(&path, proposal("approved"), "mcp:me").unwrap();
+        set_enabled(&path, "approved", true).unwrap();
+        for (name, by) in [
+            ("theirs", "mcp:me"),
+            ("approved", "mcp:me"),
+            ("keep", "mcp:me"),
+            ("missing", "mcp:me"),
+        ] {
+            assert!(withdraw(&path, name, by).is_err(), "{name}");
+        }
+        withdraw(&path, "mine", "mcp:me").unwrap();
+        assert_eq!(names(&path), ["keep", "theirs", "approved"]);
+        assert!(std::fs::read_to_string(&path).unwrap().starts_with(HUMAN));
+    }
+
+    #[test]
+    fn read_proposals_takes_one_rule_an_array_or_an_object() {
+        let rule = r#"{"name": "a", "match": {"seen": true}, "actions": ["flag"]}"#;
+        let read = |text: &str| read_proposals(serde_json::from_str(text).unwrap());
+
+        let one = read(rule).unwrap();
+        assert_eq!(
+            (one.rules.len(), one.place, one.replace),
+            (1, Place::End, false)
+        );
+        let one = read(&rule.replace(
+            "{\"name\"",
+            "{\"after\": \"x\", \"replace\": true, \"name\"",
+        ))
+        .unwrap();
+        assert_eq!((one.place, one.replace), (Place::After("x".into()), true));
+
+        let array = read(&format!("[{rule}, {}]", rule.replace("\"a\"", "\"b\""))).unwrap();
+        assert_eq!(array.rules.len(), 2);
+        let object = read(&format!("{{\"rules\": [{rule}], \"before\": \"x\"}}")).unwrap();
+        assert_eq!(object.place, Place::Before("x".into()));
+        // A host that sends every optional key, unset ones as null, still proposes one rule.
+        let nulls = read(&rule.replace(
+            "{\"name\"",
+            "{\"rules\": null, \"before\": null, \"after\": null, \"replace\": null, \"name\"",
+        ))
+        .unwrap();
+        assert_eq!(
+            (nulls.rules.len(), nulls.place, nulls.replace),
+            (1, Place::End, false)
+        );
+
+        let err = read(&format!("[{rule}, {{\"name\": \"bad\"}}]"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("rule 1 'bad'"), "{err}");
+        for bad in [
+            "3".to_string(),
+            format!("{{\"rules\": [{rule}], \"other\": 1}}"),
+            format!("{{\"rules\": [{rule}], \"before\": \"x\", \"after\": \"y\"}}"),
+            format!("{{\"rules\": {rule}}}"),
+            rule.replace("\"name\"", "\"nmae\""),
+        ] {
+            assert!(read(&bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

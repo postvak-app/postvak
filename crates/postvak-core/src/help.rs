@@ -68,16 +68,21 @@ pub const ACCOUNT_LIST: &str =
 pub const ARCHIVE: &str = "Move messages to the Archive folder";
 pub const ATTACHMENT_LIST: &str = "Index, type, size and name of each attachment";
 pub const ATTACHMENT_SAVE: &str = "Save attachment N, as numbered by the attachment list, into a directory; returns the written path";
+pub const COUNT_ONLY: &str = "Return only how many match in all, messages or in a thread view threads, as {\"count\": N}, without rows";
+/// The paging argument of `list` and `search`.
+pub const CURSOR: &str = "Continue after the page that ended with this `next`, with the same other arguments; the rows of every account come newest first in one order, and the limit counts them together";
 pub const DELETE: &str =
     "Move messages to Trash; inside Trash, or without one, delete them keeping a local .eml backup";
 /// The MCP `docs` tool's description.
 pub const DOCS: &str = "A page of Postvak's documentation, as Markdown: agent-guide (how to use these tools), rules (every rule key, with examples), search (the search syntax) or cli (the command line); without a page, the list of pages";
 pub const JUNK: &str = "Report messages as junk: tag them $Junk, which trains server spam filters, and move them to the Junk folder; --not tags them $NotJunk and moves them to INBOX";
 pub const UNSUBSCRIBE: &str = "Leave a message's mailing list: by one-click POST when the sender offers it (RFC 8058), else print the page or address from its List-Unsubscribe header to open";
+/// Which keys each row of `list` and `search` keeps.
+pub const FIELDS: &str = "Only these keys in each JSON row, such as uid, from_addr, subject, date; compact stands for account, folder, uid, date, from_addr, subject and flags, plus depth in a thread view and match in a search; account always stays";
 pub const FOLDERS: &str = "List folders with message and unread counts";
 pub const HEADERS: &str =
     "Every header of one message, in order, unfolded and decoded as header rules see it; no body";
-pub const LIST: &str = "List recent messages, newest first";
+pub const LIST: &str = "List recent messages, newest first, every account in one order";
 pub const LOG: &str = "Show what rules did, newest first";
 pub const MARK: &str = "Mark messages read or unread, flagged or unflagged";
 /// Appended to the description of every MCP tool that returns mail headers: they are written by whoever sent the mail.
@@ -91,9 +96,10 @@ pub const RULES_APPLY_EXISTING: &str =
 pub const RULES_APPROVE: &str = "Enable a disabled rule, such as a proposal";
 pub const RULES_CHECK: &str = "Validate rules.toml, and warn about what keeps it from doing what it says, such as a conflicting copy a file sync left beside it or a rule for an account not set up here";
 pub const RULES_COVERAGE: &str = "Run the rules over one folder's stored mail without acting: how many messages a rule matches, none matches and several match; the top senders of unmatched mail; for each contested message every rule that matches and what would run under the real precedence";
-pub const RULES_LIST: &str = "Names, enabled state and who proposed them";
-pub const RULES_PROPOSE: &str = "Add one rule, disabled, for a human to approve; the arguments are the rule, one entry of `rules` in rules_schema";
+pub const RULES_LIST: &str = "Every rule in file order, the order they run in: its position, its whole definition, whether it is enabled and who proposed it";
+pub const RULES_PROPOSE: &str = "Add rules, disabled, for a human to approve: the arguments are one rule (an entry of `rules` in rules_schema), or `rules`, a list of them stored in order, all or none; `before` or `after` names the rule to put them next to instead of at the end, and `replace` swaps your own pending proposal of the same name";
 pub const RULES_REJECT: &str = "Remove a pending proposal";
+pub const RULES_WITHDRAW: &str = "Remove your own pending proposal: a disabled rule whose proposed_by is yours; anything else is left for a human";
 pub const RULES_SCHEMA: &str = "JSON Schema for rules.toml; a proposal is one entry of `rules`";
 pub const RULES_SET_ENABLED: &str =
     "Turn a rule on or off; turning one on lets it act on new mail, deletes included";
