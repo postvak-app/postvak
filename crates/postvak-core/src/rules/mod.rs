@@ -5,7 +5,7 @@ pub use edit::rule_toml;
 pub mod engine;
 mod warnings;
 
-pub use warnings::warnings;
+pub use warnings::{AccountFolders, account_folders, warnings};
 
 use std::io;
 use std::path::Path;

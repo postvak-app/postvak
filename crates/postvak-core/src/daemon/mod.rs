@@ -379,8 +379,9 @@ struct Watch {
     rules: FileWatch,
     /// The folder holding rules.toml, whose entries change when a file sync leaves a conflicting copy there.
     dir: FileWatch,
-    /// The configured accounts, for the rules' warnings.
+    /// The configured accounts, for the rules' warnings, and where their stores are.
     accounts: Vec<String>,
+    paths: Paths,
     /// The rules' warnings last logged, so each is logged once rather than on every change.
     warned: Vec<String>,
     checked: Instant,
@@ -394,6 +395,7 @@ impl Watch {
             dir: FileWatch::new(rules.parent().map(Path::to_path_buf).unwrap_or_default()),
             rules: FileWatch::new(rules),
             accounts: Vec::new(),
+            paths: paths.clone(),
             warned: Vec::new(),
             checked: Instant::now(),
         }
@@ -410,7 +412,8 @@ impl Watch {
         let Ok(file) = crate::rules::load(&self.rules.path) else {
             return;
         };
-        let accounts: Vec<&str> = self.accounts.iter().map(String::as_str).collect();
+        let names: Vec<&str> = self.accounts.iter().map(String::as_str).collect();
+        let accounts = crate::rules::account_folders(&self.paths, &names);
         let warnings = crate::rules::warnings(&self.rules.path, &file.rules, &accounts);
         for warning in warnings.iter().filter(|w| !self.warned.contains(w)) {
             log::warn!("rules.toml: {}", crate::message::clean(warning, false));

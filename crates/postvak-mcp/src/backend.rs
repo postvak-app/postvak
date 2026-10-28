@@ -510,7 +510,8 @@ impl Backend {
         file.rules
             .retain(|r| !self.narrowed() || self.is_visible(r.account.as_deref()));
         let names = self.all_accounts();
-        let accounts: Vec<&str> = names.iter().map(String::as_str).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let accounts = rules::account_folders(&self.paths, &names);
         let warnings = rules::warnings(&path, &file.rules, &accounts);
         Ok(json!({ "rules": count, "warnings": warnings }))
     }

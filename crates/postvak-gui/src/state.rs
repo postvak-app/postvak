@@ -711,7 +711,8 @@ impl App {
         super::phases::mark("stores_opened");
         let rules_path = paths.rules_file();
         let rules_dir = paths.config_dir.clone();
-        let rules = RulesState::load(&rules_path, Vec::new(), &account_names(&accounts));
+        let folders = rule_file::account_folders(&paths, &account_names(&accounts));
+        let rules = RulesState::load(&rules_path, Vec::new(), &folders);
         let mut app = App {
             accounts,
             activity_log: Vec::new(),
@@ -2774,7 +2775,7 @@ impl App {
             self.rules.warnings = rule_file::warnings(
                 &self.paths.rules_file(),
                 &self.rules.rules,
-                &account_names(&self.accounts),
+                &rule_file::account_folders(&self.paths, &account_names(&self.accounts)),
             );
         }
         let saving = self
@@ -3036,7 +3037,7 @@ impl App {
         self.rules = RulesState::load(
             &self.paths.rules_file(),
             std::mem::take(&mut self.rules.rules),
-            &account_names(&self.accounts),
+            &rule_file::account_folders(&self.paths, &account_names(&self.accounts)),
         );
         let on_disk = self.rule_draft_opened.as_ref().and_then(|opened| {
             let name = opened.original.as_deref()?;

@@ -673,6 +673,7 @@ pub fn sync_all_with(
         }
     }
     forget_unlisted_folders(store, &folders)?;
+    store.set_folders_listed(now())?;
     Ok((new, errors))
 }
 

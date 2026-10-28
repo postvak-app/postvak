@@ -32,7 +32,11 @@ pub(crate) struct RulesState {
 impl RulesState {
     /// The file's rules, or the previous ones when it does not parse. A rule that does not compile is reported but
     /// still listed, so it can be switched off.
-    pub fn load(path: &Path, previous: Vec<Rule>, accounts: &[&str]) -> RulesState {
+    pub fn load(
+        path: &Path,
+        previous: Vec<Rule>,
+        accounts: &[rules::AccountFolders],
+    ) -> RulesState {
         let (error, rules) = match rules::load(path) {
             Ok(file) => (
                 rules::compile(&file).err().map(|e| e.to_string()),

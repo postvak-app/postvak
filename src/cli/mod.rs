@@ -1306,7 +1306,8 @@ fn read_rule_json() -> Result<Rule> {
 /// What `rules check` warns about after the rules compiled.
 fn rules_warnings(paths: &Paths, config: &Config) -> Result<Vec<String>> {
     let path = paths.rules_file();
-    let accounts: Vec<&str> = config.accounts.iter().map(|a| a.name.as_str()).collect();
+    let names: Vec<&str> = config.accounts.iter().map(|a| a.name.as_str()).collect();
+    let accounts = postvak_core::rules::account_folders(paths, &names);
     Ok(postvak_core::rules::warnings(
         &path,
         &postvak_core::rules::load(&path)?.rules,
