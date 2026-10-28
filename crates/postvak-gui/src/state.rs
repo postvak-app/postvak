@@ -654,6 +654,15 @@ fn account_names(accounts: &[Account]) -> Vec<&str> {
     accounts.iter().map(|a| a.name.as_str()).collect()
 }
 
+/// The names of the accounts that trust no authserv-id, for the rules' warning about `authenticated`.
+fn untrusting(accounts: &[Account]) -> Vec<&str> {
+    accounts
+        .iter()
+        .filter(|a| a.identity.as_ref().is_some_and(|id| !id.can_authenticate()))
+        .map(|a| a.name.as_str())
+        .collect()
+}
+
 /// An account's window state over its store; `open_account` creates the store of an account just added.
 fn account_state(
     paths: &Paths,
@@ -711,7 +720,12 @@ impl App {
         super::phases::mark("stores_opened");
         let rules_path = paths.rules_file();
         let rules_dir = paths.config_dir.clone();
-        let rules = RulesState::load(&rules_path, Vec::new(), &account_names(&accounts));
+        let rules = RulesState::load(
+            &rules_path,
+            Vec::new(),
+            &account_names(&accounts),
+            &untrusting(&accounts),
+        );
         let mut app = App {
             accounts,
             activity_log: Vec::new(),
@@ -2775,6 +2789,7 @@ impl App {
                 &self.paths.rules_file(),
                 &self.rules.rules,
                 &account_names(&self.accounts),
+                &untrusting(&self.accounts),
             );
         }
         let saving = self
@@ -3037,6 +3052,7 @@ impl App {
             &self.paths.rules_file(),
             std::mem::take(&mut self.rules.rules),
             &account_names(&self.accounts),
+            &untrusting(&self.accounts),
         );
         let on_disk = self.rule_draft_opened.as_ref().and_then(|opened| {
             let name = opened.original.as_deref()?;

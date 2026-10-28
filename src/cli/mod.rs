@@ -1331,10 +1331,17 @@ fn read_rule_json() -> Result<Rule> {
 fn rules_warnings(paths: &Paths, config: &Config) -> Result<Vec<String>> {
     let path = paths.rules_file();
     let accounts: Vec<&str> = config.accounts.iter().map(|a| a.name.as_str()).collect();
+    let untrusting: Vec<&str> = config
+        .accounts
+        .iter()
+        .filter(|a| !a.can_authenticate())
+        .map(|a| a.name.as_str())
+        .collect();
     Ok(postvak_core::rules::warnings(
         &path,
         &postvak_core::rules::load(&path)?.rules,
         &accounts,
+        &untrusting,
     ))
 }
 

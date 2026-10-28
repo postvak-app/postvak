@@ -115,7 +115,7 @@ pub struct Match {
     /// The domain, or any subdomain, of an address in the To header; a list matches any of them
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to_domain: Option<OneOrMany<String>>,
-    /// Your provider's Authentication-Results says DMARC passed, or DKIM passed for a domain aligned with the From domain
+    /// An Authentication-Results header from a server in the account's trusted_authserv_ids says DMARC passed for the From domain, or without a DMARC verdict, DKIM passed for a domain aligned with it; never true without that list
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authenticated: Option<bool>,
     /// Arrived at least this long ago, e.g. 30m, 1h, 2days

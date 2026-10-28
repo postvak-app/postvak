@@ -206,51 +206,41 @@ fn aligned(signer: &str, from: &str) -> bool {
 }
 
 impl AuthResults {
-    /// Whether this header says mail from `from_domain` (lower-cased) is authenticated: DMARC passed for that domain,
-    /// or DKIM passed with a signing domain aligned with it.
+    /// Whether this header says mail from `from_domain` (lower-cased) is authenticated. A DMARC pass or fail for that
+    /// domain decides, since it applies the domain's own alignment policy, which may be stricter than ours; without
+    /// one, DKIM passing with a signing domain aligned with it does.
     pub fn authenticates(&self, from_domain: &str) -> bool {
-        self.results.iter().any(|r| {
-            if r.passed("dmarc") {
-                return r.property("header.from").is_none_or(|domain| {
+        let dmarc = self.results.iter().find(|r| {
+            r.method == "dmarc"
+                && matches!(r.result.as_str(), "pass" | "fail")
+                && r.property("header.from").is_none_or(|domain| {
                     domain
                         .trim_end_matches('.')
                         .eq_ignore_ascii_case(from_domain)
-                });
-            }
-            if r.passed("dkim") {
-                let signer = r
-                    .property("header.d")
-                    .map(str::to_string)
-                    .or_else(|| r.property("header.i").and_then(address_domain));
-                return signer.is_some_and(|signer| {
+                })
+        });
+        if let Some(dmarc) = dmarc {
+            return dmarc.result == "pass";
+        }
+        self.results.iter().any(|r| {
+            let signer = r
+                .property("header.d")
+                .map(str::to_string)
+                .or_else(|| r.property("header.i").and_then(address_domain));
+            r.passed("dkim")
+                && signer.is_some_and(|signer| {
                     aligned(&signer.trim_end_matches('.').to_lowercase(), from_domain)
-                });
-            }
-            false
+                })
         })
     }
 }
 
-/// Which `Authentication-Results` header counts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Pick {
-    /// The topmost header whose authserv-id is trusted. Safe when the trusted ids are the ones the provider writes:
-    /// its header sits above any the sender wrote, and RFC 8601 has it remove copies that claim its own id.
-    TopmostTrusted,
-    /// The topmost header, and only when its authserv-id is trusted. For guessed ids, which may miss the provider's
-    /// own: a trusted-looking header below an untrusted one may then come from the sender.
-    Topmost,
-}
-
-/// Whether the message with these headers and this From field is authenticated, as the `Authentication-Results`
-/// header `pick` chooses says, when `trusted` accepts its authserv-id. A From with no address, or more than one, is
-/// not; neither is mail without such a header.
-pub fn authenticated(
-    raw_headers: &[u8],
-    from: &str,
-    pick: Pick,
-    trusted: impl Fn(&str) -> bool,
-) -> bool {
+/// Whether the message with these headers and this From field is authenticated, as the topmost
+/// `Authentication-Results` header whose authserv-id `trusted` accepts says. That is safe when the trusted ids are
+/// servers of the provider that write the header on every incoming message: theirs sits above any the sender wrote,
+/// and RFC 8601 has them remove copies that claim their id. A From with no address, or more than one, is not
+/// authenticated; neither is mail without such a header.
+pub fn authenticated(raw_headers: &[u8], from: &str, trusted: impl Fn(&str) -> bool) -> bool {
     let addresses = crate::message::bare_addresses(from);
     let [address] = addresses.as_slice() else {
         return false;
@@ -258,12 +248,10 @@ pub fn authenticated(
     let Some(domain) = address_domain(address) else {
         return false;
     };
-    let mut headers = all(raw_headers).into_iter();
-    let header = match pick {
-        Pick::TopmostTrusted => headers.find(|header| trusted(&header.authserv_id)),
-        Pick::Topmost => headers.next().filter(|header| trusted(&header.authserv_id)),
-    };
-    header.is_some_and(|header| header.authenticates(&domain))
+    all(raw_headers)
+        .into_iter()
+        .find(|header| trusted(&header.authserv_id))
+        .is_some_and(|header| header.authenticates(&domain))
 }
 
 #[cfg(test)]
@@ -362,6 +350,31 @@ mod tests {
             header("mx.a.net; dkim=pass header.d=sendgrid.net; dkim=pass header.d=paypal.com")
                 .authenticates("paypal.com")
         );
+        // A regression: DMARC's verdict for the From domain decides over our relaxed alignment, since the domain may
+        // publish strict alignment (adkim=s), under which a subdomain's signature does not count.
+        assert!(
+            !header(
+                "mx.a.net; dkim=pass header.d=news.bank.example; dmarc=fail header.from=bank.example"
+            )
+            .authenticates("bank.example")
+        );
+        assert!(
+            !header("mx.a.net; dmarc=fail; dkim=pass header.d=bank.example")
+                .authenticates("bank.example")
+        );
+        // A DMARC verdict for another domain, or one that is no verdict, leaves it to DKIM.
+        assert!(
+            header(
+                "mx.a.net; dmarc=fail header.from=other.example; dkim=pass header.d=bank.example"
+            )
+            .authenticates("bank.example")
+        );
+        assert!(
+            header(
+                "mx.a.net; dmarc=none header.from=bank.example; dkim=pass header.d=bank.example"
+            )
+            .authenticates("bank.example")
+        );
     }
 
     fn trusted(id: &str) -> bool {
@@ -373,34 +386,13 @@ mod tests {
         let raw = b"Authentication-Results: mx.soverin.net; dmarc=fail header.from=paypal.com\r\n\
             Authentication-Results: mx.soverin.net; dmarc=pass header.from=paypal.com\r\n\
             From: PayPal <service@paypal.com>\r\n\r\n";
-        for pick in [Pick::Topmost, Pick::TopmostTrusted] {
-            assert!(!authenticated(
-                raw,
-                "PayPal <service@paypal.com>",
-                pick,
-                trusted
-            ));
-        }
+        assert!(!authenticated(raw, "PayPal <service@paypal.com>", trusted));
         let raw = b"Authentication-Results: relay.example; dmarc=fail\r\n\
             Authentication-Results: mx.soverin.net; dmarc=pass header.from=paypal.com\r\n\r\n";
-        assert!(authenticated(
-            raw,
-            "service@paypal.com",
-            Pick::TopmostTrusted,
-            trusted
-        ));
-        assert!(
-            !authenticated(raw, "service@paypal.com", Pick::Topmost, trusted),
-            "below an untrusted header, a trusted-looking one may be the sender's"
-        );
+        assert!(authenticated(raw, "service@paypal.com", trusted));
         let raw = b"Authentication-Results: mx.soverin.net; dmarc=pass header.from=paypal.com\r\n\
             Authentication-Results: relay.example; dmarc=fail\r\n\r\n";
-        assert!(authenticated(
-            raw,
-            "service@paypal.com",
-            Pick::Topmost,
-            trusted
-        ));
+        assert!(authenticated(raw, "service@paypal.com", trusted));
     }
 
     #[test]
@@ -408,21 +400,18 @@ mod tests {
         let raw =
             b"Authentication-Results: mx.soverin.net.evil; dmarc=pass header.from=paypal.com\r\n\
             Authentication-Results: mx.google.com; dmarc=pass header.from=paypal.com\r\n\r\n";
-        for pick in [Pick::Topmost, Pick::TopmostTrusted] {
-            assert!(!authenticated(raw, "service@paypal.com", pick, trusted));
-            assert!(!authenticated(
-                b"Subject: hi\r\n\r\n",
-                "service@paypal.com",
-                pick,
-                trusted
-            ));
-        }
+        assert!(!authenticated(raw, "service@paypal.com", trusted));
+        assert!(!authenticated(
+            b"Subject: hi\r\n\r\n",
+            "service@paypal.com",
+            trusted
+        ));
     }
 
     #[test]
     fn the_from_field_needs_exactly_one_address() {
         let raw = b"Authentication-Results: mx.soverin.net; dmarc=pass\r\n\r\n";
-        let check = |from: &str| authenticated(raw, from, Pick::Topmost, trusted);
+        let check = |from: &str| authenticated(raw, from, trusted);
         assert!(check("\"apple.com\" <a@paypal.com>"));
         assert!(!check("a@paypal.com, b@paypal.com"));
         assert!(!check(""));

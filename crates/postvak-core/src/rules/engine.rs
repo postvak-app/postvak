@@ -913,10 +913,13 @@ actions = [{ move = "Later" }]
 
     #[test]
     fn authenticated_believes_only_the_accounts_provider() {
-        let password = PasswordSource::Keyring { keyring: true };
-        let id = AccountConfig::new("work", "imap.soverin.net", "me@x.test", password)
-            .identity()
-            .unwrap();
+        let account = |trusted: Option<Vec<String>>| {
+            let password = PasswordSource::Keyring { keyring: true };
+            let mut account = AccountConfig::new("work", "imap.soverin.net", "me@x.test", password);
+            account.trusted_authserv_ids = trusted;
+            account.identity().unwrap()
+        };
+        let id = account(Some(vec!["mx.soverin.net".into()]));
         let rule = |want: bool| {
             rules(
                 &format!(
@@ -959,8 +962,7 @@ actions = [{ move = "Later" }]
                 "Authentication-Results: mx.soverin.net; dmarc=fail header.from=paypal.com\r\nAuthentication-Results: mx.soverin.net; dmarc=pass header.from=paypal.com\r\n",
                 false,
             ),
-            // The provider's own id is not in the IMAP host's domain, so the default does not know it; a header in
-            // that domain below it may be the sender's.
+            // Only the listed server counts, not others in its domain.
             (
                 "Authentication-Results: mx.google.com; dmarc=fail header.from=paypal.com\r\nAuthentication-Results: mx2.soverin.net; dmarc=pass header.from=paypal.com\r\n",
                 false,
@@ -972,14 +974,24 @@ actions = [{ move = "Later" }]
             assert_eq!(fired(true, &m), authenticated, "{headers}");
             assert_eq!(fired(false, &m), !authenticated, "{headers}");
         }
-        let default_host = identity();
-        let m = with(cases[0].0);
-        assert!(
-            evaluate(&rule(true), &m, &ctx(&default_host, 200))
-                .actions
-                .is_empty(),
-            "a host without a domain trusts no server"
+        // A regression: without a list nothing is trusted, not even a server in the IMAP host's domain, since on a
+        // server that writes no Authentication-Results the topmost one is the sender's.
+        let forged = with(
+            "Authentication-Results: mx.soverin.net; dkim=pass header.d=paypal.com; dmarc=pass header.from=paypal.com\r\n",
         );
+        for trusted in [None, Some(Vec::new())] {
+            let id = account(trusted);
+            assert!(
+                evaluate(&rule(true), &forged, &ctx(&id, 200))
+                    .actions
+                    .is_empty()
+            );
+            assert!(
+                !evaluate(&rule(false), &forged, &ctx(&id, 200))
+                    .actions
+                    .is_empty()
+            );
+        }
         let mut gmail = AccountConfig::new(
             "gmail",
             "imap.gmail.com",

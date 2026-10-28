@@ -444,9 +444,7 @@ fn exercise_message_inner(raw: &[u8], folder: &str, uid: u32) {
     let _ = attachments_and_html(raw);
     let _ = auth::all(raw);
     let from = parsed.from.as_deref().unwrap_or_default();
-    for pick in [auth::Pick::Topmost, auth::Pick::TopmostTrusted] {
-        let _ = auth::authenticated(raw, from, pick, |_| true);
-    }
+    let _ = auth::authenticated(raw, from, |_| true);
 }
 
 fn exercise_save(raw: &[u8]) {
@@ -874,9 +872,7 @@ fn exercise_auth(value: &str) {
         }
     }
     let raw = format!("Authentication-Results: {value}\r\nFrom: a@paypal.com\r\n\r\n");
-    for pick in [auth::Pick::Topmost, auth::Pick::TopmostTrusted] {
-        let _ = auth::authenticated(raw.as_bytes(), "a@paypal.com", pick, |_| true);
-    }
+    let _ = auth::authenticated(raw.as_bytes(), "a@paypal.com", |_| true);
     for domain in [value, "", "."] {
         let _ = auth::org_domain(domain);
         let _ = auth::in_domain(domain, "paypal.com");

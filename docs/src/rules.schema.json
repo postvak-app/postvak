@@ -145,7 +145,7 @@
           }
         },
         "authenticated": {
-          "description": "Your provider's Authentication-Results says DMARC passed, or DKIM passed for a domain aligned with the From domain",
+          "description": "An Authentication-Results header from a server in the account's trusted_authserv_ids says DMARC passed for the From domain, or without a DMARC verdict, DKIM passed for a domain aligned with it; never true without that list",
           "type": [
             "boolean",
             "null"
