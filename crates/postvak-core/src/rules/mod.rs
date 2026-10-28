@@ -69,7 +69,7 @@ pub struct Rule {
     /// Disabled rules are skipped; proposals start disabled
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Who proposed the rule; set by `rules propose`
+    /// Who proposed the rule; set by `rules propose` and removed when a human approves it
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposed_by: Option<String>,
     /// Conditions that must all hold; at least one

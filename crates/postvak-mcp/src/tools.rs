@@ -654,7 +654,7 @@ fn dispatch(
         }
         "rules_propose" => {
             let arguments = arguments.unwrap_or_default();
-            let batch = arguments.contains_key("rules");
+            let batch = arguments.get("rules").is_some_and(Value::is_array);
             let mut proposed = backend.propose(Value::Object(arguments), &by, sight)?;
             match proposed.pop() {
                 // One rule's fields: the result names the rule, as it did before batches.

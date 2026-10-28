@@ -17,7 +17,7 @@ actions = [{ move = "Lists/GitHub" }, "mark_read"]
 | `account` | every account | Only for this account. |
 | `folder` | `INBOX` | The folder the rule watches. |
 | `enabled` | `true` | `false` skips the rule. Proposals start disabled. |
-| `proposed_by` | none | Set by `postvak rules propose`. |
+| `proposed_by` | none | Set by `postvak rules propose`, and removed when the rule is approved. |
 | `match` | required | Conditions that must all hold. At least one. |
 | `actions` | required | What to do. At least one. |
 

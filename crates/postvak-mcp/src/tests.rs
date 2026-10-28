@@ -764,6 +764,47 @@ async fn rule_writes_refuse_rules_of_hidden_accounts_and_leave_the_file_alone() 
     assert_eq!(rule_file(&fx), before);
 }
 
+#[tokio::test]
+async fn withdraw_replace_and_placement_treat_a_hidden_accounts_proposal_as_absent() {
+    let fx = fixture(&["home", "work"]);
+    // The caller's own pending proposal, but scoped to an account this server does not see.
+    let own = scoped_rule("for-home", "home").replace("\"mcp\"", "\"mcp:test-host\"");
+    std::fs::write(fx.paths.rules_file(), own).unwrap();
+    let before = rule_file(&fx);
+    let client = connect(&fx, "rules:propose", &["work"]).await;
+    let rule = |name: &str| {
+        json!({ "name": name, "match": { "subject": { "contains": "x" } }, "actions": ["flag"] })
+    };
+    let mut replacing = rule("for-home");
+    replacing["replace"] = json!(true);
+    let mut placed = rule("p");
+    placed["before"] = json!("for-home");
+    for (tool, arguments) in [
+        ("rules_withdraw", json!({ "name": "for-home" })),
+        ("rules_propose", replacing),
+        ("rules_propose", placed),
+    ] {
+        let text = error_text(&call(&client, tool, arguments.clone()).await);
+        assert!(
+            text.contains("no rule named 'for-home'"),
+            "{tool} {arguments}: {text}"
+        );
+    }
+    assert_eq!(rule_file(&fx), before);
+
+    // Every optional key sent, the unset ones as null, still proposes one rule and answers as one.
+    let mut nulls = rule("q");
+    for key in ["rules", "before", "after", "replace"] {
+        nulls[key] = Value::Null;
+    }
+    let proposed = call(&client, "rules_propose", nulls)
+        .await
+        .structured_content
+        .unwrap();
+    assert_eq!(proposed["proposed"], "q");
+    assert_eq!(proposed["account"], "work");
+}
+
 fn add_with_raw(fx: &Fixture, account: &str, uid: u32, subject: &str, body: &str) {
     fx.add(account, fixture_message("INBOX", uid, subject, body));
     let raw = format!(

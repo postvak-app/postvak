@@ -48,12 +48,7 @@ pub fn read_proposals(value: serde_json::Value) -> Result<Proposals, RulesError>
         Json::Array(items) => (items, serde_json::Map::new()),
         Json::Object(mut object) => match object.remove("rules") {
             Some(Json::Array(items)) => (items, object),
-            Some(_) => {
-                return Err(RulesError::Parse(
-                    "`rules` must be an array of rules".into(),
-                ));
-            }
-            None => {
+            Some(Json::Null) | None => {
                 let mut rule = serde_json::Map::new();
                 for key in ["before", "after", "replace"] {
                     if let Some(value) = object.remove(key) {
@@ -61,6 +56,11 @@ pub fn read_proposals(value: serde_json::Value) -> Result<Proposals, RulesError>
                     }
                 }
                 (vec![Json::Object(object)], rule)
+            }
+            Some(_) => {
+                return Err(RulesError::Parse(
+                    "`rules` must be an array of rules".into(),
+                ));
             }
         },
         _ => {
@@ -361,6 +361,9 @@ fn approve(path: &Path, name: &str) -> Result<(), RulesError> {
             return Err(invalid(name, "is already enabled"));
         }
         write_enabled(table, true);
+        // Approved, the rule is no longer anyone's proposal: turned off later, it must not read as pending again, which
+        // would let its proposer replace or withdraw it.
+        table.remove("proposed_by");
         Ok(None)
     })
 }
@@ -692,6 +695,23 @@ mod tests {
         assert!(approve(&path, "missing").is_err());
     }
 
+    #[test]
+    fn an_approved_rule_turned_off_is_not_its_proposers_to_replace_or_withdraw() {
+        let (_dir, path) = rules_file(HUMAN);
+        propose(&path, proposal("codes"), "mcp:host").unwrap();
+        approve(&path, "codes").unwrap();
+        set_enabled(&path, "codes", false).unwrap();
+        let paused = std::fs::read_to_string(&path).unwrap();
+        assert!(!paused.contains("proposed_by"), "{paused}");
+
+        let mut replacing = batch(&["codes"]);
+        replacing.replace = true;
+        assert!(propose_all(&path, replacing, "mcp:host").is_err(), "replace");
+        assert!(withdraw(&path, "codes", "mcp:host").is_err(), "withdraw");
+        assert!(reject(&path, "codes").is_err(), "reject");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), paused);
+    }
+
     const TWO_ACCOUNTS: &str = "[[accounts]]\nname = \"work\"\nhost = \"imap.example.com\"\nusername = \"w@example.com\"\npassword = { keyring = true }\n\n[[accounts]]\nname = \"home\"\nhost = \"mail.home.test\"\nusername = \"h\"\naddress = \"h@home.test\"\npassword = { keyring = true }\n";
 
     fn first_seen(paths: &Paths, account: &str, name: &str, at: i64) -> i64 {
@@ -983,6 +1003,16 @@ mod tests {
         assert_eq!(array.rules.len(), 2);
         let object = read(&format!("{{\"rules\": [{rule}], \"before\": \"x\"}}")).unwrap();
         assert_eq!(object.place, Place::Before("x".into()));
+        // A host that sends every optional key, unset ones as null, still proposes one rule.
+        let nulls = read(&rule.replace(
+            "{\"name\"",
+            "{\"rules\": null, \"before\": null, \"after\": null, \"replace\": null, \"name\"",
+        ))
+        .unwrap();
+        assert_eq!(
+            (nulls.rules.len(), nulls.place, nulls.replace),
+            (1, Place::End, false)
+        );
 
         let err = read(&format!("[{rule}, {{\"name\": \"bad\"}}]"))
             .unwrap_err()
