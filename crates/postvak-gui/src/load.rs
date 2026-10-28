@@ -2,7 +2,7 @@
 //! that view anyway; a reload after the daemon reported changes reads them on a thread of its own, so a large mailbox
 //! never stalls a frame on every sync event. Both run [`load`]; the app applies its result.
 
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::Receiver;
 
 use postvak_core::config::Identity;
 use postvak_core::paths::Paths;
@@ -11,6 +11,7 @@ use postvak_core::store::{Filter, Matched, MessageSummary, Store, ThreadSummary}
 
 use super::html::Wake;
 use super::list::{self, Row, RowKey, THREAD_LIMIT};
+use super::worker;
 
 /// A thread by account index and thread id: mail sent to two accounts shares its thread id.
 pub(crate) type ThreadKey = (usize, String);
@@ -172,12 +173,9 @@ pub(crate) fn spawn(
     query: ListQuery,
     wake: Wake,
 ) -> Receiver<Loaded> {
-    let (done, answer) = mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = done.send(load_fn(&paths, &accounts, &query));
-        wake();
-    });
-    answer
+    worker::oneshot("list-load", wake, move || {
+        load_fn(&paths, &accounts, &query)
+    })
 }
 
 #[cfg(test)]

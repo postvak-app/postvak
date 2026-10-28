@@ -144,22 +144,11 @@ mod tests {
 
     use super::*;
     use crate::body;
-    use crate::test_support::{Driver, Fixture, message};
+    use crate::state::App;
+    use crate::test_support::{Fixture, message};
 
-    /// Ticks until `done` holds or 5 s of real time passed; for answers from the reader thread.
-    fn tick_until(driver: &mut Driver, done: impl Fn(&Driver) -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !done(driver) && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-            driver.tick();
-        }
-        assert!(done(driver), "timed out");
-    }
-
-    fn shown(driver: &Driver) -> Option<u32> {
-        driver
-            .app
-            .body
+    fn shown(app: &App) -> Option<u32> {
+        app.body
             .as_ref()
             .and_then(|b| b.message.as_ref())
             .map(|m| m.uid)
@@ -185,16 +174,20 @@ mod tests {
         let fx = Fixture::new(&["work"]);
         inbox(&fx, &[1, 2]);
         let (mut driver, _wires) = fx.driver();
-        assert_eq!(shown(&driver), Some(2));
+        assert_eq!(shown(&driver.app), Some(2));
         driver.app.body_budget = Duration::ZERO;
         driver.app.read_body = held;
         driver.app.reader = None;
         driver.press("j");
-        assert_eq!(shown(&driver), None, "the frame does not wait for the read");
+        assert_eq!(
+            shown(&driver.app),
+            None,
+            "the frame does not wait for the read"
+        );
         assert_eq!(body::pane(&driver.app).empty, Some("Loading…"));
         RELEASE.store(true, Ordering::SeqCst);
-        tick_until(&mut driver, |d| shown(d).is_some());
-        assert_eq!(shown(&driver), Some(1));
+        driver.tick_until(|app| shown(app).is_some());
+        assert_eq!(shown(&driver.app), Some(1));
         let text = driver.app.body.as_ref().and_then(|b| b.text.clone());
         assert_eq!(text.as_deref(), Some("text 1"));
     }
@@ -217,11 +210,11 @@ mod tests {
         driver.app.read_body = held;
         driver.app.reader = None;
         driver.press("j");
-        tick_until(&mut driver, |_| READS.lock().unwrap().len() == 1);
+        driver.tick_until(|_| READS.lock().unwrap().len() == 1);
         driver.press("j j");
         RELEASE.store(true, Ordering::SeqCst);
-        tick_until(&mut driver, |d| shown(d).is_some());
-        assert_eq!(shown(&driver), Some(1));
+        driver.tick_until(|app| shown(app).is_some());
+        assert_eq!(shown(&driver.app), Some(1));
         assert_eq!(*READS.lock().unwrap(), [3, 1], "message 2 was passed over");
     }
 
@@ -230,7 +223,7 @@ mod tests {
         let fx = Fixture::new(&["work"]);
         inbox(&fx, &[1]);
         let (mut driver, wires) = fx.driver();
-        assert_eq!(shown(&driver), Some(1));
+        assert_eq!(shown(&driver.app), Some(1));
         fx.store("work").remove_message("INBOX", 1).unwrap();
         let ready = postvak_core::sync::Event::BodyReady {
             account: "work".into(),
@@ -238,8 +231,7 @@ mod tests {
             uid: 1,
             request: 0,
         };
-        wires.events.send(ready).unwrap();
-        driver.tick();
+        driver.receive(&wires, [ready]);
         assert_eq!(
             body::pane(&driver.app).empty,
             Some("This message is no longer in the local store.")

@@ -2,7 +2,7 @@
 //! reaches out of a Flatpak, on a thread of its own since it waits for the user; on macOS an `NSSavePanel`, which
 //! AppKit runs on the main thread, where it is modal.
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::Receiver;
 
 use crate::html::Wake;
 
@@ -12,28 +12,26 @@ pub(crate) type Chosen = anyhow::Result<Option<PathBuf>>;
 /// Opens the save dialog with `name` filled in, starting in `folder`. The answer arrives on the receiver, and `wake`
 /// runs once it has.
 pub(crate) fn ask(name: &str, folder: &Path, wake: Wake) -> Receiver<Chosen> {
-    let (done, answer) = mpsc::channel();
     #[cfg(target_os = "linux")]
     {
         let (name, folder) = (name.to_string(), folder.to_path_buf());
-        std::thread::spawn(move || {
-            let chosen = postvak_core::portal::save_file("Save as", &name, Some(&folder));
-            let _ = done.send(chosen);
-            wake();
-        });
+        crate::worker::oneshot("save-as", wake, move || {
+            postvak_core::portal::save_file("Save as", &name, Some(&folder))
+        })
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(not(target_os = "linux"))]
     {
+        let (done, answer) = std::sync::mpsc::channel();
+        #[cfg(target_os = "macos")]
         let _ = done.send(mac::choose(name, folder));
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (name, folder);
+            let _ = done.send(Err(anyhow::anyhow!("Save as works on macOS and Linux")));
+        }
         wake();
+        answer
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        let _ = (name, folder);
-        let _ = done.send(Err(anyhow::anyhow!("Save as works on macOS and Linux")));
-        wake();
-    }
-    answer
 }
 
 #[cfg(target_os = "macos")]
