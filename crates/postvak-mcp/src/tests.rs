@@ -819,9 +819,7 @@ async fn withdraw_replace_and_placement_treat_a_hidden_accounts_proposal_as_abse
     std::fs::write(fx.paths.rules_file(), own).unwrap();
     let before = rule_file(&fx);
     let client = connect(&fx, "rules:propose", &["work"]).await;
-    let rule = |name: &str| {
-        json!({ "name": name, "match": { "subject": { "contains": "x" } }, "actions": ["flag"] })
-    };
+    let rule = |name: &str| json!({ "name": name, "match": { "subject": { "contains": "x" } }, "actions": ["flag"] });
     let mut replacing = rule("for-home");
     replacing["replace"] = json!(true);
     let mut placed = rule("p");

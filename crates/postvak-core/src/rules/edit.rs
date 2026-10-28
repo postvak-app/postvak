@@ -706,7 +706,10 @@ mod tests {
 
         let mut replacing = batch(&["codes"]);
         replacing.replace = true;
-        assert!(propose_all(&path, replacing, "mcp:host").is_err(), "replace");
+        assert!(
+            propose_all(&path, replacing, "mcp:host").is_err(),
+            "replace"
+        );
         assert!(withdraw(&path, "codes", "mcp:host").is_err(), "withdraw");
         assert!(reject(&path, "codes").is_err(), "reject");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), paused);
