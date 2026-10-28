@@ -252,8 +252,12 @@ enum Command {
         #[command(subcommand)]
         command: Option<CrashesCommand>,
     },
-    /// Print the agent guide: how an LLM should drive Postvak
-    Guide,
+    /// Print the agent guide, how an LLM should drive Postvak, or another page of the documentation
+    Guide {
+        /// The page; without one, the agent guide
+        #[arg(value_parser = doc_pages())]
+        page: Option<String>,
+    },
     /// Serve Postvak to an agent host over MCP on stdio; hosts start this, see `postvak mcp install`
     #[command(args_conflicts_with_subcommands = true)]
     Mcp {
@@ -384,7 +388,10 @@ enum RulesCommand {
         #[arg(long)]
         stdin: bool,
     },
-    #[command(about = postvak_core::help::RULES_SCHEMA)]
+    #[command(
+        about = postvak_core::help::RULES_SCHEMA,
+        after_help = "`postvak guide rules` explains every key, with examples."
+    )]
     Schema,
     /// Read one rule as JSON on stdin and add it disabled, for a human to approve
     Propose {
@@ -739,8 +746,16 @@ pub fn run() -> Result<()> {
                 Ok(())
             }
         },
-        Command::Guide => {
-            print!("{}", postvak_core::help::AGENT_GUIDE);
+        Command::Guide { page } => {
+            let text = match page.as_deref() {
+                None => postvak_core::help::AGENT_GUIDE,
+                Some(name) => match postvak_core::help::doc_page(name) {
+                    Some(page) => page.text,
+                    // clap only lets the page names through.
+                    None => bail!("no page {name}"),
+                },
+            };
+            print!("{text}");
             Ok(())
         }
         Command::Mcp {
@@ -757,6 +772,15 @@ pub fn run() -> Result<()> {
             command,
         ),
     }
+}
+
+/// The names `postvak guide` takes, each with its summary, which clap lists in `--help` and when a name is wrong.
+fn doc_pages() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(
+        postvak_core::help::DOC_PAGES
+            .iter()
+            .map(|page| clap::builder::PossibleValue::new(page.name).help(page.summary)),
+    )
 }
 
 /// Runs a direct action on the selected uids; `--dry-run` only reads the local store.
