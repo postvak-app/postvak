@@ -131,6 +131,26 @@ struct RulesTestArgs {
     account: Option<String>,
 }
 
+/// The input schema of `rules_propose`: one rule's fields, or `rules`. Hosts refuse a top-level `anyOf`, so the two
+/// forms share one object; `rules::edit::read_proposals` reads it and refuses a mix.
+#[derive(JsonSchema)]
+#[allow(
+    dead_code,
+    reason = "only describes the arguments; read_proposals parses them"
+)]
+struct ProposeArgs {
+    #[serde(flatten)]
+    rule: Option<postvak_core::rules::Rule>,
+    /// Several rules, each an entry of `rules` in rules_schema, stored in this order, all or none; give this or one rule's fields
+    rules: Option<Vec<postvak_core::rules::Rule>>,
+    /// Put the rules right before the rule of this name instead of at the end; earlier rules run first
+    before: Option<String>,
+    /// Put the rules right after the rule of this name instead of at the end
+    after: Option<String>,
+    /// Replace your own pending proposal of the same name, instead of refusing the name
+    replace: Option<bool>,
+}
+
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ApplyExistingArgs {
@@ -441,7 +461,7 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
             Effect::ReadOnly,
             help::RULES_LIST,
         ),
-        ToolDef::new::<postvak_core::rules::Rule>(
+        ToolDef::new::<ProposeArgs>(
             "rules_propose",
             Scope::RulesPropose,
             Effect::Changes,
@@ -467,6 +487,12 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
             Scope::RulesWrite,
             Effect::Destructive,
             help::RULES_SET_ENABLED,
+        ),
+        ToolDef::new::<NameArgs>(
+            "rules_withdraw",
+            Scope::RulesPropose,
+            Effect::Changes,
+            help::RULES_WITHDRAW,
         ),
         ToolDef::new::<RulesTestArgs>(
             "rules_test",
@@ -677,8 +703,19 @@ fn dispatch(
             rows(backend.rules_list()?)
         }
         "rules_propose" => {
-            let rule: postvak_core::rules::Rule = args(arguments)?;
-            backend.propose(rule, &by, sight)
+            let arguments = arguments.unwrap_or_default();
+            let batch = arguments.get("rules").is_some_and(Value::is_array);
+            let mut proposed = backend.propose(Value::Object(arguments), &by, sight)?;
+            match proposed.pop() {
+                // One rule's fields: the result names the rule, as it did before batches.
+                Some(only) if !batch && proposed.is_empty() => Ok(
+                    json!({ "proposed": only["name"], "account": only["account"], "enabled": false, "proposed_by": by }),
+                ),
+                last => {
+                    proposed.extend(last);
+                    Ok(json!({ "proposed": proposed, "enabled": false, "proposed_by": by }))
+                }
+            }
         }
         "rules_reject" => {
             let a: NameArgs = args(arguments)?;
@@ -691,6 +728,10 @@ fn dispatch(
         "rules_set_enabled" => {
             let a: SetEnabledArgs = args(arguments)?;
             backend.set_enabled(&a.name, a.enabled, sight)
+        }
+        "rules_withdraw" => {
+            let a: NameArgs = args(arguments)?;
+            backend.withdraw(&a.name, &by)
         }
         "rules_test" => {
             let a: RulesTestArgs = args(arguments)?;

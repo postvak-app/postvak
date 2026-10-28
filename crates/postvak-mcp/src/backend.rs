@@ -14,6 +14,7 @@ use postvak_core::page;
 /// What `list` shows, a plain value like `Filter`.
 pub(crate) use postvak_core::page::ListRequest;
 use postvak_core::paths::Paths;
+use postvak_core::rules::edit::Place;
 use postvak_core::rules::{self, Action, Rule, RuleFile};
 use postvak_core::search::{self, Scope};
 /// The `list` filter, a plain value, so the tools need not name the store.
@@ -540,15 +541,17 @@ impl Backend {
         }
     }
 
-    /// Rules scoped to a hidden account are left out; rules for every account stay.
+    /// Every rule in file order, each with its position in the file. Rules scoped to a hidden account are left out,
+    /// so positions may skip; rules for every account stay.
     pub fn rules_list(&self) -> Result<Vec<Value>> {
         let file = rules::load(&self.paths.rules_file())?;
-        Ok(file
-            .rules
-            .iter()
-            .filter(|r| self.is_visible(r.account.as_deref()))
-            .map(output::rule)
-            .collect())
+        let mut rows = Vec::new();
+        for (position, rule) in file.rules.iter().enumerate() {
+            if self.is_visible(rule.account.as_deref()) {
+                rows.push(output::rule(rule, position)?);
+            }
+        }
+        Ok(rows)
     }
 
     /// The number of rules, and what leaves the file valid but not doing what was meant. A server narrowed with
@@ -645,24 +648,49 @@ impl Backend {
         Ok(rows)
     }
 
-    /// While accounts are hidden, a rule without `account` gets the only visible one, or is refused.
-    pub fn propose(&self, mut rule: Rule, by: &str, sight: Sight) -> Result<Value> {
-        refuse_unseen(
-            &rules::compile(&RuleFile {
+    /// Stores the rules of `proposals` disabled, all or none. While accounts are hidden, a rule without `account` gets
+    /// the only visible one, or is refused, and a rule of a hidden account can be neither replaced nor named as the
+    /// place. `arguments` are one rule's fields or `{"rules": [...]}`, as `rules::edit::read_proposals` reads them.
+    /// The result names each rule with the account it got.
+    pub fn propose(&self, arguments: Value, by: &str, sight: Sight) -> Result<Vec<Value>> {
+        let mut proposals = rules::edit::read_proposals(arguments)?;
+        // A rule that does not compile is left to propose_all, which names every failing rule of the batch.
+        for rule in &mut proposals.rules {
+            if let Ok(compiled) = rules::compile(&RuleFile {
                 rules: vec![rule.clone()],
-            })?,
-            sight,
-        )?;
-        match rule.account.as_deref() {
-            Some(account) if !self.is_visible(Some(account)) => {
-                bail!("no account named '{account}'")
+            }) {
+                refuse_unseen(&compiled, sight)?;
             }
-            None if self.narrowed() => rule.account = Some(self.single(None)?.name),
-            _ => {}
+            match rule.account.as_deref() {
+                Some(account) if !self.is_visible(Some(account)) => {
+                    bail!("no account named '{account}'")
+                }
+                None if self.narrowed() => rule.account = Some(self.single(None)?.name),
+                _ => {}
+            }
         }
-        let (name, account) = (rule.name.clone(), rule.account.clone());
-        rules::edit::propose(&self.paths.rules_file(), rule, by)?;
-        Ok(json!({ "proposed": name, "account": account, "enabled": false, "proposed_by": by }))
+        if let Place::Before(anchor) | Place::After(anchor) = &proposals.place {
+            self.ensure_rule_visible(anchor, false)?;
+        }
+        if proposals.replace {
+            for rule in &proposals.rules {
+                self.ensure_rule_visible(&rule.name, false)?;
+            }
+        }
+        let proposed: Vec<Value> = proposals
+            .rules
+            .iter()
+            .map(|r| json!({ "name": r.name, "account": r.account }))
+            .collect();
+        rules::edit::propose_all(&self.paths.rules_file(), proposals, by)?;
+        Ok(proposed)
+    }
+
+    /// Removes the caller's own pending proposal; a rule of a hidden account reads as absent.
+    pub fn withdraw(&self, name: &str, by: &str) -> Result<Value> {
+        self.ensure_rule_visible(name, false)?;
+        rules::edit::withdraw(&self.paths.rules_file(), name, by)?;
+        Ok(json!({ "withdrawn": name }))
     }
 
     /// Enables the rule and restarts its clock in every account, so it acts only on mail that arrives from now on.

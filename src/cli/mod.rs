@@ -16,6 +16,7 @@ use postvak_core::message::clean;
 use postvak_core::output::{Fields, RowKind};
 use postvak_core::page;
 use postvak_core::paths::Paths;
+use postvak_core::rules::edit::Place;
 use postvak_core::rules::{Action, CompiledRule, Rule, RuleFile};
 use postvak_core::store::{Filter, Message, Store};
 use postvak_core::sync::{self, Event};
@@ -410,9 +411,25 @@ enum RulesCommand {
         after_help = "`postvak guide rules` explains every key, with examples."
     )]
     Schema,
-    /// Read one rule as JSON on stdin and add it disabled, for a human to approve
+    /// Read one rule, a JSON array of rules or {"rules": [...]} on stdin and add them disabled, in order, for a human to approve; all or none are stored
     Propose {
         /// Who proposes it, recorded as proposed_by = "cli:WHO"
+        #[arg(long)]
+        by: Option<String>,
+        /// Put the rules right before this rule instead of at the end
+        #[arg(long, conflicts_with = "after")]
+        before: Option<String>,
+        /// Put the rules right after this rule instead of at the end
+        #[arg(long)]
+        after: Option<String>,
+        /// Replace your own pending proposal of the same name instead of refusing the name
+        #[arg(long)]
+        replace: bool,
+    },
+    #[command(about = postvak_core::help::RULES_WITHDRAW)]
+    Withdraw {
+        name: String,
+        /// Who proposed it, as given to `rules propose --by`
         #[arg(long)]
         by: Option<String>,
     },
@@ -1286,9 +1303,9 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
         }
         RulesCommand::List { json } => {
             let file = postvak_core::rules::load(&paths.rules_file())?;
-            for r in &file.rules {
+            for (position, r) in file.rules.iter().enumerate() {
                 if json {
-                    print_json(postvak_core::output::rule(r));
+                    print_json(postvak_core::output::rule(r, position)?);
                 } else {
                     println!(
                         "{}\t{}\t{}",
@@ -1365,15 +1382,42 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             print!("{}", postvak_core::rules::schema());
             Ok(())
         }
-        RulesCommand::Propose { by } => {
-            let rule = read_rule_json()?;
-            let name = rule.name.clone();
-            let by = by.map_or_else(|| "cli".to_string(), |who| format!("cli:{who}"));
-            postvak_core::rules::edit::propose(&paths.rules_file(), rule, &by)?;
+        RulesCommand::Propose {
+            by,
+            before,
+            after,
+            replace,
+        } => {
+            let value: serde_json::Value = serde_json::from_reader(io::stdin().lock())
+                .context("reading rules as JSON from stdin")?;
+            let mut proposals = postvak_core::rules::edit::read_proposals(value)?;
+            let place = match (before, after) {
+                (Some(name), _) => Some(Place::Before(name)),
+                (None, Some(name)) => Some(Place::After(name)),
+                (None, None) => None,
+            };
+            if let Some(place) = place {
+                if proposals.place != Place::End {
+                    bail!("give the place either in the JSON or with --before/--after, not both");
+                }
+                proposals.place = place;
+            }
+            proposals.replace |= replace;
+            let names: Vec<String> = proposals
+                .rules
+                .iter()
+                .map(|r| format!("'{}'", clean(&r.name, false)))
+                .collect();
+            postvak_core::rules::edit::propose_all(&paths.rules_file(), proposals, &cli_by(by))?;
             println!(
-                "proposed '{}'; it stays disabled until a human runs `postvak rules approve`",
-                clean(&name, false)
+                "proposed {}; disabled until a human runs `postvak rules approve`",
+                names.join(", ")
             );
+            Ok(())
+        }
+        RulesCommand::Withdraw { name, by } => {
+            postvak_core::rules::edit::withdraw(&paths.rules_file(), &name, &cli_by(by))?;
+            println!("withdrew proposal '{}'", clean(&name, false));
             Ok(())
         }
         RulesCommand::Approve { name } => {
@@ -1390,6 +1434,11 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             Ok(())
         }
     }
+}
+
+/// What `--by WHO` records as proposed_by: `cli:WHO`, or `cli` alone.
+fn cli_by(by: Option<String>) -> String {
+    by.map_or_else(|| "cli".to_string(), |who| format!("cli:{who}"))
 }
 
 fn read_rule_json() -> Result<Rule> {

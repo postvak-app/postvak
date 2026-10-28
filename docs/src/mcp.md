@@ -56,7 +56,7 @@ The install also prints a hint with the granted scopes and how to widen them. It
 | `read` | Folders, each message's sender, recipients, subject and date, the activity log, rules and trash listings, previews of rules that match on neither the body nor a `header` condition, and a sync. No body text and no other headers. | `accounts`, `docs`, `folders`, `list`, `log`, `rules_check`, `rules_list`, `rules_schema`, `rules_test`, `search`, `status`, `sync`, `trash_list` |
 | `read:headers` | Every header of a message, such as `List-Id`, `Authentication-Results` or a spam score, from the local store, and with `read` previews of rules with a `header` condition; proposing, enabling or running such a rule needs it too. No body text. | `headers` |
 | `read:bodies` | Message bodies and attachment names, search over indexed bodies and on the server (`search` with `server`) with a `snippet` of the body around a match, and with `read` previews of rules that match on the body. | `attachments`, `show` |
-| `rules:propose` | Proposing a rule. It is stored disabled until you approve it. | `rules_propose` |
+| `rules:propose` | Proposing rules, which are stored disabled until you approve them, and withdrawing its own proposals while they are still pending. | `rules_propose`, `rules_withdraw` |
 | `rules:write` | Approving and rejecting rules, and turning them on or off. | `rules_approve`, `rules_reject`, `rules_set_enabled` |
 | `files:write` | Writing attachment files into your Downloads folder, or the `--save-dir` you set, and the directories below it. The file name and content come from the sender. | `attachment_save` |
 | `mail:modify` | Acting on mail and the trash. | `archive`, `delete`, `junk`, `mark`, `move`, `rules_apply_existing`, `trash_purge`, `trash_restore`, `unsubscribe` |
@@ -78,7 +78,7 @@ The server's instructions to the host are short: the ground rules of the [agent 
 
 The names follow the CLI commands. A tool that lists things returns the CLI's `--json` rows wrapped in `{"rows": [...]}`; the others return one object. Rows carry an `account`; in `rules_list` that is the rule's own scope, and `null` means every account. Message rows carry no body text. `show` returns `{"message": ..., "body": ..., "truncated": ...}`.
 
-`rules.toml` is shared by every account, so `rules_list`, `rules_propose`, `rules_approve`, `rules_reject` and `rules_set_enabled` take no `account` argument; a rule's own `account` field scopes it. They follow `--account` as described under [Safety](#safety).
+`rules.toml` is shared by every account, so `rules_list`, `rules_propose`, `rules_withdraw`, `rules_approve`, `rules_reject` and `rules_set_enabled` take no `account` argument; a rule's own `account` field scopes it. They follow `--account` as described under [Safety](#safety).
 
 `read`:
 
@@ -89,7 +89,7 @@ The names follow the CLI commands. A tool that lists things returns the CLI's `-
 - `list` and `search` page: when more rows follow, the result carries `next` beside `rows`; pass it back as `cursor`, with the same other arguments, for the next page. `fields` keeps only the named keys in each row, such as `["uid", "from_addr", "subject", "date"]`, or `["compact"]` for account, folder, uid, date, from_addr, subject and flags (plus `depth` or `match`); `account` always stays, and an unknown name is an error. `count_only: true` returns `{"count": N}`, how many messages (threads with `threads`) match in all, and no rows.
 - `log` shows the rule and action log.
 - `rules_check` validates `rules.toml` and lists `warnings`, such as a conflicting copy a file sync left beside it or a rule for an account that is not set up; [Rules](rules.md) lists them all. A server started with `--account` leaves out rules for the accounts it hides.
-- `rules_list` lists rules and their state.
+- `rules_list` lists rules in file order, the order they run in. Each row is the whole rule as `rules_propose` takes it (`match`, `actions` and the rest), with its state, its proposer and `position`, its 0-based place in the file. A server started with `--account` leaves out rules for the accounts it hides, so positions can skip.
 - `rules_schema` returns the JSON Schema for a rule; its description sends the agent to the `rules` page of `docs` for what each key means.
 - `rules_test` previews a rule, given as JSON, against the local store. It reports subjects, never bodies. A rule that matches on the body needs `read:bodies` too, and one with a `header` condition `read:headers`, since their matches would reveal what bodies or headers contain. `rules_propose`, `rules_approve`, `rules_set_enabled` and `rules_apply_existing` refuse such rules on the same terms. `from`, `to`, `cc` and `subject` conditions need only `read`, as `list` already shows those fields.
 - `search` finds messages by subject, addresses and attachment names. It matches all the given words, `"phrases"` in order, `-word` excludes, and the last word also as a prefix; the operators of [Search](search.md) (`from:`, `in:`, `is:unread`, `after:7d` and the rest) narrow it, and the tool's description lists them. When fewer than ten messages match as typed, close matches follow, each row's `match` being `exact` or `close`; `exact: true` leaves them out. Searching bodies, and `server: true`, need `read:bodies`; with `server` the result is one page, without `next`, and takes no `cursor` or `count_only`.
@@ -108,7 +108,8 @@ The names follow the CLI commands. A tool that lists things returns the CLI's `-
 
 `rules:propose`:
 
-- `rules_propose` stores a rule disabled, with `proposed_by` set to `mcp:<client name>`, or `mcp` when the host sends no name. A rule scoped to an account the server hides is refused. While `--account` hides an account, a rule without `account` gets the only visible account, or is refused when several are visible.
+- `rules_propose` stores a rule disabled, with `proposed_by` set to `mcp:<client name>`, or `mcp` when the host sends no name. A rule scoped to an account the server hides is refused. While `--account` hides an account, a rule without `account` gets the only visible account, or is refused when several are visible. Instead of one rule's fields it takes `rules`, a list stored in the given order, all or none; an error names each failing rule by index and name. Proposals go after the last rule, or right next to another with `before` or `after`. With `replace`, a rule whose name is taken by this host's own pending proposal replaces it in place rather than being refused. One rule returns `{"proposed": name, "account": ...}`, a list `{"proposed": [{"name": ..., "account": ...}, ...]}`.
+- `rules_withdraw` removes one of this host's own pending proposals: a disabled rule whose `proposed_by` is this host's. An approved rule, or another proposer's, is refused; you reject those.
 
 `files:write`:
 
