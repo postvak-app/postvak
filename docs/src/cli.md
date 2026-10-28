@@ -57,7 +57,7 @@ This document contains the help content for the `postvak` command-line program.
 
 ## `postvak`
 
-A fast, simple mail client with automatic mailbox rules
+Your inbox, organized by rules you write
 
 **Usage:** `postvak <COMMAND>`
 
