@@ -30,6 +30,17 @@ A rule in a client lives in that client's settings on that one machine. Postvak'
 
 **Pick another tool when** you already live in one of these clients and only sort mail while you use it.
 
+## Search
+
+Postvak keeps a local full-text index of every account, bodies and attachment names included, as Thunderbird does, so search answers as you type and works offline. It differs in a few ways:
+
+- **One query everywhere.** The same query means the same thing in the window, on the [command line](cli.md#postvak-search) and over MCP, so an agent searches the way you do.
+- **Operators.** `from:`, `to:`, `subject:`, `in:`, `is:unread`, `has:attachment`, dates such as `after:7d`, and `from:me` that knows your aliases. See [Search](search.md).
+- **Forgiving.** Nothing you type is an error: an unbalanced quote or an unknown key searches as words. When few messages match, [close matches](search.md#close-matches) follow, so `invioce` still finds the invoice.
+- **Fast.** About 35 ms to search 100,000 messages on an M1 Pro; see [Performance](perf.md).
+
+**Pick another tool when** you need to search a large archive the moment you add it, or would rather not keep its text on disk. Postvak [indexes in the background](search.md#the-index), newest first, and until it is done asks the server for the rest; `index_bodies = false` keeps bodies off disk, at the cost of searching them only on the server.
+
 ## AI sorters
 
 Services such as SaneBox, Shortwave and Superhuman sort mail with a model trained on your behaviour or a prompt you write. They take no rules to write, and they can catch mail no pattern would.
