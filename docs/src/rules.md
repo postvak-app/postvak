@@ -58,7 +58,7 @@ Each entry of `any` and `none` is a set of conditions that must all hold, writte
 | `"mark_read"` | Marks it read. |
 | `"flag"` | Flags it. |
 | `"archive"` | Moves it to the server's Archive folder. Fails when the server has none. |
-| `{ move = "Folder/Sub" }` | Moves it to that folder, creating the folder if needed and subscribing to it, so mail apps that show only subscribed folders list it. |
+| `{ move = "Folder/Sub" }` | Moves it to that folder, creating the folder if needed and subscribing to it, so mail apps that show only subscribed folders list it. A folder that only groups others and cannot hold mail, such as Gmail's `[Gmail]`, is refused. |
 | `{ tag = "$label1" }` | Adds that IMAP keyword, which Thunderbird and other clients show as a tag. The server must accept custom keywords. |
 | `"notify"` | Notifies even when the message was moved. |
 | `"silent"` | Never notifies. |

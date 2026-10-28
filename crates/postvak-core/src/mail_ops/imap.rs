@@ -467,19 +467,17 @@ fn special_use(attrs: &[NameAttribute<'_>]) -> Option<String> {
     })
 }
 
-/// The folder a LIST answer names, or None for one that cannot be selected.
+/// The folder a LIST answer names; one that cannot be selected is kept, marked, so a move to it can be refused.
 fn listed_folder(
     attrs: &[NameAttribute<'_>],
     delimiter: Option<&str>,
     name: &str,
 ) -> Option<RemoteFolder> {
-    if attrs.iter().any(|a| matches!(a, NameAttribute::NoSelect)) {
-        return None;
-    }
     Some(RemoteFolder {
         name: name.to_string(),
         special_use: special_use(attrs),
         delimiter: delimiter.map(str::to_string),
+        noselect: attrs.iter().any(|a| matches!(a, NameAttribute::NoSelect)),
     })
 }
 
@@ -1007,6 +1005,15 @@ fn text_query(words: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_noselect_folder_is_listed_marked() {
+        let parent = listed_folder(&[NameAttribute::NoSelect], Some("/"), "[Gmail]").unwrap();
+        assert!(parent.noselect);
+        let trash = listed_folder(&[NameAttribute::Trash], Some("/"), "[Gmail]/Trash").unwrap();
+        assert!(!trash.noselect);
+        assert_eq!(trash.special_use.as_deref(), Some("Trash"));
+    }
 
     #[test]
     fn only_a_plain_no_to_login_means_rejected_credentials() {

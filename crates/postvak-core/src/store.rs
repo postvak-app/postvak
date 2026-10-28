@@ -32,6 +32,7 @@ const MIGRATIONS: &[M<'static>] = &[
     )),
     M::up(include_str!("../migrations/016-folder-uid-next/up.sql")),
     M::up(include_str!("../migrations/017-folder-list/up.sql")),
+    M::up(include_str!("../migrations/018-noselect-folders/up.sql")),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -416,6 +417,33 @@ impl Store {
             Some(row) => Ok(Some(serde_rusqlite::from_row(row)?)),
             None => Ok(None),
         }
+    }
+
+    /// The folders the server last listed as `\\Noselect`, replacing those of the listing before.
+    pub fn set_noselect_folders(&self, names: &[&str]) -> Result<(), StoreError> {
+        self.transaction(|| {
+            self.conn.execute("DELETE FROM noselect_folders", [])?;
+            for name in names {
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO noselect_folders (name) VALUES (?1)",
+                    params![name],
+                )?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Whether the server last listed `name` as `\\Noselect`, a folder that holds no messages.
+    pub fn is_noselect(&self, name: &str) -> Result<bool, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT 1 FROM noselect_folders WHERE name = ?1",
+                params![name],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
     }
 
     /// Records that a pass went through every folder the server listed; `synced_folders` answers from then on.

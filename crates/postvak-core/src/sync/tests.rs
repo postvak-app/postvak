@@ -378,6 +378,26 @@ fn synced_folders_are_known_only_once_a_pass_went_through_them_all() {
 }
 
 #[test]
+fn a_noselect_folder_is_remembered_but_never_selected() {
+    let mut ops = ops_with_inbox().with_noselect("[Gmail]");
+    let store = Store::open_in_memory().unwrap();
+    sync_all(&mut ops, &store).unwrap();
+    assert!(store.is_noselect("[Gmail]").unwrap());
+    assert_eq!(store.folder("[Gmail]").unwrap(), None);
+    assert!(
+        !ops.calls.iter().any(|c| c.contains("[Gmail]")),
+        "{:?}",
+        ops.calls
+    );
+    ops.folders.retain(|f| f.name != "[Gmail]");
+    sync_all(&mut ops, &store).unwrap();
+    assert!(
+        !store.is_noselect("[Gmail]").unwrap(),
+        "each listing replaces the last"
+    );
+}
+
+#[test]
 fn unlisted_rule_move_placeholder_survives_a_pass() {
     let mut ops = ops_with_inbox();
     let store = Store::open_in_memory().unwrap();
@@ -1376,6 +1396,7 @@ fn failing_folder_is_reported_and_others_still_sync() {
             name: "Bogus".into(),
             special_use: None,
             delimiter: None,
+            noselect: false,
         },
     );
     let dir = tempfile::tempdir().unwrap();
@@ -1444,6 +1465,7 @@ fn interrupted_first_sync_stays_initial_on_retry() {
         name: "INBOX".into(),
         special_use: None,
         delimiter: None,
+        noselect: false,
     };
     assert!(sync_folder(&mut ops, &store, &inbox).is_err());
     assert_eq!(store.folder("INBOX").unwrap().unwrap().last_uid, 0);
@@ -1488,6 +1510,7 @@ fn inbox() -> RemoteFolder {
         name: "INBOX".into(),
         special_use: None,
         delimiter: None,
+        noselect: false,
     }
 }
 
@@ -2064,6 +2087,7 @@ fn changed_uidvalidity_blocks_rules_on_stale_rows() {
         name: "INBOX".into(),
         special_use: None,
         delimiter: None,
+        noselect: false,
     };
     sync_folder(&mut ops, &store, &inbox).unwrap();
     let run = run_rules(

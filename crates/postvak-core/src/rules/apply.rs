@@ -24,6 +24,8 @@ pub enum ApplyError {
     InvalidTag(String),
     #[error("message {folder}/{uid} could not be fetched for backup")]
     RawUnavailable { folder: String, uid: u32 },
+    #[error("{0} cannot hold messages")]
+    NoSelect(String),
 }
 
 pub fn ensure_raw(
@@ -302,6 +304,12 @@ fn move_many(
     let mut results = Vec::new();
     let moving = log_each(planned, msgs, store, now, &mut results);
     if moving.is_empty() {
+        return results;
+    }
+    if store.is_noselect(target).unwrap_or(false) {
+        for msg in moving {
+            results.push((msg.uid, Err(ApplyError::NoSelect(target.to_string()))));
+        }
         return results;
     }
     let known = match store.folder(target) {
@@ -583,6 +591,9 @@ fn move_to(
     ops: &mut dyn MailOps,
     store: &Store,
 ) -> Result<(), ApplyError> {
+    if store.is_noselect(target)? {
+        return Err(ApplyError::NoSelect(target.to_string()));
+    }
     let known = store.folder(target)?.is_some();
     let (target, placeholder) = if known {
         (target.to_string(), false)
@@ -966,6 +977,37 @@ mod tests {
         )
         .unwrap();
         assert!(!ops.calls.iter().any(|c| c.starts_with("move")));
+    }
+
+    #[test]
+    fn a_move_to_a_folder_that_cannot_hold_messages_is_refused_by_name() {
+        let (mut ops, store, trash, _dir, msg) = setup();
+        let mut ops_noselect = std::mem::take(&mut ops).with_noselect("[Gmail]");
+        store.set_noselect_folders(&["[Gmail]"]).unwrap();
+        let moving = plan(vec![Action::Move("[Gmail]".into())]);
+        let err = apply(&moving, &msg, &mut ops_noselect, &store, &trash, 500).unwrap_err();
+        assert_eq!(err.to_string(), "[Gmail] cannot hold messages");
+        let applied = apply_many(
+            &moving.actions[0],
+            &[msg],
+            &mut ops_noselect,
+            &store,
+            &trash,
+            500,
+        );
+        assert!(
+            matches!(&applied[..], [(5, Err(ApplyError::NoSelect(name)))] if name == "[Gmail]"),
+            "{applied:?}"
+        );
+        assert!(
+            !ops_noselect
+                .calls
+                .iter()
+                .any(|c| c.starts_with("create_folder") || c.starts_with("move")),
+            "{:?}",
+            ops_noselect.calls
+        );
+        assert!(store.message("INBOX", 5).unwrap().is_some());
     }
 
     #[test]
