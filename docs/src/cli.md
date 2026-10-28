@@ -72,7 +72,7 @@ Your inbox, organized by rules you write
 * `attachment` — List or save a message's attachments
 * `rules` — Inspect and test rules.toml
 * `folders` — List folders with message and unread counts
-* `list` — List recent messages, newest first
+* `list` — List recent messages, newest first, every account in one order
 * `search` — Search subject, addresses, attachment names and bodies, newest first; words, "phrases", -not and key:value operators such as from:acme, in:Archive, is:unread or after:7d; the last word also matches as a prefix; close matches such as corrected typos follow when exact hits are few
 * `headers` — Every header of one message, in order, unfolded and decoded as header rules see it; no body
 * `show` — Show one message
@@ -426,7 +426,7 @@ List folders with message and unread counts
 
 ## `postvak list`
 
-List recent messages, newest first
+List recent messages, newest first, every account in one order
 
 **Usage:** `postvak list [OPTIONS]`
 
@@ -444,6 +444,9 @@ List recent messages, newest first
 * `--unread` — Only unread messages; with --threads, threads with an unread message
 * `--flagged` — Only flagged messages; with --threads, threads with a flagged message
 * `--attachments` — Only messages with attachments, guessed from the headers; with --threads, threads with one
+* `--cursor <CURSOR>` — Continue after the page that ended with this `next`, with the same other arguments; the rows of every account come newest first in one order, and the limit counts them together
+* `--fields <FIELDS>` — Only these keys in each JSON row, such as uid, from_addr, subject, date; compact stands for account, folder, uid, date, from_addr, subject and flags, plus depth in a thread view and match in a search; account always stays
+* `--count-only` — Return only how many match in all, messages or in a thread view threads, as {"count": N}, without rows
 
 
 
@@ -472,12 +475,15 @@ Anything else, such as an unknown key or a date that does not parse, searches as
 
 * `--account <ACCOUNT>` — Only this account; the same as account: in the query
 * `--folder <FOLDER>` — Only this folder; the same as in: in the query
-* `--server` — Ask the server too, which searches bodies not downloaded yet; each folder costs a round trip
+* `--server` — Ask the server too, which searches bodies not downloaded yet; each folder costs a round trip. One page: no --cursor or --count-only
 * `--exact` — Only what matches as typed: no close matches such as corrected typos
 * `--limit <LIMIT>`
 
   Default value: `50`
 * `--json`
+* `--cursor <CURSOR>` — Continue after the page that ended with this `next`, with the same other arguments; the rows of every account come newest first in one order, and the limit counts them together
+* `--fields <FIELDS>` — Only these keys in each JSON row, such as uid, from_addr, subject, date; compact stands for account, folder, uid, date, from_addr, subject and flags, plus depth in a thread view and match in a search; account always stays
+* `--count-only` — Return only how many match in all, messages or in a thread view threads, as {"count": N}, without rows
 
 
 

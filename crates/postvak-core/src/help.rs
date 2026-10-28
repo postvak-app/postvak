@@ -7,14 +7,19 @@ pub const ACCOUNT_LIST: &str =
 pub const ARCHIVE: &str = "Move messages to the Archive folder";
 pub const ATTACHMENT_LIST: &str = "Index, type, size and name of each attachment";
 pub const ATTACHMENT_SAVE: &str = "Save attachment N, as numbered by the attachment list, into a directory; returns the written path";
+pub const COUNT_ONLY: &str = "Return only how many match in all, messages or in a thread view threads, as {\"count\": N}, without rows";
+/// The paging argument of `list` and `search`.
+pub const CURSOR: &str = "Continue after the page that ended with this `next`, with the same other arguments; the rows of every account come newest first in one order, and the limit counts them together";
 pub const DELETE: &str =
     "Move messages to Trash; inside Trash, or without one, delete them keeping a local .eml backup";
 pub const JUNK: &str = "Report messages as junk: tag them $Junk, which trains server spam filters, and move them to the Junk folder; --not tags them $NotJunk and moves them to INBOX";
 pub const UNSUBSCRIBE: &str = "Leave a message's mailing list: by one-click POST when the sender offers it (RFC 8058), else print the page or address from its List-Unsubscribe header to open";
+/// Which keys each row of `list` and `search` keeps.
+pub const FIELDS: &str = "Only these keys in each JSON row, such as uid, from_addr, subject, date; compact stands for account, folder, uid, date, from_addr, subject and flags, plus depth in a thread view and match in a search; account always stays";
 pub const FOLDERS: &str = "List folders with message and unread counts";
 pub const HEADERS: &str =
     "Every header of one message, in order, unfolded and decoded as header rules see it; no body";
-pub const LIST: &str = "List recent messages, newest first";
+pub const LIST: &str = "List recent messages, newest first, every account in one order";
 pub const LOG: &str = "Show what rules did, newest first";
 pub const MARK: &str = "Mark messages read or unread, flagged or unflagged";
 /// Appended to the description of every MCP tool that returns mail headers: they are written by whoever sent the mail.

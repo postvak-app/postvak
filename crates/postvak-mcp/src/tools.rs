@@ -1,5 +1,5 @@
 //! The MCP tools: definitions, scope filtering, and results cleaned for an agent.
-use super::backend::{Filter, Sight};
+use super::backend::{Filter, ListRequest, Sight};
 use std::collections::BTreeSet;
 use std::sync::{Arc, LazyLock};
 
@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use super::{Backend, Scope};
 use postvak_core::help;
 use postvak_core::message::clean_for_agent;
-use postvak_core::output;
+use postvak_core::output::{self, Fields, RowKind};
 use postvak_core::rules::Action;
 
 const BODY_LIMIT: usize = 100 * 1024;
@@ -168,6 +168,14 @@ struct ListArgs {
     /// Only messages with attachments, guessed from the headers; with `threads`, threads with one
     #[serde(default)]
     attachments: bool,
+    /// The `next` of the page before, to continue after it with the same other arguments; leave it out for the first page
+    cursor: Option<String>,
+    /// Only these keys in each row, such as ["uid", "from_addr", "subject", "date"]; "compact" stands for account, folder, uid, date, from_addr, subject and flags, plus depth in a thread view; account always stays
+    #[serde(default)]
+    fields: Vec<String>,
+    /// Return only how many messages, or with `threads` threads, match in all, as {"count": N}, without rows; takes no cursor or fields
+    #[serde(default)]
+    count_only: bool,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -241,6 +249,14 @@ struct SearchArgs {
     /// Only what matches as typed: no close matches such as corrected typos
     #[serde(default)]
     exact: bool,
+    /// The `next` of the page before, to continue after it with the same other arguments; leave it out for the first page
+    cursor: Option<String>,
+    /// Only these keys in each row, such as ["uid", "from_addr", "subject", "date"]; "compact" stands for account, folder, uid, date, from_addr, subject and flags, plus match; account always stays
+    #[serde(default)]
+    fields: Vec<String>,
+    /// Return only how many messages match in all, as {"count": N}, without rows; takes no cursor or fields
+    #[serde(default)]
+    count_only: bool,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -562,12 +578,34 @@ fn dispatch(
         }
         "list" => {
             let a: ListArgs = args(arguments)?;
-            let filter = Filter {
-                unread: a.unread,
-                flagged: a.flagged,
-                attachments: a.attachments,
+            let request = ListRequest {
+                folder: &a.folder,
+                filter: Filter {
+                    unread: a.unread,
+                    flagged: a.flagged,
+                    attachments: a.attachments,
+                },
+                threads: a.threads,
             };
-            rows(backend.list(a.account.as_deref(), &a.folder, a.limit, a.threads, filter)?)
+            if a.count_only {
+                count_alone(&a.cursor, &a.fields)?;
+                return Ok(output::count(
+                    backend.list_count(a.account.as_deref(), &request)?,
+                ));
+            }
+            let kind = if a.threads {
+                RowKind::Thread
+            } else {
+                RowKind::Message
+            };
+            let fields = Fields::parse(&a.fields, kind)?;
+            page_of(backend.list(
+                a.account.as_deref(),
+                &request,
+                a.limit,
+                a.cursor.as_deref(),
+                &fields,
+            )?)
         }
         "log" => {
             let a: LogArgs = args(arguments)?;
@@ -648,7 +686,21 @@ fn dispatch(
         }
         "search" => {
             let a: SearchArgs = args(arguments)?;
-            rows(backend.search(
+            if a.count_only {
+                count_alone(&a.cursor, &a.fields)?;
+                if a.server {
+                    bail!("a count reads the local store alone; leave out server");
+                }
+                return Ok(output::count(backend.search_count(
+                    &a.query,
+                    a.account.as_deref(),
+                    a.folder.as_deref(),
+                    sight.bodies,
+                    a.exact,
+                )?));
+            }
+            let fields = Fields::parse(&a.fields, RowKind::Hit)?;
+            page_of(backend.search(
                 &a.query,
                 a.account.as_deref(),
                 a.folder.as_deref(),
@@ -656,6 +708,8 @@ fn dispatch(
                 sight.bodies,
                 a.server,
                 a.exact,
+                a.cursor.as_deref(),
+                &fields,
             )?)
         }
         "unsubscribe" => {
@@ -694,6 +748,23 @@ fn dispatch(
 
 fn rows(rows: Vec<Value>) -> Result<Value> {
     Ok(json!({ "rows": rows }))
+}
+
+/// A page of `list` or `search`: its rows, and `next` when more follow.
+fn page_of((rows, next): (Vec<Value>, Option<String>)) -> Result<Value> {
+    let mut page = json!({ "rows": rows });
+    if let Some(next) = next {
+        page["next"] = next.into();
+    }
+    Ok(page)
+}
+
+/// A count stands alone: no cursor and no fields beside it.
+fn count_alone(cursor: &Option<String>, fields: &[String]) -> Result<()> {
+    if cursor.is_some() || !fields.is_empty() {
+        bail!("count_only returns one number; leave out cursor and fields");
+    }
+    Ok(())
 }
 
 /// Keeps the fields that fit in `HEADERS_LIMIT`, in order; true when some were dropped.
