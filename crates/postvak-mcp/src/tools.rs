@@ -334,9 +334,9 @@ struct SearchArgs {
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 enum How {
-    Flag,
+    Flagged,
     Read,
-    Unflag,
+    Unflagged,
     Unread,
 }
 
@@ -358,7 +358,7 @@ struct SelectionArgs {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct MarkArgs {
-    /// read, unread, flag or unflag
+    /// read, unread, flagged or unflagged
     how: How,
     /// Message uids in `folder`, as `list` returns them
     uids: Vec<u32>,
@@ -711,9 +711,9 @@ fn dispatch(
         "mark" => {
             let a: MarkArgs = args(arguments)?;
             let action = match a.how {
-                How::Flag => Action::Flag,
+                How::Flagged => Action::Flag,
                 How::Read => Action::MarkRead,
-                How::Unflag => Action::Unflag,
+                How::Unflagged => Action::Unflag,
                 How::Unread => Action::MarkUnread,
             };
             backend.act(

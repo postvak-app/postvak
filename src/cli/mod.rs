@@ -79,9 +79,9 @@ struct Paging {
 
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum Mark {
-    Flag,
+    Flagged,
     Read,
-    Unflag,
+    Unflagged,
     Unread,
 }
 
@@ -820,9 +820,9 @@ pub fn run() -> Result<()> {
         }
         Command::Mark { how, selection } => {
             let action = match how {
-                Mark::Flag => Action::Flag,
+                Mark::Flagged => Action::Flag,
                 Mark::Read => Action::MarkRead,
-                Mark::Unflag => Action::Unflag,
+                Mark::Unflagged => Action::Unflag,
                 Mark::Unread => Action::MarkUnread,
             };
             cmd_act(&config, &paths, selection, action)

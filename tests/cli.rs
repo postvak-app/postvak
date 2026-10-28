@@ -254,7 +254,7 @@ fn list_and_log_show_the_account() {
             uid: 42,
             message_id: None,
             subject: Some("Your invoice".into()),
-            action: "flag".into(),
+            action: "flagged".into(),
             trash_file: None,
         })
         .unwrap();

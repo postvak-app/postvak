@@ -374,7 +374,7 @@ fn activity() {
             "move Receipts",
             "Your receipt for order 1042",
         ),
-        (9, "gui", "flag", "Re: Planning the offsite"),
+        (9, "gui", "flagged", "Re: Planning the offsite"),
     ];
     for (minutes, rule, action, subject) in entries {
         let entry = LogEntry {

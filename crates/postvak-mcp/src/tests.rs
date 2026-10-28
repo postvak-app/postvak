@@ -507,7 +507,7 @@ async fn account_filter_hides_other_accounts_everywhere() {
             uid: 1,
             message_id: None,
             subject: None,
-            action: "flag".into(),
+            action: "flagged".into(),
             trash_file: None,
         };
         fx.store(account).log_action(&entry).unwrap();

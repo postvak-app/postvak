@@ -647,7 +647,7 @@ Mark messages read or unread, flagged or unflagged
 
 * `<HOW>`
 
-  Possible values: `flag`, `read`, `unflag`, `unread`
+  Possible values: `flagged`, `read`, `unflagged`, `unread`
 
 * `<UIDS>` — Message uids in --folder, as `list` prints them
 

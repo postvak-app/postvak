@@ -229,7 +229,7 @@ fn junk_fixture() -> Fixture {
             uid: 1,
             message_id: Some("<1@example.com>".into()),
             subject: Some("Code 1234".into()),
-            action: "flag".into(),
+            action: "flagged".into(),
             trash_file: None,
         })
         .unwrap();
