@@ -224,16 +224,63 @@ fn backend_without_accounts_opens_but_every_lookup_says_so() {
 }
 
 #[tokio::test]
-async fn server_info_carries_the_agent_guide() {
+async fn server_info_carries_the_short_instructions() {
     let fx = fixture(&["work"]);
     let client = connect(&fx, "read", &[]).await;
     let info = client.peer_info().unwrap();
     assert_eq!(info.server_info.as_ref().unwrap().name, "postvak");
+    assert_eq!(
+        info.instructions.as_deref(),
+        Some(postvak_core::help::MCP_INSTRUCTIONS)
+    );
+}
+
+fn text(result: &CallToolResult) -> String {
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    serde_json::to_value(&result.content).unwrap()[0]["text"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[tokio::test]
+async fn docs_returns_each_page_whole() {
+    let fx = fixture(&["work"]);
+    let client = connect(&fx, "read", &[]).await;
+    for page in postvak_core::help::DOC_PAGES {
+        let result = call(&client, "docs", json!({ "page": page.name })).await;
+        assert_eq!(text(&result), page.text, "{}", page.name);
+    }
+    // The rules page keeps its layout: the tables and code blocks an agent needs.
+    let rules = text(&call(&client, "docs", json!({ "page": "rules" })).await);
+    assert!(rules.contains("\n| Key | Default | Meaning |\n"));
+}
+
+#[tokio::test]
+async fn docs_without_a_page_or_with_an_unknown_one_lists_the_pages() {
+    let fx = fixture(&["work"]);
+    let client = connect(&fx, "read", &[]).await;
+    let index = text(&call(&client, "docs", json!({})).await);
+    let unknown = error_text(&call(&client, "docs", json!({ "page": "nope" })).await);
+    assert!(unknown.contains("no page nope"), "{unknown}");
+    for page in postvak_core::help::DOC_PAGES {
+        assert!(index.contains(&format!("{}: ", page.name)), "{index}");
+        assert!(unknown.contains(page.name), "{unknown}");
+    }
+}
+
+#[tokio::test]
+async fn rules_schema_points_to_the_rules_page() {
+    let fx = fixture(&["work"]);
+    let client = connect(&fx, "read", &[]).await;
+    let tools = client.list_all_tools().await.unwrap();
+    let schema = tools.iter().find(|t| t.name == "rules_schema").unwrap();
     assert!(
-        info.instructions
+        schema
+            .description
             .as_deref()
             .unwrap()
-            .starts_with("# Agent guide")
+            .contains("call docs with page rules")
     );
 }
 
@@ -990,6 +1037,7 @@ async fn tools_list_per_scope_set_is_exact_and_alphabetical() {
             "read,rules:propose",
             &[
                 "accounts",
+                "docs",
                 "folders",
                 "list",
                 "log",

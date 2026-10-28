@@ -110,6 +110,14 @@ struct NameArgs {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct DocsArgs {
+    /// agent-guide, rules, search or cli; leave it out for the list of pages
+    #[serde(default)]
+    page: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct SetEnabledArgs {
     name: String,
     enabled: bool,
@@ -418,6 +426,7 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
             Effect::Destructive,
             help::DELETE,
         ),
+        ToolDef::new::<DocsArgs>("docs", Scope::Read, Effect::ReadOnly, help::DOCS),
         ToolDef::new::<NoArgs>(
             "accounts",
             Scope::Read,
@@ -485,7 +494,10 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
             "rules_schema",
             Scope::Read,
             Effect::ReadOnly,
-            help::RULES_SCHEMA,
+            format!(
+                "{}; call docs with page rules for what every key means, with examples",
+                help::RULES_SCHEMA
+            ),
         ),
         ToolDef::new::<SetEnabledArgs>(
             "rules_set_enabled",
@@ -812,6 +824,32 @@ pub(super) fn wrap_body(text: &str) -> (String, bool) {
     )
 }
 
+/// The `docs` tool: a page as Markdown text, or the list of pages when none or an unknown one is asked for.
+/// The pages are ours, embedded at build time, so their layout stays and nothing in them is mail.
+fn docs(arguments: Option<JsonObject>) -> CallToolResult {
+    let page = match args::<DocsArgs>(arguments) {
+        Ok(a) => a.page,
+        Err(e) => return error_result(&format!("{e:#}")),
+    };
+    match page.as_deref() {
+        None => CallToolResult::success(vec![ContentBlock::text(format!(
+            "Pages, by the name to pass as page:\n{}",
+            help::doc_index()
+        ))]),
+        Some(name) => match help::doc_page(name) {
+            Some(page) => CallToolResult::success(vec![ContentBlock::text(page.text)]),
+            None => error_result(&format!(
+                "no page {name}; the pages are {}",
+                help::DOC_PAGES
+                    .iter()
+                    .map(|page| page.name)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        },
+    }
+}
+
 fn error_result(text: &str) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(clean_for_agent(text, false))])
 }
@@ -839,7 +877,7 @@ impl ServerHandler for Server {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("postvak", env!("CARGO_PKG_VERSION")))
-            .with_instructions(postvak_core::help::AGENT_GUIDE)
+            .with_instructions(postvak_core::help::MCP_INSTRUCTIONS)
     }
 
     async fn list_tools(
@@ -874,6 +912,9 @@ impl ServerHandler for Server {
         };
         if !self.scopes.contains(&tool.scope) {
             return Ok(error_result("not allowed with these scopes").into());
+        }
+        if name == "docs" {
+            return Ok(docs(request.arguments).into());
         }
         let client = context.client_info().map(|info| info.name);
         let sight = Sight {

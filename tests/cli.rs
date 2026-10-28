@@ -15,6 +15,28 @@ fn postvak(home: &std::path::Path, args: &[&str]) -> std::process::Output {
 }
 
 #[test]
+fn guide_prints_the_agent_guide_or_the_page_asked_for() {
+    let home = tempfile::tempdir().unwrap();
+    let out = postvak(home.path(), &["guide"]);
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        postvak_core::help::AGENT_GUIDE
+    );
+    for page in postvak_core::help::DOC_PAGES {
+        let out = postvak(home.path(), &["guide", page.name]);
+        assert!(out.status.success(), "{}", page.name);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), page.text);
+    }
+    let out = postvak(home.path(), &["guide", "nope"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    for page in postvak_core::help::DOC_PAGES {
+        assert!(stderr.contains(page.name), "{stderr}");
+    }
+}
+
+#[test]
 fn rules_check_reports_bad_file_and_exits_nonzero() {
     let home = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(home.path().join("config")).unwrap();

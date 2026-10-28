@@ -53,7 +53,7 @@ The install also prints a hint with the granted scopes and how to widen them. It
 
 | Scope | What it grants | Tools |
 |---|---|---|
-| `read` | Folders, each message's sender, recipients, subject and date, the activity log, rules and trash listings, previews of rules that match on neither the body nor a `header` condition, and a sync. No body text and no other headers. | `accounts`, `folders`, `list`, `log`, `rules_check`, `rules_coverage`, `rules_list`, `rules_schema`, `rules_test`, `search`, `senders`, `status`, `sync`, `trash_list` |
+| `read` | Folders, each message's sender, recipients, subject and date, the activity log, rules and trash listings, previews of rules that match on neither the body nor a `header` condition, and a sync. No body text and no other headers. | `accounts`, `docs`, `folders`, `list`, `log`, `rules_check`, `rules_coverage`, `rules_list`, `rules_schema`, `rules_test`, `search`, `senders`, `status`, `sync`, `trash_list` |
 | `read:headers` | Every header of a message, such as `List-Id`, `Authentication-Results` or a spam score, from the local store, and with `read` previews of rules with a `header` condition; proposing, enabling or running such a rule needs it too. No body text. | `headers` |
 | `read:bodies` | Message bodies and attachment names, search over indexed bodies and on the server (`search` with `server`) with a `snippet` of the body around a match, and with `read` previews of rules that match on the body. | `attachments`, `show` |
 | `rules:propose` | Proposing a rule. It is stored disabled until you approve it. | `rules_propose` |
@@ -74,6 +74,8 @@ An agent cannot add mail accounts: a password command runs as a shell command as
 
 ## Tools
 
+The server's instructions to the host are short: the ground rules of the [agent guide](agent-guide.md), and to call `docs` for the rest. Some hosts cut long instructions short, so the full guide and the rules, search and CLI pages come from that tool instead.
+
 The names follow the CLI commands. A tool that lists things returns the CLI's `--json` rows wrapped in `{"rows": [...]}`; the others return one object. Rows carry an `account`; in `rules_list` that is the rule's own scope, and `null` means every account. Message rows carry no body text. `show` returns `{"message": ..., "body": ..., "truncated": ...}`.
 
 `rules.toml` is shared by every account, so `rules_list`, `rules_propose`, `rules_approve`, `rules_reject` and `rules_set_enabled` take no `account` argument; a rule's own `account` field scopes it. They follow `--account` as described under [Safety](#safety).
@@ -81,13 +83,14 @@ The names follow the CLI commands. A tool that lists things returns the CLI's `-
 `read`:
 
 - `accounts` lists the visible accounts: name, username, host, port, address and aliases. Never the password source.
+- `docs` returns a page of this documentation as Markdown text: `page` is `agent-guide`, `rules`, `search` or `cli`, the pages `postvak guide` prints. Without a page it lists them.
 - `folders` lists folders with total and unread counts.
 - `list` lists the newest messages in a folder, or threads. `folder` defaults to INBOX; `limit` defaults to 50 and is at most 500. With `threads: true` it counts threads, and each thread comes with all its messages. `unread`, `flagged` and `attachments` keep only the messages, or threads, that have one.
 - `log` shows the rule and action log.
 - `rules_check` validates `rules.toml` and lists `warnings`, such as a conflicting copy a file sync left beside it or a rule for an account that is not set up; [Rules](rules.md) lists them all. A server started with `--account` leaves out rules for the accounts it hides.
 - `rules_coverage` runs every enabled rule over a folder's stored mail, changing nothing, and returns one row per account: `messages`, `matched`, `unmatched` and `contested` (matched by two or more rules), `unmatched_senders` grouped as `senders` groups them, and `contested_messages`, each with its message row, every matching `rules`, the `acts` that would run under the real precedence (a flag already set does not run), and `fails`, why nothing would run at all, such as an archive on an account without an Archive folder, or `null`. `include_pending` counts the proposals waiting for approval too. `limit` (default 20, at most 500) caps the two lists; the counts cover the whole folder.
 - `rules_list` lists rules and their state.
-- `rules_schema` returns the JSON Schema for a rule.
+- `rules_schema` returns the JSON Schema for a rule; its description sends the agent to the `rules` page of `docs` for what each key means.
 - `rules_test` previews a rule, given as JSON, against the local store. It reports subjects, never bodies. A rule that matches on the body needs `read:bodies` too, and one with a `header` condition `read:headers`, since their matches would reveal what bodies or headers contain. `rules_propose`, `rules_approve`, `rules_set_enabled` and `rules_apply_existing` refuse such rules on the same terms. `senders` and `rules_coverage` run the whole file instead, so they leave such rules out and name them in `skipped_rules`. `from`, `to`, `cc` and `subject` conditions need only `read`, as `list` already shows those fields.
 - `search` finds messages by subject, addresses and attachment names. It matches all the given words, `"phrases"` in order, `-word` excludes, and the last word also as a prefix; the operators of [Search](search.md) (`from:`, `in:`, `is:unread`, `after:7d` and the rest) narrow it, and the tool's description lists them. When fewer than ten messages match as typed, close matches follow, each row's `match` being `exact` or `close`; `exact: true` leaves them out. Searching bodies, and `server: true`, need `read:bodies`.
 - `senders` groups a folder's stored mail by sender address, or with `group_by: "domain"` by registrable domain, the largest group first: `count`, `unread`, `first` and `last` (Unix seconds), up to three `subjects` and the enabled `rules` that already match some of it. `after` and `before` take `2026-01-15` or `30d`, `3w`, `6m`, `1y`; `limit` defaults to 50 and is at most 500.
