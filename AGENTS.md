@@ -9,7 +9,7 @@ Four crates in one workspace. `crates/postvak-core` holds every module below exc
 - `actions` direct actions on chosen messages (mark, move, archive, delete); same `apply` as rules; downloading a message for the reader, a large one's text, HTML and `cid:` images first (`fetch_body`), and one attachment on its own (`fetch_attachment`)
 - `autostart` opening the window at login (`gui --background`): a launch agent on macOS, an XDG autostart entry on Linux, the Background portal in a Flatpak (`autostart/portal.rs`); the only code that turns it on or off
 - `badge` the unread count on the Linux task bar or dock entry (the Unity LauncherEntry signal over D-Bus) or the macOS Dock icon; the GUI keeps it current while open
-- `config` accounts and identity (address + aliases)
+- `config` accounts and identity (address + aliases); the only writer of config.toml (`save_account`, `save_theme`)
 - `credentials` keyring or password command; `Secret` has no Debug
 - `daemon` the background process that owns sync and IMAP: `mod.rs` the server (socket, lock, log, idle exit), `wire` the JSON-lines protocol, `client` what front ends use (CLI, GUI, MCP; auto-starts the daemon), `service` launchd and systemd
 - `engine` one sync thread per account, commands in and events out; applies a config change by restarting only the changed accounts, each once its old thread ended; what the daemon runs
@@ -31,7 +31,7 @@ Four crates in one workspace. `crates/postvak-core` holds every module below exc
 - `trash` `.eml` backups before any rule delete
 - `update` whether a newer release is out (GUI only): GitHub's latest release at most once a day, cached; never updates itself
 
-`tests/architecture.rs` checks the ownership rules above that crate boundaries cannot: `mcp`, `rules` (rules.toml writes), `search` (the FTS table) and `gui` views; allowed exceptions live there with a reason. It also checks the dependency graph from `cargo metadata`: nothing `postvak-core` pulls in is Slint, Blitz or rmcp, and no other crate depends on rusqlite outside its tests.
+`tests/architecture.rs` checks the ownership rules above that crate boundaries cannot: `mcp`, `rules` (rules.toml writes), `config` (config.toml writes), `search` (the FTS table) and `gui` views; allowed exceptions live there with a reason. It also checks the dependency graph from `cargo metadata`: nothing `postvak-core` pulls in is Slint, Blitz or rmcp, and no other crate depends on rusqlite outside its tests.
 
 ## Surfaces
 - A feature ships on the CLI, MCP and GUI together unless its spec names the exception; `help` and `output` are shared so the texts and JSON rows stay identical
