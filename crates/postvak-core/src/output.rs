@@ -51,6 +51,139 @@ pub fn message(
     Ok(row)
 }
 
+/// Every key of a message row, as `message` builds it.
+const MESSAGE_FIELDS: &[&str] = &[
+    "account",
+    "folder",
+    "uid",
+    "message_id",
+    "from_addr",
+    "to_addr",
+    "cc_addr",
+    "delivered_to",
+    "in_reply_to",
+    "refs",
+    "thread_id",
+    "subject",
+    "date",
+    "internaldate",
+    "flags",
+    "size",
+];
+/// What `compact` keeps of a message row; a thread row keeps its `depth` too and a search hit its `match`.
+const COMPACT: &[&str] = &[
+    "account",
+    "folder",
+    "uid",
+    "date",
+    "from_addr",
+    "subject",
+    "flags",
+];
+
+/// Which listing a row comes from, which decides the keys beyond a message's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowKind {
+    /// A `list` row.
+    Message,
+    /// A `list` row in a thread view: a message with its `depth`.
+    Thread,
+    /// A `search` row: a message with its `match` and, for a body match, its `snippet`.
+    Hit,
+}
+
+impl RowKind {
+    fn extra(self) -> &'static [&'static str] {
+        match self {
+            RowKind::Message => &[],
+            RowKind::Thread => &["depth"],
+            RowKind::Hit => &["match", "snippet"],
+        }
+    }
+
+    fn compact_extra(self) -> &'static [&'static str] {
+        match self {
+            RowKind::Message => &[],
+            RowKind::Thread => &["depth"],
+            RowKind::Hit => &["match"],
+        }
+    }
+}
+
+/// The keys a listing row keeps: every key, or the ones asked for and always `account`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Fields(Option<Vec<String>>);
+
+/// A name `Fields::parse` does not know.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unknown field '{name}'; fields are compact, {}", allowed.join(", "))]
+pub struct UnknownField {
+    pub name: String,
+    pub allowed: Vec<&'static str>,
+}
+
+impl Fields {
+    /// The keys `names` asks for, where `compact` stands for the usual few; no names keeps every key.
+    pub fn parse(names: &[String], kind: RowKind) -> Result<Fields, UnknownField> {
+        if names.is_empty() {
+            return Ok(Fields(None));
+        }
+        let allowed: Vec<&'static str> =
+            MESSAGE_FIELDS.iter().chain(kind.extra()).copied().collect();
+        let mut keep = vec!["account".to_string()];
+        for name in names.iter().map(|n| n.trim()) {
+            let named: Vec<&str> = if name == "compact" {
+                COMPACT
+                    .iter()
+                    .chain(kind.compact_extra())
+                    .copied()
+                    .collect()
+            } else if allowed.contains(&name) {
+                vec![name]
+            } else {
+                return Err(UnknownField {
+                    name: name.to_string(),
+                    allowed,
+                });
+            };
+            for key in named {
+                if !keep.iter().any(|k| k == key) {
+                    keep.push(key.to_string());
+                }
+            }
+        }
+        Ok(Fields(Some(keep)))
+    }
+
+    /// `row` with only the kept keys.
+    pub fn apply(&self, mut row: Value) -> Value {
+        if let (Some(keep), Some(object)) = (&self.0, row.as_object_mut()) {
+            object.retain(|key, _| keep.iter().any(|k| k == key));
+        }
+        row
+    }
+}
+
+/// The row of a `list` page, with the kept `fields`.
+pub fn list_row(row: &crate::page::ListRow, fields: &Fields) -> serde_json::Result<Value> {
+    Ok(fields.apply(message(&row.account, &row.message, row.depth)?))
+}
+
+/// The row of a `search` page, with the kept `fields`.
+pub fn search_row(row: &crate::page::SearchRow, fields: &Fields) -> serde_json::Result<Value> {
+    Ok(fields.apply(message(&row.account, &row.hit, None)?))
+}
+
+/// What a count of `list` or `search` returns.
+pub fn count(count: u64) -> Value {
+    json!({ "count": count })
+}
+
+/// The last line of a `--json` page that has a next one: the cursor to pass back.
+pub fn next(cursor: &str) -> Value {
+    json!({ "next": cursor })
+}
+
 /// A message's headers: its row without body text, and every header field in order; `headers --json` and the MCP
 /// `headers` tool share it.
 pub fn headers(account: &str, msg: &Message, fields: &[HeaderField]) -> serde_json::Result<Value> {
@@ -67,9 +200,21 @@ pub fn show(
     Ok(json!({ "message": message(account, msg, None)?, "body": body, "truncated": truncated }))
 }
 
-/// A rule's listing row; `account` is the rule's own scope, `null` for every account.
-pub fn rule(rule: &Rule) -> Value {
-    json!({ "name": rule.name, "enabled": rule.enabled, "proposed_by": rule.proposed_by, "account": rule.account, "folder": rule.folder })
+/// A rule's listing row: its whole definition as `rules propose` takes it, and `position`, its 0-based place in
+/// rules.toml, where an earlier rule runs first. `account` is the rule's own scope, `null` for every account.
+pub fn rule(rule: &Rule, position: usize) -> serde_json::Result<Value> {
+    let mut row = serde_json::to_value(rule)?;
+    if let Value::Object(map) = &mut row {
+        map.insert("position".into(), position.into());
+        for (key, value) in [
+            ("account", &rule.account),
+            ("folder", &rule.folder),
+            ("proposed_by", &rule.proposed_by),
+        ] {
+            map.insert(key.into(), json!(value));
+        }
+    }
+    Ok(row)
 }
 
 /// One row of a dry run: what `rule` would do to the message.
@@ -123,6 +268,21 @@ mod tests {
     }
 
     #[test]
+    fn rule_rows_carry_the_whole_rule_and_its_position() {
+        let rule: Rule = serde_json::from_str(
+            r#"{"name": "a", "match": {"subject": {"contains": "x"}}, "actions": [{"move": "X"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            super::rule(&rule, 3).unwrap(),
+            serde_json::json!({
+                "name": "a", "position": 3, "enabled": true, "account": null, "folder": null, "proposed_by": null,
+                "match": {"subject": {"contains": "x"}}, "actions": [{"move": "X"}],
+            })
+        );
+    }
+
+    #[test]
     fn with_account_adds_the_account_key() {
         let row = with_account("work", &serde_json::json!({ "uid": 1 })).unwrap();
         assert_eq!(row, serde_json::json!({ "account": "work", "uid": 1 }));
@@ -148,6 +308,88 @@ mod tests {
                 .get("depth")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn the_field_list_names_every_key_of_a_message_row() {
+        let row = super::message("work", &Message::default(), None).unwrap();
+        let mut keys: Vec<&str> = row
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        let mut known = MESSAGE_FIELDS.to_vec();
+        known.sort_unstable();
+        assert_eq!(keys, known);
+    }
+
+    #[test]
+    fn fields_keep_what_was_asked_and_always_the_account() {
+        let names = |list: &[&str]| list.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        let msg = Message {
+            uid: 4,
+            subject: Some("Hi".into()),
+            ..Default::default()
+        };
+        let row = super::message("work", &msg, Some(1)).unwrap();
+        let fields = Fields::parse(&names(&["uid", "subject"]), RowKind::Message).unwrap();
+        assert_eq!(
+            fields.apply(row.clone()),
+            serde_json::json!({ "account": "work", "uid": 4, "subject": "Hi" })
+        );
+        let compact = Fields::parse(&names(&["compact"]), RowKind::Thread).unwrap();
+        let kept = compact.apply(row.clone());
+        let mut keys: Vec<&str> = kept
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "account",
+                "date",
+                "depth",
+                "flags",
+                "folder",
+                "from_addr",
+                "subject",
+                "uid"
+            ]
+        );
+        assert_eq!(
+            Fields::parse(&[], RowKind::Message)
+                .unwrap()
+                .apply(row.clone()),
+            row
+        );
+        let with_snippet = Fields::parse(&names(&["compact", "snippet"]), RowKind::Hit).unwrap();
+        assert_eq!(
+            with_snippet,
+            Fields(Some(names(&[
+                "account",
+                "folder",
+                "uid",
+                "date",
+                "from_addr",
+                "subject",
+                "flags",
+                "match",
+                "snippet"
+            ])))
+        );
+        let unknown = Fields::parse(&names(&["match"]), RowKind::Message).unwrap_err();
+        assert_eq!(unknown.name, "match");
+        assert!(
+            unknown
+                .to_string()
+                .starts_with("unknown field 'match'; fields are compact, account, folder")
+        );
+        assert!(Fields::parse(&names(&["body_text"]), RowKind::Hit).is_err());
     }
 
     #[test]

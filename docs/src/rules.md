@@ -17,7 +17,7 @@ actions = [{ move = "Lists/GitHub" }, "mark_read"]
 | `account` | every account | Only for this account. |
 | `folder` | `INBOX` | The folder the rule watches. |
 | `enabled` | `true` | `false` skips the rule. Proposals start disabled. |
-| `proposed_by` | none | Set by `postvak rules propose`. |
+| `proposed_by` | none | Set by `postvak rules propose`, and removed when the rule is approved. |
 | `match` | required | Conditions that must all hold. At least one. |
 | `actions` | required | What to do. At least one. |
 
@@ -203,9 +203,9 @@ When two devices change the file before they sync, the sync keeps one version an
 
 ## Proposals
 
-Agents never edit `rules.toml`. They run `postvak rules propose`, which appends the rule with `enabled = false` and `proposed_by` set. To review a proposal:
+Agents never edit `rules.toml`. They run `postvak rules propose`, which appends the rule with `enabled = false` and `proposed_by` set. It takes one rule or several at once, stored in the order given or not at all, and with `--before NAME` or `--after NAME` puts them next to that rule instead of at the end, since order decides which rule runs first. An agent can take back its own pending proposal with `postvak rules withdraw NAME --by WHO`, or change it with `rules propose --replace`; neither touches an approved rule or another proposer's. To review a proposal:
 
-- `postvak rules list` shows every rule with its state and proposer; a pending proposal is `off` with a proposer.
+- `postvak rules list` shows every rule in file order, the order they run in, with its state and proposer; a pending proposal is `off` with a proposer. `--json` adds each rule's whole definition and its 0-based `position` in the file.
 - `postvak rules test NAME` previews what a proposal would do.
 - `postvak rules approve NAME` enables it.
 - `postvak rules reject NAME` removes it.

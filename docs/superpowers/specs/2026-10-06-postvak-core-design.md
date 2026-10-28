@@ -283,9 +283,10 @@ postvak rules check                          validate rules.toml
 postvak rules test [NAME | --stdin] [--account NAME]   dry run; NAME previews a disabled proposal too, --stdin a draft JSON rule
 postvak rules apply-existing NAME [--dry-run]
 postvak rules schema                         JSON Schema for rules.toml, from the Rust types via schemars
-postvak rules propose [--by WHO]             read one rule as JSON on stdin, append with enabled = false
+postvak rules propose [--by WHO]             read one rule or several as JSON on stdin, append with enabled = false
+postvak rules withdraw NAME [--by WHO]       remove your own pending proposal (2026-10-28-rule-proposals-design.md)
 postvak rules approve NAME | reject NAME     flip enabled, or remove the proposal
-postvak rules list [--json]                  name, enabled, proposed_by
+postvak rules list [--json]                  name, enabled, proposed_by; --json the whole rule and its position
 postvak guide                                print docs/src/agent-guide.md
 postvak folders [--account NAME] [--json]
 postvak list [--account NAME] [--folder INBOX] [--limit 50] [--threads] [--json]
