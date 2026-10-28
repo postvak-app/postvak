@@ -1,0 +1,1 @@
+../../../../docs/src/rules.md
