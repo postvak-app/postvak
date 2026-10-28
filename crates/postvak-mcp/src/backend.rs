@@ -9,7 +9,10 @@ use postvak_core::config::{AccountConfig, Config};
 use postvak_core::daemon::Client;
 use postvak_core::daemon::client::LazyClient;
 use postvak_core::message;
-use postvak_core::output;
+use postvak_core::output::{self, Fields};
+use postvak_core::page;
+/// What `list` shows, a plain value like `Filter`.
+pub(crate) use postvak_core::page::ListRequest;
 use postvak_core::paths::Paths;
 use postvak_core::rules::{self, Action, Rule, RuleFile};
 use postvak_core::search::{self, Scope};
@@ -157,35 +160,57 @@ impl Backend {
         Ok(rows)
     }
 
+    /// The stores of the accounts `account` selects, each with its identity when `identity`, for a page of `list`
+    /// or `search`.
+    fn sources(&self, account: Option<&str>, identity: bool) -> Result<Vec<page::Source>> {
+        self.select(account)?
+            .into_iter()
+            .map(|acc| {
+                Ok(page::Source {
+                    store: self.store(&acc)?,
+                    identity: if identity {
+                        Some(acc.identity()?)
+                    } else {
+                        None
+                    },
+                    account: acc.name,
+                })
+            })
+            .collect()
+    }
+
+    /// A page of `list`, at most `limit` rows (or threads), after `cursor`, with the kept `fields`; and the cursor
+    /// of the next page when there is one.
     pub fn list(
         &self,
         account: Option<&str>,
-        folder: &str,
+        request: &ListRequest,
         limit: u32,
-        threads: bool,
-        filter: Filter,
-    ) -> Result<Vec<Value>> {
-        let limit = limit.min(MAX_LIMIT);
-        let mut rows = Vec::new();
-        for acc in self.select(account)? {
-            let store = self.store(&acc)?;
-            if threads {
-                for thread in store.threads(folder, limit, filter)? {
-                    for (m, depth) in thread.iter().zip(output::depths(&thread)) {
-                        rows.push(output::message(&acc.name, m, Some(depth))?);
-                    }
-                }
-            } else {
-                for m in store.messages(folder, limit, filter)? {
-                    rows.push(output::message(&acc.name, &m, None)?);
-                }
-            }
-        }
-        Ok(rows)
+        cursor: Option<&str>,
+        fields: &Fields,
+    ) -> Result<(Vec<Value>, Option<String>)> {
+        let found = page::list(
+            &self.sources(account, false)?,
+            request,
+            limit.min(MAX_LIMIT),
+            cursor,
+        )?;
+        let rows = found
+            .rows
+            .iter()
+            .map(|row| output::list_row(row, fields))
+            .collect::<serde_json::Result<_>>()?;
+        Ok((rows, found.next))
+    }
+
+    /// How many messages, or threads, `list` has in all.
+    pub fn list_count(&self, account: Option<&str>, request: &ListRequest) -> Result<u64> {
+        Ok(page::list_count(&self.sources(account, false)?, request)?)
     }
 
     /// `bodies` lets stored body text decide a match; without it only the header columns do.
-    /// `server` asks the mail server as well, which searches bodies, so it needs `bodies`.
+    /// `server` asks the mail server as well, which searches bodies, so it needs `bodies`; it returns one page and
+    /// takes no cursor.
     #[allow(clippy::too_many_arguments)] // the tool's own arguments, one per flag of `postvak search`
     pub fn search(
         &self,
@@ -196,34 +221,59 @@ impl Backend {
         bodies: bool,
         server: bool,
         exact: bool,
-    ) -> Result<Vec<Value>> {
+        cursor: Option<&str>,
+        fields: &Fields,
+    ) -> Result<(Vec<Value>, Option<String>)> {
         if server && !bodies {
             bail!("a server search matches message bodies, which needs the read:bodies scope");
+        }
+        if server && cursor.is_some() {
+            bail!(page::SERVER_TAKES_NO_CURSOR);
         }
         let limit = limit.min(MAX_LIMIT);
         let parsed = search::parse(query, postvak_core::time::now());
         let account = search::named_account(account, &parsed)?;
-        let scope = if bodies { Scope::All } else { Scope::Headers };
-        let mut rows = Vec::new();
-        for acc in self.select(account)? {
-            let store = self.store(&acc)?;
-            let mut found = store.search(
-                &parsed,
-                scope,
-                folder,
-                limit,
-                !exact,
-                Some(&acc.identity()?),
-            )?;
-            if server {
-                let hits = self.daemon.search_server(&acc.name, folder, query)?;
-                found = actions::with_server_hits(&store, found, &hits, limit)?;
-            }
-            for hit in &found {
-                rows.push(output::message(&acc.name, hit, None)?);
+        let sources = self.sources(account, true)?;
+        let request = page::SearchQuery {
+            query: &parsed,
+            scope: if bodies { Scope::All } else { Scope::Headers },
+            folder,
+            close: !exact,
+        };
+        let mut found = page::search(&sources, &request, limit, cursor)?;
+        if server {
+            for source in &sources {
+                let hits = self.daemon.search_server(&source.account, folder, query)?;
+                found =
+                    page::with_server_hits(found, &source.account, &source.store, &hits, limit)?;
             }
         }
-        Ok(rows)
+        let rows = found
+            .rows
+            .iter()
+            .map(|row| output::search_row(row, fields))
+            .collect::<serde_json::Result<_>>()?;
+        Ok((rows, found.next))
+    }
+
+    /// How many messages `search` finds in all, close matches included where they would show.
+    pub fn search_count(
+        &self,
+        query: &str,
+        account: Option<&str>,
+        folder: Option<&str>,
+        bodies: bool,
+        exact: bool,
+    ) -> Result<u64> {
+        let parsed = search::parse(query, postvak_core::time::now());
+        let account = search::named_account(account, &parsed)?;
+        let request = page::SearchQuery {
+            query: &parsed,
+            scope: if bodies { Scope::All } else { Scope::Headers },
+            folder,
+            close: !exact,
+        };
+        Ok(page::search_count(&self.sources(account, true)?, &request)?)
     }
 
     /// The account name, the message and its plain body text, fetched once if not stored yet.

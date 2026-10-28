@@ -304,6 +304,80 @@ async fn folders_and_list_rows_carry_the_account_and_no_body() {
 }
 
 #[tokio::test]
+async fn list_and_search_page_with_a_cursor_keep_fields_and_count() {
+    let fx = fixture(&["work", "home"]);
+    for uid in 1..=3 {
+        fx.add("work", fixture_message("INBOX", uid, "Invoice", "x"));
+        fx.add("home", fixture_message("INBOX", uid, "Invoice", "x"));
+    }
+    let client = connect(&fx, "read", &[]).await;
+    for (tool, base) in [
+        ("list", json!({ "limit": 4 })),
+        ("search", json!({ "query": "invoice", "limit": 4 })),
+    ] {
+        let first = call(&client, tool, base.clone()).await;
+        let next = first.structured_content.as_ref().unwrap()["next"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let mut second_args = base.clone();
+        second_args["cursor"] = next.into();
+        let second = call(&client, tool, second_args).await;
+        assert!(
+            second
+                .structured_content
+                .as_ref()
+                .unwrap()
+                .get("next")
+                .is_none(),
+            "{tool}: the last page has no next"
+        );
+        let seen: Vec<String> = rows(&first)
+            .iter()
+            .chain(rows(&second).iter())
+            .map(|row| format!("{}/{}", row["account"], row["uid"]))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                "\"work\"/3",
+                "\"home\"/3",
+                "\"work\"/2",
+                "\"home\"/2",
+                "\"work\"/1",
+                "\"home\"/1"
+            ],
+            "{tool}"
+        );
+        let mut count_args = base.clone();
+        count_args["count_only"] = true.into();
+        let count = call(&client, tool, count_args.clone()).await;
+        assert_eq!(
+            count.structured_content,
+            Some(json!({ "count": 6 })),
+            "{tool}"
+        );
+        count_args["fields"] = json!(["uid"]);
+        assert!(error_text(&call(&client, tool, count_args).await).contains("count_only"));
+        let mut fields_args = base.clone();
+        fields_args["fields"] = json!(["uid", "subject"]);
+        assert_eq!(
+            rows(&call(&client, tool, fields_args.clone()).await)[0],
+            json!({ "account": "work", "uid": 3, "subject": "Invoice" }),
+            "{tool}: account always stays"
+        );
+        fields_args["fields"] = json!(["body_text"]);
+        assert!(
+            error_text(&call(&client, tool, fields_args).await)
+                .contains("unknown field 'body_text'")
+        );
+        let mut bad = base.clone();
+        bad["cursor"] = "garbage".into();
+        assert!(error_text(&call(&client, tool, bad).await).contains("cursor"));
+    }
+}
+
+#[tokio::test]
 async fn list_threads_adds_depth() {
     let fx = fixture(&["work"]);
     fx.add("work", fixture_message("INBOX", 1, "Hi", "x"));

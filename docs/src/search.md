@@ -28,6 +28,10 @@ Keys are case-insensitive. A search of operators alone, such as `is:unread from:
 
 When fewer than ten messages match as typed, close matches follow: for each word of four letters or more, the terms in the mail itself within one typo of it (two for a word of eight or more), so `invioce` still finds the invoice. They come after the exact hits, under their own heading in the window, with `~` before the line on the CLI and `match: close` in `--json` and MCP rows; `--exact` and `exact: true` leave them out. A phrase, an excluded word and an operator's value are never widened.
 
+## Pages
+
+On the CLI and over MCP a search returns at most `--limit` (`limit`) results over every account together: the exact matches newest first, then the close ones. When more follow, `--json` ends with a line `{"next": "…"}` and an MCP result carries `next`; pass it back as `--cursor` (`cursor`) with the same query for the next page. Pages continue through the close matches the same way, and whether close matches show is decided on all exact matches, so every page agrees. `--count-only` (`count_only`) tells how many results there are in all. A search with `--server` is one page and takes no cursor. `list` pages the same way; [CLI](cli.md) has the flags.
+
 ## Snippets
 
 A hit that matched in its body shows the text around the match: in the window on the row's second line in place of the subject, and as `snippet` in `--json` and MCP rows. A hit that matched in its headers shows none, since the row already shows them, and over MCP without `read:bodies` no row ever has one.

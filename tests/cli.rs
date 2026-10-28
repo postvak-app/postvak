@@ -275,6 +275,61 @@ fn list_and_log_show_the_account() {
     }
 }
 
+/// The JSON lines of `out`'s stdout.
+fn json_lines(out: &std::process::Output) -> Vec<serde_json::Value> {
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+#[test]
+fn list_and_search_json_end_with_next_while_more_follow() {
+    let (home, _store) = seeded_home(&[
+        message(1, "a@example.com", "Invoice one"),
+        message(2, "b@example.com", "Invoice two"),
+        message(3, "c@example.com", "Invoice three"),
+    ]);
+    for command in [&["list"][..], &["search", "invoice"][..]] {
+        let args = |extra: &[&str]| -> Vec<String> {
+            command.iter().chain(extra).map(|s| s.to_string()).collect()
+        };
+        let run = |extra: &[&str]| {
+            let args = args(extra);
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            postvak(home.path(), &args)
+        };
+        let first = json_lines(&run(&["--json", "--limit", "2", "--fields", "uid,subject"]));
+        assert_eq!(first.len(), 3, "{command:?}: two rows and the next");
+        assert_eq!(
+            first[0],
+            serde_json::json!({ "account": "work", "uid": 3, "subject": "Invoice three" })
+        );
+        let next = first[2]["next"].as_str().unwrap();
+        assert_eq!(first[2].as_object().unwrap().len(), 1);
+        let second = json_lines(&run(&["--json", "--limit", "2", "--cursor", next]));
+        assert_eq!(second.len(), 1, "{command:?}: the last row and no next");
+        assert_eq!(second[0]["uid"], 1);
+        let count = json_lines(&run(&["--json", "--count-only"]));
+        assert_eq!(count, [serde_json::json!({ "count": 3 })]);
+        let unknown = run(&["--json", "--fields", "nope"]);
+        assert!(!unknown.status.success());
+        assert!(
+            String::from_utf8_lossy(&unknown.stderr).contains("unknown field 'nope'"),
+            "{command:?}"
+        );
+        let plain = run(&["--limit", "1"]);
+        let stderr = String::from_utf8_lossy(&plain.stderr);
+        assert!(stderr.contains("--cursor "), "{command:?}: {stderr}");
+        assert_eq!(String::from_utf8_lossy(&plain.stdout).lines().count(), 1);
+    }
+}
+
 #[test]
 fn trash_list_shows_subjects() {
     let (home, _store) = seeded_home(&[]);
