@@ -430,7 +430,7 @@ impl Store {
 
     /// The folders a sync filled in, without a move's placeholders; `None` until a pass went through every folder the
     /// server listed, since before that a folder may only not be reached yet.
-    pub fn synced_folders(&self) -> Result<Option<Vec<String>>, StoreError> {
+    pub fn synced_folders(&self) -> Result<Option<Vec<Folder>>, StoreError> {
         let listed: Option<i64> = self
             .conn
             .query_row("SELECT synced_at FROM folder_list", [], |row| row.get(0))
@@ -442,7 +442,6 @@ impl Store {
             self.folders()?
                 .into_iter()
                 .filter(|f| f.uidvalidity != 0)
-                .map(|f| f.name)
                 .collect(),
         ))
     }
