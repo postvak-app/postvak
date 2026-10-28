@@ -95,8 +95,8 @@ component HtmlView inherits VerticalLayout {
 
     property <length> page-width: max(root.page.width, flick.width);
     // The part of the page in view, in page points.
-    property <length> view-top: min(max(0px, -flick.viewport-y), root.page.height);
-    property <length> view-height: max(0px, min(root.page.height, -flick.viewport-y + flick.height) - root.view-top);
+    property <length> view-top: min(max(0px, -flick.content-y), root.page.height);
+    property <length> view-height: max(0px, min(root.page.height, -flick.content-y + flick.height) - root.view-top);
 
     if root.page.remote == Remote.loading: Text {
         text: "Loading remote content…";
