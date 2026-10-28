@@ -4867,6 +4867,7 @@ dependencies = [
  "serde_json",
  "slint",
  "slint-build",
+ "stylo",
  "sys-locale",
  "tempfile",
  "thiserror 2.0.21",

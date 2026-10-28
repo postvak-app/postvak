@@ -40,11 +40,14 @@ notify = true
 ```toml
 [ui]
 check_updates = false
+html_colours = "adapt"
 sender_images = false
 theme = "system"
 ```
 
 `theme` is `"system"` (follow the OS, the default), `"light"` or `"dark"`. The mail window's theme switch writes it.
+
+`html_colours` is how HTML mail looks in the dark theme: `"adapt"` (the default) turns light pages dark and keeps text readable, unless the mail brings its own dark design; `"original"` shows every message in its sender's colours on a white page, as in the light theme. Either way the reader's **Original colours** switch changes the open message (see [HTML mail](gui.md#html-mail)). Only the mail window reads it; the CLI and MCP never render HTML.
 
 `check_updates` (off by default) lets the mail window ask GitHub at most once a day whether a newer release is out, and link to its release notes at the foot of the folder pane. The request is a plain HTTPS request to `api.github.com` with the user agent `postvak/<version>`: it carries nothing about your accounts or mail, though GitHub sees your IP address as with any request. Postvak never updates itself; upgrade the way you installed it (`brew upgrade postvak`, `cargo install postvak`, a new AppImage). Set `check_updates = true` to turn the check on.
 

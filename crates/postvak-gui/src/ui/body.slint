@@ -43,6 +43,9 @@ export struct BodyInfo {
     has-html: bool,
     shows-html: bool,
     text-note: string,
+    // HTML adapted to the dark theme, or that would be: "Original colours" shows; and whether it is on.
+    adapts: bool,
+    original-colours: bool,
     attachments: [string],
     // Listed before the whole message is here: Save waits for it.
     attachments-pending: bool,
@@ -64,6 +67,8 @@ export enum Remote { none, not-loaded, loading }
 export struct PageInfo {
     // Laid out: the page and its strips can show.
     ready: bool,
+    // Styled for the dark theme: drawn on the dark page rather than a white one.
+    dark: bool,
     width: length,
     height: length,
     remote: Remote,
@@ -139,7 +144,7 @@ component HtmlView inherits VerticalLayout {
             y: root.view-top;
             width: root.page-width;
             height: root.view-height;
-            background: white;
+            background: root.page.dark ? Theme.night.background : white;
         }
         if root.page.ready: Rectangle {
             x: 0;
@@ -280,6 +285,7 @@ component MessageTools inherits HorizontalLayout {
     in property <string> source-icon;
     callback unsubscribe();
     callback toggle-html();
+    callback toggle-original-colours();
     callback save-eml();
     callback open-source();
     spacing: Theme.pad / 2;
@@ -324,6 +330,16 @@ component MessageTools inherits HorizontalLayout {
             }
         }
     }
+    if root.info.adapts && root.info.shows-html: VerticalLayout {
+        alignment: center;
+        TextButton {
+            text: "Original colours";
+            hint: "Show this message in its sender's colours";
+            palette: Theme.pane;
+            selected: root.info.original-colours;
+            clicked => { root.toggle-original-colours(); }
+        }
+    }
     IconButton {
         icon: root.save-icon;
         name: "Save .eml";
@@ -363,6 +379,7 @@ export component BodyPane inherits Rectangle {
     callback action(int);
     callback clear-selection();
     callback toggle-html();
+    callback toggle-original-colours();
     callback save-eml();
     callback open-source();
     callback unsubscribe();
@@ -399,12 +416,12 @@ export component BodyPane inherits Rectangle {
     property <length> margin: root.width > 80 * Theme.pad ? 2 * Theme.inset : Theme.inset;
     // Room for the message actions and `MessageTools` on one line: the tools' labels are measured, their padding and
     // icon buttons added.
-    property <length> tools: labels.preferred-width + (root.info.unsubscribe ? 2 * Theme.pad : 0px) + (root.info.has-html ? 3 * Theme.pad : 0px) + 2 * Theme.action + 2 * Theme.pad;
+    property <length> tools: labels.preferred-width + (root.info.unsubscribe ? 2 * Theme.pad : 0px) + (root.info.has-html ? 3 * Theme.pad : 0px) + (root.info.adapts && root.info.shows-html ? 2 * Theme.pad : 0px) + 2 * Theme.action + 2 * Theme.pad;
     property <bool> wide: root.width - 2 * root.margin >= root.actions.length * (Theme.action + Theme.pad / 2) + Theme.inset + root.tools;
     labels := Text {
         visible: false;
         accessible-role: none;
-        text: (root.info.unsubscribe ? "Unsubscribe" : "") + (root.info.has-html ? "TextHTML" : "");
+        text: (root.info.unsubscribe ? "Unsubscribe" : "") + (root.info.has-html ? "TextHTML" : "") + (root.info.adapts && root.info.shows-html ? "Original colours" : "");
         font-weight: 600;
     }
 
@@ -441,6 +458,7 @@ export component BodyPane inherits Rectangle {
                 source-icon: root.source-icon;
                 unsubscribe => { root.unsubscribe(); }
                 toggle-html => { root.toggle-html(); }
+                toggle-original-colours => { root.toggle-original-colours(); }
                 save-eml => { root.save-eml(); }
                 open-source => { root.open-source(); }
             }
@@ -454,6 +472,7 @@ export component BodyPane inherits Rectangle {
                 source-icon: root.source-icon;
                 unsubscribe => { root.unsubscribe(); }
                 toggle-html => { root.toggle-html(); }
+                toggle-original-colours => { root.toggle-original-colours(); }
                 save-eml => { root.save-eml(); }
                 open-source => { root.open-source(); }
             }

@@ -366,6 +366,7 @@ impl Live {
             let now = (self.clock)();
             self.app.tick(now);
             self.present();
+            self.follow_theme();
             let asks = ASKS.with_borrow_mut(std::mem::take);
             if asks.is_empty() {
                 self.schedule(now);
@@ -374,6 +375,17 @@ impl Live {
             for ask in asks {
                 self.apply(ask);
             }
+        }
+    }
+
+    /// HTML mail is styled for the theme the window shows, which only the window knows for System: the window's
+    /// answer is asked for after it shows the app's theme choice.
+    fn follow_theme(&mut self) {
+        let dark = self.window.global::<ui::Theme>().get_dark();
+        if dark != self.app.html_dark {
+            ASKS.with_borrow_mut(|asks| {
+                asks.push(Box::new(move |_| vec![state::UiAction::HtmlDark(dark)]));
+            });
         }
     }
 
@@ -461,6 +473,8 @@ fn follow_desktop_scheme(window: &ui::MailWindow) -> Result<ui::SchemeProbe> {
         if let Some(window) = weak.upgrade() {
             window.global::<ui::Theme>().set_desktop_dark(dark);
         }
+        // A tick, so HTML mail follows the System theme (`Live::follow_theme`).
+        on(Box::new(|_| Vec::new()));
     });
     Ok(probe)
 }

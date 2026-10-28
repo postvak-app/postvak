@@ -73,6 +73,9 @@ pub struct UiConfig {
     /// Ask GitHub once a day whether a newer release is out.
     #[serde(default)]
     pub check_updates: bool,
+    /// How HTML mail looks in the dark theme: adapted to it, or in the sender's colours on a white page.
+    #[serde(default)]
+    pub html_colours: HtmlColours,
     /// Show the logo a sender's domain publishes (BIMI): a DNS lookup and an HTTPS fetch to that domain.
     #[serde(default)]
     pub sender_images: bool,
@@ -93,6 +96,17 @@ pub enum Theme {
     Light,
     #[default]
     System,
+}
+
+/// HTML mail in the dark theme (GUI only: the CLI and MCP never render HTML).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HtmlColours {
+    /// Styled with the dark colour scheme, and light pages turned dark.
+    #[default]
+    Adapt,
+    /// The sender's colours on a white page, as in the light theme.
+    Original,
 }
 
 impl Theme {
@@ -542,6 +556,25 @@ notify = false
         assert!(matches!(Config::parse(&blue), Err(ConfigError::Parse(_))));
         let typo = format!("{SAMPLE}\n[ui]\ntheme_ = \"dark\"\n");
         assert!(matches!(Config::parse(&typo), Err(ConfigError::Parse(_))));
+    }
+
+    #[test]
+    fn html_colours_default_to_adapt_and_parse() {
+        let ui =
+            |text: &str| Config::parse(&format!("{SAMPLE}\n{text}")).map(|c| c.ui.html_colours);
+        assert_eq!(ui("").unwrap(), HtmlColours::Adapt);
+        assert_eq!(
+            ui("[ui]\nhtml_colours = \"original\"\n").unwrap(),
+            HtmlColours::Original
+        );
+        assert_eq!(
+            ui("[ui]\nhtml_colours = \"adapt\"\n").unwrap(),
+            HtmlColours::Adapt
+        );
+        assert!(matches!(
+            ui("[ui]\nhtml_colours = \"inverted\"\n"),
+            Err(ConfigError::Parse(_))
+        ));
     }
 
     #[test]

@@ -37,6 +37,10 @@ pub(crate) struct Pane {
     pub shows_html: bool,
     /// Why HTML shows as text, which disables the switch's HTML side.
     pub text_note: Option<&'static str>,
+    /// The HTML is adapted to the dark theme, or would be: the Original colours switch shows.
+    pub adapts: bool,
+    /// The switch is on: this message's HTML is in its sender's colours on a white page.
+    pub original_colours: bool,
     /// "report.txt (2 KB)" per attachment.
     pub attachments: Vec<String>,
     /// The attachments are listed before the whole message is here, so they cannot be saved yet.
@@ -115,6 +119,8 @@ pub(crate) fn pane(app: &App) -> Pane {
         has_html: body.html.is_some(),
         shows_html: body.shows_html(),
         text_note: body.text_note,
+        adapts: app.offers_original_colours(),
+        original_colours: body.original_colours,
         attachments,
         attachments_pending: body.attachments_pending,
         saved: body.saved.as_deref().map(|s| clean(s, false)),

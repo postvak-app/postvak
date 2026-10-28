@@ -71,6 +71,7 @@ serde_json = "1"                                     # --json output
 serde_rusqlite = "0.43"                              # rows to structs
 signal-hook = { version = "0.4", default-features = false }  # stop the daemon cleanly on SIGTERM (docker stop, systemctl stop) and Ctrl-C; signal-hook-registry is already in the tree through zbus
 strsim = "0.11"                                      # edit distance for the close matches of search
+stylo = "=0.22.0"                                    # HTML mail: change the colours Blitz computed to adapt a page to the dark theme; pinned to blitz-dom's version, already in the tree
 slint = { version = "=1.18.1", features = ["unstable-winit-030"] }  # the GUI window (royalty-free licence: About shows AboutSlint); default features: winit with runtime-loaded X11/Wayland, femtovg and software renderers, AccessKit, the system tray; unstable-winit-030 to raise the window from the tray (pinned, so the unstable API cannot shift)
 slint-build = "=1.18.1"                              # compiles the window's ui/*.slint into Rust
 socket2 = { version = "0.6", features = ["all"] }     # TCP keepalive on the IMAP socket so dead connections fail; "all" exposes the retry count

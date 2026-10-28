@@ -453,8 +453,6 @@ fn newsletter(theme: &str, width: f32) -> (Fixture, Open, Wires) {
 
 /// INBOX of `work` with a message whose HTML part is `html` open, once it is painted.
 fn html_message(theme: &str, width: f32, html: &str) -> (Fixture, Open, Wires) {
-    use std::time::{Duration, Instant};
-
     use slint::ComponentHandle;
 
     use super::fixture::mail;
@@ -477,6 +475,13 @@ fn html_message(theme: &str, width: f32, html: &str) -> (Fixture, Open, Wires) {
         .window()
         .set_size(slint::LogicalSize::new(width, 800.0));
     open.with(|live| live.app.select_view(work_inbox()));
+    wait_painted(&open);
+    (fx, open, wires)
+}
+
+/// Ticks the window until the HTML page is laid out and every strip in view is painted.
+fn wait_painted(open: &Open) {
+    use std::time::{Duration, Instant};
     let deadline = Instant::now() + Duration::from_secs(30);
     let painted = |open: &Open| {
         open.with(|live| {
@@ -488,7 +493,7 @@ fn html_message(theme: &str, width: f32, html: &str) -> (Fixture, Open, Wires) {
             })
         })
     };
-    while !painted(&open) {
+    while !painted(open) {
         assert!(
             Instant::now() < deadline,
             "timed out waiting for the renderer"
@@ -496,7 +501,6 @@ fn html_message(theme: &str, width: f32, html: &str) -> (Fixture, Open, Wires) {
         std::thread::sleep(Duration::from_millis(5));
         open.tick();
     }
-    (fx, open, wires)
 }
 
 #[test]
@@ -505,10 +509,31 @@ fn html_light() {
     snapshot(&open, "gui_html_light");
 }
 
+/// The newsletter adapted to the dark theme.
 #[test]
 fn html_dark() {
     let (_fx, open, _wires) = newsletter("dark", 1280.0);
     snapshot(&open, "gui_html_dark");
+}
+
+/// The newsletter in the dark theme with Original colours on: as in the light theme, on a white page.
+#[test]
+fn html_dark_original_colours() {
+    let (_fx, open, _wires) = newsletter("dark", 1280.0);
+    open.window().invoke_toggle_original_colours();
+    wait_painted(&open);
+    snapshot(&open, "gui_html_dark_original");
+}
+
+/// Mail with its own dark-mode CSS, shown as its sender wrote it for the dark theme.
+#[test]
+fn html_dark_own_css() {
+    let (_fx, open, _wires) = html_message(
+        "dark",
+        1280.0,
+        include_str!("../../../tests/fixtures/newsletter-dark-css.html"),
+    );
+    snapshot(&open, "gui_html_dark_own_css");
 }
 
 /// The software renderer casts every rectangle to `i16`, so a page background as tall as a very long message
