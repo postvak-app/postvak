@@ -53,7 +53,7 @@ The install also prints a hint with the granted scopes and how to widen them. It
 
 | Scope | What it grants | Tools |
 |---|---|---|
-| `read` | Folders, each message's sender, recipients, subject and date, the activity log, rules and trash listings, previews of rules that match on neither the body nor a `header` condition, and a sync. No body text and no other headers. | `accounts`, `folders`, `list`, `log`, `rules_check`, `rules_list`, `rules_schema`, `rules_test`, `search`, `status`, `sync`, `trash_list` |
+| `read` | Folders, each message's sender, recipients, subject and date, the activity log, rules and trash listings, previews of rules that match on neither the body nor a `header` condition, and a sync. No body text and no other headers. | `accounts`, `docs`, `folders`, `list`, `log`, `rules_check`, `rules_list`, `rules_schema`, `rules_test`, `search`, `status`, `sync`, `trash_list` |
 | `read:headers` | Every header of a message, such as `List-Id`, `Authentication-Results` or a spam score, from the local store, and with `read` previews of rules with a `header` condition; proposing, enabling or running such a rule needs it too. No body text. | `headers` |
 | `read:bodies` | Message bodies and attachment names, search over indexed bodies and on the server (`search` with `server`) with a `snippet` of the body around a match, and with `read` previews of rules that match on the body. | `attachments`, `show` |
 | `rules:propose` | Proposing rules, which are stored disabled until you approve them, and withdrawing its own proposals while they are still pending. | `rules_propose`, `rules_withdraw` |
@@ -74,6 +74,8 @@ An agent cannot add mail accounts: a password command runs as a shell command as
 
 ## Tools
 
+The server's instructions to the host are short: the ground rules of the [agent guide](agent-guide.md), and to call `docs` for the rest. Some hosts cut long instructions short, so the full guide and the rules, search and CLI pages come from that tool instead.
+
 The names follow the CLI commands. A tool that lists things returns the CLI's `--json` rows wrapped in `{"rows": [...]}`; the others return one object. Rows carry an `account`; in `rules_list` that is the rule's own scope, and `null` means every account. Message rows carry no body text. `show` returns `{"message": ..., "body": ..., "truncated": ...}`.
 
 `rules.toml` is shared by every account, so `rules_list`, `rules_propose`, `rules_withdraw`, `rules_approve`, `rules_reject` and `rules_set_enabled` take no `account` argument; a rule's own `account` field scopes it. They follow `--account` as described under [Safety](#safety).
@@ -81,12 +83,13 @@ The names follow the CLI commands. A tool that lists things returns the CLI's `-
 `read`:
 
 - `accounts` lists the visible accounts: name, username, host, port, address and aliases. Never the password source.
+- `docs` returns a page of this documentation as Markdown text: `page` is `agent-guide`, `rules`, `search` or `cli`, the pages `postvak guide` prints. Without a page it lists them.
 - `folders` lists folders with total and unread counts.
 - `list` lists the newest messages in a folder, or threads. `folder` defaults to INBOX; `limit` defaults to 50 and is at most 500. With `threads: true` it counts threads, and each thread comes with all its messages. `unread`, `flagged` and `attachments` keep only the messages, or threads, that have one.
 - `log` shows the rule and action log.
 - `rules_check` validates `rules.toml` and lists `warnings`, such as a conflicting copy a file sync left beside it or a rule for an account that is not set up; [Rules](rules.md) lists them all. A server started with `--account` leaves out rules for the accounts it hides.
 - `rules_list` lists rules in file order, the order they run in. Each row is the whole rule as `rules_propose` takes it (`match`, `actions` and the rest), with its state, its proposer and `position`, its 0-based place in the file. A server started with `--account` leaves out rules for the accounts it hides, so positions can skip.
-- `rules_schema` returns the JSON Schema for a rule.
+- `rules_schema` returns the JSON Schema for a rule; its description sends the agent to the `rules` page of `docs` for what each key means.
 - `rules_test` previews a rule, given as JSON, against the local store. It reports subjects, never bodies. A rule that matches on the body needs `read:bodies` too, and one with a `header` condition `read:headers`, since their matches would reveal what bodies or headers contain. `rules_propose`, `rules_approve`, `rules_set_enabled` and `rules_apply_existing` refuse such rules on the same terms. `from`, `to`, `cc` and `subject` conditions need only `read`, as `list` already shows those fields.
 - `search` finds messages by subject, addresses and attachment names. It matches all the given words, `"phrases"` in order, `-word` excludes, and the last word also as a prefix; the operators of [Search](search.md) (`from:`, `in:`, `is:unread`, `after:7d` and the rest) narrow it, and the tool's description lists them. When fewer than ten messages match as typed, close matches follow, each row's `match` being `exact` or `close`; `exact: true` leaves them out. Searching bodies, and `server: true`, need `read:bodies`.
 - `status` is `postvak daemon status --json`: the daemon's pid, version, uptime and each visible account's activity, and whether its server offers `UIDPLUS` (see [Other mail clients](daemon.md#other-mail-clients)).
