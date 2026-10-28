@@ -58,6 +58,10 @@ pub struct AccountConfig {
     /// Extra trusted root certificate (PEM), for servers with a private CA.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ca_file: Option<PathBuf>,
+    /// The servers whose `Authentication-Results` the `authenticated` rule condition believes, by authserv-id. Unset:
+    /// those in the same domain as `host`, so `imap.soverin.net` trusts `mx.soverin.net`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trusted_authserv_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -172,6 +176,18 @@ impl Config {
                 return Err(ConfigError::Invalid(format!(
                     "account '{name}': ca_file must be an absolute path"
                 )));
+            }
+            for id in account.trusted_authserv_ids.iter().flatten() {
+                let token = !id.is_empty()
+                    && id
+                        .chars()
+                        .all(|c| c.is_ascii_graphic() && !"\";()\\".contains(c));
+                if !token {
+                    return Err(ConfigError::Invalid(format!(
+                        "account '{name}': trusted_authserv_ids holds '{}'; each must be a server name such as mx.example.com",
+                        id.escape_default()
+                    )));
+                }
             }
             account.identity()?;
         }
@@ -313,6 +329,7 @@ impl AccountConfig {
             notify: default_true(),
             index_bodies: default_true(),
             ca_file: None,
+            trusted_authserv_ids: None,
         }
     }
 
@@ -323,10 +340,19 @@ impl AccountConfig {
     pub fn identity(&self) -> Result<Identity, ConfigError> {
         let aliases = regex::RegexSet::new(self.aliases.iter().map(|pattern| alias_regex(pattern)))
             .map_err(|e| ConfigError::Invalid(format!("account '{}': aliases: {e}", self.name)))?;
+        let authserv = match &self.trusted_authserv_ids {
+            Some(ids) => AuthservTrust::Listed(
+                ids.iter()
+                    .map(|id| id.trim_end_matches('.').to_lowercase())
+                    .collect(),
+            ),
+            None => AuthservTrust::SameDomainAs(host_org_domain(&self.host)),
+        };
         Ok(Identity {
             address: self.address().to_ascii_lowercase(),
             aliases,
             patterns: self.aliases.clone(),
+            authserv,
         })
     }
 }
@@ -336,12 +362,33 @@ pub(crate) fn alias_regex(pattern: &str) -> String {
     format!("(?i)^{}$", regex::escape(pattern).replace(r"\*", ".*"))
 }
 
+/// The organisation's domain of an IMAP host, for the default `trusted_authserv_ids`; None for an IP address or a
+/// name without a dot, which say nothing about who runs the mail servers.
+fn host_org_domain(host: &str) -> Option<String> {
+    let host = host.trim().trim_start_matches('[').trim_end_matches(']');
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return None;
+    }
+    let org = crate::message::auth::org_domain(&host.to_lowercase());
+    org.contains('.').then_some(org)
+}
+
+/// Whose `Authentication-Results` an account believes.
+#[derive(Debug, Clone)]
+enum AuthservTrust {
+    /// Exactly these authserv-ids, lower-cased.
+    Listed(Vec<String>),
+    /// Any authserv-id in this organisation's domain; nothing when None.
+    SameDomainAs(Option<String>),
+}
+
 #[derive(Debug, Clone)]
 pub struct Identity {
     address: String,
     aliases: regex::RegexSet,
     /// The alias patterns as configured, for code that matches them outside this type, such as a search.
     patterns: Vec<String>,
+    authserv: AuthservTrust,
 }
 
 impl Identity {
@@ -358,6 +405,29 @@ impl Identity {
     /// The alias patterns as configured: whole addresses, with `*` for anything.
     pub fn alias_patterns(&self) -> &[String] {
         &self.patterns
+    }
+
+    /// Whether the account believes an `Authentication-Results` header written by this authserv-id.
+    pub fn trusts_authserv_id(&self, id: &str) -> bool {
+        let id = id.trim_end_matches('.').to_lowercase();
+        match &self.authserv {
+            AuthservTrust::Listed(ids) => ids.contains(&id),
+            AuthservTrust::SameDomainAs(org) => org.as_deref().is_some_and(|org| {
+                id.contains('.') && crate::message::auth::org_domain(&id) == org
+            }),
+        }
+    }
+
+    /// Whether the account's provider vouches for mail with these headers and this From field: see
+    /// [`auth::authenticated`](crate::message::auth::authenticated). Listed ids are the provider's own, so the
+    /// topmost of them counts; guessed ones only when the topmost header of all is theirs.
+    pub fn authenticated(&self, raw_headers: &[u8], from: &str) -> bool {
+        use crate::message::auth::{Pick, authenticated};
+        let pick = match self.authserv {
+            AuthservTrust::Listed(_) => Pick::TopmostTrusted,
+            AuthservTrust::SameDomainAs(_) => Pick::Topmost,
+        };
+        authenticated(raw_headers, from, pick, |id| self.trusts_authserv_id(id))
     }
 }
 
@@ -391,6 +461,7 @@ username = "pieter"
 address = "pieter@home.test"
 password = { command = "pass show mail/home" }
 notify = false
+trusted_authserv_ids = ["mx.home.test"]
 "#;
 
     #[test]
@@ -442,6 +513,60 @@ notify = false
         assert!(id.is_me("p@example.org"));
         assert!(id.is_me("orders@shop.example.com"));
         assert!(!id.is_me("someone@example.com"));
+    }
+
+    #[test]
+    fn authserv_ids_default_to_the_imap_hosts_domain() {
+        let account = |host: &str| {
+            AccountConfig::new(
+                "a",
+                host,
+                "me@x.test",
+                PasswordSource::Keyring { keyring: true },
+            )
+            .identity()
+            .unwrap()
+        };
+        let soverin = account("imap.soverin.net");
+        assert!(soverin.trusts_authserv_id("mx.soverin.net"));
+        assert!(soverin.trusts_authserv_id("MX.Soverin.NET."));
+        assert!(!soverin.trusts_authserv_id("soverin.net.evil"));
+        assert!(!soverin.trusts_authserv_id("mx.google.com"));
+        let uk = account("imap.mail.example.co.uk");
+        assert!(uk.trusts_authserv_id("mx.example.co.uk"));
+        assert!(!uk.trusts_authserv_id("mx.other.co.uk"));
+        for bare in ["127.0.0.1", "[::1]", "localhost"] {
+            let id = account(bare);
+            assert!(!id.trusts_authserv_id(bare) && !id.trusts_authserv_id("localhost"));
+        }
+    }
+
+    #[test]
+    fn listed_authserv_ids_replace_the_default() {
+        let text = SAMPLE.replace(
+            "aliases = [\"p@example.org\", \"*@shop.example.com\"]",
+            "trusted_authserv_ids = [\"mx.google.com\", \"Spam.Example.com\"]",
+        );
+        let cfg = Config::parse(&text).unwrap();
+        let work = cfg.account("work").unwrap().identity().unwrap();
+        assert!(work.trusts_authserv_id("mx.google.com"));
+        assert!(work.trusts_authserv_id("spam.example.com"));
+        assert!(
+            !work.trusts_authserv_id("mx.example.com"),
+            "a list replaces the default"
+        );
+        let none = text.replace("[\"mx.google.com\", \"Spam.Example.com\"]", "[]");
+        let work = Config::parse(&none).unwrap().accounts[0]
+            .identity()
+            .unwrap();
+        assert!(!work.trusts_authserv_id("mx.example.com"));
+        for bad in ["\"\"", "\"mx example\"", "\"a;dmarc=pass\""] {
+            let text = text.replace("\"mx.google.com\"", bad);
+            assert!(
+                matches!(Config::parse(&text), Err(ConfigError::Invalid(e)) if e.contains("trusted_authserv_ids")),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

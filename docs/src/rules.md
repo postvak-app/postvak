@@ -38,6 +38,9 @@ Text conditions take exactly one of:
 | `from`, `to`, `cc`, `subject` | text condition | That header. |
 | `body` | text condition | The plain-text body; HTML mail is converted. Postvak downloads the body of new mail in the rule's folder for this. |
 | `header` | text condition plus `name`, or a list of them | Any header, such as `List-Id`, unfolded and with encoded words (`=?UTF-8?…?=`) decoded. Of a repeated header only the last copy counts. Every header in a list must match. |
+| `from_domain` | domain, or a list of them | The From address is in that domain or a subdomain of it: `paypal.com` matches `service@paypal.com` and `x@mail.paypal.com`, not `x@notpaypal.com`. Only the address counts, never the display name, and case does not matter. A list matches when any domain does. |
+| `to_domain` | domain, or a list of them | The same, for any address in To. |
+| `authenticated` | `true` or `false` | Your provider vouches that the mail comes from its From domain (see [Authenticated mail](#authenticated-mail)). |
 | `older_than` | duration: `30m`, `1h`, `2days` | Mail that arrived at least this long ago. |
 | `larger_than` | size: `500KB`, `5MB`, `1GB` | Mail larger than this. A bare number is bytes, and `1KB` is 1024 bytes. |
 | `seen` | `true` or `false` | Read or unread mail. |
@@ -49,6 +52,22 @@ Text conditions take exactly one of:
 | `none` | list of conditions | Holds when no entry holds. |
 
 Each entry of `any` and `none` is a set of conditions that must all hold, written like `match` itself, so `none = [{ from = …, subject = … }]` only excludes mail that matches both. To exclude either, give each its own entry. Entries can hold `any` and `none` again, up to eight levels deep. A rule whose conditions need the body never fires on a message whose body could not be downloaded, even through `none`.
+
+## Authenticated mail
+
+Anyone can write any From address. A receiving mail server checks the sender's DKIM signature, SPF and DMARC, and writes its verdict in an `Authentication-Results` header at the top of the message. `authenticated = true` holds when that verdict says DMARC passed, or DKIM passed for a domain aligned with the From domain (the same domain, or a parent or subdomain of it within the same organisation, so a `mail.paypal.com` signature counts for `paypal.com`, and a `sendgrid.net` one does not). SPF alone is not enough, since it vouches for the envelope sender, not the From address. A From with no address or with several is never authenticated.
+
+A sender can write an `Authentication-Results` header too, so Postvak only reads the ones your provider wrote, recognised by the server name at their start (the authserv-id), and of those only the topmost, the one the last server added. By default your provider's servers are those in the same domain as the account's IMAP host: with `host = "imap.soverin.net"`, a header from `mx.soverin.net` counts, and only when it is the topmost `Authentication-Results` of all, since a header further down may be the sender's. When your provider uses another name, such as Gmail's `mx.google.com` for `imap.gmail.com`, the default trusts nothing it writes: list the name in the account's `trusted_authserv_ids` (see [Accounts](accounts.md)). `postvak headers UID` shows the headers of a message, topmost first. With that list, the topmost header from a listed server counts, wherever it sits. Mail without one is not authenticated, so a rule with `authenticated = false` also catches it.
+
+Use it with `from_domain` on rules that move mail you would act on, such as security alerts or invoices, so that mail which only claims to come from that domain stays in your inbox:
+
+```toml
+[[rules]]
+name = "paypal"
+match.from_domain = ["paypal.com", "paypal.nl"]
+match.authenticated = true
+actions = [{ move = "Finance" }]
+```
 
 ## Actions
 

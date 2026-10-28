@@ -28,7 +28,7 @@ postvak attachment list 42 --folder INBOX
 ## Writing a rule
 
 1. Run `postvak rules schema` for the JSON Schema. A rule is one entry of `rules`; `docs/src/rules.md` explains every key.
-2. Write the rule as JSON. Keep the conditions as narrow as the request allows. A `header` condition is often the surest: `postvak headers <uid>` prints every header of a message as rules see it, such as `List-Id`, `List-Unsubscribe`, `Auto-Submitted` or your provider's spam score, so read a few examples before you pick one:
+2. Write the rule as JSON. Keep the conditions as narrow as the request allows. A `header` condition is often the surest: `postvak headers <uid>` prints every header of a message as rules see it, such as `List-Id`, `List-Unsubscribe`, `Auto-Submitted` or your provider's spam score, so read a few examples before you pick one. For mail from one sender, match `from_domain` (`"from_domain": "paypal.com"` also covers `mail.paypal.com`, but not `notpaypal.com` or a display name that says PayPal) rather than a `from` substring. A rule that moves security, bank or payment mail should also say `"authenticated": true`, so mail that only claims to come from that domain stays where the human sees it. A rule for sign-in codes from any sender:
 
 ```json
 {
