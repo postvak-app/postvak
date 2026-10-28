@@ -994,11 +994,13 @@ async fn tools_list_per_scope_set_is_exact_and_alphabetical() {
                 "list",
                 "log",
                 "rules_check",
+                "rules_coverage",
                 "rules_list",
                 "rules_propose",
                 "rules_schema",
                 "rules_test",
                 "search",
+                "senders",
                 "status",
                 "sync",
                 "trash_list",
@@ -1850,7 +1852,16 @@ async fn tools_returning_mail_say_its_fields_are_data() {
     let fx = fixture(&["work"]);
     let client = connect(&fx, "read,read:bodies", &[]).await;
     let tools = client.list_all_tools().await.unwrap();
-    for name in ["attachments", "list", "log", "rules_test", "search", "show"] {
+    for name in [
+        "attachments",
+        "list",
+        "log",
+        "rules_coverage",
+        "rules_test",
+        "search",
+        "senders",
+        "show",
+    ] {
         let tool = tools.iter().find(|t| t.name == name).unwrap();
         let description = tool.description.as_deref().unwrap_or_default();
         assert!(
@@ -1858,4 +1869,154 @@ async fn tools_returning_mail_say_its_fields_are_data() {
             "{name}: {description}"
         );
     }
+}
+
+/// A message from `from` with `subject`; a higher uid is newer.
+fn from_sender(uid: u32, from: &str, subject: &str) -> Message {
+    Message {
+        from_addr: Some(from.into()),
+        ..fixture_message("INBOX", uid, subject, "secret body")
+    }
+}
+
+const ANALYSIS_RULES: &str = r#"
+[[rules]]
+name = "delivery"
+match.subject = { contains = "delivery" }
+actions = [{ move = "Deliveries" }]
+
+[[rules]]
+name = "shop"
+match.from = { contains = "shop.example" }
+actions = ["flag", { move = "Shop" }]
+
+[[rules]]
+name = "list header"
+match.header = { name = "List-Id", contains = "x" }
+actions = ["mark_read"]
+
+[[rules]]
+name = "proposal"
+enabled = false
+proposed_by = "mcp:test-host"
+match.from = { contains = "friend@" }
+actions = ["archive"]
+"#;
+
+fn analysis_fixture() -> Fixture {
+    let fx = fixture(&["work"]);
+    std::fs::write(fx.paths.rules_file(), ANALYSIS_RULES).unwrap();
+    fx.add(
+        "work",
+        from_sender(1, "Friend <friend@home.example>", "Dinner?"),
+    );
+    fx.add("work", from_sender(2, "friend@home.example", "Photos"));
+    fx.add(
+        "work",
+        from_sender(3, "Shop <orders@shop.example>", "Your delivery"),
+    );
+    fx.add(
+        "work",
+        from_sender(4, "orders@mail.shop.example", "Receipt"),
+    );
+    fx
+}
+
+#[tokio::test]
+async fn senders_groups_by_address_or_domain_and_names_matching_rules() {
+    let fx = analysis_fixture();
+    let client = connect(&fx, "read", &[]).await;
+    let result = call(&client, "senders", json!({})).await;
+    let found = rows(&result);
+    let skipped = &result.structured_content.as_ref().unwrap()["skipped_rules"];
+    assert_eq!(
+        skipped,
+        &json!(["list header"]),
+        "header rules need read:headers"
+    );
+    let first = &found[0];
+    assert_eq!(first["sender"], "friend@home.example");
+    assert_eq!(
+        (first["count"].as_u64(), first["unread"].as_u64()),
+        (Some(2), Some(2))
+    );
+    assert_eq!(first["subjects"], json!(["Photos", "Dinner?"]));
+    assert_eq!(
+        first["rules"],
+        json!([]),
+        "pending proposals are not existing rules"
+    );
+    assert_eq!(
+        (first["account"].as_str(), first["folder"].as_str()),
+        (Some("work"), Some("INBOX"))
+    );
+    assert!(
+        !serde_json::to_string(&found)
+            .unwrap()
+            .contains("secret body")
+    );
+
+    let by_domain = rows(
+        &call(
+            &client,
+            "senders",
+            json!({ "group_by": "domain", "limit": 1 }),
+        )
+        .await,
+    );
+    assert_eq!(by_domain.len(), 1);
+    assert_eq!(by_domain[0]["sender"], "shop.example");
+    assert_eq!(by_domain[0]["rules"], json!(["delivery", "shop"]));
+
+    let after = rows(&call(&client, "senders", json!({ "after": "1d" })).await);
+    assert!(after.is_empty(), "the fixture mail is older than a day");
+    let text = error_text(&call(&client, "senders", json!({ "before": "soon" })).await);
+    assert!(text.contains("not a date"), "{text}");
+}
+
+#[tokio::test]
+async fn rules_coverage_counts_and_lists_contested_mail_with_what_acts() {
+    let fx = analysis_fixture();
+    let client = connect(&fx, "read,read:headers", &[]).await;
+    let result = call(&client, "rules_coverage", json!({})).await;
+    assert_eq!(
+        result.structured_content.as_ref().unwrap()["skipped_rules"],
+        json!([])
+    );
+    let row = &rows(&result)[0];
+    assert_eq!(
+        (
+            row["messages"].as_u64(),
+            row["matched"].as_u64(),
+            row["unmatched"].as_u64(),
+            row["contested"].as_u64()
+        ),
+        (Some(4), Some(2), Some(2), Some(1))
+    );
+    assert_eq!(row["unmatched_senders"][0]["sender"], "friend@home.example");
+    let contested = &row["contested_messages"][0];
+    assert_eq!(contested["message"]["uid"], 3);
+    assert!(contested["message"].get("body_text").is_none());
+    assert_eq!(contested["rules"], json!(["delivery", "shop"]));
+    assert_eq!(
+        contested["acts"],
+        json!([{ "rule": "delivery", "action": "move:Deliveries" }, { "rule": "shop", "action": "flag" }])
+    );
+
+    let pending = rows(
+        &call(
+            &client,
+            "rules_coverage",
+            json!({ "include_pending": true, "limit": 0 }),
+        )
+        .await,
+    );
+    assert_eq!(
+        (
+            pending[0]["matched"].as_u64(),
+            pending[0]["unmatched"].as_u64()
+        ),
+        (Some(4), Some(0))
+    );
+    assert_eq!(pending[0]["contested_messages"], json!([]));
 }

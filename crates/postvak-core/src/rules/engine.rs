@@ -48,20 +48,7 @@ pub fn evaluate(rules: &[CompiledRule], msg: &Message, ctx: &Context) -> Plan {
     let mut plan = Plan::default();
     let mut explicit_notify: Option<bool> = None;
     for rule in rules {
-        if !rule.rule.enabled
-            || !rule.applies_to_account(ctx.account)
-            || rule.folder() != msg.folder
-        {
-            continue;
-        }
-        if ctx.mode == Mode::Normal && msg.internaldate < rule.first_seen_at {
-            continue;
-        }
-        // An unknown body is neither a match nor a mismatch, so `none` cannot turn a failed fetch into a hit.
-        if rule.needs_body() && msg.body_text.is_none() {
-            continue;
-        }
-        if !matches(&rule.conditions, msg, ctx) {
+        if !rule_matches(rule, msg, ctx) {
             continue;
         }
         let mut stop = false;
@@ -96,6 +83,20 @@ pub fn evaluate(rules: &[CompiledRule], msg: &Message, ctx: &Context) -> Plan {
             }
         };
     plan
+}
+
+/// Whether `rule` alone would match `msg`: the checks `evaluate` makes before it plans a rule's actions. Whether an
+/// earlier rule's `stop` or delete keeps it from acting is left to `evaluate`. What coverage and sender statistics
+/// report as a rule's match.
+pub fn rule_matches(rule: &CompiledRule, msg: &Message, ctx: &Context) -> bool {
+    !has_flag(&msg.flags, RESTORED_KEYWORD)
+        && rule.rule.enabled
+        && rule.applies_to_account(ctx.account)
+        && rule.folder() == msg.folder
+        && (ctx.mode != Mode::Normal || msg.internaldate >= rule.first_seen_at)
+        // An unknown body is neither a match nor a mismatch, so `none` cannot turn a failed fetch into a hit.
+        && (!rule.needs_body() || msg.body_text.is_some())
+        && matches(&rule.conditions, msg, ctx)
 }
 
 fn field(value: &Option<String>) -> &str {

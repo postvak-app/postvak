@@ -57,6 +57,7 @@ objc2-core-foundation = { version = "0.3", default-features = false, features = 
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSURL"] }  # the Dock badge's label and the Save as… panel's paths; already in the tree through muda
 percent-encoding = "2"                               # HTML mail: decode cid: URLs; already in the tree through url
 png = "0.18"                                         # decodes the icons and reads and writes the GUI snapshots
+psl = "2"                                            # the registrable domain of a sender (mail.example.co.uk → example.co.uk) for sender statistics; the public suffix list compiled in, re-released as the list changes
 proptest = { version = "1", default-features = false, features = ["std"] }  # postvak-core's tests/fuzz.rs (hostile input never panics the parsers) and tests/sync_model.rs (random sync event sequences, shrunk)
 regex = "1"                                          # rule regex conditions and alias wildcards
 rmcp = { version = "3.5", default-features = false, features = ["server", "transport-io"] }  # MCP server for `postvak mcp`, hand-written handler on stdio

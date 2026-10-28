@@ -72,6 +72,7 @@ Tool names follow the CLI commands so the agent guide's examples carry over. Res
 | `read` | `trash_list` | `.eml` backups |
 | `read` | `rules_list`, `rules_schema`, `rules_check` | as the CLI |
 | `read` | `rules_test` | a rule as JSON in, the preview lines out; the preview reports subjects, never bodies |
+| `read` | `senders`, `rules_coverage` | sender statistics and rules coverage of a folder; see `2026-10-28-senders-and-coverage-design.md` |
 | `read` | `sync` | §6 |
 | `read:bodies` | `show` | headers plus the body, wrapped (§7) |
 | `read:bodies` | `attachments` | names, types, sizes; no saving |

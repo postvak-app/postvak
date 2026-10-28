@@ -45,6 +45,24 @@ struct Selection {
     dry_run: bool,
 }
 
+#[derive(Clone, Copy, Default, clap::ValueEnum)]
+enum GroupBy {
+    /// The sender's address
+    #[default]
+    Address,
+    /// The registrable domain of the sender's address
+    Domain,
+}
+
+impl From<GroupBy> for postvak_core::senders::GroupBy {
+    fn from(by: GroupBy) -> Self {
+        match by {
+            GroupBy::Address => postvak_core::senders::GroupBy::Address,
+            GroupBy::Domain => postvak_core::senders::GroupBy::Domain,
+        }
+    }
+}
+
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum Mark {
     Flag,
@@ -157,6 +175,26 @@ enum Command {
         exact: bool,
         #[arg(long, default_value_t = 50)]
         limit: u32,
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = postvak_core::help::SENDERS)]
+    Senders {
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long, default_value = "INBOX")]
+        folder: String,
+        #[arg(long, value_enum, default_value_t)]
+        group_by: GroupBy,
+        /// At most this many groups per account
+        #[arg(long, default_value_t = 50)]
+        limit: u32,
+        /// Only mail that arrived on or after this date: 2026-01-15, or 30d, 3w, 6m, 1y back from now
+        #[arg(long)]
+        after: Option<String>,
+        /// Only mail that arrived before this date: 2026-01-15, or 30d, 3w, 6m, 1y back from now
+        #[arg(long)]
+        before: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -401,6 +439,24 @@ enum RulesCommand {
         #[arg(long)]
         json: bool,
     },
+    #[command(about = postvak_core::help::RULES_COVERAGE)]
+    Coverage {
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long, default_value = "INBOX")]
+        folder: String,
+        /// Count the proposals still waiting for approval as if they were enabled
+        #[arg(long)]
+        include_pending: bool,
+        /// How to group the senders of unmatched mail
+        #[arg(long, value_enum, default_value_t)]
+        group_by: GroupBy,
+        /// At most this many unmatched senders and contested messages per account; the counts cover everything
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+        #[arg(long)]
+        json: bool,
+    },
     #[command(about = postvak_core::help::RULES_APPLY_EXISTING)]
     ApplyExisting {
         name: String,
@@ -499,6 +555,45 @@ pub fn run() -> Result<()> {
         Command::Sync { account } => cmd_sync(&config, &paths, account.as_deref()),
         Command::Attachment { command } => cmd_attachment(command, &config, &paths),
         Command::Rules { command } => cmd_rules(command, &config, &paths),
+        Command::Senders {
+            account,
+            folder,
+            group_by,
+            limit,
+            after,
+            before,
+            json,
+        } => {
+            let now = time::now();
+            let after = after.as_deref().map(|d| parse_date(d, now)).transpose()?;
+            let before = before.as_deref().map(|d| parse_date(d, now)).transpose()?;
+            let rules = postvak_core::rules::coverage::rules(
+                &postvak_core::rules::load(&paths.rules_file())?,
+                false,
+            )?;
+            for acc in select_accounts(&config, account.as_deref())? {
+                let store = Store::open_account(&paths, &acc.name)?;
+                let identity = acc.identity()?;
+                let ctx = postvak_core::rules::coverage::context(&acc.name, &identity, now);
+                let senders = postvak_core::senders::in_folder(
+                    &store,
+                    &rules,
+                    &ctx,
+                    &folder,
+                    after,
+                    before,
+                    group_by.into(),
+                )?;
+                for sender in senders.iter().take(limit as usize) {
+                    if json {
+                        print_json(postvak_core::output::sender(&acc.name, &folder, sender)?);
+                    } else {
+                        println!("{}", sender_line(&acc.name, sender));
+                    }
+                }
+            }
+            Ok(())
+        }
         Command::Folders { account, json } => {
             for acc in select_accounts(&config, account.as_deref())? {
                 let store = Store::open_account(&paths, &acc.name)?;
@@ -987,6 +1082,36 @@ fn cmd_attachment(command: AttachmentCommand, config: &Config, paths: &Paths) ->
     Ok(())
 }
 
+/// A `--after` or `--before` value, read as `after:` and `before:` are in search.
+fn parse_date(value: &str, now: i64) -> Result<i64> {
+    postvak_core::search::date(value, now).with_context(|| {
+        format!(
+            "'{}' is not a date; use 2026-01-15, or 30d, 3w, 6m or 1y",
+            clean(value, false)
+        )
+    })
+}
+
+/// `account  count  unread  first..last  sender  rules`.
+fn sender_line(account: &str, sender: &postvak_core::senders::Sender) -> String {
+    format!(
+        "{account}\t{}\t{}\t{}\t{}\t{}\t{}",
+        sender.count,
+        sender.unread,
+        time::date_time(sender.first),
+        time::date_time(sender.last),
+        clean(
+            if sender.sender.is_empty() {
+                "(no address)"
+            } else {
+                &sender.sender
+            },
+            false
+        ),
+        clean(&sender.rules.join(", "), false)
+    )
+}
+
 fn select_accounts<'a>(config: &'a Config, name: Option<&str>) -> Result<Vec<&'a AccountConfig>> {
     match name {
         Some(n) => Ok(vec![
@@ -1205,6 +1330,41 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             }
             Ok(())
         }
+        RulesCommand::Coverage {
+            account,
+            folder,
+            include_pending,
+            group_by,
+            limit,
+            json,
+        } => {
+            let rules = postvak_core::rules::coverage::rules(
+                &postvak_core::rules::load(&paths.rules_file())?,
+                include_pending,
+            )?;
+            for acc in select_accounts(config, account.as_deref())? {
+                let store = Store::open_account(paths, &acc.name)?;
+                let identity = acc.identity()?;
+                let ctx = postvak_core::rules::coverage::context(&acc.name, &identity, time::now());
+                let mut coverage = postvak_core::rules::coverage::in_folder(
+                    &store,
+                    &rules,
+                    &ctx,
+                    &folder,
+                    group_by.into(),
+                )?;
+                coverage.unmatched_senders.truncate(limit as usize);
+                coverage.contests.truncate(limit as usize);
+                if json {
+                    print_json(postvak_core::output::coverage(
+                        &acc.name, &folder, &coverage,
+                    )?);
+                } else {
+                    print_coverage(&acc.name, &folder, &coverage);
+                }
+            }
+            Ok(())
+        }
         RulesCommand::ApplyExisting {
             name,
             account,
@@ -1294,6 +1454,42 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             println!("removed proposal '{}'", clean(&name, false));
             Ok(())
         }
+    }
+}
+
+fn print_coverage(account: &str, folder: &str, coverage: &postvak_core::rules::coverage::Coverage) {
+    println!(
+        "{account} {}: {} messages, {} matched, {} unmatched, {} contested",
+        clean(folder, false),
+        coverage.messages,
+        coverage.matched,
+        coverage.unmatched,
+        coverage.contested
+    );
+    if !coverage.unmatched_senders.is_empty() {
+        println!("unmatched mail by sender:");
+        for sender in &coverage.unmatched_senders {
+            println!("  {}", sender_line(account, sender));
+        }
+    }
+    if !coverage.contests.is_empty() {
+        println!("contested:");
+    }
+    for contest in &coverage.contests {
+        let m = &contest.message;
+        println!(
+            "  {}/{}\t{}",
+            clean(&m.folder, false),
+            m.uid,
+            clean(m.subject.as_deref().unwrap_or(""), false)
+        );
+        println!("    match: {}", clean(&contest.rules.join(", "), false));
+        let acts: Vec<String> = contest
+            .acts
+            .iter()
+            .map(|act| format!("{} {}", act.rule, act.action))
+            .collect();
+        println!("    acts:  {}", clean(&acts.join(", "), false));
     }
 }
 

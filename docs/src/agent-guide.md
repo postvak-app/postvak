@@ -25,6 +25,18 @@ postvak attachment list 42 --folder INBOX
 - `search` matches words in the subject, the addresses, attachment names and bodies, newest first. A `"quoted phrase"` matches in order, `-word` excludes, and the last word also matches as a prefix. Operators narrow it: `from:acme`, `to:me`, `cc:`, `subject:`, `attachment:` (the word in that column), `in:Archive`, `has:attachment`, `is:unread`, `is:read`, `is:flagged`, `before:2026-01-15`, `after:30d` (also `w`, `m` and `y`) and `account:work`; `postvak search 'from:acme after:30d invoice' --json` lists last month's invoices from Acme. Nothing else you type is read as query syntax, so a bare address, an unbalanced quote or an unknown key searches as words. When fewer than ten messages match as typed, close matches follow (a word within one typo, two for a long word, taken from the mail itself); each row's `match` says `exact` or `close`, and `--exact` leaves the close ones out.
 - Bodies are searched once the background index has read them, which takes a while after an account is added. `--server` also asks the mail server, which searches every body in a round trip per folder.
 
+## Finding what a rule should catch
+
+```sh
+postvak senders --folder INBOX --group-by domain --limit 30 --json
+postvak rules coverage --folder INBOX --json
+```
+
+- `senders` groups a folder's stored mail by sender (or `--group-by domain`), biggest group first, with counts, unread, first and last date (Unix seconds), a few subjects and the enabled `rules` that already match some of it. `--after 90d` or `--before 2026-01-01` narrow it. A large group with no rules is a candidate.
+- `rules coverage` runs the rules over the folder without acting: how many messages are `matched`, `unmatched` or `contested` (several rules match), the top `unmatched_senders`, and for each contested message every matching rule and the `acts` that would run. Run it with `--include-pending` after you propose, to show the human what the proposal changes and whether an earlier rule would take its mail first.
+
+Over MCP, rules your scopes may not run (a `header` condition without `read:headers`, a body condition without `read:bodies`) are left out and listed in `skipped_rules`.
+
 ## Writing a rule
 
 1. Run `postvak rules schema` for the JSON Schema. A rule is one entry of `rules`; `docs/src/rules.md` explains every key.

@@ -29,10 +29,12 @@ This document contains the help content for the `postvak` command-line program.
 * [`postvak rules approve`↴](#postvak-rules-approve)
 * [`postvak rules reject`↴](#postvak-rules-reject)
 * [`postvak rules list`↴](#postvak-rules-list)
+* [`postvak rules coverage`↴](#postvak-rules-coverage)
 * [`postvak rules apply-existing`↴](#postvak-rules-apply-existing)
 * [`postvak folders`↴](#postvak-folders)
 * [`postvak list`↴](#postvak-list)
 * [`postvak search`↴](#postvak-search)
+* [`postvak senders`↴](#postvak-senders)
 * [`postvak headers`↴](#postvak-headers)
 * [`postvak show`↴](#postvak-show)
 * [`postvak unsubscribe`↴](#postvak-unsubscribe)
@@ -74,6 +76,7 @@ Your inbox, organized by rules you write
 * `folders` — List folders with message and unread counts
 * `list` — List recent messages, newest first
 * `search` — Search subject, addresses, attachment names and bodies, newest first; words, "phrases", -not and key:value operators such as from:acme, in:Archive, is:unread or after:7d; the last word also matches as a prefix; close matches such as corrected typos follow when exact hits are few
+* `senders` — Group one folder's stored mail by sender address or registrable domain, the largest group first: message and unread counts, first and last date, a few subjects and the enabled rules that already match some of it
 * `headers` — Every header of one message, in order, unfolded and decoded as header rules see it; no body
 * `show` — Show one message
 * `unsubscribe` — Leave a message's mailing list: by one-click POST when the sender offers it (RFC 8058), else print the page or address from its List-Unsubscribe header to open
@@ -308,6 +311,7 @@ Inspect and test rules.toml
 * `approve` — Enable a disabled rule, such as a proposal
 * `reject` — Remove a pending proposal
 * `list` — Names, enabled state and who proposed them
+* `coverage` — Run the rules over one folder's stored mail without acting: how many messages a rule matches, none matches and several match; the top senders of unmatched mail; for each contested message every rule that matches and what would run under the real precedence
 * `apply-existing` — Run one enabled rule against mail that predates it; dry run lists what it would do
 
 
@@ -389,6 +393,36 @@ Names, enabled state and who proposed them
 
 ###### **Options:**
 
+* `--json`
+
+
+
+## `postvak rules coverage`
+
+Run the rules over one folder's stored mail without acting: how many messages a rule matches, none matches and several match; the top senders of unmatched mail; for each contested message every rule that matches and what would run under the real precedence
+
+**Usage:** `postvak rules coverage [OPTIONS]`
+
+###### **Options:**
+
+* `--account <ACCOUNT>`
+* `--folder <FOLDER>`
+
+  Default value: `INBOX`
+* `--include-pending` — Count the proposals still waiting for approval as if they were enabled
+* `--group-by <GROUP_BY>` — How to group the senders of unmatched mail
+
+  Default value: `address`
+
+  Possible values:
+  - `address`:
+    The sender's address
+  - `domain`:
+    The registrable domain of the sender's address
+
+* `--limit <LIMIT>` — At most this many unmatched senders and contested messages per account; the counts cover everything
+
+  Default value: `20`
 * `--json`
 
 
@@ -477,6 +511,37 @@ Anything else, such as an unknown key or a date that does not parse, searches as
 * `--limit <LIMIT>`
 
   Default value: `50`
+* `--json`
+
+
+
+## `postvak senders`
+
+Group one folder's stored mail by sender address or registrable domain, the largest group first: message and unread counts, first and last date, a few subjects and the enabled rules that already match some of it
+
+**Usage:** `postvak senders [OPTIONS]`
+
+###### **Options:**
+
+* `--account <ACCOUNT>`
+* `--folder <FOLDER>`
+
+  Default value: `INBOX`
+* `--group-by <GROUP_BY>`
+
+  Default value: `address`
+
+  Possible values:
+  - `address`:
+    The sender's address
+  - `domain`:
+    The registrable domain of the sender's address
+
+* `--limit <LIMIT>` — At most this many groups per account
+
+  Default value: `50`
+* `--after <AFTER>` — Only mail that arrived on or after this date: 2026-01-15, or 30d, 3w, 6m, 1y back from now
+* `--before <BEFORE>` — Only mail that arrived before this date: 2026-01-15, or 30d, 3w, 6m, 1y back from now
 * `--json`
 
 

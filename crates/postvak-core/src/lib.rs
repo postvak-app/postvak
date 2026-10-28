@@ -19,6 +19,7 @@ pub mod paths;
 pub mod portal;
 pub mod rules;
 pub mod search;
+pub mod senders;
 pub mod store;
 pub mod sync;
 pub mod time;

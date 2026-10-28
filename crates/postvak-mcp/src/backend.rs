@@ -13,6 +13,7 @@ use postvak_core::output;
 use postvak_core::paths::Paths;
 use postvak_core::rules::{self, Action, Rule, RuleFile};
 use postvak_core::search::{self, Scope};
+use postvak_core::senders::{self, GroupBy};
 /// The `list` filter, a plain value, so the tools need not name the store.
 pub(crate) use postvak_core::store::Filter;
 use postvak_core::store::{Message, Store};
@@ -538,6 +539,85 @@ impl Backend {
             }
         }
         Ok(rows)
+    }
+
+    /// The rules the analysis tools run: the enabled ones, with `include_pending` the waiting proposals too, less those
+    /// `sight` may not run, whose names come back second.
+    fn analysis_rules(
+        &self,
+        include_pending: bool,
+        sight: Sight,
+    ) -> Result<(Vec<rules::CompiledRule>, Vec<String>)> {
+        let all = rules::coverage::rules(&rules::load(&self.paths.rules_file())?, include_pending)?;
+        let (seen, unseen): (Vec<_>, Vec<_>) = all
+            .into_iter()
+            .partition(|rule| refuse_unseen(std::slice::from_ref(rule), sight).is_ok());
+        let skipped = unseen
+            .into_iter()
+            .filter(|rule| self.is_visible(rule.rule.account.as_deref()))
+            .map(|rule| rule.rule.name)
+            .collect();
+        Ok((seen, skipped))
+    }
+
+    /// Sender statistics of `folder` in the visible accounts; `dates` is the `after` and `before` bounds as typed.
+    pub fn senders(
+        &self,
+        account: Option<&str>,
+        folder: &str,
+        by: GroupBy,
+        limit: u32,
+        dates: (Option<&str>, Option<&str>),
+        sight: Sight,
+    ) -> Result<Value> {
+        let now = time::now();
+        let date = |value: Option<&str>| {
+            value
+                .map(|v| {
+                    search::date(v, now).with_context(|| {
+                        format!("'{v}' is not a date; use 2026-01-15, or 30d, 3w, 6m or 1y")
+                    })
+                })
+                .transpose()
+        };
+        let (after, before) = (date(dates.0)?, date(dates.1)?);
+        let (compiled, skipped) = self.analysis_rules(false, sight)?;
+        let mut rows = Vec::new();
+        for acc in self.select(account)? {
+            let store = self.store(&acc)?;
+            let identity = acc.identity()?;
+            let ctx = rules::coverage::context(&acc.name, &identity, now);
+            let found = senders::in_folder(&store, &compiled, &ctx, folder, after, before, by)?;
+            for sender in found.iter().take(limit.min(MAX_LIMIT) as usize) {
+                rows.push(output::sender(&acc.name, folder, sender)?);
+            }
+        }
+        Ok(json!({ "rows": rows, "skipped_rules": skipped }))
+    }
+
+    /// Rules coverage of `folder` in the visible accounts, one row per account.
+    pub fn rules_coverage(
+        &self,
+        account: Option<&str>,
+        folder: &str,
+        include_pending: bool,
+        by: GroupBy,
+        limit: u32,
+        sight: Sight,
+    ) -> Result<Value> {
+        let (compiled, skipped) = self.analysis_rules(include_pending, sight)?;
+        let limit = limit.min(MAX_LIMIT) as usize;
+        let mut rows = Vec::new();
+        for acc in self.select(account)? {
+            let store = self.store(&acc)?;
+            let identity = acc.identity()?;
+            let ctx = rules::coverage::context(&acc.name, &identity, time::now());
+            let mut coverage = rules::coverage::in_folder(&store, &compiled, &ctx, folder, by)?;
+            coverage.unmatched_senders.truncate(limit);
+            coverage.contests.truncate(limit);
+            rows.push(output::coverage(&acc.name, folder, &coverage)?);
+        }
+        Ok(json!({ "rows": rows, "skipped_rules": skipped }))
     }
 
     /// Runs one enabled rule over the existing mail of the visible accounts it applies to, through the daemon; a dry

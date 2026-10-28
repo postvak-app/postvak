@@ -23,7 +23,8 @@ Four crates in one workspace. `crates/postvak-core` holds every module below exc
 - `output` JSON rows shared by `--json` and MCP results
 - `paths` platform dirs, atomic writes, `stable_exe` (the binary path that survives `brew upgrade` and AppImage mounts), whether this is the macOS app opened from Finder (`launched_as_app`)
 - `portal` XDG desktop portals on Linux: one request and its `Response` (`request`), and the save dialog (`save_file`); `autostart` and the GUI's Save as… use it
-- `rules` parse + validate + schema (`mod.rs`), pure `evaluate` (`engine.rs`), side effects (`apply.rs`), the only writer of rules.toml (`edit.rs`), what leaves the file valid but not doing what was meant: a file sync's conflicting copy, a rule for an account not set up here (`warnings.rs`)
+- `rules` parse + validate + schema (`mod.rs`), pure `evaluate` (`engine.rs`), side effects (`apply.rs`), what the rules would do to a whole folder without acting (`coverage.rs`), the only writer of rules.toml (`edit.rs`), what leaves the file valid but not doing what was meant: a file sync's conflicting copy, a rule for an account not set up here (`warnings.rs`)
+- `senders` sender statistics: a folder's stored mail grouped by address or registrable domain, with counts, dates, a few subjects and the rules that match; what `senders` and `rules coverage` show
 - `search` the query syntax: `parse` reads what the user typed and never fails, `plan` builds the one FTS5 expression and the SQL predicates `Store::search` runs (operators such as `from:` and `after:` are column terms and predicates there); nothing else names the FTS table
 - `store` one SQLite file per account; migrations in `crates/postvak-core/migrations/`
 - `sync` per-account loop: sync folders in chunks, run rules, run commands, IDLE

@@ -1,4 +1,5 @@
 pub mod apply;
+pub mod coverage;
 pub mod edit;
 
 pub use edit::rule_toml;
