@@ -2521,6 +2521,9 @@ impl MailOps for QueuesCommandsOnSelect {
     fn create_folder(&mut self, name: &str) -> crate::mail_ops::MailResult<()> {
         self.inner.create_folder(name)
     }
+    fn subscribe_folder(&mut self, name: &str) -> crate::mail_ops::MailResult<()> {
+        self.inner.subscribe_folder(name)
+    }
     fn append(
         &mut self,
         folder: &str,
@@ -4669,6 +4672,9 @@ impl MailOps for Returning {
     }
     fn create_folder(&mut self, name: &str) -> crate::mail_ops::MailResult<()> {
         self.ops.create_folder(name)
+    }
+    fn subscribe_folder(&mut self, name: &str) -> crate::mail_ops::MailResult<()> {
+        self.ops.subscribe_folder(name)
     }
     fn append(
         &mut self,

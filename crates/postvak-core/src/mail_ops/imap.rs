@@ -784,6 +784,12 @@ impl MailOps for ImapOps {
         })
     }
 
+    fn subscribe_folder(&mut self, name: &str) -> MailResult<()> {
+        self.run(self.command_timeout, async |session| {
+            session.subscribe(name).await.map_err(proto)
+        })
+    }
+
     fn append(&mut self, folder: &str, raw: &[u8], flags: &[&str]) -> MailResult<()> {
         let flags = (!flags.is_empty()).then(|| format!("({})", flags.join(" ")));
         self.run(self.bulk_timeout(), async |session| {

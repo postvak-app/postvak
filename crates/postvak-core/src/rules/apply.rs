@@ -311,9 +311,8 @@ fn move_many(
             false
         }
     };
-    // The folder may exist on the server before our first sync of it; a real create failure surfaces in the move.
-    if !known && let Err(e) = ops.create_folder(target) {
-        log::debug!("{target}: create failed ({e}), trying the move anyway");
+    if !known {
+        create_and_subscribe(target, ops);
     }
     if let Err(e) = ops.move_messages(&uids_of(&moving), target) {
         fail_all(&moving, &e, &mut results);
@@ -525,6 +524,19 @@ fn junk_folder(store: &Store) -> Result<String, ApplyError> {
     special_folder(store, "Junk")?.ok_or(ApplyError::NoJunkFolder)
 }
 
+/// Creates the move target and subscribes to it, so clients that list only subscribed folders show the mail moved
+/// there. The folder may exist on the server before our first sync of it; a real create failure surfaces in the move.
+fn create_and_subscribe(target: &str, ops: &mut dyn MailOps) {
+    if let Err(e) = ops.create_folder(target) {
+        log::debug!("{target}: create failed ({e}), trying the move anyway");
+        return;
+    }
+    // The move does not need it, so a refusal only costs the folder its place in those clients.
+    if let Err(e) = ops.subscribe_folder(target) {
+        log::warn!("{target}: created, but could not subscribe to it: {e}");
+    }
+}
+
 /// A folder a move created, until its first sync fills in the rest.
 fn new_folder(name: &str) -> Folder {
     Folder {
@@ -544,9 +556,8 @@ fn move_to(
     store: &Store,
 ) -> Result<(), ApplyError> {
     let known = store.folder(target)?.is_some();
-    // The folder may exist on the server before our first sync of it; a real create failure surfaces in the move.
-    if !known && let Err(e) = ops.create_folder(target) {
-        log::debug!("{target}: create failed ({e}), trying the move anyway");
+    if !known {
+        create_and_subscribe(target, ops);
     }
     ops.move_message(current.uid, target)?;
     if !known {
@@ -799,7 +810,20 @@ mod tests {
             500,
         )
         .unwrap();
-        assert!(ops.calls.iter().any(|c| c == "create_folder Lists/GitHub"));
+        let created = ops
+            .calls
+            .iter()
+            .position(|c| c == "create_folder Lists/GitHub");
+        let subscribed = ops
+            .calls
+            .iter()
+            .position(|c| c == "subscribe_folder Lists/GitHub");
+        let moved = ops.calls.iter().position(|c| c.starts_with("move"));
+        assert!(
+            created.is_some() && created < subscribed && subscribed < moved,
+            "{:?}",
+            ops.calls
+        );
         assert!(store.folder("Lists/GitHub").unwrap().is_some());
         assert_eq!(store.message("INBOX", 5).unwrap(), None);
         assert!(
@@ -812,6 +836,73 @@ mod tests {
                 .contains(&"\\Seen".to_string()),
             "mark_read runs before the move, so the server copy carries it"
         );
+    }
+
+    #[test]
+    fn a_move_of_many_subscribes_to_the_folder_it_created() {
+        let (mut ops, store, trash, _dir, msg) = setup();
+        let applied = apply_many(
+            &plan(vec![Action::Move("Lists".into())]).actions[0],
+            &[msg],
+            &mut ops,
+            &store,
+            &trash,
+            500,
+        );
+        assert!(matches!(applied[..], [(5, Ok(1))]), "{applied:?}");
+        assert!(ops.calls.iter().any(|c| c == "subscribe_folder Lists"));
+    }
+
+    #[test]
+    fn a_move_to_a_known_folder_creates_and_subscribes_nothing() {
+        let (mut ops, store, trash, _dir, msg) = setup();
+        let moving = plan(vec![Action::Move("Archive".into())]);
+        apply(&moving, &msg, &mut ops, &store, &trash, 500).unwrap();
+        assert!(
+            !ops.calls
+                .iter()
+                .any(|c| c.starts_with("create_folder") || c.starts_with("subscribe_folder")),
+            "{:?}",
+            ops.calls
+        );
+    }
+
+    #[test]
+    fn a_folder_the_create_found_already_there_is_not_subscribed() {
+        let (mut ops, store, trash, _dir, msg) = setup();
+        // On the server, but not yet synced: the user may have unsubscribed it on purpose.
+        ops.create_folder("Lists").unwrap();
+        ops.calls.clear();
+        apply(
+            &plan(vec![Action::Move("Lists".into())]),
+            &msg,
+            &mut ops,
+            &store,
+            &trash,
+            500,
+        )
+        .unwrap();
+        assert!(ops.calls.iter().any(|c| c == "create_folder Lists"));
+        assert!(!ops.calls.iter().any(|c| c.starts_with("subscribe_folder")));
+        assert_eq!(ops.mail["Lists"].len(), 1);
+    }
+
+    #[test]
+    fn a_refused_subscribe_still_moves_the_mail() {
+        let (mut ops, store, trash, _dir, msg) = setup();
+        ops.fail_next_subscribe = Some(MailError::Protocol("NO not allowed".into()));
+        let n = apply(
+            &plan(vec![Action::Move("Lists".into())]),
+            &msg,
+            &mut ops,
+            &store,
+            &trash,
+            500,
+        )
+        .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(ops.mail["Lists"].len(), 1);
+        assert_eq!(store.message("INBOX", 5).unwrap(), None);
     }
 
     #[test]

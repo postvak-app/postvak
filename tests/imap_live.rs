@@ -279,6 +279,18 @@ fn list_status_and_status_report_what_select_does() {
     }
 }
 
+/// A folder a rule creates is subscribed, so clients that list only subscribed folders show it.
+#[test]
+fn a_created_folder_can_be_subscribed() {
+    let Some(host) = host() else { return };
+    for port in [PORT, PORT_WITHOUT_MOVE] {
+        let mut ops = connect(&account(&host, port, "subscribe"));
+        ops.create_folder("Lists").unwrap();
+        ops.subscribe_folder("Lists")
+            .unwrap_or_else(|e| panic!("port {port}: {e}"));
+    }
+}
+
 /// Mail another client adds to a folder the pass skips by its status still shows up, with or without LIST-STATUS.
 #[test]
 fn a_pass_finds_changes_another_client_made_in_a_skipped_folder() {

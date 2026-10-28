@@ -256,7 +256,7 @@ The rules pass evaluates every message of INBOX and each rule folder from the st
 
 Direct actions from the CLI (`mark`, `move`, `delete`, `archive`) build the same `Action` values and go through the same `apply`, logged in `rule_log` with `rule_name = "cli"`. One difference: a user-initiated `delete` moves to the `\Trash` folder when the server has one, like other clients, and only falls back to expunge-plus-`.eml` when there is no Trash folder. Rule deletes always expunge-plus-`.eml`, because the point is a clean mailbox. Direct actions also offer `mark_unread`, `unflag` and the user delete (`trash`); these are not valid in `rules.toml`. `--dry-run` previews any direct action from the local store.
 
-`MailOps` is the trait that `apply` and `sync` call: `list_folders`, `select`, `fetch_envelopes`, `fetch_flags`, `fetch_raw`, `store_flags`, `expunge`, `move_message`, `create_folder`, `idle`. Real impl wraps `async-imap`; `RecordingOps` in tests records calls and serves canned data. The trait exists for the fake.
+`MailOps` is the trait that `apply` and `sync` call: `list_folders`, `select`, `fetch_envelopes`, `fetch_flags`, `fetch_raw`, `store_flags`, `expunge`, `move_message`, `create_folder`, `subscribe_folder`, `idle`. Real impl wraps `async-imap`; `RecordingOps` in tests records calls and serves canned data. The trait exists for the fake.
 
 Rules file validation fails as a whole on any error (bad regex, unknown action, unknown key, no match keys), reporting rule name and TOML span. The engine never runs with a partially parsed file.
 
