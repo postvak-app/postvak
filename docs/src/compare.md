@@ -34,14 +34,7 @@ A rule in a client lives in that client's settings on that one machine. Postvak'
 
 Services such as SaneBox, Shortwave and Superhuman sort mail with a model trained on your behaviour or a prompt you write. They take no rules to write, and they can catch mail no pattern would.
 
-Postvak sorts with rules instead, for these reasons:
-
-- **Predictable.** The same mail gets the same outcome, every time. A model can file a message differently tomorrow, or delete one it misread.
-- **Reviewable.** A rule is a few lines of TOML. [`rules test`](cli.md#postvak-rules-test) shows what it would do before it does it, and [`postvak log`](cli.md#postvak-log) says which rule did what.
-- **Safe from the sender.** Mail is written by strangers. A rule matches patterns, so instructions hidden in a message cannot change what it does.
-- **Private.** Your mail is never sent to a model to be sorted. Rules run on your own machine or server, and agents see only [what you grant](mcp.md#scopes): by default headers, no bodies.
-- **Free and fast.** No subscription, no tokens per message and no API key. Rules run on every sync, without a round trip to a model, across years of mail.
-- **AI where it helps.** An agent over MCP reads your inbox, [proposes a rule](rules.md#proposals) and shows its dry run. You approve it once, and from then on the rule does the work without the model.
+Postvak sorts with rules instead: predictable, reviewable, safe from instructions hidden in a message, and private. See [why rules, not an AI](index.md#why-rules-not-an-ai-that-sorts-your-mail) for the full case, and how an agent can still [propose a rule](rules.md#proposals) for you to approve.
 
 **Pick another tool when** you would rather not write or approve rules at all, and are fine with a service reading your mail to sort it.
 
