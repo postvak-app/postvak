@@ -301,7 +301,7 @@ Inspect and test rules.toml
 
 ###### **Subcommands:**
 
-* `check` — Validate rules.toml, and warn about conflicting copies a file sync left beside it and rules for accounts not set up here
+* `check` — Validate rules.toml, and warn about what keeps it from doing what it says, such as a conflicting copy a file sync left beside it or a rule for an account not set up here
 * `test` — Dry run: print what each rule would do to the cached messages; naming a rule previews it even while disabled
 * `schema` — JSON Schema for rules.toml; a proposal is one entry of `rules`
 * `propose` — Read one rule as JSON on stdin and add it disabled, for a human to approve
@@ -314,7 +314,7 @@ Inspect and test rules.toml
 
 ## `postvak rules check`
 
-Validate rules.toml, and warn about conflicting copies a file sync left beside it and rules for accounts not set up here
+Validate rules.toml, and warn about what keeps it from doing what it says, such as a conflicting copy a file sync left beside it or a rule for an account not set up here
 
 **Usage:** `postvak rules check`
 
