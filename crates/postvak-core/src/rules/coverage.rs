@@ -4,9 +4,9 @@
 use serde::Serialize;
 
 use crate::config::Identity;
-use crate::rules::apply::plan_for;
+use crate::rules::apply::{ApplyError, plan_for, would_run};
 use crate::rules::engine::{Context, Mode, Plan, folder_needs_body, rule_matches};
-use crate::rules::{Action, CompiledRule, RuleFile, RulesError, compile};
+use crate::rules::{CompiledRule, RuleFile, RulesError, compile};
 use crate::senders::{GroupBy, Sender, senders};
 use crate::store::{Message, Store, StoreError};
 
@@ -16,8 +16,11 @@ pub struct Contest {
     pub message: Message,
     /// Every rule that matches it, in rules.toml order, whether or not it gets to act.
     pub rules: Vec<String>,
-    /// What would run, rule by rule, after a delete, `stop` and the first move have had their say.
+    /// What would run, rule by rule, after a delete, `stop` and the first move have had their say; a flag change already
+    /// in effect does not run.
     pub acts: Vec<Act>,
+    /// Why nothing would run at all, such as an archive on an account with no Archive folder; `acts` is then empty.
+    pub fails: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -97,11 +100,12 @@ pub fn in_folder(
             _ => {
                 coverage.matched += 1;
                 coverage.contested += 1;
-                let acts = acts(&plan_for(rules, &msg, ctx, store)?, &msg);
+                let (acts, fails) = acts(&plan_for(rules, &msg, ctx, store)?, &msg, store)?;
                 coverage.contests.push(Contest {
                     message: msg,
                     rules: matching,
                     acts,
+                    fails,
                 });
             }
         }
@@ -110,30 +114,26 @@ pub fn in_folder(
     Ok(coverage)
 }
 
-/// What `apply` would run of `plan`: a delete alone, or else every flag change and the first move or archive. When that
-/// first move is into the message's own folder, `apply` moves nothing, and no later move takes its place.
-fn acts(plan: &Plan, msg: &Message) -> Vec<Act> {
-    let act = |planned: &crate::rules::engine::PlannedAction| Act {
-        rule: planned.rule.clone(),
-        action: planned.action.label(),
-    };
-    if let Some(delete) = plan
-        .actions
-        .iter()
-        .find(|p| matches!(p.action, Action::Delete | Action::Trash))
-    {
-        return vec![act(delete)];
+/// What `apply` would run of `plan`, as `would_run` says, or why `apply` would fail before running anything.
+fn acts(
+    plan: &Plan,
+    msg: &Message,
+    store: &Store,
+) -> Result<(Vec<Act>, Option<String>), StoreError> {
+    match would_run(plan, msg, store) {
+        Ok(running) => Ok((
+            running
+                .into_iter()
+                .map(|planned| Act {
+                    rule: planned.rule.clone(),
+                    action: planned.action.label(),
+                })
+                .collect(),
+            None,
+        )),
+        Err(ApplyError::Store(e)) => Err(e),
+        Err(e) => Ok((Vec::new(), Some(e.to_string()))),
     }
-    let mut moved = false;
-    plan.actions
-        .iter()
-        .filter(|p| match &p.action {
-            Action::Move(target) => !std::mem::replace(&mut moved, true) && *target != msg.folder,
-            Action::Archive => !std::mem::replace(&mut moved, true),
-            _ => true,
-        })
-        .map(act)
-        .collect()
 }
 
 #[cfg(test)]
@@ -342,6 +342,115 @@ actions = ["archive"]
                 rule: "lists".into(),
                 action: "mark_read".into()
             }]
+        );
+    }
+
+    fn contest(store: &Store, folder: &str, toml: &str) -> Contest {
+        let id = identity();
+        let ctx = context("work", &id, 10_000);
+        let rules = rules(&parse(toml).unwrap(), false).unwrap();
+        let coverage = in_folder(store, &rules, &ctx, folder, GroupBy::Address).unwrap();
+        coverage.contests.into_iter().next().unwrap()
+    }
+
+    fn acted(contest: &Contest) -> Vec<(&str, &str)> {
+        contest
+            .acts
+            .iter()
+            .map(|a| (a.rule.as_str(), a.action.as_str()))
+            .collect()
+    }
+
+    const ARCHIVE_AND_READ: &str = r#"
+[[rules]]
+name = "keep"
+match.from = { contains = "@list.example" }
+actions = ["flag", "archive"]
+
+[[rules]]
+name = "read"
+match.subject = { regex = "." }
+actions = ["mark_read"]
+"#;
+
+    #[test]
+    fn an_archive_without_an_archive_folder_runs_nothing_and_says_why() {
+        let store = store(&[(1, "news@list.example", "Weekly")]);
+        let contest = contest(&store, "INBOX", ARCHIVE_AND_READ);
+        assert_eq!(contest.rules, ["keep", "read"]);
+        assert!(contest.acts.is_empty(), "{:?}", contest.acts);
+        assert_eq!(
+            contest.fails.as_deref(),
+            Some("the server has no Archive folder")
+        );
+    }
+
+    #[test]
+    fn an_archive_in_the_archive_folder_moves_nothing() {
+        let store = store(&[]);
+        store
+            .upsert_folder(&crate::store::Folder {
+                name: "Archive".into(),
+                uidvalidity: 1,
+                last_uid: 0,
+                special_use: Some("Archive".into()),
+                delimiter: None,
+            })
+            .unwrap();
+        store
+            .insert_message(&Message {
+                folder: "Archive".into(),
+                uid: 1,
+                message_id: Some("1@x".into()),
+                thread_id: "1@x".into(),
+                from_addr: Some("news@list.example".into()),
+                subject: Some("Weekly".into()),
+                internaldate: 100,
+                ..Default::default()
+            })
+            .unwrap();
+        let in_archive =
+            ARCHIVE_AND_READ.replace("[[rules]]\n", "[[rules]]\nfolder = \"Archive\"\n");
+        let contest = contest(&store, "Archive", &in_archive);
+        assert_eq!(contest.fails, None);
+        assert_eq!(acted(&contest), [("keep", "flag"), ("read", "mark_read")]);
+    }
+
+    #[test]
+    fn a_flag_change_already_in_effect_does_not_act() {
+        let store = store(&[]);
+        store
+            .insert_message(&Message {
+                folder: "INBOX".into(),
+                uid: 1,
+                message_id: Some("1@x".into()),
+                thread_id: "1@x".into(),
+                from_addr: Some("news@list.example".into()),
+                subject: Some("Weekly".into()),
+                flags: "\\Seen".into(),
+                internaldate: 100,
+                ..Default::default()
+            })
+            .unwrap();
+        let contest = contest(
+            &store,
+            "INBOX",
+            r#"
+[[rules]]
+name = "read"
+match.from = { contains = "@list.example" }
+actions = ["mark_read", "flag"]
+
+[[rules]]
+name = "unread"
+match.subject = { regex = "." }
+actions = ["flag", { tag = "$later" }]
+"#,
+        );
+        // Already read, so mark_read is skipped; the first rule's flag leaves nothing for the second rule's flag to do.
+        assert_eq!(
+            acted(&contest),
+            [("read", "flag"), ("unread", "tag:$later")]
         );
     }
 }

@@ -100,6 +100,7 @@ pub fn coverage(account: &str, folder: &str, coverage: &Coverage) -> serde_json:
                 "message": message(account, &contest.message, None)?,
                 "rules": contest.rules,
                 "acts": contest.acts,
+                "fails": contest.fails,
             }))
         })
         .collect::<serde_json::Result<Vec<Value>>>()?;

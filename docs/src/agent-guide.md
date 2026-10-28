@@ -33,7 +33,7 @@ postvak rules coverage --folder INBOX --json
 ```
 
 - `senders` groups a folder's stored mail by sender (or `--group-by domain`), biggest group first, with counts, unread, first and last date (Unix seconds), a few subjects and the enabled `rules` that already match some of it. `--after 90d` or `--before 2026-01-01` narrow it. A large group with no rules is a candidate.
-- `rules coverage` runs the rules over the folder without acting: how many messages are `matched`, `unmatched` or `contested` (several rules match), the top `unmatched_senders`, and for each contested message every matching rule and the `acts` that would run. Run it with `--include-pending` after you propose, to show the human what the proposal changes and whether an earlier rule would take its mail first.
+- `rules coverage` runs the rules over the folder without acting: how many messages are `matched`, `unmatched` or `contested` (several rules match), the top `unmatched_senders`, and for each contested message every matching rule and the `acts` that would run, or in `fails` why nothing would. Run it with `--include-pending` after you propose, to show the human what the proposal changes and whether an earlier rule would take its mail first.
 
 Over MCP, rules your scopes may not run (a `header` condition without `read:headers`, a body condition without `read:bodies`) are left out and listed in `skipped_rules`.
 

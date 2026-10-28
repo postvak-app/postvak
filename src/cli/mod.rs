@@ -1489,7 +1489,10 @@ fn print_coverage(account: &str, folder: &str, coverage: &postvak_core::rules::c
             .iter()
             .map(|act| format!("{} {}", act.rule, act.action))
             .collect();
-        println!("    acts:  {}", clean(&acts.join(", "), false));
+        match &contest.fails {
+            Some(why) => println!("    acts:  nothing ({why})"),
+            None => println!("    acts:  {}", clean(&acts.join(", "), false)),
+        }
     }
 }
 

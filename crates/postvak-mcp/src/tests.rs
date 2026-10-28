@@ -1923,6 +1923,25 @@ fn analysis_fixture() -> Fixture {
 }
 
 #[tokio::test]
+async fn skipped_rules_never_name_a_rule_for_a_hidden_account() {
+    let fx = fixture(&["work", "home"]);
+    let rules = format!(
+        "{ANALYSIS_RULES}\n[[rules]]\nname = \"home only\"\naccount = \"home\"\nmatch.header = {{ name = \"List-Id\", contains = \"y\" }}\nactions = [\"flag\"]\n"
+    );
+    std::fs::write(fx.paths.rules_file(), rules).unwrap();
+    fx.add("work", from_sender(1, "friend@home.example", "Dinner?"));
+    let client = connect(&fx, "read", &["work"]).await;
+    for tool in ["senders", "rules_coverage"] {
+        let result = call(&client, tool, json!({})).await;
+        assert_eq!(
+            result.structured_content.as_ref().unwrap()["skipped_rules"],
+            json!(["list header"]),
+            "{tool}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn senders_groups_by_address_or_domain_and_names_matching_rules() {
     let fx = analysis_fixture();
     let client = connect(&fx, "read", &[]).await;
@@ -2002,6 +2021,7 @@ async fn rules_coverage_counts_and_lists_contested_mail_with_what_acts() {
         contested["acts"],
         json!([{ "rule": "delivery", "action": "move:Deliveries" }, { "rule": "shop", "action": "flag" }])
     );
+    assert_eq!(contested["fails"], json!(null));
 
     let pending = rows(
         &call(
