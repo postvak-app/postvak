@@ -41,7 +41,7 @@ Over MCP, rules your scopes may not run (a `header` condition without `read:head
 ## Writing a rule
 
 1. Run `postvak rules schema` for the JSON Schema. A rule is one entry of `rules`; `postvak guide rules` explains every key, with examples.
-2. Write the rule as JSON. Keep the conditions as narrow as the request allows. A `header` condition is often the surest: `postvak headers <uid>` prints every header of a message as rules see it, such as `List-Id`, `List-Unsubscribe`, `Auto-Submitted` or your provider's spam score, so read a few examples before you pick one:
+2. Write the rule as JSON. Keep the conditions as narrow as the request allows. A `header` condition is often the surest: `postvak headers <uid>` prints every header of a message as rules see it, such as `List-Id`, `List-Unsubscribe`, `Auto-Submitted` or your provider's spam score, so read a few examples before you pick one. For mail from one sender, match `from_domain` (`"from_domain": "paypal.com"` also covers `mail.paypal.com`, but not `notpaypal.com` or a display name that says PayPal) rather than a `from` substring. A rule that moves security, bank or payment mail should also say `"authenticated": true`, so mail that only claims to come from that domain stays where the human sees it; that needs the account's `trusted_authserv_ids`, and `rules check` warns when it is missing, which only the human can fix. A rule for sign-in codes from any sender:
 
 ```json
 {

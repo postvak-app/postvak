@@ -3,7 +3,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use i_slint_backend_testing::ElementHandle;
 use slint::ComponentHandle;
@@ -43,6 +43,13 @@ pub(crate) struct Wires {
 impl Wires {
     pub fn sent(&self) -> Vec<(String, Command)> {
         self.commands.try_iter().collect()
+    }
+
+    /// Sends `events` as the daemon would; the app takes them on its next tick.
+    pub fn send(&self, events: impl IntoIterator<Item = Event>) {
+        for event in events {
+            self.events.send(event).unwrap();
+        }
     }
 }
 
@@ -198,6 +205,22 @@ impl Open {
         let result = with_live(f).unwrap();
         with_live(Live::tick).unwrap();
         result
+    }
+
+    /// Sends the daemon's `events`, then ticks so the window takes them.
+    pub fn receive(&self, wires: &Wires, events: impl IntoIterator<Item = Event>) {
+        wires.send(events);
+        self.tick();
+    }
+
+    /// Ticks until `done` holds; for answers from other threads.
+    pub fn tick_until(&self, done: impl Fn(&Open) -> bool) {
+        wait_until(|| {
+            done(self) || {
+                self.tick();
+                false
+            }
+        });
     }
 
     /// Takes what the daemon sent, as when the window is woken. Visiting the elements then makes Slint build what the
@@ -434,6 +457,22 @@ impl Driver {
         self.tick();
     }
 
+    /// Sends the daemon's `events`, then ticks so the app takes them.
+    pub fn receive(&mut self, wires: &Wires, events: impl IntoIterator<Item = Event>) {
+        wires.send(events);
+        self.tick();
+    }
+
+    /// Ticks until `done` holds; for answers from other threads.
+    pub fn tick_until(&mut self, done: impl Fn(&App) -> bool) {
+        wait_until(|| {
+            done(&self.app) || {
+                self.tick();
+                false
+            }
+        });
+    }
+
     /// Presses each space-separated key in the focused pane: "down", "up", "left", "right", "tab", "escape",
     /// "delete", "backspace", "enter", "ctrl+r", or the text it types. While the search field or the move picker has
     /// the keyboard, text goes there and Enter does what it does there.
@@ -536,6 +575,23 @@ pub(crate) fn unread(folder: &str, uid: u32, subject: &str) -> Message {
     message
 }
 
+/// How long a test waits for an answer from another thread before it fails; generous, since a loaded machine renders
+/// HTML slowly.
+const WAIT: Duration = Duration::from_secs(30);
+
+/// Calls `ready` every few milliseconds until it holds, and fails the test after `WAIT`. `ready` ticks whatever has to
+/// take the answer in.
+pub(crate) fn wait_until(mut ready: impl FnMut() -> bool) {
+    let deadline = Instant::now() + WAIT;
+    while !ready() {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for another thread"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 /// What the window sends to the daemon for `action` on `uids` of `folder` in `account`.
 pub(crate) fn command(
     account: &str,
@@ -550,6 +606,26 @@ pub(crate) fn command(
         by: "gui".into(),
     };
     (account.into(), apply)
+}
+
+/// `command` for the "work" account, the one most tests use.
+pub(crate) fn work(
+    folder: &str,
+    uids: &[u32],
+    action: postvak_core::rules::Action,
+) -> (String, Command) {
+    command("work", folder, uids, action)
+}
+
+/// The daemon's word that `account` finished a sync that found `new_messages`.
+pub(crate) fn synced(account: &str, new_messages: usize) -> Event {
+    Event::Synced {
+        account: account.into(),
+        new_messages,
+        actions: 0,
+        requests: vec![],
+        errors: vec![],
+    }
 }
 
 /// A 1×1 PNG, for the `cid:` image.

@@ -791,16 +791,12 @@ mod tests {
     }
 
     use crate::state::Focus;
-    use crate::test_support::{Fixture, command, unread};
+    use crate::test_support::{Fixture, unread, work};
     use postvak_core::rules::Action;
     use postvak_core::sync::Command;
 
     fn uids(open: &crate::test_support::Open) -> Vec<u32> {
         open.with(|live| live.app.list.rows.iter().map(|r| r.uid).collect())
-    }
-
-    fn apply(folder: &str, uids: &[u32], action: Action) -> (String, Command) {
-        command("work", folder, uids, action)
     }
 
     #[test]
@@ -980,7 +976,7 @@ mod tests {
             .position(|(title, _)| *title == "Archive")
             .unwrap();
         open.window().invoke_row_menu(1, 1, archive as i32);
-        assert_eq!(wires.sent(), [apply("INBOX", &[1], Action::Archive)]);
+        assert_eq!(wires.sent(), [work("INBOX", &[1], Action::Archive)]);
     }
 
     #[test]
@@ -1005,7 +1001,7 @@ mod tests {
         let (open, wires) = fx.window();
         open.press("x j x");
         open.window().invoke_row_menu(0, 1, 2);
-        assert_eq!(wires.sent(), [apply("INBOX", &[2, 3], Action::Trash)]);
+        assert_eq!(wires.sent(), [work("INBOX", &[2, 3], Action::Trash)]);
     }
 
     #[test]
@@ -1017,7 +1013,7 @@ mod tests {
         let (open, wires) = fx.window();
         open.press("x");
         open.window().invoke_row_menu(2, 1, 2);
-        assert_eq!(wires.sent(), [apply("INBOX", &[1], Action::Trash)]);
+        assert_eq!(wires.sent(), [work("INBOX", &[1], Action::Trash)]);
     }
 
     #[test]
@@ -1073,7 +1069,7 @@ mod tests {
         open.drag(&row_of(&open, 1), "Travel");
         assert_eq!(
             wires.sent(),
-            [apply("INBOX", &[1], Action::Move("Travel".into()))]
+            [work("INBOX", &[1], Action::Move("Travel".into()))]
         );
     }
 
@@ -1089,7 +1085,7 @@ mod tests {
         open.drag(&row_of(&open, 2), "Travel");
         assert_eq!(
             wires.sent(),
-            [apply("INBOX", &[2, 3], Action::Move("Travel".into()))]
+            [work("INBOX", &[2, 3], Action::Move("Travel".into()))]
         );
     }
 
@@ -1105,7 +1101,7 @@ mod tests {
         open.drag(&row_of(&open, 1), "Travel");
         assert_eq!(
             wires.sent(),
-            [apply("INBOX", &[1], Action::Move("Travel".into()))]
+            [work("INBOX", &[1], Action::Move("Travel".into()))]
         );
     }
 
@@ -1236,7 +1232,7 @@ mod tests {
             wires.sent(),
             [
                 ("work".to_string(), search),
-                apply("Archive", &[3], Action::Move("INBOX".into()))
+                work("Archive", &[3], Action::Move("INBOX".into()))
             ]
         );
         open.press("escape");
@@ -1276,7 +1272,7 @@ mod tests {
             wires.sent(),
             [
                 ("work".to_string(), search),
-                apply("Archive", &[3], Action::Move("INBOX".into()))
+                work("Archive", &[3], Action::Move("INBOX".into()))
             ]
         );
         assert!(open.find("Move to").is_empty());
@@ -1299,7 +1295,7 @@ mod tests {
         picker.unwrap().invoke_accessible_default_action();
         assert_eq!(
             wires.sent(),
-            [apply("INBOX", &[1], Action::Move("Travel".into()))]
+            [work("INBOX", &[1], Action::Move("Travel".into()))]
         );
     }
 

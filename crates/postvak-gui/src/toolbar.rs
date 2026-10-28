@@ -98,16 +98,11 @@ pub(crate) fn enabled(app: &App) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::state::{UiAction, View};
-    use crate::test_support::{Fixture, Open, command, message};
+    use crate::test_support::{Fixture, Open, message, work};
     use postvak_core::rules::Action;
-    use postvak_core::sync::Command;
 
     fn enabled(open: &Open, label: &str) -> bool {
         open.get(label).accessible_enabled().unwrap()
-    }
-
-    fn apply(folder: &str, action: Action) -> (String, Command) {
-        command("work", folder, &[1], action)
     }
 
     #[test]
@@ -155,7 +150,7 @@ mod tests {
         fx.add("work", message("INBOX", 1, "hello"));
         let (open, wires) = fx.window();
         open.click("Archive message");
-        assert_eq!(wires.sent(), [apply("INBOX", Action::Archive)]);
+        assert_eq!(wires.sent(), [work("INBOX", &[1], Action::Archive)]);
         assert!(open.with(|live| live.app.list.rows.is_empty()));
     }
 
@@ -170,7 +165,7 @@ mod tests {
         open.click("Unarchive message");
         assert_eq!(
             wires.sent(),
-            [apply("Archive", Action::Move("INBOX".into()))]
+            [work("Archive", &[1], Action::Move("INBOX".into()))]
         );
     }
 
@@ -188,8 +183,8 @@ mod tests {
         assert_eq!(
             wires.sent(),
             [
-                apply("INBOX", Action::Junk),
-                command("work", "Spam", &[2], Action::NotJunk)
+                work("INBOX", &[1], Action::Junk),
+                work("Spam", &[2], Action::NotJunk)
             ]
         );
     }

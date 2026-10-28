@@ -120,7 +120,7 @@ pub(crate) fn save(
 ) -> Result<Saving, String> {
     let (account, secret) = fields.account()?;
     let (done, answer) = mpsc::channel();
-    std::thread::spawn(move || {
+    crate::worker::spawn("account-save", move || {
         let tested = Config::load(&paths.config_file())
             .map_err(|e| e.to_string())
             .and_then(|config| {
@@ -163,7 +163,6 @@ mod tests {
     use postvak_core::paths::Paths;
 
     use super::*;
-    use std::time::Instant;
 
     use crate::state::View;
     use crate::test_support::{Fixture, Open};
@@ -193,12 +192,7 @@ mod tests {
                     .is_some_and(|form| form.saving.is_some())
             })
         };
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while saving() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-            open.tick();
-        }
-        assert!(!saving(), "the save did not finish");
+        open.tick_until(|_| !saving());
     }
 
     fn names(open: &Open) -> Vec<String> {
@@ -229,8 +223,7 @@ mod tests {
             account: "home".into(),
             message: "login failed".into(),
         };
-        wires.events.send(refused).unwrap();
-        open.tick();
+        open.receive(&wires, [refused]);
         assert_eq!(open.find("home: login failed").len(), 1);
         open.advance(5.0);
         assert!(
@@ -290,8 +283,7 @@ mod tests {
             account: "work".into(),
             message: "login failed".into(),
         };
-        wires.events.send(refused).unwrap();
-        open.tick();
+        open.receive(&wires, [refused]);
         open.window().invoke_menu_item(MenuAction::AddAccount);
         fill_window(&open, "work", "imap.example.org");
         save_in(&open);

@@ -1,5 +1,5 @@
 use crate::config::Identity;
-use crate::message::{bare_addresses, header_text};
+use crate::message::{auth, bare_addresses, header_text};
 use crate::rules::{Action, CompiledRule, Conditions};
 use crate::store::{Message, has_flag};
 
@@ -103,6 +103,18 @@ fn field(value: &Option<String>) -> &str {
     value.as_deref().unwrap_or("")
 }
 
+/// Whether an address of the field, not its display name, is in one of `domains` or a subdomain of one.
+fn in_any_domain(addresses: &str, domains: &[String]) -> bool {
+    bare_addresses(addresses)
+        .iter()
+        .filter_map(|address| auth::address_domain(address))
+        .any(|domain| {
+            domains
+                .iter()
+                .any(|parent| auth::in_domain(&domain, parent))
+        })
+}
+
 fn matches(c: &Conditions, msg: &Message, ctx: &Context) -> bool {
     if let Some(m) = &c.from
         && !m.is_address_match(field(&msg.from_addr))
@@ -134,6 +146,24 @@ fn matches(c: &Conditions, msg: &Message, ctx: &Context) -> bool {
             Some(value) if m.is_match(&value) => {}
             _ => return false,
         }
+    }
+    if let Some(domains) = &c.from_domain
+        && !in_any_domain(field(&msg.from_addr), domains)
+    {
+        return false;
+    }
+    if let Some(domains) = &c.to_domain
+        && !in_any_domain(field(&msg.to_addr), domains)
+    {
+        return false;
+    }
+    if let Some(authenticated) = c.authenticated
+        && ctx
+            .identity
+            .authenticated(&msg.headers, field(&msg.from_addr))
+            != authenticated
+    {
+        return false;
     }
     if let Some(min_age) = c.older_than
         && ctx.now - msg.internaldate < i64::try_from(min_age.as_secs()).unwrap_or(i64::MAX)
@@ -835,6 +865,162 @@ actions = [{ move = "Later" }]
         let mut m = msg("a@x", "p@x", "s", 100, false);
         m.headers = b"X-Team: =?UTF-8?Q?Gr=C3=BC=C3=9Fe?=\r\n\r\n".to_vec();
         assert!(fires(toml, &m));
+    }
+
+    #[test]
+    fn from_domain_matches_the_address_domain_and_its_subdomains_only() {
+        let toml = "[[rules]]\nname = \"ms\"\nmatch.from_domain = \"microsoft.com\"\nactions = [\"flag\"]\n";
+        for (from, hit) in [
+            ("Microsoft <account-security@microsoft.com>", true),
+            ("x@AccountProtection.Microsoft.com", true),
+            ("x@notmicrosoft.com", false),
+            ("x@microsoft.com.evil", false),
+            ("\"microsoft.com\" <x@scam.example>", false),
+            ("\"x@microsoft.com\" <x@scam.example>", false),
+            ("microsoft.com", false),
+            ("a@scam.example, b@microsoft.com", true),
+        ] {
+            assert_eq!(
+                fires(toml, &msg(from, "p@x", "s", 100, false)),
+                hit,
+                "{from}"
+            );
+        }
+    }
+
+    #[test]
+    fn domain_lists_match_any_and_to_domain_reads_the_to_header() {
+        let toml = "[[rules]]\nname = \"pp\"\nmatch.from_domain = [\"paypal.nl\", \"paypal.com\"]\nmatch.to_domain = \"example.org\"\nactions = [\"flag\"]\n";
+        assert!(fires(
+            toml,
+            &msg("a@paypal.nl", "Me <me@mail.example.org>", "s", 100, false)
+        ));
+        assert!(fires(
+            toml,
+            &msg("a@e.paypal.com", "x@y, me@example.org", "s", 100, false)
+        ));
+        assert!(!fires(
+            toml,
+            &msg("a@paypal.de", "me@example.org", "s", 100, false)
+        ));
+        assert!(!fires(
+            toml,
+            &msg("a@paypal.nl", "\"me@example.org\" <a@b.c>", "s", 100, false)
+        ));
+        let mut cc_only = msg("a@paypal.nl", "x@y", "s", 100, false);
+        cc_only.cc_addr = Some("me@example.org".into());
+        assert!(!fires(toml, &cc_only), "to_domain reads To, as `to` does");
+    }
+
+    #[test]
+    fn authenticated_believes_only_the_accounts_provider() {
+        let account = |trusted: Option<Vec<String>>| {
+            let password = PasswordSource::Keyring { keyring: true };
+            let mut account = AccountConfig::new("work", "imap.soverin.net", "me@x.test", password);
+            account.trusted_authserv_ids = trusted;
+            account.identity().unwrap()
+        };
+        let id = account(Some(vec!["mx.soverin.net".into()]));
+        let rule = |want: bool| {
+            rules(
+                &format!(
+                    "[[rules]]\nname = \"a\"\nmatch.from_domain = \"paypal.com\"\nmatch.authenticated = {want}\nactions = [\"flag\"]\n"
+                ),
+                0,
+            )
+        };
+        let with = |headers: &str| {
+            let mut m = msg("PayPal <service@paypal.com>", "me@x.test", "s", 100, false);
+            m.headers = format!("{headers}From: PayPal <service@paypal.com>\r\n\r\n").into_bytes();
+            m
+        };
+        let fired =
+            |want: bool, m: &Message| !evaluate(&rule(want), m, &ctx(&id, 200)).actions.is_empty();
+        let cases = [
+            (
+                "Authentication-Results: mx.soverin.net; dkim=pass header.d=paypal.com; dmarc=pass header.from=paypal.com\r\n",
+                true,
+            ),
+            (
+                "Authentication-Results: mx.soverin.net; dkim=pass header.d=mail.paypal.com\r\n",
+                true,
+            ),
+            (
+                "Authentication-Results: mx.soverin.net; dkim=pass header.d=sendgrid.net; spf=pass\r\n",
+                false,
+            ),
+            (
+                "Authentication-Results: mx.soverin.net; dmarc=fail header.from=paypal.com\r\n",
+                false,
+            ),
+            // Forged by the sender: an authserv-id that is not the provider's.
+            (
+                "Authentication-Results: mx.paypal.com; dmarc=pass header.from=paypal.com\r\n",
+                false,
+            ),
+            // The provider's header comes first; a pass further down is older, and may be forged.
+            (
+                "Authentication-Results: mx.soverin.net; dmarc=fail header.from=paypal.com\r\nAuthentication-Results: mx.soverin.net; dmarc=pass header.from=paypal.com\r\n",
+                false,
+            ),
+            // Only the listed server counts, not others in its domain.
+            (
+                "Authentication-Results: mx.google.com; dmarc=fail header.from=paypal.com\r\nAuthentication-Results: mx2.soverin.net; dmarc=pass header.from=paypal.com\r\n",
+                false,
+            ),
+            ("", false),
+        ];
+        for (headers, authenticated) in cases {
+            let m = with(headers);
+            assert_eq!(fired(true, &m), authenticated, "{headers}");
+            assert_eq!(fired(false, &m), !authenticated, "{headers}");
+        }
+        // A regression: without a list nothing is trusted, not even a server in the IMAP host's domain, since on a
+        // server that writes no Authentication-Results the topmost one is the sender's.
+        let forged = with(
+            "Authentication-Results: mx.soverin.net; dkim=pass header.d=paypal.com; dmarc=pass header.from=paypal.com\r\n",
+        );
+        for trusted in [None, Some(Vec::new())] {
+            let id = account(trusted);
+            assert!(
+                evaluate(&rule(true), &forged, &ctx(&id, 200))
+                    .actions
+                    .is_empty()
+            );
+            assert!(
+                !evaluate(&rule(false), &forged, &ctx(&id, 200))
+                    .actions
+                    .is_empty()
+            );
+        }
+        let mut gmail = AccountConfig::new(
+            "gmail",
+            "imap.gmail.com",
+            "me@gmail.com",
+            PasswordSource::Keyring { keyring: true },
+        );
+        gmail.trusted_authserv_ids = Some(vec!["mx.google.com".into()]);
+        let gmail = gmail.identity().unwrap();
+        let listed = |headers: &str| {
+            !evaluate(&rule(true), &with(headers), &ctx(&gmail, 200))
+                .actions
+                .is_empty()
+        };
+        assert!(listed(
+            "Authentication-Results: mx.google.com; dmarc=pass header.from=paypal.com\r\nAuthentication-Results: mx.google.com; dmarc=fail\r\n"
+        ));
+        assert!(
+            listed(
+                "Authentication-Results: spam.example; none\r\nAuthentication-Results: mx.google.com; dkim=pass header.d=paypal.com\r\n"
+            ),
+            "a listed id counts below a header the list does not name"
+        );
+        assert!(!listed(
+            "Authentication-Results: mx.google.com; dmarc=fail header.from=paypal.com\r\nAuthentication-Results: mx.google.com; dmarc=pass header.from=paypal.com\r\n"
+        ));
+        assert!(!listed(
+            "Authentication-Results: mx.soverin.net; dmarc=pass header.from=paypal.com\r\n"
+        ));
     }
 
     #[test]

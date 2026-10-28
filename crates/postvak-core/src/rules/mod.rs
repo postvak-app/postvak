@@ -113,6 +113,15 @@ pub struct Match {
     /// Any header, by name; a list must all match
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub header: Option<OneOrMany<HeaderMatch>>,
+    /// The From address's domain or any subdomain of it, never the display name; a list matches any of them
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_domain: Option<OneOrMany<String>>,
+    /// The domain, or any subdomain, of an address in the To header; a list matches any of them
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_domain: Option<OneOrMany<String>>,
+    /// An Authentication-Results header from a server in the account's trusted_authserv_ids says DMARC passed for the From domain, or without a DMARC verdict, DKIM passed for a domain aligned with it; never true without that list
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authenticated: Option<bool>,
     /// Arrived at least this long ago, e.g. 30m, 1h, 2days
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub older_than: Option<String>,
@@ -373,6 +382,10 @@ pub(crate) struct Conditions {
     pub(crate) subject: Option<Matcher>,
     pub(crate) body: Option<Matcher>,
     pub(crate) headers: Vec<(String, Matcher)>,
+    /// Lower-cased domains, without a leading `@` or a trailing dot.
+    pub(crate) from_domain: Option<Vec<String>>,
+    pub(crate) to_domain: Option<Vec<String>>,
+    pub(crate) authenticated: Option<bool>,
     pub(crate) older_than: Option<Duration>,
     pub(crate) larger_than: Option<u64>,
     pub(crate) seen: Option<bool>,
@@ -521,6 +534,9 @@ fn compile_match(
         || m.subject.is_some()
         || m.body.is_some()
         || !headers.is_empty()
+        || m.from_domain.is_some()
+        || m.to_domain.is_some()
+        || m.authenticated.is_some()
         || m.older_than.is_some()
         || m.larger_than.is_some()
         || m.seen.is_some()
@@ -621,6 +637,11 @@ fn compile_match(
                 .collect(),
         }
     };
+    let domains = |key: &str, list: &Option<OneOrMany<String>>| {
+        list.as_ref()
+            .map(|list| domain_list(rule, &format!("{path}.{key}"), list.as_slice()))
+            .transpose()
+    };
     let any = branches("any", &m.any)?;
     let none = branches("none", &m.none)?;
     Ok(Conditions {
@@ -630,6 +651,9 @@ fn compile_match(
         subject: text("subject", &m.subject)?,
         body: text("body", &m.body)?,
         headers,
+        from_domain: domains("from_domain", &m.from_domain)?,
+        to_domain: domains("to_domain", &m.to_domain)?,
+        authenticated: m.authenticated,
         older_than,
         larger_than,
         seen: m.seen,
@@ -640,6 +664,44 @@ fn compile_match(
         none,
         any,
     })
+}
+
+/// The domains of a `from_domain` or `to_domain`, lower-cased; a leading `@` and a trailing dot are dropped, so
+/// `@PayPal.com.` is `paypal.com`. Refused when empty or when a value is no domain.
+fn domain_list(rule: &str, path: &str, values: &[String]) -> Result<Vec<String>, RulesError> {
+    if values.is_empty() {
+        return Err(invalid(rule, format!("{path} must not be empty")));
+    }
+    values
+        .iter()
+        .map(|value| {
+            let domain = value
+                .trim()
+                .trim_start_matches('@')
+                .trim_end_matches('.')
+                .to_lowercase();
+            if domain.is_empty() {
+                return Err(invalid(rule, format!("{path} must not be empty")));
+            }
+            let bad = |c: char| c == '@' || c.is_whitespace() || c.is_control();
+            if domain.contains(bad) || domain.starts_with('.') || domain.contains("..") {
+                return Err(invalid(
+                    rule,
+                    format!(
+                        "{path}: '{}' is not a domain such as example.com",
+                        value.escape_default()
+                    ),
+                ));
+            }
+            if domain.chars().count() > MAX_NAME_CHARS {
+                return Err(invalid(
+                    rule,
+                    format!("{path} must be at most {MAX_NAME_CHARS} characters"),
+                ));
+            }
+            Ok(domain)
+        })
+        .collect()
 }
 
 /// Bytes in `500`, `500B`, `2KB`, `5 MB` or `1GB`, ignoring case; units are powers of 1024, as in Thunderbird.
@@ -1122,6 +1184,42 @@ actions = [{ tag = "$label4" }, { move = "Shop" }]
             compiled[0].rule.actions,
             vec![Action::MarkRead, Action::Stop]
         );
+    }
+
+    #[test]
+    fn domain_conditions_take_one_or_more_domains() {
+        let text = "[[rules]]\nname = \"x\"\nmatch.from_domain = [\"@PayPal.com.\", \"paypal.nl\"]\nmatch.to_domain = \"Example.org\"\nmatch.authenticated = true\nactions = [\"flag\"]\n";
+        let compiled = compile(&parse(text).unwrap()).unwrap();
+        let c = &compiled[0].conditions;
+        assert_eq!(
+            c.from_domain.as_deref(),
+            Some(&["paypal.com".to_string(), "paypal.nl".to_string()][..])
+        );
+        assert_eq!(
+            c.to_domain.as_deref(),
+            Some(&["example.org".to_string()][..])
+        );
+        assert_eq!(c.authenticated, Some(true));
+        assert!(!compiled[0].matches_header());
+        let rule = |value: &str| {
+            format!("[[rules]]\nname = \"x\"\nmatch.from_domain = {value}\nactions = [\"flag\"]\n")
+        };
+        for (value, want) in [
+            ("[]", "match.from_domain must not be empty"),
+            ("\" \"", "match.from_domain must not be empty"),
+            ("\"@\"", "match.from_domain must not be empty"),
+            ("\"a@paypal.com\"", "is not a domain"),
+            ("\"pay pal.com\"", "is not a domain"),
+            ("\".paypal.com\"", "is not a domain"),
+            ("\"paypal..com\"", "is not a domain"),
+        ] {
+            match parse(&rule(value)).and_then(|f| compile(&f)) {
+                Err(RulesError::Invalid { reason, .. }) => {
+                    assert!(reason.contains(want), "{reason} should contain {want}")
+                }
+                other => panic!("expected Invalid for {value}, got {other:?}"),
+            }
+        }
     }
 
     #[test]
