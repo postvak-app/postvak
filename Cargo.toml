@@ -85,7 +85,7 @@ toml_edit = "0.25"                                   # approve/reject edit rules
 ureq = { version = "3", default-features = false, features = ["rustls"] }  # HTTP over the same rustls and ring: remote images in HTML mail when the user asks, the update check, and one-click unsubscribe
 url = "2"                                            # parse URLs to check their host before Postvak contacts it; already in the tree through Blitz and webbrowser
 webpki-roots = "1"                                   # root certificates
-zbus = "5"                                           # Linux notifications on one session bus connection, which also hears clicks and activation tokens; already in the tree through the Secret Service store
+zbus = "6"                                           # Linux notifications on one session bus connection, which also hears clicks and activation tokens; already in the tree through the Secret Service store
 zbus-secret-service-keyring-store = { version = "1", features = ["rt-tokio-crypto-rust"] }  # Secret Service backend for keyring-core
 zeroize = "1"                                        # wipe secrets on drop
 
