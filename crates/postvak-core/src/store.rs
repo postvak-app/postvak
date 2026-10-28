@@ -840,6 +840,33 @@ impl Store {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
+    /// The messages in `folder` that arrived at or after `after` and before `before`, newest first; with their body
+    /// text only when `with_body`, so sender statistics and rules coverage read no more than the rules they run need.
+    pub fn messages_between(
+        &self,
+        folder: &str,
+        after: Option<i64>,
+        before: Option<i64>,
+        with_body: bool,
+    ) -> Result<Vec<Message>, StoreError> {
+        let columns = if with_body {
+            MESSAGE_COLUMNS
+        } else {
+            BODILESS_COLUMNS
+        };
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT {columns} FROM messages WHERE folder = ?1 AND internaldate >= ?2 AND internaldate < ?3
+             ORDER BY internaldate DESC, uid DESC"
+        ))?;
+        let range = params![
+            folder,
+            after.unwrap_or(i64::MIN),
+            before.unwrap_or(i64::MAX)
+        ];
+        let rows = serde_rusqlite::from_rows::<Message>(stmt.query(range)?);
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
     /// The messages `query` matches, newest first, in `folder` or any folder, at most `limit`. `close` adds the
     /// close matches when the exact ones are few; `identity` resolves `from:me` and `to:me`. The plan's predicates
     /// follow the FTS match; their `?` parameters count on from the fixed ones, so the later placeholders are
@@ -2422,6 +2449,32 @@ mod tests {
             },
             read[0],
             "every other column is read"
+        );
+    }
+
+    #[test]
+    fn messages_between_read_a_date_range_newest_first_and_the_body_only_when_asked() {
+        let s = store_with_inbox();
+        for uid in 1..=4 {
+            s.insert_message(&msg("INBOX", uid, i64::from(uid) * 10))
+                .unwrap();
+            s.set_raw("INBOX", uid, b"Subject: x\r\n\r\nbody", "body")
+                .unwrap();
+        }
+        let uids = |rows: Vec<Message>| rows.iter().map(|m| m.uid).collect::<Vec<_>>();
+        let all = s.messages_between("INBOX", None, None, false).unwrap();
+        assert!(all.iter().all(|m| m.body_text.is_none()));
+        assert_eq!(uids(all), [4, 3, 2, 1]);
+        // after is inclusive, before exclusive, as in search.
+        let range = s
+            .messages_between("INBOX", Some(20), Some(40), true)
+            .unwrap();
+        assert!(range.iter().all(|m| m.body_text.as_deref() == Some("body")));
+        assert_eq!(uids(range), [3, 2]);
+        assert!(
+            s.messages_between("Other", None, None, false)
+                .unwrap()
+                .is_empty()
         );
     }
 

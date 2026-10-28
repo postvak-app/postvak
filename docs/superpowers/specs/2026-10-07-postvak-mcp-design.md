@@ -73,6 +73,7 @@ Tool names follow the CLI commands so the agent guide's examples carry over. Res
 | `read` | `rules_list`, `rules_schema`, `rules_check` | as the CLI; `rules_schema`'s description points to the `rules` page of `docs` |
 | `read` | `docs` | a page of `docs/src/` as Markdown text, by `page`: `agent-guide`, `rules`, `search` or `cli`, as `postvak guide PAGE` prints it; without a page the list of pages, and for an unknown one an error naming them. The pages are embedded at build time through symlinks in `crates/postvak-core/src/docs/`, so the published crate carries them. No GUI counterpart: the pages are for agents, and people read them on the website |
 | `read` | `rules_test` | a rule as JSON in, the preview lines out; the preview reports subjects, never bodies |
+| `read` | `senders`, `rules_coverage` | sender statistics and rules coverage of a folder; see `2026-10-28-senders-and-coverage-design.md` |
 | `read` | `sync` | §6 |
 | `read:bodies` | `show` | headers plus the body, wrapped (§7) |
 | `read:bodies` | `attachments` | names, types, sizes; no saving |

@@ -1377,3 +1377,62 @@ fn rules_check_warns_about_a_conflicting_copy_and_still_passes() {
         "{stderr}"
     );
 }
+
+#[test]
+fn senders_and_rules_coverage_read_the_stored_folder() {
+    let (home, _store) = seeded_home(&[
+        message(1, "Friend <friend@home.example>", "Dinner?"),
+        message(2, "orders@shop.example", "Your delivery"),
+        message(3, "news@mail.shop.example", "Sale"),
+    ]);
+    std::fs::write(
+        home.path().join("config/rules.toml"),
+        "[[rules]]\nname = \"delivery\"\nmatch.subject = { contains = \"delivery\" }\nactions = [\"archive\"]\n\n\
+         [[rules]]\nname = \"shop\"\nmatch.from = { contains = \"shop.example\" }\nactions = [\"flag\"]\n",
+    )
+    .unwrap();
+    let out = postvak(home.path(), &["senders", "--group-by", "domain", "--json"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let rows: Vec<serde_json::Value> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["sender"], "shop.example");
+    assert_eq!(rows[0]["count"], 2);
+    assert_eq!(rows[0]["rules"], serde_json::json!(["delivery", "shop"]));
+    assert_eq!(rows[0]["account"], "work");
+    let out = postvak(home.path(), &["senders"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("friend@home.example"), "{stdout}");
+    let out = postvak(home.path(), &["senders", "--after", "tomorrow"]);
+    assert!(!out.status.success());
+
+    let out = postvak(home.path(), &["rules", "coverage", "--json"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let coverage: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        [
+            &coverage["matched"],
+            &coverage["unmatched"],
+            &coverage["contested"]
+        ],
+        [2, 1, 1]
+    );
+    assert_eq!(coverage["contested_messages"][0]["message"]["uid"], 2);
+    let out = postvak(home.path(), &["rules", "coverage"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("3 messages, 2 matched, 1 unmatched, 1 contested")
+            && stdout.contains("match: delivery, shop"),
+        "{stdout}"
+    );
+}

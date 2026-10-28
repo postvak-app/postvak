@@ -26,6 +26,18 @@ postvak attachment list 42 --folder INBOX
 - `list` and `search` return at most `--limit` rows over every account together, newest first. When more follow, the last line is `{"next": "…"}`: pass it as `--cursor` with the same other arguments for the next page, until a page ends without one. `--fields uid,from_addr,subject` keeps only those keys in each row (`compact` is account, folder, uid, date, from_addr, subject and flags), `account` always stays, and `--count-only` prints `{"count": N}` alone. The MCP tools take `cursor`, `fields` and `count_only` and return `next` beside `rows`.
 - Bodies are searched once the background index has read them, which takes a while after an account is added. `--server` also asks the mail server, which searches every body in a round trip per folder.
 
+## Finding what a rule should catch
+
+```sh
+postvak senders --folder INBOX --group-by domain --limit 30 --json
+postvak rules coverage --folder INBOX --json
+```
+
+- `senders` groups a folder's stored mail by sender (or `--group-by domain`), biggest group first, with counts, unread, first and last date (Unix seconds), a few subjects and the enabled `rules` that already match some of it. `--after 90d` or `--before 2026-01-01` narrow it. A large group with no rules is a candidate.
+- `rules coverage` runs the rules over the folder without acting: how many messages are `matched`, `unmatched` or `contested` (several rules match), the top `unmatched_senders`, and for each contested message every matching rule and the `acts` that would run, or in `fails` why nothing would. Run it with `--include-pending` after you propose, to show the human what the proposal changes and whether an earlier rule would take its mail first.
+
+Over MCP, rules your scopes may not run (a `header` condition without `read:headers`, a body condition without `read:bodies`) are left out and listed in `skipped_rules`.
+
 ## Writing a rule
 
 1. Run `postvak rules schema` for the JSON Schema. A rule is one entry of `rules`; `postvak guide rules` explains every key, with examples.

@@ -22,6 +22,7 @@ humantime.workspace = true
 keyring-core.workspace = true
 log.workspace = true
 mail-parser.workspace = true
+psl.workspace = true
 regex.workspace = true
 rusqlite.workspace = true
 rusqlite_migration.workspace = true

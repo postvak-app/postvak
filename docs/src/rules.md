@@ -207,7 +207,16 @@ Agents never edit `rules.toml`. They run `postvak rules propose`, which appends 
 
 - `postvak rules list` shows every rule in file order, the order they run in, with its state and proposer; a pending proposal is `off` with a proposer. `--json` adds each rule's whole definition and its 0-based `position` in the file.
 - `postvak rules test NAME` previews what a proposal would do.
+- `postvak rules coverage --include-pending` shows what the proposals change for a folder as a whole; see [Coverage](#coverage).
 - `postvak rules approve NAME` enables it.
 - `postvak rules reject NAME` removes it.
+
+## Coverage
+
+`postvak rules coverage --folder INBOX` runs every enabled rule over the mail Postvak has stored for a folder, the way `rules test` does, and changes nothing. It counts the mail that a rule matches, that no rule matches, and that several rules match, which it calls contested. For mail that no rule matches, it lists the senders who send the most. For each contested message, it lists every rule that matches, then what would run: a delete on its own, or else every flag change and only the first move. A broad rule early in the file that takes mail meant for a later rule shows up here. `--include-pending` counts the proposals still waiting for approval as if they were on. `--group-by domain` groups the senders by domain, and `--limit` (20 by default) caps the senders and contested messages shown. The counts always cover the whole folder.
+
+`postvak senders --folder INBOX` groups a folder's mail by sender, or with `--group-by domain` by domain, the biggest group first. Each group shows its message and unread counts, its first and last date, a few subjects, and the enabled rules that already match some of it. `mail.shop.co.uk` and `shop.co.uk` count as one domain. `--after` and `--before` take a date such as `2026-01-15`, or `30d`, `3w`, `6m` or `1y` back from now.
+
+Neither command has a place in the window yet; both are also MCP tools, `rules_coverage` and `senders`.
 
 `postvak rules schema` prints the JSON Schema of this file, and `rules.schema.json` in these docs holds the same schema.

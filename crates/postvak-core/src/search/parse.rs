@@ -113,8 +113,9 @@ fn filter(body: &str, quoted: bool, negated: bool, now: i64) -> Option<Filter> {
     ))
 }
 
-/// A date value: `YYYY-MM-DD` is local midnight of that day; `7d`, `3w`, `6m` and `1y` count back from `now`.
-fn date(value: &str, now: i64) -> Option<i64> {
+/// A date value: `YYYY-MM-DD` is local midnight of that day; `7d`, `3w`, `6m` and `1y` count back from `now`. What
+/// `before:` and `after:` read, and the `--before` and `--after` of sender statistics.
+pub fn date(value: &str, now: i64) -> Option<i64> {
     if let Some(count) = value.strip_suffix(['d', 'w', 'm', 'y'])
         && !count.is_empty()
         && count.bytes().all(|b| b.is_ascii_digit())
