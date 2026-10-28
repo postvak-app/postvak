@@ -115,7 +115,7 @@ pub const SEARCH_SYNTAX: &str = "Operators:
   has:attachment                                  with an attachment, as guessed from the headers
   is:unread, is:read, is:flagged                  by flag
   before:2026-01-15, after:2026-01-01             by date, in local time; before: is exclusive, after: inclusive
-  after:7d, before:3w, after:6m, after:1y         days, weeks, months or years back from now
+  after:7d, before:3w, after:6mo, after:1y        days, weeks, months or years back from now
   account:work                                    one account, where several are searched
 Anything else, such as an unknown key or a date that does not parse, searches as a word.";
 pub const SENDERS: &str = "Group one folder's stored mail by sender address or registrable domain, the largest group first: message and unread counts, first and last date, a few subjects and the enabled rules that already match some of it";

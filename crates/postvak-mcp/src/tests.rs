@@ -570,7 +570,7 @@ async fn limit_clamps_to_five_hundred() {
     );
 }
 
-const RULES: &str = "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = [\"delete\"]\n";
+const RULES: &str = "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = { delete = true }\n";
 
 fn rule_file(fx: &Fixture) -> String {
     std::fs::read_to_string(fx.paths.rules_file()).unwrap()
@@ -580,7 +580,7 @@ fn rule_file(fx: &Fixture) -> String {
 async fn rules_propose_stores_a_disabled_rule_attributed_to_the_host() {
     let fx = fixture(&["work"]);
     let client = connect(&fx, "rules:propose", &[]).await;
-    let rule = json!({ "name": "codes", "match": { "subject": { "contains": "code" } }, "actions": ["delete"] });
+    let rule = json!({ "name": "codes", "match": { "subject": { "contains": "code" } }, "actions": {"delete": true} });
     let result = call(&client, "rules_propose", rule).await;
     assert_ne!(result.is_error, Some(true), "{result:?}");
     let file = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
@@ -589,7 +589,7 @@ async fn rules_propose_stores_a_disabled_rule_attributed_to_the_host() {
 }
 
 fn named_rule(name: &str) -> Value {
-    json!({ "name": name, "match": { "subject": { "contains": name } }, "actions": ["flag"] })
+    json!({ "name": name, "match": { "subject": { "contains": name } }, "actions": {"flagged": true} })
 }
 
 fn rule_names(fx: &Fixture) -> Vec<String> {
@@ -649,7 +649,7 @@ async fn rules_list_returns_each_rule_whole_with_its_file_position() {
         listed[0]["match"],
         json!({ "subject": { "contains": "code" } })
     );
-    assert_eq!(listed[0]["actions"], json!(["delete"]));
+    assert_eq!(listed[0]["actions"], json!({ "delete": true }));
     assert_eq!(listed[3]["proposed_by"], "mcp:test-host");
     assert_eq!(listed[3]["enabled"], false);
 }
@@ -670,11 +670,11 @@ async fn rules_withdraw_and_replace_touch_only_the_callers_own_proposals() {
     }
     let mut changed = named_rule("mine");
     changed["replace"] = json!(true);
-    changed["match"] = json!({ "seen": true });
+    changed["match"] = json!({ "read": true });
     let result = call(&client, "rules_propose", changed.clone()).await;
     assert_ne!(result.is_error, Some(true), "{result:?}");
     let file = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
-    assert_eq!(file.rules[2].matches.seen, Some(true));
+    assert_eq!(file.rules[2].matches.read, Some(true));
     changed["name"] = json!("theirs");
     let text = error_text(&call(&client, "rules_propose", changed).await);
     assert!(text.contains("not your pending proposal"), "{text}");
@@ -711,7 +711,8 @@ async fn rules_propose_schema_offers_one_rule_or_a_batch() {
 async fn a_bad_rule_returns_the_rules_check_error() {
     let fx = fixture(&["work"]);
     let client = connect(&fx, "read,rules:propose", &[]).await;
-    let bad = json!({ "name": "x", "match": { "from": { "regex": "(" } }, "actions": ["delete"] });
+    let bad =
+        json!({ "name": "x", "match": { "from": { "regex": "(" } }, "actions": {"delete": true} });
     let text = error_text(&call(&client, "rules_propose", bad.clone()).await);
     assert!(text.contains("rule 'x'"), "{text}");
     let text = error_text(&call(&client, "rules_test", json!({ "rule": bad })).await);
@@ -724,7 +725,7 @@ async fn rules_propose_refuses_blank_and_overlong_folders() {
     let fx = fixture(&["work"]);
     let client = connect(&fx, "rules:propose", &[]).await;
     for folder in [String::new(), "   ".into(), "a".repeat(100_000)] {
-        let rule = json!({ "name": "x", "folder": folder, "match": { "seen": true }, "actions": ["flag"] });
+        let rule = json!({ "name": "x", "folder": folder, "match": { "read": true }, "actions": {"flagged": true} });
         let text = error_text(&call(&client, "rules_propose", rule).await);
         assert!(text.contains("folder must"), "{text}");
     }
@@ -739,7 +740,7 @@ async fn rules_test_previews_subjects() {
         fixture_message("INBOX", 1, "Your code", "secret body"),
     );
     let client = connect(&fx, "read", &[]).await;
-    let rule = json!({ "name": "codes", "match": { "subject": { "contains": "code" } }, "actions": ["delete"] });
+    let rule = json!({ "name": "codes", "match": { "subject": { "contains": "code" } }, "actions": {"delete": true} });
     let preview = rows(&call(&client, "rules_test", json!({ "rule": rule })).await);
     assert_eq!(preview.len(), 1);
     assert_eq!(preview[0]["subject"], "Your code");
@@ -769,8 +770,7 @@ async fn rules_list_check_and_schema() {
 #[tokio::test]
 async fn rules_check_warns_without_revealing_a_hidden_account() {
     let fx = fixture(&["work", "home"]);
-    let gone =
-        "[[rules]]\nname = \"old\"\naccount = \"gone\"\nmatch.seen = true\nactions = [\"flag\"]\n";
+    let gone = "[[rules]]\nname = \"old\"\naccount = \"gone\"\nmatch.read = true\nactions = { flagged = true }\n";
     std::fs::write(fx.paths.rules_file(), format!("{RULES}{gone}")).unwrap();
     let copy = "rules.sync-conflict-20261024-101500-ABCDEFG.toml";
     std::fs::write(fx.paths.rules_file().with_file_name(copy), "").unwrap();
@@ -798,7 +798,7 @@ async fn rules_write_approves_rejects_and_toggles() {
     let fx = fixture(&["work"]);
     let propose = connect(&fx, "rules:propose", &[]).await;
     for name in ["a", "b"] {
-        let rule = json!({ "name": name, "match": { "subject": { "contains": name } }, "actions": ["flag"] });
+        let rule = json!({ "name": name, "match": { "subject": { "contains": name } }, "actions": {"flagged": true} });
         call(&propose, "rules_propose", rule).await;
     }
     let client = connect(&fx, "rules:write", &[]).await;
@@ -830,7 +830,7 @@ async fn rules_write_approves_rejects_and_toggles() {
 
 fn scoped_rule(name: &str, account: &str) -> String {
     format!(
-        "[[rules]]\nname = \"{name}\"\naccount = \"{account}\"\nenabled = false\nproposed_by = \"mcp\"\nmatch.subject = {{ contains = \"x\" }}\nactions = [\"flag\"]\n\n"
+        "[[rules]]\nname = \"{name}\"\naccount = \"{account}\"\nenabled = false\nproposed_by = \"mcp\"\nmatch.subject = {{ contains = \"x\" }}\nactions = {{ flagged = true }}\n\n"
     )
 }
 
@@ -879,7 +879,7 @@ async fn rule_writes_refuse_rules_of_hidden_accounts_and_leave_the_file_alone() 
         let text = error_text(&call(&client, tool, arguments).await);
         assert!(text.contains("no rule named 'for-home'"), "{tool}: {text}");
     }
-    let rule = json!({ "name": "p", "account": "home", "match": { "subject": { "contains": "x" } }, "actions": ["flag"] });
+    let rule = json!({ "name": "p", "account": "home", "match": { "subject": { "contains": "x" } }, "actions": {"flagged": true} });
     let text = error_text(&call(&client, "rules_propose", rule).await);
     assert!(text.contains("no account named 'home'"), "{text}");
     assert_eq!(rule_file(&fx), before);
@@ -893,7 +893,7 @@ async fn withdraw_replace_and_placement_treat_a_hidden_accounts_proposal_as_abse
     std::fs::write(fx.paths.rules_file(), own).unwrap();
     let before = rule_file(&fx);
     let client = connect(&fx, "rules:propose", &["work"]).await;
-    let rule = |name: &str| json!({ "name": name, "match": { "subject": { "contains": "x" } }, "actions": ["flag"] });
+    let rule = |name: &str| json!({ "name": name, "match": { "subject": { "contains": "x" } }, "actions": {"flagged": true} });
     let mut replacing = rule("for-home");
     replacing["replace"] = json!(true);
     let mut placed = rule("p");
@@ -1490,7 +1490,7 @@ async fn sync_reports_the_errors_of_its_pass() {
     let fx = fixture_with_daemon(&["work"], recording_connector());
     std::fs::write(
         fx.paths.rules_file(),
-        "[[rules]]\nname = \"x\"\nmatch.from = { regex = \"(\" }\nactions = [\"delete\"]\n",
+        "[[rules]]\nname = \"x\"\nmatch.from = { regex = \"(\" }\nactions = { delete = true }\n",
     )
     .unwrap();
     let client = connect(&fx, "read", &[]).await;
@@ -1634,7 +1634,7 @@ async fn rules_apply_existing_dry_run_lists_planned_rows() {
     fx.add("work", fixture_message("INBOX", 1, "Your code", ""));
     std::fs::write(
         fx.paths.rules_file(),
-        "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = [\"flag\"]\n",
+        "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = { flagged = true }\n",
     )
     .unwrap();
     let client = connect(&fx, "mail:modify", &[]).await;
@@ -1643,7 +1643,7 @@ async fn rules_apply_existing_dry_run_lists_planned_rows() {
     assert_eq!(report.len(), 1, "{report:?}");
     assert_eq!(report[0]["rule"], "codes");
     assert_eq!(report[0]["uid"], 1);
-    assert_eq!(report[0]["action"], "flag");
+    assert_eq!(report[0]["action"], "flagged");
 }
 
 #[tokio::test]
@@ -1653,7 +1653,7 @@ async fn rules_apply_existing_refuses_to_expunge_without_yes() {
     fx.add("work", fixture_message("INBOX", 2, "Another code", ""));
     std::fs::write(
         fx.paths.rules_file(),
-        "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = [\"delete\"]\n",
+        "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = { delete = true }\n",
     )
     .unwrap();
     let client = connect(&fx, "mail:modify", &[]).await;
@@ -1677,7 +1677,7 @@ async fn rules_apply_existing_goes_through_the_daemon() {
     let fx = fixture_with_daemon(&["work"], connector_with_mail());
     std::fs::write(
         fx.paths.rules_file(),
-        "[[rules]]\nname = \"greet\"\nmatch.subject = { contains = \"Hi\" }\nactions = [\"flag\"]\n",
+        "[[rules]]\nname = \"greet\"\nmatch.subject = { contains = \"Hi\" }\nactions = { flagged = true }\n",
     )
     .unwrap();
     let client = connect(&fx, "read, mail:modify", &[]).await;
@@ -1696,7 +1696,7 @@ async fn rules_apply_existing_refuses_disabled_and_hidden_rules() {
     std::fs::write(
         fx.paths.rules_file(),
         format!(
-            "[[rules]]\nname = \"off\"\nenabled = false\nmatch.subject = {{ contains = \"x\" }}\nactions = [\"flag\"]\n\n{}",
+            "[[rules]]\nname = \"off\"\nenabled = false\nmatch.subject = {{ contains = \"x\" }}\nactions = {{ flagged = true }}\n\n{}",
             scoped_rule("hidden", "home")
         ),
     )
@@ -1803,8 +1803,7 @@ async fn rules_test_on_the_body_needs_read_bodies() {
         "work",
         fixture_message("INBOX", 1, "Hello", "the secret word"),
     );
-    let rule =
-        json!({ "name": "probe", "match": { "body": { "regex": "secret" } }, "actions": ["flag"] });
+    let rule = json!({ "name": "probe", "match": { "body": { "regex": "secret" } }, "actions": {"flagged": true} });
     let read = connect(&fx, "read", &[]).await;
     let text = error_text(&call(&read, "rules_test", json!({ "rule": rule })).await);
     assert!(
@@ -1830,8 +1829,7 @@ async fn a_body_rule_needs_read_bodies_to_propose_enable_or_run() {
             "{text}"
         )
     };
-    let rule =
-        json!({ "name": "probe", "match": { "body": { "regex": "secret" } }, "actions": ["flag"] });
+    let rule = json!({ "name": "probe", "match": { "body": { "regex": "secret" } }, "actions": {"flagged": true} });
     let blind = connect(&fx, "rules:propose,rules:write,mail:modify", &[]).await;
     refused(error_text(
         &call(&blind, "rules_propose", rule.clone()).await,
@@ -1867,7 +1865,7 @@ async fn a_header_rule_needs_read_headers_to_test_propose_enable_or_run() {
             "{text}"
         )
     };
-    let nested = json!({ "name": "probe", "match": { "any": [{ "header": { "name": "Subject", "regex": "^H" } }] }, "actions": ["flag"] });
+    let nested = json!({ "name": "probe", "match": { "any": [{ "header": { "Subject": { "regex": "^H" } } }] }, "actions": {"flagged": true} });
     let blind = connect(
         &fx,
         "read,read:bodies,rules:propose,rules:write,mail:modify",
@@ -1901,7 +1899,7 @@ async fn a_header_rule_needs_read_headers_to_test_propose_enable_or_run() {
     refused(error_text(
         &call(&blind, "rules_apply_existing", dry_run).await,
     ));
-    let plain = json!({ "name": "plain", "match": { "subject": { "contains": "Hello" } }, "actions": ["flag"] });
+    let plain = json!({ "name": "plain", "match": { "subject": { "contains": "Hello" } }, "actions": {"flagged": true} });
     let preview = rows(&call(&blind, "rules_test", json!({ "rule": plain })).await);
     assert_eq!(preview.len(), 1, "from, to, cc and subject stay under read");
 }
@@ -1912,7 +1910,7 @@ async fn rules_test_leaves_out_mail_of_hidden_accounts() {
     fx.add("home", fixture_message("INBOX", 1, "Your code", "x"));
     fx.add("work", fixture_message("INBOX", 2, "Your code", "x"));
     let client = connect(&fx, "read", &["work"]).await;
-    let rule = json!({ "name": "codes", "match": { "subject": { "contains": "code" } }, "actions": ["delete"] });
+    let rule = json!({ "name": "codes", "match": { "subject": { "contains": "code" } }, "actions": {"delete": true} });
     let preview = rows(&call(&client, "rules_test", json!({ "rule": rule })).await);
     assert_eq!(preview.len(), 1);
     assert_eq!(preview[0]["account"], "work");
@@ -1920,7 +1918,7 @@ async fn rules_test_leaves_out_mail_of_hidden_accounts() {
 
 fn unscoped_rule(name: &str) -> String {
     format!(
-        "[[rules]]\nname = \"{name}\"\nenabled = false\nproposed_by = \"mcp\"\nmatch.subject = {{ contains = \"x\" }}\nactions = [\"flag\"]\n\n"
+        "[[rules]]\nname = \"{name}\"\nenabled = false\nproposed_by = \"mcp\"\nmatch.subject = {{ contains = \"x\" }}\nactions = {{ flagged = true }}\n\n"
     )
 }
 
@@ -1983,8 +1981,7 @@ async fn rejecting_a_rule_for_every_account_works_while_some_are_hidden() {
 async fn rules_propose_without_account_fills_in_the_only_visible_one() {
     let fx = fixture(&["home", "work"]);
     let client = connect(&fx, "rules:propose", &["work"]).await;
-    let rule =
-        json!({ "name": "p", "match": { "subject": { "contains": "x" } }, "actions": ["flag"] });
+    let rule = json!({ "name": "p", "match": { "subject": { "contains": "x" } }, "actions": {"flagged": true} });
     let result = call(&client, "rules_propose", rule).await;
     assert_ne!(result.is_error, Some(true), "{result:?}");
     let file = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
@@ -1996,8 +1993,7 @@ async fn rules_propose_without_account_is_refused_when_several_of_some_are_visib
     let fx = fixture(&["home", "play", "work"]);
     std::fs::write(fx.paths.rules_file(), unscoped_rule("kept")).unwrap();
     let before = rule_file(&fx);
-    let rule =
-        json!({ "name": "p", "match": { "subject": { "contains": "x" } }, "actions": ["flag"] });
+    let rule = json!({ "name": "p", "match": { "subject": { "contains": "x" } }, "actions": {"flagged": true} });
     let narrow = connect(&fx, "rules:propose", &["home", "work"]).await;
     let text = error_text(&call(&narrow, "rules_propose", rule.clone()).await);
     assert!(text.contains("pass account"), "{text}");
@@ -2165,24 +2161,24 @@ const ANALYSIS_RULES: &str = r#"
 [[rules]]
 name = "delivery"
 match.subject = { contains = "delivery" }
-actions = [{ move = "Deliveries" }]
+actions = { move = "Deliveries" }
 
 [[rules]]
 name = "shop"
 match.from = { contains = "shop.example" }
-actions = ["flag", { move = "Shop" }]
+actions = { flagged = true, move = "Shop" }
 
 [[rules]]
 name = "list header"
-match.header = { name = "List-Id", contains = "x" }
-actions = ["mark_read"]
+match.header.List-Id = { contains = "x" }
+actions = { read = true }
 
 [[rules]]
 name = "proposal"
 enabled = false
 proposed_by = "mcp:test-host"
 match.from = { contains = "friend@" }
-actions = ["archive"]
+actions = { archive = true }
 "#;
 
 fn analysis_fixture() -> Fixture {
@@ -2208,7 +2204,7 @@ fn analysis_fixture() -> Fixture {
 async fn skipped_rules_never_name_a_rule_for_a_hidden_account() {
     let fx = fixture(&["work", "home"]);
     let rules = format!(
-        "{ANALYSIS_RULES}\n[[rules]]\nname = \"home only\"\naccount = \"home\"\nmatch.header = {{ name = \"List-Id\", contains = \"y\" }}\nactions = [\"flag\"]\n"
+        "{ANALYSIS_RULES}\n[[rules]]\nname = \"home only\"\naccount = \"home\"\nmatch.header.List-Id = {{ contains = \"y\" }}\nactions = {{ flagged = true }}\n"
     );
     std::fs::write(fx.paths.rules_file(), rules).unwrap();
     fx.add("work", from_sender(1, "friend@home.example", "Dinner?"));
@@ -2301,7 +2297,7 @@ async fn rules_coverage_counts_and_lists_contested_mail_with_what_acts() {
     assert_eq!(contested["rules"], json!(["delivery", "shop"]));
     assert_eq!(
         contested["acts"],
-        json!([{ "rule": "delivery", "action": "move:Deliveries" }, { "rule": "shop", "action": "flag" }])
+        json!([{ "rule": "delivery", "action": "move:Deliveries" }, { "rule": "shop", "action": "flagged" }])
     );
     assert_eq!(contested["fails"], json!(null));
 

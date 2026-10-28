@@ -14,7 +14,7 @@ use postvak_core::store::LogEntry;
 use postvak_core::sync::{Activity, Event};
 use postvak_core::trash::Trash;
 
-const RULES: &str = "[[rules]]\nname = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions = [\"archive\"]\n\n[[rules]]\nname = \"receipts\"\naccount = \"work\"\nmatch.subject = { contains = \"receipt\" }\nactions = [{ move = \"Receipts\" }]\n\n[[rules]]\nname = \"codes\"\nenabled = false\nproposed_by = \"agent\"\nmatch.subject = { contains = \"verification code\" }\nactions = [\"delete\"]\n";
+const RULES: &str = "[[rules]]\nname = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions = { archive = true }\n\n[[rules]]\nname = \"receipts\"\naccount = \"work\"\nmatch.subject = { contains = \"receipt\" }\nactions = { move = \"Receipts\" }\n\n[[rules]]\nname = \"codes\"\nenabled = false\nproposed_by = \"agent\"\nmatch.subject = { contains = \"verification code\" }\nactions = { delete = true }\n";
 
 /// Whether local times read as UTC, now and at the fixture time; a zone such as Europe/London is UTC in winter but
 /// not in September.
@@ -347,7 +347,7 @@ fn rule_editor() {
 #[test]
 fn apply_confirm() {
     let fx = Fixture::mailbox("light");
-    let tidy = "[[rules]]\nname = \"tidy\"\naccount = \"work\"\nmatch.subject = { contains = \"a\" }\nactions = [\"delete\"]\n";
+    let tidy = "[[rules]]\nname = \"tidy\"\naccount = \"work\"\nmatch.subject = { contains = \"a\" }\nactions = { delete = true }\n";
     std::fs::write(fx.paths.rules_file(), tidy).unwrap();
     let (open, _wires) = open(&fx);
     open.with(|live| live.app.select_view(View::Rules));

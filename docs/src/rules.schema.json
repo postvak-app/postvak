@@ -13,129 +13,85 @@
   },
   "additionalProperties": false,
   "$defs": {
-    "Action": {
-      "oneOf": [
-        {
-          "type": "string",
-          "enum": []
-        },
-        {
-          "description": "Back up as .eml locally, then remove from the server; stops later rules",
-          "type": "string",
-          "const": "delete"
-        },
-        {
-          "description": "Set \\Seen",
-          "type": "string",
-          "const": "mark_read"
-        },
-        {
-          "description": "Set \\Flagged",
-          "type": "string",
-          "const": "flag"
-        },
-        {
-          "description": "Move to the server's Archive folder",
-          "type": "string",
-          "const": "archive"
-        },
-        {
-          "description": "Notify even when the message was moved",
-          "type": "string",
-          "const": "notify"
-        },
-        {
-          "description": "Never notify",
-          "type": "string",
-          "const": "silent"
-        },
-        {
-          "description": "Later rules don't run for this message",
-          "type": "string",
-          "const": "stop"
-        },
-        {
-          "description": "Move to this folder, creating it if needed",
-          "type": "object",
-          "properties": {
-            "move": {
-              "type": "string"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "move"
-          ]
-        },
-        {
-          "description": "Add this IMAP keyword, which Thunderbird shows as a tag (e.g. $label1)",
-          "type": "object",
-          "properties": {
-            "tag": {
-              "type": "string"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "tag"
-          ]
-        }
-      ]
-    },
-    "HeaderMatch": {
+    "Actions": {
+      "description": "What a rule does, each at most once and in any order: flags and tags are set before a move, and a delete wins over\nthe rest",
       "type": "object",
       "properties": {
-        "contains": {
-          "description": "Case-insensitive substring; a list matches any of them",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/OneOrMany"
-            },
-            {
-              "type": "null"
-            }
+        "archive": {
+          "description": "true moves the message to the server's Archive folder",
+          "type": [
+            "boolean",
+            "null"
           ]
         },
-        "equals": {
-          "description": "The whole value, case-insensitive; on from, to and cc also any single address; a list matches any of them",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/OneOrMany"
-            },
-            {
-              "type": "null"
-            }
+        "delete": {
+          "description": "true backs the message up as .eml locally, then removes it from the server; later rules don't run",
+          "type": [
+            "boolean",
+            "null"
           ]
         },
-        "name": {
-          "description": "Header name, e.g. List-Id",
-          "type": "string"
+        "flagged": {
+          "description": "true flags the message, false unflags it",
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
-        "regex": {
-          "description": "Rust regex syntax; (?i) makes it case-insensitive",
+        "move": {
+          "description": "Moves the message to this folder, creating it if needed",
           "type": [
             "string",
             "null"
           ]
+        },
+        "notify": {
+          "description": "true notifies even when the message was moved, false never notifies; the first matching rule that says wins",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "read": {
+          "description": "true marks the message read, false unread",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "stop": {
+          "description": "true: later rules don't run for this message",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "tag": {
+          "description": "Adds this IMAP keyword, or each of a list; Thunderbird shows them as tags (e.g. $label1)",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OneOrMany"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
-      "additionalProperties": false,
-      "required": [
-        "name"
-      ]
+      "additionalProperties": false
     },
     "Match": {
       "type": "object",
       "properties": {
         "alias": {
-          "description": "Sent to this alias; * is a wildcard",
+          "description": "An address among the recipients (To, Cc or Delivered-To) is this alias; * matches any run of characters, and\nnothing else is special: it is no regex",
           "type": [
             "string",
             "null"
           ]
         },
         "any": {
-          "description": "Holds when at least one of these holds",
+          "description": "Holds when at least one entry holds; an entry holds when all its conditions do",
           "type": [
             "array",
             "null"
@@ -203,15 +159,14 @@
           ]
         },
         "header": {
-          "description": "Any header, by name; a list must all match",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/OneOrMany2"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "description": "Headers by name, such as List-Id, each with its own text condition; every header named must match. Of a repeated\nheader only the last copy counts, the one nearest the body",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "$ref": "#/$defs/TextMatch"
+          }
         },
         "larger_than": {
           "description": "Larger than this size, e.g. 500KB, 5MB; a bare number is bytes and 1KB is 1024 bytes",
@@ -231,13 +186,13 @@
           }
         },
         "older_than": {
-          "description": "Arrived at least this long ago, e.g. 30m, 1h, 2days",
+          "description": "Arrived at least this long ago: 30min, 1h, 2d, 3w, 6mo or 1y; a bare m is refused as ambiguous",
           "type": [
             "string",
             "null"
           ]
         },
-        "seen": {
+        "read": {
           "description": "Read (true) or unread (false)",
           "type": [
             "boolean",
@@ -274,7 +229,7 @@
           ]
         },
         "to_domain": {
-          "description": "The domain, or any subdomain, of an address in the To header; a list matches any of them",
+          "description": "The domain, or any subdomain, of an address in the To header, not Cc; a list matches any of them",
           "anyOf": [
             {
               "$ref": "#/$defs/OneOrMany"
@@ -285,7 +240,7 @@
           ]
         },
         "to_me": {
-          "description": "To, Cc or Delivered-To holds your address or an alias",
+          "description": "Your address or an alias is among the recipients: To, Cc or Delivered-To",
           "type": [
             "boolean",
             "null"
@@ -308,20 +263,6 @@
         }
       ]
     },
-    "OneOrMany2": {
-      "description": "One value, or a list of them",
-      "anyOf": [
-        {
-          "$ref": "#/$defs/HeaderMatch"
-        },
-        {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/HeaderMatch"
-          }
-        }
-      ]
-    },
     "Rule": {
       "type": "object",
       "properties": {
@@ -334,10 +275,7 @@
         },
         "actions": {
           "description": "What to do; at least one",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/Action"
-          }
+          "$ref": "#/$defs/Actions"
         },
         "enabled": {
           "description": "Disabled rules are skipped; proposals start disabled",
@@ -401,7 +339,7 @@
           ]
         },
         "regex": {
-          "description": "Rust regex syntax; (?i) makes it case-insensitive",
+          "description": "Rust regex syntax, case-insensitive like the others; (?-i) makes it case-sensitive",
           "type": [
             "string",
             "null"

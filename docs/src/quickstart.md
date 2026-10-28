@@ -14,10 +14,10 @@ Postvak ships with no rules. Add your own to `rules.toml` next to `config.toml`,
 ```toml
 [[rules]]
 name = "purge sign-in codes"
-match.subject = { regex = "(?i)sign.?in|verification code|magic link" }
+match.subject = { regex = "sign.?in|verification code|magic link" }
 match.older_than = "1h"
-match.seen = true
-actions = ["delete"]
+match.read = true
+actions.delete = true
 ```
 
 ```sh

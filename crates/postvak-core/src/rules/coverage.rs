@@ -181,35 +181,35 @@ mod tests {
 [[rules]]
 name = "delivery"
 match.subject = { regex = "(?i)deliver" }
-actions = [{ move = "Deliveries" }]
+actions = { move = "Deliveries" }
 
 [[rules]]
 name = "shop"
 match.from = { contains = "@shop.example" }
-actions = ["flag", { move = "Shop" }]
+actions = { flagged = true, move = "Shop" }
 
 [[rules]]
 name = "noise"
 match.from = { contains = "@noise.example" }
-actions = ["delete"]
+actions = { delete = true }
 
 [[rules]]
 name = "noise read"
 match.from = { contains = "@noise.example" }
-actions = ["mark_read"]
+actions = { read = true }
 
 [[rules]]
 name = "proposal"
 enabled = false
 proposed_by = "cli:agent"
 match.from = { contains = "friend@" }
-actions = ["archive"]
+actions = { archive = true }
 
 [[rules]]
 name = "off by hand"
 enabled = false
 match.from = { contains = "friend@" }
-actions = ["flag"]
+actions = { flagged = true }
 "#;
 
     #[test]
@@ -265,7 +265,7 @@ actions = ["flag"]
             .iter()
             .map(|a| (a.rule.as_str(), a.action.as_str()))
             .collect();
-        assert_eq!(acts, [("delivery", "move:Deliveries"), ("shop", "flag")]);
+        assert_eq!(acts, [("delivery", "move:Deliveries"), ("shop", "flagged")]);
     }
 
     #[test]
@@ -291,12 +291,12 @@ actions = ["flag"]
 [[rules]]
 name = "stay"
 match.from = { contains = "@list.example" }
-actions = ["flag", { move = "INBOX" }]
+actions = { flagged = true, move = "INBOX" }
 
 [[rules]]
 name = "elsewhere"
 match.subject = { regex = "." }
-actions = [{ move = "Lists" }]
+actions = { move = "Lists" }
 "#,
         )
         .unwrap();
@@ -309,7 +309,7 @@ actions = [{ move = "Lists" }]
             coverage.contests[0].acts,
             [Act {
                 rule: "stay".into(),
-                action: "flag".into()
+                action: "flagged".into()
             }]
         );
     }
@@ -322,12 +322,12 @@ actions = [{ move = "Lists" }]
 [[rules]]
 name = "lists"
 match.from = { contains = "@list.example" }
-actions = ["mark_read", "stop"]
+actions = { read = true, stop = true }
 
 [[rules]]
 name = "everything"
 match.subject = { regex = "." }
-actions = ["archive"]
+actions = { archive = true }
 "#,
         )
         .unwrap();
@@ -340,7 +340,7 @@ actions = ["archive"]
             coverage.contests[0].acts,
             [Act {
                 rule: "lists".into(),
-                action: "mark_read".into()
+                action: "read".into()
             }]
         );
     }
@@ -365,12 +365,12 @@ actions = ["archive"]
 [[rules]]
 name = "keep"
 match.from = { contains = "@list.example" }
-actions = ["flag", "archive"]
+actions = { flagged = true, archive = true }
 
 [[rules]]
 name = "read"
 match.subject = { regex = "." }
-actions = ["mark_read"]
+actions = { read = true }
 "#;
 
     #[test]
@@ -413,7 +413,7 @@ actions = ["mark_read"]
             ARCHIVE_AND_READ.replace("[[rules]]\n", "[[rules]]\nfolder = \"Archive\"\n");
         let contest = contest(&store, "Archive", &in_archive);
         assert_eq!(contest.fails, None);
-        assert_eq!(acted(&contest), [("keep", "flag"), ("read", "mark_read")]);
+        assert_eq!(acted(&contest), [("keep", "flagged"), ("read", "read")]);
     }
 
     #[test]
@@ -439,18 +439,18 @@ actions = ["mark_read"]
 [[rules]]
 name = "read"
 match.from = { contains = "@list.example" }
-actions = ["mark_read", "flag"]
+actions = { read = true, flagged = true }
 
 [[rules]]
 name = "unread"
 match.subject = { regex = "." }
-actions = ["flag", { tag = "$later" }]
+actions = { flagged = true, tag = "$later" }
 "#,
         );
         // Already read, so mark_read is skipped; the first rule's flag leaves nothing for the second rule's flag to do.
         assert_eq!(
             acted(&contest),
-            [("read", "flag"), ("unread", "tag:$later")]
+            [("read", "flagged"), ("unread", "tag:$later")]
         );
     }
     #[test]

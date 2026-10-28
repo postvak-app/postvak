@@ -301,14 +301,14 @@ mod tests {
     #[test]
     fn rule_rows_carry_the_whole_rule_and_its_position() {
         let rule: Rule = serde_json::from_str(
-            r#"{"name": "a", "match": {"subject": {"contains": "x"}}, "actions": [{"move": "X"}]}"#,
+            r#"{"name": "a", "match": {"subject": {"contains": "x"}}, "actions": {"move": "X"}}"#,
         )
         .unwrap();
         assert_eq!(
             super::rule(&rule, 3).unwrap(),
             serde_json::json!({
                 "name": "a", "position": 3, "enabled": true, "account": null, "folder": null, "proposed_by": null,
-                "match": {"subject": {"contains": "x"}}, "actions": [{"move": "X"}],
+                "match": {"subject": {"contains": "x"}}, "actions": {"move": "X"},
             })
         );
     }
@@ -486,7 +486,7 @@ mod tests {
         };
         assert_eq!(
             planned_row("work", &planned),
-            serde_json::json!({ "account": "work", "rule": "codes", "folder": "INBOX", "uid": 7, "action": "flag", "subject": "Your code" })
+            serde_json::json!({ "account": "work", "rule": "codes", "folder": "INBOX", "uid": 7, "action": "flagged", "subject": "Your code" })
         );
     }
 

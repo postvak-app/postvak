@@ -150,9 +150,9 @@ struct SendersArgs {
     /// At most this many groups per account, at most 500
     #[serde(default = "fifty")]
     limit: u32,
-    /// Only mail that arrived on or after this date: 2026-01-15, or 30d, 3w, 6m, 1y back from now
+    /// Only mail that arrived on or after this date: 2026-01-15, or 30d, 3w, 6mo, 1y back from now
     after: Option<String>,
-    /// Only mail that arrived before this date: 2026-01-15, or 30d, 3w, 6m, 1y back from now
+    /// Only mail that arrived before this date: 2026-01-15, or 30d, 3w, 6mo, 1y back from now
     before: Option<String>,
 }
 

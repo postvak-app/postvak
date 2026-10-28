@@ -18,7 +18,6 @@ base64.workspace = true
 chrono.workspace = true
 directories.workspace = true
 futures-util.workspace = true
-humantime.workspace = true
 keyring-core.workspace = true
 log.workspace = true
 mail-parser.workspace = true

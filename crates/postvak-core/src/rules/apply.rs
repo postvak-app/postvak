@@ -835,7 +835,7 @@ mod tests {
             .rev()
             .map(|entry| entry.action)
             .collect();
-        assert_eq!(actions, ["mark_read", "move:Archive"]);
+        assert_eq!(actions, ["read", "move:Archive"]);
     }
 
     #[test]
@@ -1310,7 +1310,7 @@ mod tests {
             .into_iter()
             .map(|e| e.action)
             .collect();
-        assert_eq!(actions, ["unflag", "mark_unread"]);
+        assert_eq!(actions, ["flagged:false", "read:false"]);
     }
 
     #[test]

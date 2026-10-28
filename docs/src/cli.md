@@ -520,7 +520,7 @@ Operators:
   has:attachment                                  with an attachment, as guessed from the headers
   is:unread, is:read, is:flagged                  by flag
   before:2026-01-15, after:2026-01-01             by date, in local time; before: is exclusive, after: inclusive
-  after:7d, before:3w, after:6m, after:1y         days, weeks, months or years back from now
+  after:7d, before:3w, after:6mo, after:1y        days, weeks, months or years back from now
   account:work                                    one account, where several are searched
 Anything else, such as an unknown key or a date that does not parse, searches as a word.
 
@@ -569,8 +569,8 @@ Group one folder's stored mail by sender address or registrable domain, the larg
 * `--limit <LIMIT>` — At most this many groups per account
 
   Default value: `50`
-* `--after <AFTER>` — Only mail that arrived on or after this date: 2026-01-15, or 30d, 3w, 6m, 1y back from now
-* `--before <BEFORE>` — Only mail that arrived before this date: 2026-01-15, or 30d, 3w, 6m, 1y back from now
+* `--after <AFTER>` — Only mail that arrived on or after this date: 2026-01-15, or 30d, 3w, 6mo, 1y back from now
+* `--before <BEFORE>` — Only mail that arrived before this date: 2026-01-15, or 30d, 3w, 6mo, 1y back from now
 * `--json`
 
 

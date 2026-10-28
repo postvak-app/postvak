@@ -461,8 +461,8 @@ pub fn rule_toml(rule: &Rule) -> Result<String, RulesError> {
     Ok(doc.to_string())
 }
 
-/// `rule` as a `[[rules]]` table in the docs' style: one block, nested tables as dotted keys with inline values,
-/// `actions` last, and no `enabled = true`.
+/// `rule` as a `[[rules]]` table in the docs' style: one block, nested tables as dotted keys with inline values, so
+/// `match.header.List-Id = { … }` and `actions.move = "…"`, `actions` last, and no `enabled = true`.
 fn rule_table(rule: &Rule) -> Result<Table, RulesError> {
     let text = toml::to_string(&RuleFile {
         rules: vec![rule.clone()],
@@ -481,8 +481,17 @@ fn rule_table(rule: &Rule) -> Result<Table, RulesError> {
         match item {
             Item::Table(nested) => {
                 nested.set_dotted(true);
-                for (_, child) in nested.iter_mut() {
-                    inline(child);
+                for (key, child) in nested.iter_mut() {
+                    match child {
+                        Item::Table(headers) if key.get() == "header" => {
+                            headers.set_dotted(true);
+                            for (_, header) in headers.iter_mut() {
+                                inline(header);
+                            }
+                            headers.fmt();
+                        }
+                        other => inline(other),
+                    }
                 }
                 nested.fmt();
             }
@@ -502,8 +511,13 @@ fn rule_table(rule: &Rule) -> Result<Table, RulesError> {
 fn inline(item: &mut Item) {
     *item = match std::mem::take(item).into_value() {
         Ok(mut value) => {
-            if let Value::Array(array) = &mut value {
-                array.fmt();
+            match &mut value {
+                Value::Array(array) => array.fmt(),
+                Value::InlineTable(table) => {
+                    table.set_dotted(false);
+                    table.fmt();
+                }
+                _ => {}
             }
             Item::Value(value)
         }
@@ -548,6 +562,10 @@ fn merge(old: &mut Table, new: &Table) {
             (Some(old_item), new_item) => {
                 let decor = old_item.as_value().map(|value| value.decor().clone());
                 *old_item = new_item.clone();
+                if decor.is_some() {
+                    // Written inline before, so it stays inline: `actions = { … }` does not turn into dotted keys.
+                    inline(old_item);
+                }
                 if let (Some(decor), Some(value)) = (decor, old_item.as_value_mut()) {
                     *value.decor_mut() = decor;
                 }
@@ -564,7 +582,10 @@ fn same_value(a: &Item, b: &Item) -> bool {
     let plain = |item: &Item| {
         let mut value = item.clone().into_value().ok()?;
         match &mut value {
-            Value::InlineTable(table) => table.fmt(),
+            Value::InlineTable(table) => {
+                table.set_dotted(false);
+                table.fmt();
+            }
             Value::Array(array) => array.fmt(),
             _ => {}
         }
@@ -623,11 +644,11 @@ mod tests {
     use super::*;
     use crate::rules::{Action, TextMatch, load};
 
-    const HUMAN: &str = "# my rules\n[[rules]]\nname = \"keep\" # do not touch\nmatch.seen = true\nactions = [\"flag\"]\n";
+    const HUMAN: &str = "# my rules\n[[rules]]\nname = \"keep\" # do not touch\nmatch.read = true\nactions = { flagged = true }\n";
 
     fn proposal(name: &str) -> Rule {
         serde_json::from_str(&format!(
-            r#"{{"name": "{name}", "match": {{"subject": {{"contains": "code"}}}}, "actions": [{{"move": "Codes"}}, "mark_read"]}}"#
+            r#"{{"name": "{name}", "match": {{"subject": {{"contains": "code"}}}}, "actions": {{"move": "Codes", "read": true}}}}"#
         ))
         .unwrap()
     }
@@ -794,7 +815,7 @@ mod tests {
     #[test]
     fn reject_of_the_last_table_keeps_comment_order() {
         let (_dir, path) = rules_file(
-            "# head\n[[rules]]\nname = \"keep\"\nmatch.seen = true\nactions = [\"flag\"]\n\n# above\n",
+            "# head\n[[rules]]\nname = \"keep\"\nmatch.read = true\nactions = { flagged = true }\n\n# above\n",
         );
         propose(&path, proposal("codes"), "cli").unwrap();
         let mut text = std::fs::read_to_string(&path).unwrap();
@@ -927,7 +948,7 @@ mod tests {
         propose(&path, proposal("theirs"), "cli:other").unwrap();
 
         let mut changed = proposal("a");
-        changed.matches.seen = Some(true);
+        changed.matches.read = Some(true);
         let again = Proposals {
             rules: vec![changed.clone()],
             ..Proposals::default()
@@ -943,7 +964,7 @@ mod tests {
         };
         propose_all(&path, replacing.clone(), "cli:me").unwrap();
         assert_eq!(names(&path), ["keep", "a", "b", "theirs"], "in place");
-        assert_eq!(load(&path).unwrap().rules[1].matches.seen, Some(true));
+        assert_eq!(load(&path).unwrap().rules[1].matches.read, Some(true));
 
         assert!(
             propose_all(&path, replacing.clone(), "cli:other").is_err(),
@@ -987,7 +1008,7 @@ mod tests {
 
     #[test]
     fn read_proposals_takes_one_rule_an_array_or_an_object() {
-        let rule = r#"{"name": "a", "match": {"seen": true}, "actions": ["flag"]}"#;
+        let rule = r#"{"name": "a", "match": {"read": true}, "actions": {"flagged": true}}"#;
         let read = |text: &str| read_proposals(serde_json::from_str(text).unwrap());
 
         let one = read(rule).unwrap();
@@ -1053,7 +1074,7 @@ mod tests {
     #[test]
     fn approve_keeps_a_comment_on_the_enabled_line() {
         let (_dir, path) = rules_file(
-            "[[rules]]\nname = \"x\"\nenabled = false # waiting for review\nproposed_by = \"cli\"\nmatch.seen = true\nactions = [\"flag\"]\n",
+            "[[rules]]\nname = \"x\"\nenabled = false # waiting for review\nproposed_by = \"cli\"\nmatch.read = true\nactions = { flagged = true }\n",
         );
         approve(&path, "x").unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
@@ -1065,7 +1086,7 @@ mod tests {
 
     #[test]
     fn set_enabled_toggles_one_rule_and_keeps_the_rest() {
-        const TWO_RULES: &str = "# keep me\n[[rules]]\nname = \"a\"   # inline\nmatch.seen = true\nactions = [\"flag\"]\n\n[[rules]]\nname = \"b\"\nenabled = false # off for now\nmatch.seen = true\nactions = [\"flag\"]\n";
+        const TWO_RULES: &str = "# keep me\n[[rules]]\nname = \"a\"   # inline\nmatch.read = true\nactions = { flagged = true }\n\n[[rules]]\nname = \"b\"\nenabled = false # off for now\nmatch.read = true\nactions = { flagged = true }\n";
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("rules.toml");
@@ -1090,15 +1111,14 @@ mod tests {
 
     fn rule(name: &str, subject: &str) -> Rule {
         serde_json::from_str(&format!(
-            r#"{{"name": "{name}", "match": {{"subject": {{"contains": "{subject}"}}}}, "actions": ["delete"]}}"#
+            r#"{{"name": "{name}", "match": {{"subject": {{"contains": "{subject}"}}}}, "actions": {{"delete": true}}}}"#
         ))
         .unwrap()
     }
 
-    const TWO: &str = "# my rules\n\n# codes go after an hour\n[[rules]]\nname = \"codes\" # sign-in codes\nmatch.subject = { contains = \"code\" } # any code\nmatch.seen = true\nactions = [\"delete\"]\n\n[[rules]]\nname = \"keep\"   # do not touch\nmatch.seen = true\nactions = [\"flag\"]\n";
+    const TWO: &str = "# my rules\n\n# codes go after an hour\n[[rules]]\nname = \"codes\" # sign-in codes\nmatch.subject = { contains = \"code\" } # any code\nmatch.read = true\nactions = { delete = true }\n\n[[rules]]\nname = \"keep\"   # do not touch\nmatch.read = true\nactions = { flagged = true }\n";
 
-    const KEEP: &str =
-        "\n[[rules]]\nname = \"keep\"   # do not touch\nmatch.seen = true\nactions = [\"flag\"]\n";
+    const KEEP: &str = "\n[[rules]]\nname = \"keep\"   # do not touch\nmatch.read = true\nactions = { flagged = true }\n";
 
     #[test]
     fn save_rule_appends_a_new_rule_in_the_docs_style() {
@@ -1107,22 +1127,34 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             format!(
-                "{HUMAN}\n[[rules]]\nname = \"codes\"\nmatch.subject = {{ contains = \"code\" }}\nactions = [\"delete\"]\n"
+                "{HUMAN}\n[[rules]]\nname = \"codes\"\nmatch.subject = {{ contains = \"code\" }}\nactions.delete = true\n"
             )
         );
     }
 
     #[test]
-    fn save_rule_writes_table_actions_inline() {
+    fn save_rule_writes_headers_and_actions_as_dotted_keys() {
         let (_dir, path) = rules_file(HUMAN);
         let mut moved = rule("receipts", "receipt");
-        moved.actions = vec![Action::Move("Receipts".into())];
+        moved.matches.header = Some(
+            [("List-Id".to_string(), moved.matches.subject.take().unwrap())]
+                .into_iter()
+                .collect(),
+        );
+        moved.actions = vec![
+            Action::Move("Receipts".into()),
+            Action::Tag("$a".into()),
+            Action::Tag("$b".into()),
+        ];
         save_rule(&path, None, &moved).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(
-            text.ends_with("actions = [{ move = \"Receipts\" }]\n"),
+            text.ends_with(
+                "match.header.List-Id = { contains = \"receipt\" }\nactions.move = \"Receipts\"\nactions.tag = [\"$a\", \"$b\"]\n"
+            ),
             "{text}"
         );
+        assert_eq!(load(&path).unwrap().rules[1].actions, moved.actions);
     }
 
     #[test]
@@ -1145,7 +1177,7 @@ mod tests {
     fn save_rule_replaces_in_place_and_keeps_comments_and_unchanged_lines() {
         let (_dir, path) = rules_file(TWO);
         let mut changed = rule("codes", "verification code");
-        changed.matches.seen = Some(true);
+        changed.matches.read = Some(true);
         save_rule(&path, Some("codes"), &changed).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert_eq!(
@@ -1160,27 +1192,27 @@ mod tests {
 
     #[test]
     fn save_rule_edits_header_style_tables_without_restyling_them() {
-        let headers = "[[rules]]\nname = \"codes\"\nactions = [\"delete\"]\n\n[rules.match]\nseen = true # after reading\n\n[rules.match.subject]\ncontains = \"code\"\n";
+        let headers = "[[rules]]\nname = \"codes\"\nactions = { delete = true }\n\n[rules.match]\nread = true # after reading\n\n[rules.match.subject]\ncontains = \"code\"\n";
         let (_dir, path) = rules_file(headers);
         let mut changed = rule("codes", "code");
-        changed.matches.seen = Some(false);
+        changed.matches.read = Some(false);
         save_rule(&path, Some("codes"), &changed).unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
-            headers.replace("seen = true", "seen = false")
+            headers.replace("read = true", "read = false")
         );
     }
 
     #[test]
     fn save_rule_keeps_any_tables_and_value_lists_as_written() {
-        let grouped = "[[rules]]\nname = \"codes\"\nactions = [\"delete\"]\n\n[rules.match]\nseen = true\nsubject = { contains = [\"code\", \"pin\"] }\n\n[[rules.match.any]]\nfrom = { contains = \"a\" }\n\n[[rules.match.any]]\nto_me = false\n";
+        let grouped = "[[rules]]\nname = \"codes\"\nactions = { delete = true }\n\n[rules.match]\nread = true\nsubject = { contains = [\"code\", \"pin\"] }\n\n[[rules.match.any]]\nfrom = { contains = \"a\" }\n\n[[rules.match.any]]\nto_me = false\n";
         let (_dir, path) = rules_file(grouped);
         let mut changed = load(&path).unwrap().rules.remove(0);
-        changed.matches.seen = Some(false);
+        changed.matches.read = Some(false);
         save_rule(&path, Some("codes"), &changed).unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
-            grouped.replace("seen = true", "seen = false")
+            grouped.replace("read = true", "read = false")
         );
     }
 
@@ -1188,7 +1220,7 @@ mod tests {
     fn save_rule_renames_in_place() {
         let (_dir, path) = rules_file(TWO);
         let mut renamed = rule("sign-in codes", "code");
-        renamed.matches.seen = Some(true);
+        renamed.matches.read = Some(true);
         save_rule(&path, Some("codes"), &renamed).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(

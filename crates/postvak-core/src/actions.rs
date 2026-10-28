@@ -383,7 +383,7 @@ pub fn with_server_hits(
 /// What a dry run would do to `msg`; a user delete names its outcome, because an expunge cannot be undone on the server.
 pub fn planned_effect(store: &Store, msg: &Message, action: &Action) -> Result<String, StoreError> {
     if *action != Action::Trash {
-        return Ok(format!("would {}", clean(&action.label(), false)));
+        return Ok(format!("would apply {}", clean(&action.label(), false)));
     }
     let effect = match move_target(store, &msg.folder, action)? {
         Some(trash) => format!("would move to {}", clean(&trash, false)),
@@ -512,7 +512,11 @@ mod tests {
         );
         assert_eq!(
             planned_effect(&store, &msg, &Action::Archive).unwrap(),
-            "would archive"
+            "would apply archive"
+        );
+        assert_eq!(
+            planned_effect(&store, &msg, &Action::MarkUnread).unwrap(),
+            "would apply read:false"
         );
     }
 
@@ -553,18 +557,18 @@ mod tests {
         let identity = account.identity().unwrap();
         let warning = |actions: &str| {
             let toml = format!(
-                "[[rules]]\nname = \"r\"\nmatch.subject = {{ contains = \"hi\" }}\nactions = [{actions}]\n"
+                "[[rules]]\nname = \"r\"\nmatch.subject = {{ contains = \"hi\" }}\nactions = {{ {actions} }}\n"
             );
             let rules = crate::rules::compile(&crate::rules::parse(&toml).unwrap()).unwrap();
             expunge_warning(&rules, &store, &account, &identity, 0).unwrap()
         };
         assert_eq!(
-            warning("\"delete\"").as_deref(),
+            warning("delete = true").as_deref(),
             Some(
                 "work: would permanently delete 1 message from the server; .eml backups kept locally for 30 days"
             )
         );
-        assert_eq!(warning("\"flag\""), None);
+        assert_eq!(warning("flagged = true"), None);
     }
 
     /// `setup` with messages 5, 6 and 7 in INBOX, 6 already read, and an Archive folder.

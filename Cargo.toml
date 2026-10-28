@@ -43,7 +43,6 @@ fontique = "0.12"                                    # HTML mail: symbol fonts a
 futures-util = { version = "0.3", default-features = false }  # collect async-imap streams
 hickory-resolver = { version = "0.26", default-features = false, features = ["system-config", "tokio"] }  # DNS TXT lookups for BIMI sender logos; std has no TXT query
 html5ever = "=0.40.1"                                # HTML mail: parse as HTML ourselves, since Blitz's entry point parses XHTML-looking mail as XML; pinned to blitz-html's version
-humantime = "2"                                      # "1h", "2d" in rules
 i-slint-backend-testing = { version = "=1.18.1", features = ["renderer-software"] }  # headless GUI tests: key events, mock time, elements found by accessible label, snapshots from the software renderer
 i-slint-common = "=1.18.1"                           # Slint's own fontique loads fontconfig at runtime on Linux; one linked and one loaded copy do not build together
 keyring-core = "1"                                   # OS keyring API
