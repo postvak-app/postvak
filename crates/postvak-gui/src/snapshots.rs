@@ -83,10 +83,7 @@ fn open(fx: &Fixture) -> (Open, Wires) {
             activity: Activity::Idle { since: AT },
         },
     ];
-    for event in events {
-        wires.events.send(event).unwrap();
-    }
-    open.tick();
+    open.receive(&wires, events);
     (open, wires)
 }
 
@@ -159,12 +156,7 @@ fn a_sender_logo() {
     super::test_support::cache_github_logo(&fx.paths);
     let (open, _wires) = open(&fx);
     open.with(|live| live.app.select_view(work_inbox()));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !open.window().get_body_info().has_logo && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        open.tick();
-    }
-    assert!(open.window().get_body_info().has_logo);
+    open.tick_until(|open| open.window().get_body_info().has_logo);
     snapshot(&open, "gui_sender_logo");
 }
 
@@ -453,8 +445,6 @@ fn newsletter(theme: &str, width: f32) -> (Fixture, Open, Wires) {
 
 /// INBOX of `work` with a message whose HTML part is `html` open, once it is painted.
 fn html_message(theme: &str, width: f32, html: &str) -> (Fixture, Open, Wires) {
-    use std::time::{Duration, Instant};
-
     use slint::ComponentHandle;
 
     use super::fixture::mail;
@@ -477,7 +467,6 @@ fn html_message(theme: &str, width: f32, html: &str) -> (Fixture, Open, Wires) {
         .window()
         .set_size(slint::LogicalSize::new(width, 800.0));
     open.with(|live| live.app.select_view(work_inbox()));
-    let deadline = Instant::now() + Duration::from_secs(30);
     let painted = |open: &Open| {
         open.with(|live| {
             let view = live.app.body.as_ref().and_then(|b| b.html_view.as_ref());
@@ -488,14 +477,7 @@ fn html_message(theme: &str, width: f32, html: &str) -> (Fixture, Open, Wires) {
             })
         })
     };
-    while !painted(&open) {
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for the renderer"
-        );
-        std::thread::sleep(Duration::from_millis(5));
-        open.tick();
-    }
+    open.tick_until(painted);
     (fx, open, wires)
 }
 
@@ -651,7 +633,7 @@ fn home_up_to_date(wires: &Wires) {
         account: "home".into(),
         activity: Activity::Idle { since: AT },
     };
-    wires.events.send(event).unwrap();
+    wires.send([event]);
 }
 
 /// Tells the window that `work` has fetched `done` of INBOX's `total` headers.
@@ -665,7 +647,7 @@ fn fetching(wires: &Wires, done: usize, total: usize) {
         account: "work".into(),
         activity,
     };
-    wires.events.send(event).unwrap();
+    wires.send([event]);
 }
 
 /// What the status bar's progress hairline tells a screen reader, while it says anything.
@@ -772,8 +754,7 @@ fn the_sync_progress_glides_forward_jumps_back_and_fades_out() {
             of: 3,
         },
     };
-    wires.events.send(syncing).unwrap();
-    open.tick();
+    open.receive(&wires, [syncing]);
     assert_eq!(
         meter_value(&open),
         None,
@@ -830,14 +811,7 @@ fn mail_that_moves_the_rows_down_shows_their_dots_at_once() {
 
 /// Tells the window that `account` synced `new_messages`.
 fn synced(wires: &Wires, account: &str, new_messages: usize) {
-    let event = Event::Synced {
-        account: account.into(),
-        new_messages,
-        actions: 0,
-        requests: vec![],
-        errors: vec![],
-    };
-    wires.events.send(event).unwrap();
+    wires.send([super::test_support::synced(account, new_messages)]);
 }
 
 #[test]

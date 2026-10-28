@@ -1,11 +1,13 @@
 //! Downloads a message's remote content once the user asks: capped in count, size and time, public hosts only.
 use std::collections::BTreeMap;
 use std::io::Read;
-use std::sync::mpsc::{self, Receiver, Sender};
+#[cfg(test)]
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use super::{FetchDone, FetchJob, MAX_REMOTE, Wake};
+use crate::worker::Worker;
 use postvak_core::net::{public, public_agent};
 
 /// A larger response counts as failed.
@@ -14,45 +16,25 @@ const MAX_REDIRECTS: usize = 5;
 const TIMEOUT: Duration = Duration::from_secs(15);
 const WORKERS: usize = 6;
 
-/// The download thread and its two channels, as `Renderer` has them.
-pub(crate) struct Fetcher {
-    done: Receiver<FetchDone>,
-    jobs: Sender<FetchJob>,
-}
+/// The download thread, as `Renderer` has its own.
+pub(crate) struct Fetcher(Worker<FetchJob, FetchDone>);
 
 impl Fetcher {
     pub fn start(wake: Wake) -> Fetcher {
-        let (jobs, todo) = mpsc::channel::<FetchJob>();
-        let (send, done) = mpsc::channel();
-        let spawned = std::thread::Builder::new()
-            .name("html-fetch".into())
-            .spawn(move || {
-                for job in todo {
-                    let fetched = fetch_all(job.urls, get);
-                    if send
-                        .send(FetchDone {
-                            tag: job.tag,
-                            fetched,
-                        })
-                        .is_err()
-                    {
-                        return;
-                    }
-                    wake();
-                }
-            });
-        if let Err(e) = spawned {
-            log::warn!("could not start loading remote content: {e}");
-        }
-        Fetcher { done, jobs }
+        Fetcher(Worker::start("html-fetch", wake, |job: FetchJob| {
+            FetchDone {
+                tag: job.tag,
+                fetched: fetch_all(job.urls, get),
+            }
+        }))
     }
 
     pub fn send(&self, job: FetchJob) {
-        let _ = self.jobs.send(job);
+        self.0.send(job);
     }
 
     pub fn done(&self) -> Vec<FetchDone> {
-        self.done.try_iter().collect()
+        self.0.done()
     }
 }
 
@@ -60,9 +42,8 @@ impl Fetcher {
 impl Fetcher {
     /// A fetcher with no thread: the test reads the jobs and answers in its place.
     pub fn fake() -> (Fetcher, Receiver<FetchJob>, Sender<FetchDone>) {
-        let (jobs, todo) = mpsc::channel();
-        let (send, done) = mpsc::channel();
-        (Fetcher { done, jobs }, todo, send)
+        let (worker, todo, send) = Worker::fake();
+        (Fetcher(worker), todo, send)
     }
 }
 
