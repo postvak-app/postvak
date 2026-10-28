@@ -1,9 +1,9 @@
 //! What leaves rules.toml valid but not doing what its author meant: a conflicting copy a file sync left beside it,
-//! and a rule for an account this device does not have.
+//! a rule for an account this device does not have, and a rule moving mail to the folder it watches.
 use std::fs;
 use std::path::Path;
 
-use super::Rule;
+use super::{Action, Rule};
 
 /// One line per problem: conflicting copies by name, then rules in file order; empty when there is nothing to say.
 pub fn warnings(path: &Path, rules: &[Rule], accounts: &[&str]) -> Vec<String> {
@@ -25,8 +25,24 @@ pub fn warnings(path: &Path, rules: &[Rule], accounts: &[&str]) -> Vec<String> {
                 rule.name
             ));
         }
+        let watched = rule.folder.as_deref().unwrap_or("INBOX");
+        for action in &rule.actions {
+            if let Action::Move(target) = action
+                && same_folder(target, watched)
+            {
+                lines.push(format!(
+                    "rule '{}' moves mail to '{target}', the folder it watches, so the move does nothing",
+                    rule.name
+                ));
+            }
+        }
     }
     lines
+}
+
+/// INBOX is the same folder in any case (RFC 3501 §5.1); other names may differ by case alone on some servers.
+fn same_folder(a: &str, b: &str) -> bool {
+    a == b || (a.eq_ignore_ascii_case("INBOX") && b.eq_ignore_ascii_case("INBOX"))
 }
 
 /// Files beside `path` named like a sync tool's conflicting copy of it, sorted: Syncthing's
@@ -72,6 +88,27 @@ mod tests {
         assert_eq!(
             warnings(&dir.path().join("rules.toml"), &rules, &["work", "home"]),
             ["rule 'old' is for account 'werk', which is not set up here, so it never runs"]
+        );
+    }
+
+    #[test]
+    fn a_rule_moving_mail_to_the_folder_it_watches_is_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let rules = parse(
+            "[[rules]]\nname = \"lists\"\nfolder = \"Lists\"\nmatch.seen = true\nactions = [{ move = \"Lists\" }]\n\n\
+             [[rules]]\nname = \"inbox\"\nmatch.seen = true\nactions = [\"mark_read\", { move = \"Inbox\" }]\n\n\
+             [[rules]]\nname = \"case\"\nfolder = \"Lists\"\nmatch.seen = true\nactions = [{ move = \"lists\" }]\n\n\
+             [[rules]]\nname = \"away\"\nmatch.seen = true\nactions = [{ move = \"Lists\" }]\n",
+        )
+        .unwrap()
+        .rules;
+        assert_eq!(
+            warnings(&dir.path().join("rules.toml"), &rules, &[]),
+            [
+                "rule 'lists' moves mail to 'Lists', the folder it watches, so the move does nothing",
+                "rule 'inbox' moves mail to 'Inbox', the folder it watches, so the move does nothing",
+            ],
+            "only INBOX is the same in any case: 'lists' may be another folder than 'Lists'"
         );
     }
 

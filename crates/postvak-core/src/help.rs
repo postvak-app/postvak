@@ -26,7 +26,7 @@ pub const MOVE: &str = "Move messages to another folder, creating it if needed";
 pub const RULES_APPLY_EXISTING: &str =
     "Run one enabled rule against mail that predates it; dry run lists what it would do";
 pub const RULES_APPROVE: &str = "Enable a disabled rule, such as a proposal";
-pub const RULES_CHECK: &str = "Validate rules.toml, and warn about conflicting copies a file sync left beside it and rules for accounts not set up here";
+pub const RULES_CHECK: &str = "Validate rules.toml, and warn about what keeps it from doing what it says, such as a conflicting copy a file sync left beside it or a rule for an account not set up here";
 pub const RULES_LIST: &str = "Names, enabled state and who proposed them";
 pub const RULES_PROPOSE: &str = "Add one rule, disabled, for a human to approve; the arguments are the rule, one entry of `rules` in rules_schema";
 pub const RULES_REJECT: &str = "Remove a pending proposal";
