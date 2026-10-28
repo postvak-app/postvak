@@ -467,6 +467,125 @@ async fn rules_propose_stores_a_disabled_rule_attributed_to_the_host() {
     assert_eq!(file.rules[0].proposed_by.as_deref(), Some("mcp:test-host"));
 }
 
+fn named_rule(name: &str) -> Value {
+    json!({ "name": name, "match": { "subject": { "contains": name } }, "actions": ["flag"] })
+}
+
+fn rule_names(fx: &Fixture) -> Vec<String> {
+    postvak_core::rules::load(&fx.paths.rules_file())
+        .unwrap()
+        .rules
+        .into_iter()
+        .map(|r| r.name)
+        .collect()
+}
+
+#[tokio::test]
+async fn rules_propose_takes_a_batch_in_order_all_or_none() {
+    let fx = fixture(&["work"]);
+    std::fs::write(fx.paths.rules_file(), RULES).unwrap();
+    let client = connect(&fx, "rules:propose", &[]).await;
+    let batch = json!({ "rules": [named_rule("a"), named_rule("b"), named_rule("c")] });
+    let result = call(&client, "rules_propose", batch).await;
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    let content = result.structured_content.unwrap();
+    assert_eq!(content["proposed"][2]["name"], "c");
+    assert_eq!(content["proposed_by"], "mcp:test-host");
+    assert_eq!(rule_names(&fx), ["codes", "a", "b", "c"]);
+
+    let mut bad = named_rule("e");
+    bad["actions"] = json!([]);
+    let refused = json!({ "rules": [named_rule("d"), bad, named_rule("codes")], "before": "a" });
+    let text = error_text(&call(&client, "rules_propose", refused).await);
+    for part in ["rule 1 'e'", "rule 2 'codes'"] {
+        assert!(text.contains(part), "{part}: {text}");
+    }
+    assert_eq!(rule_names(&fx), ["codes", "a", "b", "c"]);
+
+    let placed = json!({ "rules": [named_rule("d")], "before": "a" });
+    let result = call(&client, "rules_propose", placed).await;
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    assert_eq!(rule_names(&fx), ["codes", "d", "a", "b", "c"]);
+}
+
+#[tokio::test]
+async fn rules_list_returns_each_rule_whole_with_its_file_position() {
+    let fx = fixture(&["work"]);
+    std::fs::write(fx.paths.rules_file(), RULES).unwrap();
+    let client = connect(&fx, "read,rules:propose", &[]).await;
+    for name in ["a", "b", "c"] {
+        call(&client, "rules_propose", named_rule(name)).await;
+    }
+    let listed = rows(&call(&client, "rules_list", json!({})).await);
+    let names: Vec<&str> = listed.iter().map(|r| r["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["codes", "a", "b", "c"]);
+    let positions: Vec<u64> = listed
+        .iter()
+        .map(|r| r["position"].as_u64().unwrap())
+        .collect();
+    assert_eq!(positions, [0, 1, 2, 3]);
+    assert_eq!(
+        listed[0]["match"],
+        json!({ "subject": { "contains": "code" } })
+    );
+    assert_eq!(listed[0]["actions"], json!(["delete"]));
+    assert_eq!(listed[3]["proposed_by"], "mcp:test-host");
+    assert_eq!(listed[3]["enabled"], false);
+}
+
+#[tokio::test]
+async fn rules_withdraw_and_replace_touch_only_the_callers_own_proposals() {
+    let fx = fixture(&["work"]);
+    std::fs::write(
+        fx.paths.rules_file(),
+        format!("{RULES}\n{}", unscoped_rule("theirs")),
+    )
+    .unwrap();
+    let client = connect(&fx, "rules:propose", &[]).await;
+    call(&client, "rules_propose", named_rule("mine")).await;
+    for name in ["codes", "theirs", "missing"] {
+        let text = error_text(&call(&client, "rules_withdraw", json!({ "name": name })).await);
+        assert!(text.contains(name), "{text}");
+    }
+    let mut changed = named_rule("mine");
+    changed["replace"] = json!(true);
+    changed["match"] = json!({ "seen": true });
+    let result = call(&client, "rules_propose", changed.clone()).await;
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    let file = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
+    assert_eq!(file.rules[2].matches.seen, Some(true));
+    changed["name"] = json!("theirs");
+    let text = error_text(&call(&client, "rules_propose", changed).await);
+    assert!(text.contains("not your pending proposal"), "{text}");
+
+    let result = call(&client, "rules_withdraw", json!({ "name": "mine" })).await;
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    assert_eq!(rule_names(&fx), ["codes", "theirs"]);
+}
+
+#[tokio::test]
+async fn rules_propose_schema_offers_one_rule_or_a_batch() {
+    let fx = fixture(&["work"]);
+    let client = connect(&fx, "rules:propose", &[]).await;
+    let tools = client.list_all_tools().await.unwrap();
+    let propose = tools.iter().find(|t| t.name == "rules_propose").unwrap();
+    let schema = serde_json::to_value(&*propose.input_schema).unwrap();
+    assert_eq!(schema["type"], "object");
+    assert!(
+        schema.get("anyOf").is_none() && schema.get("oneOf").is_none(),
+        "{schema}"
+    );
+    for key in [
+        "name", "match", "actions", "rules", "before", "after", "replace",
+    ] {
+        assert!(schema["properties"][key].is_object(), "{key}: {schema}");
+    }
+    assert!(
+        schema["required"].as_array().is_none_or(|r| r.is_empty()),
+        "{schema}"
+    );
+}
+
 #[tokio::test]
 async fn a_bad_rule_returns_the_rules_check_error() {
     let fx = fixture(&["work"]);
@@ -998,6 +1117,7 @@ async fn tools_list_per_scope_set_is_exact_and_alphabetical() {
                 "rules_propose",
                 "rules_schema",
                 "rules_test",
+                "rules_withdraw",
                 "search",
                 "status",
                 "sync",
@@ -1068,6 +1188,7 @@ async fn annotations_mark_reads_and_destructive_tools() {
             "move",
             "rules_propose",
             "rules_reject",
+            "rules_withdraw",
             "sync",
             "trash_restore",
         ]

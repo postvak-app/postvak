@@ -27,9 +27,10 @@ pub const RULES_APPLY_EXISTING: &str =
     "Run one enabled rule against mail that predates it; dry run lists what it would do";
 pub const RULES_APPROVE: &str = "Enable a disabled rule, such as a proposal";
 pub const RULES_CHECK: &str = "Validate rules.toml, and warn about what keeps it from doing what it says, such as a conflicting copy a file sync left beside it or a rule for an account not set up here";
-pub const RULES_LIST: &str = "Names, enabled state and who proposed them";
-pub const RULES_PROPOSE: &str = "Add one rule, disabled, for a human to approve; the arguments are the rule, one entry of `rules` in rules_schema";
+pub const RULES_LIST: &str = "Every rule in file order, the order they run in: its position, its whole definition, whether it is enabled and who proposed it";
+pub const RULES_PROPOSE: &str = "Add rules, disabled, for a human to approve: the arguments are one rule (an entry of `rules` in rules_schema), or `rules`, a list of them stored in order, all or none; `before` or `after` names the rule to put them next to instead of at the end, and `replace` swaps your own pending proposal of the same name";
 pub const RULES_REJECT: &str = "Remove a pending proposal";
+pub const RULES_WITHDRAW: &str = "Remove your own pending proposal: a disabled rule whose proposed_by is yours; anything else is left for a human";
 pub const RULES_SCHEMA: &str = "JSON Schema for rules.toml; a proposal is one entry of `rules`";
 pub const RULES_SET_ENABLED: &str =
     "Turn a rule on or off; turning one on lets it act on new mail, deletes included";

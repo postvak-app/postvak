@@ -75,7 +75,7 @@ Tool names follow the CLI commands so the agent guide's examples carry over. Res
 | `read` | `sync` | §6 |
 | `read:bodies` | `show` | headers plus the body, wrapped (§7) |
 | `read:bodies` | `attachments` | names, types, sizes; no saving |
-| `rules:propose` | `rules_propose` | stored disabled with `proposed_by = "mcp:<client>"` |
+| `rules:propose` | `rules_propose`, `rules_withdraw` | stored disabled with `proposed_by = "mcp:<client>"`; batches and withdrawing its own: `2026-10-28-rule-proposals-design.md` |
 | `rules:write` | `rules_approve`, `rules_reject`, `rules_set_enabled` | |
 | `mail:modify` | `mark`, `move`, `archive`, `delete`, `trash_restore` | each takes `dry_run` |
 

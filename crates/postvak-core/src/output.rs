@@ -67,9 +67,21 @@ pub fn show(
     Ok(json!({ "message": message(account, msg, None)?, "body": body, "truncated": truncated }))
 }
 
-/// A rule's listing row; `account` is the rule's own scope, `null` for every account.
-pub fn rule(rule: &Rule) -> Value {
-    json!({ "name": rule.name, "enabled": rule.enabled, "proposed_by": rule.proposed_by, "account": rule.account, "folder": rule.folder })
+/// A rule's listing row: its whole definition as `rules propose` takes it, and `position`, its 0-based place in
+/// rules.toml, where an earlier rule runs first. `account` is the rule's own scope, `null` for every account.
+pub fn rule(rule: &Rule, position: usize) -> serde_json::Result<Value> {
+    let mut row = serde_json::to_value(rule)?;
+    if let Value::Object(map) = &mut row {
+        map.insert("position".into(), position.into());
+        for (key, value) in [
+            ("account", &rule.account),
+            ("folder", &rule.folder),
+            ("proposed_by", &rule.proposed_by),
+        ] {
+            map.insert(key.into(), json!(value));
+        }
+    }
+    Ok(row)
 }
 
 /// One row of a dry run: what `rule` would do to the message.
@@ -120,6 +132,21 @@ mod tests {
             thread_id: "t".into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn rule_rows_carry_the_whole_rule_and_its_position() {
+        let rule: Rule = serde_json::from_str(
+            r#"{"name": "a", "match": {"subject": {"contains": "x"}}, "actions": [{"move": "X"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            super::rule(&rule, 3).unwrap(),
+            serde_json::json!({
+                "name": "a", "position": 3, "enabled": true, "account": null, "folder": null, "proposed_by": null,
+                "match": {"subject": {"contains": "x"}}, "actions": [{"move": "X"}],
+            })
+        );
     }
 
     #[test]

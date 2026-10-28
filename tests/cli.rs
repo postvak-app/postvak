@@ -698,6 +698,84 @@ fn agent_proposes_and_a_human_approves_or_rejects() {
 }
 
 #[test]
+fn an_agent_proposes_a_batch_reads_it_back_in_order_and_withdraws_its_own() {
+    let (home, _store) = seeded_home(&[message(42, "noreply@example.com", "Your code")]);
+    let rule = |name: &str| {
+        format!(
+            r#"{{"name": "{name}", "match": {{"subject": {{"contains": "{name}"}}}}, "actions": ["flag"]}}"#
+        )
+    };
+    let ok = |out: std::process::Output| {
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let listed = |home: &std::path::Path| -> Vec<serde_json::Value> {
+        String::from_utf8_lossy(&postvak(home, &["rules", "list", "--json"]).stdout)
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    };
+    let names = |home: &std::path::Path| -> Vec<String> {
+        listed(home)
+            .iter()
+            .map(|r| r["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    ok(postvak_stdin(
+        home.path(),
+        &["rules", "propose", "--by", "bot"],
+        &format!("[{}, {}]", rule("a"), rule("b")),
+    ));
+    ok(postvak_stdin(
+        home.path(),
+        &["rules", "propose", "--by", "bot", "--before", "a"],
+        &format!(r#"{{"rules": [{}]}}"#, rule("c")),
+    ));
+    assert_eq!(names(home.path()), ["c", "a", "b"]);
+    let rows = listed(home.path());
+    assert_eq!(rows[1]["position"], 1);
+    assert_eq!(rows[1]["match"]["subject"]["contains"], "a");
+    assert_eq!(rows[1]["proposed_by"], "cli:bot");
+
+    let out = postvak_stdin(
+        home.path(),
+        &["rules", "propose", "--by", "bot"],
+        &format!("[{}, {}]", rule("d"), rule("a")),
+    );
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("rule 1 'a'"));
+    assert_eq!(names(home.path()), ["c", "a", "b"], "all or none");
+
+    ok(postvak_stdin(
+        home.path(),
+        &["rules", "propose", "--by", "bot", "--replace"],
+        &rule("a").replace(r#""contains": "a""#, r#""contains": "aa""#),
+    ));
+    assert_eq!(listed(home.path())[1]["match"]["subject"]["contains"], "aa");
+
+    assert!(
+        !postvak(home.path(), &["rules", "withdraw", "a", "--by", "other"])
+            .status
+            .success()
+    );
+    assert!(
+        !postvak(home.path(), &["rules", "withdraw", "a"])
+            .status
+            .success()
+    );
+    ok(postvak(
+        home.path(),
+        &["rules", "withdraw", "a", "--by", "bot"],
+    ));
+    assert_eq!(names(home.path()), ["c", "b"]);
+}
+
+#[test]
 fn search_marks_close_matches_and_exact_turns_them_off() {
     let typo = message(44, "billing@example.com", "Invioce for March");
     let right = message(45, "billing@example.com", "Invoice for April");

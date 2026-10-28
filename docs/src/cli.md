@@ -26,6 +26,7 @@ This document contains the help content for the `postvak` command-line program.
 * [`postvak rules test`↴](#postvak-rules-test)
 * [`postvak rules schema`↴](#postvak-rules-schema)
 * [`postvak rules propose`↴](#postvak-rules-propose)
+* [`postvak rules withdraw`↴](#postvak-rules-withdraw)
 * [`postvak rules approve`↴](#postvak-rules-approve)
 * [`postvak rules reject`↴](#postvak-rules-reject)
 * [`postvak rules list`↴](#postvak-rules-list)
@@ -304,10 +305,11 @@ Inspect and test rules.toml
 * `check` — Validate rules.toml, and warn about what keeps it from doing what it says, such as a conflicting copy a file sync left beside it or a rule for an account not set up here
 * `test` — Dry run: print what each rule would do to the cached messages; naming a rule previews it even while disabled
 * `schema` — JSON Schema for rules.toml; a proposal is one entry of `rules`
-* `propose` — Read one rule as JSON on stdin and add it disabled, for a human to approve
+* `propose` — Read one rule, a JSON array of rules or {"rules": [...]} on stdin and add them disabled, in order, for a human to approve; all or none are stored
+* `withdraw` — Remove your own pending proposal: a disabled rule whose proposed_by is yours; anything else is left for a human
 * `approve` — Enable a disabled rule, such as a proposal
 * `reject` — Remove a pending proposal
-* `list` — Names, enabled state and who proposed them
+* `list` — Every rule in file order, the order they run in: its position, its whole definition, whether it is enabled and who proposed it
 * `apply-existing` — Run one enabled rule against mail that predates it; dry run lists what it would do
 
 
@@ -347,13 +349,32 @@ JSON Schema for rules.toml; a proposal is one entry of `rules`
 
 ## `postvak rules propose`
 
-Read one rule as JSON on stdin and add it disabled, for a human to approve
+Read one rule, a JSON array of rules or {"rules": [...]} on stdin and add them disabled, in order, for a human to approve; all or none are stored
 
 **Usage:** `postvak rules propose [OPTIONS]`
 
 ###### **Options:**
 
 * `--by <BY>` — Who proposes it, recorded as proposed_by = "cli:WHO"
+* `--before <BEFORE>` — Put the rules right before this rule instead of at the end
+* `--after <AFTER>` — Put the rules right after this rule instead of at the end
+* `--replace` — Replace your own pending proposal of the same name instead of refusing the name
+
+
+
+## `postvak rules withdraw`
+
+Remove your own pending proposal: a disabled rule whose proposed_by is yours; anything else is left for a human
+
+**Usage:** `postvak rules withdraw [OPTIONS] <NAME>`
+
+###### **Arguments:**
+
+* `<NAME>`
+
+###### **Options:**
+
+* `--by <BY>` — Who proposed it, as given to `rules propose --by`
 
 
 
@@ -383,7 +404,7 @@ Remove a pending proposal
 
 ## `postvak rules list`
 
-Names, enabled state and who proposed them
+Every rule in file order, the order they run in: its position, its whole definition, whether it is enabled and who proposed it
 
 **Usage:** `postvak rules list [OPTIONS]`
 
