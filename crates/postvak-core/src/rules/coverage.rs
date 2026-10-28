@@ -453,4 +453,32 @@ actions = ["flag", { tag = "$later" }]
             [("read", "flag"), ("unread", "tag:$later")]
         );
     }
+    #[test]
+    fn a_message_restored_from_trash_matches_no_rule() {
+        let store = store(&[]);
+        store
+            .insert_message(&Message {
+                folder: "INBOX".into(),
+                uid: 1,
+                message_id: Some("1@x".into()),
+                thread_id: "1@x".into(),
+                from_addr: Some("a@noise.example".into()),
+                subject: Some("Buy now".into()),
+                flags: crate::rules::engine::RESTORED_KEYWORD.into(),
+                internaldate: 100,
+                ..Default::default()
+            })
+            .unwrap();
+        let id = identity();
+        let ctx = context("work", &id, 10_000);
+        let rules = rules(&parse(RULES).unwrap(), false).unwrap();
+        let coverage = in_folder(&store, &rules, &ctx, "INBOX", GroupBy::Address).unwrap();
+        // A sync never acts on it, so the two noise rules neither match nor contest it.
+        assert_eq!((coverage.matched, coverage.unmatched), (0, 1));
+        assert!(coverage.contests.is_empty(), "{:?}", coverage.contests);
+        let restored = store.messages_between("INBOX", None, None, false).unwrap();
+        let groups = senders(&restored, &rules, &ctx, GroupBy::Address);
+        assert_eq!(groups[0].sender, "a@noise.example");
+        assert!(groups[0].rules.is_empty(), "{:?}", groups[0].rules);
+    }
 }
