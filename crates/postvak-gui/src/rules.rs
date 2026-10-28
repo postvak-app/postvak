@@ -672,6 +672,38 @@ mod tests {
         assert_eq!(open.find("newsletters").len(), 1);
     }
 
+    /// The folder warnings read the store, which holds the account's folders only once it synced.
+    #[test]
+    fn a_folder_warning_shows_once_a_sync_brought_the_folders() {
+        let fx = Fixture::new(&["work"]);
+        let rule = "[[rules]]\nname = \"gh\"\nmatch.seen = true\nactions = [{ move = \"Lists/GitHub\" }]\n";
+        std::fs::write(fx.paths.rules_file(), rule).unwrap();
+        let (open, wires) = view(&fx, View::Rules);
+        assert!(open.labels_containing("'Lists/GitHub'").is_empty());
+        let store = postvak_core::store::Store::open_account(&fx.paths, "work").unwrap();
+        store
+            .upsert_folder(&postvak_core::store::Folder {
+                name: "INBOX".into(),
+                uidvalidity: 1,
+                last_uid: 0,
+                special_use: None,
+                delimiter: Some(".".into()),
+            })
+            .unwrap();
+        let synced = Event::Synced {
+            account: "work".into(),
+            new_messages: 0,
+            actions: 0,
+            requests: vec![],
+            errors: vec![],
+        };
+        wires.events.send(synced).unwrap();
+        open.tick();
+        let banner = open.labels_containing("'Lists/GitHub'");
+        assert_eq!(banner.len(), 1, "{banner:?}");
+        assert!(banner[0].contains("write 'Lists.GitHub'"), "{banner:?}");
+    }
+
     #[test]
     fn a_config_change_asks_to_reopen_the_window() {
         let fx = Fixture::new(&["work"]);

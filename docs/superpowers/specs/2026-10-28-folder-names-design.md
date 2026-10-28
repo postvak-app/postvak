@@ -6,6 +6,8 @@ Issue #347. How Postvak spells a folder name to the server, which move targets i
 
 - `mail_ops/utf7.rs` encodes and decodes RFC 3501 §5.1.3 modified UTF-7. `ImapOps` encodes every name it sends (SELECT, STATUS, CREATE, SUBSCRIBE, MOVE/COPY, APPEND, DELETE) and decodes every name it lists. Everything above `MailOps` (store, rules, GUI, CLI, MCP) sees UTF-8.
 - `decode` accepts only what `encode` writes, so `encode(decode(wire)) == wire` and the server always gets back the name it listed. A listed name that is not canonical modified UTF-7 (raw UTF-8 from a lax server, two adjacent sections, non-zero padding bits) is kept as it came, and `ImapOps` remembers it for the connection and sends it back unchanged.
+- Which names a server keeps raw is known only from a listing, so on a new connection a command for a name that may be one (non-ASCII, or holding `&`) lists the folders first: commands queued offline run before the sync lists. When a raw name and a modified UTF-7 one decode to the same name, the raw one keeps it and the other keeps its wire form, so both stay reachable.
+- Backups in the trash are named after their folder with `%`, `/` and `&` escaped. A backup name with a bare `&` was saved before names were decoded, so its folder is decoded when it is listed or restored.
 - `UTF8=ACCEPT` (RFC 6855) is not used: modified UTF-7 works on every server, and one spelling is simpler.
 - Existing stores hold encoded names. Migration 017 runs a Rust hook (`store::decode_folder_names`) once, inside the migration's transaction: each folder whose name decodes is renamed, with its messages, rule log and rule moves, so it keeps its state instead of syncing again. A placeholder (`uidvalidity = 0`) left under the decoded name by a move that sent raw UTF-8 gives way. When a synced folder already holds the decoded name, the encoded row and its messages go, and the next sync refetches what the server lists.
 
@@ -25,6 +27,10 @@ Direct actions (`postvak move`, MCP `move`, the GUI's Move to) are not validated
 
 - the target contains `/` while the account's delimiter (INBOX's, else the first folder's) is something else: the server would create one folder with `/` in its name, or refuse it. Postvak does not rewrite `/`, since it is a legal character on a `.` server and the same rules.toml can serve accounts on other servers;
 - every synced folder of the account other than INBOX lives under `INBOX` + delimiter (`folder_name::under_inbox`, which the GUI's folder tree also uses to drop that prefix) and the target does not.
+
+A rule naming a `folder` or `move` target in modified UTF-7 for another name (`&AMkA6Q-n`), as Postvak showed folders before, is warned about with the plain name to write; this needs no store.
+
+The GUI and the daemon work the warnings out again after each sync, since they depend on the stores.
 
 Placeholders a move left (`uidvalidity = 0`) do not count. These are warnings, not errors, shown wherever the other rules warnings are: `rules check`, MCP `rules_check` (only visible accounts), the Rules view and the daemon log.
 

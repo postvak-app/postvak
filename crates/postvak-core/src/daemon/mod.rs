@@ -294,8 +294,8 @@ fn serve(
 ) -> anyhow::Result<()> {
     let mut watch = Watch::new(paths);
     let config = Config::load(&paths.config_file())?;
-    watch.warn(&config);
     migrate_stores(&config, paths);
+    watch.warn(&config);
     let (engine, events) = Engine::start(&config, paths, options.connect.clone());
     let shared = Arc::new(Shared {
         engine: Mutex::new(Some(engine)),
@@ -597,6 +597,10 @@ fn route_events(
         // The sync sends NewMail only for mail that should notify, rules included.
         if let Some(batch) = batches.hear(&event) {
             notify(&batch);
+        }
+        if matches!(event, Event::Synced { .. }) {
+            // The folder warnings read what the account's store holds, which a sync changes.
+            lock(&shared.watch).check_rules();
         }
         let mut hub = lock(&shared.hub);
         match &event {

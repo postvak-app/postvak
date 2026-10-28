@@ -45,8 +45,7 @@ pub struct ImapOps {
     has_special_use: bool,
     selected: Option<String>,
     command_timeout: Duration,
-    /// Names the server listed that are not modified UTF-7 (raw UTF-8, a sloppy encoding), sent back as they came.
-    verbatim: HashSet<String>,
+    names: FolderNames,
 }
 
 impl ImapOps {
@@ -93,7 +92,7 @@ impl ImapOps {
             has_special_use: caps.has_str("SPECIAL-USE"),
             selected: None,
             command_timeout: COMMAND_TIMEOUT,
-            verbatim: HashSet::new(),
+            names: FolderNames::default(),
         })
     }
 
@@ -174,6 +173,31 @@ impl ImapOps {
         })
     }
 
+    /// `name` as the server spells it. Only a listing tells which names the server keeps as they came, so a name that
+    /// may be one of them lists the folders first on a connection that has not yet: commands queued while offline run
+    /// before the sync lists.
+    fn wire(&mut self, name: &str) -> String {
+        if self.names.needs_list(name) {
+            if let Err(e) = self.list_folders() {
+                log::debug!("could not list the folders before using {name}: {e}");
+            }
+            self.names.listed = true;
+        }
+        self.names.wire(name)
+    }
+}
+
+/// How one connection spells folder names between UTF-8, which everything above `MailOps` uses, and the wire.
+#[derive(Default)]
+struct FolderNames {
+    /// Names sent as they are rather than in modified UTF-7: those the server listed that are not modified UTF-7 (raw
+    /// UTF-8, a sloppy encoding), and a modified UTF-7 one whose decoded name a raw listed folder already has.
+    verbatim: HashSet<String>,
+    /// Whether the folders were listed on this connection, so `verbatim` is known.
+    listed: bool,
+}
+
+impl FolderNames {
     /// `name` as the server spells it: modified UTF-7 (RFC 3501 §5.1.3), unless the server listed it otherwise.
     fn wire(&self, name: &str) -> String {
         if self.verbatim.contains(name) {
@@ -183,25 +207,51 @@ impl ImapOps {
         }
     }
 
-    /// A name the server listed, in UTF-8; one that is not modified UTF-7 is kept as it came, and sent back so.
-    fn local(&mut self, wire: String) -> String {
-        match utf7::decode(&wire) {
-            Some(name) => name,
-            None => {
-                self.verbatim.insert(wire.clone());
-                wire
-            }
-        }
+    /// Whether `name` could be one the server keeps as it came, which is unknown until the folders are listed.
+    fn needs_list(&self, name: &str) -> bool {
+        !self.listed && (!name.is_ascii() || name.contains('&'))
+    }
+
+    /// The names a full listing gave, in UTF-8 and in its order. One that is not modified UTF-7 is kept as it came. When
+    /// a raw name and a modified UTF-7 one decode alike, the raw one keeps the name and the other its wire form, so
+    /// both stay reachable.
+    fn learn(&mut self, wire: Vec<String>) -> Vec<String> {
+        let decoded: Vec<Option<String>> = wire.iter().map(|name| utf7::decode(name)).collect();
+        let raw: HashSet<&str> = wire
+            .iter()
+            .zip(&decoded)
+            .filter(|(_, decoded)| decoded.is_none())
+            .map(|(name, _)| name.as_str())
+            .collect();
+        let mut verbatim = HashSet::new();
+        let local = wire
+            .iter()
+            .zip(&decoded)
+            .map(|(name, decoded)| match decoded {
+                Some(plain) if !raw.contains(plain.as_str()) => plain.clone(),
+                Some(plain) => {
+                    log::warn!("the server lists both {plain} and {name}, which spells the same name; showing it as {name}");
+                    verbatim.insert(name.clone());
+                    name.clone()
+                }
+                None => {
+                    verbatim.insert(name.clone());
+                    name.clone()
+                }
+            })
+            .collect();
+        self.verbatim = verbatim;
+        self.listed = true;
+        local
     }
 
     /// The listed folders with their names in UTF-8.
-    fn decoded(&mut self, folders: Vec<RemoteFolder>) -> Vec<RemoteFolder> {
-        folders
+    fn decoded<T>(&mut self, listed: Vec<(RemoteFolder, T)>) -> Vec<(RemoteFolder, T)> {
+        let names = self.learn(listed.iter().map(|(f, _)| f.name.clone()).collect());
+        listed
             .into_iter()
-            .map(|folder| RemoteFolder {
-                name: self.local(folder.name),
-                ..folder
-            })
+            .zip(names)
+            .map(|((folder, extra), name)| (RemoteFolder { name, ..folder }, extra))
             .collect()
     }
 }
@@ -566,9 +616,15 @@ impl MailOps for ImapOps {
             Ok(names
                 .iter()
                 .filter_map(|n| listed_folder(n.attributes(), n.delimiter(), n.name()))
-                .collect())
+                .collect::<Vec<_>>())
         })?;
-        Ok(self.decoded(listed))
+        let listed = listed.into_iter().map(|folder| (folder, ())).collect();
+        Ok(self
+            .names
+            .decoded(listed)
+            .into_iter()
+            .map(|(folder, ())| folder)
+            .collect())
     }
 
     fn list_folders_status(&mut self) -> MailResult<Vec<(RemoteFolder, Option<StatusInfo>)>> {
@@ -626,13 +682,7 @@ impl MailOps for ImapOps {
                 })
                 .collect::<Vec<_>>())
         })?;
-        Ok(listed
-            .into_iter()
-            .map(|(folder, status)| {
-                let name = self.local(folder.name);
-                (RemoteFolder { name, ..folder }, status)
-            })
-            .collect())
+        Ok(self.names.decoded(listed))
     }
 
     fn select(&mut self, folder: &str) -> MailResult<SelectInfo> {
@@ -1051,6 +1101,50 @@ fn text_query(words: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn learned(wire: &[&str]) -> (FolderNames, Vec<String>) {
+        let mut names = FolderNames::default();
+        let local = names.learn(wire.iter().map(|n| n.to_string()).collect());
+        (names, local)
+    }
+
+    #[test]
+    fn a_listed_name_that_is_not_modified_utf7_goes_back_as_it_came() {
+        let (names, local) = learned(&["INBOX", "Caf\u{e9}", "R&D", "Archief/&AMkA6Q-n"]);
+        assert_eq!(
+            local,
+            ["INBOX", "Caf\u{e9}", "R&D", "Archief/\u{c9}\u{e9}n"]
+        );
+        assert_eq!(names.wire("Caf\u{e9}"), "Caf\u{e9}");
+        assert_eq!(names.wire("R&D"), "R&D");
+        assert_eq!(names.wire("Archief/\u{c9}\u{e9}n"), "Archief/&AMkA6Q-n");
+        // Not listed: a folder about to be created is sent in modified UTF-7.
+        assert_eq!(names.wire("Th\u{e9}"), "Th&AOk-");
+        assert_eq!(names.wire("Q&A"), "Q&-A");
+    }
+
+    /// A raw `Café` the old Postvak created on a lax server, beside another client's `Caf&AOk-`.
+    #[test]
+    fn a_raw_name_and_its_modified_utf7_twin_both_stay_reachable() {
+        let (names, local) = learned(&["Caf&AOk-", "Caf\u{e9}"]);
+        assert_eq!(local, ["Caf&AOk-", "Caf\u{e9}"]);
+        assert_eq!(names.wire("Caf&AOk-"), "Caf&AOk-");
+        assert_eq!(names.wire("Caf\u{e9}"), "Caf\u{e9}");
+    }
+
+    #[test]
+    fn a_name_that_may_be_kept_raw_waits_for_a_listing() {
+        let names = FolderNames::default();
+        assert!(names.needs_list("Caf\u{e9}"));
+        assert!(names.needs_list("R&D"));
+        assert!(!names.needs_list("Lists/GitHub"));
+        let (names, _) = learned(&["INBOX"]);
+        assert!(!names.needs_list("Caf\u{e9}"));
+        // A later listing forgets what the server no longer lists.
+        let (mut names, _) = learned(&["Caf\u{e9}"]);
+        names.learn(vec!["INBOX".into()]);
+        assert_eq!(names.wire("Caf\u{e9}"), "Caf&AOk-");
+    }
 
     #[test]
     fn only_a_plain_no_to_login_means_rejected_credentials() {

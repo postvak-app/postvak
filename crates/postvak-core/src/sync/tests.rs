@@ -1169,6 +1169,48 @@ fn rules_run_selects_each_folder_once() {
     );
 }
 
+/// macOS input can spell `Één` with combining accents (NFD), while the server lists precomposed letters (NFC).
+#[test]
+fn a_rule_watching_a_folder_written_in_nfd_runs_in_the_folder_the_server_spells_in_nfc() {
+    let mut ops = ops_with_inbox().with_folder("\u{c9}\u{e9}n", None);
+    ops.add_mail(
+        "\u{c9}\u{e9}n",
+        1,
+        H,
+        &headers("list@x", "news", "l1@x"),
+        None,
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open_in_memory().unwrap();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let acc = account();
+    let identity = acc.identity().unwrap();
+    let rules = rules_from(
+        "[[rules]]\nname = \"news\"\nfolder = \"E\u{301}e\u{301}n\"\nmatch.from = { equals = \"list@x\" }\nactions = [\"flag\"]\n",
+        &store,
+        0,
+    );
+    sync_all(&mut ops, &store).unwrap();
+    ops.calls.clear();
+    let run = run_rules(
+        &mut ops,
+        &store,
+        &trash,
+        &rules,
+        &acc,
+        &identity,
+        Mode::Normal,
+        12 * H,
+    )
+    .unwrap();
+    assert_eq!(run.actions, 1, "{:?}", ops.calls);
+    assert!(
+        ops.calls.contains(&"select \u{c9}\u{e9}n".to_string()),
+        "{:?}",
+        ops.calls
+    );
+}
+
 #[test]
 fn a_rules_pass_with_nothing_to_do_selects_no_folder() {
     let mut ops = ops_with_inbox().with_folder("Lists", None);

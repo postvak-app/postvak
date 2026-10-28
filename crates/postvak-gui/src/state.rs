@@ -1111,6 +1111,12 @@ impl App {
                 // A fresh sync result replaces the last notice, which would otherwise outrank every account line.
                 self.notice = None;
                 self.refresh(index);
+                // The folder warnings read what the stores hold, which a sync changes.
+                self.rules.warnings = rules::warnings(
+                    &self.paths,
+                    &self.rules.rules,
+                    &account_names(&self.accounts),
+                );
             }
             Event::ActionDone {
                 folder, results, ..

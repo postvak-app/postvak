@@ -1,5 +1,6 @@
 //! What leaves rules.toml valid but not doing what its author meant: a conflicting copy a file sync left beside it,
-//! a rule for an account this device does not have, and a rule moving mail to the folder it watches. `folder_warnings`
+//! a rule for an account this device does not have, a rule moving mail to the folder it watches, and a folder written
+//! the way IMAP spells it on the wire, as Postvak showed non-ASCII names before it decoded them. `folder_warnings`
 //! adds what an account's own folders show: a move target written for another hierarchy or namespace.
 use std::fs;
 use std::path::Path;
@@ -29,6 +30,22 @@ pub fn warnings(path: &Path, rules: &[Rule], accounts: &[&str]) -> Vec<String> {
                 rule.name
             ));
         }
+        let named =
+            rule.folder
+                .iter()
+                .chain(rule.actions.iter().filter_map(|action| match action {
+                    Action::Move(target) => Some(target),
+                    _ => None,
+                }));
+        for name in named {
+            if let Some(plain) = wire_spelling(name) {
+                lines.push(format!(
+                    "rule '{}' names folder '{name}', which is how IMAP spells '{plain}' on the wire; Postvak now \
+                     takes folder names in plain text, so it means a folder literally called '{name}': write '{plain}'",
+                    rule.name
+                ));
+            }
+        }
         let watched = rule.folder.as_deref().unwrap_or("INBOX");
         for action in &rule.actions {
             if let Action::Move(target) = action
@@ -42,6 +59,15 @@ pub fn warnings(path: &Path, rules: &[Rule], accounts: &[&str]) -> Vec<String> {
         }
     }
     lines
+}
+
+/// The plain name `name` encodes when it is modified UTF-7 for another name, such as `&AMkA6Q-n` for `Één`: before
+/// Postvak decoded folder names it showed them so, and a rule copied from that never matches the folder now.
+fn wire_spelling(name: &str) -> Option<String> {
+    name.contains('&')
+        .then(|| crate::mail_ops::utf7::decode(name))
+        .flatten()
+        .filter(|plain| plain != name)
 }
 
 /// INBOX is the same folder in any case (RFC 3501 §5.1); other names may differ by case alone on some servers.
@@ -215,6 +241,34 @@ mod tests {
                 "rule 'inbox' moves mail to 'Inbox', the folder it watches, so the move does nothing",
             ],
             "only INBOX is the same in any case: 'lists' may be another folder than 'Lists'"
+        );
+    }
+
+    /// Before folder names were decoded the folder list showed `&AMkA6Q-n` for `Één`, and rules were written so.
+    #[test]
+    fn a_folder_written_in_its_wire_spelling_is_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let rules = parse(
+            "[[rules]]\nname = \"watch\"\nfolder = \"&AMkA6Q-n\"\nmatch.seen = true\nactions = [\"flag\"]\n\n\
+             [[rules]]\nname = \"move\"\nmatch.seen = true\nactions = [{ move = \"Archief/&AMkA6Q-n\" }]\n\n\
+             [[rules]]\nname = \"amp\"\nmatch.seen = true\nactions = [{ move = \"Q&-A\" }]\n\n\
+             [[rules]]\nname = \"plain\"\nfolder = \"R&D\"\nmatch.seen = true\nactions = [{ move = \"Archief/\u{c9}\u{e9}n\" }]\n",
+        )
+        .unwrap()
+        .rules;
+        assert_eq!(
+            warnings(&dir.path().join("rules.toml"), &rules, &[]),
+            [
+                "rule 'watch' names folder '&AMkA6Q-n', which is how IMAP spells '\u{c9}\u{e9}n' on the wire; \
+                 Postvak now takes folder names in plain text, so it means a folder literally called '&AMkA6Q-n': \
+                 write '\u{c9}\u{e9}n'",
+                "rule 'move' names folder 'Archief/&AMkA6Q-n', which is how IMAP spells 'Archief/\u{c9}\u{e9}n' on \
+                 the wire; Postvak now takes folder names in plain text, so it means a folder literally called \
+                 'Archief/&AMkA6Q-n': write 'Archief/\u{c9}\u{e9}n'",
+                "rule 'amp' names folder 'Q&-A', which is how IMAP spells 'Q&A' on the wire; Postvak now takes \
+                 folder names in plain text, so it means a folder literally called 'Q&-A': write 'Q&A'",
+            ],
+            "'R&D' is not modified UTF-7, and a plain name is fine"
         );
     }
 
