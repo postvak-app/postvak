@@ -1,6 +1,7 @@
 //! The folder pane without a toolkit: the tree of custom folders, the order of special ones, labels and unread counts.
 //! The window draws All inboxes, each account's folders and the Rules, Activity and Backups entries from it.
 
+use postvak_core::folder_name;
 use postvak_core::message::clean;
 use postvak_core::store::Folder;
 
@@ -250,7 +251,11 @@ pub(crate) fn tree(folders: &[FolderRow]) -> Vec<TreeRow> {
         .iter()
         .filter(|f| !is_special(&f.name, f.special_use.as_deref()))
         .collect();
-    let strip = !custom.is_empty() && custom.iter().all(|f| inbox_prefix(f).is_some());
+    let strip = folder_name::under_inbox(
+        custom
+            .iter()
+            .map(|f| (f.name.as_str(), f.delimiter.as_deref())),
+    );
     let mut paths: Vec<(Vec<String>, &FolderRow)> = custom
         .into_iter()
         .map(|f| (segments(f, strip), f))
@@ -297,11 +302,7 @@ pub(crate) fn tree(folders: &[FolderRow]) -> Vec<TreeRow> {
 
 /// The name after a leading `INBOX` + delimiter, when it has one.
 fn inbox_prefix(folder: &FolderRow) -> Option<&str> {
-    let delimiter = folder.delimiter.as_deref().filter(|d| !d.is_empty())?;
-    let prefix = format!("INBOX{delimiter}");
-    let head = folder.name.get(..prefix.len())?;
-    head.eq_ignore_ascii_case(&prefix)
-        .then(|| &folder.name[prefix.len()..])
+    folder_name::inbox_prefix(&folder.name, folder.delimiter.as_deref())
 }
 
 fn segments(folder: &FolderRow, strip_inbox: bool) -> Vec<String> {

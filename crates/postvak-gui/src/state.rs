@@ -711,7 +711,7 @@ impl App {
         super::phases::mark("stores_opened");
         let rules_path = paths.rules_file();
         let rules_dir = paths.config_dir.clone();
-        let rules = RulesState::load(&rules_path, Vec::new(), &account_names(&accounts));
+        let rules = RulesState::load(&paths, Vec::new(), &account_names(&accounts));
         let mut app = App {
             accounts,
             activity_log: Vec::new(),
@@ -2771,8 +2771,8 @@ impl App {
             self.rules_changed();
         } else if self.config_dir_watch.changed() {
             // A sync tool's conflicting copy appears beside rules.toml without changing it.
-            self.rules.warnings = rule_file::warnings(
-                &self.paths.rules_file(),
+            self.rules.warnings = rules::warnings(
+                &self.paths,
                 &self.rules.rules,
                 &account_names(&self.accounts),
             );
@@ -3034,7 +3034,7 @@ impl App {
     fn rules_changed(&mut self) {
         self.rules_watch.changed();
         self.rules = RulesState::load(
-            &self.paths.rules_file(),
+            &self.paths,
             std::mem::take(&mut self.rules.rules),
             &account_names(&self.accounts),
         );

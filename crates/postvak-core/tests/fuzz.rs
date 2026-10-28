@@ -25,6 +25,7 @@ use proptest::test_runner::Config;
 use postvak_core::daemon::wire::{
     self, AccountStatus, ClientMessage, DaemonMessage, Outcome, Payload, Status,
 };
+use postvak_core::mail_ops::utf7;
 use postvak_core::message::{
     attachments, attachments_and_html, bare_addresses, body_text, clean, clean_for_agent,
     header_value, parse_headers, save_attachment, thread_id,
@@ -605,6 +606,46 @@ proptest! {
                 prop_assert!(result.is_ok(), "{text:?}: {:?}", result.err());
             }
         }
+    }
+}
+
+/// Folder names a server could list: modified UTF-7 sections, sloppy ones, raw UTF-8 and `&`/`-` in odd places.
+fn wire_folder_name() -> BoxedStrategy<String> {
+    prop_oneof![
+        ".{0,64}",
+        "[A-Za-z0-9+,&/. -]{0,64}",
+        proptest::collection::vec(
+            prop_oneof![
+                Just("&".to_string()),
+                Just("-".to_string()),
+                Just("&-".to_string()),
+                "&[A-Za-z0-9+,]{0,12}-",
+                "[A-Za-z ./]{0,4}",
+                ".{0,2}",
+            ],
+            0..12,
+        )
+        .prop_map(|parts| parts.concat()),
+    ]
+    .boxed()
+}
+
+proptest! {
+    #![proptest_config(config())]
+
+    /// Whatever name a server lists, decoding it does not panic, and a name that decodes encodes back to what the
+    /// server sent, so the server gets back the name it listed.
+    #[test]
+    fn modified_utf7_decodes_any_listed_name_or_refuses_it(wire in wire_folder_name()) {
+        if let Some(name) = utf7::decode(&wire) {
+            prop_assert_eq!(utf7::encode(&name), wire);
+        }
+    }
+
+    /// Every UTF-8 name survives the trip to the wire and back.
+    #[test]
+    fn modified_utf7_round_trips_any_name(name in ".{0,64}") {
+        prop_assert_eq!(utf7::decode(&utf7::encode(&name)), Some(name));
     }
 }
 

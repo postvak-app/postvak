@@ -1,6 +1,7 @@
 use std::io;
 
 use crate::actions::RULE_NAME;
+use crate::folder_name;
 use crate::mail_ops::{MailError, MailOps, delete_message, delete_messages};
 use crate::message::body_text;
 use crate::rules::engine::{Context, Plan, PlannedAction, evaluate};
@@ -202,7 +203,9 @@ pub fn apply_many(
             };
             match target {
                 // A move into the messages' own folder does nothing, as in `apply`.
-                Ok(target) if target == folder => msgs.iter().map(|msg| (msg.uid, Ok(0))).collect(),
+                Ok(target) if folder_name::same(&target, &folder) => {
+                    msgs.iter().map(|msg| (msg.uid, Ok(0))).collect()
+                }
                 Ok(target) => move_many(planned, msgs, &target, ops, store, now),
                 Err(_) => per_message(ops),
             }
@@ -304,18 +307,21 @@ fn move_many(
     if moving.is_empty() {
         return results;
     }
-    let known = match store.folder(target) {
-        Ok(folder) => folder.is_some(),
+    let (target, known) = match folder_name::known(store, target) {
+        Ok(folder) => spelled(target, folder),
         Err(e) => {
             log::warn!("{target}: could not read the folder ({e}); creating it if missing");
-            false
+            spelled(target, None)
         }
     };
-    if !known {
-        create_and_subscribe(target, ops);
-    }
+    let target = target.as_str();
+    let refused = if known {
+        None
+    } else {
+        create_and_subscribe(target, ops)
+    };
     if let Err(e) = ops.move_messages(&uids_of(&moving), target) {
-        fail_all(&moving, &e, &mut results);
+        fail_all(&moving, &with_create_error(e, refused), &mut results);
         return results;
     }
     if !known && let Err(e) = store.upsert_folder(&new_folder(target)) {
@@ -384,7 +390,7 @@ fn first_move<'a>(
         Action::Move(target) => target.clone(),
         _ => archive_folder(store)?,
     };
-    Ok((target != msg.folder).then_some((planned, target)))
+    Ok((!folder_name::same(&target, &msg.folder)).then_some((planned, target)))
 }
 
 /// Swaps the $Junk and $NotJunk keywords, then moves to the Junk folder or back to INBOX. A server that refuses
@@ -513,7 +519,7 @@ pub fn move_target(
         Action::NotJunk => Some("INBOX".to_string()),
         _ => None,
     };
-    Ok(target.filter(|target| target != folder))
+    Ok(target.filter(|target| !folder_name::same(target, folder)))
 }
 
 fn archive_folder(store: &Store) -> Result<String, ApplyError> {
@@ -524,16 +530,37 @@ fn junk_folder(store: &Store) -> Result<String, ApplyError> {
     special_folder(store, "Junk")?.ok_or(ApplyError::NoJunkFolder)
 }
 
+/// Where a move to `target` goes, and whether the store knows that folder: its own spelling of a folder it knows,
+/// apart from Unicode normalization, else `target` in NFC, the form a new name should have (RFC 9051 §5.1).
+fn spelled(target: &str, known: Option<Folder>) -> (String, bool) {
+    match known {
+        Some(folder) => (folder.name, true),
+        None => (folder_name::nfc(target).into_owned(), false),
+    }
+}
+
 /// Creates the move target and subscribes to it, so clients that list only subscribed folders show the mail moved
-/// there. The folder may exist on the server before our first sync of it; a real create failure surfaces in the move.
-fn create_and_subscribe(target: &str, ops: &mut dyn MailOps) {
+/// there. The folder may exist on the server before our first sync of it, so the move is tried anyway; the server's
+/// refusal comes back, for the move's error to carry if the move fails too.
+fn create_and_subscribe(target: &str, ops: &mut dyn MailOps) -> Option<MailError> {
     if let Err(e) = ops.create_folder(target) {
         log::debug!("{target}: create failed ({e}), trying the move anyway");
-        return;
+        return Some(e);
     }
     // The move does not need it, so a refusal only costs the folder its place in those clients.
     if let Err(e) = ops.subscribe_folder(target) {
         log::warn!("{target}: created, but could not subscribe to it: {e}");
+    }
+    None
+}
+
+/// A failed move's error, with why creating its folder failed before it: a bad name, a wrong namespace or a missing
+/// permission explains a move's "no such mailbox".
+fn with_create_error(error: MailError, refused: Option<MailError>) -> MailError {
+    match refused {
+        Some(refused) => error
+            .map_reason(|reason| format!("{reason}; creating the folder failed first: {refused}")),
+        None => error,
     }
 }
 
@@ -555,11 +582,15 @@ fn move_to(
     ops: &mut dyn MailOps,
     store: &Store,
 ) -> Result<(), ApplyError> {
-    let known = store.folder(target)?.is_some();
-    if !known {
-        create_and_subscribe(target, ops);
-    }
-    ops.move_message(current.uid, target)?;
+    let (target, known) = spelled(target, folder_name::known(store, target)?);
+    let target = target.as_str();
+    let refused = if known {
+        None
+    } else {
+        create_and_subscribe(target, ops)
+    };
+    ops.move_message(current.uid, target)
+        .map_err(|e| with_create_error(e, refused))?;
     if !known {
         store.upsert_folder(&new_folder(target))?;
     }
@@ -851,6 +882,142 @@ mod tests {
         );
         assert!(matches!(applied[..], [(5, Ok(1))]), "{applied:?}");
         assert!(ops.calls.iter().any(|c| c == "subscribe_folder Lists"));
+    }
+
+    #[test]
+    fn a_refused_create_is_reported_with_the_move_that_failed_after_it() {
+        let refused = || MailError::Protocol("[CANNOT] Invalid mailbox name".into());
+        let (mut ops, store, trash, _dir, msg) = setup();
+        ops.fail_next_create = Some(refused());
+        let err = apply(
+            &plan(vec![Action::Move("Lists".into())]),
+            &msg,
+            &mut ops,
+            &store,
+            &trash,
+            500,
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(
+            err,
+            "server error: no folder Lists; creating the folder failed first: server error: [CANNOT] Invalid \
+             mailbox name"
+        );
+
+        // A direct action goes through `apply_many`.
+        let (mut ops, store, trash, _dir, msg) = setup();
+        ops.fail_next_create = Some(refused());
+        let applied = apply_many(
+            &plan(vec![Action::Move("Lists".into())]).actions[0],
+            &[msg],
+            &mut ops,
+            &store,
+            &trash,
+            500,
+        );
+        let [(5, Err(err))] = &applied[..] else {
+            panic!("{applied:?}");
+        };
+        assert!(
+            err.to_string().ends_with(
+                "creating the folder failed first: server error: [CANNOT] Invalid mailbox name"
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_refused_create_of_a_folder_already_there_is_no_error() {
+        let (mut ops, store, trash, _dir, msg) = setup();
+        ops.create_folder("Lists").unwrap();
+        ops.fail_next_create = Some(MailError::Protocol("[ALREADYEXISTS] Lists".into()));
+        apply(
+            &plan(vec![Action::Move("Lists".into())]),
+            &msg,
+            &mut ops,
+            &store,
+            &trash,
+            500,
+        )
+        .unwrap();
+        assert_eq!(ops.mail["Lists"].len(), 1);
+    }
+
+    const NFC: &str = "Archief/\u{c9}\u{e9}n";
+    const NFD: &str = "Archief/E\u{301}e\u{301}n";
+
+    #[test]
+    fn a_new_folder_written_in_nfd_is_created_in_nfc() {
+        let (mut ops, store, trash, _dir, msg) = setup();
+        let applied = apply_many(
+            &plan(vec![Action::Move(NFD.into())]).actions[0],
+            std::slice::from_ref(&msg),
+            &mut ops,
+            &store,
+            &trash,
+            500,
+        );
+        assert!(matches!(applied[..], [(5, Ok(1))]), "{applied:?}");
+        assert!(
+            ops.calls.contains(&format!("create_folder {NFC}")),
+            "{:?}",
+            ops.calls
+        );
+        assert_eq!(ops.mail[NFC].len(), 1);
+        assert!(store.folder(NFC).unwrap().is_some());
+        assert!(!ops.mail.contains_key(NFD));
+    }
+
+    #[test]
+    fn a_target_in_nfd_moves_to_the_folder_known_in_nfc_and_back() {
+        for (known, written) in [(NFC, NFD), (NFD, NFC)] {
+            let (mut ops, store, trash, _dir, msg) = setup();
+            ops.create_folder(known).unwrap();
+            store
+                .upsert_folder(&Folder {
+                    uidvalidity: 1,
+                    ..new_folder(known)
+                })
+                .unwrap();
+            ops.calls.clear();
+            apply(
+                &plan(vec![Action::Move(written.into())]),
+                &msg,
+                &mut ops,
+                &store,
+                &trash,
+                500,
+            )
+            .unwrap();
+            assert_eq!(
+                ops.calls,
+                [format!("move INBOX 5 -> {known}")],
+                "the server's own spelling, nothing created"
+            );
+            assert_eq!(store.folders().unwrap().len(), 3);
+        }
+    }
+
+    #[test]
+    fn a_move_to_the_own_folder_in_another_normalization_does_nothing() {
+        let (mut ops, store, trash, _dir, mut msg) = setup();
+        msg.folder = NFC.into();
+        assert_eq!(
+            move_target(&store, &msg.folder, &Action::Move(NFD.into())).unwrap(),
+            None
+        );
+        ops.calls.clear();
+        let applied = apply_many(
+            &plan(vec![Action::Move(NFD.into())]).actions[0],
+            &[msg],
+            &mut ops,
+            &store,
+            &trash,
+            500,
+        );
+        assert!(matches!(applied[..], [(5, Ok(0))]), "{applied:?}");
+        assert!(ops.calls.is_empty(), "{:?}", ops.calls);
     }
 
     #[test]

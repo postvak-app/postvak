@@ -1307,11 +1307,10 @@ fn read_rule_json() -> Result<Rule> {
 fn rules_warnings(paths: &Paths, config: &Config) -> Result<Vec<String>> {
     let path = paths.rules_file();
     let accounts: Vec<&str> = config.accounts.iter().map(|a| a.name.as_str()).collect();
-    Ok(postvak_core::rules::warnings(
-        &path,
-        &postvak_core::rules::load(&path)?.rules,
-        &accounts,
-    ))
+    let rules = postvak_core::rules::load(&path)?.rules;
+    let warnings = postvak_core::rules::warnings(&path, &rules, &accounts);
+    let folders = postvak_core::rules::folder_warnings(paths, &rules, &accounts);
+    Ok([warnings, folders].concat())
 }
 
 fn compiled_rules(paths: &Paths, name: Option<&str>) -> Result<Vec<CompiledRule>> {

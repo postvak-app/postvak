@@ -37,7 +37,10 @@ pub struct Plan {
 
 pub fn folder_needs_body(rules: &[CompiledRule], account: &str, folder: &str) -> bool {
     rules.iter().any(|r| {
-        r.rule.enabled && r.applies_to_account(account) && r.folder() == folder && r.needs_body()
+        r.rule.enabled
+            && r.applies_to_account(account)
+            && crate::folder_name::same(r.folder(), folder)
+            && r.needs_body()
     })
 }
 
@@ -50,7 +53,7 @@ pub fn evaluate(rules: &[CompiledRule], msg: &Message, ctx: &Context) -> Plan {
     for rule in rules {
         if !rule.rule.enabled
             || !rule.applies_to_account(ctx.account)
-            || rule.folder() != msg.folder
+            || !crate::folder_name::same(rule.folder(), &msg.folder)
         {
             continue;
         }
@@ -462,6 +465,20 @@ actions = ["flag"]
             &ctx(&id, 200),
         );
         assert!(plan.actions.is_empty());
+    }
+
+    #[test]
+    fn a_rule_watching_a_folder_written_in_nfd_runs_in_the_folder_listed_in_nfc() {
+        let id = identity();
+        let toml = "[[rules]]\nname = \"n\"\nfolder = \"E\u{301}e\u{301}n\"\nmatch.body = { contains = \"x\" }\nactions = [\"flag\"]\n";
+        let mut m = msg("a@x", "pieter@example.com", "s", 100, false);
+        m.folder = "\u{c9}\u{e9}n".into();
+        m.body_text = Some("x".into());
+        assert_eq!(
+            evaluate(&rules(toml, 0), &m, &ctx(&id, 200)).actions.len(),
+            1
+        );
+        assert!(folder_needs_body(&rules(toml, 0), "work", "\u{c9}\u{e9}n"));
     }
 
     #[test]

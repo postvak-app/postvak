@@ -512,6 +512,10 @@ impl Backend {
         let names = self.all_accounts();
         let accounts: Vec<&str> = names.iter().map(String::as_str).collect();
         let warnings = rules::warnings(&path, &file.rules, &accounts);
+        // These name the account, so only the visible ones.
+        let shown: Vec<String> = self.visible().into_iter().map(|a| a.name).collect();
+        let folders = rules::folder_warnings(&self.paths, &file.rules, &shown);
+        let warnings = [warnings, folders].concat();
         Ok(json!({ "rules": count, "warnings": warnings }))
     }
 

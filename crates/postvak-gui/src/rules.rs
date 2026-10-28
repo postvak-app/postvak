@@ -32,8 +32,8 @@ pub(crate) struct RulesState {
 impl RulesState {
     /// The file's rules, or the previous ones when it does not parse. A rule that does not compile is reported but
     /// still listed, so it can be switched off.
-    pub fn load(path: &Path, previous: Vec<Rule>, accounts: &[&str]) -> RulesState {
-        let (error, rules) = match rules::load(path) {
+    pub fn load(paths: &Paths, previous: Vec<Rule>, accounts: &[&str]) -> RulesState {
+        let (error, rules) = match rules::load(&paths.rules_file()) {
             Ok(file) => (
                 rules::compile(&file).err().map(|e| e.to_string()),
                 file.rules,
@@ -42,13 +42,19 @@ impl RulesState {
         };
         RulesState {
             error,
-            warnings: rules::warnings(path, &rules, accounts),
+            warnings: warnings(paths, &rules, accounts),
             previews: BTreeMap::new(),
             proposals: proposals(&rules),
             lines: rule_lines(&rules),
             rules,
         }
     }
+}
+
+/// What leaves the rules valid but not doing what was meant: `rules::warnings`, then what the accounts' folders show.
+pub(crate) fn warnings(paths: &Paths, rules: &[Rule], accounts: &[&str]) -> Vec<String> {
+    let file = rules::warnings(&paths.rules_file(), rules, accounts);
+    [file, rules::folder_warnings(paths, rules, accounts)].concat()
 }
 
 /// A rule waiting for approval, as the Rules view shows it.

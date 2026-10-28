@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,7 +21,7 @@ use crate::config::AccountConfig;
 use crate::credentials::Secret;
 use crate::mail_ops::{
     Envelope, FlagUpdate, IdleOutcome, MailError, MailOps, MailResult, PartRef, RemoteFolder,
-    SelectInfo, StatusInfo, Structure, TextPart,
+    SelectInfo, StatusInfo, Structure, TextPart, utf7,
 };
 
 type ImapSession = Session<TlsStream<TcpStream>>;
@@ -45,6 +45,8 @@ pub struct ImapOps {
     has_special_use: bool,
     selected: Option<String>,
     command_timeout: Duration,
+    /// Names the server listed that are not modified UTF-7 (raw UTF-8, a sloppy encoding), sent back as they came.
+    verbatim: HashSet<String>,
 }
 
 impl ImapOps {
@@ -91,6 +93,7 @@ impl ImapOps {
             has_special_use: caps.has_str("SPECIAL-USE"),
             selected: None,
             command_timeout: COMMAND_TIMEOUT,
+            verbatim: HashSet::new(),
         })
     }
 
@@ -165,9 +168,41 @@ impl ImapOps {
 
     #[cfg(any(test, feature = "testing"))]
     pub fn delete_folder(&mut self, name: &str) -> MailResult<()> {
+        let name = self.wire(name);
         self.run(self.command_timeout, async |session| {
-            session.delete(name).await.map_err(proto)
+            session.delete(&name).await.map_err(proto)
         })
+    }
+
+    /// `name` as the server spells it: modified UTF-7 (RFC 3501 §5.1.3), unless the server listed it otherwise.
+    fn wire(&self, name: &str) -> String {
+        if self.verbatim.contains(name) {
+            name.to_string()
+        } else {
+            utf7::encode(name)
+        }
+    }
+
+    /// A name the server listed, in UTF-8; one that is not modified UTF-7 is kept as it came, and sent back so.
+    fn local(&mut self, wire: String) -> String {
+        match utf7::decode(&wire) {
+            Some(name) => name,
+            None => {
+                self.verbatim.insert(wire.clone());
+                wire
+            }
+        }
+    }
+
+    /// The listed folders with their names in UTF-8.
+    fn decoded(&mut self, folders: Vec<RemoteFolder>) -> Vec<RemoteFolder> {
+        folders
+            .into_iter()
+            .map(|folder| RemoteFolder {
+                name: self.local(folder.name),
+                ..folder
+            })
+            .collect()
     }
 }
 
@@ -520,7 +555,7 @@ impl MailOps for ImapOps {
     }
 
     fn list_folders(&mut self) -> MailResult<Vec<RemoteFolder>> {
-        self.run(self.command_timeout, async |session| {
+        let listed = self.run(self.command_timeout, async |session| {
             let names: Vec<_> = session
                 .list(Some(""), Some("*"))
                 .await
@@ -532,7 +567,8 @@ impl MailOps for ImapOps {
                 .iter()
                 .filter_map(|n| listed_folder(n.attributes(), n.delimiter(), n.name()))
                 .collect())
-        })
+        })?;
+        Ok(self.decoded(listed))
     }
 
     fn list_folders_status(&mut self) -> MailResult<Vec<(RemoteFolder, Option<StatusInfo>)>> {
@@ -549,7 +585,7 @@ impl MailOps for ImapOps {
             "LIST \"\" \"*\" RETURN ({special_use}STATUS {})",
             self.status_items()
         );
-        self.run(self.command_timeout, async |session| {
+        let listed = self.run(self.command_timeout, async |session| {
             let tag = session.run_command(&command).await.map_err(proto)?;
             let mut folders = Vec::new();
             let mut statuses = HashMap::new();
@@ -588,17 +624,25 @@ impl MailOps for ImapOps {
                     let status = statuses.remove(&folder.name);
                     (folder, status)
                 })
-                .collect())
-        })
+                .collect::<Vec<_>>())
+        })?;
+        Ok(listed
+            .into_iter()
+            .map(|(folder, status)| {
+                let name = self.local(folder.name);
+                (RemoteFolder { name, ..folder }, status)
+            })
+            .collect())
     }
 
     fn select(&mut self, folder: &str) -> MailResult<SelectInfo> {
         let condstore = self.has_condstore;
+        let wire = self.wire(folder);
         let selected = self.run(self.command_timeout, async |session| {
             let mailbox = if condstore {
-                session.select_condstore(folder).await
+                session.select_condstore(&wire).await
             } else {
-                session.select(folder).await
+                session.select(&wire).await
             }
             .map_err(proto)?;
             Ok(SelectInfo {
@@ -619,8 +663,9 @@ impl MailOps for ImapOps {
 
     fn status(&mut self, folder: &str) -> MailResult<StatusInfo> {
         let items = self.status_items();
+        let folder = self.wire(folder);
         self.run(self.command_timeout, async |session| {
-            let mailbox = session.status(folder, items).await.map_err(proto)?;
+            let mailbox = session.status(&folder, items).await.map_err(proto)?;
             Ok(StatusInfo {
                 messages: mailbox.exists,
                 uidnext: mailbox.uid_next.unwrap_or(0),
@@ -774,27 +819,31 @@ impl MailOps for ImapOps {
     }
 
     fn move_messages(&mut self, uids: &[u32], to: &str) -> MailResult<()> {
+        let wire = self.wire(to);
         uids.chunks(UID_BATCH)
-            .try_for_each(|batch| move_batch(self, batch, to))
+            .try_for_each(|batch| move_batch(self, batch, &wire, to))
     }
 
     fn create_folder(&mut self, name: &str) -> MailResult<()> {
+        let name = self.wire(name);
         self.run(self.command_timeout, async |session| {
-            session.create(name).await.map_err(proto)
+            session.create(&name).await.map_err(proto)
         })
     }
 
     fn subscribe_folder(&mut self, name: &str) -> MailResult<()> {
+        let name = self.wire(name);
         self.run(self.command_timeout, async |session| {
-            session.subscribe(name).await.map_err(proto)
+            session.subscribe(&name).await.map_err(proto)
         })
     }
 
     fn append(&mut self, folder: &str, raw: &[u8], flags: &[&str]) -> MailResult<()> {
         let flags = (!flags.is_empty()).then(|| format!("({})", flags.join(" ")));
+        let folder = self.wire(folder);
         self.run(self.bulk_timeout(), async |session| {
             session
-                .append(folder, flags.as_deref(), None, raw)
+                .append(&folder, flags.as_deref(), None, raw)
                 .await
                 .map_err(proto)
         })
@@ -877,12 +926,13 @@ fn expunge(ops: &mut ImapOps, uids: &[u32]) -> MailResult<()> {
     })
 }
 
-fn move_batch(ops: &mut ImapOps, uids: &[u32], to: &str) -> MailResult<()> {
+/// Moves `uids` to the folder `to`, which the server spells `wire`.
+fn move_batch(ops: &mut ImapOps, uids: &[u32], wire: &str, to: &str) -> MailResult<()> {
     let (has_move, has_uidplus) = (ops.has_move, ops.has_uidplus);
     let set = uid_set(uids);
     if has_move {
         return ops.run(ops.batch_timeout(uids), async |session| {
-            session.uid_mv(set, to).await.map_err(proto)
+            session.uid_mv(set, wire).await.map_err(proto)
         });
     }
     ops.run(ops.batch_timeout(uids), async |session| {
@@ -890,7 +940,7 @@ fn move_batch(ops: &mut ImapOps, uids: &[u32], to: &str) -> MailResult<()> {
         if !has_uidplus {
             refuse_if_others_deleted(session, uids).await?;
         }
-        session.uid_copy(set, to).await.map_err(proto)
+        session.uid_copy(set, wire).await.map_err(proto)
     })?;
     delete_copied(ops, uids, to)
 }
@@ -899,13 +949,7 @@ fn delete_copied(ops: &mut impl MailOps, uids: &[u32], to: &str) -> MailResult<(
     let Err(err) = super::delete_messages(ops, uids) else {
         return Ok(());
     };
-    let kept = |reason: String| format!("copied to {to}, original kept: {reason}");
-    Err(match err {
-        MailError::Connect(reason) => MailError::Connect(kept(reason)),
-        MailError::Auth(reason) => MailError::Auth(kept(reason)),
-        MailError::Protocol(reason) => MailError::Protocol(kept(reason)),
-        MailError::Io(reason) => MailError::Io(kept(reason)),
-    })
+    Err(err.map_reason(|reason| format!("copied to {to}, original kept: {reason}")))
 }
 
 /// Without UIDPLUS only a plain EXPUNGE exists, which would also remove every other message marked deleted here.

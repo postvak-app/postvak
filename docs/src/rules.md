@@ -23,6 +23,8 @@ actions = [{ move = "Lists/GitHub" }, "mark_read"]
 
 A tag is printable ASCII without spaces, backslashes or `( ) { % * " ]`, and `$PostvakRestored` is reserved. `name`, `account`, `folder` and `move` folders must not be blank, may not contain control characters, and are at most 255 characters.
 
+Folder names are written in plain text, `Archief/Één` included; Postvak encodes them as IMAP requires (modified UTF-7) and shows the server's folders decoded. A level of a `folder` or `move` folder (the parts between `/`) may not start or end with a space. A `move` folder also may not contain `*` or `%`, which IMAP reads as wildcards, or an empty level: `/Lists`, `Lists//GitHub` and `Lists/` are refused. A name typed with separate accents, as macOS can produce, finds the folder the server spells with precomposed letters (Unicode NFC) and the other way round, and a new folder is created in NFC.
+
 ## Conditions
 
 Text conditions take exactly one of:
@@ -58,7 +60,7 @@ Each entry of `any` and `none` is a set of conditions that must all hold, writte
 | `"mark_read"` | Marks it read. |
 | `"flag"` | Flags it. |
 | `"archive"` | Moves it to the server's Archive folder. Fails when the server has none. |
-| `{ move = "Folder/Sub" }` | Moves it to that folder, creating the folder if needed and subscribing to it, so mail apps that show only subscribed folders list it. |
+| `{ move = "Folder/Sub" }` | Moves it to that folder, creating the folder if needed and subscribing to it, so mail apps that show only subscribed folders list it. When the server refuses to create it and the move then fails, the error says both. `/` separates levels on most servers; see the warnings below for servers that use `.`. |
 | `{ tag = "$label1" }` | Adds that IMAP keyword, which Thunderbird and other clients show as a tag. The server must accept custom keywords. |
 | `"notify"` | Notifies even when the message was moved. |
 | `"silent"` | Never notifies. |
@@ -180,7 +182,7 @@ A symlink from that folder to a `rules.toml` elsewhere works outside the Flatpak
 
 Every device that runs Postvak runs the rules itself. Moving or marking mail that another device already handled does nothing, but a deleted message's `.eml` backup is only on the device that deleted it.
 
-When two devices change the file before they sync, the sync keeps one version and leaves the other beside it, such as `rules.sync-conflict-20261024-101500-ABCDEFG.toml` from Syncthing or `rules (conflicted copy 2026-10-24 101500).toml` from Nextcloud. Postvak ignores that copy, so its changes are lost until you move them into `rules.toml`. `postvak rules check`, the Rules view, the MCP `rules_check` tool and the daemon's log warn about such a copy, and about a rule whose `account` is not set up on this device, since it never runs there; name each account the same on every device. They also warn about a rule that moves mail to the folder it watches (INBOX in any case), since that move does nothing.
+When two devices change the file before they sync, the sync keeps one version and leaves the other beside it, such as `rules.sync-conflict-20261024-101500-ABCDEFG.toml` from Syncthing or `rules (conflicted copy 2026-10-24 101500).toml` from Nextcloud. Postvak ignores that copy, so its changes are lost until you move them into `rules.toml`. `postvak rules check`, the Rules view, the MCP `rules_check` tool and the daemon's log warn about such a copy, and about a rule whose `account` is not set up on this device, since it never runs there; name each account the same on every device. They also warn about a rule that moves mail to the folder it watches (INBOX in any case), since that move does nothing. Once an account has synced, they warn about a `move` folder that account does not have yet and that does not fit its server: one with `/` on a server that separates levels with another character, such as `.` on Courier, where it would become one folder with `/` in its name, and a top-level name on a server that keeps every folder under `INBOX.`, where creating it usually fails. Neither is an error, since the same file can serve accounts on other servers.
 
 ## Proposals
 

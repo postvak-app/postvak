@@ -1,9 +1,13 @@
 //! What leaves rules.toml valid but not doing what its author meant: a conflicting copy a file sync left beside it,
-//! a rule for an account this device does not have, and a rule moving mail to the folder it watches.
+//! a rule for an account this device does not have, and a rule moving mail to the folder it watches. `folder_warnings`
+//! adds what an account's own folders show: a move target written for another hierarchy or namespace.
 use std::fs;
 use std::path::Path;
 
 use super::{Action, Rule};
+use crate::folder_name;
+use crate::paths::Paths;
+use crate::store::{Folder, Store};
 
 /// One line per problem: conflicting copies by name, then rules in file order; empty when there is nothing to say.
 pub fn warnings(path: &Path, rules: &[Rule], accounts: &[&str]) -> Vec<String> {
@@ -70,6 +74,108 @@ fn conflict_copies(path: &Path) -> Vec<String> {
         .collect();
     names.sort();
     names
+}
+
+/// An account's folders, as `folder_warnings` reads them from its store.
+struct FolderLayout {
+    account: String,
+    folders: Vec<Folder>,
+}
+
+/// What a move target's name gets wrong for the folders of the accounts its rule runs on, read from their stores: see
+/// `layout_warnings`. An account without a store, or whose store does not open, has nothing to say yet.
+pub fn folder_warnings(paths: &Paths, rules: &[Rule], accounts: &[impl AsRef<str>]) -> Vec<String> {
+    let layouts: Vec<FolderLayout> = accounts
+        .iter()
+        .filter_map(|account| {
+            let account = account.as_ref();
+            let db = paths.mail_db(account);
+            // Opening creates a missing store, and a check should leave no files behind.
+            if !db.exists() {
+                return None;
+            }
+            let folders = Store::open(&db)
+                .and_then(|store| store.folders())
+                .inspect_err(|e| log::debug!("{account}: could not read the folders: {e}"))
+                .ok()?;
+            Some(FolderLayout {
+                account: account.to_string(),
+                folders,
+            })
+        })
+        .collect();
+    layout_warnings(rules, &layouts)
+}
+
+/// One line per move target, in file order, that does not fit an account the rule runs on: a `/` on a server whose
+/// hierarchy delimiter is another character, which makes one folder with `/` in its name or is refused (RFC 3501
+/// §5.1), or a top-level name on a server that keeps every folder under `INBOX` + delimiter, where creating it
+/// usually fails. Neither is an error: the same rules.toml can serve accounts on other servers, and `/` is a legal
+/// character in a name on a `.` server. A target the account already has is fine as it is.
+fn layout_warnings(rules: &[Rule], layouts: &[FolderLayout]) -> Vec<String> {
+    let mut lines = Vec::new();
+    for rule in rules {
+        let targets = rule.actions.iter().filter_map(|action| match action {
+            Action::Move(target) => Some(target.as_str()),
+            _ => None,
+        });
+        for target in targets {
+            for layout in layouts
+                .iter()
+                .filter(|l| rule.account.as_deref().is_none_or(|a| a == l.account))
+            {
+                lines.extend(layout_warning(&rule.name, target, layout));
+            }
+        }
+    }
+    lines
+}
+
+fn layout_warning(rule: &str, target: &str, layout: &FolderLayout) -> Option<String> {
+    // A move's placeholder is not the server's word on anything.
+    let synced: Vec<&Folder> = layout
+        .folders
+        .iter()
+        .filter(|f| f.uidvalidity != 0)
+        .collect();
+    if target.eq_ignore_ascii_case("INBOX")
+        || synced.iter().any(|f| folder_name::same(&f.name, target))
+    {
+        return None;
+    }
+    let account = &layout.account;
+    let delimiter = delimiter(&synced)?;
+    if delimiter != "/" && target.contains('/') {
+        return Some(format!(
+            "rule '{rule}' moves mail to '{target}', but account '{account}' separates folder levels with \
+             '{delimiter}', so the server makes one folder with '/' in its name or refuses it; write '{}' for a \
+             subfolder",
+            target.replace('/', delimiter)
+        ));
+    }
+    let others = synced
+        .iter()
+        .filter(|f| !f.name.eq_ignore_ascii_case("INBOX"))
+        .map(|f| (f.name.as_str(), f.delimiter.as_deref()));
+    if folder_name::under_inbox(others)
+        && folder_name::inbox_prefix(target, Some(delimiter)).is_none()
+    {
+        return Some(format!(
+            "rule '{rule}' moves mail to '{target}', but every folder of account '{account}' is under \
+             'INBOX{delimiter}', where the server usually wants new folders too; write 'INBOX{delimiter}{target}'"
+        ));
+    }
+    None
+}
+
+/// The account's hierarchy delimiter: INBOX's, else the first folder's that has one.
+fn delimiter<'a>(synced: &[&'a Folder]) -> Option<&'a str> {
+    let of = |f: &&'a Folder| f.delimiter.as_deref().filter(|d| !d.is_empty());
+    synced
+        .iter()
+        .find(|f| f.name.eq_ignore_ascii_case("INBOX"))
+        .and_then(of)
+        .or_else(|| synced.iter().find_map(of))
 }
 
 #[cfg(test)]
@@ -147,5 +253,103 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("missing/rules.toml");
         assert!(warnings(&path, &[], &[]).is_empty());
+    }
+
+    fn layout(account: &str, delimiter: &str, names: &[&str]) -> FolderLayout {
+        FolderLayout {
+            account: account.into(),
+            folders: names
+                .iter()
+                .map(|name| Folder {
+                    name: name.to_string(),
+                    uidvalidity: 1,
+                    last_uid: 0,
+                    special_use: None,
+                    delimiter: Some(delimiter.into()),
+                })
+                .collect(),
+        }
+    }
+
+    fn moves(targets: &[&str]) -> Vec<Rule> {
+        let rules: String = targets
+            .iter()
+            .enumerate()
+            .map(|(i, target)| {
+                format!("[[rules]]\nname = \"r{i}\"\nmatch.seen = true\nactions = [{{ move = \"{target}\" }}]\n\n")
+            })
+            .collect();
+        parse(&rules).unwrap().rules
+    }
+
+    #[test]
+    fn a_slash_on_a_server_with_another_delimiter_is_named() {
+        let rules = moves(&["Folder/Sub", "Plain", "Known/Sub"]);
+        let dot = layout("courier", ".", &["INBOX", "Known/Sub", "Work"]);
+        let slash = layout("dovecot", "/", &["INBOX", "Work"]);
+        assert_eq!(
+            layout_warnings(&rules, &[dot, slash]),
+            [
+                "rule 'r0' moves mail to 'Folder/Sub', but account 'courier' separates folder levels with '.', so \
+                 the server makes one folder with '/' in its name or refuses it; write 'Folder.Sub' for a subfolder"
+            ],
+            "a folder the account has is fine as it is"
+        );
+    }
+
+    #[test]
+    fn a_top_level_target_on_a_server_keeping_folders_under_inbox_is_named() {
+        let rules = moves(&["Lists", "INBOX.Lists", "inbox.Work", "Inbox"]);
+        let namespaced = layout("courier", ".", &["INBOX", "INBOX.Sent", "INBOX.Work"]);
+        let mixed = layout("other", ".", &["INBOX", "INBOX.Sent", "Work"]);
+        let empty = layout("new", ".", &["INBOX"]);
+        assert_eq!(
+            layout_warnings(&rules, &[namespaced, mixed, empty]),
+            [
+                "rule 'r0' moves mail to 'Lists', but every folder of account 'courier' is under 'INBOX.', where \
+                 the server usually wants new folders too; write 'INBOX.Lists'"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_rule_for_one_account_is_checked_against_that_account_only() {
+        let rules = parse(
+            "[[rules]]\nname = \"home\"\naccount = \"home\"\nmatch.seen = true\nactions = [{ move = \"A/B\" }]\n",
+        )
+        .unwrap()
+        .rules;
+        assert!(layout_warnings(&rules, &[layout("work", ".", &["INBOX"])]).is_empty());
+        assert_eq!(
+            layout_warnings(&rules, &[layout("home", ".", &["INBOX"])]).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn placeholders_and_accounts_without_a_store_say_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let store = Store::open_account(&paths, "work").unwrap();
+        // A folder a move created, before its first sync: not the server's word on the delimiter.
+        store
+            .upsert_folder(&Folder {
+                name: "Lists".into(),
+                uidvalidity: 0,
+                last_uid: 0,
+                special_use: None,
+                delimiter: Some(".".into()),
+            })
+            .unwrap();
+        drop(store);
+        let rules = moves(&["A/B"]);
+        assert!(folder_warnings(&paths, &rules, &["work", "new"]).is_empty());
+        assert!(!paths.mail_db("new").exists(), "a check creates no store");
+        let store = Store::open_account(&paths, "work").unwrap();
+        store
+            .upsert_folder(&layout("work", ".", &["INBOX"]).folders[0])
+            .unwrap();
+        drop(store);
+        assert_eq!(folder_warnings(&paths, &rules, &["work"]).len(), 1);
     }
 }

@@ -10,28 +10,86 @@ use crate::paths::Paths;
 use crate::search::{self, Candidate, Plan, Query, Scope, Vocab};
 
 /// In order; a new directory under `migrations/` needs its line here too.
-const MIGRATIONS: &[M<'static>] = &[
-    M::up(include_str!("../migrations/001-initial/up.sql")),
-    M::up(include_str!("../migrations/002-initial-uid-next/up.sql")),
-    M::up(include_str!("../migrations/003-notified-uid/up.sql")),
-    M::up(include_str!(
-        "../migrations/004-drop-message-id-index/up.sql"
-    )),
-    M::up(include_str!("../migrations/005-folder-delimiter/up.sql")),
-    M::up(include_str!("../migrations/006-flag-sync/up.sql")),
-    M::up(include_str!("../migrations/007-rule-definition/up.sql")),
-    M::up(include_str!("../migrations/008-has-attachment/up.sql")),
-    M::up(include_str!("../migrations/009-folder-thread-index/up.sql")),
-    M::up(include_str!("../migrations/010-unread-index/up.sql")),
-    M::up(include_str!("../migrations/011-search/up.sql")),
-    M::up(include_str!("../migrations/012-rule-moves/up.sql")),
-    M::up(include_str!("../migrations/013-backlog-index/up.sql")),
-    M::up(include_str!("../migrations/014-newest-index/up.sql")),
-    M::up(include_str!(
-        "../migrations/015-attachment-in-thread-index/up.sql"
-    )),
-    M::up(include_str!("../migrations/016-folder-uid-next/up.sql")),
-];
+fn migration_list() -> Vec<M<'static>> {
+    vec![
+        M::up(include_str!("../migrations/001-initial/up.sql")),
+        M::up(include_str!("../migrations/002-initial-uid-next/up.sql")),
+        M::up(include_str!("../migrations/003-notified-uid/up.sql")),
+        M::up(include_str!(
+            "../migrations/004-drop-message-id-index/up.sql"
+        )),
+        M::up(include_str!("../migrations/005-folder-delimiter/up.sql")),
+        M::up(include_str!("../migrations/006-flag-sync/up.sql")),
+        M::up(include_str!("../migrations/007-rule-definition/up.sql")),
+        M::up(include_str!("../migrations/008-has-attachment/up.sql")),
+        M::up(include_str!("../migrations/009-folder-thread-index/up.sql")),
+        M::up(include_str!("../migrations/010-unread-index/up.sql")),
+        M::up(include_str!("../migrations/011-search/up.sql")),
+        M::up(include_str!("../migrations/012-rule-moves/up.sql")),
+        M::up(include_str!("../migrations/013-backlog-index/up.sql")),
+        M::up(include_str!("../migrations/014-newest-index/up.sql")),
+        M::up(include_str!(
+            "../migrations/015-attachment-in-thread-index/up.sql"
+        )),
+        M::up(include_str!("../migrations/016-folder-uid-next/up.sql")),
+        M::up_with_hook(
+            include_str!("../migrations/017-decode-folder-names/up.sql"),
+            decode_folder_names,
+        ),
+    ]
+}
+
+/// Renames the folders stored under their modified UTF-7 wire name (`Caf&AOk-`) to the UTF-8 name `ImapOps` now
+/// gives them (`Café`), with their messages and rule history, so they keep their state instead of syncing again. A
+/// name that is not exactly what the encoder writes stays: it was sent raw, and the server knows it so. A placeholder
+/// a rule move left under the UTF-8 name (it sent the raw name, which the server refused) gives way. A synced folder
+/// under the UTF-8 name, which only a server listing both spellings has, stays; the encoded row then goes with its
+/// messages, and the next sync fetches what the server still lists.
+fn decode_folder_names(tx: &rusqlite::Transaction) -> rusqlite_migration::HookResult {
+    let names: Vec<String> = tx
+        .prepare("SELECT name FROM folders")?
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    // The messages follow their folder's new name before the commit checks their reference to it.
+    tx.pragma_update(None, "defer_foreign_keys", "ON")?;
+    for wire in names {
+        let Some(name) = crate::mail_ops::utf7::decode(&wire).filter(|name| *name != wire) else {
+            continue;
+        };
+        tx.execute(
+            "DELETE FROM folders WHERE name = ?1 AND uidvalidity = 0",
+            params![name],
+        )?;
+        let taken: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM folders WHERE name = ?1)",
+            params![name],
+            |row| row.get(0),
+        )?;
+        if taken {
+            tx.execute("DELETE FROM messages WHERE folder = ?1", params![wire])?;
+            tx.execute("DELETE FROM folders WHERE name = ?1", params![wire])?;
+        } else {
+            tx.execute(
+                "UPDATE folders SET name = ?2 WHERE name = ?1",
+                params![wire, name],
+            )?;
+            tx.execute(
+                "UPDATE messages SET folder = ?2 WHERE folder = ?1",
+                params![wire, name],
+            )?;
+        }
+        tx.execute(
+            "UPDATE rule_log SET folder = ?2 WHERE folder = ?1",
+            params![wire, name],
+        )?;
+        tx.execute(
+            "UPDATE OR IGNORE rule_moves SET folder = ?2 WHERE folder = ?1",
+            params![wire, name],
+        )?;
+        tx.execute("DELETE FROM rule_moves WHERE folder = ?1", params![wire])?;
+    }
+    Ok(())
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -351,7 +409,7 @@ fn backlog_sql() -> String {
 
 impl Store {
     pub fn migrations() -> Migrations<'static> {
-        Migrations::from_slice(MIGRATIONS)
+        Migrations::new(migration_list())
     }
 
     pub fn open(path: &Path) -> Result<Store, StoreError> {
@@ -1180,7 +1238,7 @@ mod tests {
     #[test]
     fn every_migration_directory_is_listed() {
         let dirs = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations")).unwrap();
-        assert_eq!(dirs.count(), MIGRATIONS.len());
+        assert_eq!(dirs.count(), migration_list().len());
     }
 
     #[test]
@@ -1449,6 +1507,75 @@ mod tests {
             "the rebuilt index folds diacritics"
         );
         fts_integrity_check(&s);
+    }
+
+    #[test]
+    fn migration_017_decodes_folder_names_stored_in_modified_utf7() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mail.db");
+        {
+            let mut conn = Connection::open(&path).unwrap();
+            Store::migrations().to_version(&mut conn, 16).unwrap();
+            conn.execute_batch(
+                "INSERT INTO folders (name, uidvalidity, last_uid, rules_uid, delimiter) VALUES
+                     ('INBOX', 1, 1, 1, '/'), ('Archief/&AMkA6Q-n', 7, 3, 2, '/'), ('R&-D', 8, 1, 1, '/'),
+                     ('Caf&AOk-', 9, 1, 1, '/'), ('Caf\u{e9}', 0, 0, 0, NULL),
+                     ('Re&AOc-us', 4, 1, 1, '/'), ('Re\u{e7}us', 5, 1, 1, '/'),
+                     ('Sloppy&AOk-&AOk-', 6, 1, 1, '/');
+                 INSERT INTO messages (folder, uid, thread_id, subject, internaldate, flags, headers) VALUES
+                     ('Archief/&AMkA6Q-n', 3, 't', 'kept', 10, '', X''),
+                     ('Caf&AOk-', 1, 't2', 'cafe', 10, '', X''),
+                     ('Re&AOc-us', 1, 't3', 'dropped', 10, '', X''),
+                     ('Re\u{e7}us', 1, 't4', 'synced', 10, '', X'');
+                 INSERT INTO rule_log (at, rule_name, folder, uid, action) VALUES (1, 'r', 'Archief/&AMkA6Q-n', 3, 'flag');
+                 INSERT INTO rule_moves (folder, message_id, internaldate) VALUES ('R&-D', '<a@x>', 10);",
+            )
+            .unwrap();
+        }
+        let s = Store::open(&path).unwrap();
+        let mut names: Vec<String> = s.folders().unwrap().into_iter().map(|f| f.name).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "Archief/\u{c9}\u{e9}n",
+                "Caf\u{e9}",
+                "INBOX",
+                "R&D",
+                "Re\u{e7}us",
+                "Sloppy&AOk-&AOk-"
+            ]
+        );
+        let archief = s.folder("Archief/\u{c9}\u{e9}n").unwrap().unwrap();
+        assert_eq!((archief.uidvalidity, archief.last_uid), (7, 3));
+        assert_eq!(s.rules_uid("Archief/\u{c9}\u{e9}n").unwrap(), 2);
+        assert_eq!(
+            s.messages_in_folder("Archief/\u{c9}\u{e9}n").unwrap().len(),
+            1
+        );
+        let cafe = s.folder("Caf\u{e9}").unwrap().unwrap();
+        assert_eq!(
+            cafe.uidvalidity, 9,
+            "the synced folder, not the placeholder"
+        );
+        assert_eq!(s.messages_in_folder("Caf\u{e9}").unwrap().len(), 1);
+        let recus = s.messages_in_folder("Re\u{e7}us").unwrap();
+        assert_eq!(recus.len(), 1);
+        assert_eq!(recus[0].subject.as_deref(), Some("synced"));
+        let log = s.log(10).unwrap();
+        assert_eq!(log[0].folder, "Archief/\u{c9}\u{e9}n");
+        let moved: String = s
+            .conn
+            .query_row("SELECT folder FROM rule_moves", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(moved, "R&D");
+        fts_integrity_check(&s);
+        let orphan = s
+            .conn
+            .query_row("PRAGMA foreign_key_check", [], |_| Ok(()))
+            .optional()
+            .unwrap();
+        assert_eq!(orphan, None, "a message lost its folder");
     }
 
     #[test]
