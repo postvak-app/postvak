@@ -86,7 +86,7 @@ Your inbox, organized by rules you write
 * `trash` — Deleted mail kept for the retention period
 * `account` — Manage accounts
 * `crashes` — List the local crash reports, newest first; they are never sent anywhere
-* `guide` — Print the agent guide: how an LLM should drive Postvak
+* `guide` — Print the agent guide, how an LLM should drive Postvak, or another page of the documentation
 * `mcp` — Serve Postvak to an agent host over MCP on stdio; hosts start this, see `postvak mcp install`
 
 
@@ -342,6 +342,8 @@ Dry run: print what each rule would do to the cached messages; naming a rule pre
 JSON Schema for rules.toml; a proposal is one entry of `rules`
 
 **Usage:** `postvak rules schema`
+
+`postvak guide rules` explains every key, with examples.
 
 
 
@@ -778,9 +780,24 @@ Print one crash report, by the id `postvak crashes` lists
 
 ## `postvak guide`
 
-Print the agent guide: how an LLM should drive Postvak
+Print the agent guide, how an LLM should drive Postvak, or another page of the documentation
 
-**Usage:** `postvak guide`
+**Usage:** `postvak guide [PAGE]`
+
+###### **Arguments:**
+
+* `<PAGE>` — The page; without one, the agent guide
+
+  Possible values:
+  - `agent-guide`:
+    How an agent should read mail, write and propose rules, and act on mail
+  - `rules`:
+    Every key of a rule: its conditions and actions, with examples
+  - `search`:
+    The search syntax: words, phrases, operators and close matches
+  - `cli`:
+    Every command and flag of the postvak command line
+
 
 
 
