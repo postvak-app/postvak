@@ -198,10 +198,11 @@ fn account_entries(app: &App, index: usize, account: &Account) -> Vec<Entry> {
 /// The deepest level that still steps in; folders below it line up with it, and show their path on hover.
 pub(crate) const DEEPEST: usize = 3;
 
-/// Rules, Activity and Backups, pinned at the bottom of the pane.
+/// Rules, Activity and Backups, pinned at the bottom of the pane. Rules counts the proposals waiting for approval.
 pub(crate) fn pinned(app: &App) -> [FolderEntry; 3] {
+    let proposals = u32::try_from(app.rules.proposals.len()).unwrap_or(u32::MAX);
     [
-        FolderEntry::new(icons::RULES, "Rules".into(), 0, View::Rules, app),
+        FolderEntry::new(icons::RULES, "Rules".into(), proposals, View::Rules, app),
         FolderEntry::new(icons::ACTIVITY, "Activity".into(), 0, View::Activity, app),
         FolderEntry::new(icons::BACKUPS, "Backups".into(), 0, View::Trash, app),
     ]
@@ -675,6 +676,18 @@ mod tests {
         assert_eq!(open.with(|live| live.app.view.clone()), work("Archive"));
         open.click("Rules");
         assert_eq!(open.with(|live| live.app.view.clone()), View::Rules);
+    }
+
+    #[test]
+    fn rules_counts_the_proposals_waiting_for_approval() {
+        let fx = Fixture::new(&["work"]);
+        std::fs::write(
+            fx.paths.rules_file(),
+            "[[rules]]\nname = \"codes\"\nenabled = false\nproposed_by = \"agent\"\nmatch.subject = { contains = \"code\" }\nactions = [\"delete\"]\n",
+        )
+        .unwrap();
+        let (open, _wires) = fx.window();
+        assert_eq!(open.find("Rules (1)").len(), 1);
     }
 
     #[test]
