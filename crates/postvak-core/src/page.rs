@@ -390,11 +390,12 @@ pub fn with_server_hits(
         .rows
         .into_iter()
         .partition(|row| row.account == account);
+    // Uncut here: `cut` below orders by tier first, so no exact match gives way to a newer close one.
     let own = crate::actions::with_server_hits(
         store,
         own.into_iter().map(|row| row.hit).collect(),
         server,
-        limit,
+        u32::MAX,
     )?;
     rows.extend(own.into_iter().map(|hit| SearchRow {
         account: account.to_string(),
@@ -734,5 +735,73 @@ mod tests {
         let uids: Vec<u32> = merged.rows.iter().map(|r| r.hit.message.uid).collect();
         assert_eq!(uids, [2, 1]);
         assert_eq!(merged.next, None);
+    }
+
+    #[test]
+    fn server_hits_never_push_out_an_exact_match_for_a_close_one() {
+        let sources = [source(
+            "work",
+            &[
+                ("INBOX", 1, 10, "invioce"),
+                ("INBOX", 2, 50, "invoice"),
+                ("INBOX", 3, 30, "other"),
+            ],
+        )];
+        let query = crate::search::parse("invioce", 0);
+        let query = SearchQuery {
+            query: &query,
+            scope: Scope::All,
+            folder: None,
+            close: true,
+        };
+        let page = search(&sources, &query, 2, None).unwrap();
+        let merged = with_server_hits(
+            page,
+            "work",
+            &sources[0].store,
+            &[("INBOX".to_string(), 3)],
+            2,
+        )
+        .unwrap();
+        let rows: Vec<(u32, Matched)> = merged
+            .rows
+            .iter()
+            .map(|r| (r.hit.message.uid, r.hit.matched))
+            .collect();
+        assert_eq!(rows, [(3, Matched::Exact), (1, Matched::Exact)]);
+    }
+
+    #[test]
+    fn close_matches_keep_paging_when_exact_ones_arrive_between_pages() {
+        let mut messages: Vec<(&str, u32, i64, &str)> = (1..=9)
+            .map(|uid| ("INBOX", uid, i64::from(uid), "invioce"))
+            .collect();
+        messages.extend((10..=14).map(|uid| ("INBOX", uid, i64::from(uid), "invoice")));
+        let sources = [source("work", &messages)];
+        let query = crate::search::parse("invioce", 0);
+        let query = SearchQuery {
+            query: &query,
+            scope: Scope::All,
+            folder: None,
+            close: true,
+        };
+        let first = search(&sources, &query, 10, None).unwrap();
+        assert_eq!(first.rows.len(), 10);
+        assert_eq!(first.rows[9].hit.matched, Matched::Close);
+        sources[0]
+            .store
+            .insert_message(&Message {
+                folder: "INBOX".into(),
+                uid: 15,
+                thread_id: "INBOX15".into(),
+                subject: Some("invioce".into()),
+                internaldate: 100,
+                ..Default::default()
+            })
+            .unwrap();
+        let second = search(&sources, &query, 10, first.next.as_deref()).unwrap();
+        let uids: Vec<u32> = second.rows.iter().map(|r| r.hit.message.uid).collect();
+        assert_eq!(uids, [13, 12, 11, 10]);
+        assert!(second.rows.iter().all(|r| r.hit.matched == Matched::Close));
     }
 }

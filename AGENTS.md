@@ -21,6 +21,7 @@ Four crates in one workspace. `crates/postvak-core` holds every module below exc
 - `message` header parsing, thread id, body text, the HTML part and its `cid:` images
 - `notify` desktop notifications for new mail, where a click opens the message with `postvak gui --open`; on Linux over D-Bus (`notify/dbus.rs`), on macOS through `mac-notification-sys` (`notify/mac.rs`), whose clicks arrive on the run loop the daemon's main thread runs while it waits for clients
 - `output` JSON rows shared by `--json` and MCP results
+- `page` pages of `list` and `search` over several accounts: one newest-first order, the keyset cursor both front ends share, and the counts
 - `paths` platform dirs, atomic writes, `stable_exe` (the binary path that survives `brew upgrade` and AppImage mounts), whether this is the macOS app opened from Finder (`launched_as_app`)
 - `portal` XDG desktop portals on Linux: one request and its `Response` (`request`), and the save dialog (`save_file`); `autostart` and the GUI's Save as… use it
 - `rules` parse + validate + schema (`mod.rs`), pure `evaluate` (`engine.rs`), side effects (`apply.rs`), the only writer of rules.toml (`edit.rs`), what leaves the file valid but not doing what was meant: a file sync's conflicting copy, a rule for an account not set up here (`warnings.rs`)
