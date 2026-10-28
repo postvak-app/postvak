@@ -104,6 +104,18 @@ On macOS a notification shows the sender and the subject as Postvak's once Postv
 
 ## Examples
 
+- [Delete sign-in codes](#delete-sign-in-codes): `from`, `subject`, `older_than`, `seen`
+- [Move list mail out of the inbox](#move-list-mail-out-of-the-inbox): `to_me`, `header`, `silent`
+- [Give an alias its own folder](#give-an-alias-its-own-folder): `alias`, `notify`
+- [Move shop mail after notifying](#move-shop-mail-after-notifying): `older_than`, `move`
+- [Tag shop mail except receipts](#tag-shop-mail-except-receipts): `none`, `tag`
+- [Flag certain people or topics](#flag-certain-people-or-topics): `any`, `flag`
+- [Set large mail aside](#set-large-mail-aside): `larger_than`, `flagged`, `stop`
+- [Archive read mail after 30 days](#archive-read-mail-after-30-days): `seen`, `older_than`, `archive`
+- [Tag spam by its score](#tag-spam-by-its-score): `header` with a regex
+
+### Delete sign-in codes
+
 Delete sign-in codes and magic links an hour after you read them:
 
 ```toml
@@ -116,6 +128,8 @@ match.seen = true
 actions = ["delete"]
 ```
 
+### Move list mail out of the inbox
+
 Move list mail that is not addressed to you, without a notification:
 
 ```toml
@@ -126,6 +140,8 @@ match.header = { name = "List-Unsubscribe", regex = "." }
 actions = [{ move = "Lists" }, "silent"]
 ```
 
+### Give an alias its own folder
+
 Give a shop alias its own folder, but still notify:
 
 ```toml
@@ -134,6 +150,8 @@ name = "shop alias"
 match.alias = "*@shop.example.com"
 actions = [{ move = "Shopping" }, "notify"]
 ```
+
+### Move shop mail after notifying
 
 Leave shop mail in INBOX for 15 minutes before moving it, so mail apps on your other devices, which mostly notify only for INBOX, see it first. Postvak notifies too, since nothing moved the message when it arrived. The move runs on the first full sync after those 15 minutes, so up to `sync_interval_secs` later:
 
@@ -145,6 +163,8 @@ match.older_than = "15m"
 actions = [{ move = "Shopping" }]
 ```
 
+### Tag shop mail except receipts
+
 Tag shop mail as Important (Thunderbird's `$label1`), except receipts and invoices:
 
 ```toml
@@ -154,6 +174,8 @@ match.from = { contains = "shop.example.com" }
 match.none = [{ subject = { contains = ["receipt", "invoice"] } }]
 actions = [{ tag = "$label1" }]
 ```
+
+### Flag certain people or topics
 
 Flag mail from either of two people, or about an outage:
 
@@ -167,6 +189,8 @@ match.any = [
 actions = ["flag"]
 ```
 
+### Set large mail aside
+
 Move large mail you have not flagged to its own folder, and leave it to no other rule:
 
 ```toml
@@ -177,7 +201,7 @@ match.flagged = false
 actions = [{ move = "Large" }, "stop"]
 ```
 
-Archive read mail after 30 days:
+### Archive read mail after 30 days
 
 ```toml
 [[rules]]
@@ -186,6 +210,8 @@ match.seen = true
 match.older_than = "30days"
 actions = ["archive"]
 ```
+
+### Tag spam by its score
 
 Filter junk on your provider's spam score. Many servers score mail but only move it to Junk above a high threshold; SpamAssassin writes the score as stars in `X-Spam-Level`, and some providers use their own header, such as `X-Soverin-Spam-Level`. Look at the headers of a few spam and legitimate messages with `postvak headers UID` to find yours, tag first to see what a threshold catches, then change the action to `{ move = "Junk" }` once it only catches spam:
 
