@@ -932,6 +932,10 @@ impl MailOps for Harness<'_> {
         self.run(|ops| ops.create_folder(name))
     }
 
+    fn subscribe_folder(&mut self, name: &str) -> MailResult<()> {
+        self.run(|ops| ops.subscribe_folder(name))
+    }
+
     fn append(&mut self, folder: &str, _raw: &[u8], _flags: &[&str]) -> MailResult<()> {
         panic!("sync never appends, yet it appended to {folder}");
     }

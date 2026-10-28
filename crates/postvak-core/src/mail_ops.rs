@@ -159,6 +159,8 @@ pub trait MailOps {
     /// Moves the message. Its new uid is not known here; the next sync of `to` finds it.
     fn move_message(&mut self, uid: u32, to: &str) -> MailResult<()>;
     fn create_folder(&mut self, name: &str) -> MailResult<()>;
+    /// Adds the folder to the subscribed ones, which clients such as iOS Mail list instead of every folder.
+    fn subscribe_folder(&mut self, name: &str) -> MailResult<()>;
     /// Appends a message carrying `flags`, e.g. a keyword.
     fn append(&mut self, folder: &str, raw: &[u8], flags: &[&str]) -> MailResult<()>;
     /// `add_flags` for many messages; a server does it in one command per batch of uids.
@@ -240,6 +242,8 @@ mod recording {
         pub unreadable: Option<(String, u32)>,
         /// Makes the next `expunge` fail with this error, once, like a server refusing it after a COPY.
         pub fail_next_expunge: Option<MailError>,
+        /// Makes the next `subscribe_folder` fail with this error, once, like a server refusing SUBSCRIBE.
+        pub fail_next_subscribe: Option<MailError>,
         /// Makes every `add_flags` fail with an I/O error once this many have succeeded, like a connection that dropped.
         pub fail_add_flags_after: Option<usize>,
         /// Makes `add_flags` panic, like a bug in a command.
@@ -707,6 +711,11 @@ mod recording {
             self.uidvalidity.insert(name.into(), 1);
             self.mail.entry(name.into()).or_default();
             Ok(())
+        }
+
+        fn subscribe_folder(&mut self, name: &str) -> MailResult<()> {
+            self.calls.push(format!("subscribe_folder {name}"));
+            self.fail_next_subscribe.take().map_or(Ok(()), Err)
         }
 
         fn append(&mut self, folder: &str, raw: &[u8], flags: &[&str]) -> MailResult<()> {
