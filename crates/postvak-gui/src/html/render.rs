@@ -244,9 +244,11 @@ fn layout(load: Load) -> Option<(Current, Reply)> {
         return None;
     }
     font_colours(&mut doc);
-    // The provider answered every request synchronously; take its answers before the layout.
+    // The provider answered every request synchronously; take its answers before the layout, and the background
+    // images the styles asked for after it, so they paint and `dark::adapt` sees which of them loaded.
     doc.handle_messages();
     doc.resolve(0.0);
+    doc.handle_messages();
     let originals = if load.dark {
         dark::adapt(&mut doc)
     } else {
@@ -1224,6 +1226,42 @@ mod tests {
         assert!(crate::theme::luminance(rgb(band)) < 0.05, "{band:?}");
         assert!(band[2] > band[0], "the blue stays blue: {band:?}");
         assert_eq!(colour_of(&dark, "div + div"), rgb([0x33; 3]));
+        // The picture itself is painted: white on the left, blue on the right.
+        let strip = first_strip(&mut dark);
+        assert_eq!(pixel(&strip, 2, 102), [255; 3]);
+        assert_eq!(pixel(&strip, 15, 102), [20, 60, 200]);
+    }
+
+    #[test]
+    fn light_text_from_the_senders_dark_css_on_no_background_stays_visible() {
+        // The sender relies on the reader's dark canvas and paints no background of their own.
+        let html = "<meta name=\"color-scheme\" content=\"light dark\"><style>@media (prefers-color-scheme: dark) { .text { color: #f1f1f1 !important } }</style><table><tr><td class=text>Hello</td></tr></table>";
+        let dark = laid_out(html, true, Vec::new());
+        assert_eq!(colour_of(&dark, "td"), rgb([0xf1; 3]));
+    }
+
+    #[test]
+    fn text_hidden_on_the_senders_own_background_stays_hidden() {
+        let html = "<body style=\"background:#ffffff\"><div style=\"color:#fefefe\">Preheader</div><p>Body</p></body>";
+        let dark = laid_out(html, true, Vec::new());
+        let hidden = colour_of(&dark, "div");
+        assert!(
+            crate::theme::contrast(hidden, dark::PAGE) < 1.2,
+            "{hidden:?}"
+        );
+        assert!(crate::theme::contrast(colour_of(&dark, "p"), dark::PAGE) >= 4.5);
+    }
+
+    #[test]
+    fn text_on_a_background_picture_that_did_not_load_is_adapted() {
+        // Remote content is not shown, so the hero photo the dark heading was written for never paints.
+        let html = "<table><tr><td style=\"background-image:url(https://cdn.example/hero.jpg)\"><h1 style=\"color:#222222\">Spring sale</h1></td></tr></table>";
+        let dark = laid_out(html, true, Vec::new());
+        let heading = colour_of(&dark, "h1");
+        assert!(
+            crate::theme::contrast(heading, dark::PAGE) >= 4.5,
+            "{heading:?}"
+        );
     }
 
     #[test]

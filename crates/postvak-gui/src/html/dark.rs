@@ -4,6 +4,7 @@
 //! the document change: the stored HTML is never rewritten, and `restore` puts the sender's colours back.
 use std::collections::HashSet;
 
+use blitz_dom::node::{ImageData, Status};
 use blitz_dom::{BaseDocument, NodeId, local_name};
 use style::color::{AbsoluteColor, ColorSpace};
 use style::properties::ComputedValues;
@@ -24,7 +25,8 @@ pub(crate) const PAGE: Rgb = rgb8(0x16, 0x18, 0x1f);
 pub(crate) const LINK: Rgb = rgb8(0xf3, 0xb3, 0x9d);
 /// WCAG AA for body text.
 const AA: f32 = 4.5;
-/// Text this close to its background was hidden on purpose (a preheader, a spam trap): it stays hidden.
+/// Text this close to a background the sender painted behind it was hidden on purpose (a preheader, a spam trap): it
+/// stays hidden.
 const HIDDEN: f32 = 1.2;
 /// Below this HSL saturation a colour counts as grey and takes the page's tint.
 const GREY: f32 = 0.05;
@@ -199,7 +201,8 @@ enum Layers {
     None,
     /// Only gradients, with every colour stop: they are adapted as surfaces are.
     Gradients(Vec<Rgba>),
-    /// A picture (or anything else that is not a gradient), left as the sender drew it, with what is on it.
+    /// A picture that loaded (or anything else that is not a gradient or a picture), left as the sender drew it, with
+    /// what is on it.
     Picture,
 }
 
@@ -210,13 +213,25 @@ fn paint_of(node: &blitz_dom::Node) -> Option<Paint> {
     let bg = back.background_color.resolve_to_absolute(&current);
     let mut stops = Vec::new();
     let mut picture = false;
-    for layer in back.background_image.0.iter() {
+    let loaded = node
+        .element_data()
+        .map(|el| &el.background_images[..])
+        .unwrap_or_default();
+    for (idx, layer) in back.background_image.0.iter().enumerate() {
         match layer {
             Image::None => {}
             Image::Gradient(gradient) => {
                 for_each_stop(gradient, |stop| {
                     stops.push(rgba(&stop.resolve_to_absolute(&current)))
                 });
+            }
+            // A picture that did not load (remote content not shown, a missing part) paints nothing.
+            Image::Url(_) => {
+                picture |= loaded.get(idx).is_some_and(|data| {
+                    data.as_ref().is_some_and(|data| {
+                        data.status == Status::Ok && !matches!(data.image, ImageData::None)
+                    })
+                })
             }
             _ => picture = true,
         }
@@ -325,6 +340,9 @@ struct Behind {
     /// Inside a box with a background image, whose colours are left as the sender drew them.
     image: bool,
     link: bool,
+    /// The sender painted a background behind the node, in the dark scheme's cascade. Without one, `original` is only
+    /// the white a light page is assumed to have, and light text may be written for a dark canvas the sender expects.
+    painted: bool,
 }
 
 /// A node's new background and text colours, and whether its gradients turn dark.
@@ -342,6 +360,7 @@ fn plan(doc: &BaseDocument) -> Vec<Change> {
         adapted: PAGE,
         image: false,
         link: false,
+        painted: false,
     };
     let mut stack = vec![(doc.root_element().id, page)];
     let mut seen = HashSet::new();
@@ -370,6 +389,7 @@ fn plan(doc: &BaseDocument) -> Vec<Change> {
                     change.background = Some(dark);
                     inside.original = over(bg, outside.original);
                     inside.adapted = over(dark, outside.adapted);
+                    inside.painted = true;
                 }
                 if let Layers::Gradients(stops) = layers {
                     let dark: Vec<Rgba> = stops
@@ -382,11 +402,13 @@ fn plan(doc: &BaseDocument) -> Vec<Change> {
                     change.gradients = true;
                     inside.original = over(mean(&stops), inside.original);
                     inside.adapted = over(mean(&dark), inside.adapted);
+                    inside.painted = true;
                 }
                 inside.link = outside.link
                     || (node.data.is_element_with_tag_name(&local_name!("a"))
                         && node.attr(local_name!("href")).is_some());
-                change.colour = if fg[3] > 0.0
+                change.colour = if inside.painted
+                    && fg[3] > 0.0
                     && contrast(over(fg, inside.original), inside.original) < HIDDEN
                 {
                     let [r, g, b] = inside.adapted;

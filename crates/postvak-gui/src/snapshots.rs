@@ -481,6 +481,21 @@ fn html_message(theme: &str, width: f32, html: &str) -> (Fixture, Open, Wires) {
 
 /// Ticks the window until the HTML page is laid out and every strip in view is painted.
 fn wait_painted(open: &Open) {
+    wait_repainted(open, &[]);
+}
+
+/// The strips the HTML view shows now. Holding them keeps their memory from being reused by later strips.
+fn shown_strips(open: &Open) -> Vec<std::sync::Arc<crate::html::Pixels>> {
+    open.with(|live| {
+        let view = live.app.body.as_ref().and_then(|b| b.html_view.as_ref());
+        view.map(|v| v.strips.values().cloned().collect())
+            .unwrap_or_default()
+    })
+}
+
+/// As `wait_painted`, and none of the strips shown is one of `old`: a restyle keeps the old strips on screen until
+/// its layout arrives, so they alone do not say the page was painted again.
+fn wait_repainted(open: &Open, old: &[std::sync::Arc<crate::html::Pixels>]) {
     use std::time::{Duration, Instant};
     let deadline = Instant::now() + Duration::from_secs(30);
     let painted = |open: &Open| {
@@ -490,6 +505,10 @@ fn wait_painted(open: &Open) {
                 v.page.is_some()
                     && !v.requested.is_empty()
                     && v.requested.iter().all(|s| v.strips.contains_key(s))
+                    && !v
+                        .strips
+                        .values()
+                        .any(|new| old.iter().any(|old| std::sync::Arc::ptr_eq(new, old)))
             })
         })
     };
@@ -520,8 +539,9 @@ fn html_dark() {
 #[test]
 fn html_dark_original_colours() {
     let (_fx, open, _wires) = newsletter("dark", 1280.0);
+    let adapted = shown_strips(&open);
     open.window().invoke_toggle_original_colours();
-    wait_painted(&open);
+    wait_repainted(&open, &adapted);
     snapshot(&open, "gui_html_dark_original");
 }
 
