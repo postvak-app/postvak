@@ -172,7 +172,8 @@ hdiutil convert "$raw" -format UDRW -o "$rw"
 hdiutil attach -nobrowse -noverify -mountpoint "$mnt" "$rw"
 xattr -cr "$mnt/Postvak.app"
 hdiutil detach "$mnt"
-hdiutil convert "$rw" -format UDZO -o "$dmg"
+# ULMO (LZMA, macOS 10.15+) instead of UDZO (zlib): a third smaller, the most of it on the bundled dSYM.
+hdiutil convert "$rw" -format ULMO -o "$dmg"
 
 if [ "$identity" != - ]; then
     codesign --force --timestamp --sign "$identity" ${keychain_args[@]+"${keychain_args[@]}"} "$dmg"
