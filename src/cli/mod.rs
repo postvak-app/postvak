@@ -13,7 +13,10 @@ use postvak_core::daemon::Client;
 use postvak_core::daemon::client::LazyClient;
 use postvak_core::daemon::wire::Status;
 use postvak_core::message::clean;
+use postvak_core::output::{Fields, RowKind};
+use postvak_core::page;
 use postvak_core::paths::Paths;
+use postvak_core::rules::edit::Place;
 use postvak_core::rules::{Action, CompiledRule, Rule, RuleFile};
 use postvak_core::store::{Filter, Message, Store};
 use postvak_core::sync::{self, Event};
@@ -43,6 +46,17 @@ struct Selection {
     /// Print what would happen without touching the server
     #[arg(long)]
     dry_run: bool,
+}
+
+/// How `list` and `search` page, shape and count their rows.
+#[derive(clap::Args)]
+struct Paging {
+    #[arg(long, help = postvak_core::help::CURSOR)]
+    cursor: Option<String>,
+    #[arg(long, value_delimiter = ',', requires = "json", help = postvak_core::help::FIELDS)]
+    fields: Vec<String>,
+    #[arg(long, conflicts_with_all = ["cursor", "fields"], help = postvak_core::help::COUNT_ONLY)]
+    count_only: bool,
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -139,6 +153,8 @@ enum Command {
         /// Only messages with attachments, guessed from the headers; with --threads, threads with one
         #[arg(long)]
         attachments: bool,
+        #[command(flatten)]
+        paging: Paging,
     },
     #[command(about = postvak_core::help::SEARCH, after_help = postvak_core::help::SEARCH_SYNTAX)]
     Search {
@@ -149,8 +165,8 @@ enum Command {
         /// Only this folder; the same as in: in the query
         #[arg(long)]
         folder: Option<String>,
-        /// Ask the server too, which searches bodies not downloaded yet; each folder costs a round trip
-        #[arg(long)]
+        /// Ask the server too, which searches bodies not downloaded yet; each folder costs a round trip. One page: no --cursor or --count-only
+        #[arg(long, conflicts_with_all = ["cursor", "count_only"])]
         server: bool,
         /// Only what matches as typed: no close matches such as corrected typos
         #[arg(long)]
@@ -159,6 +175,8 @@ enum Command {
         limit: u32,
         #[arg(long)]
         json: bool,
+        #[command(flatten)]
+        paging: Paging,
     },
     #[command(about = postvak_core::help::HEADERS)]
     Headers {
@@ -393,9 +411,25 @@ enum RulesCommand {
         after_help = "`postvak guide rules` explains every key, with examples."
     )]
     Schema,
-    /// Read one rule as JSON on stdin and add it disabled, for a human to approve
+    /// Read one rule, a JSON array of rules or {"rules": [...]} on stdin and add them disabled, in order, for a human to approve; all or none are stored
     Propose {
         /// Who proposes it, recorded as proposed_by = "cli:WHO"
+        #[arg(long)]
+        by: Option<String>,
+        /// Put the rules right before this rule instead of at the end
+        #[arg(long, conflicts_with = "after")]
+        before: Option<String>,
+        /// Put the rules right after this rule instead of at the end
+        #[arg(long)]
+        after: Option<String>,
+        /// Replace your own pending proposal of the same name instead of refusing the name
+        #[arg(long)]
+        replace: bool,
+    },
+    #[command(about = postvak_core::help::RULES_WITHDRAW)]
+    Withdraw {
+        name: String,
+        /// Who proposed it, as given to `rules propose --by`
         #[arg(long)]
         by: Option<String>,
     },
@@ -530,38 +564,38 @@ pub fn run() -> Result<()> {
             unread,
             flagged,
             attachments,
+            paging,
         } => {
-            let filter = Filter {
-                unread,
-                flagged,
-                attachments,
+            let request = page::ListRequest {
+                folder: &folder,
+                filter: Filter {
+                    unread,
+                    flagged,
+                    attachments,
+                },
+                threads,
             };
-            for acc in select_accounts(&config, account.as_deref())? {
-                let store = Store::open_account(&paths, &acc.name)?;
-                if threads {
-                    for thread in store.threads(&folder, limit, filter)? {
-                        for (m, depth) in thread.iter().zip(postvak_core::output::depths(&thread)) {
-                            if json {
-                                print_json(postvak_core::output::message(
-                                    &acc.name,
-                                    m,
-                                    Some(depth),
-                                )?);
-                            } else {
-                                println!("{}", message_line(&acc.name, m, depth));
-                            }
-                        }
-                    }
-                    continue;
-                }
-                for m in store.messages(&folder, limit, filter)? {
-                    if json {
-                        print_json(postvak_core::output::message(&acc.name, &m, None)?);
-                    } else {
-                        println!("{}", message_line(&acc.name, &m, 0));
-                    }
+            let kind = if threads {
+                RowKind::Thread
+            } else {
+                RowKind::Message
+            };
+            let fields = Fields::parse(&paging.fields, kind)?;
+            let sources = sources(&config, &paths, account.as_deref(), false)?;
+            if paging.count_only {
+                print_count(page::list_count(&sources, &request)?, json);
+                return Ok(());
+            }
+            let found = page::list(&sources, &request, limit, paging.cursor.as_deref())?;
+            for row in &found.rows {
+                if json {
+                    print_json(postvak_core::output::list_row(row, &fields)?);
+                } else {
+                    let depth = row.depth.unwrap_or(0);
+                    println!("{}", message_line(&row.account, &row.message, depth));
                 }
             }
+            print_next(found.next.as_deref(), json);
             Ok(())
         }
         Command::Search {
@@ -572,46 +606,56 @@ pub fn run() -> Result<()> {
             exact,
             limit,
             json,
+            paging,
         } => {
-            let daemon = LazyClient::new(&paths);
+            let fields = Fields::parse(&paging.fields, RowKind::Hit)?;
             let parsed = postvak_core::search::parse(&query, postvak_core::time::now());
             let account = postvak_core::search::named_account(account.as_deref(), &parsed)?;
-            for acc in select_accounts(&config, account)? {
-                let store = Store::open_account(&paths, &acc.name)?;
-                let mut found = store.search(
-                    &parsed,
-                    postvak_core::search::Scope::All,
-                    folder.as_deref(),
-                    limit,
-                    !exact,
-                    Some(&acc.identity()?),
-                )?;
-                if server {
-                    match daemon.search_server(&acc.name, folder.as_deref(), &query) {
+            let sources = sources(&config, &paths, account, true)?;
+            let request = page::SearchQuery {
+                query: &parsed,
+                scope: postvak_core::search::Scope::All,
+                folder: folder.as_deref(),
+                close: !exact,
+            };
+            if paging.count_only {
+                print_count(page::search_count(&sources, &request)?, json);
+                return Ok(());
+            }
+            let mut found = page::search(&sources, &request, limit, paging.cursor.as_deref())?;
+            if server {
+                let daemon = LazyClient::new(&paths);
+                for source in &sources {
+                    match daemon.search_server(&source.account, folder.as_deref(), &query) {
                         Ok(hits) => {
-                            found = postvak_core::actions::with_server_hits(
-                                &store, found, &hits, limit,
+                            found = page::with_server_hits(
+                                found,
+                                &source.account,
+                                &source.store,
+                                &hits,
+                                limit,
                             )?
                         }
                         Err(e) => eprintln!(
                             "{}: {}; showing local results only",
-                            acc.name,
+                            source.account,
                             clean(&format!("{e:#}"), false)
                         ),
                     }
                 }
-                for hit in found {
-                    if json {
-                        print_json(postvak_core::output::message(&acc.name, &hit, None)?);
-                    } else {
-                        let line = message_line(&acc.name, &hit.message, 0);
-                        match hit.matched {
-                            postvak_core::store::Matched::Exact => println!("{line}"),
-                            postvak_core::store::Matched::Close => println!("~ {line}"),
-                        }
+            }
+            for row in &found.rows {
+                if json {
+                    print_json(postvak_core::output::search_row(row, &fields)?);
+                } else {
+                    let line = message_line(&row.account, &row.hit.message, 0);
+                    match row.hit.matched {
+                        postvak_core::store::Matched::Exact => println!("{line}"),
+                        postvak_core::store::Matched::Close => println!("~ {line}"),
                     }
                 }
             }
+            print_next(found.next.as_deref(), json);
             Ok(())
         }
         Command::Unsubscribe {
@@ -1054,6 +1098,50 @@ fn print_json(value: serde_json::Value) {
     println!("{}", postvak_core::output::clean_value(value, false));
 }
 
+/// The stores of the accounts `name` selects, each with its identity when `identity`, for a page of `list` or
+/// `search`.
+fn sources(
+    config: &Config,
+    paths: &Paths,
+    name: Option<&str>,
+    identity: bool,
+) -> Result<Vec<page::Source>> {
+    select_accounts(config, name)?
+        .into_iter()
+        .map(|acc| {
+            Ok(page::Source {
+                account: acc.name.clone(),
+                store: Store::open_account(paths, &acc.name)?,
+                identity: if identity {
+                    Some(acc.identity()?)
+                } else {
+                    None
+                },
+            })
+        })
+        .collect()
+}
+
+/// A count of `list` or `search`: `{"count": N}` with `--json`, else the number.
+fn print_count(count: u64, json: bool) {
+    if json {
+        print_json(postvak_core::output::count(count));
+    } else {
+        println!("{count}");
+    }
+}
+
+/// Where the next page starts, when there is one: a last `{"next": …}` line with `--json`, else a line on stderr
+/// so the rows on stdout stay one message each.
+fn print_next(next: Option<&str>, json: bool) {
+    let Some(next) = next else { return };
+    if json {
+        print_json(postvak_core::output::next(next));
+    } else {
+        eprintln!("more: --cursor {next}");
+    }
+}
+
 /// `account  * INBOX/42  date  from  subject`; `*` marks unread, `depth` indents the subject in thread views.
 fn message_line(account: &str, m: &Message, depth: usize) -> String {
     format!(
@@ -1215,9 +1303,9 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
         }
         RulesCommand::List { json } => {
             let file = postvak_core::rules::load(&paths.rules_file())?;
-            for r in &file.rules {
+            for (position, r) in file.rules.iter().enumerate() {
                 if json {
-                    print_json(postvak_core::output::rule(r));
+                    print_json(postvak_core::output::rule(r, position)?);
                 } else {
                     println!(
                         "{}\t{}\t{}",
@@ -1294,15 +1382,42 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             print!("{}", postvak_core::rules::schema());
             Ok(())
         }
-        RulesCommand::Propose { by } => {
-            let rule = read_rule_json()?;
-            let name = rule.name.clone();
-            let by = by.map_or_else(|| "cli".to_string(), |who| format!("cli:{who}"));
-            postvak_core::rules::edit::propose(&paths.rules_file(), rule, &by)?;
+        RulesCommand::Propose {
+            by,
+            before,
+            after,
+            replace,
+        } => {
+            let value: serde_json::Value = serde_json::from_reader(io::stdin().lock())
+                .context("reading rules as JSON from stdin")?;
+            let mut proposals = postvak_core::rules::edit::read_proposals(value)?;
+            let place = match (before, after) {
+                (Some(name), _) => Some(Place::Before(name)),
+                (None, Some(name)) => Some(Place::After(name)),
+                (None, None) => None,
+            };
+            if let Some(place) = place {
+                if proposals.place != Place::End {
+                    bail!("give the place either in the JSON or with --before/--after, not both");
+                }
+                proposals.place = place;
+            }
+            proposals.replace |= replace;
+            let names: Vec<String> = proposals
+                .rules
+                .iter()
+                .map(|r| format!("'{}'", clean(&r.name, false)))
+                .collect();
+            postvak_core::rules::edit::propose_all(&paths.rules_file(), proposals, &cli_by(by))?;
             println!(
-                "proposed '{}'; it stays disabled until a human runs `postvak rules approve`",
-                clean(&name, false)
+                "proposed {}; disabled until a human runs `postvak rules approve`",
+                names.join(", ")
             );
+            Ok(())
+        }
+        RulesCommand::Withdraw { name, by } => {
+            postvak_core::rules::edit::withdraw(&paths.rules_file(), &name, &cli_by(by))?;
+            println!("withdrew proposal '{}'", clean(&name, false));
             Ok(())
         }
         RulesCommand::Approve { name } => {
@@ -1319,6 +1434,11 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             Ok(())
         }
     }
+}
+
+/// What `--by WHO` records as proposed_by: `cli:WHO`, or `cli` alone.
+fn cli_by(by: Option<String>) -> String {
+    by.map_or_else(|| "cli".to_string(), |who| format!("cli:{who}"))
 }
 
 fn read_rule_json() -> Result<Rule> {

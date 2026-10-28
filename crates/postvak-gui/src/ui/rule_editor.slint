@@ -2,7 +2,7 @@
 // `RuleEditor` from `App.rule_draft` and turns its callbacks into edits of the draft.
 import { ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { IconButton, Note, Switch, TextButton } from "common.slint";
+import { Hairline, IconButton, Note, Switch, TextButton } from "common.slint";
 import { Dialog } from "dialogs.slint";
 
 export struct ConditionData {
@@ -308,10 +308,7 @@ export component RuleEditorPane inherits ScrollView {
             Rectangle { horizontal-stretch: 1; }
         }
 
-        Rectangle {
-            height: 1px;
-            background: Theme.pane.border;
-        }
+        Hairline { }
         if RuleEditor.error != "": Text {
             text: RuleEditor.error;
             color: Theme.pane.error;
@@ -365,7 +362,7 @@ export component RuleEditorPane inherits ScrollView {
 // Asked when another rule would replace one with unsaved changes.
 export component UnsavedDialog {
     in property <string> close-icon;
-    width: 360px;
+    width: Theme.dialog-small;
     Dialog {
         title: "Unsaved changes";
         close-icon: root.close-icon;

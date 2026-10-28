@@ -2,7 +2,7 @@
 // several messages selected, the selection. `body.rs` words it, `toolbar.rs` the actions.
 import { ListView, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Heading, IconButton, Link, TextButton } from "common.slint";
+import { Hairline, Heading, IconButton, Link, TextButton } from "common.slint";
 
 // A message action: its glyph, its accessible name, its hover hint and the label it shows beside the glyph while
 // several messages are selected.
@@ -503,10 +503,7 @@ export component BodyPane inherits Rectangle {
                 Rectangle { horizontal-stretch: 1; }
             }
             Rectangle { height: Theme.pad; }
-            Rectangle {
-                height: 1px;
-                background: Theme.pane.border;
-            }
+            Hairline { }
             ListView {
                 vertical-stretch: 1;
                 for message in root.selection: Rectangle {
@@ -535,11 +532,7 @@ export component BodyPane inherits Rectangle {
                             vertical-alignment: center;
                         }
                     }
-                    Rectangle {
-                        y: parent.height - 1px;
-                        height: 1px;
-                        background: Theme.pane.border;
-                    }
+                    Hairline { y: parent.height - 1px; }
                 }
             }
         }
@@ -655,10 +648,7 @@ export component BodyPane inherits Rectangle {
             // More room under the headers' hairline than between them.
             VerticalLayout {
                 padding-bottom: Theme.pad;
-                Rectangle {
-                    height: 1px;
-                    background: Theme.pane.border;
-                }
+                Hairline { }
             }
 
             if root.info.shows-html: HtmlView {

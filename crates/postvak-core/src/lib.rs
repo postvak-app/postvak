@@ -14,6 +14,7 @@ pub mod message;
 pub mod net;
 pub mod notify;
 pub mod output;
+pub mod page;
 pub mod paths;
 #[cfg(target_os = "linux")]
 pub mod portal;

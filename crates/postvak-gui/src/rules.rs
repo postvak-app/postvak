@@ -420,8 +420,7 @@ mod tests {
             actions: 3,
             errors,
         };
-        wires.events.send(applied(Vec::new())).unwrap();
-        open.tick();
+        open.receive(&wires, [applied(Vec::new())]);
         assert_eq!(open.find("work: 3 actions on 12 messages").len(), 1);
         wires
             .events
@@ -461,8 +460,7 @@ mod tests {
             actions: 1,
             errors: vec![],
         };
-        wires.events.send(applied).unwrap();
-        open.tick();
+        open.receive(&wires, [applied]);
         assert_eq!(open.find("work: 1 action on 1 message").len(), 1);
     }
 
@@ -838,8 +836,7 @@ mod tests {
             requests: vec![],
             errors: vec![],
         };
-        wires.events.send(synced).unwrap();
-        open.tick();
+        open.receive(&wires, [synced]);
         assert_eq!(open.find("your receipt").len(), 1);
         assert!(open.find("read again").is_empty());
         assert_eq!(open.find("new backup").len(), 1);
@@ -871,8 +868,7 @@ mod tests {
             folder: "INBOX".into(),
             request: 0,
         };
-        wires.events.send(restored).unwrap();
-        open.tick();
+        open.receive(&wires, [restored]);
         assert!(open.find("your receipt").is_empty());
         let history = open.with(|live| {
             live.app

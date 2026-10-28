@@ -319,7 +319,7 @@ mod tests {
     use slint::ComponentHandle;
 
     use crate::state::{UiAction, View};
-    use crate::test_support::{Driver, Fixture, Wires, command, launched, message, unread};
+    use crate::test_support::{Driver, Fixture, Wires, launched, message, synced, unread, work};
     use postvak_core::rules::Action;
     use postvak_core::store::Message;
     use postvak_core::sync::{Command, Event};
@@ -439,12 +439,8 @@ mod tests {
         m
     }
 
-    fn apply(uid: u32, action: Action) -> (String, Command) {
-        command("work", "INBOX", &[uid], action)
-    }
-
     fn read(uid: u32) -> (String, Command) {
-        apply(uid, Action::MarkRead)
+        work("INBOX", &[uid], Action::MarkRead)
     }
 
     fn fetch(uid: u32) -> (String, Command) {
@@ -465,27 +461,12 @@ mod tests {
         }
     }
 
-    fn synced() -> Event {
-        Event::Synced {
-            account: "work".into(),
-            new_messages: 1,
-            actions: 0,
-            requests: vec![],
-            errors: vec![],
-        }
-    }
-
     /// Stores the fetched raw message for uid `uid` with `text` as its body.
     fn downloaded(fx: &Fixture, uid: u32, text: &str) {
         let raw = format!("Subject: later\r\n\r\n{text}\r\n");
         fx.store("work")
             .set_raw("INBOX", uid, raw.as_bytes(), text)
             .unwrap();
-    }
-
-    fn send(driver: &mut Driver, wires: &Wires, event: Event) {
-        wires.events.send(event).unwrap();
-        driver.tick();
     }
 
     fn body_text(driver: &Driver) -> Option<String> {
@@ -581,8 +562,7 @@ mod tests {
         assert_eq!(wires.sent(), [fetch(1)]);
         assert_eq!(open.find("Loading…").len(), 1);
         downloaded(&fx, 1, "Fetched text");
-        wires.events.send(ready(1)).unwrap();
-        open.tick();
+        open.receive(&wires, [ready(1)]);
         assert_eq!(open.window().get_body_text(), "Fetched text");
         assert!(wires.sent().is_empty());
     }
@@ -598,7 +578,7 @@ mod tests {
             account: "work".into(),
             message: "boom".into(),
         };
-        send(&mut driver, &wires, error);
+        driver.receive(&wires, [error]);
         driver.press("j k");
         assert_eq!(wires.sent(), [fetch(2)]);
     }
@@ -610,12 +590,12 @@ mod tests {
         let (mut driver, wires) = fx.driver();
         driver.press("u u");
         downloaded(&fx, 1, "Fetched");
-        send(&mut driver, &wires, ready(1));
+        driver.receive(&wires, [ready(1)]);
         assert_eq!(body_text(&driver).as_deref(), Some("Fetched"));
         driver.at(100.0);
         assert_eq!(
             wires.sent(),
-            [fetch(1), read(1), apply(1, Action::MarkUnread)]
+            [fetch(1), read(1), work("INBOX", &[1], Action::MarkUnread)]
         );
     }
 
@@ -628,7 +608,10 @@ mod tests {
         driver.at(10.0);
         driver.press("j x k u");
         driver.at(12.0);
-        assert_eq!(wires.sent(), [apply(1, Action::MarkUnread), read(2)]);
+        assert_eq!(
+            wires.sent(),
+            [work("INBOX", &[1], Action::MarkUnread), read(2)]
+        );
     }
 
     #[test]
@@ -644,8 +627,7 @@ mod tests {
             account: "work".into(),
             activity: offline,
         };
-        wires.events.send(event).unwrap();
-        open.tick();
+        open.receive(&wires, [event]);
         assert_eq!(
             open.find("Not downloaded; loads when work reconnects.")
                 .len(),
@@ -666,8 +648,7 @@ mod tests {
             account: "work".into(),
             activity: rejected,
         };
-        wires.events.send(event).unwrap();
-        open.tick();
+        open.receive(&wires, [event]);
         assert_eq!(
             open.find("Not downloaded; the server rejected work's login.")
                 .len(),
@@ -743,13 +724,9 @@ mod tests {
         assert_eq!(pane.tint, crate::avatar::tint("linus@example.com"));
     }
 
-    /// Ticks until the shown message's logo is in, or five seconds.
+    /// Ticks until the shown message's logo is in.
     fn wait_for_logo(driver: &mut Driver) -> Pane {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while pane(&driver.app).logo.is_none() && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(5));
-            driver.tick();
-        }
+        driver.tick_until(|app| pane(app).logo.is_some());
         pane(&driver.app)
     }
 
@@ -792,11 +769,7 @@ mod tests {
         fx.add("work", crate::test_support::branded("INBOX", 1, "merged"));
         crate::test_support::cache_github_logo(&fx.paths);
         let (open, _wires) = fx.window();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !open.window().get_body_info().has_logo && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(5));
-            open.tick();
-        }
+        open.tick_until(|open| open.window().get_body_info().has_logo);
         let shown = open.window().get_body_info();
         assert!(shown.has_logo);
         assert_eq!(shown.logo_key, "default._bimi.github.com");
@@ -814,7 +787,7 @@ mod tests {
         let (mut driver, wires) = fx.driver();
         driver.press("u");
         driver.at(30.0);
-        assert_eq!(wires.sent(), [apply(1, Action::MarkUnread)]);
+        assert_eq!(wires.sent(), [work("INBOX", &[1], Action::MarkUnread)]);
     }
 
     const WITH_ATTACHMENT_RAW: &[u8] = WITH_ATTACHMENT.as_bytes();
@@ -864,8 +837,7 @@ mod tests {
             uid: 1,
             preview: Box::new(preview),
         };
-        wires.events.send(shown).unwrap();
-        open.tick();
+        open.receive(&wires, [shown]);
         assert!(shows_html(&open));
         let label = open.labels_containing("report.txt (").remove(0);
         let save = open.get(&format!("Save {label}"));
@@ -882,8 +854,7 @@ mod tests {
         fx.store("work")
             .set_raw("INBOX", 1, WITH_ATTACHMENT_RAW, "See attached")
             .unwrap();
-        wires.events.send(ready(1)).unwrap();
-        open.tick();
+        open.receive(&wires, [ready(1)]);
         assert!(open.with(|live| live.app.previews.is_empty()));
         let label = open.labels_containing("report.txt (").remove(0);
         open.click(&format!("Save {label}"));
@@ -920,9 +891,7 @@ mod tests {
             uid: 1,
             preview: Box::new(preview),
         };
-        wires.events.send(shown).unwrap();
-        wires.events.send(ready(1)).unwrap();
-        open.tick();
+        open.receive(&wires, [shown, ready(1)]);
         wires.sent();
         (open, wires)
     }
@@ -950,8 +919,7 @@ mod tests {
             contents: b"PDF".to_vec(),
             request: 0,
         };
-        wires.events.send(fetched).unwrap();
-        open.tick();
+        open.receive(&wires, [fetched]);
         let saved = fx.paths.cache_dir.join("downloads").join("scan.pdf");
         assert_eq!(std::fs::read(&saved).unwrap(), b"PDF");
         assert_eq!(open.labels_containing("Saved to").len(), 1);
@@ -975,8 +943,7 @@ mod tests {
         fx.store("work")
             .set_raw("INBOX", 1, WITH_ATTACHMENT_RAW, "See attached")
             .unwrap();
-        wires.events.send(ready(1)).unwrap();
-        open.tick();
+        open.receive(&wires, [ready(1)]);
         assert_eq!(std::fs::read(&saved).unwrap(), WITH_ATTACHMENT_RAW);
         assert!(open.with(|live| live.app.previews.is_empty()));
     }
@@ -997,7 +964,7 @@ mod tests {
                     whole: true,
                 }),
             };
-            send(&mut driver, &wires, shown);
+            driver.receive(&wires, [shown]);
         }
         let held: Vec<u32> = driver
             .app
@@ -1068,7 +1035,7 @@ mod tests {
         fx.add("work", message("INBOX", 1, "old"));
         let (mut driver, wires) = fx.driver();
         fx.add("work", unread("INBOX", 2, "new"));
-        wires.events.send(synced()).unwrap();
+        wires.send([synced("work", 1)]);
         driver.at(10.0);
         driver.at(12.0);
         assert!(wires.sent().is_empty());
@@ -1115,7 +1082,7 @@ mod tests {
         driver.at(12.0);
         assert_eq!(wires.sent(), [fetch(1)]);
         downloaded(&fx, 1, "Fetched");
-        wires.events.send(ready(1)).unwrap();
+        wires.send([ready(1)]);
         driver.at(12.5);
         assert!(wires.sent().is_empty());
         driver.at(13.6);
@@ -1131,7 +1098,10 @@ mod tests {
         driver.at(10.0);
         driver.press("e");
         driver.at(12.0);
-        assert_eq!(wires.sent(), [apply(2, Action::Archive), read(1)]);
+        assert_eq!(
+            wires.sent(),
+            [work("INBOX", &[2], Action::Archive), read(1)]
+        );
     }
 
     #[test]
@@ -1176,7 +1146,7 @@ mod tests {
         let mut reply = message("INBOX", 4, "Re: b");
         reply.thread_id = thread_b.into();
         fx.add("work", reply);
-        send(&mut driver, &wires, synced());
+        driver.receive(&wires, [synced("work", 1)]);
         let list = &driver.app.list;
         assert_eq!(list.rows[list.cursor].thread_id.as_deref(), Some(thread_b));
         driver.press("e");
@@ -1199,7 +1169,7 @@ mod tests {
         driver.press("j");
         assert_eq!(wires.sent(), [fetch(1)]);
         downloaded(&fx, 1, "Fetched");
-        wires.events.send(ready(1)).unwrap();
+        wires.send([ready(1)]);
         driver.at(20.0);
         driver.at(20.5);
         assert!(wires.sent().is_empty());
@@ -1227,18 +1197,6 @@ mod tests {
         fx.add("work", news);
     }
 
-    /// Ticks the window until `label` shows, for an answer from another thread.
-    fn wait_for(open: &crate::test_support::Open, label: &str) -> bool {
-        for _ in 0..200 {
-            open.tick();
-            if !open.labels_containing(label).is_empty() {
-                return true;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        false
-    }
-
     #[test]
     fn unsubscribe_posts_one_click_and_says_whether_the_sender_accepted() {
         let fx = Fixture::new(&["work"]);
@@ -1249,7 +1207,7 @@ mod tests {
         );
         let (open, _wires) = fx.window();
         open.click("Unsubscribe");
-        assert!(wait_for(&open, "Unsubscribed"));
+        open.tick_until(|open| !open.labels_containing("Unsubscribed").is_empty());
         assert!(crate::test_support::launched().is_empty());
         let fx = Fixture::new(&["work"]);
         list_mail(
@@ -1258,7 +1216,7 @@ mod tests {
         );
         let (open, _wires) = fx.window();
         open.click("Unsubscribe");
-        assert!(wait_for(&open, "Could not unsubscribe"));
+        open.tick_until(|open| !open.labels_containing("Could not unsubscribe").is_empty());
     }
 
     #[test]

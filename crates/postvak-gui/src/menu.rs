@@ -237,9 +237,7 @@ mod tests {
         // Checked while the change runs, and off limits until it is done.
         assert!(driver.app.open_at_login.checked());
         assert_eq!(action(MenuAction::OpenAtLogin, &driver.app), None);
-        wait_for(&mut driver, |app| {
-            matches!(app.open_at_login, OpenAtLogin::Known(true))
-        });
+        driver.tick_until(|app| matches!(app.open_at_login, OpenAtLogin::Known(true)));
         assert_eq!(
             action(MenuAction::OpenAtLogin, &driver.app),
             Some(UiAction::SetOpenAtLogin(false))
@@ -253,9 +251,7 @@ mod tests {
         driver.app.set_open_at_login = |_, _| Err(anyhow::anyhow!("cancelled"));
         driver.tick();
         driver.apply(UiAction::SetOpenAtLogin(true));
-        wait_for(&mut driver, |app| {
-            matches!(app.open_at_login, OpenAtLogin::Known(false))
-        });
+        driver.tick_until(|app| matches!(app.open_at_login, OpenAtLogin::Known(false)));
         assert!(
             driver
                 .app
@@ -265,17 +261,5 @@ mod tests {
             "{:?}",
             driver.app.error
         );
-    }
-
-    /// Ticks until `done`, since the change runs on a thread of its own.
-    fn wait_for(driver: &mut crate::test_support::Driver, done: impl Fn(&App) -> bool) {
-        for _ in 0..500 {
-            driver.tick();
-            if done(&driver.app) {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        panic!("the change did not finish");
     }
 }
