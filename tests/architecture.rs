@@ -352,11 +352,41 @@ fn functions(code: &[char]) -> Vec<(String, usize, usize, usize)> {
     out
 }
 
-/// Rule 2: only `rules/edit.rs` in `postvak-core` writes rules.toml. Flags any function outside it that both names the rules path
-/// and calls a file write.
-fn check_rules_writes(source: &Source) -> Vec<String> {
-    const RULE: &str = "only postvak-core's rules/edit.rs writes rules.toml";
-    const PATH_MARKERS: [&str; 3] = ["rules_file", "rules_path", "\"rules.toml\""];
+/// A file that one module alone writes: that module, what names the file's path, and the functions elsewhere that may
+/// write next to it, as `(file, fn, reason)`.
+struct OwnedFile {
+    rule: &'static str,
+    owner: &'static str,
+    path_markers: &'static [&'static str],
+    instead: &'static str,
+    exceptions: &'static [(&'static str, &'static str, &'static str)],
+}
+
+/// Rule 2: each of these files has one writer. `config.rs` takes `.config.lock` and merges its own change into the file
+/// as it is on disk; a write anywhere else could drop an account another process just added (#261).
+const OWNED_FILES: [OwnedFile; 2] = [
+    OwnedFile {
+        rule: "only postvak-core's rules/edit.rs writes rules.toml",
+        owner: "crates/postvak-core/src/rules/edit.rs",
+        path_markers: &["rules_file", "rules_path", "\"rules.toml\""],
+        instead: "use `rules::edit`",
+        exceptions: &RULES_WRITE_EXCEPTIONS,
+    },
+    OwnedFile {
+        rule: "only postvak-core's config.rs writes config.toml",
+        owner: "crates/postvak-core/src/config.rs",
+        path_markers: &["config_file", "\"config.toml\""],
+        instead: "use `config::save_account` or `config::save_theme`",
+        exceptions: &[(
+            "crates/postvak-core/src/daemon/test_support.rs",
+            "write_config",
+            "test harness, built only for tests and the `testing` feature; writes a fixture config into a temp home",
+        )],
+    },
+];
+
+/// Flags any function outside `owned.owner` that both names its file's path and calls a file write.
+fn check_owned_writes(source: &Source, owned: &OwnedFile) -> Vec<String> {
     const WRITES: [&str; 7] = [
         "write_atomic",
         "write_atomic_keeping_dir_mode",
@@ -366,15 +396,17 @@ fn check_rules_writes(source: &Source) -> Vec<String> {
         "fs::rename",
         "fs::remove_file",
     ];
-    if source.path == "crates/postvak-core/src/rules/edit.rs" {
+    if source.path == owned.owner {
         return Vec::new();
     }
     let mut out = Vec::new();
     for (name, at, open, close) in functions(&source.code) {
-        let excepted = RULES_WRITE_EXCEPTIONS
+        let excepted = owned
+            .exceptions
             .iter()
             .any(|(file, f, _)| *file == source.path && *f == name);
-        let names_path = PATH_MARKERS
+        let names_path = owned
+            .path_markers
             .iter()
             .any(|m| !find_tokens(&source.text[open..close], m).is_empty());
         let write = WRITES.iter().find_map(|w| {
@@ -385,10 +417,11 @@ fn check_rules_writes(source: &Source) -> Vec<String> {
         if let (false, true, Some((w, pos))) = (excepted, names_path, write) {
             out.push(source.violation(
                 pos,
-                RULE,
+                owned.rule,
                 &format!(
-                    "`fn {name}` (line {}) names the rules path and calls `{w}`; use `rules::edit`",
-                    source.line(at)
+                    "`fn {name}` (line {}) names its path and calls `{w}`; {}",
+                    source.line(at),
+                    owned.instead
                 ),
             ));
         }
@@ -463,7 +496,9 @@ fn check_search_expressions(source: &Source) -> Vec<String> {
 
 fn check(source: &Source) -> Vec<String> {
     let mut out = check_mcp(source);
-    out.extend(check_rules_writes(source));
+    for owned in &OWNED_FILES {
+        out.extend(check_owned_writes(source, owned));
+    }
     out.extend(check_gui_views(source));
     out.extend(check_search_expressions(source));
     out
@@ -522,14 +557,17 @@ fn module_ownership_rules_from_agents_md_hold() {
 }
 
 #[test]
-fn every_rules_write_exception_still_exists() {
+fn every_write_exception_still_exists() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    for (file, name, _reason) in RULES_WRITE_EXCEPTIONS {
-        let source = Source::parse(file, &std::fs::read_to_string(root.join(file)).unwrap());
-        assert!(
-            functions(&source.code).iter().any(|(n, ..)| n == name),
-            "{file} has no `fn {name}`; drop it from RULES_WRITE_EXCEPTIONS"
-        );
+    for owned in &OWNED_FILES {
+        for (file, name, _reason) in owned.exceptions {
+            let source = Source::parse(file, &std::fs::read_to_string(root.join(file)).unwrap());
+            assert!(
+                functions(&source.code).iter().any(|(n, ..)| n == name),
+                "{file} has no `fn {name}`; drop it from the exceptions to \"{}\"",
+                owned.rule
+            );
+        }
     }
 }
 
@@ -747,13 +785,32 @@ mod checks_fire {
             violations("crates/postvak-core/src/sync.rs", joined).len(),
             1
         );
-        let unrelated = "fn f(p: &Paths) { write_atomic(&p.config_file(), b\"\"); }\n\
+        let unrelated = "fn f(p: &Paths) { write_atomic(&p.window_file(), b\"\"); }\n\
                          fn g(p: &Paths) { let _ = rules::load(&p.rules_file()); }";
         assert!(violations("crates/postvak-core/src/sync.rs", unrelated).is_empty());
         assert!(violations("crates/postvak-core/src/rules/edit.rs", bad).is_empty());
         let excepted =
             "fn open_rules_file(&mut self) { write_atomic(&self.paths.rules_file(), b\"\"); }";
         assert!(violations("crates/postvak-gui/src/state.rs", excepted).is_empty());
+    }
+
+    #[test]
+    fn config_toml_writes_outside_config_rs_are_flagged() {
+        let bad = "fn save(paths: &Paths) {\n    write_atomic(&paths.config_file(), b\"x\").unwrap();\n}\n";
+        let found = violations("crates/postvak-gui/src/state.rs", bad);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found[0].starts_with("crates/postvak-gui/src/state.rs:2: `fn save`"),
+            "{found:?}"
+        );
+        assert!(found[0].contains("config::save_account"), "{found:?}");
+        let joined =
+            "fn f(dir: &Path) { std::fs::write(dir.join(\"config.toml\"), \"\").unwrap(); }";
+        assert_eq!(violations("src/cli/mod.rs", joined).len(), 1);
+        assert!(violations("crates/postvak-core/src/config.rs", bad).is_empty());
+        let read = "fn f(p: &Paths) -> Config { Config::load(&p.config_file()).unwrap() }\n\
+                    fn g(p: &Paths) { let path = p.config_file(); config::save_theme(&path, t); }";
+        assert!(violations("crates/postvak-core/src/account.rs", read).is_empty());
     }
 
     #[test]
