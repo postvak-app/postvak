@@ -3,13 +3,13 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, Sender};
 
 use hickory_resolver::Resolver;
 use hickory_resolver::proto::rr::RData;
 use postvak_core::bimi::{self, Brand, MAX_SVG, Net};
 
 use super::html::{self, Wake};
+use crate::worker::Worker;
 
 /// Each DNS query gives up after this.
 const DNS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -24,7 +24,7 @@ pub(crate) struct Logos {
     pub(crate) net: Arc<dyn Net + Send + Sync>,
     /// `None` while a lookup is pending, and for a brand without a logo.
     known: HashMap<Brand, Option<Arc<str>>>,
-    worker: Option<(Sender<Brand>, Receiver<Found>)>,
+    worker: Option<Worker<Brand, Found>>,
 }
 
 impl Logos {
@@ -48,20 +48,18 @@ impl Logos {
         if self.known.contains_key(brand) {
             return;
         }
-        let (requests, _) = self
-            .worker
-            .get_or_insert_with(|| spawn(self.cache_dir.clone(), self.net.clone(), wake.clone()));
-        let _ = requests.send(brand.clone());
+        self.worker
+            .get_or_insert_with(|| spawn(self.cache_dir.clone(), self.net.clone(), wake.clone()))
+            .send(brand.clone());
         self.known.insert(brand.clone(), None);
     }
 
     /// Takes the worker's answers.
     pub fn receive(&mut self) {
-        let Some((_, found)) = &self.worker else {
+        let Some(worker) = &self.worker else {
             return;
         };
-        let found: Vec<Found> = found.try_iter().collect();
-        for (brand, svg) in found {
+        for (brand, svg) in worker.done() {
             self.known.insert(brand, svg.map(Arc::from));
         }
     }
@@ -78,32 +76,15 @@ impl Logos {
 }
 
 /// One thread that looks brands up in turn, so at most one lookup or fetch is in flight; it ends with the window.
-fn spawn(
-    cache_dir: PathBuf,
-    net: Arc<dyn Net + Send + Sync>,
-    wake: Wake,
-) -> (Sender<Brand>, Receiver<Found>) {
-    let (requests, incoming) = mpsc::channel::<Brand>();
-    let (send, found) = mpsc::channel();
-    let spawned = std::thread::Builder::new()
-        .name("sender-logos".into())
-        .spawn(move || {
-            for brand in incoming {
-                // A failed lookup shows the initials for this session. Nothing is logged: a log line would name the
-                // sender's domain.
-                let svg = bimi::logo(&cache_dir, &brand, postvak_core::time::now(), net.as_ref())
-                    .ok()
-                    .flatten();
-                if send.send((brand, svg)).is_err() {
-                    return;
-                }
-                wake();
-            }
-        });
-    if let Err(e) = spawned {
-        log::warn!("could not start loading sender logos: {e}");
-    }
-    (requests, found)
+fn spawn(cache_dir: PathBuf, net: Arc<dyn Net + Send + Sync>, wake: Wake) -> Worker<Brand, Found> {
+    Worker::start("sender-logos", wake, move |brand: Brand| {
+        // A failed lookup shows the initials for this session. Nothing is logged: a log line would name the sender's
+        // domain.
+        let svg = bimi::logo(&cache_dir, &brand, postvak_core::time::now(), net.as_ref())
+            .ok()
+            .flatten();
+        (brand, svg)
+    })
 }
 
 /// DNS through the system's resolvers, and HTTPS through the downloader HTML mail uses, which checks every hop's host.
@@ -154,11 +135,10 @@ impl Net for Internet {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
 
     use super::*;
     use crate::fixture::message;
-    use crate::test_support::{Fixture, branded, cache_github_logo};
+    use crate::test_support::{Fixture, branded, cache_github_logo, wait_until};
 
     #[test]
     fn a_brand_is_only_read_while_sender_images_are_on() {
@@ -187,11 +167,10 @@ mod tests {
         let wake: Wake = Arc::new(|| {});
         logos.want(&brand, &wake);
         logos.want(&brand, &wake);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while logos.svg(&brand).is_none() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
+        wait_until(|| {
             logos.receive();
-        }
+            logos.svg(&brand).is_some()
+        });
         assert!(logos.svg(&brand).is_some_and(|svg| svg.contains("<svg")));
     }
 
@@ -203,13 +182,15 @@ mod tests {
         let brand = logos.brand(&branded("INBOX", 1, "Hi").headers).unwrap();
         let wake: Wake = Arc::new(|| {});
         logos.want(&brand, &wake);
-        let Some((_, found)) = &logos.worker else {
+        let Some(worker) = &logos.worker else {
             panic!("want starts the worker");
         };
-        assert_eq!(
-            found.recv_timeout(Duration::from_secs(5)).unwrap(),
-            (brand.clone(), None)
-        );
+        let mut found = Vec::new();
+        wait_until(|| {
+            found.extend(worker.done());
+            !found.is_empty()
+        });
+        assert_eq!(found, [(brand.clone(), None)]);
         assert_eq!(logos.svg(&brand), None);
         assert!(!fx.paths.cache_dir.join("bimi").exists());
     }

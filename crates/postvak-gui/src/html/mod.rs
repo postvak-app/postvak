@@ -314,7 +314,6 @@ mod view_tests {
     //! failures.
     use std::collections::BTreeMap;
     use std::sync::mpsc::{Receiver, Sender};
-    use std::time::{Duration, Instant};
 
     use slint::ComponentHandle;
 
@@ -329,15 +328,7 @@ mod view_tests {
 
     /// Ticks the window until `done` holds; the render thread answers in real time.
     fn wait_for(open: &Open, done: impl Fn(&App) -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while !open.with(|live| done(&live.app)) {
-            assert!(
-                Instant::now() < deadline,
-                "timed out waiting for the renderer"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-            open.tick();
-        }
+        open.tick_until(|open| open.with(|live| done(&live.app)));
     }
 
     /// True once the shown message is laid out and every strip it asked for is painted.
