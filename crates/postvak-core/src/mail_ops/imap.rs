@@ -552,13 +552,19 @@ fn special_use(attrs: &[NameAttribute<'_>]) -> Option<String> {
     })
 }
 
-/// The folder a LIST answer names, or None for one that cannot be selected.
+/// The folder a LIST answer names, or None for one that cannot be selected: `\Noselect`, or `\NonExistent`, which
+/// implies it (RFC 5258 §3.4). Dovecot answers an extended LIST so for the parent of a new `Archief/Één`.
 fn listed_folder(
     attrs: &[NameAttribute<'_>],
     delimiter: Option<&str>,
     name: &str,
 ) -> Option<RemoteFolder> {
-    if attrs.iter().any(|a| matches!(a, NameAttribute::NoSelect)) {
+    let unselectable = |a: &NameAttribute<'_>| match a {
+        NameAttribute::NoSelect => true,
+        NameAttribute::Extension(s) => s.eq_ignore_ascii_case("\\NonExistent"),
+        _ => false,
+    };
+    if attrs.iter().any(unselectable) {
         return None;
     }
     Some(RemoteFolder {
@@ -1144,6 +1150,22 @@ mod tests {
         let (mut names, _) = learned(&["Caf\u{e9}"]);
         names.learn(vec!["INBOX".into()]);
         assert_eq!(names.wire("Caf\u{e9}"), "Caf&AOk-");
+    }
+
+    #[test]
+    fn a_folder_listed_as_nonexistent_or_noselect_is_left_out() {
+        use std::borrow::Cow;
+        let listed = |attrs: &[NameAttribute<'_>]| listed_folder(attrs, Some("/"), "Archief");
+        assert_eq!(listed(&[NameAttribute::NoSelect]), None);
+        for nonexistent in ["\\NonExistent", "\\nonexistent"] {
+            let attrs = [
+                NameAttribute::Extension(Cow::Borrowed(nonexistent)),
+                NameAttribute::Extension(Cow::Borrowed("\\HasChildren")),
+            ];
+            assert_eq!(listed(&attrs), None);
+        }
+        let attrs = [NameAttribute::Extension(Cow::Borrowed("\\HasChildren"))];
+        assert_eq!(listed(&attrs).map(|f| f.name).as_deref(), Some("Archief"));
     }
 
     #[test]
