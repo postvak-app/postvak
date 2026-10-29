@@ -1,5 +1,6 @@
 [book]
 title = "Postvak"
+description = "Postvak documentation: install, accounts, rules, search, the mail window, the background service, the MCP server for agents and the CLI reference."
 authors = ["pataar"]
 language = "en"
 src = "src"
@@ -8,3 +9,4 @@ src = "src"
 additional-css = ["theme/postvak.css"]
 default-theme = "light"
 preferred-dark-theme = "coal"
+site-url = "/docs/"
