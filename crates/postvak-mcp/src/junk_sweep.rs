@@ -210,8 +210,8 @@ fn snapshot(fx: &Fixture) -> (Vec<String>, Option<Vec<u8>>, Vec<String>) {
     (rows, std::fs::read(fx.paths.rules_file()).ok(), trash)
 }
 
-const RULES: &str = "[[rules]]\nname = \"on\"\nmatch.subject = { contains = \"code\" }\nactions = [\"flag\"]\n\n\
-    [[rules]]\nname = \"news\"\nenabled = false\nproposed_by = \"mcp\"\nmatch.subject = { contains = \"news\" }\nactions = [\"archive\"]\n";
+const RULES: &str = "[[rules]]\nname = \"on\"\nmatch.subject = { contains = \"code\" }\nactions = { flagged = true }\n\n\
+    [[rules]]\nname = \"news\"\nenabled = false\nproposed_by = \"mcp\"\nmatch.subject = { contains = \"news\" }\nactions = { archive = true }\n";
 
 /// One account with two messages, a log entry, a trash backup and two rules, one of them a proposal named `news`.
 fn junk_fixture() -> Fixture {
@@ -229,7 +229,7 @@ fn junk_fixture() -> Fixture {
             uid: 1,
             message_id: Some("<1@example.com>".into()),
             subject: Some("Code 1234".into()),
-            action: "flag".into(),
+            action: "flagged".into(),
             trash_file: None,
         })
         .unwrap();

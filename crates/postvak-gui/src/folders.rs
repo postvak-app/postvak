@@ -1,6 +1,7 @@
 //! The folder pane without a toolkit: the tree of custom folders, the order of special ones, labels and unread counts.
 //! The window draws All inboxes, each account's folders and the Rules, Activity and Backups entries from it.
 
+use postvak_core::folder_name;
 use postvak_core::message::clean;
 use postvak_core::store::Folder;
 
@@ -198,10 +199,11 @@ fn account_entries(app: &App, index: usize, account: &Account) -> Vec<Entry> {
 /// The deepest level that still steps in; folders below it line up with it, and show their path on hover.
 pub(crate) const DEEPEST: usize = 3;
 
-/// Rules, Activity and Backups, pinned at the bottom of the pane.
+/// Rules, Activity and Backups, pinned at the bottom of the pane. Rules counts the proposals waiting for approval.
 pub(crate) fn pinned(app: &App) -> [FolderEntry; 3] {
+    let proposals = u32::try_from(app.rules.proposals.len()).unwrap_or(u32::MAX);
     [
-        FolderEntry::new(icons::RULES, "Rules".into(), 0, View::Rules, app),
+        FolderEntry::new(icons::RULES, "Rules".into(), proposals, View::Rules, app),
         FolderEntry::new(icons::ACTIVITY, "Activity".into(), 0, View::Activity, app),
         FolderEntry::new(icons::BACKUPS, "Backups".into(), 0, View::Trash, app),
     ]
@@ -249,7 +251,11 @@ pub(crate) fn tree(folders: &[FolderRow]) -> Vec<TreeRow> {
         .iter()
         .filter(|f| !is_special(&f.name, f.special_use.as_deref()))
         .collect();
-    let strip = !custom.is_empty() && custom.iter().all(|f| inbox_prefix(f).is_some());
+    let strip = folder_name::under_inbox(
+        custom
+            .iter()
+            .map(|f| (f.name.as_str(), f.delimiter.as_deref())),
+    );
     let mut paths: Vec<(Vec<String>, &FolderRow)> = custom
         .into_iter()
         .map(|f| (segments(f, strip), f))
@@ -296,11 +302,7 @@ pub(crate) fn tree(folders: &[FolderRow]) -> Vec<TreeRow> {
 
 /// The name after a leading `INBOX` + delimiter, when it has one.
 fn inbox_prefix(folder: &FolderRow) -> Option<&str> {
-    let delimiter = folder.delimiter.as_deref().filter(|d| !d.is_empty())?;
-    let prefix = format!("INBOX{delimiter}");
-    let head = folder.name.get(..prefix.len())?;
-    head.eq_ignore_ascii_case(&prefix)
-        .then(|| &folder.name[prefix.len()..])
+    folder_name::inbox_prefix(&folder.name, folder.delimiter.as_deref())
 }
 
 fn segments(folder: &FolderRow, strip_inbox: bool) -> Vec<String> {
@@ -675,6 +677,18 @@ mod tests {
         assert_eq!(open.with(|live| live.app.view.clone()), work("Archive"));
         open.click("Rules");
         assert_eq!(open.with(|live| live.app.view.clone()), View::Rules);
+    }
+
+    #[test]
+    fn rules_counts_the_proposals_waiting_for_approval() {
+        let fx = Fixture::new(&["work"]);
+        std::fs::write(
+            fx.paths.rules_file(),
+            "[[rules]]\nname = \"codes\"\nenabled = false\nproposed_by = \"agent\"\nmatch.subject = { contains = \"code\" }\nactions = { delete = true }\n",
+        )
+        .unwrap();
+        let (open, _wires) = fx.window();
+        assert_eq!(open.find("Rules (1)").len(), 1);
     }
 
     #[test]

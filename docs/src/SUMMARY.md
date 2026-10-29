@@ -11,6 +11,7 @@
 - [Rules](rules.md)
 - [Agent guide](agent-guide.md)
 - [Agents over MCP](mcp.md)
+- [Compared to other tools](compare.md)
 - [Crash reports](crashes.md)
 - [CLI reference](cli.md)
 - [Performance](perf.md)

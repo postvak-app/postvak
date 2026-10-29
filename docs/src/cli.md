@@ -26,13 +26,16 @@ This document contains the help content for the `postvak` command-line program.
 * [`postvak rules test`↴](#postvak-rules-test)
 * [`postvak rules schema`↴](#postvak-rules-schema)
 * [`postvak rules propose`↴](#postvak-rules-propose)
+* [`postvak rules withdraw`↴](#postvak-rules-withdraw)
 * [`postvak rules approve`↴](#postvak-rules-approve)
 * [`postvak rules reject`↴](#postvak-rules-reject)
 * [`postvak rules list`↴](#postvak-rules-list)
+* [`postvak rules coverage`↴](#postvak-rules-coverage)
 * [`postvak rules apply-existing`↴](#postvak-rules-apply-existing)
 * [`postvak folders`↴](#postvak-folders)
 * [`postvak list`↴](#postvak-list)
 * [`postvak search`↴](#postvak-search)
+* [`postvak senders`↴](#postvak-senders)
 * [`postvak headers`↴](#postvak-headers)
 * [`postvak show`↴](#postvak-show)
 * [`postvak unsubscribe`↴](#postvak-unsubscribe)
@@ -57,7 +60,7 @@ This document contains the help content for the `postvak` command-line program.
 
 ## `postvak`
 
-A fast, simple mail client with automatic mailbox rules
+Your inbox, organized by rules you write
 
 **Usage:** `postvak <COMMAND>`
 
@@ -72,8 +75,9 @@ A fast, simple mail client with automatic mailbox rules
 * `attachment` — List or save a message's attachments
 * `rules` — Inspect and test rules.toml
 * `folders` — List folders with message and unread counts
-* `list` — List recent messages, newest first
+* `list` — List recent messages, newest first, every account in one order
 * `search` — Search subject, addresses, attachment names and bodies, newest first; words, "phrases", -not and key:value operators such as from:acme, in:Archive, is:unread or after:7d; the last word also matches as a prefix; close matches such as corrected typos follow when exact hits are few
+* `senders` — Group one folder's stored mail by sender address or registrable domain, the largest group first: message and unread counts, first and last date, a few subjects and the enabled rules that already match some of it
 * `headers` — Every header of one message, in order, unfolded and decoded as header rules see it; no body
 * `show` — Show one message
 * `unsubscribe` — Leave a message's mailing list: by one-click POST when the sender offers it (RFC 8058), else print the page or address from its List-Unsubscribe header to open
@@ -86,7 +90,7 @@ A fast, simple mail client with automatic mailbox rules
 * `trash` — Deleted mail kept for the retention period
 * `account` — Manage accounts
 * `crashes` — List the local crash reports, newest first; they are never sent anywhere
-* `guide` — Print the agent guide: how an LLM should drive Postvak
+* `guide` — Print the agent guide, how an LLM should drive Postvak, or another page of the documentation
 * `mcp` — Serve Postvak to an agent host over MCP on stdio; hosts start this, see `postvak mcp install`
 
 
@@ -304,10 +308,12 @@ Inspect and test rules.toml
 * `check` — Validate rules.toml, and warn about what keeps it from doing what it says, such as a conflicting copy a file sync left beside it or a rule for an account not set up here
 * `test` — Dry run: print what each rule would do to the cached messages; naming a rule previews it even while disabled
 * `schema` — JSON Schema for rules.toml; a proposal is one entry of `rules`
-* `propose` — Read one rule as JSON on stdin and add it disabled, for a human to approve
+* `propose` — Read one rule, a JSON array of rules or {"rules": [...]} on stdin and add them disabled, in order, for a human to approve; all or none are stored
+* `withdraw` — Remove your own pending proposal: a disabled rule whose proposed_by is yours; anything else is left for a human
 * `approve` — Enable a disabled rule, such as a proposal
 * `reject` — Remove a pending proposal
-* `list` — Names, enabled state and who proposed them
+* `list` — Every rule in file order, the order they run in: its position, its whole definition, whether it is enabled and who proposed it
+* `coverage` — Run the rules over one folder's stored mail without acting: how many messages a rule matches, none matches and several match; the top senders of unmatched mail; for each contested message every rule that matches and what would run under the real precedence
 * `apply-existing` — Run one enabled rule against mail that predates it; dry run lists what it would do
 
 
@@ -343,17 +349,38 @@ JSON Schema for rules.toml; a proposal is one entry of `rules`
 
 **Usage:** `postvak rules schema`
 
+`postvak guide rules` explains every key, with examples.
+
 
 
 ## `postvak rules propose`
 
-Read one rule as JSON on stdin and add it disabled, for a human to approve
+Read one rule, a JSON array of rules or {"rules": [...]} on stdin and add them disabled, in order, for a human to approve; all or none are stored
 
 **Usage:** `postvak rules propose [OPTIONS]`
 
 ###### **Options:**
 
 * `--by <BY>` — Who proposes it, recorded as proposed_by = "cli:WHO"
+* `--before <BEFORE>` — Put the rules right before this rule instead of at the end
+* `--after <AFTER>` — Put the rules right after this rule instead of at the end
+* `--replace` — Replace your own pending proposal of the same name instead of refusing the name
+
+
+
+## `postvak rules withdraw`
+
+Remove your own pending proposal: a disabled rule whose proposed_by is yours; anything else is left for a human
+
+**Usage:** `postvak rules withdraw [OPTIONS] <NAME>`
+
+###### **Arguments:**
+
+* `<NAME>`
+
+###### **Options:**
+
+* `--by <BY>` — Who proposed it, as given to `rules propose --by`
 
 
 
@@ -383,12 +410,42 @@ Remove a pending proposal
 
 ## `postvak rules list`
 
-Names, enabled state and who proposed them
+Every rule in file order, the order they run in: its position, its whole definition, whether it is enabled and who proposed it
 
 **Usage:** `postvak rules list [OPTIONS]`
 
 ###### **Options:**
 
+* `--json`
+
+
+
+## `postvak rules coverage`
+
+Run the rules over one folder's stored mail without acting: how many messages a rule matches, none matches and several match; the top senders of unmatched mail; for each contested message every rule that matches and what would run under the real precedence
+
+**Usage:** `postvak rules coverage [OPTIONS]`
+
+###### **Options:**
+
+* `--account <ACCOUNT>`
+* `--folder <FOLDER>`
+
+  Default value: `INBOX`
+* `--include-pending` — Count the proposals still waiting for approval as if they were enabled
+* `--group-by <GROUP_BY>` — How to group the senders of unmatched mail
+
+  Default value: `address`
+
+  Possible values:
+  - `address`:
+    The sender's address
+  - `domain`:
+    The registrable domain of the sender's address
+
+* `--limit <LIMIT>` — At most this many unmatched senders and contested messages per account; the counts cover everything
+
+  Default value: `20`
 * `--json`
 
 
@@ -426,7 +483,7 @@ List folders with message and unread counts
 
 ## `postvak list`
 
-List recent messages, newest first
+List recent messages, newest first, every account in one order
 
 **Usage:** `postvak list [OPTIONS]`
 
@@ -444,6 +501,9 @@ List recent messages, newest first
 * `--unread` — Only unread messages; with --threads, threads with an unread message
 * `--flagged` — Only flagged messages; with --threads, threads with a flagged message
 * `--attachments` — Only messages with attachments, guessed from the headers; with --threads, threads with one
+* `--cursor <CURSOR>` — Continue after the page that ended with this `next`, with the same other arguments; the rows of every account come newest first in one order, and the limit counts them together
+* `--fields <FIELDS>` — Only these keys in each JSON row, such as uid, from_addr, subject, date; compact stands for account, folder, uid, date, from_addr, subject and flags, plus depth in a thread view and match in a search; account always stays
+* `--count-only` — Return only how many match in all, messages or in a thread view threads, as {"count": N}, without rows
 
 
 
@@ -460,7 +520,7 @@ Operators:
   has:attachment                                  with an attachment, as guessed from the headers
   is:unread, is:read, is:flagged                  by flag
   before:2026-01-15, after:2026-01-01             by date, in local time; before: is exclusive, after: inclusive
-  after:7d, before:3w, after:6m, after:1y         days, weeks, months or years back from now
+  after:7d, before:3w, after:6mo, after:1y        days, weeks, months or years back from now
   account:work                                    one account, where several are searched
 Anything else, such as an unknown key or a date that does not parse, searches as a word.
 
@@ -472,11 +532,45 @@ Anything else, such as an unknown key or a date that does not parse, searches as
 
 * `--account <ACCOUNT>` — Only this account; the same as account: in the query
 * `--folder <FOLDER>` — Only this folder; the same as in: in the query
-* `--server` — Ask the server too, which searches bodies not downloaded yet; each folder costs a round trip
+* `--server` — Ask the server too, which searches bodies not downloaded yet; each folder costs a round trip. One page: no --cursor or --count-only
 * `--exact` — Only what matches as typed: no close matches such as corrected typos
 * `--limit <LIMIT>`
 
   Default value: `50`
+* `--json`
+* `--cursor <CURSOR>` — Continue after the page that ended with this `next`, with the same other arguments; the rows of every account come newest first in one order, and the limit counts them together
+* `--fields <FIELDS>` — Only these keys in each JSON row, such as uid, from_addr, subject, date; compact stands for account, folder, uid, date, from_addr, subject and flags, plus depth in a thread view and match in a search; account always stays
+* `--count-only` — Return only how many match in all, messages or in a thread view threads, as {"count": N}, without rows
+
+
+
+## `postvak senders`
+
+Group one folder's stored mail by sender address or registrable domain, the largest group first: message and unread counts, first and last date, a few subjects and the enabled rules that already match some of it
+
+**Usage:** `postvak senders [OPTIONS]`
+
+###### **Options:**
+
+* `--account <ACCOUNT>`
+* `--folder <FOLDER>`
+
+  Default value: `INBOX`
+* `--group-by <GROUP_BY>`
+
+  Default value: `address`
+
+  Possible values:
+  - `address`:
+    The sender's address
+  - `domain`:
+    The registrable domain of the sender's address
+
+* `--limit <LIMIT>` — At most this many groups per account
+
+  Default value: `50`
+* `--after <AFTER>` — Only mail that arrived on or after this date: 2026-01-15, or 30d, 3w, 6mo, 1y back from now
+* `--before <BEFORE>` — Only mail that arrived before this date: 2026-01-15, or 30d, 3w, 6mo, 1y back from now
 * `--json`
 
 
@@ -553,7 +647,7 @@ Mark messages read or unread, flagged or unflagged
 
 * `<HOW>`
 
-  Possible values: `flag`, `read`, `unflag`, `unread`
+  Possible values: `flagged`, `read`, `unflagged`, `unread`
 
 * `<UIDS>` — Message uids in --folder, as `list` prints them
 
@@ -778,9 +872,24 @@ Print one crash report, by the id `postvak crashes` lists
 
 ## `postvak guide`
 
-Print the agent guide: how an LLM should drive Postvak
+Print the agent guide, how an LLM should drive Postvak, or another page of the documentation
 
-**Usage:** `postvak guide`
+**Usage:** `postvak guide [PAGE]`
+
+###### **Arguments:**
+
+* `<PAGE>` — The page; without one, the agent guide
+
+  Possible values:
+  - `agent-guide`:
+    How an agent should read mail, write and propose rules, and act on mail
+  - `rules`:
+    Every key of a rule: its conditions and actions, with examples
+  - `search`:
+    The search syntax: words, phrases, operators and close matches
+  - `cli`:
+    Every command and flag of the postvak command line
+
 
 
 

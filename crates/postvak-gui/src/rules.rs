@@ -6,7 +6,7 @@ use postvak_core::help;
 use postvak_core::message::clean;
 use postvak_core::paths::Paths;
 use postvak_core::rules::{self, Rule};
-use postvak_core::store::LogEntry;
+use postvak_core::store::{LogEntry, Store};
 use postvak_core::trash::{Trash, TrashEntry};
 
 use postvak_core::time::date_time;
@@ -32,11 +32,7 @@ pub(crate) struct RulesState {
 impl RulesState {
     /// The file's rules, or the previous ones when it does not parse. A rule that does not compile is reported but
     /// still listed, so it can be switched off.
-    pub fn load(
-        path: &Path,
-        previous: Vec<Rule>,
-        accounts: &[rules::AccountFolders],
-    ) -> RulesState {
+    pub fn load(path: &Path, previous: Vec<Rule>, accounts: &[Account]) -> RulesState {
         let (error, rules) = match rules::load(path) {
             Ok(file) => (
                 rules::compile(&file).err().map(|e| e.to_string()),
@@ -46,13 +42,36 @@ impl RulesState {
         };
         RulesState {
             error,
-            warnings: rules::warnings(path, &rules, accounts),
+            warnings: warnings(path, &rules, accounts),
             previews: BTreeMap::new(),
             proposals: proposals(&rules),
             lines: rule_lines(&rules),
             rules,
         }
     }
+}
+
+/// What leaves the rules valid but not doing what was meant: `rules::warnings`, then what the accounts' folders show,
+/// read through the stores the window holds open rather than opening each again.
+pub(crate) fn warnings(path: &Path, rules: &[Rule], accounts: &[Account]) -> Vec<String> {
+    let names: Vec<&str> = accounts.iter().map(|a| a.name.as_str()).collect();
+    // The accounts that trust no authserv-id, for the warning about `authenticated`.
+    let untrusting: Vec<&str> = accounts
+        .iter()
+        .filter(|a| a.identity.as_ref().is_some_and(|id| !id.can_authenticate()))
+        .map(|a| a.name.as_str())
+        .collect();
+    let stores: Vec<(&str, &Store)> = accounts
+        .iter()
+        .filter_map(|a| Some((a.name.as_str(), a.store.as_ref().ok()?)))
+        .collect();
+    let synced: Vec<rules::AccountFolders> = accounts
+        .iter()
+        .map(|a| rules::AccountFolders::read(&a.name, a.store.as_ref().ok()))
+        .collect();
+    let file = rules::warnings(path, rules, &names, &untrusting);
+    let watched = rules::watched_folder_warnings(rules, &synced);
+    [file, watched, rules::open_folder_warnings(rules, &stores)].concat()
 }
 
 /// A rule waiting for approval, as the Rules view shows it.
@@ -322,7 +341,7 @@ mod tests {
     use slint::language::StandardListViewItem;
     use slint::{Model, ModelRc};
 
-    const RULES: &str = "# keep me\n[[rules]]\nname = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions = [\"archive\"]\n\n[[rules]]\nname = \"codes\"\nenabled = false\nproposed_by = \"agent\"\nmatch.subject = { contains = \"code\" }\nactions = [\"delete\"]\n";
+    const RULES: &str = "# keep me\n[[rules]]\nname = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions = { archive = true }\n\n[[rules]]\nname = \"codes\"\nenabled = false\nproposed_by = \"agent\"\nmatch.subject = { contains = \"code\" }\nactions = { delete = true }\n";
 
     fn touch(path: &Path) {
         let file = if path.is_dir() {
@@ -360,7 +379,7 @@ mod tests {
         );
         std::fs::write(
             fx.paths.rules_file(),
-            "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = [\"delete\"]\n",
+            "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = { delete = true }\n",
         )
         .unwrap();
         let (open, wires) = view(&fx, View::Rules);
@@ -392,7 +411,7 @@ mod tests {
     #[test]
     fn apply_runs_an_enabled_rule_on_its_accounts_and_shows_the_outcome() {
         let fx = Fixture::new(&["home", "work"]);
-        let only_work = "\n[[rules]]\nname = \"only-work\"\naccount = \"work\"\nmatch.subject = { contains = \"x\" }\nactions = [\"flag\"]\n";
+        let only_work = "\n[[rules]]\nname = \"only-work\"\naccount = \"work\"\nmatch.subject = { contains = \"x\" }\nactions = { flagged = true }\n";
         std::fs::write(fx.paths.rules_file(), format!("{RULES}{only_work}")).unwrap();
         let (open, wires) = view(&fx, View::Rules);
         let apply = |nth: usize| {
@@ -424,8 +443,7 @@ mod tests {
             actions: 3,
             errors,
         };
-        wires.events.send(applied(Vec::new())).unwrap();
-        open.tick();
+        open.receive(&wires, [applied(Vec::new())]);
         assert_eq!(open.find("work: 3 actions on 12 messages").len(), 1);
         wires
             .events
@@ -442,7 +460,7 @@ mod tests {
     #[test]
     fn a_rule_for_an_account_the_window_does_not_list_says_so() {
         let fx = Fixture::new(&["work"]);
-        let gone = "[[rules]]\nname = \"old\"\naccount = \"gone\"\nmatch.subject = { contains = \"x\" }\nactions = [\"flag\"]\n";
+        let gone = "[[rules]]\nname = \"old\"\naccount = \"gone\"\nmatch.subject = { contains = \"x\" }\nactions = { flagged = true }\n";
         std::fs::write(fx.paths.rules_file(), gone).unwrap();
         let (open, wires) = view(&fx, View::Rules);
         open.click("Apply to existing mail");
@@ -465,8 +483,7 @@ mod tests {
             actions: 1,
             errors: vec![],
         };
-        wires.events.send(applied).unwrap();
-        open.tick();
+        open.receive(&wires, [applied]);
         assert_eq!(open.find("work: 1 action on 1 message").len(), 1);
     }
 
@@ -576,7 +593,7 @@ mod tests {
 
     #[test]
     fn agent_text_is_drawn_without_control_characters() {
-        let sneaky = "[[rules]]\nname = \"codes\"\nenabled = false\nproposed_by = \"age\\u001bnt\"\nmatch.subject = { contains = \"\\u001b[2Jcode\" }\nactions = [\"delete\"]\n";
+        let sneaky = "[[rules]]\nname = \"codes\"\nenabled = false\nproposed_by = \"age\\u001bnt\"\nmatch.subject = { contains = \"\\u001b[2Jcode\" }\nactions = { delete = true }\n";
         let fx = Fixture::new(&["work"]);
         std::fs::write(fx.paths.rules_file(), sneaky).unwrap();
         let (open, _wires) = view(&fx, View::Rules);
@@ -624,7 +641,7 @@ mod tests {
         let fx = Fixture::new(&["work"]);
         let (open, wires) = rules_view(&fx);
         let more = format!(
-            "{RULES}\n[[rules]]\nname = \"receipts\"\nmatch.subject = {{ contains = \"receipt\" }}\nactions = [{{ move = \"Receipts\" }}]\n"
+            "{RULES}\n[[rules]]\nname = \"receipts\"\nmatch.subject = {{ contains = \"receipt\" }}\nactions = {{ move = \"Receipts\" }}\n"
         );
         std::fs::write(fx.paths.rules_file(), more).unwrap();
         touch(&fx.paths.rules_file());
@@ -651,7 +668,7 @@ mod tests {
     #[test]
     fn a_conflicting_copy_and_a_rule_for_a_missing_account_show_in_the_banner() {
         let fx = Fixture::new(&["work"]);
-        let gone = "[[rules]]\nname = \"old\"\naccount = \"gone\"\nmatch.seen = true\nactions = [\"flag\"]\n";
+        let gone = "[[rules]]\nname = \"old\"\naccount = \"gone\"\nmatch.read = true\nactions = { flagged = true }\n";
         std::fs::write(fx.paths.rules_file(), format!("{RULES}{gone}")).unwrap();
         let (open, _wires) = view(&fx, View::Rules);
         assert_eq!(open.labels_containing("account 'gone'").len(), 1);
@@ -668,6 +685,38 @@ mod tests {
         assert_eq!(banner.len(), 1);
         assert!(banner[0].contains("account 'gone'"), "{banner:?}");
         assert_eq!(open.find("newsletters").len(), 1);
+    }
+
+    /// The folder warnings read the store, which holds the account's folders only once it synced.
+    #[test]
+    fn a_folder_warning_shows_once_a_sync_brought_the_folders() {
+        let fx = Fixture::new(&["work"]);
+        let rule = "[[rules]]\nname = \"gh\"\nmatch.read = true\nactions.move = \"Lists/GitHub\"\n";
+        std::fs::write(fx.paths.rules_file(), rule).unwrap();
+        let (open, wires) = view(&fx, View::Rules);
+        assert!(open.labels_containing("'Lists/GitHub'").is_empty());
+        let store = postvak_core::store::Store::open_account(&fx.paths, "work").unwrap();
+        store
+            .upsert_folder(&postvak_core::store::Folder {
+                name: "INBOX".into(),
+                uidvalidity: 1,
+                last_uid: 0,
+                special_use: None,
+                delimiter: Some(".".into()),
+            })
+            .unwrap();
+        let synced = Event::Synced {
+            account: "work".into(),
+            new_messages: 0,
+            actions: 0,
+            requests: vec![],
+            errors: vec![],
+        };
+        wires.events.send(synced).unwrap();
+        open.tick();
+        let banner = open.labels_containing("'Lists/GitHub'");
+        assert_eq!(banner.len(), 1, "{banner:?}");
+        assert!(banner[0].contains("write 'Lists.GitHub'"), "{banner:?}");
     }
 
     #[test]
@@ -842,8 +891,7 @@ mod tests {
             requests: vec![],
             errors: vec![],
         };
-        wires.events.send(synced).unwrap();
-        open.tick();
+        open.receive(&wires, [synced]);
         assert_eq!(open.find("your receipt").len(), 1);
         assert!(open.find("read again").is_empty());
         assert_eq!(open.find("new backup").len(), 1);
@@ -875,8 +923,7 @@ mod tests {
             folder: "INBOX".into(),
             request: 0,
         };
-        wires.events.send(restored).unwrap();
-        open.tick();
+        open.receive(&wires, [restored]);
         assert!(open.find("your receipt").is_empty());
         let history = open.with(|live| {
             live.app
@@ -897,11 +944,11 @@ mod editor_tests {
     use crate::ui::RuleEditor;
     use postvak_core::rules::Action;
 
-    const RULES: &str = "# keep me\n[[rules]]\nname = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions = [\"archive\"]\n";
+    const RULES: &str = "# keep me\n[[rules]]\nname = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions = { archive = true }\n";
 
     fn two_rules() -> String {
         format!(
-            "{RULES}\n[[rules]]\nname = \"receipts\"\nmatch.subject = {{ contains = \"receipt\" }}\nactions = [\"flag\"]\n"
+            "{RULES}\n[[rules]]\nname = \"receipts\"\nmatch.subject = {{ contains = \"receipt\" }}\nactions = {{ flagged = true }}\n"
         )
     }
 
@@ -960,7 +1007,7 @@ mod editor_tests {
         assert_eq!(
             file(&fx),
             format!(
-                "{RULES}\n[[rules]]\nname = \"receipts\"\nmatch.subject = {{ contains = \"receipt\" }}\nactions = [{{ move = \"Receipts\" }}]\n"
+                "{RULES}\n[[rules]]\nname = \"receipts\"\nmatch.subject = {{ contains = \"receipt\" }}\nactions.move = \"Receipts\"\n"
             )
         );
         let original = open.with(|live| live.app.rule_draft.clone().unwrap().original);
@@ -997,8 +1044,8 @@ mod editor_tests {
     #[test]
     fn conditions_the_form_cannot_edit_are_shown_and_saved_unchanged() {
         let grouped = RULES.replace(
-            "actions = [\"archive\"]",
-            "match.subject = { contains = [\"weekly\", \"digest\"] }\nactions = [\"archive\"]",
+            "actions = { archive = true }",
+            "match.subject = { contains = [\"weekly\", \"digest\"] }\nactions = { archive = true }",
         );
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = rules_view(&fx, &grouped);
@@ -1076,8 +1123,8 @@ mod editor_tests {
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = open_newsletters(&fx);
         let off = RULES.replace(
-            "actions = [\"archive\"]",
-            "enabled = false\nactions = [\"archive\"]",
+            "actions = { archive = true }",
+            "enabled = false\nactions = { archive = true }",
         );
         std::fs::write(fx.paths.rules_file(), &off).unwrap();
         let file = std::fs::File::options()
@@ -1124,7 +1171,7 @@ mod editor_tests {
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = open_newsletters(&fx);
         editor(&open, |e| e.invoke_value_edited(0, "letters@".into()));
-        let changed = RULES.replace("[\"archive\"]", "[\"flag\"]");
+        let changed = RULES.replace("archive = true", "flagged = true");
         write_elsewhere(&open, &fx, &changed);
         open.click("Save");
         assert_eq!(file(&fx), changed, "the first Save writes nothing");

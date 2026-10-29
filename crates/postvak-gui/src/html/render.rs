@@ -1,10 +1,10 @@
 //! The render thread: owns the Blitz document of the shown message, lays it out, paints strips and answers hit tests.
 //! Blitz documents are not `Send`, so every one is made, used and dropped here.
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, LazyLock, PoisonError};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 use anyrender::ImageRenderer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
@@ -15,7 +15,7 @@ use blitz_traits::shell::{ColorScheme, Viewport};
 use fontique::{Blob, Collection, CollectionOptions, FallbackKey, Script, SourceCache};
 
 use super::{Load, Pixels, Reply, Request, STRIP, Wake};
-use super::{depth, net};
+use super::{dark, depth, net};
 
 /// Layout, style and paint recurse once per element level, and a stack overflow aborts the app: deeper markup shows as
 /// text, and the thread gets a stack that holds this depth.
@@ -108,12 +108,21 @@ impl Renderer {
 
 /// The document being shown, laid out at one width and scale.
 struct Current {
+    /// Styled with the dark scheme (and adapted, when `originals` holds the styles that replaced).
+    dark: bool,
     doc: BaseDocument,
     generation: u64,
     height: u32,
+    /// The styles dark adaptation replaced, to put back before the page is styled again.
+    originals: dark::Originals,
     raster: VelloCpuImageRenderer,
+    /// Every remote URL the page asked for, as the net provider noted them.
+    remote: BTreeSet<String>,
+    remote_noted: Arc<Mutex<BTreeSet<String>>>,
     scale: f32,
     width: u32,
+    /// The narrowest the page is laid out, in points.
+    wide: f32,
 }
 
 /// Runs jobs until the app hangs up. A panic in `handle` drops the document and replies `Failed`.
@@ -163,6 +172,7 @@ fn kind(request: &Request) -> (u8, u32) {
         Request::Paint { strip, .. } => (1, *strip),
         Request::Hit { .. } => (2, 0),
         Request::Select { .. } => (3, 0),
+        Request::Restyle { .. } => (4, 0),
     }
 }
 
@@ -175,6 +185,10 @@ fn handle(current: &mut Option<Current>, request: Request) -> Option<Reply> {
             *current = laid;
             Some(reply.unwrap_or(Reply::Failed { generation }))
         }
+        Request::Restyle { generation, dark } => Some(match current.as_mut() {
+            Some(current) => restyle(current, generation, dark),
+            None => Reply::Failed { generation },
+        }),
         Request::Paint { generation, strip } => {
             let current = current.as_mut().filter(|c| c.generation == generation)?;
             Some(Reply::Strip {
@@ -216,7 +230,7 @@ fn layout(load: Load) -> Option<(Current, Reply)> {
             width,
             physical(800.0, scale),
             scale,
-            ColorScheme::Light,
+            scheme(load.dark),
         )),
         base_url: Some(BASE.into()),
         ua_stylesheets: vec![UserAgentStylesheet::default_sheet(), MAIL_SHEET.clone()],
@@ -230,28 +244,82 @@ fn layout(load: Load) -> Option<(Current, Reply)> {
         return None;
     }
     font_colours(&mut doc);
-    // The provider answered every request synchronously; take its answers before the layout.
+    // The provider answered every request synchronously; take its answers before the layout, and the background
+    // images the styles asked for after it, so they paint and `dark::adapt` sees which of them loaded.
     doc.handle_messages();
     doc.resolve(0.0);
-    let layout = doc.root_element().final_layout();
-    let overflow = layout.scrollable_overflow_rect;
-    let laid_width = overflow.right.max(wide);
-    let height = layout.size.height.max(overflow.bottom);
-    let current = Current {
+    doc.handle_messages();
+    let originals = if load.dark {
+        dark::adapt(&mut doc)
+    } else {
+        Vec::new()
+    };
+    let mut current = Current {
+        dark: load.dark,
         doc,
         generation: load.generation,
-        height: physical(height, scale),
+        height: 0,
+        originals,
         raster: VelloCpuImageRenderer::new(1, 1),
+        remote: BTreeSet::new(),
+        remote_noted: remote,
         scale,
-        width: physical(laid_width, scale).max(width),
+        width: 0,
+        wide,
     };
-    let reply = Reply::Laid {
-        generation: load.generation,
-        height,
-        remote: std::mem::take(&mut *remote.lock().unwrap_or_else(PoisonError::into_inner)),
-        width: laid_width,
-    };
+    let reply = laid(&mut current);
     Some((current, reply))
+}
+
+fn scheme(dark: bool) -> ColorScheme {
+    if dark {
+        ColorScheme::Dark
+    } else {
+        ColorScheme::Light
+    }
+}
+
+/// Measures the styled page and answers its layout.
+fn laid(current: &mut Current) -> Reply {
+    let layout = current.doc.root_element().final_layout();
+    let overflow = layout.scrollable_overflow_rect;
+    let laid_width = overflow.right.max(current.wide);
+    let height = layout.size.height.max(overflow.bottom);
+    current.height = physical(height, current.scale);
+    current.width =
+        physical(laid_width, current.scale).max(physical(current.wide, current.scale).max(1));
+    let noted = std::mem::take(
+        &mut *current
+            .remote_noted
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner),
+    );
+    current.remote.extend(noted);
+    Reply::Laid {
+        generation: current.generation,
+        height,
+        remote: current.remote.clone(),
+        width: laid_width,
+    }
+}
+
+/// Styles the page again with or without the dark scheme. Blitz recascades every element on a colour-scheme change,
+/// so the sender's `prefers-color-scheme` rules follow; the HTML is not parsed again.
+fn restyle(current: &mut Current, generation: u64, dark: bool) -> Reply {
+    if current.dark != dark {
+        let originals = std::mem::take(&mut current.originals);
+        dark::restore(&mut current.doc, originals);
+        let mut viewport = current.doc.get_viewport();
+        viewport.color_scheme = scheme(dark);
+        current.doc.set_viewport(viewport);
+        current.doc.resolve(0.0);
+        if dark {
+            current.originals = dark::adapt(&mut current.doc);
+        }
+        current.dark = dark;
+    }
+    current.generation = generation;
+    laid(current)
 }
 
 /// Whether any node sits more than `limit` levels below the root; iterative, as recursion is what it guards against.
@@ -483,6 +551,7 @@ mod tests {
 
     fn load(generation: u64, html: &str, width: f32) -> Request {
         Request::Load(Load {
+            dark: false,
             fetched: Fetched::default(),
             generation,
             html: html.into(),
@@ -704,6 +773,7 @@ mod tests {
                 Request::Select { to, .. } => format!("select {}", to[0]),
                 Request::Paint { strip, .. } => format!("paint {strip}"),
                 Request::Hit { .. } => "hit".to_string(),
+                Request::Restyle { .. } => "restyle".to_string(),
             });
             None
         });
@@ -1011,6 +1081,224 @@ mod tests {
         assert!((900.0..901.0).contains(&width), "laid out {width} wide");
     }
 
+    /// `html` laid out at 400 points, light or styled for the dark theme, with `inline` as its `cid:` parts.
+    fn laid_out(html: &str, dark: bool, inline: Vec<postvak_core::message::InlinePart>) -> Current {
+        let load = Load {
+            dark,
+            fetched: Fetched::default(),
+            generation: 1,
+            html: html.into(),
+            inline,
+            scale: 1.0,
+            width: 400.0,
+        };
+        let Some((current, _)) = layout(load) else {
+            panic!("not laid out");
+        };
+        current
+    }
+
+    fn first_strip(current: &mut Current) -> Strip {
+        let Some(pixels) = paint(current, 0) else {
+            panic!("no strip");
+        };
+        colours(&pixels)
+    }
+
+    /// The computed colour of the first element `selector` matches.
+    fn colour_of(current: &Current, selector: &str) -> [f32; 3] {
+        let doc = &current.doc;
+        let Some(node) = doc
+            .query_selector(selector)
+            .ok()
+            .flatten()
+            .and_then(|id| doc.get_node(id))
+        else {
+            panic!("no {selector}");
+        };
+        let Some(style) = node.primary_styles() else {
+            panic!("{selector} has no style");
+        };
+        let [r, g, b, _] = style
+            .clone_color()
+            .to_color_space(style::color::ColorSpace::Srgb)
+            .raw_components()
+            .to_owned();
+        [r, g, b]
+    }
+
+    fn pixel(strip: &Strip, x: usize, y: usize) -> [u8; 3] {
+        let p = strip.pixels[y * strip.size[0] + x];
+        [p.r(), p.g(), p.b()]
+    }
+
+    fn rgb(p: [u8; 3]) -> [f32; 3] {
+        p.map(|v| f32::from(v) / 255.0)
+    }
+
+    const CARD: &str = "<body bgcolor=\"#ffffff\"><table cellpadding=0 cellspacing=0><tr><td width=100 height=100 bgcolor=\"#fde8e8\"></td></tr></table><p style=\"color: #333333 !important\">Read me</p><p><font color=\"#1e3a8a\">Blue</font></p></body>";
+
+    #[test]
+    fn a_bgcolor_cell_and_important_text_are_adapted_in_the_dark_theme() {
+        let mut light = laid_out(CARD, false, Vec::new());
+        let mut dark = laid_out(CARD, true, Vec::new());
+        assert!(light.originals.is_empty());
+        assert!(!dark.originals.is_empty());
+        let (light_cell, dark_cell) = (
+            pixel(&first_strip(&mut light), 58, 58),
+            pixel(&first_strip(&mut dark), 58, 58),
+        );
+        assert_eq!(light_cell, [0xfd, 0xe8, 0xe8]);
+        // The pink cell turns dark and stays reddish.
+        assert!(
+            crate::theme::luminance(rgb(dark_cell)) < 0.05,
+            "{dark_cell:?}"
+        );
+        assert!(
+            dark_cell[0] > dark_cell[1] && dark_cell[0] > dark_cell[2],
+            "{dark_cell:?}"
+        );
+        let page = pixel(&first_strip(&mut dark), 300, 2);
+        for (ours, theirs) in rgb(page).iter().zip(dark::PAGE) {
+            assert!((ours - theirs).abs() < 0.01, "{page:?}");
+        }
+        for selector in ["p", "font"] {
+            let text = colour_of(&dark, selector);
+            assert!(
+                crate::theme::contrast(text, dark::PAGE) >= 4.5,
+                "{selector}: {text:?}"
+            );
+        }
+        assert_eq!(colour_of(&light, "p"), rgb([0x33; 3]));
+    }
+
+    /// A 20 × 20 PNG, white on the left half and blue on the right.
+    fn half_white() -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut encoder = png::Encoder::new(&mut out, 20, 20);
+        encoder.set_color(png::ColorType::Rgb);
+        let mut writer = encoder.write_header().unwrap();
+        let row: Vec<u8> = (0..20)
+            .flat_map(|x| {
+                if x < 10 {
+                    [255, 255, 255]
+                } else {
+                    [20, 60, 200]
+                }
+            })
+            .collect();
+        writer.write_image_data(&row.repeat(20)).unwrap();
+        writer.finish().unwrap();
+        out
+    }
+
+    #[test]
+    fn image_pixels_are_the_same_adapted_or_not() {
+        let html = "<body style=\"margin:0;background:#ffffff\"><img src=\"cid:logo\" width=20 height=20 style=\"display:block\"></body>";
+        let part = || {
+            vec![postvak_core::message::InlinePart {
+                cid: "logo".into(),
+                bytes: half_white(),
+            }]
+        };
+        let light = first_strip(&mut laid_out(html, false, part()));
+        let dark = first_strip(&mut laid_out(html, true, part()));
+        assert_eq!(pixel(&light, 300, 10), [255; 3]);
+        assert_ne!(pixel(&dark, 300, 10), [255; 3], "the page is adapted");
+        for y in 0..20 {
+            for x in 0..20 {
+                assert_eq!(pixel(&light, x, y), pixel(&dark, x, y), "({x}, {y})");
+            }
+        }
+        assert_eq!(pixel(&dark, 2, 2), [255; 3]);
+        assert_eq!(pixel(&dark, 15, 2), [20, 60, 200]);
+    }
+
+    #[test]
+    fn a_gradient_turns_dark_and_a_background_picture_keeps_its_colours() {
+        let html = "<body style=\"margin:0\"><div style=\"height:100px;background:linear-gradient(#e8f0fe,#e8f0fe)\"></div><div style=\"background:#ffffff url(cid:logo);color:#333333\">On a picture</div></body>";
+        let part = vec![postvak_core::message::InlinePart {
+            cid: "logo".into(),
+            bytes: half_white(),
+        }];
+        let mut dark = laid_out(html, true, part);
+        let band = pixel(&first_strip(&mut dark), 300, 50);
+        assert!(crate::theme::luminance(rgb(band)) < 0.05, "{band:?}");
+        assert!(band[2] > band[0], "the blue stays blue: {band:?}");
+        assert_eq!(colour_of(&dark, "div + div"), rgb([0x33; 3]));
+        // The picture itself is painted: white on the left, blue on the right.
+        let strip = first_strip(&mut dark);
+        assert_eq!(pixel(&strip, 2, 102), [255; 3]);
+        assert_eq!(pixel(&strip, 15, 102), [20, 60, 200]);
+    }
+
+    #[test]
+    fn light_text_from_the_senders_dark_css_on_no_background_stays_visible() {
+        // The sender relies on the reader's dark canvas and paints no background of their own.
+        let html = "<meta name=\"color-scheme\" content=\"light dark\"><style>@media (prefers-color-scheme: dark) { .text { color: #f1f1f1 !important } }</style><table><tr><td class=text>Hello</td></tr></table>";
+        let dark = laid_out(html, true, Vec::new());
+        assert_eq!(colour_of(&dark, "td"), rgb([0xf1; 3]));
+    }
+
+    #[test]
+    fn text_hidden_on_the_senders_own_background_stays_hidden() {
+        let html = "<body style=\"background:#ffffff\"><div style=\"color:#fefefe\">Preheader</div><p>Body</p></body>";
+        let dark = laid_out(html, true, Vec::new());
+        let hidden = colour_of(&dark, "div");
+        assert!(
+            crate::theme::contrast(hidden, dark::PAGE) < 1.2,
+            "{hidden:?}"
+        );
+        assert!(crate::theme::contrast(colour_of(&dark, "p"), dark::PAGE) >= 4.5);
+    }
+
+    #[test]
+    fn text_on_a_background_picture_that_did_not_load_is_adapted() {
+        // Remote content is not shown, so the hero photo the dark heading was written for never paints.
+        let html = "<table><tr><td style=\"background-image:url(https://cdn.example/hero.jpg)\"><h1 style=\"color:#222222\">Spring sale</h1></td></tr></table>";
+        let dark = laid_out(html, true, Vec::new());
+        let heading = colour_of(&dark, "h1");
+        assert!(
+            crate::theme::contrast(heading, dark::PAGE) >= 4.5,
+            "{heading:?}"
+        );
+    }
+
+    #[test]
+    fn a_page_with_its_own_dark_css_is_left_alone() {
+        let html = "<style>@media (prefers-color-scheme: dark) { body { background: #101820; color: #dddddd } }</style><p>Night</p>";
+        let mut dark = laid_out(html, true, Vec::new());
+        assert!(dark.originals.is_empty());
+        assert_eq!(pixel(&first_strip(&mut dark), 300, 2), [0x10, 0x18, 0x20]);
+        assert_eq!(colour_of(&dark, "p"), rgb([0xdd; 3]));
+        // In the light theme the same mail is in its light colours.
+        let light = laid_out(html, false, Vec::new());
+        assert_eq!(colour_of(&light, "p"), [0.0; 3]);
+    }
+
+    #[test]
+    fn a_dark_outer_table_counts_as_a_dark_page() {
+        let html = "<table width=\"100%\" bgcolor=\"#1b1b1b\"><tr><td style=\"color:#eeeeee\">Dark design</td></tr></table>";
+        let dark = laid_out(html, true, Vec::new());
+        assert!(dark.originals.is_empty());
+        assert_eq!(colour_of(&dark, "td"), rgb([0xee; 3]));
+    }
+
+    #[test]
+    fn a_restyle_paints_as_a_fresh_layout_would() {
+        let fresh = |dark| first_strip(&mut laid_out(NEWSLETTER, dark, Vec::new())).pixels;
+        let mut current = laid_out(NEWSLETTER, true, Vec::new());
+        let Reply::Laid { generation, .. } = restyle(&mut current, 2, false) else {
+            panic!("not laid out");
+        };
+        assert_eq!(generation, 2);
+        assert!(current.originals.is_empty());
+        assert!(first_strip(&mut current).pixels == fresh(false), "light");
+        restyle(&mut current, 3, true);
+        assert!(!current.originals.is_empty());
+        assert!(first_strip(&mut current).pixels == fresh(true), "dark");
+    }
+
     /// Blitz lays a `<td>` with `display: block` out but paints nothing of it. `MIN_WIDTH` keeps responsive mail's
     /// media queries from making one; an inline `display: block` still does, hence this stays ignored until a
     /// pinned Blitz fixes it (#313, upstream report still to be filed).
@@ -1039,6 +1327,7 @@ mod tests {
         panic::catch_unwind(|| {
             let mut current = None;
             let load = Request::Load(Load {
+                dark: false,
                 fetched: Fetched::default(),
                 generation: 1,
                 html: html.into(),
@@ -1147,6 +1436,7 @@ mod tests {
         #[test]
         fn hostile_html_never_panics(html in hostile_html(), width in 1.0f32..2000.0, scale in 0.5f32..3.0) {
             let mut requests = vec![Request::Load(Load {
+                dark: false,
                 fetched: Fetched::default(),
                 generation: 1,
                 html,

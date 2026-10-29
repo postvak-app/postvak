@@ -1,15 +1,19 @@
 pub mod apply;
+pub mod coverage;
 pub mod edit;
 
 pub use edit::rule_toml;
 pub mod engine;
 mod warnings;
 
-pub use warnings::{AccountFolders, account_folders, warnings};
+pub use warnings::{
+    AccountFolders, account_folders, folder_warnings, open_folder_warnings, warnings,
+    watched_folder_warnings,
+};
 
+use std::collections::BTreeMap;
 use std::io;
 use std::path::Path;
-use std::time::Duration;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -22,6 +26,9 @@ pub enum RulesError {
     Invalid { rule: String, reason: String },
     #[error("no rule named '{0}'")]
     NotFound(String),
+    /// A batch of proposals refused as a whole; each failing rule is named by its index.
+    #[error("nothing proposed: {0}")]
+    Batch(String),
     #[error("rule '{0}' is disabled; approve or enable it first")]
     Disabled(String),
     #[error(transparent)]
@@ -66,25 +73,25 @@ pub struct Rule {
     /// Disabled rules are skipped; proposals start disabled
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Who proposed the rule; set by `rules propose`
+    /// Who proposed the rule; set by `rules propose` and removed when a human approves it
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposed_by: Option<String>,
     /// Conditions that must all hold; at least one
     #[serde(rename = "match")]
     pub matches: Match,
     /// What to do; at least one
+    #[serde(with = "action_table")]
+    #[schemars(with = "Actions")]
     pub actions: Vec<Action>,
 }
 
 impl Rule {
     /// What the rule does, as JSON: editing any of it restarts the rule's clock, so a widened rule never acts on older mail.
     pub fn definition(&self) -> Result<String, RulesError> {
-        serde_json::to_string(&(&self.account, &self.folder, &self.matches, &self.actions)).map_err(
-            |e| RulesError::Invalid {
-                rule: self.name.clone(),
-                reason: e.to_string(),
-            },
-        )
+        let actions =
+            Actions::from_list(&self.actions).map_err(|reason| invalid(&self.name, reason))?;
+        serde_json::to_string(&(&self.account, &self.folder, &self.matches, actions))
+            .map_err(|e| invalid(&self.name, e.to_string()))
     }
 }
 
@@ -106,10 +113,20 @@ pub struct Match {
     /// The plain-text body; HTML mail is converted
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<TextMatch>,
-    /// Any header, by name; a list must all match
+    /// Headers by name, such as List-Id, each with its own text condition; every header named must match. Of a repeated
+    /// header only the last copy counts, the one nearest the body
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub header: Option<OneOrMany<HeaderMatch>>,
-    /// Arrived at least this long ago, e.g. 30m, 1h, 2days
+    pub header: Option<BTreeMap<String, TextMatch>>,
+    /// The From address's domain or any subdomain of it, never the display name; a list matches any of them
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_domain: Option<OneOrMany<String>>,
+    /// The domain, or any subdomain, of an address in the To header, not Cc; a list matches any of them
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_domain: Option<OneOrMany<String>>,
+    /// An Authentication-Results header from a server in the account's trusted_authserv_ids says DMARC passed for the From domain, or without a DMARC verdict, DKIM passed for a domain aligned with it; never true without that list
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authenticated: Option<bool>,
+    /// Arrived at least this long ago: 30min, 1h, 2d, 3w, 6mo or 1y; a bare m is refused as ambiguous
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub older_than: Option<String>,
     /// Larger than this size, e.g. 500KB, 5MB; a bare number is bytes and 1KB is 1024 bytes
@@ -117,14 +134,15 @@ pub struct Match {
     pub larger_than: Option<String>,
     /// Read (true) or unread (false)
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub seen: Option<bool>,
+    pub read: Option<bool>,
     /// Flagged (true) or not (false)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flagged: Option<bool>,
-    /// To, Cc or Delivered-To holds your address or an alias
+    /// Your address or an alias is among the recipients: To, Cc or Delivered-To
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to_me: Option<bool>,
-    /// Sent to this alias; * is a wildcard
+    /// An address among the recipients (To, Cc or Delivered-To) is this alias; * matches any run of characters, and
+    /// nothing else is special: it is no regex
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
     /// Carries this IMAP keyword, which Thunderbird shows as a tag (e.g. $label1); case-insensitive
@@ -133,7 +151,7 @@ pub struct Match {
     /// Holds when no entry holds; an entry holds when all its conditions do
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub none: Option<Vec<Match>>,
-    /// Holds when at least one of these holds
+    /// Holds when at least one entry holds; an entry holds when all its conditions do
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub any: Option<Vec<Match>>,
 }
@@ -165,29 +183,132 @@ pub struct TextMatch {
     /// The whole value, case-insensitive; on from, to and cc also any single address; a list matches any of them
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub equals: Option<OneOrMany<String>>,
-    /// Rust regex syntax; (?i) makes it case-insensitive
+    /// Rust regex syntax, case-insensitive like the others; (?-i) makes it case-sensitive
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub regex: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+/// What a rule does, each at most once and in any order: flags and tags are set before a move, and a delete wins over
+/// the rest
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct HeaderMatch {
-    /// Header name, e.g. List-Id
-    pub name: String,
-    /// Case-insensitive substring; a list matches any of them
+pub struct Actions {
+    /// true moves the message to the server's Archive folder
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub contains: Option<OneOrMany<String>>,
-    /// The whole value, case-insensitive; on from, to and cc also any single address; a list matches any of them
+    archive: Option<bool>,
+    /// true backs the message up as .eml locally, then removes it from the server; later rules don't run
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub equals: Option<OneOrMany<String>>,
-    /// Rust regex syntax; (?i) makes it case-insensitive
+    delete: Option<bool>,
+    /// true flags the message, false unflags it
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub regex: Option<String>,
+    flagged: Option<bool>,
+    /// Moves the message to this folder, creating it if needed
+    #[serde(default, rename = "move", skip_serializing_if = "Option::is_none")]
+    move_to: Option<String>,
+    /// true notifies even when the message was moved, false never notifies; the first matching rule that says wins
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    notify: Option<bool>,
+    /// true marks the message read, false unread
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    read: Option<bool>,
+    /// true: later rules don't run for this message
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stop: Option<bool>,
+    /// Adds this IMAP keyword, or each of a list; Thunderbird shows them as tags (e.g. $label1)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tag: Option<OneOrMany<String>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+impl Actions {
+    fn into_list(self) -> Vec<Action> {
+        let when = |set: Option<bool>, action: Action| (set == Some(true)).then_some(action);
+        let either =
+            |set: Option<bool>, yes: Action, no: Action| set.map(|set| if set { yes } else { no });
+        [
+            when(self.delete, Action::Delete),
+            when(self.archive, Action::Archive),
+            self.move_to.map(Action::Move),
+            either(self.read, Action::MarkRead, Action::MarkUnread),
+            either(self.flagged, Action::Flag, Action::Unflag),
+        ]
+        .into_iter()
+        .flatten()
+        .chain(
+            self.tag
+                .iter()
+                .flat_map(OneOrMany::as_slice)
+                .map(|keyword| Action::Tag(keyword.clone())),
+        )
+        .chain(either(self.notify, Action::Notify, Action::Silent))
+        .chain(when(self.stop, Action::Stop))
+        .collect()
+    }
+
+    /// The table that holds `list`; refused when the list says one thing twice or holds an action rules cannot take.
+    pub fn from_list(list: &[Action]) -> Result<Actions, String> {
+        let mut table = Actions::default();
+        let mut tags = Vec::new();
+        for action in list {
+            let (key, slot, value) = match action {
+                Action::Archive => ("archive", &mut table.archive, true),
+                Action::Delete => ("delete", &mut table.delete, true),
+                Action::Flag => ("flagged", &mut table.flagged, true),
+                Action::Unflag => ("flagged", &mut table.flagged, false),
+                Action::MarkRead => ("read", &mut table.read, true),
+                Action::MarkUnread => ("read", &mut table.read, false),
+                Action::Notify => ("notify", &mut table.notify, true),
+                Action::Silent => ("notify", &mut table.notify, false),
+                Action::Stop => ("stop", &mut table.stop, true),
+                Action::Move(folder) => {
+                    if table.move_to.replace(folder.clone()).is_some() {
+                        return Err("actions.move is given twice".into());
+                    }
+                    continue;
+                }
+                Action::Tag(keyword) => {
+                    tags.push(keyword.clone());
+                    continue;
+                }
+                Action::Trash | Action::Junk | Action::NotJunk => {
+                    return Err(format!("{} is not a rule action", action.label()));
+                }
+            };
+            if slot.replace(value).is_some() {
+                return Err(format!("actions.{key} is given twice"));
+            }
+        }
+        if table.archive == Some(true) && table.move_to.is_some() {
+            return Err("actions cannot both move and archive".into());
+        }
+        table.tag = match tags.len() {
+            0 => None,
+            1 => tags.pop().map(OneOrMany::One),
+            _ => Some(OneOrMany::Many(tags)),
+        };
+        Ok(table)
+    }
+}
+
+/// `actions` is a table in rules.toml and a list in memory, the form the engine and the window's editor work with.
+mod action_table {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::{Action, Actions};
+
+    pub fn serialize<S: Serializer>(list: &[Action], serializer: S) -> Result<S::Ok, S::Error> {
+        Actions::from_list(list)
+            .map_err(serde::ser::Error::custom)?
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<Action>, D::Error> {
+        Actions::deserialize(deserializer).map(Actions::into_list)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     /// Back up as .eml locally, then remove from the server; stops later rules
     Delete,
@@ -203,24 +324,17 @@ pub enum Action {
     Silent,
     /// Later rules don't run for this message
     Stop,
-    #[serde(skip)]
     MarkUnread,
-    #[serde(skip)]
     Unflag,
     /// A user delete: to the Trash folder, or deleted with a backup when there is none or the message is already in it.
-    #[serde(skip)]
     Trash,
     /// A user report: tagged $Junk, which trains server spam filters, and moved to the Junk folder.
-    #[serde(skip)]
     Junk,
     /// Undoes a wrong `Junk`: tagged $NotJunk and moved to INBOX.
-    #[serde(skip)]
     NotJunk,
     /// Move to this folder, creating it if needed
-    #[serde(rename = "move")]
     Move(String),
     /// Add this IMAP keyword, which Thunderbird shows as a tag (e.g. $label1)
-    #[serde(rename = "tag")]
     Tag(String),
 }
 
@@ -233,17 +347,19 @@ impl Action {
         }
     }
 
+    /// The action in the words of a rule's `actions` table: a bare key is `key = true`, `key:value` any other value.
+    /// Actions that only users take, such as `trash`, have names of their own.
     pub fn label(&self) -> String {
         match self {
             Action::Delete => "delete".into(),
-            Action::MarkRead => "mark_read".into(),
-            Action::Flag => "flag".into(),
+            Action::MarkRead => "read".into(),
+            Action::Flag => "flagged".into(),
             Action::Archive => "archive".into(),
             Action::Notify => "notify".into(),
-            Action::Silent => "silent".into(),
+            Action::Silent => "notify:false".into(),
             Action::Stop => "stop".into(),
-            Action::MarkUnread => "mark_unread".into(),
-            Action::Unflag => "unflag".into(),
+            Action::MarkUnread => "read:false".into(),
+            Action::Unflag => "flagged:false".into(),
             Action::Trash => "trash".into(),
             Action::Junk => "junk".into(),
             Action::NotJunk => "not_junk".into(),
@@ -268,7 +384,32 @@ pub fn schema() -> String {
 }
 
 pub fn parse(text: &str) -> Result<RuleFile, RulesError> {
-    toml::from_str(text).map_err(|e| RulesError::Parse(e.to_string()))
+    toml::from_str(text).map_err(|e| RulesError::Parse(format!("{e}{}", old_syntax_hint(text))))
+}
+
+/// How to rewrite a file that still lists actions, says `seen` or names a header with `name`.
+fn old_syntax_hint(text: &str) -> &'static str {
+    let old = text.lines().any(|line| {
+        let line: String = line
+            .split('#')
+            .next()
+            .unwrap_or_default()
+            .split_whitespace()
+            .collect();
+        line.starts_with("actions=[")
+            || line.starts_with("seen=")
+            || line.starts_with("match.seen=")
+            || line.contains("{seen=")
+            || line.contains("header={name=")
+            || line.contains("header=[{name=")
+    });
+    if old {
+        "\nThis looks like the old rules syntax: `actions` is a table (`actions.move = \"Lists\"`, \
+         `actions.read = true`, `actions.notify = false`), `seen` is `read`, and a header is keyed by its name \
+         (`match.header.List-Id = { contains = \"x\" }`). `postvak guide rules` has the details."
+    } else {
+        ""
+    }
 }
 
 pub fn load(path: &Path) -> Result<RuleFile, RulesError> {
@@ -342,7 +483,9 @@ impl Matcher {
             (None, Some(e), None) => Ok(Matcher::Equals(
                 e.iter().map(|value| value.trim().to_lowercase()).collect(),
             )),
-            (None, None, Some(r)) => regex::Regex::new(r)
+            (None, None, Some(r)) => regex::RegexBuilder::new(r)
+                .case_insensitive(true)
+                .build()
                 .map(Matcher::Regex)
                 .map_err(|e| invalid(rule, format!("{path}: invalid regex: {e}"))),
             _ => Err(invalid(
@@ -369,9 +512,13 @@ pub(crate) struct Conditions {
     pub(crate) subject: Option<Matcher>,
     pub(crate) body: Option<Matcher>,
     pub(crate) headers: Vec<(String, Matcher)>,
-    pub(crate) older_than: Option<Duration>,
+    /// Lower-cased domains, without a leading `@` or a trailing dot.
+    pub(crate) from_domain: Option<Vec<String>>,
+    pub(crate) to_domain: Option<Vec<String>>,
+    pub(crate) authenticated: Option<bool>,
+    pub(crate) older_than: Option<crate::time::Span>,
     pub(crate) larger_than: Option<u64>,
-    pub(crate) seen: Option<bool>,
+    pub(crate) read: Option<bool>,
     pub(crate) flagged: Option<bool>,
     pub(crate) to_me: Option<bool>,
     pub(crate) alias: Option<regex::Regex>,
@@ -416,7 +563,7 @@ impl CompiledRule {
 /// Longest rule name, account or folder; agents propose rules, so no field may grow without bound.
 const MAX_NAME_CHARS: usize = 255;
 
-/// Deepest nesting of `not` and `any`; Thunderbird's filters need two levels at most.
+/// Deepest nesting of `none` and `any`; Thunderbird's filters need two levels at most.
 const MAX_DEPTH: usize = 8;
 
 /// The compiled rule called `name`, refused when absent or disabled. It keeps `first_seen_at` 0, so it also covers mail
@@ -453,6 +600,7 @@ fn compile_rule(
     if rule.actions.is_empty() {
         return Err(invalid(&rule.name, "actions must not be empty"));
     }
+    Actions::from_list(&rule.actions).map_err(|reason| invalid(&rule.name, reason))?;
     let strings = [
         ("name", Some(&rule.name)),
         ("account", rule.account.as_ref()),
@@ -481,6 +629,18 @@ fn compile_rule(
             ));
         }
     }
+    let folders = rule
+        .folder
+        .iter()
+        .map(|folder| ("folder", folder, false))
+        .chain(rule.actions.iter().filter_map(|action| match action {
+            Action::Move(folder) => Some(("move folder", folder, true)),
+            _ => None,
+        }));
+    for (field, folder, target) in folders {
+        check_folder_shape(folder, target)
+            .map_err(|reason| invalid(&rule.name, format!("{field} {reason}")))?;
+    }
     for action in &rule.actions {
         if let Action::Tag(keyword) = action {
             check_keyword(keyword)
@@ -492,6 +652,27 @@ fn compile_rule(
         first_seen_at: 0,
         conditions: compile_match(&rule.name, &rule.matches, "match", 0)?,
     })
+}
+
+/// Refuses a folder name servers refuse or misread, by its levels between `/`, the delimiter the docs teach: a level
+/// starting or ending in whitespace, which looks like a folder that is not there. A move target, which may be created,
+/// also may not have an empty level (`/Lists`, `Lists//GitHub`, or `Lists/`, which RFC 3501 §6.3.3 makes only a
+/// parent for later folders) or IMAP's `LIST` wildcards `*` and `%`.
+fn check_folder_shape(name: &str, target: bool) -> Result<(), String> {
+    if target && name.contains(['*', '%']) {
+        return Err("must not contain * or %, which IMAP reads as wildcards".into());
+    }
+    for level in name.split('/') {
+        if target && level.is_empty() {
+            return Err("must not have an empty level: a leading, trailing or doubled /".into());
+        }
+        if level.trim() != level {
+            return Err(format!(
+                "level '{level}' must not start or end with whitespace"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn compile_match(
@@ -506,20 +687,18 @@ fn compile_match(
             format!("{path} is nested deeper than {MAX_DEPTH}"),
         ));
     }
-    let headers = m
-        .header
-        .as_ref()
-        .map(OneOrMany::as_slice)
-        .unwrap_or_default();
     let has_condition = m.from.is_some()
         || m.to.is_some()
         || m.cc.is_some()
         || m.subject.is_some()
         || m.body.is_some()
-        || !headers.is_empty()
+        || m.header.as_ref().is_some_and(|headers| !headers.is_empty())
+        || m.from_domain.is_some()
+        || m.to_domain.is_some()
+        || m.authenticated.is_some()
         || m.older_than.is_some()
         || m.larger_than.is_some()
-        || m.seen.is_some()
+        || m.read.is_some()
         || m.flagged.is_some()
         || m.to_me.is_some()
         || m.alias.is_some()
@@ -555,30 +734,29 @@ fn compile_match(
             })
             .transpose()
     };
-    let headers = headers
+    let headers = m
+        .header
         .iter()
-        .map(|h| {
-            if h.name.trim().is_empty() {
-                return Err(invalid(
-                    rule,
-                    format!("{path}.header.name must not be empty"),
-                ));
+        .flatten()
+        .map(|(name, t)| {
+            if name.trim().is_empty() {
+                return Err(invalid(rule, format!("{path}.header needs a header name")));
             }
             Matcher::build(
                 rule,
-                &format!("{path}.header"),
-                &h.contains,
-                &h.equals,
-                &h.regex,
+                &format!("{path}.header.{name}"),
+                &t.contains,
+                &t.equals,
+                &t.regex,
             )
-            .map(|matcher| (h.name.clone(), matcher))
+            .map(|matcher| (name.clone(), matcher))
         })
         .collect::<Result<_, _>>()?;
     let older_than = m
         .older_than
-        .as_ref()
-        .map(|s| {
-            humantime::parse_duration(s)
+        .as_deref()
+        .map(|text| {
+            crate::time::Span::parse(text)
                 .map_err(|e| invalid(rule, format!("{path}.older_than: {e}")))
         })
         .transpose()?;
@@ -617,6 +795,11 @@ fn compile_match(
                 .collect(),
         }
     };
+    let domains = |key: &str, list: &Option<OneOrMany<String>>| {
+        list.as_ref()
+            .map(|list| domain_list(rule, &format!("{path}.{key}"), list.as_slice()))
+            .transpose()
+    };
     let any = branches("any", &m.any)?;
     let none = branches("none", &m.none)?;
     Ok(Conditions {
@@ -626,9 +809,12 @@ fn compile_match(
         subject: text("subject", &m.subject)?,
         body: text("body", &m.body)?,
         headers,
+        from_domain: domains("from_domain", &m.from_domain)?,
+        to_domain: domains("to_domain", &m.to_domain)?,
+        authenticated: m.authenticated,
         older_than,
         larger_than,
-        seen: m.seen,
+        read: m.read,
         flagged: m.flagged,
         to_me: m.to_me,
         alias,
@@ -636,6 +822,44 @@ fn compile_match(
         none,
         any,
     })
+}
+
+/// The domains of a `from_domain` or `to_domain`, lower-cased; a leading `@` and a trailing dot are dropped, so
+/// `@PayPal.com.` is `paypal.com`. Refused when empty or when a value is no domain.
+fn domain_list(rule: &str, path: &str, values: &[String]) -> Result<Vec<String>, RulesError> {
+    if values.is_empty() {
+        return Err(invalid(rule, format!("{path} must not be empty")));
+    }
+    values
+        .iter()
+        .map(|value| {
+            let domain = value
+                .trim()
+                .trim_start_matches('@')
+                .trim_end_matches('.')
+                .to_lowercase();
+            if domain.is_empty() {
+                return Err(invalid(rule, format!("{path} must not be empty")));
+            }
+            let bad = |c: char| c == '@' || c.is_whitespace() || c.is_control();
+            if domain.contains(bad) || domain.starts_with('.') || domain.contains("..") {
+                return Err(invalid(
+                    rule,
+                    format!(
+                        "{path}: '{}' is not a domain such as example.com",
+                        value.escape_default()
+                    ),
+                ));
+            }
+            if domain.chars().count() > MAX_NAME_CHARS {
+                return Err(invalid(
+                    rule,
+                    format!("{path} must be at most {MAX_NAME_CHARS} characters"),
+                ));
+            }
+            Ok(domain)
+        })
+        .collect()
 }
 
 /// Bytes in `500`, `500B`, `2KB`, `5 MB` or `1GB`, ignoring case; units are powers of 1024, as in Thunderbird.
@@ -704,9 +928,17 @@ mod tests {
         let rule = &schema["$defs"]["Rule"];
         assert_eq!(rule["additionalProperties"], false);
         assert!(rule["properties"]["match"].is_object());
-        assert!(
-            !text.contains("mark_unread"),
-            "CLI-only actions stay out of the schema"
+        let keys: Vec<&String> = schema["$defs"]["Actions"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "archive", "delete", "flagged", "move", "notify", "read", "stop", "tag"
+            ],
+            "actions only users take stay out of the schema"
         );
     }
 
@@ -715,22 +947,22 @@ mod tests {
 name = "purge sign-in codes"
 account = "work"
 match.from = { regex = "no-?reply@" }
-match.subject = { regex = "(?i)sign.?in|verification code|magic link" }
+match.subject = { regex = "sign.?in|verification code|magic link" }
 match.older_than = "1h"
-match.seen = true
-actions = ["delete"]
+match.read = true
+actions = { delete = true }
 
 [[rules]]
 name = "github to folder"
-match.header = { name = "List-Id", contains = "github.com" }
-actions = [{ move = "Lists/GitHub" }, "mark_read"]
+match.header.List-Id = { contains = "github.com" }
+actions = { move = "Lists/GitHub", read = true }
 
 [[rules]]
 name = "shop alias"
 enabled = false
 proposed_by = "cli:test"
 match.alias = "*@shop.example.com"
-actions = [{ move = "Shopping" }, "notify"]
+actions = { move = "Shopping", notify = true }
 "#;
 
     #[test]
@@ -743,8 +975,14 @@ actions = [{ move = "Shopping" }, "notify"]
             vec![Action::Move("Lists/GitHub".into()), Action::MarkRead]
         );
         assert_eq!(
-            github.matches.header.as_ref().unwrap().as_slice()[0].name,
-            "List-Id"
+            github
+                .matches
+                .header
+                .as_ref()
+                .unwrap()
+                .keys()
+                .collect::<Vec<_>>(),
+            ["List-Id"]
         );
         assert!(!file.rules[2].enabled);
         assert_eq!(file.rules[2].proposed_by.as_deref(), Some("cli:test"));
@@ -760,8 +998,61 @@ actions = [{ move = "Shopping" }, "notify"]
         assert!(!compiled[0].needs_body());
         assert_eq!(
             compiled[0].conditions.older_than,
-            Some(Duration::from_secs(3600))
+            Some(crate::time::Span::Seconds(3600))
         );
+    }
+
+    #[test]
+    fn actions_are_a_table_whose_false_values_undo() {
+        let file = parse(
+            "[[rules]]\nname = \"x\"\nmatch.read = true\nactions = { read = false, flagged = false, tag = [\"$a\", \"$b\"], notify = false, stop = true, delete = false }\n",
+        )
+        .unwrap();
+        assert_eq!(
+            file.rules[0].actions,
+            [
+                Action::MarkUnread,
+                Action::Unflag,
+                Action::Tag("$a".into()),
+                Action::Tag("$b".into()),
+                Action::Silent,
+                Action::Stop,
+            ]
+        );
+        assert_eq!(
+            parse(&toml::to_string(&file).unwrap()).unwrap().rules[0].actions,
+            file.rules[0].actions
+        );
+    }
+
+    #[test]
+    fn actions_refuse_unknown_keys_and_what_a_table_cannot_say() {
+        let rule =
+            |actions: &str| format!("[[rules]]\nname = \"x\"\nmatch.read = true\n{actions}\n");
+        assert!(parse(&rule("actions = { mark_read = true }")).is_err());
+        assert!(parse(&rule("actions = [\"delete\"]")).is_err());
+        let refused = |actions: Vec<Action>| {
+            let mut file = parse(&rule("actions = { flagged = true }")).unwrap();
+            file.rules[0].actions = actions;
+            match compile(&file) {
+                Err(RulesError::Invalid { reason, .. }) => reason,
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(
+            refused(vec![Action::Move("A".into()), Action::Move("B".into())]),
+            "actions.move is given twice"
+        );
+        assert_eq!(
+            refused(vec![Action::Notify, Action::Silent]),
+            "actions.notify is given twice"
+        );
+        assert_eq!(
+            refused(vec![Action::Archive, Action::Move("A".into())]),
+            "actions cannot both move and archive"
+        );
+        assert_eq!(refused(vec![Action::Junk]), "junk is not a rule action");
+        assert_eq!(refused(Vec::new()), "actions must not be empty");
     }
 
     #[test]
@@ -795,17 +1086,17 @@ actions = [{ move = "Shopping" }, "notify"]
 
     #[test]
     fn rejects_rule_without_conditions_or_actions_or_unknown_action() {
-        let empty_match = "[[rules]]\nname = \"x\"\nmatch = {}\nactions = [\"delete\"]\n";
+        let empty_match = "[[rules]]\nname = \"x\"\nmatch = {}\nactions = { delete = true }\n";
         assert!(matches!(
             parse(empty_match).and_then(|f| compile(&f)),
             Err(RulesError::Invalid { .. })
         ));
-        let no_actions = "[[rules]]\nname = \"x\"\nmatch.seen = true\nactions = []\n";
+        let no_actions = "[[rules]]\nname = \"x\"\nmatch.read = true\nactions = {}\n";
         assert!(matches!(
             parse(no_actions).and_then(|f| compile(&f)),
             Err(RulesError::Invalid { .. })
         ));
-        let unknown = "[[rules]]\nname = \"x\"\nmatch.seen = true\nactions = [\"explode\"]\n";
+        let unknown = "[[rules]]\nname = \"x\"\nmatch.read = true\nactions.explode = true\n";
         assert!(matches!(parse(unknown), Err(RulesError::Parse(_))));
     }
 
@@ -873,25 +1164,25 @@ actions = [{ move = "Shopping" }, "notify"]
 
     #[test]
     fn rejects_unknown_top_level_key() {
-        let typo = "[[rule]]\nname = \"x\"\nmatch.seen = true\nactions = [\"flag\"]\n";
+        let typo = "[[rule]]\nname = \"x\"\nmatch.read = true\nactions = { flagged = true }\n";
         assert!(matches!(parse(typo), Err(RulesError::Parse(_))));
     }
 
     #[test]
     fn rejects_empty_values() {
         let rule = |matcher: &str, action: &str| {
-            format!("[[rules]]\nname = \"x\"\n{matcher}\nactions = [{action}]\n")
+            format!("[[rules]]\nname = \"x\"\n{matcher}\nactions = {{ {action} }}\n")
         };
         let cases = [
-            rule("match.subject = { contains = \"\" }", "\"delete\""),
-            rule("match.subject = { equals = \"  \" }", "\"delete\""),
-            rule("match.subject = { regex = \"\" }", "\"delete\""),
+            rule("match.subject = { contains = \"\" }", "delete = true"),
+            rule("match.subject = { equals = \"  \" }", "delete = true"),
+            rule("match.subject = { regex = \"\" }", "delete = true"),
             rule(
-                "match.header = { name = \"\", contains = \"a\" }",
-                "\"delete\"",
+                "match.header = { \" \" = { contains = \"a\" } }",
+                "delete = true",
             ),
-            rule("match.seen = true", "{ move = \"\" }"),
-            rule("match.alias = \"\"", "\"delete\""),
+            rule("match.read = true", "move = \"\""),
+            rule("match.alias = \"\"", "delete = true"),
         ];
         for text in cases {
             assert!(
@@ -909,7 +1200,7 @@ actions = [{ move = "Shopping" }, "notify"]
         let long = "a".repeat(MAX_NAME_CHARS + 1);
         let rule = |extra: &str, name: &str, target: &str| {
             format!(
-                "[[rules]]\nname = \"{name}\"\n{extra}match.seen = true\nactions = [{{ move = \"{target}\" }}]\n"
+                "[[rules]]\nname = \"{name}\"\n{extra}match.read = true\nactions = {{ move = \"{target}\" }}\n"
             )
         };
         let cases = [
@@ -946,10 +1237,70 @@ actions = [{ move = "Shopping" }, "notify"]
     }
 
     #[test]
+    fn rejects_folder_names_servers_refuse_or_misread() {
+        let rule = |extra: &str, target: &str| {
+            format!(
+                "[[rules]]\nname = \"x\"\n{extra}match.read = true\nactions.move = \"{target}\"\n"
+            )
+        };
+        let cases = [
+            (rule("", "Lists/*"), "move folder must not contain * or %"),
+            (rule("", "100%"), "move folder must not contain * or %"),
+            (
+                rule("", "Lists/"),
+                "move folder must not have an empty level",
+            ),
+            (
+                rule("", "/Lists"),
+                "move folder must not have an empty level",
+            ),
+            (
+                rule("", "Lists//GitHub"),
+                "move folder must not have an empty level",
+            ),
+            (
+                rule("", " Lists"),
+                "move folder level ' Lists' must not start or end with whitespace",
+            ),
+            (
+                rule("", "Lists "),
+                "move folder level 'Lists ' must not start or end with whitespace",
+            ),
+            (
+                rule("", "Lists / GitHub"),
+                "move folder level 'Lists ' must not start or end with whitespace",
+            ),
+            (
+                rule("folder = \"Lists/ GitHub\"\n", "Done"),
+                "folder level ' GitHub' must not start or end with whitespace",
+            ),
+        ];
+        for (text, want) in cases {
+            match parse(&text).and_then(|f| compile(&f)) {
+                Err(RulesError::Invalid { reason, .. }) => {
+                    assert!(
+                        reason.starts_with(want),
+                        "{reason} should start with {want}"
+                    )
+                }
+                other => panic!("expected Invalid ({want}), got {other:?}"),
+            }
+        }
+        // A watched folder may hold what a move target may not: it exists already, so the server accepted it.
+        for ok in [
+            rule("folder = \"100%\"\n", "Lists/GitHub"),
+            rule("folder = \"Lists/\"\n", "Archief/\u{c9}\u{e9}n"),
+            rule("", "Lists - Old/Q&A"),
+        ] {
+            compile(&parse(&ok).unwrap()).unwrap();
+        }
+    }
+
+    #[test]
     fn rejects_control_characters_in_agent_strings() {
         let cases = [
-            "[[rules]]\nname = \"x\"\nmatch.seen = true\nactions = [{ move = \"Codes\\u001b[2J\" }]\n",
-            "[[rules]]\nname = \"x\\u001b]0;pwned\"\nmatch.seen = true\nactions = [\"flag\"]\n",
+            "[[rules]]\nname = \"x\"\nmatch.read = true\nactions = { move = \"Codes\\u001b[2J\" }\n",
+            "[[rules]]\nname = \"x\\u001b]0;pwned\"\nmatch.read = true\nactions = { flagged = true }\n",
         ];
         for text in cases {
             match parse(text).and_then(|f| compile(&f)) {
@@ -967,8 +1318,8 @@ name = "tagged"
 match.from = { contains = "shop" }
 match.none = [{ subject = { contains = ["receipt", "invoice"] } }]
 match.any = [{ to_me = true }, { tag = "$label1" }]
-match.header = [{ name = "List-Id", contains = "shop" }, { name = "X-Mailer", contains = "bulk" }]
-actions = [{ tag = "$label4" }, { move = "Shop" }]
+match.header = { List-Id = { contains = "shop" }, X-Mailer = { contains = "bulk" } }
+actions = { tag = "$label4", move = "Shop" }
 "#;
 
     #[test]
@@ -977,11 +1328,11 @@ actions = [{ tag = "$label4" }, { move = "Shop" }]
         let rule = &file.rules[0];
         assert_eq!(
             rule.actions,
-            vec![Action::Tag("$label4".into()), Action::Move("Shop".into())]
+            vec![Action::Move("Shop".into()), Action::Tag("$label4".into())]
         );
         assert_eq!(rule.matches.any.as_ref().unwrap().len(), 2);
         assert_eq!(rule.matches.none.as_ref().unwrap().len(), 1);
-        assert_eq!(rule.matches.header.as_ref().unwrap().as_slice().len(), 2);
+        assert_eq!(rule.matches.header.as_ref().unwrap().len(), 2);
         let compiled = compile(&file).unwrap();
         assert_eq!(compiled[0].conditions.headers.len(), 2);
         let again = parse(&toml::to_string(&file).unwrap()).unwrap();
@@ -1001,12 +1352,13 @@ actions = [{ tag = "$label4" }, { move = "Shop" }]
 
     #[test]
     fn nested_matches_are_validated_with_their_path() {
-        let rule =
-            |matcher: &str| format!("[[rules]]\nname = \"x\"\n{matcher}\nactions = [\"flag\"]\n");
+        let rule = |matcher: &str| {
+            format!("[[rules]]\nname = \"x\"\n{matcher}\nactions = {{ flagged = true }}\n")
+        };
         let deep = format!(
             "match.none = {}{}",
             "[{ none = ".repeat(MAX_DEPTH),
-            "[{ seen = true }]".to_string() + &" }]".repeat(MAX_DEPTH)
+            "[{ read = true }]".to_string() + &" }]".repeat(MAX_DEPTH)
         );
         let cases = [
             (
@@ -1022,7 +1374,7 @@ actions = [{ tag = "$label4" }, { move = "Shop" }]
                 rule("match.subject = { contains = [\"a\", \" \"] }"),
                 "match.subject must not be empty",
             ),
-            (rule("match.header = []"), "match.header must not be empty"),
+            (rule("match.header = {}"), "match.header must not be empty"),
             (rule("match.any = []"), "match.any must not be empty"),
             (
                 rule("match.any = [{}]"),
@@ -1033,7 +1385,7 @@ actions = [{ tag = "$label4" }, { move = "Shop" }]
                 "match.none[0].subject: invalid regex",
             ),
             (
-                rule("match.any = [{ seen = true }, { from = { contains = \"\" } }]"),
+                rule("match.any = [{ read = true }, { from = { contains = \"\" } }]"),
                 "match.any[1].from must not be empty",
             ),
             (rule(&deep), "nested deeper than"),
@@ -1051,12 +1403,12 @@ actions = [{ tag = "$label4" }, { move = "Shop" }]
     #[test]
     fn tags_must_be_imap_keywords() {
         let action = |tag: &str| {
-            format!(
-                "[[rules]]\nname = \"x\"\nmatch.seen = true\nactions = [{{ tag = \"{tag}\" }}]\n"
-            )
+            format!("[[rules]]\nname = \"x\"\nmatch.read = true\nactions = {{ tag = \"{tag}\" }}\n")
         };
         let matcher = |tag: &str| {
-            format!("[[rules]]\nname = \"x\"\nmatch.tag = \"{tag}\"\nactions = [\"flag\"]\n")
+            format!(
+                "[[rules]]\nname = \"x\"\nmatch.tag = \"{tag}\"\nactions = {{ flagged = true }}\n"
+            )
         };
         for bad in [
             "",
@@ -1088,7 +1440,7 @@ actions = [{ tag = "$label4" }, { move = "Shop" }]
     fn larger_than_takes_a_size_with_a_unit() {
         let rule = |size: &str| {
             format!(
-                "[[rules]]\nname = \"x\"\nmatch.larger_than = \"{size}\"\nactions = [\"flag\"]\n"
+                "[[rules]]\nname = \"x\"\nmatch.larger_than = \"{size}\"\nactions = {{ flagged = true }}\n"
             )
         };
         let size =
@@ -1110,8 +1462,7 @@ actions = [{ tag = "$label4" }, { move = "Shop" }]
 
     #[test]
     fn flagged_and_stop_parse() {
-        let text =
-            "[[rules]]\nname = \"x\"\nmatch.flagged = true\nactions = [\"mark_read\", \"stop\"]\n";
+        let text = "[[rules]]\nname = \"x\"\nmatch.flagged = true\nactions = { read = true, stop = true }\n";
         let compiled = compile(&parse(text).unwrap()).unwrap();
         assert_eq!(compiled[0].conditions.flagged, Some(true));
         assert_eq!(
@@ -1121,10 +1472,65 @@ actions = [{ tag = "$label4" }, { move = "Shop" }]
     }
 
     #[test]
-    fn cli_only_actions_are_not_rule_actions() {
-        for action in ["mark_unread", "trash", "unflag"] {
+    fn domain_conditions_take_one_or_more_domains() {
+        let text = "[[rules]]\nname = \"x\"\nmatch.from_domain = [\"@PayPal.com.\", \"paypal.nl\"]\nmatch.to_domain = \"Example.org\"\nmatch.authenticated = true\nactions = { flagged = true }\n";
+        let compiled = compile(&parse(text).unwrap()).unwrap();
+        let c = &compiled[0].conditions;
+        assert_eq!(
+            c.from_domain.as_deref(),
+            Some(&["paypal.com".to_string(), "paypal.nl".to_string()][..])
+        );
+        assert_eq!(
+            c.to_domain.as_deref(),
+            Some(&["example.org".to_string()][..])
+        );
+        assert_eq!(c.authenticated, Some(true));
+        assert!(!compiled[0].matches_header());
+        let rule = |value: &str| {
+            format!(
+                "[[rules]]\nname = \"x\"\nmatch.from_domain = {value}\nactions = {{ flagged = true }}\n"
+            )
+        };
+        for (value, want) in [
+            ("[]", "match.from_domain must not be empty"),
+            ("\" \"", "match.from_domain must not be empty"),
+            ("\"@\"", "match.from_domain must not be empty"),
+            ("\"a@paypal.com\"", "is not a domain"),
+            ("\"pay pal.com\"", "is not a domain"),
+            ("\".paypal.com\"", "is not a domain"),
+            ("\"paypal..com\"", "is not a domain"),
+        ] {
+            match parse(&rule(value)).and_then(|f| compile(&f)) {
+                Err(RulesError::Invalid { reason, .. }) => {
+                    assert!(reason.contains(want), "{reason} should contain {want}")
+                }
+                other => panic!("expected Invalid for {value}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_file_in_the_old_syntax_is_told_how_to_rewrite_it() {
+        let old = "[[rules]]\nname = \"x\"\nmatch.seen = true\nactions = [\"delete\"]\n";
+        match parse(old) {
+            Err(RulesError::Parse(message)) => {
+                assert!(message.contains("old rules syntax"), "{message}")
+            }
+            other => panic!("{other:?}"),
+        }
+        match parse("[[rules]]\nname = \"x\"\nmatch.read = true\nactions = { explode = true }\n") {
+            Err(RulesError::Parse(message)) => {
+                assert!(!message.contains("old rules syntax"), "{message}")
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn user_only_actions_are_not_rule_actions() {
+        for action in ["junk", "not_junk", "trash"] {
             let text =
-                format!("[[rules]]\nname = \"x\"\nmatch.seen = true\nactions = [\"{action}\"]\n");
+                format!("[[rules]]\nname = \"x\"\nmatch.read = true\nactions.{action} = true\n");
             assert!(parse(&text).is_err(), "{action}");
         }
     }

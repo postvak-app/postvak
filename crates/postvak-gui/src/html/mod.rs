@@ -1,5 +1,6 @@
 //! The HTML view of a message, without a toolkit: the render thread's protocol, the strips it paints as plain pixels,
 //! and which strips to ask for. `state.rs` owns `HtmlState` and talks to the render thread; the window draws it.
+pub(crate) mod dark;
 mod depth;
 mod fetch;
 mod legacy;
@@ -94,6 +95,9 @@ pub(crate) struct FetchDone {
 }
 
 pub(crate) struct Load {
+    /// Styled with the dark colour scheme, and adapted to it unless the page is dark already (`dark.rs`); else the
+    /// sender's colours on a white page.
+    pub dark: bool,
     pub fetched: Fetched,
     pub generation: u64,
     pub html: String,
@@ -121,6 +125,12 @@ pub enum Request {
         from: [f32; 2],
         to: [f32; 2],
     },
+    /// The laid-out page styled again, dark (as `Load::dark`) or with the sender's colours, without parsing it again;
+    /// it is answered as a layout under `generation`.
+    Restyle {
+        generation: u64,
+        dark: bool,
+    },
 }
 
 impl Request {
@@ -129,7 +139,8 @@ impl Request {
             Request::Load(load) => load.generation,
             Request::Paint { generation, .. }
             | Request::Hit { generation, .. }
-            | Request::Select { generation, .. } => *generation,
+            | Request::Select { generation, .. }
+            | Request::Restyle { generation, .. } => *generation,
         }
     }
 }
@@ -175,6 +186,8 @@ impl Reply {
 
 /// The HTML view of the shown message: what is laid out, which strips are painted, what the pointer is over.
 pub(crate) struct HtmlState {
+    /// The page is styled dark (`Load::dark`), on the dark page rather than a white one.
+    pub dark: bool,
     /// The layout in flight or shown; replies for any other generation are stale.
     pub generation: u64,
     pub hover: Option<String>,
@@ -205,6 +218,7 @@ pub(crate) struct HtmlState {
 impl HtmlState {
     pub fn new(generation: u64, scale: f32, width: f32) -> HtmlState {
         HtmlState {
+            dark: false,
             generation,
             hover: None,
             hovered_at: None,
@@ -314,7 +328,6 @@ mod view_tests {
     //! failures.
     use std::collections::BTreeMap;
     use std::sync::mpsc::{Receiver, Sender};
-    use std::time::{Duration, Instant};
 
     use slint::ComponentHandle;
 
@@ -329,15 +342,7 @@ mod view_tests {
 
     /// Ticks the window until `done` holds; the render thread answers in real time.
     fn wait_for(open: &Open, done: impl Fn(&App) -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while !open.with(|live| done(&live.app)) {
-            assert!(
-                Instant::now() < deadline,
-                "timed out waiting for the renderer"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-            open.tick();
-        }
+        open.tick_until(|open| open.with(|live| done(&live.app)));
     }
 
     /// True once the shown message is laid out and every strip it asked for is painted.
@@ -749,5 +754,88 @@ mod view_tests {
         faked.open.tick();
         assert!(loads(&faked.jobs).is_empty());
         assert!(view(&faked.open, |v| v.fetched.is_empty()).unwrap());
+    }
+
+    /// The restyles the app sent since the last call, as whether each asked for the dark page.
+    fn restyles(jobs: &Receiver<Request>) -> Vec<bool> {
+        jobs.try_iter()
+            .filter_map(|job| match job {
+                Request::Restyle { dark, .. } => Some(dark),
+                Request::Load(_) => panic!("parsed again"),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The newest generation the app asked for, as the reply to it must carry.
+    fn shown(faked: &Faked) -> u64 {
+        view(&faked.open, |v| v.generation).unwrap()
+    }
+
+    #[test]
+    fn original_colours_and_the_theme_restyle_the_page_without_parsing_it_again() {
+        let fx = Fixture::new(&["work"]);
+        fx.append_config("[ui]\ntheme = \"dark\"\n");
+        add_html(&fx, 1, "<p>x</p>", "text");
+        let faked = faked(&fx);
+        assert_eq!(
+            view(&faked.open, |v| v.dark),
+            Some(true),
+            "the dark theme lays out dark"
+        );
+        reply(&faked, laid(faked.generation, 300.0, &[]));
+        assert!(faked.open.window().get_page().dark);
+        assert_eq!(faked.open.find("Original colours").len(), 1);
+
+        faked
+            .open
+            .window()
+            .invoke_menu_item(crate::ui::MenuAction::OriginalColours);
+        assert_eq!(restyles(&faked.jobs), [false]);
+        reply(&faked, laid(shown(&faked), 300.0, &[]));
+        assert!(!faked.open.window().get_page().dark);
+        assert!(faked.open.window().get_menu().shows_original_colours);
+
+        faked.open.window().invoke_toggle_original_colours();
+        assert_eq!(restyles(&faked.jobs), [true]);
+
+        // The light theme shows every message in its own colours, and offers no switch.
+        faked.open.with(|live| {
+            live.app.apply(crate::state::UiAction::SetTheme(
+                postvak_core::config::Theme::Light,
+            ));
+        });
+        faked.open.tick();
+        assert_eq!(restyles(&faked.jobs), [false]);
+        reply(&faked, laid(shown(&faked), 300.0, &[]));
+        assert!(faked.open.find("Original colours").is_empty());
+        assert!(!faked.open.window().get_menu().original_colours);
+    }
+
+    #[test]
+    fn the_original_setting_keeps_html_in_its_own_colours_in_the_dark_theme() {
+        let fx = Fixture::new(&["work"]);
+        fx.append_config("[ui]\ntheme = \"dark\"\nhtml_colours = \"original\"\n");
+        add_html(&fx, 1, "<p>x</p>", "text");
+        let faked = faked(&fx);
+        reply(&faked, laid(faked.generation, 300.0, &[]));
+        assert!(!faked.open.window().get_page().dark);
+        assert!(faked.open.find("Original colours").is_empty());
+        assert!(!faked.open.window().get_menu().original_colours);
+    }
+
+    #[test]
+    fn original_colours_last_for_the_open_message_only() {
+        let fx = Fixture::new(&["work"]);
+        fx.append_config("[ui]\ntheme = \"dark\"\n");
+        add_html(&fx, 1, "<p>older</p>", "older");
+        add_html(&fx, 2, "<p>newer</p>", "newer");
+        let faked = faked(&fx);
+        reply(&faked, laid(faked.generation, 300.0, &[]));
+        faked.open.window().invoke_toggle_original_colours();
+        assert!(!faked.open.with(|live| live.app.html_dark_page()));
+        faked.open.press("j");
+        let next = loads(&faked.jobs);
+        assert_eq!(next.last().map(|load| load.dark), Some(true));
     }
 }

@@ -7,7 +7,7 @@ mod parse;
 mod plan;
 
 pub use close::{Candidate, Vocab, expansions};
-pub use parse::parse;
+pub use parse::{date, parse};
 pub use plan::plan;
 
 /// What the user asked for, as `parse` read it.
