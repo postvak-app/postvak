@@ -449,18 +449,42 @@ pub fn sync_folder_with(
         FlagFetch::All => ops.fetch_flags(last_uid, None)?,
         FlagFetch::ChangedSince(modseq) => ops.fetch_flags(last_uid, Some(modseq))?,
     };
+    let backfill_uid = if starts_tracking {
+        0
+    } else {
+        store.backfill_uid(&folder.name)?
+    };
     // Every uid is below UIDNEXT, so one no higher than last_uid + 1 means nothing new.
-    let uids: Vec<u32> = if info.uidnext.is_some_and(|next| next <= last_uid + 1) {
+    let listed: Vec<u32> = if backfill_uid > 0 {
+        ops.search_uids(1)?
+    } else if info.uidnext.is_some_and(|next| next <= last_uid + 1) {
         Vec::new()
     } else {
         ops.search_uids(last_uid + 1)?
-            .into_iter()
-            .filter(|&uid| uid > last_uid)
-            .collect()
+    };
+    let mut uids: Vec<u32> = listed
+        .iter()
+        .copied()
+        .filter(|&uid| uid > last_uid)
+        .collect();
+    let mut history: Vec<u32> = listed
+        .iter()
+        .copied()
+        .filter(|&uid| uid < backfill_uid)
+        .collect();
+    // A first sync takes all it lists as history, fetched newest first, so recent mail shows within seconds.
+    let (last_uid, backfill_uid) = if starts_tracking {
+        history = std::mem::take(&mut uids);
+        let top = history.last().copied();
+        (top.unwrap_or(0), top.map_or(0, |uid| uid + 1))
+    } else {
+        (last_uid, backfill_uid)
     };
     // Without an expunge, the server holds exactly the stored messages plus the new ones.
     let present: Option<Vec<u32>> = if flag_fetch == FlagFetch::All {
         Some(updates.iter().map(|u| u.uid).collect())
+    } else if !starts_tracking && backfill_uid > 0 {
+        Some(listed)
     } else if !starts_tracking
         && info.exists as usize != store.message_count(&folder.name)? as usize + uids.len()
     {
@@ -484,7 +508,8 @@ pub fn sync_folder_with(
         // Unknown until this sync completes, so a pass cut short never looks unchanged to the next.
         store.set_uid_next(&folder.name, 0)?;
         if starts_tracking {
-            store.set_initial_uid_next(&folder.name, uids.last().map_or(0, |uid| uid + 1))?;
+            store.set_initial_uid_next(&folder.name, backfill_uid)?;
+            store.set_backfill_uid(&folder.name, backfill_uid)?;
             store.set_rules_uid(&folder.name, 0)?;
             store.set_notified_uid(&folder.name, 0)?;
         }
@@ -501,11 +526,13 @@ pub fn sync_folder_with(
         Ok::<_, SyncError>(())
     })?;
 
-    let total = uids.len();
+    let total = uids.len() + history.len();
     let mut done = 0;
     let mut new = 0;
     let mut complete = true;
-    for chunk in uids.chunks(chunk_size()) {
+    let live = uids.chunks(chunk_size()).map(|chunk| (chunk, false));
+    let backfill = history.rchunks(chunk_size()).map(|chunk| (chunk, true));
+    for (chunk, is_history) in live.chain(backfill) {
         let progress = Activity::FetchingHeaders {
             folder: folder.name.clone(),
             done,
@@ -532,11 +559,16 @@ pub fn sync_folder_with(
                 store.insert_message(&to_message(&folder.name, env))?;
                 new += 1;
             }
-            store.upsert_folder(&row(last))
+            if is_history {
+                store.set_backfill_uid(&folder.name, first)
+            } else {
+                store.upsert_folder(&row(last))
+            }
         })?;
         done += chunk.len();
     }
     if complete {
+        store.set_backfill_uid(&folder.name, 0)?;
         store.set_uid_next(&folder.name, info.uidnext.unwrap_or(0))?;
     }
     if total > 0 {
