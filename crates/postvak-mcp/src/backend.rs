@@ -1,6 +1,7 @@
 //! The only MCP code that touches the store, rules.toml or the daemon; the daemon owns every IMAP connection.
 use anyhow::{Context as _, Result, bail};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
 use serde_json::{Value, json};
 
@@ -13,7 +14,7 @@ use postvak_core::output::{self, Fields};
 use postvak_core::page;
 /// What `list` shows, a plain value like `Filter`.
 pub(crate) use postvak_core::page::ListRequest;
-use postvak_core::paths::Paths;
+use postvak_core::paths::{FileWatch, Paths};
 use postvak_core::rules::edit::Place;
 use postvak_core::rules::{self, Action, Rule, RuleFile};
 use postvak_core::search::{self, Scope};
@@ -28,7 +29,8 @@ use postvak_core::trash::Trash;
 const MAX_LIMIT: u32 = 500;
 
 pub struct Backend {
-    config: Config,
+    /// The last config.toml that loaded, loaded again once the file changes, as the daemon does.
+    config: Mutex<(FileWatch, Config)>,
     /// The `--account` filter; empty shows every account.
     only: Vec<String>,
     /// The one folder `attachment_save` writes into, or below; None when there is no Downloads folder and no
@@ -64,7 +66,7 @@ impl Backend {
             bail!("no account named '{name}'");
         }
         Ok(Backend {
-            config: config.clone(),
+            config: Mutex::new((FileWatch::new(paths.config_file()), config.clone())),
             only: only.to_vec(),
             save_dir: paths.downloads_dir(),
             daemon,
@@ -81,7 +83,15 @@ impl Backend {
     }
 
     fn config(&self) -> Config {
-        self.config.clone()
+        let mut guard = self.config.lock().unwrap_or_else(PoisonError::into_inner);
+        let (watch, config) = &mut *guard;
+        if watch.changed() {
+            match Config::load(&watch.path) {
+                Ok(loaded) => *config = loaded,
+                Err(e) => eprintln!("postvak: {e}; keeping the config loaded before"),
+            }
+        }
+        config.clone()
     }
 
     /// Every configured account's name, visible or not: an approved rule's clock restarts in all of them.

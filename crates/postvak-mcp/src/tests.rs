@@ -6,6 +6,7 @@ use rmcp::{RoleClient, ServiceExt};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
+use super::backend::Sight;
 use super::{Backend, Server, parse_scopes};
 use postvak_core::config::Config;
 use postvak_core::daemon::Client;
@@ -15,6 +16,7 @@ use postvak_core::daemon::test_support::{
 use postvak_core::engine::Connector;
 use postvak_core::mail_ops::{MailOps, RecordingOps};
 use postvak_core::paths::Paths;
+use postvak_core::rules::Rule;
 use postvak_core::store::{Folder, LogEntry, Message, Store};
 
 pub(super) struct Fixture {
@@ -766,6 +768,46 @@ async fn rules_propose_refuses_blank_and_overlong_folders() {
         assert!(text.contains("folder must"), "{text}");
     }
     assert!(!fx.paths.rules_file().exists() || !rule_file(&fx).contains("name = \"x\""));
+}
+
+#[test]
+fn rules_test_sees_trusted_authserv_ids_added_while_running() {
+    let fx = fixture(&["work"]);
+    let mut message = fixture_message("INBOX", 1, "Sign-in", "");
+    message.from_addr = Some("alerts@bank.example".into());
+    message.headers =
+        b"Authentication-Results: mx.provider.example; dmarc=pass header.from=bank.example\r\n\r\n"
+            .to_vec();
+    fx.add("work", message);
+    let backend = Backend::new(&fx.config(), &fx.paths, &[]).unwrap();
+    let rule: Rule = serde_json::from_value(
+        json!({ "name": "bank", "match": { "authenticated": true }, "actions": { "read": true } }),
+    )
+    .unwrap();
+    let preview = |backend: &Backend| {
+        backend
+            .rules_test(rule.clone(), None, Sight::default())
+            .unwrap()
+    };
+    assert!(preview(&backend).is_empty());
+
+    let config = std::fs::read_to_string(fx.paths.config_file()).unwrap();
+    // A later modification time than the first write, on file systems with coarse timestamps too.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    std::fs::write(
+        fx.paths.config_file(),
+        format!("{config}trusted_authserv_ids = [\"mx.provider.example\"]\n"),
+    )
+    .unwrap();
+    assert_eq!(preview(&backend).len(), 1);
+
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    std::fs::write(fx.paths.config_file(), "not toml [").unwrap();
+    assert_eq!(
+        preview(&backend).len(),
+        1,
+        "a broken edit keeps the last good config"
+    );
 }
 
 #[tokio::test]
