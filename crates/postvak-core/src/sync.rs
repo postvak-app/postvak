@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::actions::{self, ActionError};
 use crate::config::{AccountConfig, ConfigError, Identity};
 use crate::credentials::{self, CredentialError};
+use crate::folder_ops::{self, Deleted, FolderError};
 use crate::mail_ops::imap::ImapOps;
 use crate::mail_ops::{Envelope, IdleOutcome, MailError, MailOps, RemoteFolder, StatusInfo};
 use crate::message::{clean, parse_headers, thread_id};
@@ -39,6 +40,8 @@ pub enum SyncError {
     Store(#[from] StoreError),
     #[error(transparent)]
     Apply(#[from] ApplyError),
+    #[error(transparent)]
+    Folder(#[from] FolderError),
     #[error(transparent)]
     Rules(#[from] RulesError),
     #[error(transparent)]
@@ -110,6 +113,30 @@ pub enum Event {
         account: String,
         message: String,
     },
+    FolderCreated {
+        account: String,
+        name: String,
+        request: RequestId,
+    },
+    FolderDeleted {
+        account: String,
+        name: String,
+        request: RequestId,
+    },
+    /// A delete without a mode found mail in the folder: `count` messages, and whether the account has a Trash folder.
+    FolderNotEmpty {
+        account: String,
+        name: String,
+        count: u32,
+        has_trash: bool,
+        request: RequestId,
+    },
+    FolderRenamed {
+        account: String,
+        from: String,
+        to: String,
+        request: RequestId,
+    },
     /// The indexer stored the text of `count` more messages, so a search may find more now.
     Indexed {
         account: String,
@@ -159,6 +186,10 @@ impl Event {
             | Event::AttachmentFetched { request, .. }
             | Event::BodyReady { request, .. }
             | Event::CommandFailed { request, .. }
+            | Event::FolderCreated { request, .. }
+            | Event::FolderDeleted { request, .. }
+            | Event::FolderNotEmpty { request, .. }
+            | Event::FolderRenamed { request, .. }
             | Event::Restored { request, .. }
             | Event::RuleApplied { request, .. }
             | Event::ServerSearchDone { request, .. } => vec![*request],
@@ -316,6 +347,15 @@ pub enum Command {
     ApplyRule {
         name: String,
     },
+    CreateFolder {
+        name: String,
+    },
+    /// `count` is the number of messages the user confirmed; a folder holding another number is left alone.
+    DeleteFolder {
+        name: String,
+        mode: Option<DeleteMode>,
+        count: u32,
+    },
     FetchBody {
         folder: String,
         uid: u32,
@@ -329,6 +369,10 @@ pub enum Command {
         uid: u32,
         index: usize,
     },
+    RenameFolder {
+        from: String,
+        to: String,
+    },
     Restore {
         file: PathBuf,
     },
@@ -338,6 +382,14 @@ pub enum Command {
         query: String,
     },
     SyncNow,
+}
+
+/// What happens to the mail of a folder being deleted: moved to the Trash folder, or backed up and deleted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeleteMode {
+    Trash,
+    Permanent,
 }
 
 /// `Action` skips its user-only variants in rules.toml, so the wire derives them separately.
@@ -1257,10 +1309,54 @@ fn run_command(
                 })
                 .map_err(SyncError::from)
         }
+        Command::CreateFolder { name: folder } => {
+            run.used_connection = true;
+            folder_ops::create(ops, store, &folder)
+                .map(|folder| Event::FolderCreated {
+                    account: name(),
+                    name: folder,
+                    request,
+                })
+                .map_err(SyncError::from)
+        }
+        Command::RenameFolder { from, to } => {
+            run.used_connection = true;
+            folder_ops::rename(ops, store, &from, &to)
+                .map(|to| Event::FolderRenamed {
+                    account: name(),
+                    from,
+                    to,
+                    request,
+                })
+                .map_err(SyncError::from)
+        }
+        Command::DeleteFolder {
+            name: folder,
+            mode,
+            count,
+        } => {
+            run.used_connection = true;
+            folder_ops::delete(ops, store, trash, &folder, mode, count, now())
+                .map(|deleted| match deleted {
+                    Deleted::Done => Event::FolderDeleted {
+                        account: name(),
+                        name: folder,
+                        request,
+                    },
+                    Deleted::NotEmpty { count, has_trash } => Event::FolderNotEmpty {
+                        account: name(),
+                        name: folder,
+                        count,
+                        has_trash,
+                        request,
+                    },
+                })
+                .map_err(SyncError::from)
+        }
         Command::Restore { file } => {
             run.used_connection = true;
             trash
-                .restore(ops, &file)
+                .restore(ops, store, &file)
                 .map(|folder| {
                     sync_now(ops, store, &folder);
                     run.next = NextPass::Inbox;
@@ -1352,9 +1448,16 @@ impl LostConnection for RestoreError {
     }
 }
 
+impl LostConnection for FolderError {
+    fn is_lost_connection(&self) -> bool {
+        matches!(self, FolderError::Mail(e) | FolderError::LeftEmpty(e) if e.is_lost_connection())
+    }
+}
+
 impl LostConnection for SyncError {
     fn is_lost_connection(&self) -> bool {
         match self {
+            SyncError::Folder(e) => e.is_lost_connection(),
             SyncError::Action(e) => e.is_lost_connection(),
             SyncError::Restore(e) => e.is_lost_connection(),
             SyncError::Mail(e) => e.is_lost_connection(),

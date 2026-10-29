@@ -9,6 +9,7 @@ pub mod credentials;
 pub mod daemon;
 pub mod engine;
 pub mod folder_name;
+pub mod folder_ops;
 pub mod help;
 pub mod mail_ops;
 pub mod message;

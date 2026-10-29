@@ -5139,3 +5139,336 @@ fn mail_dragged_back_out_of_a_rule_folder_stays() {
         "mail that stays notifies like any other"
     );
 }
+
+/// `synced()` plus `extra` folders, every folder with `/` as its delimiter, and `old` messages in `Old` when it is listed.
+fn with_folders(
+    extra: &[(&str, Option<&str>)],
+    old: u32,
+) -> (RecordingOps, Store, tempfile::TempDir) {
+    let mut ops = ops_with_inbox();
+    for (name, role) in extra {
+        ops = ops.with_folder(name, *role);
+    }
+    for folder in &mut ops.folders {
+        folder.delimiter = Some("/".into());
+    }
+    for uid in 1..=old {
+        let id = format!("old{uid}@x");
+        ops.add_mail(
+            "Old",
+            uid,
+            H,
+            &headers("a@x", "old", &id),
+            Some("From: a@x\r\n\r\nold"),
+        );
+    }
+    let store = Store::open_in_memory().unwrap();
+    sync_all(&mut ops, &store).unwrap();
+    (ops, store, tempfile::tempdir().unwrap())
+}
+
+fn failure(events: &[Event]) -> &str {
+    events
+        .iter()
+        .find_map(|e| match e {
+            Event::CommandFailed { message, .. } => Some(message.as_str()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no failure in {events:?}"))
+}
+
+fn called(ops: &RecordingOps, prefix: &str) -> Option<usize> {
+    ops.calls.iter().position(|c| c.starts_with(prefix))
+}
+
+fn delete(name: &str, mode: Option<DeleteMode>, count: u32) -> Command {
+    Command::DeleteFolder {
+        name: name.into(),
+        mode,
+        count,
+    }
+}
+
+#[test]
+fn create_folder_creates_subscribes_and_stores_nfc() {
+    let (mut ops, store, dir) = with_folders(&[("Work", None)], 0);
+    let trash = Trash::new(dir.path().to_path_buf());
+    let create = Command::CreateFolder {
+        name: "Work/E\u{301}e\u{301}n".into(),
+    };
+    let (run, events) = drain(&mut ops, &store, &trash, vec![create]);
+    assert!(run.unwrap().used_connection);
+    let name = "Work/\u{c9}\u{e9}n".to_string();
+    assert!(events.contains(&Event::FolderCreated {
+        account: "work".into(),
+        name: name.clone(),
+        request: 1
+    }));
+    assert!(called(&ops, &format!("create_folder {name}")).is_some());
+    assert!(called(&ops, &format!("subscribe_folder {name}")).is_some());
+    let stored = store.folder(&name).unwrap().unwrap();
+    assert_eq!(stored.delimiter.as_deref(), Some("/"));
+}
+
+#[test]
+fn create_folder_refuses_a_known_name() {
+    let (mut ops, store, dir) = with_folders(&[("Work", None)], 0);
+    let trash = Trash::new(dir.path().to_path_buf());
+    let create = Command::CreateFolder {
+        name: "Work".into(),
+    };
+    let (_, events) = drain(&mut ops, &store, &trash, vec![create]);
+    assert!(failure(&events).contains("already exists"), "{events:?}");
+    assert_eq!(called(&ops, "create_folder"), None);
+}
+
+#[test]
+fn rename_folder_moves_children_in_store() {
+    let (mut ops, store, dir) = with_folders(&[("Work", None), ("Work/Clients", None)], 0);
+    let trash = Trash::new(dir.path().to_path_buf());
+    let rename = Command::RenameFolder {
+        from: "Work".into(),
+        to: "Jobs".into(),
+    };
+    let (_, events) = drain(&mut ops, &store, &trash, vec![rename]);
+    assert!(events.contains(&Event::FolderRenamed {
+        account: "work".into(),
+        from: "Work".into(),
+        to: "Jobs".into(),
+        request: 1
+    }));
+    assert!(called(&ops, "rename_folder Work Jobs").is_some());
+    assert!(called(&ops, "subscribe_folder Jobs").is_some());
+    assert!(called(&ops, "unsubscribe_folder Work").is_some());
+    assert!(store.folder("Jobs/Clients").unwrap().is_some());
+    assert!(store.folder("Work").unwrap().is_none());
+    assert!(store.folder("Work/Clients").unwrap().is_none());
+}
+
+#[test]
+fn rename_refuses_inbox_and_special_use() {
+    let (mut ops, store, dir) = with_folders(&[], 0);
+    let trash = Trash::new(dir.path().to_path_buf());
+    for (from, role) in [("inbox", "INBOX"), ("Trash", "Trash")] {
+        let rename = Command::RenameFolder {
+            from: from.into(),
+            to: "Elsewhere".into(),
+        };
+        let (_, events) = drain(&mut ops, &store, &trash, vec![rename]);
+        assert!(failure(&events).contains(role), "{events:?}");
+    }
+    assert_eq!(called(&ops, "rename_folder"), None);
+}
+
+#[test]
+fn rename_refuses_a_folder_holding_sent() {
+    let (mut ops, store, dir) = with_folders(&[("Mail", None), ("Mail/Sent", Some("Sent"))], 0);
+    let trash = Trash::new(dir.path().to_path_buf());
+    let rename = Command::RenameFolder {
+        from: "Mail".into(),
+        to: "Post".into(),
+    };
+    let (_, events) = drain(&mut ops, &store, &trash, vec![rename]);
+    assert!(failure(&events).contains("Mail/Sent (Sent)"), "{events:?}");
+    assert_eq!(called(&ops, "rename_folder"), None);
+}
+
+#[test]
+fn rename_refused_by_server_leaves_store_alone() {
+    let (mut ops, store, dir) = with_folders(&[("Work", None)], 0);
+    let trash = Trash::new(dir.path().to_path_buf());
+    ops.fail_next_rename = Some(MailError::Protocol("NO not allowed".into()));
+    let rename = Command::RenameFolder {
+        from: "Work".into(),
+        to: "Jobs".into(),
+    };
+    let (_, events) = drain(&mut ops, &store, &trash, vec![rename]);
+    assert!(failure(&events).contains("NO not allowed"), "{events:?}");
+    assert!(store.folder("Work").unwrap().is_some());
+    assert!(store.folder("Jobs").unwrap().is_none());
+    assert_eq!(called(&ops, "subscribe_folder"), None);
+}
+
+#[test]
+fn delete_empty_folder() {
+    let (mut ops, store, dir) = with_folders(&[("Old", None)], 0);
+    let trash = Trash::new(dir.path().to_path_buf());
+    let (run, events) = drain(&mut ops, &store, &trash, vec![delete("Old", None, 0)]);
+    assert!(run.unwrap().used_connection);
+    assert!(events.contains(&Event::FolderDeleted {
+        account: "work".into(),
+        name: "Old".into(),
+        request: 1
+    }));
+    assert!(called(&ops, "delete_folder Old").is_some());
+    assert!(store.folder("Old").unwrap().is_none());
+}
+
+#[test]
+fn delete_refuses_subfolders() {
+    let (mut ops, store, dir) = with_folders(&[("Work", None), ("Work/Clients", None)], 0);
+    let trash = Trash::new(dir.path().to_path_buf());
+    let (_, events) = drain(&mut ops, &store, &trash, vec![delete("Work", None, 0)]);
+    assert!(
+        failure(&events).contains("Delete or move its subfolders first"),
+        "{events:?}"
+    );
+    assert_eq!(called(&ops, "delete_folder"), None);
+}
+
+#[test]
+fn delete_without_mode_answers_not_empty_with_count_and_trash() {
+    let (mut ops, store, dir) = with_folders(&[("Old", None)], 2);
+    let trash = Trash::new(dir.path().to_path_buf());
+    let (_, events) = drain(&mut ops, &store, &trash, vec![delete("Old", None, 0)]);
+    assert!(events.contains(&Event::FolderNotEmpty {
+        account: "work".into(),
+        name: "Old".into(),
+        count: 2,
+        has_trash: true,
+        request: 1
+    }));
+    assert_eq!(called(&ops, "delete_folder"), None);
+    assert_eq!(ops.mail["Old"].len(), 2);
+}
+
+#[test]
+fn delete_to_trash_moves_every_message_then_deletes() {
+    let (mut ops, store, dir) = with_folders(&[("Old", None)], 2);
+    let trash = Trash::new(dir.path().to_path_buf());
+    let command = delete("Old", Some(DeleteMode::Trash), 2);
+    let (_, events) = drain(&mut ops, &store, &trash, vec![command]);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::FolderDeleted { name, .. } if name == "Old")),
+        "{events:?}"
+    );
+    assert_eq!(ops.mail["Trash"].len(), 2);
+    assert!(!ops.mail.contains_key("Old"));
+    let moved = called(&ops, "move Old").unwrap();
+    assert!(moved < called(&ops, "delete_folder Old").unwrap());
+    assert!(store.folder("Old").unwrap().is_none());
+}
+
+#[test]
+fn delete_permanent_backs_up_every_message_first() {
+    let (mut ops, store, dir) = with_folders(&[("Old", None)], 2);
+    let trash = Trash::new(dir.path().to_path_buf());
+    let command = delete("Old", Some(DeleteMode::Permanent), 2);
+    let (_, events) = drain(&mut ops, &store, &trash, vec![command]);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::FolderDeleted { name, .. } if name == "Old")),
+        "{events:?}"
+    );
+    let backups = trash.list().unwrap();
+    assert_eq!(backups.len(), 2);
+    assert!(backups.iter().all(|b| b.folder == "Old"));
+    let last_fetch = ops
+        .calls
+        .iter()
+        .rposition(|c| c.starts_with("fetch_raw Old"));
+    assert!(last_fetch.unwrap() < called(&ops, "delete_folder Old").unwrap());
+    assert!(!ops.mail.contains_key("Old"));
+    assert!(store.folder("Old").unwrap().is_none());
+}
+
+#[test]
+fn delete_permanent_backup_failure_deletes_nothing() {
+    let (mut ops, store, dir) = with_folders(&[("Old", None)], 2);
+    // `write_atomic` makes the trash directory writable again, so a file in its place is what makes saving fail.
+    let blocker = dir.path().join("file");
+    std::fs::write(&blocker, b"").unwrap();
+    let trash = Trash::new(blocker.join("trash"));
+    let command = delete("Old", Some(DeleteMode::Permanent), 2);
+    let (_, events) = drain(&mut ops, &store, &trash, vec![command]);
+    assert!(
+        failure(&events).contains("nothing was deleted"),
+        "{events:?}"
+    );
+    assert_eq!(called(&ops, "delete_folder"), None);
+    assert_eq!(ops.mail["Old"].len(), 2);
+    assert!(store.folder("Old").unwrap().is_some());
+}
+
+#[test]
+fn delete_refuses_a_changed_count() {
+    let (mut ops, store, dir) = with_folders(&[("Old", None)], 4);
+    let trash = Trash::new(dir.path().to_path_buf());
+    let outcome = crate::folder_ops::delete(
+        &mut ops,
+        &store,
+        &trash,
+        "Old",
+        Some(DeleteMode::Trash),
+        3,
+        100,
+    );
+    assert!(
+        matches!(
+            outcome,
+            Err(crate::folder_ops::FolderError::CountChanged { shown: 3, now: 4 })
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(called(&ops, "move"), None);
+    assert_eq!(called(&ops, "delete_folder"), None);
+}
+
+#[test]
+fn delete_failing_after_moves_says_left_empty() {
+    let (mut ops, store, dir) = with_folders(&[("Old", None)], 2);
+    let trash = Trash::new(dir.path().to_path_buf());
+    ops.fail_next_delete = Some(MailError::Protocol("NO busy".into()));
+    let command = delete("Old", Some(DeleteMode::Trash), 2);
+    let (_, events) = drain(&mut ops, &store, &trash, vec![command]);
+    let message = failure(&events);
+    assert!(
+        message.contains("the folder's mail was moved, but deleting the empty folder failed")
+            && message.contains("NO busy"),
+        "{events:?}"
+    );
+    assert_eq!(ops.mail["Trash"].len(), 2);
+}
+
+#[test]
+fn folder_commands_are_failed_while_offline() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::under(dir.path());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (commands_tx, commands) = std::sync::mpsc::channel();
+    let folder_commands = [
+        Command::CreateFolder { name: "New".into() },
+        Command::RenameFolder {
+            from: "Old".into(),
+            to: "New".into(),
+        },
+        delete("Old", Some(DeleteMode::Permanent), 3),
+    ];
+    for (request, command) in (1..).zip(folder_commands) {
+        commands_tx.send(Job { request, command }).unwrap();
+    }
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let stop = shutdown.clone();
+    run_loop_with(
+        account(),
+        paths,
+        tx,
+        shutdown,
+        commands,
+        Arc::new(AtomicBool::new(false)),
+        || Err(SyncError::Mail(MailError::Connect("refused".into()))),
+        |_| stop.store(true, Ordering::Relaxed),
+    );
+    let events: Vec<Event> = rx.try_iter().collect();
+    for request in 1..=3 {
+        assert!(
+            events.iter().any(|e| matches!(e,
+                Event::CommandFailed { request: r, message, .. }
+                    if *r == request && message.starts_with("work is offline"))),
+            "{request}: {events:?}"
+        );
+    }
+}

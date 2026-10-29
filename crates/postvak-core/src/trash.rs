@@ -5,6 +5,7 @@ use crate::mail_ops::{MailError, MailOps};
 use crate::message::{Parsed, parse_headers};
 use crate::paths::write_atomic;
 use crate::rules::engine::RESTORED_KEYWORD;
+use crate::store::Store;
 
 pub struct Trash {
     dir: PathBuf,
@@ -18,6 +19,8 @@ pub enum RestoreError {
     Io(#[from] io::Error),
     #[error(transparent)]
     Mail(#[from] MailError),
+    #[error(transparent)]
+    Store(#[from] crate::store::StoreError),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -110,7 +113,13 @@ impl Trash {
     }
 
     /// Appends the backup to its original folder with the restored keyword, then removes the file. Returns the folder.
-    pub fn restore(&self, ops: &mut dyn MailOps, file: &Path) -> Result<String, RestoreError> {
+    /// A folder the store does not know, such as one deleted since, is created and subscribed first.
+    pub fn restore(
+        &self,
+        ops: &mut dyn MailOps,
+        store: &Store,
+        file: &Path,
+    ) -> Result<String, RestoreError> {
         let not_in_trash = || RestoreError::NotInTrash(file.display().to_string());
         let file = file.canonicalize().map_err(|_| not_in_trash())?;
         let in_trash = self.dir.canonicalize().ok().as_deref() == file.parent();
@@ -122,6 +131,14 @@ impl Trash {
             return Err(not_in_trash());
         };
         let raw = std::fs::read(&file)?;
+        if crate::folder_name::known(store, &folder)?.is_none() {
+            // A refused create leaves the APPEND's error to report, as a rule move does.
+            if let Err(e) = ops.create_folder(&folder) {
+                log::debug!("{folder}: create before restoring failed: {e}");
+            } else if let Err(e) = ops.subscribe_folder(&folder) {
+                log::warn!("{folder}: created, but could not subscribe to it: {e}");
+            }
+        }
         ops.append(&folder, &raw, &[RESTORED_KEYWORD])?;
         std::fs::remove_file(&file)?;
         Ok(folder)
@@ -262,7 +279,37 @@ mod tests {
         let file = dir.path().join("12-Caf&AOk--5.eml");
         std::fs::write(&file, b"raw").unwrap();
         let mut ops = crate::mail_ops::RecordingOps::default().with_folder("Caf\u{e9}", None);
-        assert_eq!(trash.restore(&mut ops, &file).unwrap(), "Caf\u{e9}");
+        let store = crate::store::Store::open_in_memory().unwrap();
+        store
+            .upsert_folder(&crate::store::Folder {
+                name: "Caf\u{e9}".into(),
+                uidvalidity: 1,
+                last_uid: 0,
+                special_use: None,
+                delimiter: None,
+            })
+            .unwrap();
+        assert_eq!(trash.restore(&mut ops, &store, &file).unwrap(), "Caf\u{e9}");
+        assert!(!ops.calls.iter().any(|c| c.starts_with("create_folder")));
+    }
+
+    #[test]
+    fn restore_recreates_a_deleted_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let trash = Trash::new(dir.path().to_path_buf());
+        let file = trash.save("Gone", 3, b"Subject: x\r\n\r\nhi", 100).unwrap();
+        let mut ops = crate::mail_ops::RecordingOps::default();
+        let store = crate::store::Store::open_in_memory().unwrap();
+        assert_eq!(trash.restore(&mut ops, &store, &file).unwrap(), "Gone");
+        assert_eq!(
+            ops.calls[..2],
+            [
+                "create_folder Gone".to_string(),
+                "subscribe_folder Gone".into()
+            ]
+        );
+        assert_eq!(ops.mail["Gone"].len(), 1);
+        assert!(!file.exists());
     }
 
     #[test]

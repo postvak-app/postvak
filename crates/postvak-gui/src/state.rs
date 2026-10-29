@@ -1036,6 +1036,10 @@ impl App {
             | Event::CommandFailed { account, .. }
             | Event::Connected { account, .. }
             | Event::Error { account, .. }
+            | Event::FolderCreated { account, .. }
+            | Event::FolderDeleted { account, .. }
+            | Event::FolderNotEmpty { account, .. }
+            | Event::FolderRenamed { account, .. }
             | Event::Indexed { account, .. }
             | Event::NewMail { account, .. }
             | Event::Restored { account, .. }
@@ -1211,6 +1215,10 @@ impl App {
                 contents,
                 ..
             } => self.attachment_fetched(index, (folder, uid), attachment, name, contents),
+            Event::FolderCreated { .. }
+            | Event::FolderDeleted { .. }
+            | Event::FolderRenamed { .. } => self.refresh(index),
+            Event::FolderNotEmpty { .. } => {}
             Event::Restored { folder, .. } => {
                 let line = format!(
                     "{}: restored to {}",

@@ -103,6 +103,10 @@ pub fn check_shape(name: &str, target: bool) -> Result<(), String> {
 /// knows by that name, in any normalization.
 pub fn check_new(store: &Store, name: &str) -> Result<String, String> {
     check_shape(name, true)?;
+    // Every server has INBOX, in any case (RFC 3501 §5.1), whether or not the store has synced it.
+    if name.eq_ignore_ascii_case("INBOX") {
+        return Err("a folder named INBOX already exists".into());
+    }
     if let Some(existing) = known(store, name).map_err(|e| e.to_string())? {
         return Err(format!("a folder named {} already exists", existing.name));
     }
@@ -175,6 +179,19 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         stored(&store, "Caf\u{e9}", None);
         assert!(check_new(&store, "Cafe\u{301}").is_err());
+    }
+
+    #[test]
+    fn check_new_refuses_inbox_in_any_case() {
+        let store = Store::open_in_memory().unwrap();
+        stored(&store, "INBOX", None);
+        for name in ["INBOX", "inbox", "Inbox"] {
+            assert_eq!(
+                check_new(&store, name),
+                Err("a folder named INBOX already exists".into()),
+                "{name}"
+            );
+        }
     }
 
     #[test]
