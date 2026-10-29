@@ -178,6 +178,12 @@ pub trait MailOps {
     /// Moves the message. Its new uid is not known here; the next sync of `to` finds it.
     fn move_message(&mut self, uid: u32, to: &str) -> MailResult<()>;
     fn create_folder(&mut self, name: &str) -> MailResult<()>;
+    /// Renames the folder; a server renames the folders under it too.
+    fn rename_folder(&mut self, from: &str, to: &str) -> MailResult<()>;
+    /// Deletes the folder and its messages; a server refuses one that has folders under it.
+    fn delete_folder(&mut self, name: &str) -> MailResult<()>;
+    /// Removes the folder from the subscribed ones.
+    fn unsubscribe_folder(&mut self, name: &str) -> MailResult<()>;
     /// Adds the folder to the subscribed ones, which clients such as iOS Mail list instead of every folder.
     fn subscribe_folder(&mut self, name: &str) -> MailResult<()>;
     /// Appends a message carrying `flags`, e.g. a keyword.
@@ -265,6 +271,13 @@ mod recording {
         pub fail_next_subscribe: Option<MailError>,
         /// Makes the next `create_folder` fail with this error, once, like a server refusing a name.
         pub fail_next_create: Option<MailError>,
+        /// Makes the next `delete_folder` fail with this error, once, like a server refusing DELETE.
+        pub fail_next_delete: Option<MailError>,
+        /// Makes the next `rename_folder` fail with this error, once, like a server refusing a name.
+        pub fail_next_rename: Option<MailError>,
+        /// (searches to let pass, folder, uid): delivers a message to the folder just before that `search_uids`
+        /// answers, like mail arriving while a client works on the folder.
+        pub arrive_at_search: Option<(usize, String, u32)>,
         /// Makes every `add_flags` fail with an I/O error once this many have succeeded, like a connection that dropped.
         pub fail_add_flags_after: Option<usize>,
         /// Makes `add_flags` panic, like a bug in a command.
@@ -307,6 +320,17 @@ mod recording {
                 return existing.clone();
             }
             name.to_string()
+        }
+
+        /// Whether `name` sits under `parent`, as the delimiter the fake lists for `parent` (`/` when it lists none) says.
+        fn is_child(&self, name: &str, parent: &str) -> bool {
+            let delimiter = self
+                .folders
+                .iter()
+                .find(|f| f.name == parent)
+                .and_then(|f| f.delimiter.clone())
+                .unwrap_or_else(|| "/".into());
+            name.starts_with(&format!("{parent}{delimiter}"))
         }
 
         /// Lists a `\\Noselect` folder, which holds no messages and cannot be created again.
@@ -519,6 +543,13 @@ mod recording {
         fn search_uids(&mut self, from_uid: u32) -> MailResult<Vec<u32>> {
             self.calls
                 .push(format!("search_uids {} {from_uid}", self.selected));
+            match self.arrive_at_search.take() {
+                Some((0, folder, uid)) => {
+                    let raw = "Subject: new\r\n\r\nhi";
+                    self.add_mail(&folder, uid, 0, raw, Some(raw));
+                }
+                later => self.arrive_at_search = later.map(|(n, f, u)| (n - 1, f, u)),
+            }
             let mut uids: Vec<u32> = self
                 .mail
                 .get(&self.selected)
@@ -773,9 +804,83 @@ mod recording {
             Ok(())
         }
 
+        fn rename_folder(&mut self, from: &str, to: &str) -> MailResult<()> {
+            self.calls.push(format!("rename_folder {from} {to}"));
+            if let Some(e) = self.fail_next_rename.take() {
+                return Err(e);
+            }
+            if !self.mail.contains_key(from) {
+                return Err(MailError::Protocol(format!("[NONEXISTENT] {from}")));
+            }
+            if self.mail.contains_key(to) || self.folders.iter().any(|f| f.name == to) {
+                return Err(MailError::Protocol(format!("[ALREADYEXISTS] {to}")));
+            }
+            let moved: Vec<String> = self
+                .mail
+                .keys()
+                .filter(|name| name.as_str() == from || self.is_child(name, from))
+                .cloned()
+                .collect();
+            let renamed = |name: &str| format!("{to}{}", &name[from.len()..]);
+            for old in moved {
+                let new = renamed(&old);
+                if let Some(list) = self.mail.remove(&old) {
+                    self.mail.insert(new.clone(), list);
+                }
+                if let Some(value) = self.uidvalidity.remove(&old) {
+                    self.uidvalidity.insert(new.clone(), value);
+                }
+                if let Some(value) = self.next_uid.remove(&old) {
+                    self.next_uid.insert(new.clone(), value);
+                }
+                let raws: Vec<_> = self
+                    .raw
+                    .keys()
+                    .filter(|(f, _)| *f == old)
+                    .cloned()
+                    .collect();
+                for key in raws {
+                    if let Some(bytes) = self.raw.remove(&key) {
+                        self.raw.insert((new.clone(), key.1), bytes);
+                    }
+                }
+                for folder in self.folders.iter_mut().filter(|f| f.name == old) {
+                    folder.name = new.clone();
+                }
+                if self.selected == old {
+                    self.selected = new;
+                }
+            }
+            Ok(())
+        }
+
+        fn delete_folder(&mut self, name: &str) -> MailResult<()> {
+            self.calls.push(format!("delete_folder {name}"));
+            if let Some(e) = self.fail_next_delete.take() {
+                return Err(e);
+            }
+            if !self.mail.contains_key(name) {
+                return Err(MailError::Protocol(format!("[NONEXISTENT] {name}")));
+            }
+            if self.mail.keys().any(|other| self.is_child(other, name)) {
+                return Err(MailError::Protocol(format!("[INUSE] {name} has children")));
+            }
+            self.mail.remove(name);
+            self.uidvalidity.remove(name);
+            self.next_uid.remove(name);
+            self.raw.retain(|(folder, _), _| folder != name);
+            self.folders.retain(|f| f.name != name);
+            Ok(())
+        }
+
         fn subscribe_folder(&mut self, name: &str) -> MailResult<()> {
             self.calls.push(format!("subscribe_folder {name}"));
             self.fail_next_subscribe.take().map_or(Ok(()), Err)
+        }
+
+        fn unsubscribe_folder(&mut self, name: &str) -> MailResult<()> {
+            self.calls.push(format!("unsubscribe_folder {name}"));
+            Ok(())
         }
 
         fn append(&mut self, folder: &str, raw: &[u8], flags: &[&str]) -> MailResult<()> {
@@ -870,6 +975,23 @@ mod recording {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fake_renames_children_and_refuses_to_delete_a_parent() {
+        let mut ops = RecordingOps::default()
+            .with_folder("Work", None)
+            .with_folder("Work/Clients", None)
+            .with_folder("Workshop", None);
+        ops.add_mail("Work/Clients", 1, 10, "Subject: a\r\n\r\n", None);
+        assert!(matches!(
+            ops.delete_folder("Work"),
+            Err(MailError::Protocol(m)) if m.contains("[INUSE]")
+        ));
+        ops.rename_folder("Work", "Archive/Work").unwrap();
+        assert_eq!(ops.mail["Archive/Work/Clients"].len(), 1);
+        assert!(ops.mail.contains_key("Workshop") && !ops.mail.contains_key("Work"));
+        assert!(ops.folders.iter().any(|f| f.name == "Archive/Work/Clients"));
+    }
 
     #[test]
     fn fake_search_uids_mimics_star_semantics() {

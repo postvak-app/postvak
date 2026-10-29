@@ -53,6 +53,17 @@ With two or more accounts, **All inboxes** at the top of the folder pane lists t
 
 Each account lists its INBOX and special folders (Archive, Drafts, Sent, Junk, Trash) first, then your own folders as a tree that follows the server's hierarchy. Each level steps in a little, up to three; deeper folders line up with the third level, are cut off with "…" when long, and show their whole path on hover. Click the chevron on the right of a parent to fold or unfold its branch; folding lasts until you close the window. A parent the server does not list as a folder is shown but cannot be opened. The folders scroll, while Rules, Activity and Backups stay at the bottom of the pane.
 
+### Managing folders
+
+Right-click a folder, or the account's name for a top-level one, for **New folder…**, **Rename…** and **Delete…**. `postvak folder create`, `rename` and `delete` do the same. A new folder is subscribed, so other mail apps show it too.
+
+- **New folder** on a folder makes a subfolder of it; on the account's name it makes a top-level folder, which on servers that keep every folder under INBOX goes under INBOX.
+
+- **Rename** changes the folder and the folders under it. Rules that name it follow. A rule for every account is split into one copy per account, named `<name> (<account>)`, so only the account's own copy follows the rename.
+- **Delete** of an empty folder just removes it. A folder holding mail says how many messages it holds and asks whether to move them to Trash or delete them permanently; moving them to Trash is offered only when the account has a Trash folder. A permanent delete saves each message as an `.eml` backup first; Backups, or `postvak trash restore`, brings one back and creates the folder again if it is gone.
+- INBOX and the special folders (Archive, Drafts, Sent, Junk, Trash, and the server's own such as Gmail's All Mail and Starred) cannot be renamed or deleted, and a folder with one under it cannot be renamed. Nor can a folder be renamed into one of its own subfolders.
+- A folder with subfolders cannot be deleted; delete or move the subfolders first.
+
 ## Message actions and search
 
 The top of the reading pane has buttons for Archive, Move, Delete, Junk, Flag and Read or unread; hover one to see its key. They act on the selection or the current row, like the keys. In the Archive folder the archive button moves mail back to INBOX, and in the Junk folder the junk button reports it as not junk. With two or more messages selected, the reading pane lists them under "3 messages selected" instead of showing one, and the same buttons, now with their names, act on all of them; **Clear selection** (or Esc) empties it. The search field at the top of the message list starts a search, like `/`.

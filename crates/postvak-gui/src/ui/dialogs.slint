@@ -3,6 +3,7 @@ import { LineEdit, ListView, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Heading, HoverFill, IconButton, TextButton } from "common.slint";
 import { AccountFields, AccountForm } from "account.slint";
+import { MenuChoice } from "folders.slint";
 
 export struct KeyHelp {
     keys: string,
@@ -268,6 +269,68 @@ export component ApplyConfirmDialog {
                 palette: Theme.pane;
                 framed: true;
                 clicked => { root.confirm(); }
+            }
+        }
+    }
+}
+
+// A new folder's name, a folder's new name, or a delete and what to do with its mail; `folders.rs` words it.
+export component FolderDialog {
+    in property <string> title;
+    in property <string> text;
+    // Whether it asks for a name, and the name it opens with.
+    in property <bool> field;
+    in property <string> name;
+    in property <string> error;
+    in property <[MenuChoice]> buttons;
+    in property <string> close-icon;
+    callback edited(string);
+    // Enter in the field: the first button.
+    callback accepted();
+    callback chosen(int);
+    callback close();
+    // Wider only when the buttons with a large count need it.
+    width: max(Theme.dialog, dialog.min-width);
+    dialog := Dialog {
+        title: root.title;
+        close-icon: root.close-icon;
+        close => { root.close(); }
+        if root.field: LineEdit {
+            height: Theme.control;
+            accessible-label: "Name";
+            init => {
+                self.text = root.name;
+                self.select-all();
+                self.focus();
+            }
+            edited(text) => { root.edited(text); }
+            accepted => { root.accepted(); }
+        }
+        if root.text != "": Text {
+            text: root.text;
+            color: Theme.pane.text;
+            wrap: word-wrap;
+        }
+        if root.error != "": Text {
+            text: root.error;
+            color: Theme.pane.error;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            spacing: Theme.pad;
+            Rectangle { horizontal-stretch: 1; }
+            TextButton {
+                text: "Cancel";
+                palette: Theme.pane;
+                framed: true;
+                clicked => { root.close(); }
+            }
+            for button[i] in root.buttons: TextButton {
+                text: button.title;
+                enabled: button.enabled;
+                palette: Theme.pane;
+                framed: true;
+                clicked => { root.chosen(i); }
             }
         }
     }

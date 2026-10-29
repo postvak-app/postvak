@@ -21,10 +21,11 @@ use super::wire::{
 };
 use crate::config::AccountConfig;
 use crate::credentials::Secret;
+use crate::folder_ops::Deleted;
 use crate::paths::{self, Paths};
 use crate::rules::Action;
 use crate::store::{Message, Store};
-use crate::sync::{Command, Event, EventResults, RequestId};
+use crate::sync::{Command, DeleteMode, Event, EventResults, RequestId};
 
 pub const NO_REPLY: &str =
     "no reply from the daemon within 120 s; the command may still run, see `postvak log`";
@@ -284,6 +285,49 @@ impl LazyClient {
     pub fn restore(&self, account: &str, file: PathBuf) -> anyhow::Result<String> {
         self.request(account, Command::Restore { file }, |reply| match reply {
             Event::Restored { folder, .. } => Ok(folder),
+            other => Err(other),
+        })
+    }
+
+    /// Creates folder `name` through the daemon; its name as created, in NFC.
+    pub fn create_folder(&self, account: &str, name: &str) -> anyhow::Result<String> {
+        let command = Command::CreateFolder { name: name.into() };
+        self.request(account, command, |reply| match reply {
+            Event::FolderCreated { name, .. } => Ok(name),
+            other => Err(other),
+        })
+    }
+
+    /// Renames folder `from` and the folders under it through the daemon; the new name, in NFC.
+    pub fn rename_folder(&self, account: &str, from: &str, to: &str) -> anyhow::Result<String> {
+        let command = Command::RenameFolder {
+            from: from.into(),
+            to: to.into(),
+        };
+        self.request(account, command, |reply| match reply {
+            Event::FolderRenamed { to, .. } => Ok(to),
+            other => Err(other),
+        })
+    }
+
+    /// Deletes folder `name` through the daemon; one holding mail needs `mode` and the `count` the user confirmed.
+    pub fn delete_folder(
+        &self,
+        account: &str,
+        name: &str,
+        mode: Option<DeleteMode>,
+        count: u32,
+    ) -> anyhow::Result<Deleted> {
+        let command = Command::DeleteFolder {
+            name: name.into(),
+            mode,
+            count,
+        };
+        self.request(account, command, |reply| match reply {
+            Event::FolderDeleted { .. } => Ok(Deleted::Done),
+            Event::FolderNotEmpty {
+                count, has_trash, ..
+            } => Ok(Deleted::NotEmpty { count, has_trash }),
             other => Err(other),
         })
     }
@@ -600,10 +644,16 @@ impl Drop for Client {
 /// giving up early would drop the client and let an auto-started daemon idle out mid-run.
 pub(super) fn reply_timeout(command: &Command) -> Option<Duration> {
     match command {
-        Command::ApplyRule { .. } | Command::SearchServer { .. } | Command::SyncNow => None,
+        // A delete backs up or moves every message of a folder first, however many it holds.
+        Command::ApplyRule { .. }
+        | Command::DeleteFolder { .. }
+        | Command::SearchServer { .. }
+        | Command::SyncNow => None,
         Command::Apply { .. }
+        | Command::CreateFolder { .. }
         | Command::FetchAttachment { .. }
         | Command::FetchBody { .. }
+        | Command::RenameFolder { .. }
         | Command::Restore { .. } => Some(REPLY_TIMEOUT),
     }
 }

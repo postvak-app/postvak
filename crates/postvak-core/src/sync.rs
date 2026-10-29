@@ -12,11 +12,12 @@ use serde::{Deserialize, Serialize};
 use crate::actions::{self, ActionError};
 use crate::config::{AccountConfig, ConfigError, Identity};
 use crate::credentials::{self, CredentialError};
+use crate::folder_ops::{self, Deleted, FolderError};
 use crate::mail_ops::imap::ImapOps;
 use crate::mail_ops::{Envelope, IdleOutcome, MailError, MailOps, RemoteFolder, StatusInfo};
 use crate::message::{clean, parse_headers, thread_id};
 use crate::paths::Paths;
-use crate::rules::apply::{ApplyError, apply, ensure_body_text, plan_for};
+use crate::rules::apply::{ApplyError, apply, ensure_body_text, plan_for, special_folder};
 use crate::rules::engine::{Context, Mode, evaluate, folder_needs_body};
 use crate::rules::{Action, CompiledRule, RulesError};
 use crate::store::{Folder, Message, Store, StoreError};
@@ -39,6 +40,8 @@ pub enum SyncError {
     Store(#[from] StoreError),
     #[error(transparent)]
     Apply(#[from] ApplyError),
+    #[error(transparent)]
+    Folder(#[from] FolderError),
     #[error(transparent)]
     Rules(#[from] RulesError),
     #[error(transparent)]
@@ -110,6 +113,30 @@ pub enum Event {
         account: String,
         message: String,
     },
+    FolderCreated {
+        account: String,
+        name: String,
+        request: RequestId,
+    },
+    FolderDeleted {
+        account: String,
+        name: String,
+        request: RequestId,
+    },
+    /// A delete without a mode found mail in the folder: `count` messages, and whether the account has a Trash folder.
+    FolderNotEmpty {
+        account: String,
+        name: String,
+        count: u32,
+        has_trash: bool,
+        request: RequestId,
+    },
+    FolderRenamed {
+        account: String,
+        from: String,
+        to: String,
+        request: RequestId,
+    },
     /// The indexer stored the text of `count` more messages, so a search may find more now.
     Indexed {
         account: String,
@@ -159,6 +186,10 @@ impl Event {
             | Event::AttachmentFetched { request, .. }
             | Event::BodyReady { request, .. }
             | Event::CommandFailed { request, .. }
+            | Event::FolderCreated { request, .. }
+            | Event::FolderDeleted { request, .. }
+            | Event::FolderNotEmpty { request, .. }
+            | Event::FolderRenamed { request, .. }
             | Event::Restored { request, .. }
             | Event::RuleApplied { request, .. }
             | Event::ServerSearchDone { request, .. } => vec![*request],
@@ -316,6 +347,15 @@ pub enum Command {
     ApplyRule {
         name: String,
     },
+    CreateFolder {
+        name: String,
+    },
+    /// `count` is the number of messages the user confirmed; a folder holding another number is left alone.
+    DeleteFolder {
+        name: String,
+        mode: Option<DeleteMode>,
+        count: u32,
+    },
     FetchBody {
         folder: String,
         uid: u32,
@@ -329,6 +369,10 @@ pub enum Command {
         uid: u32,
         index: usize,
     },
+    RenameFolder {
+        from: String,
+        to: String,
+    },
     Restore {
         file: PathBuf,
     },
@@ -338,6 +382,14 @@ pub enum Command {
         query: String,
     },
     SyncNow,
+}
+
+/// What happens to the mail of a folder being deleted: moved to the Trash folder, or backed up and deleted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeleteMode {
+    Trash,
+    Permanent,
 }
 
 /// `Action` skips its user-only variants in rules.toml, so the wire derives them separately.
@@ -380,6 +432,8 @@ pub enum NextPass {
 pub struct CommandsRun {
     pub used_connection: bool,
     pub next: NextPass,
+    /// A folder was created, renamed or deleted, so a pass's folder listing and compiled rules are out of date.
+    pub folders_changed: bool,
 }
 
 /// Called between steps of a pass with what is happening; may run queued commands on the connection.
@@ -1131,6 +1185,7 @@ fn run_commands(
         let ran = ran?;
         run.used_connection |= ran.used_connection;
         run.next = run.next.max(ran.next);
+        run.folders_changed |= ran.folders_changed;
     }
     Ok(run)
 }
@@ -1320,10 +1375,64 @@ fn run_command(
                 })
                 .map_err(SyncError::from)
         }
+        Command::CreateFolder { name: folder } => {
+            run.used_connection = true;
+            run.folders_changed = true;
+            folder_ops::create(ops, store, &folder)
+                .map(|folder| Event::FolderCreated {
+                    account: name(),
+                    name: folder,
+                    request,
+                })
+                .map_err(SyncError::from)
+        }
+        Command::RenameFolder { from, to } => {
+            run.used_connection = true;
+            run.folders_changed = true;
+            folder_ops::rename(ops, store, &from, &to)
+                .map(|(from, to)| Event::FolderRenamed {
+                    account: name(),
+                    from,
+                    to,
+                    request,
+                })
+                .map_err(SyncError::from)
+        }
+        Command::DeleteFolder {
+            name: folder,
+            mode,
+            count,
+        } => {
+            run.used_connection = true;
+            run.folders_changed = true;
+            folder_ops::delete(ops, store, trash, &folder, mode, count, now())
+                .map(|(folder, deleted)| match deleted {
+                    Deleted::Done => {
+                        if mode == Some(DeleteMode::Trash)
+                            && let Ok(Some(target)) = special_folder(store, "Trash")
+                        {
+                            sync_now(ops, store, &target);
+                        }
+                        Event::FolderDeleted {
+                            account: name(),
+                            name: folder,
+                            request,
+                        }
+                    }
+                    Deleted::NotEmpty { count, has_trash } => Event::FolderNotEmpty {
+                        account: name(),
+                        name: folder,
+                        count,
+                        has_trash,
+                        request,
+                    },
+                })
+                .map_err(SyncError::from)
+        }
         Command::Restore { file } => {
             run.used_connection = true;
             trash
-                .restore(ops, &file)
+                .restore(ops, store, &file)
                 .map(|folder| {
                     sync_now(ops, store, &folder);
                     run.next = NextPass::Inbox;
@@ -1415,9 +1524,16 @@ impl LostConnection for RestoreError {
     }
 }
 
+impl LostConnection for FolderError {
+    fn is_lost_connection(&self) -> bool {
+        matches!(self, FolderError::Mail(e) | FolderError::LeftEmpty(e) if e.is_lost_connection())
+    }
+}
+
 impl LostConnection for SyncError {
     fn is_lost_connection(&self) -> bool {
         match self {
+            SyncError::Folder(e) => e.is_lost_connection(),
             SyncError::Action(e) => e.is_lost_connection(),
             SyncError::Restore(e) => e.is_lost_connection(),
             SyncError::Mail(e) => e.is_lost_connection(),
@@ -1672,6 +1788,9 @@ impl<'a> AccountSync<'a> {
         let mut next = NextPass::None;
         // After a command hits a lost connection nothing else may touch it this pass.
         let mut lost = None;
+        // A folder command makes the pass's listing and rules stale: forgetting unlisted folders would drop a renamed
+        // one, and a rule would move to an old name. The pass ends and a full one starts from a new listing.
+        let mut folders_changed = false;
         let mut checkpoint = |ops: &mut dyn MailOps, step: Activity| {
             if lost.is_some() {
                 return Err(SyncError::Stopped);
@@ -1685,6 +1804,10 @@ impl<'a> AccountSync<'a> {
             ) {
                 Ok(run) => {
                     next = next.max(run.next);
+                    folders_changed |= run.folders_changed;
+                    if folders_changed {
+                        return Err(SyncError::Stopped);
+                    }
                     Ok(run.used_connection)
                 }
                 Err(e) => {
@@ -1707,6 +1830,9 @@ impl<'a> AccountSync<'a> {
         });
         if let Some(e) = lost {
             return Err(e);
+        }
+        if folders_changed {
+            return Ok(NextPass::Full);
         }
         let (new, mut errors, run) = ran?;
         errors.extend(rules.error.clone());

@@ -547,7 +547,7 @@ fn set_flag(
     Ok(())
 }
 
-fn special_folder(store: &Store, role: &str) -> Result<Option<String>, StoreError> {
+pub(crate) fn special_folder(store: &Store, role: &str) -> Result<Option<String>, StoreError> {
     Ok(store
         .folders()?
         .into_iter()

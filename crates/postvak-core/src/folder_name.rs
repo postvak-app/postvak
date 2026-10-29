@@ -78,6 +78,79 @@ pub fn under_inbox<'a>(folders: impl IntoIterator<Item = (&'a str, Option<&'a st
     any
 }
 
+/// Refuses a folder name servers refuse or misread, by its levels between `/`, the delimiter the docs teach: a level
+/// starting or ending in whitespace, which looks like a folder that is not there. A move target, which may be created,
+/// also may not have an empty level (`/Lists`, `Lists//GitHub`, or `Lists/`, which RFC 3501 §6.3.3 makes only a
+/// parent for later folders) or IMAP's `LIST` wildcards `*` and `%`.
+pub fn check_shape(name: &str, target: bool) -> Result<(), String> {
+    if target && name.contains(['*', '%']) {
+        return Err("must not contain * or %, which IMAP reads as wildcards".into());
+    }
+    for level in name.split('/') {
+        if target && level.is_empty() {
+            return Err("must not have an empty level: a leading, trailing or doubled /".into());
+        }
+        if level.trim() != level {
+            return Err(format!(
+                "level '{level}' must not start or end with whitespace"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `name` in NFC for a folder to create, or why not: a bad shape ([`check_shape`]) or a folder the store already
+/// knows by that name, in any normalization.
+pub fn check_new(store: &Store, name: &str) -> Result<String, String> {
+    check_shape(name, true)?;
+    // Every server has INBOX, in any case (RFC 3501 §5.1), whether or not the store has synced it.
+    if name.eq_ignore_ascii_case("INBOX") {
+        return Err("a folder named INBOX already exists".into());
+    }
+    if let Some(existing) = known(store, name).map_err(|e| e.to_string())? {
+        return Err(format!("a folder named {} already exists", existing.name));
+    }
+    Ok(nfc(name).into_owned())
+}
+
+/// Why a folder must not be renamed or deleted: `INBOX` in any case, or the special-use role the store has for it.
+pub fn protected(store: &Store, name: &str) -> Result<Option<String>, StoreError> {
+    if name.eq_ignore_ascii_case("INBOX") {
+        return Ok(Some("INBOX".into()));
+    }
+    Ok(known(store, name)?.and_then(|folder| folder.special_use))
+}
+
+/// The first folder under `name` that [`protected`] names, as `child (role)`.
+pub fn protected_below(store: &Store, name: &str) -> Result<Option<String>, StoreError> {
+    for child in children(store, name)? {
+        if let Some(role) = protected(store, &child)? {
+            return Ok(Some(format!("{child} ({role})")));
+        }
+    }
+    Ok(None)
+}
+
+/// The stored folders under `name`: those starting with `name` and their own delimiter, sorted. A folder without a
+/// delimiter has none.
+pub fn children(store: &Store, name: &str) -> Result<Vec<String>, StoreError> {
+    let Some(parent) = known(store, name)? else {
+        return Ok(Vec::new());
+    };
+    let Some(delimiter) = parent.delimiter.filter(|d| !d.is_empty()) else {
+        return Ok(Vec::new());
+    };
+    let prefix = format!("{}{delimiter}", parent.name);
+    let mut found: Vec<String> = store
+        .folders()?
+        .into_iter()
+        .filter(|folder| folder.name.starts_with(&prefix))
+        .map(|folder| folder.name)
+        .collect();
+    found.sort();
+    Ok(found)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,6 +166,76 @@ mod tests {
             special_use: None,
             delimiter: Some("/".into()),
         }
+    }
+
+    fn stored(store: &Store, name: &str, special_use: Option<&str>) {
+        let mut f = folder(name);
+        f.special_use = special_use.map(Into::into);
+        store.upsert_folder(&f).unwrap();
+    }
+
+    #[test]
+    fn check_new_refuses_a_known_name_in_nfd() {
+        let store = Store::open_in_memory().unwrap();
+        stored(&store, "Caf\u{e9}", None);
+        assert!(check_new(&store, "Cafe\u{301}").is_err());
+    }
+
+    #[test]
+    fn check_new_refuses_inbox_in_any_case() {
+        let store = Store::open_in_memory().unwrap();
+        stored(&store, "INBOX", None);
+        for name in ["INBOX", "inbox", "Inbox"] {
+            assert_eq!(
+                check_new(&store, name),
+                Err("a folder named INBOX already exists".into()),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn check_new_returns_nfc() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(check_new(&store, NFD).unwrap(), NFC);
+    }
+
+    #[test]
+    fn check_new_refuses_wildcards_and_empty_levels() {
+        let store = Store::open_in_memory().unwrap();
+        for bad in ["A/*", "A//B", "A/"] {
+            assert!(check_new(&store, bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn inbox_and_special_use_are_protected() {
+        let store = Store::open_in_memory().unwrap();
+        stored(&store, "Bin", Some("Trash"));
+        stored(&store, "Plain", None);
+        assert_eq!(protected(&store, "inbox").unwrap(), Some("INBOX".into()));
+        assert_eq!(protected(&store, "Bin").unwrap(), Some("Trash".into()));
+        assert_eq!(protected(&store, "Plain").unwrap(), None);
+    }
+
+    #[test]
+    fn children_match_by_delimiter_not_prefix() {
+        let store = Store::open_in_memory().unwrap();
+        for name in ["Work", "Work/Clients", "Workshop"] {
+            stored(&store, name, None);
+        }
+        assert_eq!(children(&store, "Work").unwrap(), ["Work/Clients"]);
+    }
+
+    #[test]
+    fn protected_below_names_the_child() {
+        let store = Store::open_in_memory().unwrap();
+        stored(&store, "Mail", None);
+        stored(&store, "Mail/Sent", Some("Sent"));
+        assert_eq!(
+            protected_below(&store, "Mail").unwrap(),
+            Some("Mail/Sent (Sent)".into())
+        );
     }
 
     #[test]

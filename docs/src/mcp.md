@@ -143,6 +143,7 @@ With more than one visible account, every tool that acts on one message needs `a
 - `--account` hides other accounts from every tool. Rule writes refuse rules scoped to a hidden account, and so does proposing one. A rule without `account` applies to every account, hidden ones too, so while an account is hidden `rules_approve` and `rules_set_enabled` refuse to turn such a rule on, and `rules_move` refuses to move it; turning it off and rejecting it still work.
 - Without `read:bodies`, no tool returns or reveals body text: `search` covers subject, addresses and attachment names only, and `rules_test` refuses a rule that matches on the body.
 - Without `read:headers`, no tool returns or reveals a header beyond sender, recipients, subject, date and the threading ids, apart from one bit: a rule with `authenticated` shows which messages your provider's `Authentication-Results` vouches for. `rules_test` and the other rule tools refuse a rule with a `header` condition, at any depth of `any` and `none`.
+- The server cannot create, rename or delete folders, with any scope. That is left to you, in the window or with `postvak folder`, on purpose: a folder delete can take a whole mailbox's structure with it.
 - A call outside the granted scopes fails with "not allowed with these scopes". Hosts only see the tools you granted, so they should not make such a call.
 
 ## Alongside the window and the CLI

@@ -12,11 +12,13 @@ use postvak_core::credentials::Secret;
 use postvak_core::daemon::Client;
 use postvak_core::daemon::client::LazyClient;
 use postvak_core::daemon::wire::Status;
+use postvak_core::folder_name;
+use postvak_core::folder_ops::Deleted;
 use postvak_core::message::clean;
 use postvak_core::output::{Fields, RowKind};
 use postvak_core::page;
 use postvak_core::paths::Paths;
-use postvak_core::rules::edit::Place;
+use postvak_core::rules::edit::{FolderRename, Place, rules_after_rename};
 use postvak_core::rules::{Action, CompiledRule, Rule, RuleFile};
 use postvak_core::store::{Filter, Message, Store};
 use postvak_core::sync::{self, Event};
@@ -144,6 +146,11 @@ enum Command {
     Rules {
         #[command(subcommand)]
         command: RulesCommand,
+    },
+    #[command(about = postvak_core::help::FOLDER)]
+    Folder {
+        #[command(subcommand)]
+        command: FolderCommand,
     },
     #[command(about = postvak_core::help::FOLDERS)]
     Folders {
@@ -528,6 +535,35 @@ enum RulesCommand {
 }
 
 #[derive(Subcommand)]
+enum FolderCommand {
+    #[command(about = postvak_core::help::FOLDER_CREATE)]
+    Create {
+        name: String,
+        #[arg(long)]
+        account: Option<String>,
+    },
+    #[command(about = postvak_core::help::FOLDER_DELETE)]
+    Delete {
+        name: String,
+        #[arg(long)]
+        account: Option<String>,
+        /// Move the mail to Trash first
+        #[arg(long, conflicts_with = "permanent")]
+        trash: bool,
+        /// Delete the mail with the folder, keeping an .eml backup
+        #[arg(long)]
+        permanent: bool,
+    },
+    #[command(about = postvak_core::help::FOLDER_RENAME)]
+    Rename {
+        from: String,
+        to: String,
+        #[arg(long)]
+        account: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum TrashCommand {
     #[command(about = postvak_core::help::TRASH_LIST)]
     List {
@@ -664,6 +700,7 @@ pub fn run() -> Result<()> {
             }
             Ok(())
         }
+        Command::Folder { command } => cmd_folder(command, &config, &paths),
         Command::Folders { account, json } => {
             for acc in config::select(&config.accounts, account.as_deref())? {
                 let store = Store::open_account(&paths, &acc.name)?;
@@ -1021,6 +1058,85 @@ fn unsubscribe_line(report: &postvak_core::unsubscribe::Report) -> String {
         ("one_click", false) => format!("would unsubscribe by one-click POST to {url}"),
         ("mail", false) => format!("send a mail to unsubscribe: {url}"),
         _ => format!("open this page to unsubscribe: {url}"),
+    }
+}
+
+fn cmd_folder(command: FolderCommand, config: &Config, paths: &Paths) -> Result<()> {
+    match command {
+        FolderCommand::Create { name, account } => {
+            let acc = config::single(&config.accounts, account.as_deref())?;
+            let created = LazyClient::new(paths).create_folder(&acc.name, &name)?;
+            println!("created {}", clean(&created, false));
+            Ok(())
+        }
+        FolderCommand::Delete {
+            name,
+            account,
+            trash,
+            permanent,
+        } => {
+            let acc = config::single(&config.accounts, account.as_deref())?;
+            let daemon = LazyClient::new(paths);
+            let Deleted::NotEmpty { count, has_trash } =
+                daemon.delete_folder(&acc.name, &name, None, 0)?
+            else {
+                println!(
+                    "{}",
+                    postvak_core::help::folder_deleted(&clean(&name, false), 0, None)
+                );
+                return Ok(());
+            };
+            let mode = match (trash, permanent) {
+                (true, _) if !has_trash => {
+                    bail!("{}", postvak_core::help::folder_no_trash())
+                }
+                (true, _) => sync::DeleteMode::Trash,
+                (_, true) => sync::DeleteMode::Permanent,
+                _ => bail!(
+                    "{}",
+                    postvak_core::help::folder_not_empty(&clean(&name, false), count)
+                ),
+            };
+            daemon.delete_folder(&acc.name, &name, Some(mode), count)?;
+            println!(
+                "{}",
+                postvak_core::help::folder_deleted(&clean(&name, false), count, Some(mode))
+            );
+            Ok(())
+        }
+        FolderCommand::Rename { from, to, account } => {
+            let acc = config::single(&config.accounts, account.as_deref())?;
+            let delimiter = folder_name::known(&Store::open_account(paths, &acc.name)?, &from)?
+                .and_then(|folder| folder.delimiter);
+            let accounts: Vec<String> = config.accounts.iter().map(|a| a.name.clone()).collect();
+            let renamed = LazyClient::new(paths).rename_folder(&acc.name, &from, &to)?;
+            println!(
+                "renamed {} to {}",
+                clean(&from, false),
+                clean(&renamed, false)
+            );
+            let rename = FolderRename {
+                account: &acc.name,
+                accounts: &accounts,
+                from: &from,
+                to: &renamed,
+                delimiter: delimiter.as_deref(),
+            };
+            let naming =
+                rules_after_rename(&paths.rules_file(), &rename).map_err(anyhow::Error::msg)?;
+            for (name, split) in naming {
+                let name = clean(&name, false);
+                println!(
+                    "{}",
+                    if split {
+                        postvak_core::help::folder_rule_split(&name)
+                    } else {
+                        postvak_core::help::folder_rule_followed(&name)
+                    }
+                );
+            }
+            Ok(())
+        }
     }
 }
 
