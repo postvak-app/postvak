@@ -848,7 +848,7 @@ impl App {
             html_size: None,
             history: VecDeque::new(),
             history_open: false,
-            launch,
+            launch: crate::opener::open,
             last_index_reload: 0.0,
             last_poll: 0.0,
             last_reconnect: 0.0,
@@ -3853,27 +3853,6 @@ fn same_row(row: &Row, cursor: &Row) -> bool {
         (Some(row_thread), Some(cursor_thread)) if !row.member => row_thread == cursor_thread,
         _ => row.key() == cursor.key(),
     }
-}
-
-/// Opens a file or URL with the desktop's default app; `text` asks for the text editor where the platform can.
-pub(crate) fn launch(target: &std::ffi::OsStr, text: bool) -> std::io::Result<()> {
-    // `open -t` uses the default text editor, so a missing `.toml` association still opens one.
-    let (opener, flags): (&str, &[&str]) = match (cfg!(target_os = "macos"), text) {
-        (true, true) => ("open", &["-t"]),
-        (true, false) => ("open", &[]),
-        (false, _) => ("xdg-open", &[]),
-    };
-    let mut child = std::process::Command::new(opener)
-        .args(flags)
-        .arg(target)
-        .spawn()?;
-    // The target is not logged: a link from a message can carry a token.
-    worker::spawn("opener-wait", move || match child.wait() {
-        Ok(status) if !status.success() => log::warn!("{opener}: {status}"),
-        Ok(_) => {}
-        Err(e) => log::warn!("{opener}: {e}"),
-    });
-    Ok(())
 }
 
 /// Where Save puts attachments: the Downloads folder, else home.

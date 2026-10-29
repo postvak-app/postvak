@@ -127,10 +127,11 @@ impl Marker {
 }
 
 /// Counts this start as one that showed a window once `window`'s native window has its first event. Reports the
-/// `first_frame` phase once that frame is drawn.
+/// `first_frame` phase once that frame is drawn. Hands the opener the activation tokens the window asked for.
 pub(crate) fn watch(window: &slint::Window, marker: Option<Marker>) {
     // ponytail: the first event comes before the first frame, so a crash while drawing that frame is not counted.
     window.on_winit_window_event(move |_, event| {
+        crate::opener::on_event(event);
         if !SHOWN.swap(true, Ordering::Relaxed)
             && let Some(marker) = &marker
         {
