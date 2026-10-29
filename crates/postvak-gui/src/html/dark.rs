@@ -8,9 +8,13 @@ use blitz_dom::node::{ImageData, Status};
 use blitz_dom::{BaseDocument, NodeId, local_name};
 use style::color::{AbsoluteColor, ColorSpace};
 use style::properties::ComputedValues;
+use style::properties::style_structs::Background;
 use style::servo_arc::Arc;
-use style::values::computed::{Color, Gradient, Image};
+use style::values::computed::background::BackgroundSize;
+use style::values::computed::{Color, Gradient, Image, Length, NonNegativeLengthPercentage};
 use style::values::generics::image::GradientItem;
+use style::values::generics::length::GenericLengthPercentageOrAuto;
+use style::values::specified::background::{BackgroundRepeat, BackgroundRepeatKeyword};
 
 use crate::theme::contrast;
 
@@ -32,6 +36,9 @@ const HIDDEN: f32 = 1.2;
 const GREY: f32 = 0.05;
 /// How far below the body the outermost container of a page is looked for.
 const CONTAINER_DEPTH: usize = 6;
+/// The share of its box a background picture must paint for the text on it to count as written for the picture:
+/// below it, the picture is an icon or a bullet beside the text.
+const COVERS: f32 = 0.5;
 
 const WHITE: Rgb = [1.0; 3];
 const BLACK: Rgb = [0.0; 3];
@@ -44,11 +51,15 @@ const fn rgb8(r: u8, g: u8, b: u8) -> Rgb {
 pub(crate) type Originals = Vec<(NodeId, Arc<ComputedValues>)>;
 
 /// Adapts a page styled with the dark scheme, unless its own colours already make it dark; the styles it replaced.
+/// A page made dark by its containers rather than its canvas keeps its colours, except text on no background of the
+/// sender's, which sits on the dark pane.
 pub(crate) fn adapt(doc: &mut BaseDocument) -> Originals {
-    if already_dark(doc) {
-        return Vec::new();
-    }
-    let changes = plan(doc);
+    let bare = match judge(doc) {
+        Page::DarkCanvas => return Vec::new(),
+        Page::DarkContainers => true,
+        Page::Light => false,
+    };
+    let changes = plan(doc, bare);
     apply(doc, changes)
 }
 
@@ -201,8 +212,8 @@ enum Layers {
     None,
     /// Only gradients, with every colour stop: they are adapted as surfaces are.
     Gradients(Vec<Rgba>),
-    /// A picture that loaded (or anything else that is not a gradient or a picture), left as the sender drew it, with
-    /// what is on it.
+    /// A picture that loaded and covers the box (or anything else that is not a gradient or a picture), left as the
+    /// sender drew it, with what is on it.
     Picture,
 }
 
@@ -225,13 +236,16 @@ fn paint_of(node: &blitz_dom::Node) -> Option<Paint> {
                     stops.push(rgba(&stop.resolve_to_absolute(&current)))
                 });
             }
-            // A picture that did not load (remote content not shown, a missing part) paints nothing.
+            // A picture that did not load (remote content not shown, a missing part) paints nothing; one that paints
+            // only a corner of the box (an icon, a bullet) leaves the text on what is behind it.
             Image::Url(_) => {
-                picture |= loaded.get(idx).is_some_and(|data| {
-                    data.as_ref().is_some_and(|data| {
+                picture |= loaded
+                    .get(idx)
+                    .and_then(Option::as_ref)
+                    .filter(|data| {
                         data.status == Status::Ok && !matches!(data.image, ImageData::None)
                     })
-                })
+                    .is_some_and(|data| covers(node, back, idx, &data.image))
             }
             _ => picture = true,
         }
@@ -248,6 +262,61 @@ fn paint_of(node: &blitz_dom::Node) -> Option<Paint> {
         bg: rgba(&bg),
         layers,
     })
+}
+
+/// The `idx`th value of a background list, which repeats when it is shorter than the list of images.
+fn cyclic<T>(list: &[T], idx: usize) -> Option<&T> {
+    list.get(idx.checked_rem(list.len())?)
+}
+
+/// Whether the `idx`th background picture of `node`, `image`, paints at least `COVERS` of its box, as its size and
+/// repeat lay it out. A picture without a size of its own, or a box without one, counts as covering.
+fn covers(node: &blitz_dom::Node, back: &Background, idx: usize, image: &ImageData) -> bool {
+    let size = node.final_layout().size;
+    let (w, h) = (size.width, size.height);
+    let ImageData::Raster(raster) = image else {
+        return true;
+    };
+    let (iw, ih) = (raster.width as f32, raster.height as f32);
+    if !(w > 0.0 && h > 0.0 && iw > 0.0 && ih > 0.0) {
+        return true;
+    }
+    let resolve = |value: &GenericLengthPercentageOrAuto<NonNegativeLengthPercentage>,
+                   against: f32| match value {
+        GenericLengthPercentageOrAuto::LengthPercentage(v) => {
+            Some(v.0.resolve(Length::new(against)).px())
+        }
+        GenericLengthPercentageOrAuto::Auto => None,
+    };
+    let (tile_w, tile_h) = match cyclic(&back.background_size.0, idx) {
+        Some(BackgroundSize::Cover) => return true,
+        Some(BackgroundSize::Contain) => {
+            let ratio = (w / iw).min(h / ih);
+            (iw * ratio, ih * ratio)
+        }
+        Some(BackgroundSize::ExplicitSize { width, height }) => {
+            match (resolve(width, w), resolve(height, h)) {
+                (Some(tw), Some(th)) => (tw, th),
+                (Some(tw), None) => (tw, tw * ih / iw),
+                (None, Some(th)) => (th * iw / ih, th),
+                (None, None) => (iw, ih),
+            }
+        }
+        None => (iw, ih),
+    };
+    let (across, down) = cyclic(&back.background_repeat.0, idx).map_or(
+        (
+            BackgroundRepeatKeyword::Repeat,
+            BackgroundRepeatKeyword::Repeat,
+        ),
+        |BackgroundRepeat(across, down)| (*across, *down),
+    );
+    // A repeating picture fills its axis; one that does not, as much of it as one tile reaches.
+    let extent = |keyword: BackgroundRepeatKeyword, tile: f32, side: f32| match keyword {
+        BackgroundRepeatKeyword::NoRepeat => tile.clamp(0.0, side),
+        _ => side,
+    };
+    extent(across, tile_w, w) * extent(down, tile_h, h) >= COVERS * w * h
 }
 
 /// Calls `f` on each colour stop of `gradient`.
@@ -292,9 +361,19 @@ fn mean(colours: &[Rgba]) -> Rgba {
     [0, 1, 2, 3].map(|i| colours.iter().map(|c| c[i]).sum::<f32>() / n)
 }
 
-/// Whether the page's own colours make it dark: the canvas (the root's background, else the body's), or, when neither
-/// has one, the outermost container that spans at least half the page.
-fn already_dark(doc: &BaseDocument) -> bool {
+/// What a page's own colours make it.
+#[derive(Debug, PartialEq)]
+enum Page {
+    Light,
+    /// Its canvas (the root's background, else the body's) is dark.
+    DarkCanvas,
+    /// It has no canvas, and dark containers spanning at least half the page paint more of it than light ones.
+    DarkContainers,
+}
+
+/// What the page's own colours make it: the canvas decides, or, when there is none, the outermost containers that span
+/// at least half the page, by the area each paints. A dark header above a white article leaves the page light.
+fn judge(doc: &BaseDocument) -> Page {
     let root = doc.root_element();
     let body = doc
         .query_selector("body")
@@ -307,10 +386,17 @@ fn already_dark(doc: &BaseDocument) -> bool {
             .filter(|bg| bg[3] >= 0.5)
     };
     if let Some(bg) = opaque(root).or_else(|| body.and_then(opaque)) {
-        return is_dark([bg[0], bg[1], bg[2]]);
+        return if is_dark([bg[0], bg[1], bg[2]]) {
+            Page::DarkCanvas
+        } else {
+            Page::Light
+        };
     }
-    let Some(body) = body else { return false };
+    let Some(body) = body else {
+        return Page::Light;
+    };
     let half = root.final_layout().size.width / 2.0;
+    let (mut dark, mut light) = (0.0_f32, 0.0_f32);
     let mut level = vec![body.id];
     for _ in 0..CONTAINER_DEPTH {
         let mut next = Vec::new();
@@ -319,17 +405,29 @@ fn already_dark(doc: &BaseDocument) -> bool {
                 if !child.is_element() {
                     continue;
                 }
+                let size = child.final_layout().size;
                 if let Some(bg) = opaque(child)
-                    && child.final_layout().size.width >= half
+                    && size.width >= half
                 {
-                    return is_dark([bg[0], bg[1], bg[2]]);
+                    // What is inside a container is on it: its own containers do not count again.
+                    let area = (size.width * size.height).max(0.0);
+                    if is_dark([bg[0], bg[1], bg[2]]) {
+                        dark += area;
+                    } else {
+                        light += area;
+                    }
+                    continue;
                 }
                 next.push(child.id);
             }
         }
         level = next;
     }
-    false
+    if dark > light {
+        Page::DarkContainers
+    } else {
+        Page::Light
+    }
 }
 
 /// What is painted behind a node, before and after adaptation, and what it sits in.
@@ -353,8 +451,9 @@ struct Change {
     gradients: bool,
 }
 
-/// The changes for every element and anonymous box, top-down, each against what its ancestors paint behind it.
-fn plan(doc: &BaseDocument) -> Vec<Change> {
+/// The changes for every element and anonymous box, top-down, each against what its ancestors paint behind it. With
+/// `bare`, only text on no background of the sender's changes, against the dark pane; surfaces stay as they are.
+fn plan(doc: &BaseDocument, bare: bool) -> Vec<Change> {
     let page = Behind {
         original: WHITE,
         adapted: PAGE,
@@ -386,7 +485,7 @@ fn plan(doc: &BaseDocument) -> Vec<Change> {
                 if bg[3] > 0.0 {
                     let [r, g, b] = surface([bg[0], bg[1], bg[2]]);
                     let dark = [r, g, b, bg[3]];
-                    change.background = Some(dark);
+                    change.background = (!bare).then_some(dark);
                     inside.original = over(bg, outside.original);
                     inside.adapted = over(dark, outside.adapted);
                     inside.painted = true;
@@ -399,7 +498,7 @@ fn plan(doc: &BaseDocument) -> Vec<Change> {
                             [r, g, b, c[3]]
                         })
                         .collect();
-                    change.gradients = true;
+                    change.gradients = !bare;
                     inside.original = over(mean(&stops), inside.original);
                     inside.adapted = over(mean(&dark), inside.adapted);
                     inside.painted = true;
@@ -407,7 +506,9 @@ fn plan(doc: &BaseDocument) -> Vec<Change> {
                 inside.link = outside.link
                     || (node.data.is_element_with_tag_name(&local_name!("a"))
                         && node.attr(local_name!("href")).is_some());
-                change.colour = if inside.painted
+                change.colour = if bare && inside.painted {
+                    None
+                } else if inside.painted
                     && fg[3] > 0.0
                     && contrast(over(fg, inside.original), inside.original) < HIDDEN
                 {
