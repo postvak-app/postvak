@@ -6,7 +6,10 @@ pub use edit::rule_toml;
 pub mod engine;
 mod warnings;
 
-pub use warnings::{folder_warnings, open_folder_warnings, warnings};
+pub use warnings::{
+    AccountFolders, account_folders, folder_warnings, open_folder_warnings, warnings,
+    watched_folder_warnings,
+};
 
 use std::collections::BTreeMap;
 use std::io;

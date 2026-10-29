@@ -673,6 +673,10 @@ pub fn sync_all_with(
         }
     }
     forget_unlisted_folders(store, &folders)?;
+    // A folder whose first sync failed has no row yet, so only a pass without errors vouches for the list.
+    if errors.is_empty() {
+        store.set_folders_listed(now())?;
+    }
     Ok((new, errors))
 }
 

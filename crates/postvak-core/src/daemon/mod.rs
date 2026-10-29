@@ -386,6 +386,11 @@ struct Watch {
     untrusting: Vec<String>,
     /// The folder warnings by account, each read again from its store only after that account synced.
     folder_lines: BTreeMap<String, Vec<String>>,
+    /// The folders each account syncs, read again from its store only after that account synced, for the warning
+    /// about a watched folder none of a rule's accounts syncs, which looks at them all at once.
+    synced: BTreeMap<String, crate::rules::AccountFolders>,
+    /// That warning's lines.
+    watched_lines: Vec<String>,
     /// The file's own warnings, without the folder ones.
     file_lines: Vec<String>,
     /// The rules' warnings last logged, so each is logged once rather than on every change.
@@ -404,6 +409,8 @@ impl Watch {
             paths: paths.clone(),
             untrusting: Vec::new(),
             folder_lines: BTreeMap::new(),
+            synced: BTreeMap::new(),
+            watched_lines: Vec::new(),
             file_lines: Vec::new(),
             warned: Vec::new(),
             checked: Instant::now(),
@@ -439,6 +446,11 @@ impl Watch {
                 (account.clone(), lines)
             })
             .collect();
+        self.synced = crate::rules::account_folders(&self.paths, &self.accounts)
+            .into_iter()
+            .map(|folders| (folders.name.clone(), folders))
+            .collect();
+        self.watch_folders(&file.rules);
         self.file_lines = warnings;
         self.log_new();
     }
@@ -448,6 +460,7 @@ impl Watch {
         let warnings: Vec<String> = self
             .file_lines
             .iter()
+            .chain(&self.watched_lines)
             .chain(self.folder_lines.values().flatten())
             .cloned()
             .collect();
@@ -457,12 +470,32 @@ impl Watch {
         self.warned = warnings;
     }
 
-    /// Takes `account`'s folder warnings, read after it synced, and logs what is new.
-    fn synced(&mut self, account: &str, lines: Vec<String>) {
+    /// The warning about a watched folder no account syncs, from what each account synced, in config order.
+    fn watch_folders(&mut self, rules: &[crate::rules::Rule]) {
+        let synced: Vec<crate::rules::AccountFolders> = self
+            .accounts
+            .iter()
+            .filter_map(|account| self.synced.get(account).cloned())
+            .collect();
+        self.watched_lines = crate::rules::watched_folder_warnings(rules, &synced);
+    }
+
+    /// Takes `account`'s folder warnings and what `account_folders` read of it after it synced, with the `rules` they
+    /// were read for, and logs what is new.
+    fn synced(
+        &mut self,
+        account: &str,
+        lines: Vec<String>,
+        folders: Vec<crate::rules::AccountFolders>,
+        rules: &[crate::rules::Rule],
+    ) {
         if !self.accounts.iter().any(|a| a == account) {
             return;
         }
         self.folder_lines.insert(account.to_string(), lines);
+        self.synced
+            .extend(folders.into_iter().map(|f| (f.name.clone(), f)));
+        self.watch_folders(rules);
         self.log_new();
     }
 
@@ -651,7 +684,8 @@ fn route_events(
             };
             if let Ok(file) = crate::rules::load(&rules) {
                 let lines = crate::rules::folder_warnings(&paths, &file.rules, &[account]);
-                lock(&shared.watch).synced(account, lines);
+                let folders = crate::rules::account_folders(&paths, &[account]);
+                lock(&shared.watch).synced(account, lines, folders, &file.rules);
             }
         }
         let mut hub = lock(&shared.hub);

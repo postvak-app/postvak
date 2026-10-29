@@ -195,6 +195,11 @@ CREATE TABLE rule_moves (
   internaldate  INTEGER NOT NULL,
   PRIMARY KEY (folder, message_id, internaldate)
 ) WITHOUT ROWID;
+
+CREATE TABLE folder_list (
+  id         INTEGER PRIMARY KEY CHECK (id = 1),
+  synced_at  INTEGER NOT NULL       -- the last pass that went through every listed folder; no row before the first
+);
 ```
 
 Migrations are numbered SQL files under `crates/postvak-core/migrations/`, embedded with `include_dir`, applied by `rusqlite_migration` on open using `user_version`. Every account file runs the same migrations. Rows map to structs via `serde_rusqlite`.

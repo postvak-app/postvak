@@ -65,8 +65,13 @@ pub(crate) fn warnings(path: &Path, rules: &[Rule], accounts: &[Account]) -> Vec
         .iter()
         .filter_map(|a| Some((a.name.as_str(), a.store.as_ref().ok()?)))
         .collect();
+    let synced: Vec<rules::AccountFolders> = accounts
+        .iter()
+        .map(|a| rules::AccountFolders::read(&a.name, a.store.as_ref().ok()))
+        .collect();
     let file = rules::warnings(path, rules, &names, &untrusting);
-    [file, rules::open_folder_warnings(rules, &stores)].concat()
+    let watched = rules::watched_folder_warnings(rules, &synced);
+    [file, watched, rules::open_folder_warnings(rules, &stores)].concat()
 }
 
 /// A rule waiting for approval, as the Rules view shows it.

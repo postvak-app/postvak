@@ -972,6 +972,55 @@ fn the_folder_warnings_are_checked_again_after_a_sync() {
     );
 }
 
+/// A rule for every account watching a folder none of them syncs is named once the last of them finished a full
+/// pass, read from the store of each account as it syncs.
+#[test]
+fn a_watched_folder_no_account_syncs_is_named_once_every_account_synced() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::under(dir.path());
+    fs::create_dir_all(paths.rules_file().parent().unwrap()).unwrap();
+    fs::write(
+        paths.rules_file(),
+        "[[rules]]\nname = \"typo\"\nfolder = \"Newsleters\"\nmatch.read = true\nactions.flagged = true\n",
+    )
+    .unwrap();
+    let mut watch = super::Watch::new(&paths);
+    watch.accounts = vec!["work".into(), "home".into()];
+    watch.check_rules();
+    assert!(watch.warned.is_empty(), "{:?}", watch.warned);
+    let shared = super::Shared {
+        watch: std::sync::Mutex::new(watch),
+        ..idle_shared()
+    };
+    let synced = |account: &str| {
+        let store = crate::store::Store::open_account(&paths, account).unwrap();
+        store.set_folders_listed(1).unwrap();
+        drop(store);
+        let (events, received) = std::sync::mpsc::channel();
+        events
+            .send(Event::Synced {
+                account: account.into(),
+                new_messages: 0,
+                actions: 0,
+                requests: Vec::new(),
+                errors: Vec::new(),
+            })
+            .unwrap();
+        drop(events);
+        super::route_events(&shared, received, false, |_| {});
+        super::lock(&shared.watch).warned.clone()
+    };
+    assert_eq!(
+        synced("work"),
+        Vec::<String>::new(),
+        "home may yet have the folder"
+    );
+    assert_eq!(
+        synced("home"),
+        ["rule 'typo' watches 'Newsleters', which no account syncs, so it never runs"]
+    );
+}
+
 #[test]
 fn new_mail_notifies_even_on_an_account_with_notify_off() {
     let shared = idle_shared();

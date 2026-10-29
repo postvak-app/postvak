@@ -342,6 +342,51 @@ fn stopped_pass_keeps_folders_it_did_not_list() {
 }
 
 #[test]
+fn synced_folders_are_known_only_once_a_pass_went_through_them_all() {
+    let mut ops = ops_with_inbox().with_folder("Lists", None);
+    let store = Store::open_in_memory().unwrap();
+    let mut stop_at_second = |_: &mut dyn MailOps, activity| match activity {
+        Activity::SyncingFolder { index: 2, .. } => Err(SyncError::Stopped),
+        _ => Ok(false),
+    };
+    assert!(sync_all_with(&mut ops, &store, &mut stop_at_second).is_err());
+    assert!(store.folder("INBOX").unwrap().is_some());
+    assert_eq!(
+        store.synced_folders().unwrap(),
+        None,
+        "a pass cut short may not have reached a folder yet"
+    );
+    let bogus = RemoteFolder {
+        name: "Bogus".into(),
+        special_use: None,
+        delimiter: None,
+    };
+    ops.folders.push(bogus);
+    sync_all(&mut ops, &store).unwrap();
+    assert_eq!(
+        store.synced_folders().unwrap(),
+        None,
+        "a folder whose sync failed has no row, so the pass does not vouch for the list"
+    );
+    ops.folders.retain(|f| f.name != "Bogus");
+    store
+        .upsert_folder(&Folder {
+            name: "Newsletters".into(),
+            uidvalidity: 0,
+            last_uid: 0,
+            special_use: None,
+            delimiter: None,
+        })
+        .unwrap();
+    sync_all(&mut ops, &store).unwrap();
+    assert_eq!(
+        store.synced_folders().unwrap(),
+        Some(vec!["INBOX".into(), "Lists".into(), "Trash".into()]),
+        "a move's placeholder is not synced"
+    );
+}
+
+#[test]
 fn unlisted_rule_move_placeholder_survives_a_pass() {
     let mut ops = ops_with_inbox();
     let store = Store::open_in_memory().unwrap();

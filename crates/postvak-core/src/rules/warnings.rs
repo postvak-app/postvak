@@ -2,7 +2,8 @@
 //! a rule for an account this device does not have, a rule moving mail to the folder it watches, a rule using
 //! `authenticated` for an account that trusts no server's `Authentication-Results`, and a folder written the way IMAP
 //! spells it on the wire, as Postvak showed non-ASCII names before it decoded them. `folder_warnings` adds what an
-//! account's own folders show: a move target written for another hierarchy or namespace.
+//! account's own folders show: a move target written for another hierarchy or namespace. `watched_folder_warnings`
+//! adds a rule watching a folder no account it is for syncs, once those accounts have synced all their folders.
 use std::fs;
 use std::path::Path;
 
@@ -246,6 +247,91 @@ fn delimiter<'a>(synced: &[&'a Folder]) -> Option<&'a str> {
         .or_else(|| synced.iter().find_map(of))
 }
 
+/// An account set up here, and the folders it syncs; `synced` is `None` until a pass without errors went through
+/// every folder the server listed, since before that a folder may only not be reached yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountFolders {
+    pub name: String,
+    pub synced: Option<Vec<String>>,
+}
+
+impl AccountFolders {
+    /// What `store` knows of account `name`'s folders. Without a store, or when it cannot be read, nothing is known
+    /// yet: better silent than wrong.
+    pub fn read(name: &str, store: Option<&Store>) -> AccountFolders {
+        let synced = store.and_then(|store| {
+            store
+                .synced_folders()
+                .inspect_err(|e| log::debug!("{name}: could not read the synced folders: {e}"))
+                .ok()
+                .flatten()
+        });
+        AccountFolders {
+            name: name.to_string(),
+            synced,
+        }
+    }
+}
+
+/// [`AccountFolders::read`] for each of `names`, opening only the stores that exist, so a check creates no files.
+pub fn account_folders(paths: &Paths, names: &[impl AsRef<str>]) -> Vec<AccountFolders> {
+    names
+        .iter()
+        .map(|name| {
+            let name = name.as_ref();
+            let db = paths.mail_db(name);
+            let store = db
+                .exists()
+                .then(|| {
+                    Store::open(&db)
+                        .inspect_err(|e| log::debug!("{name}: could not open the store: {e}"))
+                        .ok()
+                })
+                .flatten();
+            AccountFolders::read(name, store.as_ref())
+        })
+        .collect()
+}
+
+/// One line per rule, in file order, watching a folder that no account it is for syncs, such as a misspelled name:
+/// only once every one of those accounts has synced all its folders. A rule for every account that one account can
+/// use stays quiet, since it runs there. INBOX matches in any case, and a folder as the engine finds it
+/// ([`folder_name::rule_names`]).
+pub fn watched_folder_warnings(rules: &[Rule], accounts: &[AccountFolders]) -> Vec<String> {
+    rules
+        .iter()
+        .filter_map(|rule| unsynced_folder(rule, accounts))
+        .collect()
+}
+
+fn unsynced_folder(rule: &Rule, accounts: &[AccountFolders]) -> Option<String> {
+    let watched = rule.folder.as_deref().unwrap_or("INBOX");
+    let mut covered = accounts
+        .iter()
+        .filter(|a| rule.account.as_deref().is_none_or(|name| name == a.name))
+        .peekable();
+    // A rule for an account not set up here has its own warning.
+    covered.peek()?;
+    for account in covered {
+        if account
+            .synced
+            .as_ref()?
+            .iter()
+            .any(|folder| same_folder(folder, watched) || folder_name::rule_names(watched, folder))
+        {
+            return None;
+        }
+    }
+    let whom = match rule.account.as_deref() {
+        Some(account) => format!("account '{account}' does not sync"),
+        None => "no account syncs".to_string(),
+    };
+    Some(format!(
+        "rule '{}' watches '{watched}', which {whom}, so it never runs",
+        rule.name
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -483,5 +569,79 @@ mod tests {
             .unwrap();
         drop(store);
         assert_eq!(folder_warnings(&paths, &rules, &["work"]).len(), 1);
+    }
+
+    fn synced(name: &str, folders: &[&str]) -> AccountFolders {
+        AccountFolders {
+            name: name.to_string(),
+            synced: Some(folders.iter().map(|f| f.to_string()).collect()),
+        }
+    }
+
+    #[test]
+    fn a_rule_watching_a_folder_no_account_syncs_is_named_once_every_account_synced() {
+        let rules = parse(
+            "[[rules]]\nname = \"typo\"\nfolder = \"Newsleters\"\nmatch.read = true\nactions.flagged = true\n\n\
+             [[rules]]\nname = \"work lists\"\naccount = \"work\"\nfolder = \"Lists\"\nmatch.read = true\n\
+             actions.flagged = true\n\n\
+             [[rules]]\nname = \"shared\"\nfolder = \"Lists\"\nmatch.read = true\nactions.flagged = true\n\n\
+             [[rules]]\nname = \"inbox\"\nfolder = \"Inbox\"\nmatch.read = true\nactions.flagged = true\n\n\
+             [[rules]]\nname = \"nfd\"\nfolder = \"Re\u{301}sume\u{301}s\"\nmatch.read = true\n\
+             actions.flagged = true\n\n\
+             [[rules]]\nname = \"elsewhere\"\naccount = \"werk\"\nfolder = \"Nope\"\nmatch.read = true\n\
+             actions.flagged = true\n",
+        )
+        .unwrap()
+        .rules;
+        let home = synced("home", &["INBOX", "Lists", "Résumés"]);
+        let work = synced("work", &["INBOX"]);
+        assert_eq!(
+            watched_folder_warnings(&rules, &[work.clone(), home.clone()]),
+            [
+                "rule 'typo' watches 'Newsleters', which no account syncs, so it never runs",
+                "rule 'work lists' watches 'Lists', which account 'work' does not sync, so it never runs",
+            ],
+            "'shared' runs on home; INBOX matches in any case, a name in any normalization form; an account not set \
+             up here has its own warning"
+        );
+        let first_sync = AccountFolders {
+            synced: None,
+            ..home
+        };
+        assert_eq!(
+            watched_folder_warnings(&rules, &[work, first_sync]),
+            [
+                "rule 'work lists' watches 'Lists', which account 'work' does not sync, so it never runs"
+            ],
+            "an account still in its first sync may yet have the folder"
+        );
+    }
+
+    #[test]
+    fn synced_folders_are_read_from_existing_stores_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let store = Store::open_account(&paths, "work").unwrap();
+        store
+            .upsert_folder(&layout("work", "/", &["INBOX"]).folders[0])
+            .unwrap();
+        assert_eq!(
+            account_folders(&paths, &["work"])[0].synced,
+            None,
+            "no pass went through every folder yet"
+        );
+        store.set_folders_listed(1).unwrap();
+        drop(store);
+        assert_eq!(
+            account_folders(&paths, &["work", "new"]),
+            [
+                synced("work", &["INBOX"]),
+                AccountFolders {
+                    name: "new".into(),
+                    synced: None
+                }
+            ]
+        );
+        assert!(!paths.mail_db("new").exists(), "a check creates no store");
     }
 }

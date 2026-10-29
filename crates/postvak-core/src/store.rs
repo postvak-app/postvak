@@ -36,6 +36,7 @@ fn migration_list() -> Vec<M<'static>> {
             include_str!("../migrations/017-decode-folder-names/up.sql"),
             decode_folder_names,
         ),
+        M::up(include_str!("../migrations/018-folder-list/up.sql")),
     ]
 }
 
@@ -560,6 +561,35 @@ impl Store {
             Some(row) => Ok(Some(serde_rusqlite::from_row(row)?)),
             None => Ok(None),
         }
+    }
+
+    /// Records that a pass went through every folder the server listed; `synced_folders` answers from then on.
+    pub fn set_folders_listed(&self, at: i64) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO folder_list (id, synced_at) VALUES (1, ?1)
+             ON CONFLICT (id) DO UPDATE SET synced_at = ?1",
+            params![at],
+        )?;
+        Ok(())
+    }
+
+    /// The folders a sync filled in, without a move's placeholders; `None` until a pass went through every folder the
+    /// server listed, since before that a folder may only not be reached yet.
+    pub fn synced_folders(&self) -> Result<Option<Vec<String>>, StoreError> {
+        let listed: Option<i64> = self
+            .conn
+            .query_row("SELECT synced_at FROM folder_list", [], |row| row.get(0))
+            .optional()?;
+        if listed.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(
+            self.folders()?
+                .into_iter()
+                .filter(|f| f.uidvalidity != 0)
+                .map(|f| f.name)
+                .collect(),
+        ))
     }
 
     pub fn upsert_folder(&self, folder: &Folder) -> Result<(), StoreError> {
