@@ -1,12 +1,14 @@
 //! Rules coverage: which of a folder's stored messages the rules match, which no rule matches, and which several
 //! rules contest, with what the real precedence (a delete wins, then the first move; `stop`) would do. Read-only:
 //! nothing is fetched, logged or changed.
+use std::collections::{HashMap, HashSet};
+
 use serde::Serialize;
 
 use crate::config::Identity;
 use crate::rules::apply::{ApplyError, plan_for, would_run};
 use crate::rules::engine::{Context, Mode, Plan, folder_needs_body, rule_matches};
-use crate::rules::{CompiledRule, RuleFile, RulesError, compile};
+use crate::rules::{CompiledRule, Rule, RuleFile, RulesError, compile};
 use crate::senders::{GroupBy, Sender, senders};
 use crate::store::{Message, Store, StoreError};
 
@@ -57,13 +59,27 @@ pub fn context<'a>(account: &'a str, identity: &'a Identity, now: i64) -> Contex
 }
 
 /// The rules of `file` that coverage runs: the enabled ones, and with `include_pending` the proposals still waiting
-/// for a human too, each where it stands in the file.
+/// for a human too, each where it stands in the file, and a pending edit in place of the rule it edits.
 pub fn rules(file: &RuleFile, include_pending: bool) -> Result<Vec<CompiledRule>, RulesError> {
     let mut file = file.clone();
     if include_pending {
         for rule in &mut file.rules {
             rule.enabled |= rule.proposed_by.is_some();
         }
+        // An edit whose rule is gone stays where it is, as a proposal of its own.
+        let names: HashSet<String> = file.rules.iter().map(|r| r.name.clone()).collect();
+        let is_edit = |r: &Rule| {
+            r.proposed_by.is_some() && r.replaces.as_ref().is_some_and(|t| names.contains(t))
+        };
+        let (edits, kept): (Vec<Rule>, Vec<Rule>) = file.rules.into_iter().partition(is_edit);
+        let mut edits: HashMap<String, Rule> = edits
+            .into_iter()
+            .filter_map(|r| Some((r.replaces.clone()?, r)))
+            .collect();
+        file.rules = kept
+            .into_iter()
+            .map(|r| edits.remove(&r.name).unwrap_or(r))
+            .collect();
     }
     let mut compiled = compile(&file)?;
     compiled.retain(|r| r.rule.enabled);
@@ -281,6 +297,26 @@ actions = { flagged = true }
         );
         let coverage = in_folder(&store, &rules, &ctx, "INBOX", GroupBy::Domain).unwrap();
         assert_eq!((coverage.matched, coverage.unmatched), (1, 0));
+    }
+
+    #[test]
+    fn a_pending_edit_runs_in_place_of_its_rule_when_asked() {
+        let file = parse(&format!(
+            "{RULES}\n[[rules]]\nname = \"delivery (edit)\"\nenabled = false\nproposed_by = \"cli:agent\"\nreplaces = \"delivery\"\nmatch.from = {{ contains = \"orders@\" }}\nactions = {{ read = true }}\n"
+        ))
+        .unwrap();
+        let names = |pending| -> Vec<String> {
+            rules(&file, pending)
+                .unwrap()
+                .into_iter()
+                .map(|r| r.rule.name)
+                .collect()
+        };
+        assert_eq!(names(false), ["delivery", "shop", "noise", "noise read"]);
+        assert_eq!(
+            names(true),
+            ["delivery (edit)", "shop", "noise", "noise read", "proposal"]
+        );
     }
 
     #[test]

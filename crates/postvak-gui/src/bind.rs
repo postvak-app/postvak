@@ -589,6 +589,8 @@ fn present_sheet(app: &App, window: &MailWindow) {
                     label: p.label.as_str().into(),
                     by: p.by.as_str().into(),
                     summary: p.summary.as_str().into(),
+                    note: p.note.as_str().into(),
+                    edits: p.edits,
                     toml: p.toml.as_str().into(),
                     marks: p.marks.as_str().into(),
                     preview: app
