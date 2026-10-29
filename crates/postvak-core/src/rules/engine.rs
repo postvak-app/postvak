@@ -175,6 +175,13 @@ fn matches(c: &Conditions, msg: &Message, ctx: &Context) -> bool {
     {
         return false;
     }
+    if let Some(span) = c.younger_than
+        && span
+            .before(ctx.now)
+            .is_some_and(|cutoff| msg.internaldate <= cutoff)
+    {
+        return false;
+    }
     if let Some(min_size) = c.larger_than
         && msg.size.is_none_or(|size| u64::from(size) <= min_size)
     {
@@ -772,6 +779,26 @@ actions = { move = "Shopping" }
             evaluate(&r, &exact, &ctx(&id, 1000 + HOUR - 1))
                 .actions
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn younger_than_holds_until_older_than_would() {
+        let id = identity();
+        let toml = "[[rules]]\nname = \"hold\"\nmatch.younger_than = \"1h\"\nactions = { flagged = true }\n";
+        let r = rules(toml, 0);
+        let m = msg("a@x", "pieter@example.com", "s", 1000, false);
+        assert_eq!(
+            evaluate(&r, &m, &ctx(&id, 1000 + HOUR - 1)).actions.len(),
+            1
+        );
+        assert!(evaluate(&r, &m, &ctx(&id, 1000 + HOUR)).actions.is_empty());
+        let huge = "[[rules]]\nname = \"always\"\nmatch.younger_than = \"1000000y\"\nactions = { flagged = true }\n";
+        assert_eq!(
+            evaluate(&rules(huge, 0), &m, &ctx(&id, 10 * HOUR))
+                .actions
+                .len(),
+            1
         );
     }
 
