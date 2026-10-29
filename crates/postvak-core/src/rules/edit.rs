@@ -719,8 +719,22 @@ pub fn follow_rename(path: &Path, rename: &FolderRename) -> Result<Vec<String>, 
             return Ok(());
         };
         let mut taken: Vec<String> = file.rules.iter().map(|r| r.name.clone()).collect();
+        let split: Vec<&str> = file
+            .rules
+            .iter()
+            .filter(|rule| rename.splits(rule) && rename.rewrite(rule).is_some())
+            .map(|rule| rule.name.as_str())
+            .collect();
         let mut rebuilt = Vec::new();
         for (rule, table) in file.rules.iter().zip(tables.iter()) {
+            if rule.replaces.as_deref().is_some_and(|r| split.contains(&r)) {
+                continue;
+            }
+            let edit = file
+                .rules
+                .iter()
+                .zip(tables.iter())
+                .find(|(edit, _)| edit.replaces.as_deref() == Some(rule.name.as_str()));
             let Some(renamed) = rename.rewrite(rule) else {
                 rebuilt.push(table.clone());
                 continue;
@@ -743,6 +757,20 @@ pub fn follow_rename(path: &Path, rename: &FolderRename) -> Result<Vec<String>, 
                     clear_positions(&mut copied);
                     copied.decor_mut().set_prefix("\n");
                 }
+                rebuilt.push(copied);
+                let Some((edit, edit_table)) = edit.filter(|_| split.contains(&rule.name.as_str()))
+                else {
+                    continue;
+                };
+                let mut edit_copy = edit.clone();
+                edit_copy.account = copy.account.clone();
+                edit_copy = rename.rewrite(&edit_copy).unwrap_or(edit_copy);
+                edit_copy.name = free_name(&taken, &edit_name(&copy.name));
+                taken.push(edit_copy.name.clone());
+                edit_copy.replaces = Some(copy.name.clone());
+                let mut copied = rewritten(edit_table, &edit_copy)?;
+                clear_positions(&mut copied);
+                copied.decor_mut().set_prefix("\n");
                 rebuilt.push(copied);
             }
         }
@@ -1883,6 +1911,86 @@ mod tests {
         let (changed, text) = follow(HEADERS, &["a", "b"], "b", "Nowhere", "Job");
         assert!(changed.is_empty());
         assert_eq!(text, HEADERS);
+    }
+
+    const NEWS: &str = "[[rules]]\nname = \"news\"\nmatch.read = true\nactions.move = \"Lists\"\n\n[[rules]]\nname = \"news (edit)\"\nenabled = false\nproposed_by = \"mcp:me\"\nreplaces = \"news\"\nmatch.read = false\nactions.move = \"Lists/Old\"\n";
+
+    #[test]
+    fn a_split_rule_takes_its_pending_edit_along_one_per_account() {
+        let (_dir, path) = rules_file(NEWS);
+        let accounts: Vec<String> = ["a", "b", "c"].map(String::from).to_vec();
+        let rename = FolderRename {
+            account: "b",
+            accounts: &accounts,
+            from: "Lists",
+            to: "Mail/Lists",
+            delimiter: Some("/"),
+        };
+        follow_rename(&path, &rename).unwrap();
+        let rules = load(&path).unwrap().rules;
+        let seen: Vec<_> = rules
+            .iter()
+            .map(|r| {
+                (
+                    r.name.as_str(),
+                    r.account.as_deref().unwrap(),
+                    r.replaces.as_deref(),
+                    r.enabled,
+                    r.actions.clone(),
+                )
+            })
+            .collect();
+        let to = |folder: &str| vec![Action::Move(folder.into())];
+        assert_eq!(
+            seen,
+            [
+                ("news (a)", "a", None, true, to("Lists")),
+                (
+                    "news (a) (edit)",
+                    "a",
+                    Some("news (a)"),
+                    false,
+                    to("Lists/Old")
+                ),
+                ("news (c)", "c", None, true, to("Lists")),
+                (
+                    "news (c) (edit)",
+                    "c",
+                    Some("news (c)"),
+                    false,
+                    to("Lists/Old")
+                ),
+                ("news (b)", "b", None, true, to("Mail/Lists")),
+                (
+                    "news (b) (edit)",
+                    "b",
+                    Some("news (b)"),
+                    false,
+                    to("Mail/Lists/Old")
+                ),
+            ]
+        );
+        assert!(
+            rules
+                .iter()
+                .skip(1)
+                .step_by(2)
+                .all(|r| r.proposed_by.as_deref() == Some("mcp:me"))
+        );
+        assert_eq!(approve(&path, "news (b) (edit)").unwrap(), "news (b)");
+        let rules = load(&path).unwrap().rules;
+        let approved = rules.iter().find(|r| r.name == "news (b)").unwrap();
+        assert!(approved.enabled && approved.replaces.is_none() && !approved.matches.read.unwrap());
+        assert_eq!(approved.actions, to("Mail/Lists/Old"));
+    }
+
+    #[test]
+    fn an_edit_of_a_rule_rewritten_in_place_keeps_replacing_it() {
+        let (changed, text) = follow(NEWS, &["a"], "a", "Lists", "Mail/Lists");
+        assert_eq!(changed, ["news", "news (edit)"]);
+        let rules = parse(&text).unwrap().rules;
+        assert_eq!(rules[1].replaces.as_deref(), Some("news"));
+        assert_eq!(rules[1].actions, [Action::Move("Mail/Lists/Old".into())]);
     }
 
     fn edit_of(names: &[&str]) -> Proposals {
