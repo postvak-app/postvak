@@ -7,7 +7,7 @@ use anyhow::{Context as _, Result, bail};
 use clap::{Parser, Subcommand};
 
 use postvak_core::account;
-use postvak_core::config::{AccountConfig, Config, Identity, PasswordSource};
+use postvak_core::config::{self, AccountConfig, Config, Identity, PasswordSource};
 use postvak_core::credentials::Secret;
 use postvak_core::daemon::Client;
 use postvak_core::daemon::client::LazyClient;
@@ -612,7 +612,7 @@ pub fn run() -> Result<()> {
                 &postvak_core::rules::load(&paths.rules_file())?,
                 false,
             )?;
-            for acc in select_accounts(&config, account.as_deref())? {
+            for acc in config::select(&config.accounts, account.as_deref())? {
                 let store = Store::open_account(&paths, &acc.name)?;
                 let identity = acc.identity()?;
                 let ctx = postvak_core::rules::coverage::context(&acc.name, &identity, now);
@@ -636,7 +636,7 @@ pub fn run() -> Result<()> {
             Ok(())
         }
         Command::Folders { account, json } => {
-            for acc in select_accounts(&config, account.as_deref())? {
+            for acc in config::select(&config.accounts, account.as_deref())? {
                 let store = Store::open_account(&paths, &acc.name)?;
                 for f in store.folders()? {
                     let total = store.message_count(&f.name)?;
@@ -844,7 +844,7 @@ pub fn run() -> Result<()> {
             limit,
             json,
         } => {
-            for acc in select_accounts(&config, account.as_deref())? {
+            for acc in config::select(&config.accounts, account.as_deref())? {
                 let store = Store::open_account(&paths, &acc.name)?;
                 for e in store.log(limit)? {
                     if json {
@@ -924,7 +924,7 @@ fn doc_pages() -> clap::builder::PossibleValuesParser {
 
 /// Runs a direct action on the selected uids; `--dry-run` only reads the local store.
 fn cmd_act(config: &Config, paths: &Paths, selection: Selection, action: Action) -> Result<()> {
-    let acc = single_account(config, selection.account.as_deref())?;
+    let acc = config::single(&config.accounts, selection.account.as_deref())?;
     let store = Store::open_account(paths, &acc.name)?;
     let folder = clean(&selection.folder, false);
     if selection.dry_run {
@@ -984,10 +984,7 @@ fn unsubscribe_line(report: &postvak_core::unsubscribe::Report) -> String {
 }
 
 fn cmd_sync(config: &Config, paths: &Paths, account: Option<&str>) -> Result<()> {
-    let accounts = select_accounts(config, account)?;
-    if accounts.is_empty() {
-        return Ok(());
-    }
+    let accounts = config::select(&config.accounts, account)?;
     let names: Vec<&str> = accounts.iter().map(|acc| acc.name.as_str()).collect();
     let client = Client::connect_or_start(paths)?;
     let events = client.subscribe()?;
@@ -1180,28 +1177,6 @@ fn sender_line(account: &str, sender: &postvak_core::senders::Sender) -> String 
     )
 }
 
-fn select_accounts<'a>(config: &'a Config, name: Option<&str>) -> Result<Vec<&'a AccountConfig>> {
-    match name {
-        Some(n) => Ok(vec![
-            config
-                .account(n)
-                .with_context(|| format!("no account named '{n}'"))?,
-        ]),
-        None => Ok(config.accounts.iter().collect()),
-    }
-}
-
-fn single_account<'a>(config: &'a Config, name: Option<&str>) -> Result<&'a AccountConfig> {
-    match (name, config.accounts.len()) {
-        (Some(n), _) => config
-            .account(n)
-            .with_context(|| format!("no account named '{n}'")),
-        (None, 1) => Ok(&config.accounts[0]),
-        (None, 0) => bail!("no accounts configured; run `postvak account add`"),
-        (None, _) => bail!("several accounts configured; pass --account"),
-    }
-}
-
 /// The account, its store and the stored message `folder/uid`.
 fn open_message<'a>(
     config: &'a Config,
@@ -1210,7 +1185,7 @@ fn open_message<'a>(
     folder: &str,
     uid: u32,
 ) -> Result<(&'a AccountConfig, Store, Message)> {
-    let acc = single_account(config, account)?;
+    let acc = config::single(&config.accounts, account)?;
     let store = Store::open_account(paths, &acc.name)?;
     let msg = store
         .message(folder, uid)?
@@ -1231,7 +1206,7 @@ fn sources(
     name: Option<&str>,
     identity: bool,
 ) -> Result<Vec<page::Source>> {
-    select_accounts(config, name)?
+    config::select(&config.accounts, name)?
         .into_iter()
         .map(|acc| {
             Ok(page::Source {
@@ -1454,7 +1429,7 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                 &postvak_core::rules::load(&paths.rules_file())?,
                 include_pending,
             )?;
-            for acc in select_accounts(config, account.as_deref())? {
+            for acc in config::select(&config.accounts, account.as_deref())? {
                 let store = Store::open_account(paths, &acc.name)?;
                 let identity = acc.identity()?;
                 let ctx = postvak_core::rules::coverage::context(&acc.name, &identity, time::now());
@@ -1487,10 +1462,11 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                 &paths.rules_file(),
                 &name,
             )?];
-            let accounts: Vec<&AccountConfig> = select_accounts(config, account.as_deref())?
-                .into_iter()
-                .filter(|acc| rules.iter().any(|r| r.applies_to_account(&acc.name)))
-                .collect();
+            let accounts: Vec<&AccountConfig> =
+                config::select(&config.accounts, account.as_deref())?
+                    .into_iter()
+                    .filter(|acc| rules.iter().any(|r| r.applies_to_account(&acc.name)))
+                    .collect();
             if dry_run {
                 for acc in accounts {
                     let store = Store::open_account(paths, &acc.name)?;
@@ -1532,7 +1508,7 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                 }
                 rules
             };
-            for acc in select_accounts(config, account.as_deref())? {
+            for acc in config::select(&config.accounts, account.as_deref())? {
                 let store = Store::open_account(paths, &acc.name)?;
                 print_planned_actions(&rules, &store, acc, &acc.identity()?)?;
             }
@@ -1736,7 +1712,7 @@ fn print_planned_actions(
 fn cmd_trash(command: TrashCommand, config: &Config, paths: &Paths) -> Result<()> {
     match command {
         TrashCommand::List { account } => {
-            for acc in select_accounts(config, account.as_deref())? {
+            for acc in config::select(&config.accounts, account.as_deref())? {
                 for e in Trash::new(paths.trash_dir(&acc.name)).list()? {
                     let subject = e.headers().subject.unwrap_or_default();
                     println!(
@@ -1753,7 +1729,7 @@ fn cmd_trash(command: TrashCommand, config: &Config, paths: &Paths) -> Result<()
             Ok(())
         }
         TrashCommand::Restore { file, account } => {
-            let acc = single_account(config, account.as_deref())?;
+            let acc = config::single(&config.accounts, account.as_deref())?;
             let folder = LazyClient::new(paths).restore(&acc.name, std::path::absolute(&file)?)?;
             println!(
                 "restored to {}; rules leave restored mail alone",
@@ -1762,7 +1738,7 @@ fn cmd_trash(command: TrashCommand, config: &Config, paths: &Paths) -> Result<()
             Ok(())
         }
         TrashCommand::Purge { account } => {
-            for acc in select_accounts(config, account.as_deref())? {
+            for acc in config::select(&config.accounts, account.as_deref())? {
                 let removed = Trash::new(paths.trash_dir(&acc.name))
                     .purge(acc.trash_retention_days, time::now())?;
                 println!("{}: removed {removed}", acc.name);
