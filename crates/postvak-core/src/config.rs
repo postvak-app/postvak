@@ -426,9 +426,78 @@ impl Identity {
     }
 }
 
+/// Why `--account` (or MCP's `account`) picked no account.
+#[derive(Debug, PartialEq, thiserror::Error)]
+pub enum SelectError {
+    #[error("no accounts configured; run `postvak account add`")]
+    NoAccounts,
+    #[error("no account named '{0}'")]
+    NoSuchAccount(String),
+    #[error("several accounts configured; pass --account")]
+    Several,
+}
+
+/// The account named `name`, or every one of `accounts`; none at all is an error that says what to do.
+pub fn select<'a>(
+    accounts: &'a [AccountConfig],
+    name: Option<&str>,
+) -> Result<Vec<&'a AccountConfig>, SelectError> {
+    if accounts.is_empty() {
+        return Err(SelectError::NoAccounts);
+    }
+    match name {
+        Some(name) => accounts
+            .iter()
+            .find(|a| a.name == name)
+            .map(|a| vec![a])
+            .ok_or_else(|| SelectError::NoSuchAccount(name.to_string())),
+        None => Ok(accounts.iter().collect()),
+    }
+}
+
+/// One account: the one named `name`, or the only one of `accounts`.
+pub fn single<'a>(
+    accounts: &'a [AccountConfig],
+    name: Option<&str>,
+) -> Result<&'a AccountConfig, SelectError> {
+    match select(accounts, name)?.as_slice() {
+        [only] => Ok(only),
+        _ => Err(SelectError::Several),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn select_and_single_fail_without_accounts_and_on_an_unknown_name() {
+        let account = |name: &str| {
+            AccountConfig::new(
+                name,
+                "imap.example.com",
+                "me",
+                PasswordSource::Command {
+                    command: "x".into(),
+                },
+            )
+        };
+        let names = |accounts: Vec<&AccountConfig>| {
+            accounts.iter().map(|a| a.name.clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(select(&[], None), Err(SelectError::NoAccounts));
+        assert_eq!(single(&[], Some("work")), Err(SelectError::NoAccounts));
+        let accounts = [account("play"), account("work")];
+        assert_eq!(names(select(&accounts, None).unwrap()), ["play", "work"]);
+        assert_eq!(names(select(&accounts, Some("work")).unwrap()), ["work"]);
+        assert_eq!(
+            select(&accounts, Some("nope")),
+            Err(SelectError::NoSuchAccount("nope".into()))
+        );
+        assert_eq!(single(&accounts, None), Err(SelectError::Several));
+        assert_eq!(single(&accounts, Some("play")).unwrap().name, "play");
+        assert_eq!(single(&accounts[1..], None).unwrap().name, "work");
+    }
 
     #[test]
     fn alias_patterns_take_star_as_the_only_wildcard() {

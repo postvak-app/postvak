@@ -66,13 +66,24 @@ fn rules_check_passes_on_valid_file_and_lists() {
 }
 
 #[test]
-fn list_on_unknown_account_fails_and_empty_config_lists_nothing() {
+fn list_on_unknown_account_or_without_accounts_fails_and_says_what_to_do() {
     let home = tempfile::tempdir().unwrap();
     let out = postvak(home.path(), &["list", "--account", "nope"]);
     assert!(!out.status.success());
-    let out = postvak(home.path(), &["folders"]);
-    assert!(out.status.success());
-    assert!(out.stdout.is_empty());
+    for command in ["folders", "list", "log", "search", "sync"] {
+        let args: &[&str] = if command == "search" {
+            &[command, "x"]
+        } else {
+            &[command]
+        };
+        let out = postvak(home.path(), args);
+        assert!(!out.status.success(), "{command}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("run `postvak account add`"),
+            "{command}: {stderr}"
+        );
+    }
 }
 
 /// The wizard's answers in prompt order: name, host, port, CA file, username, address, storage, password command.
@@ -351,7 +362,7 @@ fn trash_list_shows_subjects() {
 
 #[test]
 fn error_lines_strip_control_characters() {
-    let home = tempfile::tempdir().unwrap();
+    let (home, _store) = seeded_home(&[]);
     let out = postvak(home.path(), &["list", "--account", "x\u{1b}[2Jy"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("no account named 'x[2Jy'"), "{stderr}");
