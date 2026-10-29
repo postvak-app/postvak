@@ -346,13 +346,17 @@ impl Live {
 
     /// Applies what `ask` names, then shows the result; whether it named anything.
     fn answer(&mut self, ask: bind::Ask) -> bool {
-        let answered = self.apply(ask);
-        self.tick();
+        let actions = ask(&self.app);
+        let scrolled = actions.iter().all(state::UiAction::is_scroll);
+        let answered = self.apply(actions);
+        // A scroll comes every frame of a wheel animation and is already on screen, unless the list follows the cursor.
+        if !(answered && scrolled && !self.app.list.follow_cursor) {
+            self.tick();
+        }
         answered
     }
 
-    fn apply(&mut self, ask: bind::Ask) -> bool {
-        let actions = ask(&self.app);
+    fn apply(&mut self, actions: Vec<state::UiAction>) -> bool {
         let answered = !actions.is_empty();
         for action in actions {
             self.app.apply(action);
@@ -373,7 +377,7 @@ impl Live {
                 return;
             }
             for ask in asks {
-                self.apply(ask);
+                self.apply(ask(&self.app));
             }
         }
     }

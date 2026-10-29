@@ -966,6 +966,24 @@ mod tests {
     }
 
     #[test]
+    fn a_scroll_by_hand_is_taken_without_showing_the_whole_window_again() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        open.tick();
+        crate::with_live(|live| live.app.config_changed = true).unwrap();
+        open.window().invoke_list_scrolled(40.0, 600.0);
+        open.window().invoke_page_visible(0.0, 600.0);
+        assert!(
+            !open.window().get_config_changed(),
+            "a scroll showed the window again"
+        );
+        assert_eq!(
+            crate::with_live(|live| live.app.list.viewport).unwrap(),
+            (40.0, 600.0)
+        );
+    }
+
+    #[test]
     fn a_rows_menu_acts_on_that_row() {
         let fx = Fixture::new(&["work"]);
         fx.add("work", message("INBOX", 1, "older"));
