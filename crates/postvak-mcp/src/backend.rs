@@ -548,10 +548,21 @@ impl Backend {
     /// so positions may skip; rules for every account stay.
     pub fn rules_list(&self) -> Result<Vec<Value>> {
         let file = rules::load(&self.paths.rules_file())?;
+        // Only the visible accounts' stores, so a hidden account's hits never show.
+        let stores = self
+            .visible()
+            .iter()
+            .map(|account| self.store(account))
+            .collect::<Result<Vec<_>>>()?;
+        let hits = rules::hits::total(
+            &stores.iter().collect::<Vec<_>>(),
+            postvak_core::time::now(),
+        )?;
         let mut rows = Vec::new();
         for (position, rule) in file.rules.iter().enumerate() {
             if self.is_visible(rule.account.as_deref()) {
-                rows.push(output::rule(rule, position)?);
+                let found = hits.get(&rule.name).copied().unwrap_or_default();
+                rows.push(output::rule(rule, position, &found)?);
             }
         }
         Ok(rows)

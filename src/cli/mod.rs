@@ -1564,9 +1564,17 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
         }
         RulesCommand::List { json } => {
             let file = postvak_core::rules::load(&paths.rules_file())?;
+            let stores = config
+                .accounts
+                .iter()
+                .map(|acc| Store::open_account(paths, &acc.name))
+                .collect::<Result<Vec<_>, _>>()?;
+            let hits =
+                postvak_core::rules::hits::total(&stores.iter().collect::<Vec<_>>(), time::now())?;
             for (position, r) in file.rules.iter().enumerate() {
+                let found = hits.get(&r.name).copied().unwrap_or_default();
                 if json {
-                    print_json(postvak_core::output::rule(r, position)?);
+                    print_json(postvak_core::output::rule(r, position, &found)?);
                 } else {
                     let edits = r
                         .replaces
@@ -1574,10 +1582,11 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                         .map(|target| format!(" edits {}", clean(target, false)))
                         .unwrap_or_default();
                     println!(
-                        "{}\t{}\t{}{edits}",
+                        "{}\t{}\t{}{edits}\t{} in 30 days",
                         if r.enabled { "on " } else { "off" },
                         clean(&r.name, false),
-                        clean(r.proposed_by.as_deref().unwrap_or(""), false)
+                        clean(r.proposed_by.as_deref().unwrap_or(""), false),
+                        found.last_30d
                     );
                 }
             }

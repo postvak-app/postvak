@@ -639,6 +639,31 @@ async fn rules_propose_takes_a_batch_in_order_all_or_none() {
 }
 
 #[tokio::test]
+async fn rules_list_rows_carry_hit_counts() {
+    let fx = fixture(&["work"]);
+    std::fs::write(fx.paths.rules_file(), RULES).unwrap();
+    let store = postvak_core::store::Store::open_account(&fx.paths, "work").unwrap();
+    store
+        .log_action(&postvak_core::store::LogEntry {
+            id: 0,
+            at: postvak_core::time::now(),
+            rule_name: "codes".into(),
+            folder: "INBOX".into(),
+            uid: 1,
+            message_id: None,
+            subject: None,
+            action: "delete".into(),
+            trash_file: None,
+        })
+        .unwrap();
+    let client = connect(&fx, "read", &[]).await;
+    let listed = rows(&call(&client, "rules_list", json!({})).await);
+    assert_eq!(listed[0]["name"], "codes");
+    assert_eq!(listed[0]["hits_30d"], 1);
+    assert!(listed[0]["last_fired"].is_number());
+}
+
+#[tokio::test]
 async fn rules_list_returns_each_rule_whole_with_its_file_position() {
     let fx = fixture(&["work"]);
     std::fs::write(fx.paths.rules_file(), RULES).unwrap();

@@ -4,6 +4,7 @@ pub mod edit;
 
 pub use edit::rule_toml;
 pub mod engine;
+pub mod hits;
 mod warnings;
 
 pub use warnings::{
