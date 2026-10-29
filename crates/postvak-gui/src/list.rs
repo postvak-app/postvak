@@ -966,6 +966,29 @@ mod tests {
     }
 
     #[test]
+    fn another_folder_starts_at_the_top_of_its_list() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Archive", None);
+        for uid in 1..=40 {
+            fx.add("work", message("INBOX", uid, "hi"));
+            fx.add("work", message("Archive", uid, "hi"));
+        }
+        let (open, _wires) = fx.window();
+        open.tick();
+        open.window().set_list_y(-400.0);
+        open.tick();
+        assert_eq!(open.with(|live| live.app.list.viewport.0), 400.0);
+        open.with(|live| {
+            live.app.select_view(View::Folder {
+                account: 0,
+                folder: "Archive".into(),
+            })
+        });
+        open.tick();
+        assert_eq!(open.window().get_list_y(), 0.0);
+    }
+
+    #[test]
     fn a_scroll_by_hand_is_taken_without_showing_the_whole_window_again() {
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = fx.window();
