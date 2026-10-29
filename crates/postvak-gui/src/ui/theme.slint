@@ -58,8 +58,11 @@ export global Theme {
     out property <length> row: 24px;
     // A folder in the folder pane.
     out property <length> folder-row: row + pad;
-    // A message in the list: the sender and date, then the subject, with half a row of room around them.
-    out property <length> list-row: 3 * row;
+    // A message in the list: the sender and date, the subject and the body's start, a line of 20 each, 10 above and
+    // below.
+    out property <length> list-row: 10 * pad;
+    // A heading strip above a list row: a date group, or "Close matches" in a search.
+    out property <length> section: 4 * pad;
     out property <length> pad: 8px;
     out property <length> inset: 2 * pad;
     out property <length> icon: 16px;

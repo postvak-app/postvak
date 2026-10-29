@@ -94,6 +94,7 @@ pub(crate) fn pane(app: &App) -> Pane {
     let at = message.date.unwrap_or(message.internaldate);
     let from = message.from_addr.as_deref().unwrap_or_default();
     let (name, address) = name_and_address(from);
+    let (initials, tint) = avatar::of(from);
     let header = |value: &Option<String>| value.as_deref().map(|v| clean(v, false));
     let attachments = body
         .attachments
@@ -111,8 +112,8 @@ pub(crate) fn pane(app: &App) -> Pane {
         empty: None,
         hint: None,
         subject: header(&message.subject),
-        initials: initials(from),
-        tint: avatar::tint(address.as_deref().unwrap_or(&name)),
+        initials,
+        tint,
         logo: body.brand.as_ref().and_then(|brand| {
             let svg = app.logos.svg(brand)?;
             Some((brand.record_name(), svg.clone()))

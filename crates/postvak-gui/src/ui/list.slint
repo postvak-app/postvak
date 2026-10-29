@@ -2,7 +2,7 @@
 // texts; this file only places them.
 import { LineEdit, ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { EmptyState, Heading, HoverFill, IconButton } from "common.slint";
+import { EmptyState, Heading, HoverFill, IconButton, Keycap } from "common.slint";
 
 export struct RowData {
     unread: bool,
@@ -13,7 +13,16 @@ export struct RowData {
     tag: string,
     who: string,
     subject: string,
+    // A thread's message count for the pill beside the sender, or empty.
+    count: string,
     date: string,
+    // The body's start, or empty until it is indexed.
+    preview: string,
+    // The paperclip glyph when the message carries an attachment, or empty.
+    clip: string,
+    // The avatar's letters and which of `Theme.avatars` they sit on.
+    initials: string,
+    tint: int,
     // The cursor row.
     selected: bool,
     marked: bool,
@@ -21,8 +30,10 @@ export struct RowData {
     arrived: bool,
     // The accessible name, from `list::row_text`.
     name: string,
-    // A label drawn above the row, on the first close match of a search; empty otherwise.
+    // A heading drawn above the row: its date group, or "Close matches" on a search's first close hit; else empty.
     section: string,
+    // The heading is today's, drawn in the accent.
+    today: bool,
     // The right-click menu's three groups, from `list::menu`.
     menu-read: [string],
     menu-move: [string],
@@ -70,21 +81,25 @@ component ListRow inherits Rectangle {
         root.unread-level = data.unread ? 1 : 0;
     }
 
-    property <length> strip: data.section == "" ? 0px : Theme.row;
+    property <length> strip: data.section == "" ? 0px : Theme.section;
+    // One of the row's three lines.
+    property <length> line: 5 * Theme.pad / 2;
     height: Theme.list-row + root.strip;
     accessible-role: list-item;
     accessible-label: data.name;
     accessible-item-selected: data.selected;
     accessible-action-default => { root.clicked(false, false); }
 
-    // The "Close matches" strip above the first close hit.
+    // The date group's heading, or "Close matches" above the first close hit, sitting on the row below it.
     if data.section != "": Text {
         x: Theme.pad * 3 / 2;
-        y: 0;
+        y: root.strip - Theme.row;
         height: Theme.row;
         text: data.section;
-        font-size: Theme.small-size;
-        color: Theme.pane.muted;
+        font-size: Theme.caps-size;
+        font-weight: 600;
+        letter-spacing: 0.12 * Theme.caps-size;
+        color: data.today ? Theme.pane.accent : Theme.pane.muted;
         vertical-alignment: center;
     }
 
@@ -111,31 +126,35 @@ component ListRow inherits Rectangle {
         clicked => { root.clicked(root.held.shift, root.held.control); }
     }
 
+    // The avatar, then three lines: the sender and date, the subject, the body's start.
     HorizontalLayout {
-        padding-left: Theme.pad * 3 / 2;
+        padding-left: Theme.pad * 3 / 2 + root.indent;
         padding-right: Theme.pad * 3 / 2;
-        padding-top: (Theme.list-row - 2 * Theme.row) / 2;
+        padding-top: (Theme.list-row - 3 * root.line) / 2;
         padding-bottom: self.padding-top;
         spacing: Theme.pad * 3 / 2;
 
-        // The unread dot, on the sender's line.
-        Rectangle {
-            width: Theme.pad;
+        VerticalLayout {
+            alignment: start;
             Rectangle {
-                opacity: root.unread-level;
-                y: (Theme.row - self.height) / 2;
-                width: Theme.pad;
+                width: 4 * Theme.pad;
                 height: self.width;
                 border-radius: self.width / 2;
-                background: Theme.pane.highlight;
+                background: Theme.avatars[mod(data.tint, Theme.avatars.length)];
+                Text {
+                    accessible-role: none;
+                    text: data.initials;
+                    font-size: Theme.small-size;
+                    font-weight: 600;
+                    color: Theme.pane.heading;
+                }
             }
         }
 
         VerticalLayout {
-            padding-left: root.indent;
             HorizontalLayout {
-                height: Theme.row;
-                spacing: Theme.pad;
+                height: root.line;
+                spacing: 3 * Theme.pad / 4;
                 if data.tag != "": Text {
                     accessible-role: none;
                     max-width: 80px;
@@ -145,15 +164,42 @@ component ListRow inherits Rectangle {
                     overflow: elide;
                     vertical-alignment: center;
                 }
-                // Every sender is semibold; unread ones are darker.
+                // The unread dot before the sender, fading as the message turns read.
+                if root.unread-level > 0: VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        opacity: root.unread-level;
+                        width: 7px;
+                        height: self.width;
+                        border-radius: self.width / 2;
+                        background: Theme.pane.highlight;
+                    }
+                }
+                // Unread senders are semibold and dark; read ones step back.
                 Text {
                     accessible-role: none;
                     horizontal-stretch: 1;
                     text: data.who;
-                    font-weight: 600;
+                    font-weight: data.unread ? 600 : 500;
                     color: data.selected ? root.ink : Theme.pane.strong.mix(Theme.pane.secondary, root.unread-level);
                     overflow: elide;
                     vertical-alignment: center;
+                }
+                if data.count != "": VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        height: 9 * Theme.pad / 4;
+                        width: max(self.height, count.preferred-width + 3 * Theme.pad / 2);
+                        border-radius: self.height / 2;
+                        background: data.selected ? Theme.pane.background : Theme.pane.hover;
+                        count := Text {
+                            accessible-role: none;
+                            text: data.count;
+                            font-size: Theme.caps-size;
+                            font-weight: 600;
+                            color: Theme.pane.secondary;
+                        }
+                    }
                 }
                 // The mark's or flag's glyph.
                 if data.marker != "": Text {
@@ -174,11 +220,33 @@ component ListRow inherits Rectangle {
             }
             Text {
                 accessible-role: none;
-                height: Theme.row;
+                height: root.line;
                 text: data.subject;
-                color: data.selected ? root.ink : Theme.pane.secondary;
+                font-weight: data.unread ? 600 : 500;
+                color: data.selected ? root.ink : Theme.pane.text;
                 overflow: elide;
                 vertical-alignment: center;
+            }
+            HorizontalLayout {
+                height: root.line;
+                spacing: 3 * Theme.pad / 4;
+                Text {
+                    accessible-role: none;
+                    horizontal-stretch: 1;
+                    text: data.preview;
+                    font-size: Theme.small-size;
+                    color: data.selected ? Theme.pane.secondary : Theme.pane.muted;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+                if data.clip != "": Text {
+                    accessible-role: none;
+                    text: data.clip;
+                    font-family: Theme.icon-font;
+                    font-size: Theme.icon * 7 / 8;
+                    color: Theme.pane.muted;
+                    vertical-alignment: center;
+                }
             }
         }
     }
@@ -231,7 +299,7 @@ export component ListPane inherits Rectangle {
                 border-radius: Theme.pad;
                 border-width: 1px;
                 border-color: Theme.pane.border;
-                background: search.has-hover ? Theme.pane.faint : Theme.pane.background;
+                background: search.has-hover ? Theme.pane.background : Theme.pane.faint;
                 accessible-role: button;
                 accessible-label: "Search";
                 accessible-description: root.search-key;
@@ -243,6 +311,7 @@ export component ListPane inherits Rectangle {
                 }
                 HorizontalLayout {
                     padding-left: Theme.pad * 3 / 2;
+                    padding-right: Theme.pad;
                     spacing: Theme.pad;
                     Text {
                         accessible-role: none;
@@ -252,13 +321,19 @@ export component ListPane inherits Rectangle {
                         color: Theme.pane.muted;
                         vertical-alignment: center;
                     }
+                    // Names two operators, so the search syntax is found without the docs.
                     Text {
                         accessible-role: none;
-                        text: "Search mail";
+                        horizontal-stretch: 1;
+                        text: "Search mail, try from: or has:attachment";
                         color: Theme.pane.muted;
+                        overflow: elide;
                         vertical-alignment: center;
                     }
-                    Rectangle { horizontal-stretch: 1; }
+                    VerticalLayout {
+                        alignment: center;
+                        Keycap { key: "/"; }
+                    }
                 }
             }
 
@@ -371,7 +446,7 @@ export component ListPane inherits Rectangle {
                 changed visible-height => { root.scrolled(); }
                 // The menu sits above the row: a TouchArea takes every button's press before its parent sees it.
                 for row[i] in root.rows: Rectangle {
-                    height: Theme.list-row;
+                    height: Theme.list-row + (row.section == "" ? 0px : Theme.section);
                     // Dragging onto a folder moves the row; a click still reaches it.
                     drag := DragArea {
                         allow-move: true;

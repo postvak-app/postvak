@@ -740,14 +740,18 @@ fn row_fill(open: &Open, label: &str) -> slint::Color {
 
 /// The colour at the centre of the unread dot of the row labelled `label`, whether or not the dot shows.
 fn unread_dot(open: &Open, label: &str) -> slint::Color {
-    let (_, _, pad, row) = grid(open);
-    let at = open.get(label).absolute_position();
+    let (_, _, pad, _) = grid(open);
+    let element = open.get(label);
+    let at = element.absolute_position();
     let list_row =
         slint::ComponentHandle::global::<super::ui::Theme>(&open.window()).get_list_row();
+    // Below the row's heading strip, if it has one: after the padding, the avatar and a gap, on the first line.
+    let strip = element.size().height - list_row;
+    let line = pad * 5.0 / 2.0;
     pixel(
         open,
-        at.x + pad * 2.0,
-        at.y + (list_row - 2.0 * row) / 2.0 + row / 2.0,
+        at.x + pad * 3.0 / 2.0 + pad * 4.0 + pad * 3.0 / 2.0 + 3.5,
+        at.y + strip + (list_row - 3.0 * line) / 2.0 + line / 2.0,
     )
 }
 
@@ -1090,7 +1094,18 @@ fn rows_and_buttons_keep_the_grid_at_every_size() {
                 "{size:?}: no {type_name}"
             );
             for b in found {
-                assert_eq!(b.height, height, "{size:?}: {type_name} {:?}", b.label);
+                // A list row grows by its heading strip, when it has one.
+                let strip = if type_name == "ListRow" {
+                    super::theme::SECTION
+                } else {
+                    0.0
+                };
+                assert!(
+                    b.height == height || b.height == height + strip,
+                    "{size:?}: {type_name} {:?} is {}",
+                    b.label,
+                    b.height
+                );
             }
         }
         for b in all(&open, "IconButton") {

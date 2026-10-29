@@ -2,6 +2,15 @@
 use super::theme::TINTS;
 
 /// Which avatar fill `address` gets: FNV-1a of the lowercased address, so it holds across runs and releases.
+/// The initials and fill a sender's avatar shows, in the reader and the list alike.
+pub(crate) fn of(from: &str) -> (String, usize) {
+    let (name, address) = super::body::name_and_address(from);
+    (
+        super::body::initials(from),
+        tint(address.as_deref().unwrap_or(&name)),
+    )
+}
+
 pub(crate) fn tint(address: &str) -> usize {
     let hash = address
         .to_lowercase()

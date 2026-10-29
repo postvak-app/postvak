@@ -41,6 +41,10 @@ pub struct Row {
     pub close: bool,
     /// For a search hit that matched in its body: the text around the match, shown in place of the subject.
     pub snippet: Option<String>,
+    /// The headers' guess that it carries an attachment.
+    pub attachment: bool,
+    /// The start of the body text; empty until the body is indexed.
+    pub preview: String,
 }
 
 impl Row {
@@ -69,6 +73,8 @@ impl Row {
             unread: !message.is_seen(),
             close: false,
             snippet: None,
+            attachment: false,
+            preview: String::new(),
         }
     }
 
@@ -88,6 +94,8 @@ impl Row {
             unread: !message.is_seen(),
             close: false,
             snippet: None,
+            attachment: message.attachment,
+            preview: message.preview.clone(),
         }
     }
 }
@@ -120,15 +128,21 @@ pub(crate) struct ListState {
 impl ListState {
     /// Whether the cursor's row is in view, or as much of it as a list lower than a row shows; not before the list
     /// has reported its height.
-    pub fn cursor_shown(&self) -> bool {
+    pub fn cursor_shown(&self, search: bool) -> bool {
         let (offset, height) = self.viewport;
-        let above = match divider(&self.rows) {
-            Some(first) if first <= self.cursor => super::theme::ROW,
-            _ => 0.0,
-        };
+        let (above, own) = self.strips(search);
         height > 0.0
             && (height < LIST_ROW
-                || offset_showing(self.cursor, LIST_ROW, above, offset, height) == offset)
+                || offset_showing(self.cursor, LIST_ROW, above, own, offset, height) == offset)
+    }
+
+    /// The heading strips the cursor's row needs room for: those of the rows above it, and its own.
+    pub fn strips(&self, search: bool) -> (f32, f32) {
+        let now = chrono::Local::now();
+        let all = strips_above(&self.rows, self.cursor, search, &now);
+        let own = usize::from(section(&self.rows, self.cursor, search, &now).is_some());
+        let strip = super::theme::SECTION;
+        ((all - own) as f32 * strip, own as f32 * strip)
     }
 }
 
@@ -382,7 +396,14 @@ pub struct Columns {
     pub account: Option<String>,
     pub who: String,
     pub subject: String,
+    /// A thread's message count, for the pill beside the sender; None for one message.
+    pub count: Option<String>,
     pub date: String,
+    /// The body's start on one line.
+    pub preview: String,
+    /// The avatar's letters and which of `Theme.avatars` they sit on.
+    pub initials: String,
+    pub tint: usize,
 }
 
 /// The list pane's narrowest width, so the unread dot and the flag never reach the date and a long title keeps room
@@ -399,21 +420,27 @@ pub fn columns<Tz: TimeZone>(
 where
     Tz::Offset: std::fmt::Display,
 {
-    let who = display_name(if recipient { &row.to } else { &row.from });
+    let party = if recipient { &row.to } else { &row.from };
+    let who = display_name(party);
     let mut subject = String::new();
     if in_search {
         subject.push_str(&format!("[{}] ", folders::label(&row.folder)));
     }
     // A body hit shows where it matched; the subject did not, or it would have matched there.
     subject.push_str(row.snippet.as_deref().unwrap_or(&row.subject));
-    if row.count > 1 {
-        subject.push_str(&format!(" ({})", row.count));
-    }
+    let (initials, tint) = super::avatar::of(party);
     Columns {
         account: account.map(|name| clean(name, false)),
         who: clean(&who, false),
         subject: clean(&subject, false),
+        count: (row.count > 1).then(|| row.count.to_string()),
         date: list_date(row.date, now),
+        preview: clean(
+            &row.preview.split_whitespace().collect::<Vec<_>>().join(" "),
+            false,
+        ),
+        initials,
+        tint,
     }
 }
 
@@ -429,8 +456,12 @@ pub fn row_text(row: &Row, columns: &Columns) -> String {
     if let Some(account) = &columns.account {
         text.push_str(&format!("{account} · "));
     }
+    let count = columns
+        .count
+        .as_ref()
+        .map_or(String::new(), |count| format!(" ({count})"));
     text.push_str(&format!(
-        "{} — {}  ·  {}",
+        "{} — {}{count}  ·  {}",
         columns.who, columns.subject, columns.date
     ));
     if row.close {
@@ -440,10 +471,18 @@ pub fn row_text(row: &Row, columns: &Columns) -> String {
 }
 
 /// The scroll offset that shows the cursor row, moving the view as little as possible. `above` is what sits above
-/// the row besides whole rows: the "Close matches" strip, when the cursor is on or below it.
-pub fn offset_showing(cursor: usize, row_height: f32, above: f32, offset: f32, height: f32) -> f32 {
+/// the row besides whole rows, the heading strips of the rows before it; `own` is the row's own heading strip, which
+/// shows with it.
+pub fn offset_showing(
+    cursor: usize,
+    row_height: f32,
+    above: f32,
+    own: f32,
+    offset: f32,
+    height: f32,
+) -> f32 {
     let top = cursor as f32 * row_height + above;
-    let bottom = top + row_height;
+    let bottom = top + own + row_height;
     if top < offset {
         top
     } else if bottom > offset + height {
@@ -466,6 +505,66 @@ pub fn merge_hits(mut hits: Vec<Row>, limit: u32) -> Vec<Row> {
 
 /// The label above the first close match, when the list has one.
 pub const CLOSE_MATCHES: &str = "Close matches";
+
+/// Which date group a row dated `ts` falls in: Today, Yesterday, This week, then its month, with the year once it is
+/// not this year's.
+pub fn date_section<Tz: TimeZone>(ts: i64, now: &DateTime<Tz>) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let Some(at) = now.timezone().timestamp_opt(ts, 0).single() else {
+        return String::new();
+    };
+    let days = now
+        .date_naive()
+        .signed_duration_since(at.date_naive())
+        .num_days();
+    match days {
+        ..=0 => "Today".into(),
+        1 => "Yesterday".into(),
+        2..=6 => "This week".into(),
+        _ if at.year() == now.year() => at.format("%B").to_string(),
+        _ => at.format("%B %Y").to_string(),
+    }
+}
+
+/// The heading above row `index`: in a search the "Close matches" strip on the first close hit; otherwise the date
+/// group of a thread whose group differs from the thread above it. Members of an expanded thread never get one.
+pub fn section<Tz: TimeZone>(
+    rows: &[Row],
+    index: usize,
+    search: bool,
+    now: &DateTime<Tz>,
+) -> Option<String>
+where
+    Tz::Offset: std::fmt::Display,
+{
+    if search {
+        return (divider(rows) == Some(index)).then(|| CLOSE_MATCHES.to_string());
+    }
+    let row = rows.get(index).filter(|row| !row.member)?;
+    let group = date_section(row.date, now);
+    let above = rows[..index].iter().rev().find(|row| !row.member);
+    match above {
+        Some(above) if date_section(above.date, now) == group => None,
+        _ => Some(group),
+    }
+}
+
+/// How many heading strips sit above the bottom of row `cursor`, its own included, for the scroll offset.
+pub fn strips_above<Tz: TimeZone>(
+    rows: &[Row],
+    cursor: usize,
+    search: bool,
+    now: &DateTime<Tz>,
+) -> usize
+where
+    Tz::Offset: std::fmt::Display,
+{
+    (0..=cursor.min(rows.len().saturating_sub(1)))
+        .filter(|&index| section(rows, index, search, now).is_some())
+        .count()
+}
 
 /// The row the "Close matches" strip sits on: the first close hit.
 pub fn divider(rows: &[Row]) -> Option<usize> {
@@ -562,6 +661,8 @@ mod tests {
             subject: format!("subject {uid}"),
             date: 1_790_000_000 + i64::from(uid),
             flags: flags.into(),
+            attachment: false,
+            preview: String::new(),
         }
     }
 
@@ -639,10 +740,70 @@ mod tests {
             .with_ymd_and_hms(2026, 10, 6, 9, 13, 0)
             .unwrap()
             .timestamp();
+        row.preview = "Hi Robin,\n\n  Shall we\ttry\u{1b}[2J lunch?".into();
         let c = columns(&row, None, false, true, &now);
         assert_eq!(c.who, "Linus Example");
-        assert_eq!(c.subject, "[Inbox] Lunch? (3)");
+        assert_eq!(c.subject, "[Inbox] Lunch?");
+        assert_eq!(c.count.as_deref(), Some("3"));
         assert_eq!(c.date, "09:13");
+        assert_eq!(c.preview, "Hi Robin, Shall we try[2J lunch?");
+        assert_eq!(c.initials, "LE");
+        assert!(
+            row_text(&row, &c).contains("Lunch? (3)"),
+            "screen readers still hear the count"
+        );
+    }
+
+    #[test]
+    fn rows_fall_into_today_yesterday_this_week_then_months() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 6, 12, 0, 0).unwrap();
+        let at = |y, mo, d| Utc.with_ymd_and_hms(y, mo, d, 9, 0, 0).unwrap().timestamp();
+        assert_eq!(date_section(at(2026, 10, 6), &now), "Today");
+        assert_eq!(date_section(at(2026, 10, 5), &now), "Yesterday");
+        assert_eq!(date_section(at(2026, 10, 1), &now), "This week");
+        assert_eq!(date_section(at(2026, 9, 29), &now), "September");
+        assert_eq!(date_section(at(2025, 12, 10), &now), "December 2025");
+    }
+
+    #[test]
+    fn a_heading_starts_each_date_group_and_search_keeps_only_close_matches() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 6, 12, 0, 0).unwrap();
+        let at = |d, h| {
+            Utc.with_ymd_and_hms(2026, 10, d, h, 0, 0)
+                .unwrap()
+                .timestamp()
+        };
+        let mut rows: Vec<Row> = [(6, 11), (6, 9), (6, 8), (5, 9)]
+            .into_iter()
+            .enumerate()
+            .map(|(uid, (day, hour))| {
+                let mut row = Row::from_message(0, &message("INBOX", uid as u32, "x"));
+                row.date = at(day, hour);
+                row
+            })
+            .collect();
+        rows[2].member = true;
+        let headings: Vec<Option<String>> = (0..rows.len())
+            .map(|i| section(&rows, i, false, &now))
+            .collect();
+        let expected = [
+            Some("Today".to_string()),
+            None,
+            None,
+            Some("Yesterday".into()),
+        ];
+        assert_eq!(headings, expected);
+        assert_eq!(strips_above(&rows, 0, false, &now), 1);
+        assert_eq!(strips_above(&rows, 3, false, &now), 2);
+        rows[3].close = true;
+        let headings: Vec<Option<String>> = (0..rows.len())
+            .map(|i| section(&rows, i, true, &now))
+            .collect();
+        assert_eq!(
+            headings,
+            [None, None, None, Some(CLOSE_MATCHES.to_string())]
+        );
+        assert_eq!(strips_above(&rows, 2, true, &now), 0);
     }
 
     #[test]
@@ -664,15 +825,21 @@ mod tests {
 
     #[test]
     fn offset_showing_scrolls_only_as_far_as_needed() {
-        assert_eq!(offset_showing(0, 20.0, 0.0, 0.0, 100.0), 0.0);
-        assert_eq!(offset_showing(4, 20.0, 0.0, 0.0, 100.0), 0.0);
-        assert_eq!(offset_showing(5, 20.0, 0.0, 0.0, 100.0), 20.0);
-        assert_eq!(offset_showing(1, 20.0, 0.0, 60.0, 100.0), 20.0);
+        assert_eq!(offset_showing(0, 20.0, 0.0, 0.0, 0.0, 100.0), 0.0);
+        assert_eq!(offset_showing(4, 20.0, 0.0, 0.0, 0.0, 100.0), 0.0);
+        assert_eq!(offset_showing(5, 20.0, 0.0, 0.0, 0.0, 100.0), 20.0);
+        assert_eq!(offset_showing(1, 20.0, 0.0, 0.0, 60.0, 100.0), 20.0);
         assert_eq!(
-            offset_showing(4, 20.0, 8.0, 0.0, 100.0),
+            offset_showing(4, 20.0, 8.0, 0.0, 0.0, 100.0),
             8.0,
             "the strip pushes the row down"
         );
+        assert_eq!(
+            offset_showing(0, 20.0, 0.0, 8.0, 50.0, 100.0),
+            0.0,
+            "the row's own heading shows with it"
+        );
+        assert_eq!(offset_showing(4, 20.0, 0.0, 8.0, 0.0, 100.0), 8.0);
     }
 
     #[test]
@@ -709,6 +876,8 @@ mod tests {
             unread: true,
             close: false,
             snippet: None,
+            attachment: false,
+            preview: String::new(),
         };
         let now = Utc.with_ymd_and_hms(2026, 10, 6, 12, 0, 0).unwrap();
         let text = row_text(&row, &columns(&row, None, false, false, &now));
@@ -963,6 +1132,22 @@ mod tests {
     }
 
     #[test]
+    fn a_row_shows_the_body_start_and_a_paperclip_for_an_attachment() {
+        let fx = Fixture::new(&["work"]);
+        let mut attached = message("INBOX", 1, "report");
+        attached.headers = b"Content-Type: multipart/mixed; boundary=b\r\n\r\n".to_vec();
+        attached.body_text = Some("See the\n  numbers attached.".into());
+        fx.add("work", attached);
+        let (open, _wires) = fx.window();
+        let row = slint::Model::row_data(&open.window().get_rows(), 0).unwrap();
+        assert_eq!(row.clip, crate::icons::PAPERCLIP);
+        assert_eq!(row.preview, "See the numbers attached.");
+        let date = open.with(|live| live.app.list.rows[0].date);
+        let group = date_section(date, &chrono::Local::now()).to_uppercase();
+        assert_eq!(row.section, group.as_str());
+    }
+
+    #[test]
     fn a_list_with_mail_shows_no_placeholder() {
         let fx = Fixture::new(&["work"]);
         fx.add("work", message("INBOX", 1, "hi"));
@@ -1005,7 +1190,8 @@ mod tests {
         open.tick();
         open.window().set_list_y(-400.0);
         open.tick();
-        assert_eq!(open.with(|live| live.app.list.viewport.0), 400.0);
+        // The ListView settles near the offset: rows with a heading strip are taller than the ones it estimates.
+        assert!(open.with(|live| live.app.list.viewport.0) > 300.0);
         open.with(|live| {
             live.app.select_view(View::Folder {
                 account: 0,

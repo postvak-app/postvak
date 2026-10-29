@@ -179,12 +179,8 @@ impl Model for ListModel {
             .map(String::as_str);
         let marked = shown.marked.contains(&row.id());
         let arrived = shown.arrived.contains(&row.id());
-        let section = if list::divider(&shown.rows) == Some(index) {
-            list::CLOSE_MATCHES
-        } else {
-            ""
-        };
         let now = Local::now();
+        let section = list::section(&shown.rows, index, shown.search, &now).unwrap_or_default();
         let columns = list::columns(row, account, shown.recipient, shown.search, &now);
         let mut name = list::row_text(row, &columns);
         if marked {
@@ -214,12 +210,24 @@ impl Model for ListModel {
             tag: columns.account.unwrap_or_default().into(),
             who: columns.who.into(),
             subject: columns.subject.into(),
+            count: columns.count.unwrap_or_default().into(),
             date: columns.date.into(),
+            preview: columns.preview.into(),
+            clip: if row.attachment { icons::PAPERCLIP } else { "" }.into(),
+            initials: columns.initials.into(),
+            tint: i32::try_from(columns.tint).unwrap_or_default(),
             selected: index == shown.cursor,
             marked,
             arrived,
             name: name.into(),
-            section: section.into(),
+            today: section == "Today",
+            // Small capitals, as the website's eyebrows; "Close matches" keeps its own case.
+            section: if section == list::CLOSE_MATCHES {
+                section
+            } else {
+                section.to_uppercase()
+            }
+            .into(),
         })
     }
 

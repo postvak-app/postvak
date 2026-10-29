@@ -205,11 +205,9 @@ fn present_list(app: &App, window: &MailWindow) {
     // Until the list has reported its height there is nothing to scroll within.
     if app.list.follow_cursor && app.list.viewport.1 > 0.0 {
         let (offset, height) = app.list.viewport;
-        let above = match list::divider(&app.list.rows) {
-            Some(first) if first <= app.list.cursor => theme::ROW,
-            _ => 0.0,
-        };
-        let offset = list::offset_showing(app.list.cursor, theme::LIST_ROW, above, offset, height);
+        let (above, own) = app.list.strips(app.search.is_some());
+        let offset =
+            list::offset_showing(app.list.cursor, theme::LIST_ROW, above, own, offset, height);
         window.set_list_y(-offset);
     }
     window.set_move_open(app.move_picker.is_some());
