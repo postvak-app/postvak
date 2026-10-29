@@ -652,7 +652,7 @@ fn compile_rule(
             _ => None,
         }));
     for (field, folder, target) in folders {
-        check_folder_shape(folder, target)
+        crate::folder_name::check_shape(folder, target)
             .map_err(|reason| invalid(&rule.name, format!("{field} {reason}")))?;
     }
     for action in &rule.actions {
@@ -666,27 +666,6 @@ fn compile_rule(
         first_seen_at: 0,
         conditions: compile_match(&rule.name, &rule.matches, "match", 0)?,
     })
-}
-
-/// Refuses a folder name servers refuse or misread, by its levels between `/`, the delimiter the docs teach: a level
-/// starting or ending in whitespace, which looks like a folder that is not there. A move target, which may be created,
-/// also may not have an empty level (`/Lists`, `Lists//GitHub`, or `Lists/`, which RFC 3501 §6.3.3 makes only a
-/// parent for later folders) or IMAP's `LIST` wildcards `*` and `%`.
-fn check_folder_shape(name: &str, target: bool) -> Result<(), String> {
-    if target && name.contains(['*', '%']) {
-        return Err("must not contain * or %, which IMAP reads as wildcards".into());
-    }
-    for level in name.split('/') {
-        if target && level.is_empty() {
-            return Err("must not have an empty level: a leading, trailing or doubled /".into());
-        }
-        if level.trim() != level {
-            return Err(format!(
-                "level '{level}' must not start or end with whitespace"
-            ));
-        }
-    }
-    Ok(())
 }
 
 fn compile_match(
