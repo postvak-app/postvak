@@ -110,3 +110,13 @@ img[src$="#gh-dark-mode-only"],
     font-size: 0;
     height: 32px;
 }
+
+/* The comparison table on compare.md: the Postvak column stands out, the rows stay scannable. */
+.compare table { width: 100%; font-size: 0.9em; }
+.compare th:first-child, .compare td:first-child { text-align: left; font-weight: 600; width: 26%; }
+.compare th, .compare td { text-align: center; }
+.compare th:nth-child(2), .compare td:nth-child(2) { background: color-mix(in srgb, var(--links) 12%, transparent); }
+.compare th:nth-child(2) { color: var(--links); }
+.compare .yes, .compare .no { font-weight: 700; }
+.compare .yes { color: var(--blockquote-tip-color); }
+.compare .no { color: var(--blockquote-caution-color); opacity: 0.8; }

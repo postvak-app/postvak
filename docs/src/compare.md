@@ -1,16 +1,32 @@
 # Compared to other tools
 
-Postvak sorts mail with rules you write, on your own machine or server, over IMAP. Plenty of tools sort mail; this page says where Postvak differs and when another one fits you better.
+Postvak sorts your mail with rules you write, on any IMAP server, without the app open. No other tool here does all of this at once:
+
+- **It sorts mail already in your folders**, not only as it arrives: it deletes a sign-in code an hour after you read it, or archives a newsletter once it is a week old.
+- **You see what a rule would do before it does it**, and anything a rule deletes is kept as an `.eml` backup you can restore.
+- **It keeps working without you**: at login, on a server or in Docker, while the mail window is closed.
+- **It comes with a mail window, full-text search and an MCP server**, so you can read, search and have an agent propose rules in one place.
+- **Your mail never leaves your machine** to be sorted.
+
+<div class="compare">
 
 | | Postvak | imapfilter | Sieve | Thunderbird, Apple Mail | AI sorters |
 |---|---|---|---|---|---|
-| Runs | in the background, on your machine or server | where you run it | on the mail server | while the app is open | on the vendor's servers |
-| Works with | any IMAP server with password login | any IMAP server | servers that offer it | the app's accounts | the services they support |
-| Rules are | TOML | Lua | Sieve scripts | dialogs | a model's judgement |
-| Acts on mail already in a folder | yes, on every sync | yes | no, only on delivery | when you run a filter | varies |
-| Shows what a rule would do first | [`rules test`](cli.md#postvak-rules-test) | dry-run mode | no | no | no |
-| Undo a delete | [trash](cli.md#postvak-trash-restore) | no | no | the app's trash | varies |
-| Mail leaves your machine | no | no | no | no | yes |
+| Sorts without the app open | <span class="yes">✓</span> | <span class="yes">✓</span> | <span class="yes">✓</span> | <span class="no">✗</span> | <span class="yes">✓</span> |
+| Sorts mail already in a folder | <span class="yes">✓</span> on every sync | <span class="yes">✓</span> | <span class="no">✗</span> on delivery only | when you run a filter | varies |
+| Works with any IMAP server | <span class="yes">✓</span> with a password | <span class="yes">✓</span> | <span class="no">✗</span> if it offers Sieve | <span class="yes">✓</span> | <span class="no">✗</span> services they support |
+| Rules without programming | <span class="yes">✓</span> TOML or a form | <span class="no">✗</span> Lua | <span class="no">✗</span> Sieve scripts | <span class="yes">✓</span> dialogs | no rules to write |
+| Shows what a rule would do first | <span class="yes">✓</span> [dry run](cli.md#postvak-rules-test) | <span class="yes">✓</span> dry run | <span class="no">✗</span> | <span class="no">✗</span> | <span class="no">✗</span> |
+| Undo a delete | <span class="yes">✓</span> [`.eml` backups](cli.md#postvak-trash-restore) | <span class="no">✗</span> | <span class="no">✗</span> | the app's trash | varies |
+| Rules in a text file you can keep in git | <span class="yes">✓</span> | <span class="yes">✓</span> | on the server | <span class="no">✗</span> | <span class="no">✗</span> |
+| Mail window and full-text search | <span class="yes">✓</span> | <span class="no">✗</span> | <span class="no">✗</span> | <span class="yes">✓</span> | varies |
+| Your own AI agent can propose rules | <span class="yes">✓</span> [over MCP](mcp.md) | <span class="no">✗</span> | <span class="no">✗</span> | <span class="no">✗</span> | <span class="no">✗</span> |
+| Mail stays on your machine | <span class="yes">✓</span> | <span class="yes">✓</span> | <span class="yes">✓</span> | <span class="yes">✓</span> | <span class="no">✗</span> |
+| Price | free, open source | free, open source | part of your server | free | mostly a subscription |
+
+</div>
+
+Each tool below has cases where it fits better; [where Postvak falls short](#where-postvak-falls-short) lists its own gaps.
 
 ## Scriptable filters: imapfilter, Sieve, procmail
 
