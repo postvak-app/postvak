@@ -5300,7 +5300,8 @@ fn delete_empty_folder() {
         name: "Old".into(),
         request: 1
     }));
-    assert!(called(&ops, "delete_folder Old").is_some());
+    let delete_at = called(&ops, "delete_folder Old").unwrap();
+    assert_eq!(ops.calls[delete_at - 1], "select INBOX", "{:?}", ops.calls);
     assert!(store.folder("Old").unwrap().is_none());
 }
 
@@ -5347,7 +5348,13 @@ fn delete_to_trash_moves_every_message_then_deletes() {
     assert_eq!(ops.mail["Trash"].len(), 2);
     assert!(!ops.mail.contains_key("Old"));
     let moved = called(&ops, "move Old").unwrap();
-    assert!(moved < called(&ops, "delete_folder Old").unwrap());
+    let delete_at = called(&ops, "delete_folder Old").unwrap();
+    assert!(moved < delete_at);
+    assert_eq!(
+        ops.calls[moved + 1..delete_at],
+        ["select Old", "search_uids Old 1", "select INBOX"],
+        "searched again, then left the folder before DELETE"
+    );
     assert!(store.folder("Old").unwrap().is_none());
 }
 
@@ -5471,4 +5478,32 @@ fn folder_commands_are_failed_while_offline() {
             "{request}: {events:?}"
         );
     }
+}
+
+#[test]
+fn delete_refuses_mail_arriving_while_the_folder_is_emptied() {
+    for mode in [DeleteMode::Trash, DeleteMode::Permanent] {
+        let (mut ops, store, dir) = with_folders(&[("Old", None)], 2);
+        let trash = Trash::new(dir.path().to_path_buf());
+        // The first search lists the two confirmed messages; the one before DELETE finds a third.
+        ops.arrive_at_search = Some((1, "Old".into(), 9));
+        let (_, events) = drain(&mut ops, &store, &trash, vec![delete("Old", Some(mode), 2)]);
+        assert!(
+            failure(&events).contains("1 new messages arrived"),
+            "{mode:?}: {events:?}"
+        );
+        assert_eq!(called(&ops, "delete_folder"), None, "{mode:?}");
+        assert!(ops.mail["Old"].iter().any(|m| m.uid == 9), "{mode:?}");
+        assert!(store.folder("Old").unwrap().is_some(), "{mode:?}");
+    }
+}
+
+#[test]
+fn delete_of_an_empty_folder_refuses_mail_arriving_before_delete() {
+    let (mut ops, store, dir) = with_folders(&[("Old", None)], 0);
+    let trash = Trash::new(dir.path().to_path_buf());
+    ops.arrive_at_search = Some((0, "Old".into(), 1));
+    let (_, events) = drain(&mut ops, &store, &trash, vec![delete("Old", None, 0)]);
+    assert!(failure(&events).contains("arrived"), "{events:?}");
+    assert_eq!(called(&ops, "delete_folder"), None);
 }

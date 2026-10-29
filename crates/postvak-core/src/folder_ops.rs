@@ -25,6 +25,8 @@ pub enum FolderError {
     Store(#[from] StoreError),
     #[error("could not back up the folder's mail, so nothing was deleted: {0}")]
     Backup(io::Error),
+    #[error("{0} new messages arrived while the folder was being emptied, so it was not deleted")]
+    Arrived(usize),
     #[error("the folder's mail was moved, but deleting the empty folder failed: {0}")]
     LeftEmpty(MailError),
 }
@@ -98,15 +100,17 @@ pub fn delete(
     }
     let held = server_count(ops, &name)?;
     let trash_folder = special_folder(store, "Trash")?;
-    if held > 0 {
-        let Some(mode) = mode else {
+    let kept = match mode {
+        _ if held == 0 => Vec::new(),
+        Some(mode) => empty(ops, trash, &name, mode, count, trash_folder, now)?,
+        None => {
             return Ok(Deleted::NotEmpty {
                 count: held,
                 has_trash: trash_folder.is_some(),
             });
-        };
-        empty(ops, trash, &name, mode, count, trash_folder, now)?;
-    }
+        }
+    };
+    leave_if_unchanged(ops, &name, &kept)?;
     if let Err(e) = ops.delete_folder(&name) {
         return Err(match mode {
             Some(DeleteMode::Trash) if held > 0 => FolderError::LeftEmpty(e),
@@ -117,8 +121,24 @@ pub fn delete(
     Ok(Deleted::Done)
 }
 
+/// Searches `name` once more right before DELETE, refusing if it holds a message other than `kept`, then selects
+/// INBOX: some servers refuse to delete the selected folder.
+fn leave_if_unchanged(ops: &mut dyn MailOps, name: &str, kept: &[u32]) -> Result<(), FolderError> {
+    ops.select(name)?;
+    let arrived = ops
+        .search_uids(1)?
+        .into_iter()
+        .filter(|uid| !kept.contains(uid))
+        .count();
+    if arrived > 0 {
+        return Err(FolderError::Arrived(arrived));
+    }
+    ops.select("INBOX")?;
+    Ok(())
+}
+
 /// Moves every message of `name` to Trash, or backs every one up before DELETE takes them; refuses when the folder
-/// does not hold exactly the `count` messages the user confirmed.
+/// does not hold exactly the `count` messages the user confirmed. Returns the messages left in the folder.
 fn empty(
     ops: &mut dyn MailOps,
     trash: &Trash,
@@ -127,7 +147,7 @@ fn empty(
     count: u32,
     trash_folder: Option<String>,
     now: i64,
-) -> Result<(), FolderError> {
+) -> Result<Vec<u32>, FolderError> {
     ops.select(name)?;
     let uids = ops.search_uids(1)?;
     // Checked on the selected folder, so mail arriving since the confirm is never taken.
@@ -146,9 +166,10 @@ fn empty(
                 ));
             };
             ops.move_messages(&uids, &trash_folder)?;
+            Ok(Vec::new())
         }
         DeleteMode::Permanent => {
-            for uid in uids {
+            for &uid in &uids {
                 let raw = ops.fetch_raw(uid)?.ok_or_else(|| {
                     FolderError::Backup(io::Error::other(format!(
                         "{name}/{uid}: the server sent no message"
@@ -158,9 +179,9 @@ fn empty(
                     .save(name, uid, &raw, now)
                     .map_err(FolderError::Backup)?;
             }
+            Ok(uids)
         }
     }
-    Ok(())
 }
 
 /// The server's count of messages in `name`; STATUS of the selected folder is one a server may refuse.

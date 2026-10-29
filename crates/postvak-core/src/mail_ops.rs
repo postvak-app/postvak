@@ -275,6 +275,9 @@ mod recording {
         pub fail_next_delete: Option<MailError>,
         /// Makes the next `rename_folder` fail with this error, once, like a server refusing a name.
         pub fail_next_rename: Option<MailError>,
+        /// (searches to let pass, folder, uid): delivers a message to the folder just before that `search_uids`
+        /// answers, like mail arriving while a client works on the folder.
+        pub arrive_at_search: Option<(usize, String, u32)>,
         /// Makes every `add_flags` fail with an I/O error once this many have succeeded, like a connection that dropped.
         pub fail_add_flags_after: Option<usize>,
         /// Makes `add_flags` panic, like a bug in a command.
@@ -540,6 +543,13 @@ mod recording {
         fn search_uids(&mut self, from_uid: u32) -> MailResult<Vec<u32>> {
             self.calls
                 .push(format!("search_uids {} {from_uid}", self.selected));
+            match self.arrive_at_search.take() {
+                Some((0, folder, uid)) => {
+                    let raw = "Subject: new\r\n\r\nhi";
+                    self.add_mail(&folder, uid, 0, raw, Some(raw));
+                }
+                later => self.arrive_at_search = later.map(|(n, f, u)| (n - 1, f, u)),
+            }
             let mut uids: Vec<u32> = self
                 .mail
                 .get(&self.selected)
