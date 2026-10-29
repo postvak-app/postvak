@@ -16,8 +16,8 @@ use super::state::{self, App, Focus, UiAction, View};
 use super::ui::{
     AccountFields, ActionData, AttachmentData, BodyInfo, ConditionData, Dialog, Dot, FolderItem,
     FolderKind, KeyHelp, MailWindow, MenuAction, MenuChoice, MenuState, PageInfo, Pane,
-    ProposalData, Remote, RuleData, RuleEditor, SelectedData, Sheet, StatusLine, Theme,
-    ThemePreference, ToolButton,
+    ProposalData, ProvenanceData, Remote, RuleData, RuleEditor, SelectedData, Sheet, StatusLine,
+    Theme, ThemePreference, ToolButton, WhyLine,
 };
 use super::{account, body, icons, list, menu, rules, status, theme, toolbar};
 use postvak_core::message::clean;
@@ -229,6 +229,53 @@ fn present_list(app: &App, window: &MailWindow) {
     });
 }
 
+/// The provenance strip as the window draws it; an empty one when no rule acted on the message.
+fn provenance_data(pane: &body::Pane) -> ProvenanceData {
+    let Some(p) = &pane.provenance else {
+        return ProvenanceData::default();
+    };
+    let target = if p.target.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", p.target)
+    };
+    let removed = if p.removed { " (removed)" } else { "" };
+    let why = pane
+        .why
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|(text, met)| WhyLine {
+            text: text.as_str().into(),
+            met: *met,
+        });
+    ProvenanceData {
+        shown: true,
+        verb: p.verb.as_str().into(),
+        target: p.target.as_str().into(),
+        rule: p.rule.as_str().into(),
+        when: p.when.as_str().into(),
+        sentence: format!("{}{target} by rule {} {}{removed}", p.verb, p.rule, p.when).into(),
+        removed: p.removed,
+        move_back: p
+            .move_back
+            .as_deref()
+            .map(crate::folders::label)
+            .unwrap_or_default()
+            .into(),
+        more: i32::try_from(p.all.len().saturating_sub(1)).unwrap_or(i32::MAX),
+        open: pane.provenance_open,
+        all: model(
+            p.all
+                .iter()
+                .map(|line| SharedString::from(line.as_str()))
+                .collect::<Vec<_>>(),
+        ),
+        why_open: pane.why.is_some(),
+        why: model(why.collect::<Vec<_>>()),
+    }
+}
+
 fn present_body(app: &App, window: &MailWindow) {
     let pane = body::pane(app);
     let text = |value: Option<String>| SharedString::from(value.unwrap_or_default());
@@ -250,6 +297,7 @@ fn present_body(app: &App, window: &MailWindow) {
             .as_ref()
             .and_then(|(_, svg)| slint::Image::load_from_svg_data(svg.as_bytes()).ok())
     };
+    let provenance = provenance_data(&pane);
     let info = BodyInfo {
         empty: pane.empty.unwrap_or_default().into(),
         empty_hint: pane.hint.unwrap_or_default().into(),
@@ -287,6 +335,7 @@ fn present_body(app: &App, window: &MailWindow) {
         unsubscribe: pane.unsubscribe,
         unsubscribed: pane.unsubscribed,
         reply: pane.reply,
+        provenance,
         links: strings(shown.links.clone(), pane.links),
     };
     if info != shown {
@@ -1050,6 +1099,32 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
             let message = app.body.as_ref()?.message.as_ref()?;
             Some(UiAction::OpenUrl(body::reply_url(message)?))
         }));
+    });
+    window.on_edit_shown_rule(move || {
+        on(Box::new(|app: &App| {
+            let name = app.body.as_ref().and_then(|b| b.provenance.first());
+            name.map(|entry| {
+                vec![
+                    UiAction::SelectView(View::Rules),
+                    UiAction::EditRule(entry.rule_name.clone()),
+                ]
+            })
+            .unwrap_or_default()
+        }));
+    });
+    window.on_move_back(move || {
+        on(one(|app| {
+            let body = app.body.as_ref()?;
+            let pane = body::pane(app);
+            pane.provenance?.move_back?;
+            Some(UiAction::MoveTo(body.provenance.first()?.folder.clone()))
+        }));
+    });
+    window.on_toggle_provenance(move || {
+        act(UiAction::ToggleProvenance);
+    });
+    window.on_toggle_why(move || {
+        act(UiAction::ToggleWhy);
     });
     window.on_rule_from(move || {
         on(one(|app| {

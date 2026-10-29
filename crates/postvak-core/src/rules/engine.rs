@@ -1,6 +1,6 @@
 use crate::config::Identity;
 use crate::message::{auth, bare_addresses, header_text};
-use crate::rules::{Action, CompiledRule, Conditions};
+use crate::rules::{Action, CompiledRule, Conditions, Match, Rule};
 use crate::store::{Message, has_flag};
 
 /// Set by `trash restore`; rules never act on, or notify about, mail carrying it.
@@ -100,6 +100,42 @@ pub fn rule_matches(rule: &CompiledRule, msg: &Message, ctx: &Context) -> bool {
         // An unknown body is neither a match nor a mismatch, so `none` cannot turn a failed fetch into a hit.
         && (!rule.needs_body() || msg.body_text.is_some())
         && matches(&rule.conditions, msg, ctx)
+}
+
+/// Each condition of `rule` on its own, one per key of its `match` and one per header, with whether `msg` meets it: what
+/// the reader's Why? lists. Whether the rule is on, its account, folder and first-seen time are left out, since the
+/// message may since have left the folder the rule watches.
+pub fn explain(rule: &Rule, msg: &Message, ctx: &Context) -> Vec<(Match, bool)> {
+    let Ok(serde_json::Value::Object(keys)) = serde_json::to_value(&rule.matches) else {
+        return Vec::new();
+    };
+    let mut singles = Vec::new();
+    for (key, value) in keys {
+        match value {
+            serde_json::Value::Object(headers) if key == "header" => singles.extend(
+                headers
+                    .into_iter()
+                    .map(|(name, test)| serde_json::json!({ "header": { name: test } })),
+            ),
+            value => singles.push(serde_json::json!({ key: value })),
+        }
+    }
+    singles
+        .into_iter()
+        .filter_map(|single| serde_json::from_value::<Match>(single).ok())
+        .filter_map(|single| {
+            let alone = Rule {
+                matches: single.clone(),
+                ..rule.clone()
+            };
+            let compiled =
+                crate::rules::compile(&crate::rules::RuleFile { rules: vec![alone] }).ok()?;
+            let met = compiled
+                .first()
+                .is_some_and(|c| matches(&c.conditions, msg, ctx));
+            Some((single, met))
+        })
+        .collect()
 }
 
 fn field(value: &Option<String>) -> &str {
@@ -719,6 +755,32 @@ actions = { delete = true }
             evaluate(&rules(toml, 0), &m, &ctx(&id, 10 * HOUR))
                 .actions
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn explain_checks_each_condition_on_its_own_whatever_the_rule_scope() {
+        let id = identity();
+        let toml = "[[rules]]\nname = \"travel\"\nenabled = false\nfolder = \"INBOX\"\nmatch.from = { contains = \"rail\" }\nmatch.subject = { contains = \"invoice\" }\nactions = { move = \"Travel\" }\n";
+        let rule = crate::rules::parse(toml).unwrap().rules.remove(0);
+        let mut moved = msg(
+            "tickets@rail.example",
+            "pieter@example.com",
+            "Your e-ticket",
+            100,
+            false,
+        );
+        moved.folder = "Travel".into();
+        let explained: Vec<(String, bool)> = explain(&rule, &moved, &ctx(&id, 200))
+            .into_iter()
+            .map(|(single, met)| (serde_json::to_string(&single).unwrap(), met))
+            .collect();
+        assert_eq!(
+            explained,
+            [
+                (r#"{"from":{"contains":"rail"}}"#.to_string(), true),
+                (r#"{"subject":{"contains":"invoice"}}"#.to_string(), false),
+            ]
         );
     }
 

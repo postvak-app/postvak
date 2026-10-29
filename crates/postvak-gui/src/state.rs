@@ -209,6 +209,11 @@ pub(crate) struct BodyState {
     pub reading: Option<u64>,
     /// The links in `text` that open, found once with it.
     pub links: Vec<String>,
+    /// What rules did to this message, newest first; whether the strip lists them all; and, while Why? is open, each
+    /// condition of the newest one's rule worded with whether the message meets it.
+    pub provenance: Vec<LogEntry>,
+    pub provenance_open: bool,
+    pub why: Option<Vec<(String, bool)>>,
 }
 
 impl BodyState {
@@ -236,6 +241,9 @@ impl BodyState {
             shown_at: now,
             source: None,
             links: Vec::new(),
+            provenance: Vec::new(),
+            provenance_open: false,
+            why: None,
             text: None,
         }
     }
@@ -412,6 +420,10 @@ pub(crate) enum UiAction {
     EditDraft(Box<Draft>),
     /// Open a rule in the editor.
     EditRule(String),
+    /// The reader's strip: list every rule action on the message, or only the newest again.
+    ToggleProvenance,
+    /// The reader's strip: show each condition of the rule that last acted, or hide them again.
+    ToggleWhy,
     Collapse,
     /// Ask before deleting this folder of this account.
     DeleteFolder(usize, String),
@@ -1459,6 +1471,12 @@ impl App {
                 }
             }
             UiAction::Expand => self.expand(),
+            UiAction::ToggleProvenance => {
+                if let Some(body) = &mut self.body {
+                    body.provenance_open = !body.provenance_open;
+                }
+            }
+            UiAction::ToggleWhy => self.toggle_why(),
             UiAction::ListViewport { offset, height } => {
                 self.list.viewport = (offset, height);
                 // The list can stop short of the cursor while it still estimates its rows; then it is asked again.
@@ -2235,7 +2253,9 @@ impl App {
             mut attachments,
             mut html,
             has_raw,
+            provenance,
         } = read;
+        body.provenance = provenance;
         let preview = (message.is_some() && !has_raw)
             .then(|| {
                 self.previews
@@ -2555,6 +2575,38 @@ impl App {
                 self.apply_action(UiAction::OpenUrl(url))
             }
             None => {}
+        }
+    }
+
+    /// Shows or hides Why?: each condition of the rule that last acted on the shown message, checked against it now.
+    fn toggle_why(&mut self) {
+        let Some(body) = &self.body else { return };
+        if body.why.is_some() {
+            if let Some(body) = &mut self.body {
+                body.why = None;
+            }
+            return;
+        }
+        let found = (|| {
+            let entry = body.provenance.first()?;
+            let rule = self
+                .rules
+                .rules
+                .iter()
+                .find(|r| r.name == entry.rule_name)?;
+            let message = body.message.as_ref()?;
+            let account = &self.accounts[body.account].name;
+            let config = Config::load(&self.paths.config_file()).ok()?;
+            let identity = config.account(account)?.identity().ok()?;
+            let ctx = rule_file::coverage::context(account, &identity, postvak_core::time::now());
+            let lines = rule_file::engine::explain(rule, message, &ctx)
+                .into_iter()
+                .map(|(single, met)| (draft::match_labels(&single).join(", "), met))
+                .collect();
+            Some(lines)
+        })();
+        if let Some(body) = &mut self.body {
+            body.why = Some(found.unwrap_or_default());
         }
     }
 

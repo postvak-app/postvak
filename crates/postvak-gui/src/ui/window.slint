@@ -231,6 +231,10 @@ export component MailWindow inherits Window {
     callback new-rule();
     callback rule-from();
     callback reply();
+    callback edit-shown-rule();
+    callback move-back();
+    callback toggle-provenance();
+    callback toggle-why();
     callback edit-rule(int);
     callback set-enabled(int, bool);
     pure callback rule-drag-data(int) -> data-transfer;
@@ -591,6 +595,10 @@ export component MailWindow inherits Window {
                         empty-icon: root.envelope-icon;
                         rule-from => { root.rule-from(); }
                         reply => { root.reply(); }
+                        edit-shown-rule => { root.edit-shown-rule(); }
+                        move-back => { root.move-back(); }
+                        toggle-provenance => { root.toggle-provenance(); }
+                        toggle-why => { root.toggle-why(); }
                         page: root.page;
                         strips: root.strips;
                         page-width(width) => { root.page-width(width); }
