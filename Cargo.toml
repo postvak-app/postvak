@@ -83,7 +83,7 @@ tokio = { version = "1", features = ["rt", "net", "time", "macros"] }  # current
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }  # TLS stream for tokio
 toml = "1"                                           # config.toml and rules.toml
 toml_edit = "0.25"                                   # approve/reject edit rules.toml in place, keeping comments
-unicode-normalization = "0.1"                        # NFC for folder names: a name typed or pasted in NFD (macOS) still finds and creates the folder as servers spell it (RFC 9051 §5.1)
+unicode-normalization = "0.1"                        # NFC for folder names: a name typed or pasted in NFD (macOS) still finds and creates the folder as servers spell it (RFC 9051 §5.1); NFKC folds fullwidth and styled letters in the MCP wrapper's tag name
 ureq = { version = "3", default-features = false, features = ["rustls"] }  # HTTP over the same rustls and ring: remote images in HTML mail when the user asks, the update check, and one-click unsubscribe
 url = "2"                                            # parse URLs to check their host before Postvak contacts it; already in the tree through Blitz and webbrowser
 webpki-roots = "1"                                   # root certificates
