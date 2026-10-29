@@ -2,7 +2,7 @@
 # Add Postvak's Flatpak repository to the docs site, so `flatpak update` brings new releases.
 #
 # Usage: packaging/linux/flatpak-repo.sh SITE
-#   SITE is the built site (docs/book); this writes SITE/flatpak/repo and SITE/flatpak/postvak.flatpakrepo. Every
+#   SITE is the built site (docs/site.sh); this writes SITE/flatpak/repo and SITE/flatpak/postvak.flatpakrepo. Every
 #   Pages deploy replaces the whole site, so the repository is mirrored from the live site first, then the latest
 #   release's bundles are imported into it. Needs flatpak, ostree, curl and gh (with GH_TOKEN and GITHUB_REPOSITORY);
 #   $SITE_URL is the site's address. Before the first release with bundles, it writes nothing. A failure to read the

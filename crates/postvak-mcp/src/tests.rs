@@ -904,6 +904,58 @@ async fn rules_write_approves_rejects_and_toggles() {
     );
 }
 
+#[tokio::test]
+async fn rules_move_changes_the_order_and_keeps_rules_of_every_account_from_a_narrowed_server() {
+    let fx = fixture(&["home", "work"]);
+    let global =
+        "[[rules]]\nname = \"global\"\nmatch.read = true\nactions = { flagged = true }\n\n";
+    std::fs::write(
+        fx.paths.rules_file(),
+        scoped_rule("first", "work") + &scoped_rule("second", "work") + global,
+    )
+    .unwrap();
+    let order = || {
+        postvak_core::rules::load(&fx.paths.rules_file())
+            .unwrap()
+            .rules
+            .into_iter()
+            .map(|r| r.name)
+            .collect::<Vec<_>>()
+    };
+    let client = connect(&fx, "read,rules:write", &[]).await;
+    let moved = call(
+        &client,
+        "rules_move",
+        json!({ "name": "second", "before": "first" }),
+    )
+    .await;
+    assert_ne!(moved.is_error, Some(true), "{moved:?}");
+    assert_eq!(order(), ["second", "first", "global"]);
+    let both = json!({ "name": "second", "before": "first", "after": "global" });
+    assert!(
+        error_text(&call(&client, "rules_move", both).await).contains("one of before and after")
+    );
+
+    let narrow = connect(&fx, "read,rules:write", &["work"]).await;
+    let text = error_text(
+        &call(
+            &narrow,
+            "rules_move",
+            json!({ "name": "global", "before": "first" }),
+        )
+        .await,
+    );
+    assert!(text.contains("applies to every account"), "{text}");
+    let moved = call(
+        &narrow,
+        "rules_move",
+        json!({ "name": "first", "after": "global" }),
+    )
+    .await;
+    assert_ne!(moved.is_error, Some(true), "{moved:?}");
+    assert_eq!(order(), ["second", "global", "first"]);
+}
+
 fn scoped_rule(name: &str, account: &str) -> String {
     format!(
         "[[rules]]\nname = \"{name}\"\naccount = \"{account}\"\nenabled = false\nproposed_by = \"mcp\"\nmatch.subject = {{ contains = \"x\" }}\nactions = {{ flagged = true }}\n\n"
@@ -950,6 +1002,10 @@ async fn rule_writes_refuse_rules_of_hidden_accounts_and_leave_the_file_alone() 
         (
             "rules_set_enabled",
             json!({ "name": "for-home", "enabled": true }),
+        ),
+        (
+            "rules_move",
+            json!({ "name": "for-home", "after": "for-home" }),
         ),
     ] {
         let text = error_text(&call(&client, tool, arguments).await);
@@ -1371,7 +1427,12 @@ async fn tools_list_per_scope_set_is_exact_and_alphabetical() {
         ("read:bodies", &["attachments", "show"]),
         (
             "rules:write",
-            &["rules_approve", "rules_reject", "rules_set_enabled"],
+            &[
+                "rules_approve",
+                "rules_move",
+                "rules_reject",
+                "rules_set_enabled",
+            ],
         ),
         (
             "mail:modify",
@@ -1417,6 +1478,7 @@ async fn annotations_mark_reads_and_destructive_tools() {
             "delete",
             "rules_apply_existing",
             "rules_approve",
+            "rules_move",
             "rules_set_enabled",
             "trash_purge",
             "unsubscribe",

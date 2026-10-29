@@ -103,6 +103,7 @@ pub const RULES_COVERAGE: &str = "Run the rules over one folder's stored mail wi
 pub const RULES_LIST: &str = "Every rule in file order, the order they run in: its position, its whole definition, whether it is enabled and who proposed it";
 pub const RULES_PROPOSE: &str = "Add rules, disabled, for a human to approve: the arguments are one rule (an entry of `rules` in rules_schema), or `rules`, a list of them stored in order, all or none; `before` or `after` names the rule to put them next to instead of at the end, and `replace` swaps your own pending proposal of the same name; `edit` proposes changes to the existing rules of these names, each stored as '<name> (edit)' while the rule runs unchanged until a human approves";
 pub const RULES_REJECT: &str = "Remove a pending proposal";
+pub const RULES_MOVE: &str = "Move a rule right before or after another, which changes the order the rules run in: earlier rules run first";
 pub const RULES_WITHDRAW: &str = "Remove your own pending proposal: a disabled rule whose proposed_by is yours; anything else is left for a human";
 pub const RULES_SCHEMA: &str = "JSON Schema for rules.toml; a proposal is one entry of `rules`";
 pub const RULES_SET_ENABLED: &str =

@@ -12,3 +12,5 @@ mise.lock
 /dist/
 __pycache__/
 /.codegraph/
+/site/
+/website/

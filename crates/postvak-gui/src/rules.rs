@@ -12,7 +12,7 @@ use postvak_core::trash::{Trash, TrashEntry};
 use postvak_core::time::date_time;
 
 use super::draft;
-use super::state::{Account, App};
+use super::state::{Account, App, UiAction};
 
 /// Entries shown in the Activity view.
 const LOG_LIMIT: u32 = 500;
@@ -400,6 +400,46 @@ fn rule_order(lines: &[RuleLine], sort: Option<SheetSort>) -> Vec<usize> {
         }
         _ => (0..lines.len()).collect(),
     }
+}
+
+/// Whether the Rules table shows the order the rules run in, the only order in which a dragged row has a place.
+pub(crate) fn reorderable(sort: Option<SheetSort>) -> bool {
+    sort.is_none_or(|sort| sort.column == 0 && sort.ascending)
+}
+
+/// What the plain text of a dragged rule row says: `rule:` and its row, so a message row's number cannot pass for one.
+pub(crate) fn drag_data(row: usize) -> String {
+    format!("rule:{row}")
+}
+
+/// The row a drag carries, when it is a rule row of `drag_data`.
+pub(crate) fn dragged_row(text: &str) -> Option<usize> {
+    text.strip_prefix("rule:")?.parse().ok()
+}
+
+/// What dropping the Rules table's row `from` above or `below` its row `to` asks for, rows counted as the table shows
+/// them for `filter`; `None` when the table is sorted by anything but run order, a row is missing, or the rule would
+/// stay where it is.
+pub(crate) fn dropped(
+    lines: &[RuleLine],
+    sort: Option<SheetSort>,
+    filter: &str,
+    from: usize,
+    to: usize,
+    below: bool,
+) -> Option<UiAction> {
+    let shown = shown_rules(lines, sort, filter);
+    let (from, to) = (*shown.get(from)?, *shown.get(to)?);
+    let (moved, target) = (lines.get(from)?, lines.get(to)?);
+    let stays = from == to || (below && to + 1 == from) || (!below && from + 1 == to);
+    if !reorderable(sort) || stays {
+        return None;
+    }
+    Some(UiAction::MoveRule {
+        name: moved.name.clone(),
+        anchor: target.name.clone(),
+        below,
+    })
 }
 
 /// The Activity view's rows, cell by cell.
@@ -1122,6 +1162,62 @@ mod tests {
     }
 
     #[test]
+    fn a_drop_moves_a_rule_only_in_run_order_and_only_when_its_place_changes() {
+        use super::UiAction;
+        let line = |name: &str| super::RuleLine {
+            name: name.into(),
+            label: name.into(),
+            enabled: true,
+            account: String::new(),
+            folder: String::new(),
+            by: String::new(),
+            conditions: String::new(),
+            actions: String::new(),
+        };
+        let lines = ["a", "b", "c"].map(line);
+        let moved = |from, to, below| super::dropped(&lines, None, "", from, to, below);
+        let action = |name: &str, anchor: &str, below| {
+            Some(UiAction::MoveRule {
+                name: name.into(),
+                anchor: anchor.into(),
+                below,
+            })
+        };
+        assert_eq!(moved(2, 0, false), action("c", "a", false));
+        assert_eq!(moved(0, 2, true), action("a", "c", true));
+        assert_eq!(moved(0, 1, true), action("a", "b", true));
+        for (from, to, below) in [(1, 1, true), (1, 0, true), (1, 2, false), (1, 9, false)] {
+            assert_eq!(
+                moved(from, to, below),
+                None,
+                "{from} on {to}, below {below}"
+            );
+        }
+        let by = |column, ascending| Some(super::SheetSort { column, ascending });
+        assert!(super::reorderable(by(0, true)));
+        for sort in [by(0, false), by(1, true)] {
+            assert_eq!(
+                super::dropped(&lines, sort, "", 2, 0, false),
+                None,
+                "{sort:?}"
+            );
+        }
+        assert_eq!(
+            super::dropped(&lines, None, "c", 0, 0, false),
+            None,
+            "the filter shows c alone"
+        );
+        let filtered = ["x a", "x b", "y", "x c"].map(line);
+        assert_eq!(
+            super::dropped(&filtered, None, "x", 2, 0, false),
+            action("x c", "x a", false),
+            "rows count as the filtered table shows them"
+        );
+        assert_eq!(super::dragged_row(&super::drag_data(4)), Some(4));
+        assert_eq!(super::dragged_row("4"), None, "a message row");
+    }
+
+    #[test]
     fn a_sorted_table_orders_by_the_column_and_keeps_ties_in_their_own_order() {
         let rows = [["b", "1"], ["a", "2"], ["b", "3"]].map(|row| row.map(String::from));
         assert_eq!(super::sheet_order(&rows, None), [0, 1, 2]);
@@ -1450,6 +1546,42 @@ mod editor_tests {
         assert_eq!(shown(), [pair("1", "newsletters"), pair("2", "receipts")]);
         open.click("#");
         assert_eq!(shown(), [pair("2", "receipts"), pair("1", "newsletters")]);
+    }
+
+    #[test]
+    fn a_rule_row_dropped_on_another_moves_the_rule_in_rules_toml() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = rules_view(&fx, &two_rules());
+        let labels = || -> Vec<String> {
+            (open.window().get_rules().iter())
+                .map(|r| r.label.to_string())
+                .collect()
+        };
+        let window = open.window();
+        assert!(window.get_rules_reorderable());
+        let data = window.invoke_rule_drag_data(1);
+        assert_eq!(window.invoke_dragged_rule(data), 1);
+        window.invoke_rule_dropped(1, 0, false);
+        open.tick();
+        assert_eq!(labels(), ["receipts", "newsletters"]);
+        let names: Vec<String> = (postvak_core::rules::load(&fx.paths.rules_file())
+            .unwrap()
+            .rules)
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        assert_eq!(names, ["receipts", "newsletters"]);
+
+        open.click("Name");
+        assert!(!open.window().get_rules_reorderable());
+        let before = file(&fx);
+        open.window().invoke_rule_dropped(0, 1, true);
+        open.tick();
+        assert_eq!(
+            file(&fx),
+            before,
+            "a table sorted by name has no place to drop on"
+        );
     }
 
     #[test]

@@ -366,11 +366,17 @@ fn place_tables(
     }
     let count = rest.len();
     for (offset, mut table) in rest.into_iter().enumerate() {
-        let prefix = if offset == 0 && at == 0 {
+        let gap = if offset == 0 && at == 0 {
             std::mem::take(&mut head)
         } else {
             "\n".to_string()
         };
+        let own = table
+            .decor()
+            .prefix()
+            .and_then(|p| p.as_str())
+            .unwrap_or("");
+        let prefix = format!("{gap}{own}");
         table.decor_mut().set_prefix(prefix);
         rules.insert(at + offset, table);
     }
@@ -383,6 +389,83 @@ fn place_tables(
         }
     }
     Ok(())
+}
+
+/// Moves the rule named `name` to `place`, which changes when it runs. The comments right above it go with it; those a
+/// blank line above them, such as the file's heading, stay where they are. A pending edit of the rule, which sits right
+/// after it, moves with it, and a rule placed after another lands after that one's pending edit.
+pub fn move_rule(path: &Path, name: &str, place: &Place) -> Result<(), RulesError> {
+    edit_file(path, |doc| {
+        let edit = pending_edit(doc, name);
+        let place = match place {
+            Place::After(anchor) => {
+                Place::After(pending_edit(doc, anchor).unwrap_or(anchor.clone()))
+            }
+            other => other.clone(),
+        };
+        if let Place::Before(anchor) | Place::After(anchor) = &place
+            && (anchor == name || Some(anchor) == edit.as_ref())
+        {
+            return Err(invalid(name, "cannot be placed next to itself"));
+        }
+        let mut tables = vec![take_rule(doc, name)?];
+        if let Some(edit) = edit {
+            tables.push(take_rule(doc, &edit)?);
+        }
+        place_tables(doc, tables, &place)
+    })
+}
+
+/// The name of the pending edit of the rule named `name`, if there is one.
+fn pending_edit(doc: &DocumentMut, name: &str) -> Option<String> {
+    let rules = doc.get("rules")?.as_array_of_tables()?;
+    let edit = rules
+        .iter()
+        .find(|t| t.get("replaces").and_then(|v| v.as_str()) == Some(name))?;
+    Some(edit.get("name")?.as_str()?.to_string())
+}
+
+/// Takes the rule named `name` out of the document, with the comments right above it; those a blank line above them
+/// stay for the next rule.
+fn take_rule(doc: &mut DocumentMut, name: &str) -> Result<Table, RulesError> {
+    let rules = doc
+        .get_mut("rules")
+        .and_then(|item| item.as_array_of_tables_mut())
+        .ok_or_else(|| invalid(name, "no such rule"))?;
+    let index = rules
+        .iter()
+        .position(|t| t.get("name").and_then(|v| v.as_str()) == Some(name))
+        .ok_or_else(|| invalid(name, "no such rule"))?;
+    let mut table = rules
+        .get(index)
+        .cloned()
+        .ok_or_else(|| invalid(name, "no such rule"))?;
+    let prefix = table
+        .decor()
+        .prefix()
+        .and_then(|p| p.as_str())
+        .unwrap_or("")
+        .to_string();
+    let own_start = prefix.rfind("\n\n").map_or(0, |split| split + 2);
+    let stays = prefix[..own_start].to_string();
+    let stays = if stays.trim().is_empty() {
+        String::new()
+    } else {
+        stays
+    };
+    // Kept, the table's place in the file as read would win over where it is put.
+    table.set_position(None);
+    table
+        .decor_mut()
+        .set_prefix(prefix[own_start..].trim_start_matches('\n').to_string());
+    if let Some(old) = rules.get_mut(index) {
+        old.decor_mut().set_prefix(stays);
+    }
+    if let Some(orphaned) = remove_at(rules, index) {
+        let trailing = format!("{orphaned}{}", doc.trailing().as_str().unwrap_or(""));
+        doc.set_trailing(trailing);
+    }
+    Ok(table)
 }
 
 /// Removes `name` when it is `by`'s own pending proposal: disabled, and proposed by `by`. Anything else, an approved
@@ -643,7 +726,13 @@ fn append(doc: &mut DocumentMut, mut table: Table, after_text: bool) -> Result<(
     } else {
         ""
     };
-    table.decor_mut().set_prefix(format!("{trailing}{gap}"));
+    let own = table
+        .decor()
+        .prefix()
+        .and_then(|p| p.as_str())
+        .unwrap_or("");
+    let prefix = format!("{trailing}{gap}{own}");
+    table.decor_mut().set_prefix(prefix);
     match doc.get_mut("rules") {
         None => {
             let mut rules = ArrayOfTables::new();
@@ -1380,6 +1469,44 @@ mod tests {
     }
 
     #[test]
+    fn move_rule_changes_the_order_and_takes_its_own_comments_along() {
+        let (_dir, path) = rules_file(TWO);
+        move_rule(&path, "codes", &Place::After("keep".into())).unwrap();
+        assert_eq!(names(&path), ["keep", "codes"]);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.starts_with("# my rules\n\n[[rules]]\nname = \"keep\""),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "}\n\n# codes go after an hour\n[[rules]]\nname = \"codes\" # sign-in codes\n"
+            ),
+            "{text}"
+        );
+
+        move_rule(&path, "codes", &Place::Before("keep".into())).unwrap();
+        assert_eq!(names(&path), ["codes", "keep"]);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), TWO);
+
+        move_rule(&path, "codes", &Place::End).unwrap();
+        assert_eq!(names(&path), ["keep", "codes"]);
+    }
+
+    #[test]
+    fn move_rule_refuses_a_missing_rule_or_anchor_and_itself() {
+        let (_dir, path) = rules_file(TWO);
+        for (name, place) in [
+            ("missing", Place::End),
+            ("codes", Place::Before("missing".into())),
+            ("codes", Place::After("codes".into())),
+        ] {
+            assert!(move_rule(&path, name, &place).is_err(), "{name} {place:?}");
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), TWO);
+    }
+
+    #[test]
     fn remove_rule_removes_any_rule_and_keeps_the_comments_above_it() {
         let (_dir, path) = rules_file(TWO);
         remove_rule(&path, "codes").unwrap();
@@ -1430,6 +1557,19 @@ mod tests {
             .to_string();
         assert!(err.contains("propose it again with replace"), "{err}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn a_moved_rule_takes_its_pending_edit_along_and_lands_after_its_anchors() {
+        let (_dir, path) = rules_file(TWO);
+        propose_all(&path, edit_of(&["codes"]), "mcp:me").unwrap();
+        move_rule(&path, "codes", &Place::After("keep".into())).unwrap();
+        assert_eq!(names(&path), ["keep", "codes", "codes (edit)"]);
+        move_rule(&path, "keep", &Place::After("codes".into())).unwrap();
+        assert_eq!(names(&path), ["codes", "codes (edit)", "keep"]);
+        assert!(move_rule(&path, "codes", &Place::After("codes (edit)".into())).is_err());
+        assert!(move_rule(&path, "codes", &Place::After("codes".into())).is_err());
+        assert_eq!(names(&path), ["codes", "codes (edit)", "keep"]);
     }
 
     #[test]
