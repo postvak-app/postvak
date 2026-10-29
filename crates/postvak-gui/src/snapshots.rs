@@ -352,6 +352,7 @@ fn apply_confirm() {
     let (open, _wires) = open(&fx);
     open.with(|live| live.app.select_view(View::Rules));
     open.tick();
+    open.click("tidy");
     open.click("Apply to existing mail");
     open.tick();
     assert_eq!(open.find("Delete and apply").len(), 1);
