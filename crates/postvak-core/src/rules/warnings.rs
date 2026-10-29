@@ -8,7 +8,8 @@
 use std::fs;
 use std::path::Path;
 
-use super::{Action, Match, Rule};
+use super::{Action, CompiledRule, Match, Rule};
+use crate::config::AccountConfig;
 use crate::folder_name;
 use crate::message::auth;
 use crate::paths::Paths;
@@ -113,6 +114,29 @@ pub fn authenticated_warnings(
         }
     }
     lines
+}
+
+/// [`authenticated_warnings`] for one account a preview of `rules` runs on, its INBOX read from `store`: a rule tested
+/// before it is stored gets the warning `rules check` gives a stored one.
+pub fn preview_warnings(
+    rules: &[CompiledRule],
+    account: &AccountConfig,
+    store: &Store,
+) -> Vec<String> {
+    let name = account.name.as_str();
+    let warned: Vec<Rule> = rules
+        .iter()
+        .map(|compiled| &compiled.rule)
+        .filter(|rule| {
+            uses_authenticated(&rule.matches)
+                && rule.account.as_deref().is_none_or(|own| own == name)
+        })
+        .cloned()
+        .collect();
+    if warned.is_empty() || account.can_authenticate() {
+        return Vec::new();
+    }
+    authenticated_warnings(&warned, &[name], &[AccountFolders::read(name, Some(store))])
 }
 
 /// The (account, authserv-id) pairs among [`authenticated_warnings`]' that its INBOX offers, once per account, in the
@@ -572,6 +596,40 @@ mod tests {
             authserv_offers(&rules[1..2], &["home"], &[home]).is_empty(),
             "only a rule that runs on the account asks for one"
         );
+    }
+
+    #[test]
+    fn a_preview_warns_about_authenticated_only_on_an_account_that_trusts_no_server() {
+        let rules = parse("[[rules]]\nname = \"bank\"\nmatch.authenticated = true\nactions = { flagged = true }\n")
+            .unwrap()
+            .rules;
+        let store = Store::open_in_memory().unwrap();
+        let mut account = AccountConfig::new(
+            "work",
+            "imap.example.com",
+            "me@example.com",
+            crate::config::PasswordSource::Keyring { keyring: true },
+        );
+        let rules = crate::rules::compile(&crate::rules::RuleFile { rules }).unwrap();
+        let warned = preview_warnings(&rules, &account, &store);
+        assert_eq!(warned.len(), 1);
+        assert!(
+            warned[0].starts_with(
+                "rule 'bank' uses authenticated, but account 'work' trusts no server's"
+            )
+        );
+        account.name = "home".into();
+        let work_only = parse("[[rules]]\nname = \"bank\"\naccount = \"work\"\nmatch.authenticated = true\nactions = { flagged = true }\n")
+            .unwrap()
+            .rules;
+        let work_only =
+            crate::rules::compile(&crate::rules::RuleFile { rules: work_only }).unwrap();
+        assert!(
+            preview_warnings(&work_only, &account, &store).is_empty(),
+            "a rule for another account does not run here"
+        );
+        account.trusted_authserv_ids = Some(vec!["mx.example.com".into()]);
+        assert!(preview_warnings(&rules, &account, &store).is_empty());
     }
 
     #[test]

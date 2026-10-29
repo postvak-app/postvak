@@ -314,7 +314,7 @@ Inspect and test rules.toml
 ###### **Subcommands:**
 
 * `check` — Validate rules.toml, and warn about what keeps it from doing what it says, such as a conflicting copy a file sync left beside it or a rule for an account not set up here
-* `test` — Dry run: print what each rule would do to the cached messages; naming a rule previews it even while disabled
+* `test` — Dry run: print what each rule would do to the cached messages, and warn where `authenticated` cannot hold; naming a rule previews it even while disabled
 * `schema` — JSON Schema for rules.toml; a proposal is one entry of `rules`
 * `propose` — Read one rule, a JSON array of rules or {"rules": [...]} on stdin and add them disabled, in order, for a human to approve; all or none are stored
 * `withdraw` — Remove your own pending proposal: a disabled rule whose proposed_by is yours; anything else is left for a human
@@ -337,7 +337,7 @@ Validate rules.toml, and warn about what keeps it from doing what it says, such 
 
 ## `postvak rules test`
 
-Dry run: print what each rule would do to the cached messages; naming a rule previews it even while disabled
+Dry run: print what each rule would do to the cached messages, and warn where `authenticated` cannot hold; naming a rule previews it even while disabled
 
 **Usage:** `postvak rules test [OPTIONS] [NAME]`
 

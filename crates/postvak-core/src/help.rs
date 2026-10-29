@@ -113,8 +113,7 @@ pub const RULES_WITHDRAW: &str = "Remove your own pending proposal: a disabled r
 pub const RULES_SCHEMA: &str = "JSON Schema for rules.toml; a proposal is one entry of `rules`";
 pub const RULES_SET_ENABLED: &str =
     "Turn a rule on or off; turning one on lets it act on new mail, deletes included";
-pub const RULES_TEST: &str =
-    "Dry run: what this rule would do to the cached messages; previews subjects, never bodies";
+pub const RULES_TEST: &str = "Dry run: what this rule would do to the cached messages; previews subjects, never bodies, and warns where `authenticated` cannot hold";
 pub const SEARCH: &str = "Search subject, addresses, attachment names and bodies, newest first; words, \"phrases\", -not and key:value operators such as from:acme, in:Archive, is:unread or after:7d; the last word also matches as a prefix; close matches such as corrected typos follow when exact hits are few";
 /// The operators `search` takes, one line each; the CLI prints it after `postvak search --help` and the MCP tool
 /// description carries it.

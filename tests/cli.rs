@@ -756,6 +756,21 @@ fn postvak_stdin(home: &std::path::Path, args: &[&str], stdin: &str) -> std::pro
 }
 
 #[test]
+fn rules_test_warns_when_authenticated_cannot_hold() {
+    let (home, _store) = seeded_home(&[message(42, "alerts@bank.example", "Sign-in")]);
+    let rule =
+        r#"{"name": "bank", "match": {"authenticated": true}, "actions": {"flagged": true}}"#;
+    let out = postvak_stdin(home.path(), &["rules", "test", "--stdin"], rule);
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty(), "no mail is authenticated");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("warning: rule 'bank' uses authenticated, but account"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn agent_proposes_and_a_human_approves_or_rejects() {
     let (home, store) = seeded_home(&[message(42, "noreply@example.com", "Your code is 123456")]);
     let rule = r#"{"name": "codes", "match": {"subject": {"contains": "code"}}, "actions": {"delete": true}}"#;

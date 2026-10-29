@@ -3657,6 +3657,7 @@ impl App {
             Err(e) => return e.to_string(),
         };
         let mut matched = HashSet::new();
+        let mut warnings = Vec::new();
         for account in &self.accounts {
             let Ok(store) = &account.store else { continue };
             let Some(settings) = config.account(&account.name) else {
@@ -3683,9 +3684,13 @@ impl App {
                 ),
                 Err(e) => return format!("{}: {e}", account.name),
             }
+            warnings.extend(rule_file::preview_warnings(&compiled, settings, store));
         }
         let needs_body = compiled.iter().any(|compiled| compiled.needs_body());
-        draft::preview_text(&rule, matched.len(), needs_body)
+        std::iter::once(draft::preview_text(&rule, matched.len(), needs_body))
+            .chain(warnings.iter().map(|w| clean(w, false)))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn open_rules_file(&mut self) {
