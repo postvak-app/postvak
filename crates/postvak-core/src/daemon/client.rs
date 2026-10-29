@@ -778,6 +778,7 @@ fn spawn_daemon(paths: &Paths, exe: &Path) -> anyhow::Result<Option<Child>> {
         .mode(0o600)
         .open(paths.daemon_log())
         .with_context(|| format!("opening {}", paths.daemon_log().display()))?;
+    #[cfg(target_os = "linux")]
     if paths::flatpak_id().is_some() {
         // A child would keep this sandbox running, and the desktop counting the app as open, after the window quits.
         let envs = match &paths.home {
@@ -804,6 +805,7 @@ fn spawn_daemon(paths: &Paths, exe: &Path) -> anyhow::Result<Option<Child>> {
         .with_context(|| format!("starting {}", exe.display()))
 }
 
+#[cfg(target_os = "linux")]
 fn utf8(path: &Path) -> anyhow::Result<String> {
     path.to_str()
         .map(str::to_owned)
