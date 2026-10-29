@@ -1208,6 +1208,58 @@ fn a_rule_watching_a_folder_written_in_nfd_runs_in_the_folder_the_server_spells_
     );
 }
 
+/// Rules written before Postvak decoded folder names spell `Één` as `&AMkA6Q-n`; they keep watching and moving to
+/// that folder, rather than stop matching or move mail into a new folder literally called `&AMkA6Q-n`.
+#[test]
+fn a_rule_written_in_the_wire_spelling_still_reaches_the_decoded_folder() {
+    let mut ops = ops_with_inbox()
+        .with_folder("\u{c9}\u{e9}n", None)
+        .with_folder("Archief/\u{c9}\u{e9}n", None);
+    ops.add_mail(
+        "\u{c9}\u{e9}n",
+        1,
+        H,
+        &headers("list@x", "news", "l1@x"),
+        None,
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open_in_memory().unwrap();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let acc = account();
+    let identity = acc.identity().unwrap();
+    let rules = rules_from(
+        "[[rules]]\nname = \"news\"\nfolder = \"&AMkA6Q-n\"\nmatch.from = { equals = \"list@x\" }\nactions.move = \"Archief/&AMkA6Q-n\"\n",
+        &store,
+        0,
+    );
+    sync_all(&mut ops, &store).unwrap();
+    ops.calls.clear();
+    let run = run_rules(
+        &mut ops,
+        &store,
+        &trash,
+        &rules,
+        &acc,
+        &identity,
+        Mode::Normal,
+        12 * H,
+    )
+    .unwrap();
+    assert_eq!(run.actions, 1, "{:?}", ops.calls);
+    assert!(
+        !ops.calls.iter().any(|c| c.starts_with("create_folder")),
+        "{:?}",
+        ops.calls
+    );
+    assert!(
+        ops.calls
+            .iter()
+            .any(|c| c.starts_with("move") && c.ends_with("Archief/\u{c9}\u{e9}n")),
+        "{:?}",
+        ops.calls
+    );
+}
+
 #[test]
 fn a_rules_pass_with_nothing_to_do_selects_no_folder() {
     let mut ops = ops_with_inbox().with_folder("Lists", None);

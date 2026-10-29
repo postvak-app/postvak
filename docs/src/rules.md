@@ -28,7 +28,7 @@ A tag is printable ASCII without spaces, backslashes or `( ) { % * " ]`, and `$P
 
 Folder names are written in plain text, `Archief/Één` included; Postvak encodes them as IMAP requires (modified UTF-7) and shows the server's folders decoded. A level of a `folder` or `move` folder (the parts between `/`) may not start or end with a space. A `move` folder also may not contain `*` or `%`, which IMAP reads as wildcards, or an empty level: `/Lists`, `Lists//GitHub` and `Lists/` are refused. A name typed with separate accents, as macOS can produce, finds the folder the server spells with precomposed letters (Unicode NFC) and the other way round, and a new folder is created in NFC.
 
-Like any invalid rule, one of these names stops the whole file from loading, so no rule runs until it is fixed; a file that loaded before Postvak checked them can stop after an upgrade, and `postvak rules check` names the rule. Postvak used to show non-ASCII folders in their encoded form, such as `&AMkA6Q-n` for `Één`. A rule that names a folder that way now means a folder with exactly that name, so `rules check` warns about it and gives the plain name to write instead.
+Like any invalid rule, one of these names stops the whole file from loading, so no rule runs until it is fixed; a file that loaded before Postvak checked them can stop after an upgrade, and `postvak rules check` names the rule. Postvak used to show non-ASCII folders in their encoded form, such as `&AMkA6Q-n` for `Één`. A rule that names a folder that way still finds the folder while the account has it, so it keeps watching and moving to `Één`; otherwise it means a folder with exactly that name. `rules check` warns about such a rule and gives the plain name to write instead.
 
 ## Conditions
 

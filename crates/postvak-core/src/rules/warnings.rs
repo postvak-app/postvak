@@ -59,10 +59,11 @@ pub fn warnings(
                     _ => None,
                 }));
         for name in named {
-            if let Some(plain) = wire_spelling(name) {
+            if let Some(plain) = folder_name::wire_spelling(name) {
                 lines.push(format!(
                     "rule '{}' names folder '{name}', which is how IMAP spells '{plain}' on the wire; Postvak now \
-                     takes folder names in plain text, so it means a folder literally called '{name}': write '{plain}'",
+                     takes folder names in plain text, and finds '{plain}' by the old spelling only while the account \
+                     has that folder: write '{plain}'",
                     rule.name
                 ));
             }
@@ -80,15 +81,6 @@ pub fn warnings(
         }
     }
     lines
-}
-
-/// The plain name `name` encodes when it is modified UTF-7 for another name, such as `&AMkA6Q-n` for `Één`: before
-/// Postvak decoded folder names it showed them so, and a rule copied from that never matches the folder now.
-fn wire_spelling(name: &str) -> Option<String> {
-    name.contains('&')
-        .then(|| crate::mail_ops::utf7::decode(name))
-        .flatten()
-        .filter(|plain| plain != name)
 }
 
 /// Whether `authenticated` is a condition, at any depth of `any` and `none`.
@@ -140,9 +132,10 @@ struct FolderLayout {
 }
 
 /// What a move target's name gets wrong for the folders of the accounts its rule runs on, read from their stores: see
-/// `layout_warnings`. An account without a store, or whose store does not open, has nothing to say yet.
+/// `layout_warnings`. An account without a store, or whose store does not open, has nothing to say yet. Each store is
+/// opened, so a caller holding them open uses [`open_folder_warnings`] instead.
 pub fn folder_warnings(paths: &Paths, rules: &[Rule], accounts: &[impl AsRef<str>]) -> Vec<String> {
-    let layouts: Vec<FolderLayout> = accounts
+    let stores: Vec<(&str, Store)> = accounts
         .iter()
         .filter_map(|account| {
             let account = account.as_ref();
@@ -151,8 +144,26 @@ pub fn folder_warnings(paths: &Paths, rules: &[Rule], accounts: &[impl AsRef<str
             if !db.exists() {
                 return None;
             }
-            let folders = Store::open(&db)
-                .and_then(|store| store.folders())
+            Store::open(&db)
+                .inspect_err(|e| log::debug!("{account}: could not open the store: {e}"))
+                .ok()
+                .map(|store| (account, store))
+        })
+        .collect();
+    let open: Vec<(&str, &Store)> = stores
+        .iter()
+        .map(|(account, store)| (*account, store))
+        .collect();
+    open_folder_warnings(rules, &open)
+}
+
+/// [`folder_warnings`] over stores already open, as (account, store).
+pub fn open_folder_warnings(rules: &[Rule], stores: &[(&str, &Store)]) -> Vec<String> {
+    let layouts: Vec<FolderLayout> = stores
+        .iter()
+        .filter_map(|(account, store)| {
+            let folders = store
+                .folders()
                 .inspect_err(|e| log::debug!("{account}: could not read the folders: {e}"))
                 .ok()?;
             Some(FolderLayout {
@@ -294,16 +305,12 @@ mod tests {
         .rules;
         assert_eq!(
             warnings(&dir.path().join("rules.toml"), &rules, &[], &[]),
-            [
-                "rule 'watch' names folder '&AMkA6Q-n', which is how IMAP spells '\u{c9}\u{e9}n' on the wire; \
-                 Postvak now takes folder names in plain text, so it means a folder literally called '&AMkA6Q-n': \
-                 write '\u{c9}\u{e9}n'",
-                "rule 'move' names folder 'Archief/&AMkA6Q-n', which is how IMAP spells 'Archief/\u{c9}\u{e9}n' on \
-                 the wire; Postvak now takes folder names in plain text, so it means a folder literally called \
-                 'Archief/&AMkA6Q-n': write 'Archief/\u{c9}\u{e9}n'",
-                "rule 'amp' names folder 'Q&-A', which is how IMAP spells 'Q&A' on the wire; Postvak now takes \
-                 folder names in plain text, so it means a folder literally called 'Q&-A': write 'Q&A'",
-            ],
+            [("watch", "&AMkA6Q-n", "\u{c9}\u{e9}n"), ("move", "Archief/&AMkA6Q-n", "Archief/\u{c9}\u{e9}n"), ("amp", "Q&-A", "Q&A")]
+                .map(|(rule, name, plain)| format!(
+                    "rule '{rule}' names folder '{name}', which is how IMAP spells '{plain}' on the wire; Postvak \
+                     now takes folder names in plain text, and finds '{plain}' by the old spelling only while the \
+                     account has that folder: write '{plain}'"
+                )),
             "'R&D' is not modified UTF-7, and a plain name is fine"
         );
     }
@@ -399,7 +406,9 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, target)| {
-                format!("[[rules]]\nname = \"r{i}\"\nmatch.read = true\nactions.move = \"{target}\"\n\n")
+                format!(
+                    "[[rules]]\nname = \"r{i}\"\nmatch.read = true\nactions.move = \"{target}\"\n\n"
+                )
             })
             .collect();
         parse(&rules).unwrap().rules

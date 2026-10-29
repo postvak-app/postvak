@@ -6,7 +6,7 @@ use postvak_core::help;
 use postvak_core::message::clean;
 use postvak_core::paths::Paths;
 use postvak_core::rules::{self, Rule};
-use postvak_core::store::LogEntry;
+use postvak_core::store::{LogEntry, Store};
 use postvak_core::trash::{Trash, TrashEntry};
 
 use postvak_core::time::date_time;
@@ -31,14 +31,9 @@ pub(crate) struct RulesState {
 
 impl RulesState {
     /// The file's rules, or the previous ones when it does not parse. A rule that does not compile is reported but
-    /// still listed, so it can be switched off. `untrusting` are the accounts that trust no authserv-id.
-    pub fn load(
-        paths: &Paths,
-        previous: Vec<Rule>,
-        accounts: &[&str],
-        untrusting: &[&str],
-    ) -> RulesState {
-        let (error, rules) = match rules::load(&paths.rules_file()) {
+    /// still listed, so it can be switched off.
+    pub fn load(path: &Path, previous: Vec<Rule>, accounts: &[Account]) -> RulesState {
+        let (error, rules) = match rules::load(path) {
             Ok(file) => (
                 rules::compile(&file).err().map(|e| e.to_string()),
                 file.rules,
@@ -47,7 +42,7 @@ impl RulesState {
         };
         RulesState {
             error,
-            warnings: warnings(paths, &rules, accounts, untrusting),
+            warnings: warnings(path, &rules, accounts),
             previews: BTreeMap::new(),
             proposals: proposals(&rules),
             lines: rule_lines(&rules),
@@ -56,15 +51,22 @@ impl RulesState {
     }
 }
 
-/// What leaves the rules valid but not doing what was meant: `rules::warnings`, then what the accounts' folders show.
-pub(crate) fn warnings(
-    paths: &Paths,
-    rules: &[Rule],
-    accounts: &[&str],
-    untrusting: &[&str],
-) -> Vec<String> {
-    let file = rules::warnings(&paths.rules_file(), rules, accounts, untrusting);
-    [file, rules::folder_warnings(paths, rules, accounts)].concat()
+/// What leaves the rules valid but not doing what was meant: `rules::warnings`, then what the accounts' folders show,
+/// read through the stores the window holds open rather than opening each again.
+pub(crate) fn warnings(path: &Path, rules: &[Rule], accounts: &[Account]) -> Vec<String> {
+    let names: Vec<&str> = accounts.iter().map(|a| a.name.as_str()).collect();
+    // The accounts that trust no authserv-id, for the warning about `authenticated`.
+    let untrusting: Vec<&str> = accounts
+        .iter()
+        .filter(|a| a.identity.as_ref().is_some_and(|id| !id.can_authenticate()))
+        .map(|a| a.name.as_str())
+        .collect();
+    let stores: Vec<(&str, &Store)> = accounts
+        .iter()
+        .filter_map(|a| Some((a.name.as_str(), a.store.as_ref().ok()?)))
+        .collect();
+    let file = rules::warnings(path, rules, &names, &untrusting);
+    [file, rules::open_folder_warnings(rules, &stores)].concat()
 }
 
 /// A rule waiting for approval, as the Rules view shows it.

@@ -661,20 +661,6 @@ pub struct App {
     pub(crate) view_dirty: bool,
 }
 
-/// The accounts' names, for the rules' warnings.
-fn account_names(accounts: &[Account]) -> Vec<&str> {
-    accounts.iter().map(|a| a.name.as_str()).collect()
-}
-
-/// The names of the accounts that trust no authserv-id, for the rules' warning about `authenticated`.
-fn untrusting(accounts: &[Account]) -> Vec<&str> {
-    accounts
-        .iter()
-        .filter(|a| a.identity.as_ref().is_some_and(|id| !id.can_authenticate()))
-        .map(|a| a.name.as_str())
-        .collect()
-}
-
 /// An account's window state over its store; `open_account` creates the store of an account just added.
 fn account_state(
     paths: &Paths,
@@ -732,12 +718,7 @@ impl App {
         super::phases::mark("stores_opened");
         let rules_path = paths.rules_file();
         let rules_dir = paths.config_dir.clone();
-        let rules = RulesState::load(
-            &paths,
-            Vec::new(),
-            &account_names(&accounts),
-            &untrusting(&accounts),
-        );
+        let rules = RulesState::load(&rules_path, Vec::new(), &accounts);
         let mut app = App {
             accounts,
             activity_log: Vec::new(),
@@ -1128,12 +1109,8 @@ impl App {
                 self.notice = None;
                 self.refresh(index);
                 // The folder warnings read what the stores hold, which a sync changes.
-                self.rules.warnings = rules::warnings(
-                    &self.paths,
-                    &self.rules.rules,
-                    &account_names(&self.accounts),
-                    &untrusting(&self.accounts),
-                );
+                self.rules.warnings =
+                    rules::warnings(&self.paths.rules_file(), &self.rules.rules, &self.accounts);
             }
             Event::ActionDone {
                 folder, results, ..
@@ -2835,12 +2812,8 @@ impl App {
             self.rules_changed();
         } else if self.config_dir_watch.changed() {
             // A sync tool's conflicting copy appears beside rules.toml without changing it.
-            self.rules.warnings = rules::warnings(
-                &self.paths,
-                &self.rules.rules,
-                &account_names(&self.accounts),
-                &untrusting(&self.accounts),
-            );
+            self.rules.warnings =
+                rules::warnings(&self.paths.rules_file(), &self.rules.rules, &self.accounts);
         }
         let saving = self
             .account_form
@@ -3099,10 +3072,9 @@ impl App {
     fn rules_changed(&mut self) {
         self.rules_watch.changed();
         self.rules = RulesState::load(
-            &self.paths,
+            &self.paths.rules_file(),
             std::mem::take(&mut self.rules.rules),
-            &account_names(&self.accounts),
-            &untrusting(&self.accounts),
+            &self.accounts,
         );
         let on_disk = self.rule_draft_opened.as_ref().and_then(|opened| {
             let name = opened.original.as_deref()?;

@@ -44,7 +44,8 @@ fn migration_list() -> Vec<M<'static>> {
 /// name that is not exactly what the encoder writes stays: it was sent raw, and the server knows it so. A placeholder
 /// a rule move left under the UTF-8 name (it sent the raw name, which the server refused) gives way. A synced folder
 /// under the UTF-8 name, which only a server listing both spellings has, stays; the encoded row then goes with its
-/// messages, and the next sync fetches what the server still lists.
+/// messages and move records, its rule history keeps the wire name, and the next sync fetches what the server still
+/// lists.
 fn decode_folder_names(tx: &rusqlite::Transaction) -> rusqlite_migration::HookResult {
     let names: Vec<String> = tx
         .prepare("SELECT name FROM folders")?
@@ -66,6 +67,8 @@ fn decode_folder_names(tx: &rusqlite::Transaction) -> rusqlite_migration::HookRe
             |row| row.get(0),
         )?;
         if taken {
+            // The history stays under the wire name, the encoded folder's own: the listing keeps that folder apart
+            // from the raw one. Its move records go with its messages.
             tx.execute("DELETE FROM messages WHERE folder = ?1", params![wire])?;
             tx.execute("DELETE FROM folders WHERE name = ?1", params![wire])?;
         } else {
@@ -77,15 +80,15 @@ fn decode_folder_names(tx: &rusqlite::Transaction) -> rusqlite_migration::HookRe
                 "UPDATE messages SET folder = ?2 WHERE folder = ?1",
                 params![wire, name],
             )?;
+            tx.execute(
+                "UPDATE rule_log SET folder = ?2 WHERE folder = ?1",
+                params![wire, name],
+            )?;
+            tx.execute(
+                "UPDATE OR IGNORE rule_moves SET folder = ?2 WHERE folder = ?1",
+                params![wire, name],
+            )?;
         }
-        tx.execute(
-            "UPDATE rule_log SET folder = ?2 WHERE folder = ?1",
-            params![wire, name],
-        )?;
-        tx.execute(
-            "UPDATE OR IGNORE rule_moves SET folder = ?2 WHERE folder = ?1",
-            params![wire, name],
-        )?;
         tx.execute("DELETE FROM rule_moves WHERE folder = ?1", params![wire])?;
     }
     Ok(())
@@ -1791,8 +1794,10 @@ mod tests {
                      ('Caf&AOk-', 1, 't2', 'cafe', 10, '', X''),
                      ('Re&AOc-us', 1, 't3', 'dropped', 10, '', X''),
                      ('Re\u{e7}us', 1, 't4', 'synced', 10, '', X'');
-                 INSERT INTO rule_log (at, rule_name, folder, uid, action) VALUES (1, 'r', 'Archief/&AMkA6Q-n', 3, 'flag');
-                 INSERT INTO rule_moves (folder, message_id, internaldate) VALUES ('R&-D', '<a@x>', 10);",
+                 INSERT INTO rule_log (at, rule_name, folder, uid, action) VALUES
+                     (1, 'r', 'Archief/&AMkA6Q-n', 3, 'flag'), (2, 'r', 'Re&AOc-us', 1, 'flag');
+                 INSERT INTO rule_moves (folder, message_id, internaldate) VALUES
+                     ('R&-D', '<a@x>', 10), ('Re&AOc-us', '<b@x>', 10);",
             )
             .unwrap();
         }
@@ -1827,12 +1832,22 @@ mod tests {
         assert_eq!(recus.len(), 1);
         assert_eq!(recus[0].subject.as_deref(), Some("synced"));
         let log = s.log(10).unwrap();
-        assert_eq!(log[0].folder, "Archief/\u{c9}\u{e9}n");
-        let moved: String = s
+        let mut logged: Vec<&str> = log.iter().map(|e| e.folder.as_str()).collect();
+        logged.sort();
+        assert_eq!(
+            logged,
+            ["Archief/\u{c9}\u{e9}n", "Re&AOc-us"],
+            "the history of a folder that gave way is not the raw twin's"
+        );
+        let moved: Vec<String> = s
             .conn
-            .query_row("SELECT folder FROM rule_moves", [], |row| row.get(0))
+            .prepare("SELECT folder FROM rule_moves")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
             .unwrap();
-        assert_eq!(moved, "R&D");
+        assert_eq!(moved, ["R&D"]);
         fts_integrity_check(&s);
         let orphan = s
             .conn

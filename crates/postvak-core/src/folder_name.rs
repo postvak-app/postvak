@@ -22,16 +22,38 @@ pub fn same(a: &str, b: &str) -> bool {
     a == b || (!(a.is_ascii() && b.is_ascii()) && nfc(a) == nfc(b))
 }
 
+/// Whether a rule's folder `rule` names `folder`: [`same`], or `rule` is how IMAP spells `folder` on the wire, as
+/// rules written before Postvak decoded folder names spell it ([`wire_spelling`]).
+pub fn rule_names(rule: &str, folder: &str) -> bool {
+    same(rule, folder) || wire_spelling(rule).is_some_and(|plain| same(&plain, folder))
+}
+
+/// The plain name `name` encodes when it is modified UTF-7 for another name, such as `&AMkA6Q-n` for `Één`: before
+/// Postvak decoded folder names it showed them so, and rules were written so.
+pub fn wire_spelling(name: &str) -> Option<String> {
+    name.contains('&')
+        .then(|| crate::mail_ops::utf7::decode(name))
+        .flatten()
+        .filter(|plain| plain != name)
+}
+
 /// The folder the store knows by `name`, in the store's spelling: the exact name first, else one equal in NFC. A
-/// folder another client created through IMAP4rev1 may be stored in NFD, and only its own spelling reaches it.
+/// folder another client created through IMAP4rev1 may be stored in NFD, and only its own spelling reaches it. A
+/// name no folder has that is the wire spelling of one the store knows, such as `Archief/&AMkA6Q-n` for
+/// `Archief/Één`, finds that folder, so a rule from before Postvak decoded names never creates a literal twin.
 pub fn known(store: &Store, name: &str) -> Result<Option<Folder>, StoreError> {
     if let Some(folder) = store.folder(name)? {
         return Ok(Some(folder));
     }
-    if name.is_ascii() {
+    let plain = wire_spelling(name);
+    if name.is_ascii() && plain.is_none() {
         return Ok(None);
     }
-    Ok(store.folders()?.into_iter().find(|f| same(&f.name, name)))
+    let folders = store.folders()?;
+    if let Some(folder) = folders.iter().find(|f| same(&f.name, name)) {
+        return Ok(Some(folder.clone()));
+    }
+    Ok(plain.and_then(|plain| folders.into_iter().find(|f| same(&f.name, &plain))))
 }
 
 /// The rest of `name` after a leading `INBOX` + `delimiter` (Dovecot and Courier namespaces), in any case.
@@ -96,6 +118,33 @@ mod tests {
         let found = known(&store, &format!("Archief/{NFC}")).unwrap().unwrap();
         assert_eq!(found.name, format!("Archief/{NFD}"));
         assert_eq!(known(&store, "Archief").unwrap(), None);
+    }
+
+    /// Before Postvak decoded folder names it showed `Archief/&AMkA6Q-n`, and a rule copied from that moved mail to
+    /// `Archief/Één`; it must still, not into a new folder literally called `Archief/&AMkA6Q-n`.
+    #[test]
+    fn a_wire_spelling_finds_the_folder_it_encodes() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .upsert_folder(&folder(&format!("Archief/{NFC}")))
+            .unwrap();
+        let found = known(&store, "Archief/&AMkA6Q-n").unwrap().unwrap();
+        assert_eq!(found.name, format!("Archief/{NFC}"));
+        assert_eq!(known(&store, "Other/&AMkA6Q-n").unwrap(), None);
+        // A folder that really has that name wins.
+        store.upsert_folder(&folder("Archief/&AMkA6Q-n")).unwrap();
+        let found = known(&store, "Archief/&AMkA6Q-n").unwrap().unwrap();
+        assert_eq!(found.name, "Archief/&AMkA6Q-n");
+    }
+
+    #[test]
+    fn a_rule_names_a_folder_in_its_wire_spelling_too() {
+        assert!(rule_names("&AMkA6Q-n", NFC));
+        assert!(rule_names("&AMkA6Q-n", NFD));
+        assert!(rule_names(NFC, NFD));
+        assert!(rule_names("Q&-A", "Q&A"));
+        assert!(!rule_names("R&D", "R&D-"));
+        assert!(!rule_names("&AMkA6Q-n", "Een"));
     }
 
     #[test]

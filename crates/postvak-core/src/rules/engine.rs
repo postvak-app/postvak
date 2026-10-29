@@ -39,7 +39,7 @@ pub fn folder_needs_body(rules: &[CompiledRule], account: &str, folder: &str) ->
     rules.iter().any(|r| {
         r.rule.enabled
             && r.applies_to_account(account)
-            && crate::folder_name::same(r.folder(), folder)
+            && crate::folder_name::rule_names(r.folder(), folder)
             && r.needs_body()
     })
 }
@@ -95,7 +95,7 @@ pub fn rule_matches(rule: &CompiledRule, msg: &Message, ctx: &Context) -> bool {
     !has_flag(&msg.flags, RESTORED_KEYWORD)
         && rule.rule.enabled
         && rule.applies_to_account(ctx.account)
-        && crate::folder_name::same(rule.folder(), &msg.folder)
+        && crate::folder_name::rule_names(rule.folder(), &msg.folder)
         && (ctx.mode != Mode::Normal || msg.internaldate >= rule.first_seen_at)
         // An unknown body is neither a match nor a mismatch, so `none` cannot turn a failed fetch into a hit.
         && (!rule.needs_body() || msg.body_text.is_some())
