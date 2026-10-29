@@ -6,6 +6,7 @@ Rules run in file order: the first matching `move` and `notify` win, and `stop` 
 
 - `rules::edit::move_rule(path, name, place)` puts a rule right before or after another, or at the end (`Place`, the same type proposals use). It refuses a missing rule or anchor, and a rule placed next to itself.
 - The comments right above the rule move with it. Comments a blank line above them, such as the file's heading, stay where they are. Nothing else in the file changes, and the edited file must validate as a whole, as every rules.toml edit does.
+- A pending edit of the rule (`<name> (edit)`, see `2026-10-29-rule-edit-proposals-design.md`) moves with it and stays right after it, and a rule placed after another lands after that one's pending edit, so an edit never ends up apart from its rule.
 
 ## CLI and MCP
 

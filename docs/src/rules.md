@@ -283,7 +283,7 @@ To review a proposal:
 
 While the [daemon](daemon.md) runs, a new proposal brings a desktop notification ("A rule waits for your approval", naming it; several within two seconds come as one), on Linux and macOS alike. Clicking it opens the window on Rules, as `postvak gui --rules` does. Proposals already waiting when the daemon starts do not notify again, and neither does a proposal changed with `--replace`, which keeps its name.
 
-`postvak rules move NAME --before OTHER` or `--after OTHER` changes when a rule runs, keeping the file's comments; the comments right above the rule move with it. The Rules view does the same when you drag a row, and the MCP `rules_move` tool for an agent granted `rules:write`.
+`postvak rules move NAME --before OTHER` or `--after OTHER` changes when a rule runs, keeping the file's comments; the comments right above the rule move with it, and so does a pending edit of it, which stays right after it. The Rules view does the same when you drag a row, and the MCP `rules_move` tool for an agent granted `rules:write`.
 
 ## Coverage
 
