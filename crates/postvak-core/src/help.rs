@@ -68,7 +68,7 @@ pub const ACCOUNT_LIST: &str =
 pub const ARCHIVE: &str = "Move messages to the Archive folder";
 pub const ATTACHMENT_LIST: &str = "Index, type, size and name of each attachment";
 pub const ATTACHMENT_SAVE: &str = "Save attachment N, as numbered by the attachment list, into a directory; returns the written path";
-pub const COUNT_ONLY: &str = "Return only how many match in all, messages or in a thread view threads, as {\"count\": N}, without rows";
+pub const COUNT_ONLY: &str = "Return only how many match in all, messages or in a thread view threads, as {\"count\": N}, without rows; takes no cursor or fields";
 /// The paging argument of `list` and `search`.
 pub const CURSOR: &str = "Continue after the page that ended with this `next`, with the same other arguments; the rows of every account come newest first in one order, and the limit counts them together";
 pub const DELETE: &str =

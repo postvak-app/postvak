@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::Identity;
 use crate::search::{Query, Scope};
-use crate::store::{After, Filter, Hit, Matched, Message, SearchRequest, Store, StoreError};
+use crate::store::{
+    After, Filter, Hit, Matched, Message, Resume, SearchRequest, Store, StoreError,
+};
 
 /// A position with this uid comes before every message of its date: every uid is below it.
 const ABOVE_EVERY_UID: i64 = 1 << 32;
@@ -55,6 +57,9 @@ struct Cursor {
     uid: u32,
     #[serde(rename = "f")]
     folder: String,
+    /// In a search, the accounts whose close matches a page showed so far; theirs keep showing on later pages.
+    #[serde(rename = "c", default, skip_serializing_if = "Vec::is_empty")]
+    close_shown: Vec<String>,
 }
 
 impl Cursor {
@@ -144,16 +149,12 @@ fn cut<T, K: Ord>(
     limit: u32,
     key: impl Fn(&T) -> K,
     cursor: impl Fn(&T) -> Cursor,
-) -> (Vec<T>, Option<String>) {
+) -> (Vec<T>, Option<Cursor>) {
     items.sort_by_key(|item| std::cmp::Reverse(key(item)));
     let limit = usize::try_from(limit).unwrap_or(usize::MAX);
     let more = items.len() > limit;
     items.truncate(limit);
-    let next = if more {
-        items.last().map(|last| cursor(last).encode())
-    } else {
-        None
-    };
+    let next = if more { items.last().map(cursor) } else { None };
     (items, next)
 }
 
@@ -215,9 +216,13 @@ pub fn list(
                 account: row.account.clone(),
                 uid: row.message.uid,
                 folder: row.message.folder.clone(),
+                close_shown: Vec::new(),
             },
         );
-        Ok(Page { rows, next })
+        Ok(Page {
+            rows,
+            next: next.map(|c| c.encode()),
+        })
     }
 }
 
@@ -263,8 +268,10 @@ fn list_threads(
             account: t.account.clone(),
             uid: t.top_uid,
             folder: request.folder.to_string(),
+            close_shown: Vec::new(),
         },
     );
+    let next = next.map(|c| c.encode());
     let mut rows = Vec::new();
     for thread in threads {
         let depths = crate::output::depths(&thread.members);
@@ -319,6 +326,18 @@ fn search_cursor(row: &SearchRow) -> Cursor {
         account: row.account.clone(),
         uid: row.hit.message.uid,
         folder: row.hit.message.folder.clone(),
+        close_shown: Vec::new(),
+    }
+}
+
+/// Where `account`'s hits continue after `cursor`.
+fn resume<'a>(cursor: &Cursor, account: &str, after: &'a After) -> Resume<'a> {
+    match cursor.tier {
+        Some(Matched::Close) => Resume::Close {
+            after,
+            shown: cursor.close_shown.iter().any(|shown| shown == account),
+        },
+        _ => Resume::Exact(after),
     }
 }
 
@@ -351,13 +370,13 @@ pub fn search(
     }
     let mut found = Vec::new();
     for source in sources {
-        let after = cursor
-            .as_ref()
-            .map(|c| (c.tier.unwrap_or(Matched::Exact), c.after(&source.account)));
+        let after = cursor.as_ref().map(|c| (c, c.after(&source.account)));
         let hits = source.store.search_after(
             &request(query, source),
             limit.saturating_add(1),
-            after.as_ref().map(|(tier, position)| (*tier, position)),
+            after
+                .as_ref()
+                .map(|(c, position)| resume(c, &source.account, position)),
         )?;
         found.extend(hits.into_iter().map(|hit| SearchRow {
             account: source.account.clone(),
@@ -365,6 +384,18 @@ pub fn search(
         }));
     }
     let (rows, next) = cut(found, limit, search_key, search_cursor);
+    // Each account whose close matches showed, on this page or an earlier one, keeps them on the next.
+    let next = next.map(|mut next| {
+        let mut shown = cursor.map(|c| c.close_shown).unwrap_or_default();
+        for row in &rows {
+            if row.hit.matched == Matched::Close && !shown.contains(&row.account) {
+                shown.push(row.account.clone());
+            }
+        }
+        shown.sort();
+        next.close_shown = shown;
+        next.encode()
+    });
     Ok(Page { rows, next })
 }
 
@@ -803,5 +834,109 @@ mod tests {
         let uids: Vec<u32> = second.rows.iter().map(|r| r.hit.message.uid).collect();
         assert_eq!(uids, [13, 12, 11, 10]);
         assert!(second.rows.iter().all(|r| r.hit.matched == Matched::Close));
+    }
+
+    fn typo_query(query: &Query) -> SearchQuery<'_> {
+        SearchQuery {
+            query,
+            scope: Scope::All,
+            folder: None,
+            close: true,
+        }
+    }
+
+    /// `(account, uid, matched)` of each row.
+    fn tiers(page: &Page<SearchRow>) -> Vec<(String, u32, Matched)> {
+        page.rows
+            .iter()
+            .map(|r| (r.account.clone(), r.hit.message.uid, r.hit.matched))
+            .collect()
+    }
+
+    #[test]
+    fn a_close_cursor_shows_no_close_matches_of_an_account_with_enough_exact_ones() {
+        // home has ten exact matches, so its close match never shows; work has one, so its close ones do.
+        let mut home: Vec<(&str, u32, i64, &str)> = (1..=10)
+            .map(|uid| ("INBOX", uid, i64::from(uid), "invioce"))
+            .collect();
+        home.push(("INBOX", 11, 100, "invoice"));
+        let work = [
+            ("INBOX", 1, 50, "invioce"),
+            ("INBOX", 2, 500, "invoice"),
+            ("INBOX", 3, 400, "invoice"),
+            ("INBOX", 4, 300, "invoice"),
+        ];
+        let sources = [source("home", &home), source("work", &work)];
+        let query = crate::search::parse("invioce", 0);
+        let query = typo_query(&query);
+        let first = search(&sources, &query, 12, None).unwrap();
+        assert_eq!(
+            first
+                .rows
+                .last()
+                .map(|r| (r.account.as_str(), r.hit.matched)),
+            Some(("work", Matched::Close))
+        );
+        let second = search(&sources, &query, 12, first.next.as_deref()).unwrap();
+        assert_eq!(
+            tiers(&second),
+            [
+                ("work".to_string(), 3, Matched::Close),
+                ("work".to_string(), 4, Matched::Close)
+            ]
+        );
+        assert_eq!(second.next, None);
+    }
+
+    #[test]
+    fn close_matches_keep_paging_in_every_account_that_showed_them() {
+        // Both accounts are thin, so a first page shows close matches of both and ends in work's.
+        let home = [
+            ("INBOX", 1, 10, "invioce"),
+            ("INBOX", 2, 450, "invoice"),
+            ("INBOX", 3, 200, "invoice"),
+        ];
+        let work = [
+            ("INBOX", 1, 20, "invioce"),
+            ("INBOX", 2, 500, "invoice"),
+            ("INBOX", 3, 400, "invoice"),
+            ("INBOX", 4, 300, "invoice"),
+        ];
+        let sources = [source("home", &home), source("work", &work)];
+        let query = crate::search::parse("invioce", 0);
+        let query = typo_query(&query);
+        let first = search(&sources, &query, 5, None).unwrap();
+        assert_eq!(
+            tiers(&first),
+            [
+                ("work".to_string(), 1, Matched::Exact),
+                ("home".to_string(), 1, Matched::Exact),
+                ("work".to_string(), 2, Matched::Close),
+                ("home".to_string(), 2, Matched::Close),
+                ("work".to_string(), 3, Matched::Close),
+            ]
+        );
+        // Enough exact matches arrive in home that a new search would leave its close ones out.
+        for uid in 10..20 {
+            sources[0]
+                .store
+                .insert_message(&Message {
+                    folder: "INBOX".into(),
+                    uid,
+                    thread_id: format!("INBOX{uid}"),
+                    subject: Some("invioce".into()),
+                    internaldate: 1000,
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+        let second = search(&sources, &query, 5, first.next.as_deref()).unwrap();
+        assert_eq!(
+            tiers(&second),
+            [
+                ("work".to_string(), 4, Matched::Close),
+                ("home".to_string(), 3, Matched::Close),
+            ]
+        );
     }
 }

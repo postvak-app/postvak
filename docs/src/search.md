@@ -30,7 +30,7 @@ When fewer than ten messages match as typed, close matches follow: for each word
 
 ## Pages
 
-On the CLI and over MCP a search returns at most `--limit` (`limit`) results over every account together: the exact matches newest first, then the close ones. When more follow, `--json` ends with a line `{"next": "…"}` and an MCP result carries `next`; pass it back as `--cursor` (`cursor`) with the same query for the next page. Pages continue through the close matches the same way, and whether close matches show is decided on all exact matches, so every page agrees. `--count-only` (`count_only`) tells how many results there are in all. A search with `--server` is one page and takes no cursor. `list` pages the same way; [CLI](cli.md) has the flags.
+On the CLI and over MCP a search returns at most `--limit` (`limit`) results over every account together: the exact matches newest first, then the close ones. When more follow, `--json` ends with a line `{"next": "…"}` and an MCP result carries `next`; pass it back as `--cursor` (`cursor`) with the same query for the next page. Pages continue through the close matches the same way. Whether an account's close matches show is decided on all its exact matches, and once a page showed them they keep showing on later pages, even when exact matches arrive in between. `--count-only` (`count_only`) tells how many results there are in all. A search with `--server` is one page and takes no cursor. `list` pages the same way; [CLI](cli.md) has the flags.
 
 ## Snippets
 
