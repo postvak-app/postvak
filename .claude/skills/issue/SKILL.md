@@ -40,7 +40,7 @@ Pick the issue that scores best on both together; a small issue with a clear fix
 Every session acts as the user's GitHub account, so an assignee can't tell sessions apart; the label and a comment carry the claim.
 
 1. Add the `in progress` label. With `issue_write` (method `update`) the `labels` list replaces the issue's labels, so send its current labels plus `in progress`, never `in progress` alone. GitHub creates the label the first time it's applied; with `gh`, `gh issue edit <n> --add-label "in progress"`.
-2. Comment: `Claimed by a Claude Code session on branch <branch>.` (plus the attribution footer).
+2. Comment: `Claimed by a Claude Code session on branch <branch>.`
 3. Re-read the issue's comments. If another session's claim comment is older than yours (the two raced), that session has it: comment that you're backing off, leave the label on (it's theirs), and tell the user.
 
 Release the claim whenever this session stops working on the issue without a PR that closes it: the user drops it, the issue is closed in step 2, or it's split into other issues. Remove the label (current labels minus `in progress`) and comment that the claim is released. Once the PR merges and closes the issue, remove the label too, so closed issues don't show up as in progress.
@@ -63,8 +63,6 @@ Then decide, and say which with the evidence (commit hashes, PR numbers, test ou
 | No longer relevant (design changed, duplicate) | Propose closing as `not_planned` (or `duplicate`, naming the other issue). Ask first. |
 | Partly done, or the issue's description is out of date | Propose a comment (or body edit, if the user wrote the issue) saying what main already does and what is left. Ask first, then post it. |
 | Still open as written | Carry on. |
-
-Every comment you post ends with the Claude Code attribution footer required by the session.
 
 ## 3. Clear up what's unclear
 
