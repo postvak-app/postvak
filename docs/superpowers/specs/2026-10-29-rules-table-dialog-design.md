@@ -9,6 +9,7 @@ Issue #401. The Rules view edited a rule in a pane beside the list, which took h
 - A click on a heading sorts by that column, and a second click reverses it. The sort is `SheetSort`, which Activity and Backups use too, so leaving the view drops it. # sorts by run order rather than as text, so the table can always go back to the order the rules run in. Sorting only changes how the table is shown, never `rules.toml`.
 - The table is drawn by hand rather than with `StandardTableView`, whose cells hold only text and so cannot hold the switch.
 - A click on a row, anywhere but its switch, opens the rule.
+- A Filter rules field in the title row narrows the proposals and the table to those with every whitespace-separated word of it, ignoring case, in what their card or row shows (name, proposed by, account, folder, conditions, actions; a proposal's one-line summary). Like the sort, it only changes what is shown and leaving the view clears it. A row keeps its #, the header keeps counting every rule and proposal, and a filter that leaves no rule says so. GUI only: `rules list` and `rules_list` show the whole file, which is short enough to read or grep.
 
 ## The dialog
 
