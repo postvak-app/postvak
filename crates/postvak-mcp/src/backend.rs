@@ -557,16 +557,17 @@ impl Backend {
             .retain(|r| !self.narrowed() || self.is_visible(r.account.as_deref()));
         let names = self.all_accounts();
         let accounts: Vec<&str> = names.iter().map(String::as_str).collect();
-        let config = self.config();
-        let untrusting: Vec<&str> = config
-            .accounts
+        let warnings = rules::warnings(&path, &file.rules, &accounts);
+        // These name the account, so only the visible ones.
+        let visible = self.visible();
+        let shown: Vec<String> = visible.iter().map(|a| a.name.clone()).collect();
+        let untrusting: Vec<&str> = visible
             .iter()
             .filter(|a| !a.can_authenticate())
             .map(|a| a.name.as_str())
             .collect();
-        let warnings = rules::warnings(&path, &file.rules, &accounts, &untrusting);
-        // These name the account, so only the visible ones.
-        let shown: Vec<String> = self.visible().into_iter().map(|a| a.name).collect();
+        let shown_folders = rules::account_folders(&self.paths, &shown);
+        let authenticated = rules::authenticated_warnings(&file.rules, &untrusting, &shown_folders);
         // Whether a rule for every account watches a folder none syncs depends on the hidden accounts too, so while
         // any is hidden only the rules for a visible account are checked.
         let hiding = shown.len() < names.len();
@@ -576,12 +577,9 @@ impl Backend {
             .filter(|r| !hiding || r.account.is_some())
             .cloned()
             .collect();
-        let watched = rules::watched_folder_warnings(
-            &watched_rules,
-            &rules::account_folders(&self.paths, &shown),
-        );
+        let watched = rules::watched_folder_warnings(&watched_rules, &shown_folders);
         let folders = rules::folder_warnings(&self.paths, &file.rules, &shown);
-        let warnings = [warnings, watched, folders].concat();
+        let warnings = [warnings, authenticated, watched, folders].concat();
         Ok(json!({ "rules": count, "warnings": warnings }))
     }
 

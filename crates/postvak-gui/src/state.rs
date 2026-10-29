@@ -348,6 +348,11 @@ pub(crate) enum UiAction {
     About,
     Act(Action),
     ApproveRule(String),
+    /// Add this authserv-id to this account's trusted_authserv_ids, as the Rules view offered.
+    TrustAuthserv {
+        account: String,
+        id: String,
+    },
     /// Take every row out of the selection.
     ClearSelection,
     /// Dismiss this dialog without answering it; its close button, Escape and the toggles that open it all come here.
@@ -1121,8 +1126,7 @@ impl App {
                 self.notice = None;
                 self.refresh(index);
                 // The folder warnings read what the stores hold, which a sync changes.
-                self.rules.warnings =
-                    rules::warnings(&self.paths.rules_file(), &self.rules.rules, &self.accounts);
+                self.rules.check(&self.paths.rules_file(), &self.accounts);
             }
             Event::ActionDone {
                 folder, results, ..
@@ -1273,6 +1277,7 @@ impl App {
                     rule_file::edit::approve_from_now(&paths, &name, postvak_core::time::now())
                 });
             }
+            UiAction::TrustAuthserv { account, id } => self.trust_authserv(&account, &id),
             UiAction::Collapse => self.collapse(),
             UiAction::DropOn(view) => self.drop_on(view),
             UiAction::HtmlHover(at) => self.html_hover(at),
@@ -2824,8 +2829,7 @@ impl App {
             self.rules_changed();
         } else if self.config_dir_watch.changed() {
             // A sync tool's conflicting copy appears beside rules.toml without changing it.
-            self.rules.warnings =
-                rules::warnings(&self.paths.rules_file(), &self.rules.rules, &self.accounts);
+            self.rules.check(&self.paths.rules_file(), &self.accounts);
         }
         let saving = self
             .account_form
@@ -3078,6 +3082,21 @@ impl App {
     fn notice(&mut self, text: String) {
         self.push_history(text.clone());
         self.notice = Some(text);
+    }
+
+    /// Trusts `id` for `name` in config.toml, which the daemon notices itself, and shows the account's new identity.
+    fn trust_authserv(&mut self, name: &str, id: &str) {
+        match postvak_core::account::trust_authserv_id(&self.paths, name, id) {
+            Ok(config) => {
+                // Absorbs this write, so the poll does not take it for an outside edit.
+                self.config_watch.changed();
+                if let Some(account) = self.accounts.iter_mut().find(|a| a.name == name) {
+                    account.identity = config.account(name).and_then(|a| a.identity().ok());
+                }
+                self.rules.check(&self.paths.rules_file(), &self.accounts);
+            }
+            Err(e) => self.note_error(None, format!("could not trust {id}: {e}")),
+        }
     }
 
     /// Reloads the rules view; the daemon notices the change itself and syncs every account.

@@ -7,8 +7,8 @@ pub mod engine;
 mod warnings;
 
 pub use warnings::{
-    AccountFolders, account_folders, folder_warnings, open_folder_warnings, warnings,
-    watched_folder_warnings,
+    AccountFolders, account_folders, authenticated_warnings, authserv_offers, folder_warnings,
+    open_folder_warnings, warnings, watched_folder_warnings,
 };
 
 use std::collections::BTreeMap;

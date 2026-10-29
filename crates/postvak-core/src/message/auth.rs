@@ -254,6 +254,32 @@ pub fn authenticated(raw_headers: &[u8], from: &str, trusted: impl Fn(&str) -> b
         .is_some_and(|header| header.authenticates(&domain))
 }
 
+/// How few messages [`common_authserv_id`] needs before it offers an authserv-id.
+pub const SUGGEST_MIN: usize = 10;
+
+/// The authserv-id of the topmost `Authentication-Results` header of every one of these messages, lower-cased and
+/// without a trailing dot, when they all have one with the same id and there are at least [`SUGGEST_MIN`] of them.
+/// That is the provider's server writing the header on each message it receives, which is what trusting it needs; one
+/// message without the header, or topped by another id, offers nothing. Neither does an id that is no host name, since
+/// the offer puts it in a command to run.
+pub fn common_authserv_id<'a>(headers: impl IntoIterator<Item = &'a [u8]>) -> Option<String> {
+    let mut common: Option<String> = None;
+    let mut count = 0;
+    for raw in headers {
+        let id = all(raw).into_iter().next()?.authserv_id;
+        let id = id.trim_end_matches('.').to_string();
+        if common.get_or_insert_with(|| id.clone()) != &id {
+            return None;
+        }
+        count += 1;
+    }
+    let host = |id: &String| {
+        id.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+    };
+    common.filter(|id| count >= SUGGEST_MIN && host(id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,5 +442,46 @@ mod tests {
         assert!(!check("a@paypal.com, b@paypal.com"));
         assert!(!check(""));
         assert!(!check("undisclosed"));
+    }
+
+    fn topped_by(id: &str) -> Vec<u8> {
+        format!("Authentication-Results: {id}; dmarc=pass\r\nAuthentication-Results: relay.example; spf=pass\r\n\r\n")
+            .into_bytes()
+    }
+
+    #[test]
+    fn the_authserv_id_topping_every_message_is_offered() {
+        let mail: Vec<Vec<u8>> = (0..SUGGEST_MIN)
+            .map(|_| topped_by("MX.Google.com."))
+            .collect();
+        assert_eq!(
+            common_authserv_id(mail.iter().map(Vec::as_slice)).as_deref(),
+            Some("mx.google.com")
+        );
+    }
+
+    #[test]
+    fn no_authserv_id_is_offered_on_too_little_or_mixed_mail() {
+        let few: Vec<Vec<u8>> = (1..SUGGEST_MIN)
+            .map(|_| topped_by("mx.google.com"))
+            .collect();
+        assert_eq!(common_authserv_id(few.iter().map(Vec::as_slice)), None);
+        let mut mixed: Vec<Vec<u8>> = (0..SUGGEST_MIN)
+            .map(|_| topped_by("mx.google.com"))
+            .collect();
+        mixed.push(topped_by("mx.evil.example"));
+        assert_eq!(common_authserv_id(mixed.iter().map(Vec::as_slice)), None);
+        // One message the server left without a header is where a sender's own would sit on top.
+        let mut bare = mixed[..SUGGEST_MIN].to_vec();
+        bare.push(b"Subject: hi\r\n\r\n".to_vec());
+        assert_eq!(common_authserv_id(bare.iter().map(Vec::as_slice)), None);
+        let shell: Vec<Vec<u8>> = (0..SUGGEST_MIN)
+            .map(|_| topped_by("mx$(true).example"))
+            .collect();
+        assert_eq!(
+            common_authserv_id(shell.iter().map(Vec::as_slice)),
+            None,
+            "no host name"
+        );
     }
 }

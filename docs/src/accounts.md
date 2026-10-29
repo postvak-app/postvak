@@ -35,7 +35,7 @@ notify = true
 | `notify` | true | Desktop notification for new INBOX mail that no rule moved, archived, deleted or silenced (see [Notifications](rules.md#notifications)). |
 | `index_bodies` | true | Download and index the text of every message in the background, so search covers bodies (see [Search](search.md)). Off, only the subject, addresses and the bodies of mail you opened are searched. |
 | `ca_file` | none | Absolute path to a PEM file with an extra trusted root certificate, for a server with a private CA. Postvak trusts the public web roots it ships with, not the system's certificate store, so a CA you installed on your system goes here too. |
-| `trusted_authserv_ids` | none | The servers whose `Authentication-Results` headers the `authenticated` rule condition believes, by the name at the header's start, such as `["mx.google.com"]`. List only a server of your provider that writes that header on every message it receives. Without one, no mail is authenticated. See [Authenticated mail](rules.md#authenticated-mail). |
+| `trusted_authserv_ids` | none | The servers whose `Authentication-Results` headers the `authenticated` rule condition believes, by the name at the header's start, such as `["mx.google.com"]`. List only a server of your provider that writes that header on every message it receives. Without one, no mail is authenticated. `postvak account trust ACCOUNT ID` adds one. See [Authenticated mail](rules.md#authenticated-mail). |
 
 ## Appearance
 

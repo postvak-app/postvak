@@ -52,6 +52,7 @@ This document contains the help content for the `postvak` command-line program.
 * [`postvak account`↴](#postvak-account)
 * [`postvak account add`↴](#postvak-account-add)
 * [`postvak account list`↴](#postvak-account-list)
+* [`postvak account trust`↴](#postvak-account-trust)
 * [`postvak crashes`↴](#postvak-crashes)
 * [`postvak crashes show`↴](#postvak-crashes-show)
 * [`postvak guide`↴](#postvak-guide)
@@ -823,6 +824,7 @@ Manage accounts
 
 * `add` — Add an IMAP account; the daemon tests the login first and nothing is saved when it fails, then syncs it once
 * `list` — Each configured account: name, username and server; never the password source
+* `trust` — Trust a server's Authentication-Results headers for the authenticated rule condition: add AUTHSERV_ID, the name at the start of the topmost one, to the account's trusted_authserv_ids
 
 
 
@@ -843,6 +845,19 @@ Each configured account: name, username and server; never the password source
 ###### **Options:**
 
 * `--json`
+
+
+
+## `postvak account trust`
+
+Trust a server's Authentication-Results headers for the authenticated rule condition: add AUTHSERV_ID, the name at the start of the topmost one, to the account's trusted_authserv_ids
+
+**Usage:** `postvak account trust <ACCOUNT> <AUTHSERV_ID>`
+
+###### **Arguments:**
+
+* `<ACCOUNT>`
+* `<AUTHSERV_ID>`
 
 
 

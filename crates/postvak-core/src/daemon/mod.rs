@@ -446,9 +446,7 @@ impl Watch {
             return;
         };
         let accounts: Vec<&str> = self.accounts.iter().map(String::as_str).collect();
-        let untrusting: Vec<&str> = self.untrusting.iter().map(String::as_str).collect();
-        let warnings =
-            crate::rules::warnings(&self.rules.path, &file.rules, &accounts, &untrusting);
+        let warnings = crate::rules::warnings(&self.rules.path, &file.rules, &accounts);
         self.folder_lines = self
             .accounts
             .iter()
@@ -481,14 +479,20 @@ impl Watch {
         self.warned = warnings;
     }
 
-    /// The warning about a watched folder no account syncs, from what each account synced, in config order.
+    /// The warnings about a watched folder no account syncs and about `authenticated`, from what each account
+    /// synced, in config order.
     fn watch_folders(&mut self, rules: &[crate::rules::Rule]) {
         let synced: Vec<crate::rules::AccountFolders> = self
             .accounts
             .iter()
             .filter_map(|account| self.synced.get(account).cloned())
             .collect();
-        self.watched_lines = crate::rules::watched_folder_warnings(rules, &synced);
+        let untrusting: Vec<&str> = self.untrusting.iter().map(String::as_str).collect();
+        self.watched_lines = [
+            crate::rules::watched_folder_warnings(rules, &synced),
+            crate::rules::authenticated_warnings(rules, &untrusting, &synced),
+        ]
+        .concat();
     }
 
     /// Takes `account`'s folder warnings and what `account_folders` read of it after it synced, with the `rules` they
