@@ -145,7 +145,7 @@ export component AccountForm inherits VerticalLayout {
         spacing: Theme.pad;
         TextButton {
             text: "Save account";
-            framed: true;
+            primary: true;
             palette: Theme.pane;
             enabled: !root.saving;
             clicked => { root.submit(); }

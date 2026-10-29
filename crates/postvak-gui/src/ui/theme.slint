@@ -81,6 +81,13 @@ export global Theme {
     // The shadow under a dialog, and the dimmed window behind it.
     out property <color> shadow: #0006;
     out property <color> scrim: #0005;
+    // The one action a screen leads with, in both modes: the website's vermilion, darkened so white text passes AA.
+    out property <color> brand: #c4441f;
+    out property <color> brand-hover: #a93a1a;
+    out property <color> on-brand: #ffffff;
+    out property <color> brand-glow: #e8562f66;
+    // The website's peach: the glyph of an empty pane.
+    out property <color> brand-soft: #f3b39d;
     // How long a hover background takes to fade in or out; selection and presses change at once.
     out property <duration> hover-fade: 90ms;
     // How long a message turning read or unread, or an account's status dot, takes to fade.
@@ -97,6 +104,9 @@ export global Theme {
     out property <length> heading-size: 19px;
     out property <length> title-size: 22px;
     out property <length> subject-size: 28px;
+    // An empty pane's heading and the line under it.
+    out property <length> empty-size: 24px;
+    out property <length> lede-size: 14px;
     out property <string> text-font: "Hanken Grotesk";
     // Headings and the wordmark; only its SemiBold is bundled.
     out property <string> heading-font: "Bricolage Grotesque";
@@ -133,13 +143,14 @@ export global Theme {
         background: #16181f,
         border: #2b3042,
         error: #f08a8a,
-        faint: #0f1117,
+        // Lifted above `background`, as the website's dark cards are.
+        faint: #1d2029,
         heading: #f3eee4,
         highlight: #f08a68,
         hover: #20242f,
         muted: #9b9aa4,
         on-accent: #f3eee4,
-        panel: #0f1117,
+        panel: #1d2029,
         pressed: #2b3042,
         secondary: #c3c4cf,
         selected: #2b3650,

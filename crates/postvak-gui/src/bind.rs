@@ -49,6 +49,8 @@ pub(crate) fn init(window: &MailWindow) {
     window.set_close_icon(icons::CLOSE.into());
     window.set_search_icon(icons::SEARCH.into());
     window.set_filter_icon(icons::FILTER.into());
+    window.set_inbox_icon(icons::INBOX.into());
+    window.set_envelope_icon(icons::MARK_UNREAD.into());
     window.set_rule_icon(icons::RULES.into());
     window.set_sync_icon(icons::SYNC.into());
     window.set_save_icon(icons::SAVE.into());
@@ -230,6 +232,7 @@ fn present_body(app: &App, window: &MailWindow) {
     };
     let info = BodyInfo {
         empty: pane.empty.unwrap_or_default().into(),
+        empty_hint: pane.hint.unwrap_or_default().into(),
         subject: text(pane.subject),
         initials: pane.initials.into(),
         tint: i32::try_from(pane.tint).unwrap_or_default(),

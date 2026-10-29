@@ -355,9 +355,8 @@ component RuleEditorPane inherits ScrollView {
             }
             if RuleEditor.confirm-remove: TextButton {
                 text: "Remove from rules.toml";
-                framed: true;
+                danger: true;
                 palette: Theme.pane;
-                text-color: Theme.pane.error;
                 clicked => { RuleEditor.remove(true); }
             }
             if RuleEditor.confirm-remove: TextButton {
@@ -367,7 +366,7 @@ component RuleEditorPane inherits ScrollView {
             }
             TextButton {
                 text: "Save";
-                framed: true;
+                primary: true;
                 palette: Theme.pane;
                 clicked => { RuleEditor.save(); }
             }
@@ -422,7 +421,7 @@ export component UnsavedDialog {
             }
             TextButton {
                 text: "Save";
-                framed: true;
+                primary: true;
                 palette: Theme.pane;
                 clicked => { RuleEditor.unsaved-save(); }
             }

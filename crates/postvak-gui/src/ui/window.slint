@@ -76,6 +76,9 @@ export component MailWindow inherits Window {
     in property <string> search-icon;
     in property <string> sync-icon;
     in property <string> filter-icon;
+    // The glyphs of the empty list and the empty reader.
+    in property <string> inbox-icon;
+    in property <string> envelope-icon;
     in property <string> rule-icon;
 
     in property <[ToolButton]> tool-buttons;
@@ -518,6 +521,7 @@ export component MailWindow inherits Window {
                         filter: root.list-filter;
                         filter-label: root.filter-label;
                         filter-icon: root.filter-icon;
+                        empty-icon: root.inbox-icon;
                         search-icon: root.search-icon;
                         search-key: root.search-hint;
                         filter-clicked(i) => { root.list-filter-clicked(i); }
@@ -568,6 +572,7 @@ export component MailWindow inherits Window {
                         save-attachment-as(i) => { root.save-attachment-as(i); }
                         open-link(url) => { root.open-link(url); }
                         rule-icon: root.rule-icon;
+                        empty-icon: root.envelope-icon;
                         rule-from => { root.rule-from(); }
                         page: root.page;
                         strips: root.strips;

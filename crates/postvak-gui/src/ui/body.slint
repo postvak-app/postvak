@@ -2,7 +2,7 @@
 // several messages selected, the selection. `body.rs` words it, `toolbar.rs` the actions.
 import { ListView, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Hairline, Heading, IconButton, Link, TextButton } from "common.slint";
+import { EmptyState, Hairline, Heading, IconButton, Keycap, Link, TextButton } from "common.slint";
 
 // A message action: its glyph, its accessible name, its hover hint and the label it shows beside the glyph while
 // several messages are selected.
@@ -22,8 +22,9 @@ export struct SelectedData {
 }
 
 export struct BodyInfo {
-    // Instead of a message, when set.
+    // Instead of a message, when set, with a line under it.
     empty: string,
+    empty-hint: string,
     subject: string,
     initials: string,
     // Which of `Theme.avatars` the initials sit on.
@@ -371,6 +372,8 @@ export component BodyPane inherits Rectangle {
     in property <string> save-icon;
     in property <string> source-icon;
     in property <string> rule-icon;
+    // The glyph above `info.empty`.
+    in property <string> empty-icon;
     in property <[ToolButton]> actions;
     in property <bool> actions-enabled;
     // "3 messages selected" while two or more are, else empty; and those messages.
@@ -402,14 +405,43 @@ export component BodyPane inherits Rectangle {
 
     property <bool> several: root.selection-title != "";
 
-    if root.info.empty != "" && !root.several: Text {
+    if root.info.empty != "" && !root.several: EmptyState {
         x: Theme.inset;
-        y: (root.height - self.height) / 2;
+        y: (root.height - self.preferred-height) / 2;
+        height: self.preferred-height;
         width: root.width - 2 * Theme.inset;
-        text: root.info.empty;
-        color: Theme.pane.muted;
-        horizontal-alignment: center;
-        wrap: word-wrap;
+        icon: root.info.empty-hint != "" ? root.empty-icon : "";
+        title: root.info.empty;
+        // The hint, with its keys drawn as keys; screen readers get the sentence.
+        if root.info.empty-hint != "": HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                accessible-role: AccessibleRole.text;
+                accessible-label: root.info.empty-hint;
+                HorizontalLayout {
+                    spacing: Theme.pad / 2;
+                    for part in [
+                        { text: "Or press", key: "j" },
+                        { text: "for the next one,", key: "/" },
+                        { text: "to search,", key: "?" },
+                        { text: "for every key.", key: "" },
+                    ]: HorizontalLayout {
+                        spacing: Theme.pad / 2;
+                        Text {
+                            accessible-role: none;
+                            text: part.text;
+                            font-size: Theme.lede-size;
+                            color: Theme.pane.muted;
+                            vertical-alignment: center;
+                        }
+                        if part.key != "": VerticalLayout {
+                            alignment: center;
+                            Keycap { key: part.key; }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Wide margins while there is room for them.

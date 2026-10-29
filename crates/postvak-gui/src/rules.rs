@@ -302,7 +302,7 @@ fn rule_lines(rules: &[Rule]) -> Vec<RuleLine> {
         let folder = rule
             .folder
             .as_deref()
-            .map_or("INBOX".into(), |f| clean(f, false));
+            .map_or("Inbox".into(), |f| clean(crate::folders::label(f), false));
         let actions: Vec<String> = rule.actions.iter().map(draft::action_label).collect();
         RuleLine {
             name: rule.name.clone(),
@@ -450,7 +450,7 @@ pub(crate) fn activity_cells(app: &App) -> Vec<[String; 6]> {
             account.clone(),
             clean(&entry.rule_name, false),
             clean(&entry.action, false),
-            clean(&entry.folder, false),
+            clean(crate::folders::label(&entry.folder), false),
             entry
                 .subject
                 .as_deref()
@@ -467,7 +467,7 @@ pub(crate) fn trash_cells(app: &App) -> Vec<[String; 5]> {
         [
             date_time(row.entry.saved_at),
             app.accounts[row.account].name.clone(),
-            clean(&row.entry.folder, false),
+            clean(crate::folders::label(&row.entry.folder), false),
             clean(&row.from, false),
             clean(&row.subject, false),
         ]
@@ -865,6 +865,15 @@ mod tests {
         assert_eq!(open.find("every account").len(), 1);
         assert_eq!(open.find("from contains \"news@\"").len(), 1);
         assert_eq!(open.find("archive").len(), 1);
+        let folders: Vec<String> = open.with(|live| {
+            live.app
+                .rules
+                .lines
+                .iter()
+                .map(|l| l.folder.clone())
+                .collect()
+        });
+        assert!(folders.iter().all(|f| f == "Inbox"), "{folders:?}");
     }
 
     #[test]
@@ -1123,6 +1132,16 @@ mod tests {
         assert_eq!(order, expected);
         assert_eq!(open.find("work newest").len(), 1);
         assert_eq!(open.find("Subject").len(), 1);
+    }
+
+    #[test]
+    fn the_activity_table_names_the_inbox_as_the_folder_pane_does() {
+        let fx = Fixture::new(&["home"]);
+        logged(&fx, "home", 100, "hello");
+        let (open, _wires) = view(&fx, View::Activity);
+        let cells = open.window().get_sheet_cells();
+        let folder = cells.row_data(0).unwrap().row_data(4).unwrap().text;
+        assert_eq!(folder, "Inbox");
     }
 
     #[test]

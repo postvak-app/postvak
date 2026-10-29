@@ -14,8 +14,10 @@ use super::state::{Account, App};
 /// The body pane for the shown message, in words.
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Pane {
-    /// Instead of a message: "No message selected." or that it left the store.
+    /// Instead of a message: "Pick a message to read it" or that it left the store.
     pub empty: Option<&'static str>,
+    /// A line under `empty`: what to press to get going.
+    pub hint: Option<&'static str>,
     pub subject: Option<String>,
     pub initials: String,
     /// Which avatar fill the initials sit on.
@@ -66,11 +68,17 @@ pub(crate) fn links(text: Option<&str>) -> Vec<String> {
         .collect()
 }
 
+/// Under "Pick a message to read it", drawn with keycaps: the keys `keys.rs` binds to the next message, search and the
+/// key list.
+pub(crate) const NOTHING_SELECTED_HINT: &str =
+    "Or press j for the next one, / to search, ? for every key.";
+
 /// What the body pane shows for `app`.
 pub(crate) fn pane(app: &App) -> Pane {
     let Some(body) = &app.body else {
         return Pane {
-            empty: Some("No message selected."),
+            empty: Some("Pick a message to read it"),
+            hint: Some(NOTHING_SELECTED_HINT),
             ..Pane::default()
         };
     };
@@ -101,6 +109,7 @@ pub(crate) fn pane(app: &App) -> Pane {
         .collect();
     Pane {
         empty: None,
+        hint: None,
         subject: header(&message.subject),
         initials: initials(from),
         tint: avatar::tint(address.as_deref().unwrap_or(&name)),
@@ -475,6 +484,14 @@ mod tests {
 
     fn shows_html(open: &crate::test_support::Open) -> bool {
         open.with(|live| live.app.body.as_ref().is_some_and(|b| b.shows_html()))
+    }
+
+    #[test]
+    fn an_empty_folder_says_so_and_the_reader_names_the_keys_that_start() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        assert_eq!(open.find("Pick a message to read it").len(), 1);
+        assert_eq!(open.find(NOTHING_SELECTED_HINT).len(), 1);
     }
 
     #[test]
