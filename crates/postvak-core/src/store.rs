@@ -41,6 +41,27 @@ fn migration_list() -> Vec<M<'static>> {
     ]
 }
 
+/// Gives the folder `from` the name `to` in every table that names one. The caller defers the foreign keys.
+fn rename_folder_rows(tx: &rusqlite::Connection, from: &str, to: &str) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE folders SET name = ?2 WHERE name = ?1",
+        params![from, to],
+    )?;
+    tx.execute(
+        "UPDATE messages SET folder = ?2 WHERE folder = ?1",
+        params![from, to],
+    )?;
+    tx.execute(
+        "UPDATE rule_log SET folder = ?2 WHERE folder = ?1",
+        params![from, to],
+    )?;
+    tx.execute(
+        "UPDATE OR IGNORE rule_moves SET folder = ?2 WHERE folder = ?1",
+        params![from, to],
+    )?;
+    Ok(())
+}
+
 /// Renames the folders stored under their modified UTF-7 wire name (`Caf&AOk-`) to the UTF-8 name `ImapOps` now
 /// gives them (`Café`), with their messages and rule history, so they keep their state instead of syncing again. A
 /// name that is not exactly what the encoder writes stays: it was sent raw, and the server knows it so. A placeholder
@@ -74,22 +95,7 @@ fn decode_folder_names(tx: &rusqlite::Transaction) -> rusqlite_migration::HookRe
             tx.execute("DELETE FROM messages WHERE folder = ?1", params![wire])?;
             tx.execute("DELETE FROM folders WHERE name = ?1", params![wire])?;
         } else {
-            tx.execute(
-                "UPDATE folders SET name = ?2 WHERE name = ?1",
-                params![wire, name],
-            )?;
-            tx.execute(
-                "UPDATE messages SET folder = ?2 WHERE folder = ?1",
-                params![wire, name],
-            )?;
-            tx.execute(
-                "UPDATE rule_log SET folder = ?2 WHERE folder = ?1",
-                params![wire, name],
-            )?;
-            tx.execute(
-                "UPDATE OR IGNORE rule_moves SET folder = ?2 WHERE folder = ?1",
-                params![wire, name],
-            )?;
+            rename_folder_rows(tx, &wire, &name)?;
         }
         tx.execute("DELETE FROM rule_moves WHERE folder = ?1", params![wire])?;
     }
@@ -543,6 +549,33 @@ impl Store {
         let out = f()?;
         tx.commit().map_err(StoreError::from)?;
         Ok(out)
+    }
+
+    /// Renames `from` and the stored folders under it (by `from`'s stored delimiter) to sit under `to`, with their
+    /// messages and rule history, in one transaction.
+    pub fn rename_folder(&self, from: &str, to: &str) -> Result<(), StoreError> {
+        let prefix = self
+            .folder(from)?
+            .and_then(|folder| folder.delimiter)
+            .filter(|delimiter| !delimiter.is_empty())
+            .map(|delimiter| format!("{from}{delimiter}"));
+        let children: Vec<String> = match &prefix {
+            Some(prefix) => self
+                .folders()?
+                .into_iter()
+                .map(|folder| folder.name)
+                .filter(|name| name.starts_with(prefix.as_str()))
+                .collect(),
+            None => Vec::new(),
+        };
+        let tx = self.conn.unchecked_transaction()?;
+        tx.pragma_update(None, "defer_foreign_keys", "ON")?;
+        rename_folder_rows(&tx, from, to)?;
+        for child in children {
+            rename_folder_rows(&tx, &child, &format!("{to}{}", &child[from.len()..]))?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn folders(&self) -> Result<Vec<Folder>, StoreError> {
@@ -1535,6 +1568,45 @@ mod tests {
         Store::open_account(&paths, "work").unwrap();
         let meta = std::fs::metadata(paths.account_dir("work")).unwrap();
         assert_eq!(meta.permissions().mode() & 0o777, 0o700);
+    }
+
+    #[test]
+    fn rename_folder_keeps_messages_and_rule_history_of_children() {
+        let s = Store::open_in_memory().unwrap();
+        for name in ["Work", "Work/Clients", "Workshop"] {
+            s.upsert_folder(&Folder {
+                name: name.into(),
+                uidvalidity: 1,
+                last_uid: 1,
+                special_use: None,
+                delimiter: Some("/".into()),
+            })
+            .unwrap();
+            s.insert_message(&msg(name, 1, 10)).unwrap();
+            s.log_action(&LogEntry {
+                id: 0,
+                at: 1,
+                rule_name: "r".into(),
+                folder: name.into(),
+                uid: 1,
+                message_id: None,
+                subject: None,
+                action: "flag".into(),
+                trash_file: None,
+            })
+            .unwrap();
+        }
+        s.rename_folder("Work", "Archive/Work").unwrap();
+        let mut names: Vec<String> = s.folders().unwrap().into_iter().map(|f| f.name).collect();
+        names.sort();
+        assert_eq!(names, ["Archive/Work", "Archive/Work/Clients", "Workshop"]);
+        for name in ["Archive/Work", "Archive/Work/Clients", "Workshop"] {
+            assert_eq!(s.messages_in_folder(name).unwrap().len(), 1, "{name}");
+        }
+        assert!(s.messages_in_folder("Work").unwrap().is_empty());
+        let mut logged: Vec<String> = s.log(10).unwrap().into_iter().map(|e| e.folder).collect();
+        logged.sort();
+        assert_eq!(logged, ["Archive/Work", "Archive/Work/Clients", "Workshop"]);
     }
 
     fn msg(folder: &str, uid: u32, internaldate: i64) -> Message {

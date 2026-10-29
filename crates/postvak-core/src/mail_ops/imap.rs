@@ -204,14 +204,6 @@ impl ImapOps {
         self.has_move
     }
 
-    #[cfg(any(test, feature = "testing"))]
-    pub fn delete_folder(&mut self, name: &str) -> MailResult<()> {
-        let name = self.wire(name);
-        self.run(self.command_timeout, async |session| {
-            session.delete(&name).await.map_err(proto)
-        })
-    }
-
     /// `name` as the server spells it. Only a listing tells which names the server keeps as they came, so a name that
     /// may be one of them lists the folders first on a connection that has not yet: commands queued while offline run
     /// before the sync lists.
@@ -1017,6 +1009,28 @@ impl MailOps for ImapOps {
         let name = self.wire(name);
         self.run(self.command_timeout, async |session| {
             session.create(&name).await.map_err(proto)
+        })
+    }
+
+    fn rename_folder(&mut self, from: &str, to: &str) -> MailResult<()> {
+        let from = self.wire(from);
+        let to = self.wire(to);
+        self.run(self.command_timeout, async |session| {
+            session.rename(&from, &to).await.map_err(proto)
+        })
+    }
+
+    fn delete_folder(&mut self, name: &str) -> MailResult<()> {
+        let name = self.wire(name);
+        self.run(self.command_timeout, async |session| {
+            session.delete(&name).await.map_err(proto)
+        })
+    }
+
+    fn unsubscribe_folder(&mut self, name: &str) -> MailResult<()> {
+        let name = self.wire(name);
+        self.run(self.command_timeout, async |session| {
+            session.unsubscribe(&name).await.map_err(proto)
         })
     }
 

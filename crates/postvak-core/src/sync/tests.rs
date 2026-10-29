@@ -2689,6 +2689,15 @@ impl MailOps for QueuesCommandsOnSelect {
     fn subscribe_folder(&mut self, name: &str) -> crate::mail_ops::MailResult<()> {
         self.inner.subscribe_folder(name)
     }
+    fn rename_folder(&mut self, from: &str, to: &str) -> crate::mail_ops::MailResult<()> {
+        self.inner.rename_folder(from, to)
+    }
+    fn delete_folder(&mut self, name: &str) -> crate::mail_ops::MailResult<()> {
+        self.inner.delete_folder(name)
+    }
+    fn unsubscribe_folder(&mut self, name: &str) -> crate::mail_ops::MailResult<()> {
+        self.inner.unsubscribe_folder(name)
+    }
     fn append(
         &mut self,
         folder: &str,
@@ -4838,6 +4847,15 @@ impl MailOps for Returning {
     }
     fn subscribe_folder(&mut self, name: &str) -> crate::mail_ops::MailResult<()> {
         self.ops.subscribe_folder(name)
+    }
+    fn rename_folder(&mut self, from: &str, to: &str) -> crate::mail_ops::MailResult<()> {
+        self.ops.rename_folder(from, to)
+    }
+    fn delete_folder(&mut self, name: &str) -> crate::mail_ops::MailResult<()> {
+        self.ops.delete_folder(name)
+    }
+    fn unsubscribe_folder(&mut self, name: &str) -> crate::mail_ops::MailResult<()> {
+        self.ops.unsubscribe_folder(name)
     }
     fn append(
         &mut self,
