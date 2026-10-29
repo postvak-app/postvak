@@ -84,9 +84,15 @@ If the issue is too big for one reviewable PR, propose splitting it into stacked
 - If something becomes unclear while building (the code contradicts the issue, a choice has visible consequences), stop and ask. Don't guess silently.
 - Commit with Conventional Commits; the squash-merge title drives release-plz's changelog and version bump, so `feat`, `fix`, `docs`, etc. must be accurate and a breaking change gets `!`.
 
-Before pushing, run every check in the Definition of done from `AGENTS.md`, including the regeneration steps that apply (look at every changed snapshot PNG yourself), and commit what they regenerate.
+### Review and simplify
 
-Re-read the full diff (`git diff origin/main...`) adversarially before pushing.
+Once it works, review the branch's whole diff against `origin/main` before pushing:
+
+1. Run the `simplify` skill: it cuts what the change doesn't need and applies the cleanups.
+2. Run the `code-review` skill at `high` with `--fix` on the branch: it finds correctness bugs and fixes them.
+3. A finding you disagree with, or one whose fix would broaden the task, goes to the user instead.
+
+Then run every check in the Definition of done from `AGENTS.md`, including the regeneration steps that apply (look at every changed snapshot PNG yourself), and commit what they regenerate.
 
 ## 5. Open the PR
 
