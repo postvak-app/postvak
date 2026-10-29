@@ -256,6 +256,7 @@ fn present_body(app: &App, window: &MailWindow) {
         attachments_pending: pane.attachments_pending,
         saved: text(pane.saved),
         unsubscribe: pane.unsubscribe,
+        unsubscribed: pane.unsubscribed,
         links: strings(shown.links.clone(), pane.links),
     };
     if info != shown {
@@ -881,6 +882,9 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     });
     window.on_unsubscribe(move || {
         act(UiAction::Unsubscribe);
+    });
+    window.on_trash_unsubscribed(move || {
+        act(UiAction::TrashUnsubscribed);
     });
     window.on_open_source(move || {
         act(UiAction::OpenSource);

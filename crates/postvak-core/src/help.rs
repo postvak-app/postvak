@@ -78,7 +78,7 @@ pub const DELETE: &str =
 /// The MCP `docs` tool's description.
 pub const DOCS: &str = "A page of Postvak's documentation, as Markdown: agent-guide (how to use these tools), rules (every rule key, with examples), search (the search syntax) or cli (the command line); without a page, the list of pages";
 pub const JUNK: &str = "Report messages as junk: tag them $Junk, which trains server spam filters, and move them to the Junk folder; --not tags them $NotJunk and moves them to INBOX";
-pub const UNSUBSCRIBE: &str = "Leave a message's mailing list: by one-click POST when the sender offers it (RFC 8058), else print the page or address from its List-Unsubscribe header to open";
+pub const UNSUBSCRIBE: &str = "Leave a message's mailing list: by one-click POST when the sender offers it (RFC 8058), else print the page or address from its List-Unsubscribe header to open. Once the sender accepted it, delete can remove the message";
 /// Which keys each row of `list` and `search` keeps.
 pub const FIELDS: &str = "Only these keys in each JSON row, such as uid, from_addr, subject, date; compact stands for account, folder, uid, date, from_addr, subject and flags, plus depth in a thread view and match in a search; account always stays";
 pub const FOLDER: &str = "Create, rename or delete a folder on the server";

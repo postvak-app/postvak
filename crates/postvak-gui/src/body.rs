@@ -50,6 +50,8 @@ pub(crate) struct Pane {
     pub saved: Option<String>,
     /// The message has a List-Unsubscribe header: the Unsubscribe button shows.
     pub unsubscribe: bool,
+    /// The sender accepted the one-click unsubscribe: a Delete button shows beside the note.
+    pub unsubscribed: bool,
     /// The links in the text that open, in order, once each.
     pub links: Vec<String>,
 }
@@ -134,6 +136,7 @@ pub(crate) fn pane(app: &App) -> Pane {
         attachments_pending: body.attachments_pending,
         saved: body.saved.as_deref().map(|s| clean(s, false)),
         unsubscribe: postvak_core::unsubscribe::method(&message.headers).is_some(),
+        unsubscribed: body.unsubscribed,
         links: body.links.clone(),
     }
 }
@@ -1234,6 +1237,31 @@ mod tests {
         let (open, _wires) = fx.window();
         open.click("Unsubscribe");
         open.tick_until(|open| !open.labels_containing("Could not unsubscribe").is_empty());
+        assert!(open.find(DELETE_UNSUBSCRIBED).is_empty());
+    }
+
+    const DELETE_UNSUBSCRIBED: &str = "Delete the unsubscribed message";
+
+    #[test]
+    fn an_accepted_unsubscribe_offers_to_delete_the_message() {
+        let fx = Fixture::new(&["work"]);
+        list_mail(
+            &fx,
+            "List-Unsubscribe: <https://list.example/u>\r\nList-Unsubscribe-Post: List-Unsubscribe=One-Click",
+        );
+        let (open, wires) = fx.window();
+        assert!(open.find(DELETE_UNSUBSCRIBED).is_empty());
+        open.click("Unsubscribe");
+        open.tick_until(|open| !open.find(DELETE_UNSUBSCRIBED).is_empty());
+        wires.sent();
+        open.click(DELETE_UNSUBSCRIBED);
+        let trash = Command::Apply {
+            folder: "INBOX".into(),
+            uids: vec![1],
+            action: Action::Trash,
+            by: "gui".into(),
+        };
+        assert_eq!(wires.sent(), [("work".to_string(), trash)]);
     }
 
     #[test]

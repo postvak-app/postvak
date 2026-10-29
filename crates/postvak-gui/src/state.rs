@@ -192,6 +192,8 @@ pub(crate) struct BodyState {
     /// Set once mark-read was sent, or the user marked read or unread by hand, so the delay does not act again.
     pub read_sent: bool,
     pub saved: Option<String>,
+    /// The sender accepted this message's one-click unsubscribe, so the note offers to delete it.
+    pub unsubscribed: bool,
     pub shown_at: f64,
     /// Set by `v`: the text view for this message even though it has HTML.
     pub show_text: bool,
@@ -228,6 +230,7 @@ impl BodyState {
             read_sent: false,
             reading: None,
             saved: None,
+            unsubscribed: false,
             show_text: false,
             original_colours: false,
             shown_at: now,
@@ -488,6 +491,8 @@ pub(crate) enum UiAction {
     SaveEmlAs,
     /// Leave the shown message's mailing list: by one click, or by opening its page or address.
     Unsubscribe,
+    /// Move the message whose one-click unsubscribe the sender accepted to Trash.
+    TrashUnsubscribed,
     /// Enter in the search field: ask the servers too, and open the first hit.
     SearchAccepted,
     /// The search field took (true) or lost (false) the keyboard.
@@ -1586,6 +1591,7 @@ impl App {
                 self.save_as(file);
             }
             UiAction::Unsubscribe => self.unsubscribe(),
+            UiAction::TrashUnsubscribed => self.trash_unsubscribed(),
             UiAction::SearchFocused(focused) => self.search_focused = focused,
             UiAction::SearchAccepted => {
                 self.search_server();
@@ -2550,20 +2556,45 @@ impl App {
         else {
             return;
         };
-        let note = match worker::poll(answer) {
+        let (note, accepted) = match worker::poll(answer) {
             None => return,
-            Some(Ok(Ok(()))) => "Unsubscribed: the sender's server accepted it.".to_string(),
-            Some(Ok(Err(e))) => format!("Could not unsubscribe: {e}"),
-            Some(Err(Stopped)) => "Could not unsubscribe: the request stopped".to_string(),
+            Some(Ok(Ok(()))) => (
+                "Unsubscribed: the sender's server accepted it.".to_string(),
+                true,
+            ),
+            Some(Ok(Err(e))) => (format!("Could not unsubscribe: {e}"), false),
+            Some(Err(Stopped)) => (
+                "Could not unsubscribe: the request stopped".to_string(),
+                false,
+            ),
         };
         if let Some(body) = &mut self.body
             && body.account == *account
             && body.key == *key
         {
             body.saved = Some(note.clone());
+            body.unsubscribed = accepted;
         }
         self.push_history(note);
         self.unsubscribing = None;
+    }
+
+    /// Only the shown message, where Delete would take its whole thread.
+    fn trash_unsubscribed(&mut self) {
+        let Some(body) = &self.body else { return };
+        if !body.unsubscribed {
+            return;
+        }
+        let (account, (folder, uid)) = (body.account, body.key.clone());
+        self.pending_arm = true;
+        self.send_apply(
+            account,
+            folder,
+            vec![uid],
+            Action::Trash,
+            Optimistic::Hidden,
+        );
+        self.rebuild_rows();
     }
 
     fn open_source(&mut self) {
