@@ -328,6 +328,16 @@ fn clean_pass_forgets_a_virtual_folder_synced_before_it_was_skipped() {
 }
 
 #[test]
+fn an_all_folder_named_archive_is_the_archive_when_none_is_marked() {
+    // Soverin lists its archive as `(\All) "/" Archive`.
+    let mut ops = ops_with_inbox().with_folder("Archive", Some("All"));
+    let store = Store::open_in_memory().unwrap();
+    sync_all(&mut ops, &store).unwrap();
+    let archive = store.folder("Archive").unwrap().unwrap();
+    assert_eq!(archive.special_use.as_deref(), Some("Archive"));
+}
+
+#[test]
 fn stopped_pass_keeps_folders_it_did_not_list() {
     let mut ops = ops_with_inbox().with_folder("Old", None);
     let store = Store::open_in_memory().unwrap();

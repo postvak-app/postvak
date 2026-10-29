@@ -648,6 +648,7 @@ pub fn sync_all_with(
         folders.into_iter().partition(|f| f.noselect);
     let names: Vec<&str> = noselect.iter().map(|f| f.name.as_str()).collect();
     store.set_noselect_folders(&names)?;
+    special_use_by_name(&mut folders);
     // Gmail's All Mail, Starred and Important hold copies of messages in other folders; syncing them doubles the traffic.
     folders.retain(|f| {
         !matches!(
@@ -655,7 +656,6 @@ pub fn sync_all_with(
             Some("All" | "Flagged" | "Important")
         )
     });
-    special_use_by_name(&mut folders);
     // New mail shows up before the rest of a first sync, which can take minutes.
     folders.sort_by_key(|f| !f.name.eq_ignore_ascii_case("INBOX"));
     let of = folders.len();
@@ -753,7 +753,8 @@ fn forget_unlisted_folders(store: &Store, synced: &[RemoteFolder]) -> Result<(),
     Ok(())
 }
 
-/// Spec section 6: a role no folder is marked with goes to the folder carrying that name, ignoring case.
+/// Spec section 6: a role no folder is marked with goes to the folder carrying that name, ignoring case. Soverin marks its
+/// `Archive` folder `\\All`, so the Archive role may take a `\\All` folder by name.
 fn special_use_by_name(folders: &mut [RemoteFolder]) {
     for role in ["Archive", "Drafts", "Junk", "Sent", "Trash"] {
         if folders
@@ -762,10 +763,11 @@ fn special_use_by_name(folders: &mut [RemoteFolder]) {
         {
             continue;
         }
-        if let Some(folder) = folders
-            .iter_mut()
-            .find(|f| f.special_use.is_none() && f.name.eq_ignore_ascii_case(role))
-        {
+        if let Some(folder) = folders.iter_mut().find(|f| {
+            let unmarked = f.special_use.is_none()
+                || (role == "Archive" && f.special_use.as_deref() == Some("All"));
+            unmarked && f.name.eq_ignore_ascii_case(role)
+        }) {
             folder.special_use = Some(role.to_string());
         }
     }
