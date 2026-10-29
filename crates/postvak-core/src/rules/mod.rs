@@ -375,6 +375,13 @@ impl Action {
     }
 }
 
+/// Whether `name` is who took a direct action rather than a rule: direct actions are logged under `cli`, `gui` or `mcp`,
+/// alone or followed by `:` and who asked.
+pub fn is_actor(name: &str) -> bool {
+    let who = name.split_once(':').map_or(name, |(who, _)| who);
+    matches!(who, "cli" | "gui" | "mcp")
+}
+
 fn default_true() -> bool {
     true
 }
@@ -902,6 +909,16 @@ pub(crate) fn check_keyword(keyword: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn actor_names_are_the_names_direct_actions_log_under() {
+        for name in ["cli", "cli:me", "gui", "mcp", "mcp:claude-desktop"] {
+            assert!(is_actor(name), "{name}");
+        }
+        for name in ["travel", "client", "guide", "mcpx"] {
+            assert!(!is_actor(name), "{name}");
+        }
+    }
 
     #[test]
     fn schema_file_is_current() {
