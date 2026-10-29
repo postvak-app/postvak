@@ -51,6 +51,8 @@ export struct BodyInfo {
     attachments-pending: bool,
     saved: string,
     unsubscribe: bool,
+    // The sender accepted the one-click unsubscribe: Delete shows beside the note.
+    unsubscribed: bool,
     links: [string],
 }
 
@@ -383,6 +385,7 @@ export component BodyPane inherits Rectangle {
     callback save-eml();
     callback open-source();
     callback unsubscribe();
+    callback trash-unsubscribed();
     callback save-attachment(int);
     callback save-attachment-as(int);
     callback open-link(string);
@@ -639,10 +642,27 @@ export component BodyPane inherits Rectangle {
                 }
                 Rectangle { horizontal-stretch: 1; }
             }
-            if root.info.saved != "": Text {
+            if root.info.saved != "" && !root.info.unsubscribed: Text {
                 text: root.info.saved;
                 color: Theme.pane.text;
                 wrap: word-wrap;
+            }
+            if root.info.saved != "" && root.info.unsubscribed: HorizontalLayout {
+                spacing: Theme.pad;
+                Text {
+                    text: root.info.saved;
+                    color: Theme.pane.text;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                }
+                TextButton {
+                    text: "Delete";
+                    framed: true;
+                    palette: Theme.pane;
+                    accessible-label: "Delete the unsubscribed message";
+                    clicked => { root.trash-unsubscribed(); }
+                }
+                Rectangle { horizontal-stretch: 1; }
             }
 
             // More room under the headers' hairline than between them.

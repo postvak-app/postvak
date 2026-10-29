@@ -196,6 +196,7 @@ export component MailWindow inherits Window {
     callback toggle-original-colours();
     callback save-eml();
     callback unsubscribe();
+    callback trash-unsubscribed();
     callback open-source();
     callback save-attachment(int);
     callback save-attachment-as(int);
@@ -563,6 +564,7 @@ export component MailWindow inherits Window {
                         toggle-original-colours => { root.toggle-original-colours(); }
                         save-eml => { root.save-eml(); }
                         unsubscribe => { root.unsubscribe(); }
+                        trash-unsubscribed => { root.trash-unsubscribed(); }
                         open-source => { root.open-source(); }
                         save-attachment(i) => { root.save-attachment(i); }
                         save-attachment-as(i) => { root.save-attachment-as(i); }

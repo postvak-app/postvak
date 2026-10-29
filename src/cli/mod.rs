@@ -1054,7 +1054,8 @@ fn cmd_act(config: &Config, paths: &Paths, selection: Selection, action: Action)
 fn unsubscribe_line(report: &postvak_core::unsubscribe::Report) -> String {
     let url = clean(&report.url, false);
     match (report.method, report.done) {
-        (_, true) => "unsubscribed: the sender's server accepted it".to_string(),
+        (_, true) => "unsubscribed: the sender's server accepted it; `postvak delete` with the same uid, --folder and --account moves the message to Trash"
+            .to_string(),
         ("one_click", false) => format!("would unsubscribe by one-click POST to {url}"),
         ("mail", false) => format!("send a mail to unsubscribe: {url}"),
         _ => format!("open this page to unsubscribe: {url}"),
@@ -2060,7 +2061,7 @@ mod tests {
         };
         assert_eq!(
             line("one_click", true),
-            "unsubscribed: the sender's server accepted it"
+            "unsubscribed: the sender's server accepted it; `postvak delete` with the same uid, --folder and --account moves the message to Trash"
         );
         assert_eq!(
             line("one_click", false),

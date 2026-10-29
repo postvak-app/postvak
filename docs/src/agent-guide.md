@@ -79,7 +79,7 @@ postvak junk 41 --dry-run
 postvak unsubscribe 41 --dry-run
 ```
 
-`--dry-run` reads only the local store, so run `postvak sync` first for an up-to-date preview. It does not detect a missing Archive folder or a changed folder. Run the command again without `--dry-run` only after the human agreed. `delete` moves mail to the server's Trash folder. Inside Trash, or when there is no Trash folder, it deletes the mail and keeps a local `.eml` copy for the account's `trash_retention_days` (30 by default). `junk` tags the mail `$Junk` and moves it to the Junk folder; `junk --not` undoes that. `unsubscribe` contacts the sender, who then knows the address is read, so it needs the human's explicit yes. Every action except `unsubscribe` is recorded in `postvak log` under the rule name `cli`.
+`--dry-run` reads only the local store, so run `postvak sync` first for an up-to-date preview. It does not detect a missing Archive folder or a changed folder. Run the command again without `--dry-run` only after the human agreed. `delete` moves mail to the server's Trash folder. Inside Trash, or when there is no Trash folder, it deletes the mail and keeps a local `.eml` copy for the account's `trash_retention_days` (30 by default). `junk` tags the mail `$Junk` and moves it to the Junk folder; `junk --not` undoes that. `unsubscribe` contacts the sender, who then knows the address is read, so it needs the human's explicit yes. Once it reports the sender accepted it, offer to `delete` the message. Every action except `unsubscribe` is recorded in `postvak log` under the rule name `cli`.
 
 ## Over MCP
 
