@@ -38,8 +38,9 @@ fn migration_list() -> Vec<M<'static>> {
         ),
         M::up(include_str!("../migrations/018-folder-list/up.sql")),
         M::up(include_str!("../migrations/019-noselect-folders/up.sql")),
+        M::up(include_str!("../migrations/020-folder-backfill/up.sql")),
         M::up(include_str!(
-            "../migrations/020-thread-by-in-reply-to/up.sql"
+            "../migrations/021-thread-by-in-reply-to/up.sql"
         )),
     ]
 }
@@ -650,6 +651,15 @@ impl Store {
         self.set_folder_uid(folder, "uid_next", uid_next)
     }
 
+    /// Uids below this one in `folder` are history its first sync has not fetched yet; 0 when there is none.
+    pub fn backfill_uid(&self, folder: &str) -> Result<u32, StoreError> {
+        self.folder_uid(folder, "backfill_uid")
+    }
+
+    pub fn set_backfill_uid(&self, folder: &str, uid: u32) -> Result<(), StoreError> {
+        self.set_folder_uid(folder, "backfill_uid", uid)
+    }
+
     /// The highest uid the rules have evaluated in `folder`; above it mail is fresh. 0 when unknown.
     pub fn rules_uid(&self, folder: &str) -> Result<u32, StoreError> {
         self.folder_uid(folder, "rules_uid")
@@ -725,7 +735,7 @@ impl Store {
         self.conn
             .execute("DELETE FROM messages WHERE folder = ?1", params![name])?;
         self.conn.execute(
-            "UPDATE folders SET uidvalidity = ?2, last_uid = 0, uid_next = 0 WHERE name = ?1",
+            "UPDATE folders SET uidvalidity = ?2, last_uid = 0, uid_next = 0, backfill_uid = 0 WHERE name = ?1",
             params![name, uidvalidity],
         )?;
         Ok(())
@@ -773,6 +783,24 @@ impl Store {
             .prepare_cached("SELECT thread_id FROM messages WHERE message_id = ?1 LIMIT 1")?
             .query_row(params![message_id], |r| r.get(0))
             .optional()?)
+    }
+
+    /// Moves the stored replies without References under this message, and theirs in turn, to its thread: a backfill
+    /// fetches newest first, so a reply can be stored before its parent.
+    pub fn adopt_replies(&self, message_id: &str, thread_id: &str) -> Result<(), StoreError> {
+        self.conn
+            .prepare_cached(
+                "WITH RECURSIVE parents(id) AS (
+                   SELECT ?1
+                   UNION
+                   SELECT m.message_id FROM messages AS m JOIN parents ON m.in_reply_to = parents.id
+                    WHERE m.refs IS NULL AND m.message_id IS NOT NULL
+                 )
+                 UPDATE messages SET thread_id = ?2
+                  WHERE refs IS NULL AND in_reply_to IN parents AND thread_id IS NOT ?2",
+            )?
+            .execute(params![message_id, thread_id])?;
+        Ok(())
     }
 
     pub fn update_flags(&self, folder: &str, uid: u32, flags: &str) -> Result<(), StoreError> {
@@ -1859,12 +1887,12 @@ mod tests {
     }
 
     #[test]
-    fn migration_020_rethreads_stored_replies_without_references() {
+    fn migration_021_rethreads_stored_replies_without_references() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mail.db");
         {
             let mut conn = Connection::open(&path).unwrap();
-            Store::migrations().to_version(&mut conn, 19).unwrap();
+            Store::migrations().to_version(&mut conn, 20).unwrap();
             conn.execute_batch(
                 "INSERT INTO folders (name, uidvalidity) VALUES ('INBOX', 1);
                  INSERT INTO messages (folder, uid, message_id, in_reply_to, refs, thread_id, internaldate, flags, headers) VALUES
@@ -2532,17 +2560,33 @@ mod tests {
     }
 
     #[test]
-    fn thread_of_reads_the_message_id_index() {
+    fn threading_a_reply_reads_the_message_id_and_reply_indexes() {
         let s = store_with_inbox();
-        let plan: String = s
-            .conn
-            .query_row(
-                "EXPLAIN QUERY PLAN SELECT thread_id FROM messages WHERE message_id = 'm@x' LIMIT 1",
-                [],
-                |r| r.get(3),
-            )
-            .unwrap();
-        assert!(plan.contains("messages_message_id"), "{plan}");
+        let plan = |sql: &str| -> String {
+            let mut stmt = s
+                .conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap();
+            let rows = stmt.query_map([], |r| r.get::<_, String>(3)).unwrap();
+            rows.collect::<Result<Vec<_>, _>>().unwrap().join("\n")
+        };
+        let lookup = plan("SELECT thread_id FROM messages WHERE message_id = 'm@x' LIMIT 1");
+        assert!(lookup.contains("messages_message_id"), "{lookup}");
+        let adopt = plan(
+            "WITH RECURSIVE parents(id) AS (
+               SELECT 'm@x'
+               UNION
+               SELECT m.message_id FROM messages AS m JOIN parents ON m.in_reply_to = parents.id
+                WHERE m.refs IS NULL AND m.message_id IS NOT NULL
+             )
+             UPDATE messages SET thread_id = 't' WHERE refs IS NULL AND in_reply_to IN parents AND thread_id IS NOT 't'",
+        );
+        // The update and each recursive step: no pass over the whole table.
+        assert_eq!(
+            adopt.matches("USING INDEX messages_reply_to").count(),
+            2,
+            "{adopt}"
+        );
     }
 
     #[test]

@@ -1,6 +1,7 @@
 -- A reply without References joins the thread of the stored message its In-Reply-To names, which `Store::thread_of`
--- looks up by Message-ID.
+-- looks up by Message-ID; a parent stored after its replies takes them along (`Store::adopt_replies`).
 CREATE INDEX messages_message_id ON messages (message_id);
+CREATE INDEX messages_reply_to ON messages (in_reply_to) WHERE refs IS NULL;
 
 -- Re-threads such replies already stored, one level: a parent that is itself such a reply gives its stored thread.
 UPDATE messages SET thread_id = (

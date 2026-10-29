@@ -86,7 +86,7 @@ pub fn save_file(
             ("current_name", Value::from(name.to_string())),
         ]);
         if let Some(folder) = folder {
-            options.insert("current_folder", Value::from(folder_bytes(folder)));
+            options.insert("current_folder", Value::from(path_bytes(folder)));
         }
         ("", title.to_string(), options)
     })?;
@@ -101,10 +101,56 @@ pub fn save_file(
     file_path(&uri).map(Some)
 }
 
-/// A folder as the portal takes it: its bytes with a closing NUL.
-fn folder_bytes(folder: &std::path::Path) -> Vec<u8> {
+/// Runs `exe` with `args` in a new sandbox of this Flatpak app (`org.freedesktop.portal.Flatpak.Spawn`), with
+/// `envs` added and stdout and stderr to `output`. Returns once it started: the new sandbox is not this process's
+/// child and lives on after this one ends.
+pub fn spawn_sandboxed(
+    exe: &std::path::Path,
+    args: &[&str],
+    envs: HashMap<String, String>,
+    output: &std::fs::File,
+) -> Result<()> {
+    use std::os::fd::AsFd;
+    use zbus::zvariant::Fd;
+
+    let null = std::fs::File::open("/dev/null").context("opening /dev/null")?;
+    let fds: HashMap<u32, Fd> = HashMap::from([
+        (0, Fd::from(null.as_fd())),
+        (1, Fd::from(output.as_fd())),
+        (2, Fd::from(output.as_fd())),
+    ]);
+    let options: HashMap<&str, Value> = HashMap::new();
+    let flags = 0u32;
+    let bus = Connection::session().context("no session bus for the Flatpak portal")?;
+    bus.call_method(
+        Some("org.freedesktop.portal.Flatpak"),
+        "/org/freedesktop/portal/Flatpak",
+        Some("org.freedesktop.portal.Flatpak"),
+        "Spawn",
+        &(
+            path_bytes(std::path::Path::new("/")),
+            spawn_argv(exe, args),
+            fds,
+            envs,
+            flags,
+            options,
+        ),
+    )
+    .with_context(|| format!("starting {} in its own sandbox", exe.display()))?;
+    Ok(())
+}
+
+/// `exe` and `args` as `Spawn` takes them: each with a closing NUL.
+fn spawn_argv(exe: &std::path::Path, args: &[&str]) -> Vec<Vec<u8>> {
+    std::iter::once(path_bytes(exe))
+        .chain(args.iter().map(|arg| path_bytes(std::path::Path::new(arg))))
+        .collect()
+}
+
+/// A path as the portals take it: its bytes with a closing NUL.
+fn path_bytes(path: &std::path::Path) -> Vec<u8> {
     use std::os::unix::ffi::OsStrExt;
-    let mut bytes = folder.as_os_str().as_bytes().to_vec();
+    let mut bytes = path.as_os_str().as_bytes().to_vec();
     bytes.push(0);
     bytes
 }
@@ -147,10 +193,23 @@ mod tests {
     }
 
     #[test]
-    fn the_folder_goes_to_the_portal_with_a_closing_nul() {
+    fn a_path_goes_to_the_portal_with_a_closing_nul() {
+        assert_eq!(path_bytes(std::path::Path::new("/home/me")), b"/home/me\0");
+    }
+
+    #[test]
+    fn the_sandbox_runs_the_binary_with_its_arguments() {
         assert_eq!(
-            folder_bytes(std::path::Path::new("/home/me")),
-            b"/home/me\0"
+            spawn_argv(
+                std::path::Path::new("/app/bin/postvak"),
+                &["run", "--idle-exit", "60"]
+            ),
+            [
+                &b"/app/bin/postvak\0"[..],
+                b"run\0",
+                b"--idle-exit\0",
+                b"60\0"
+            ]
         );
     }
 }

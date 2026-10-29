@@ -930,6 +930,7 @@ fn idle_shared() -> super::Shared {
         login: super::test_support::refuse_wrong(),
         signalled: Default::default(),
         watch: std::sync::Mutex::new(super::Watch::new(&Paths::under(Path::new("/nonexistent")))),
+        notifier: None,
     }
 }
 
@@ -1299,6 +1300,7 @@ fn a_command_for_an_account_between_threads_says_it_is_restarting() {
         login: super::test_support::refuse_wrong(),
         signalled: Default::default(),
         watch: std::sync::Mutex::new(super::Watch::new(&paths)),
+        notifier: None,
     };
     // Bound after the engine, so the gate opens before the engine's drop waits for its threads.
     let gate = gate;
@@ -1352,4 +1354,30 @@ fn the_watch_warns_once_about_a_conflicting_copy_that_appears_beside_the_rules()
     assert!(config.is_none() && !rules);
     assert_eq!(watch.warned.len(), 2);
     assert!(watch.warned[0].starts_with("rules.sync-conflict-"));
+}
+
+#[test]
+fn only_proposals_that_start_waiting_after_the_first_load_notify() {
+    let rules = |file: &str| {
+        toml::from_str::<crate::rules::RuleFile>(file)
+            .unwrap()
+            .rules
+    };
+    let proposal = |name: &str| {
+        format!(
+            "[[rules]]\nname = \"{name}\"\nenabled = false\nproposed_by = \"mcp:host\"\nmatch.read = true\nactions = {{ flagged = true }}\n"
+        )
+    };
+    let enabled = "[[rules]]\nname = \"on\"\nmatch.read = true\nactions = { flagged = true }\n";
+    let mut waiting = None;
+
+    let first = rules(&(proposal("old") + enabled));
+    assert!(super::new_proposals(&mut waiting, &first).is_empty());
+    let added = rules(&(proposal("old") + &proposal("new") + &proposal("b") + enabled));
+    assert_eq!(super::new_proposals(&mut waiting, &added), ["b", "new"]);
+    assert!(super::new_proposals(&mut waiting, &added).is_empty());
+    // Approved, then proposed again under the same name.
+    let approved = rules(&(proposal("old") + enabled));
+    assert!(super::new_proposals(&mut waiting, &approved).is_empty());
+    assert_eq!(super::new_proposals(&mut waiting, &added), ["b", "new"]);
 }

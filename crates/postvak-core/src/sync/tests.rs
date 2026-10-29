@@ -162,6 +162,25 @@ fn a_reply_with_only_in_reply_to_joins_its_parents_thread() {
 }
 
 #[test]
+fn replies_fetched_before_their_parent_join_its_thread_once_it_arrives() {
+    CHUNK_OVERRIDE.set(Some(1));
+    let mut ops = RecordingOps::default().with_folder("INBOX", None);
+    let root = headers("alice@x", "plan", "root@x");
+    let middle = "From: bob@x\r\nSubject: Re: plan\r\nMessage-ID: <mid@x>\r\nIn-Reply-To: <root@x>\r\nReferences: <root@x>\r\n\r\n";
+    let reply = "From: carol@x\r\nSubject: Re: plan\r\nMessage-ID: <reply@x>\r\nIn-Reply-To: <mid@x>\r\n\r\n";
+    let answer = "From: dave@x\r\nSubject: Re: plan\r\nMessage-ID: <answer@x>\r\nIn-Reply-To: <reply@x>\r\n\r\n";
+    ops.add_mail("INBOX", 1, 10 * H, &root, None);
+    ops.add_mail("INBOX", 2, 11 * H, middle, None);
+    ops.add_mail("INBOX", 3, 12 * H, reply, None);
+    ops.add_mail("INBOX", 4, 13 * H, answer, None);
+    let store = Store::open_in_memory().unwrap();
+    sync_all(&mut ops, &store).unwrap();
+    CHUNK_OVERRIDE.set(None);
+    let thread = |uid| store.message("INBOX", uid).unwrap().unwrap().thread_id;
+    assert_eq!((thread(3), thread(4)), ("root@x".into(), "root@x".into()));
+}
+
+#[test]
 fn first_sync_does_not_notify() {
     let mut ops = ops_with_inbox();
     let dir = tempfile::tempdir().unwrap();
@@ -342,6 +361,16 @@ fn clean_pass_forgets_a_virtual_folder_synced_before_it_was_skipped() {
         .unwrap();
     sync_all(&mut ops, &store).unwrap();
     assert_eq!(store.folder("[Gmail]/All Mail").unwrap(), None);
+}
+
+#[test]
+fn an_all_folder_named_archive_is_the_archive_when_none_is_marked() {
+    // Soverin lists its archive as `(\All) "/" Archive`.
+    let mut ops = ops_with_inbox().with_folder("Archive", Some("All"));
+    let store = Store::open_in_memory().unwrap();
+    sync_all(&mut ops, &store).unwrap();
+    let archive = store.folder("Archive").unwrap().unwrap();
+    assert_eq!(archive.special_use.as_deref(), Some("Archive"));
 }
 
 #[test]
@@ -1590,7 +1619,8 @@ fn interrupted_first_sync_stays_initial_on_retry() {
         noselect: false,
     };
     assert!(sync_folder(&mut ops, &store, &inbox).is_err());
-    assert_eq!(store.folder("INBOX").unwrap().unwrap().last_uid, 0);
+    assert_eq!(store.folder("INBOX").unwrap().unwrap().last_uid, 3);
+    assert_eq!(store.backfill_uid("INBOX").unwrap(), 4);
     assert_eq!(store.message_count("INBOX").unwrap(), 0);
     ops.fail_fetch_after = None;
     sync_folder(&mut ops, &store, &inbox).unwrap();
@@ -1637,7 +1667,7 @@ fn inbox() -> RemoteFolder {
 }
 
 #[test]
-fn sparse_uids_are_fetched_in_chunks_of_500_messages() {
+fn a_first_sync_fetches_the_newest_chunk_first_and_fills_in_history_downward() {
     let mut ops = RecordingOps::default().with_folder("INBOX", None);
     for i in 1..=1200u32 {
         ops.add_mail(
@@ -1659,12 +1689,13 @@ fn sparse_uids_are_fetched_in_chunks_of_500_messages() {
     assert_eq!(
         fetches,
         [
-            "fetch_envelopes INBOX 1000 500000",
-            "fetch_envelopes INBOX 501000 1000000",
-            "fetch_envelopes INBOX 1001000 1200000",
+            "fetch_envelopes INBOX 701000 1200000",
+            "fetch_envelopes INBOX 201000 700000",
+            "fetch_envelopes INBOX 1000 200000",
         ]
     );
     assert_eq!(store.folder("INBOX").unwrap().unwrap().last_uid, 1_200_000);
+    assert_eq!(store.backfill_uid("INBOX").unwrap(), 0);
 }
 
 #[test]
@@ -1682,14 +1713,31 @@ fn interrupted_chunked_first_sync_resumes_and_stays_silent() {
     let store = Store::open_in_memory().unwrap();
     ops.fail_fetch_after = Some(1);
     assert!(sync_folder(&mut ops, &store, &inbox()).is_err());
-    assert_eq!(store.folder("INBOX").unwrap().unwrap().last_uid, 500);
+    assert_eq!(store.folder("INBOX").unwrap().unwrap().last_uid, 1200);
     assert_eq!(store.message_count("INBOX").unwrap(), 500);
+    assert_eq!(
+        store.backfill_uid("INBOX").unwrap(),
+        701,
+        "the newest 500 came first"
+    );
     assert_eq!(store.initial_uid_next("INBOX").unwrap(), 1201);
+    assert_eq!(
+        store.uid_next("INBOX").unwrap(),
+        0,
+        "a folder still filling in never looks unchanged"
+    );
 
     ops.fail_fetch_after = None;
     ops.add_mail("INBOX", 1201, 11 * H, &headers("b@x", "new", "n@x"), None);
+    ops.mail.get_mut("INBOX").unwrap().retain(|e| e.uid != 1000);
     let new = sync_folder(&mut ops, &store, &inbox()).unwrap();
     assert_eq!(new, 701);
+    assert_eq!(
+        store.message_count("INBOX").unwrap(),
+        1200,
+        "uid 1000 went while history filled in"
+    );
+    assert_eq!(store.backfill_uid("INBOX").unwrap(), 0);
     assert_eq!(notify_uids(&mut ops, &store), [1201]);
 }
 
