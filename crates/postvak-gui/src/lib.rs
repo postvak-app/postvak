@@ -19,6 +19,7 @@ mod load;
 mod logos;
 mod menu;
 mod numbers;
+mod opener;
 mod persist;
 mod phases;
 mod reader;
@@ -194,6 +195,7 @@ impl Start<'_> {
         phases::mark("daemon_connected");
         let window = ui::MailWindow::new().context("could not open the window")?;
         launch::watch(window.window(), marker.cloned());
+        opener::attach(&window);
         let _scheme = follow_desktop_scheme(&window)?;
         let layout = persist::path(&paths);
         if !safe_mode {
@@ -536,7 +538,7 @@ fn explain(
         problem = problem.with_crashes(&dir);
     }
     let open_docs = |url: &str| {
-        if let Err(e) = state::launch(url.as_ref(), false) {
+        if let Err(e) = opener::open(url.as_ref(), false) {
             log::warn!("could not open the docs: {e}");
         }
     };
@@ -550,6 +552,7 @@ fn explain(
         state::test_login,
     )?;
     launch::watch(window.window(), marker.cloned());
+    opener::attach(&window);
     window.run()?;
     Ok(form.is_some_and(|paths| saved(&paths, &pending)))
 }
