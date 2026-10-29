@@ -6,6 +6,7 @@ use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
 
 use crate::config::Config;
 use crate::folder_name;
+use crate::message::clean;
 use crate::paths::{Paths, edit_toml};
 use crate::rules::{Action, Rule, RuleFile, RulesError, compile, invalid, parse};
 use crate::store::Store;
@@ -560,6 +561,35 @@ pub fn follow_rename(path: &Path, rename: &FolderRename) -> Result<Vec<String>, 
         Ok(())
     })?;
     Ok(touched)
+}
+
+/// [`follow_rename`] with the rules it follows, as [`rules_naming`] reads them first, so a failed rewrite can name the
+/// rules that still name `from` (`help::folder_rules_not_updated`). A file in which no rule names the folder is not
+/// written.
+pub fn rules_after_rename(
+    path: &Path,
+    rename: &FolderRename,
+) -> Result<Vec<(String, bool)>, String> {
+    let naming = crate::rules::load(path)
+        .map(|file| rules_naming(&file, rename))
+        .map_err(|e| e.to_string());
+    if naming.as_ref().is_ok_and(Vec::is_empty) {
+        return Ok(Vec::new());
+    }
+    match follow_rename(path, rename) {
+        Ok(_) => Ok(naming.unwrap_or_default()),
+        Err(e) => {
+            let names = naming.map(|pairs| {
+                let names = pairs.into_iter().map(|(name, _)| clean(&name, false));
+                names.collect::<Vec<_>>()
+            });
+            Err(crate::help::folder_rules_not_updated(
+                &clean(rename.from, false),
+                &e.to_string(),
+                names.as_deref().map_err(String::as_str),
+            ))
+        }
+    }
 }
 
 /// Drops the file positions of `table` and its subtables, so a copy of a header-style rule prints where it is put.
@@ -1571,6 +1601,45 @@ mod tests {
             ]
         );
         assert_eq!(text.matches("[rules.match]").count(), 4, "{text}");
+    }
+
+    #[test]
+    fn rules_after_rename_names_the_rules_left_behind_when_the_rewrite_fails() {
+        let (_dir, path) = rules_file(WORK);
+        let accounts = ["a".to_string()];
+        let rename = FolderRename {
+            account: "a",
+            accounts: &accounts,
+            from: "Work",
+            to: "Jo*b",
+            delimiter: Some("/"),
+        };
+        let error = rules_after_rename(&path, &rename).unwrap_err();
+        assert!(error.ends_with("these rules still name Work: r"), "{error}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), WORK);
+        let rename = FolderRename {
+            to: "Job",
+            ..rename
+        };
+        assert_eq!(
+            rules_after_rename(&path, &rename),
+            Ok(vec![("r".to_string(), false)])
+        );
+    }
+
+    #[test]
+    fn rules_after_rename_makes_no_file_when_no_rule_names_the_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rules.toml");
+        let rename = FolderRename {
+            account: "a",
+            accounts: &["a".to_string()],
+            from: "Work",
+            to: "Job",
+            delimiter: None,
+        };
+        assert_eq!(rules_after_rename(&path, &rename), Ok(Vec::new()));
+        assert!(!path.exists());
     }
 
     #[test]

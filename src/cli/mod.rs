@@ -18,7 +18,7 @@ use postvak_core::message::clean;
 use postvak_core::output::{Fields, RowKind};
 use postvak_core::page;
 use postvak_core::paths::Paths;
-use postvak_core::rules::edit::{FolderRename, Place, follow_rename, rules_naming};
+use postvak_core::rules::edit::{FolderRename, Place, rules_after_rename};
 use postvak_core::rules::{Action, CompiledRule, Rule, RuleFile};
 use postvak_core::store::{Filter, Message, Store};
 use postvak_core::sync::{self, Event};
@@ -1092,29 +1092,9 @@ fn cmd_folder(command: FolderCommand, config: &Config, paths: &Paths) -> Result<
                 to: &renamed,
                 delimiter: delimiter.as_deref(),
             };
-            let path = paths.rules_file();
-            let loaded = postvak_core::rules::load(&path);
-            let naming = loaded
-                .as_ref()
-                .map(|file| rules_naming(file, &rename))
-                .map_err(ToString::to_string);
-            if let Err(e) = follow_rename(&path, &rename) {
-                let names = naming.as_ref().map(|pairs| {
-                    pairs
-                        .iter()
-                        .map(|(name, _)| clean(name, false).to_string())
-                        .collect::<Vec<_>>()
-                });
-                bail!(
-                    "{}",
-                    postvak_core::help::folder_rules_not_updated(
-                        &clean(&from, false),
-                        &e.to_string(),
-                        names.as_deref().map_err(|e| e.as_str()),
-                    )
-                );
-            }
-            for (name, split) in naming.unwrap_or_default() {
+            let naming =
+                rules_after_rename(&paths.rules_file(), &rename).map_err(anyhow::Error::msg)?;
+            for (name, split) in naming {
                 let name = clean(&name, false);
                 println!(
                     "{}",

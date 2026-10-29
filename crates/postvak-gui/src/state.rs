@@ -3229,11 +3229,10 @@ impl App {
     pub(crate) fn folder_target(&self, dialog: &FolderDialog) -> Option<String> {
         let parent = match &dialog.kind {
             FolderKind::New { parent } => parent.clone(),
-            FolderKind::Rename { from, .. } => {
-                let delimiter = self.delimiter(dialog.account, from)?;
-                from.rsplit_once(delimiter.as_str())
+            FolderKind::Rename { from, .. } => self.delimiter(dialog.account, from).and_then(|d| {
+                from.rsplit_once(d.as_str())
                     .map(|(parent, _)| parent.to_string())
-            }
+            }),
             FolderKind::Delete { .. } => return None,
         };
         let prefix =
@@ -3381,28 +3380,10 @@ impl App {
             to,
             delimiter,
         };
-        let path = self.paths.rules_file();
-        let naming = rule_file::load(&path)
-            .map(|file| rule_file::edit::rules_naming(&file, &rename))
-            .map_err(|e| e.to_string());
-        // Nothing to follow: rules.toml is left as it is, or not made.
-        if naming.as_ref().is_ok_and(Vec::is_empty) {
-            return;
-        }
-        match rule_file::edit::follow_rename(&path, &rename) {
+        match rule_file::edit::rules_after_rename(&self.paths.rules_file(), &rename) {
+            Ok(naming) if naming.is_empty() => {}
             Ok(_) => self.rules_changed(),
-            Err(e) => {
-                let names = naming.map(|pairs| {
-                    let names = pairs.into_iter().map(|(name, _)| clean(&name, false));
-                    names.collect::<Vec<_>>()
-                });
-                let message = help::folder_rules_not_updated(
-                    &clean(from, false),
-                    &e.to_string(),
-                    names.as_deref().map_err(String::as_str),
-                );
-                self.note_error(Some(index), message);
-            }
+            Err(message) => self.note_error(Some(index), message),
         }
     }
 
@@ -5232,6 +5213,21 @@ mod tests {
         let file = std::fs::read_to_string(fx.paths.rules_file()).unwrap();
         assert!(file.contains("folder = \"Projects/Site/Old\""), "{file}");
         assert!(file.contains("name = \"sites (work)\""), "{file}");
+    }
+
+    #[test]
+    fn rename_on_an_account_without_a_delimiter_sends_the_name() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Old", None);
+        let (mut driver, wires) = fx.driver();
+        driver.apply(UiAction::RenameFolder(0, "Old".into()));
+        driver.apply(UiAction::FolderName("New".into()));
+        driver.press("enter");
+        let rename = Command::RenameFolder {
+            from: "Old".into(),
+            to: "New".into(),
+        };
+        assert_eq!(wires.sent(), [("work".to_string(), rename)]);
     }
 
     #[test]
