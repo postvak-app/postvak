@@ -581,10 +581,10 @@ fn present_sheet(app: &App, window: &MailWindow) {
             sync(window.get_rules_offers(), offers, |m| {
                 window.set_rules_offers(m)
             });
-            let proposals: Vec<ProposalData> = app
-                .rules
-                .proposals
-                .iter()
+            let filter = app.rules_filter.as_str();
+            let proposals: Vec<ProposalData> = rules::shown_proposals(&app.rules.proposals, filter)
+                .into_iter()
+                .map(|i| &app.rules.proposals[i])
                 .map(|p| ProposalData {
                     label: p.label.as_str().into(),
                     by: p.by.as_str().into(),
@@ -598,7 +598,7 @@ fn present_sheet(app: &App, window: &MailWindow) {
                         .map_or_else(SharedString::new, Into::into),
                 })
                 .collect();
-            let lines: Vec<RuleData> = rules::rule_order(&app.rules.lines, app.sheet_sort)
+            let lines: Vec<RuleData> = rules::shown_rules(&app.rules.lines, app.sheet_sort, filter)
                 .into_iter()
                 .map(|i| (i, &app.rules.lines[i]))
                 .map(|(i, r)| RuleData {
@@ -616,7 +616,10 @@ fn present_sheet(app: &App, window: &MailWindow) {
                         .is_some_and(|d| d.original.as_ref() == Some(&r.name)),
                 })
                 .collect();
-            window.set_rules_counts(rules::counts(lines.len(), proposals.len()).into());
+            window.set_rules_counts(
+                rules::counts(app.rules.lines.len(), app.rules.proposals.len()).into(),
+            );
+            window.set_rules_empty(rules::no_rules(filter).into());
             let sort = app.sheet_sort;
             window.set_rules_sort(
                 sort.and_then(|s| i32::try_from(s.column).ok())
@@ -1003,6 +1006,9 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
             Some(UiAction::Restore(row.account, row.entry.path.clone()))
         }));
     });
+    window.on_filter_rules(move |text| {
+        act(UiAction::FilterRules(text.into()));
+    });
     window.on_sort_sheet(move |column, ascending| {
         if let Ok(column) = usize::try_from(column) {
             act(UiAction::SortSheet(SheetSort { column, ascending }));
@@ -1021,15 +1027,16 @@ fn nth<T>(items: impl IntoIterator<Item = T>, index: i32) -> Option<T> {
     items.into_iter().nth(usize::try_from(index).ok()?)
 }
 
-/// The rule the Rules table shows at `index`, in its sorted order.
+/// The rule the Rules table shows at `index`, in its filtered and sorted order.
 fn rule_line(app: &App, index: i32) -> Option<&rules::RuleLine> {
-    let order = rules::rule_order(&app.rules.lines, app.sheet_sort);
-    app.rules.lines.get(*nth(&order, index)?)
+    let shown = rules::shown_rules(&app.rules.lines, app.sheet_sort, &app.rules_filter);
+    app.rules.lines.get(*nth(&shown, index)?)
 }
 
 /// The name of the proposal the Rules view shows at `index`.
 fn proposal(app: &App, index: i32) -> Option<String> {
-    Some(nth(&app.rules.proposals, index)?.name.clone())
+    let shown = rules::shown_proposals(&app.rules.proposals, &app.rules_filter);
+    Some(app.rules.proposals.get(*nth(&shown, index)?)?.name.clone())
 }
 
 /// A pill with `label`, drawn from SVG with the window's own fonts.
