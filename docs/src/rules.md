@@ -283,6 +283,8 @@ To review a proposal:
 
 While the [daemon](daemon.md) runs, a new proposal brings a desktop notification ("A rule waits for your approval", naming it; several within two seconds come as one), on Linux and macOS alike. Clicking it opens the window on Rules, as `postvak gui --rules` does. Proposals already waiting when the daemon starts do not notify again, and neither does a proposal changed with `--replace`, which keeps its name.
 
+`postvak rules move NAME --before OTHER` or `--after OTHER` changes when a rule runs, keeping the file's comments; the comments right above the rule move with it, and so does a pending edit of it, which stays right after it. The Rules view does the same when you drag a row, and the MCP `rules_move` tool for an agent granted `rules:write`.
+
 ## Coverage
 
 `postvak rules coverage --folder INBOX` runs every enabled rule over the mail Postvak has stored for a folder, the way `rules test` does, and changes nothing. It counts the mail that a rule matches, that no rule matches, and that several rules match, which it calls contested. For mail that no rule matches, it lists the senders who send the most. For each contested message, it lists every rule that matches, then what would run: a delete on its own, or else every flag change and only the first move. A broad rule early in the file that takes mail meant for a later rule shows up here. `--include-pending` counts the proposals still waiting for approval as if they were on, each edit in place of the rule it edits. `--group-by domain` groups the senders by domain, and `--limit` (20 by default) caps the senders and contested messages shown. The counts always cover the whole folder.
