@@ -1071,6 +1071,22 @@ mod editor_tests {
         open.with(|live| live.app.rule_draft.as_ref().map(|d| d.name.clone()))
     }
 
+    #[test]
+    fn a_click_beside_an_edited_rule_asks_before_closing_it() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = open_newsletters(&fx);
+        editor(&open, |e| e.invoke_value_edited(0, "letters@".into()));
+        open.tap("Backups");
+        assert_eq!(open.find("This rule has unsaved changes.").len(), 1);
+        assert_eq!(open.with(|live| live.app.view.clone()), View::Rules);
+        open.tap("Backups");
+        assert!(
+            open.find("This rule has unsaved changes.").is_empty(),
+            "the click cancels the question"
+        );
+        assert_eq!(draft_name(&open).as_deref(), Some("newsletters"));
+    }
+
     /// newsletters open with an unsaved edit, then receipts clicked in the list.
     fn leave_edited_newsletters(fx: &Fixture) -> (Open, Wires) {
         let (open, wires) = rules_view(fx, &two_rules());

@@ -216,6 +216,19 @@ mod tests {
     }
 
     #[test]
+    fn a_click_beside_a_dialog_closes_it_and_reaches_nothing_behind() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        open.window().invoke_menu_item(MenuAction::About);
+        open.tap("Backups");
+        assert!(open.find("About Postvak").is_empty());
+        assert!(
+            open.with(|live| live.app.view != crate::state::View::Trash),
+            "the click stopped at the backdrop"
+        );
+    }
+
+    #[test]
     fn closing_the_keys_twice_leaves_them_closed() {
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = fx.window();
