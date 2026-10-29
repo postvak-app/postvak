@@ -557,6 +557,15 @@ fn present_sheet(app: &App, window: &MailWindow) {
         View::Rules => {
             window.set_sheet(Sheet::Rules);
             window.set_rules_banner(rules::banner(&app.rules).unwrap_or_default().into());
+            let offers: Vec<SharedString> = app
+                .rules
+                .offers
+                .iter()
+                .map(|(account, id)| rules::offer_label(account, id).into())
+                .collect();
+            sync(window.get_rules_offers(), offers, |m| {
+                window.set_rules_offers(m)
+            });
             let proposals: Vec<ProposalData> = app
                 .rules
                 .proposals
@@ -928,6 +937,12 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     window.on_approve_rule(move |i| {
         on(one(move |app| {
             Some(UiAction::ApproveRule(proposal(app, i)?))
+        }));
+    });
+    window.on_trust_authserv(move |i| {
+        on(one(move |app| {
+            let (account, id) = nth(&app.rules.offers, i)?.clone();
+            Some(UiAction::TrustAuthserv { account, id })
         }));
     });
     window.on_reject_rule(move |i| {

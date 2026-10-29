@@ -21,6 +21,8 @@ pub(crate) struct RulesState {
     pub error: Option<String>,
     /// What leaves the file valid but not doing what was meant, from `rules::warnings`.
     pub warnings: Vec<String>,
+    /// (account, authserv-id) pairs the Rules view offers to trust, from `rules::authserv_offers`.
+    pub offers: Vec<(String, String)>,
     /// "Preview on cached mail" results by proposal name; a reload drops them.
     pub previews: BTreeMap<String, String>,
     pub rules: Vec<Rule>,
@@ -40,38 +42,62 @@ impl RulesState {
             ),
             Err(e) => (Some(e.to_string()), previous),
         };
-        RulesState {
+        let mut state = RulesState {
             error,
-            warnings: warnings(path, &rules, accounts),
+            warnings: Vec::new(),
+            offers: Vec::new(),
             previews: BTreeMap::new(),
             proposals: proposals(&rules),
             lines: rule_lines(&rules),
             rules,
-        }
+        };
+        state.check(path, accounts);
+        state
+    }
+
+    /// Reads the warnings and offers again, which the stores and the files beside rules.toml change.
+    pub fn check(&mut self, path: &Path, accounts: &[Account]) {
+        let synced: Vec<rules::AccountFolders> = accounts
+            .iter()
+            .map(|a| rules::AccountFolders::read(&a.name, a.store.as_ref().ok()))
+            .collect();
+        // The accounts that trust no authserv-id, for the warning about `authenticated`.
+        let untrusting: Vec<&str> = accounts
+            .iter()
+            .filter(|a| a.identity.as_ref().is_some_and(|id| !id.can_authenticate()))
+            .map(|a| a.name.as_str())
+            .collect();
+        self.warnings = warnings(path, &self.rules, accounts, &untrusting, &synced);
+        self.offers = rules::authserv_offers(&self.rules, &untrusting, &synced);
     }
 }
 
 /// What leaves the rules valid but not doing what was meant: `rules::warnings`, then what the accounts' folders show,
 /// read through the stores the window holds open rather than opening each again.
-pub(crate) fn warnings(path: &Path, rules: &[Rule], accounts: &[Account]) -> Vec<String> {
+fn warnings(
+    path: &Path,
+    rules: &[Rule],
+    accounts: &[Account],
+    untrusting: &[&str],
+    synced: &[rules::AccountFolders],
+) -> Vec<String> {
     let names: Vec<&str> = accounts.iter().map(|a| a.name.as_str()).collect();
-    // The accounts that trust no authserv-id, for the warning about `authenticated`.
-    let untrusting: Vec<&str> = accounts
-        .iter()
-        .filter(|a| a.identity.as_ref().is_some_and(|id| !id.can_authenticate()))
-        .map(|a| a.name.as_str())
-        .collect();
     let stores: Vec<(&str, &Store)> = accounts
         .iter()
         .filter_map(|a| Some((a.name.as_str(), a.store.as_ref().ok()?)))
         .collect();
-    let synced: Vec<rules::AccountFolders> = accounts
-        .iter()
-        .map(|a| rules::AccountFolders::read(&a.name, a.store.as_ref().ok()))
-        .collect();
-    let file = rules::warnings(path, rules, &names, &untrusting);
-    let watched = rules::watched_folder_warnings(rules, &synced);
-    [file, watched, rules::open_folder_warnings(rules, &stores)].concat()
+    [
+        rules::warnings(path, rules, &names),
+        rules::authenticated_warnings(rules, untrusting, synced),
+        rules::watched_folder_warnings(rules, synced),
+        rules::open_folder_warnings(rules, &stores),
+    ]
+    .concat()
+}
+
+/// "Trust mx.google.com for work", on the button that takes an offer.
+pub(crate) fn offer_label(account: &str, id: &str) -> String {
+    format!("Trust {} for {}", clean(id, false), clean(account, false))
 }
 
 /// A rule waiting for approval, as the Rules view shows it.
@@ -368,6 +394,41 @@ mod tests {
     fn enabled(fx: &Fixture, name: &str) -> bool {
         let file = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
         file.rules.iter().find(|r| r.name == name).unwrap().enabled
+    }
+
+    #[test]
+    fn the_authserv_id_the_inbox_offers_is_trusted_with_one_click() {
+        let fx = Fixture::new(&["work"]);
+        for uid in 1..=postvak_core::message::auth::SUGGEST_MIN as u32 {
+            fx.add(
+                "work",
+                postvak_core::store::Message {
+                    headers: b"Authentication-Results: mx.google.com; dmarc=pass\r\n\r\n".to_vec(),
+                    ..message("INBOX", uid, "hello")
+                },
+            );
+        }
+        std::fs::write(
+            fx.paths.rules_file(),
+            "[[rules]]\nname = \"paypal\"\nmatch.from_domain = \"paypal.com\"\nmatch.authenticated = true\nactions.flagged = true\n",
+        )
+        .unwrap();
+        let (open, _wires) = view(&fx, View::Rules);
+        assert_eq!(
+            open.labels_containing("`postvak account trust work mx.google.com`")
+                .len(),
+            1
+        );
+        open.click("Trust mx.google.com for work");
+        open.tick();
+        assert!(open.find("Trust mx.google.com for work").is_empty());
+        assert!(open.labels_containing("trusts no server").is_empty());
+        let config = postvak_core::config::Config::load(&fx.paths.config_file()).unwrap();
+        assert!(config.accounts[0].can_authenticate());
+        assert!(
+            !open.with(|live| live.app.config_changed),
+            "its own write is no outside edit"
+        );
     }
 
     #[test]

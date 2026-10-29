@@ -1,4 +1,5 @@
-//! Adding an account: the one writer of a new account into config.toml, for the CLI, MCP and the GUI alike.
+//! Adding an account: the one writer of a new account into config.toml, for the CLI, MCP and the GUI alike; and
+//! trusting an authserv-id for one already there.
 use std::time::{Duration, Instant};
 
 use anyhow::bail;
@@ -103,6 +104,26 @@ pub fn test_login(
     client.test_login(account, secret)
 }
 
+/// Adds `id` to the trusted_authserv_ids of account `name` as config.toml reads now, unless it is listed already;
+/// returns the config the file then holds. The user's yes to what [`rules::authserv_offers`](crate::rules::authserv_offers)
+/// offers.
+pub fn trust_authserv_id(paths: &Paths, name: &str, id: &str) -> Result<Config, ConfigError> {
+    let path = paths.config_file();
+    let mut account = Config::load(&path)?
+        .account(name)
+        .cloned()
+        .ok_or_else(|| ConfigError::Invalid(format!("no account named '{name}'")))?;
+    let id = id.trim_end_matches('.').to_lowercase();
+    let ids = account.trusted_authserv_ids.get_or_insert_with(Vec::new);
+    if !ids
+        .iter()
+        .any(|known| known.trim_end_matches('.').eq_ignore_ascii_case(&id))
+    {
+        ids.push(id);
+    }
+    config::save_account(&path, &account)
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -139,6 +160,28 @@ mod tests {
                 command: "printf x".into(),
             },
         )
+    }
+
+    #[test]
+    fn trusting_an_authserv_id_adds_it_once() {
+        let (_dir, paths) = home();
+        let mut config = Config::default();
+        add(&mut config, &paths, command_account("work"), None).unwrap();
+        trust_authserv_id(&paths, "work", "MX.Google.com.").unwrap();
+        let config = trust_authserv_id(&paths, "work", "mx.google.com").unwrap();
+        assert_eq!(
+            config.accounts[0].trusted_authserv_ids.as_deref(),
+            Some(&["mx.google.com".to_string()][..])
+        );
+        assert_eq!(
+            config.accounts,
+            Config::load(&paths.config_file()).unwrap().accounts
+        );
+        assert!(trust_authserv_id(&paths, "home", "mx.google.com").is_err());
+        assert!(
+            trust_authserv_id(&paths, "work", "not a name").is_err(),
+            "the id is validated like one written by hand"
+        );
     }
 
     #[test]

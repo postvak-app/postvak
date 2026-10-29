@@ -65,6 +65,8 @@ Call docs for the rest. Without a page it lists them: agent-guide is the full gu
 pub const ACCOUNT_ADD: &str = "Add an IMAP account; the daemon tests the login first and nothing is saved when it fails, then syncs it once";
 pub const ACCOUNT_LIST: &str =
     "Each configured account: name, username and server; never the password source";
+pub const ACCOUNT_TRUST: &str = "Trust a server's Authentication-Results headers for the authenticated rule condition: \
+     add AUTHSERV_ID, the name at the start of the topmost one, to the account's trusted_authserv_ids";
 pub const ARCHIVE: &str = "Move messages to the Archive folder";
 pub const ATTACHMENT_LIST: &str = "Index, type, size and name of each attachment";
 pub const ATTACHMENT_SAVE: &str = "Save attachment N, as numbered by the attachment list, into a directory; returns the written path";

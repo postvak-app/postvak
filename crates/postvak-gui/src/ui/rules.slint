@@ -56,6 +56,8 @@ export component RulesPane inherits Rectangle {
     in property <Sheet> sheet;
     // Rules.
     in property <string> banner;
+    // "Trust mx.google.com for work", one button each.
+    in property <[string]> offers;
     // "1 rule · 2 proposals".
     in property <string> counts;
     in property <[ProposalData]> proposals;
@@ -72,6 +74,7 @@ export component RulesPane inherits Rectangle {
     callback new-rule();
     callback edit-rule(int);
     callback approve(int);
+    callback trust(int);
     callback reject(int);
     callback preview(int);
     callback set-enabled(int, bool);
@@ -90,6 +93,19 @@ export component RulesPane inherits Rectangle {
             text: root.banner;
             color: Theme.pane.error;
             wrap: word-wrap;
+        }
+        if root.sheet == Sheet.rules && root.offers.length > 0: VerticalLayout {
+            spacing: Theme.pad;
+            for offer[i] in root.offers: HorizontalLayout {
+                TextButton {
+                    text: offer;
+                    framed: true;
+                    palette: Theme.pane;
+                    hint: "Adds the server to the account's trusted_authserv_ids in config.toml";
+                    clicked => { root.trust(i); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
         }
         // The sheet's title, with its action at the end.
         HorizontalLayout {

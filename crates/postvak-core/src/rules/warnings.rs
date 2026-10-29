@@ -10,18 +10,16 @@ use std::path::Path;
 
 use super::{Action, Match, Rule};
 use crate::folder_name;
+use crate::message::auth;
 use crate::paths::Paths;
-use crate::store::{Folder, Store};
+use crate::store::{Filter, Folder, Store};
+
+/// How many of the newest INBOX messages must agree on an authserv-id before it is offered.
+const AUTHSERV_SAMPLE: u32 = 20;
 
 /// One line per problem: conflicting copies by name, then rules in file order; empty when there is nothing to say.
-/// `accounts` are the accounts set up here, and `untrusting` those that trust no authserv-id
-/// ([`Identity::can_authenticate`](crate::config::Identity::can_authenticate)).
-pub fn warnings(
-    path: &Path,
-    rules: &[Rule],
-    accounts: &[&str],
-    untrusting: &[&str],
-) -> Vec<String> {
+/// `accounts` are the accounts set up here.
+pub fn warnings(path: &Path, rules: &[Rule], accounts: &[&str]) -> Vec<String> {
     let mut lines: Vec<String> = conflict_copies(path)
         .into_iter()
         .map(|name| {
@@ -39,19 +37,6 @@ pub fn warnings(
                 "rule '{}' is for account '{account}', which is not set up here, so it never runs",
                 rule.name
             ));
-        }
-        if uses_authenticated(&rule.matches) {
-            for account in untrusting
-                .iter()
-                .filter(|a| rule.account.as_deref().is_none_or(|own| own == **a))
-            {
-                lines.push(format!(
-                    "rule '{}' uses authenticated, but account '{account}' trusts no server's \
-                     Authentication-Results, so there authenticated = true never holds and false always does; list \
-                     your provider's server in its trusted_authserv_ids",
-                    rule.name
-                ));
-            }
         }
         let named =
             rule.folder
@@ -83,6 +68,69 @@ pub fn warnings(
         }
     }
     lines
+}
+
+/// One line per rule using `authenticated` and account of `untrusting` it runs on, in file order: those accounts trust
+/// no authserv-id ([`Identity::can_authenticate`](crate::config::Identity::can_authenticate)), so no mail is
+/// authenticated there. Where `accounts` holds the id that account's INBOX offers, the line names it and the command
+/// that trusts it.
+pub fn authenticated_warnings(
+    rules: &[Rule],
+    untrusting: &[&str],
+    accounts: &[AccountFolders],
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    for rule in rules.iter().filter(|r| uses_authenticated(&r.matches)) {
+        for account in untrusting
+            .iter()
+            .filter(|a| rule.account.as_deref().is_none_or(|own| own == **a))
+        {
+            let offer = accounts
+                .iter()
+                .find(|a| a.name == *account)
+                .and_then(|a| a.authserv_id.as_deref())
+                .map(|id| {
+                    format!(
+                        ": the newest mail in its INBOX all has one from '{id}', which `postvak account trust \
+                         {account} {id}` lists"
+                    )
+                })
+                .unwrap_or_default();
+            lines.push(format!(
+                "rule '{}' uses authenticated, but account '{account}' trusts no server's Authentication-Results, so \
+                 there authenticated = true never holds and false always does; list your provider's server in its \
+                 trusted_authserv_ids{offer}",
+                rule.name
+            ));
+        }
+    }
+    lines
+}
+
+/// The (account, authserv-id) pairs among [`authenticated_warnings`]' that its INBOX offers, once per account, in the
+/// order of `untrusting`: what the window offers to trust with one click.
+pub fn authserv_offers(
+    rules: &[Rule],
+    untrusting: &[&str],
+    accounts: &[AccountFolders],
+) -> Vec<(String, String)> {
+    untrusting
+        .iter()
+        .filter(|account| {
+            rules.iter().any(|r| {
+                uses_authenticated(&r.matches)
+                    && r.account.as_deref().is_none_or(|own| own == **account)
+            })
+        })
+        .filter_map(|account| {
+            let id = accounts
+                .iter()
+                .find(|a| a.name == *account)?
+                .authserv_id
+                .clone()?;
+            Some((account.to_string(), id))
+        })
+        .collect()
 }
 
 /// Whether `authenticated` is a condition, at any depth of `any` and `none`.
@@ -254,6 +302,8 @@ fn delimiter<'a>(synced: &[&'a Folder]) -> Option<&'a str> {
 pub struct AccountFolders {
     pub name: String,
     pub synced: Option<Vec<Folder>>,
+    /// The authserv-id the newest mail in its INBOX offers to trust ([`auth::common_authserv_id`]).
+    pub authserv_id: Option<String>,
 }
 
 impl AccountFolders {
@@ -267,9 +317,17 @@ impl AccountFolders {
                 .ok()
                 .flatten()
         });
+        let authserv_id = store.and_then(|store| {
+            let newest = store
+                .messages("INBOX", AUTHSERV_SAMPLE, Filter::default())
+                .inspect_err(|e| log::debug!("{name}: could not read the INBOX: {e}"))
+                .ok()?;
+            auth::common_authserv_id(newest.iter().map(|m| m.headers.as_slice()))
+        });
         AccountFolders {
             name: name.to_string(),
             synced,
+            authserv_id,
         }
     }
 }
@@ -400,12 +458,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let rules = parse(RULES).unwrap().rules;
         assert_eq!(
-            warnings(
-                &dir.path().join("rules.toml"),
-                &rules,
-                &["work", "home"],
-                &[]
-            ),
+            warnings(&dir.path().join("rules.toml"), &rules, &["work", "home"]),
             ["rule 'old' is for account 'werk', which is not set up here, so it never runs"]
         );
     }
@@ -422,7 +475,7 @@ mod tests {
         .unwrap()
         .rules;
         assert_eq!(
-            warnings(&dir.path().join("rules.toml"), &rules, &[], &[]),
+            warnings(&dir.path().join("rules.toml"), &rules, &[]),
             [
                 "rule 'lists' moves mail to 'Lists', the folder it watches, so the move does nothing",
                 "rule 'inbox' moves mail to 'Inbox', the folder it watches, so the move does nothing",
@@ -444,7 +497,7 @@ mod tests {
         .unwrap()
         .rules;
         assert_eq!(
-            warnings(&dir.path().join("rules.toml"), &rules, &[], &[]),
+            warnings(&dir.path().join("rules.toml"), &rules, &[]),
             [("watch", "&AMkA6Q-n", "\u{c9}\u{e9}n"), ("move", "Archief/&AMkA6Q-n", "Archief/\u{c9}\u{e9}n"), ("amp", "Q&-A", "Q&A")]
                 .map(|(rule, name, plain)| format!(
                     "rule '{rule}' names folder '{name}', which is how IMAP spells '{plain}' on the wire; Postvak \
@@ -457,7 +510,6 @@ mod tests {
 
     #[test]
     fn a_rule_using_authenticated_for_an_account_that_trusts_no_server_is_named() {
-        let dir = tempfile::tempdir().unwrap();
         let rules = parse(
             "[[rules]]\nname = \"junk\"\nmatch.from_domain = \"paypal.com\"\nmatch.authenticated = false\nactions = { flagged = true }\n\n\
              [[rules]]\nname = \"deep\"\naccount = \"work\"\nmatch.read = true\nmatch.none = [{ any = [{ authenticated = true }] }]\nactions = { flagged = true }\n\n\
@@ -468,18 +520,58 @@ mod tests {
         .rules;
         let tail = "trusts no server's Authentication-Results, so there authenticated = true never holds and false \
                     always does; list your provider's server in its trusted_authserv_ids";
+        let gmail = AccountFolders {
+            authserv_id: Some("mx.google.com".into()),
+            ..synced("gmail", &["INBOX"])
+        };
+        let offer = ": the newest mail in its INBOX all has one from 'mx.google.com', which `postvak account trust \
+                     gmail mx.google.com` lists";
         assert_eq!(
-            warnings(
-                &dir.path().join("rules.toml"),
-                &rules,
-                &["work", "home", "gmail"],
-                &["work", "gmail"]
-            ),
+            authenticated_warnings(&rules, &["work", "gmail"], std::slice::from_ref(&gmail)),
             [
                 format!("rule 'junk' uses authenticated, but account 'work' {tail}"),
-                format!("rule 'junk' uses authenticated, but account 'gmail' {tail}"),
+                format!("rule 'junk' uses authenticated, but account 'gmail' {tail}{offer}"),
                 format!("rule 'deep' uses authenticated, but account 'work' {tail}"),
             ]
+        );
+        assert_eq!(
+            authserv_offers(&rules, &["work", "gmail"], std::slice::from_ref(&gmail)),
+            [("gmail".to_string(), "mx.google.com".to_string())]
+        );
+        let home = AccountFolders {
+            name: "home".into(),
+            ..gmail
+        };
+        assert!(
+            authserv_offers(&rules[1..2], &["home"], &[home]).is_empty(),
+            "only a rule that runs on the account asks for one"
+        );
+    }
+
+    #[test]
+    fn the_inbox_offers_the_authserv_id_topping_its_newest_mail() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .upsert_folder(&layout("work", "/", &["INBOX"]).folders[0])
+            .unwrap();
+        assert_eq!(AccountFolders::read("work", Some(&store)).authserv_id, None);
+        for uid in 1..=auth::SUGGEST_MIN as u32 {
+            store
+                .insert_message(&crate::store::Message {
+                    folder: "INBOX".into(),
+                    uid,
+                    thread_id: uid.to_string(),
+                    internaldate: uid.into(),
+                    headers: b"Authentication-Results: mx.google.com; dmarc=pass\r\n\r\n".to_vec(),
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+        assert_eq!(
+            AccountFolders::read("work", Some(&store))
+                .authserv_id
+                .as_deref(),
+            Some("mx.google.com")
         );
     }
 
@@ -501,12 +593,7 @@ mod tests {
         }
         let rules = parse(RULES).unwrap().rules;
         assert_eq!(
-            warnings(
-                &dir.path().join("rules.toml"),
-                &rules,
-                &["work", "werk"],
-                &[]
-            ),
+            warnings(&dir.path().join("rules.toml"), &rules, &["work", "werk"]),
             [
                 "rules (Pieter's Conflicted Copy 2026-10-24).toml looks like a conflicting copy left by a file \
                  sync; move what you want to keep into rules.toml and delete it",
@@ -522,7 +609,7 @@ mod tests {
     fn a_missing_directory_has_nothing_to_say() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("missing/rules.toml");
-        assert!(warnings(&path, &[], &[], &[]).is_empty());
+        assert!(warnings(&path, &[], &[]).is_empty());
     }
 
     fn layout(account: &str, delimiter: &str, names: &[&str]) -> FolderLayout {
@@ -647,6 +734,7 @@ mod tests {
                     })
                     .collect(),
             ),
+            authserv_id: None,
         }
     }
 
@@ -689,6 +777,7 @@ mod tests {
         let first_sync = AccountFolders {
             name: "gmail".into(),
             synced: None,
+            authserv_id: None,
         };
         assert!(
             watched_folder_warnings(&rules, &[first_sync]).is_empty(),
@@ -756,7 +845,8 @@ mod tests {
                 synced("work", &["INBOX"]),
                 AccountFolders {
                     name: "new".into(),
-                    synced: None
+                    synced: None,
+                    authserv_id: None,
                 }
             ]
         );

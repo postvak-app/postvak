@@ -540,6 +540,11 @@ enum AccountCommand {
         #[arg(long)]
         json: bool,
     },
+    #[command(about = postvak_core::help::ACCOUNT_TRUST)]
+    Trust {
+        account: String,
+        authserv_id: String,
+    },
 }
 
 pub fn run() -> Result<()> {
@@ -882,6 +887,18 @@ pub fn run() -> Result<()> {
                         );
                     }
                 }
+                Ok(())
+            }
+            AccountCommand::Trust {
+                account,
+                authserv_id,
+            } => {
+                postvak_core::account::trust_authserv_id(&paths, &account, &authserv_id)?;
+                println!(
+                    "account '{}' now trusts the Authentication-Results of {}",
+                    clean(&account, false),
+                    clean(&authserv_id, false)
+                );
                 Ok(())
             }
         },
@@ -1636,11 +1653,12 @@ fn rules_warnings(paths: &Paths, config: &Config) -> Result<Vec<String>> {
         .map(|a| a.name.as_str())
         .collect();
     let rules = postvak_core::rules::load(&path)?.rules;
-    let warnings = postvak_core::rules::warnings(&path, &rules, &accounts, &untrusting);
+    let warnings = postvak_core::rules::warnings(&path, &rules, &accounts);
     let synced = postvak_core::rules::account_folders(paths, &accounts);
+    let authenticated = postvak_core::rules::authenticated_warnings(&rules, &untrusting, &synced);
     let watched = postvak_core::rules::watched_folder_warnings(&rules, &synced);
     let folders = postvak_core::rules::folder_warnings(paths, &rules, &accounts);
-    Ok([warnings, watched, folders].concat())
+    Ok([warnings, authenticated, watched, folders].concat())
 }
 
 fn compiled_rules(paths: &Paths, name: Option<&str>) -> Result<Vec<CompiledRule>> {
