@@ -3,7 +3,9 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use postvak_core::message::{clean, display_name};
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
+use postvak_core::message::{clean, display_name, header_value};
+use postvak_core::store::Message;
 use postvak_core::sync::Activity;
 use postvak_core::time::local_time;
 
@@ -32,26 +34,28 @@ pub(crate) struct Pane {
     pub cc: Option<String>,
     /// The raw message is here, so Save .eml and View source work.
     pub downloaded: bool,
-    /// Why the body is not shown yet, and the hint on the disabled buttons.
+    /// Why the body is not shown yet.
     pub missing: String,
-    /// The message has an HTML part: the Text | HTML switch shows.
+    /// The message has an HTML part: the More menu offers it as text or as HTML.
     pub has_html: bool,
     pub shows_html: bool,
-    /// Why HTML shows as text, which disables the switch's HTML side.
+    /// Why HTML shows as text, which disables Show as HTML.
     pub text_note: Option<&'static str>,
-    /// The HTML is adapted to the dark theme, or would be: the Original colours switch shows.
+    /// The HTML is adapted to the dark theme, or would be: the More menu offers Original colours.
     pub adapts: bool,
     /// The switch is on: this message's HTML is in its sender's colours on a white page.
     pub original_colours: bool,
-    /// "report.txt (2 KB)" per attachment.
-    pub attachments: Vec<String>,
+    /// Each attachment's name and size, such as "report.txt" and "2 KB".
+    pub attachments: Vec<(String, String)>,
     /// The attachments are listed before the whole message is here, so they cannot be saved yet.
     pub attachments_pending: bool,
     pub saved: Option<String>,
-    /// The message has a List-Unsubscribe header: the Unsubscribe button shows.
+    /// The message has a List-Unsubscribe header: the More menu offers Unsubscribe.
     pub unsubscribe: bool,
     /// The sender accepted the one-click unsubscribe: a Delete button shows beside the note.
     pub unsubscribed: bool,
+    /// There is an address to reply to: Reply shows.
+    pub reply: bool,
     /// The links in the text that open, in order, once each.
     pub links: Vec<String>,
 }
@@ -107,7 +111,7 @@ pub(crate) fn pane(app: &App) -> Pane {
                 .as_deref()
                 .map(|name| clean(name, false))
                 .unwrap_or_else(|| format!("attachment {}", attachment.index));
-            format!("{name} ({})", size(attachment.size))
+            (name, size(attachment.size))
         })
         .collect();
     Pane {
@@ -138,6 +142,7 @@ pub(crate) fn pane(app: &App) -> Pane {
         saved: body.saved.as_deref().map(|s| clean(s, false)),
         unsubscribe: postvak_core::unsubscribe::method(&message.headers).is_some(),
         unsubscribed: body.unsubscribed,
+        reply: reply_url(message).is_some(),
         links: body.links.clone(),
     }
 }
@@ -256,6 +261,50 @@ pub(crate) fn name_and_address(from: &str) -> (String, Option<String>) {
     (name, address)
 }
 
+/// What a `mailto:` URL may leave as it is; the rest is escaped, since the subject is a stranger's text.
+const MAILTO: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~')
+    .remove(b'@');
+
+/// The `mailto:` URL that starts a reply in the user's mail app: to the Reply-To address, else the sender's, with
+/// "Re:" before the subject and the message it answers; None without an address to write to.
+pub(crate) fn reply_url(message: &Message) -> Option<String> {
+    let reply_to = header_value(&message.headers, "Reply-To");
+    let to = [reply_to.as_deref(), message.from_addr.as_deref()]
+        .into_iter()
+        .flatten()
+        .find_map(address)?;
+    let subject = message.subject.as_deref().unwrap_or_default();
+    let answered = subject
+        .get(..3)
+        .is_some_and(|re| re.eq_ignore_ascii_case("re:"));
+    let subject = if answered {
+        subject.to_string()
+    } else {
+        format!("Re: {subject}")
+    };
+    let encode = |text: &str| utf8_percent_encode(text, MAILTO).to_string();
+    let mut url = format!("mailto:{}?subject={}", encode(to), encode(&subject));
+    if let Some(id) = &message.message_id {
+        let id = id.trim().trim_start_matches('<').trim_end_matches('>');
+        url.push_str(&format!("&In-Reply-To={}", encode(&format!("<{id}>"))));
+    }
+    Some(url)
+}
+
+/// The one address in a From or Reply-To value, in angle brackets or bare.
+fn address(value: &str) -> Option<&str> {
+    let address = match value.split_once('<') {
+        Some((_, rest)) => rest.split_once('>')?.0,
+        None => value,
+    };
+    let address = address.trim();
+    (address.contains('@') && !address.contains([',', ' '])).then_some(address)
+}
+
 /// The first letters of the sender's first and last name, or of the address when there is no name.
 pub(crate) fn initials(from: &str) -> String {
     let name = display_name(from);
@@ -334,8 +383,41 @@ mod tests {
     use crate::state::{UiAction, View};
     use crate::test_support::{Driver, Fixture, Wires, launched, message, synced, unread, work};
     use postvak_core::rules::Action;
-    use postvak_core::store::Message;
     use postvak_core::sync::{Command, Event};
+
+    #[test]
+    fn reply_opens_a_reply_to_the_sender_in_the_mail_app() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "lunch"));
+        let (open, _wires) = fx.window();
+        open.click("Reply");
+        assert_eq!(
+            launched(),
+            ["mailto:sender1@example.com?subject=Re%3A%20lunch&In-Reply-To=%3C1@example.com%3E"]
+        );
+    }
+
+    #[test]
+    fn reply_writes_to_the_reply_to_address_else_the_sender_with_the_subject_and_the_id_it_answers()
+    {
+        let mut original = message("INBOX", 1, "Tickets & seats?");
+        assert_eq!(
+            reply_url(&original).as_deref(),
+            Some(
+                "mailto:sender1@example.com?subject=Re%3A%20Tickets%20%26%20seats%3F&In-Reply-To=%3C1@example.com%3E"
+            )
+        );
+        original.headers = b"Reply-To: Desk <desk@example.com>\r\n\r\n".to_vec();
+        original.subject = Some("RE: hello".into());
+        original.message_id = None;
+        assert_eq!(
+            reply_url(&original).as_deref(),
+            Some("mailto:desk@example.com?subject=RE%3A%20hello")
+        );
+        original.headers = Vec::new();
+        original.from_addr = Some("not an address".into());
+        assert_eq!(reply_url(&original), None);
+    }
 
     const WITH_ATTACHMENT: &str = "From: a@example.com\r\nSubject: report\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nSee attached\r\n--b\r\nContent-Type: text/plain\r\nContent-Disposition: attachment; filename=\"report.txt\"\r\n\r\nquarterly numbers\r\n--b--\r\n";
 
@@ -867,10 +949,6 @@ mod tests {
             save.accessible_description().as_deref(),
             Some("Downloading the message…")
         );
-        assert_eq!(
-            open.get(&format!("Save {label} as")).accessible_enabled(),
-            Some(false)
-        );
 
         fx.store("work")
             .set_raw("INBOX", 1, WITH_ATTACHMENT_RAW, "See attached")
@@ -951,7 +1029,7 @@ mod tests {
     fn save_eml_of_a_message_too_large_to_download_downloads_it_first() {
         let fx = Fixture::new(&["work"]);
         let (open, wires) = on_demand(&fx);
-        open.click("Save .eml");
+        open.choose_more("Save .eml");
         let whole = Command::FetchBody {
             folder: "INBOX".into(),
             uid: 1,
@@ -1018,8 +1096,7 @@ mod tests {
             .join("downloads")
             .join("picked-report.txt");
         std::fs::write(&picked, "old").unwrap();
-        let label = open.labels_containing("report.txt (").remove(0);
-        open.click(&format!("Save {label} as"));
+        open.window().invoke_save_attachment_as(0);
         assert_eq!(
             std::fs::read_to_string(&picked).unwrap().trim_end(),
             "quarterly numbers"
@@ -1042,8 +1119,7 @@ mod tests {
                 answer
             }
         });
-        let label = open.labels_containing("report.txt (").remove(0);
-        open.click(&format!("Save {label} as"));
+        open.window().invoke_save_attachment_as(0);
         let downloads = fx.paths.cache_dir.join("downloads");
         assert_eq!(std::fs::read_dir(downloads).unwrap().count(), 0);
         assert!(open.labels_containing("Saved to").is_empty());
@@ -1206,7 +1282,7 @@ mod tests {
             .set_raw("INBOX", 1, WITH_ATTACHMENT_RAW, "See attached")
             .unwrap();
         let (open, _wires) = fx.window();
-        open.click("Save .eml");
+        open.choose_more("Save .eml");
         let saved = fx.paths.cache_dir.join("downloads").join("Re- lunch.eml");
         assert_eq!(std::fs::read(&saved).unwrap(), WITH_ATTACHMENT_RAW);
         assert_eq!(open.labels_containing("Saved to").len(), 1);
@@ -1227,7 +1303,7 @@ mod tests {
             &format!("List-Unsubscribe: <https://list.example/u>\r\n{post}"),
         );
         let (open, _wires) = fx.window();
-        open.click("Unsubscribe");
+        open.choose_more("Unsubscribe");
         open.tick_until(|open| !open.labels_containing("Unsubscribed").is_empty());
         assert!(crate::test_support::launched().is_empty());
         let fx = Fixture::new(&["work"]);
@@ -1236,7 +1312,7 @@ mod tests {
             &format!("List-Unsubscribe: <https://list.example/refuse>\r\n{post}"),
         );
         let (open, _wires) = fx.window();
-        open.click("Unsubscribe");
+        open.choose_more("Unsubscribe");
         open.tick_until(|open| !open.labels_containing("Could not unsubscribe").is_empty());
         assert!(open.find(DELETE_UNSUBSCRIBED).is_empty());
     }
@@ -1252,7 +1328,7 @@ mod tests {
         );
         let (open, wires) = fx.window();
         assert!(open.find(DELETE_UNSUBSCRIBED).is_empty());
-        open.click("Unsubscribe");
+        open.choose_more("Unsubscribe");
         open.tick_until(|open| !open.find(DELETE_UNSUBSCRIBED).is_empty());
         wires.sent();
         open.click(DELETE_UNSUBSCRIBED);
@@ -1270,7 +1346,7 @@ mod tests {
         let fx = Fixture::new(&["work"]);
         list_mail(&fx, "List-Unsubscribe: <https://list.example/page>");
         let (open, _wires) = fx.window();
-        open.click("Unsubscribe");
+        open.choose_more("Unsubscribe");
         assert_eq!(
             crate::test_support::launched(),
             ["https://list.example/page"]
@@ -1278,6 +1354,7 @@ mod tests {
         let fx = Fixture::new(&["work"]);
         list_mail(&fx, "X-Other: 1");
         let (open, _wires) = fx.window();
+        open.click("More actions");
         assert!(open.find("Unsubscribe").is_empty());
     }
 
@@ -1288,9 +1365,7 @@ mod tests {
         let (open, wires) = fx.window();
         assert_eq!(wires.sent(), [fetch(1)]);
         for name in ["Save .eml", "View source"] {
-            let button = open.get(name);
-            assert_eq!(button.accessible_enabled(), Some(false), "{name}");
-            button.invoke_accessible_default_action();
+            open.choose_more(name);
         }
         assert!(wires.sent().is_empty());
         let downloads = fx.paths.cache_dir.join("downloads");
@@ -1306,7 +1381,7 @@ mod tests {
             .set_raw("INBOX", 1, HOSTILE, "line one")
             .unwrap();
         let (open, _wires) = fx.window();
-        open.click("View source");
+        open.choose_more("View source");
         assert_eq!(open.find("Subject: ]0;pwnedreport").len(), 1);
         assert_eq!(open.find("Copy").len(), 1);
         let copied = open.window().get_source_text();
@@ -1327,7 +1402,7 @@ mod tests {
             .set_raw("INBOX", 1, raw.as_bytes(), "x")
             .unwrap();
         let (open, _wires) = fx.window();
-        open.click("View source");
+        open.choose_more("View source");
         let (rows, short) = open.with(|live| {
             let source = live.app.body.as_ref().unwrap().source.as_ref().unwrap();
             let short = source
@@ -1350,7 +1425,7 @@ mod tests {
             .set_raw("INBOX", 2, HOSTILE, "line one")
             .unwrap();
         let (open, _wires) = fx.window();
-        open.click("View source");
+        open.choose_more("View source");
         assert_eq!(open.find("Subject: ]0;pwnedreport").len(), 1);
         open.press("j");
         assert!(open.with(|live| live.app.body.as_ref().is_some_and(|b| b.source.is_none())));
@@ -1365,14 +1440,15 @@ mod tests {
         add_html(&fx, 2, "<p>rich words</p>", "plain words");
         let (open, _wires) = fx.window();
         assert!(shows_html(&open));
-        open.click("Text");
+        open.choose_more("Show as text");
         assert!(!shows_html(&open));
         assert_eq!(open.window().get_body_text(), "plain words");
-        open.click("HTML");
+        open.choose_more("Show as HTML");
         assert!(shows_html(&open));
         open.press("j");
-        assert!(open.find("HTML").is_empty());
-        assert!(open.find("Text").is_empty());
+        open.click("More actions");
+        assert!(open.find("Show as HTML").is_empty());
+        assert!(open.find("Show as text").is_empty());
     }
 
     #[test]
@@ -1387,8 +1463,9 @@ mod tests {
             "plain words",
         );
         let (open, _wires) = fx.window();
-        assert_eq!(open.get("HTML").accessible_enabled(), Some(false));
-        assert_eq!(open.get("Text").accessible_enabled(), Some(true));
+        // The item is disabled, and the action declines too.
+        open.choose_more("Show as HTML");
+        assert!(!shows_html(&open));
     }
 
     #[test]
@@ -1397,7 +1474,7 @@ mod tests {
         let fx = Fixture::new(&["work"]);
         add_html(&fx, 1, "<p>rich words</p>", "plain words");
         let (open, _wires) = fx.window();
-        open.click("View source");
+        open.choose_more("View source");
         let part = "Content-Type: text/html; charset=utf-8";
         assert_eq!(open.find(part).len(), 1);
         open.press("v");
@@ -1421,7 +1498,7 @@ mod tests {
         use crate::draft::{Condition, Field, Op};
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = reading_hello(&fx);
-        open.click("New rule for mail from this sender");
+        open.click("Rule from sender");
         assert_eq!(open.with(|live| live.app.view.clone()), View::Rules);
         assert_eq!(
             draft_conditions(&open),
@@ -1444,7 +1521,7 @@ mod tests {
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = reading_hello(&fx);
         let inbox = open.with(|live| live.app.view.clone());
-        open.click("New rule for mail from this sender");
+        open.click("Rule from sender");
         open.with(|live| {
             live.app
                 .apply(UiAction::EditDraft(Box::new(crate::draft::Draft {
@@ -1454,7 +1531,7 @@ mod tests {
         });
         open.with(|live| live.app.select_view(inbox.clone()));
         open.tick();
-        open.click("New rule for mail from this sender");
+        open.click("Rule from sender");
         assert_eq!(open.find("This rule has unsaved changes.").len(), 1);
         assert_eq!(
             open.with(|live| live.app.view.clone()),

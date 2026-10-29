@@ -80,8 +80,15 @@ export component MailWindow inherits Window {
     in property <string> inbox-icon;
     in property <string> envelope-icon;
     in property <string> rule-icon;
+    // The reader's More menu, Reply and the arrow that says it opens the mail app, and an attachment.
+    in property <string> more-icon;
+    in property <string> reply-icon;
+    in property <string> external-icon;
+    in property <string> file-icon;
 
+    // The message actions that move the message, then the marks: flag and read state.
     in property <[ToolButton]> tool-buttons;
+    in property <[ToolButton]> mark-buttons;
     in property <bool> tool-buttons-enabled;
     in property <string> search-hint;
     in property <string> selection-title;
@@ -223,6 +230,7 @@ export component MailWindow inherits Window {
     callback preview-rule(int);
     callback new-rule();
     callback rule-from();
+    callback reply();
     callback edit-rule(int);
     callback set-enabled(int, bool);
     pure callback rule-drag-data(int) -> data-transfer;
@@ -560,6 +568,7 @@ export component MailWindow inherits Window {
                         save-icon: root.save-icon;
                         source-icon: root.source-icon;
                         actions: root.tool-buttons;
+                        marks: root.mark-buttons;
                         actions-enabled: root.tool-buttons-enabled;
                         selection-title: root.selection-title;
                         selection: root.selection;
@@ -575,8 +584,13 @@ export component MailWindow inherits Window {
                         save-attachment-as(i) => { root.save-attachment-as(i); }
                         open-link(url) => { root.open-link(url); }
                         rule-icon: root.rule-icon;
+                        more-icon: root.more-icon;
+                        reply-icon: root.reply-icon;
+                        external-icon: root.external-icon;
+                        file-icon: root.file-icon;
                         empty-icon: root.envelope-icon;
                         rule-from => { root.rule-from(); }
+                        reply => { root.reply(); }
                         page: root.page;
                         strips: root.strips;
                         page-width(width) => { root.page-width(width); }

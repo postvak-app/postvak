@@ -18,6 +18,9 @@ pub(crate) struct Button {
 /// The hover hint of the search field.
 pub(crate) const SEARCH_HINT: &str = "Search · /";
 
+/// How many of `buttons` move the message; the rest, its flag and read state, are drawn as a group of their own.
+pub(crate) const MOVING: usize = 4;
+
 /// The message actions, left to right. In the Archive folder the archive button moves back to the inbox, and in the
 /// Junk folder the junk button reports not junk.
 pub(crate) fn buttons(app: &App) -> [Button; 6] {
@@ -46,7 +49,7 @@ pub(crate) fn buttons(app: &App) -> [Button; 6] {
             icons::MOVE,
             "Move message",
             "Move · m",
-            "Move…",
+            "Move",
             UiAction::OpenMovePicker,
         ),
         button(
