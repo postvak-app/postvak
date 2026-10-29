@@ -1460,6 +1460,78 @@ fn special_use_falls_back_to_folder_name() {
     assert_eq!(ops.mail["archive"].len(), 1);
 }
 
+fn roles_by_name(listed: &[(&str, &str, Option<&str>)]) -> Vec<(String, Option<String>)> {
+    let mut folders: Vec<RemoteFolder> = listed
+        .iter()
+        .map(|(name, delimiter, special_use)| RemoteFolder {
+            name: name.to_string(),
+            special_use: special_use.map(str::to_string),
+            delimiter: Some(delimiter.to_string()),
+            noselect: false,
+        })
+        .collect();
+    special_use_by_name(&mut folders);
+    folders
+        .into_iter()
+        .map(|f| (f.name, f.special_use))
+        .collect()
+}
+
+#[test]
+fn special_use_falls_back_to_common_synonyms_under_inbox() {
+    let roles = roles_by_name(&[
+        ("INBOX", ".", None),
+        ("INBOX.Archives", ".", None),
+        ("INBOX.Drafts", ".", None),
+        ("INBOX.Sent Messages", ".", None),
+        ("INBOX.spam", ".", None),
+        ("INBOX.Trash", ".", None),
+    ]);
+    let role = |name: &str| roles.iter().find(|r| r.0 == name).unwrap().1.as_deref();
+    assert_eq!(role("INBOX"), None);
+    assert_eq!(role("INBOX.Archives"), Some("Archive"));
+    assert_eq!(role("INBOX.Drafts"), Some("Drafts"));
+    assert_eq!(role("INBOX.Sent Messages"), Some("Sent"));
+    assert_eq!(role("INBOX.spam"), Some("Junk"));
+    assert_eq!(role("INBOX.Trash"), Some("Trash"));
+}
+
+#[test]
+fn special_use_falls_back_to_exchange_names() {
+    let roles = roles_by_name(&[
+        ("Bin", "/", None),
+        ("Deleted Items", "/", None),
+        ("Junk E-mail", "/", None),
+        ("Sent Items", "/", None),
+    ]);
+    assert_eq!(
+        roles,
+        [
+            ("Bin".into(), None),
+            ("Deleted Items".into(), Some("Trash".into())),
+            ("Junk E-mail".into(), Some("Junk".into())),
+            ("Sent Items".into(), Some("Sent".into())),
+        ],
+        "the first synonym in the list wins"
+    );
+}
+
+#[test]
+fn special_use_by_name_skips_nested_folders_and_marked_roles() {
+    let roles = roles_by_name(&[
+        ("INBOX/Projects/Trash", "/", None),
+        ("Projects/Archive", "/", None),
+        ("Rubbish", "/", Some("Trash")),
+        ("Trash", "/", None),
+    ]);
+    assert!(
+        roles
+            .iter()
+            .all(|(name, role)| name == "Rubbish" || role.is_none()),
+        "{roles:?}"
+    );
+}
+
 #[test]
 fn flag_rule_acts_and_logs_once_across_passes() {
     let mut ops = RecordingOps::default().with_folder("INBOX", None);
