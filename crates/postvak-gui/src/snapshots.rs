@@ -160,6 +160,43 @@ fn a_sender_logo() {
     snapshot(&open, "gui_sender_logo");
 }
 
+/// A message with attachments in a reader wide enough to label its actions.
+#[test]
+fn reader_attachments() {
+    let fx = Fixture::mailbox("light");
+    let raw = "From: Northwind Rail <tickets@northwind-rail.example>\r\nSubject: Your e-ticket: Utrecht to Koeln\r\n\
+        MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\n\
+        Your ticket for Thursday is attached.\r\n--b\r\nContent-Type: application/pdf\r\n\
+        Content-Disposition: attachment; filename=\"e-ticket-UTR-CGN.pdf\"\r\n\r\nticket\r\n--b\r\n\
+        Content-Type: application/pdf\r\nContent-Disposition: attachment; filename=\"conditions.pdf\"\r\n\r\n\
+        conditions\r\n--b--\r\n";
+    fx.add(
+        "work",
+        mail(
+            97,
+            "Northwind Rail <tickets@northwind-rail.example>",
+            "Your e-ticket: Utrecht to Koeln",
+            "",
+            "Your ticket for Thursday is attached.",
+        ),
+    );
+    fx.store("work")
+        .set_raw(
+            "INBOX",
+            97,
+            raw.as_bytes(),
+            "Your ticket for Thursday is attached.",
+        )
+        .unwrap();
+    let (open, _wires) = open(&fx);
+    resize(&open, (1600.0, 800.0));
+    open.with(|live| live.app.select_view(work_inbox()));
+    open.tick_until(|open| {
+        slint::Model::row_count(&open.window().get_body_info().attachments) == 2
+    });
+    snapshot(&open, "gui_reader_attachments");
+}
+
 #[test]
 fn all_inboxes() {
     let fx = Fixture::mailbox("dark");
@@ -690,7 +727,7 @@ fn the_inbox_lines_up_on_the_grid() {
     );
     assert_eq!(
         edge(&open, "Archive message").1,
-        edge(&open, "View source").1,
+        edge(&open, "More actions").1,
         "the reader's actions share a line"
     );
     let (rules, activity) = (open.get("Rules"), open.get("Activity"));
@@ -1076,7 +1113,6 @@ fn resize(open: &Open, (width, height): (f32, f32)) {
 fn rows_and_buttons_keep_the_grid_at_every_size() {
     use super::theme::{CONTROL, LIST_ROW};
     let (_fx, open, _wires) = inbox("light");
-    let (_, _, _, row) = grid(&open);
     let window = open.window();
     let theme = slint::ComponentHandle::global::<super::ui::Theme>(&window);
     for size in sizes(&open) {
@@ -1084,7 +1120,7 @@ fn rows_and_buttons_keep_the_grid_at_every_size() {
         let heights = [
             ("FolderRow", theme.get_folder_row()),
             ("ListRow", LIST_ROW),
-            ("TextButton", row),
+            ("TextButton", CONTROL),
         ];
         for (type_name, height) in heights {
             let found = all(&open, type_name);
@@ -1094,11 +1130,12 @@ fn rows_and_buttons_keep_the_grid_at_every_size() {
                 "{size:?}: no {type_name}"
             );
             for b in found {
-                // A list row grows by its heading strip, when it has one.
-                let strip = if type_name == "ListRow" {
-                    super::theme::SECTION
-                } else {
-                    0.0
+                // A list row grows by its heading strip, when it has one; a pill is half a pad taller than a plain
+                // text button.
+                let strip = match type_name {
+                    "ListRow" => super::theme::SECTION,
+                    "TextButton" => theme.get_pad() / 2.0,
+                    _ => 0.0,
                 };
                 assert!(
                     b.height == height || b.height == height + strip,
@@ -1108,9 +1145,11 @@ fn rows_and_buttons_keep_the_grid_at_every_size() {
                 );
             }
         }
+        // The reader's More is as tall as the pill beside it.
+        let pill = CONTROL + theme.get_pad() / 2.0;
         for b in all(&open, "IconButton") {
             assert!(
-                b.width == b.height && [CONTROL, theme.get_action()].contains(&b.height),
+                b.width == b.height && [CONTROL, pill, theme.get_action()].contains(&b.height),
                 "{size:?}: {b:?}"
             );
         }
@@ -1152,7 +1191,7 @@ fn content_sits_inset_from_its_pane_at_every_size() {
             margin,
             "{size:?}: the reader's actions"
         );
-        let source = labelled(&open, "View source").right();
+        let source = labelled(&open, "More actions").right();
         assert!(
             body.right() - source >= margin,
             "{size:?}: the reader's tools"

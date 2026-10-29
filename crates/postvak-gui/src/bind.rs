@@ -14,9 +14,10 @@ use super::rows::{ListModel, PageModel, model, sync, synced};
 use super::rules::SheetSort;
 use super::state::{self, App, Focus, UiAction, View};
 use super::ui::{
-    AccountFields, ActionData, BodyInfo, ConditionData, Dialog, Dot, FolderItem, FolderKind,
-    KeyHelp, MailWindow, MenuAction, MenuChoice, MenuState, PageInfo, Pane, ProposalData, Remote,
-    RuleData, RuleEditor, SelectedData, Sheet, StatusLine, Theme, ThemePreference, ToolButton,
+    AccountFields, ActionData, AttachmentData, BodyInfo, ConditionData, Dialog, Dot, FolderItem,
+    FolderKind, KeyHelp, MailWindow, MenuAction, MenuChoice, MenuState, PageInfo, Pane,
+    ProposalData, Remote, RuleData, RuleEditor, SelectedData, Sheet, StatusLine, Theme,
+    ThemePreference, ToolButton,
 };
 use super::{account, body, icons, list, menu, rules, status, theme, toolbar};
 use postvak_core::message::clean;
@@ -52,6 +53,10 @@ pub(crate) fn init(window: &MailWindow) {
     window.set_inbox_icon(icons::INBOX.into());
     window.set_envelope_icon(icons::MARK_UNREAD.into());
     window.set_rule_icon(icons::RULES.into());
+    window.set_more_icon(icons::MORE.into());
+    window.set_reply_icon(icons::REPLY.into());
+    window.set_external_icon(icons::EXTERNAL.into());
+    window.set_file_icon(icons::FILE.into());
     window.set_sync_icon(icons::SYNC.into());
     window.set_save_icon(icons::SAVE.into());
     window.set_source_icon(icons::SOURCE.into());
@@ -83,8 +88,12 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
         hint: b.hint.into(),
         label: b.label.into(),
     });
-    sync(window.get_tool_buttons(), buttons.into(), |m| {
+    let (moving, marks) = buttons.split_at(toolbar::MOVING);
+    sync(window.get_tool_buttons(), moving.to_vec(), |m| {
         window.set_tool_buttons(m)
+    });
+    sync(window.get_mark_buttons(), marks.to_vec(), |m| {
+        window.set_mark_buttons(m)
     });
     window.set_tool_buttons_enabled(toolbar::enabled(app));
 
@@ -263,11 +272,21 @@ fn present_body(app: &App, window: &MailWindow) {
         text_note: pane.text_note.unwrap_or_default().into(),
         adapts: pane.adapts,
         original_colours: pane.original_colours,
-        attachments: strings(shown.attachments.clone(), pane.attachments),
+        attachments: synced(
+            shown.attachments.clone(),
+            pane.attachments
+                .into_iter()
+                .map(|(name, size)| AttachmentData {
+                    name: name.into(),
+                    size: size.into(),
+                })
+                .collect(),
+        ),
         attachments_pending: pane.attachments_pending,
         saved: text(pane.saved),
         unsubscribe: pane.unsubscribe,
         unsubscribed: pane.unsubscribed,
+        reply: pane.reply,
         links: strings(shown.links.clone(), pane.links),
     };
     if info != shown {
@@ -1024,6 +1043,12 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     window.on_reject_rule(move |i| {
         on(one(move |app| {
             Some(UiAction::RejectRule(proposal(app, i)?))
+        }));
+    });
+    window.on_reply(move || {
+        on(one(|app| {
+            let message = app.body.as_ref()?.message.as_ref()?;
+            Some(UiAction::OpenUrl(body::reply_url(message)?))
         }));
     });
     window.on_rule_from(move || {
