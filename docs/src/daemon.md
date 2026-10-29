@@ -1,6 +1,6 @@
 # Background sync
 
-One process, the daemon, syncs every account, runs your rules and sends the notifications for new mail. The mail window, the command line and agents over MCP all talk to it, so they never fight over a mailbox.
+One process, the daemon, syncs every account, runs your rules and sends the notifications for new mail and for rules waiting for your approval. The mail window, the command line and agents over MCP all talk to it, so they never fight over a mailbox.
 
 ## How it starts
 

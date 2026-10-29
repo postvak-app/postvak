@@ -692,6 +692,35 @@ async fn rules_withdraw_and_replace_touch_only_the_callers_own_proposals() {
 }
 
 #[tokio::test]
+async fn an_edit_leaves_the_rule_as_it_is_until_approved() {
+    let fx = fixture(&["work"]);
+    std::fs::write(fx.paths.rules_file(), RULES).unwrap();
+    let client = connect(&fx, "read,rules:propose,rules:write", &[]).await;
+    let mut edit = named_rule("codes");
+    edit["edit"] = json!(true);
+    let result = call(&client, "rules_propose", edit).await;
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    assert_eq!(
+        result.structured_content.unwrap()["proposed"],
+        "codes (edit)"
+    );
+    assert_eq!(rule_names(&fx), ["codes", "codes (edit)"]);
+    let listed = rows(&call(&client, "rules_list", json!({})).await);
+    assert_eq!(listed[0]["actions"], json!({ "delete": true }));
+    assert_eq!(listed[0]["replaces"], Value::Null);
+    assert_eq!(listed[1]["replaces"], "codes");
+
+    let approved = call(&client, "rules_approve", json!({ "name": "codes (edit)" })).await;
+    assert_eq!(
+        approved.structured_content.unwrap(),
+        json!({ "rule": "codes", "enabled": true })
+    );
+    assert_eq!(rule_names(&fx), ["codes"]);
+    let listed = rows(&call(&client, "rules_list", json!({})).await);
+    assert_eq!(listed[0]["actions"], json!({ "flagged": true }));
+}
+
+#[tokio::test]
 async fn rules_propose_schema_offers_one_rule_or_a_batch() {
     let fx = fixture(&["work"]);
     let client = connect(&fx, "rules:propose", &[]).await;
@@ -704,7 +733,7 @@ async fn rules_propose_schema_offers_one_rule_or_a_batch() {
         "{schema}"
     );
     for key in [
-        "name", "match", "actions", "rules", "before", "after", "replace",
+        "name", "match", "actions", "rules", "before", "after", "replace", "edit",
     ] {
         assert!(schema["properties"][key].is_object(), "{key}: {schema}");
     }
@@ -875,6 +904,58 @@ async fn rules_write_approves_rejects_and_toggles() {
     );
 }
 
+#[tokio::test]
+async fn rules_move_changes_the_order_and_keeps_rules_of_every_account_from_a_narrowed_server() {
+    let fx = fixture(&["home", "work"]);
+    let global =
+        "[[rules]]\nname = \"global\"\nmatch.read = true\nactions = { flagged = true }\n\n";
+    std::fs::write(
+        fx.paths.rules_file(),
+        scoped_rule("first", "work") + &scoped_rule("second", "work") + global,
+    )
+    .unwrap();
+    let order = || {
+        postvak_core::rules::load(&fx.paths.rules_file())
+            .unwrap()
+            .rules
+            .into_iter()
+            .map(|r| r.name)
+            .collect::<Vec<_>>()
+    };
+    let client = connect(&fx, "read,rules:write", &[]).await;
+    let moved = call(
+        &client,
+        "rules_move",
+        json!({ "name": "second", "before": "first" }),
+    )
+    .await;
+    assert_ne!(moved.is_error, Some(true), "{moved:?}");
+    assert_eq!(order(), ["second", "first", "global"]);
+    let both = json!({ "name": "second", "before": "first", "after": "global" });
+    assert!(
+        error_text(&call(&client, "rules_move", both).await).contains("one of before and after")
+    );
+
+    let narrow = connect(&fx, "read,rules:write", &["work"]).await;
+    let text = error_text(
+        &call(
+            &narrow,
+            "rules_move",
+            json!({ "name": "global", "before": "first" }),
+        )
+        .await,
+    );
+    assert!(text.contains("applies to every account"), "{text}");
+    let moved = call(
+        &narrow,
+        "rules_move",
+        json!({ "name": "first", "after": "global" }),
+    )
+    .await;
+    assert_ne!(moved.is_error, Some(true), "{moved:?}");
+    assert_eq!(order(), ["second", "global", "first"]);
+}
+
 fn scoped_rule(name: &str, account: &str) -> String {
     format!(
         "[[rules]]\nname = \"{name}\"\naccount = \"{account}\"\nenabled = false\nproposed_by = \"mcp\"\nmatch.subject = {{ contains = \"x\" }}\nactions = {{ flagged = true }}\n\n"
@@ -922,6 +1003,10 @@ async fn rule_writes_refuse_rules_of_hidden_accounts_and_leave_the_file_alone() 
             "rules_set_enabled",
             json!({ "name": "for-home", "enabled": true }),
         ),
+        (
+            "rules_move",
+            json!({ "name": "for-home", "after": "for-home" }),
+        ),
     ] {
         let text = error_text(&call(&client, tool, arguments).await);
         assert!(text.contains("no rule named 'for-home'"), "{tool}: {text}");
@@ -945,10 +1030,13 @@ async fn withdraw_replace_and_placement_treat_a_hidden_accounts_proposal_as_abse
     replacing["replace"] = json!(true);
     let mut placed = rule("p");
     placed["before"] = json!("for-home");
+    let mut editing = rule("for-home");
+    editing["edit"] = json!(true);
     for (tool, arguments) in [
         ("rules_withdraw", json!({ "name": "for-home" })),
         ("rules_propose", replacing),
         ("rules_propose", placed),
+        ("rules_propose", editing),
     ] {
         let text = error_text(&call(&client, tool, arguments.clone()).await);
         assert!(
@@ -1339,7 +1427,12 @@ async fn tools_list_per_scope_set_is_exact_and_alphabetical() {
         ("read:bodies", &["attachments", "show"]),
         (
             "rules:write",
-            &["rules_approve", "rules_reject", "rules_set_enabled"],
+            &[
+                "rules_approve",
+                "rules_move",
+                "rules_reject",
+                "rules_set_enabled",
+            ],
         ),
         (
             "mail:modify",
@@ -1385,6 +1478,7 @@ async fn annotations_mark_reads_and_destructive_tools() {
             "delete",
             "rules_apply_existing",
             "rules_approve",
+            "rules_move",
             "rules_set_enabled",
             "trash_purge",
             "unsubscribe",

@@ -212,6 +212,7 @@ pub fn rule(rule: &Rule, position: usize) -> serde_json::Result<Value> {
             ("account", &rule.account),
             ("folder", &rule.folder),
             ("proposed_by", &rule.proposed_by),
+            ("replaces", &rule.replaces),
         ] {
             map.insert(key.into(), json!(value));
         }
@@ -307,7 +308,7 @@ mod tests {
         assert_eq!(
             super::rule(&rule, 3).unwrap(),
             serde_json::json!({
-                "name": "a", "position": 3, "enabled": true, "account": null, "folder": null, "proposed_by": null,
+                "name": "a", "position": 3, "enabled": true, "account": null, "folder": null, "proposed_by": null, "replaces": null,
                 "match": {"subject": {"contains": "x"}}, "actions": {"move": "X"},
             })
         );

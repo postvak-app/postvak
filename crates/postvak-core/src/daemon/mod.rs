@@ -1,5 +1,5 @@
 //! The one process that owns the engine, serving it to the GUI, CLI and MCP over a private Unix socket.
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::net::Shutdown;
@@ -293,6 +293,7 @@ struct Shared {
     /// Set by a stop signal.
     signalled: Arc<AtomicBool>,
     watch: Mutex<Watch>,
+    notifier: Option<crate::notify::Notifier>,
 }
 
 /// A panic elsewhere must not take the daemon down with a poisoned lock.
@@ -317,15 +318,15 @@ fn serve(
         login: options.login.clone(),
         signalled,
         watch: Mutex::new(watch),
+        notifier: options.notify.then(crate::notify::Notifier::new),
     });
-    let notifier = options.notify.then(crate::notify::Notifier::new);
     let router = std::thread::Builder::new()
         .name("daemon-events".into())
         .spawn({
             let shared = shared.clone();
             move || {
                 route_events(&shared, events, io::stdout().is_terminal(), |mail| {
-                    if let Some(notifier) = &notifier {
+                    if let Some(notifier) = &shared.notifier {
                         notifier.new_mail(mail);
                     }
                 });
@@ -410,6 +411,10 @@ struct Watch {
     file_lines: Vec<String>,
     /// The rules' warnings last logged, so each is logged once rather than on every change.
     warned: Vec<String>,
+    /// The proposals waiting for approval when the file last loaded; None before it first did.
+    waiting: Option<BTreeSet<String>>,
+    /// Those that started waiting since, to notify.
+    proposed: Vec<String>,
     checked: Instant,
 }
 
@@ -428,6 +433,8 @@ impl Watch {
             watched_lines: Vec::new(),
             file_lines: Vec::new(),
             warned: Vec::new(),
+            waiting: None,
+            proposed: Vec::new(),
             checked: Instant::now(),
         }
     }
@@ -466,6 +473,8 @@ impl Watch {
         self.watch_folders(&file.rules);
         self.file_lines = warnings;
         self.log_new();
+        let proposed = new_proposals(&mut self.waiting, &file.rules);
+        self.proposed.extend(proposed);
     }
 
     /// Logs the warnings of the file and of the folders that were not logged before.
@@ -542,6 +551,25 @@ impl Watch {
     }
 }
 
+/// The proposals in `rules` waiting for approval that `waiting` did not hold, which then holds them all. The first
+/// load only learns them, so the proposals that waited before the daemon started do not notify again.
+fn new_proposals(
+    waiting: &mut Option<BTreeSet<String>>,
+    rules: &[crate::rules::Rule],
+) -> Vec<String> {
+    let now: BTreeSet<String> = rules
+        .iter()
+        .filter(|rule| !rule.enabled && rule.proposed_by.is_some())
+        .map(|rule| rule.name.clone())
+        .collect();
+    let new = match waiting {
+        Some(before) => now.difference(before).cloned().collect(),
+        None => Vec::new(),
+    };
+    *waiting = Some(now);
+    new
+}
+
 struct Connection {
     stream: UnixStream,
     reader: JoinHandle<()>,
@@ -552,6 +580,12 @@ fn apply_file_changes(shared: &Shared, poll: bool) {
     // Held throughout, so a request never overtakes a change another thread is still applying.
     let mut watch = lock(&shared.watch);
     let (config, rules) = watch.changed(poll);
+    let proposed = std::mem::take(&mut watch.proposed);
+    if let Some(notifier) = &shared.notifier
+        && !proposed.is_empty()
+    {
+        notifier.proposals(&proposed);
+    }
     if let Some(engine) = lock(&shared.engine).as_mut() {
         if let Some(config) = &config {
             engine.apply_config(config);

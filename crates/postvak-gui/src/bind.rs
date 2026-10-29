@@ -598,14 +598,16 @@ fn present_sheet(app: &App, window: &MailWindow) {
             sync(window.get_rules_offers(), offers, |m| {
                 window.set_rules_offers(m)
             });
-            let proposals: Vec<ProposalData> = app
-                .rules
-                .proposals
-                .iter()
+            let filter = app.rules_filter.as_str();
+            let proposals: Vec<ProposalData> = rules::shown_proposals(&app.rules.proposals, filter)
+                .into_iter()
+                .map(|i| &app.rules.proposals[i])
                 .map(|p| ProposalData {
                     label: p.label.as_str().into(),
                     by: p.by.as_str().into(),
                     summary: p.summary.as_str().into(),
+                    note: p.note.as_str().into(),
+                    edits: p.edits,
                     toml: p.toml.as_str().into(),
                     marks: p.marks.as_str().into(),
                     preview: app
@@ -615,7 +617,7 @@ fn present_sheet(app: &App, window: &MailWindow) {
                         .map_or_else(SharedString::new, Into::into),
                 })
                 .collect();
-            let lines: Vec<RuleData> = rules::rule_order(&app.rules.lines, app.sheet_sort)
+            let lines: Vec<RuleData> = rules::shown_rules(&app.rules.lines, app.sheet_sort, filter)
                 .into_iter()
                 .map(|i| (i, &app.rules.lines[i]))
                 .map(|(i, r)| RuleData {
@@ -633,13 +635,17 @@ fn present_sheet(app: &App, window: &MailWindow) {
                         .is_some_and(|d| d.original.as_ref() == Some(&r.name)),
                 })
                 .collect();
-            window.set_rules_counts(rules::counts(lines.len(), proposals.len()).into());
+            window.set_rules_counts(
+                rules::counts(app.rules.lines.len(), app.rules.proposals.len()).into(),
+            );
+            window.set_rules_empty(rules::no_rules(filter).into());
             let sort = app.sheet_sort;
             window.set_rules_sort(
                 sort.and_then(|s| i32::try_from(s.column).ok())
                     .unwrap_or(-1),
             );
             window.set_rules_ascending(sort.is_none_or(|s| s.ascending));
+            window.set_rules_reorderable(rules::reorderable(sort));
             sync(window.get_proposals(), proposals, |m| {
                 window.set_proposals(m)
             });
@@ -1026,6 +1032,23 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
             Some(UiAction::SetRuleEnabled(rule.name.clone(), enabled))
         }));
     });
+    window.on_rule_drag_data(|row| {
+        let row = usize::try_from(row).unwrap_or_default();
+        slint::DataTransfer::from(SharedString::from(rules::drag_data(row)))
+    });
+    window.on_dragged_rule(|data| {
+        (data.plain_text().ok())
+            .and_then(|text| rules::dragged_row(&text))
+            .and_then(|row| i32::try_from(row).ok())
+            .unwrap_or(-1)
+    });
+    window.on_rule_dropped(move |from, to, below| {
+        on(one(move |app| {
+            let (from, to) = (usize::try_from(from).ok()?, usize::try_from(to).ok()?);
+            let filter = &app.rules_filter;
+            rules::dropped(&app.rules.lines, app.sheet_sort, filter, from, to, below)
+        }));
+    });
     window.on_purge_trash(move || {
         act(UiAction::PurgeTrash);
     });
@@ -1035,6 +1058,9 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
             let row = &app.trash[*nth(&order, i)?];
             Some(UiAction::Restore(row.account, row.entry.path.clone()))
         }));
+    });
+    window.on_filter_rules(move |text| {
+        act(UiAction::FilterRules(text.into()));
     });
     window.on_sort_sheet(move |column, ascending| {
         if let Ok(column) = usize::try_from(column) {
@@ -1054,15 +1080,16 @@ fn nth<T>(items: impl IntoIterator<Item = T>, index: i32) -> Option<T> {
     items.into_iter().nth(usize::try_from(index).ok()?)
 }
 
-/// The rule the Rules table shows at `index`, in its sorted order.
+/// The rule the Rules table shows at `index`, in its filtered and sorted order.
 fn rule_line(app: &App, index: i32) -> Option<&rules::RuleLine> {
-    let order = rules::rule_order(&app.rules.lines, app.sheet_sort);
-    app.rules.lines.get(*nth(&order, index)?)
+    let shown = rules::shown_rules(&app.rules.lines, app.sheet_sort, &app.rules_filter);
+    app.rules.lines.get(*nth(&shown, index)?)
 }
 
 /// The name of the proposal the Rules view shows at `index`.
 fn proposal(app: &App, index: i32) -> Option<String> {
-    Some(nth(&app.rules.proposals, index)?.name.clone())
+    let shown = rules::shown_proposals(&app.rules.proposals, &app.rules_filter);
+    Some(app.rules.proposals.get(*nth(&shown, index)?)?.name.clone())
 }
 
 /// A pill with `label`, drawn from SVG with the window's own fonts.

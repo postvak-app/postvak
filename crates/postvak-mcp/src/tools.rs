@@ -118,6 +118,16 @@ struct DocsArgs {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct MoveRuleArgs {
+    name: String,
+    /// Put it right before the rule of this name; give this or after
+    before: Option<String>,
+    /// Put it right after the rule of this name; give this or before
+    after: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct SetEnabledArgs {
     name: String,
     enabled: bool,
@@ -193,6 +203,8 @@ struct ProposeArgs {
     after: Option<String>,
     /// Replace your own pending proposal of the same name, instead of refusing the name
     replace: Option<bool>,
+    /// Propose a change to the existing rules of these names: each is written as it should read once approved and stored as '<name> (edit)'; the rule runs unchanged until a human approves
+    edit: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -514,6 +526,12 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
             Effect::ReadOnly,
             help::RULES_LIST,
         ),
+        ToolDef::new::<MoveRuleArgs>(
+            "rules_move",
+            Scope::RulesWrite,
+            Effect::Destructive,
+            help::RULES_MOVE,
+        ),
         ToolDef::new::<ProposeArgs>(
             "rules_propose",
             Scope::RulesPropose,
@@ -787,6 +805,10 @@ fn dispatch(
                 }
             }
         }
+        "rules_move" => {
+            let a: MoveRuleArgs = args(arguments)?;
+            backend.move_rule(&a.name, a.before, a.after)
+        }
         "rules_reject" => {
             let a: NameArgs = args(arguments)?;
             backend.reject(&a.name)
@@ -1019,6 +1041,7 @@ const UNWRAPPED_TOOLS: &[&str] = &[
     "rules_approve",
     "rules_check",
     "rules_list",
+    "rules_move",
     "rules_propose",
     "rules_reject",
     "rules_schema",

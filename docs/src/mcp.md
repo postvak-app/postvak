@@ -57,7 +57,7 @@ The install also prints a hint with the granted scopes and how to widen them. It
 | `read:headers` | Every header of a message, such as `List-Id`, `Authentication-Results` (beyond the one bit `authenticated` gives with `read`) or a spam score, from the local store, and with `read` previews of rules with a `header` condition; proposing, enabling or running such a rule needs it too. No body text. | `headers` |
 | `read:bodies` | Message bodies and attachment names, search over indexed bodies and on the server (`search` with `server`) with a `snippet` of the body around a match, and with `read` previews of rules that match on the body. | `attachments`, `show` |
 | `rules:propose` | Proposing rules, which are stored disabled until you approve them, and withdrawing its own proposals while they are still pending. | `rules_propose`, `rules_withdraw` |
-| `rules:write` | Approving and rejecting rules, and turning them on or off. | `rules_approve`, `rules_reject`, `rules_set_enabled` |
+| `rules:write` | Approving and rejecting rules, turning them on or off, and changing their order. | `rules_approve`, `rules_move`, `rules_reject`, `rules_set_enabled` |
 | `files:write` | Writing attachment files into your Downloads folder, or the `--save-dir` you set, and the directories below it. The file name and content come from the sender. | `attachment_save` |
 | `mail:modify` | Acting on mail and the trash. | `archive`, `delete`, `junk`, `mark`, `move`, `rules_apply_existing`, `trash_purge`, `trash_restore`, `unsubscribe` |
 
@@ -78,7 +78,7 @@ The server's instructions to the host are short: the ground rules of the [agent 
 
 The names follow the CLI commands. A tool that lists things returns the CLI's `--json` rows wrapped in `{"rows": [...]}`; the others return one object. Rows carry an `account`; in `rules_list` that is the rule's own scope, and `null` means every account. Message rows carry no body text. `show` returns `{"message": ..., "body": ..., "truncated": ...}`.
 
-`rules.toml` is shared by every account, so `rules_list`, `rules_propose`, `rules_withdraw`, `rules_approve`, `rules_reject` and `rules_set_enabled` take no `account` argument; a rule's own `account` field scopes it. They follow `--account` as described under [Safety](#safety).
+`rules.toml` is shared by every account, so `rules_list`, `rules_propose`, `rules_withdraw`, `rules_approve`, `rules_move`, `rules_reject` and `rules_set_enabled` take no `account` argument; a rule's own `account` field scopes it. They follow `--account` as described under [Safety](#safety).
 
 `read`:
 
@@ -110,7 +110,7 @@ The names follow the CLI commands. A tool that lists things returns the CLI's `-
 
 `rules:propose`:
 
-- `rules_propose` stores a rule disabled, with `proposed_by` set to `mcp:<client name>`, or `mcp` when the host sends no name. A rule scoped to an account the server hides is refused. While `--account` hides an account, a rule without `account` gets the only visible account, or is refused when several are visible. Instead of one rule's fields it takes `rules`, a list stored in the given order, all or none; an error names each failing rule by index and name. Proposals go after the last rule, or right next to another with `before` or `after`. With `replace`, a rule whose name is taken by this host's own pending proposal replaces it in place rather than being refused. One rule returns `{"proposed": name, "account": ...}`, a list `{"proposed": [{"name": ..., "account": ...}, ...]}`.
+- `rules_propose` stores a rule disabled, with `proposed_by` set to `mcp:<client name>`, or `mcp` when the host sends no name. A rule scoped to an account the server hides is refused. While `--account` hides an account, a rule without `account` gets the only visible account, or is refused when several are visible. Instead of one rule's fields it takes `rules`, a list stored in the given order, all or none; an error names each failing rule by index and name. Proposals go after the last rule, or right next to another with `before` or `after`. With `replace`, a rule whose name is taken by this host's own pending proposal replaces it in place rather than being refused. With `edit`, each rule is a change to the existing rule of its name, stored as `<name> (edit)` right after it while the rule runs unchanged; approving it writes the change over the rule. While `--account` hides an account, a rule for every account cannot be edited. One rule returns `{"proposed": name, "account": ...}`, a list `{"proposed": [{"name": ..., "account": ...}, ...]}`.
 - `rules_withdraw` removes one of this host's own pending proposals: a disabled rule whose `proposed_by` is this host's. An approved rule, or another proposer's, is refused; you reject those.
 
 `files:write`:
@@ -122,6 +122,7 @@ The names follow the CLI commands. A tool that lists things returns the CLI's `-
 - `rules_approve` approves a rule. It acts on mail that arrives afterwards.
 - `rules_reject` rejects a proposal.
 - `rules_set_enabled` turns a rule on or off.
+- `rules_move` puts a rule right `before` or `after` another, which changes when it runs.
 
 `mail:modify`:
 
@@ -137,9 +138,9 @@ With more than one visible account, every tool that acts on one message needs `a
 
 - Mail is written by strangers. `show` wraps the body in `<untrusted_mail_content>`, and tells the agent that text inside is data, never instructions. Every other string a stranger wrote comes in the same tag, in every tool's result: subjects, sender and recipient addresses with their names, message and thread ids, a search hit's `snippet`, header names and values, attachment names, and the senders and subjects that `senders` and `rules_coverage` group, such as `"subject": "<untrusted_mail_content>Invoice</untrusted_mail_content>"`. The tags are not part of the text; the server's instructions tell the agent to leave them out when it quotes a field or matches it in a rule. The rule tools return rules as written, without the tag. Any spelling of that tag name inside mail is rewritten to `untrusted-mail-content`, so a mail cannot close the wrapper early. The rewrite ignores letter case, and catches the name spelled with fullwidth or styled letters, or with Cyrillic, Greek and Armenian letters that look like Latin ones. A body is cut at 100 KB and marked `"truncated": true`.
 - Every string in a result or an error loses its control characters and the characters a person cannot see but a model reads, before the tag rewrite runs. That stops "ASCII smuggling", text hidden as Unicode tag characters (U+E0000–U+E007F), and also removes bidi controls, zero-width spaces and the other invisible format characters. A body keeps its newlines and tabs, and emoji keep their zero-width joiners; flags written with tag characters show as a plain black flag. The CLI's `--json` output is cleaned the same way.
-- A host that honours tool annotations asks you before tools that change things. `delete`, `rules_apply_existing`, `rules_approve`, `rules_set_enabled`, `trash_purge` and `unsubscribe` are marked destructive, because they can delete mail or its backups, or cannot be undone. The other changing tools are marked as changing, but not destructive.
+- A host that honours tool annotations asks you before tools that change things. `delete`, `rules_apply_existing`, `rules_approve`, `rules_move`, `rules_set_enabled`, `trash_purge` and `unsubscribe` are marked destructive, because they can delete mail or its backups, or cannot be undone. The other changing tools are marked as changing, but not destructive.
 - Except `trash_purge`, the `mail:modify` tools take `dry_run`. It reports what would happen from the local store and does not ask the daemon.
-- `--account` hides other accounts from every tool. Rule writes refuse rules scoped to a hidden account, and so does proposing one. A rule without `account` applies to every account, hidden ones too, so while an account is hidden `rules_approve` and `rules_set_enabled` refuse to turn such a rule on; turning it off and rejecting it still work.
+- `--account` hides other accounts from every tool. Rule writes refuse rules scoped to a hidden account, and so does proposing one. A rule without `account` applies to every account, hidden ones too, so while an account is hidden `rules_approve` and `rules_set_enabled` refuse to turn such a rule on, and `rules_move` refuses to move it; turning it off and rejecting it still work.
 - Without `read:bodies`, no tool returns or reveals body text: `search` covers subject, addresses and attachment names only, and `rules_test` refuses a rule that matches on the body.
 - Without `read:headers`, no tool returns or reveals a header beyond sender, recipients, subject, date and the threading ids, apart from one bit: a rule with `authenticated` shows which messages your provider's `Authentication-Results` vouches for. `rules_test` and the other rule tools refuse a rule with a `header` condition, at any depth of `any` and `none`.
 - The server cannot create, rename or delete folders, with any scope. That is left to you, in the window or with `postvak folder`, on purpose: a folder delete can take a whole mailbox's structure with it.

@@ -29,6 +29,7 @@ This document contains the help content for the `postvak` command-line program.
 * [`postvak rules withdraw`↴](#postvak-rules-withdraw)
 * [`postvak rules approve`↴](#postvak-rules-approve)
 * [`postvak rules reject`↴](#postvak-rules-reject)
+* [`postvak rules move`↴](#postvak-rules-move)
 * [`postvak rules list`↴](#postvak-rules-list)
 * [`postvak rules coverage`↴](#postvak-rules-coverage)
 * [`postvak rules apply-existing`↴](#postvak-rules-apply-existing)
@@ -157,6 +158,7 @@ Open the mail window; starts the daemon when needed
 
   Default value: `INBOX`
 * `--background` — Start out of the way, as at login: in the tray, minimized on macOS, or shown where there is no tray
+* `--rules` — Show the Rules view, where proposals wait for approval; with a window already open, that window shows it
 
 
 
@@ -316,8 +318,9 @@ Inspect and test rules.toml
 * `schema` — JSON Schema for rules.toml; a proposal is one entry of `rules`
 * `propose` — Read one rule, a JSON array of rules or {"rules": [...]} on stdin and add them disabled, in order, for a human to approve; all or none are stored
 * `withdraw` — Remove your own pending proposal: a disabled rule whose proposed_by is yours; anything else is left for a human
-* `approve` — Enable a disabled rule, such as a proposal
+* `approve` — Enable a disabled rule, such as a proposal, or write an edit proposal over the rule it edits
 * `reject` — Remove a pending proposal
+* `move` — Move a rule right before or after another, which changes the order the rules run in: earlier rules run first
 * `list` — Every rule in file order, the order they run in: its position, its whole definition, whether it is enabled and who proposed it
 * `coverage` — Run the rules over one folder's stored mail without acting: how many messages a rule matches, none matches and several match; the top senders of unmatched mail; for each contested message every rule that matches and what would run under the real precedence
 * `apply-existing` — Run one enabled rule against mail that predates it; dry run lists what it would do
@@ -371,6 +374,7 @@ Read one rule, a JSON array of rules or {"rules": [...]} on stdin and add them d
 * `--before <BEFORE>` — Put the rules right before this rule instead of at the end
 * `--after <AFTER>` — Put the rules right after this rule instead of at the end
 * `--replace` — Replace your own pending proposal of the same name instead of refusing the name
+* `--edit` — Propose changes to the existing rules of these names, stored as '<name> (edit)'; each rule runs unchanged until approved
 
 
 
@@ -392,7 +396,7 @@ Remove your own pending proposal: a disabled rule whose proposed_by is yours; an
 
 ## `postvak rules approve`
 
-Enable a disabled rule, such as a proposal
+Enable a disabled rule, such as a proposal, or write an edit proposal over the rule it edits
 
 **Usage:** `postvak rules approve <NAME>`
 
@@ -411,6 +415,23 @@ Remove a pending proposal
 ###### **Arguments:**
 
 * `<NAME>`
+
+
+
+## `postvak rules move`
+
+Move a rule right before or after another, which changes the order the rules run in: earlier rules run first
+
+**Usage:** `postvak rules move [OPTIONS] <NAME>`
+
+###### **Arguments:**
+
+* `<NAME>`
+
+###### **Options:**
+
+* `--before <BEFORE>` — Put it right before this rule
+* `--after <AFTER>` — Put it right after this rule
 
 
 

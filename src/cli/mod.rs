@@ -118,6 +118,9 @@ enum Command {
         /// Start out of the way, as at login: in the tray, minimized on macOS, or shown where there is no tray
         #[arg(long, conflicts_with = "open")]
         background: bool,
+        /// Show the Rules view, where proposals wait for approval; with a window already open, that window shows it
+        #[arg(long, conflicts_with_all = ["open", "background"])]
+        rules: bool,
     },
     /// Open the window at login, hidden in the tray: a launch agent on macOS, an autostart entry on Linux
     Autostart {
@@ -470,6 +473,9 @@ enum RulesCommand {
         /// Replace your own pending proposal of the same name instead of refusing the name
         #[arg(long)]
         replace: bool,
+        /// Propose changes to the existing rules of these names, stored as '<name> (edit)'; each rule runs unchanged until approved
+        #[arg(long, conflicts_with_all = ["before", "after"])]
+        edit: bool,
     },
     #[command(about = postvak_core::help::RULES_WITHDRAW)]
     Withdraw {
@@ -482,6 +488,16 @@ enum RulesCommand {
     Approve { name: String },
     #[command(about = postvak_core::help::RULES_REJECT)]
     Reject { name: String },
+    #[command(about = postvak_core::help::RULES_MOVE)]
+    Move {
+        name: String,
+        /// Put it right before this rule
+        #[arg(long, conflicts_with = "after", required_unless_present = "after")]
+        before: Option<String>,
+        /// Put it right after this rule
+        #[arg(long)]
+        after: Option<String>,
+    },
     #[command(about = postvak_core::help::RULES_LIST)]
     List {
         #[arg(long)]
@@ -592,6 +608,7 @@ pub fn run() -> Result<()> {
                 account: None,
                 folder: "INBOX".into(),
                 background: false,
+                rules: false,
             },
         }
     } else {
@@ -611,14 +628,21 @@ pub fn run() -> Result<()> {
         account,
         folder,
         background,
+        rules,
     } = cli.command
     {
-        let open = open.map(|uid| postvak_core::notify::Open {
-            account,
-            folder,
-            uid,
-        });
-        return cmd_gui(paths, safe_mode, open, background);
+        let show = if rules {
+            Some(postvak_core::notify::Show::Rules)
+        } else {
+            open.map(|uid| {
+                postvak_core::notify::Show::Message(postvak_core::notify::Open {
+                    account,
+                    folder,
+                    uid,
+                })
+            })
+        };
+        return cmd_gui(paths, safe_mode, show, background);
     }
     let paths = paths?;
     let config = Config::load(&paths.config_file())?;
@@ -1441,17 +1465,17 @@ fn opened_as_mac_app() -> bool {
 fn cmd_gui(
     paths: Result<Paths>,
     safe_mode: bool,
-    open: Option<postvak_core::notify::Open>,
+    show: Option<postvak_core::notify::Show>,
     background: bool,
 ) -> Result<()> {
-    postvak_gui::run(paths, safe_mode, open, background)
+    postvak_gui::run(paths, safe_mode, show, background)
 }
 
 #[cfg(not(feature = "gui"))]
 fn cmd_gui(
     _paths: Result<Paths>,
     _safe_mode: bool,
-    _open: Option<postvak_core::notify::Open>,
+    _show: Option<postvak_core::notify::Show>,
     _background: bool,
 ) -> Result<()> {
     bail!("this postvak was built without the GUI; install it with the default features")
@@ -1543,8 +1567,13 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                 if json {
                     print_json(postvak_core::output::rule(r, position)?);
                 } else {
+                    let edits = r
+                        .replaces
+                        .as_deref()
+                        .map(|target| format!(" edits {}", clean(target, false)))
+                        .unwrap_or_default();
                     println!(
-                        "{}\t{}\t{}",
+                        "{}\t{}\t{}{edits}",
                         if r.enabled { "on " } else { "off" },
                         clean(&r.name, false),
                         clean(r.proposed_by.as_deref().unwrap_or(""), false)
@@ -1659,6 +1688,7 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             before,
             after,
             replace,
+            edit,
         } => {
             let value: serde_json::Value = serde_json::from_reader(io::stdin().lock())
                 .context("reading rules as JSON from stdin")?;
@@ -1675,10 +1705,21 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                 proposals.place = place;
             }
             proposals.replace |= replace;
+            proposals.edit |= edit;
+            if proposals.edit && proposals.place != Place::End {
+                bail!("an edit keeps its rule's place: give --edit without --before or --after");
+            }
             let names: Vec<String> = proposals
                 .rules
                 .iter()
-                .map(|r| format!("'{}'", clean(&r.name, false)))
+                .map(|r| {
+                    if proposals.edit {
+                        postvak_core::rules::edit::edit_name(&r.name)
+                    } else {
+                        r.name.clone()
+                    }
+                })
+                .map(|name| format!("'{}'", clean(&name, false)))
                 .collect();
             postvak_core::rules::edit::propose_all(&paths.rules_file(), proposals, &cli_by(by))?;
             println!(
@@ -1693,16 +1734,44 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             Ok(())
         }
         RulesCommand::Approve { name } => {
-            postvak_core::rules::edit::approve_from_now(paths, &name, time::now())?;
-            println!(
-                "enabled '{}'; it acts on mail that arrives from now on",
-                clean(&name, false)
-            );
+            let approved = postvak_core::rules::edit::approve_from_now(paths, &name, time::now())?;
+            if approved == name {
+                println!(
+                    "enabled '{}'; it acts on mail that arrives from now on",
+                    clean(&name, false)
+                );
+            } else {
+                println!(
+                    "changed '{}' as '{}' proposed; it acts as changed on mail that arrives from now on",
+                    clean(&approved, false),
+                    clean(&name, false)
+                );
+            }
             Ok(())
         }
         RulesCommand::Reject { name } => {
             postvak_core::rules::edit::reject(&paths.rules_file(), &name)?;
             println!("removed proposal '{}'", clean(&name, false));
+            Ok(())
+        }
+        RulesCommand::Move {
+            name,
+            before,
+            after,
+        } => {
+            let (place, words) = match (before, after) {
+                (Some(anchor), _) => (Place::Before(anchor), "before"),
+                (None, Some(anchor)) => (Place::After(anchor), "after"),
+                (None, None) => bail!("give --before or --after"),
+            };
+            postvak_core::rules::edit::move_rule(&paths.rules_file(), &name, &place)?;
+            if let Place::Before(anchor) | Place::After(anchor) = &place {
+                println!(
+                    "moved '{}' {words} '{}'",
+                    clean(&name, false),
+                    clean(anchor, false)
+                );
+            }
             Ok(())
         }
     }

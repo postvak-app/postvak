@@ -310,6 +310,13 @@
             "string",
             "null"
           ]
+        },
+        "replaces": {
+          "description": "The rule this proposal changes once approved; set by `rules propose --edit`",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false,

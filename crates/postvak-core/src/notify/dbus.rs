@@ -9,7 +9,7 @@ use zbus::message::Type;
 use zbus::zvariant::Value;
 use zbus::{MatchRule, Message};
 
-use super::{Notice, escape_markup};
+use super::{Notice, Show, escape_markup};
 use crate::daemon::lock;
 use crate::paths::APP_ID;
 
@@ -139,20 +139,27 @@ impl Request {
                 notice.body.clone()
             },
             actions: vec![DEFAULT_ACTION, "Open"],
-            hints: HashMap::from([
-                // Ties the notification to the desktop entry: its icon, and the desktop's per-app settings.
-                ("desktop-entry", Value::from(APP_ID)),
-                ("category", Value::from("email.arrived")),
-                // From the sound theme; the server plays it, so Do Not Disturb and the volume apply.
-                ("sound-name", Value::from("message-new-email")),
-                // Plasma shows it beside the app's name, so you see which account the mail is for.
-                (
-                    "x-kde-origin-name",
-                    Value::from(notice.open.account.clone().unwrap_or_default()),
-                ),
-            ]),
+            hints: hints(&notice.show),
         }
     }
+}
+
+fn hints(show: &Show) -> HashMap<&'static str, Value<'static>> {
+    // Ties the notification to the desktop entry: its icon, and the desktop's per-app settings.
+    let mut hints = HashMap::from([("desktop-entry", Value::from(APP_ID))]);
+    if let Show::Message(open) = show {
+        hints.extend([
+            ("category", Value::from("email.arrived")),
+            // From the sound theme; the server plays it, so Do Not Disturb and the volume apply.
+            ("sound-name", Value::from("message-new-email")),
+            // Plasma shows it beside the app's name, so you see which account the mail is for.
+            (
+                "x-kde-origin-name",
+                Value::from(open.account.clone().unwrap_or_default()),
+            ),
+        ]);
+    }
+    hints
 }
 
 /// The server's signals about notifications.
@@ -241,11 +248,11 @@ mod tests {
         Notice {
             title: "Tom & Jerry".into(),
             body: "Cheese <today> & tomorrow".into(),
-            open: super::super::Open {
+            show: Show::Message(super::super::Open {
                 account: Some("work".into()),
                 folder: "INBOX".into(),
                 uid,
-            },
+            }),
         }
     }
 
@@ -262,6 +269,17 @@ mod tests {
             request.hints["sound-name"],
             Value::from("message-new-email")
         );
+    }
+
+    #[test]
+    fn a_proposal_notification_neither_plays_the_mail_sound_nor_names_an_account() {
+        let notice = Notice {
+            title: "A rule waits for your approval".into(),
+            body: "newsletters".into(),
+            show: Show::Rules,
+        };
+        let hints = Request::of(&notice, true).hints;
+        assert_eq!(hints.keys().collect::<Vec<_>>(), [&"desktop-entry"]);
     }
 
     #[test]

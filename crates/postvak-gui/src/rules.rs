@@ -12,7 +12,7 @@ use postvak_core::trash::{Trash, TrashEntry};
 use postvak_core::time::date_time;
 
 use super::draft;
-use super::state::{Account, App};
+use super::state::{Account, App, UiAction};
 
 /// Entries shown in the Activity view.
 const LOG_LIMIT: u32 = 500;
@@ -104,13 +104,23 @@ pub(crate) fn offer_label(account: &str, id: &str) -> String {
 pub(crate) struct Proposal {
     pub name: String,
     pub label: String,
-    /// "proposed by agent".
+    /// "proposed by agent", or "edit proposed by agent".
     pub by: String,
     pub summary: String,
-    /// The TOML it adds.
+    /// What it does to rules.toml: "Adds to rules.toml", or names the rule an edit changes.
+    pub note: String,
+    /// Whether it changes a rule rather than adding one, so `marks` holds "-" and " " too.
+    pub edits: bool,
+    /// The TOML it adds, or for an edit the rule's lines both as they are and as the edit has them.
     pub toml: String,
-    /// A "+" beside each line of `toml`, as a diff marks added lines.
+    /// One mark beside each line of `toml`, as a diff marks lines: "+" added, "-" removed, " " unchanged.
     pub marks: String,
+}
+
+impl Proposal {
+    fn matches(&self, filter: &str) -> bool {
+        matches_filter(&[&self.label, &self.by, &self.summary], filter)
+    }
 }
 
 /// A rule in the Rules view's table.
@@ -127,6 +137,45 @@ pub(crate) struct RuleLine {
     pub conditions: String,
     /// "archive, mark read".
     pub actions: String,
+}
+
+impl RuleLine {
+    fn matches(&self, filter: &str) -> bool {
+        let texts = [
+            &*self.label,
+            &self.by,
+            &self.account,
+            &self.folder,
+            &self.conditions,
+            &self.actions,
+        ];
+        matches_filter(&texts, filter)
+    }
+}
+
+/// Whether every word of `filter` is in one of `texts`, ignoring case; an empty filter matches everything.
+fn matches_filter(texts: &[&str], filter: &str) -> bool {
+    let texts: Vec<String> = texts.iter().map(|text| text.to_lowercase()).collect();
+    filter
+        .to_lowercase()
+        .split_whitespace()
+        .all(|word| texts.iter().any(|text| text.contains(word)))
+}
+
+/// What the Rules table says when it shows no rule: none in the file, or none that `filter` matches.
+pub(crate) fn no_rules(filter: &str) -> String {
+    if filter.trim().is_empty() {
+        "rules.toml has no rules yet.".into()
+    } else {
+        format!("No rule matches “{}”.", filter.trim())
+    }
+}
+
+/// The proposals the Rules view shows for `filter`, as indices into `proposals`.
+pub(crate) fn shown_proposals(proposals: &[Proposal], filter: &str) -> Vec<usize> {
+    (0..proposals.len())
+        .filter(|&i| proposals[i].matches(filter))
+        .collect()
 }
 
 /// "1 rule · 2 proposals", beside the Rules title.
@@ -159,25 +208,89 @@ pub(crate) fn banner(state: &RulesState) -> Option<String> {
 }
 
 fn proposals(rules: &[Rule]) -> Vec<Proposal> {
+    let toml = |rule: &Rule| {
+        let toml = rules::rule_toml(rule).unwrap_or_else(|e| e.to_string());
+        clean(&toml, true).trim_end().to_owned()
+    };
     rules
         .iter()
         .filter(|rule| is_proposal(rule))
         .map(|rule| {
-            let toml = rules::rule_toml(rule).unwrap_or_else(|e| e.to_string());
-            let toml = clean(&toml, true).trim_end().to_owned();
+            let by = clean(rule.proposed_by.as_deref().unwrap_or_default(), false);
+            let edited = rule
+                .replaces
+                .as_deref()
+                .and_then(|target| rules.iter().find(|r| r.name == target));
+            let (note, lines) = match edited {
+                Some(old) => {
+                    // Compared as the rule will read once approved: its own name and `enabled`, no proposal keys.
+                    let new = Rule {
+                        name: old.name.clone(),
+                        enabled: old.enabled,
+                        proposed_by: old.proposed_by.clone(),
+                        replaces: old.replaces.clone(),
+                        ..rule.clone()
+                    };
+                    let note = format!("Changes rule '{}' in rules.toml", clean(&old.name, false));
+                    (note, diff(&toml(old), &toml(&new)))
+                }
+                None => {
+                    let lines = toml(rule)
+                        .lines()
+                        .map(|line| ('+', line.to_owned()))
+                        .collect();
+                    ("Adds to rules.toml".to_owned(), lines)
+                }
+            };
+            let (marks, toml): (Vec<String>, Vec<String>) = lines
+                .into_iter()
+                .map(|(mark, line)| (mark.to_string(), line))
+                .unzip();
             Proposal {
                 name: rule.name.clone(),
                 label: clean(&rule.name, false),
-                by: format!(
-                    "proposed by {}",
-                    clean(rule.proposed_by.as_deref().unwrap_or_default(), false)
-                ),
+                by: match edited {
+                    Some(_) => format!("edit proposed by {by}"),
+                    None => format!("proposed by {by}"),
+                },
                 summary: draft::summary(rule),
-                marks: vec!["+"; toml.lines().count()].join("\n"),
-                toml,
+                note,
+                edits: edited.is_some(),
+                marks: marks.join("\n"),
+                toml: toml.join("\n"),
             }
         })
         .collect()
+}
+
+/// `old` and `new` line by line, each marked as a diff marks it: ' ' in both, '-' only in `old`, '+' only in `new`.
+fn diff(old: &str, new: &str) -> Vec<(char, String)> {
+    let (old, new): (Vec<&str>, Vec<&str>) = (old.lines().collect(), new.lines().collect());
+    // common[i][j]: the longest run of lines old[i..] and new[j..] share, in order.
+    let mut common = vec![vec![0usize; new.len() + 1]; old.len() + 1];
+    for i in (0..old.len()).rev() {
+        for j in (0..new.len()).rev() {
+            common[i][j] = if old[i] == new[j] {
+                common[i + 1][j + 1] + 1
+            } else {
+                common[i + 1][j].max(common[i][j + 1])
+            };
+        }
+    }
+    let (mut i, mut j, mut lines) = (0, 0, Vec::new());
+    while i < old.len() || j < new.len() {
+        if i < old.len() && j < new.len() && old[i] == new[j] {
+            lines.push((' ', old[i].to_owned()));
+            (i, j) = (i + 1, j + 1);
+        } else if i < old.len() && (j == new.len() || common[i + 1][j] >= common[i][j + 1]) {
+            lines.push(('-', old[i].to_owned()));
+            i += 1;
+        } else {
+            lines.push(('+', new[j].to_owned()));
+            j += 1;
+        }
+    }
+    lines
 }
 
 fn rule_lines(rules: &[Rule]) -> Vec<RuleLine> {
@@ -258,9 +371,16 @@ pub(crate) fn sheet_order<T: Ord, const N: usize>(
     order
 }
 
+/// The lines the Rules table shows for `filter`, in its order, as indices into `lines`.
+pub(crate) fn shown_rules(lines: &[RuleLine], sort: Option<SheetSort>, filter: &str) -> Vec<usize> {
+    (rule_order(lines, sort).into_iter())
+        .filter(|&i| lines[i].matches(filter))
+        .collect()
+}
+
 /// The order the Rules table shows `lines` in, as indices into them. Its columns are #, Name, Account, Folder,
 /// Conditions and Actions; # is the order they run in, which is also the order without `sort`.
-pub(crate) fn rule_order(lines: &[RuleLine], sort: Option<SheetSort>) -> Vec<usize> {
+fn rule_order(lines: &[RuleLine], sort: Option<SheetSort>) -> Vec<usize> {
     match sort {
         Some(SheetSort {
             column: 0,
@@ -280,6 +400,46 @@ pub(crate) fn rule_order(lines: &[RuleLine], sort: Option<SheetSort>) -> Vec<usi
         }
         _ => (0..lines.len()).collect(),
     }
+}
+
+/// Whether the Rules table shows the order the rules run in, the only order in which a dragged row has a place.
+pub(crate) fn reorderable(sort: Option<SheetSort>) -> bool {
+    sort.is_none_or(|sort| sort.column == 0 && sort.ascending)
+}
+
+/// What the plain text of a dragged rule row says: `rule:` and its row, so a message row's number cannot pass for one.
+pub(crate) fn drag_data(row: usize) -> String {
+    format!("rule:{row}")
+}
+
+/// The row a drag carries, when it is a rule row of `drag_data`.
+pub(crate) fn dragged_row(text: &str) -> Option<usize> {
+    text.strip_prefix("rule:")?.parse().ok()
+}
+
+/// What dropping the Rules table's row `from` above or `below` its row `to` asks for, rows counted as the table shows
+/// them for `filter`; `None` when the table is sorted by anything but run order, a row is missing, or the rule would
+/// stay where it is.
+pub(crate) fn dropped(
+    lines: &[RuleLine],
+    sort: Option<SheetSort>,
+    filter: &str,
+    from: usize,
+    to: usize,
+    below: bool,
+) -> Option<UiAction> {
+    let shown = shown_rules(lines, sort, filter);
+    let (from, to) = (*shown.get(from)?, *shown.get(to)?);
+    let (moved, target) = (lines.get(from)?, lines.get(to)?);
+    let stays = from == to || (below && to + 1 == from) || (!below && from + 1 == to);
+    if !reorderable(sort) || stays {
+        return None;
+    }
+    Some(UiAction::MoveRule {
+        name: moved.name.clone(),
+        anchor: target.name.clone(),
+        below,
+    })
 }
 
 /// The Activity view's rows, cell by cell.
@@ -658,6 +818,43 @@ mod tests {
         assert!(open.find("Approve").is_empty());
     }
 
+    const EDIT: &str = "[[rules]]\nname = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions = { archive = true }\n\n[[rules]]\nname = \"newsletters (edit)\"\nenabled = false\nproposed_by = \"agent\"\nreplaces = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions = { read = true }\n";
+
+    #[test]
+    fn an_edit_shows_what_it_changes_in_its_rule() {
+        let rules = postvak_core::rules::parse(EDIT).unwrap().rules;
+        let edit = &super::proposals(&rules)[0];
+        assert_eq!(edit.by, "edit proposed by agent");
+        assert_eq!(edit.note, "Changes rule 'newsletters' in rules.toml");
+        assert_eq!(
+            edit.toml,
+            "[[rules]]\nname = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions.archive = true\nactions.read = true"
+        );
+        assert_eq!(edit.marks, " \n \n \n-\n+");
+        let new = &super::proposals(&postvak_core::rules::parse(RULES).unwrap().rules)[0];
+        assert_eq!(new.note, "Adds to rules.toml");
+        assert_eq!(new.marks, vec!["+"; new.toml.lines().count()].join("\n"));
+    }
+
+    #[test]
+    fn approving_an_edit_changes_its_rule() {
+        let fx = Fixture::new(&["work"]);
+        std::fs::write(fx.paths.rules_file(), EDIT).unwrap();
+        let (open, _wires) = view(&fx, View::Rules);
+        assert_eq!(
+            open.find("Changes rule 'newsletters' in rules.toml").len(),
+            1
+        );
+        open.click("Approve");
+        let file = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
+        assert_eq!(file.rules.len(), 1);
+        assert_eq!(file.rules[0].name, "newsletters");
+        assert_eq!(
+            file.rules[0].actions,
+            vec![postvak_core::rules::Action::MarkRead]
+        );
+    }
+
     #[test]
     fn the_header_counts_rules_and_proposals_and_rows_say_what_they_do() {
         assert_eq!(super::counts(1, 2), "1 rule · 2 proposals");
@@ -668,6 +865,49 @@ mod tests {
         assert_eq!(open.find("every account").len(), 1);
         assert_eq!(open.find("from contains \"news@\"").len(), 1);
         assert_eq!(open.find("archive").len(), 1);
+    }
+
+    #[test]
+    fn a_filter_matches_every_word_anywhere_in_a_row_ignoring_case() {
+        let texts = ["Newsletters", "work", "INBOX", "from contains \"news@\""];
+        assert!(super::matches_filter(&texts, ""));
+        assert!(super::matches_filter(&texts, "  NEWS  work "));
+        assert!(super::matches_filter(&texts, "inbox news@"));
+        assert!(!super::matches_filter(&texts, "news home"));
+        assert_eq!(super::no_rules(" "), "rules.toml has no rules yet.");
+        assert_eq!(super::no_rules(" spam "), "No rule matches “spam”.");
+    }
+
+    #[test]
+    fn the_filter_field_narrows_rules_and_proposals_and_leaving_the_view_clears_it() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = rules_view(&fx);
+        let shown = |open: &Open| {
+            let window = open.window();
+            (
+                window.get_rules().row_count(),
+                window.get_proposals().row_count(),
+            )
+        };
+        assert_eq!(shown(&open), (1, 1));
+        open.get("Filter rules").set_accessible_value("CODE");
+        open.tick();
+        assert_eq!(shown(&open), (0, 1));
+        assert_eq!(open.find("No rule matches “CODE”.").len(), 1);
+        assert_eq!(
+            open.find("1 rule · 1 proposal").len(),
+            1,
+            "the header still counts them all"
+        );
+        open.get("Filter rules").set_accessible_value("archive");
+        open.tick();
+        assert_eq!(shown(&open), (1, 0));
+        open.tap("newsletters");
+        let opened = open.with(|live| live.app.rule_draft.as_ref()?.original.clone());
+        assert_eq!(opened.as_deref(), Some("newsletters"));
+        open.with(|live| live.app.select_view(View::Rules));
+        open.tick();
+        assert_eq!(shown(&open), (1, 1));
     }
 
     #[test]
@@ -912,6 +1152,62 @@ mod tests {
     }
 
     #[test]
+    fn a_drop_moves_a_rule_only_in_run_order_and_only_when_its_place_changes() {
+        use super::UiAction;
+        let line = |name: &str| super::RuleLine {
+            name: name.into(),
+            label: name.into(),
+            enabled: true,
+            account: String::new(),
+            folder: String::new(),
+            by: String::new(),
+            conditions: String::new(),
+            actions: String::new(),
+        };
+        let lines = ["a", "b", "c"].map(line);
+        let moved = |from, to, below| super::dropped(&lines, None, "", from, to, below);
+        let action = |name: &str, anchor: &str, below| {
+            Some(UiAction::MoveRule {
+                name: name.into(),
+                anchor: anchor.into(),
+                below,
+            })
+        };
+        assert_eq!(moved(2, 0, false), action("c", "a", false));
+        assert_eq!(moved(0, 2, true), action("a", "c", true));
+        assert_eq!(moved(0, 1, true), action("a", "b", true));
+        for (from, to, below) in [(1, 1, true), (1, 0, true), (1, 2, false), (1, 9, false)] {
+            assert_eq!(
+                moved(from, to, below),
+                None,
+                "{from} on {to}, below {below}"
+            );
+        }
+        let by = |column, ascending| Some(super::SheetSort { column, ascending });
+        assert!(super::reorderable(by(0, true)));
+        for sort in [by(0, false), by(1, true)] {
+            assert_eq!(
+                super::dropped(&lines, sort, "", 2, 0, false),
+                None,
+                "{sort:?}"
+            );
+        }
+        assert_eq!(
+            super::dropped(&lines, None, "c", 0, 0, false),
+            None,
+            "the filter shows c alone"
+        );
+        let filtered = ["x a", "x b", "y", "x c"].map(line);
+        assert_eq!(
+            super::dropped(&filtered, None, "x", 2, 0, false),
+            action("x c", "x a", false),
+            "rows count as the filtered table shows them"
+        );
+        assert_eq!(super::dragged_row(&super::drag_data(4)), Some(4));
+        assert_eq!(super::dragged_row("4"), None, "a message row");
+    }
+
+    #[test]
     fn a_sorted_table_orders_by_the_column_and_keeps_ties_in_their_own_order() {
         let rows = [["b", "1"], ["a", "2"], ["b", "3"]].map(|row| row.map(String::from));
         assert_eq!(super::sheet_order(&rows, None), [0, 1, 2]);
@@ -1084,7 +1380,8 @@ mod editor_tests {
             open.find("This rule has unsaved changes.").is_empty(),
             "the click cancels the question"
         );
-        assert_eq!(draft_name(&open).as_deref(), Some("newsletters"));
+        let opened = open.with(|live| live.app.rule_draft.as_ref()?.original.clone());
+        assert_eq!(opened.as_deref(), Some("newsletters"));
     }
 
     /// newsletters open with an unsaved edit, then receipts clicked in the list.
@@ -1181,6 +1478,29 @@ mod editor_tests {
     }
 
     #[test]
+    fn a_filtered_row_keeps_its_number_and_opens_its_own_rule() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = rules_view(&fx, &two_rules());
+        open.get("Filter rules").set_accessible_value("receipt");
+        open.tick();
+        let rules = open.window().get_rules();
+        let row = rules.row_data(0).unwrap();
+        assert_eq!((rules.row_count(), row.number.as_str()), (1, "2"));
+        open.click("Enable receipts");
+        let rules = postvak_core::rules::load(&fx.paths.rules_file())
+            .unwrap()
+            .rules;
+        let enabled: Vec<bool> = rules.iter().map(|r| r.enabled).collect();
+        assert_eq!(
+            enabled,
+            [true, false],
+            "the switch turns off the filtered rule"
+        );
+        open.tap("receipts");
+        assert_eq!(draft_name(&open).as_deref(), Some("receipts"));
+    }
+
+    #[test]
     fn a_heading_sorts_the_rules_and_the_number_keeps_their_order() {
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = rules_view(&fx, &two_rules());
@@ -1216,6 +1536,42 @@ mod editor_tests {
         assert_eq!(shown(), [pair("1", "newsletters"), pair("2", "receipts")]);
         open.click("#");
         assert_eq!(shown(), [pair("2", "receipts"), pair("1", "newsletters")]);
+    }
+
+    #[test]
+    fn a_rule_row_dropped_on_another_moves_the_rule_in_rules_toml() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = rules_view(&fx, &two_rules());
+        let labels = || -> Vec<String> {
+            (open.window().get_rules().iter())
+                .map(|r| r.label.to_string())
+                .collect()
+        };
+        let window = open.window();
+        assert!(window.get_rules_reorderable());
+        let data = window.invoke_rule_drag_data(1);
+        assert_eq!(window.invoke_dragged_rule(data), 1);
+        window.invoke_rule_dropped(1, 0, false);
+        open.tick();
+        assert_eq!(labels(), ["receipts", "newsletters"]);
+        let names: Vec<String> = (postvak_core::rules::load(&fx.paths.rules_file())
+            .unwrap()
+            .rules)
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        assert_eq!(names, ["receipts", "newsletters"]);
+
+        open.click("Name");
+        assert!(!open.window().get_rules_reorderable());
+        let before = file(&fx);
+        open.window().invoke_rule_dropped(0, 1, true);
+        open.tick();
+        assert_eq!(
+            file(&fx),
+            before,
+            "a table sorted by name has no place to drop on"
+        );
     }
 
     #[test]
@@ -1447,7 +1803,8 @@ mod editor_tests {
         let (open, _wires) = leave_edited_newsletters(&fx);
         open.click("Cancel");
         assert!(open.find("This rule has unsaved changes.").is_empty());
-        assert_eq!(draft_name(&open).as_deref(), Some("newsletters"));
+        let opened = open.with(|live| live.app.rule_draft.as_ref()?.original.clone());
+        assert_eq!(opened.as_deref(), Some("newsletters"));
         let value = open.with(|live| {
             live.app.rule_draft.clone().unwrap().conditions[0]
                 .value
@@ -1482,7 +1839,8 @@ mod editor_tests {
         let (open, _wires) = leave_edited_newsletters(&fx);
         std::fs::write(fx.paths.rules_file(), "# emptied\n").unwrap();
         editor(&open, |e| e.invoke_unsaved_save());
-        assert_eq!(draft_name(&open).as_deref(), Some("newsletters"));
+        let opened = open.with(|live| live.app.rule_draft.as_ref()?.original.clone());
+        assert_eq!(opened.as_deref(), Some("newsletters"));
         assert!(open.find("This rule has unsaved changes.").is_empty());
         assert_eq!(open.labels_containing("no such rule").len(), 1);
         assert_eq!(file(&fx), "# emptied\n");

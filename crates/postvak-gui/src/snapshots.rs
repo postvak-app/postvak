@@ -332,6 +332,21 @@ fn rules() {
 }
 
 #[test]
+fn rule_edit_proposal() {
+    let fx = Fixture::mailbox("light");
+    let edit = "[[rules]]\nname = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions = { archive = true }\n\n[[rules]]\nname = \"newsletters (edit)\"\nenabled = false\nproposed_by = \"agent\"\nreplaces = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions = { archive = true, read = true }\n";
+    std::fs::write(fx.paths.rules_file(), edit).unwrap();
+    let (open, _wires) = open(&fx);
+    open.with(|live| live.app.select_view(View::Rules));
+    open.tick();
+    assert_eq!(
+        open.find("Changes rule 'newsletters' in rules.toml").len(),
+        1
+    );
+    snapshot(&open, "gui_rule_edit_proposal");
+}
+
+#[test]
 fn rule_editor() {
     let fx = Fixture::mailbox("light");
     std::fs::write(fx.paths.rules_file(), RULES).unwrap();

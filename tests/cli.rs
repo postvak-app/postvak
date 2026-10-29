@@ -66,6 +66,50 @@ fn rules_check_passes_on_valid_file_and_lists() {
 }
 
 #[test]
+fn rules_move_changes_the_run_order() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join("config")).unwrap();
+    let rule = |name: &str| {
+        format!("[[rules]]\nname = \"{name}\"\nmatch.read = true\nactions = {{ flagged = true }}\n")
+    };
+    std::fs::write(
+        home.path().join("config/rules.toml"),
+        [rule("a"), rule("b"), rule("c")].join("\n"),
+    )
+    .unwrap();
+    let order = |home: &std::path::Path| {
+        let out = postvak(home, &["rules", "list", "--json"]);
+        json_lines(&out)
+            .iter()
+            .map(|row| row["name"].as_str().unwrap_or("").to_string())
+            .collect::<Vec<_>>()
+    };
+    let out = postvak(home.path(), &["rules", "move", "c", "--before", "a"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(order(home.path()), ["c", "a", "b"]);
+    assert!(
+        postvak(home.path(), &["rules", "move", "c", "--after", "b"])
+            .status
+            .success()
+    );
+    assert_eq!(order(home.path()), ["a", "b", "c"]);
+    assert!(
+        !postvak(home.path(), &["rules", "move", "c"])
+            .status
+            .success()
+    );
+    assert!(
+        !postvak(home.path(), &["rules", "move", "c", "--after", "nope"])
+            .status
+            .success()
+    );
+}
+
+#[test]
 fn list_on_unknown_account_or_without_accounts_fails_and_says_what_to_do() {
     let home = tempfile::tempdir().unwrap();
     let out = postvak(home.path(), &["list", "--account", "nope"]);

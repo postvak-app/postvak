@@ -60,7 +60,7 @@ use slint::winit_030::WinitWindowAccessor;
 use slint::{ComponentHandle, SharedString};
 
 use postvak_core::config::Config;
-use postvak_core::notify::Open;
+use postvak_core::notify::Show;
 use postvak_core::paths::{APP_ID, Paths};
 
 use state::App;
@@ -73,13 +73,13 @@ use state::App;
 pub fn run(
     paths: Result<Paths>,
     safe_mode: bool,
-    open: Option<Open>,
+    show: Option<Show>,
     background: bool,
 ) -> Result<()> {
     phases::start();
     let token = launch::take_token();
     let instance = match &paths {
-        Ok(paths) => match instance::claim(paths, &instance::Request { open: open.clone() }) {
+        Ok(paths) => match instance::claim(paths, &instance::Request { show: show.clone() }) {
             instance::Claim::Handed => return Ok(()),
             instance::Claim::First(instance) => Some(instance),
             instance::Claim::Alone => None,
@@ -107,9 +107,9 @@ pub fn run(
         safe_mode,
         marker: marker.as_ref(),
         instance: instance.as_ref(),
-        // A message to show wants the window in front.
-        background: background && open.is_none(),
-        open,
+        // Something to show wants the window in front.
+        background: background && show.is_none(),
+        show,
     };
     let (error, window_error) = match start.run(paths) {
         Ok(()) => return Ok(()),
@@ -150,8 +150,8 @@ struct Start<'a> {
     marker: Option<&'a launch::Marker>,
     /// Held when this is the first window, which then answers later starts.
     instance: Option<&'a instance::Instance>,
-    /// The message to show once the window opens.
-    open: Option<Open>,
+    /// What to show once the window opens.
+    show: Option<Show>,
     /// Started at login: in the tray, or minimized on macOS (`launch::showing`).
     background: bool,
 }
@@ -228,8 +228,8 @@ impl Start<'_> {
             Some(postvak_core::badge::Badge::new()),
             clock,
         );
-        if let Some(open) = self.open.clone() {
-            show_message(open);
+        if let Some(show) = self.show.clone() {
+            show_in_window(show);
         }
         if let Some(instance) = self.instance
             && let Err(e) = instance.listen(|request| {
@@ -449,15 +449,19 @@ fn on_wayland(native: &slint::winit_030::winit::window::Window) -> bool {
         .is_ok_and(|handle| matches!(handle.as_raw(), RawWindowHandle::Wayland(_)))
 }
 
-/// Shows the message in the window.
-fn show_message(open: Open) {
-    on(Box::new(move |_| vec![state::UiAction::OpenMessage(open)]));
+/// Shows the message, or the Rules view, in the window.
+fn show_in_window(show: Show) {
+    let action = match show {
+        Show::Message(open) => state::UiAction::OpenMessage(open),
+        Show::Rules => state::UiAction::SelectView(state::View::Rules),
+    };
+    on(Box::new(move |_| vec![action]));
 }
 
-/// A later start's request: open its message, then bring the window to the front.
+/// A later start's request: show what it asks for, then bring the window to the front.
 fn hand_over(request: instance::Request) {
-    if let Some(open) = request.open {
-        show_message(open);
+    if let Some(show) = request.show {
+        show_in_window(show);
     }
     let window = with_live(|live| live.window.as_weak()).and_then(|weak| weak.upgrade());
     if let Some(window) = window {

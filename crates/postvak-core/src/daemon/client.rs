@@ -29,6 +29,8 @@ use crate::sync::{Command, DeleteMode, Event, EventResults, RequestId};
 
 pub const NO_REPLY: &str =
     "no reply from the daemon within 120 s; the command may still run, see `postvak log`";
+/// What a front end starts the daemon with: it stops once no client has been connected for a minute.
+const DAEMON_ARGS: [&str; 3] = ["run", "--idle-exit", "60"];
 const LOG_TAIL_LINES: usize = 20;
 const REPLY_TIMEOUT: Duration = Duration::from_secs(120);
 const RETRY: Duration = Duration::from_millis(100);
@@ -804,15 +806,21 @@ fn start_daemon(paths: &Paths, exe: &Path, version: &str) -> anyhow::Result<Clie
                 log_tail(&log)
             ));
         }
-        if matches!(child.try_wait(), Ok(Some(_))) && !paths.daemon_socket().exists() {
+        let exited = child
+            .as_mut()
+            .is_some_and(|child| matches!(child.try_wait(), Ok(Some(_))));
+        if exited && !paths.daemon_socket().exists() {
             child = spawn_daemon(paths, exe)?;
         }
     };
-    reap(child);
+    if let Some(child) = child {
+        reap(child);
+    }
     connected
 }
 
-fn spawn_daemon(paths: &Paths, exe: &Path) -> anyhow::Result<Child> {
+/// The daemon as a child of this process, or None when it went to a sandbox of its own.
+fn spawn_daemon(paths: &Paths, exe: &Path) -> anyhow::Result<Option<Child>> {
     paths::create_private_dir(&paths.state_dir)?;
     let log = File::options()
         .create(true)
@@ -820,9 +828,19 @@ fn spawn_daemon(paths: &Paths, exe: &Path) -> anyhow::Result<Child> {
         .mode(0o600)
         .open(paths.daemon_log())
         .with_context(|| format!("opening {}", paths.daemon_log().display()))?;
+    #[cfg(target_os = "linux")]
+    if paths::flatpak_id().is_some() {
+        // A child would keep this sandbox running, and the desktop counting the app as open, after the window quits.
+        let envs = match &paths.home {
+            Some(home) => HashMap::from([("POSTVAK_HOME".into(), utf8(home)?)]),
+            None => HashMap::new(),
+        };
+        crate::portal::spawn_sandboxed(exe, &DAEMON_ARGS, envs, &log)?;
+        return Ok(None);
+    }
     let mut command = std::process::Command::new(exe);
     command
-        .args(["run", "--idle-exit", "60"])
+        .args(DAEMON_ARGS)
         .current_dir("/")
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
@@ -833,7 +851,15 @@ fn spawn_daemon(paths: &Paths, exe: &Path) -> anyhow::Result<Child> {
     }
     command
         .spawn()
+        .map(Some)
         .with_context(|| format!("starting {}", exe.display()))
+}
+
+#[cfg(target_os = "linux")]
+fn utf8(path: &Path) -> anyhow::Result<String> {
+    path.to_str()
+        .map(str::to_owned)
+        .with_context(|| format!("{} is not UTF-8", path.display()))
 }
 
 /// Waits on a child in the background so it does not linger as a zombie.

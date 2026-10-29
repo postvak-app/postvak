@@ -140,6 +140,9 @@ export component MailWindow inherits Window {
     // The column the Rules table is sorted by, or -1.
     in property <int> rules-sort: -1;
     in property <bool> rules-ascending: true;
+    in property <bool> rules-reorderable;
+    // What the Rules table says when it shows no rule.
+    in property <string> rules-empty;
     in property <[TableColumn]> sheet-columns;
     in property <[[StandardListViewItem]]> sheet-cells;
     in-out property <int> sheet-row: -1;
@@ -217,6 +220,9 @@ export component MailWindow inherits Window {
     callback rule-from();
     callback edit-rule(int);
     callback set-enabled(int, bool);
+    pure callback rule-drag-data(int) -> data-transfer;
+    pure callback dragged-rule(data-transfer) -> int;
+    callback rule-dropped(int, int, bool);
     callback confirm-apply-rule();
     callback folder-edited(string);
     callback folder-accepted();
@@ -224,6 +230,7 @@ export component MailWindow inherits Window {
     callback restore(int);
     callback purge-trash();
     callback sort-sheet(int, bool);
+    callback filter-rules(string);
 
     // Puts `text` on the clipboard: Slint copies only from a text field.
     public function copy-text(text: string) {
@@ -588,7 +595,13 @@ export component MailWindow inherits Window {
                         proposals: root.proposals;
                         rules: root.rules;
                         rules-sort: root.rules-sort;
+                        rules-empty: root.rules-empty;
                         rules-ascending: root.rules-ascending;
+                        rules-reorderable: root.rules-reorderable;
+                        rule-drag-data(i) => { root.rule-drag-data(i) }
+                        rule-drag-image(label, fill, ink) => { root.drag-image(1, label, fill, ink) }
+                        dragged-rule(data) => { root.dragged-rule(data) }
+                        rule-dropped(from, to, below) => { root.rule-dropped(from, to, below); }
                         columns: root.sheet-columns;
                         cells: root.sheet-cells;
                         current-row <=> root.sheet-row;
@@ -603,6 +616,7 @@ export component MailWindow inherits Window {
                         restore(i) => { root.restore(i); }
                         purge => { root.purge-trash(); }
                         sort(column, ascending) => { root.sort-sheet(column, ascending); }
+                        filter(text) => { root.filter-rules(text); }
                     }
                 }
             }

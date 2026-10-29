@@ -76,6 +76,9 @@ pub struct Rule {
     /// Who proposed the rule; set by `rules propose` and removed when a human approves it
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposed_by: Option<String>,
+    /// The rule this proposal changes once approved; set by `rules propose --edit`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaces: Option<String>,
     /// Conditions that must all hold; at least one
     #[serde(rename = "match")]
     pub matches: Match,

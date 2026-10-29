@@ -5,7 +5,7 @@ use std::path::Path;
 use postvak_core::message::clean;
 
 /// Where the docs explain `postvak account add` and config.toml.
-pub(crate) const ACCOUNTS_DOCS: &str = "https://postvak.pataar.nl/accounts.html";
+pub(crate) const ACCOUNTS_DOCS: &str = "https://postvak.pataar.nl/docs/accounts.html";
 
 /// config.toml names no account, so the window has nothing to show.
 #[derive(Debug, thiserror::Error)]
