@@ -10,12 +10,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use postvak_core::config::{self, AccountConfig, Config, PasswordSource, Tls};
 use postvak_core::credentials::Secret;
 use postvak_core::engine::{Engine, imap_connector};
+use postvak_core::folder_ops::{self, Deleted};
 use postvak_core::mail_ops::imap::ImapOps;
 use postvak_core::mail_ops::{Envelope, IdleOutcome, MailOps};
 use postvak_core::paths::Paths;
 use postvak_core::rules::Action;
 use postvak_core::store::Store;
-use postvak_core::sync::{self, Activity, Command, Event};
+use postvak_core::sync::{self, Activity, Command, DeleteMode, Event};
+use postvak_core::trash::Trash;
 
 const PASSWORD: &str = "postvak-test";
 const PORT: u16 = 10993;
@@ -1207,4 +1209,87 @@ fn starttls_refuses_a_server_without_it_and_tls_none_logs_in_unencrypted() {
             _ => {}
         }
     }
+}
+
+fn folder_names(ops: &mut ImapOps) -> Vec<String> {
+    ops.list_folders()
+        .unwrap()
+        .into_iter()
+        .map(|f| f.name)
+        .collect()
+}
+
+#[test]
+fn folder_create_rename_delete() {
+    let Some(host) = host() else { return };
+    let account = account(&host, PORT, "folder-crud");
+    let home = home_with(&account, "");
+    let paths = Paths::under(home.path());
+    let (events, _received) = std::sync::mpsc::channel();
+    // The first pass stores the folders, so the store knows Trash.
+    sync::run_once(&account, &paths, &events).unwrap();
+    let store = Store::open(&paths.mail_db(&account.name)).unwrap();
+    let trash = Trash::new(paths.trash_dir(&account.name));
+    let mut ops = connect(&account);
+
+    folder_ops::create(&mut ops, &store, "Live/A").unwrap();
+    folder_ops::create(&mut ops, &store, "Live/A/B").unwrap();
+    folder_ops::rename(&mut ops, &store, "Live/A", "Live/C").unwrap();
+    let names = folder_names(&mut ops);
+    assert!(names.iter().any(|n| n == "Live/C/B"), "{names:?}");
+    assert!(!names.iter().any(|n| n == "Live/A"), "{names:?}");
+
+    let refused = folder_ops::delete(&mut ops, &store, &trash, "Live/C", None, 0, 0);
+    assert!(refused.is_err(), "a folder with a subfolder was deleted");
+    let deleted = folder_ops::delete(&mut ops, &store, &trash, "Live/C/B", None, 0, 0).unwrap();
+    assert_eq!(deleted, Deleted::Done);
+
+    for subject in ["first", "second"] {
+        ops.append("Live/C", &mail(subject), &[]).unwrap();
+    }
+    let asked = folder_ops::delete(&mut ops, &store, &trash, "Live/C", None, 0, 0).unwrap();
+    assert_eq!(
+        asked,
+        Deleted::NotEmpty {
+            count: 2,
+            has_trash: true
+        }
+    );
+    let moved = folder_ops::delete(
+        &mut ops,
+        &store,
+        &trash,
+        "Live/C",
+        Some(DeleteMode::Trash),
+        2,
+        0,
+    )
+    .unwrap();
+    assert_eq!(moved, Deleted::Done);
+    ops.select("Trash").unwrap();
+    assert_eq!(all_envelopes(&mut ops).len(), 2);
+
+    folder_ops::create(&mut ops, &store, "Live/C").unwrap();
+    for subject in ["third", "fourth"] {
+        ops.append("Live/C", &mail(subject), &[]).unwrap();
+    }
+    let gone = folder_ops::delete(
+        &mut ops,
+        &store,
+        &trash,
+        "Live/C",
+        Some(DeleteMode::Permanent),
+        2,
+        postvak_core::time::now(),
+    )
+    .unwrap();
+    assert_eq!(gone, Deleted::Done);
+    let backups = trash.list().unwrap();
+    assert_eq!(backups.len(), 2);
+    assert!(!folder_names(&mut ops).iter().any(|n| n == "Live/C"));
+
+    let restored = trash.restore(&mut ops, &store, &backups[0].path).unwrap();
+    assert_eq!(restored, "Live/C");
+    ops.select("Live/C").unwrap();
+    assert_eq!(all_envelopes(&mut ops).len(), 1);
 }
