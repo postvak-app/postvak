@@ -785,33 +785,17 @@ fn sync_exits_nonzero_when_a_rule_fails_on_a_message() {
 
 #[test]
 fn account_add_accepts_a_private_ca_file_and_starttls() {
-    use std::io::Write;
-    use std::process::Stdio;
-
     let Some(host) = host() else { return };
     let template = account(&host, PORT, "account-add");
-    let ca_file = template.ca_file.as_ref().unwrap().display().to_string();
     let home = tempfile::tempdir().unwrap();
-    let answers = format!(
-        "live\n{host}\n{PORT_STARTTLS}\ns\n{ca_file}\n{}\n\nc\nprintf {PASSWORD}\n",
-        template.username
+    let out = account_add(
+        home.path(),
+        &host,
+        PORT_STARTTLS,
+        "s",
+        &template.username,
+        PASSWORD,
     );
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_postvak"))
-        .args(["account", "add"])
-        .env("POSTVAK_HOME", home.path())
-        .env("RUST_LOG", "error")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(answers.as_bytes())
-        .unwrap();
-    let out = child.wait_with_output().unwrap();
     assert!(
         out.status.success(),
         "{}",
@@ -1016,11 +1000,20 @@ async fn mcp_actions_run_from_a_blocking_pool_thread() {
     assert_eq!(report["done"], 1, "{report}");
 }
 
-/// `postvak account add` with a password command, answering the wizard in prompt order.
-fn account_add(home: &Path, host: &str, username: &str, password: &str) -> std::process::Output {
+/// `postvak account add` with the test CA and a password command, answering the wizard in prompt order; an empty
+/// `encryption` takes the port's default.
+fn account_add(
+    home: &Path,
+    host: &str,
+    port: u16,
+    encryption: &str,
+    username: &str,
+    password: &str,
+) -> std::process::Output {
     use std::io::Write;
     let ca = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/dovecot/certs/ca.pem");
-    let answers = format!("live\n{host}\n{PORT}\n\n{ca}\n{username}\n\nc\nprintf {password}\n");
+    let answers =
+        format!("live\n{host}\n{port}\n{encryption}\n{ca}\n{username}\n\nc\nprintf {password}\n");
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_postvak"))
         .args(["account", "add"])
         .env("POSTVAK_HOME", home)
@@ -1046,7 +1039,7 @@ fn account_add_tests_the_login_before_it_saves() {
     let username = account(&host, PORT, "add-tested").username;
     let home = tempfile::tempdir().unwrap();
     let config = Paths::under(home.path()).config_file();
-    let refused = account_add(home.path(), &host, &username, "wrong");
+    let refused = account_add(home.path(), &host, PORT, "", &username, "wrong");
     let stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(!refused.status.success(), "{stderr}");
     assert!(
@@ -1054,7 +1047,7 @@ fn account_add_tests_the_login_before_it_saves() {
         "{stderr}"
     );
     assert!(!config.exists(), "nothing saved");
-    let added = account_add(home.path(), &host, &username, PASSWORD);
+    let added = account_add(home.path(), &host, PORT, "", &username, PASSWORD);
     assert!(
         added.status.success(),
         "{}",
