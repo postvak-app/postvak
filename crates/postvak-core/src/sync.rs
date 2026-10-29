@@ -785,24 +785,42 @@ fn forget_unlisted_folders(store: &Store, synced: &[RemoteFolder]) -> Result<(),
     Ok(())
 }
 
-/// Spec section 6: a role no folder is marked with goes to the folder carrying that name, ignoring case. Soverin marks its
-/// `Archive` folder `\\All`, so the Archive role may take a `\\All` folder by name.
+/// Spec section 6: a role no folder is marked with goes to a top-level folder, or one directly under `INBOX` + delimiter,
+/// named after it, ignoring case; the earlier name wins. Soverin marks its `Archive` folder `\\All`, so the Archive role
+/// may take a `\\All` folder by name.
 fn special_use_by_name(folders: &mut [RemoteFolder]) {
-    for role in ["Archive", "Drafts", "Junk", "Sent", "Trash"] {
+    const NAMES: [(&str, &[&str]); 5] = [
+        ("Archive", &["Archive", "Archives"]),
+        ("Drafts", &["Drafts"]),
+        ("Junk", &["Junk", "Junk E-mail", "Spam"]),
+        ("Sent", &["Sent", "Sent Items", "Sent Messages"]),
+        ("Trash", &["Trash", "Deleted Items", "Bin"]),
+    ];
+    for (role, names) in NAMES {
         if folders
             .iter()
             .any(|f| f.special_use.as_deref() == Some(role))
         {
             continue;
         }
-        if let Some(folder) = folders.iter_mut().find(|f| {
-            let unmarked = f.special_use.is_none()
-                || (role == "Archive" && f.special_use.as_deref() == Some("All"));
-            unmarked && f.name.eq_ignore_ascii_case(role)
-        }) {
-            folder.special_use = Some(role.to_string());
-        }
+        let Some(index) = names.iter().find_map(|name| {
+            folders.iter().position(|f| {
+                let unmarked = f.special_use.is_none()
+                    || (role == "Archive" && f.special_use.as_deref() == Some("All"));
+                unmarked && top_level_name(f).eq_ignore_ascii_case(name)
+            })
+        }) else {
+            continue;
+        };
+        folders[index].special_use = Some(role.to_string());
     }
+}
+
+/// The folder's name without a leading `INBOX` + delimiter; a nested folder's name keeps its delimiter, so it never
+/// equals a role's name.
+fn top_level_name(folder: &RemoteFolder) -> &str {
+    crate::folder_name::inbox_prefix(&folder.name, folder.delimiter.as_deref())
+        .unwrap_or(&folder.name)
 }
 
 pub fn load_rules_for(
