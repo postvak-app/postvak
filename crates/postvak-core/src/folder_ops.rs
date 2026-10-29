@@ -3,7 +3,7 @@
 use std::io;
 
 use crate::folder_name;
-use crate::mail_ops::{MailError, MailOps};
+use crate::mail_ops::{MailError, MailOps, RemoteFolder};
 use crate::rules::apply::special_folder;
 use crate::store::{Folder, Store, StoreError};
 use crate::sync::DeleteMode;
@@ -56,13 +56,13 @@ pub fn create(ops: &mut dyn MailOps, store: &Store, name: &str) -> Result<String
     Ok(name)
 }
 
-/// Renames `from` and the folders under it to `to`; returns `to` in NFC.
+/// Renames `from` and the folders under it to `to`; returns `from` as the server lists it and `to` in NFC.
 pub fn rename(
     ops: &mut dyn MailOps,
     store: &Store,
     from: &str,
     to: &str,
-) -> Result<String, FolderError> {
+) -> Result<(String, String), FolderError> {
     let from = stored_name(store, from)?;
     refuse_protected(store, &from)?;
     if let Some(child) = folder_name::protected_below(store, &from)? {
@@ -70,7 +70,27 @@ pub fn rename(
             "{from} cannot be renamed: {child} is under it"
         )));
     }
+    let folders = ops.list_folders()?;
+    let listed = listed(&folders, &from)?;
+    let from = listed.name.clone();
+    if let Some(prefix) = child_prefix(listed)
+        && let Some(child) = folders
+            .iter()
+            .find(|f| f.name.starts_with(&prefix) && f.special_use.is_some())
+    {
+        let role = child.special_use.as_deref().unwrap_or_default();
+        return Err(FolderError::Protected(format!(
+            "{from} cannot be renamed: {} ({role}) is under it",
+            child.name
+        )));
+    }
     let to = checked_new(store, to)?;
+    if child_prefix(listed).is_some_and(|prefix| to.starts_with(folder_name::nfc(&prefix).as_ref()))
+    {
+        return Err(FolderError::Invalid(format!(
+            "cannot rename {from} to {to}, a folder under itself"
+        )));
+    }
     ops.rename_folder(&from, &to)?;
     if let Err(e) = ops.subscribe_folder(&to) {
         log::warn!("{to}: renamed, but could not subscribe to it: {e}");
@@ -79,11 +99,11 @@ pub fn rename(
         log::warn!("{from}: renamed, but could not unsubscribe from the old name: {e}");
     }
     store.rename_folder(&from, &to)?;
-    Ok(to)
+    Ok((from, to))
 }
 
-/// Deletes `name`. A folder holding mail needs `mode` and `count`, the number of messages the user confirmed; without
-/// a mode it is left alone and its count returned.
+/// Deletes `name`, returning it as the server lists it. A folder holding mail needs `mode` and `count`, the number of
+/// messages the user confirmed; without a mode it is left alone and its count returned.
 pub fn delete(
     ops: &mut dyn MailOps,
     store: &Store,
@@ -92,9 +112,10 @@ pub fn delete(
     mode: Option<DeleteMode>,
     count: u32,
     now: i64,
-) -> Result<Deleted, FolderError> {
+) -> Result<(String, Deleted), FolderError> {
     let name = stored_name(store, name)?;
     refuse_protected(store, &name)?;
+    let name = listed(&ops.list_folders()?, &name)?.name.clone();
     if !folder_name::children(store, &name)?.is_empty() {
         return Err(FolderError::HasSubfolders);
     }
@@ -104,10 +125,11 @@ pub fn delete(
         _ if held == 0 => Vec::new(),
         Some(mode) => empty(ops, trash, &name, mode, count, trash_folder, now)?,
         None => {
-            return Ok(Deleted::NotEmpty {
+            let not_empty = Deleted::NotEmpty {
                 count: held,
                 has_trash: trash_folder.is_some(),
-            });
+            };
+            return Ok((name, not_empty));
         }
     };
     leave_if_unchanged(ops, &name, &kept)?;
@@ -118,7 +140,32 @@ pub fn delete(
         });
     }
     store.remove_folder(&name)?;
-    Ok(Deleted::Done)
+    Ok((name, Deleted::Done))
+}
+
+/// The server's listing of `name`, refusing a name it does not list, one that holds no mail (`\Noselect`) and one with
+/// a special-use role, such as Gmail's All Mail, which a sync skips and so the store may not know.
+fn listed<'a>(folders: &'a [RemoteFolder], name: &str) -> Result<&'a RemoteFolder, FolderError> {
+    let Some(folder) = folders.iter().find(|f| folder_name::same(&f.name, name)) else {
+        return Err(FolderError::Invalid(format!(
+            "the server lists no folder named {name}"
+        )));
+    };
+    if folder.noselect {
+        return Err(FolderError::Protected(format!(
+            "{name} holds no mail of its own, so it cannot be renamed or deleted"
+        )));
+    }
+    match &folder.special_use {
+        Some(role) => Err(protected_role(name, role)),
+        None => Ok(folder),
+    }
+}
+
+/// `folder`'s name and delimiter, which start the name of every folder under it; none without a delimiter.
+fn child_prefix(folder: &RemoteFolder) -> Option<String> {
+    let delimiter = folder.delimiter.as_deref().filter(|d| !d.is_empty())?;
+    Some(format!("{}{delimiter}", folder.name))
 }
 
 /// Searches `name` once more right before DELETE, refusing if it holds a message other than `kept`, then selects
@@ -204,11 +251,15 @@ fn checked_new(store: &Store, name: &str) -> Result<String, FolderError> {
 
 fn refuse_protected(store: &Store, name: &str) -> Result<(), FolderError> {
     match folder_name::protected(store, name)? {
-        Some(role) => Err(FolderError::Protected(format!(
-            "{name} is the {role} folder, which cannot be renamed or deleted"
-        ))),
+        Some(role) => Err(protected_role(name, &role)),
         None => Ok(()),
     }
+}
+
+fn protected_role(name: &str, role: &str) -> FolderError {
+    FolderError::Protected(format!(
+        "{name} is the {role} folder, which cannot be renamed or deleted"
+    ))
 }
 
 /// The delimiter of the stored folder `name` sits under, else INBOX's, which a top-level folder shares.

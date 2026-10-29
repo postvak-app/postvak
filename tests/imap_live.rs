@@ -1242,14 +1242,14 @@ fn folder_create_rename_delete() {
     let refused = folder_ops::delete(&mut ops, &store, &trash, "Live/C", None, 0, 0);
     assert!(refused.is_err(), "a folder with a subfolder was deleted");
     let deleted = folder_ops::delete(&mut ops, &store, &trash, "Live/C/B", None, 0, 0).unwrap();
-    assert_eq!(deleted, Deleted::Done);
+    assert_eq!(deleted.1, Deleted::Done);
 
     for subject in ["first", "second"] {
         ops.append("Live/C", &mail(subject), &[]).unwrap();
     }
     let asked = folder_ops::delete(&mut ops, &store, &trash, "Live/C", None, 0, 0).unwrap();
     assert_eq!(
-        asked,
+        asked.1,
         Deleted::NotEmpty {
             count: 2,
             has_trash: true
@@ -1265,7 +1265,7 @@ fn folder_create_rename_delete() {
         0,
     )
     .unwrap();
-    assert_eq!(moved, Deleted::Done);
+    assert_eq!(moved.1, Deleted::Done);
     ops.select("Trash").unwrap();
     assert_eq!(all_envelopes(&mut ops).len(), 2);
 
@@ -1283,7 +1283,7 @@ fn folder_create_rename_delete() {
         postvak_core::time::now(),
     )
     .unwrap();
-    assert_eq!(gone, Deleted::Done);
+    assert_eq!(gone.1, Deleted::Done);
     let backups = trash.list().unwrap();
     assert_eq!(backups.len(), 2);
     assert!(!folder_names(&mut ops).iter().any(|n| n == "Live/C"));

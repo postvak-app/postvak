@@ -2604,12 +2604,14 @@ fn stop_interrupts_the_reconnect_wait() {
     );
 }
 
-/// Queues commands and a connection failure when the pass selects `folder`, i.e. before its chunk checkpoint.
+/// Queues commands, and a connection failure when `reset`, when the pass selects `folder`, i.e. before its chunk
+/// checkpoint.
 struct QueuesCommandsOnSelect {
     inner: RecordingOps,
     commands: std::sync::mpsc::Sender<Job>,
     queued: Vec<Job>,
     folder: &'static str,
+    reset: bool,
 }
 
 impl MailOps for QueuesCommandsOnSelect {
@@ -2623,7 +2625,7 @@ impl MailOps for QueuesCommandsOnSelect {
         if folder != self.folder {
             return self.inner.select(folder);
         }
-        if !self.queued.is_empty() {
+        if self.reset && !self.queued.is_empty() {
             self.inner.fail_next = Some(MailError::Io("reset".into()));
         }
         for command in self.queued.drain(..) {
@@ -2749,6 +2751,7 @@ fn a_lost_connection_at_a_chunk_checkpoint_ends_the_pass_and_keeps_later_command
         commands: commands_tx,
         queued: vec![mark_read(1), mark_read(2)],
         folder: "INBOX",
+        reset: true,
     };
     let (tx, rx) = std::sync::mpsc::channel();
     let result = state.pass(
@@ -2813,6 +2816,7 @@ fn clean_pass_after_an_aborted_one(rules: &str) -> (Vec<Event>, Store, tempfile:
         commands: commands_tx,
         queued: vec![mark_read(1)],
         folder: "Later",
+        reset: true,
     };
     let stop = AtomicBool::new(false);
     let (tx, _) = std::sync::mpsc::channel();
@@ -3031,6 +3035,7 @@ fn apply_reports_a_result_per_uid_and_keeps_going() {
         CommandsRun {
             used_connection: true,
             next: NextPass::Full,
+            folders_changed: false,
         }
     );
     let done = events
@@ -5506,4 +5511,235 @@ fn delete_of_an_empty_folder_refuses_mail_arriving_before_delete() {
     let (_, events) = drain(&mut ops, &store, &trash, vec![delete("Old", None, 0)]);
     assert!(failure(&events).contains("arrived"), "{events:?}");
     assert_eq!(called(&ops, "delete_folder"), None);
+}
+
+#[test]
+fn delete_and_rename_refuse_a_folder_the_server_marks_special_even_when_not_stored() {
+    let (mut ops, store, dir) = with_folders(&[("[Gmail]/All Mail", Some("All"))], 0);
+    ops.add_mail(
+        "[Gmail]/All Mail",
+        1,
+        H,
+        &headers("a@x", "a", "all1@x"),
+        Some("From: a@x\r\n\r\na"),
+    );
+    assert!(
+        store.folder("[Gmail]/All Mail").unwrap().is_none(),
+        "never synced"
+    );
+    let trash = Trash::new(dir.path().to_path_buf());
+    let rename = Command::RenameFolder {
+        from: "[Gmail]/All Mail".into(),
+        to: "Everything".into(),
+    };
+    for command in [
+        delete("[Gmail]/All Mail", Some(DeleteMode::Trash), 1),
+        delete("[Gmail]/All Mail", Some(DeleteMode::Permanent), 1),
+        rename,
+    ] {
+        let (_, events) = drain(&mut ops, &store, &trash, vec![command]);
+        assert!(failure(&events).contains("All folder"), "{events:?}");
+    }
+    for call in ["move", "fetch_raw", "delete_folder", "rename_folder"] {
+        assert_eq!(called(&ops, call), None, "{call}: {:?}", ops.calls);
+    }
+    assert_eq!(ops.mail["[Gmail]/All Mail"].len(), 1);
+}
+
+#[test]
+fn rename_refuses_a_noselect_folder_and_an_unlisted_name() {
+    let (mut ops, store, dir) = with_folders(&[], 0);
+    ops = ops.with_noselect("[Gmail]");
+    let trash = Trash::new(dir.path().to_path_buf());
+    let renames = [("[Gmail]", "holds no mail"), ("Nowhere", "lists no folder")];
+    for (from, why) in renames {
+        let rename = Command::RenameFolder {
+            from: from.into(),
+            to: "Elsewhere".into(),
+        };
+        let (_, events) = drain(&mut ops, &store, &trash, vec![rename]);
+        assert!(failure(&events).contains(why), "{from}: {events:?}");
+    }
+    assert_eq!(called(&ops, "rename_folder"), None, "{:?}", ops.calls);
+}
+
+#[test]
+fn rename_refuses_a_listed_folder_with_a_special_folder_under_it() {
+    let (mut ops, store, dir) = with_folders(&[("Mail", None), ("Mail/All", Some("All"))], 0);
+    let trash = Trash::new(dir.path().to_path_buf());
+    let rename = Command::RenameFolder {
+        from: "Mail".into(),
+        to: "Post".into(),
+    };
+    let (_, events) = drain(&mut ops, &store, &trash, vec![rename]);
+    assert!(failure(&events).contains("Mail/All (All)"), "{events:?}");
+    assert_eq!(called(&ops, "rename_folder"), None);
+}
+
+#[test]
+fn rename_refuses_a_name_under_itself() {
+    let (mut ops, store, dir) = with_folders(&[("Work", None), ("\u{c9}\u{e9}n", None)], 0);
+    let trash = Trash::new(dir.path().to_path_buf());
+    for (from, to) in [
+        ("Work", "Work/Sub"),
+        ("\u{c9}\u{e9}n", "E\u{301}e\u{301}n/Sub"),
+    ] {
+        let rename = Command::RenameFolder {
+            from: from.into(),
+            to: to.into(),
+        };
+        let (_, events) = drain(&mut ops, &store, &trash, vec![rename]);
+        assert!(
+            failure(&events).contains("under itself"),
+            "{from}: {events:?}"
+        );
+    }
+    assert_eq!(called(&ops, "rename_folder"), None);
+}
+
+#[test]
+fn folder_events_name_the_folder_as_stored_not_as_requested() {
+    const NFC: &str = "\u{c9}\u{e9}n";
+    const NFD: &str = "E\u{301}e\u{301}n";
+    let (mut ops, store, dir) = with_folders(&[(NFC, None), ("Old", None)], 1);
+    ops.add_mail(
+        NFC,
+        1,
+        H,
+        &headers("a@x", "a", "een1@x"),
+        Some("From: a@x\r\n\r\na"),
+    );
+    sync_all(&mut ops, &store).unwrap();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let (_, events) = drain(&mut ops, &store, &trash, vec![delete(NFD, None, 0)]);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::FolderNotEmpty { name, .. } if name == NFC)),
+        "{events:?}"
+    );
+    let rename = Command::RenameFolder {
+        from: NFD.into(),
+        to: "Twee".into(),
+    };
+    let (_, events) = drain(&mut ops, &store, &trash, vec![rename]);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::FolderRenamed { from, .. } if from == NFC)),
+        "{events:?}"
+    );
+    ops.mail.get_mut("Twee").unwrap().clear();
+    let renamed_back = Command::RenameFolder {
+        from: "Twee".into(),
+        to: NFC.into(),
+    };
+    let (_, _) = drain(&mut ops, &store, &trash, vec![renamed_back]);
+    let (_, events) = drain(&mut ops, &store, &trash, vec![delete(NFD, None, 0)]);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::FolderDeleted { name, .. } if name == NFC)),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn delete_to_trash_syncs_trash_at_once() {
+    let (mut ops, store, dir) = with_folders(&[("Old", None)], 2);
+    let trash = Trash::new(dir.path().to_path_buf());
+    let command = delete("Old", Some(DeleteMode::Trash), 2);
+    let (_, events) = drain(&mut ops, &store, &trash, vec![command]);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::FolderDeleted { .. })),
+        "{events:?}"
+    );
+    assert_eq!(store.message_count("Trash").unwrap(), 2);
+}
+
+#[test]
+fn delete_to_trash_without_a_trash_folder_is_refused_before_any_move() {
+    let mut ops = RecordingOps::default()
+        .with_folder("INBOX", None)
+        .with_folder("Old", None);
+    ops.add_mail(
+        "Old",
+        1,
+        H,
+        &headers("a@x", "a", "o1@x"),
+        Some("From: a@x\r\n\r\na"),
+    );
+    let store = Store::open_in_memory().unwrap();
+    sync_all(&mut ops, &store).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let (_, events) = drain(
+        &mut ops,
+        &store,
+        &trash,
+        vec![delete("Old", Some(DeleteMode::Trash), 1)],
+    );
+    assert!(failure(&events).contains("no Trash folder"), "{events:?}");
+    assert_eq!(called(&ops, "move"), None);
+    assert_eq!(called(&ops, "delete_folder"), None);
+    assert_eq!(ops.mail["Old"].len(), 1);
+}
+
+#[test]
+fn a_rename_during_a_full_pass_keeps_the_renamed_folder_and_ends_the_pass() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::under(dir.path());
+    let acct = account();
+    let mut state = AccountSync::open(&acct, &paths).unwrap();
+    let mut inner = ops_with_inbox()
+        .with_folder("Work", None)
+        .with_folder("Work/Sub", None);
+    for folder in &mut inner.folders {
+        folder.delimiter = Some("/".into());
+    }
+    inner.add_mail("Work", 1, H, &headers("a@x", "w", "w1@x"), None);
+    inner.add_mail("Work/Sub", 1, H, &headers("a@x", "s", "s1@x"), None);
+    sync_all(&mut inner, &state.store).unwrap();
+    let (commands_tx, commands) = std::sync::mpsc::channel();
+    let rename = Job {
+        request: 9,
+        command: Command::RenameFolder {
+            from: "Work".into(),
+            to: "Jobs".into(),
+        },
+    };
+    let mut ops = QueuesCommandsOnSelect {
+        inner,
+        commands: commands_tx,
+        queued: vec![rename],
+        folder: "INBOX",
+        reset: false,
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let next = state
+        .pass(
+            &mut ops,
+            true,
+            &mut Carried::default(),
+            &tx,
+            &commands,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    let events: Vec<Event> = rx.try_iter().collect();
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::FolderRenamed { to, .. } if to == "Jobs")),
+        "{events:?}"
+    );
+    assert!(
+        !events.iter().any(|e| matches!(e, Event::Error { .. })),
+        "{events:?}"
+    );
+    assert_eq!(state.store.message_count("Jobs").unwrap(), 1);
+    assert_eq!(state.store.message_count("Jobs/Sub").unwrap(), 1);
+    assert_eq!(next, NextPass::Full);
 }
