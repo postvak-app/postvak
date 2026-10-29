@@ -58,11 +58,25 @@ pub struct AccountConfig {
     /// Extra trusted root certificate (PEM), for servers with a private CA.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ca_file: Option<PathBuf>,
+    /// How the connection is encrypted; unset follows the port, see `AccountConfig::tls`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls: Option<Tls>,
     /// The servers whose `Authentication-Results` the `authenticated` rule condition believes, by authserv-id. Unset
     /// or empty: none, so `authenticated = true` never holds. No default is guessed from `host`: a provider that writes
     /// no such header leaves the topmost one to the sender, who can name any server in the provider's domain.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trusted_authserv_ids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Tls {
+    /// TLS from the first byte, as on port 993.
+    Implicit,
+    /// A plain greeting upgraded with STARTTLS, as on port 143; a server that does not offer it is refused.
+    Starttls,
+    /// STARTTLS when the server offers it, else a plain-text login. Only for servers that leave no other way.
+    None,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -344,8 +358,18 @@ impl AccountConfig {
             notify: default_true(),
             index_bodies: default_true(),
             ca_file: None,
+            tls: None,
             trusted_authserv_ids: None,
         }
+    }
+
+    /// The `tls` setting, or else what the port implies: STARTTLS on 143, implicit TLS elsewhere.
+    pub fn tls(&self) -> Tls {
+        self.tls.unwrap_or(if self.port == 143 {
+            Tls::Starttls
+        } else {
+            Tls::Implicit
+        })
     }
 
     pub fn address(&self) -> &str {
@@ -460,6 +484,16 @@ trusted_authserv_ids = ["mx.home.test"]
 "#;
 
     #[test]
+    fn an_explicit_tls_setting_beats_the_port() {
+        let cfg = Config::parse(&format!("{SAMPLE}tls = \"implicit\"\n")).unwrap();
+        assert_eq!(cfg.account("home").unwrap().tls(), Tls::Implicit);
+        let cfg =
+            Config::parse(&SAMPLE.replace("port = 143", "port = 1143\ntls = \"none\"")).unwrap();
+        assert_eq!(cfg.account("home").unwrap().tls(), Tls::None);
+        assert!(Config::parse(&format!("{SAMPLE}tls = \"plain\"\n")).is_err());
+    }
+
+    #[test]
     fn parses_accounts_with_defaults() {
         let cfg = Config::parse(SAMPLE).unwrap();
         let work = cfg.account("work").unwrap();
@@ -471,8 +505,10 @@ trusted_authserv_ids = ["mx.home.test"]
             work.password,
             PasswordSource::Keyring { keyring: true }
         ));
+        assert_eq!(work.tls(), Tls::Implicit);
         let home = cfg.account("home").unwrap();
         assert_eq!(home.port, 143);
+        assert_eq!(home.tls(), Tls::Starttls);
         assert!(!home.notify);
         assert!(
             matches!(&home.password, PasswordSource::Command { command } if command == "pass show mail/home")

@@ -75,8 +75,9 @@ fn list_on_unknown_account_fails_and_empty_config_lists_nothing() {
     assert!(out.stdout.is_empty());
 }
 
-/// The wizard's answers in prompt order: name, host, port, CA file, username, address, storage, password command.
-const ADD_ANSWERS: &str = "late\n127.0.0.1\n1\n\nme@example.com\n\nc\nprintf x\n";
+/// The wizard's answers in prompt order: name, host, port, encryption, CA file, username, address, storage, password
+/// command.
+const ADD_ANSWERS: &str = "late\n127.0.0.1\n1\n\n\nme@example.com\n\nc\nprintf x\n";
 
 #[test]
 fn account_add_tests_the_login_first_and_saves_nothing_when_it_fails() {

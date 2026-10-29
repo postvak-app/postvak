@@ -4786,6 +4786,7 @@ version = "0.8.0"
 dependencies = [
  "anyhow",
  "apple-native-keyring-store",
+ "async-channel 2.5.0",
  "async-imap",
  "base64",
  "chrono",

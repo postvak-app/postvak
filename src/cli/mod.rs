@@ -7,7 +7,7 @@ use anyhow::{Context as _, Result, bail};
 use clap::{Parser, Subcommand};
 
 use postvak_core::account;
-use postvak_core::config::{AccountConfig, Config, Identity, PasswordSource};
+use postvak_core::config::{AccountConfig, Config, Identity, PasswordSource, Tls};
 use postvak_core::credentials::Secret;
 use postvak_core::daemon::Client;
 use postvak_core::daemon::client::LazyClient;
@@ -1055,6 +1055,9 @@ fn print_status(status: &Status) {
             .as_ref()
             .map_or("starting".into(), ToString::to_string);
         println!("{}  {activity}", account.name);
+        if account.encrypted == Some(false) {
+            println!("  note: {}", postvak_core::help::UNENCRYPTED);
+        }
         if account.uidplus == Some(false) {
             println!("  note: {}", postvak_core::help::NO_UIDPLUS);
         }
@@ -1776,6 +1779,17 @@ fn cmd_account_add(mut config: Config, paths: &Paths) -> Result<()> {
     let name = prompt("Account name (letters, digits, - _)")?;
     let host = prompt("IMAP host")?;
     let port: u16 = prompt("Port [993]")?.parse().unwrap_or(993);
+    let tls = match prompt("Encryption: (i)mplicit TLS, (s)TARTTLS or (n)one [by port: STARTTLS on 143, else implicit]")?
+        .to_ascii_lowercase()
+        .chars()
+        .next()
+    {
+        None => None,
+        Some('i') => Some(Tls::Implicit),
+        Some('s') => Some(Tls::Starttls),
+        Some('n') => Some(Tls::None),
+        Some(_) => bail!("answer i, s or n, or nothing for the port's default"),
+    };
     let ca_file = {
         let answer = prompt("Extra trusted CA file (PEM, absolute path) [none]")?;
         if answer.is_empty() {
@@ -1801,6 +1815,7 @@ fn cmd_account_add(mut config: Config, paths: &Paths) -> Result<()> {
         port,
         address,
         ca_file,
+        tls,
         ..AccountConfig::new(&name, &host, &username, password)
     };
     account::check(&config, &account)?;

@@ -7,6 +7,7 @@ services:
       USER_PASSWORD: postvak-test
     ports:
       - "127.0.0.1:10993:31993"
+      - "127.0.0.1:10143:31143"
     volumes:
       - ./certs:/etc/postvak-test:ro
       - ./postvak.conf:/etc/dovecot/conf.d/zz-postvak.conf:ro
@@ -20,3 +21,13 @@ services:
       - ./certs:/etc/postvak-test:ro
       - ./postvak.conf:/etc/dovecot/conf.d/zz-postvak.conf:ro
       - ./without-move.conf:/etc/dovecot/conf.d/zz-without-move.conf:ro
+  dovecot-plain:
+    image: dovecot/dovecot:2.4.5
+    environment:
+      USER_PASSWORD: postvak-test
+    ports:
+      - "127.0.0.1:12143:31143"
+    volumes:
+      - ./certs:/etc/postvak-test:ro
+      - ./postvak.conf:/etc/dovecot/conf.d/zz-postvak.conf:ro
+      - ./plain.conf:/etc/dovecot/conf.d/zz-plain.conf:ro

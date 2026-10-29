@@ -126,13 +126,20 @@ pub fn report(event: &Event) {
         Event::Activity { account, activity } => log::debug!("[{account}] {activity:?}"),
         Event::Connected {
             account,
-            uidplus: false,
-        } => println!("[{account}] note: {}", crate::help::NO_UIDPLUS),
+            uidplus,
+            encrypted,
+        } => {
+            if !encrypted {
+                println!("[{account}] note: {}", crate::help::UNENCRYPTED);
+            }
+            if !uidplus {
+                println!("[{account}] note: {}", crate::help::NO_UIDPLUS);
+            }
+        }
         Event::ActionDone { .. }
         | Event::AttachmentFetched { .. }
         | Event::BodyPreview { .. }
         | Event::BodyReady { .. }
-        | Event::Connected { .. }
         | Event::Indexed { .. }
         | Event::Restored { .. }
         | Event::RuleApplied { .. }
@@ -220,6 +227,8 @@ struct Hub {
     activity: HashMap<String, Activity>,
     /// Per account, whether its server offered UIDPLUS at the last login.
     uidplus: HashMap<String, bool>,
+    /// Per account, whether its last login ran over TLS.
+    encrypted: HashMap<String, bool>,
     clients: HashMap<ClientId, ClientConn>,
     last_client_left: Instant,
     next_request: RequestId,
@@ -235,6 +244,7 @@ impl Hub {
         Hub {
             activity: HashMap::new(),
             uidplus: HashMap::new(),
+            encrypted: HashMap::new(),
             clients: HashMap::new(),
             last_client_left: started,
             next_request: 0,
@@ -657,6 +667,10 @@ fn reported(event: &Event, terminal: bool) -> bool {
             event,
             Event::CommandFailed { .. }
                 | Event::Connected { uidplus: false, .. }
+                | Event::Connected {
+                    encrypted: false,
+                    ..
+                }
                 | Event::Error { .. }
         )
 }
@@ -694,8 +708,13 @@ fn route_events(
             Event::Activity { account, activity } => {
                 hub.activity.insert(account.clone(), activity.clone());
             }
-            Event::Connected { account, uidplus } => {
+            Event::Connected {
+                account,
+                uidplus,
+                encrypted,
+            } => {
                 hub.uidplus.insert(account.clone(), *uidplus);
+                hub.encrypted.insert(account.clone(), *encrypted);
             }
             _ => {}
         }
@@ -906,6 +925,7 @@ fn status(shared: &Shared) -> Status {
             .map(|name| AccountStatus {
                 activity: hub.activity.get(&name).cloned(),
                 uidplus: hub.uidplus.get(&name).copied(),
+                encrypted: hub.encrypted.get(&name).copied(),
                 name,
             })
             .collect(),

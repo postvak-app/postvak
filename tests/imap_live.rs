@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use postvak_core::config::{self, AccountConfig, Config, PasswordSource};
+use postvak_core::config::{self, AccountConfig, Config, PasswordSource, Tls};
 use postvak_core::credentials::Secret;
 use postvak_core::engine::{Engine, imap_connector};
 use postvak_core::mail_ops::imap::ImapOps;
@@ -20,6 +20,10 @@ use postvak_core::sync::{self, Activity, Command, Event};
 const PASSWORD: &str = "postvak-test";
 const PORT: u16 = 10993;
 const PORT_WITHOUT_MOVE: u16 = 11993;
+/// The `PORT` server's plain-text listener, which offers STARTTLS.
+const PORT_STARTTLS: u16 = 10143;
+/// A server without TLS, so without STARTTLS.
+const PORT_PLAIN: u16 = 12143;
 
 /// CI sets the variable to an empty string where no server runs; that counts as unset.
 fn host() -> Option<String> {
@@ -780,7 +784,7 @@ fn sync_exits_nonzero_when_a_rule_fails_on_a_message() {
 }
 
 #[test]
-fn account_add_accepts_a_private_ca_file() {
+fn account_add_accepts_a_private_ca_file_and_starttls() {
     use std::io::Write;
     use std::process::Stdio;
 
@@ -789,7 +793,7 @@ fn account_add_accepts_a_private_ca_file() {
     let ca_file = template.ca_file.as_ref().unwrap().display().to_string();
     let home = tempfile::tempdir().unwrap();
     let answers = format!(
-        "live\n{host}\n{PORT}\n{ca_file}\n{}\n\nc\nprintf {PASSWORD}\n",
+        "live\n{host}\n{PORT_STARTTLS}\ns\n{ca_file}\n{}\n\nc\nprintf {PASSWORD}\n",
         template.username
     );
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_postvak"))
@@ -815,6 +819,7 @@ fn account_add_accepts_a_private_ca_file() {
     );
     let saved = Config::load(&Paths::under(home.path()).config_file()).unwrap();
     assert_eq!(saved.accounts[0].ca_file, template.ca_file);
+    assert_eq!(saved.accounts[0].tls, Some(Tls::Starttls));
 }
 
 #[test]
@@ -1015,7 +1020,7 @@ async fn mcp_actions_run_from_a_blocking_pool_thread() {
 fn account_add(home: &Path, host: &str, username: &str, password: &str) -> std::process::Output {
     use std::io::Write;
     let ca = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/dovecot/certs/ca.pem");
-    let answers = format!("live\n{host}\n{PORT}\n{ca}\n{username}\n\nc\nprintf {password}\n");
+    let answers = format!("live\n{host}\n{PORT}\n\n{ca}\n{username}\n\nc\nprintf {password}\n");
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_postvak"))
         .args(["account", "add"])
         .env("POSTVAK_HOME", home)
@@ -1156,4 +1161,57 @@ fn a_message_too_large_to_download_unasked_fetches_one_attachment_when_asked() {
         postvak_core::message::attachment(&stored, 2).unwrap(),
         ("scan.pdf".to_string(), contents)
     );
+}
+
+fn with_tls(host: &str, port: u16, tls: Tls, test: &str) -> AccountConfig {
+    AccountConfig {
+        tls: Some(tls),
+        ..account(host, port, test)
+    }
+}
+
+#[test]
+fn starttls_logs_in_encrypted_where_the_server_offers_it() {
+    let Some(host) = host() else { return };
+    for tls in [Tls::Starttls, Tls::None] {
+        let mut ops = connect(&with_tls(&host, PORT_STARTTLS, tls, "starttls"));
+        assert!(ops.is_encrypted(), "{tls:?}");
+        assert!(
+            ops.list_folders()
+                .unwrap()
+                .iter()
+                .any(|f| f.name == "INBOX")
+        );
+    }
+}
+
+#[test]
+fn starttls_refuses_a_server_without_it_and_tls_none_logs_in_unencrypted() {
+    let Some(host) = host() else { return };
+    let refused = ImapOps::connect(
+        &with_tls(&host, PORT_PLAIN, Tls::Starttls, "no-starttls"),
+        &Secret::new(PASSWORD.into()),
+    );
+    match refused {
+        Err(e) => assert!(e.to_string().contains("STARTTLS"), "{e}"),
+        Ok(_) => panic!("logged in without STARTTLS"),
+    }
+    let account = with_tls(&host, PORT_PLAIN, Tls::None, "plain");
+    assert!(!connect(&account).is_encrypted());
+    let home = tempfile::tempdir().unwrap();
+    let config = Config {
+        accounts: vec![account],
+        ..Default::default()
+    };
+    let (_engine, events) = Engine::start(&config, &Paths::under(home.path()), imap_connector());
+    loop {
+        match events
+            .recv_timeout(Duration::from_secs(30))
+            .expect("event within 30 s")
+        {
+            Event::Connected { encrypted, .. } => break assert!(!encrypted),
+            Event::Error { message, .. } => panic!("{message}"),
+            _ => {}
+        }
+    }
 }

@@ -24,7 +24,8 @@ notify = true
 | Key | Default | Meaning |
 |---|---|---|
 | `name` | required | Letters, digits, `-` and `_`. Used in `--account` and for the store directory. |
-| `host`, `port` | port 993 | IMAP over TLS. STARTTLS on port 143 is not supported yet. |
+| `host`, `port` | port 993 | The IMAP server. |
+| `tls` | by port | `"implicit"`: TLS from the first byte, as on port 993. `"starttls"`: a plain connection upgraded with STARTTLS before the login, as on port 143; a server that does not offer STARTTLS is refused. Unset, port 143 means `"starttls"` and any other port `"implicit"`. `"none"` is for a server with no TLS at all: it still upgrades when the server offers STARTTLS, and otherwise logs in in plain text, so anyone on the network can read the password and the mail; `postvak daemon status` then marks the account unencrypted. Set `"none"` only in `config.toml` or the `postvak account add` wizard. |
 | `username` | required | The IMAP login. |
 | `password` | required | `{ keyring = true }` or `{ command = "pass show mail/work" }`. |
 | `address` | the username | Your address. Required when the username is not an email address. |

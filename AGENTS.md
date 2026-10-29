@@ -68,7 +68,7 @@ docker compose -f tests/dovecot/compose.yml up -d
 POSTVAK_TEST_IMAP_HOST=localhost cargo test --features testing --test imap_live
 ```
 
-Port 10993 advertises MOVE, UIDPLUS and LIST-STATUS, port 11993 none of them. Each test logs in as its own throwaway user. `tests/dovecot/gen-certs.sh` regenerates the test-only CA.
+Port 10993 advertises MOVE, UIDPLUS, LIST-STATUS and ID, port 11993 none of them; port 10143 is 10993's plain listener with STARTTLS, port 12143 a server without TLS at all. Each test logs in as its own throwaway user. `tests/dovecot/gen-certs.sh` regenerates the test-only CA.
 
 The notification click test runs against a stand-in server on a private session bus, so nothing reaches your desktop: `dbus-run-session -- env POSTVAK_TEST_DBUS=1 cargo test -p postvak-core notify::dbus badge`.
 

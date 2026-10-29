@@ -4,27 +4,34 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use async_imap::Session;
 use async_imap::extensions::idle::IdleResponse;
 use async_imap::imap_proto::{
-    BodyContentCommon, BodyContentSinglePart, BodyStructure, ContentEncoding, MailboxDatum,
-    MessageSection, Response, SectionPath, StatusAttribute,
+    BodyContentCommon, BodyContentSinglePart, BodyStructure, Capability, ContentEncoding,
+    MailboxDatum, MessageSection, Response, ResponseCode, SectionPath, StatusAttribute,
 };
+use async_imap::types::UnsolicitedResponse;
 use async_imap::types::{Capabilities, Fetch, Flag, NameAttribute};
+use async_imap::{Client, Session};
 use futures_util::TryStreamExt;
 use rustls::pki_types::{CertificateDer, pem::PemObject};
 use tokio::net::TcpStream;
 use tokio::runtime::Runtime;
-use tokio_rustls::client::TlsStream;
 
-use crate::config::AccountConfig;
+use crate::config::{AccountConfig, Tls};
 use crate::credentials::Secret;
 use crate::mail_ops::{
     Envelope, FlagUpdate, IdleOutcome, MailError, MailOps, MailResult, PartRef, RemoteFolder,
     SelectInfo, StatusInfo, Structure, TextPart, utf7,
 };
 
-type ImapSession = Session<TlsStream<TcpStream>>;
+/// TCP, TLS over TCP, or TLS over TCP after STARTTLS.
+trait Transport: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + std::fmt::Debug {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + std::fmt::Debug> Transport
+    for T
+{
+}
+
+type ImapSession = Session<Box<dyn Transport>>;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// A server that stops answering mid-command would otherwise hold the account's thread until keepalive gives up, or forever.
@@ -43,6 +50,7 @@ pub struct ImapOps {
     has_condstore: bool,
     has_list_status: bool,
     has_special_use: bool,
+    encrypted: bool,
     selected: Option<String>,
     command_timeout: Duration,
     names: FolderNames,
@@ -72,7 +80,7 @@ impl ImapOps {
                     ))
                 })?
         });
-        let (session, caps) = match opened {
+        let (session, caps, encrypted) = match opened {
             Ok(opened) => opened,
             Err(error) => {
                 // Dropping the runtime would wait for a blocking DNS lookup past the limit.
@@ -90,6 +98,7 @@ impl ImapOps {
             has_condstore: caps.has_str("CONDSTORE") || caps.has_str("QRESYNC"),
             has_list_status: caps.has_str("LIST-STATUS"),
             has_special_use: caps.has_str("SPECIAL-USE"),
+            encrypted,
             selected: None,
             command_timeout: COMMAND_TIMEOUT,
             names: FolderNames::default(),
@@ -278,11 +287,62 @@ fn root_store(ca_file: Option<&Path>) -> MailResult<rustls::RootCertStore> {
 async fn open_session(
     account: &AccountConfig,
     secret: &Secret,
-) -> MailResult<(ImapSession, Capabilities)> {
+) -> MailResult<(ImapSession, Capabilities, bool)> {
     let tcp = TcpStream::connect((account.host.as_str(), account.port))
         .await
         .map_err(|e| MailError::Connect(e.to_string()))?;
     enable_keepalive(&tcp).map_err(|e| MailError::Connect(e.to_string()))?;
+    let tcp: Box<dyn Transport> = Box::new(tcp);
+    let (client, encrypted) = match account.tls() {
+        Tls::Implicit => (Client::new(tls_handshake(account, tcp).await?), true),
+        mode => {
+            let mut client = Client::new(tcp);
+            if offers_starttls(&mut client).await? {
+                client
+                    .run_command_and_check_ok("STARTTLS", None)
+                    .await
+                    .map_err(|e| MailError::Connect(format!("STARTTLS failed: {e}")))?;
+                if mode == Tls::None {
+                    log::info!(
+                        "{}: the server offers STARTTLS, so the login is encrypted despite tls = \"none\"",
+                        account.name
+                    );
+                }
+                // Anything the server sent before the handshake is dropped with the plain stream (RFC 3501 6.2.1).
+                let tls = tls_handshake(account, client.into_inner()).await?;
+                (Client::new(tls), true)
+            } else if mode == Tls::None {
+                (client, false)
+            } else {
+                return Err(MailError::Connect(format!(
+                    "{}:{} does not offer STARTTLS, so Postvak did not log in",
+                    account.host, account.port
+                )));
+            }
+        }
+    };
+    let mut session = client
+        .login(&account.username, secret.expose())
+        .await
+        .map_err(|(e, _)| login_error(e))?;
+    let caps = session.capabilities().await.map_err(proto)?;
+    if caps.has_str("ID") {
+        // Some providers refuse SELECT from a client that does not say what it is (RFC 2971); the reply is not needed.
+        let _ = session
+            .id([
+                ("name", Some("Postvak")),
+                ("version", Some(env!("CARGO_PKG_VERSION"))),
+            ])
+            .await;
+    }
+    Ok((session, caps, encrypted))
+}
+
+/// TLS over `stream` with the public roots and the account's `ca_file`.
+async fn tls_handshake(
+    account: &AccountConfig,
+    stream: Box<dyn Transport>,
+) -> MailResult<Box<dyn Transport>> {
     let roots = root_store(account.ca_file.as_deref())?;
     let config = rustls::ClientConfig::builder()
         .with_root_certificates(roots)
@@ -291,16 +351,34 @@ async fn open_session(
     let name = rustls::pki_types::ServerName::try_from(account.host.clone())
         .map_err(|e| MailError::Connect(e.to_string()))?;
     let tls = connector
-        .connect(name, tcp)
+        .connect(name, stream)
         .await
         .map_err(|e| MailError::Connect(e.to_string()))?;
-    let client = async_imap::Client::new(tls);
-    let mut session = client
-        .login(&account.username, secret.expose())
+    Ok(Box::new(tls))
+}
+
+/// Whether the plain-text greeting or an answer to CAPABILITY lists STARTTLS.
+async fn offers_starttls(client: &mut Client<Box<dyn Transport>>) -> MailResult<bool> {
+    let (sender, untagged) = async_channel::unbounded();
+    client
+        .run_command_and_check_ok("CAPABILITY", Some(sender))
         .await
-        .map_err(|(e, _)| login_error(e))?;
-    let caps = session.capabilities().await.map_err(proto)?;
-    Ok((session, caps))
+        .map_err(proto)?;
+    let mut offered = false;
+    while let Ok(UnsolicitedResponse::Other(response)) = untagged.try_recv() {
+        let listed = match response.parsed() {
+            Response::Capabilities(listed) => listed,
+            Response::Data { outcome, .. } => match &outcome.code {
+                Some(ResponseCode::Capabilities(listed)) => listed,
+                _ => continue,
+            },
+            _ => continue,
+        };
+        offered |= listed
+            .iter()
+            .any(|c| matches!(c, Capability::Atom(atom) if atom.eq_ignore_ascii_case("STARTTLS")));
+    }
+    Ok(offered)
 }
 
 fn enable_keepalive(tcp: &TcpStream) -> std::io::Result<()> {
@@ -608,6 +686,10 @@ fn envelope_from(fetch: &Fetch) -> Option<Envelope> {
 impl MailOps for ImapOps {
     fn has_uidplus(&self) -> bool {
         self.has_uidplus
+    }
+
+    fn is_encrypted(&self) -> bool {
+        self.encrypted
     }
 
     fn list_folders(&mut self) -> MailResult<Vec<RemoteFolder>> {
@@ -1482,9 +1564,7 @@ mod tests {
         drop(listener);
     }
 
-    /// Answers LOGIN and CAPABILITY over TLS with the test certificate, then holds every later command unanswered.
-    fn serve_login_then_stall(listener: std::net::TcpListener) {
-        use std::io::{BufRead, BufReader, Write};
+    fn test_server_tls() -> rustls::ServerConnection {
         let certs = CertificateDer::pem_file_iter(TEST_CERT)
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
@@ -1494,8 +1574,14 @@ mod tests {
             .with_no_client_auth()
             .with_single_cert(certs, key)
             .unwrap();
+        rustls::ServerConnection::new(Arc::new(config)).unwrap()
+    }
+
+    /// Answers LOGIN and CAPABILITY over TLS with the test certificate, then holds every later command unanswered.
+    fn serve_login_then_stall(listener: std::net::TcpListener) {
+        use std::io::{BufRead, BufReader, Write};
         let (tcp, _) = listener.accept().unwrap();
-        let tls = rustls::ServerConnection::new(Arc::new(config)).unwrap();
+        let tls = test_server_tls();
         let mut stream = BufReader::new(rustls::StreamOwned::new(tls, tcp));
         stream.get_mut().write_all(b"* OK ready\r\n").unwrap();
         stream.get_mut().flush().unwrap();
@@ -1539,6 +1625,103 @@ mod tests {
         );
         drop(ops);
         server.join().unwrap();
+    }
+
+    /// A plain-text server listing `capabilities` that answers every command OK, and STARTTLS by switching to TLS with
+    /// the test certificate. Returns the commands it read, those over TLS as `tls COMMAND`.
+    fn serve_plain(listener: std::net::TcpListener, capabilities: &str) -> Vec<String> {
+        use std::io::{BufReader, Write};
+        let (tcp, _) = listener.accept().unwrap();
+        let mut seen = Vec::new();
+        let mut plain = BufReader::new(tcp);
+        plain.get_mut().write_all(b"* OK ready\r\n").unwrap();
+        if answer(&mut plain, capabilities, "", &mut seen) {
+            let tls = rustls::StreamOwned::new(test_server_tls(), plain.into_inner());
+            answer(&mut BufReader::new(tls), capabilities, "tls ", &mut seen);
+        }
+        seen
+    }
+
+    /// Answers until the client leaves, or until STARTTLS, which returns true.
+    fn answer(
+        stream: &mut std::io::BufReader<impl std::io::Read + std::io::Write>,
+        capabilities: &str,
+        prefix: &str,
+        seen: &mut Vec<String>,
+    ) -> bool {
+        use std::io::BufRead;
+        let mut line = String::new();
+        while matches!(stream.read_line(&mut line), Ok(n) if n > 0) {
+            let mut words = line.split_whitespace();
+            let tag = words.next().unwrap_or("").to_string();
+            let command = words.next().unwrap_or("").to_ascii_uppercase();
+            seen.push(format!("{prefix}{command}"));
+            let listed = match command.as_str() {
+                "CAPABILITY" => format!("* CAPABILITY IMAP4rev1 {capabilities}\r\n"),
+                _ => String::new(),
+            };
+            let _ = write!(stream.get_mut(), "{listed}{tag} OK done\r\n");
+            let _ = stream.get_mut().flush();
+            if command == "STARTTLS" {
+                return true;
+            }
+            line.clear();
+        }
+        false
+    }
+
+    /// Connects with `tls` to `serve_plain` and returns the result and the commands the server read.
+    fn connect_plain(tls: Tls, capabilities: &'static str) -> (MailResult<bool>, Vec<String>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || serve_plain(listener, capabilities));
+        let account = AccountConfig {
+            ca_file: Some(TEST_CA.into()),
+            tls: Some(tls),
+            ..test_account("127.0.0.1", port)
+        };
+        let result =
+            ImapOps::connect_within(&account, &Secret::new("x".into()), Duration::from_secs(5))
+                .map(|ops| ops.is_encrypted());
+        (result, server.join().unwrap())
+    }
+
+    #[test]
+    fn starttls_upgrades_before_the_login_and_asks_the_capabilities_again() {
+        for tls in [Tls::Starttls, Tls::None] {
+            let (result, seen) = connect_plain(tls, "STARTTLS");
+            assert!(matches!(result, Ok(true)), "{tls:?}: {result:?}");
+            assert_eq!(
+                seen,
+                ["CAPABILITY", "STARTTLS", "tls LOGIN", "tls CAPABILITY"],
+                "{tls:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn starttls_refuses_a_server_that_does_not_offer_it_before_sending_the_password() {
+        let (result, seen) = connect_plain(Tls::Starttls, "LOGINDISABLED");
+        match result {
+            Err(MailError::Connect(message)) => assert!(message.contains("STARTTLS"), "{message}"),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert_eq!(seen, ["CAPABILITY"]);
+    }
+
+    #[test]
+    fn tls_none_logs_in_in_plain_text_only_where_starttls_is_not_offered() {
+        let (result, seen) = connect_plain(Tls::None, "");
+        assert!(matches!(result, Ok(false)), "{result:?}");
+        assert_eq!(seen, ["CAPABILITY", "LOGIN", "CAPABILITY"]);
+    }
+
+    #[test]
+    fn the_client_says_its_name_only_to_a_server_that_offers_id() {
+        let (_, seen) = connect_plain(Tls::Starttls, "STARTTLS ID");
+        assert!(seen.contains(&"tls ID".to_string()), "{seen:?}");
+        let (_, seen) = connect_plain(Tls::Starttls, "STARTTLS");
+        assert!(!seen.iter().any(|c| c.ends_with("ID")), "{seen:?}");
     }
 
     #[test]
