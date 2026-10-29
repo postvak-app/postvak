@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 
 use i_slint_backend_testing::ElementHandle;
 use slint::ComponentHandle;
+use slint::platform::WindowAdapter;
+use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType, Rgb565Pixel};
 
 use tempfile::TempDir;
 
@@ -175,6 +177,45 @@ pub(crate) fn headless() {
         renderer_name: Some("software".into()),
     });
     let _ = slint::platform::set_platform(Box::new(backend));
+}
+
+/// Like `headless`, but the window is Slint's `MinimalSoftwareWindow`, which keeps the redraws the testing backend
+/// drops; `drawn` draws it when something asked for that, and says whether anything did.
+pub(crate) fn redraws() {
+    struct Platform(i_slint_backend_testing::TestingBackend);
+    impl slint::platform::Platform for Platform {
+        fn create_window_adapter(
+            &self,
+        ) -> Result<Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError> {
+            let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+            DRAWN.with_borrow_mut(|slot| *slot = Some(window.clone()));
+            Ok(window)
+        }
+        fn duration_since_start(&self) -> Duration {
+            self.0.duration_since_start()
+        }
+    }
+    use i_slint_backend_testing::{TestingBackend, TestingBackendOptions};
+    let backend = TestingBackend::new(TestingBackendOptions {
+        mock_time: true,
+        threading: false,
+        renderer_name: None,
+    });
+    slint::platform::set_platform(Box::new(Platform(backend))).unwrap();
+}
+
+thread_local! {
+    static DRAWN: std::cell::RefCell<Option<Rc<MinimalSoftwareWindow>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Draws the window `redraws` made if anything asked for a redraw since the last time; whether it did.
+pub(crate) fn drawn() -> bool {
+    let window = DRAWN.with_borrow(|slot| slot.clone()).unwrap();
+    window.draw_if_needed(|renderer| {
+        let size = window.window().size();
+        let mut pixels = vec![Rgb565Pixel::default(); (size.width * size.height) as usize];
+        renderer.render(&mut pixels, size.width as usize);
+    })
 }
 
 impl Fixture {

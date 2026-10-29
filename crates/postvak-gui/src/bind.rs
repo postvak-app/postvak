@@ -87,9 +87,9 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
     window.set_tool_buttons_enabled(toolbar::enabled(app));
 
     let folders = folders::entries(app).iter().map(folder_item).collect();
-    sync(window.get_folders(), folders, |m| window.set_folders(m));
+    sync_folders(window.get_folders(), folders, |m| window.set_folders(m));
     let pinned = folders::pinned(app).iter().map(folder_row).collect();
-    sync(window.get_pinned(), pinned, |m| window.set_pinned(m));
+    sync_folders(window.get_pinned(), pinned, |m| window.set_pinned(m));
 
     let line = status_line(status::summary(app));
     if window.get_status_line() != line {
@@ -1060,6 +1060,24 @@ fn folder_item(entry: &Entry) -> FolderItem {
             ..FolderItem::default()
         },
     }
+}
+
+/// `sync` for folder rows. Their menus are models, which compare by identity, so a row keeps the shown menus while
+/// they offer the same choices; otherwise every row would differ and the window draw again on every tick.
+fn sync_folders(
+    current: ModelRc<FolderItem>,
+    mut items: Vec<FolderItem>,
+    set: impl FnOnce(ModelRc<FolderItem>),
+) {
+    for (item, shown) in items.iter_mut().zip(current.iter()) {
+        if item.menu_head.iter().eq(shown.menu_head.iter()) {
+            item.menu_head = shown.menu_head;
+        }
+        if item.menu_tail.iter().eq(shown.menu_tail.iter()) {
+            item.menu_tail = shown.menu_tail;
+        }
+    }
+    sync(current, items, set);
 }
 
 fn folder_row(folder: &FolderEntry) -> FolderItem {
