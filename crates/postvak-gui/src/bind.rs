@@ -169,6 +169,9 @@ fn present_folder_dialog(app: &App, window: &MailWindow) {
         choices(&question.buttons),
         |m| window.set_folder_buttons(m),
     );
+    sync(window.get_folder_danger(), question.danger, |m| {
+        window.set_folder_danger(m)
+    });
 }
 
 fn present_list(app: &App, window: &MailWindow) {

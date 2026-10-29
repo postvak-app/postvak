@@ -125,6 +125,7 @@ export component MailWindow inherits Window {
     in property <string> folder-name;
     in property <string> folder-error;
     in property <[MenuChoice]> folder-buttons;
+    in property <[bool]> folder-danger;
 
     in property <BodyInfo> body-info;
     in property <string> body-text;
@@ -718,6 +719,7 @@ export component MailWindow inherits Window {
         name: root.folder-name;
         error: root.folder-error;
         buttons: root.folder-buttons;
+        danger: root.folder-danger;
         close-icon: root.close-icon;
         edited(text) => { root.folder-edited(text); }
         accepted => { root.folder-accepted(); }

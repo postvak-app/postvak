@@ -366,6 +366,8 @@ pub(crate) struct Question {
     pub error: Option<String>,
     /// (title, enabled, what it confirms).
     pub buttons: Vec<(String, bool, Option<DeleteMode>)>,
+    /// Per button: it deletes the folder or its mail for good, so it is drawn as danger; the others lead as primary.
+    pub danger: Vec<bool>,
 }
 
 /// What the open folder dialog says and offers.
@@ -420,12 +422,18 @@ pub(crate) fn question(app: &App) -> Option<Question> {
             ("Delete folder", text, None, buttons)
         }
     };
+    let deletes = matches!(dialog.kind, FolderKind::Delete { .. });
+    let danger = buttons
+        .iter()
+        .map(|(_, _, mode)| deletes && *mode != Some(DeleteMode::Trash))
+        .collect();
     Some(Question {
         title,
         text,
         name,
         error: dialog.error.clone(),
         buttons,
+        danger,
     })
 }
 
