@@ -312,7 +312,7 @@ Inspect and test rules.toml
 * `schema` — JSON Schema for rules.toml; a proposal is one entry of `rules`
 * `propose` — Read one rule, a JSON array of rules or {"rules": [...]} on stdin and add them disabled, in order, for a human to approve; all or none are stored
 * `withdraw` — Remove your own pending proposal: a disabled rule whose proposed_by is yours; anything else is left for a human
-* `approve` — Enable a disabled rule, such as a proposal
+* `approve` — Enable a disabled rule, such as a proposal, or write an edit proposal over the rule it edits
 * `reject` — Remove a pending proposal
 * `list` — Every rule in file order, the order they run in: its position, its whole definition, whether it is enabled and who proposed it
 * `coverage` — Run the rules over one folder's stored mail without acting: how many messages a rule matches, none matches and several match; the top senders of unmatched mail; for each contested message every rule that matches and what would run under the real precedence
@@ -367,6 +367,7 @@ Read one rule, a JSON array of rules or {"rules": [...]} on stdin and add them d
 * `--before <BEFORE>` — Put the rules right before this rule instead of at the end
 * `--after <AFTER>` — Put the rules right after this rule instead of at the end
 * `--replace` — Replace your own pending proposal of the same name instead of refusing the name
+* `--edit` — Propose changes to the existing rules of these names, stored as '<name> (edit)'; each rule runs unchanged until approved
 
 
 
@@ -388,7 +389,7 @@ Remove your own pending proposal: a disabled rule whose proposed_by is yours; an
 
 ## `postvak rules approve`
 
-Enable a disabled rule, such as a proposal
+Enable a disabled rule, such as a proposal, or write an edit proposal over the rule it edits
 
 **Usage:** `postvak rules approve <NAME>`
 

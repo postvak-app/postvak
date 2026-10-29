@@ -766,15 +766,23 @@ impl Backend {
         if let Place::Before(anchor) | Place::After(anchor) = &proposals.place {
             self.ensure_rule_visible(anchor, false)?;
         }
-        if proposals.replace {
+        if proposals.replace || proposals.edit {
             for rule in &proposals.rules {
-                self.ensure_rule_visible(&rule.name, false)?;
+                // An edit reaches every account its rule does, so a narrowed server may not edit a rule for all of them.
+                self.ensure_rule_visible(&rule.name, proposals.edit)?;
             }
         }
         let proposed: Vec<Value> = proposals
             .rules
             .iter()
-            .map(|r| json!({ "name": r.name, "account": r.account }))
+            .map(|r| {
+                let name = if proposals.edit {
+                    rules::edit::edit_name(&r.name)
+                } else {
+                    r.name.clone()
+                };
+                json!({ "name": name, "account": r.account })
+            })
             .collect();
         rules::edit::propose_all(&self.paths.rules_file(), proposals, by)?;
         Ok(proposed)
@@ -791,8 +799,8 @@ impl Backend {
     pub fn approve(&self, name: &str, sight: Sight) -> Result<Value> {
         self.ensure_rule_visible(name, true)?;
         refuse_named_unseen(&self.paths, name, sight)?;
-        rules::edit::approve_from_now(&self.paths, name, time::now())?;
-        Ok(json!({ "rule": name, "enabled": true }))
+        let approved = rules::edit::approve_from_now(&self.paths, name, time::now())?;
+        Ok(json!({ "rule": approved, "enabled": true }))
     }
 
     pub fn reject(&self, name: &str) -> Result<Value> {
