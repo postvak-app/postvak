@@ -1294,11 +1294,10 @@ impl App {
             Event::FolderDeleted { name, .. } => {
                 self.folder_answered(index, &name);
                 self.refresh(index);
-                let open = View::Folder {
-                    account: index,
-                    folder: name,
-                };
-                if self.view == open {
+                if let View::Folder { account, folder } = &self.view
+                    && *account == index
+                    && folder_name::same(folder, &name)
+                {
                     self.select_view(View::Folder {
                         account: index,
                         folder: list::INBOX.into(),
@@ -5198,7 +5197,7 @@ mod tests {
             question.text,
             [
                 help::folder_rule_split("sites"),
-                help::folder_rule_followed("old", "Projects/Site")
+                help::folder_rule_will_follow("old")
             ]
             .join("\n")
         );
@@ -5301,6 +5300,36 @@ mod tests {
         };
         driver.apply(UiAction::SelectView(open("Old")));
         driver.receive(&wires, [deleted("Old")]);
+        assert_eq!(driver.app.view, open("INBOX"));
+    }
+
+    #[test]
+    fn renamed_parent_of_the_selected_folder_keeps_the_view() {
+        let fx = Fixture::new(&["work"]);
+        for name in ["Projects/Website", "Projects/Website/Q3"] {
+            fx.store("work").upsert_folder(&slashed(name)).unwrap();
+        }
+        let (mut driver, wires) = fx.driver();
+        let open = |folder: &str| View::Folder {
+            account: 0,
+            folder: folder.into(),
+        };
+        driver.apply(UiAction::SelectView(open("Projects/Website/Q3")));
+        driver.receive(&wires, [renamed("Projects/Website", "Projects/Site")]);
+        assert_eq!(driver.app.view, open("Projects/Site/Q3"));
+    }
+
+    #[test]
+    fn deleted_selected_folder_named_in_another_normalization_returns_to_inbox() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "\u{c9}\u{e9}n", None);
+        let (mut driver, wires) = fx.driver();
+        let open = |folder: &str| View::Folder {
+            account: 0,
+            folder: folder.into(),
+        };
+        driver.apply(UiAction::SelectView(open("\u{c9}\u{e9}n")));
+        driver.receive(&wires, [deleted("E\u{301}e\u{301}n")]);
         assert_eq!(driver.app.view, open("INBOX"));
     }
 

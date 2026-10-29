@@ -378,16 +378,12 @@ pub(crate) fn question(app: &App) -> Option<Question> {
             let create = ("Create".to_string(), ready, None);
             ("New folder", text, Some(dialog.name.clone()), vec![create])
         }
-        FolderKind::Rename { from, rules } => {
-            let to = app
-                .folder_target(dialog)
-                .filter(|_| !dialog.name.is_empty())
-                .unwrap_or_else(|| from.clone());
+        FolderKind::Rename { rules, .. } => {
             let lines: Vec<String> = rules
                 .iter()
                 .map(|(rule, split)| match split {
                     true => help::folder_rule_split(&clean(rule, false)),
-                    false => help::folder_rule_followed(&clean(rule, false), &clean(&to, false)),
+                    false => help::folder_rule_will_follow(&clean(rule, false)),
                 })
                 .collect();
             let rename = ("Rename".to_string(), ready, None);

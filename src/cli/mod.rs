@@ -1056,7 +1056,10 @@ fn cmd_folder(command: FolderCommand, config: &Config, paths: &Paths) -> Result<
             let Deleted::NotEmpty { count, has_trash } =
                 daemon.delete_folder(&acc.name, &name, None, 0)?
             else {
-                println!("deleted {}", clean(&name, false));
+                println!(
+                    "{}",
+                    postvak_core::help::folder_deleted(&clean(&name, false), 0, None)
+                );
                 return Ok(());
             };
             let mode = match (trash, permanent) {
@@ -1071,7 +1074,10 @@ fn cmd_folder(command: FolderCommand, config: &Config, paths: &Paths) -> Result<
                 ),
             };
             daemon.delete_folder(&acc.name, &name, Some(mode), count)?;
-            println!("deleted {}", clean(&name, false));
+            println!(
+                "{}",
+                postvak_core::help::folder_deleted(&clean(&name, false), count, Some(mode))
+            );
             Ok(())
         }
         FolderCommand::Rename { from, to, account } => {
@@ -1101,7 +1107,7 @@ fn cmd_folder(command: FolderCommand, config: &Config, paths: &Paths) -> Result<
                     if split {
                         postvak_core::help::folder_rule_split(&name)
                     } else {
-                        postvak_core::help::folder_rule_followed(&name, &clean(&renamed, false))
+                        postvak_core::help::folder_rule_followed(&name)
                     }
                 );
             }

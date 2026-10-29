@@ -142,8 +142,27 @@ pub fn folder_not_empty(name: &str, count: u32) -> String {
     format!("{name} holds {count} messages; pass --trash or --permanent")
 }
 
-pub fn folder_rule_followed(rule: &str, to: &str) -> String {
-    format!("rule '{rule}' now moves to {to}")
+/// A rule naming a folder about to be renamed; [`folder_rule_followed`] once it is.
+pub fn folder_rule_will_follow(rule: &str) -> String {
+    format!("rule '{rule}' will follow the new name")
+}
+
+pub fn folder_rule_followed(rule: &str) -> String {
+    format!("rule '{rule}' follows the new name")
+}
+
+/// A deleted folder, and where its `count` messages went by `mode`.
+pub fn folder_deleted(name: &str, count: u32, mode: Option<crate::sync::DeleteMode>) -> String {
+    use crate::sync::DeleteMode;
+    match (count, mode) {
+        (0, _) | (_, None) => format!("deleted {name}"),
+        (_, Some(DeleteMode::Trash)) => {
+            format!("deleted {name}; its {count} messages moved to the Trash folder")
+        }
+        (_, Some(DeleteMode::Permanent)) => format!(
+            "deleted {name}; its {count} messages are backed up in Postvak's trash (postvak trash list)"
+        ),
+    }
 }
 
 pub fn folder_rule_split(rule: &str) -> String {
@@ -162,6 +181,7 @@ pub fn folder_rules_not_updated(from: &str, error: &str, rules: Result<&[String]
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sync::DeleteMode;
 
     #[test]
     fn every_doc_page_embeds_its_markdown() {
@@ -208,8 +228,18 @@ mod tests {
             "the account has no Trash folder; use --permanent"
         );
         assert_eq!(
-            folder_rule_followed("a", "New"),
-            "rule 'a' now moves to New"
+            folder_rule_will_follow("a"),
+            "rule 'a' will follow the new name"
+        );
+        assert_eq!(folder_rule_followed("a"), "rule 'a' follows the new name");
+        assert_eq!(folder_deleted("Old", 0, None), "deleted Old");
+        assert_eq!(
+            folder_deleted("Old", 3, Some(DeleteMode::Trash)),
+            "deleted Old; its 3 messages moved to the Trash folder"
+        );
+        assert_eq!(
+            folder_deleted("Old", 3, Some(DeleteMode::Permanent)),
+            "deleted Old; its 3 messages are backed up in Postvak's trash (postvak trash list)"
         );
         assert_eq!(folder_rule_split("a"), "rule 'a' split per account");
         let names = ["a".to_string(), "b".to_string()];
