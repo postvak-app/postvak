@@ -456,6 +456,7 @@ pub(crate) struct Draft {
     /// The rule's name in rules.toml; None until the draft is first saved.
     pub original: Option<String>,
     pub proposed_by: Option<String>,
+    pub replaces: Option<String>,
     /// The last Test result; cleared by any edit.
     pub tested: Option<String>,
 }
@@ -480,6 +481,7 @@ impl Draft {
             name: rule.name.clone(),
             original: Some(rule.name.clone()),
             proposed_by: rule.proposed_by.clone(),
+            replaces: rule.replaces.clone(),
             ..Draft::default()
         }
     }
@@ -549,6 +551,7 @@ impl Draft {
             folder: self.folder.clone(),
             enabled: self.enabled,
             proposed_by: self.proposed_by.clone(),
+            replaces: self.replaces.clone(),
             matches: m,
             actions: self.actions.clone(),
         })

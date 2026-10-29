@@ -37,10 +37,12 @@ pub struct Proposals {
     pub place: Place,
     /// A rule whose name is taken by the caller's own pending proposal replaces it, instead of being refused.
     pub replace: bool,
+    /// Each rule changes the existing rule of its name once approved, which runs as it is until then.
+    pub edit: bool,
 }
 
 /// What `rules propose` reads on stdin and `rules_propose` takes: one rule, an array of rules, or `{"rules": [...]}`.
-/// Either object may also carry `before` or `after` (a rule's name) and `replace`. A rule that does not parse is named
+/// Either object may also carry `before` or `after` (a rule's name), `replace` and `edit`. A rule that does not parse is named
 /// by its index in the batch.
 pub fn read_proposals(value: serde_json::Value) -> Result<Proposals, RulesError> {
     use serde_json::Value as Json;
@@ -50,7 +52,7 @@ pub fn read_proposals(value: serde_json::Value) -> Result<Proposals, RulesError>
             Some(Json::Array(items)) => (items, object),
             Some(Json::Null) | None => {
                 let mut rule = serde_json::Map::new();
-                for key in ["before", "after", "replace"] {
+                for key in ["before", "after", "edit", "replace"] {
                     if let Some(value) = object.remove(key) {
                         rule.insert(key.to_string(), value);
                     }
@@ -84,11 +86,18 @@ pub fn read_proposals(value: serde_json::Value) -> Result<Proposals, RulesError>
         (None, Some(name)) => Place::After(name),
         (None, None) => Place::End,
     };
-    let replace = match object.remove("replace") {
-        None | Some(Json::Null) => false,
-        Some(Json::Bool(replace)) => replace,
-        Some(_) => return Err(RulesError::Parse("`replace` must be true or false".into())),
+    let flag = |key: &str, object: &mut serde_json::Map<String, Json>| match object.remove(key) {
+        None | Some(Json::Null) => Ok(false),
+        Some(Json::Bool(value)) => Ok(value),
+        Some(_) => Err(RulesError::Parse(format!("`{key}` must be true or false"))),
     };
+    let replace = flag("replace", &mut object)?;
+    let edit = flag("edit", &mut object)?;
+    if edit && place != Place::End {
+        return Err(RulesError::Parse(
+            "an edit keeps its rule's place: give `edit` without `before` or `after`".into(),
+        ));
+    }
     if let Some(key) = object.keys().next() {
         return Err(RulesError::Parse(format!("unknown field `{key}`")));
     }
@@ -114,18 +123,20 @@ pub fn read_proposals(value: serde_json::Value) -> Result<Proposals, RulesError>
         rules,
         place,
         replace,
+        edit,
     })
 }
 
 /// Stores every rule of `proposals` disabled and attributed to `by`, in the order given, or none of them: the whole
 /// batch is checked first, and each rule that fails is named by its index. A name already in the file is refused,
 /// unless `replace` is set and that rule is `by`'s own pending proposal; a replaced rule keeps its place unless the
-/// batch names one.
+/// batch names one. With `edit`, each rule is stored as `<name> (edit)` right after the rule it changes.
 pub fn propose_all(path: &Path, proposals: Proposals, by: &str) -> Result<(), RulesError> {
     let Proposals {
         mut rules,
         place,
         replace,
+        edit,
     } = proposals;
     if rules.is_empty() {
         return Err(RulesError::Batch("no rules to propose".into()));
@@ -133,6 +144,11 @@ pub fn propose_all(path: &Path, proposals: Proposals, by: &str) -> Result<(), Ru
     for rule in &mut rules {
         rule.enabled = false;
         rule.proposed_by = Some(by.to_string());
+        rule.replaces = None;
+        if edit {
+            let stored = edit_name(&rule.name);
+            rule.replaces = Some(std::mem::replace(&mut rule.name, stored));
+        }
     }
     let tables = rules
         .iter()
@@ -140,9 +156,56 @@ pub fn propose_all(path: &Path, proposals: Proposals, by: &str) -> Result<(), Ru
         .collect::<Result<Vec<_>, _>>()?;
     edit_file(path, |doc| {
         let existing = parse(&doc.to_string())?.rules;
+        if edit {
+            check_edits(&existing, &rules)?;
+        }
         check_batch(&existing, &rules, by, replace, &place)?;
-        place_tables(doc, tables, &place)
+        if !edit {
+            return place_tables(doc, tables, &place);
+        }
+        for (rule, table) in rules.iter().zip(tables) {
+            // A pending edit being replaced stays where it is; a new one goes right after its rule.
+            let place = match &rule.replaces {
+                Some(target) if !existing.iter().any(|r| r.name == rule.name) => {
+                    Place::After(target.clone())
+                }
+                _ => Place::End,
+            };
+            place_tables(doc, vec![table], &place)?;
+        }
+        Ok(())
     })
+}
+
+/// The name an edit of `name` is stored under until a human approves it.
+pub fn edit_name(name: &str) -> String {
+    format!("{name} (edit)")
+}
+
+/// Every edit of `batch` must change a rule of `existing` that is not itself a pending proposal.
+fn check_edits(existing: &[Rule], batch: &[Rule]) -> Result<(), RulesError> {
+    let mut errors = Vec::new();
+    for (index, rule) in batch.iter().enumerate() {
+        let target = rule.replaces.as_deref().unwrap_or_default();
+        let reason = match existing.iter().find(|r| r.name == target) {
+            None => "no rule to edit; propose it as a new rule",
+            Some(r) if is_pending(r) => "is a pending proposal; propose it again with replace",
+            Some(_) => continue,
+        };
+        if batch.len() == 1 {
+            return Err(invalid(target, reason));
+        }
+        errors.push(format!("rule {index} '{target}': {reason}"));
+    }
+    if errors.is_empty() {
+        return Ok(());
+    }
+    Err(RulesError::Batch(errors.join("; ")))
+}
+
+/// A rule an agent proposed that no human has approved yet.
+fn is_pending(rule: &Rule) -> bool {
+    !rule.enabled && rule.proposed_by.is_some()
 }
 
 /// Every reason the batch cannot be stored as a whole, each rule's named by its index; a lone rule's error stays as
@@ -408,7 +471,9 @@ pub fn set_enabled(path: &Path, name: &str, enabled: bool) -> Result<(), RulesEr
     })
 }
 
-fn approve(path: &Path, name: &str) -> Result<(), RulesError> {
+/// Enables `name`, or writes it over the rule it edits; returns the name of the rule that now holds it.
+fn approve(path: &Path, name: &str) -> Result<String, RulesError> {
+    let mut approved = name.to_string();
     edit(path, name, |rules, index| {
         let table = rules
             .get_mut(index)
@@ -416,24 +481,68 @@ fn approve(path: &Path, name: &str) -> Result<(), RulesError> {
         if !is_disabled(table) {
             return Err(invalid(name, "is already enabled"));
         }
+        if let Some(target) = table.get("replaces").and_then(|v| v.as_str()) {
+            approved = target.to_string();
+            return approve_edit(rules, index, name);
+        }
         write_enabled(table, true);
         // Approved, the rule is no longer anyone's proposal: turned off later, it must not read as pending again, which
         // would let its proposer replace or withdraw it.
         table.remove("proposed_by");
         Ok(None)
-    })
+    })?;
+    Ok(approved)
 }
 
-/// Approves `name` and restarts its clock in the store of every account in config.toml, read here rather than taken
-/// from the caller, so it acts only on mail that arrives from now on, even where an older clock of the rule survived
-/// and whichever front end added the account. An unreadable config.toml refuses before the rule is enabled.
-pub fn approve_from_now(paths: &Paths, name: &str, now: i64) -> Result<(), RulesError> {
-    let config = Config::load(&paths.config_file())?;
-    approve(&paths.rules_file(), name)?;
-    for account in &config.accounts {
-        Store::open_account(paths, &account.name)?.restart_rule_clock(name, now)?;
+/// Merges the edit at `index` into the rule it replaces, which keeps its name, comments, place and `enabled`, then
+/// removes the edit.
+fn approve_edit(
+    rules: &mut ArrayOfTables,
+    index: usize,
+    name: &str,
+) -> Result<Option<String>, RulesError> {
+    let mut new = rules
+        .get(index)
+        .ok_or_else(|| invalid(name, "no such rule"))?
+        .clone();
+    let target = new
+        .remove("replaces")
+        .and_then(|item| item.as_str().map(str::to_string))
+        .unwrap_or_default();
+    let found = rules
+        .iter()
+        .position(|t| t.get("name").and_then(|v| v.as_str()) == Some(target.as_str()))
+        .ok_or_else(|| {
+            invalid(
+                name,
+                format!("the rule it edits, '{target}', is no longer in rules.toml; reject it"),
+            )
+        })?;
+    let old = rules
+        .get_mut(found)
+        .ok_or_else(|| invalid(name, "no such rule"))?;
+    new.remove("proposed_by");
+    new.remove("enabled");
+    for key in ["name", "enabled"] {
+        if let Some(item) = old.get(key) {
+            new.insert(key, item.clone());
+        }
     }
-    Ok(())
+    merge(old, &new);
+    Ok(remove_at(rules, index))
+}
+
+/// Approves `name`, or writes the edit it is over its rule, and restarts that rule's clock in the store of every account
+/// in config.toml, read here rather than taken from the caller, so it acts only on mail that arrives from now on, even
+/// where an older clock of the rule survived and whichever front end added the account. An unreadable config.toml
+/// refuses before the rule is enabled. Returns the approved rule's name.
+pub fn approve_from_now(paths: &Paths, name: &str, now: i64) -> Result<String, RulesError> {
+    let config = Config::load(&paths.config_file())?;
+    let approved = approve(&paths.rules_file(), name)?;
+    for account in &config.accounts {
+        Store::open_account(paths, &account.name)?.restart_rule_clock(&approved, now)?;
+    }
+    Ok(approved)
 }
 
 fn write_enabled(table: &mut toml_edit::Table, enabled: bool) {
@@ -1379,5 +1488,157 @@ mod tests {
             format!("# my rules\n\n# codes go after an hour\n{KEEP}")
         );
         assert!(remove_rule(&path, "codes").is_err());
+    }
+
+    fn edit_of(names: &[&str]) -> Proposals {
+        Proposals {
+            edit: true,
+            ..batch(names)
+        }
+    }
+
+    #[test]
+    fn an_edit_is_stored_disabled_after_its_rule_which_stays_as_it_is() {
+        let (_dir, path) = rules_file(&format!(
+            "{HUMAN}\n[[rules]]\nname = \"last\"\nmatch.read = true\nactions = {{ flagged = true }}\n"
+        ));
+        let mut edit = edit_of(&["keep"]);
+        edit.rules[0].proposed_by = Some("spoofed".into());
+        propose_all(&path, edit, "mcp:me").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with(HUMAN), "{text}");
+        let rules = load(&path).unwrap().rules;
+        assert_eq!(names(&path), ["keep", "keep (edit)", "last"]);
+        let edit = &rules[1];
+        assert!(!edit.enabled);
+        assert_eq!(edit.proposed_by.as_deref(), Some("mcp:me"));
+        assert_eq!(edit.replaces.as_deref(), Some("keep"));
+        assert!(rules[0].enabled && rules[0].replaces.is_none());
+    }
+
+    #[test]
+    fn an_edit_needs_a_rule_that_is_not_a_proposal() {
+        let (_dir, path) = rules_file(HUMAN);
+        propose(&path, proposal("codes"), "mcp:me").unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+        let err = propose_all(&path, edit_of(&["missing"]), "mcp:me")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no rule to edit"), "{err}");
+        let err = propose_all(&path, edit_of(&["codes"]), "mcp:me")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("propose it again with replace"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn a_rule_has_one_pending_edit_which_only_its_proposer_replaces() {
+        let (_dir, path) = rules_file(HUMAN);
+        propose_all(&path, edit_of(&["keep"]), "mcp:me").unwrap();
+        assert!(
+            propose_all(&path, edit_of(&["keep"]), "mcp:me").is_err(),
+            "without replace"
+        );
+        let mut theirs = edit_of(&["keep"]);
+        theirs.replace = true;
+        assert!(
+            propose_all(&path, theirs.clone(), "mcp:other").is_err(),
+            "another proposer"
+        );
+        theirs.rules[0].actions = vec![Action::Flag];
+        propose_all(&path, theirs, "mcp:me").unwrap();
+        assert_eq!(names(&path), ["keep", "keep (edit)"]);
+        assert_eq!(load(&path).unwrap().rules[1].actions, vec![Action::Flag]);
+    }
+
+    #[test]
+    fn a_replaces_key_is_only_written_by_an_edit() {
+        let (_dir, path) = rules_file(HUMAN);
+        let mut sneaky = proposal("codes");
+        sneaky.replaces = Some("keep".into());
+        propose(&path, sneaky, "mcp:me").unwrap();
+        assert!(load(&path).unwrap().rules[1].replaces.is_none());
+    }
+
+    #[test]
+    fn approving_an_edit_writes_it_over_its_rule_in_place() {
+        let (_dir, path) = rules_file(&format!(
+            "{HUMAN}\n# paused for now\n[[rules]]\nname = \"off\"\nenabled = false # by hand\nmatch.read = true\nactions = {{ flagged = true }}\n"
+        ));
+        propose_all(&path, edit_of(&["keep", "off"]), "mcp:me").unwrap();
+        assert_eq!(approve(&path, "keep (edit)").unwrap(), "keep");
+        assert_eq!(approve(&path, "off (edit)").unwrap(), "off");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.starts_with("# my rules\n[[rules]]\nname = \"keep\" # do not touch\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("# paused for now\n") && text.contains("enabled = false # by hand"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("proposed_by") && !text.contains("replaces"),
+            "{text}"
+        );
+        let rules = load(&path).unwrap().rules;
+        assert_eq!(names(&path), ["keep", "off"]);
+        assert!(
+            rules[0].enabled && !rules[1].enabled,
+            "each keeps its own enabled"
+        );
+        assert!(rules.iter().all(|r| r.actions == proposal("x").actions));
+    }
+
+    #[test]
+    fn an_edit_whose_rule_is_gone_cannot_be_approved_but_can_be_rejected() {
+        let (_dir, path) = rules_file(HUMAN);
+        propose_all(&path, edit_of(&["keep"]), "mcp:me").unwrap();
+        remove_rule(&path, "keep").unwrap();
+        let err = approve(&path, "keep (edit)").unwrap_err().to_string();
+        assert!(err.contains("is no longer in rules.toml"), "{err}");
+        reject(&path, "keep (edit)").unwrap();
+        assert!(names(&path).is_empty());
+    }
+
+    #[test]
+    fn approve_from_now_restarts_the_clock_of_the_edited_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        std::fs::create_dir_all(&paths.config_dir).unwrap();
+        std::fs::write(paths.config_file(), TWO_ACCOUNTS).unwrap();
+        std::fs::write(paths.rules_file(), HUMAN).unwrap();
+        assert_eq!(first_seen(&paths, "work", "keep", 1), 1);
+        propose_all(&paths.rules_file(), edit_of(&["keep"]), "cli").unwrap();
+        approve_from_now(&paths, "keep (edit)", 500).unwrap();
+        assert_eq!(first_seen(&paths, "work", "keep", 900), 500);
+    }
+
+    #[test]
+    fn read_proposals_takes_edit_but_not_with_a_place() {
+        let rule = r#"{"name": "a", "match": {"read": true}, "actions": {"flagged": true}}"#;
+        let read = |text: &str| read_proposals(serde_json::from_str(text).unwrap());
+        assert!(
+            read(&rule.replace("{\"name\"", "{\"edit\": true, \"name\""))
+                .unwrap()
+                .edit
+        );
+        assert!(
+            read(&format!("{{\"rules\": [{rule}], \"edit\": true}}"))
+                .unwrap()
+                .edit
+        );
+        assert!(
+            !read(&rule.replace("{\"name\"", "{\"edit\": null, \"name\""))
+                .unwrap()
+                .edit
+        );
+        for bad in [
+            rule.replace("{\"name\"", "{\"edit\": 1, \"name\""),
+            rule.replace("{\"name\"", "{\"edit\": true, \"after\": \"x\", \"name\""),
+        ] {
+            assert!(read(&bad).is_err(), "{bad}");
+        }
     }
 }

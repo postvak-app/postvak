@@ -38,6 +38,7 @@ fn migration_list() -> Vec<M<'static>> {
         ),
         M::up(include_str!("../migrations/018-folder-list/up.sql")),
         M::up(include_str!("../migrations/019-noselect-folders/up.sql")),
+        M::up(include_str!("../migrations/020-folder-backfill/up.sql")),
     ]
 }
 
@@ -647,6 +648,15 @@ impl Store {
         self.set_folder_uid(folder, "uid_next", uid_next)
     }
 
+    /// Uids below this one in `folder` are history its first sync has not fetched yet; 0 when there is none.
+    pub fn backfill_uid(&self, folder: &str) -> Result<u32, StoreError> {
+        self.folder_uid(folder, "backfill_uid")
+    }
+
+    pub fn set_backfill_uid(&self, folder: &str, uid: u32) -> Result<(), StoreError> {
+        self.set_folder_uid(folder, "backfill_uid", uid)
+    }
+
     /// The highest uid the rules have evaluated in `folder`; above it mail is fresh. 0 when unknown.
     pub fn rules_uid(&self, folder: &str) -> Result<u32, StoreError> {
         self.folder_uid(folder, "rules_uid")
@@ -722,7 +732,7 @@ impl Store {
         self.conn
             .execute("DELETE FROM messages WHERE folder = ?1", params![name])?;
         self.conn.execute(
-            "UPDATE folders SET uidvalidity = ?2, last_uid = 0, uid_next = 0 WHERE name = ?1",
+            "UPDATE folders SET uidvalidity = ?2, last_uid = 0, uid_next = 0, backfill_uid = 0 WHERE name = ?1",
             params![name, uidvalidity],
         )?;
         Ok(())

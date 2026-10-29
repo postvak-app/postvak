@@ -836,16 +836,18 @@ fn rule() -> BoxedStrategy<Rule> {
         proptest::option::of(hostile_text()),
         any::<bool>(),
         proptest::option::of(hostile_text()),
+        proptest::option::of(hostile_text()),
         matches,
         proptest::collection::vec(action(), 0..4),
     )
         .prop_map(
-            |(name, account, folder, enabled, proposed_by, matches, actions)| Rule {
+            |(name, account, folder, enabled, proposed_by, replaces, matches, actions)| Rule {
                 name,
                 account,
                 folder,
                 enabled,
                 proposed_by,
+                replaces,
                 matches,
                 actions,
             },

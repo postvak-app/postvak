@@ -104,12 +104,16 @@ pub(crate) fn offer_label(account: &str, id: &str) -> String {
 pub(crate) struct Proposal {
     pub name: String,
     pub label: String,
-    /// "proposed by agent".
+    /// "proposed by agent", or "edit proposed by agent".
     pub by: String,
     pub summary: String,
-    /// The TOML it adds.
+    /// What it does to rules.toml: "Adds to rules.toml", or names the rule an edit changes.
+    pub note: String,
+    /// Whether it changes a rule rather than adding one, so `marks` holds "-" and " " too.
+    pub edits: bool,
+    /// The TOML it adds, or for an edit the rule's lines both as they are and as the edit has them.
     pub toml: String,
-    /// A "+" beside each line of `toml`, as a diff marks added lines.
+    /// One mark beside each line of `toml`, as a diff marks lines: "+" added, "-" removed, " " unchanged.
     pub marks: String,
 }
 
@@ -204,25 +208,89 @@ pub(crate) fn banner(state: &RulesState) -> Option<String> {
 }
 
 fn proposals(rules: &[Rule]) -> Vec<Proposal> {
+    let toml = |rule: &Rule| {
+        let toml = rules::rule_toml(rule).unwrap_or_else(|e| e.to_string());
+        clean(&toml, true).trim_end().to_owned()
+    };
     rules
         .iter()
         .filter(|rule| is_proposal(rule))
         .map(|rule| {
-            let toml = rules::rule_toml(rule).unwrap_or_else(|e| e.to_string());
-            let toml = clean(&toml, true).trim_end().to_owned();
+            let by = clean(rule.proposed_by.as_deref().unwrap_or_default(), false);
+            let edited = rule
+                .replaces
+                .as_deref()
+                .and_then(|target| rules.iter().find(|r| r.name == target));
+            let (note, lines) = match edited {
+                Some(old) => {
+                    // Compared as the rule will read once approved: its own name and `enabled`, no proposal keys.
+                    let new = Rule {
+                        name: old.name.clone(),
+                        enabled: old.enabled,
+                        proposed_by: old.proposed_by.clone(),
+                        replaces: old.replaces.clone(),
+                        ..rule.clone()
+                    };
+                    let note = format!("Changes rule '{}' in rules.toml", clean(&old.name, false));
+                    (note, diff(&toml(old), &toml(&new)))
+                }
+                None => {
+                    let lines = toml(rule)
+                        .lines()
+                        .map(|line| ('+', line.to_owned()))
+                        .collect();
+                    ("Adds to rules.toml".to_owned(), lines)
+                }
+            };
+            let (marks, toml): (Vec<String>, Vec<String>) = lines
+                .into_iter()
+                .map(|(mark, line)| (mark.to_string(), line))
+                .unzip();
             Proposal {
                 name: rule.name.clone(),
                 label: clean(&rule.name, false),
-                by: format!(
-                    "proposed by {}",
-                    clean(rule.proposed_by.as_deref().unwrap_or_default(), false)
-                ),
+                by: match edited {
+                    Some(_) => format!("edit proposed by {by}"),
+                    None => format!("proposed by {by}"),
+                },
                 summary: draft::summary(rule),
-                marks: vec!["+"; toml.lines().count()].join("\n"),
-                toml,
+                note,
+                edits: edited.is_some(),
+                marks: marks.join("\n"),
+                toml: toml.join("\n"),
             }
         })
         .collect()
+}
+
+/// `old` and `new` line by line, each marked as a diff marks it: ' ' in both, '-' only in `old`, '+' only in `new`.
+fn diff(old: &str, new: &str) -> Vec<(char, String)> {
+    let (old, new): (Vec<&str>, Vec<&str>) = (old.lines().collect(), new.lines().collect());
+    // common[i][j]: the longest run of lines old[i..] and new[j..] share, in order.
+    let mut common = vec![vec![0usize; new.len() + 1]; old.len() + 1];
+    for i in (0..old.len()).rev() {
+        for j in (0..new.len()).rev() {
+            common[i][j] = if old[i] == new[j] {
+                common[i + 1][j + 1] + 1
+            } else {
+                common[i + 1][j].max(common[i][j + 1])
+            };
+        }
+    }
+    let (mut i, mut j, mut lines) = (0, 0, Vec::new());
+    while i < old.len() || j < new.len() {
+        if i < old.len() && j < new.len() && old[i] == new[j] {
+            lines.push((' ', old[i].to_owned()));
+            (i, j) = (i + 1, j + 1);
+        } else if i < old.len() && (j == new.len() || common[i + 1][j] >= common[i][j + 1]) {
+            lines.push(('-', old[i].to_owned()));
+            i += 1;
+        } else {
+            lines.push(('+', new[j].to_owned()));
+            j += 1;
+        }
+    }
+    lines
 }
 
 fn rule_lines(rules: &[Rule]) -> Vec<RuleLine> {
@@ -748,6 +816,43 @@ mod tests {
         );
         assert!(wires.sent().is_empty());
         assert!(open.find("Approve").is_empty());
+    }
+
+    const EDIT: &str = "[[rules]]\nname = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions = { archive = true }\n\n[[rules]]\nname = \"newsletters (edit)\"\nenabled = false\nproposed_by = \"agent\"\nreplaces = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions = { read = true }\n";
+
+    #[test]
+    fn an_edit_shows_what_it_changes_in_its_rule() {
+        let rules = postvak_core::rules::parse(EDIT).unwrap().rules;
+        let edit = &super::proposals(&rules)[0];
+        assert_eq!(edit.by, "edit proposed by agent");
+        assert_eq!(edit.note, "Changes rule 'newsletters' in rules.toml");
+        assert_eq!(
+            edit.toml,
+            "[[rules]]\nname = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions.archive = true\nactions.read = true"
+        );
+        assert_eq!(edit.marks, " \n \n \n-\n+");
+        let new = &super::proposals(&postvak_core::rules::parse(RULES).unwrap().rules)[0];
+        assert_eq!(new.note, "Adds to rules.toml");
+        assert_eq!(new.marks, vec!["+"; new.toml.lines().count()].join("\n"));
+    }
+
+    #[test]
+    fn approving_an_edit_changes_its_rule() {
+        let fx = Fixture::new(&["work"]);
+        std::fs::write(fx.paths.rules_file(), EDIT).unwrap();
+        let (open, _wires) = view(&fx, View::Rules);
+        assert_eq!(
+            open.find("Changes rule 'newsletters' in rules.toml").len(),
+            1
+        );
+        open.click("Approve");
+        let file = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
+        assert_eq!(file.rules.len(), 1);
+        assert_eq!(file.rules[0].name, "newsletters");
+        assert_eq!(
+            file.rules[0].actions,
+            vec![postvak_core::rules::Action::MarkRead]
+        );
     }
 
     #[test]

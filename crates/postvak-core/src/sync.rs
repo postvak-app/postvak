@@ -449,18 +449,42 @@ pub fn sync_folder_with(
         FlagFetch::All => ops.fetch_flags(last_uid, None)?,
         FlagFetch::ChangedSince(modseq) => ops.fetch_flags(last_uid, Some(modseq))?,
     };
+    let backfill_uid = if starts_tracking {
+        0
+    } else {
+        store.backfill_uid(&folder.name)?
+    };
     // Every uid is below UIDNEXT, so one no higher than last_uid + 1 means nothing new.
-    let uids: Vec<u32> = if info.uidnext.is_some_and(|next| next <= last_uid + 1) {
+    let listed: Vec<u32> = if backfill_uid > 0 {
+        ops.search_uids(1)?
+    } else if info.uidnext.is_some_and(|next| next <= last_uid + 1) {
         Vec::new()
     } else {
         ops.search_uids(last_uid + 1)?
-            .into_iter()
-            .filter(|&uid| uid > last_uid)
-            .collect()
+    };
+    let mut uids: Vec<u32> = listed
+        .iter()
+        .copied()
+        .filter(|&uid| uid > last_uid)
+        .collect();
+    let mut history: Vec<u32> = listed
+        .iter()
+        .copied()
+        .filter(|&uid| uid < backfill_uid)
+        .collect();
+    // A first sync takes all it lists as history, fetched newest first, so recent mail shows within seconds.
+    let (last_uid, backfill_uid) = if starts_tracking {
+        history = std::mem::take(&mut uids);
+        let top = history.last().copied();
+        (top.unwrap_or(0), top.map_or(0, |uid| uid + 1))
+    } else {
+        (last_uid, backfill_uid)
     };
     // Without an expunge, the server holds exactly the stored messages plus the new ones.
     let present: Option<Vec<u32>> = if flag_fetch == FlagFetch::All {
         Some(updates.iter().map(|u| u.uid).collect())
+    } else if !starts_tracking && backfill_uid > 0 {
+        Some(listed)
     } else if !starts_tracking
         && info.exists as usize != store.message_count(&folder.name)? as usize + uids.len()
     {
@@ -484,7 +508,8 @@ pub fn sync_folder_with(
         // Unknown until this sync completes, so a pass cut short never looks unchanged to the next.
         store.set_uid_next(&folder.name, 0)?;
         if starts_tracking {
-            store.set_initial_uid_next(&folder.name, uids.last().map_or(0, |uid| uid + 1))?;
+            store.set_initial_uid_next(&folder.name, backfill_uid)?;
+            store.set_backfill_uid(&folder.name, backfill_uid)?;
             store.set_rules_uid(&folder.name, 0)?;
             store.set_notified_uid(&folder.name, 0)?;
         }
@@ -501,11 +526,13 @@ pub fn sync_folder_with(
         Ok::<_, SyncError>(())
     })?;
 
-    let total = uids.len();
+    let total = uids.len() + history.len();
     let mut done = 0;
     let mut new = 0;
     let mut complete = true;
-    for chunk in uids.chunks(chunk_size()) {
+    let live = uids.chunks(chunk_size()).map(|chunk| (chunk, false));
+    let backfill = history.rchunks(chunk_size()).map(|chunk| (chunk, true));
+    for (chunk, is_history) in live.chain(backfill) {
         let progress = Activity::FetchingHeaders {
             folder: folder.name.clone(),
             done,
@@ -532,11 +559,16 @@ pub fn sync_folder_with(
                 store.insert_message(&to_message(&folder.name, env))?;
                 new += 1;
             }
-            store.upsert_folder(&row(last))
+            if is_history {
+                store.set_backfill_uid(&folder.name, first)
+            } else {
+                store.upsert_folder(&row(last))
+            }
         })?;
         done += chunk.len();
     }
     if complete {
+        store.set_backfill_uid(&folder.name, 0)?;
         store.set_uid_next(&folder.name, info.uidnext.unwrap_or(0))?;
     }
     if total > 0 {
@@ -753,24 +785,42 @@ fn forget_unlisted_folders(store: &Store, synced: &[RemoteFolder]) -> Result<(),
     Ok(())
 }
 
-/// Spec section 6: a role no folder is marked with goes to the folder carrying that name, ignoring case. Soverin marks its
-/// `Archive` folder `\\All`, so the Archive role may take a `\\All` folder by name.
+/// Spec section 6: a role no folder is marked with goes to a top-level folder, or one directly under `INBOX` + delimiter,
+/// named after it, ignoring case; the earlier name wins. Soverin marks its `Archive` folder `\\All`, so the Archive role
+/// may take a `\\All` folder by name.
 fn special_use_by_name(folders: &mut [RemoteFolder]) {
-    for role in ["Archive", "Drafts", "Junk", "Sent", "Trash"] {
+    const NAMES: [(&str, &[&str]); 5] = [
+        ("Archive", &["Archive", "Archives"]),
+        ("Drafts", &["Drafts"]),
+        ("Junk", &["Junk", "Junk E-mail", "Spam"]),
+        ("Sent", &["Sent", "Sent Items", "Sent Messages"]),
+        ("Trash", &["Trash", "Deleted Items", "Bin"]),
+    ];
+    for (role, names) in NAMES {
         if folders
             .iter()
             .any(|f| f.special_use.as_deref() == Some(role))
         {
             continue;
         }
-        if let Some(folder) = folders.iter_mut().find(|f| {
-            let unmarked = f.special_use.is_none()
-                || (role == "Archive" && f.special_use.as_deref() == Some("All"));
-            unmarked && f.name.eq_ignore_ascii_case(role)
-        }) {
-            folder.special_use = Some(role.to_string());
-        }
+        let Some(index) = names.iter().find_map(|name| {
+            folders.iter().position(|f| {
+                let unmarked = f.special_use.is_none()
+                    || (role == "Archive" && f.special_use.as_deref() == Some("All"));
+                unmarked && top_level_name(f).eq_ignore_ascii_case(name)
+            })
+        }) else {
+            continue;
+        };
+        folders[index].special_use = Some(role.to_string());
     }
+}
+
+/// The folder's name without a leading `INBOX` + delimiter; a nested folder's name keeps its delimiter, so it never
+/// equals a role's name.
+fn top_level_name(folder: &RemoteFolder) -> &str {
+    crate::folder_name::inbox_prefix(&folder.name, folder.delimiter.as_deref())
+        .unwrap_or(&folder.name)
 }
 
 pub fn load_rules_for(

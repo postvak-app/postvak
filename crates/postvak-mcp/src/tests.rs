@@ -692,6 +692,35 @@ async fn rules_withdraw_and_replace_touch_only_the_callers_own_proposals() {
 }
 
 #[tokio::test]
+async fn an_edit_leaves_the_rule_as_it_is_until_approved() {
+    let fx = fixture(&["work"]);
+    std::fs::write(fx.paths.rules_file(), RULES).unwrap();
+    let client = connect(&fx, "read,rules:propose,rules:write", &[]).await;
+    let mut edit = named_rule("codes");
+    edit["edit"] = json!(true);
+    let result = call(&client, "rules_propose", edit).await;
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    assert_eq!(
+        result.structured_content.unwrap()["proposed"],
+        "codes (edit)"
+    );
+    assert_eq!(rule_names(&fx), ["codes", "codes (edit)"]);
+    let listed = rows(&call(&client, "rules_list", json!({})).await);
+    assert_eq!(listed[0]["actions"], json!({ "delete": true }));
+    assert_eq!(listed[0]["replaces"], Value::Null);
+    assert_eq!(listed[1]["replaces"], "codes");
+
+    let approved = call(&client, "rules_approve", json!({ "name": "codes (edit)" })).await;
+    assert_eq!(
+        approved.structured_content.unwrap(),
+        json!({ "rule": "codes", "enabled": true })
+    );
+    assert_eq!(rule_names(&fx), ["codes"]);
+    let listed = rows(&call(&client, "rules_list", json!({})).await);
+    assert_eq!(listed[0]["actions"], json!({ "flagged": true }));
+}
+
+#[tokio::test]
 async fn rules_propose_schema_offers_one_rule_or_a_batch() {
     let fx = fixture(&["work"]);
     let client = connect(&fx, "rules:propose", &[]).await;
@@ -704,7 +733,7 @@ async fn rules_propose_schema_offers_one_rule_or_a_batch() {
         "{schema}"
     );
     for key in [
-        "name", "match", "actions", "rules", "before", "after", "replace",
+        "name", "match", "actions", "rules", "before", "after", "replace", "edit",
     ] {
         assert!(schema["properties"][key].is_object(), "{key}: {schema}");
     }
@@ -1001,10 +1030,13 @@ async fn withdraw_replace_and_placement_treat_a_hidden_accounts_proposal_as_abse
     replacing["replace"] = json!(true);
     let mut placed = rule("p");
     placed["before"] = json!("for-home");
+    let mut editing = rule("for-home");
+    editing["edit"] = json!(true);
     for (tool, arguments) in [
         ("rules_withdraw", json!({ "name": "for-home" })),
         ("rules_propose", replacing),
         ("rules_propose", placed),
+        ("rules_propose", editing),
     ] {
         let text = error_text(&call(&client, tool, arguments.clone()).await);
         assert!(

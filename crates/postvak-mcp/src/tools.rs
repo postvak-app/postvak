@@ -203,6 +203,8 @@ struct ProposeArgs {
     after: Option<String>,
     /// Replace your own pending proposal of the same name, instead of refusing the name
     replace: Option<bool>,
+    /// Propose a change to the existing rules of these names: each is written as it should read once approved and stored as '<name> (edit)'; the rule runs unchanged until a human approves
+    edit: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
