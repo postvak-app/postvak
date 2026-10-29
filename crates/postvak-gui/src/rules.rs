@@ -5,6 +5,7 @@ use std::path::Path;
 use postvak_core::help;
 use postvak_core::message::clean;
 use postvak_core::paths::Paths;
+use postvak_core::rules::hits::Hits;
 use postvak_core::rules::{self, Rule};
 use postvak_core::store::{LogEntry, Store};
 use postvak_core::trash::{Trash, TrashEntry};
@@ -32,6 +33,13 @@ pub(crate) struct RulesState {
 }
 
 impl RulesState {
+    /// Shows `hits` on the rules they count; a rule they do not name has none.
+    pub fn set_hits(&mut self, hits: &HashMap<String, Hits>) {
+        for line in &mut self.lines {
+            line.hits = hits.get(&line.name).copied().unwrap_or_default();
+        }
+    }
+
     /// The file's rules, or the previous ones when it does not parse. A rule that does not compile is reported but
     /// still listed, so it can be switched off.
     pub fn load(path: &Path, previous: Vec<Rule>, accounts: &[Account]) -> RulesState {
@@ -137,6 +145,8 @@ pub(crate) struct RuleLine {
     pub conditions: String,
     /// "archive, mark read".
     pub actions: String,
+    /// How often it acted, once counted; until then, none.
+    pub hits: Hits,
 }
 
 impl RuleLine {
@@ -176,6 +186,17 @@ pub(crate) fn shown_proposals(proposals: &[Proposal], filter: &str) -> Vec<usize
     (0..proposals.len())
         .filter(|&i| proposals[i].matches(filter))
         .collect()
+}
+
+/// The Last 30 days and Last fired cells of a rule: its count and when it last acted, or that it never has.
+pub(crate) fn hit_cells(hits: &Hits) -> (String, String) {
+    match hits.last_fired {
+        Some(at) => (
+            hits.last_30d.to_string(),
+            super::list::list_date(at, &chrono::Local::now()),
+        ),
+        None => ("no matches yet".into(), "—".into()),
+    }
 }
 
 /// "1 rule · 2 proposals", beside the Rules title.
@@ -317,6 +338,7 @@ fn rule_lines(rules: &[Rule]) -> Vec<RuleLine> {
                 .unwrap_or_default(),
             conditions: clean(&draft::match_labels(&rule.matches).join(", "), false),
             actions: clean(&actions.join(", "), false),
+            hits: Hits::default(),
         }
     };
     rules
@@ -379,13 +401,29 @@ pub(crate) fn shown_rules(lines: &[RuleLine], sort: Option<SheetSort>, filter: &
 }
 
 /// The order the Rules table shows `lines` in, as indices into them. Its columns are #, Name, Account, Folder,
-/// Conditions and Actions; # is the order they run in, which is also the order without `sort`.
+/// Conditions, Actions, Last 30 days and Last fired; # is the order they run in, which is also the order without `sort`.
+/// The last two sort by their numbers and times, a rule that never fired first.
 fn rule_order(lines: &[RuleLine], sort: Option<SheetSort>) -> Vec<usize> {
     match sort {
         Some(SheetSort {
             column: 0,
             ascending: false,
         }) => (0..lines.len()).rev().collect(),
+        Some(SheetSort { column, ascending }) if column >= 6 => {
+            let keys: Vec<[(u64, i64); 1]> = (lines.iter())
+                .map(|l| match column {
+                    6 => [(l.hits.last_30d, 0)],
+                    _ => [(0, l.hits.last_fired.unwrap_or(i64::MIN))],
+                })
+                .collect();
+            sheet_order(
+                &keys,
+                Some(SheetSort {
+                    column: 0,
+                    ascending,
+                }),
+            )
+        }
         Some(sort) if sort.column > 0 => {
             let cells: Vec<[&str; 5]> = (lines.iter())
                 .map(|l| [&*l.label, &l.account, &l.folder, &l.conditions, &l.actions])
@@ -1201,6 +1239,7 @@ mod tests {
             by: String::new(),
             conditions: String::new(),
             actions: String::new(),
+            hits: Default::default(),
         };
         let lines = ["a", "b", "c"].map(line);
         let moved = |from, to, below| super::dropped(&lines, None, "", from, to, below);
@@ -1243,6 +1282,80 @@ mod tests {
         );
         assert_eq!(super::dragged_row(&super::drag_data(4)), Some(4));
         assert_eq!(super::dragged_row("4"), None, "a message row");
+    }
+
+    #[test]
+    fn the_hit_columns_sort_by_number_and_time_not_text() {
+        use postvak_core::rules::hits::Hits;
+        let line = |name: &str, last_30d, last_fired| super::RuleLine {
+            name: name.into(),
+            label: name.into(),
+            enabled: true,
+            account: String::new(),
+            folder: String::new(),
+            by: String::new(),
+            conditions: String::new(),
+            actions: String::new(),
+            hits: Hits {
+                last_30d,
+                last_fired,
+            },
+        };
+        let lines = [
+            line("ten", 10, Some(200)),
+            line("nine", 9, Some(1_000)),
+            line("never", 0, None),
+        ];
+        let by = |column| {
+            Some(super::SheetSort {
+                column,
+                ascending: true,
+            })
+        };
+        assert_eq!(super::shown_rules(&lines, by(6), ""), [2, 1, 0]);
+        assert_eq!(super::shown_rules(&lines, by(7), ""), [2, 0, 1]);
+    }
+
+    #[test]
+    fn the_table_shows_hits_and_last_fired() {
+        let fx = Fixture::new(&["work"]);
+        std::fs::write(
+            fx.paths.rules_file(),
+            "[[rules]]\nname = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions = { archive = true }\n\n[[rules]]\nname = \"quiet\"\nmatch.from = { contains = \"x@\" }\nactions = { archive = true }\n",
+        )
+        .unwrap();
+        fx.store("work")
+            .log_action(&LogEntry {
+                id: 0,
+                at: postvak_core::time::now(),
+                rule_name: "newsletters".into(),
+                folder: "INBOX".into(),
+                uid: 1,
+                message_id: None,
+                subject: None,
+                action: "archive".into(),
+                trash_file: None,
+            })
+            .unwrap();
+        let (open, _wires) = view(&fx, View::Rules);
+        let cells = |open: &Open| {
+            let rules = open.window().get_rules();
+            (0..rules.row_count())
+                .filter_map(|i| rules.row_data(i))
+                .map(|r| (r.label.to_string(), r.hits.to_string(), r.fired.to_string()))
+                .collect::<Vec<_>>()
+        };
+        open.tick_until(|open| cells(open).first().is_some_and(|c| c.1 == "1"));
+        let shown = cells(&open);
+        assert_ne!(shown[0].2, "—", "newsletters fired today");
+        assert_eq!(
+            shown[1],
+            (
+                "quiet".to_string(),
+                "no matches yet".to_string(),
+                "—".to_string()
+            )
+        );
     }
 
     #[test]

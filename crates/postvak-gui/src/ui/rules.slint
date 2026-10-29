@@ -29,6 +29,9 @@ export struct RuleData {
     by: string,
     conditions: string,
     actions: string,
+    // Messages it acted on in the last 30 days, or "no matches yet"; and when it last did, or "—".
+    hits: string,
+    fired: string,
     // Open in the editor.
     selected: bool,
 }
@@ -65,6 +68,8 @@ global Columns {
     out property <length> switch: 3 * Theme.row / 2;
     out property <length> account: 120px;
     out property <length> folder: 120px;
+    out property <length> hits: 14 * Theme.pad;
+    out property <length> fired: 10 * Theme.pad;
 }
 
 // One cell of the Rules table, cut short when it does not fit.
@@ -408,6 +413,22 @@ export component RulesPane inherits Rectangle {
                         ascending: root.rules-ascending;
                         sorted(column, ascending) => { root.sort(column, ascending); }
                     }
+                    ColumnHeading {
+                        width: Columns.hits;
+                        text: "Last 30 days";
+                        column: 6;
+                        sort: root.rules-sort;
+                        ascending: root.rules-ascending;
+                        sorted(column, ascending) => { root.sort(column, ascending); }
+                    }
+                    ColumnHeading {
+                        width: Columns.fired;
+                        text: "Last fired";
+                        column: 7;
+                        sort: root.rules-sort;
+                        ascending: root.rules-ascending;
+                        sorted(column, ascending) => { root.sort(column, ascending); }
+                    }
                 }
                 // A click on a row, anywhere but its switch, opens the rule; a drag moves it, in run order only.
                 for rule[i] in root.rules: row := Rectangle {
@@ -491,6 +512,16 @@ export component RulesPane inherits Rectangle {
                                     min-width: 0;
                                     text: rule.actions;
                                     color: Theme.pane.secondary;
+                                }
+                                Cell {
+                                    width: Columns.hits;
+                                    text: rule.hits;
+                                    color: rule.fired == "—" ? Theme.pane.muted : Theme.pane.text;
+                                }
+                                Cell {
+                                    width: Columns.fired;
+                                    text: rule.fired;
+                                    color: Theme.pane.muted;
                                 }
                             }
                         }

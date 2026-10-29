@@ -644,6 +644,8 @@ fn present_sheet(app: &App, window: &MailWindow) {
                     by: r.by.as_str().into(),
                     conditions: r.conditions.as_str().into(),
                     actions: r.actions.as_str().into(),
+                    hits: rules::hit_cells(&r.hits).0.into(),
+                    fired: rules::hit_cells(&r.hits).1.into(),
                     selected: app
                         .rule_draft
                         .as_ref()

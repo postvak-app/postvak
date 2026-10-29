@@ -649,6 +649,9 @@ pub struct App {
     /// Sends a one-click unsubscribe; tests swap it so nothing leaves the machine.
     pub(crate) post_unsubscribe: fn(&str) -> Result<(), String>,
     pub(crate) unsubscribing: Option<Unsubscribing>,
+    /// Each rule's hits as last counted, and the count under way.
+    pub(crate) rule_hits: HashMap<String, rule_file::hits::Hits>,
+    counting_hits: Option<Receiver<HashMap<String, rule_file::hits::Hits>>>,
     pub(crate) saving_as: Option<SavingAs>,
     /// Attachments of messages too large to download whole, asked of the daemon one by one, until they arrive.
     pub(crate) fetching: Vec<Fetching>,
@@ -836,6 +839,8 @@ impl App {
             check_login: test_login,
             post_unsubscribe: |url| unsubscribe::one_click(url).map_err(|e| e.to_string()),
             unsubscribing: None,
+            rule_hits: HashMap::new(),
+            counting_hits: None,
             saving_as: None,
             fetching: Vec::new(),
             ask_save_path: save_as::ask,
@@ -928,6 +933,7 @@ impl App {
         self.check_release();
         self.receive_open_at_login();
         self.receive_unsubscribe();
+        self.receive_hits();
         self.receive_save_as();
         self.receive_list();
         if std::mem::take(&mut self.view_dirty) {
@@ -1231,6 +1237,9 @@ impl App {
                 self.refresh(index);
                 // The folder warnings read what the stores hold, which a sync changes.
                 self.rules.check(&self.paths.rules_file(), &self.accounts);
+                if self.view == View::Rules {
+                    self.count_hits();
+                }
             }
             Event::ActionDone {
                 folder, results, ..
@@ -1868,6 +1877,9 @@ impl App {
     }
 
     pub(crate) fn select_view(&mut self, view: View) {
+        if view == View::Rules {
+            self.count_hits();
+        }
         self.view = view;
         self.sheet_sort = None;
         self.rules_filter.clear();
@@ -2543,6 +2555,47 @@ impl App {
                 self.apply_action(UiAction::OpenUrl(url))
             }
             None => {}
+        }
+    }
+
+    /// Counts each rule's hits in every account's store on a thread of its own; one count at a time.
+    fn count_hits(&mut self) {
+        if self.counting_hits.is_some() {
+            return;
+        }
+        let paths = self.paths.clone();
+        let names: Vec<String> = self.accounts.iter().map(|a| a.name.clone()).collect();
+        self.counting_hits = Some(worker::oneshot("rule-hits", self.wake.clone(), move || {
+            let counted = names
+                .iter()
+                .map(|name| Store::open_account(&paths, name))
+                .collect::<Result<Vec<_>, _>>()
+                .and_then(|stores| {
+                    rule_file::hits::total(
+                        &stores.iter().collect::<Vec<_>>(),
+                        postvak_core::time::now(),
+                    )
+                });
+            counted.unwrap_or_else(|e| {
+                log::warn!("could not count the rules' hits: {e}");
+                HashMap::new()
+            })
+        }));
+    }
+
+    fn receive_hits(&mut self) {
+        let Some(answer) = &self.counting_hits else {
+            return;
+        };
+        match worker::poll(answer) {
+            None => {}
+            Some(found) => {
+                self.counting_hits = None;
+                if let Ok(hits) = found {
+                    self.rules.set_hits(&hits);
+                    self.rule_hits = hits;
+                }
+            }
         }
     }
 
@@ -3528,6 +3581,7 @@ impl App {
             std::mem::take(&mut self.rules.rules),
             &self.accounts,
         );
+        self.rules.set_hits(&self.rule_hits);
         let on_disk = self.rule_draft_opened.as_ref().and_then(|opened| {
             let name = opened.original.as_deref()?;
             let rule = self.rules.rules.iter().find(|rule| rule.name == name)?;
