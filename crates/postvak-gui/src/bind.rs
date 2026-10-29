@@ -90,10 +90,20 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
 
     let folders = folders::entries(app).iter().map(folder_item).collect();
     sync_folders(window.get_folders(), folders, |m| window.set_folders(m));
-    let pinned = folders::pinned(app).iter().map(folder_row).collect();
+    // Rules counts proposals waiting for the user, so its count is a badge rather than an unread count.
+    let badge = |(i, mut item): (usize, FolderItem)| {
+        item.badge = i == 0;
+        item
+    };
+    let pinned = folders::pinned(app)
+        .iter()
+        .map(folder_row)
+        .enumerate()
+        .map(badge)
+        .collect();
     sync_folders(window.get_pinned(), pinned, |m| window.set_pinned(m));
 
-    let line = status_line(status::summary(app));
+    let line = status_line(status::summary(app), &app.accounts);
     if window.get_status_line() != line {
         window.set_status_line(line);
     }
@@ -1132,12 +1142,15 @@ fn folder_item(entry: &Entry) -> FolderItem {
             note,
             error,
             gap,
+            tint,
             ..
         } => FolderItem {
             kind: FolderKind::Account,
             menu_head: model(choices(&entry.menu()[0])),
             menu_tail: model(choices(&entry.menu()[1])),
-            label: name.into(),
+            label: name.to_uppercase().into(),
+            name: name.into(),
+            tint: i32::try_from(*tint).unwrap_or_default(),
             busy: *busy,
             note: note.unwrap_or_default().into(),
             gap: *gap,
@@ -1197,8 +1210,10 @@ fn folder_row(folder: &FolderEntry) -> FolderItem {
     }
 }
 
-fn status_line(line: status::Line) -> StatusLine {
+fn status_line(line: status::Line, accounts: &[state::Account]) -> StatusLine {
     StatusLine {
+        headline: status::headline(&line, accounts).into(),
+        syncing: accounts.iter().any(state::Account::busy),
         text: line.text.into(),
         dot: match line.dot {
             None => Dot::None,

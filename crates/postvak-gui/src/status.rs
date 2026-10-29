@@ -50,6 +50,21 @@ pub(crate) fn summary(app: &App) -> Line {
         .unwrap_or_default()
 }
 
+/// The sync card's first line, over `line`: what every account is doing, in a word or two; empty while they start.
+pub(crate) fn headline(line: &Line, accounts: &[Account]) -> &'static str {
+    if line.failed {
+        "Sync failed"
+    } else if line.dot == Some(Dot::Offline) {
+        "Offline"
+    } else if accounts.iter().any(Account::busy) {
+        "Syncing…"
+    } else if line.dot == Some(Dot::UpToDate) {
+        "All synced"
+    } else {
+        ""
+    }
+}
+
 /// Every line, one per row, for the summary's hover text.
 pub(crate) fn detail(app: &App) -> String {
     let lines: Vec<String> = lines(app).into_iter().map(|line| line.text).collect();
@@ -130,13 +145,13 @@ pub(crate) fn failed(account: &Account) -> bool {
 pub(crate) enum Dot {
     /// A ring in the error colour.
     Failed,
-    /// A filled vermilion dot.
+    /// A filled dot in the success colour.
     UpToDate,
     /// A vermilion ring.
     Offline,
 }
 
-/// A ring in the error colour for an error, a muted dot while offline, a vermilion dot once up to date, none while it
+/// A ring in the error colour for an error, a muted dot while offline, a success dot once up to date, none while it
 /// syncs.
 pub(crate) fn dot(account: &Account) -> Option<Dot> {
     if failed(account) {
@@ -197,6 +212,31 @@ mod tests {
         assert!(failed(&account));
         assert_eq!(dot(&account), Some(Dot::Failed));
         assert_eq!(account_line(&account), "work: boom");
+    }
+
+    #[test]
+    fn the_sync_card_heads_its_line_with_the_state_that_matters_most() {
+        let line = |account: &Account| Line {
+            text: account_line(account),
+            dot: dot(account),
+            failed: failed(account),
+            progress: None,
+        };
+        let mut account = account();
+        assert_eq!(headline(&line(&account), &[]), "");
+        account.activity = Some(Activity::Idle {
+            since: 1_790_000_000,
+        });
+        assert_eq!(headline(&line(&account), &[]), "All synced");
+        account.activity = Some(Activity::FetchingHeaders {
+            folder: "INBOX".into(),
+            done: 1,
+            total: 2,
+        });
+        let syncing = headline(&line(&account), std::slice::from_ref(&account));
+        assert_eq!(syncing, "Syncing…");
+        account.error = Some("boom".into());
+        assert_eq!(headline(&line(&account), &[]), "Sync failed");
     }
 
     #[test]

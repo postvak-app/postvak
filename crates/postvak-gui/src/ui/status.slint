@@ -6,6 +6,10 @@ import { IconButton, TextButton } from "common.slint";
 export enum Dot { none, failed, up-to-date, offline }
 
 export struct StatusLine {
+    // "All synced", "Syncing…", "Offline", "Sync failed", or empty while the accounts start.
+    headline: string,
+    // Some account's sync thread is at work: the dot pulses.
+    syncing: bool,
     text: string,
     dot: Dot,
     failed: bool,
@@ -75,63 +79,87 @@ export component StatusBar inherits VerticalLayout {
 
     padding-left: Theme.pad;
     padding-right: Theme.pad;
-    padding-bottom: Theme.pad;
+    padding-bottom: Theme.pad / 2;
+    spacing: Theme.pad / 2;
 
-    HorizontalLayout {
-        // The dot then sits under the folders' glyphs.
-        padding-left: Theme.pad;
-        spacing: Theme.pad / 2;
-        TouchArea {
-            horizontal-stretch: 1;
-            clicked => { root.toggle-history(); }
-            accessible-role: button;
-            accessible-label: root.line.text;
-            accessible-description: root.detail;
-            accessible-action-default => { root.toggle-history(); }
-            Tooltip { text: @markdown("\{root.detail}"); }
-            // Under the text, in the room the row leaves below it, so the line does not move when a fetch starts.
-            Meter {
-                x: 2 * Theme.pad;
-                y: parent.height - self.height - Theme.pad / 4;
-                width: parent.width - self.x;
-                progress: root.line.progress;
-            }
-            HorizontalLayout {
-                spacing: Theme.pad;
-                Rectangle {
-                    width: Theme.pad;
-                    height: Theme.pad;
-                    y: (parent.height - self.height) / 2;
-                    border-radius: self.width / 2;
-                    // Vermilion when up to date, quiet when offline; only a failure gets a ring.
-                    border-width: root.line.dot == Dot.failed ? 1.5px : 0px;
-                    border-color: Theme.frame.error;
-                    background: root.line.dot == Dot.up-to-date ? Theme.frame.highlight : root.line.dot == Dot.offline ? Theme.frame.muted : Theme.frame.highlight.transparentize(100%);
-                    animate background, border-color, border-width {
-                        duration: Theme.state-fade;
-                        easing: ease-out;
+    // A card on the frame: the headline beside its dot, the line under it, the sync button at the end.
+    Rectangle {
+        border-radius: Theme.pad;
+        background: Theme.frame.faint;
+        HorizontalLayout {
+            padding-left: 5 * Theme.pad / 4;
+            padding-right: Theme.pad / 2;
+            padding-top: Theme.pad;
+            padding-bottom: Theme.pad;
+            spacing: Theme.pad / 2;
+            TouchArea {
+                horizontal-stretch: 1;
+                clicked => { root.toggle-history(); }
+                accessible-role: button;
+                accessible-label: root.line.text;
+                accessible-description: root.detail;
+                accessible-action-default => { root.toggle-history(); }
+                Tooltip { text: @markdown("\{root.detail}"); }
+                // Under the text, in the card's padding, so the lines do not move when a fetch starts.
+                Meter {
+                    y: parent.height + Theme.pad / 4;
+                    width: parent.width;
+                    progress: root.line.progress;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    spacing: Theme.pad / 4;
+                    HorizontalLayout {
+                        spacing: 3 * Theme.pad / 4;
+                        Rectangle {
+                            width: 7px;
+                            height: self.width;
+                            y: (parent.height - self.height) / 2;
+                            border-radius: self.width / 2;
+                            // Green once up to date, pulsing while a sync runs, quiet when offline; only a failure
+                            // gets a ring.
+                            border-width: root.line.dot == Dot.failed ? 1.5px : 0px;
+                            border-color: Theme.frame.error;
+                            background: root.line.dot == Dot.up-to-date ? Theme.frame.success : root.line.dot == Dot.offline ? Theme.frame.muted : root.line.syncing ? Theme.frame.accent : Theme.frame.accent.transparentize(100%);
+                            opacity: root.line.syncing && root.line.dot != Dot.failed ? 0.35 + 0.65 * abs(sin(animation-tick() / 1ms * 0.09deg)) : 1;
+                            animate background, border-color, border-width {
+                                duration: Theme.state-fade;
+                                easing: ease-out;
+                            }
+                        }
+                        Text {
+                            accessible-role: none;
+                            horizontal-stretch: 1;
+                            text: root.line.headline != "" ? root.line.headline : root.line.text;
+                            font-size: Theme.small-size;
+                            font-weight: root.line.headline != "" ? 600 : 500;
+                            color: root.line.failed ? Theme.frame.error : root.line.headline != "" ? Theme.frame.heading : Theme.frame.muted;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+                    if root.line.headline != "": Text {
+                        accessible-role: none;
+                        text: root.line.text;
+                        font-size: Theme.caps-size;
+                        color: root.line.failed ? Theme.frame.error : Theme.frame.muted;
+                        animate color {
+                            duration: Theme.state-fade;
+                            easing: ease-out;
+                        }
+                        overflow: elide;
                     }
                 }
-                Text {
-                    accessible-role: none;
-                    horizontal-stretch: 1;
-                    text: root.line.text;
-                    font-size: Theme.small-size;
-                    color: root.line.failed ? Theme.frame.error : Theme.frame.muted;
-                    animate color {
-                        duration: Theme.state-fade;
-                        easing: ease-out;
-                    }
-                    vertical-alignment: center;
-                    overflow: elide;
+            }
+            VerticalLayout {
+                alignment: center;
+                IconButton {
+                    icon: root.sync-icon;
+                    name: "Sync now";
+                    hint: root.sync-hint;
+                    clicked => { root.sync(); }
                 }
             }
-        }
-        IconButton {
-            icon: root.sync-icon;
-            name: "Sync now";
-            hint: root.sync-hint;
-            clicked => { root.sync(); }
         }
     }
 

@@ -33,6 +33,10 @@ export struct FolderItem {
     gap: bool,
     // An account heading: syncing, a note such as "unencrypted", and its store error.
     busy: bool,
+    // Which of `Theme.account-dots` marks the heading.
+    tint: int,
+    // The count is a vermilion badge: things waiting for the user, not unread mail.
+    badge: bool,
     note: string,
     error: string,
     // The right-click menu: the items above the separator, then those below.
@@ -69,7 +73,7 @@ component FolderRow inherits Rectangle {
     callback dropped(int);
 
     height: Theme.folder-row;
-    border-radius: Theme.pad * 3 / 4;
+    border-radius: Theme.pad;
     background: item.selected ? Theme.frame.selected : transparent;
     accessible-role: list-item;
     accessible-label: item.name;
@@ -129,12 +133,30 @@ component FolderRow inherits Rectangle {
             overflow: elide;
             vertical-alignment: center;
         }
-        if item.count != "": Text {
+        if item.count != "" && !item.badge: Text {
             accessible-role: none;
             text: item.count;
             font-size: Theme.small-size;
             color: item.selected ? Theme.frame.text : Theme.frame.muted;
             vertical-alignment: center;
+        }
+        if item.count != "" && item.badge: VerticalLayout {
+            alignment: center;
+            Rectangle {
+                height: 9 * Theme.pad / 4;
+                width: max(self.height, badge.preferred-width + 3 * Theme.pad / 2);
+                border-radius: self.height / 2;
+                background: Theme.brand;
+                badge := Text {
+                    accessible-role: none;
+                    text: item.count;
+                    font-size: Theme.caps-size;
+                    font-weight: 600;
+                    color: Theme.on-brand;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
         }
         if item.caret != "": Text {
             accessible-role: none;
@@ -170,15 +192,25 @@ export component FolderPane inherits Rectangle {
     callback menu(int, int, int);
     callback pinned-clicked(int);
 
+    clip: true;
+    // The brand's glow from the top-left corner, as on the website's hero.
+    Rectangle {
+        x: -self.width / 2;
+        y: -self.height / 2;
+        width: 75 * Theme.pad;
+        height: self.width;
+        background: @radial-gradient(circle, Theme.frame-glow 0%, Theme.frame-glow.transparentize(100%) 70%);
+    }
+
     VerticalLayout {
         HorizontalLayout {
-            height: Theme.top-bar + Theme.pad;
-            padding-left: Theme.inset;
-            padding-top: Theme.pad;
-            spacing: Theme.pad;
+            height: Theme.top-bar + Theme.pad / 2;
+            padding-left: 9 * Theme.pad / 4;
+            padding-top: Theme.pad / 2;
+            spacing: 5 * Theme.pad / 4;
             // The layout stretches this cell to the row; the icon centres in it, level with the wordmark.
             Rectangle {
-                width: Theme.large-icon + Theme.pad / 4;
+                width: 11 * Theme.pad / 4;
                 Image {
                     width: parent.width;
                     height: self.width;
@@ -186,9 +218,13 @@ export component FolderPane inherits Rectangle {
                     source: @image-url("../../assets/icon.png");
                 }
             }
-            Heading {
+            Text {
                 text: "Postvak";
-                color: Theme.frame.strong;
+                font-family: Theme.heading-font;
+                font-weight: 600;
+                font-size: Theme.wordmark-size;
+                letter-spacing: -0.02 * Theme.wordmark-size;
+                color: Theme.frame.heading;
                 vertical-alignment: center;
             }
             Rectangle { horizontal-stretch: 1; }
@@ -203,32 +239,36 @@ export component FolderPane inherits Rectangle {
                 padding-bottom: Theme.pad;
                 for item[i] in root.items: VerticalLayout {
                     if item.kind == FolderKind.separator: Rectangle { height: Theme.pad; }
-                    // In line with the folder names, small and quiet: it groups the folders without competing.
+                    // Small capitals after the account's dot, which pulses while the account syncs: it groups the
+                    // folders without competing with them.
                     if item.kind == FolderKind.account: Rectangle {
                         VerticalLayout {
-                            padding-top: item.gap ? Theme.inset : Theme.pad;
-                            padding-bottom: Theme.pad / 2;
+                            padding-top: item.gap ? 5 * Theme.pad / 4 : Theme.pad / 2;
                             HorizontalLayout {
-                                height: Theme.row;
-                                padding-left: Theme.pad + Theme.large-icon + Theme.pad * 3 / 2;
+                                height: 7 * Theme.pad / 2;
+                                padding-left: Theme.pad;
                                 spacing: Theme.pad;
-                                Text {
-                                    text: item.label;
-                                    font-size: Theme.small-size;
-                                    letter-spacing: 0.5px;
-                                    color: Theme.frame.muted;
-                                    vertical-alignment: center;
-                                }
-                                // A pulsing dot in the accent rather than std-widgets' spinner, whose colour is the desktop's.
-                                if item.busy: Rectangle {
-                                    width: Theme.pad * 3 / 4;
+                                accessible-role: none;
+                                Rectangle {
+                                    width: 3 * Theme.pad / 4;
                                     height: self.width;
                                     y: (parent.height - self.height) / 2;
                                     border-radius: self.width / 2;
-                                    background: Theme.frame.accent;
-                                    opacity: 0.35 + 0.65 * abs(sin(animation-tick() / 1ms * 0.09deg));
-                                    accessible-role: progress-indicator;
-                                    accessible-label: "Syncing";
+                                    background: Theme.account-dots[mod(item.tint, Theme.account-dots.length)];
+                                    opacity: item.busy ? 0.35 + 0.65 * abs(sin(animation-tick() / 1ms * 0.09deg)) : 1;
+                                    if item.busy: Rectangle {
+                                        accessible-role: progress-indicator;
+                                        accessible-label: "Syncing";
+                                    }
+                                }
+                                Text {
+                                    accessible-label: item.name;
+                                    text: item.label;
+                                    font-size: Theme.caps-size;
+                                    font-weight: 600;
+                                    letter-spacing: 0.12 * Theme.caps-size;
+                                    color: Theme.frame.muted;
+                                    vertical-alignment: center;
                                 }
                                 if item.note != "": Text {
                                     text: item.note;
