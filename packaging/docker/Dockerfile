@@ -6,7 +6,7 @@ ARG TARGETARCH
 LABEL org.opencontainers.image.title="Postvak" \
       org.opencontainers.image.description="Postvak's background sync: IMAP mailbox rules, headless" \
       org.opencontainers.image.source="https://github.com/postvak-app/postvak" \
-      org.opencontainers.image.documentation="https://postvak.pataar.nl/daemon.html#docker" \
+      org.opencontainers.image.documentation="https://postvak.pataar.nl/docs/daemon.html#docker" \
       org.opencontainers.image.licenses="MIT OR Apache-2.0"
 
 COPY --chmod=755 postvak-${TARGETARCH} /usr/local/bin/postvak
