@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/postvak-app/postvak/compare/v0.8.0...v0.9.0) - 2026-10-29
+
+### Added
+
+- *(account)* suggest STARTTLS on port 143 when the login test cannot connect over TLS ([#395](https://github.com/postvak-app/postvak/pull/395))
+- *(gui)* choose STARTTLS in the add-account form and mark an unencrypted account ([#394](https://github.com/postvak-app/postvak/pull/394))
+- *(imap)* support STARTTLS and tls = "none", and send the ID command ([#393](https://github.com/postvak-app/postvak/pull/393))
+- *(rules)* warn about a move to a special folder's name instead of its role ([#362](https://github.com/postvak-app/postvak/pull/362))
+- *(rules)* warn about a rule watching a folder no account syncs ([#361](https://github.com/postvak-app/postvak/pull/361))
+- *(rules)* [**breaking**] make actions a table and the rule syntax consistent ([#387](https://github.com/postvak-app/postvak/pull/387))
+- sender statistics and rules coverage for a folder ([#376](https://github.com/postvak-app/postvak/pull/376))
+- *(gui)* adapt HTML mail to the dark theme ([#382](https://github.com/postvak-app/postvak/pull/382))
+- *(rules)* match the sender's domain and its authentication ([#379](https://github.com/postvak-app/postvak/pull/379))
+- *(rules)* propose several rules at once, list them in full and withdraw your own ([#377](https://github.com/postvak-app/postvak/pull/377))
+- cursor paging, field selection and counts for list and search ([#381](https://github.com/postvak-app/postvak/pull/381))
+- *(mcp)* serve the documentation pages ([#365](https://github.com/postvak-app/postvak/pull/365))
+- *(gui)* count the proposals waiting for approval beside Rules ([#368](https://github.com/postvak-app/postvak/pull/368))
+- *(rules)* warn about a rule that moves mail to the folder it watches ([#360](https://github.com/postvak-app/postvak/pull/360))
+
+### Fixed
+
+- *(rules)* keep \Noselect folders and refuse a move into one ([#364](https://github.com/postvak-app/postvak/pull/364))
+- *(mcp)* [**breaking**] wrap every field a stranger wrote in <untrusted_mail_content> ([#392](https://github.com/postvak-app/postvak/pull/392))
+- *(cli)* fail without accounts, as MCP does, through one account selection in core ([#391](https://github.com/postvak-app/postvak/pull/391))
+- *(rules)* match INBOX in any case, and move to the server's spelling of a folder ([#363](https://github.com/postvak-app/postvak/pull/363))
+- *(gui)* dark HTML keeps scheme-switched backgrounds, dark headers and icon text right ([#390](https://github.com/postvak-app/postvak/pull/390))
+- *(search)* keep exact matches first and close-match paging stable ([#389](https://github.com/postvak-app/postvak/pull/389))
+- *(imap)* encode folder names as modified UTF-7 and check move targets ([#380](https://github.com/postvak-app/postvak/pull/380))
+- *(gui)* wake the window when a one-off thread cannot start ([#388](https://github.com/postvak-app/postvak/pull/388))
+- *(gui)* use content-y instead of the deprecated viewport-y ([#386](https://github.com/postvak-app/postvak/pull/386))
+- *(macos)* clear makehybrid's FinderInfo from the app on the DMG ([#375](https://github.com/postvak-app/postvak/pull/375))
+- *(message)* show an HTML part without markup as text ([#373](https://github.com/postvak-app/postvak/pull/373))
+- *(rules)* subscribe to a folder a move creates ([#359](https://github.com/postvak-app/postvak/pull/359))
+- *(gui)* context menus are no longer blurry on Wayland ([#345](https://github.com/postvak-app/postvak/pull/345))
+
+### Other
+
+- *(readme)* add macOS and Linux platform badges ([#396](https://github.com/postvak-app/postvak/pull/396))
+- *(rules)* example of a delayed move so other devices still notify ([#385](https://github.com/postvak-app/postvak/pull/385))
+- *(rules)* list the examples with the keys each one uses ([#383](https://github.com/postvak-app/postvak/pull/383))
+- *(gui)* a worker helper, shared test helpers and Theme sizes ([#378](https://github.com/postvak-app/postvak/pull/378))
+- *(macos)* compress the DMG with LZMA (ULMO) instead of zlib ([#374](https://github.com/postvak-app/postvak/pull/374))
+- compare Postvak with other mail sorting tools ([#369](https://github.com/postvak-app/postvak/pull/369))
+- new tagline "Your inbox, organized by rules you write." ([#366](https://github.com/postvak-app/postvak/pull/366))
+- *(architecture)* only config.rs writes config.toml ([#358](https://github.com/postvak-app/postvak/pull/358))
+
 ## [0.8.0](https://github.com/postvak-app/postvak/compare/v0.7.0...v0.8.0) - 2026-10-27
 
 ### Added
