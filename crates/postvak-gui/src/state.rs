@@ -476,6 +476,16 @@ pub(crate) enum UiAction {
     UnsavedSave,
 }
 
+impl UiAction {
+    /// Where the list or the HTML page scrolled to, as the window reports it.
+    pub(crate) fn is_scroll(&self) -> bool {
+        matches!(
+            self,
+            UiAction::HtmlVisible { .. } | UiAction::ListViewport { .. }
+        )
+    }
+}
+
 /// The window's dialogs, topmost first: the order `ui/window.slint` draws them in reverse.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Dialog {
