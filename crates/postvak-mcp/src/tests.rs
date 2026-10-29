@@ -793,6 +793,46 @@ async fn rules_check_warns_without_revealing_a_hidden_account() {
     assert!(only[0].starts_with(copy));
 }
 
+/// Whether a rule for every account watches a folder none of them syncs depends on the hidden accounts too, so a
+/// narrowed server checks only the rules for its own accounts.
+#[tokio::test]
+async fn rules_check_names_a_watched_folder_no_account_syncs_without_hidden_accounts() {
+    let fx = fixture(&["work", "home"]);
+    for account in ["work", "home"] {
+        open_store(&fx.paths, account)
+            .set_folders_listed(1)
+            .unwrap();
+    }
+    std::fs::write(
+        fx.paths.rules_file(),
+        "[[rules]]\nname = \"typo\"\nfolder = \"Newsleters\"\nmatch.read = true\nactions.flagged = true\n\n\
+         [[rules]]\nname = \"lists\"\naccount = \"work\"\nfolder = \"Lists\"\nmatch.read = true\n\
+         actions.flagged = true\n",
+    )
+    .unwrap();
+    let warnings = |result: CallToolResult| {
+        result.structured_content.unwrap()["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w.as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let all = warnings(call(&connect(&fx, "read", &[]).await, "rules_check", json!({})).await);
+    assert_eq!(
+        all,
+        [
+            "rule 'typo' watches 'Newsleters', which no account syncs, so it never runs",
+            "rule 'lists' watches 'Lists', which account 'work' does not sync, so it never runs",
+        ]
+    );
+    let narrowed = connect(&fx, "read", &["work"]).await;
+    assert_eq!(
+        warnings(call(&narrowed, "rules_check", json!({})).await),
+        ["rule 'lists' watches 'Lists', which account 'work' does not sync, so it never runs"]
+    );
+}
+
 #[tokio::test]
 async fn rules_write_approves_rejects_and_toggles() {
     let fx = fixture(&["work"]);

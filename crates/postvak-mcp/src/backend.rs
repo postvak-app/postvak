@@ -573,14 +573,21 @@ impl Backend {
             .map(|a| a.name.as_str())
             .collect();
         let warnings = rules::warnings(&path, &file.rules, &accounts, &untrusting);
-        // Every account counts here: a rule for all of them is quiet when a hidden one syncs its folder, and the rules
-        // left are those for visible accounts or for all of them, so a warning names no hidden account.
-        let watched = rules::watched_folder_warnings(
-            &file.rules,
-            &rules::account_folders(&self.paths, &names),
-        );
         // These name the account, so only the visible ones.
         let shown: Vec<String> = self.visible().into_iter().map(|a| a.name).collect();
+        // Whether a rule for every account watches a folder none syncs depends on the hidden accounts too, so while
+        // any is hidden only the rules for a visible account are checked.
+        let hiding = shown.len() < names.len();
+        let watched_rules: Vec<rules::Rule> = file
+            .rules
+            .iter()
+            .filter(|r| !hiding || r.account.is_some())
+            .cloned()
+            .collect();
+        let watched = rules::watched_folder_warnings(
+            &watched_rules,
+            &rules::account_folders(&self.paths, &shown),
+        );
         let folders = rules::folder_warnings(&self.paths, &file.rules, &shown);
         let warnings = [warnings, watched, folders].concat();
         Ok(json!({ "rules": count, "warnings": warnings }))

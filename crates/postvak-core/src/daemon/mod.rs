@@ -480,8 +480,8 @@ impl Watch {
         self.watched_lines = crate::rules::watched_folder_warnings(rules, &synced);
     }
 
-    /// Takes `account`'s folder warnings and what `account_folders` read of it, read after it synced, with the `rules` they were
-    /// read for, and logs what is new.
+    /// Takes `account`'s folder warnings and what `account_folders` read of it after it synced, with the `rules` they
+    /// were read for, and logs what is new.
     fn synced(
         &mut self,
         account: &str,
