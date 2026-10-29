@@ -122,7 +122,7 @@ export component TextButton inherits Rectangle {
     property <bool> pill: root.framed || root.primary || root.danger;
     property <color> fill: root.primary ? Theme.brand : root.danger ? root.palette.error : transparent;
 
-    height: Theme.control;
+    height: root.pill ? Theme.control + Theme.pad / 2 : Theme.control;
     border-radius: root.pill ? self.height / 2 : Theme.pad / 2;
     border-width: root.framed && !root.primary && !root.danger ? 1px : 0px;
     border-color: root.palette.border;
@@ -130,7 +130,7 @@ export component TextButton inherits Rectangle {
     background: root.selected ? root.palette.pressed : root.fill;
     drop-shadow-color: root.primary && root.enabled ? Theme.brand-glow : transparent;
     drop-shadow-blur: Theme.pad * 2;
-    drop-shadow-offset-y: Theme.pad / 2;
+    drop-shadow-offset-y: Theme.pad * 3 / 4;
     opacity: root.enabled ? 1 : 0.5;
     accessible-role: button;
     accessible-label: root.text;
@@ -156,7 +156,7 @@ export component TextButton inherits Rectangle {
             text: root.text;
             color: root.primary ? Theme.on-brand : root.danger ? root.palette.faint : root.text-color;
             font-family: root.text-font;
-            font-weight: root.selected || root.primary || root.danger ? 600 : 500;
+            font-weight: root.selected || root.pill ? 600 : 500;
             vertical-alignment: center;
         }
     }
@@ -179,23 +179,59 @@ export component Note inherits Text {
 
 // Shown in place of a pane's content: a heading in the display face, centred, with an optional muted line under it.
 export component EmptyState inherits VerticalLayout {
+    // A Phosphor glyph above the heading.
+    in property <string> icon;
     in property <string> title;
     in property <string> note;
     spacing: Theme.pad;
+    if root.icon != "": VerticalLayout {
+        padding-bottom: Theme.pad;
+        Text {
+            accessible-role: none;
+            text: root.icon;
+            font-family: Theme.icon-font;
+            font-size: 7 * Theme.pad;
+            color: Theme.brand-soft;
+            horizontal-alignment: center;
+        }
+    }
     Text {
         text: root.title;
         font-family: Theme.heading-font;
         font-weight: 600;
-        font-size: Theme.heading-size;
+        font-size: Theme.empty-size;
+        letter-spacing: -0.02 * Theme.empty-size;
         color: Theme.pane.heading;
         horizontal-alignment: center;
         wrap: word-wrap;
     }
     if root.note != "": Text {
         text: root.note;
+        font-size: Theme.lede-size;
         color: Theme.pane.muted;
         horizontal-alignment: center;
         wrap: word-wrap;
+    }
+    @children
+}
+
+// A key drawn as a key, inline with text.
+export component Keycap inherits Rectangle {
+    in property <string> key;
+    height: 9 * Theme.pad / 4;
+    width: max(self.height, label.preferred-width + Theme.pad);
+    border-radius: Theme.pad / 2;
+    border-width: 1px;
+    border-color: Theme.pane.border;
+    background: Theme.pane.faint;
+    label := Text {
+        accessible-role: none;
+        text: root.key;
+        font-family: Theme.mono-font;
+        font-size: 11px;
+        color: Theme.pane.muted;
+        horizontal-alignment: center;
+        vertical-alignment: center;
     }
 }
 

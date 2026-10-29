@@ -200,6 +200,7 @@ export component RulesPane inherits Rectangle {
                     alignment: center;
                     TextButton {
                         text: "Open rules.toml";
+                        framed: true;
                         palette: Theme.pane;
                         clicked => { root.open-rules-file(); }
                     }
@@ -208,7 +209,7 @@ export component RulesPane inherits Rectangle {
                     alignment: center;
                     TextButton {
                         text: "New rule";
-                        framed: true;
+                        primary: true;
                         palette: Theme.pane;
                         clicked => { root.new-rule(); }
                     }

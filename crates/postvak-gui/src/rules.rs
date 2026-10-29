@@ -302,7 +302,7 @@ fn rule_lines(rules: &[Rule]) -> Vec<RuleLine> {
         let folder = rule
             .folder
             .as_deref()
-            .map_or("INBOX".into(), |f| clean(f, false));
+            .map_or("Inbox".into(), |f| clean(crate::folders::label(f), false));
         let actions: Vec<String> = rule.actions.iter().map(draft::action_label).collect();
         RuleLine {
             name: rule.name.clone(),
@@ -865,6 +865,15 @@ mod tests {
         assert_eq!(open.find("every account").len(), 1);
         assert_eq!(open.find("from contains \"news@\"").len(), 1);
         assert_eq!(open.find("archive").len(), 1);
+        let folders: Vec<String> = open.with(|live| {
+            live.app
+                .rules
+                .lines
+                .iter()
+                .map(|l| l.folder.clone())
+                .collect()
+        });
+        assert!(folders.iter().all(|f| f == "Inbox"), "{folders:?}");
     }
 
     #[test]

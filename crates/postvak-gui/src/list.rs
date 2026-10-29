@@ -251,9 +251,15 @@ pub(crate) fn results(app: &App) -> String {
 pub(crate) fn empty(view: &View, search: Option<&str>, filter: Filter) -> String {
     let kind =
         filter_label(filter).map_or(String::new(), |label| format!("{} ", label.to_lowercase()));
+    let inbox = match view {
+        View::AllInboxes => true,
+        View::Folder { folder, .. } => folder.eq_ignore_ascii_case("INBOX"),
+        _ => false,
+    };
     match search {
         Some("") => String::new(),
         Some(_) => "No mail matches.".into(),
+        None if inbox && filter == Filter::default() => "Inbox zero".into(),
         None if *view == View::AllInboxes => format!("No {kind}mail in any inbox."),
         None => format!("No {kind}mail in this folder."),
     }
@@ -914,6 +920,32 @@ mod tests {
     }
 
     #[test]
+    fn only_an_unfiltered_inbox_is_at_inbox_zero() {
+        let inbox = View::Folder {
+            account: 0,
+            folder: "INBOX".into(),
+        };
+        let sent = View::Folder {
+            account: 0,
+            folder: "Sent".into(),
+        };
+        let unread = FILTERS[1].1;
+        assert_eq!(empty(&inbox, None, Filter::default()), "Inbox zero");
+        assert_eq!(
+            empty(&View::AllInboxes, None, Filter::default()),
+            "Inbox zero"
+        );
+        assert_eq!(
+            empty(&inbox, None, unread),
+            "No unread mail in this folder."
+        );
+        assert_eq!(
+            empty(&sent, None, Filter::default()),
+            "No mail in this folder."
+        );
+    }
+
+    #[test]
     fn only_a_filter_other_than_all_is_named() {
         assert_eq!(filter_label(Filter::default()), None);
         assert_eq!(filter_label(FILTERS[3].1), Some("Attachments"));
@@ -923,13 +955,9 @@ mod tests {
     fn an_empty_list_says_so() {
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = fx.window();
-        assert_eq!(open.find("No mail in this folder.").len(), 1);
+        assert_eq!(open.find("Inbox zero").len(), 1);
         open.press("/");
-        assert_eq!(
-            open.find("No mail in this folder.").len(),
-            0,
-            "no query yet"
-        );
+        assert_eq!(open.find("Inbox zero").len(), 0, "no query yet");
         open.press("zzz");
         assert_eq!(open.find("No mail matches.").len(), 1);
     }
@@ -939,7 +967,7 @@ mod tests {
         let fx = Fixture::new(&["work"]);
         fx.add("work", message("INBOX", 1, "hi"));
         let (open, _wires) = fx.window();
-        assert_eq!(open.find("No mail in this folder.").len(), 0);
+        assert_eq!(open.find("Inbox zero").len(), 0);
     }
 
     #[test]

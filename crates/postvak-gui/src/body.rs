@@ -14,7 +14,7 @@ use super::state::{Account, App};
 /// The body pane for the shown message, in words.
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Pane {
-    /// Instead of a message: "No message selected." or that it left the store.
+    /// Instead of a message: "Pick a message to read it" or that it left the store.
     pub empty: Option<&'static str>,
     /// A line under `empty`: what to press to get going.
     pub hint: Option<&'static str>,
@@ -68,15 +68,16 @@ pub(crate) fn links(text: Option<&str>) -> Vec<String> {
         .collect()
 }
 
-/// Under "No message selected.": the keys `keys.rs` binds to the next message, search and the key list.
+/// Under "Pick a message to read it", drawn with keycaps: the keys `keys.rs` binds to the next message, search and the
+/// key list.
 pub(crate) const NOTHING_SELECTED_HINT: &str =
-    "Press j for the next message, / to search, ? for every key.";
+    "Or press j for the next one, / to search, ? for every key.";
 
 /// What the body pane shows for `app`.
 pub(crate) fn pane(app: &App) -> Pane {
     let Some(body) = &app.body else {
         return Pane {
-            empty: Some("No message selected."),
+            empty: Some("Pick a message to read it"),
             hint: Some(NOTHING_SELECTED_HINT),
             ..Pane::default()
         };
@@ -489,7 +490,7 @@ mod tests {
     fn an_empty_folder_says_so_and_the_reader_names_the_keys_that_start() {
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = fx.window();
-        assert_eq!(open.find("No message selected.").len(), 1);
+        assert_eq!(open.find("Pick a message to read it").len(), 1);
         assert_eq!(open.find(NOTHING_SELECTED_HINT).len(), 1);
     }
 
