@@ -73,6 +73,7 @@ pub(crate) fn match_labels(m: &Match) -> Vec<String> {
         .to_string()
     }));
     labels.extend(m.older_than.as_ref().map(|v| format!("older than {v}")));
+    labels.extend(m.younger_than.as_ref().map(|v| format!("younger than {v}")));
     labels.extend(m.larger_than.as_ref().map(|v| format!("larger than {v}")));
     labels.extend(
         m.read
@@ -182,6 +183,7 @@ pub(crate) enum Field {
     ToDomain,
     Authenticated,
     OlderThan,
+    YoungerThan,
     LargerThan,
     Read,
     Flagged,
@@ -192,7 +194,7 @@ pub(crate) enum Field {
 
 impl Field {
     /// In the order the rules docs list them.
-    pub const ALL: [Field; 16] = [
+    pub const ALL: [Field; 17] = [
         Field::From,
         Field::To,
         Field::Cc,
@@ -203,6 +205,7 @@ impl Field {
         Field::ToDomain,
         Field::Authenticated,
         Field::OlderThan,
+        Field::YoungerThan,
         Field::LargerThan,
         Field::Read,
         Field::Flagged,
@@ -229,6 +232,7 @@ impl Field {
             Field::To => "to",
             Field::ToDomain => "to domain",
             Field::ToMe => "to me",
+            Field::YoungerThan => "younger than",
         }
     }
 
@@ -392,6 +396,7 @@ pub(crate) fn conditions(m: &Match) -> (Vec<Condition>, Match) {
             .map(|v| plain(Field::Authenticated, v.to_string())),
     );
     rows.extend(m.older_than.clone().map(|v| plain(Field::OlderThan, v)));
+    rows.extend(m.younger_than.clone().map(|v| plain(Field::YoungerThan, v)));
     rows.extend(m.larger_than.clone().map(|v| plain(Field::LargerThan, v)));
     rows.extend(m.read.map(|v| plain(Field::Read, v.to_string())));
     rows.extend(m.flagged.map(|v| plain(Field::Flagged, v.to_string())));
@@ -529,6 +534,7 @@ impl Draft {
                 Field::Tag => m.tag.replace(c.value.clone()).is_some(),
                 Field::To => m.to.replace(text_match(c)).is_some(),
                 Field::ToMe => m.to_me.replace(flag(c)?).is_some(),
+                Field::YoungerThan => m.younger_than.replace(c.value.clone()).is_some(),
             };
             if twice {
                 return Err(format!(
@@ -616,6 +622,7 @@ match.from_domain = "example.com"
 match.to_domain = "example.org"
 match.authenticated = true
 match.older_than = "1h"
+match.younger_than = "1d"
 match.larger_than = "5MB"
 match.read = true
 match.flagged = false
@@ -654,7 +661,7 @@ actions = { flagged = true }
             summary(&rule(ALL_FIELDS)),
             "from equals \"a@example.com\", to contains \"team\", cc matches regex \"(?i)boss\", \
              subject contains \"code\", body matches regex \"\\d{6}\", header List-Id contains \"github.com\", \
-             from domain example.com, to domain example.org, authenticated, older than 1h, larger than 5MB, read, not flagged, not to me, alias *@shop.example.com, tag $label1 \
+             from domain example.com, to domain example.org, authenticated, older than 1h, younger than 1d, larger than 5MB, read, not flagged, not to me, alias *@shop.example.com, tag $label1 \
              → move to Codes, mark read, flag, tag $label2, silent, stop"
         );
     }

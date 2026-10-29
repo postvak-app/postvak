@@ -51,6 +51,7 @@ All three ignore case.
 | `to_domain` | domain, or a list of them | The same, for any address in To; not Cc. |
 | `authenticated` | `true` or `false` | Your provider vouches that the mail comes from its From domain. Needs the account's `trusted_authserv_ids` (see [Authenticated mail](#authenticated-mail)). |
 | `older_than` | span: `30min`, `1h`, `2d`, `3w`, `6mo`, `1y` | Mail that arrived at least this long ago. Units may be written out (`2days`); a bare `m` is refused, since it could mean minutes or months. Months and years follow the calendar. |
+| `younger_than` | span, as for `older_than` | Mail that arrived less than this long ago: the opposite of `older_than`. |
 | `larger_than` | size: `500KB`, `5MB`, `1GB` | Mail larger than this. A bare number is bytes, and `1KB` is 1024 bytes. |
 | `read` | `true` or `false` | Read or unread mail. |
 | `flagged` | `true` or `false` | Flagged or unflagged mail. |
@@ -97,7 +98,7 @@ The order of the keys does not matter: flags and tags are set before a move. Whe
 
 ## When rules act
 
-- On every sync, in file order. Because rules run again on each sync, `older_than` and `read` can fire later, for example an hour after you read a sign-in code.
+- On every sync, in file order. Because rules run again on each sync, `older_than`, `younger_than` and `read` can fire or stop firing later, for example an hour after you read a sign-in code.
 - A rule acts only on mail that arrived after the rule was enabled, so adding a rule never touches your history. `postvak rules apply-existing NAME` is the explicit opt-in. Run it with `--dry-run` first. When the rule would delete mail from the server for good (`delete`), it prints how many messages per account and how long their `.eml` backups are kept, then asks you to type `yes`; without a terminal it refuses unless you pass `--yes`. Moves and flags run without asking.
 - A rule approved with `postvak rules approve` acts on mail that arrives after the approval. A rule you add or enable by editing the file acts on mail that arrives after the next sync picks it up.
 - Renaming a rule, editing its account, folder, match or actions, or disabling and enabling it again, restarts that clock.
@@ -118,6 +119,7 @@ On macOS a notification shows the sender and the subject as Postvak's once Postv
 - [Move list mail out of the inbox](#move-list-mail-out-of-the-inbox): `to_me`, `header`, `move`, `notify`
 - [Give an alias its own folder](#give-an-alias-its-own-folder): `alias`, `move`, `notify`
 - [Move shop mail after notifying](#move-shop-mail-after-notifying): `older_than`, `move`
+- [Leave important mail in INBOX for your phone](#leave-important-mail-in-inbox-for-your-phone): `younger_than`, `stop`
 - [Tag shop mail except receipts](#tag-shop-mail-except-receipts): `none`, `tag`
 - [Flag certain people or topics](#flag-certain-people-or-topics): `any`, `flagged`
 - [Set large mail aside](#set-large-mail-aside): `larger_than`, `flagged`, `move`, `stop`
@@ -173,6 +175,21 @@ name = "shop mail, after notifying"
 match.from = { contains = "shop.example.com" }
 match.older_than = "15min"
 actions.move = "Shopping"
+```
+
+### Leave important mail in INBOX for your phone
+
+When several rules move mail you want your phone to notify about, or a later rule moves everything else, hold the mail back with one rule near the top of the file instead. For 15 minutes after it arrives, `stop` keeps the rules below it from moving it; after that they run as usual:
+
+```toml
+[[rules]]
+name = "hold important mail for the phone"
+match.younger_than = "15min"
+match.any = [
+  { from_domain = ["bank.example", "work.example"] },
+  { subject = { regex = "sign-?in alert|new device" } },
+]
+actions.stop = true
 ```
 
 ### Tag shop mail except receipts

@@ -129,6 +129,9 @@ pub struct Match {
     /// Arrived at least this long ago: 30min, 1h, 2d, 3w, 6mo or 1y; a bare m is refused as ambiguous
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub older_than: Option<String>,
+    /// Arrived less than this long ago, the opposite of older_than: holds mail back while it is new
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub younger_than: Option<String>,
     /// Larger than this size, e.g. 500KB, 5MB; a bare number is bytes and 1KB is 1024 bytes
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub larger_than: Option<String>,
@@ -517,6 +520,7 @@ pub(crate) struct Conditions {
     pub(crate) to_domain: Option<Vec<String>>,
     pub(crate) authenticated: Option<bool>,
     pub(crate) older_than: Option<crate::time::Span>,
+    pub(crate) younger_than: Option<crate::time::Span>,
     pub(crate) larger_than: Option<u64>,
     pub(crate) read: Option<bool>,
     pub(crate) flagged: Option<bool>,
@@ -707,6 +711,7 @@ fn compile_match(
         || m.to_domain.is_some()
         || m.authenticated.is_some()
         || m.older_than.is_some()
+        || m.younger_than.is_some()
         || m.larger_than.is_some()
         || m.read.is_some()
         || m.flagged.is_some()
@@ -762,14 +767,14 @@ fn compile_match(
             .map(|matcher| (name.clone(), matcher))
         })
         .collect::<Result<_, _>>()?;
-    let older_than = m
-        .older_than
-        .as_deref()
-        .map(|text| {
-            crate::time::Span::parse(text)
-                .map_err(|e| invalid(rule, format!("{path}.older_than: {e}")))
-        })
-        .transpose()?;
+    let span = |key: &str, text: &Option<String>| {
+        text.as_deref()
+            .map(|text| {
+                crate::time::Span::parse(text)
+                    .map_err(|e| invalid(rule, format!("{path}.{key}: {e}")))
+            })
+            .transpose()
+    };
     let larger_than = m
         .larger_than
         .as_deref()
@@ -822,7 +827,8 @@ fn compile_match(
         from_domain: domains("from_domain", &m.from_domain)?,
         to_domain: domains("to_domain", &m.to_domain)?,
         authenticated: m.authenticated,
-        older_than,
+        older_than: span("older_than", &m.older_than)?,
+        younger_than: span("younger_than", &m.younger_than)?,
         larger_than,
         read: m.read,
         flagged: m.flagged,

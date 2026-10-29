@@ -245,6 +245,13 @@
             "boolean",
             "null"
           ]
+        },
+        "younger_than": {
+          "description": "Arrived less than this long ago, the opposite of older_than: holds mail back while it is new",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false
