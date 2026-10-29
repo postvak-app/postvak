@@ -178,7 +178,7 @@ postvak search QUERY [--account NAME] [--folder NAME] [--exact] [--server] [--li
 
 - Body text already sits in `mail.db` for every fetched message; the indexer extends that to every message of an account with `index_bodies` on. The file keeps its 0700 directory. `search.md` says so.
 - Queries are never logged. A failed search logs the error without the query; FTS5 errors cannot echo it anyway, since user text only ever reaches SQLite as bound parameters and quoted strings.
-- Snippets are body text and follow its rules: `<untrusted_mail_content>` wrapping is not applied to a one-line snippet, so over MCP the row's description marks `snippet` as stranger-written data, as `subject` is already; the tag rewrite and invisible-character cleaning apply as to every string.
+- Snippets are body text and follow its rules: over MCP a snippet comes inside `<untrusted_mail_content>`, as `subject` does (see the MCP spec); the tag rewrite and invisible-character cleaning apply as to every string.
 - Attachment names are sender-written; they already reach every surface through `attachments`.
 
 ## 6. Errors
