@@ -108,6 +108,8 @@ export component RulesPane inherits Rectangle {
     // The Rules table's sorted column, or -1, as `sort` reports it.
     in property <int> rules-sort: -1;
     in property <bool> rules-ascending: true;
+    // The table shows the order rules run in, so a row can be dragged to another place in it.
+    in property <bool> rules-reorderable;
     // Activity and Backups.
     in property <[TableColumn]> columns;
     in property <[[StandardListViewItem]]> cells;
@@ -126,6 +128,13 @@ export component RulesPane inherits Rectangle {
     callback restore(int);
     callback purge();
     callback sort(int, bool);
+    // The payload a dragged rule row carries, and the pill beside the pointer: its name, fill and text colours.
+    pure callback rule-drag-data(int) -> data-transfer;
+    pure callback rule-drag-image(string, color, color) -> image;
+    // The rule row a drag carries, or -1 for anything else.
+    pure callback dragged-rule(data-transfer) -> int;
+    // A rule row dropped on another: the dragged row, the row under the pointer, and whether it goes below that row.
+    callback rule-dropped(int, int, bool);
 
     // The title row starts where the list's and the reader's do.
     VerticalLayout {
@@ -378,81 +387,111 @@ export component RulesPane inherits Rectangle {
                         sorted(column, ascending) => { root.sort(column, ascending); }
                     }
                 }
-                // A click on a row, anywhere but its switch, opens the rule.
-                for rule[i] in root.rules: TouchArea {
+                // A click on a row, anywhere but its switch, opens the rule; a drag moves it, in run order only.
+                for rule[i] in root.rules: row := Rectangle {
+                    // Over the lower half of this row, a drop puts the rule below it.
+                    property <bool> drop-below;
                     height: Theme.row + Theme.pad;
-                    mouse-cursor: pointer;
-                    accessible-role: button;
-                    accessible-label: rule.label;
-                    accessible-description: "Open in the editor";
-                    accessible-action-default => { root.edit-rule(i); }
-                    clicked => { root.edit-rule(i); }
-                    Rectangle {
-                        border-radius: Theme.pad / 2;
-                        background: rule.selected ? Theme.pane.selected : mod(i, 2) == 0 ? Theme.pane.panel : transparent;
-                    }
-                    HorizontalLayout {
-                        padding-left: Theme.pad;
-                        padding-right: Theme.pad;
-                        spacing: Theme.pad;
-                        Cell {
-                            width: Columns.number;
-                            text: rule.number;
-                            color: Theme.pane.muted;
-                        }
-                        VerticalLayout {
-                            width: Columns.switch;
-                            alignment: center;
-                            Switch {
-                                name: "Enable " + rule.label;
-                                checked: rule.enabled;
-                                toggled(on) => { root.set-enabled(i, on); }
+                    drag := DragArea {
+                        enabled: root.rules-reorderable;
+                        allow-move: true;
+                        data: root.rule-drag-data(i);
+                        drag-image: root.rule-drag-image(rule.label, Theme.frame.highlight, Theme.frame.background);
+                        drag-image-offset-x: -Theme.pad / 1px * 2;
+                        drag-image-offset-y: -Theme.pad / 1px;
+                        TouchArea {
+                            opacity: drag.dragging ? 0.4 : 1;
+                            mouse-cursor: pointer;
+                            accessible-role: button;
+                            accessible-label: rule.label;
+                            accessible-description: "Open in the editor";
+                            accessible-action-default => { root.edit-rule(i); }
+                            clicked => { root.edit-rule(i); }
+                            Rectangle {
+                                border-radius: Theme.pad / 2;
+                                background: rule.selected ? Theme.pane.selected : mod(i, 2) == 0 ? Theme.pane.panel : transparent;
                             }
-                        }
-                        HorizontalLayout {
-                            horizontal-stretch: 2;
-                            preferred-width: 0;
-                            min-width: 0;
-                            spacing: Theme.pad;
-                            Cell {
-                                accessible-role: none;
-                                text: rule.label;
-                                font-weight: 600;
-                                color: Theme.pane.strong;
-                            }
-                            if rule.by != "": VerticalLayout {
-                                alignment: center;
-                                Chip {
-                                    text: rule.by;
-                                    tint: Theme.pane.warning;
+                            HorizontalLayout {
+                                padding-left: Theme.pad;
+                                padding-right: Theme.pad;
+                                spacing: Theme.pad;
+                                Cell {
+                                    width: Columns.number;
+                                    text: rule.number;
+                                    color: Theme.pane.muted;
+                                }
+                                VerticalLayout {
+                                    width: Columns.switch;
+                                    alignment: center;
+                                    Switch {
+                                        name: "Enable " + rule.label;
+                                        checked: rule.enabled;
+                                        toggled(on) => { root.set-enabled(i, on); }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    horizontal-stretch: 2;
+                                    preferred-width: 0;
+                                    min-width: 0;
+                                    spacing: Theme.pad;
+                                    Cell {
+                                        accessible-role: none;
+                                        text: rule.label;
+                                        font-weight: 600;
+                                        color: Theme.pane.strong;
+                                    }
+                                    if rule.by != "": VerticalLayout {
+                                        alignment: center;
+                                        Chip {
+                                            text: rule.by;
+                                            tint: Theme.pane.warning;
+                                        }
+                                    }
+                                }
+                                Cell {
+                                    width: Columns.account;
+                                    text: rule.account;
+                                }
+                                Cell {
+                                    width: Columns.folder;
+                                    text: rule.folder;
+                                }
+                                Cell {
+                                    horizontal-stretch: 3;
+                                    preferred-width: 0;
+                                    min-width: 0;
+                                    text: rule.conditions;
+                                    color: Theme.pane.secondary;
+                                }
+                                Cell {
+                                    horizontal-stretch: 2;
+                                    preferred-width: 0;
+                                    min-width: 0;
+                                    text: rule.actions;
+                                    color: Theme.pane.secondary;
                                 }
                             }
                         }
-                        Cell {
-                            width: Columns.account;
-                            text: rule.account;
+                    }
+                    drop := DropArea {
+                        enabled: root.rules-reorderable;
+                        can-drop(event) => {
+                            row.drop-below = event.position.y > self.height / 2;
+                            root.dragged-rule(event.data) >= 0 && root.dragged-rule(event.data) != i ? DragAction.move : DragAction.none
                         }
-                        Cell {
-                            width: Columns.folder;
-                            text: rule.folder;
-                        }
-                        Cell {
-                            horizontal-stretch: 3;
-                            preferred-width: 0;
-                            min-width: 0;
-                            text: rule.conditions;
-                            color: Theme.pane.secondary;
-                        }
-                        Cell {
-                            horizontal-stretch: 2;
-                            preferred-width: 0;
-                            min-width: 0;
-                            text: rule.actions;
-                            color: Theme.pane.secondary;
+                        dropped(event) => {
+                            root.rule-dropped(root.dragged-rule(event.data), i, event.position.y > self.height / 2);
+                            event.proposed-action
                         }
                     }
+                    // Where the dragged rule would go: a line above or below this row.
+                    if drop.has-drag && drop.current-action != DragAction.none: Rectangle {
+                        y: row.drop-below ? parent.height - 1px : -1px;
+                        height: 2px;
+                        background: Theme.frame.highlight;
+                    }
                 }
-                Note { text: "Rules run in the order of #, top to bottom in rules.toml, on every sync, only on mail that arrives after they are enabled."; }
+                Note { text: "Rules run in the order of #, top to bottom in rules.toml, on every sync, only on mail that arrives after they are enabled. Sorted by #, drag a row to change the order."; }
             }
         }
     }

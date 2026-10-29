@@ -623,6 +623,7 @@ fn present_sheet(app: &App, window: &MailWindow) {
                     .unwrap_or(-1),
             );
             window.set_rules_ascending(sort.is_none_or(|s| s.ascending));
+            window.set_rules_reorderable(rules::reorderable(sort));
             sync(window.get_proposals(), proposals, |m| {
                 window.set_proposals(m)
             });
@@ -991,6 +992,22 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
         on(one(move |app| {
             let rule = rule_line(app, i)?;
             Some(UiAction::SetRuleEnabled(rule.name.clone(), enabled))
+        }));
+    });
+    window.on_rule_drag_data(|row| {
+        let row = usize::try_from(row).unwrap_or_default();
+        slint::DataTransfer::from(SharedString::from(rules::drag_data(row)))
+    });
+    window.on_dragged_rule(|data| {
+        (data.plain_text().ok())
+            .and_then(|text| rules::dragged_row(&text))
+            .and_then(|row| i32::try_from(row).ok())
+            .unwrap_or(-1)
+    });
+    window.on_rule_dropped(move |from, to, below| {
+        on(one(move |app| {
+            let (from, to) = (usize::try_from(from).ok()?, usize::try_from(to).ok()?);
+            rules::dropped(&app.rules.lines, app.sheet_sort, from, to, below)
         }));
     });
     window.on_purge_trash(move || {

@@ -475,6 +475,16 @@ enum RulesCommand {
     Approve { name: String },
     #[command(about = postvak_core::help::RULES_REJECT)]
     Reject { name: String },
+    #[command(about = postvak_core::help::RULES_MOVE)]
+    Move {
+        name: String,
+        /// Put it right before this rule
+        #[arg(long, conflicts_with = "after", required_unless_present = "after")]
+        before: Option<String>,
+        /// Put it right after this rule
+        #[arg(long)]
+        after: Option<String>,
+    },
     #[command(about = postvak_core::help::RULES_LIST)]
     List {
         #[arg(long)]
@@ -1587,6 +1597,26 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
         RulesCommand::Reject { name } => {
             postvak_core::rules::edit::reject(&paths.rules_file(), &name)?;
             println!("removed proposal '{}'", clean(&name, false));
+            Ok(())
+        }
+        RulesCommand::Move {
+            name,
+            before,
+            after,
+        } => {
+            let (place, words) = match (before, after) {
+                (Some(anchor), _) => (Place::Before(anchor), "before"),
+                (None, Some(anchor)) => (Place::After(anchor), "after"),
+                (None, None) => bail!("give --before or --after"),
+            };
+            postvak_core::rules::edit::move_rule(&paths.rules_file(), &name, &place)?;
+            if let Place::Before(anchor) | Place::After(anchor) = &place {
+                println!(
+                    "moved '{}' {words} '{}'",
+                    clean(&name, false),
+                    clean(anchor, false)
+                );
+            }
             Ok(())
         }
     }

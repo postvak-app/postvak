@@ -29,6 +29,7 @@ This document contains the help content for the `postvak` command-line program.
 * [`postvak rules withdraw`↴](#postvak-rules-withdraw)
 * [`postvak rules approve`↴](#postvak-rules-approve)
 * [`postvak rules reject`↴](#postvak-rules-reject)
+* [`postvak rules move`↴](#postvak-rules-move)
 * [`postvak rules list`↴](#postvak-rules-list)
 * [`postvak rules coverage`↴](#postvak-rules-coverage)
 * [`postvak rules apply-existing`↴](#postvak-rules-apply-existing)
@@ -313,6 +314,7 @@ Inspect and test rules.toml
 * `withdraw` — Remove your own pending proposal: a disabled rule whose proposed_by is yours; anything else is left for a human
 * `approve` — Enable a disabled rule, such as a proposal
 * `reject` — Remove a pending proposal
+* `move` — Move a rule right before or after another, which changes the order the rules run in: earlier rules run first
 * `list` — Every rule in file order, the order they run in: its position, its whole definition, whether it is enabled and who proposed it
 * `coverage` — Run the rules over one folder's stored mail without acting: how many messages a rule matches, none matches and several match; the top senders of unmatched mail; for each contested message every rule that matches and what would run under the real precedence
 * `apply-existing` — Run one enabled rule against mail that predates it; dry run lists what it would do
@@ -406,6 +408,23 @@ Remove a pending proposal
 ###### **Arguments:**
 
 * `<NAME>`
+
+
+
+## `postvak rules move`
+
+Move a rule right before or after another, which changes the order the rules run in: earlier rules run first
+
+**Usage:** `postvak rules move [OPTIONS] <NAME>`
+
+###### **Arguments:**
+
+* `<NAME>`
+
+###### **Options:**
+
+* `--before <BEFORE>` — Put it right before this rule
+* `--after <AFTER>` — Put it right after this rule
 
 
 

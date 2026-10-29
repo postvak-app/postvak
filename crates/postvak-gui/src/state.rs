@@ -440,6 +440,12 @@ pub(crate) enum UiAction {
     SelectRow(usize),
     SelectView(View),
     SetRuleEnabled(String, bool),
+    /// Move the rule `name` right before the rule `anchor`, or right after it when `below`.
+    MoveRule {
+        name: String,
+        anchor: String,
+        below: bool,
+    },
     SortSheet(SheetSort),
     SetTheme(Theme),
     /// File ▸ Open at login, turned on or off.
@@ -1506,6 +1512,18 @@ impl App {
             UiAction::SortSheet(sort) => self.sheet_sort = Some(sort),
             UiAction::SetRuleEnabled(name, enabled) => {
                 self.edit_rules(|path| rule_file::edit::set_enabled(path, &name, enabled));
+            }
+            UiAction::MoveRule {
+                name,
+                anchor,
+                below,
+            } => {
+                let place = if below {
+                    rule_file::edit::Place::After(anchor)
+                } else {
+                    rule_file::edit::Place::Before(anchor)
+                };
+                self.edit_rules(|path| rule_file::edit::move_rule(path, &name, &place));
             }
             UiAction::SetTheme(theme) => {
                 self.theme = theme;

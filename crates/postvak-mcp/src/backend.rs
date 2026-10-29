@@ -801,6 +801,25 @@ impl Backend {
         Ok(json!({ "rejected": name }))
     }
 
+    /// Moves a rule next to another. A rule for every account counts as enabling here: its new place changes what it
+    /// does to accounts this server may not see.
+    pub fn move_rule(
+        &self,
+        name: &str,
+        before: Option<String>,
+        after: Option<String>,
+    ) -> Result<Value> {
+        let (anchor, place) = match (before, after) {
+            (Some(anchor), None) => (anchor.clone(), Place::Before(anchor)),
+            (None, Some(anchor)) => (anchor.clone(), Place::After(anchor)),
+            _ => bail!("give one of before and after"),
+        };
+        self.ensure_rule_visible(name, true)?;
+        self.ensure_rule_visible(&anchor, false)?;
+        rules::edit::move_rule(&self.paths.rules_file(), name, &place)?;
+        Ok(json!({ "moved": name }))
+    }
+
     pub fn set_enabled(&self, name: &str, enabled: bool, sight: Sight) -> Result<Value> {
         self.ensure_rule_visible(name, enabled)?;
         if enabled {
