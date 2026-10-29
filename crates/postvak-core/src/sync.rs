@@ -643,6 +643,11 @@ pub fn sync_all_with(
         }
         folders.push(folder);
     }
+    // They hold no messages, so nothing selects them; a move to one is refused by name.
+    let (noselect, mut folders): (Vec<RemoteFolder>, Vec<RemoteFolder>) =
+        folders.into_iter().partition(|f| f.noselect);
+    let names: Vec<&str> = noselect.iter().map(|f| f.name.as_str()).collect();
+    store.set_noselect_folders(&names)?;
     // Gmail's All Mail, Starred and Important hold copies of messages in other folders; syncing them doubles the traffic.
     folders.retain(|f| {
         !matches!(
@@ -1075,6 +1080,7 @@ fn sync_now(ops: &mut dyn MailOps, store: &Store, folder: &str) {
         name: folder.to_string(),
         special_use: stored.as_ref().and_then(|f| f.special_use.clone()),
         delimiter: stored.and_then(|f| f.delimiter),
+        noselect: false,
     };
     if let Err(e) = sync_folder(ops, store, &remote) {
         log::warn!("{folder}: sync after a command failed: {e}");
@@ -1413,6 +1419,7 @@ fn sync_inbox_with(
         name: "INBOX".into(),
         special_use: None,
         delimiter: None,
+        noselect: false,
     };
     let syncing = Activity::SyncingFolder {
         folder: inbox.name.clone(),

@@ -1013,6 +1013,7 @@ impl Fixture {
                 name: "INBOX".into(),
                 special_use: None,
                 delimiter: None,
+                noselect: false,
             };
             sync_folder(h, store, &inbox).map(|_| ())
         };

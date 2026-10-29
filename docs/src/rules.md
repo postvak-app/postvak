@@ -86,7 +86,7 @@ actions.move = "Finance"
 |---|---|
 | `delete = true` | Saves the message as `.eml` in the local trash, then removes it from the server. Later rules don't run for that message. |
 | `archive = true` | Moves it to the server's Archive folder. Fails when the server has none. A rule cannot both archive and `move`. |
-| `move = "Folder/Sub"` | Moves it to that folder, creating the folder if needed and subscribing to it, so mail apps that show only subscribed folders list it. When the server refuses to create it and the move then fails, the error says both. `/` separates levels on most servers; see the warnings below for servers that use `.`. |
+| `move = "Folder/Sub"` | Moves it to that folder, creating the folder if needed and subscribing to it, so mail apps that show only subscribed folders list it. When the server refuses to create it and the move then fails, the error says both. A folder that only groups others and cannot hold mail, such as Gmail's `[Gmail]`, is refused. `/` separates levels on most servers; see the warnings below for servers that use `.`. |
 | `read = true` | Marks it read; `false` marks it unread. |
 | `flagged = true` | Flags it; `false` removes the flag. |
 | `tag = "$label1"` | Adds that IMAP keyword, or each keyword of a list (`tag = ["$label1", "$work"]`), which Thunderbird and other clients show as tags. The server must accept custom keywords. |

@@ -630,25 +630,22 @@ fn special_use(attrs: &[NameAttribute<'_>]) -> Option<String> {
     })
 }
 
-/// The folder a LIST answer names, or None for one that cannot be selected: `\Noselect`, or `\NonExistent`, which
-/// implies it (RFC 5258 §3.4). Dovecot answers an extended LIST so for the parent of a new `Archief/Één`.
+/// The folder a LIST answer names, or None for one listed `\NonExistent` (RFC 5258 §3.4), as Dovecot answers an
+/// extended LIST for the parent of a new `Archief/Één`. A `\Noselect` one is kept, marked, so a move to it can be refused.
 fn listed_folder(
     attrs: &[NameAttribute<'_>],
     delimiter: Option<&str>,
     name: &str,
 ) -> Option<RemoteFolder> {
-    let unselectable = |a: &NameAttribute<'_>| match a {
-        NameAttribute::NoSelect => true,
-        NameAttribute::Extension(s) => s.eq_ignore_ascii_case("\\NonExistent"),
-        _ => false,
-    };
-    if attrs.iter().any(unselectable) {
+    let nonexistent = |a: &NameAttribute<'_>| matches!(a, NameAttribute::Extension(s) if s.eq_ignore_ascii_case("\\NonExistent"));
+    if attrs.iter().any(nonexistent) {
         return None;
     }
     Some(RemoteFolder {
         name: name.to_string(),
         special_use: special_use(attrs),
         delimiter: delimiter.map(str::to_string),
+        noselect: attrs.iter().any(|a| matches!(a, NameAttribute::NoSelect)),
     })
 }
 
@@ -1235,10 +1232,9 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_listed_as_nonexistent_or_noselect_is_left_out() {
+    fn a_folder_listed_as_nonexistent_is_left_out() {
         use std::borrow::Cow;
         let listed = |attrs: &[NameAttribute<'_>]| listed_folder(attrs, Some("/"), "Archief");
-        assert_eq!(listed(&[NameAttribute::NoSelect]), None);
         for nonexistent in ["\\NonExistent", "\\nonexistent"] {
             let attrs = [
                 NameAttribute::Extension(Cow::Borrowed(nonexistent)),
@@ -1248,6 +1244,15 @@ mod tests {
         }
         let attrs = [NameAttribute::Extension(Cow::Borrowed("\\HasChildren"))];
         assert_eq!(listed(&attrs).map(|f| f.name).as_deref(), Some("Archief"));
+    }
+
+    #[test]
+    fn a_noselect_folder_is_listed_marked() {
+        let parent = listed_folder(&[NameAttribute::NoSelect], Some("/"), "[Gmail]").unwrap();
+        assert!(parent.noselect);
+        let trash = listed_folder(&[NameAttribute::Trash], Some("/"), "[Gmail]/Trash").unwrap();
+        assert!(!trash.noselect);
+        assert_eq!(trash.special_use.as_deref(), Some("Trash"));
     }
 
     #[test]

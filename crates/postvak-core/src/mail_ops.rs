@@ -10,6 +10,8 @@ pub struct RemoteFolder {
     pub name: String,
     pub special_use: Option<String>,
     pub delimiter: Option<String>,
+    /// Marked `\\Noselect`: a name in the hierarchy that holds no messages, such as Gmail's `[Gmail]`.
+    pub noselect: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -307,11 +309,23 @@ mod recording {
             name.to_string()
         }
 
+        /// Lists a `\\Noselect` folder, which holds no messages and cannot be created again.
+        pub fn with_noselect(mut self, name: &str) -> RecordingOps {
+            self.folders.push(RemoteFolder {
+                name: name.into(),
+                special_use: None,
+                delimiter: Some("/".into()),
+                noselect: true,
+            });
+            self
+        }
+
         pub fn with_folder(mut self, name: &str, special_use: Option<&str>) -> RecordingOps {
             self.folders.push(RemoteFolder {
                 name: name.into(),
                 special_use: special_use.map(str::to_string),
                 delimiter: None,
+                noselect: false,
             });
             self.uidvalidity.insert(name.into(), 1);
             self.mail.entry(name.into()).or_default();
@@ -743,13 +757,16 @@ mod recording {
             if let Some(e) = self.fail_next_create.take() {
                 return Err(e);
             }
-            if self.mail.contains_key(&self.server_name(name)) {
+            if self.mail.contains_key(&self.server_name(name))
+                || self.folders.iter().any(|f| f.name == name)
+            {
                 return Err(MailError::Protocol(format!("[ALREADYEXISTS] {name}")));
             }
             self.folders.push(RemoteFolder {
                 name: name.into(),
                 special_use: None,
                 delimiter: None,
+                noselect: false,
             });
             self.uidvalidity.insert(name.into(), 1);
             self.mail.entry(name.into()).or_default();
