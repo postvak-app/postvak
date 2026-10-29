@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,7 +21,7 @@ use crate::config::AccountConfig;
 use crate::credentials::Secret;
 use crate::mail_ops::{
     Envelope, FlagUpdate, IdleOutcome, MailError, MailOps, MailResult, PartRef, RemoteFolder,
-    SelectInfo, StatusInfo, Structure, TextPart,
+    SelectInfo, StatusInfo, Structure, TextPart, utf7,
 };
 
 type ImapSession = Session<TlsStream<TcpStream>>;
@@ -45,6 +45,7 @@ pub struct ImapOps {
     has_special_use: bool,
     selected: Option<String>,
     command_timeout: Duration,
+    names: FolderNames,
 }
 
 impl ImapOps {
@@ -91,6 +92,7 @@ impl ImapOps {
             has_special_use: caps.has_str("SPECIAL-USE"),
             selected: None,
             command_timeout: COMMAND_TIMEOUT,
+            names: FolderNames::default(),
         })
     }
 
@@ -165,9 +167,92 @@ impl ImapOps {
 
     #[cfg(any(test, feature = "testing"))]
     pub fn delete_folder(&mut self, name: &str) -> MailResult<()> {
+        let name = self.wire(name);
         self.run(self.command_timeout, async |session| {
-            session.delete(name).await.map_err(proto)
+            session.delete(&name).await.map_err(proto)
         })
+    }
+
+    /// `name` as the server spells it. Only a listing tells which names the server keeps as they came, so a name that
+    /// may be one of them lists the folders first on a connection that has not yet: commands queued while offline run
+    /// before the sync lists.
+    fn wire(&mut self, name: &str) -> String {
+        if self.names.needs_list(name) {
+            if let Err(e) = self.list_folders() {
+                log::debug!("could not list the folders before using {name}: {e}");
+            }
+            self.names.listed = true;
+        }
+        self.names.wire(name)
+    }
+}
+
+/// How one connection spells folder names between UTF-8, which everything above `MailOps` uses, and the wire.
+#[derive(Default)]
+struct FolderNames {
+    /// Names sent as they are rather than in modified UTF-7: those the server listed that are not modified UTF-7 (raw
+    /// UTF-8, a sloppy encoding), and a modified UTF-7 one whose decoded name a raw listed folder already has.
+    verbatim: HashSet<String>,
+    /// Whether the folders were listed on this connection, so `verbatim` is known.
+    listed: bool,
+}
+
+impl FolderNames {
+    /// `name` as the server spells it: modified UTF-7 (RFC 3501 §5.1.3), unless the server listed it otherwise.
+    fn wire(&self, name: &str) -> String {
+        if self.verbatim.contains(name) {
+            name.to_string()
+        } else {
+            utf7::encode(name)
+        }
+    }
+
+    /// Whether `name` could be one the server keeps as it came, which is unknown until the folders are listed.
+    fn needs_list(&self, name: &str) -> bool {
+        !self.listed && (!name.is_ascii() || name.contains('&'))
+    }
+
+    /// The names a full listing gave, in UTF-8 and in its order. One that is not modified UTF-7 is kept as it came. When
+    /// a raw name and a modified UTF-7 one decode alike, the raw one keeps the name and the other its wire form, so
+    /// both stay reachable.
+    fn learn(&mut self, wire: Vec<String>) -> Vec<String> {
+        let decoded: Vec<Option<String>> = wire.iter().map(|name| utf7::decode(name)).collect();
+        let raw: HashSet<&str> = wire
+            .iter()
+            .zip(&decoded)
+            .filter(|(_, decoded)| decoded.is_none())
+            .map(|(name, _)| name.as_str())
+            .collect();
+        let mut verbatim = HashSet::new();
+        let local = wire
+            .iter()
+            .zip(&decoded)
+            .map(|(name, decoded)| match decoded {
+                Some(plain) if !raw.contains(plain.as_str()) => plain.clone(),
+                Some(plain) => {
+                    log::warn!("the server lists both {plain} and {name}, which spells the same name; showing it as {name}");
+                    verbatim.insert(name.clone());
+                    name.clone()
+                }
+                None => {
+                    verbatim.insert(name.clone());
+                    name.clone()
+                }
+            })
+            .collect();
+        self.verbatim = verbatim;
+        self.listed = true;
+        local
+    }
+
+    /// The listed folders with their names in UTF-8.
+    fn decoded<T>(&mut self, listed: Vec<(RemoteFolder, T)>) -> Vec<(RemoteFolder, T)> {
+        let names = self.learn(listed.iter().map(|(f, _)| f.name.clone()).collect());
+        listed
+            .into_iter()
+            .zip(names)
+            .map(|((folder, extra), name)| (RemoteFolder { name, ..folder }, extra))
+            .collect()
     }
 }
 
@@ -467,12 +552,19 @@ fn special_use(attrs: &[NameAttribute<'_>]) -> Option<String> {
     })
 }
 
-/// The folder a LIST answer names; one that cannot be selected is kept, marked, so a move to it can be refused.
+/// The folder a LIST answer names, or None for one listed `\NonExistent` (RFC 5258 §3.4), as Dovecot answers an
+/// extended LIST for the parent of a new `Archief/Één`. A `\Noselect` one is kept, marked, so a move to it can be refused.
 fn listed_folder(
     attrs: &[NameAttribute<'_>],
     delimiter: Option<&str>,
     name: &str,
 ) -> Option<RemoteFolder> {
+    let nonexistent = |a: &NameAttribute<'_>| {
+        matches!(a, NameAttribute::Extension(s) if s.eq_ignore_ascii_case("\\NonExistent"))
+    };
+    if attrs.iter().any(nonexistent) {
+        return None;
+    }
     Some(RemoteFolder {
         name: name.to_string(),
         special_use: special_use(attrs),
@@ -518,7 +610,7 @@ impl MailOps for ImapOps {
     }
 
     fn list_folders(&mut self) -> MailResult<Vec<RemoteFolder>> {
-        self.run(self.command_timeout, async |session| {
+        let listed = self.run(self.command_timeout, async |session| {
             let names: Vec<_> = session
                 .list(Some(""), Some("*"))
                 .await
@@ -529,8 +621,15 @@ impl MailOps for ImapOps {
             Ok(names
                 .iter()
                 .filter_map(|n| listed_folder(n.attributes(), n.delimiter(), n.name()))
-                .collect())
-        })
+                .collect::<Vec<_>>())
+        })?;
+        let listed = listed.into_iter().map(|folder| (folder, ())).collect();
+        Ok(self
+            .names
+            .decoded(listed)
+            .into_iter()
+            .map(|(folder, ())| folder)
+            .collect())
     }
 
     fn list_folders_status(&mut self) -> MailResult<Vec<(RemoteFolder, Option<StatusInfo>)>> {
@@ -547,7 +646,7 @@ impl MailOps for ImapOps {
             "LIST \"\" \"*\" RETURN ({special_use}STATUS {})",
             self.status_items()
         );
-        self.run(self.command_timeout, async |session| {
+        let listed = self.run(self.command_timeout, async |session| {
             let tag = session.run_command(&command).await.map_err(proto)?;
             let mut folders = Vec::new();
             let mut statuses = HashMap::new();
@@ -586,17 +685,19 @@ impl MailOps for ImapOps {
                     let status = statuses.remove(&folder.name);
                     (folder, status)
                 })
-                .collect())
-        })
+                .collect::<Vec<_>>())
+        })?;
+        Ok(self.names.decoded(listed))
     }
 
     fn select(&mut self, folder: &str) -> MailResult<SelectInfo> {
         let condstore = self.has_condstore;
+        let wire = self.wire(folder);
         let selected = self.run(self.command_timeout, async |session| {
             let mailbox = if condstore {
-                session.select_condstore(folder).await
+                session.select_condstore(&wire).await
             } else {
-                session.select(folder).await
+                session.select(&wire).await
             }
             .map_err(proto)?;
             Ok(SelectInfo {
@@ -617,8 +718,9 @@ impl MailOps for ImapOps {
 
     fn status(&mut self, folder: &str) -> MailResult<StatusInfo> {
         let items = self.status_items();
+        let folder = self.wire(folder);
         self.run(self.command_timeout, async |session| {
-            let mailbox = session.status(folder, items).await.map_err(proto)?;
+            let mailbox = session.status(&folder, items).await.map_err(proto)?;
             Ok(StatusInfo {
                 messages: mailbox.exists,
                 uidnext: mailbox.uid_next.unwrap_or(0),
@@ -772,27 +874,31 @@ impl MailOps for ImapOps {
     }
 
     fn move_messages(&mut self, uids: &[u32], to: &str) -> MailResult<()> {
+        let wire = self.wire(to);
         uids.chunks(UID_BATCH)
-            .try_for_each(|batch| move_batch(self, batch, to))
+            .try_for_each(|batch| move_batch(self, batch, &wire, to))
     }
 
     fn create_folder(&mut self, name: &str) -> MailResult<()> {
+        let name = self.wire(name);
         self.run(self.command_timeout, async |session| {
-            session.create(name).await.map_err(proto)
+            session.create(&name).await.map_err(proto)
         })
     }
 
     fn subscribe_folder(&mut self, name: &str) -> MailResult<()> {
+        let name = self.wire(name);
         self.run(self.command_timeout, async |session| {
-            session.subscribe(name).await.map_err(proto)
+            session.subscribe(&name).await.map_err(proto)
         })
     }
 
     fn append(&mut self, folder: &str, raw: &[u8], flags: &[&str]) -> MailResult<()> {
         let flags = (!flags.is_empty()).then(|| format!("({})", flags.join(" ")));
+        let folder = self.wire(folder);
         self.run(self.bulk_timeout(), async |session| {
             session
-                .append(folder, flags.as_deref(), None, raw)
+                .append(&folder, flags.as_deref(), None, raw)
                 .await
                 .map_err(proto)
         })
@@ -875,12 +981,13 @@ fn expunge(ops: &mut ImapOps, uids: &[u32]) -> MailResult<()> {
     })
 }
 
-fn move_batch(ops: &mut ImapOps, uids: &[u32], to: &str) -> MailResult<()> {
+/// Moves `uids` to the folder `to`, which the server spells `wire`.
+fn move_batch(ops: &mut ImapOps, uids: &[u32], wire: &str, to: &str) -> MailResult<()> {
     let (has_move, has_uidplus) = (ops.has_move, ops.has_uidplus);
     let set = uid_set(uids);
     if has_move {
         return ops.run(ops.batch_timeout(uids), async |session| {
-            session.uid_mv(set, to).await.map_err(proto)
+            session.uid_mv(set, wire).await.map_err(proto)
         });
     }
     ops.run(ops.batch_timeout(uids), async |session| {
@@ -888,7 +995,7 @@ fn move_batch(ops: &mut ImapOps, uids: &[u32], to: &str) -> MailResult<()> {
         if !has_uidplus {
             refuse_if_others_deleted(session, uids).await?;
         }
-        session.uid_copy(set, to).await.map_err(proto)
+        session.uid_copy(set, wire).await.map_err(proto)
     })?;
     delete_copied(ops, uids, to)
 }
@@ -897,13 +1004,7 @@ fn delete_copied(ops: &mut impl MailOps, uids: &[u32], to: &str) -> MailResult<(
     let Err(err) = super::delete_messages(ops, uids) else {
         return Ok(());
     };
-    let kept = |reason: String| format!("copied to {to}, original kept: {reason}");
-    Err(match err {
-        MailError::Connect(reason) => MailError::Connect(kept(reason)),
-        MailError::Auth(reason) => MailError::Auth(kept(reason)),
-        MailError::Protocol(reason) => MailError::Protocol(kept(reason)),
-        MailError::Io(reason) => MailError::Io(kept(reason)),
-    })
+    Err(err.map_reason(|reason| format!("copied to {to}, original kept: {reason}")))
 }
 
 /// Without UIDPLUS only a plain EXPUNGE exists, which would also remove every other message marked deleted here.
@@ -1005,6 +1106,65 @@ fn text_query(words: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn learned(wire: &[&str]) -> (FolderNames, Vec<String>) {
+        let mut names = FolderNames::default();
+        let local = names.learn(wire.iter().map(|n| n.to_string()).collect());
+        (names, local)
+    }
+
+    #[test]
+    fn a_listed_name_that_is_not_modified_utf7_goes_back_as_it_came() {
+        let (names, local) = learned(&["INBOX", "Caf\u{e9}", "R&D", "Archief/&AMkA6Q-n"]);
+        assert_eq!(
+            local,
+            ["INBOX", "Caf\u{e9}", "R&D", "Archief/\u{c9}\u{e9}n"]
+        );
+        assert_eq!(names.wire("Caf\u{e9}"), "Caf\u{e9}");
+        assert_eq!(names.wire("R&D"), "R&D");
+        assert_eq!(names.wire("Archief/\u{c9}\u{e9}n"), "Archief/&AMkA6Q-n");
+        // Not listed: a folder about to be created is sent in modified UTF-7.
+        assert_eq!(names.wire("Th\u{e9}"), "Th&AOk-");
+        assert_eq!(names.wire("Q&A"), "Q&-A");
+    }
+
+    /// A raw `Café` the old Postvak created on a lax server, beside another client's `Caf&AOk-`.
+    #[test]
+    fn a_raw_name_and_its_modified_utf7_twin_both_stay_reachable() {
+        let (names, local) = learned(&["Caf&AOk-", "Caf\u{e9}"]);
+        assert_eq!(local, ["Caf&AOk-", "Caf\u{e9}"]);
+        assert_eq!(names.wire("Caf&AOk-"), "Caf&AOk-");
+        assert_eq!(names.wire("Caf\u{e9}"), "Caf\u{e9}");
+    }
+
+    #[test]
+    fn a_name_that_may_be_kept_raw_waits_for_a_listing() {
+        let names = FolderNames::default();
+        assert!(names.needs_list("Caf\u{e9}"));
+        assert!(names.needs_list("R&D"));
+        assert!(!names.needs_list("Lists/GitHub"));
+        let (names, _) = learned(&["INBOX"]);
+        assert!(!names.needs_list("Caf\u{e9}"));
+        // A later listing forgets what the server no longer lists.
+        let (mut names, _) = learned(&["Caf\u{e9}"]);
+        names.learn(vec!["INBOX".into()]);
+        assert_eq!(names.wire("Caf\u{e9}"), "Caf&AOk-");
+    }
+
+    #[test]
+    fn a_folder_listed_as_nonexistent_is_left_out() {
+        use std::borrow::Cow;
+        let listed = |attrs: &[NameAttribute<'_>]| listed_folder(attrs, Some("/"), "Archief");
+        for nonexistent in ["\\NonExistent", "\\nonexistent"] {
+            let attrs = [
+                NameAttribute::Extension(Cow::Borrowed(nonexistent)),
+                NameAttribute::Extension(Cow::Borrowed("\\HasChildren")),
+            ];
+            assert_eq!(listed(&attrs), None);
+        }
+        let attrs = [NameAttribute::Extension(Cow::Borrowed("\\HasChildren"))];
+        assert_eq!(listed(&attrs).map(|f| f.name).as_deref(), Some("Archief"));
+    }
 
     #[test]
     fn a_noselect_folder_is_listed_marked() {

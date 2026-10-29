@@ -17,7 +17,7 @@ Every message's subject, sender, recipients (To, Cc and Delivered-To), attachmen
 | `has:attachment` | with an attachment, as guessed from the headers |
 | `is:unread`, `is:read`, `is:flagged` | by flag |
 | `before:2026-01-15`, `after:2026-01-01` | by date, in local time; `before:` is exclusive of that day, `after:` inclusive |
-| `after:7d`, `before:3w`, `after:6m`, `after:1y` | days, weeks, months or years back from now |
+| `after:7d`, `before:3w`, `after:6mo`, `after:1y` | days, weeks, months or years back from now |
 | `account:work` | one account, where several are searched: All inboxes in the window, and the CLI and MCP without `--account` |
 
 Operators combine with words in any order: `from:acme after:30d invoice` is the invoices Acme sent in the last month. A column operator's value is matched whole, never as a prefix and never widened to a close match. Nothing you type is read as query syntax: a bare address, an unbalanced quote, an unknown key such as `size:10` or a date that does not parse all search as words. A `-` before `in:`, `is:`, `has:`, `before:`, `after:` or `account:` is ignored.
@@ -27,6 +27,10 @@ Keys are case-insensitive. A search of operators alone, such as `is:unread from:
 ## Close matches
 
 When fewer than ten messages match as typed, close matches follow: for each word of four letters or more, the terms in the mail itself within one typo of it (two for a word of eight or more), so `invioce` still finds the invoice. They come after the exact hits, under their own heading in the window, with `~` before the line on the CLI and `match: close` in `--json` and MCP rows; `--exact` and `exact: true` leave them out. A phrase, an excluded word and an operator's value are never widened.
+
+## Pages
+
+On the CLI and over MCP a search returns at most `--limit` (`limit`) results over every account together: the exact matches newest first, then the close ones. When more follow, `--json` ends with a line `{"next": "…"}` and an MCP result carries `next`; pass it back as `--cursor` (`cursor`) with the same query for the next page. Pages continue through the close matches the same way. Whether an account's close matches show is decided on all its exact matches, and once a page showed them they keep showing on later pages, even when exact matches arrive in between. `--count-only` (`count_only`) tells how many results there are in all. A search with `--server` is one page and takes no cursor. `list` pages the same way; [CLI](cli.md) has the flags.
 
 ## Snippets
 

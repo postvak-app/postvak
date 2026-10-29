@@ -17,6 +17,14 @@ export component HoverFill inherits Rectangle {
     }
 }
 
+// A 1px divider across its parent, in `palette`'s border colour.
+export component Hairline inherits Rectangle {
+    in property <Palette> palette: Theme.pane;
+
+    height: 1px;
+    background: root.palette.border;
+}
+
 /* A frameless square button with a Phosphor glyph, named for screen readers and tests, with its hint on hover.
 
 With a `label` it is a framed button with the label instead of the glyph: the message actions while several messages

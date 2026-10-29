@@ -48,7 +48,11 @@ impl Trash {
     }
 
     pub fn save(&self, folder: &str, uid: u32, raw: &[u8], now: i64) -> io::Result<PathBuf> {
-        let encoded = folder.replace('%', "%25").replace('/', "%2F");
+        // `&` is escaped too: a backup named before folder names were decoded carries the wire name, which `&` marks.
+        let encoded = folder
+            .replace('%', "%25")
+            .replace('/', "%2F")
+            .replace('&', "%26");
         let name = |at: i64| self.dir.join(format!("{at}-{encoded}-{uid}.eml"));
         // After a UIDVALIDITY change the same folder and uid name another message, which can be deleted within the same
         // second: never overwrite a backup, take the next free second instead.
@@ -127,9 +131,35 @@ impl Trash {
         let stem = name.strip_suffix(".eml")?;
         let (ts, rest) = stem.split_once('-')?;
         let (encoded, uid) = rest.rsplit_once('-')?;
-        let folder = encoded.replace("%2F", "/").replace("%25", "%");
+        let folder = unescape(encoded);
+        // Saved before folder names were decoded: the name is the server's modified UTF-7, which `restore` would now
+        // encode a second time.
+        let folder = if encoded.contains('&') {
+            crate::mail_ops::utf7::decode(&folder).unwrap_or(folder)
+        } else {
+            folder
+        };
         Some((ts.parse().ok()?, folder, uid.parse().ok()?))
     }
+}
+
+/// Undoes `save`'s `%25`, `%2F` and `%26` in one pass, leaving any other `%` as it is.
+fn unescape(encoded: &str) -> String {
+    let mut out = String::with_capacity(encoded.len());
+    let mut rest = encoded;
+    while let Some(at) = rest.find('%') {
+        out.push_str(&rest[..at]);
+        let (escaped, len) = match rest.get(at + 1..at + 3) {
+            Some("25") => ('%', 3),
+            Some("2F") => ('/', 3),
+            Some("26") => ('&', 3),
+            _ => ('%', 1),
+        };
+        out.push(escaped);
+        rest = &rest[at + len..];
+    }
+    out.push_str(rest);
+    out
 }
 
 #[cfg(test)]
@@ -188,6 +218,51 @@ mod tests {
             trash.purge(i64::MAX as u64 / 86_400 + 1, i64::MAX).unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn folder_names_with_escapes_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let trash = Trash::new(dir.path().to_path_buf());
+        for folder in [
+            "Q&A",
+            "Caf&AOk-",
+            "%2F/%26",
+            "100%",
+            "Archief/\u{c9}\u{e9}n",
+        ] {
+            let path = trash.save(folder, 1, b"raw", 0).unwrap();
+            let name = path.file_name().unwrap().to_str().unwrap();
+            assert_eq!(
+                Trash::parse_name(name).map(|(_, f, _)| f).as_deref(),
+                Some(folder)
+            );
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    /// A backup saved before folder names were decoded is named after the wire name; restoring sends it encoded again.
+    #[test]
+    fn a_backup_named_with_the_wire_name_restores_to_the_decoded_folder() {
+        assert_eq!(
+            Trash::parse_name("12-Archief%2FCaf&AOk--5.eml"),
+            Some((12, "Archief/Caf\u{e9}".into(), 5))
+        );
+        assert_eq!(
+            Trash::parse_name("12-Q&-A-5.eml"),
+            Some((12, "Q&A".into(), 5))
+        );
+        // Not modified UTF-7: a raw name a lax server listed, which is sent back as it came.
+        assert_eq!(
+            Trash::parse_name("12-R&D-5.eml"),
+            Some((12, "R&D".into(), 5))
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let trash = Trash::new(dir.path().to_path_buf());
+        let file = dir.path().join("12-Caf&AOk--5.eml");
+        std::fs::write(&file, b"raw").unwrap();
+        let mut ops = crate::mail_ops::RecordingOps::default().with_folder("Caf\u{e9}", None);
+        assert_eq!(trash.restore(&mut ops, &file).unwrap(), "Caf\u{e9}");
     }
 
     #[test]

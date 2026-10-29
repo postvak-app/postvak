@@ -3,13 +3,13 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration;
 
 use crate::{numbers, update};
 use postvak_core::actions::Preview;
 use postvak_core::bimi::Brand;
-use postvak_core::config::{self, AccountConfig, Config, Identity, Theme};
+use postvak_core::config::{self, AccountConfig, Config, HtmlColours, Identity, Theme};
 use postvak_core::credentials::Secret;
 use postvak_core::daemon::Client;
 use postvak_core::daemon::client::NewerDaemon;
@@ -34,6 +34,7 @@ use super::logos::Logos;
 use super::reader::{self, Read, ReadFn, Reader};
 use super::rules::{self, RulesState, SheetSort, TrashRow};
 use super::save_as;
+use super::worker::{self, Stopped};
 
 /// The status line when `m` is pressed with marked rows from more than one account.
 pub(crate) const MOVE_ONE_ACCOUNT: &str =
@@ -165,6 +166,8 @@ pub(crate) struct BodyState {
     pub shown_at: f64,
     /// Set by `v`: the text view for this message even though it has HTML.
     pub show_text: bool,
+    /// Show original colours: this message's HTML in the sender's colours on a white page, also in the dark theme.
+    pub original_colours: bool,
     /// The raw message, while the source window shows it.
     pub source: Option<body::Source>,
     /// Why the HTML could not be shown; the text view shows instead, under this note.
@@ -197,6 +200,7 @@ impl BodyState {
             reading: None,
             saved: None,
             show_text: false,
+            original_colours: false,
             shown_at: now,
             source: None,
             links: Vec::new(),
@@ -451,6 +455,10 @@ pub(crate) enum UiAction {
     ToggleHelp,
     ToggleHistory,
     ToggleHtml,
+    /// The open message's HTML in its sender's colours, or adapted to the dark theme again.
+    ToggleOriginalColours,
+    /// Whether the window shows the dark theme, which decides how HTML mail is styled.
+    HtmlDark(bool),
     ToggleMark,
     ToggleRead,
     /// Cmd-click (Ctrl-click off macOS): add this row to the selection, which starts from the cursor row, or take it out.
@@ -565,6 +573,10 @@ pub struct App {
     pub(crate) html_generation: u64,
     /// The scale and width the window last gave the HTML view, so the next HTML message lays out at once.
     pub(crate) html_size: Option<(f32, f32)>,
+    /// `[ui] html_colours`: whether HTML mail is adapted to the dark theme.
+    pub(crate) html_colours: HtmlColours,
+    /// Whether the window shows the dark theme; System follows the desktop, which only the window knows.
+    pub(crate) html_dark: bool,
     pub(crate) history: VecDeque<HistoryLine>,
     pub(crate) history_open: bool,
     /// Opens a file or URL with the desktop's app; tests record instead.
@@ -649,11 +661,6 @@ pub struct App {
     pub(crate) view_dirty: bool,
 }
 
-/// The accounts' names, for the rules' warnings.
-fn account_names(accounts: &[Account]) -> Vec<&str> {
-    accounts.iter().map(|a| a.name.as_str()).collect()
-}
-
 /// An account's window state over its store; `open_account` creates the store of an account just added.
 fn account_state(
     paths: &Paths,
@@ -711,8 +718,7 @@ impl App {
         super::phases::mark("stores_opened");
         let rules_path = paths.rules_file();
         let rules_dir = paths.config_dir.clone();
-        let folders = rule_file::account_folders(&paths, &account_names(&accounts));
-        let rules = RulesState::load(&rules_path, Vec::new(), &folders);
+        let rules = RulesState::load(&rules_path, Vec::new(), &accounts);
         let mut app = App {
             accounts,
             activity_log: Vec::new(),
@@ -785,6 +791,9 @@ impl App {
             next_tick: None,
             wake: Arc::new(|| {}),
             theme: config.ui.theme,
+            html_colours: config.ui.html_colours,
+            // The window says whether the System theme is dark once it shows (`UiAction::HtmlDark`).
+            html_dark: config.ui.theme == Theme::Dark,
             trash: Vec::new(),
             sheet_sort: None,
             update: if config.ui.check_updates {
@@ -852,10 +861,10 @@ impl App {
 
     fn receive(&mut self, now: f64) {
         while !self.daemon_lost {
-            match self.events.try_recv() {
-                Ok(event) => self.handle(event, now),
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
+            match worker::poll(&self.events) {
+                Some(Ok(event)) => self.handle(event, now),
+                None => break,
+                Some(Err(Stopped)) => {
                     self.daemon_lost = true;
                     self.last_reconnect = now;
                     self.note_error(None, DAEMON_LOST.into());
@@ -876,10 +885,10 @@ impl App {
             }
             return;
         };
-        match attempt.try_recv() {
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => self.reconnecting = None,
-            Ok(Err(e)) => {
+        match worker::poll(attempt) {
+            None => {}
+            Some(Err(Stopped)) => self.reconnecting = None,
+            Some(Ok(Err(e))) => {
                 log::warn!("could not reach the daemon: {e:#}");
                 self.reconnecting = None;
                 if let Some(newer) = e.downcast_ref::<NewerDaemon>() {
@@ -889,7 +898,7 @@ impl App {
                     }
                 }
             }
-            Ok(Ok(connection)) => {
+            Some(Ok(Ok(connection))) => {
                 self.reconnecting = None;
                 self.reconnected(connection);
             }
@@ -898,15 +907,10 @@ impl App {
 
     /// Connects on a background thread so the window never waits; the window is woken with the result.
     fn start_reconnect(&self) -> Receiver<anyhow::Result<Connection>> {
-        let (done, attempt) = mpsc::channel();
         let (reconnect, paths, wake) = (self.reconnect, self.paths.clone(), self.wake.clone());
-        std::thread::spawn(move || {
-            let events_wake = wake.clone();
-            let connection = reconnect(&paths, Box::new(move || events_wake()));
-            let _ = done.send(connection);
-            wake();
-        });
-        attempt
+        worker::oneshot("reconnect", wake.clone(), move || {
+            reconnect(&paths, Box::new(move || wake()))
+        })
     }
 
     /// Starts the release check at the first tick, after the test fixture has swapped `fetch_release`, then takes its
@@ -914,28 +918,20 @@ impl App {
     fn check_release(&mut self) {
         let next = match &self.update {
             UpdateCheck::Waiting => {
-                let (done, answer) = mpsc::channel();
-                let (cache, fetch, wake) = (
-                    self.paths.update_check(),
-                    self.fetch_release,
-                    self.wake.clone(),
-                );
-                std::thread::spawn(move || {
-                    let _ = done.send(update::check(
+                let (cache, fetch) = (self.paths.update_check(), self.fetch_release);
+                let answer = worker::oneshot("update-check", self.wake.clone(), move || {
+                    update::check(
                         &cache,
                         postvak_core::time::now(),
                         env!("CARGO_PKG_VERSION"),
                         fetch,
-                    ));
-                    wake();
+                    )
                 });
                 Some(UpdateCheck::Running(answer))
             }
-            UpdateCheck::Running(answer) => match answer.try_recv() {
-                Ok(newer) => Some(UpdateCheck::Done(newer)),
-                Err(TryRecvError::Disconnected) => Some(UpdateCheck::Done(None)),
-                Err(TryRecvError::Empty) => None,
-            },
+            UpdateCheck::Running(answer) => {
+                worker::poll(answer).map(|newer| UpdateCheck::Done(newer.ok().flatten()))
+            }
             UpdateCheck::Done(_) => None,
         };
         if let Some(next) = next {
@@ -953,15 +949,15 @@ impl App {
                     OpenAtLogin::Known(false)
                 }
             },
-            OpenAtLogin::Changing(on, answer) => match answer.try_recv() {
-                Ok(Ok(_)) => OpenAtLogin::Known(*on),
-                Ok(Err(e)) => {
+            OpenAtLogin::Changing(on, answer) => match worker::poll(answer) {
+                Some(Ok(Ok(_))) => OpenAtLogin::Known(*on),
+                Some(Ok(Err(e))) => {
                     let (on, text) = (*on, format!("{e:#}"));
                     self.note_error(None, format!("could not change opening at login: {text}"));
                     OpenAtLogin::Known(!on)
                 }
-                Err(TryRecvError::Disconnected) => OpenAtLogin::Known(!*on),
-                Err(TryRecvError::Empty) => return,
+                Some(Err(Stopped)) => OpenAtLogin::Known(!*on),
+                None => return,
             },
             OpenAtLogin::Known(_) => return,
         };
@@ -1112,6 +1108,9 @@ impl App {
                 // A fresh sync result replaces the last notice, which would otherwise outrank every account line.
                 self.notice = None;
                 self.refresh(index);
+                // The folder warnings read what the stores hold, which a sync changes.
+                self.rules.warnings =
+                    rules::warnings(&self.paths.rules_file(), &self.rules.rules, &self.accounts);
             }
             Event::ActionDone {
                 folder, results, ..
@@ -1486,16 +1485,9 @@ impl App {
                 }
             }
             UiAction::SetOpenAtLogin(on) => {
-                let (done, answer) = mpsc::channel();
-                let (paths, set, wake) = (
-                    self.paths.clone(),
-                    self.set_open_at_login,
-                    self.wake.clone(),
-                );
-                std::thread::spawn(move || {
-                    let _ = done.send(set(&paths, on));
-                    wake();
-                });
+                let (paths, set) = (self.paths.clone(), self.set_open_at_login);
+                let answer =
+                    worker::oneshot("open-at-login", self.wake.clone(), move || set(&paths, on));
                 self.open_at_login = OpenAtLogin::Changing(on, answer);
             }
             UiAction::StartSearch => {
@@ -1554,6 +1546,19 @@ impl App {
                     body.show_text = !body.show_text;
                 }
             }
+            UiAction::ToggleOriginalColours => {
+                if self.offers_original_colours()
+                    && let Some(body) = self.body.as_mut()
+                {
+                    body.original_colours = !body.original_colours;
+                    self.restyle_html();
+                }
+            }
+            UiAction::HtmlDark(dark) if dark != self.html_dark => {
+                self.html_dark = dark;
+                self.restyle_html();
+            }
+            UiAction::HtmlDark(_) => {}
             UiAction::PurgeTrash => self.purge_trash(),
             UiAction::ApplyRule(name) => self.apply_rule(&name),
             UiAction::ConfirmApplyRule => {
@@ -1838,10 +1843,10 @@ impl App {
         let Some(loading) = &self.list_loading else {
             return;
         };
-        let loaded = match loading.answer.try_recv() {
-            Err(TryRecvError::Empty) => return,
-            Ok(loaded) => Some(loaded),
-            Err(TryRecvError::Disconnected) => {
+        let loaded = match worker::poll(&loading.answer) {
+            None => return,
+            Some(Ok(loaded)) => Some(loaded),
+            Some(Err(Stopped)) => {
                 log::warn!("the list reload stopped; the rows stay as they were");
                 None
             }
@@ -2301,16 +2306,14 @@ impl App {
         let Some(saving) = &self.saving_as else {
             return;
         };
-        let note = match saving.answer.try_recv() {
-            Err(TryRecvError::Empty) => return,
-            Ok(Ok(None)) => None,
-            Ok(Ok(Some(path))) => Some(saved_note(Some(
+        let note = match worker::poll(&saving.answer) {
+            None => return,
+            Some(Ok(Ok(None))) => None,
+            Some(Ok(Ok(Some(path)))) => Some(saved_note(Some(
                 message::write_chosen(&path, &saving.bytes).map(|()| path),
             ))),
-            Ok(Err(e)) => Some(format!("Could not save: {e:#}")),
-            Err(TryRecvError::Disconnected) => {
-                Some("Could not save: the save dialog stopped".into())
-            }
+            Some(Ok(Err(e))) => Some(format!("Could not save: {e:#}")),
+            Some(Err(Stopped)) => Some("Could not save: the save dialog stopped".into()),
         };
         if let Some(note) = note
             && let Some(body) = &mut self.body
@@ -2330,12 +2333,8 @@ impl App {
             .and_then(|m| unsubscribe::method(&m.headers));
         match method {
             Some(Method::OneClick(url)) => {
-                let (done, answer) = mpsc::channel();
-                let (post, wake) = (self.post_unsubscribe, self.wake.clone());
-                std::thread::spawn(move || {
-                    let _ = done.send(post(&url));
-                    wake();
-                });
+                let post = self.post_unsubscribe;
+                let answer = worker::oneshot("unsubscribe", self.wake.clone(), move || post(&url));
                 body.saved = Some("Unsubscribing…".into());
                 self.unsubscribing = Some(Unsubscribing {
                     account: body.account,
@@ -2360,13 +2359,11 @@ impl App {
         else {
             return;
         };
-        let note = match answer.try_recv() {
-            Err(TryRecvError::Empty) => return,
-            Ok(Ok(())) => "Unsubscribed: the sender's server accepted it.".to_string(),
-            Ok(Err(e)) => format!("Could not unsubscribe: {e}"),
-            Err(TryRecvError::Disconnected) => {
-                "Could not unsubscribe: the request stopped".to_string()
-            }
+        let note = match worker::poll(answer) {
+            None => return,
+            Some(Ok(Ok(()))) => "Unsubscribed: the sender's server accepted it.".to_string(),
+            Some(Ok(Err(e))) => format!("Could not unsubscribe: {e}"),
+            Some(Err(Stopped)) => "Could not unsubscribe: the request stopped".to_string(),
         };
         if let Some(body) = &mut self.body
             && body.account == *account
@@ -2485,6 +2482,7 @@ impl App {
 
     /// Sends the shown message's HTML to the render thread, at `width` points and `scale`.
     fn lay_out(&mut self, scale: f32, width: f32) {
+        let dark = self.html_dark_page();
         let Some(body) = self.body.as_mut() else {
             return;
         };
@@ -2499,6 +2497,7 @@ impl App {
             .map(|view| view.fetched.clone())
             .unwrap_or_default();
         let load = html::Load {
+            dark,
             fetched,
             generation,
             html: source.html.clone(),
@@ -2511,12 +2510,53 @@ impl App {
                 view.generation = generation;
                 view.sent = (scale, width);
                 view.wanted = None;
+                view.dark = dark;
             }
-            None => body.html_view = Some(HtmlState::new(generation, scale, width)),
+            None => {
+                let mut view = HtmlState::new(generation, scale, width);
+                view.dark = dark;
+                body.html_view = Some(view);
+            }
         }
         self.renderer
             .get_or_insert_with(|| Renderer::start(self.wake.clone()))
             .send(html::Request::Load(load));
+    }
+
+    /// Whether HTML mail may be adapted to the dark theme: the window is dark and `[ui] html_colours` allows it.
+    pub(crate) fn adapts_html(&self) -> bool {
+        self.html_dark && self.html_colours == HtmlColours::Adapt
+    }
+
+    /// Whether "Show original colours" applies: the shown message's HTML is on screen and would be adapted.
+    pub(crate) fn offers_original_colours(&self) -> bool {
+        self.adapts_html() && self.body.as_ref().is_some_and(BodyState::shows_html)
+    }
+
+    /// Whether the shown message's HTML is styled dark: adapted, unless the user asked for its original colours.
+    pub(crate) fn html_dark_page(&self) -> bool {
+        self.adapts_html() && !self.body.as_ref().is_some_and(|b| b.original_colours)
+    }
+
+    /// Styles the laid-out page again when the theme or the colours choice changed; the render thread keeps the
+    /// parsed document, and answers with a layout under a new generation.
+    fn restyle_html(&mut self) {
+        let dark = self.html_dark_page();
+        let Some(view) = self.body.as_mut().and_then(|b| b.html_view.as_mut()) else {
+            return;
+        };
+        if view.dark == dark {
+            return;
+        }
+        self.html_generation += 1;
+        view.generation = self.html_generation;
+        view.dark = dark;
+        self.renderer
+            .get_or_insert_with(|| Renderer::start(self.wake.clone()))
+            .send(html::Request::Restyle {
+                generation: view.generation,
+                dark,
+            });
     }
 
     /// Starts downloading what the shown page asked for; the tag is a fresh layout number, unique to this request.
@@ -2772,11 +2812,8 @@ impl App {
             self.rules_changed();
         } else if self.config_dir_watch.changed() {
             // A sync tool's conflicting copy appears beside rules.toml without changing it.
-            self.rules.warnings = rule_file::warnings(
-                &self.paths.rules_file(),
-                &self.rules.rules,
-                &rule_file::account_folders(&self.paths, &account_names(&self.accounts)),
-            );
+            self.rules.warnings =
+                rules::warnings(&self.paths.rules_file(), &self.rules.rules, &self.accounts);
         }
         let saving = self
             .account_form
@@ -2816,11 +2853,11 @@ impl App {
                 return;
             };
             let Some(answer) = &form.saving else { return };
-            let step = match answer.try_recv() {
-                Err(TryRecvError::Empty) => return,
-                Ok(step) => step,
-                Err(TryRecvError::Disconnected) => account::Step::Refused(account::STOPPED.into()),
+            let Some(step) = worker::poll(answer) else {
+                return;
             };
+            let step =
+                step.unwrap_or_else(|Stopped| account::Step::Refused(account::STOPPED.into()));
             match step {
                 account::Step::Tested => form.testing = false,
                 account::Step::Saved(account) => return self.account_added(account),
@@ -3037,7 +3074,7 @@ impl App {
         self.rules = RulesState::load(
             &self.paths.rules_file(),
             std::mem::take(&mut self.rules.rules),
-            &rule_file::account_folders(&self.paths, &account_names(&self.accounts)),
+            &self.accounts,
         );
         let on_disk = self.rule_draft_opened.as_ref().and_then(|opened| {
             let name = opened.original.as_deref()?;
@@ -3379,7 +3416,7 @@ pub(crate) fn launch(target: &std::ffi::OsStr, text: bool) -> std::io::Result<()
         .arg(target)
         .spawn()?;
     // The target is not logged: a link from a message can carry a token.
-    std::thread::spawn(move || match child.wait() {
+    worker::spawn("opener-wait", move || match child.wait() {
         Ok(status) if !status.success() => log::warn!("{opener}: {status}"),
         Ok(_) => {}
         Err(e) => log::warn!("{opener}: {e}"),
@@ -3403,10 +3440,11 @@ pub(crate) fn step(index: usize, delta: isize, len: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
-    use std::time::{Duration, Instant};
+    use std::sync::mpsc;
+    use std::time::Duration;
 
     use super::*;
-    use crate::test_support::{Driver, Fixture, Wires, command, message, unread};
+    use crate::test_support::{Driver, Fixture, Wires, command, message, synced, unread, work};
     use postvak_core::daemon::Client;
     use postvak_core::daemon::wire::AccountStatus;
     use postvak_core::rules::Action;
@@ -3416,10 +3454,6 @@ mod tests {
         for &uid in uids {
             fx.add("work", message("INBOX", uid, &format!("subject {uid}")));
         }
-    }
-
-    fn apply(uids: &[u32], action: Action) -> (String, Command) {
-        command("work", "INBOX", uids, action)
     }
 
     fn done(account: &str, results: Vec<(u32, Result<usize, String>)>, request: u64) -> Event {
@@ -3437,25 +3471,6 @@ mod tests {
             request,
             message: message.into(),
         }
-    }
-
-    /// Sends the daemon's events and ticks so the app takes them.
-    fn receive(driver: &mut Driver, wires: &Wires, events: impl IntoIterator<Item = Event>) {
-        for event in events {
-            wires.events.send(event).unwrap();
-        }
-        driver.tick();
-    }
-
-    /// Ticks, with the clock at `at`, until `done` holds or 5 s of real time passed; for answers from other threads.
-    fn tick_until(driver: &mut Driver, at: f64, done: impl Fn(&App) -> bool) {
-        driver.at(at);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !done(&driver.app) && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-            driver.tick();
-        }
-        assert!(done(&driver.app), "timed out");
     }
 
     fn inbox_unread(driver: &Driver) -> Option<u32> {
@@ -3574,7 +3589,7 @@ mod tests {
         inbox(&fx, &[1, 2, 3]);
         let (mut driver, wires) = fx.driver();
         driver.press("e");
-        assert_eq!(wires.sent(), [apply(&[3], Action::Archive)]);
+        assert_eq!(wires.sent(), [work("INBOX", &[3], Action::Archive)]);
         assert_eq!(driver.uids(), [2, 1]);
         assert_eq!(driver.app.list.rows[driver.app.list.cursor].uid, 2);
         assert!(driver.status()[0].ends_with(" · 1 queued"));
@@ -3596,7 +3611,7 @@ mod tests {
         assert_eq!(
             wires.sent(),
             [
-                apply(&[1], Action::Junk),
+                work("INBOX", &[1], Action::Junk),
                 command("work", "Junk", &[2], Action::NotJunk)
             ]
         );
@@ -3665,7 +3680,7 @@ mod tests {
         }
         let (mut driver, wires) = fx.driver();
         driver.press("e");
-        assert_eq!(wires.sent(), [apply(&[4, 5], Action::Archive)]);
+        assert_eq!(wires.sent(), [work("INBOX", &[4, 5], Action::Archive)]);
     }
 
     #[test]
@@ -3684,7 +3699,7 @@ mod tests {
         inbox(&fx, &[1, 2, 3]);
         let (mut driver, wires) = fx.driver();
         driver.press("x j x #");
-        assert_eq!(wires.sent(), [apply(&[2, 3], Action::Trash)]);
+        assert_eq!(wires.sent(), [work("INBOX", &[2, 3], Action::Trash)]);
         assert_eq!(driver.uids(), [1]);
         assert!(driver.app.list.marked.is_empty());
     }
@@ -3698,7 +3713,7 @@ mod tests {
         driver.apply(UiAction::ExtendSelection(3));
         assert_eq!(driver.app.list.cursor, 3);
         driver.press("#");
-        assert_eq!(wires.sent(), [apply(&[2, 3, 4], Action::Trash)]);
+        assert_eq!(wires.sent(), [work("INBOX", &[2, 3, 4], Action::Trash)]);
     }
 
     #[test]
@@ -3712,7 +3727,7 @@ mod tests {
         driver.apply(UiAction::ToggleRowMark(1));
         driver.apply(UiAction::ToggleRowMark(1));
         driver.press("e");
-        assert_eq!(wires.sent(), [apply(&[1, 3], Action::Archive)]);
+        assert_eq!(wires.sent(), [work("INBOX", &[1, 3], Action::Archive)]);
     }
 
     #[test]
@@ -3721,7 +3736,7 @@ mod tests {
         inbox(&fx, &[1, 2, 3]);
         let (mut driver, wires) = fx.driver();
         driver.press("ctrl+a e");
-        assert_eq!(wires.sent(), [apply(&[1, 2, 3], Action::Archive)]);
+        assert_eq!(wires.sent(), [work("INBOX", &[1, 2, 3], Action::Archive)]);
     }
 
     #[test]
@@ -3744,11 +3759,7 @@ mod tests {
             query: query.into(),
             hits: vec![("INBOX".into(), uid)],
         };
-        receive(
-            &mut driver,
-            &wires,
-            [found("old query", 1), found("zebra", 2)],
-        );
+        driver.receive(&wires, [found("old query", 1), found("zebra", 2)]);
         assert_eq!(driver.uids(), [2]);
         assert!(!list::results(&driver.app).contains("searching the server"));
         driver.press("escape escape");
@@ -3787,7 +3798,7 @@ mod tests {
         let (mut driver, wires) = fx.driver();
         driver.press("e");
         let failed = done("work", vec![(3, Err("NO [SERVERBUG] try later".into()))], 0);
-        receive(&mut driver, &wires, [failed]);
+        driver.receive(&wires, [failed]);
         assert_eq!(driver.uids(), [3, 2, 1]);
         assert_eq!(
             driver.status()[0],
@@ -3809,21 +3820,11 @@ mod tests {
             requests: vec![],
             errors: vec![],
         };
-        receive(&mut driver, &wires, [synced]);
+        driver.receive(&wires, [synced]);
         assert_eq!(driver.uids(), [2, 1]);
         fx.store("work").remove_message("INBOX", 3).unwrap();
-        receive(&mut driver, &wires, [done("work", vec![(3, Ok(1))], 0)]);
+        driver.receive(&wires, [done("work", vec![(3, Ok(1))], 0)]);
         assert_eq!(driver.uids(), [2, 1]);
-    }
-
-    fn synced() -> Event {
-        Event::Synced {
-            account: "work".into(),
-            new_messages: 0,
-            actions: 0,
-            requests: vec![],
-            errors: vec![],
-        }
     }
 
     /// A held list load's gate: it says when it has read the store, then waits to be let go.
@@ -3883,11 +3884,12 @@ mod tests {
         driver.app.load_list = held;
         let release = hold(&GATES);
         fx.add("work", message("INBOX", 4, "subject 4"));
-        receive(&mut driver, &wires, [synced()]);
+        driver.receive(&wires, [synced("work", 0)]);
         assert!(driver.app.list_loading.is_some());
         assert_eq!(driver.uids(), [3, 2, 1], "the frame does not wait");
         release.release();
-        tick_until(&mut driver, 0.0, |app| app.list_loading.is_none());
+        driver.at(0.0);
+        driver.tick_until(|app| app.list_loading.is_none());
         assert_eq!(driver.uids(), [4, 3, 2, 1]);
     }
 
@@ -3901,21 +3903,23 @@ mod tests {
         driver.app.load_list = held;
         let first = hold(&GATES);
         let second = hold(&GATES);
-        receive(&mut driver, &wires, [synced()]);
+        driver.receive(&wires, [synced("work", 0)]);
         let started = driver.app.list_generation;
         first.wait_read();
         fx.add("work", message("INBOX", 3, "subject 3"));
-        receive(&mut driver, &wires, [synced()]);
+        driver.receive(&wires, [synced("work", 0)]);
         assert!(driver.app.list_again, "the second waits for the first");
         first.release();
-        tick_until(&mut driver, 0.0, |app| app.list_applied == started);
+        driver.at(0.0);
+        driver.tick_until(|app| app.list_applied == started);
         assert_eq!(
             driver.uids(),
             [2, 1],
             "the first read before message 3 came"
         );
         second.release();
-        tick_until(&mut driver, 0.0, |app| app.list_loading.is_none());
+        driver.at(0.0);
+        driver.tick_until(|app| app.list_loading.is_none());
         assert_eq!(driver.uids(), [3, 2, 1]);
     }
 
@@ -3932,21 +3936,23 @@ mod tests {
         driver.press("e");
         assert_eq!(driver.uids(), [2, 1]);
         // This reload reads the store while message 3 is still in it.
-        receive(&mut driver, &wires, [synced()]);
+        driver.receive(&wires, [synced("work", 0)]);
         let started = driver.app.list_generation;
         stale.wait_read();
         fx.store("work").remove_message("INBOX", 3).unwrap();
-        receive(&mut driver, &wires, [done("work", vec![(3, Ok(1))], 0)]);
+        driver.receive(&wires, [done("work", vec![(3, Ok(1))], 0)]);
         assert_eq!(driver.uids(), [2, 1]);
         stale.release();
-        tick_until(&mut driver, 0.0, |app| app.list_applied == started);
+        driver.at(0.0);
+        driver.tick_until(|app| app.list_applied == started);
         assert_eq!(
             driver.uids(),
             [2, 1],
             "the archive settles until a newer load"
         );
         fresh.release();
-        tick_until(&mut driver, 0.0, |app| app.accounts[0].settling.is_empty());
+        driver.at(0.0);
+        driver.tick_until(|app| app.accounts[0].settling.is_empty());
         assert_eq!(driver.uids(), [2, 1]);
         assert!(driver.app.list_loading.is_none());
     }
@@ -3961,10 +3967,10 @@ mod tests {
         driver.app.load_list = held;
         let release = hold(&GATES);
         driver.press("e");
-        receive(&mut driver, &wires, [synced()]);
+        driver.receive(&wires, [synced("work", 0)]);
         assert_eq!(driver.uids(), [2, 1]);
         let failed = done("work", vec![(3, Err("NO [SERVERBUG] try later".into()))], 0);
-        receive(&mut driver, &wires, [failed]);
+        driver.receive(&wires, [failed]);
         assert_eq!(
             driver.uids(),
             [3, 2, 1],
@@ -3972,7 +3978,8 @@ mod tests {
         );
         assert!(driver.app.accounts[0].settling.is_empty());
         release.release();
-        tick_until(&mut driver, 0.0, |app| app.list_loading.is_none());
+        driver.at(0.0);
+        driver.tick_until(|app| app.list_loading.is_none());
         assert_eq!(driver.uids(), [3, 2, 1]);
     }
 
@@ -3985,15 +3992,16 @@ mod tests {
         driver.app.list_budget = Duration::ZERO;
         driver.app.load_list = held;
         let release = hold(&GATES);
-        receive(&mut driver, &wires, [synced()]);
+        driver.receive(&wires, [synced("work", 0)]);
         // Rows the store does not hold, so a rebuild from the loaded threads would show.
         driver.app.list.rows.truncate(1);
-        receive(&mut driver, &wires, [synced()]);
+        driver.receive(&wires, [synced("work", 0)]);
         assert_eq!(driver.uids(), [3], "nothing changed the edits");
-        receive(&mut driver, &wires, [refused("work", 0, "NO")]);
+        driver.receive(&wires, [refused("work", 0, "NO")]);
         assert_eq!(driver.uids(), [3, 2, 1], "a refusal drops every edit");
         release.release();
-        tick_until(&mut driver, 0.0, |app| app.list_loading.is_none());
+        driver.at(0.0);
+        driver.tick_until(|app| app.list_loading.is_none());
     }
 
     /// #263: clicking a folder while typing a search removed the field without unfocusing it, so letter keys stayed
@@ -4018,7 +4026,7 @@ mod tests {
             folder: "INBOX".into(),
         }));
         driver.press("e");
-        assert_eq!(wires.sent(), [apply(&[3], Action::Archive)]);
+        assert_eq!(wires.sent(), [work("INBOX", &[3], Action::Archive)]);
     }
 
     /// #263: the menu's Search closes the move picker, as choosing a folder does.
@@ -4061,9 +4069,8 @@ mod tests {
         );
         first.release();
         second.release();
-        tick_until(&mut driver, 0.0, |app| {
-            app.list_loading.is_none() && !app.view_dirty && !app.list_again
-        });
+        driver.at(0.0);
+        driver.tick_until(|app| app.list_loading.is_none() && !app.view_dirty && !app.list_again);
         assert_eq!(driver.uids(), [2]);
     }
 
@@ -4093,7 +4100,7 @@ mod tests {
         driver.app.list_budget = Duration::ZERO;
         driver.app.load_list = held;
         let release = hold(&GATES);
-        receive(&mut driver, &wires, [synced()]);
+        driver.receive(&wires, [synced("work", 0)]);
         release.wait_read();
         fx.store("work").remove_message("INBOX", 3).unwrap();
         driver.app.reload_view();
@@ -4124,7 +4131,7 @@ mod tests {
         driver.press("u s");
         let row = &driver.app.list.rows[0];
         assert!(!row.unread && row.flagged);
-        receive(&mut driver, &wires, [done("work", vec![(1, Ok(1))], 0)]);
+        driver.receive(&wires, [done("work", vec![(1, Ok(1))], 0)]);
         assert!(driver.app.list.rows[0].flagged);
         assert_eq!(driver.app.accounts[0].queued, 1);
     }
@@ -4256,7 +4263,10 @@ mod tests {
         driver.press("s");
         assert_eq!(
             wires.sent(),
-            [apply(&[1], Action::MarkRead), apply(&[1], Action::Flag)]
+            [
+                work("INBOX", &[1], Action::MarkRead),
+                work("INBOX", &[1], Action::Flag)
+            ]
         );
         assert!(driver.app.list.rows[0].flagged);
     }
@@ -4273,7 +4283,10 @@ mod tests {
         driver.press("rec");
         assert_eq!(driver.app.move_targets(), ["Receipts"]);
         driver.press("enter");
-        assert_eq!(wires.sent(), [apply(&[1], Action::Move("Receipts".into()))]);
+        assert_eq!(
+            wires.sent(),
+            [work("INBOX", &[1], Action::Move("Receipts".into()))]
+        );
         assert!(driver.app.move_picker.is_none());
     }
 
@@ -4289,20 +4302,6 @@ mod tests {
                 ("work".to_string(), Command::SyncNow)
             ]
         );
-    }
-
-    #[test]
-    fn backspace_deletes_on_macos_only() {
-        let fx = Fixture::new(&["work"]);
-        inbox(&fx, &[1]);
-        let (mut driver, wires) = fx.driver();
-        driver.press("backspace");
-        let expected = if cfg!(target_os = "macos") {
-            vec![apply(&[1], Action::Trash)]
-        } else {
-            Vec::new()
-        };
-        assert_eq!(wires.sent(), expected);
     }
 
     #[test]
@@ -4346,7 +4345,8 @@ mod tests {
         driver.press("e");
         assert_eq!(driver.status()[0], format!("work: {DAEMON_LOST}"));
         fx.add("work", unread("INBOX", 2, "while away"));
-        tick_until(&mut driver, 10.0, |app| !app.daemon_lost);
+        driver.at(10.0);
+        driver.tick_until(|app| !app.daemon_lost);
         driver.tick();
         assert!(
             driver
@@ -4368,7 +4368,7 @@ mod tests {
             .unwrap()
             .try_iter()
             .collect();
-        assert_eq!(sent, [apply(&[1], Action::Archive)]);
+        assert_eq!(sent, [work("INBOX", &[1], Action::Archive)]);
     }
 
     #[test]
@@ -4386,7 +4386,8 @@ mod tests {
         driver.tick();
         let newer =
             "the daemon is version 9.0.0, newer than this postvak (0.1.0); restart this program";
-        tick_until(&mut driver, 10.0, |app| app.error.as_deref() == Some(newer));
+        driver.at(10.0);
+        driver.tick_until(|app| app.error.as_deref() == Some(newer));
         assert!(driver.app.daemon_lost);
         driver.at(20.0);
         assert!(
@@ -4421,7 +4422,7 @@ mod tests {
         let fx = Fixture::new(&["work"]);
         let (mut driver, wires) = fx.driver();
         let reason = "work is offline (x); retrying at 10:00";
-        receive(&mut driver, &wires, [refused("work", 0, reason)]);
+        driver.receive(&wires, [refused("work", 0, reason)]);
         assert_eq!(driver.status()[0], format!("work: {reason}"));
     }
 
@@ -4435,7 +4436,7 @@ mod tests {
             done("work", vec![(3, Ok(1))], 7),
             refused("work", 8, "no rule named 'x'"),
         ];
-        receive(&mut driver, &wires, foreign);
+        driver.receive(&wires, foreign);
         assert_eq!(driver.uids(), [2, 1]);
         assert_eq!(driver.app.accounts[0].queued, 1);
         assert!(
@@ -4454,7 +4455,7 @@ mod tests {
         driver.press("e");
         assert_eq!(driver.uids(), [2, 1]);
         let reason = "work is offline (x); retrying at 10:00";
-        receive(&mut driver, &wires, [refused("work", 0, reason)]);
+        driver.receive(&wires, [refused("work", 0, reason)]);
         assert_eq!(driver.uids(), [3, 2, 1]);
         assert_eq!(driver.app.accounts[0].queued, 0);
         assert!(driver.status().iter().all(|line| !line.contains("queued")));
@@ -4474,7 +4475,8 @@ mod tests {
         };
         update::save(&fx.paths.update_check(), &cached).unwrap();
         let (mut driver, _wires) = fx.driver();
-        tick_until(&mut driver, 0.0, update_done);
+        driver.at(0.0);
+        driver.tick_until(update_done);
         assert_eq!(driver.app.newer_release(), Some("999.0.0"));
     }
 
@@ -4483,7 +4485,8 @@ mod tests {
         let fx = Fixture::new(&["work"]);
         fx.append_config("[ui]\ncheck_updates = true\n");
         let (mut driver, _wires) = fx.driver();
-        tick_until(&mut driver, 0.0, update_done);
+        driver.at(0.0);
+        driver.tick_until(update_done);
         assert_eq!(driver.app.newer_release(), None);
         assert!(update::load(&fx.paths.update_check()).is_some());
     }
@@ -4613,7 +4616,7 @@ mod tests {
         assert_eq!(wires.sent().len(), 2);
         assert_eq!(driver.ids(), [(1, 1)]);
         let reason = "home is offline (x); retrying at 10:00";
-        receive(&mut driver, &wires, [refused("home", 0, reason)]);
+        driver.receive(&wires, [refused("home", 0, reason)]);
         assert_eq!(driver.ids(), [(0, 1), (1, 1)]);
         assert_eq!(driver.app.accounts[1].queued, 1);
     }

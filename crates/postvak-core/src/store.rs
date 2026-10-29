@@ -10,30 +10,91 @@ use crate::paths::Paths;
 use crate::search::{self, Candidate, Plan, Query, Scope, Vocab};
 
 /// In order; a new directory under `migrations/` needs its line here too.
-const MIGRATIONS: &[M<'static>] = &[
-    M::up(include_str!("../migrations/001-initial/up.sql")),
-    M::up(include_str!("../migrations/002-initial-uid-next/up.sql")),
-    M::up(include_str!("../migrations/003-notified-uid/up.sql")),
-    M::up(include_str!(
-        "../migrations/004-drop-message-id-index/up.sql"
-    )),
-    M::up(include_str!("../migrations/005-folder-delimiter/up.sql")),
-    M::up(include_str!("../migrations/006-flag-sync/up.sql")),
-    M::up(include_str!("../migrations/007-rule-definition/up.sql")),
-    M::up(include_str!("../migrations/008-has-attachment/up.sql")),
-    M::up(include_str!("../migrations/009-folder-thread-index/up.sql")),
-    M::up(include_str!("../migrations/010-unread-index/up.sql")),
-    M::up(include_str!("../migrations/011-search/up.sql")),
-    M::up(include_str!("../migrations/012-rule-moves/up.sql")),
-    M::up(include_str!("../migrations/013-backlog-index/up.sql")),
-    M::up(include_str!("../migrations/014-newest-index/up.sql")),
-    M::up(include_str!(
-        "../migrations/015-attachment-in-thread-index/up.sql"
-    )),
-    M::up(include_str!("../migrations/016-folder-uid-next/up.sql")),
-    M::up(include_str!("../migrations/017-folder-list/up.sql")),
-    M::up(include_str!("../migrations/018-noselect-folders/up.sql")),
-];
+fn migration_list() -> Vec<M<'static>> {
+    vec![
+        M::up(include_str!("../migrations/001-initial/up.sql")),
+        M::up(include_str!("../migrations/002-initial-uid-next/up.sql")),
+        M::up(include_str!("../migrations/003-notified-uid/up.sql")),
+        M::up(include_str!(
+            "../migrations/004-drop-message-id-index/up.sql"
+        )),
+        M::up(include_str!("../migrations/005-folder-delimiter/up.sql")),
+        M::up(include_str!("../migrations/006-flag-sync/up.sql")),
+        M::up(include_str!("../migrations/007-rule-definition/up.sql")),
+        M::up(include_str!("../migrations/008-has-attachment/up.sql")),
+        M::up(include_str!("../migrations/009-folder-thread-index/up.sql")),
+        M::up(include_str!("../migrations/010-unread-index/up.sql")),
+        M::up(include_str!("../migrations/011-search/up.sql")),
+        M::up(include_str!("../migrations/012-rule-moves/up.sql")),
+        M::up(include_str!("../migrations/013-backlog-index/up.sql")),
+        M::up(include_str!("../migrations/014-newest-index/up.sql")),
+        M::up(include_str!(
+            "../migrations/015-attachment-in-thread-index/up.sql"
+        )),
+        M::up(include_str!("../migrations/016-folder-uid-next/up.sql")),
+        M::up_with_hook(
+            include_str!("../migrations/017-decode-folder-names/up.sql"),
+            decode_folder_names,
+        ),
+        M::up(include_str!("../migrations/018-folder-list/up.sql")),
+        M::up(include_str!("../migrations/019-noselect-folders/up.sql")),
+    ]
+}
+
+/// Renames the folders stored under their modified UTF-7 wire name (`Caf&AOk-`) to the UTF-8 name `ImapOps` now
+/// gives them (`Café`), with their messages and rule history, so they keep their state instead of syncing again. A
+/// name that is not exactly what the encoder writes stays: it was sent raw, and the server knows it so. A placeholder
+/// a rule move left under the UTF-8 name (it sent the raw name, which the server refused) gives way. A synced folder
+/// under the UTF-8 name, which only a server listing both spellings has, stays; the encoded row then goes with its
+/// messages and move records, its rule history keeps the wire name, and the next sync fetches what the server still
+/// lists.
+fn decode_folder_names(tx: &rusqlite::Transaction) -> rusqlite_migration::HookResult {
+    let names: Vec<String> = tx
+        .prepare("SELECT name FROM folders")?
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    // The messages follow their folder's new name before the commit checks their reference to it.
+    tx.pragma_update(None, "defer_foreign_keys", "ON")?;
+    for wire in names {
+        let Some(name) = crate::mail_ops::utf7::decode(&wire).filter(|name| *name != wire) else {
+            continue;
+        };
+        tx.execute(
+            "DELETE FROM folders WHERE name = ?1 AND uidvalidity = 0",
+            params![name],
+        )?;
+        let taken: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM folders WHERE name = ?1)",
+            params![name],
+            |row| row.get(0),
+        )?;
+        if taken {
+            // The history stays under the wire name, the encoded folder's own: the listing keeps that folder apart
+            // from the raw one. Its move records go with its messages.
+            tx.execute("DELETE FROM messages WHERE folder = ?1", params![wire])?;
+            tx.execute("DELETE FROM folders WHERE name = ?1", params![wire])?;
+        } else {
+            tx.execute(
+                "UPDATE folders SET name = ?2 WHERE name = ?1",
+                params![wire, name],
+            )?;
+            tx.execute(
+                "UPDATE messages SET folder = ?2 WHERE folder = ?1",
+                params![wire, name],
+            )?;
+            tx.execute(
+                "UPDATE rule_log SET folder = ?2 WHERE folder = ?1",
+                params![wire, name],
+            )?;
+            tx.execute(
+                "UPDATE OR IGNORE rule_moves SET folder = ?2 WHERE folder = ?1",
+                params![wire, name],
+            )?;
+        }
+        tx.execute("DELETE FROM rule_moves WHERE folder = ?1", params![wire])?;
+    }
+    Ok(())
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -218,6 +279,28 @@ impl Filter {
     }
 }
 
+/// Where a newest-first page starts: the rows after this position, those whose `(internaldate, uid, folder)` sorts
+/// below it. `uid` is wider than a uid so a position can sit before or after every uid of one `internaldate`; a list
+/// of one folder compares `internaldate` and `uid` alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct After {
+    pub internaldate: i64,
+    pub uid: i64,
+    pub folder: String,
+}
+
+/// Where a page of one search continues in one account: after a position among the exact matches or the close ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resume<'a> {
+    Exact(&'a After),
+    /// `shown` when an earlier page showed this account's close matches: they keep showing even when exact matches
+    /// arrived since. Otherwise they show only while the exact tier is thin.
+    Close {
+        after: &'a After,
+        shown: bool,
+    },
+}
+
 const SUMMARY_COLUMNS: &str = "uid, COALESCE(from_addr, ''), COALESCE(to_addr, ''), COALESCE(subject, ''), internaldate, flags";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -272,15 +355,16 @@ const MESSAGE_COLUMNS: &str = "folder, uid, message_id, from_addr, to_addr, cc_a
 const BODILESS_COLUMNS: &str = "folder, uid, message_id, from_addr, to_addr, cc_addr, delivered_to, in_reply_to, refs, thread_id, subject, date, internaldate, flags, size, headers, NULL AS body_text, NULL AS attachment_names, NULL AS indexed_at";
 
 /// The SQL of one search tier: `?1` the FTS expression (NULL when empty), `?2` the folder (NULL for all), then the
-/// plan's parameters, the excluded expression when `exclude`, and the limit. The folder is its own condition only
-/// when there is one: through `?2 IS NULL OR folder = ?2` the planner cannot use the folder's index, and without a
-/// match to drive the join it would read every message.
+/// plan's parameters, the excluded expression when `exclude`, the position to start after when `after`, and the
+/// limit. The folder is its own condition only when there is one: through `?2 IS NULL OR folder = ?2` the planner
+/// cannot use the folder's index, and without a match to drive the join it would read every message.
 fn search_sql(
     expression: &str,
     exclude: bool,
     folder: Option<&str>,
     plan: &Plan,
     snippets: bool,
+    after: bool,
 ) -> String {
     // The body is column 6 of the FTS table; bm25 weighted on some columns is non-zero only when they matched.
     let hit_columns = if snippets {
@@ -320,10 +404,71 @@ fn search_sql(
         ));
         next += 1;
     }
+    if after {
+        sql.push_str(&format!(
+            " AND (messages.internaldate, messages.uid, messages.folder) < (?{next}, ?{}, ?{})",
+            next + 1,
+            next + 2
+        ));
+        next += 3;
+    }
+    // The folder decides between equal dates and uids in different folders, so a page ends at one place.
     sql.push_str(&format!(
-        " ORDER BY internaldate DESC, uid DESC LIMIT ?{next}"
+        " ORDER BY internaldate DESC, uid DESC, folder DESC LIMIT ?{next}"
     ));
     sql
+}
+
+/// The parameters of `search_sql`, in its order; a negative `limit` reads every row.
+fn tier_values(
+    expression: &str,
+    exclude: Option<&str>,
+    folder: Option<&str>,
+    plan: &Plan,
+    after: Option<&After>,
+    limit: i64,
+) -> Vec<rusqlite::types::Value> {
+    let mut values: Vec<rusqlite::types::Value> = vec![
+        (!expression.is_empty())
+            .then(|| expression.to_owned())
+            .into(),
+        folder.map(str::to_owned).into(),
+    ];
+    values.extend(plan.params.iter().cloned());
+    if let Some(exclude) = exclude {
+        values.push(exclude.to_owned().into());
+    }
+    if let Some(after) = after {
+        values.push(after.internaldate.into());
+        values.push(after.uid.into());
+        values.push(after.folder.clone().into());
+    }
+    values.push(limit.into());
+    values
+}
+
+/// One search, the same on every page of it: what `search_after` and `search_count` read.
+#[derive(Clone, Copy)]
+pub struct SearchRequest<'a> {
+    pub query: &'a Query,
+    pub scope: Scope,
+    /// Only this folder; None for every folder.
+    pub folder: Option<&'a str>,
+    /// Whether close matches may follow the exact ones.
+    pub close: bool,
+    /// Resolves `from:me` and `to:me`.
+    pub identity: Option<&'a Identity>,
+}
+
+impl SearchRequest<'_> {
+    fn plan(&self, store: &Store) -> Plan {
+        search::plan(
+            self.query,
+            self.scope,
+            self.close.then_some(store as &dyn Vocab),
+            self.identity,
+        )
+    }
 }
 
 /// The thread list of folder `?1`, at most `?2` threads, read from the covering index `messages_folder_thread`
@@ -353,7 +498,7 @@ fn backlog_sql() -> String {
 
 impl Store {
     pub fn migrations() -> Migrations<'static> {
-        Migrations::from_slice(MIGRATIONS)
+        Migrations::new(migration_list())
     }
 
     pub fn open(path: &Path) -> Result<Store, StoreError> {
@@ -656,13 +801,58 @@ impl Store {
         limit: u32,
         filter: Filter,
     ) -> Result<Vec<Message>, StoreError> {
-        self.query_messages(
+        self.messages_after(folder, limit, filter, None)
+    }
+
+    /// The messages in `folder` that `filter` keeps, newest first, at most `limit`; with `after`, only those after
+    /// that position. One folder's `internaldate` and `uid` order it, so `after.folder` plays no part.
+    pub fn messages_after(
+        &self,
+        folder: &str,
+        limit: u32,
+        filter: Filter,
+        after: Option<&After>,
+    ) -> Result<Vec<Message>, StoreError> {
+        let order = "ORDER BY internaldate DESC, uid DESC LIMIT ?2";
+        match after {
+            None => self.query_messages(
+                &format!("WHERE folder = ?1 AND {} {order}", filter.sql()),
+                params![folder, limit],
+            ),
+            Some(after) => self.query_messages(
+                &format!(
+                    "WHERE folder = ?1 AND {} AND (internaldate, uid) < (?3, ?4) {order}",
+                    filter.sql()
+                ),
+                params![folder, limit, after.internaldate, after.uid],
+            ),
+        }
+    }
+
+    /// How many messages in `folder` `filter` keeps.
+    pub fn count_messages(&self, folder: &str, filter: Filter) -> Result<u64, StoreError> {
+        let count: i64 = self.conn.query_row(
             &format!(
-                "WHERE folder = ?1 AND {} ORDER BY internaldate DESC, uid DESC LIMIT ?2",
+                "SELECT COUNT(*) FROM messages WHERE folder = ?1 AND {}",
                 filter.sql()
             ),
-            params![folder, limit],
-        )
+            params![folder],
+            |r| r.get(0),
+        )?;
+        Ok(u64::try_from(count).unwrap_or(0))
+    }
+
+    /// How many threads in `folder` have a member `filter` keeps.
+    pub fn count_threads(&self, folder: &str, filter: Filter) -> Result<u64, StoreError> {
+        let count: i64 = self.conn.query_row(
+            &format!(
+                "SELECT COUNT(*) FROM (SELECT 1 FROM messages WHERE folder = ?1 GROUP BY thread_id HAVING SUM({}) > 0)",
+                filter.sql()
+            ),
+            params![folder],
+            |r| r.get(0),
+        )?;
+        Ok(u64::try_from(count).unwrap_or(0))
     }
 
     /// `SELECT` every message column, then `tail`; the statement is cached, so a repeated `tail` is prepared once.
@@ -686,13 +876,38 @@ impl Store {
         limit: u32,
         filter: Filter,
     ) -> Result<Vec<Vec<Message>>, StoreError> {
+        self.threads_after(folder, limit, filter, None)
+    }
+
+    /// Like `threads`; with `after`, only the threads after that position, where a thread's `internaldate` is its
+    /// latest message's and its `uid` the highest of its members'. `after.folder` plays no part.
+    pub fn threads_after(
+        &self,
+        folder: &str,
+        limit: u32,
+        filter: Filter,
+        after: Option<&After>,
+    ) -> Result<Vec<Vec<Message>>, StoreError> {
         let ids: Vec<String> = {
+            let position = if after.is_some() {
+                " AND (MAX(internaldate), MAX(uid)) < (?3, ?4)"
+            } else {
+                " AND ?3 IS NULL AND ?4 IS NULL"
+            };
             let mut stmt = self.conn.prepare(&format!(
-                "SELECT thread_id FROM messages WHERE folder = ?1 GROUP BY thread_id HAVING SUM({}) > 0
+                "SELECT thread_id FROM messages WHERE folder = ?1 GROUP BY thread_id HAVING SUM({}) > 0{position}
                  ORDER BY MAX(internaldate) DESC, MAX(uid) DESC LIMIT ?2",
                 filter.sql()
             ))?;
-            let rows = stmt.query_map(params![folder, limit], |r| r.get(0))?;
+            let rows = stmt.query_map(
+                params![
+                    folder,
+                    limit,
+                    after.map(|a| a.internaldate),
+                    after.map(|a| a.uid)
+                ],
+                |r| r.get(0),
+            )?;
             rows.collect::<Result<_, _>>()?
         };
         ids.iter()
@@ -755,6 +970,33 @@ impl Store {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
+    /// The messages in `folder` that arrived at or after `after` and before `before`, newest first; with their body
+    /// text only when `with_body`, so sender statistics and rules coverage read no more than the rules they run need.
+    pub fn messages_between(
+        &self,
+        folder: &str,
+        after: Option<i64>,
+        before: Option<i64>,
+        with_body: bool,
+    ) -> Result<Vec<Message>, StoreError> {
+        let columns = if with_body {
+            MESSAGE_COLUMNS
+        } else {
+            BODILESS_COLUMNS
+        };
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT {columns} FROM messages WHERE folder = ?1 AND internaldate >= ?2 AND internaldate < ?3
+             ORDER BY internaldate DESC, uid DESC"
+        ))?;
+        let range = params![
+            folder,
+            after.unwrap_or(i64::MIN),
+            before.unwrap_or(i64::MAX)
+        ];
+        let rows = serde_rusqlite::from_rows::<Message>(stmt.query(range)?);
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
     /// The messages `query` matches, newest first, in `folder` or any folder, at most `limit`. `close` adds the
     /// close matches when the exact ones are few; `identity` resolves `from:me` and `to:me`. The plan's predicates
     /// follow the FTS match; their `?` parameters count on from the fixed ones, so the later placeholders are
@@ -768,36 +1010,134 @@ impl Store {
         close: bool,
         identity: Option<&Identity>,
     ) -> Result<Vec<Hit>, StoreError> {
-        let plan = search::plan(query, scope, close.then_some(self as &dyn Vocab), identity);
-        if plan.is_empty() {
+        let request = SearchRequest {
+            query,
+            scope,
+            folder,
+            close,
+            identity,
+        };
+        self.search_after(&request, limit, None)
+    }
+
+    /// Like `search`, as a page: the exact matches newest first, then the close ones newest first, and with `after`
+    /// only what follows that position in its tier. The close tier joins when the exact one, as a whole, holds
+    /// fewer than ten matches, and once a page showed it, it stays (see `Resume::Close`).
+    pub fn search_after(
+        &self,
+        request: &SearchRequest,
+        limit: u32,
+        after: Option<Resume>,
+    ) -> Result<Vec<Hit>, StoreError> {
+        let plan = request.plan(self);
+        if plan.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
-        let snippets = scope == Scope::All;
-        let mut hits = self.search_tier(
-            &plan.exact,
-            plan.exclude.as_deref(),
-            folder,
-            &plan,
-            limit,
-            Matched::Exact,
-            snippets,
-        )?;
+        let snippets = request.scope == Scope::All;
+        let mut hits = match after {
+            Some(Resume::Close { .. }) => Vec::new(),
+            Some(Resume::Exact(position)) => self.search_tier(
+                &plan.exact,
+                plan.exclude.as_deref(),
+                request.folder,
+                &plan,
+                Some(position),
+                i64::from(limit),
+                Matched::Exact,
+                snippets,
+            )?,
+            None => self.search_tier(
+                &plan.exact,
+                plan.exclude.as_deref(),
+                request.folder,
+                &plan,
+                None,
+                i64::from(limit),
+                Matched::Exact,
+                snippets,
+            )?,
+        };
+        let left = i64::from(limit) - i64::try_from(hits.len()).unwrap_or(i64::MAX);
         // The close tier only when the exact one is thin, and never a message the exact expression matches.
         if let Some(widened) = &plan.close
-            && hits.len() < CLOSE_MATCHES_BELOW
+            && left > 0
         {
-            let left = limit - hits.len() as u32;
-            hits.extend(self.search_tier(
-                widened,
-                Some(&plan.exact),
-                folder,
-                &plan,
-                left,
-                Matched::Close,
-                snippets,
-            )?);
+            // Without a position, a page that is not full holds every exact match. Close matches an earlier page
+            // showed keep showing, so mail that arrived since does not hide the rest.
+            let thin = match after {
+                None => hits.len() < CLOSE_MATCHES_BELOW,
+                Some(Resume::Close { shown: true, .. }) => true,
+                Some(_) => self.exact_is_thin(request, &plan)?,
+            };
+            if thin {
+                let position = match after {
+                    Some(Resume::Close { after, .. }) => Some(after),
+                    _ => None,
+                };
+                hits.extend(self.search_tier(
+                    widened,
+                    Some(&plan.exact),
+                    request.folder,
+                    &plan,
+                    position,
+                    left,
+                    Matched::Close,
+                    snippets,
+                )?);
+            }
         }
         Ok(hits)
+    }
+
+    /// How many messages the search finds, close matches included when they would show.
+    pub fn search_count(&self, request: &SearchRequest) -> Result<u64, StoreError> {
+        let plan = request.plan(self);
+        if plan.is_empty() {
+            return Ok(0);
+        }
+        let exact = self.count_tier(&plan.exact, plan.exclude.as_deref(), request.folder, &plan)?;
+        let close = match &plan.close {
+            Some(widened) if exact < CLOSE_MATCHES_BELOW as u64 => {
+                self.count_tier(widened, Some(&plan.exact), request.folder, &plan)?
+            }
+            _ => 0,
+        };
+        Ok(exact + close)
+    }
+
+    /// Whether the exact tier holds fewer than `CLOSE_MATCHES_BELOW` matches, read no further than that.
+    fn exact_is_thin(&self, request: &SearchRequest, plan: &Plan) -> Result<bool, StoreError> {
+        let first = self.search_tier(
+            &plan.exact,
+            plan.exclude.as_deref(),
+            request.folder,
+            plan,
+            None,
+            CLOSE_MATCHES_BELOW as i64,
+            Matched::Exact,
+            false,
+        )?;
+        Ok(first.len() < CLOSE_MATCHES_BELOW)
+    }
+
+    /// How many messages one tier matches.
+    fn count_tier(
+        &self,
+        expression: &str,
+        exclude: Option<&str>,
+        folder: Option<&str>,
+        plan: &Plan,
+    ) -> Result<u64, StoreError> {
+        let sql = format!(
+            "SELECT COUNT(*) FROM ({})",
+            search_sql(expression, exclude.is_some(), folder, plan, false, false)
+        );
+        let values = tier_values(expression, exclude, folder, plan, None, -1);
+        let count: i64 = self
+            .conn
+            .prepare_cached(&sql)?
+            .query_row(rusqlite::params_from_iter(values), |r| r.get(0))?;
+        Ok(u64::try_from(count).unwrap_or(0))
     }
 
     /// The messages `expression` matches and `exclude` does not, newest first, at most `limit`; an empty
@@ -811,22 +1151,20 @@ impl Store {
         exclude: Option<&str>,
         folder: Option<&str>,
         plan: &Plan,
-        limit: u32,
+        after: Option<&After>,
+        limit: i64,
         matched: Matched,
         snippets: bool,
     ) -> Result<Vec<Hit>, StoreError> {
-        let sql = search_sql(expression, exclude.is_some(), folder, plan, snippets);
-        let mut values: Vec<rusqlite::types::Value> = vec![
-            (!expression.is_empty())
-                .then(|| expression.to_owned())
-                .into(),
-            folder.map(str::to_owned).into(),
-        ];
-        values.extend(plan.params.iter().cloned());
-        if let Some(exclude) = exclude {
-            values.push(exclude.to_owned().into());
-        }
-        values.push(limit.into());
+        let sql = search_sql(
+            expression,
+            exclude.is_some(),
+            folder,
+            plan,
+            snippets,
+            after.is_some(),
+        );
+        let values = tier_values(expression, exclude, folder, plan, after, limit);
         let mut stmt = self.conn.prepare_cached(&sql)?;
         let mut rows = stmt.query(rusqlite::params_from_iter(values))?;
         let mut hits = Vec::new();
@@ -1237,7 +1575,7 @@ mod tests {
     #[test]
     fn every_migration_directory_is_listed() {
         let dirs = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations")).unwrap();
-        assert_eq!(dirs.count(), MIGRATIONS.len());
+        assert_eq!(dirs.count(), migration_list().len());
     }
 
     #[test]
@@ -1506,6 +1844,87 @@ mod tests {
             "the rebuilt index folds diacritics"
         );
         fts_integrity_check(&s);
+    }
+
+    #[test]
+    fn migration_017_decodes_folder_names_stored_in_modified_utf7() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mail.db");
+        {
+            let mut conn = Connection::open(&path).unwrap();
+            Store::migrations().to_version(&mut conn, 16).unwrap();
+            conn.execute_batch(
+                "INSERT INTO folders (name, uidvalidity, last_uid, rules_uid, delimiter) VALUES
+                     ('INBOX', 1, 1, 1, '/'), ('Archief/&AMkA6Q-n', 7, 3, 2, '/'), ('R&-D', 8, 1, 1, '/'),
+                     ('Caf&AOk-', 9, 1, 1, '/'), ('Caf\u{e9}', 0, 0, 0, NULL),
+                     ('Re&AOc-us', 4, 1, 1, '/'), ('Re\u{e7}us', 5, 1, 1, '/'),
+                     ('Sloppy&AOk-&AOk-', 6, 1, 1, '/');
+                 INSERT INTO messages (folder, uid, thread_id, subject, internaldate, flags, headers) VALUES
+                     ('Archief/&AMkA6Q-n', 3, 't', 'kept', 10, '', X''),
+                     ('Caf&AOk-', 1, 't2', 'cafe', 10, '', X''),
+                     ('Re&AOc-us', 1, 't3', 'dropped', 10, '', X''),
+                     ('Re\u{e7}us', 1, 't4', 'synced', 10, '', X'');
+                 INSERT INTO rule_log (at, rule_name, folder, uid, action) VALUES
+                     (1, 'r', 'Archief/&AMkA6Q-n', 3, 'flag'), (2, 'r', 'Re&AOc-us', 1, 'flag');
+                 INSERT INTO rule_moves (folder, message_id, internaldate) VALUES
+                     ('R&-D', '<a@x>', 10), ('Re&AOc-us', '<b@x>', 10);",
+            )
+            .unwrap();
+        }
+        let s = Store::open(&path).unwrap();
+        let mut names: Vec<String> = s.folders().unwrap().into_iter().map(|f| f.name).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "Archief/\u{c9}\u{e9}n",
+                "Caf\u{e9}",
+                "INBOX",
+                "R&D",
+                "Re\u{e7}us",
+                "Sloppy&AOk-&AOk-"
+            ]
+        );
+        let archief = s.folder("Archief/\u{c9}\u{e9}n").unwrap().unwrap();
+        assert_eq!((archief.uidvalidity, archief.last_uid), (7, 3));
+        assert_eq!(s.rules_uid("Archief/\u{c9}\u{e9}n").unwrap(), 2);
+        assert_eq!(
+            s.messages_in_folder("Archief/\u{c9}\u{e9}n").unwrap().len(),
+            1
+        );
+        let cafe = s.folder("Caf\u{e9}").unwrap().unwrap();
+        assert_eq!(
+            cafe.uidvalidity, 9,
+            "the synced folder, not the placeholder"
+        );
+        assert_eq!(s.messages_in_folder("Caf\u{e9}").unwrap().len(), 1);
+        let recus = s.messages_in_folder("Re\u{e7}us").unwrap();
+        assert_eq!(recus.len(), 1);
+        assert_eq!(recus[0].subject.as_deref(), Some("synced"));
+        let log = s.log(10).unwrap();
+        let mut logged: Vec<&str> = log.iter().map(|e| e.folder.as_str()).collect();
+        logged.sort();
+        assert_eq!(
+            logged,
+            ["Archief/\u{c9}\u{e9}n", "Re&AOc-us"],
+            "the history of a folder that gave way is not the raw twin's"
+        );
+        let moved: Vec<String> = s
+            .conn
+            .prepare("SELECT folder FROM rule_moves")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(moved, ["R&D"]);
+        fts_integrity_check(&s);
+        let orphan = s
+            .conn
+            .query_row("PRAGMA foreign_key_check", [], |_| Ok(()))
+            .optional()
+            .unwrap();
+        assert_eq!(orphan, None, "a message lost its folder");
     }
 
     #[test]
@@ -2188,7 +2607,7 @@ mod tests {
         let plan_of = |folder: Option<&str>| -> String {
             let query = search::parse("after:2024-01-01", 1_700_000_000);
             let planned = search::plan(&query, Scope::All, None, None);
-            let sql = search_sql(&planned.exact, false, folder, &planned, true);
+            let sql = search_sql(&planned.exact, false, folder, &planned, true, false);
             let mut stmt = s
                 .conn
                 .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
@@ -2207,8 +2626,11 @@ mod tests {
             rows.collect::<Result<Vec<_>, _>>().unwrap().join("\n")
         };
         let all = plan_of(None);
+        // The folder, last in the order, only parts rows of one date and uid: SQLite sorts each such group as it
+        // walks the index and still stops at the limit. A sort of every match would read `USE TEMP B-TREE FOR
+        // ORDER BY`.
         assert!(
-            all.contains("INDEX messages_newest") && !all.contains("TEMP B-TREE"),
+            all.contains("INDEX messages_newest") && !all.contains("TEMP B-TREE FOR ORDER BY"),
             "{all}"
         );
         let one = plan_of(Some("INBOX"));
@@ -2239,6 +2661,32 @@ mod tests {
             },
             read[0],
             "every other column is read"
+        );
+    }
+
+    #[test]
+    fn messages_between_read_a_date_range_newest_first_and_the_body_only_when_asked() {
+        let s = store_with_inbox();
+        for uid in 1..=4 {
+            s.insert_message(&msg("INBOX", uid, i64::from(uid) * 10))
+                .unwrap();
+            s.set_raw("INBOX", uid, b"Subject: x\r\n\r\nbody", "body")
+                .unwrap();
+        }
+        let uids = |rows: Vec<Message>| rows.iter().map(|m| m.uid).collect::<Vec<_>>();
+        let all = s.messages_between("INBOX", None, None, false).unwrap();
+        assert!(all.iter().all(|m| m.body_text.is_none()));
+        assert_eq!(uids(all), [4, 3, 2, 1]);
+        // after is inclusive, before exclusive, as in search.
+        let range = s
+            .messages_between("INBOX", Some(20), Some(40), true)
+            .unwrap();
+        assert!(range.iter().all(|m| m.body_text.as_deref() == Some("body")));
+        assert_eq!(uids(range), [3, 2]);
+        assert!(
+            s.messages_between("Other", None, None, false)
+                .unwrap()
+                .is_empty()
         );
     }
 

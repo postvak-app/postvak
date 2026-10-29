@@ -10,6 +10,25 @@ pub(crate) const ROW: f32 = 24.0;
 /// How many avatar fills each mode has.
 pub(crate) const TINTS: usize = 6;
 
+/// WCAG relative luminance of an opaque sRGB colour, channels 0 to 1.
+pub(crate) fn luminance(rgb: [f32; 3]) -> f32 {
+    let channel = |v: f32| {
+        let v = v.clamp(0.0, 1.0);
+        if v <= 0.040_45 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(rgb[0]) + 0.7152 * channel(rgb[1]) + 0.0722 * channel(rgb[2])
+}
+
+/// WCAG contrast ratio between two opaque sRGB colours, 1 to 21.
+pub(crate) fn contrast(a: [f32; 3], b: [f32; 3]) -> f32 {
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
 #[cfg(test)]
 mod tests {
     use slint::{Color, ComponentHandle};
@@ -32,23 +51,21 @@ mod tests {
 
     /// WCAG contrast ratio between two opaque colours, 1 to 21.
     fn contrast(a: Color, b: Color) -> f32 {
-        let luminance = |c: Color| {
-            let channel = |v: u8| {
-                let v = f32::from(v) / 255.0;
-                if v <= 0.040_45 {
-                    v / 12.92
-                } else {
-                    ((v + 0.055) / 1.055).powf(2.4)
-                }
-            };
-            let (r, g, b) = (c.red(), c.green(), c.blue());
-            0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
-        };
-        let (light, dark) = (
-            luminance(a).max(luminance(b)),
-            luminance(a).min(luminance(b)),
-        );
-        (light + 0.05) / (dark + 0.05)
+        let rgb = |c: Color| [c.red(), c.green(), c.blue()].map(|v| f32::from(v) / 255.0);
+        super::contrast(rgb(a), rgb(b))
+    }
+
+    /// Dark HTML mail sits on the dark pane's background, and its unreadable links take the dark pane's accent.
+    #[test]
+    fn dark_html_mail_uses_the_dark_pane_colours() {
+        use crate::html::dark::{LINK, PAGE};
+        let night = palettes()[1].clone();
+        let rgb = |c: Color| [c.red(), c.green(), c.blue()].map(|v| f32::from(v) / 255.0);
+        for (ours, theirs) in [(PAGE, night.background), (LINK, night.accent)] {
+            for (a, b) in ours.iter().zip(rgb(theirs)) {
+                assert!((a - b).abs() < 1e-6, "{ours:?} is not {theirs:?}");
+            }
+        }
     }
 
     #[test]

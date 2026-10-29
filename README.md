@@ -8,7 +8,7 @@
 
 # Postvak
 
-Rules for your IMAP inbox. Test them with a [dry run](https://postvak.pataar.nl/cli.html#postvak-rules-test) and [undo any delete](https://postvak.pataar.nl/cli.html#postvak-trash-restore). Postvak syncs your mail into a local store and runs your rules: move mail into folders, mark it read, or delete transient mail such as sign-in codes and magic links once you no longer need it. Without rules, it leaves your mail alone.
+Your inbox, organized by rules you write. Test them with a [dry run](https://postvak.pataar.nl/cli.html#postvak-rules-test) and [undo any delete](https://postvak.pataar.nl/cli.html#postvak-trash-restore). Postvak syncs your mail into a local store and runs your rules: move mail into folders, mark it read, or delete transient mail such as sign-in codes and magic links once you no longer need it. Without rules, it leaves your mail alone.
 
 It runs headless as a [background service](https://postvak.pataar.nl/daemon.html), at login, [on a server](https://postvak.pataar.nl/daemon.html#on-a-server) or [in Docker](https://postvak.pataar.nl/daemon.html#docker). On top come a keyboard-driven [mail window](https://postvak.pataar.nl/gui.html) for reading (`postvak gui`), a full [command line](https://postvak.pataar.nl/cli.html), and an MCP server for agents (see [Agents over MCP](https://postvak.pataar.nl/mcp.html)). Postvak reads and sorts mail; it does not send it. It runs on macOS and Linux; see [Install](https://postvak.pataar.nl/install.html).
 
@@ -36,6 +36,8 @@ Many AI mail clients hand every message to a model and let it decide what happen
 - Rules [run on every sync](https://postvak.pataar.nl/rules.html#when-rules-act), not once on delivery, so they can act later: an hour after you read a sign-in code, or once a newsletter is a week old.
 - `rules test` shows what every rule would do before it does it, and deleted mail [can be restored](https://postvak.pataar.nl/cli.html#postvak-trash-restore).
 - [Passwords](https://postvak.pataar.nl/accounts.html#passwords) stay in the macOS Keychain or the Secret Service, or come from a command such as `pass`.
+
+See how Postvak [compares to imapfilter, Sieve, mail client filters and AI sorters](https://postvak.pataar.nl/compare.html).
 
 Postvak is licensed under MIT or Apache-2.0, at your option. The mail window's HTML view includes Stylo, the CSS engine from Servo and Firefox, which is under MPL-2.0. The mail window is made with [Slint](https://slint.dev/) under its royalty-free licence; Help ▸ About Postvak shows its attribution.
 

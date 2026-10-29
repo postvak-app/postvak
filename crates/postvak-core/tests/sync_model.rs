@@ -48,24 +48,24 @@ const BASE_RULES: &str = r#"
 [[rules]]
 name = "newsletters"
 match.from = { equals = "news@shop.example" }
-actions = [{ move = "Newsletters" }]
+actions = { move = "Newsletters" }
 
 [[rules]]
 name = "ci-read"
 match.from = { equals = "bot@ci.example" }
-actions = ["mark_read"]
+actions = { read = true }
 
 [[rules]]
 name = "codes"
 match.subject = { contains = "sign-in code" }
 match.older_than = "1h"
-actions = ["delete"]
+actions = { delete = true }
 
 [[rules]]
 name = "news-read"
 folder = "Newsletters"
 match.from = { equals = "news@shop.example" }
-actions = ["mark_read"]
+actions = { read = true }
 "#;
 
 /// Added by a step, so it starts its clock in the middle of a run with older mail already present.
@@ -73,7 +73,7 @@ const ALERTS_RULE: &str = r#"
 [[rules]]
 name = "alerts"
 match.from = { equals = "alerts@mon.example" }
-actions = ["flag", "archive"]
+actions = { flagged = true, archive = true }
 "#;
 
 const BASE_RULE_NAMES: [&str; 4] = ["newsletters", "ci-read", "codes", "news-read"];

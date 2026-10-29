@@ -224,16 +224,63 @@ fn backend_without_accounts_opens_but_every_lookup_says_so() {
 }
 
 #[tokio::test]
-async fn server_info_carries_the_agent_guide() {
+async fn server_info_carries_the_short_instructions() {
     let fx = fixture(&["work"]);
     let client = connect(&fx, "read", &[]).await;
     let info = client.peer_info().unwrap();
     assert_eq!(info.server_info.as_ref().unwrap().name, "postvak");
+    assert_eq!(
+        info.instructions.as_deref(),
+        Some(postvak_core::help::MCP_INSTRUCTIONS)
+    );
+}
+
+fn text(result: &CallToolResult) -> String {
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    serde_json::to_value(&result.content).unwrap()[0]["text"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[tokio::test]
+async fn docs_returns_each_page_whole() {
+    let fx = fixture(&["work"]);
+    let client = connect(&fx, "read", &[]).await;
+    for page in postvak_core::help::DOC_PAGES {
+        let result = call(&client, "docs", json!({ "page": page.name })).await;
+        assert_eq!(text(&result), page.text, "{}", page.name);
+    }
+    // The rules page keeps its layout: the tables and code blocks an agent needs.
+    let rules = text(&call(&client, "docs", json!({ "page": "rules" })).await);
+    assert!(rules.contains("\n| Key | Default | Meaning |\n"));
+}
+
+#[tokio::test]
+async fn docs_without_a_page_or_with_an_unknown_one_lists_the_pages() {
+    let fx = fixture(&["work"]);
+    let client = connect(&fx, "read", &[]).await;
+    let index = text(&call(&client, "docs", json!({})).await);
+    let unknown = error_text(&call(&client, "docs", json!({ "page": "nope" })).await);
+    assert!(unknown.contains("no page nope"), "{unknown}");
+    for page in postvak_core::help::DOC_PAGES {
+        assert!(index.contains(&format!("{}: ", page.name)), "{index}");
+        assert!(unknown.contains(page.name), "{unknown}");
+    }
+}
+
+#[tokio::test]
+async fn rules_schema_points_to_the_rules_page() {
+    let fx = fixture(&["work"]);
+    let client = connect(&fx, "read", &[]).await;
+    let tools = client.list_all_tools().await.unwrap();
+    let schema = tools.iter().find(|t| t.name == "rules_schema").unwrap();
     assert!(
-        info.instructions
+        schema
+            .description
             .as_deref()
             .unwrap()
-            .starts_with("# Agent guide")
+            .contains("call docs with page rules")
     );
 }
 
@@ -254,6 +301,80 @@ async fn folders_and_list_rows_carry_the_account_and_no_body() {
     assert_eq!(list[0]["subject"], "Invoice");
     assert_eq!(list[0]["account"], "work");
     assert!(list[0].get("body_text").is_none());
+}
+
+#[tokio::test]
+async fn list_and_search_page_with_a_cursor_keep_fields_and_count() {
+    let fx = fixture(&["work", "home"]);
+    for uid in 1..=3 {
+        fx.add("work", fixture_message("INBOX", uid, "Invoice", "x"));
+        fx.add("home", fixture_message("INBOX", uid, "Invoice", "x"));
+    }
+    let client = connect(&fx, "read", &[]).await;
+    for (tool, base) in [
+        ("list", json!({ "limit": 4 })),
+        ("search", json!({ "query": "invoice", "limit": 4 })),
+    ] {
+        let first = call(&client, tool, base.clone()).await;
+        let next = first.structured_content.as_ref().unwrap()["next"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let mut second_args = base.clone();
+        second_args["cursor"] = next.into();
+        let second = call(&client, tool, second_args).await;
+        assert!(
+            second
+                .structured_content
+                .as_ref()
+                .unwrap()
+                .get("next")
+                .is_none(),
+            "{tool}: the last page has no next"
+        );
+        let seen: Vec<String> = rows(&first)
+            .iter()
+            .chain(rows(&second).iter())
+            .map(|row| format!("{}/{}", row["account"], row["uid"]))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                "\"work\"/3",
+                "\"home\"/3",
+                "\"work\"/2",
+                "\"home\"/2",
+                "\"work\"/1",
+                "\"home\"/1"
+            ],
+            "{tool}"
+        );
+        let mut count_args = base.clone();
+        count_args["count_only"] = true.into();
+        let count = call(&client, tool, count_args.clone()).await;
+        assert_eq!(
+            count.structured_content,
+            Some(json!({ "count": 6 })),
+            "{tool}"
+        );
+        count_args["fields"] = json!(["uid"]);
+        assert!(error_text(&call(&client, tool, count_args).await).contains("count_only"));
+        let mut fields_args = base.clone();
+        fields_args["fields"] = json!(["uid", "subject"]);
+        assert_eq!(
+            rows(&call(&client, tool, fields_args.clone()).await)[0],
+            json!({ "account": "work", "uid": 3, "subject": "Invoice" }),
+            "{tool}: account always stays"
+        );
+        fields_args["fields"] = json!(["body_text"]);
+        assert!(
+            error_text(&call(&client, tool, fields_args).await)
+                .contains("unknown field 'body_text'")
+        );
+        let mut bad = base.clone();
+        bad["cursor"] = "garbage".into();
+        assert!(error_text(&call(&client, tool, bad).await).contains("cursor"));
+    }
 }
 
 #[tokio::test]
@@ -386,7 +507,7 @@ async fn account_filter_hides_other_accounts_everywhere() {
             uid: 1,
             message_id: None,
             subject: None,
-            action: "flag".into(),
+            action: "flagged".into(),
             trash_file: None,
         };
         fx.store(account).log_action(&entry).unwrap();
@@ -449,7 +570,7 @@ async fn limit_clamps_to_five_hundred() {
     );
 }
 
-const RULES: &str = "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = [\"delete\"]\n";
+const RULES: &str = "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = { delete = true }\n";
 
 fn rule_file(fx: &Fixture) -> String {
     std::fs::read_to_string(fx.paths.rules_file()).unwrap()
@@ -459,7 +580,7 @@ fn rule_file(fx: &Fixture) -> String {
 async fn rules_propose_stores_a_disabled_rule_attributed_to_the_host() {
     let fx = fixture(&["work"]);
     let client = connect(&fx, "rules:propose", &[]).await;
-    let rule = json!({ "name": "codes", "match": { "subject": { "contains": "code" } }, "actions": ["delete"] });
+    let rule = json!({ "name": "codes", "match": { "subject": { "contains": "code" } }, "actions": {"delete": true} });
     let result = call(&client, "rules_propose", rule).await;
     assert_ne!(result.is_error, Some(true), "{result:?}");
     let file = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
@@ -467,11 +588,131 @@ async fn rules_propose_stores_a_disabled_rule_attributed_to_the_host() {
     assert_eq!(file.rules[0].proposed_by.as_deref(), Some("mcp:test-host"));
 }
 
+fn named_rule(name: &str) -> Value {
+    json!({ "name": name, "match": { "subject": { "contains": name } }, "actions": {"flagged": true} })
+}
+
+fn rule_names(fx: &Fixture) -> Vec<String> {
+    postvak_core::rules::load(&fx.paths.rules_file())
+        .unwrap()
+        .rules
+        .into_iter()
+        .map(|r| r.name)
+        .collect()
+}
+
+#[tokio::test]
+async fn rules_propose_takes_a_batch_in_order_all_or_none() {
+    let fx = fixture(&["work"]);
+    std::fs::write(fx.paths.rules_file(), RULES).unwrap();
+    let client = connect(&fx, "rules:propose", &[]).await;
+    let batch = json!({ "rules": [named_rule("a"), named_rule("b"), named_rule("c")] });
+    let result = call(&client, "rules_propose", batch).await;
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    let content = result.structured_content.unwrap();
+    assert_eq!(content["proposed"][2]["name"], "c");
+    assert_eq!(content["proposed_by"], "mcp:test-host");
+    assert_eq!(rule_names(&fx), ["codes", "a", "b", "c"]);
+
+    let mut bad = named_rule("e");
+    bad["actions"] = json!([]);
+    let refused = json!({ "rules": [named_rule("d"), bad, named_rule("codes")], "before": "a" });
+    let text = error_text(&call(&client, "rules_propose", refused).await);
+    for part in ["rule 1 'e'", "rule 2 'codes'"] {
+        assert!(text.contains(part), "{part}: {text}");
+    }
+    assert_eq!(rule_names(&fx), ["codes", "a", "b", "c"]);
+
+    let placed = json!({ "rules": [named_rule("d")], "before": "a" });
+    let result = call(&client, "rules_propose", placed).await;
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    assert_eq!(rule_names(&fx), ["codes", "d", "a", "b", "c"]);
+}
+
+#[tokio::test]
+async fn rules_list_returns_each_rule_whole_with_its_file_position() {
+    let fx = fixture(&["work"]);
+    std::fs::write(fx.paths.rules_file(), RULES).unwrap();
+    let client = connect(&fx, "read,rules:propose", &[]).await;
+    for name in ["a", "b", "c"] {
+        call(&client, "rules_propose", named_rule(name)).await;
+    }
+    let listed = rows(&call(&client, "rules_list", json!({})).await);
+    let names: Vec<&str> = listed.iter().map(|r| r["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["codes", "a", "b", "c"]);
+    let positions: Vec<u64> = listed
+        .iter()
+        .map(|r| r["position"].as_u64().unwrap())
+        .collect();
+    assert_eq!(positions, [0, 1, 2, 3]);
+    assert_eq!(
+        listed[0]["match"],
+        json!({ "subject": { "contains": "code" } })
+    );
+    assert_eq!(listed[0]["actions"], json!({ "delete": true }));
+    assert_eq!(listed[3]["proposed_by"], "mcp:test-host");
+    assert_eq!(listed[3]["enabled"], false);
+}
+
+#[tokio::test]
+async fn rules_withdraw_and_replace_touch_only_the_callers_own_proposals() {
+    let fx = fixture(&["work"]);
+    std::fs::write(
+        fx.paths.rules_file(),
+        format!("{RULES}\n{}", unscoped_rule("theirs")),
+    )
+    .unwrap();
+    let client = connect(&fx, "rules:propose", &[]).await;
+    call(&client, "rules_propose", named_rule("mine")).await;
+    for name in ["codes", "theirs", "missing"] {
+        let text = error_text(&call(&client, "rules_withdraw", json!({ "name": name })).await);
+        assert!(text.contains(name), "{text}");
+    }
+    let mut changed = named_rule("mine");
+    changed["replace"] = json!(true);
+    changed["match"] = json!({ "read": true });
+    let result = call(&client, "rules_propose", changed.clone()).await;
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    let file = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
+    assert_eq!(file.rules[2].matches.read, Some(true));
+    changed["name"] = json!("theirs");
+    let text = error_text(&call(&client, "rules_propose", changed).await);
+    assert!(text.contains("not your pending proposal"), "{text}");
+
+    let result = call(&client, "rules_withdraw", json!({ "name": "mine" })).await;
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    assert_eq!(rule_names(&fx), ["codes", "theirs"]);
+}
+
+#[tokio::test]
+async fn rules_propose_schema_offers_one_rule_or_a_batch() {
+    let fx = fixture(&["work"]);
+    let client = connect(&fx, "rules:propose", &[]).await;
+    let tools = client.list_all_tools().await.unwrap();
+    let propose = tools.iter().find(|t| t.name == "rules_propose").unwrap();
+    let schema = serde_json::to_value(&*propose.input_schema).unwrap();
+    assert_eq!(schema["type"], "object");
+    assert!(
+        schema.get("anyOf").is_none() && schema.get("oneOf").is_none(),
+        "{schema}"
+    );
+    for key in [
+        "name", "match", "actions", "rules", "before", "after", "replace",
+    ] {
+        assert!(schema["properties"][key].is_object(), "{key}: {schema}");
+    }
+    assert!(
+        schema["required"].as_array().is_none_or(|r| r.is_empty()),
+        "{schema}"
+    );
+}
+
 #[tokio::test]
 async fn a_bad_rule_returns_the_rules_check_error() {
     let fx = fixture(&["work"]);
     let client = connect(&fx, "read,rules:propose", &[]).await;
-    let bad = json!({ "name": "x", "match": { "from": { "regex": "(" } }, "actions": ["delete"] });
+    let bad =
+        json!({ "name": "x", "match": { "from": { "regex": "(" } }, "actions": {"delete": true} });
     let text = error_text(&call(&client, "rules_propose", bad.clone()).await);
     assert!(text.contains("rule 'x'"), "{text}");
     let text = error_text(&call(&client, "rules_test", json!({ "rule": bad })).await);
@@ -484,7 +725,7 @@ async fn rules_propose_refuses_blank_and_overlong_folders() {
     let fx = fixture(&["work"]);
     let client = connect(&fx, "rules:propose", &[]).await;
     for folder in [String::new(), "   ".into(), "a".repeat(100_000)] {
-        let rule = json!({ "name": "x", "folder": folder, "match": { "seen": true }, "actions": ["flag"] });
+        let rule = json!({ "name": "x", "folder": folder, "match": { "read": true }, "actions": {"flagged": true} });
         let text = error_text(&call(&client, "rules_propose", rule).await);
         assert!(text.contains("folder must"), "{text}");
     }
@@ -499,7 +740,7 @@ async fn rules_test_previews_subjects() {
         fixture_message("INBOX", 1, "Your code", "secret body"),
     );
     let client = connect(&fx, "read", &[]).await;
-    let rule = json!({ "name": "codes", "match": { "subject": { "contains": "code" } }, "actions": ["delete"] });
+    let rule = json!({ "name": "codes", "match": { "subject": { "contains": "code" } }, "actions": {"delete": true} });
     let preview = rows(&call(&client, "rules_test", json!({ "rule": rule })).await);
     assert_eq!(preview.len(), 1);
     assert_eq!(preview[0]["subject"], "Your code");
@@ -529,8 +770,7 @@ async fn rules_list_check_and_schema() {
 #[tokio::test]
 async fn rules_check_warns_without_revealing_a_hidden_account() {
     let fx = fixture(&["work", "home"]);
-    let gone =
-        "[[rules]]\nname = \"old\"\naccount = \"gone\"\nmatch.seen = true\nactions = [\"flag\"]\n";
+    let gone = "[[rules]]\nname = \"old\"\naccount = \"gone\"\nmatch.read = true\nactions = { flagged = true }\n";
     std::fs::write(fx.paths.rules_file(), format!("{RULES}{gone}")).unwrap();
     let copy = "rules.sync-conflict-20261024-101500-ABCDEFG.toml";
     std::fs::write(fx.paths.rules_file().with_file_name(copy), "").unwrap();
@@ -553,12 +793,52 @@ async fn rules_check_warns_without_revealing_a_hidden_account() {
     assert!(only[0].starts_with(copy));
 }
 
+/// Whether a rule for every account watches a folder none of them syncs depends on the hidden accounts too, so a
+/// narrowed server checks only the rules for its own accounts.
+#[tokio::test]
+async fn rules_check_names_a_watched_folder_no_account_syncs_without_hidden_accounts() {
+    let fx = fixture(&["work", "home"]);
+    for account in ["work", "home"] {
+        open_store(&fx.paths, account)
+            .set_folders_listed(1)
+            .unwrap();
+    }
+    std::fs::write(
+        fx.paths.rules_file(),
+        "[[rules]]\nname = \"typo\"\nfolder = \"Newsleters\"\nmatch.read = true\nactions.flagged = true\n\n\
+         [[rules]]\nname = \"lists\"\naccount = \"work\"\nfolder = \"Lists\"\nmatch.read = true\n\
+         actions.flagged = true\n",
+    )
+    .unwrap();
+    let warnings = |result: CallToolResult| {
+        result.structured_content.unwrap()["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w.as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let all = warnings(call(&connect(&fx, "read", &[]).await, "rules_check", json!({})).await);
+    assert_eq!(
+        all,
+        [
+            "rule 'typo' watches 'Newsleters', which no account syncs, so it never runs",
+            "rule 'lists' watches 'Lists', which account 'work' does not sync, so it never runs",
+        ]
+    );
+    let narrowed = connect(&fx, "read", &["work"]).await;
+    assert_eq!(
+        warnings(call(&narrowed, "rules_check", json!({})).await),
+        ["rule 'lists' watches 'Lists', which account 'work' does not sync, so it never runs"]
+    );
+}
+
 #[tokio::test]
 async fn rules_write_approves_rejects_and_toggles() {
     let fx = fixture(&["work"]);
     let propose = connect(&fx, "rules:propose", &[]).await;
     for name in ["a", "b"] {
-        let rule = json!({ "name": name, "match": { "subject": { "contains": name } }, "actions": ["flag"] });
+        let rule = json!({ "name": name, "match": { "subject": { "contains": name } }, "actions": {"flagged": true} });
         call(&propose, "rules_propose", rule).await;
     }
     let client = connect(&fx, "rules:write", &[]).await;
@@ -590,7 +870,7 @@ async fn rules_write_approves_rejects_and_toggles() {
 
 fn scoped_rule(name: &str, account: &str) -> String {
     format!(
-        "[[rules]]\nname = \"{name}\"\naccount = \"{account}\"\nenabled = false\nproposed_by = \"mcp\"\nmatch.subject = {{ contains = \"x\" }}\nactions = [\"flag\"]\n\n"
+        "[[rules]]\nname = \"{name}\"\naccount = \"{account}\"\nenabled = false\nproposed_by = \"mcp\"\nmatch.subject = {{ contains = \"x\" }}\nactions = {{ flagged = true }}\n\n"
     )
 }
 
@@ -639,10 +919,49 @@ async fn rule_writes_refuse_rules_of_hidden_accounts_and_leave_the_file_alone() 
         let text = error_text(&call(&client, tool, arguments).await);
         assert!(text.contains("no rule named 'for-home'"), "{tool}: {text}");
     }
-    let rule = json!({ "name": "p", "account": "home", "match": { "subject": { "contains": "x" } }, "actions": ["flag"] });
+    let rule = json!({ "name": "p", "account": "home", "match": { "subject": { "contains": "x" } }, "actions": {"flagged": true} });
     let text = error_text(&call(&client, "rules_propose", rule).await);
     assert!(text.contains("no account named 'home'"), "{text}");
     assert_eq!(rule_file(&fx), before);
+}
+
+#[tokio::test]
+async fn withdraw_replace_and_placement_treat_a_hidden_accounts_proposal_as_absent() {
+    let fx = fixture(&["home", "work"]);
+    // The caller's own pending proposal, but scoped to an account this server does not see.
+    let own = scoped_rule("for-home", "home").replace("\"mcp\"", "\"mcp:test-host\"");
+    std::fs::write(fx.paths.rules_file(), own).unwrap();
+    let before = rule_file(&fx);
+    let client = connect(&fx, "rules:propose", &["work"]).await;
+    let rule = |name: &str| json!({ "name": name, "match": { "subject": { "contains": "x" } }, "actions": {"flagged": true} });
+    let mut replacing = rule("for-home");
+    replacing["replace"] = json!(true);
+    let mut placed = rule("p");
+    placed["before"] = json!("for-home");
+    for (tool, arguments) in [
+        ("rules_withdraw", json!({ "name": "for-home" })),
+        ("rules_propose", replacing),
+        ("rules_propose", placed),
+    ] {
+        let text = error_text(&call(&client, tool, arguments.clone()).await);
+        assert!(
+            text.contains("no rule named 'for-home'"),
+            "{tool} {arguments}: {text}"
+        );
+    }
+    assert_eq!(rule_file(&fx), before);
+
+    // Every optional key sent, the unset ones as null, still proposes one rule and answers as one.
+    let mut nulls = rule("q");
+    for key in ["rules", "before", "after", "replace"] {
+        nulls[key] = Value::Null;
+    }
+    let proposed = call(&client, "rules_propose", nulls)
+        .await
+        .structured_content
+        .unwrap();
+    assert_eq!(proposed["proposed"], "q");
+    assert_eq!(proposed["account"], "work");
 }
 
 fn add_with_raw(fx: &Fixture, account: &str, uid: u32, subject: &str, body: &str) {
@@ -990,15 +1309,19 @@ async fn tools_list_per_scope_set_is_exact_and_alphabetical() {
             "read,rules:propose",
             &[
                 "accounts",
+                "docs",
                 "folders",
                 "list",
                 "log",
                 "rules_check",
+                "rules_coverage",
                 "rules_list",
                 "rules_propose",
                 "rules_schema",
                 "rules_test",
+                "rules_withdraw",
                 "search",
+                "senders",
                 "status",
                 "sync",
                 "trash_list",
@@ -1068,6 +1391,7 @@ async fn annotations_mark_reads_and_destructive_tools() {
             "move",
             "rules_propose",
             "rules_reject",
+            "rules_withdraw",
             "sync",
             "trash_restore",
         ]
@@ -1206,7 +1530,7 @@ async fn sync_reports_the_errors_of_its_pass() {
     let fx = fixture_with_daemon(&["work"], recording_connector());
     std::fs::write(
         fx.paths.rules_file(),
-        "[[rules]]\nname = \"x\"\nmatch.from = { regex = \"(\" }\nactions = [\"delete\"]\n",
+        "[[rules]]\nname = \"x\"\nmatch.from = { regex = \"(\" }\nactions = { delete = true }\n",
     )
     .unwrap();
     let client = connect(&fx, "read", &[]).await;
@@ -1350,7 +1674,7 @@ async fn rules_apply_existing_dry_run_lists_planned_rows() {
     fx.add("work", fixture_message("INBOX", 1, "Your code", ""));
     std::fs::write(
         fx.paths.rules_file(),
-        "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = [\"flag\"]\n",
+        "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = { flagged = true }\n",
     )
     .unwrap();
     let client = connect(&fx, "mail:modify", &[]).await;
@@ -1359,7 +1683,7 @@ async fn rules_apply_existing_dry_run_lists_planned_rows() {
     assert_eq!(report.len(), 1, "{report:?}");
     assert_eq!(report[0]["rule"], "codes");
     assert_eq!(report[0]["uid"], 1);
-    assert_eq!(report[0]["action"], "flag");
+    assert_eq!(report[0]["action"], "flagged");
 }
 
 #[tokio::test]
@@ -1369,7 +1693,7 @@ async fn rules_apply_existing_refuses_to_expunge_without_yes() {
     fx.add("work", fixture_message("INBOX", 2, "Another code", ""));
     std::fs::write(
         fx.paths.rules_file(),
-        "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = [\"delete\"]\n",
+        "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = { delete = true }\n",
     )
     .unwrap();
     let client = connect(&fx, "mail:modify", &[]).await;
@@ -1393,7 +1717,7 @@ async fn rules_apply_existing_goes_through_the_daemon() {
     let fx = fixture_with_daemon(&["work"], connector_with_mail());
     std::fs::write(
         fx.paths.rules_file(),
-        "[[rules]]\nname = \"greet\"\nmatch.subject = { contains = \"Hi\" }\nactions = [\"flag\"]\n",
+        "[[rules]]\nname = \"greet\"\nmatch.subject = { contains = \"Hi\" }\nactions = { flagged = true }\n",
     )
     .unwrap();
     let client = connect(&fx, "read, mail:modify", &[]).await;
@@ -1412,7 +1736,7 @@ async fn rules_apply_existing_refuses_disabled_and_hidden_rules() {
     std::fs::write(
         fx.paths.rules_file(),
         format!(
-            "[[rules]]\nname = \"off\"\nenabled = false\nmatch.subject = {{ contains = \"x\" }}\nactions = [\"flag\"]\n\n{}",
+            "[[rules]]\nname = \"off\"\nenabled = false\nmatch.subject = {{ contains = \"x\" }}\nactions = {{ flagged = true }}\n\n{}",
             scoped_rule("hidden", "home")
         ),
     )
@@ -1519,8 +1843,7 @@ async fn rules_test_on_the_body_needs_read_bodies() {
         "work",
         fixture_message("INBOX", 1, "Hello", "the secret word"),
     );
-    let rule =
-        json!({ "name": "probe", "match": { "body": { "regex": "secret" } }, "actions": ["flag"] });
+    let rule = json!({ "name": "probe", "match": { "body": { "regex": "secret" } }, "actions": {"flagged": true} });
     let read = connect(&fx, "read", &[]).await;
     let text = error_text(&call(&read, "rules_test", json!({ "rule": rule })).await);
     assert!(
@@ -1546,8 +1869,7 @@ async fn a_body_rule_needs_read_bodies_to_propose_enable_or_run() {
             "{text}"
         )
     };
-    let rule =
-        json!({ "name": "probe", "match": { "body": { "regex": "secret" } }, "actions": ["flag"] });
+    let rule = json!({ "name": "probe", "match": { "body": { "regex": "secret" } }, "actions": {"flagged": true} });
     let blind = connect(&fx, "rules:propose,rules:write,mail:modify", &[]).await;
     refused(error_text(
         &call(&blind, "rules_propose", rule.clone()).await,
@@ -1583,7 +1905,7 @@ async fn a_header_rule_needs_read_headers_to_test_propose_enable_or_run() {
             "{text}"
         )
     };
-    let nested = json!({ "name": "probe", "match": { "any": [{ "header": { "name": "Subject", "regex": "^H" } }] }, "actions": ["flag"] });
+    let nested = json!({ "name": "probe", "match": { "any": [{ "header": { "Subject": { "regex": "^H" } } }] }, "actions": {"flagged": true} });
     let blind = connect(
         &fx,
         "read,read:bodies,rules:propose,rules:write,mail:modify",
@@ -1617,7 +1939,7 @@ async fn a_header_rule_needs_read_headers_to_test_propose_enable_or_run() {
     refused(error_text(
         &call(&blind, "rules_apply_existing", dry_run).await,
     ));
-    let plain = json!({ "name": "plain", "match": { "subject": { "contains": "Hello" } }, "actions": ["flag"] });
+    let plain = json!({ "name": "plain", "match": { "subject": { "contains": "Hello" } }, "actions": {"flagged": true} });
     let preview = rows(&call(&blind, "rules_test", json!({ "rule": plain })).await);
     assert_eq!(preview.len(), 1, "from, to, cc and subject stay under read");
 }
@@ -1628,7 +1950,7 @@ async fn rules_test_leaves_out_mail_of_hidden_accounts() {
     fx.add("home", fixture_message("INBOX", 1, "Your code", "x"));
     fx.add("work", fixture_message("INBOX", 2, "Your code", "x"));
     let client = connect(&fx, "read", &["work"]).await;
-    let rule = json!({ "name": "codes", "match": { "subject": { "contains": "code" } }, "actions": ["delete"] });
+    let rule = json!({ "name": "codes", "match": { "subject": { "contains": "code" } }, "actions": {"delete": true} });
     let preview = rows(&call(&client, "rules_test", json!({ "rule": rule })).await);
     assert_eq!(preview.len(), 1);
     assert_eq!(preview[0]["account"], "work");
@@ -1636,7 +1958,7 @@ async fn rules_test_leaves_out_mail_of_hidden_accounts() {
 
 fn unscoped_rule(name: &str) -> String {
     format!(
-        "[[rules]]\nname = \"{name}\"\nenabled = false\nproposed_by = \"mcp\"\nmatch.subject = {{ contains = \"x\" }}\nactions = [\"flag\"]\n\n"
+        "[[rules]]\nname = \"{name}\"\nenabled = false\nproposed_by = \"mcp\"\nmatch.subject = {{ contains = \"x\" }}\nactions = {{ flagged = true }}\n\n"
     )
 }
 
@@ -1699,8 +2021,7 @@ async fn rejecting_a_rule_for_every_account_works_while_some_are_hidden() {
 async fn rules_propose_without_account_fills_in_the_only_visible_one() {
     let fx = fixture(&["home", "work"]);
     let client = connect(&fx, "rules:propose", &["work"]).await;
-    let rule =
-        json!({ "name": "p", "match": { "subject": { "contains": "x" } }, "actions": ["flag"] });
+    let rule = json!({ "name": "p", "match": { "subject": { "contains": "x" } }, "actions": {"flagged": true} });
     let result = call(&client, "rules_propose", rule).await;
     assert_ne!(result.is_error, Some(true), "{result:?}");
     let file = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
@@ -1712,8 +2033,7 @@ async fn rules_propose_without_account_is_refused_when_several_of_some_are_visib
     let fx = fixture(&["home", "play", "work"]);
     std::fs::write(fx.paths.rules_file(), unscoped_rule("kept")).unwrap();
     let before = rule_file(&fx);
-    let rule =
-        json!({ "name": "p", "match": { "subject": { "contains": "x" } }, "actions": ["flag"] });
+    let rule = json!({ "name": "p", "match": { "subject": { "contains": "x" } }, "actions": {"flagged": true} });
     let narrow = connect(&fx, "rules:propose", &["home", "work"]).await;
     let text = error_text(&call(&narrow, "rules_propose", rule.clone()).await);
     assert!(text.contains("pass account"), "{text}");
@@ -1850,7 +2170,16 @@ async fn tools_returning_mail_say_its_fields_are_data() {
     let fx = fixture(&["work"]);
     let client = connect(&fx, "read,read:bodies", &[]).await;
     let tools = client.list_all_tools().await.unwrap();
-    for name in ["attachments", "list", "log", "rules_test", "search", "show"] {
+    for name in [
+        "attachments",
+        "list",
+        "log",
+        "rules_coverage",
+        "rules_test",
+        "search",
+        "senders",
+        "show",
+    ] {
         let tool = tools.iter().find(|t| t.name == name).unwrap();
         let description = tool.description.as_deref().unwrap_or_default();
         assert!(
@@ -1858,4 +2187,196 @@ async fn tools_returning_mail_say_its_fields_are_data() {
             "{name}: {description}"
         );
     }
+}
+
+#[tokio::test]
+async fn list_and_search_describe_paging_in_the_cli_words() {
+    let fx = fixture(&["work"]);
+    let client = connect(&fx, "read", &[]).await;
+    let tools = client.list_all_tools().await.unwrap();
+    for name in ["list", "search"] {
+        let tool = tools.iter().find(|t| t.name == name).unwrap();
+        let properties = &tool.input_schema["properties"];
+        for (argument, text) in [
+            ("cursor", postvak_core::help::CURSOR),
+            ("fields", postvak_core::help::FIELDS),
+            ("count_only", postvak_core::help::COUNT_ONLY),
+        ] {
+            assert_eq!(
+                properties[argument]["description"].as_str(),
+                Some(text),
+                "{name}.{argument}"
+            );
+        }
+    }
+}
+
+/// A message from `from` with `subject`; a higher uid is newer.
+fn from_sender(uid: u32, from: &str, subject: &str) -> Message {
+    Message {
+        from_addr: Some(from.into()),
+        ..fixture_message("INBOX", uid, subject, "secret body")
+    }
+}
+
+const ANALYSIS_RULES: &str = r#"
+[[rules]]
+name = "delivery"
+match.subject = { contains = "delivery" }
+actions = { move = "Deliveries" }
+
+[[rules]]
+name = "shop"
+match.from = { contains = "shop.example" }
+actions = { flagged = true, move = "Shop" }
+
+[[rules]]
+name = "list header"
+match.header.List-Id = { contains = "x" }
+actions = { read = true }
+
+[[rules]]
+name = "proposal"
+enabled = false
+proposed_by = "mcp:test-host"
+match.from = { contains = "friend@" }
+actions = { archive = true }
+"#;
+
+fn analysis_fixture() -> Fixture {
+    let fx = fixture(&["work"]);
+    std::fs::write(fx.paths.rules_file(), ANALYSIS_RULES).unwrap();
+    fx.add(
+        "work",
+        from_sender(1, "Friend <friend@home.example>", "Dinner?"),
+    );
+    fx.add("work", from_sender(2, "friend@home.example", "Photos"));
+    fx.add(
+        "work",
+        from_sender(3, "Shop <orders@shop.example>", "Your delivery"),
+    );
+    fx.add(
+        "work",
+        from_sender(4, "orders@mail.shop.example", "Receipt"),
+    );
+    fx
+}
+
+#[tokio::test]
+async fn skipped_rules_never_name_a_rule_for_a_hidden_account() {
+    let fx = fixture(&["work", "home"]);
+    let rules = format!(
+        "{ANALYSIS_RULES}\n[[rules]]\nname = \"home only\"\naccount = \"home\"\nmatch.header.List-Id = {{ contains = \"y\" }}\nactions = {{ flagged = true }}\n"
+    );
+    std::fs::write(fx.paths.rules_file(), rules).unwrap();
+    fx.add("work", from_sender(1, "friend@home.example", "Dinner?"));
+    let client = connect(&fx, "read", &["work"]).await;
+    for tool in ["senders", "rules_coverage"] {
+        let result = call(&client, tool, json!({})).await;
+        assert_eq!(
+            result.structured_content.as_ref().unwrap()["skipped_rules"],
+            json!(["list header"]),
+            "{tool}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn senders_groups_by_address_or_domain_and_names_matching_rules() {
+    let fx = analysis_fixture();
+    let client = connect(&fx, "read", &[]).await;
+    let result = call(&client, "senders", json!({})).await;
+    let found = rows(&result);
+    let skipped = &result.structured_content.as_ref().unwrap()["skipped_rules"];
+    assert_eq!(
+        skipped,
+        &json!(["list header"]),
+        "header rules need read:headers"
+    );
+    let first = &found[0];
+    assert_eq!(first["sender"], "friend@home.example");
+    assert_eq!(
+        (first["count"].as_u64(), first["unread"].as_u64()),
+        (Some(2), Some(2))
+    );
+    assert_eq!(first["subjects"], json!(["Photos", "Dinner?"]));
+    assert_eq!(
+        first["rules"],
+        json!([]),
+        "pending proposals are not existing rules"
+    );
+    assert_eq!(
+        (first["account"].as_str(), first["folder"].as_str()),
+        (Some("work"), Some("INBOX"))
+    );
+    assert!(
+        !serde_json::to_string(&found)
+            .unwrap()
+            .contains("secret body")
+    );
+
+    let by_domain = rows(
+        &call(
+            &client,
+            "senders",
+            json!({ "group_by": "domain", "limit": 1 }),
+        )
+        .await,
+    );
+    assert_eq!(by_domain.len(), 1);
+    assert_eq!(by_domain[0]["sender"], "shop.example");
+    assert_eq!(by_domain[0]["rules"], json!(["delivery", "shop"]));
+
+    let after = rows(&call(&client, "senders", json!({ "after": "1d" })).await);
+    assert!(after.is_empty(), "the fixture mail is older than a day");
+    let text = error_text(&call(&client, "senders", json!({ "before": "soon" })).await);
+    assert!(text.contains("not a date"), "{text}");
+}
+
+#[tokio::test]
+async fn rules_coverage_counts_and_lists_contested_mail_with_what_acts() {
+    let fx = analysis_fixture();
+    let client = connect(&fx, "read,read:headers", &[]).await;
+    let result = call(&client, "rules_coverage", json!({})).await;
+    assert_eq!(
+        result.structured_content.as_ref().unwrap()["skipped_rules"],
+        json!([])
+    );
+    let row = &rows(&result)[0];
+    assert_eq!(
+        (
+            row["messages"].as_u64(),
+            row["matched"].as_u64(),
+            row["unmatched"].as_u64(),
+            row["contested"].as_u64()
+        ),
+        (Some(4), Some(2), Some(2), Some(1))
+    );
+    assert_eq!(row["unmatched_senders"][0]["sender"], "friend@home.example");
+    let contested = &row["contested_messages"][0];
+    assert_eq!(contested["message"]["uid"], 3);
+    assert!(contested["message"].get("body_text").is_none());
+    assert_eq!(contested["rules"], json!(["delivery", "shop"]));
+    assert_eq!(
+        contested["acts"],
+        json!([{ "rule": "delivery", "action": "move:Deliveries" }, { "rule": "shop", "action": "flagged" }])
+    );
+    assert_eq!(contested["fails"], json!(null));
+
+    let pending = rows(
+        &call(
+            &client,
+            "rules_coverage",
+            json!({ "include_pending": true, "limit": 0 }),
+        )
+        .await,
+    );
+    assert_eq!(
+        (
+            pending[0]["matched"].as_u64(),
+            pending[0]["unmatched"].as_u64()
+        ),
+        (Some(4), Some(0))
+    );
+    assert_eq!(pending[0]["contested_messages"], json!([]));
 }

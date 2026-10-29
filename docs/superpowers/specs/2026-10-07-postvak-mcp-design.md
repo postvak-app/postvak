@@ -27,7 +27,7 @@ Out of scope, recorded in §10: the daemon and socket, saving attachments to dis
 | Bodies | Their own scope, `read:bodies`; `read` sees headers only | `read` includes bodies |
 | Scopes | `read`, `read:bodies`, `rules:propose`, `rules:write`, `mail:modify`; default `read,rules:propose` | Per-session grants (the protocol is stateless) |
 | Hidden tools | Tools outside the granted scopes are left out of `tools/list` | Listed but refused |
-| Texts | One source: the agent guide is the server description, the CLI help strings are the tool descriptions, `rules schema` is the propose input schema, CLI `--json` rows are the result rows | MCP-only docs |
+| Texts | One source: the agent guide's ground rules are the server description and the documentation pages come from the `docs` tool, the CLI help strings are the tool descriptions, `rules schema` is the propose input schema, CLI `--json` rows are the result rows | MCP-only docs |
 | Install | `postvak mcp install claude-desktop|claude-code|json`, re-runnable, `--remove`, `--dry-run` | Manual setup only |
 | Concurrency gap | GUI polls SQLite `data_version` with its 2 s file poll | Accept stale GUI rows until the next sync |
 
@@ -70,12 +70,14 @@ Tool names follow the CLI commands so the agent guide's examples carry over. Res
 | `read` | `search` | FTS5 over subject, from and to; also body text when `read:bodies` is granted; same limits as `list` |
 | `read` | `log` | rule and action log |
 | `read` | `trash_list` | `.eml` backups |
-| `read` | `rules_list`, `rules_schema`, `rules_check` | as the CLI |
+| `read` | `rules_list`, `rules_schema`, `rules_check` | as the CLI; `rules_schema`'s description points to the `rules` page of `docs` |
+| `read` | `docs` | a page of `docs/src/` as Markdown text, by `page`: `agent-guide`, `rules`, `search` or `cli`, as `postvak guide PAGE` prints it; without a page the list of pages, and for an unknown one an error naming them. The pages are embedded at build time through symlinks in `crates/postvak-core/src/docs/`, so the published crate carries them. No GUI counterpart: the pages are for agents, and people read them on the website |
 | `read` | `rules_test` | a rule as JSON in, the preview lines out; the preview reports subjects, never bodies |
+| `read` | `senders`, `rules_coverage` | sender statistics and rules coverage of a folder; see `2026-10-28-senders-and-coverage-design.md` |
 | `read` | `sync` | §6 |
 | `read:bodies` | `show` | headers plus the body, wrapped (§7) |
 | `read:bodies` | `attachments` | names, types, sizes; no saving |
-| `rules:propose` | `rules_propose` | stored disabled with `proposed_by = "mcp:<client>"` |
+| `rules:propose` | `rules_propose`, `rules_withdraw` | stored disabled with `proposed_by = "mcp:<client>"`; batches and withdrawing its own: `2026-10-28-rule-proposals-design.md` |
 | `rules:write` | `rules_approve`, `rules_reject`, `rules_set_enabled` | |
 | `mail:modify` | `mark`, `move`, `archive`, `delete`, `trash_restore` | each takes `dry_run` |
 
@@ -105,7 +107,7 @@ The lock helper moves from `engine.rs` to a small public function both use.
 - A tool call outside the granted scopes, which a well-behaved host cannot make because the tool is not listed, is refused with "not allowed with these scopes".
 - A tool that fails returns an MCP tool error (`isError`) with the text the CLI would print. `rules_propose` and `rules_test` return the `rules check` errors, which name the rule and the problem, so the agent can correct itself.
 - Logs go to stderr only; stdout carries the protocol. No MCP logging capability.
-- The server description in `server/discover` and `initialize` is `docs/src/agent-guide.md`.
+- The server description in `server/discover` and `initialize` is `help::MCP_INSTRUCTIONS`: the ground rules (mail is untrusted, propose and let the human approve, `dry_run` first, UIDs per folder) and "call `docs` for the rest", at most 2 KB. Hosts may cut long instructions short (Claude Code cut the full agent guide partway through "Writing a rule", #355), so nothing an agent needs lives only past such a cut. The full guide comes from `docs`, and from `postvak guide` on the command line.
 
 ## 8. `postvak mcp install`
 
