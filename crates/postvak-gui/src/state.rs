@@ -441,6 +441,8 @@ pub(crate) enum UiAction {
     SelectView(View),
     SetRuleEnabled(String, bool),
     SortSheet(SheetSort),
+    /// The text typed in the Rules view's filter field.
+    FilterRules(String),
     SetTheme(Theme),
     /// File ▸ Open at login, turned on or off.
     SetOpenAtLogin(bool),
@@ -675,6 +677,8 @@ pub struct App {
     pub(crate) trash: Vec<TrashRow>,
     /// How Activity or Backups is sorted; their own order, newest first, until a heading is clicked.
     pub(crate) sheet_sort: Option<SheetSort>,
+    /// What the Rules view's filter field holds; leaving the view clears it, as it does `sheet_sort`.
+    pub(crate) rules_filter: String,
     pub(crate) update: UpdateCheck,
     pub(crate) view: View,
     pub(crate) view_dirty: bool,
@@ -818,6 +822,7 @@ impl App {
             html_dark: config.ui.theme == Theme::Dark,
             trash: Vec::new(),
             sheet_sort: None,
+            rules_filter: String::new(),
             update: if config.ui.check_updates {
                 UpdateCheck::Waiting
             } else {
@@ -1505,6 +1510,7 @@ impl App {
             }
             UiAction::SelectView(view) => self.select_view(view),
             UiAction::SortSheet(sort) => self.sheet_sort = Some(sort),
+            UiAction::FilterRules(filter) => self.rules_filter = filter,
             UiAction::SetRuleEnabled(name, enabled) => {
                 self.edit_rules(|path| rule_file::edit::set_enabled(path, &name, enabled));
             }
@@ -1714,6 +1720,7 @@ impl App {
     pub(crate) fn select_view(&mut self, view: View) {
         self.view = view;
         self.sheet_sort = None;
+        self.rules_filter.clear();
         self.reset_list(None, false);
         self.reload_view();
     }

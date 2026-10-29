@@ -117,6 +117,12 @@ pub(crate) struct Proposal {
     pub marks: String,
 }
 
+impl Proposal {
+    fn matches(&self, filter: &str) -> bool {
+        matches_filter(&[&self.label, &self.by, &self.summary], filter)
+    }
+}
+
 /// A rule in the Rules view's table.
 pub(crate) struct RuleLine {
     pub name: String,
@@ -131,6 +137,45 @@ pub(crate) struct RuleLine {
     pub conditions: String,
     /// "archive, mark read".
     pub actions: String,
+}
+
+impl RuleLine {
+    fn matches(&self, filter: &str) -> bool {
+        let texts = [
+            &*self.label,
+            &self.by,
+            &self.account,
+            &self.folder,
+            &self.conditions,
+            &self.actions,
+        ];
+        matches_filter(&texts, filter)
+    }
+}
+
+/// Whether every word of `filter` is in one of `texts`, ignoring case; an empty filter matches everything.
+fn matches_filter(texts: &[&str], filter: &str) -> bool {
+    let texts: Vec<String> = texts.iter().map(|text| text.to_lowercase()).collect();
+    filter
+        .to_lowercase()
+        .split_whitespace()
+        .all(|word| texts.iter().any(|text| text.contains(word)))
+}
+
+/// What the Rules table says when it shows no rule: none in the file, or none that `filter` matches.
+pub(crate) fn no_rules(filter: &str) -> String {
+    if filter.trim().is_empty() {
+        "rules.toml has no rules yet.".into()
+    } else {
+        format!("No rule matches “{}”.", filter.trim())
+    }
+}
+
+/// The proposals the Rules view shows for `filter`, as indices into `proposals`.
+pub(crate) fn shown_proposals(proposals: &[Proposal], filter: &str) -> Vec<usize> {
+    (0..proposals.len())
+        .filter(|&i| proposals[i].matches(filter))
+        .collect()
 }
 
 /// "1 rule · 2 proposals", beside the Rules title.
@@ -326,9 +371,16 @@ pub(crate) fn sheet_order<T: Ord, const N: usize>(
     order
 }
 
+/// The lines the Rules table shows for `filter`, in its order, as indices into `lines`.
+pub(crate) fn shown_rules(lines: &[RuleLine], sort: Option<SheetSort>, filter: &str) -> Vec<usize> {
+    (rule_order(lines, sort).into_iter())
+        .filter(|&i| lines[i].matches(filter))
+        .collect()
+}
+
 /// The order the Rules table shows `lines` in, as indices into them. Its columns are #, Name, Account, Folder,
 /// Conditions and Actions; # is the order they run in, which is also the order without `sort`.
-pub(crate) fn rule_order(lines: &[RuleLine], sort: Option<SheetSort>) -> Vec<usize> {
+fn rule_order(lines: &[RuleLine], sort: Option<SheetSort>) -> Vec<usize> {
     match sort {
         Some(SheetSort {
             column: 0,
@@ -776,6 +828,49 @@ mod tests {
     }
 
     #[test]
+    fn a_filter_matches_every_word_anywhere_in_a_row_ignoring_case() {
+        let texts = ["Newsletters", "work", "INBOX", "from contains \"news@\""];
+        assert!(super::matches_filter(&texts, ""));
+        assert!(super::matches_filter(&texts, "  NEWS  work "));
+        assert!(super::matches_filter(&texts, "inbox news@"));
+        assert!(!super::matches_filter(&texts, "news home"));
+        assert_eq!(super::no_rules(" "), "rules.toml has no rules yet.");
+        assert_eq!(super::no_rules(" spam "), "No rule matches “spam”.");
+    }
+
+    #[test]
+    fn the_filter_field_narrows_rules_and_proposals_and_leaving_the_view_clears_it() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = rules_view(&fx);
+        let shown = |open: &Open| {
+            let window = open.window();
+            (
+                window.get_rules().row_count(),
+                window.get_proposals().row_count(),
+            )
+        };
+        assert_eq!(shown(&open), (1, 1));
+        open.get("Filter rules").set_accessible_value("CODE");
+        open.tick();
+        assert_eq!(shown(&open), (0, 1));
+        assert_eq!(open.find("No rule matches “CODE”.").len(), 1);
+        assert_eq!(
+            open.find("1 rule · 1 proposal").len(),
+            1,
+            "the header still counts them all"
+        );
+        open.get("Filter rules").set_accessible_value("archive");
+        open.tick();
+        assert_eq!(shown(&open), (1, 0));
+        open.tap("newsletters");
+        let opened = open.with(|live| live.app.rule_draft.as_ref()?.original.clone());
+        assert_eq!(opened.as_deref(), Some("newsletters"));
+        open.with(|live| live.app.select_view(View::Rules));
+        open.tick();
+        assert_eq!(shown(&open), (1, 1));
+    }
+
+    #[test]
     fn preview_counts_what_a_proposal_would_do_to_cached_mail() {
         let fx = Fixture::new(&["work"]);
         fx.add("work", message("INBOX", 1, "your code is 1234"));
@@ -1189,7 +1284,8 @@ mod editor_tests {
             open.find("This rule has unsaved changes.").is_empty(),
             "the click cancels the question"
         );
-        assert_eq!(draft_name(&open).as_deref(), Some("newsletters"));
+        let opened = open.with(|live| live.app.rule_draft.as_ref()?.original.clone());
+        assert_eq!(opened.as_deref(), Some("newsletters"));
     }
 
     /// newsletters open with an unsaved edit, then receipts clicked in the list.
@@ -1283,6 +1379,29 @@ mod editor_tests {
         editor(&open, |e| e.invoke_value_edited(0, "news@".into()));
         open.click("Apply to existing mail");
         assert_eq!(wires.sent().len(), 1);
+    }
+
+    #[test]
+    fn a_filtered_row_keeps_its_number_and_opens_its_own_rule() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = rules_view(&fx, &two_rules());
+        open.get("Filter rules").set_accessible_value("receipt");
+        open.tick();
+        let rules = open.window().get_rules();
+        let row = rules.row_data(0).unwrap();
+        assert_eq!((rules.row_count(), row.number.as_str()), (1, "2"));
+        open.click("Enable receipts");
+        let rules = postvak_core::rules::load(&fx.paths.rules_file())
+            .unwrap()
+            .rules;
+        let enabled: Vec<bool> = rules.iter().map(|r| r.enabled).collect();
+        assert_eq!(
+            enabled,
+            [true, false],
+            "the switch turns off the filtered rule"
+        );
+        open.tap("receipts");
+        assert_eq!(draft_name(&open).as_deref(), Some("receipts"));
     }
 
     #[test]
@@ -1552,7 +1671,8 @@ mod editor_tests {
         let (open, _wires) = leave_edited_newsletters(&fx);
         open.click("Cancel");
         assert!(open.find("This rule has unsaved changes.").is_empty());
-        assert_eq!(draft_name(&open).as_deref(), Some("newsletters"));
+        let opened = open.with(|live| live.app.rule_draft.as_ref()?.original.clone());
+        assert_eq!(opened.as_deref(), Some("newsletters"));
         let value = open.with(|live| {
             live.app.rule_draft.clone().unwrap().conditions[0]
                 .value
@@ -1587,7 +1707,8 @@ mod editor_tests {
         let (open, _wires) = leave_edited_newsletters(&fx);
         std::fs::write(fx.paths.rules_file(), "# emptied\n").unwrap();
         editor(&open, |e| e.invoke_unsaved_save());
-        assert_eq!(draft_name(&open).as_deref(), Some("newsletters"));
+        let opened = open.with(|live| live.app.rule_draft.as_ref()?.original.clone());
+        assert_eq!(opened.as_deref(), Some("newsletters"));
         assert!(open.find("This rule has unsaved changes.").is_empty());
         assert_eq!(open.labels_containing("no such rule").len(), 1);
         assert_eq!(file(&fx), "# emptied\n");
