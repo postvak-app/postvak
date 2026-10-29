@@ -9,4 +9,3 @@ gh = "2.103.3"
 "github:nextest-rs/nextest" = "cargo-nextest-0.9.146"
 "github:rust-lang/mdBook" = "0.5.4"
 resvg = "0.49.0"
-rust = { version = "1.99", components = ["clippy", "rust-analyzer", "rustfmt"] }
