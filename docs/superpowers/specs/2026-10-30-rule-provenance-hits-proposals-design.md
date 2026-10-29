@@ -26,11 +26,11 @@ Surfaces: hit counts ship on the CLI, MCP and GUI together. The provenance strip
 ## The provenance strip (reader)
 
 - Shown under the sender line, above the attachments, on a message a rule acted on; absent otherwise. Drawn as the canvas's Reader board: a 36px rounded strip on `pane.panel`, the rules glyph in `pane.accent`, the sentence in `pane.secondary` with the folder and the rule name in `pane.text` (the rule name in the mono font), and the actions on the right as links.
-- The sentence is the last rule action on this message: "Moved to work / Travel by rule travel at 07:02". Other actions read the same way in plain words (archived, flagged, marked read, tagged …, moved to Junk). The time is written as the list writes dates ("07:02", "yesterday", "14 Oct"). When more than one rule action was logged for the message, the sentence ends with "and N more", which opens a small popup listing each (rule, action, time), newest first.
-- The message is found in the log by its Message-ID, because a rule's move gives it a new UID in another folder. A message without a Message-ID gets no strip.
+- The sentence is the last rule action on this message: "Moved to work / Travel by rule travel at 07:02". Other actions read the same way in plain words (flagged, marked read, tagged …, moved to Junk). The log keeps no destination for `archive`, so an archive reads "Archived by rule …" without naming a folder. The time is written as the list writes dates ("07:02", "yesterday", "14 Oct"). When more than one rule action was logged for the message, the sentence ends with "and N more", which opens a small popup listing each (rule, action, time), newest first.
+- The log names the exact copy, not every message sharing its Message-ID (a Sent copy, Gmail's All Mail, list duplicates): a row matches when its folder and UID are the message's own (an action that left it in place), or when it is a move into the message's folder (`move:<folder>`, or `archive` while that folder is the account's archive folder) and `rule_moves` holds that source folder with the message's Message-ID and internaldate, which MOVE keeps. A message without a Message-ID gets a strip only for actions that left it in place.
 - **Edit rule** opens that rule in the rule dialog, as Rule from sender opens a draft. When the rule is no longer in `rules.toml`, the strip says "by rule travel (removed)" and offers no Edit rule.
 - **Move back** moves the message to the folder the rule took it from: `rule_log.folder` holds the folder the message was in when the rule acted. Shown only when the last action was a move or archive and the message is not already back there. It sends the same `Command::Apply` with `Action::Move` that dragging to a folder sends.
-- **Why?** re-evaluates the rule as it reads now against this message, with the pure `rules::evaluate`, and lists its conditions, each marked as matched or not. It says plainly that this is the rule as it reads now, so it may differ from when it acted.
+- **Why?** checks each condition of the rule as it reads now against this message as if it were still in the folder the rule acted in, skipping whether the rule is on, its account and folder scope and its first-seen time, and lists each condition as matched or not. `rules::evaluate` stops at the first failing condition, so this is a new pure function beside it. It says plainly that this is the rule as it reads now, so it may differ from when it acted.
 
 ## Hit counts (Rules table, CLI, MCP)
 
@@ -56,6 +56,13 @@ The existing card already has who proposed it, the one-line summary, the TOML or
 - While any proposal is waiting, a card at the top of the message list in an Inbox and in All inboxes, not in other folders or in search results.
 - One proposal: "Agent proposal" in small capitals, then "Claude suggests <summary>. Would affect 38 messages." and a **Review** pill that opens the Rules view. The count appears once its dry run is in, and the sentence reads without it until then. Several: "3 rules waiting for you" and Review.
 - It cannot be dismissed; it goes when the proposals are approved or rejected.
+
+## Calls made after the builder check
+
+- Hit counts are keyed by rule name, so a rule removed and re-added under the same name keeps its old counts. Bounding them by `rules_seen` is not worth the query now.
+- Saving a proposal from Edit before approving keeps it a proposal; Approve rule still approves it. The dialog's Enabled switch can turn a proposal on without approving it today; that is outside this work.
+- The banner names the proposer: an MCP client whose name starts with "claude" reads "Claude", another client reads as its name ("cursor suggests …"), anything else "An agent suggests …".
+- The two count columns sort by their numbers and times, not their text.
 
 ## Left to the builder
 

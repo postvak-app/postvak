@@ -37,12 +37,12 @@
 - Test: in-file `#[cfg(test)]` modules of both
 
 **Interfaces:**
-- Produces: `pub fn is_actor(name: &str) -> bool` in `rules`; `Store::rule_actions(&self, message_id: &str) -> Result<Vec<LogEntry>, StoreError>` (rule rows only, newest first); `Store::rule_hits(&self, since: i64) -> Result<Vec<RuleHits>, StoreError>` with `pub struct RuleHits { pub rule: String, pub messages: u64, pub last_fired: i64 }` where `messages` counts distinct `(folder, uid)` acted on at or after `since` and `last_fired` is the newest `at` ever.
+- Produces: `pub fn is_actor(name: &str) -> bool` in `rules`; `Store::rule_actions(&self, msg: &Message, archive: Option<&str>) -> Result<Vec<LogEntry>, StoreError>` (rule rows for this exact copy, newest first, per the spec's matching rule; `archive` is the account's archive folder); `Store::rule_hits(&self, since: i64) -> Result<Vec<RuleHits>, StoreError>` with `pub struct RuleHits { pub rule: String, pub messages: u64, pub last_fired: i64 }` where `messages` counts distinct `(folder, uid)` acted on at or after `since` and `last_fired` is the newest `at` ever.
 
 - [ ] **Step 1: Write the failing tests**
   - `rules::tests::actor_names_are_the_names_direct_actions_log_under`: `is_actor` true for `cli`, `cli:me`, `gui`, `mcp`, `mcp:claude-desktop`; false for `travel`, `client`, `guide`.
   - `store::tests::rule_hits_count_messages_once_and_skip_actors`: log `travel` read+move on one message at t=100, `travel` on a second at t=10, `gui` trash on a third at t=100; `rule_hits(50)` gives exactly `[RuleHits { rule: "travel", messages: 1, last_fired: 100 }]`.
-  - `store::tests::rule_actions_finds_a_moved_message_by_its_id_newest_first`: two `travel` rows and one `gui` row for `<a@x>` in different folders; returns the two `travel` rows, newest first.
+  - `store::tests::rule_actions_finds_the_moved_copy_and_not_its_twins`: `travel` flagged INBOX/1 in place, then moved it `move:Travel` (recorded in `rule_moves` with INBOX, `<a@x>`, internaldate 10); the message now Travel/7 with internaldate 10 gets both rows, newest first; a Sent copy with `<a@x>` and internaldate 11 gets none; a `gui` row is never returned.
 - [ ] **Step 2: Run** `cargo nextest run -p postvak-core actor_names rule_hits rule_actions` — expect compile failure.
 - [ ] **Step 3: Implement.** Migration 023: `CREATE INDEX rule_log_message ON rule_log(message_id); CREATE INDEX rule_log_rule_at ON rule_log(rule_name, at);`. Queries filter actors in Rust with `is_actor` (the actor set has prefixes, so SQL `NOT IN` cannot express it).
 - [ ] **Step 4: Run** the same command, then `cargo nextest run -p postvak-core` — PASS, including the migration tests.
