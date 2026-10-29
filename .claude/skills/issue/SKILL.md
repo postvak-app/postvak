@@ -1,6 +1,6 @@
 ---
 name: issue
-description: Take a Postvak GitHub issue from open to merged. Reads the issue, asks the user what is unclear, checks whether main already changed anything related, updates or closes the issue when that is warranted, implements it, opens a PR, fixes CI and review findings, and enables auto-merge. Use when the user says "/issue 123", "pick up issue #123", "work on the next issue", "pick the best issue" or similar.
+description: Take a Postvak GitHub issue from open to merged — check main still needs it, clear up what's unclear, build it, open a PR, drive it to green and auto-merge. Use when the user says "/issue 123", "pick up issue #123", "work on the next issue", "pick the best issue" or similar.
 argument-hint: "[issue number or URL; empty = pick the clearest, most valuable one]"
 ---
 
@@ -43,7 +43,7 @@ Every session acts as the user's GitHub account, so an assignee can't tell sessi
 2. Comment: `Claimed by a Claude Code session on branch <branch>.`
 3. Re-read the issue's comments. If another session's claim comment is older than yours (the two raced), that session has it: comment that you're backing off, leave the label on (it's theirs), and tell the user.
 
-Release the claim whenever this session stops working on the issue without a PR that closes it: the user drops it, the issue is closed in step 2, or it's split into other issues. Remove the label (current labels minus `in progress`) and comment that the claim is released. Once the PR merges and closes the issue, remove the label too, so closed issues don't show up as in progress.
+Release the claim whenever this session stops working on the issue without a PR that closes it: the user drops it, the issue is closed in step 2, or it's split into other issues. Remove the label (current labels minus `in progress`) and comment that the claim is released.
 
 ## 2. Check what main already did
 
@@ -80,22 +80,11 @@ If the issue is too big for one reviewable PR, propose splitting it into stacked
 ## 4. Build it
 
 - Branch: the session's designated branch if there is one, otherwise `git checkout -b <type>/<issue>-<slug> origin/main`. If it depends on an open PR, stack it on that PR's branch with `gh stack` (see "Stacked PRs" in `AGENTS.md`), which also pushes it and opens its PR in step 5 (`gh stack submit`).
-- Follow `AGENTS.md`: logic in a library module, IMAP through the daemon, tests for new logic, a regression test for a bug, no `unwrap`/`expect`/`panic!` outside tests, a reason for every new dependency, docs in `docs/src/`.
 - Don't broaden the task. Something adjacent you notice goes to the user as a suggestion for a new issue, not into this PR.
 - If something becomes unclear while building (the code contradicts the issue, a choice has visible consequences), stop and ask. Don't guess silently.
 - Commit with Conventional Commits; the squash-merge title drives release-plz's changelog and version bump, so `feat`, `fix`, `docs`, etc. must be accurate and a breaking change gets `!`.
 
-Before pushing, run the Definition of done from `AGENTS.md`:
-
-```sh
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test            # or cargo nextest run
-cargo machete
-cargo deny check
-```
-
-Plus, when they apply: `POSTVAK_BLESS=1 cargo test` after CLI flag or rule type changes; `TZ=UTC UPDATE_SNAPSHOTS=1 cargo test -p postvak-gui snapshots` after GUI work, then look at every changed PNG yourself; `packaging/icons.sh` after icon changes. Commit what they regenerate. Note which platform you compiled on and which you ran on.
+Before pushing, run every check in the Definition of done from `AGENTS.md`, including the regeneration steps that apply (look at every changed snapshot PNG yourself), and commit what they regenerate.
 
 Re-read the full diff (`git diff origin/main...`) adversarially before pushing.
 
