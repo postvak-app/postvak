@@ -47,7 +47,7 @@ pub type Login = Arc<dyn Fn(&AccountConfig, &Secret) -> Result<(), MailError> + 
 
 /// Logs in to the account's real IMAP server.
 pub fn imap_login() -> Login {
-    Arc::new(|account, secret| ImapOps::connect(account, secret).map(drop))
+    Arc::new(ImapOps::test_login)
 }
 
 pub struct Options {
