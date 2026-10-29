@@ -5311,6 +5311,30 @@ mod tests {
     }
 
     #[test]
+    fn only_a_choice_that_destroys_mail_or_a_folder_is_drawn_as_danger() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Old", None);
+        let (mut driver, wires) = fx.driver();
+        driver.apply(UiAction::DeleteFolder(0, "Old".into()));
+        assert_eq!(
+            folders::question(&driver.app).unwrap().danger,
+            [true],
+            "Delete"
+        );
+        driver.apply(UiAction::FolderConfirm(None));
+        driver.receive(&wires, [not_empty("Old", 3, true)]);
+        let danger = folders::question(&driver.app).unwrap().danger;
+        assert_eq!(danger, [false, true], "Trash leads, permanently is danger");
+        driver.apply(UiAction::Close(Dialog::Folder));
+        driver.apply(UiAction::NewFolder(0, None));
+        assert_eq!(
+            folders::question(&driver.app).unwrap().danger,
+            [false],
+            "Create"
+        );
+    }
+
+    #[test]
     fn delete_without_trash_offers_permanent_only() {
         let fx = Fixture::new(&["work"]);
         fx.folder("work", "Old", None);

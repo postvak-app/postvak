@@ -88,6 +88,10 @@ export global Theme {
     out property <color> brand-glow: #e8562f66;
     // The website's peach: the glyph of an empty pane.
     out property <color> brand-soft: #f3b39d;
+    // The brand's glow behind the top of the folder pane.
+    out property <color> frame-glow: dark ? #e8562f24 : #e8562f2e;
+    // The dot before each account's heading, in turn: the website's code colours, which read on both frames.
+    out property <[color]> account-dots: [#9fb6e6, #e6b85c, #9ccb8f, #f3b39d];
     // How long a hover background takes to fade in or out; selection and presses change at once.
     out property <duration> hover-fade: 90ms;
     // How long a message turning read or unread, or an account's status dot, takes to fade.
@@ -107,6 +111,9 @@ export global Theme {
     // An empty pane's heading and the line under it.
     out property <length> empty-size: 24px;
     out property <length> lede-size: 14px;
+    // The wordmark beside the app icon, and the small capitals of an account heading.
+    out property <length> wordmark-size: 20px;
+    out property <length> caps-size: 11px;
     out property <string> text-font: "Hanken Grotesk";
     // Headings and the wordmark; only its SemiBold is bundled.
     out property <string> heading-font: "Bricolage Grotesque";

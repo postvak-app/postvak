@@ -22,6 +22,8 @@ pub(crate) enum Entry {
         error: Option<String>,
         /// After the first account, with space above it.
         gap: bool,
+        /// Which of `Theme.account-dots` marks it: its place among the accounts.
+        tint: usize,
     },
     Folder(FolderEntry),
     Separator,
@@ -181,6 +183,7 @@ pub(crate) fn entries(app: &App) -> Vec<Entry> {
             note: (account.encrypted == Some(false)).then_some("unencrypted"),
             error: account.store.as_ref().err().map(|e| clean(e, false)),
             gap: index > 0,
+            tint: index,
         });
         entries.extend(account_entries(app, index, account));
     }
@@ -363,6 +366,8 @@ pub(crate) struct Question {
     pub error: Option<String>,
     /// (title, enabled, what it confirms).
     pub buttons: Vec<(String, bool, Option<DeleteMode>)>,
+    /// Per button: it deletes the folder or its mail for good, so it is drawn as danger; the others lead as primary.
+    pub danger: Vec<bool>,
 }
 
 /// What the open folder dialog says and offers.
@@ -417,12 +422,18 @@ pub(crate) fn question(app: &App) -> Option<Question> {
             ("Delete folder", text, None, buttons)
         }
     };
+    let deletes = matches!(dialog.kind, FolderKind::Delete { .. });
+    let danger = buttons
+        .iter()
+        .map(|(_, _, mode)| deletes && *mode != Some(DeleteMode::Trash))
+        .collect();
     Some(Question {
         title,
         text,
         name,
         error: dialog.error.clone(),
         buttons,
+        danger,
     })
 }
 
@@ -936,6 +947,20 @@ mod tests {
         );
         open.click("Backups");
         assert_eq!(open.with(|live| live.app.view.clone()), View::Trash);
+    }
+
+    #[test]
+    fn each_account_heading_takes_the_next_dot_colour_in_order() {
+        let fx = Fixture::new(&["home", "work"]);
+        let (app, _wires) = fx.app();
+        let tints: Vec<(String, usize)> = entries(&app)
+            .into_iter()
+            .filter_map(|e| match e {
+                Entry::Account { name, tint, .. } => Some((name, tint)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tints, [("home".to_string(), 0), ("work".to_string(), 1)]);
     }
 
     #[test]

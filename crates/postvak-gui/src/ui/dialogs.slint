@@ -283,6 +283,8 @@ export component FolderDialog {
     in property <string> name;
     in property <string> error;
     in property <[MenuChoice]> buttons;
+    // Per button: drawn as danger rather than primary.
+    in property <[bool]> danger;
     in property <string> close-icon;
     callback edited(string);
     // Enter in the field: the first button.
@@ -329,7 +331,8 @@ export component FolderDialog {
                 text: button.title;
                 enabled: button.enabled;
                 palette: Theme.pane;
-                framed: true;
+                primary: !root.danger[i];
+                danger: root.danger[i];
                 clicked => { root.chosen(i); }
             }
         }

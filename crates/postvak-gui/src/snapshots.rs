@@ -697,9 +697,13 @@ fn the_inbox_lines_up_on_the_grid() {
     assert_eq!(rules.size().height, theme.get_folder_row(), "folder row");
     let pitch = activity.absolute_position().y - rules.absolute_position().y;
     assert_eq!(pitch, theme.get_folder_row(), "folder rows touch");
-    let names = rules.absolute_position().x + pad + theme.get_large_icon() + pad * 3.0 / 2.0;
+    // The account's dot, `pad * 3 / 4` wide, stands over the folder glyphs and its name follows a pad later.
+    let after_dot = rules.absolute_position().x + pad + pad * 3.0 / 4.0 + pad;
     let heading = open.get("work").absolute_position().x;
-    assert_eq!(heading, names, "the account heading over the folder names");
+    assert_eq!(
+        heading, after_dot,
+        "the account's dot over the folder glyphs"
+    );
     let row = edge(&open, "Your receipt for order 1042");
     open.with(|live| live.app.focus = Focus::Body);
     assert_eq!(
