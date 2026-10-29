@@ -1290,6 +1290,7 @@ impl App {
                 let paths = self.paths.clone();
                 self.edit_rules(|_| {
                     rule_file::edit::approve_from_now(&paths, &name, postvak_core::time::now())
+                        .map(drop)
                 });
             }
             UiAction::TrustAuthserv { account, id } => self.trust_authserv(&account, &id),

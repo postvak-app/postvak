@@ -269,17 +269,21 @@ When two devices change the file before they sync, the sync keeps one version an
 
 ## Proposals
 
-Agents never edit `rules.toml`. They run `postvak rules propose`, which appends the rule with `enabled = false` and `proposed_by` set. It takes one rule or several at once, stored in the order given or not at all, and with `--before NAME` or `--after NAME` puts them next to that rule instead of at the end, since order decides which rule runs first. An agent can take back its own pending proposal with `postvak rules withdraw NAME --by WHO`, or change it with `rules propose --replace`; neither touches an approved rule or another proposer's. To review a proposal:
+Agents never edit `rules.toml`. They run `postvak rules propose`, which appends the rule with `enabled = false` and `proposed_by` set. It takes one rule or several at once, stored in the order given or not at all, and with `--before NAME` or `--after NAME` puts them next to that rule instead of at the end, since order decides which rule runs first. An agent can take back its own pending proposal with `postvak rules withdraw NAME --by WHO`, or change it with `rules propose --replace`; neither touches an approved rule or another proposer's.
 
-- `postvak rules list` shows every rule in file order, the order they run in, with its state and proposer; a pending proposal is `off` with a proposer. `--json` adds each rule's whole definition and its 0-based `position` in the file.
+To change a rule that is already there, an agent runs `rules propose --edit` with the rule written as it should read, under its own name. The change is stored right after the rule as a disabled rule named `<name> (edit)`, with `replaces = "<name>"`, and the rule runs unchanged until you approve. Approving writes the change over the rule, which keeps its comments, place and on or off state, removes the proposal, and restarts the rule's clock so it acts as changed only on mail that arrives from then on. A rule has one pending edit at a time. If the rule is renamed or removed in the meantime, the edit can no longer be approved and `rules check` warns about it; reject it. In the window, an edit's card shows the rule's lines as a diff: `-` for what goes, `+` for what comes.
+
+To review a proposal:
+
+- `postvak rules list` shows every rule in file order, the order they run in, with its state and proposer; a pending proposal is `off` with a proposer, and an edit adds which rule it edits. `--json` adds each rule's whole definition and its 0-based `position` in the file.
 - `postvak rules test NAME` previews what a proposal would do.
 - `postvak rules coverage --include-pending` shows what the proposals change for a folder as a whole; see [Coverage](#coverage).
-- `postvak rules approve NAME` enables it.
+- `postvak rules approve NAME` enables it, or for an edit writes it over the rule it edits.
 - `postvak rules reject NAME` removes it.
 
 ## Coverage
 
-`postvak rules coverage --folder INBOX` runs every enabled rule over the mail Postvak has stored for a folder, the way `rules test` does, and changes nothing. It counts the mail that a rule matches, that no rule matches, and that several rules match, which it calls contested. For mail that no rule matches, it lists the senders who send the most. For each contested message, it lists every rule that matches, then what would run: a delete on its own, or else every flag change and only the first move. A broad rule early in the file that takes mail meant for a later rule shows up here. `--include-pending` counts the proposals still waiting for approval as if they were on. `--group-by domain` groups the senders by domain, and `--limit` (20 by default) caps the senders and contested messages shown. The counts always cover the whole folder.
+`postvak rules coverage --folder INBOX` runs every enabled rule over the mail Postvak has stored for a folder, the way `rules test` does, and changes nothing. It counts the mail that a rule matches, that no rule matches, and that several rules match, which it calls contested. For mail that no rule matches, it lists the senders who send the most. For each contested message, it lists every rule that matches, then what would run: a delete on its own, or else every flag change and only the first move. A broad rule early in the file that takes mail meant for a later rule shows up here. `--include-pending` counts the proposals still waiting for approval as if they were on, each edit in place of the rule it edits. `--group-by domain` groups the senders by domain, and `--limit` (20 by default) caps the senders and contested messages shown. The counts always cover the whole folder.
 
 `postvak senders --folder INBOX` groups a folder's mail by sender, or with `--group-by domain` by domain, the biggest group first. Each group shows its message and unread counts, its first and last date, a few subjects, and the enabled rules that already match some of it. `mail.shop.co.uk` and `shop.co.uk` count as one domain. `--after` and `--before` take a date such as `2026-01-15`, or `30d`, `3w`, `6mo` or `1y` back from now.
 

@@ -9,8 +9,12 @@ export struct ProposalData {
     label: string,
     by: string,
     summary: string,
+    // "Adds to rules.toml", or the rule an edit changes.
+    note: string,
+    // An edit, whose `marks` hold "-" and " " too.
+    edits: bool,
     toml: string,
-    // A "+" for each line of `toml`.
+    // A diff's mark for each line of `toml`.
     marks: string,
     preview: string,
 }
@@ -257,10 +261,12 @@ export component RulesPane inherits Rectangle {
                             Rectangle { horizontal-stretch: 1; }
                         }
                         Summary { text: proposal.summary; }
-                        Note { text: "Adds to rules.toml"; }
-                        // Every line is added, so each gets a diff's "+" and tint.
+                        Note { text: proposal.note; }
+                        // A new rule's lines are all added, so the block gets a diff's tint; an edit's are mixed.
                         Rectangle {
-                            background: Theme.pane.added;
+                            background: proposal.edits ? transparent : Theme.pane.added;
+                            border-width: proposal.edits ? 1px : 0;
+                            border-color: Theme.pane.border;
                             border-radius: Theme.pad / 2;
                             // The marks and the lines share font and size, so each "+" sits beside its line.
                             HorizontalLayout {
@@ -272,7 +278,7 @@ export component RulesPane inherits Rectangle {
                                     text: proposal.marks;
                                     font-family: Theme.mono-font;
                                     font-size: Theme.small-size;
-                                    color: Theme.pane.success;
+                                    color: proposal.edits ? Theme.pane.text : Theme.pane.success;
                                 }
                                 Text {
                                     horizontal-stretch: 1;

@@ -463,6 +463,9 @@ enum RulesCommand {
         /// Replace your own pending proposal of the same name instead of refusing the name
         #[arg(long)]
         replace: bool,
+        /// Propose changes to the existing rules of these names, stored as '<name> (edit)'; each rule runs unchanged until approved
+        #[arg(long, conflicts_with_all = ["before", "after"])]
+        edit: bool,
     },
     #[command(about = postvak_core::help::RULES_WITHDRAW)]
     Withdraw {
@@ -1427,8 +1430,13 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                 if json {
                     print_json(postvak_core::output::rule(r, position)?);
                 } else {
+                    let edits = r
+                        .replaces
+                        .as_deref()
+                        .map(|target| format!(" edits {}", clean(target, false)))
+                        .unwrap_or_default();
                     println!(
-                        "{}\t{}\t{}",
+                        "{}\t{}\t{}{edits}",
                         if r.enabled { "on " } else { "off" },
                         clean(&r.name, false),
                         clean(r.proposed_by.as_deref().unwrap_or(""), false)
@@ -1543,6 +1551,7 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             before,
             after,
             replace,
+            edit,
         } => {
             let value: serde_json::Value = serde_json::from_reader(io::stdin().lock())
                 .context("reading rules as JSON from stdin")?;
@@ -1559,10 +1568,21 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                 proposals.place = place;
             }
             proposals.replace |= replace;
+            proposals.edit |= edit;
+            if proposals.edit && proposals.place != Place::End {
+                bail!("an edit keeps its rule's place: give --edit without --before or --after");
+            }
             let names: Vec<String> = proposals
                 .rules
                 .iter()
-                .map(|r| format!("'{}'", clean(&r.name, false)))
+                .map(|r| {
+                    if proposals.edit {
+                        postvak_core::rules::edit::edit_name(&r.name)
+                    } else {
+                        r.name.clone()
+                    }
+                })
+                .map(|name| format!("'{}'", clean(&name, false)))
                 .collect();
             postvak_core::rules::edit::propose_all(&paths.rules_file(), proposals, &cli_by(by))?;
             println!(
@@ -1577,11 +1597,19 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             Ok(())
         }
         RulesCommand::Approve { name } => {
-            postvak_core::rules::edit::approve_from_now(paths, &name, time::now())?;
-            println!(
-                "enabled '{}'; it acts on mail that arrives from now on",
-                clean(&name, false)
-            );
+            let approved = postvak_core::rules::edit::approve_from_now(paths, &name, time::now())?;
+            if approved == name {
+                println!(
+                    "enabled '{}'; it acts on mail that arrives from now on",
+                    clean(&name, false)
+                );
+            } else {
+                println!(
+                    "changed '{}' as '{}' proposed; it acts as changed on mail that arrives from now on",
+                    clean(&approved, false),
+                    clean(&name, false)
+                );
+            }
             Ok(())
         }
         RulesCommand::Reject { name } => {

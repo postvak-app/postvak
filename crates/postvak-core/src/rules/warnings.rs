@@ -1,5 +1,5 @@
 //! What leaves rules.toml valid but not doing what its author meant: a conflicting copy a file sync left beside it,
-//! a rule for an account this device does not have, a rule moving mail to the folder it watches, a rule using
+//! an edit proposal whose rule is gone, a rule for an account this device does not have, a rule moving mail to the folder it watches, a rule using
 //! `authenticated` for an account that trusts no server's `Authentication-Results`, and a folder written the way IMAP
 //! spells it on the wire, as Postvak showed non-ASCII names before it decoded them. `folder_warnings` adds what an
 //! account's own folders show: a move target written for another hierarchy or namespace. `watched_folder_warnings`
@@ -30,6 +30,14 @@ pub fn warnings(path: &Path, rules: &[Rule], accounts: &[&str]) -> Vec<String> {
         })
         .collect();
     for rule in rules {
+        if let Some(target) = rule.replaces.as_deref()
+            && !rules.iter().any(|r| r.name == target)
+        {
+            lines.push(format!(
+                "rule '{}' edits rule '{target}', which is no longer in rules.toml, so it cannot be approved; reject it",
+                rule.name
+            ));
+        }
         if let Some(account) = rule.account.as_deref()
             && !accounts.contains(&account)
         {
@@ -460,6 +468,24 @@ mod tests {
         assert_eq!(
             warnings(&dir.path().join("rules.toml"), &rules, &["work", "home"]),
             ["rule 'old' is for account 'werk', which is not set up here, so it never runs"]
+        );
+    }
+
+    #[test]
+    fn an_edit_of_a_rule_no_longer_there_is_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let rules = parse(
+            "[[rules]]\nname = \"kept\"\nmatch.read = true\nactions.flagged = true\n\n\
+             [[rules]]\nname = \"kept (edit)\"\nenabled = false\nproposed_by = \"mcp:a\"\nreplaces = \"kept\"\nmatch.read = true\nactions.read = true\n\n\
+             [[rules]]\nname = \"gone (edit)\"\nenabled = false\nproposed_by = \"mcp:a\"\nreplaces = \"gone\"\nmatch.read = true\nactions.read = true\n",
+        )
+        .unwrap()
+        .rules;
+        assert_eq!(
+            warnings(&dir.path().join("rules.toml"), &rules, &[]),
+            [
+                "rule 'gone (edit)' edits rule 'gone', which is no longer in rules.toml, so it cannot be approved; reject it"
+            ]
         );
     }
 

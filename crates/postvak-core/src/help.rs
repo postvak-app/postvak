@@ -96,11 +96,12 @@ pub const NO_UIDPLUS: &str = "the server lacks UIDPLUS: a delete also removes an
 pub const MOVE: &str = "Move messages to another folder, creating it if needed";
 pub const RULES_APPLY_EXISTING: &str =
     "Run one enabled rule against mail that predates it; dry run lists what it would do";
-pub const RULES_APPROVE: &str = "Enable a disabled rule, such as a proposal";
+pub const RULES_APPROVE: &str =
+    "Enable a disabled rule, such as a proposal, or write an edit proposal over the rule it edits";
 pub const RULES_CHECK: &str = "Validate rules.toml, and warn about what keeps it from doing what it says, such as a conflicting copy a file sync left beside it or a rule for an account not set up here";
 pub const RULES_COVERAGE: &str = "Run the rules over one folder's stored mail without acting: how many messages a rule matches, none matches and several match; the top senders of unmatched mail; for each contested message every rule that matches and what would run under the real precedence";
 pub const RULES_LIST: &str = "Every rule in file order, the order they run in: its position, its whole definition, whether it is enabled and who proposed it";
-pub const RULES_PROPOSE: &str = "Add rules, disabled, for a human to approve: the arguments are one rule (an entry of `rules` in rules_schema), or `rules`, a list of them stored in order, all or none; `before` or `after` names the rule to put them next to instead of at the end, and `replace` swaps your own pending proposal of the same name";
+pub const RULES_PROPOSE: &str = "Add rules, disabled, for a human to approve: the arguments are one rule (an entry of `rules` in rules_schema), or `rules`, a list of them stored in order, all or none; `before` or `after` names the rule to put them next to instead of at the end, and `replace` swaps your own pending proposal of the same name; `edit` proposes changes to the existing rules of these names, each stored as '<name> (edit)' while the rule runs unchanged until a human approves";
 pub const RULES_REJECT: &str = "Remove a pending proposal";
 pub const RULES_WITHDRAW: &str = "Remove your own pending proposal: a disabled rule whose proposed_by is yours; anything else is left for a human";
 pub const RULES_SCHEMA: &str = "JSON Schema for rules.toml; a proposal is one entry of `rules`";
