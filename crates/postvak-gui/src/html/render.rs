@@ -1321,6 +1321,14 @@ mod tests {
     }
 
     #[test]
+    fn text_on_a_hero_picture_that_fills_less_than_half_its_cell_keeps_its_colour() {
+        // The picture spans the cell's width but paints only 44% of it: the headline is on it, not beside it.
+        let html = "<table width=400 cellspacing=0 cellpadding=0><tr><td style=\"background:url(cid:hero) no-repeat top center;color:#333;height:900px;vertical-align:top\"><h1>Headline</h1><p>Body copy</p></td></tr></table>";
+        let dark = laid_out(html, true, vec![part("hero", solid(400, [240, 240, 240]))]);
+        assert_eq!(colour_of(&dark, "h1"), rgb([0x33; 3]));
+    }
+
+    #[test]
     fn image_pixels_are_the_same_adapted_or_not() {
         let html = "<body style=\"margin:0;background:#ffffff\"><img src=\"cid:logo\" width=20 height=20 style=\"display:block\"></body>";
         let part = || {
@@ -1406,10 +1414,13 @@ mod tests {
 
     #[test]
     fn a_dark_outer_table_counts_as_a_dark_page() {
-        let html = "<table width=\"100%\" bgcolor=\"#1b1b1b\"><tr><td style=\"color:#eeeeee\">Dark design</td></tr></table>";
+        let html = "<table width=\"100%\" bgcolor=\"#1b1b1b\"><tr><td style=\"color:#eeeeee\">Dark design<div style=\"background:#ffffff;color:#111111\">Coupon</div></td></tr></table>";
         let dark = laid_out(html, true, Vec::new());
         assert_eq!(background_of(&dark, "table")[..3], rgb([0x1b; 3]));
         assert_eq!(colour_of(&dark, "td"), rgb([0xee; 3]));
+        // A page judged light would turn the white box inside dark; a dark page keeps the sender's surfaces.
+        assert_eq!(background_of(&dark, "div"), [1.0; 4]);
+        assert_eq!(colour_of(&dark, "div"), rgb([0x11; 3]));
     }
 
     /// A logo each scheme's CSS names a picture of its own for, with dark text on it, above a light article.

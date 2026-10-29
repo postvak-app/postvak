@@ -36,8 +36,9 @@ const HIDDEN: f32 = 1.2;
 const GREY: f32 = 0.05;
 /// How far below the body the outermost container of a page is looked for.
 const CONTAINER_DEPTH: usize = 6;
-/// The share of its box a background picture must paint for the text on it to count as written for the picture:
-/// below it, the picture is an icon or a bullet beside the text.
+/// The share of its box's width a background picture must paint for the text in the box to count as written on the
+/// picture: below it, the picture is an icon or a bullet beside the text. Width, not area: a hero picture above the
+/// body copy of a taller cell paints less than half its area but is under the headline.
 const COVERS: f32 = 0.5;
 
 const WHITE: Rgb = [1.0; 3];
@@ -269,8 +270,10 @@ fn cyclic<T>(list: &[T], idx: usize) -> Option<&T> {
     list.get(idx.checked_rem(list.len())?)
 }
 
-/// Whether the `idx`th background picture of `node`, `image`, paints at least `COVERS` of its box, as its size and
-/// repeat lay it out. A picture without a size of its own, or a box without one, counts as covering.
+/// Whether the `idx`th background picture of `node`, `image`, is what the text in its box is on: it paints at least
+/// `COVERS` of the box's width, as its size and repeat lay it out. A picture without a size of its own, or a box without one, counts as covering. `background-position` is not
+/// read: a picture placed partly outside its box counts as painting all of its tile, the side that keeps the sender's
+/// colours.
 fn covers(node: &blitz_dom::Node, back: &Background, idx: usize, image: &ImageData) -> bool {
     let size = node.final_layout().size;
     let (w, h) = (size.width, size.height);
@@ -316,7 +319,8 @@ fn covers(node: &blitz_dom::Node, back: &Background, idx: usize, image: &ImageDa
         BackgroundRepeatKeyword::NoRepeat => tile.clamp(0.0, side),
         _ => side,
     };
-    extent(across, tile_w, w) * extent(down, tile_h, h) >= COVERS * w * h
+    // Painting nothing down the box (a zero-height tile) paints nothing at all.
+    extent(across, tile_w, w) >= COVERS * w && extent(down, tile_h, h) > 0.0
 }
 
 /// Calls `f` on each colour stop of `gradient`.
