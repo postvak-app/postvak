@@ -34,6 +34,10 @@ impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + std::fmt::
 type ImapSession = Session<Box<dyn Transport>>;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Where a server that has no implicit TLS port usually offers STARTTLS.
+const STARTTLS_PORT: u16 = 143;
+/// How long a failed login test waits for the STARTTLS port before it says nothing about it.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// A server that stops answering mid-command would otherwise hold the account's thread until keepalive gives up, or forever.
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 /// A peer that vanished (a NAT entry dropped during sleep) is noticed after about 60 + 4 × 15 seconds instead of never.
@@ -59,6 +63,32 @@ pub struct ImapOps {
 impl ImapOps {
     pub fn connect(account: &AccountConfig, secret: &Secret) -> MailResult<ImapOps> {
         ImapOps::connect_within(account, secret, CONNECT_TIMEOUT)
+    }
+
+    /// Logs in and out again, for the test before an account is added. When implicit TLS cannot connect but the host
+    /// offers STARTTLS on port 143, the error says to use that.
+    pub fn test_login(account: &AccountConfig, secret: &Secret) -> MailResult<()> {
+        ImapOps::test_login_with(account, secret, STARTTLS_PORT)
+    }
+
+    fn test_login_with(
+        account: &AccountConfig,
+        secret: &Secret,
+        starttls_port: u16,
+    ) -> MailResult<()> {
+        match ImapOps::connect(account, secret) {
+            Ok(_) => Ok(()),
+            Err(MailError::Connect(reason))
+                if account.tls() == Tls::Implicit
+                    && account.port != starttls_port
+                    && offers_starttls_at(&account.host, starttls_port) =>
+            {
+                Err(MailError::Connect(format!(
+                    "{reason}; the server offers STARTTLS on port {starttls_port}, so try that port with STARTTLS"
+                )))
+            }
+            Err(error) => Err(error),
+        }
     }
 
     fn connect_within(
@@ -355,6 +385,30 @@ async fn tls_handshake(
         .await
         .map_err(|e| MailError::Connect(e.to_string()))?;
     Ok(Box::new(tls))
+}
+
+/// Whether `host` answers on `port` in plain text and lists STARTTLS; false on any failure or after `PROBE_TIMEOUT`.
+fn offers_starttls_at(host: &str, port: u16) -> bool {
+    let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return false;
+    };
+    let offered = rt.block_on(async {
+        let probe = async {
+            let tcp = TcpStream::connect((host, port)).await.ok()?;
+            let tcp: Box<dyn Transport> = Box::new(tcp);
+            offers_starttls(&mut Client::new(tcp)).await.ok()
+        };
+        tokio::time::timeout(PROBE_TIMEOUT, probe)
+            .await
+            .ok()
+            .flatten()
+    });
+    // Dropping the runtime would wait for a blocking DNS lookup past the limit.
+    rt.shutdown_background();
+    offered == Some(true)
 }
 
 /// Whether the plain-text greeting or an answer to CAPABILITY lists STARTTLS.
@@ -1722,6 +1776,36 @@ mod tests {
         assert!(seen.contains(&"tls ID".to_string()), "{seen:?}");
         let (_, seen) = connect_plain(Tls::Starttls, "STARTTLS");
         assert!(!seen.iter().any(|c| c.ends_with("ID")), "{seen:?}");
+    }
+
+    #[test]
+    fn a_failed_login_test_over_tls_points_to_starttls_where_it_is_offered() {
+        let test = |capabilities: &'static str| {
+            // Answers TLS's hello in plain text, so implicit TLS cannot connect.
+            let plain = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = plain.local_addr().unwrap().port();
+            let probed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let starttls_port = probed.local_addr().unwrap().port();
+            let servers = [
+                std::thread::spawn(move || serve_plain(plain, "")),
+                std::thread::spawn(move || serve_plain(probed, capabilities)),
+            ];
+            let account = AccountConfig {
+                ca_file: Some(TEST_CA.into()),
+                ..test_account("127.0.0.1", port)
+            };
+            let result =
+                ImapOps::test_login_with(&account, &Secret::new("x".into()), starttls_port);
+            for server in servers {
+                server.join().unwrap();
+            }
+            match result {
+                Err(MailError::Connect(message)) => message,
+                other => panic!("expected a failed connect, got {other:?}"),
+            }
+        };
+        assert!(test("STARTTLS").contains("offers STARTTLS on port"));
+        assert!(!test("").contains("STARTTLS"));
     }
 
     #[test]
