@@ -1583,7 +1583,8 @@ fn interrupted_first_sync_stays_initial_on_retry() {
         noselect: false,
     };
     assert!(sync_folder(&mut ops, &store, &inbox).is_err());
-    assert_eq!(store.folder("INBOX").unwrap().unwrap().last_uid, 0);
+    assert_eq!(store.folder("INBOX").unwrap().unwrap().last_uid, 3);
+    assert_eq!(store.backfill_uid("INBOX").unwrap(), 4);
     assert_eq!(store.message_count("INBOX").unwrap(), 0);
     ops.fail_fetch_after = None;
     sync_folder(&mut ops, &store, &inbox).unwrap();
@@ -1630,7 +1631,7 @@ fn inbox() -> RemoteFolder {
 }
 
 #[test]
-fn sparse_uids_are_fetched_in_chunks_of_500_messages() {
+fn a_first_sync_fetches_the_newest_chunk_first_and_fills_in_history_downward() {
     let mut ops = RecordingOps::default().with_folder("INBOX", None);
     for i in 1..=1200u32 {
         ops.add_mail(
@@ -1652,12 +1653,13 @@ fn sparse_uids_are_fetched_in_chunks_of_500_messages() {
     assert_eq!(
         fetches,
         [
-            "fetch_envelopes INBOX 1000 500000",
-            "fetch_envelopes INBOX 501000 1000000",
-            "fetch_envelopes INBOX 1001000 1200000",
+            "fetch_envelopes INBOX 701000 1200000",
+            "fetch_envelopes INBOX 201000 700000",
+            "fetch_envelopes INBOX 1000 200000",
         ]
     );
     assert_eq!(store.folder("INBOX").unwrap().unwrap().last_uid, 1_200_000);
+    assert_eq!(store.backfill_uid("INBOX").unwrap(), 0);
 }
 
 #[test]
@@ -1675,14 +1677,31 @@ fn interrupted_chunked_first_sync_resumes_and_stays_silent() {
     let store = Store::open_in_memory().unwrap();
     ops.fail_fetch_after = Some(1);
     assert!(sync_folder(&mut ops, &store, &inbox()).is_err());
-    assert_eq!(store.folder("INBOX").unwrap().unwrap().last_uid, 500);
+    assert_eq!(store.folder("INBOX").unwrap().unwrap().last_uid, 1200);
     assert_eq!(store.message_count("INBOX").unwrap(), 500);
+    assert_eq!(
+        store.backfill_uid("INBOX").unwrap(),
+        701,
+        "the newest 500 came first"
+    );
     assert_eq!(store.initial_uid_next("INBOX").unwrap(), 1201);
+    assert_eq!(
+        store.uid_next("INBOX").unwrap(),
+        0,
+        "a folder still filling in never looks unchanged"
+    );
 
     ops.fail_fetch_after = None;
     ops.add_mail("INBOX", 1201, 11 * H, &headers("b@x", "new", "n@x"), None);
+    ops.mail.get_mut("INBOX").unwrap().retain(|e| e.uid != 1000);
     let new = sync_folder(&mut ops, &store, &inbox()).unwrap();
     assert_eq!(new, 701);
+    assert_eq!(
+        store.message_count("INBOX").unwrap(),
+        1200,
+        "uid 1000 went while history filled in"
+    );
+    assert_eq!(store.backfill_uid("INBOX").unwrap(), 0);
     assert_eq!(notify_uids(&mut ops, &store), [1201]);
 }
 
