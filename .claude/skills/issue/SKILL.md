@@ -79,7 +79,7 @@ If the issue is too big for one reviewable PR, propose splitting it into stacked
 
 ## 4. Build it
 
-- Branch: the session's designated branch if there is one, otherwise `git checkout -b <type>/<issue>-<slug> origin/main`. If it depends on an open PR, branch from that PR's branch and stack.
+- Branch: the session's designated branch if there is one, otherwise `git checkout -b <type>/<issue>-<slug> origin/main`. If it depends on an open PR, stack it on that PR's branch with `gh stack` (see "Stacked PRs" in `AGENTS.md`), which also pushes it and opens its PR in step 5 (`gh stack submit`).
 - Follow `AGENTS.md`: logic in a library module, IMAP through the daemon, tests for new logic, a regression test for a bug, no `unwrap`/`expect`/`panic!` outside tests, a reason for every new dependency, docs in `docs/src/`.
 - Don't broaden the task. Something adjacent you notice goes to the user as a suggestion for a new issue, not into this PR.
 - If something becomes unclear while building (the code contradicts the issue, a choice has visible consequences), stop and ask. Don't guess silently.
@@ -111,7 +111,7 @@ Re-read the full diff (`git diff origin/main...`) adversarially before pushing.
 On every CI result or review event, look at the whole PR on its current head:
 
 - **CI red:** reproduce locally, find the root cause, fix, re-run the local checks, push. Never skip, disable or quarantine a test, never push an empty commit to re-trigger CI. A failure that is red on main too is not this PR's: say so on the PR instead.
-- **Merge conflict:** merge `origin/main` into the branch (no rebase, no force-push), regenerate generated files with the repo's tooling, re-run the checks, push.
+- **Merge conflict:** merge `origin/main` into the branch (no rebase, no force-push), regenerate generated files with the repo's tooling, re-run the checks, push. A stacked branch instead takes `gh stack sync`, which rebases it.
 - **Review comments:** fix small asks and push; reply on the thread and resolve it. A larger ask or a design question goes to the user before you act.
 - Keep going until CI is green on the head commit and no review thread is waiting on you.
 
@@ -119,6 +119,7 @@ On every CI result or review event, look at the whole PR on its current head:
 
 Once the PR is open and the local checks passed, enable auto-merge with **squash** (`enable_pr_auto_merge`, or `gh pr merge --auto --squash`). `main` has a merge queue with required checks (`lint`, `test (macos-latest)`, `test (ubuntu-latest)`): auto-merge puts the PR in the queue once they pass, and the queue runs CI again on top of the latest main before merging. That is the safety net.
 
+- A stacked PR can't auto-merge: once it and the PRs below it are green, approved and the user agrees, `gh stack merge <pr>` queues them together.
 - If auto-merge can't be enabled, don't bypass the queue: wait until CI is fully green on the head and no thread is open, then add it to the queue (a squash merge through the API or `gh pr merge --squash`), with the PR title as the commit title.
 - If the queue rejects it (a conflict with what merged ahead of it, or CI red on the combined commit), that's step 6 again: fix, push, re-enable auto-merge.
 - Never merge a red, conflicted or changes-requested PR, and never bypass branch protection.
