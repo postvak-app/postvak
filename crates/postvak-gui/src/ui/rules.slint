@@ -1,5 +1,5 @@
 // The Rules, Activity and Backups views, in place of the list and the body. `rules.rs` words them.
-import { ScrollView, StandardTableView } from "std-widgets.slint";
+import { LineEdit, ScrollView, StandardTableView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Heading, Note, Switch, TextButton } from "common.slint";
 
@@ -110,6 +110,8 @@ export component RulesPane inherits Rectangle {
     in property <bool> rules-ascending: true;
     // The table shows the order rules run in, so a row can be dragged to another place in it.
     in property <bool> rules-reorderable;
+    // What the table says when it shows no rule: none in rules.toml, or none the filter matches.
+    in property <string> rules-empty;
     // Activity and Backups.
     in property <[TableColumn]> columns;
     in property <[[StandardListViewItem]]> cells;
@@ -135,6 +137,8 @@ export component RulesPane inherits Rectangle {
     pure callback dragged-rule(data-transfer) -> int;
     // A rule row dropped on another: the dragged row, the row under the pointer, and whether it goes below that row.
     callback rule-dropped(int, int, bool);
+    // The filter field's text, on every edit.
+    callback filter(string);
 
     // The title row starts where the list's and the reader's do.
     VerticalLayout {
@@ -177,6 +181,17 @@ export component RulesPane inherits Rectangle {
             if root.sheet == Sheet.rules: HorizontalLayout {
                 alignment: end;
                 spacing: Theme.pad;
+                // Narrows the proposals and the table to the rules with every word typed in what a row shows.
+                VerticalLayout {
+                    alignment: center;
+                    LineEdit {
+                        width: 10 * Theme.row;
+                        height: Theme.control;
+                        placeholder-text: "Filter rules";
+                        accessible-label: "Filter rules";
+                        edited(text) => { root.filter(text); }
+                    }
+                }
                 VerticalLayout {
                     alignment: center;
                     TextButton {
@@ -323,7 +338,7 @@ export component RulesPane inherits Rectangle {
                 }
 
                 if root.rules.length == 0: Text {
-                    text: "rules.toml has no rules yet.";
+                    text: root.rules-empty;
                     color: Theme.pane.muted;
                 }
                 if root.rules.length > 0: HorizontalLayout {

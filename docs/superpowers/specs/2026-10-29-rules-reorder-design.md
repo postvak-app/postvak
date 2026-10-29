@@ -16,5 +16,6 @@ Rules run in file order: the first matching `move` and `notify` win, and `stop` 
 
 - A row of the Rules table can be dragged onto another row while the table shows run order: unsorted, or sorted by # ascending. Sorted by anything else, a drop has no clear place, so dragging is off.
 - Dropped on the upper half of a row, the rule goes before it; on the lower half, after it. A line above or below the row shows where. A drop that would leave the rule where it is does nothing.
+- With the Rules filter on, a drop still lands right before or after the rule under the pointer; rules the filter hides keep their places.
 - The drag carries `rule:N`, so a message row's number dropped on the table, or a rule row dropped on a folder, is refused.
 - Proposals are cards above the table and are not dragged; a moved rule keeps its place relative to them as the anchor rule has it.
