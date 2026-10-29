@@ -81,6 +81,11 @@ pub const JUNK: &str = "Report messages as junk: tag them $Junk, which trains se
 pub const UNSUBSCRIBE: &str = "Leave a message's mailing list: by one-click POST when the sender offers it (RFC 8058), else print the page or address from its List-Unsubscribe header to open";
 /// Which keys each row of `list` and `search` keeps.
 pub const FIELDS: &str = "Only these keys in each JSON row, such as uid, from_addr, subject, date; compact stands for account, folder, uid, date, from_addr, subject and flags, plus depth in a thread view and match in a search; account always stays";
+pub const FOLDER: &str = "Create, rename or delete a folder on the server";
+pub const FOLDER_CREATE: &str = "Create a folder and subscribe to it";
+pub const FOLDER_DELETE: &str = "Delete a folder; one holding mail needs --trash or --permanent";
+pub const FOLDER_RENAME: &str =
+    "Rename a folder and the folders under it; rules that name it follow";
 pub const FOLDERS: &str = "List folders with message and unread counts";
 pub const HEADERS: &str =
     "Every header of one message, in order, unfolded and decoded as header rules see it; no body";
@@ -131,9 +136,54 @@ pub const TRASH_LIST: &str = "Deleted mail kept as .eml backups for the retentio
 pub const TRASH_PURGE: &str = "Remove .eml backups older than the account's retention period";
 pub const TRASH_RESTORE: &str = "Append a trashed .eml back into its original folder";
 
+pub fn folder_no_trash() -> String {
+    "the account has no Trash folder; use --permanent".into()
+}
+
+pub fn folder_not_empty(name: &str, count: u32) -> String {
+    format!("{name} holds {count} messages; pass --trash or --permanent")
+}
+
+/// A rule naming a folder about to be renamed; [`folder_rule_followed`] once it is.
+pub fn folder_rule_will_follow(rule: &str) -> String {
+    format!("rule '{rule}' will follow the new name")
+}
+
+pub fn folder_rule_followed(rule: &str) -> String {
+    format!("rule '{rule}' follows the new name")
+}
+
+/// A deleted folder, and where its `count` messages went by `mode`.
+pub fn folder_deleted(name: &str, count: u32, mode: Option<crate::sync::DeleteMode>) -> String {
+    use crate::sync::DeleteMode;
+    match (count, mode) {
+        (0, _) | (_, None) => format!("deleted {name}"),
+        (_, Some(DeleteMode::Trash)) => {
+            format!("deleted {name}; its {count} messages moved to the Trash folder")
+        }
+        (_, Some(DeleteMode::Permanent)) => format!(
+            "deleted {name}; its {count} messages are backed up in Postvak's trash (postvak trash list)"
+        ),
+    }
+}
+
+pub fn folder_rule_split(rule: &str) -> String {
+    format!("rule '{rule}' split per account")
+}
+
+/// `rules` is the names that still name `from`, or why they could not be told because rules.toml did not load.
+pub fn folder_rules_not_updated(from: &str, error: &str, rules: Result<&[String], &str>) -> String {
+    let rest = match rules {
+        Ok(names) => format!("these rules still name {from}: {}", names.join(", ")),
+        Err(load_error) => format!("rules.toml could not be read: {load_error}"),
+    };
+    format!("renamed on the server, but rules.toml was not updated: {error}; {rest}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sync::DeleteMode;
 
     #[test]
     fn every_doc_page_embeds_its_markdown() {
@@ -167,5 +217,41 @@ mod tests {
         assert!(MCP_INSTRUCTIONS.contains("Call docs"));
         assert!(MCP_INSTRUCTIONS.contains("<untrusted_mail_content>"));
         assert!(MCP_INSTRUCTIONS.contains("dry_run"));
+    }
+
+    #[test]
+    fn folder_messages_read_as_the_brief_words_them() {
+        assert_eq!(
+            folder_not_empty("Old", 3),
+            "Old holds 3 messages; pass --trash or --permanent"
+        );
+        assert_eq!(
+            folder_no_trash(),
+            "the account has no Trash folder; use --permanent"
+        );
+        assert_eq!(
+            folder_rule_will_follow("a"),
+            "rule 'a' will follow the new name"
+        );
+        assert_eq!(folder_rule_followed("a"), "rule 'a' follows the new name");
+        assert_eq!(folder_deleted("Old", 0, None), "deleted Old");
+        assert_eq!(
+            folder_deleted("Old", 3, Some(DeleteMode::Trash)),
+            "deleted Old; its 3 messages moved to the Trash folder"
+        );
+        assert_eq!(
+            folder_deleted("Old", 3, Some(DeleteMode::Permanent)),
+            "deleted Old; its 3 messages are backed up in Postvak's trash (postvak trash list)"
+        );
+        assert_eq!(folder_rule_split("a"), "rule 'a' split per account");
+        let names = ["a".to_string(), "b".to_string()];
+        assert_eq!(
+            folder_rules_not_updated("Old", "disk full", Ok(&names)),
+            "renamed on the server, but rules.toml was not updated: disk full; these rules still name Old: a, b"
+        );
+        assert_eq!(
+            folder_rules_not_updated("Old", "disk full", Err("bad toml")),
+            "renamed on the server, but rules.toml was not updated: disk full; rules.toml could not be read: bad toml"
+        );
     }
 }

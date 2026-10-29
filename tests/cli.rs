@@ -1491,3 +1491,24 @@ fn senders_and_rules_coverage_read_the_stored_folder() {
         "{stdout}"
     );
 }
+
+#[test]
+fn folder_delete_refuses_trash_and_permanent_together() {
+    let (home, _store) = seeded_home(&[]);
+    let out = postvak(
+        home.path(),
+        &["folder", "delete", "Old", "--trash", "--permanent"],
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("cannot be used with"), "{stderr}");
+}
+
+#[test]
+fn folder_commands_need_an_account() {
+    let home = tempfile::tempdir().unwrap();
+    let out = postvak(home.path(), &["folder", "create", "Old"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("run `postvak account add`"), "{stderr}");
+}

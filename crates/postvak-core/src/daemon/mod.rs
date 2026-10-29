@@ -140,6 +140,10 @@ pub fn report(event: &Event) {
         | Event::AttachmentFetched { .. }
         | Event::BodyPreview { .. }
         | Event::BodyReady { .. }
+        | Event::FolderCreated { .. }
+        | Event::FolderDeleted { .. }
+        | Event::FolderNotEmpty { .. }
+        | Event::FolderRenamed { .. }
         | Event::Indexed { .. }
         | Event::Restored { .. }
         | Event::RuleApplied { .. }

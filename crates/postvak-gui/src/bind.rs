@@ -135,6 +135,7 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
     let testing = form.is_some_and(|form| form.testing);
     window.set_account_progress(account::progress(testing).into());
 
+    present_folder_dialog(app, window);
     window.set_help_open(app.help_open);
     window.set_history_open(app.history_open);
     let history = status::history(app)
@@ -142,6 +143,22 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
         .map(SharedString::from)
         .collect();
     sync(window.get_history(), history, |m| window.set_history(m));
+}
+
+fn present_folder_dialog(app: &App, window: &MailWindow) {
+    let question = folders::question(app);
+    window.set_folder_open(question.is_some());
+    let Some(question) = question else { return };
+    window.set_folder_title(question.title.into());
+    window.set_folder_text(question.text.into());
+    window.set_folder_field(question.name.is_some());
+    window.set_folder_name(question.name.unwrap_or_default().into());
+    window.set_folder_error(question.error.unwrap_or_default().into());
+    sync(
+        window.get_folder_buttons(),
+        choices(&question.buttons),
+        |m| window.set_folder_buttons(m),
+    );
 }
 
 fn present_list(app: &App, window: &MailWindow) {
@@ -752,7 +769,8 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     });
     window.on_folder_menu(move |i, group, j| {
         on(one(move |app| {
-            let (_, enabled, action) = nth(nth(folder_at(app, i)?.menu(), group)?, j)?;
+            let entry = nth(folders::entries(app), i)?;
+            let (_, enabled, action) = nth(nth(entry.menu(), group)?, j)?;
             enabled.then_some(action)
         }));
     });
@@ -960,6 +978,21 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     window.on_confirm_apply_rule(move || {
         act(UiAction::ConfirmApplyRule);
     });
+    window.on_folder_edited(move |text| {
+        act(UiAction::FolderName(text.into()));
+    });
+    window.on_folder_accepted(move || {
+        on(one(|app| {
+            let (_, enabled, mode) = folders::question(app)?.buttons.into_iter().next()?;
+            enabled.then_some(UiAction::FolderConfirm(mode))
+        }));
+    });
+    window.on_folder_chosen(move |i| {
+        on(one(move |app| {
+            let (_, enabled, mode) = nth(folders::question(app)?.buttons, i)?;
+            enabled.then_some(UiAction::FolderConfirm(mode))
+        }));
+    });
     window.on_approve_rule(move |i| {
         on(one(move |app| {
             Some(UiAction::ApproveRule(proposal(app, i)?))
@@ -1099,8 +1132,11 @@ fn folder_item(entry: &Entry) -> FolderItem {
             note,
             error,
             gap,
+            ..
         } => FolderItem {
             kind: FolderKind::Account,
+            menu_head: model(choices(&entry.menu()[0])),
+            menu_tail: model(choices(&entry.menu()[1])),
             label: name.into(),
             busy: *busy,
             note: note.unwrap_or_default().into(),
@@ -1133,14 +1169,16 @@ fn sync_folders(
     sync(current, items, set);
 }
 
+fn choices<T>(items: &[(String, bool, T)]) -> Vec<MenuChoice> {
+    let choice = |(title, enabled, _): &(String, bool, T)| MenuChoice {
+        title: title.into(),
+        enabled: *enabled,
+    };
+    items.iter().map(choice).collect()
+}
+
 fn folder_row(folder: &FolderEntry) -> FolderItem {
     let [head, tail] = folder.menu();
-    let choices = |items: &[(String, bool, UiAction)]| {
-        model(items.iter().map(|(title, enabled, _)| MenuChoice {
-            title: title.into(),
-            enabled: *enabled,
-        }))
-    };
     FolderItem {
         kind: FolderKind::Folder,
         icon: folder.icon.into(),
@@ -1153,8 +1191,8 @@ fn folder_row(folder: &FolderEntry) -> FolderItem {
         caret: folder.caret().unwrap_or_default().into(),
         caret_name: folder.caret_name().unwrap_or_default().into(),
         droppable: matches!(folder.view, Some(View::Folder { .. })),
-        menu_head: choices(&head),
-        menu_tail: choices(&tail),
+        menu_head: model(choices(&head)),
+        menu_tail: model(choices(&tail)),
         ..FolderItem::default()
     }
 }
@@ -1213,6 +1251,7 @@ fn dialog_of(dialog: Dialog) -> state::Dialog {
         Dialog::Unsaved => state::Dialog::Unsaved,
         Dialog::ApplyConfirm => state::Dialog::ApplyConfirm,
         Dialog::Rule => state::Dialog::Rule,
+        Dialog::Folder => state::Dialog::Folder,
         Dialog::Account => state::Dialog::Account,
         Dialog::About => state::Dialog::About,
         Dialog::Source => state::Dialog::Source,

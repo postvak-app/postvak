@@ -936,6 +936,18 @@ impl MailOps for Harness<'_> {
         self.run(|ops| ops.subscribe_folder(name))
     }
 
+    fn rename_folder(&mut self, from: &str, to: &str) -> MailResult<()> {
+        self.run(|ops| ops.rename_folder(from, to))
+    }
+
+    fn delete_folder(&mut self, name: &str) -> MailResult<()> {
+        self.run(|ops| ops.delete_folder(name))
+    }
+
+    fn unsubscribe_folder(&mut self, name: &str) -> MailResult<()> {
+        self.run(|ops| ops.unsubscribe_folder(name))
+    }
+
     fn append(&mut self, folder: &str, _raw: &[u8], _flags: &[&str]) -> MailResult<()> {
         panic!("sync never appends, yet it appended to {folder}");
     }
