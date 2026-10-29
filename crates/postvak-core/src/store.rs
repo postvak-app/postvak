@@ -38,6 +38,9 @@ fn migration_list() -> Vec<M<'static>> {
         ),
         M::up(include_str!("../migrations/018-folder-list/up.sql")),
         M::up(include_str!("../migrations/019-noselect-folders/up.sql")),
+        M::up(include_str!(
+            "../migrations/020-thread-by-in-reply-to/up.sql"
+        )),
     ]
 }
 
@@ -761,6 +764,15 @@ impl Store {
             m.indexed_at
         ])?;
         Ok(())
+    }
+
+    /// The thread of a stored message with this Message-ID, in any folder.
+    pub fn thread_of(&self, message_id: &str) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .conn
+            .prepare_cached("SELECT thread_id FROM messages WHERE message_id = ?1 LIMIT 1")?
+            .query_row(params![message_id], |r| r.get(0))
+            .optional()?)
     }
 
     pub fn update_flags(&self, folder: &str, uid: u32, flags: &str) -> Result<(), StoreError> {
@@ -1847,6 +1859,28 @@ mod tests {
     }
 
     #[test]
+    fn migration_020_rethreads_stored_replies_without_references() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mail.db");
+        {
+            let mut conn = Connection::open(&path).unwrap();
+            Store::migrations().to_version(&mut conn, 19).unwrap();
+            conn.execute_batch(
+                "INSERT INTO folders (name, uidvalidity) VALUES ('INBOX', 1);
+                 INSERT INTO messages (folder, uid, message_id, in_reply_to, refs, thread_id, internaldate, flags, headers) VALUES
+                   ('INBOX', 1, 'mid@x', 'root@x', 'root@x', 'root@x', 10, '', X''),
+                   ('INBOX', 2, 'reply@x', 'mid@x', NULL, 'mid@x', 11, '', X''),
+                   ('INBOX', 3, 'orphan@x', 'gone@x', NULL, 'gone@x', 12, '', X'');",
+            )
+            .unwrap();
+        }
+        let s = Store::open(&path).unwrap();
+        let thread = |uid| s.message("INBOX", uid).unwrap().unwrap().thread_id;
+        assert_eq!(thread(2), "root@x");
+        assert_eq!(thread(3), "gone@x", "a parent not stored leaves the thread");
+    }
+
+    #[test]
     fn migration_017_decodes_folder_names_stored_in_modified_utf7() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mail.db");
@@ -2498,17 +2532,17 @@ mod tests {
     }
 
     #[test]
-    fn migration_004_drops_the_message_id_index() {
+    fn thread_of_reads_the_message_id_index() {
         let s = store_with_inbox();
-        let indexes: i64 = s
+        let plan: String = s
             .conn
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'messages_message_id'",
+                "EXPLAIN QUERY PLAN SELECT thread_id FROM messages WHERE message_id = 'm@x' LIMIT 1",
                 [],
-                |row| row.get(0),
+                |r| r.get(3),
             )
             .unwrap();
-        assert_eq!(indexes, 0);
+        assert!(plan.contains("messages_message_id"), "{plan}");
     }
 
     #[test]

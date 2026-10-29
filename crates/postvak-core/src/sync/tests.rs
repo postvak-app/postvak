@@ -145,6 +145,23 @@ fn first_sync_inserts_folders_and_messages() {
 }
 
 #[test]
+fn a_reply_with_only_in_reply_to_joins_its_parents_thread() {
+    let mut ops = RecordingOps::default().with_folder("INBOX", None);
+    let root = headers("alice@x", "plan", "root@x");
+    let middle = "From: bob@x\r\nSubject: Re: plan\r\nMessage-ID: <mid@x>\r\nIn-Reply-To: <root@x>\r\nReferences: <root@x>\r\n\r\n";
+    let reply = "From: carol@x\r\nSubject: Re: plan\r\nMessage-ID: <reply@x>\r\nIn-Reply-To: <mid@x>\r\n\r\n";
+    ops.add_mail("INBOX", 1, 10 * H, &root, None);
+    ops.add_mail("INBOX", 2, 11 * H, middle, None);
+    ops.add_mail("INBOX", 3, 12 * H, reply, None);
+    let store = Store::open_in_memory().unwrap();
+    sync_all(&mut ops, &store).unwrap();
+    assert_eq!(
+        store.message("INBOX", 3).unwrap().unwrap().thread_id,
+        "root@x"
+    );
+}
+
+#[test]
 fn first_sync_does_not_notify() {
     let mut ops = ops_with_inbox();
     let dir = tempfile::tempdir().unwrap();

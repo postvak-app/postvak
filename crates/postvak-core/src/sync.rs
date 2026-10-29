@@ -529,7 +529,15 @@ pub fn sync_folder_with(
         let envelopes = ops.fetch_envelopes(first, last)?;
         store.transaction(|| {
             for env in envelopes {
-                store.insert_message(&to_message(&folder.name, env))?;
+                let mut message = to_message(&folder.name, env);
+                // Without References, an In-Reply-To naming a stored message joins that message's thread.
+                if message.refs.is_none()
+                    && let Some(parent) = &message.in_reply_to
+                    && let Some(thread) = store.thread_of(parent)?
+                {
+                    message.thread_id = thread;
+                }
+                store.insert_message(&message)?;
                 new += 1;
             }
             store.upsert_folder(&row(last))
