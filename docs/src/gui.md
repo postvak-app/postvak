@@ -57,9 +57,11 @@ Each account lists its INBOX and special folders (Archive, Drafts, Sent, Junk, T
 
 Right-click a folder, or the account's name for a top-level one, for **New folder…**, **Rename…** and **Delete…**. `postvak folder create`, `rename` and `delete` do the same. A new folder is subscribed, so other mail apps show it too.
 
+- **New folder** on a folder makes a subfolder of it; on the account's name it makes a top-level folder, which on servers that keep every folder under INBOX goes under INBOX.
+
 - **Rename** changes the folder and the folders under it. Rules that name it follow. A rule for every account is split into one copy per account, named `<name> (<account>)`, so only the account's own copy follows the rename.
-- **Delete** of an empty folder just removes it. A folder holding mail asks how many messages it holds and whether to move them to Trash or delete them permanently. A permanent delete saves each message as an `.eml` backup first; Backups, or `postvak trash restore`, brings one back and creates the folder again if it is gone.
-- INBOX and the special folders (Archive, Drafts, Sent, Junk, Trash) cannot be renamed or deleted, and a folder with one under it cannot be renamed.
+- **Delete** of an empty folder just removes it. A folder holding mail says how many messages it holds and asks whether to move them to Trash or delete them permanently; moving them to Trash is offered only when the account has a Trash folder. A permanent delete saves each message as an `.eml` backup first; Backups, or `postvak trash restore`, brings one back and creates the folder again if it is gone.
+- INBOX and the special folders (Archive, Drafts, Sent, Junk, Trash, and the server's own such as Gmail's All Mail and Starred) cannot be renamed or deleted, and a folder with one under it cannot be renamed. Nor can a folder be renamed into one of its own subfolders.
 - A folder with subfolders cannot be deleted; delete or move the subfolders first.
 
 ## Message actions and search
