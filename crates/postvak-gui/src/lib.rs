@@ -1025,6 +1025,20 @@ mod tests {
     }
 
     #[test]
+    fn an_idle_tick_draws_nothing() {
+        let fx = Fixture::new(&["work"]);
+        crate::test_support::redraws();
+        let (open, _wires) = fx.window();
+        for _ in 0..3 {
+            open.tick();
+            crate::test_support::drawn();
+        }
+        open.advance(crate::state::POLL);
+        open.tick();
+        assert!(!crate::test_support::drawn());
+    }
+
+    #[test]
     fn the_desktop_entry_names_the_app_id() {
         let entry = include_str!("../../../packaging/linux/io.github.postvak_app.postvak.desktop");
         for key in ["Icon", "StartupWMClass"] {
