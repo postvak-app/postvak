@@ -277,6 +277,9 @@ mod recording {
         pub list_status: bool,
         /// Leaves UIDNEXT out of SELECT answers, as RFC 9051 allows.
         pub no_uidnext: bool,
+        /// Compares folder names ignoring case, like Gmail and Exchange: CREATE refuses a name differing only in case
+        /// from a folder, and MOVE lands in that folder.
+        pub case_insensitive: bool,
         /// Per message the flags last seen and the modseq they got, so tests may edit `mail` directly.
         modseqs: HashMap<(String, u32), (Vec<String>, u64)>,
         highest_modseq: HashMap<String, u64>,
@@ -287,6 +290,17 @@ mod recording {
     }
 
     impl RecordingOps {
+        /// The folder the server takes `name` for: the existing one of that name in any case on a case-insensitive
+        /// server, else `name` itself.
+        fn server_name(&self, name: &str) -> String {
+            if self.case_insensitive
+                && let Some(existing) = self.mail.keys().find(|k| k.eq_ignore_ascii_case(name))
+            {
+                return existing.clone();
+            }
+            name.to_string()
+        }
+
         pub fn with_folder(mut self, name: &str, special_use: Option<&str>) -> RecordingOps {
             self.folders.push(RemoteFolder {
                 name: name.into(),
@@ -692,6 +706,7 @@ mod recording {
         fn move_message(&mut self, uid: u32, to: &str) -> MailResult<()> {
             self.calls
                 .push(format!("move {} {uid} -> {to}", self.selected));
+            let to = &self.server_name(to);
             if !self.mail.contains_key(to) {
                 return Err(MailError::Protocol(format!("no folder {to}")));
             }
@@ -718,7 +733,7 @@ mod recording {
             if let Some(e) = self.fail_next_create.take() {
                 return Err(e);
             }
-            if self.mail.contains_key(name) {
+            if self.mail.contains_key(&self.server_name(name)) {
                 return Err(MailError::Protocol(format!("[ALREADYEXISTS] {name}")));
             }
             self.folders.push(RemoteFolder {

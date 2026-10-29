@@ -541,9 +541,19 @@ impl Conditions {
     }
 }
 
+/// `name`, or `INBOX` for INBOX in any case: RFC 3501 5.1 makes that one name case-insensitive, and servers list it as
+/// `INBOX`. Other names keep their case, since `Lists` and `lists` can be two folders.
+pub fn inbox_spelled(name: &str) -> &str {
+    if name.eq_ignore_ascii_case("INBOX") {
+        "INBOX"
+    } else {
+        name
+    }
+}
+
 impl CompiledRule {
     pub fn folder(&self) -> &str {
-        self.rule.folder.as_deref().unwrap_or("INBOX")
+        inbox_spelled(self.rule.folder.as_deref().unwrap_or("INBOX"))
     }
 
     pub fn applies_to_account(&self, account: &str) -> bool {

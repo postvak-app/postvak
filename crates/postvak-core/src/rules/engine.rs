@@ -515,6 +515,30 @@ actions = { flagged = true }
     }
 
     #[test]
+    fn a_rule_for_inbox_in_any_case_watches_inbox() {
+        let id = identity();
+        let toml = "[[rules]]\nname = \"inbox\"\nfolder = \"Inbox\"\nmatch.read = false\nactions.flagged = true\n";
+        let plan = evaluate(
+            &rules(toml, 0),
+            &msg("a@x", "pieter@example.com", "s", 100, false),
+            &ctx(&id, 200),
+        );
+        assert_eq!(
+            plan.actions.len(),
+            1,
+            "INBOX is case-insensitive (RFC 3501 5.1)"
+        );
+        assert!(folder_needs_body(
+            &rules(
+                "[[rules]]\nname = \"b\"\nfolder = \"inbox\"\nmatch.body = { contains = \"x\" }\nactions.flagged = true\n",
+                0
+            ),
+            "work",
+            "INBOX"
+        ));
+    }
+
+    #[test]
     fn to_me_and_alias() {
         let id = identity();
         let toml = r#"

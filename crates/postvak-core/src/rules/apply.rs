@@ -238,7 +238,7 @@ pub fn apply_many(
         }
         Action::Move(_) | Action::Archive => {
             let target = match &planned.action {
-                Action::Move(target) => Ok(target.clone()),
+                Action::Move(target) => Ok(crate::rules::inbox_spelled(target).to_string()),
                 _ => archive_folder(store),
             };
             match target {
@@ -354,17 +354,16 @@ fn move_many(
             spelled(target, None)
         }
     };
-    let target = target.as_str();
-    let refused = if known {
-        None
+    let (target, placeholder, refused) = if known {
+        (target, false, None)
     } else {
-        create_and_subscribe(target, ops)
+        missing_target(&target, ops, store)
     };
-    if let Err(e) = ops.move_messages(&uids_of(&moving), target) {
+    if let Err(e) = ops.move_messages(&uids_of(&moving), &target) {
         fail_all(&moving, &with_create_error(e, refused), &mut results);
         return results;
     }
-    if !known && let Err(e) = store.upsert_folder(&new_folder(target)) {
+    if placeholder && let Err(e) = store.upsert_folder(&new_folder(&target)) {
         log::warn!("{target}: could not record the folder; the next sync adds it: {e}");
     }
     for msg in moving {
@@ -427,7 +426,7 @@ fn first_move<'a>(
         return Ok(None);
     };
     let target = match &planned.action {
-        Action::Move(target) => target.clone(),
+        Action::Move(target) => crate::rules::inbox_spelled(target).to_string(),
         _ => archive_folder(store)?,
     };
     Ok((!folder_name::same(&target, &msg.folder)).then_some((planned, target)))
@@ -553,7 +552,7 @@ pub fn move_target(
 ) -> Result<Option<String>, StoreError> {
     let target = match action {
         Action::Archive => special_folder(store, "Archive")?,
-        Action::Move(target) => Some(target.clone()),
+        Action::Move(target) => Some(crate::rules::inbox_spelled(target).to_string()),
         Action::Trash => special_folder(store, "Trash")?,
         Action::Junk => special_folder(store, "Junk")?,
         Action::NotJunk => Some("INBOX".to_string()),
@@ -579,19 +578,47 @@ fn spelled(target: &str, known: Option<Folder>) -> (String, bool) {
     }
 }
 
-/// Creates the move target and subscribes to it, so clients that list only subscribed folders show the mail moved
-/// there. The folder may exist on the server before our first sync of it, so the move is tried anyway; the server's
-/// refusal comes back, for the move's error to carry if the move fails too.
-fn create_and_subscribe(target: &str, ops: &mut dyn MailOps) -> Option<MailError> {
+/// Where a move to `target`, a folder the store does not know, goes; whether to record it until its first sync; and
+/// the server's refusal to create it, for the move's error to carry if the move fails too. It is created and
+/// subscribed, so clients that list only subscribed folders show the mail moved there. A refused create may mean the
+/// folder is there already: before our first sync of it, or under another spelling the store knows on a server that
+/// ignores case (Gmail, Exchange), which the move then uses rather than adding a second row for the same folder. A
+/// server that respects case creates `target` beside it, as the rule asks.
+fn missing_target(
+    target: &str,
+    ops: &mut dyn MailOps,
+    store: &Store,
+) -> (String, bool, Option<MailError>) {
     if let Err(e) = ops.create_folder(target) {
+        if let Some(existing) = other_case(store, target) {
+            log::debug!(
+                "{target}: create failed ({e}), moving to {existing}, the server's spelling"
+            );
+            return (existing, false, None);
+        }
         log::debug!("{target}: create failed ({e}), trying the move anyway");
-        return Some(e);
+        return (target.to_string(), true, Some(e));
     }
     // The move does not need it, so a refusal only costs the folder its place in those clients.
     if let Err(e) = ops.subscribe_folder(target) {
         log::warn!("{target}: created, but could not subscribe to it: {e}");
     }
-    None
+    (target.to_string(), true, None)
+}
+
+/// The one folder the store knows whose name is `target` in another case, apart from Unicode normalization too; none
+/// when two are, since which one a server took `target` for is then unknown.
+fn other_case(store: &Store, target: &str) -> Option<String> {
+    let lower = folder_name::nfc(target).to_lowercase();
+    let folders = store
+        .folders()
+        .inspect_err(|e| log::debug!("{target}: could not read the folders: {e}"))
+        .ok()?;
+    let mut matches = folders.into_iter().filter(|f| {
+        !folder_name::same(&f.name, target) && folder_name::nfc(&f.name).to_lowercase() == lower
+    });
+    let found = matches.next()?;
+    matches.next().is_none().then_some(found.name)
 }
 
 /// A failed move's error, with why creating its folder failed before it: a bad name, a wrong namespace or a missing
@@ -623,16 +650,15 @@ fn move_to(
     store: &Store,
 ) -> Result<(), ApplyError> {
     let (target, known) = spelled(target, folder_name::known(store, target)?);
-    let target = target.as_str();
-    let refused = if known {
-        None
+    let (target, placeholder, refused) = if known {
+        (target, false, None)
     } else {
-        create_and_subscribe(target, ops)
+        missing_target(&target, ops, store)
     };
-    ops.move_message(current.uid, target)
+    ops.move_message(current.uid, &target)
         .map_err(|e| with_create_error(e, refused))?;
-    if !known {
-        store.upsert_folder(&new_folder(target))?;
+    if placeholder {
+        store.upsert_folder(&new_folder(&target))?;
     }
     store.remove_message(&current.folder, current.uid)?;
     Ok(())
@@ -907,6 +933,106 @@ mod tests {
                 .contains(&"\\Seen".to_string()),
             "mark_read runs before the move, so the server copy carries it"
         );
+    }
+
+    #[test]
+    fn a_move_in_another_case_on_a_case_insensitive_server_uses_the_folders_own_name() {
+        let (mut ops, store, trash, _dir, msg) = setup();
+        ops.case_insensitive = true;
+        ops.create_folder("Lists").unwrap();
+        store.upsert_folder(&new_folder("Lists")).unwrap();
+        store
+            .upsert_folder(&Folder {
+                uidvalidity: 1,
+                ..new_folder("Lists")
+            })
+            .unwrap();
+        ops.calls.clear();
+        apply(
+            &plan(vec![Action::Move("lists".into())]),
+            &msg,
+            &mut ops,
+            &store,
+            &trash,
+            500,
+        )
+        .unwrap();
+        assert_eq!(ops.mail["Lists"].len(), 1);
+        assert_eq!(
+            store.folder("lists").unwrap(),
+            None,
+            "no second row for the same folder"
+        );
+        assert!(
+            ops.calls.iter().any(|c| c == "move INBOX 5 -> Lists"),
+            "{:?}",
+            ops.calls
+        );
+    }
+
+    #[test]
+    fn a_folder_differing_only_in_case_on_a_case_sensitive_server_is_created() {
+        let (mut ops, store, trash, _dir, msg) = setup();
+        ops.create_folder("Lists").unwrap();
+        store
+            .upsert_folder(&Folder {
+                uidvalidity: 1,
+                ..new_folder("Lists")
+            })
+            .unwrap();
+        apply(
+            &plan(vec![Action::Move("lists".into())]),
+            &msg,
+            &mut ops,
+            &store,
+            &trash,
+            500,
+        )
+        .unwrap();
+        assert_eq!(ops.mail["lists"].len(), 1, "a new folder, as asked");
+        assert!(ops.mail["Lists"].is_empty());
+    }
+
+    #[test]
+    fn a_move_to_inbox_in_another_case_moves_to_inbox() {
+        let (mut ops, store, trash, _dir, mut msg) = setup();
+        msg.folder = "Archive".into();
+        msg.uid = 7;
+        store.insert_message(&msg).unwrap();
+        ops.add_mail("Archive", 7, 100, "Subject: hi\r\n\r\n", None);
+        ops.select("Archive").unwrap();
+        ops.calls.clear();
+        apply(
+            &plan(vec![Action::Move("Inbox".into())]),
+            &msg,
+            &mut ops,
+            &store,
+            &trash,
+            500,
+        )
+        .unwrap();
+        assert!(
+            ops.calls.iter().any(|c| c == "move Archive 7 -> INBOX"),
+            "{:?}",
+            ops.calls
+        );
+        assert!(!ops.calls.iter().any(|c| c.starts_with("create_folder")));
+        assert_eq!(store.folder("Inbox").unwrap(), None);
+    }
+
+    #[test]
+    fn a_move_to_inbox_in_any_case_from_inbox_is_skipped() {
+        let (mut ops, store, trash, _dir, msg) = setup();
+        apply(
+            &plan(vec![Action::Move("inbox".into())]),
+            &msg,
+            &mut ops,
+            &store,
+            &trash,
+            500,
+        )
+        .unwrap();
+        assert!(!ops.calls.iter().any(|c| c.starts_with("move")));
     }
 
     #[test]

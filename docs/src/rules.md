@@ -16,7 +16,7 @@ actions.read = true
 |---|---|---|
 | `name` | required | Unique. Renaming a rule makes it a new rule. |
 | `account` | every account | Only for this account. |
-| `folder` | `INBOX` | The folder the rule watches. |
+| `folder` | `INBOX` | The folder the rule watches. `INBOX` matches in any case; other names match exactly. |
 | `enabled` | `true` | `false` skips the rule. Proposals start disabled. |
 | `proposed_by` | none | Set by `postvak rules propose`, and removed when the rule is approved. |
 | `match` | required | Conditions that must all hold. At least one. |
@@ -24,7 +24,7 @@ actions.read = true
 
 `match` and `actions` are both tables, so each key appears once, and the order you write them in does not matter. Write them as dotted keys, one per line, as the examples do, or as one inline table: `actions = { move = "Lists", read = true }`.
 
-A tag is printable ASCII without spaces, backslashes or `( ) { % * " ]`, and `$PostvakRestored` is reserved. `name`, `account`, `folder` and `move` folders must not be blank, may not contain control characters, and are at most 255 characters.
+A tag is printable ASCII without spaces, backslashes or `( ) { % * " ]`, and `$PostvakRestored` is reserved. `name`, `account`, `folder` and `move` folders must not be blank, may not contain control characters, and are at most 255 characters. On a server that ignores case in folder names, such as Gmail or Exchange, a `move` to `lists` while `Lists` exists goes to `Lists`; a server that respects case, such as Dovecot, creates `lists` beside it.
 
 Folder names are written in plain text, `Archief/Één` included; Postvak encodes them as IMAP requires (modified UTF-7) and shows the server's folders decoded. A level of a `folder` or `move` folder (the parts between `/`) may not start or end with a space. A `move` folder also may not contain `*` or `%`, which IMAP reads as wildcards, or an empty level: `/Lists`, `Lists//GitHub` and `Lists/` are refused. A name typed with separate accents, as macOS can produce, finds the folder the server spells with precomposed letters (Unicode NFC) and the other way round, and a new folder is created in NFC.
 

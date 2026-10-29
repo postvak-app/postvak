@@ -97,7 +97,7 @@ fn uses_authenticated(m: &Match) -> bool {
 
 /// INBOX is the same folder in any case (RFC 3501 §5.1); other names may differ by case alone on some servers.
 fn same_folder(a: &str, b: &str) -> bool {
-    a == b || (a.eq_ignore_ascii_case("INBOX") && b.eq_ignore_ascii_case("INBOX"))
+    super::inbox_spelled(a) == super::inbox_spelled(b)
 }
 
 /// Files beside `path` named like a sync tool's conflicting copy of it, sorted: Syncthing's
