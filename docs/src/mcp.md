@@ -148,7 +148,7 @@ With more than one visible account, every tool that acts on one message needs `a
 
 ## Alongside the window and the CLI
 
-The MCP server reads the same local store as the mail window. Everything that needs the mail server goes through the Postvak daemon, which owns the connections: actions, `trash_restore`, `show` and `attachments` for a message not yet fetched, `search` with `server`, and `sync`. The first such call starts the daemon if none runs. The window picks up the changes as soon as the daemon reports them, so an archived message disappears from the list.
+The MCP server reads the same local store as the mail window. Everything that needs the mail server goes through the Postvak daemon, which owns the connections: actions, `trash_restore`, `show` and `attachments` for a message not yet fetched, `search` with `server`, and `sync`. The first such call starts the daemon if none runs. The window picks up the changes as soon as the daemon reports them, so an archived message disappears from the list. Like the daemon, the server reads `config.toml` again when it changes, so an edit such as a new `trusted_authserv_ids` counts from its next call, without restarting the host.
 
 ## Troubleshooting
 
