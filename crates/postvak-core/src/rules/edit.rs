@@ -5,8 +5,9 @@ use std::path::Path;
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
 
 use crate::config::Config;
+use crate::folder_name;
 use crate::paths::{Paths, edit_toml};
-use crate::rules::{Rule, RuleFile, RulesError, compile, invalid, parse};
+use crate::rules::{Action, Rule, RuleFile, RulesError, compile, invalid, parse};
 use crate::store::Store;
 
 /// Appends `rule` disabled and attributed to `by`, so it only acts once a human approves it.
@@ -450,6 +451,132 @@ fn remove_at(rules: &mut ArrayOfTables, index: usize) -> Option<String> {
         }
         None => Some(orphaned),
     }
+}
+
+/// A folder renamed from `from` to `to` in `account`; `delimiter` is the account's, so children (`from/x`) follow.
+pub struct FolderRename<'a> {
+    pub account: &'a str,
+    pub accounts: &'a [String],
+    pub from: &'a str,
+    pub to: &'a str,
+    pub delimiter: Option<&'a str>,
+}
+
+impl FolderRename<'_> {
+    fn renamed(&self, folder: &str) -> Option<String> {
+        if folder_name::same(folder, self.from) {
+            return Some(self.to.to_string());
+        }
+        let delimiter = self.delimiter?;
+        let (folder, from) = (folder_name::nfc(folder), folder_name::nfc(self.from));
+        let rest = folder
+            .strip_prefix(from.as_ref())?
+            .strip_prefix(delimiter)?;
+        Some(format!("{}{delimiter}{rest}", self.to))
+    }
+
+    fn in_scope(&self, rule: &Rule) -> bool {
+        rule.account.as_deref().is_none_or(|a| a == self.account)
+    }
+
+    /// `rule` with its folders renamed, or `None` when it is another account's or names none of them.
+    fn rewrite(&self, rule: &Rule) -> Option<Rule> {
+        if !self.in_scope(rule) {
+            return None;
+        }
+        let mut changed = rule.clone();
+        let mut any = false;
+        if let Some(to) = rule.folder.as_deref().and_then(|f| self.renamed(f)) {
+            changed.folder = Some(to);
+            any = true;
+        }
+        for action in &mut changed.actions {
+            if let Action::Move(folder) = action
+                && let Some(to) = self.renamed(folder)
+            {
+                *folder = to;
+                any = true;
+            }
+        }
+        any.then_some(changed)
+    }
+
+    fn splits(&self, rule: &Rule) -> bool {
+        rule.account.is_none() && self.accounts.len() > 1
+    }
+}
+
+/// The rules that name the renamed folder or a child, as `(name, will_split)`: a rule for every account is split into
+/// one copy per account, so only the renamed account's follows.
+pub fn rules_naming(file: &RuleFile, rename: &FolderRename) -> Vec<(String, bool)> {
+    file.rules
+        .iter()
+        .filter(|rule| rename.rewrite(rule).is_some())
+        .map(|rule| (rule.name.clone(), rename.splits(rule)))
+        .collect()
+}
+
+/// Rewrites `folder` and `move` of the rules that name the renamed folder or a child, returning the names of the rules
+/// changed or split. A rule for every account, with several accounts, becomes one copy per account in its place.
+pub fn follow_rename(path: &Path, rename: &FolderRename) -> Result<Vec<String>, RulesError> {
+    let mut touched = Vec::new();
+    edit_file(path, |doc| {
+        let file = parse(&doc.to_string())?;
+        let Some(tables) = doc.get_mut("rules").and_then(Item::as_array_of_tables_mut) else {
+            return Ok(());
+        };
+        let mut taken: Vec<String> = file.rules.iter().map(|r| r.name.clone()).collect();
+        let mut rebuilt = Vec::new();
+        for (rule, table) in file.rules.iter().zip(tables.iter()) {
+            let Some(renamed) = rename.rewrite(rule) else {
+                rebuilt.push(table.clone());
+                continue;
+            };
+            touched.push(rule.name.clone());
+            if !rename.splits(rule) {
+                rebuilt.push(rewritten(table, &renamed)?);
+                continue;
+            }
+            let others = rename.accounts.iter().filter(|a| *a != rename.account);
+            let copies = others
+                .map(|account| (account.clone(), rule.clone()))
+                .chain([(rename.account.to_string(), renamed)]);
+            for (position, (account, mut copy)) in copies.enumerate() {
+                copy.name = free_name(&taken, &format!("{} ({account})", rule.name));
+                taken.push(copy.name.clone());
+                copy.account = Some(account);
+                let mut copied = rewritten(table, &copy)?;
+                if position > 0 {
+                    copied.set_position(None);
+                    copied.decor_mut().set_prefix("\n");
+                }
+                rebuilt.push(copied);
+            }
+        }
+        tables.clear();
+        for table in rebuilt {
+            tables.push(table);
+        }
+        Ok(())
+    })?;
+    Ok(touched)
+}
+
+/// A copy of `table` holding `rule`, with the unchanged lines and comments as written.
+fn rewritten(table: &Table, rule: &Rule) -> Result<Table, RulesError> {
+    let mut copy = table.clone();
+    merge(&mut copy, &rule_table(rule)?);
+    Ok(copy)
+}
+
+fn free_name(taken: &[String], wanted: &str) -> String {
+    let mut name = wanted.to_string();
+    let mut number = 2;
+    while taken.contains(&name) {
+        name = format!("{wanted} {number}");
+        number += 1;
+    }
+    name
 }
 
 /// `rule` as rules.toml holds it, in the docs' style: what a proposal adds to the file.
@@ -1279,5 +1406,136 @@ mod tests {
             format!("# my rules\n\n# codes go after an hour\n{KEEP}")
         );
         assert!(remove_rule(&path, "codes").is_err());
+    }
+
+    fn follow(
+        text: &str,
+        accounts: &[&str],
+        account: &str,
+        from: &str,
+        to: &str,
+    ) -> (Vec<String>, String) {
+        let (_dir, path) = rules_file(text);
+        let accounts: Vec<String> = accounts.iter().map(|a| a.to_string()).collect();
+        let rename = FolderRename {
+            account,
+            accounts: &accounts,
+            from,
+            to,
+            delimiter: Some("/"),
+        };
+        let changed = follow_rename(&path, &rename).unwrap();
+        (changed, std::fs::read_to_string(&path).unwrap())
+    }
+
+    const WORK: &str = "[[rules]]\nname = \"r\" # keep\naccount = \"a\"\nfolder = \"Work\"\nmatch.read = true\nactions.move = \"Work/Old\"\n";
+
+    #[test]
+    fn follow_rename_rewrites_folder_and_move() {
+        let (changed, text) = follow(WORK, &["a"], "a", "Work", "Job");
+        assert_eq!(changed, ["r"]);
+        assert_eq!(
+            text,
+            WORK.replace("\"Work\"", "\"Job\"")
+                .replace("Work/Old", "Job/Old")
+        );
+    }
+
+    #[test]
+    fn follow_rename_follows_children_not_lookalikes() {
+        let text = "[[rules]]\nname = \"a\"\nfolder = \"Work/Clients\"\nmatch.read = true\nactions.flagged = true\n\n[[rules]]\nname = \"b\"\nfolder = \"Workshop\"\nmatch.read = true\nactions.flagged = true\n";
+        let (changed, text) = follow(text, &["a"], "a", "Work", "Work2");
+        assert_eq!(changed, ["a"]);
+        assert!(text.contains("folder = \"Work2/Clients\""), "{text}");
+        assert!(text.contains("folder = \"Workshop\""), "{text}");
+    }
+
+    #[test]
+    fn follow_rename_matches_nfd_names() {
+        let text = "[[rules]]\nname = \"a\"\nfolder = \"Cafe\u{301}\"\nmatch.read = true\nactions.flagged = true\n";
+        let (changed, text) = follow(text, &["a"], "a", "Caf\u{e9}", "Bar");
+        assert_eq!(changed, ["a"]);
+        assert!(text.contains("folder = \"Bar\""), "{text}");
+    }
+
+    #[test]
+    fn follow_rename_leaves_other_accounts_rules() {
+        let (changed, text) = follow(WORK, &["a", "b"], "b", "Work", "Job");
+        assert!(changed.is_empty());
+        assert_eq!(text, WORK);
+    }
+
+    #[test]
+    fn follow_rename_rewrites_unscoped_rule_with_one_account() {
+        let unscoped = WORK.replace("account = \"a\"\n", "");
+        let (changed, text) = follow(&unscoped, &["a"], "a", "Work", "Job");
+        assert_eq!(changed, ["r"]);
+        assert!(
+            text.contains("name = \"r\" # keep") && text.contains("folder = \"Job\""),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn follow_rename_splits_unscoped_rule_with_several_accounts() {
+        let unscoped = WORK.replace("account = \"a\"\n", "");
+        let (changed, text) = follow(&unscoped, &["a", "b", "c"], "b", "Work", "Job");
+        assert_eq!(changed, ["r"]);
+        let rules = parse(&text).unwrap().rules;
+        let seen: Vec<_> = rules
+            .iter()
+            .map(|r| {
+                (
+                    r.name.as_str(),
+                    r.account.as_deref().unwrap(),
+                    r.folder.as_deref().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("r (a)", "a", "Work"),
+                ("r (c)", "c", "Work"),
+                ("r (b)", "b", "Job")
+            ]
+        );
+        assert!(text.contains("name = \"r (a)\" # keep"), "{text}");
+    }
+
+    #[test]
+    fn split_copies_avoid_taken_names() {
+        let unscoped = format!(
+            "{}\n[[rules]]\nname = \"r (a)\"\nmatch.read = true\nactions.flagged = true\n",
+            WORK.replace("account = \"a\"\n", "")
+        );
+        let (_, text) = follow(&unscoped, &["a", "b"], "b", "Work", "Job");
+        let names: Vec<_> = parse(&text)
+            .unwrap()
+            .rules
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        assert_eq!(names, ["r (a) 2", "r (b)", "r (a)"]);
+    }
+
+    #[test]
+    fn rules_naming_marks_splits() {
+        let text = format!(
+            "{WORK}\n[[rules]]\nname = \"all\"\nfolder = \"Work\"\nmatch.read = true\nactions.flagged = true\n\n[[rules]]\nname = \"inbox\"\nmatch.read = true\nactions.flagged = true\n"
+        );
+        let file = parse(&text).unwrap();
+        let accounts = ["a".to_string(), "b".to_string()];
+        let rename = FolderRename {
+            account: "a",
+            accounts: &accounts,
+            from: "Work",
+            to: "Job",
+            delimiter: Some("/"),
+        };
+        assert_eq!(
+            rules_naming(&file, &rename),
+            [("r".to_string(), false), ("all".to_string(), true)]
+        );
     }
 }
