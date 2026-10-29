@@ -1,5 +1,5 @@
 //! The MCP tools: definitions, scope filtering, and results cleaned for an agent.
-use super::backend::{Filter, Sight};
+use super::backend::{Filter, ListRequest, Sight};
 use std::collections::BTreeSet;
 use std::sync::{Arc, LazyLock};
 
@@ -20,8 +20,9 @@ use serde_json::{Value, json};
 use super::{Backend, Scope};
 use postvak_core::help;
 use postvak_core::message::clean_for_agent;
-use postvak_core::output;
+use postvak_core::output::{self, Fields, RowKind};
 use postvak_core::rules::Action;
+use postvak_core::senders::GroupBy;
 
 const BODY_LIMIT: usize = 100 * 1024;
 /// Header blocks run to a few KB; DKIM, ARC and long Received chains rarely pass this.
@@ -109,6 +110,14 @@ struct NameArgs {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct DocsArgs {
+    /// agent-guide, rules, search or cli; leave it out for the list of pages
+    #[serde(default)]
+    page: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct SetEnabledArgs {
     name: String,
     enabled: bool,
@@ -121,6 +130,69 @@ struct RulesTestArgs {
     rule: postvak_core::rules::Rule,
     /// Only this account; default every visible account
     account: Option<String>,
+}
+
+fn twenty() -> u32 {
+    20
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SendersArgs {
+    /// Only this account; default every visible account
+    account: Option<String>,
+    /// Folder name as `folders` lists it; default INBOX
+    #[serde(default = "inbox")]
+    folder: String,
+    /// address (the default) or domain, the registrable domain of the address
+    #[serde(default)]
+    group_by: GroupBy,
+    /// At most this many groups per account, at most 500
+    #[serde(default = "fifty")]
+    limit: u32,
+    /// Only mail that arrived on or after this date: 2026-01-15, or 30d, 3w, 6mo, 1y back from now
+    after: Option<String>,
+    /// Only mail that arrived before this date: 2026-01-15, or 30d, 3w, 6mo, 1y back from now
+    before: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct CoverageArgs {
+    /// Only this account; default every visible account
+    account: Option<String>,
+    /// Folder name as `folders` lists it; default INBOX
+    #[serde(default = "inbox")]
+    folder: String,
+    /// Count the proposals still waiting for approval as if they were enabled
+    #[serde(default)]
+    include_pending: bool,
+    /// How to group the senders of unmatched mail: address (the default) or domain
+    #[serde(default)]
+    group_by: GroupBy,
+    /// At most this many unmatched senders and contested messages per account, at most 500; the counts cover everything
+    #[serde(default = "twenty")]
+    limit: u32,
+}
+
+/// The input schema of `rules_propose`: one rule's fields, or `rules`. Hosts refuse a top-level `anyOf`, so the two
+/// forms share one object; `rules::edit::read_proposals` reads it and refuses a mix.
+#[derive(JsonSchema)]
+#[allow(
+    dead_code,
+    reason = "only describes the arguments; read_proposals parses them"
+)]
+struct ProposeArgs {
+    #[serde(flatten)]
+    rule: Option<postvak_core::rules::Rule>,
+    /// Several rules, each an entry of `rules` in rules_schema, stored in this order, all or none; give this or one rule's fields
+    rules: Option<Vec<postvak_core::rules::Rule>>,
+    /// Put the rules right before the rule of this name instead of at the end; earlier rules run first
+    before: Option<String>,
+    /// Put the rules right after the rule of this name instead of at the end
+    after: Option<String>,
+    /// Replace your own pending proposal of the same name, instead of refusing the name
+    replace: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -168,6 +240,14 @@ struct ListArgs {
     /// Only messages with attachments, guessed from the headers; with `threads`, threads with one
     #[serde(default)]
     attachments: bool,
+    #[schemars(description = help::CURSOR)]
+    cursor: Option<String>,
+    #[schemars(description = help::FIELDS)]
+    #[serde(default)]
+    fields: Vec<String>,
+    #[schemars(description = help::COUNT_ONLY)]
+    #[serde(default)]
+    count_only: bool,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -241,14 +321,22 @@ struct SearchArgs {
     /// Only what matches as typed: no close matches such as corrected typos
     #[serde(default)]
     exact: bool,
+    #[schemars(description = help::CURSOR)]
+    cursor: Option<String>,
+    #[schemars(description = help::FIELDS)]
+    #[serde(default)]
+    fields: Vec<String>,
+    #[schemars(description = help::COUNT_ONLY)]
+    #[serde(default)]
+    count_only: bool,
 }
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 enum How {
-    Flag,
+    Flagged,
     Read,
-    Unflag,
+    Unflagged,
     Unread,
 }
 
@@ -270,7 +358,7 @@ struct SelectionArgs {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct MarkArgs {
-    /// read, unread, flag or unflag
+    /// read, unread, flagged or unflagged
     how: How,
     /// Message uids in `folder`, as `list` returns them
     uids: Vec<u32>,
@@ -335,6 +423,9 @@ struct RestoreArgs {
 const UNSEEN_CONDITIONS: &str =
     "a header condition needs the read:headers scope and a body condition read:bodies";
 
+/// What the analysis tools do with a rule they may not run.
+const UNSEEN_RULES_SKIPPED: &str = "rules with a header condition, without the read:headers scope, or a body condition, without read:bodies, are left out and named in skipped_rules";
+
 /// Every tool, in any order; `Server::new` sorts them and listing filters by scope. `bodies` is whether
 /// `read:bodies` is granted, which changes what `search` covers.
 fn catalog(bodies: bool) -> Vec<ToolDef> {
@@ -371,6 +462,7 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
             Effect::Destructive,
             help::DELETE,
         ),
+        ToolDef::new::<DocsArgs>("docs", Scope::Read, Effect::ReadOnly, help::DOCS),
         ToolDef::new::<NoArgs>(
             "accounts",
             Scope::Read,
@@ -410,13 +502,19 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
             Effect::ReadOnly,
             help::RULES_CHECK,
         ),
+        ToolDef::new::<CoverageArgs>(
+            "rules_coverage",
+            Scope::Read,
+            Effect::ReadOnly,
+            mail(&format!("{}; {UNSEEN_RULES_SKIPPED}", help::RULES_COVERAGE)),
+        ),
         ToolDef::new::<NoArgs>(
             "rules_list",
             Scope::Read,
             Effect::ReadOnly,
             help::RULES_LIST,
         ),
-        ToolDef::new::<postvak_core::rules::Rule>(
+        ToolDef::new::<ProposeArgs>(
             "rules_propose",
             Scope::RulesPropose,
             Effect::Changes,
@@ -432,13 +530,22 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
             "rules_schema",
             Scope::Read,
             Effect::ReadOnly,
-            help::RULES_SCHEMA,
+            format!(
+                "{}; call docs with page rules for what every key means, with examples",
+                help::RULES_SCHEMA
+            ),
         ),
         ToolDef::new::<SetEnabledArgs>(
             "rules_set_enabled",
             Scope::RulesWrite,
             Effect::Destructive,
             help::RULES_SET_ENABLED,
+        ),
+        ToolDef::new::<NameArgs>(
+            "rules_withdraw",
+            Scope::RulesPropose,
+            Effect::Changes,
+            help::RULES_WITHDRAW,
         ),
         ToolDef::new::<RulesTestArgs>(
             "rules_test",
@@ -447,6 +554,12 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
             mail(&format!("{}; {UNSEEN_CONDITIONS}", help::RULES_TEST)),
         ),
         ToolDef::new::<SearchArgs>("search", Scope::Read, Effect::ReadOnly, mail(&search)),
+        ToolDef::new::<SendersArgs>(
+            "senders",
+            Scope::Read,
+            Effect::ReadOnly,
+            mail(&format!("{}; {UNSEEN_RULES_SKIPPED}", help::SENDERS)),
+        ),
         ToolDef::new::<MessageArgs>(
             "show",
             Scope::ReadBodies,
@@ -562,12 +675,34 @@ fn dispatch(
         }
         "list" => {
             let a: ListArgs = args(arguments)?;
-            let filter = Filter {
-                unread: a.unread,
-                flagged: a.flagged,
-                attachments: a.attachments,
+            let request = ListRequest {
+                folder: &a.folder,
+                filter: Filter {
+                    unread: a.unread,
+                    flagged: a.flagged,
+                    attachments: a.attachments,
+                },
+                threads: a.threads,
             };
-            rows(backend.list(a.account.as_deref(), &a.folder, a.limit, a.threads, filter)?)
+            if a.count_only {
+                count_alone(&a.cursor, &a.fields)?;
+                return Ok(output::count(
+                    backend.list_count(a.account.as_deref(), &request)?,
+                ));
+            }
+            let kind = if a.threads {
+                RowKind::Thread
+            } else {
+                RowKind::Message
+            };
+            let fields = Fields::parse(&a.fields, kind)?;
+            page_of(backend.list(
+                a.account.as_deref(),
+                &request,
+                a.limit,
+                a.cursor.as_deref(),
+                &fields,
+            )?)
         }
         "log" => {
             let a: LogArgs = args(arguments)?;
@@ -576,9 +711,9 @@ fn dispatch(
         "mark" => {
             let a: MarkArgs = args(arguments)?;
             let action = match a.how {
-                How::Flag => Action::Flag,
+                How::Flagged => Action::Flag,
                 How::Read => Action::MarkRead,
-                How::Unflag => Action::Unflag,
+                How::Unflagged => Action::Unflag,
                 How::Unread => Action::MarkUnread,
             };
             backend.act(
@@ -622,13 +757,35 @@ fn dispatch(
             let _: NoArgs = args(arguments)?;
             backend.rules_check()
         }
+        "rules_coverage" => {
+            let a: CoverageArgs = args(arguments)?;
+            backend.rules_coverage(
+                a.account.as_deref(),
+                &a.folder,
+                a.include_pending,
+                a.group_by,
+                a.limit,
+                sight,
+            )
+        }
         "rules_list" => {
             let _: NoArgs = args(arguments)?;
             rows(backend.rules_list()?)
         }
         "rules_propose" => {
-            let rule: postvak_core::rules::Rule = args(arguments)?;
-            backend.propose(rule, &by, sight)
+            let arguments = arguments.unwrap_or_default();
+            let batch = arguments.get("rules").is_some_and(Value::is_array);
+            let mut proposed = backend.propose(Value::Object(arguments), &by, sight)?;
+            match proposed.pop() {
+                // One rule's fields: the result names the rule, as it did before batches.
+                Some(only) if !batch && proposed.is_empty() => Ok(
+                    json!({ "proposed": only["name"], "account": only["account"], "enabled": false, "proposed_by": by }),
+                ),
+                last => {
+                    proposed.extend(last);
+                    Ok(json!({ "proposed": proposed, "enabled": false, "proposed_by": by }))
+                }
+            }
         }
         "rules_reject" => {
             let a: NameArgs = args(arguments)?;
@@ -642,13 +799,31 @@ fn dispatch(
             let a: SetEnabledArgs = args(arguments)?;
             backend.set_enabled(&a.name, a.enabled, sight)
         }
+        "rules_withdraw" => {
+            let a: NameArgs = args(arguments)?;
+            backend.withdraw(&a.name, &by)
+        }
         "rules_test" => {
             let a: RulesTestArgs = args(arguments)?;
             rows(backend.rules_test(a.rule, a.account.as_deref(), sight)?)
         }
         "search" => {
             let a: SearchArgs = args(arguments)?;
-            rows(backend.search(
+            if a.count_only {
+                count_alone(&a.cursor, &a.fields)?;
+                if a.server {
+                    bail!("a count reads the local store alone; leave out server");
+                }
+                return Ok(output::count(backend.search_count(
+                    &a.query,
+                    a.account.as_deref(),
+                    a.folder.as_deref(),
+                    sight.bodies,
+                    a.exact,
+                )?));
+            }
+            let fields = Fields::parse(&a.fields, RowKind::Hit)?;
+            page_of(backend.search(
                 &a.query,
                 a.account.as_deref(),
                 a.folder.as_deref(),
@@ -656,7 +831,20 @@ fn dispatch(
                 sight.bodies,
                 a.server,
                 a.exact,
+                a.cursor.as_deref(),
+                &fields,
             )?)
+        }
+        "senders" => {
+            let a: SendersArgs = args(arguments)?;
+            backend.senders(
+                a.account.as_deref(),
+                &a.folder,
+                a.group_by,
+                a.limit,
+                (a.after.as_deref(), a.before.as_deref()),
+                sight,
+            )
         }
         "unsubscribe" => {
             let a: UnsubscribeArgs = args(arguments)?;
@@ -696,6 +884,23 @@ fn rows(rows: Vec<Value>) -> Result<Value> {
     Ok(json!({ "rows": rows }))
 }
 
+/// A page of `list` or `search`: its rows, and `next` when more follow.
+fn page_of((rows, next): (Vec<Value>, Option<String>)) -> Result<Value> {
+    let mut page = json!({ "rows": rows });
+    if let Some(next) = next {
+        page["next"] = next.into();
+    }
+    Ok(page)
+}
+
+/// A count stands alone: no cursor and no fields beside it.
+fn count_alone(cursor: &Option<String>, fields: &[String]) -> Result<()> {
+    if cursor.is_some() || !fields.is_empty() {
+        bail!("count_only returns one number; leave out cursor and fields");
+    }
+    Ok(())
+}
+
 /// Keeps the fields that fit in `HEADERS_LIMIT`, in order; true when some were dropped.
 fn cap_headers(fields: &mut Vec<postvak_core::message::HeaderField>) -> bool {
     let mut used = 0;
@@ -731,6 +936,32 @@ pub(super) fn wrap_body(text: &str) -> (String, bool) {
     )
 }
 
+/// The `docs` tool: a page as Markdown text, or the list of pages when none or an unknown one is asked for.
+/// The pages are ours, embedded at build time, so their layout stays and nothing in them is mail.
+fn docs(arguments: Option<JsonObject>) -> CallToolResult {
+    let page = match args::<DocsArgs>(arguments) {
+        Ok(a) => a.page,
+        Err(e) => return error_result(&format!("{e:#}")),
+    };
+    match page.as_deref() {
+        None => CallToolResult::success(vec![ContentBlock::text(format!(
+            "Pages, by the name to pass as page:\n{}",
+            help::doc_index()
+        ))]),
+        Some(name) => match help::doc_page(name) {
+            Some(page) => CallToolResult::success(vec![ContentBlock::text(page.text)]),
+            None => error_result(&format!(
+                "no page {name}; the pages are {}",
+                help::DOC_PAGES
+                    .iter()
+                    .map(|page| page.name)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        },
+    }
+}
+
 fn error_result(text: &str) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(clean_for_agent(text, false))])
 }
@@ -758,7 +989,7 @@ impl ServerHandler for Server {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("postvak", env!("CARGO_PKG_VERSION")))
-            .with_instructions(postvak_core::help::AGENT_GUIDE)
+            .with_instructions(postvak_core::help::MCP_INSTRUCTIONS)
     }
 
     async fn list_tools(
@@ -793,6 +1024,9 @@ impl ServerHandler for Server {
         };
         if !self.scopes.contains(&tool.scope) {
             return Ok(error_result("not allowed with these scopes").into());
+        }
+        if name == "docs" {
+            return Ok(docs(request.arguments).into());
         }
         let client = context.client_info().map(|info| info.name);
         let sight = Sight {

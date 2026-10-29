@@ -14,7 +14,7 @@ use postvak_core::store::LogEntry;
 use postvak_core::sync::{Activity, Event};
 use postvak_core::trash::Trash;
 
-const RULES: &str = "[[rules]]\nname = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions = [\"archive\"]\n\n[[rules]]\nname = \"receipts\"\naccount = \"work\"\nmatch.subject = { contains = \"receipt\" }\nactions = [{ move = \"Receipts\" }]\n\n[[rules]]\nname = \"codes\"\nenabled = false\nproposed_by = \"agent\"\nmatch.subject = { contains = \"verification code\" }\nactions = [\"delete\"]\n";
+const RULES: &str = "[[rules]]\nname = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions = { archive = true }\n\n[[rules]]\nname = \"receipts\"\naccount = \"work\"\nmatch.subject = { contains = \"receipt\" }\nactions = { move = \"Receipts\" }\n\n[[rules]]\nname = \"codes\"\nenabled = false\nproposed_by = \"agent\"\nmatch.subject = { contains = \"verification code\" }\nactions = { delete = true }\n";
 
 /// Whether local times read as UTC, now and at the fixture time; a zone such as Europe/London is UTC in winter but
 /// not in September.
@@ -83,10 +83,7 @@ fn open(fx: &Fixture) -> (Open, Wires) {
             activity: Activity::Idle { since: AT },
         },
     ];
-    for event in events {
-        wires.events.send(event).unwrap();
-    }
-    open.tick();
+    open.receive(&wires, events);
     (open, wires)
 }
 
@@ -159,12 +156,7 @@ fn a_sender_logo() {
     super::test_support::cache_github_logo(&fx.paths);
     let (open, _wires) = open(&fx);
     open.with(|live| live.app.select_view(work_inbox()));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !open.window().get_body_info().has_logo && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        open.tick();
-    }
-    assert!(open.window().get_body_info().has_logo);
+    open.tick_until(|open| open.window().get_body_info().has_logo);
     snapshot(&open, "gui_sender_logo");
 }
 
@@ -355,7 +347,7 @@ fn rule_editor() {
 #[test]
 fn apply_confirm() {
     let fx = Fixture::mailbox("light");
-    let tidy = "[[rules]]\nname = \"tidy\"\naccount = \"work\"\nmatch.subject = { contains = \"a\" }\nactions = [\"delete\"]\n";
+    let tidy = "[[rules]]\nname = \"tidy\"\naccount = \"work\"\nmatch.subject = { contains = \"a\" }\nactions = { delete = true }\n";
     std::fs::write(fx.paths.rules_file(), tidy).unwrap();
     let (open, _wires) = open(&fx);
     open.with(|live| live.app.select_view(View::Rules));
@@ -382,7 +374,7 @@ fn activity() {
             "move Receipts",
             "Your receipt for order 1042",
         ),
-        (9, "gui", "flag", "Re: Planning the offsite"),
+        (9, "gui", "flagged", "Re: Planning the offsite"),
     ];
     for (minutes, rule, action, subject) in entries {
         let entry = LogEntry {
@@ -453,8 +445,6 @@ fn newsletter(theme: &str, width: f32) -> (Fixture, Open, Wires) {
 
 /// INBOX of `work` with a message whose HTML part is `html` open, once it is painted.
 fn html_message(theme: &str, width: f32, html: &str) -> (Fixture, Open, Wires) {
-    use std::time::{Duration, Instant};
-
     use slint::ComponentHandle;
 
     use super::fixture::mail;
@@ -477,7 +467,27 @@ fn html_message(theme: &str, width: f32, html: &str) -> (Fixture, Open, Wires) {
         .window()
         .set_size(slint::LogicalSize::new(width, 800.0));
     open.with(|live| live.app.select_view(work_inbox()));
-    let deadline = Instant::now() + Duration::from_secs(30);
+    wait_painted(&open);
+    (fx, open, wires)
+}
+
+/// Ticks the window until the HTML page is laid out and every strip in view is painted.
+fn wait_painted(open: &Open) {
+    wait_repainted(open, &[]);
+}
+
+/// The strips the HTML view shows now. Holding them keeps their memory from being reused by later strips.
+fn shown_strips(open: &Open) -> Vec<std::sync::Arc<crate::html::Pixels>> {
+    open.with(|live| {
+        let view = live.app.body.as_ref().and_then(|b| b.html_view.as_ref());
+        view.map(|v| v.strips.values().cloned().collect())
+            .unwrap_or_default()
+    })
+}
+
+/// As `wait_painted`, and none of the strips shown is one of `old`: a restyle keeps the old strips on screen until
+/// its layout arrives, so they alone do not say the page was painted again.
+fn wait_repainted(open: &Open, old: &[std::sync::Arc<crate::html::Pixels>]) {
     let painted = |open: &Open| {
         open.with(|live| {
             let view = live.app.body.as_ref().and_then(|b| b.html_view.as_ref());
@@ -485,18 +495,14 @@ fn html_message(theme: &str, width: f32, html: &str) -> (Fixture, Open, Wires) {
                 v.page.is_some()
                     && !v.requested.is_empty()
                     && v.requested.iter().all(|s| v.strips.contains_key(s))
+                    && !v
+                        .strips
+                        .values()
+                        .any(|new| old.iter().any(|old| std::sync::Arc::ptr_eq(new, old)))
             })
         })
     };
-    while !painted(&open) {
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for the renderer"
-        );
-        std::thread::sleep(Duration::from_millis(5));
-        open.tick();
-    }
-    (fx, open, wires)
+    open.tick_until(painted);
 }
 
 #[test]
@@ -505,10 +511,32 @@ fn html_light() {
     snapshot(&open, "gui_html_light");
 }
 
+/// The newsletter adapted to the dark theme.
 #[test]
 fn html_dark() {
     let (_fx, open, _wires) = newsletter("dark", 1280.0);
     snapshot(&open, "gui_html_dark");
+}
+
+/// The newsletter in the dark theme with Original colours on: as in the light theme, on a white page.
+#[test]
+fn html_dark_original_colours() {
+    let (_fx, open, _wires) = newsletter("dark", 1280.0);
+    let adapted = shown_strips(&open);
+    open.window().invoke_toggle_original_colours();
+    wait_repainted(&open, &adapted);
+    snapshot(&open, "gui_html_dark_original");
+}
+
+/// Mail with its own dark-mode CSS, shown as its sender wrote it for the dark theme.
+#[test]
+fn html_dark_own_css() {
+    let (_fx, open, _wires) = html_message(
+        "dark",
+        1280.0,
+        include_str!("../../../tests/fixtures/newsletter-dark-css.html"),
+    );
+    snapshot(&open, "gui_html_dark_own_css");
 }
 
 /// The software renderer casts every rectangle to `i16`, so a page background as tall as a very long message
@@ -651,7 +679,7 @@ fn home_up_to_date(wires: &Wires) {
         account: "home".into(),
         activity: Activity::Idle { since: AT },
     };
-    wires.events.send(event).unwrap();
+    wires.send([event]);
 }
 
 /// Tells the window that `work` has fetched `done` of INBOX's `total` headers.
@@ -665,7 +693,7 @@ fn fetching(wires: &Wires, done: usize, total: usize) {
         account: "work".into(),
         activity,
     };
-    wires.events.send(event).unwrap();
+    wires.send([event]);
 }
 
 /// What the status bar's progress hairline tells a screen reader, while it says anything.
@@ -772,8 +800,7 @@ fn the_sync_progress_glides_forward_jumps_back_and_fades_out() {
             of: 3,
         },
     };
-    wires.events.send(syncing).unwrap();
-    open.tick();
+    open.receive(&wires, [syncing]);
     assert_eq!(
         meter_value(&open),
         None,
@@ -830,14 +857,7 @@ fn mail_that_moves_the_rows_down_shows_their_dots_at_once() {
 
 /// Tells the window that `account` synced `new_messages`.
 fn synced(wires: &Wires, account: &str, new_messages: usize) {
-    let event = Event::Synced {
-        account: account.into(),
-        new_messages,
-        actions: 0,
-        requests: vec![],
-        errors: vec![],
-    };
-    wires.events.send(event).unwrap();
+    wires.send([super::test_support::synced(account, new_messages)]);
 }
 
 #[test]

@@ -34,17 +34,21 @@ notify = true
 | `notify` | true | Desktop notification for new INBOX mail that no rule moved, archived, deleted or silenced (see [Notifications](rules.md#notifications)). |
 | `index_bodies` | true | Download and index the text of every message in the background, so search covers bodies (see [Search](search.md)). Off, only the subject, addresses and the bodies of mail you opened are searched. |
 | `ca_file` | none | Absolute path to a PEM file with an extra trusted root certificate, for a server with a private CA. Postvak trusts the public web roots it ships with, not the system's certificate store, so a CA you installed on your system goes here too. |
+| `trusted_authserv_ids` | none | The servers whose `Authentication-Results` headers the `authenticated` rule condition believes, by the name at the header's start, such as `["mx.google.com"]`. List only a server of your provider that writes that header on every message it receives. Without one, no mail is authenticated. See [Authenticated mail](rules.md#authenticated-mail). |
 
 ## Appearance
 
 ```toml
 [ui]
 check_updates = false
+html_colours = "adapt"
 sender_images = false
 theme = "system"
 ```
 
 `theme` is `"system"` (follow the OS, the default), `"light"` or `"dark"`. The mail window's theme switch writes it.
+
+`html_colours` is how HTML mail looks in the dark theme: `"adapt"` (the default) turns light pages dark and keeps text readable, unless the mail brings its own dark design; `"original"` shows every message in its sender's colours on a white page, as in the light theme. With `"adapt"`, the reader's **Original colours** switch shows the open message in its sender's colours (see [HTML mail](gui.md#html-mail)); with `"original"` there is nothing to switch, so it is hidden. Only the mail window reads it; the CLI and MCP never render HTML.
 
 `check_updates` (off by default) lets the mail window ask GitHub at most once a day whether a newer release is out, and link to its release notes at the foot of the folder pane. The request is a plain HTTPS request to `api.github.com` with the user agent `postvak/<version>`: it carries nothing about your accounts or mail, though GitHub sees your IP address as with any request. Postvak never updates itself; upgrade the way you installed it (`brew upgrade postvak`, `cargo install postvak`, a new AppImage). Set `check_updates = true` to turn the check on.
 

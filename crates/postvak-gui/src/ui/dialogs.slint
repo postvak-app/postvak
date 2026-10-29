@@ -20,7 +20,7 @@ export component Dialog inherits Rectangle {
     border-width: 1px;
     border-radius: Theme.radius;
     drop-shadow-blur: Theme.pad;
-    drop-shadow-color: #0004;
+    drop-shadow-color: Theme.shadow;
     accessible-role: groupbox;
     accessible-label: root.title;
 
@@ -55,7 +55,7 @@ export component KeysDialog {
     // The most height the window has room for; the keys scroll beyond it.
     in property <length> room;
     callback close();
-    width: 560px;
+    width: Theme.dialog-x-large;
     Dialog {
         title: "Keys";
         close-icon: root.close-icon;
@@ -91,7 +91,7 @@ export component HistoryDialog {
     in property <[string]> lines;
     in property <string> close-icon;
     callback close();
-    width: 520px;
+    width: Theme.dialog-large;
     Dialog {
         title: "History";
         close-icon: root.close-icon;
@@ -121,7 +121,7 @@ export component MoveDialog {
     callback accepted();
     callback chosen(int);
     callback close();
-    width: 320px;
+    width: Theme.dialog-narrow;
     Dialog {
         title: "Move to";
         close-icon: root.close-icon;
@@ -168,7 +168,7 @@ export component SourceDialog {
     in property <length> widest;
     in property <string> close-icon;
     callback close();
-    width: 720px;
+    width: Theme.dialog-wide;
     height: 480px;
     Dialog {
         title: "Message source";
@@ -215,7 +215,7 @@ export component AccountDialog {
     in property <string> close-icon;
     callback save(AccountFields);
     callback close();
-    width: 480px;
+    width: Theme.dialog;
     Dialog {
         title: "Add account";
         close-icon: root.close-icon;
@@ -235,7 +235,7 @@ export component ApplyConfirmDialog {
     in property <string> close-icon;
     callback confirm();
     callback close();
-    width: 480px;
+    width: Theme.dialog;
     Dialog {
         title: "Apply to existing mail";
         close-icon: root.close-icon;

@@ -1,3 +1,5 @@
+pub mod auth;
+
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
@@ -103,13 +105,108 @@ pub fn thread_id(parsed: &Parsed, folder: &str, uid: u32) -> String {
         .unwrap_or_else(|| synthetic_message_id(folder, uid))
 }
 
+/// The first body part as text. An HTML part without markup keeps its line breaks (`markup_free_text`), where
+/// converting it as HTML would run its lines together.
 pub fn body_text(raw: &[u8]) -> String {
     let Some(msg) = MessageParser::default().parse(raw) else {
         return String::new();
     };
+    if let Some(part) = msg.text_body().next()
+        && matches!(part.kind(), PartKind::Html)
+        && let Some(text) = part.text()
+        && !has_markup(&text)
+    {
+        return markup_free_text(&text);
+    }
     msg.body_text(0)
         .map(|text| text.into_owned())
         .unwrap_or_default()
+}
+
+/// Whether text sent as `text/html` holds any markup: a tag such as `<p>` or `</div>`, a comment or a doctype. A bare
+/// line break (`<br>`, `<br/>`, `<br />`, `</br>`) is not markup, and neither is an address in angle brackets
+/// (`<alice@example.com>`, `<https://…>`). Without markup the part is plain text under the wrong type, and the reader
+/// shows it as text.
+fn has_markup(text: &str) -> bool {
+    text.match_indices('<').any(|(at, _)| {
+        let rest = &text.as_bytes()[at..];
+        if line_break_len(rest).is_some() {
+            return false;
+        }
+        let rest = &rest[1..];
+        let rest = rest.strip_prefix(b"/").unwrap_or(rest);
+        if rest.first() == Some(&b'!') {
+            return true;
+        }
+        let name = rest
+            .iter()
+            .take_while(|b| b.is_ascii_alphanumeric())
+            .count();
+        rest.first().is_some_and(u8::is_ascii_alphabetic)
+            && matches!(
+                rest.get(name),
+                None | Some(b'>' | b'/' | b' ' | b'\t' | b'\r' | b'\n')
+            )
+    })
+}
+
+/// The length of the bare line break tag `has_markup` allows at the start of `bytes`, any case.
+fn line_break_len(bytes: &[u8]) -> Option<usize> {
+    ["<br>", "<br/>", "<br />", "</br>"].iter().find_map(|tag| {
+        bytes
+            .get(..tag.len())
+            .filter(|start| start.eq_ignore_ascii_case(tag.as_bytes()))
+            .map(|_| tag.len())
+    })
+}
+
+/// The text of an HTML part without markup: each `<br>` a line break, unless a line ends right after it, and each
+/// entity that names a visible character decoded. An unknown entity, one without its `;`, or one naming a control or
+/// invisible character (such as a bidi override) stays as written.
+fn markup_free_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(['<', '&']) {
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+        if let Some(len) = line_break_len(rest.as_bytes()) {
+            rest = &rest[len..];
+            if !rest.starts_with(['\r', '\n']) {
+                out.push('\n');
+            }
+        } else if let Some((c, len)) = entity(rest) {
+            out.push(c);
+            rest = &rest[len..];
+        } else {
+            out.push_str(&rest[..1]);
+            rest = &rest[1..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The character an entity at the start of `text` names, and the entity's length.
+fn entity(text: &str) -> Option<(char, usize)> {
+    let end = text.bytes().take(12).position(|b| b == b';')?;
+    let name = text.get(1..end)?;
+    let c = match name {
+        "amp" => '&',
+        "lt" => '<',
+        "gt" => '>',
+        "quot" => '"',
+        "apos" => '\'',
+        "nbsp" => '\u{A0}',
+        _ => {
+            let number = name.strip_prefix('#')?;
+            let code = match number.strip_prefix(['x', 'X']) {
+                Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+                None => number.parse().ok()?,
+            };
+            char::from_u32(code)?
+        }
+    };
+    (!c.is_control() && !invisible(c)).then_some((c, end + 1))
 }
 
 /// The plain text of fetched text parts, in order, for the search index. Inside a `multipart/alternative` the
@@ -276,12 +373,14 @@ fn html_of(msg: &mail_parser::Message<'_>) -> Option<HtmlBody> {
     Some(HtmlBody { html, inline })
 }
 
-/// The text of the first `text/html` part of the body, the one the reader shows.
+/// The text of the first `text/html` part of the body, the one the reader shows; `None` when it holds no markup, so
+/// the reader shows the text instead.
 fn html_text<'m>(msg: &'m mail_parser::Message<'_>) -> Option<std::borrow::Cow<'m, str>> {
     let (body, _) = sorted_parts(msg);
     body.into_iter()
         .find(|part| matches!(part.kind(), PartKind::Html))?
         .text()
+        .filter(|text| has_markup(text))
 }
 
 /// The top-level message's leaf parts, sorted as `mail_ops::imap` sorts a server's BODYSTRUCTURE, so a message read
@@ -999,6 +1098,88 @@ List-Id: Dev <dev.lists.example.com>\r\n\
         let plain = b"From: a@b\r\nContent-Type: text/plain\r\n\r\n<p>not html</p>\r\n";
         assert_eq!(attachments_and_html(plain).1, None);
         assert_eq!(attachments_and_html(b"").1, None);
+    }
+
+    #[test]
+    fn html_without_markup_shows_as_text_with_its_line_breaks() {
+        let raw = b"From: a@b\r\nContent-Type: text/html\r\n\r\nHi,\r\n\r\nsee you at 3 <alice@example.com>\r\n";
+        assert_eq!(attachments_and_html(raw).1, None);
+        let plain = b"From: a@b\r\nContent-Type: text/plain\r\n\r\nHi,\r\n\r\nsee you at 3 <alice@example.com>\r\n";
+        assert_eq!(body_text(raw), body_text(plain));
+        let part = TextPart {
+            html: true,
+            ..TextPart::default()
+        };
+        assert_eq!(part_html(&part, b"just words\r\n"), None);
+        assert_eq!(
+            part_html(&part, b"<p>words</p>").as_deref().map(str::trim),
+            Some("<p>words</p>")
+        );
+    }
+
+    #[test]
+    fn html_with_only_line_breaks_shows_as_text() {
+        let raw = b"From: a@b\r\nContent-Type: text/html\r\n\r\nHi,<br>\r\nsee you<BR/>at 3 &amp; bring &#8364;5\r\n";
+        assert_eq!(attachments_and_html(raw).1, None);
+        assert_eq!(
+            body_text(raw).trim(),
+            "Hi,\r\nsee you\nat 3 & bring \u{20AC}5"
+        );
+    }
+
+    #[test]
+    fn markup_free_text_decodes_only_safe_entities() {
+        assert_eq!(
+            markup_free_text("&lt;b&gt; &quot;x&apos; &#x41;&#66;&nbsp;."),
+            "<b> \"x' AB\u{A0}."
+        );
+        // Unknown, unterminated, control and bidi-override entities stay as written.
+        for kept in [
+            "&copy;",
+            "AT&T",
+            "&amp",
+            "&#0;",
+            "&#7;",
+            "&#x202E;",
+            "&#xFFFFFFF;",
+            "&#;",
+            "&",
+            "&#1234567890123;",
+        ] {
+            assert_eq!(markup_free_text(kept), kept);
+        }
+        // A `<br>` written as an entity is text, not a line break.
+        assert_eq!(markup_free_text("&lt;br&gt;"), "<br>");
+        assert_eq!(markup_free_text("a<br />b</br>"), "a\nb\n");
+    }
+
+    #[test]
+    fn markup_is_a_tag_comment_or_doctype_not_an_address() {
+        for html in [
+            "<p>x</p>",
+            "a<hr>b",
+            "a<img/>b",
+            "x</div>",
+            "<!-- note -->",
+            "<!DOCTYPE html>",
+            "<div\nclass=a>",
+            "<table",
+            "<br class=x>",
+        ] {
+            assert!(has_markup(html), "{html}");
+        }
+        for text in [
+            "plain",
+            "Alice <alice@example.com> wrote:",
+            "see <https://example.com>",
+            "I <3 you",
+            "a < b",
+            "a <",
+            "",
+            "a<br>b<BR/>c<br />d</br>",
+        ] {
+            assert!(!has_markup(text), "{text}");
+        }
     }
 
     #[test]

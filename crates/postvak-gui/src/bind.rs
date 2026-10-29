@@ -113,6 +113,8 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
         search: enabled(MenuAction::Search),
         message: toolbar::enabled(app),
         text_or_html: enabled(MenuAction::TextOrHtml),
+        original_colours: enabled(MenuAction::OriginalColours),
+        shows_original_colours: app.body.as_ref().is_some_and(|b| b.original_colours),
         mark_folder_read: enabled(MenuAction::MarkFolderRead),
         open_at_login: enabled(MenuAction::OpenAtLogin),
         opens_at_login: app.open_at_login.checked(),
@@ -227,6 +229,8 @@ fn present_body(app: &App, window: &MailWindow) {
         has_html: pane.has_html,
         shows_html: pane.shows_html,
         text_note: pane.text_note.unwrap_or_default().into(),
+        adapts: pane.adapts,
+        original_colours: pane.original_colours,
         attachments: strings(shown.attachments.clone(), pane.attachments),
         attachments_pending: pane.attachments_pending,
         saved: text(pane.saved),
@@ -298,6 +302,7 @@ fn present_page(app: &App, window: &MailWindow) {
         .map(|href| clean(href, false));
     window.set_page(PageInfo {
         ready: view.is_some_and(|v| v.page.is_some()),
+        dark: view.is_some_and(|v| v.dark),
         width,
         height,
         remote,
@@ -807,6 +812,9 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     });
     window.on_toggle_html(move || {
         act(UiAction::ToggleHtml);
+    });
+    window.on_toggle_original_colours(move || {
+        act(UiAction::ToggleOriginalColours);
     });
     window.on_save_eml(move || {
         act(UiAction::SaveEml);

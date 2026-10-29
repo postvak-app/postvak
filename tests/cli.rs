@@ -15,12 +15,34 @@ fn postvak(home: &std::path::Path, args: &[&str]) -> std::process::Output {
 }
 
 #[test]
+fn guide_prints_the_agent_guide_or_the_page_asked_for() {
+    let home = tempfile::tempdir().unwrap();
+    let out = postvak(home.path(), &["guide"]);
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        postvak_core::help::AGENT_GUIDE
+    );
+    for page in postvak_core::help::DOC_PAGES {
+        let out = postvak(home.path(), &["guide", page.name]);
+        assert!(out.status.success(), "{}", page.name);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), page.text);
+    }
+    let out = postvak(home.path(), &["guide", "nope"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    for page in postvak_core::help::DOC_PAGES {
+        assert!(stderr.contains(page.name), "{stderr}");
+    }
+}
+
+#[test]
 fn rules_check_reports_bad_file_and_exits_nonzero() {
     let home = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(home.path().join("config")).unwrap();
     std::fs::write(
         home.path().join("config/rules.toml"),
-        "[[rules]]\nname = \"x\"\nmatch.from = { regex = \"(\" }\nactions = [\"delete\"]\n",
+        "[[rules]]\nname = \"x\"\nmatch.from = { regex = \"(\" }\nactions = { delete = true }\n",
     )
     .unwrap();
     let out = postvak(home.path(), &["rules", "check"]);
@@ -35,7 +57,7 @@ fn rules_check_passes_on_valid_file_and_lists() {
     std::fs::create_dir_all(home.path().join("config")).unwrap();
     std::fs::write(
         home.path().join("config/rules.toml"),
-        "[[rules]]\nname = \"ok\"\nmatch.seen = true\nactions = [\"flag\"]\n",
+        "[[rules]]\nname = \"ok\"\nmatch.read = true\nactions = { flagged = true }\n",
     )
     .unwrap();
     assert!(postvak(home.path(), &["rules", "check"]).status.success());
@@ -119,7 +141,7 @@ fn rules_test_previews_fresh_rule() {
     .unwrap();
     std::fs::write(
         paths.rules_file(),
-        "[[rules]]\nname = \"flag-invoices\"\nmatch.subject = { contains = \"invoice\" }\nactions = [\"flag\"]\n",
+        "[[rules]]\nname = \"flag-invoices\"\nmatch.subject = { contains = \"invoice\" }\nactions = { flagged = true }\n",
     )
     .unwrap();
     let store = Store::open(&paths.mail_db("work")).unwrap();
@@ -232,7 +254,7 @@ fn list_and_log_show_the_account() {
             uid: 42,
             message_id: None,
             subject: Some("Your invoice".into()),
-            action: "flag".into(),
+            action: "flagged".into(),
             trash_file: None,
         })
         .unwrap();
@@ -250,6 +272,61 @@ fn list_and_log_show_the_account() {
         let first = out.stdout.split(|b| *b == b'\n').next().unwrap();
         let line: serde_json::Value = serde_json::from_slice(first).unwrap();
         assert_eq!(line["account"], "work", "{args:?}");
+    }
+}
+
+/// The JSON lines of `out`'s stdout.
+fn json_lines(out: &std::process::Output) -> Vec<serde_json::Value> {
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+#[test]
+fn list_and_search_json_end_with_next_while_more_follow() {
+    let (home, _store) = seeded_home(&[
+        message(1, "a@example.com", "Invoice one"),
+        message(2, "b@example.com", "Invoice two"),
+        message(3, "c@example.com", "Invoice three"),
+    ]);
+    for command in [&["list"][..], &["search", "invoice"][..]] {
+        let args = |extra: &[&str]| -> Vec<String> {
+            command.iter().chain(extra).map(|s| s.to_string()).collect()
+        };
+        let run = |extra: &[&str]| {
+            let args = args(extra);
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            postvak(home.path(), &args)
+        };
+        let first = json_lines(&run(&["--json", "--limit", "2", "--fields", "uid,subject"]));
+        assert_eq!(first.len(), 3, "{command:?}: two rows and the next");
+        assert_eq!(
+            first[0],
+            serde_json::json!({ "account": "work", "uid": 3, "subject": "Invoice three" })
+        );
+        let next = first[2]["next"].as_str().unwrap();
+        assert_eq!(first[2].as_object().unwrap().len(), 1);
+        let second = json_lines(&run(&["--json", "--limit", "2", "--cursor", next]));
+        assert_eq!(second.len(), 1, "{command:?}: the last row and no next");
+        assert_eq!(second[0]["uid"], 1);
+        let count = json_lines(&run(&["--json", "--count-only"]));
+        assert_eq!(count, [serde_json::json!({ "count": 3 })]);
+        let unknown = run(&["--json", "--fields", "nope"]);
+        assert!(!unknown.status.success());
+        assert!(
+            String::from_utf8_lossy(&unknown.stderr).contains("unknown field 'nope'"),
+            "{command:?}"
+        );
+        let plain = run(&["--limit", "1"]);
+        let stderr = String::from_utf8_lossy(&plain.stderr);
+        assert!(stderr.contains("--cursor "), "{command:?}: {stderr}");
+        assert_eq!(String::from_utf8_lossy(&plain.stdout).lines().count(), 1);
     }
 }
 
@@ -287,7 +364,7 @@ fn rules_test_with_unknown_name_fails() {
     std::fs::write(home.path().join("config/config.toml"), ONE_ACCOUNT).unwrap();
     std::fs::write(
         home.path().join("config/rules.toml"),
-        "[[rules]]\nname = \"ok\"\nmatch.seen = true\nactions = [\"flag\"]\n",
+        "[[rules]]\nname = \"ok\"\nmatch.read = true\nactions = { flagged = true }\n",
     )
     .unwrap();
     let out = postvak(home.path(), &["rules", "test", "nope"]);
@@ -301,7 +378,7 @@ fn an_invalid_rules_file_still_lets_actions_reach_the_daemon() {
     let (home, _store) = seeded_home(&[message(1, "a@example.com", "Hello")]);
     std::fs::write(
         Paths::under(home.path()).rules_file(),
-        "[[rules]]\nname = \"x\"\nmatch.from = { regex = \"(\" }\nactions = [\"delete\"]\n",
+        "[[rules]]\nname = \"x\"\nmatch.from = { regex = \"(\" }\nactions = { delete = true }\n",
     )
     .unwrap();
     let out = postvak(home.path(), &["archive", "1"]);
@@ -356,7 +433,7 @@ fn apply_existing_refuses_a_disabled_rule() {
     let (home, _store) = seeded_home(&[message(42, "a@example.com", "Your code")]);
     std::fs::write(
         Paths::under(home.path()).rules_file(),
-        "[[rules]]\nname = \"codes\"\nenabled = false\nmatch.subject = { contains = \"code\" }\nactions = [\"flag\"]\n",
+        "[[rules]]\nname = \"codes\"\nenabled = false\nmatch.subject = { contains = \"code\" }\nactions = { flagged = true }\n",
     )
     .unwrap();
     for args in [
@@ -381,7 +458,7 @@ fn apply_existing_refuses_to_expunge_without_yes() {
     ]);
     std::fs::write(
         Paths::under(home.path()).rules_file(),
-        "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = [\"delete\"]\n",
+        "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = { delete = true }\n",
     )
     .unwrap();
     let out = postvak(home.path(), &["rules", "apply-existing", "codes"]);
@@ -405,7 +482,7 @@ fn apply_existing_runs_a_flag_rule_without_yes() {
     let (home, _store) = seeded_home(&[message(42, "a@example.com", "Your code")]);
     std::fs::write(
         Paths::under(home.path()).rules_file(),
-        "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = [\"flag\"]\n",
+        "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = { flagged = true }\n",
     )
     .unwrap();
     let out = postvak(home.path(), &["rules", "apply-existing", "codes"]);
@@ -625,8 +702,7 @@ fn postvak_stdin(home: &std::path::Path, args: &[&str], stdin: &str) -> std::pro
 #[test]
 fn agent_proposes_and_a_human_approves_or_rejects() {
     let (home, store) = seeded_home(&[message(42, "noreply@example.com", "Your code is 123456")]);
-    let rule =
-        r#"{"name": "codes", "match": {"subject": {"contains": "code"}}, "actions": ["delete"]}"#;
+    let rule = r#"{"name": "codes", "match": {"subject": {"contains": "code"}}, "actions": {"delete": true}}"#;
     let list = |home: &std::path::Path| {
         String::from_utf8_lossy(&postvak(home, &["rules", "list"]).stdout).to_string()
     };
@@ -695,6 +771,84 @@ fn agent_proposes_and_a_human_approves_or_rejects() {
 
     let out = postvak(home.path(), &["rules", "schema"]);
     serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap();
+}
+
+#[test]
+fn an_agent_proposes_a_batch_reads_it_back_in_order_and_withdraws_its_own() {
+    let (home, _store) = seeded_home(&[message(42, "noreply@example.com", "Your code")]);
+    let rule = |name: &str| {
+        format!(
+            r#"{{"name": "{name}", "match": {{"subject": {{"contains": "{name}"}}}}, "actions": {{"flagged": true}}}}"#
+        )
+    };
+    let ok = |out: std::process::Output| {
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let listed = |home: &std::path::Path| -> Vec<serde_json::Value> {
+        String::from_utf8_lossy(&postvak(home, &["rules", "list", "--json"]).stdout)
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    };
+    let names = |home: &std::path::Path| -> Vec<String> {
+        listed(home)
+            .iter()
+            .map(|r| r["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    ok(postvak_stdin(
+        home.path(),
+        &["rules", "propose", "--by", "bot"],
+        &format!("[{}, {}]", rule("a"), rule("b")),
+    ));
+    ok(postvak_stdin(
+        home.path(),
+        &["rules", "propose", "--by", "bot", "--before", "a"],
+        &format!(r#"{{"rules": [{}]}}"#, rule("c")),
+    ));
+    assert_eq!(names(home.path()), ["c", "a", "b"]);
+    let rows = listed(home.path());
+    assert_eq!(rows[1]["position"], 1);
+    assert_eq!(rows[1]["match"]["subject"]["contains"], "a");
+    assert_eq!(rows[1]["proposed_by"], "cli:bot");
+
+    let out = postvak_stdin(
+        home.path(),
+        &["rules", "propose", "--by", "bot"],
+        &format!("[{}, {}]", rule("d"), rule("a")),
+    );
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("rule 1 'a'"));
+    assert_eq!(names(home.path()), ["c", "a", "b"], "all or none");
+
+    ok(postvak_stdin(
+        home.path(),
+        &["rules", "propose", "--by", "bot", "--replace"],
+        &rule("a").replace(r#""contains": "a""#, r#""contains": "aa""#),
+    ));
+    assert_eq!(listed(home.path())[1]["match"]["subject"]["contains"], "aa");
+
+    assert!(
+        !postvak(home.path(), &["rules", "withdraw", "a", "--by", "other"])
+            .status
+            .success()
+    );
+    assert!(
+        !postvak(home.path(), &["rules", "withdraw", "a"])
+            .status
+            .success()
+    );
+    ok(postvak(
+        home.path(),
+        &["rules", "withdraw", "a", "--by", "bot"],
+    ));
+    assert_eq!(names(home.path()), ["c", "b"]);
 }
 
 #[test]
@@ -1202,7 +1356,7 @@ fn rules_check_warns_about_a_conflicting_copy_and_still_passes() {
     std::fs::create_dir_all(&config).unwrap();
     std::fs::write(
         config.join("rules.toml"),
-        "[[rules]]\nname = \"ok\"\naccount = \"work\"\nmatch.seen = true\nactions = [\"flag\"]\n",
+        "[[rules]]\nname = \"ok\"\naccount = \"work\"\nmatch.read = true\nactions = { flagged = true }\n",
     )
     .unwrap();
     std::fs::write(
@@ -1220,5 +1374,64 @@ fn rules_check_warns_about_a_conflicting_copy_and_still_passes() {
     assert!(
         stderr.contains("warning: rule 'ok' is for account 'work', which is not set up here"),
         "{stderr}"
+    );
+}
+
+#[test]
+fn senders_and_rules_coverage_read_the_stored_folder() {
+    let (home, _store) = seeded_home(&[
+        message(1, "Friend <friend@home.example>", "Dinner?"),
+        message(2, "orders@shop.example", "Your delivery"),
+        message(3, "news@mail.shop.example", "Sale"),
+    ]);
+    std::fs::write(
+        home.path().join("config/rules.toml"),
+        "[[rules]]\nname = \"delivery\"\nmatch.subject = { contains = \"delivery\" }\nactions = { archive = true }\n\n\
+         [[rules]]\nname = \"shop\"\nmatch.from = { contains = \"shop.example\" }\nactions = { flagged = true }\n",
+    )
+    .unwrap();
+    let out = postvak(home.path(), &["senders", "--group-by", "domain", "--json"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let rows: Vec<serde_json::Value> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["sender"], "shop.example");
+    assert_eq!(rows[0]["count"], 2);
+    assert_eq!(rows[0]["rules"], serde_json::json!(["delivery", "shop"]));
+    assert_eq!(rows[0]["account"], "work");
+    let out = postvak(home.path(), &["senders"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("friend@home.example"), "{stdout}");
+    let out = postvak(home.path(), &["senders", "--after", "tomorrow"]);
+    assert!(!out.status.success());
+
+    let out = postvak(home.path(), &["rules", "coverage", "--json"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let coverage: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        [
+            &coverage["matched"],
+            &coverage["unmatched"],
+            &coverage["contested"]
+        ],
+        [2, 1, 1]
+    );
+    assert_eq!(coverage["contested_messages"][0]["message"]["uid"], 2);
+    let out = postvak(home.path(), &["rules", "coverage"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("3 messages, 2 matched, 1 unmatched, 1 contested")
+            && stdout.contains("match: delivery, shop"),
+        "{stdout}"
     );
 }
