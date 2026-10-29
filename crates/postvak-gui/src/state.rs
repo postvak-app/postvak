@@ -492,6 +492,7 @@ pub(crate) enum Dialog {
     Help,
     Unsaved,
     ApplyConfirm,
+    Rule,
     Account,
     About,
     Source,
@@ -500,10 +501,11 @@ pub(crate) enum Dialog {
 }
 
 impl Dialog {
-    const TOP_FIRST: [Dialog; 8] = [
+    const TOP_FIRST: [Dialog; 9] = [
         Dialog::Help,
         Dialog::Unsaved,
         Dialog::ApplyConfirm,
+        Dialog::Rule,
         Dialog::Account,
         Dialog::About,
         Dialog::Source,
@@ -1275,7 +1277,10 @@ impl App {
 
     fn apply_action(&mut self, action: UiAction) {
         match action {
-            leave @ (UiAction::EditRule(_) | UiAction::NewRule | UiAction::RuleFrom(_))
+            leave @ (UiAction::Close(Dialog::Rule)
+            | UiAction::EditRule(_)
+            | UiAction::NewRule
+            | UiAction::RuleFrom(_))
                 if self.draft_edited() =>
             {
                 self.leave_draft = Some(Box::new(leave));
@@ -1299,7 +1304,7 @@ impl App {
             UiAction::Close(dialog) => self.close(dialog),
             UiAction::Escape => {
                 if let Some(dialog) = self.top_dialog() {
-                    self.close(dialog);
+                    self.apply_action(UiAction::Close(dialog));
                 } else if self.search.is_some() {
                     self.reset_list(None, false);
                     self.reload_view();
@@ -1391,7 +1396,9 @@ impl App {
                 }
             }
             UiAction::SaveDraft => {
-                self.save_draft();
+                if self.save_draft() {
+                    self.open_draft(None);
+                }
             }
             UiAction::TestDraft => {
                 let tested = self.rule_draft.as_ref().map(|draft| match draft.to_rule() {
@@ -3046,6 +3053,7 @@ impl App {
             Dialog::Help => self.help_open,
             Dialog::Unsaved => self.leave_draft.is_some(),
             Dialog::ApplyConfirm => self.apply_confirm.is_some(),
+            Dialog::Rule => self.rule_draft.is_some() && self.view == View::Rules,
             Dialog::Account => self.account_form.is_some(),
             Dialog::About => self.about_open,
             Dialog::Source => self.body.as_ref().is_some_and(|b| b.source.is_some()),
@@ -3064,6 +3072,7 @@ impl App {
             Dialog::Help => self.help_open = false,
             Dialog::Unsaved => self.leave_draft = None,
             Dialog::ApplyConfirm => self.apply_confirm = None,
+            Dialog::Rule => self.open_draft(None),
             Dialog::Account => {
                 // During the login test nothing is saved yet and the save gives up; once it writes, it finishes
                 // first, so its account joins the window.
@@ -3163,7 +3172,7 @@ impl App {
     }
 
     /// Whether the open rule has changes that Save has not written.
-    fn draft_edited(&self) -> bool {
+    pub(crate) fn draft_edited(&self) -> bool {
         (self.rule_draft.as_ref())
             .zip(self.rule_draft_opened.as_ref())
             .is_some_and(|(draft, opened)| draft.edited(opened))

@@ -335,6 +335,13 @@ fn draft_accounts(app: &App) -> Vec<String> {
     names
 }
 
+/// Whether the open rule can run on existing mail: saved as it is, and on.
+fn draft_applies(app: &App) -> bool {
+    app.rule_draft
+        .as_ref()
+        .is_some_and(|d| d.original.is_some() && d.enabled && !app.draft_edited())
+}
+
 /// The editor's fixed choices, which never change while the window is open.
 fn init_editor(window: &MailWindow) {
     let editor = window.global::<RuleEditor>();
@@ -417,6 +424,8 @@ fn present_editor(app: &App, window: &MailWindow) {
     editor.set_error(draft.error.as_deref().unwrap_or_default().into());
     editor.set_tested(draft.tested.as_deref().unwrap_or_default().into());
     editor.set_confirm_remove(draft.confirm_remove);
+    editor.set_applies(draft_applies(app));
+    editor.set_saved(draft.original.is_some());
 }
 
 fn index_of<T: PartialEq>(all: &[T], item: &T) -> i32 {
@@ -538,6 +547,12 @@ fn connect_editor(window: &MailWindow, on: fn(Ask) -> bool) {
     editor.on_test(move || {
         act(UiAction::TestDraft);
     });
+    editor.on_apply(move || {
+        on(one(|app| {
+            let name = app.rule_draft.as_ref()?.original.clone()?;
+            draft_applies(app).then_some(UiAction::ApplyRule(name))
+        }));
+    });
     editor.on_remove(move |confirmed| {
         act(UiAction::RemoveRule { confirmed });
     });
@@ -583,16 +598,18 @@ fn present_sheet(app: &App, window: &MailWindow) {
                         .map_or_else(SharedString::new, Into::into),
                 })
                 .collect();
-            let lines: Vec<RuleData> = app
-                .rules
-                .lines
-                .iter()
-                .map(|r| RuleData {
+            let lines: Vec<RuleData> = rules::rule_order(&app.rules.lines, app.sheet_sort)
+                .into_iter()
+                .map(|i| (i, &app.rules.lines[i]))
+                .map(|(i, r)| RuleData {
+                    number: (i + 1).to_string().into(),
                     label: r.label.as_str().into(),
                     enabled: r.enabled,
-                    scope: r.scope.as_str().into(),
+                    account: r.account.as_str().into(),
+                    folder: r.folder.as_str().into(),
                     by: r.by.as_str().into(),
-                    summary: r.summary.as_str().into(),
+                    conditions: r.conditions.as_str().into(),
+                    actions: r.actions.as_str().into(),
                     selected: app
                         .rule_draft
                         .as_ref()
@@ -600,6 +617,12 @@ fn present_sheet(app: &App, window: &MailWindow) {
                 })
                 .collect();
             window.set_rules_counts(rules::counts(lines.len(), proposals.len()).into());
+            let sort = app.sheet_sort;
+            window.set_rules_sort(
+                sort.and_then(|s| i32::try_from(s.column).ok())
+                    .unwrap_or(-1),
+            );
+            window.set_rules_ascending(sort.is_none_or(|s| s.ascending));
             sync(window.get_proposals(), proposals, |m| {
                 window.set_proposals(m)
             });
@@ -925,12 +948,6 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     window.on_open_rules_file(move || {
         act(UiAction::OpenRulesFile);
     });
-    window.on_apply_rule(move |i| {
-        on(one(move |app| {
-            let rule = nth(&app.rules.lines, i)?;
-            rule.enabled.then(|| UiAction::ApplyRule(rule.name.clone()))
-        }));
-    });
     window.on_confirm_apply_rule(move || {
         act(UiAction::ConfirmApplyRule);
     });
@@ -961,7 +978,7 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     });
     window.on_edit_rule(move |i| {
         on(one(move |app| {
-            Some(UiAction::EditRule(nth(&app.rules.lines, i)?.name.clone()))
+            Some(UiAction::EditRule(rule_line(app, i)?.name.clone()))
         }));
     });
     connect_editor(window, on);
@@ -972,7 +989,7 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     });
     window.on_set_enabled(move |i, enabled| {
         on(one(move |app| {
-            let rule = nth(&app.rules.lines, i)?;
+            let rule = rule_line(app, i)?;
             Some(UiAction::SetRuleEnabled(rule.name.clone(), enabled))
         }));
     });
@@ -1002,6 +1019,12 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
 /// The `index`th of `items`, as the window's callbacks number them.
 fn nth<T>(items: impl IntoIterator<Item = T>, index: i32) -> Option<T> {
     items.into_iter().nth(usize::try_from(index).ok()?)
+}
+
+/// The rule the Rules table shows at `index`, in its sorted order.
+fn rule_line(app: &App, index: i32) -> Option<&rules::RuleLine> {
+    let order = rules::rule_order(&app.rules.lines, app.sheet_sort);
+    app.rules.lines.get(*nth(&order, index)?)
 }
 
 /// The name of the proposal the Rules view shows at `index`.
@@ -1141,6 +1164,7 @@ fn dialog_of(dialog: Dialog) -> state::Dialog {
         Dialog::Help => state::Dialog::Help,
         Dialog::Unsaved => state::Dialog::Unsaved,
         Dialog::ApplyConfirm => state::Dialog::ApplyConfirm,
+        Dialog::Rule => state::Dialog::Rule,
         Dialog::Account => state::Dialog::Account,
         Dialog::About => state::Dialog::About,
         Dialog::Source => state::Dialog::Source,

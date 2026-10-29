@@ -1,4 +1,4 @@
-// The right side of the Rules view: the open rule as a form, and the prompt when leaving it unsaved. `bind.rs` fills
+// The open rule as a form in a dialog over the Rules view, and the prompt when closing it unsaved. `bind.rs` fills
 // `RuleEditor` from `App.rule_draft` and turns its callbacks into edits of the draft.
 import { ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
@@ -52,6 +52,10 @@ export global RuleEditor {
     in property <string> error;
     in property <string> tested;
     in property <bool> confirm-remove;
+    // In rules.toml, so Apply to existing mail is offered.
+    in property <bool> saved;
+    // Saved as the form shows it, and on.
+    in property <bool> applies;
     // "This rule has unsaved changes."
     in property <bool> unsaved;
     callback name-edited(string);
@@ -69,6 +73,7 @@ export global RuleEditor {
     callback remove-action(int);
     callback save();
     callback test();
+    callback apply();
     callback remove(bool);
     callback cancel-remove();
     callback unsaved-save();
@@ -159,12 +164,16 @@ component ConditionRow {
     }
 }
 
-export component RuleEditorPane inherits ScrollView {
+component RuleEditorPane inherits ScrollView {
     in property <string> close-icon;
+    // The most height there is room for; the form scrolls beyond it.
+    in property <length> room;
     // "+ Add action" shows the actions to pick from.
     property <bool> adding-action;
+    height: min(form.preferred-height, root.room);
 
-    VerticalLayout {
+    form := VerticalLayout {
+        width: root.visible-width;
         alignment: start;
         spacing: Theme.pad;
         padding-right: Theme.inset;
@@ -323,6 +332,14 @@ export component RuleEditorPane inherits ScrollView {
                 hint: "Counts what it would do to the mail already downloaded; changes nothing";
                 clicked => { RuleEditor.test(); }
             }
+            if RuleEditor.saved: TextButton {
+                text: "Apply to existing mail";
+                palette: Theme.pane;
+                enabled: RuleEditor.applies;
+                hint: "Runs this rule's actions, which may delete mail, on the mail its accounts already hold, now";
+                disabled-hint: "Turn the rule on and save it first";
+                clicked => { RuleEditor.apply(); }
+            }
             if RuleEditor.tested != "": Text {
                 text: RuleEditor.tested;
                 color: Theme.pane.secondary;
@@ -359,7 +376,25 @@ export component RuleEditorPane inherits ScrollView {
     }
 }
 
-// Asked when another rule would replace one with unsaved changes.
+// The open rule over the Rules view. Esc or the X closes it, asking first when it has unsaved changes.
+export component RuleDialog {
+    in property <string> close-icon;
+    // The most height the window has room for.
+    in property <length> room;
+    callback close();
+    width: Theme.dialog-wide;
+    Dialog {
+        title: RuleEditor.saved ? "Edit rule" : "New rule";
+        close-icon: root.close-icon;
+        close => { root.close(); }
+        RuleEditorPane {
+            close-icon: root.close-icon;
+            room: root.room - 2 * Theme.inset - Theme.control - Theme.pad;
+        }
+    }
+}
+
+// Asked when closing a rule, or opening another, would drop its unsaved changes.
 export component UnsavedDialog {
     in property <string> close-icon;
     width: Theme.dialog-small;

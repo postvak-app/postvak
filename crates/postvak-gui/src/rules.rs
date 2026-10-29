@@ -113,16 +113,20 @@ pub(crate) struct Proposal {
     pub marks: String,
 }
 
-/// A rule in the Rules view's list.
+/// A rule in the Rules view's table.
 pub(crate) struct RuleLine {
     pub name: String,
     pub label: String,
     pub enabled: bool,
-    /// "work · INBOX", or "every account · INBOX".
-    pub scope: String,
+    /// "work", or "every account".
+    pub account: String,
+    pub folder: String,
     /// "proposed by agent", or empty.
     pub by: String,
-    pub summary: String,
+    /// "from contains \"news@\", subject contains \"weekly\"".
+    pub conditions: String,
+    /// "archive, mark read".
+    pub actions: String,
 }
 
 /// "1 rule · 2 proposals", beside the Rules title.
@@ -186,17 +190,20 @@ fn rule_lines(rules: &[Rule]) -> Vec<RuleLine> {
             .folder
             .as_deref()
             .map_or("INBOX".into(), |f| clean(f, false));
+        let actions: Vec<String> = rule.actions.iter().map(draft::action_label).collect();
         RuleLine {
             name: rule.name.clone(),
             label: clean(&rule.name, false),
             enabled: rule.enabled,
-            scope: format!("{account} · {folder}"),
+            account,
+            folder,
             by: rule
                 .proposed_by
                 .as_deref()
                 .map(|by| format!("proposed by {}", clean(by, false)))
                 .unwrap_or_default(),
-            summary: draft::summary(rule),
+            conditions: clean(&draft::match_labels(&rule.matches).join(", "), false),
+            actions: clean(&actions.join(", "), false),
         }
     };
     rules
@@ -237,8 +244,8 @@ pub(crate) struct SheetSort {
 
 /// The order a table shows `rows` in, as indices into them: their own order (newest first), or by `sort`'s column.
 /// The sort is stable, so rows with equal cells keep their own order.
-pub(crate) fn sheet_order<const N: usize>(
-    rows: &[[String; N]],
+pub(crate) fn sheet_order<T: Ord, const N: usize>(
+    rows: &[[T; N]],
     sort: Option<SheetSort>,
 ) -> Vec<usize> {
     let mut order: Vec<usize> = (0..rows.len()).collect();
@@ -249,6 +256,30 @@ pub(crate) fn sheet_order<const N: usize>(
         });
     }
     order
+}
+
+/// The order the Rules table shows `lines` in, as indices into them. Its columns are #, Name, Account, Folder,
+/// Conditions and Actions; # is the order they run in, which is also the order without `sort`.
+pub(crate) fn rule_order(lines: &[RuleLine], sort: Option<SheetSort>) -> Vec<usize> {
+    match sort {
+        Some(SheetSort {
+            column: 0,
+            ascending: false,
+        }) => (0..lines.len()).rev().collect(),
+        Some(sort) if sort.column > 0 => {
+            let cells: Vec<[&str; 5]> = (lines.iter())
+                .map(|l| [&*l.label, &l.account, &l.folder, &l.conditions, &l.actions])
+                .collect();
+            sheet_order(
+                &cells,
+                Some(SheetSort {
+                    column: sort.column - 1,
+                    ..sort
+                }),
+            )
+        }
+        _ => (0..lines.len()).collect(),
+    }
 }
 
 /// The Activity view's rows, cell by cell.
@@ -445,6 +476,7 @@ mod tests {
         .unwrap();
         let (open, wires) = view(&fx, View::Rules);
         let warning = "work: would permanently delete 1 message from the server; .eml backups kept locally for 30 days";
+        open.click("codes");
         open.click("Apply to existing mail");
         open.tick();
         assert!(wires.sent().is_empty(), "sent before confirming");
@@ -475,16 +507,12 @@ mod tests {
         let only_work = "\n[[rules]]\nname = \"only-work\"\naccount = \"work\"\nmatch.subject = { contains = \"x\" }\nactions = { flagged = true }\n";
         std::fs::write(fx.paths.rules_file(), format!("{RULES}{only_work}")).unwrap();
         let (open, wires) = view(&fx, View::Rules);
-        let apply = |nth: usize| {
-            let buttons = open.find("Apply to existing mail");
-            assert_eq!(
-                buttons.len(),
-                2,
-                "one per rule, not for the proposal: newsletters, only-work"
-            );
-            buttons[nth].invoke_accessible_default_action();
+        let apply = |rule: &str| {
+            open.click(rule);
+            open.click("Apply to existing mail");
+            open.press("escape");
         };
-        apply(1);
+        apply("only-work");
         let only = |name: &str, account: &str| {
             (
                 account.to_string(),
@@ -492,7 +520,7 @@ mod tests {
             )
         };
         assert_eq!(wires.sent(), [only("only-work", "work")]);
-        apply(0);
+        apply("newsletters");
         assert_eq!(
             wires.sent(),
             [only("newsletters", "home"), only("newsletters", "work")]
@@ -524,6 +552,7 @@ mod tests {
         let gone = "[[rules]]\nname = \"old\"\naccount = \"gone\"\nmatch.subject = { contains = \"x\" }\nactions = { flagged = true }\n";
         std::fs::write(fx.paths.rules_file(), gone).unwrap();
         let (open, wires) = view(&fx, View::Rules);
+        open.click("old");
         open.click("Apply to existing mail");
         assert!(wires.sent().is_empty());
         let why = "rule 'old' names account 'gone', which this window does not list";
@@ -636,8 +665,9 @@ mod tests {
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = rules_view(&fx);
         assert_eq!(open.find("1 rule · 1 proposal").len(), 1);
-        assert_eq!(open.find("every account · INBOX").len(), 1);
-        assert_eq!(open.find("from contains \"news@\" → archive").len(), 1);
+        assert_eq!(open.find("every account").len(), 1);
+        assert_eq!(open.find("from contains \"news@\"").len(), 1);
+        assert_eq!(open.find("archive").len(), 1);
     }
 
     #[test]
@@ -998,7 +1028,7 @@ mod tests {
 
 #[cfg(test)]
 mod editor_tests {
-    use slint::ComponentHandle;
+    use slint::{ComponentHandle, Model};
 
     use crate::state::View;
     use crate::test_support::{Fixture, Open, Wires, message};
@@ -1071,9 +1101,105 @@ mod editor_tests {
                 "{RULES}\n[[rules]]\nname = \"receipts\"\nmatch.subject = {{ contains = \"receipt\" }}\nactions.move = \"Receipts\"\n"
             )
         );
-        let original = open.with(|live| live.app.rule_draft.clone().unwrap().original);
-        assert_eq!(original.as_deref(), Some("receipts"));
+        assert!(draft_name(&open).is_none(), "a save closes the dialog");
         assert!(wires.sent().is_empty());
+    }
+
+    #[test]
+    fn escape_closes_an_unchanged_rule_without_asking() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = open_newsletters(&fx);
+        assert_eq!(open.find("Edit rule").len(), 1);
+        open.press("escape");
+        assert!(draft_name(&open).is_none());
+        assert!(open.find("This rule has unsaved changes.").is_empty());
+    }
+
+    #[test]
+    fn closing_an_edited_rule_asks_and_discard_drops_the_edit() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = open_newsletters(&fx);
+        editor(&open, |e| e.invoke_value_edited(0, "letters@".into()));
+        open.press("escape");
+        assert_eq!(open.find("This rule has unsaved changes.").len(), 1);
+        open.press("escape");
+        assert_eq!(
+            draft_name(&open).as_deref(),
+            Some("newsletters"),
+            "Esc cancels the question only"
+        );
+        open.click("Close");
+        open.click("Discard");
+        assert!(draft_name(&open).is_none());
+        assert_eq!(file(&fx), RULES);
+    }
+
+    #[test]
+    fn closing_an_edited_rule_can_save_it_first() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = open_newsletters(&fx);
+        editor(&open, |e| e.invoke_value_edited(0, "letters@".into()));
+        open.press("escape");
+        editor(&open, |e| e.invoke_unsaved_save());
+        assert!(draft_name(&open).is_none());
+        assert_eq!(file(&fx), RULES.replace("news@", "letters@"));
+    }
+
+    #[test]
+    fn apply_waits_until_the_rule_is_saved_and_on() {
+        let fx = Fixture::new(&["work"]);
+        let (open, wires) = rules_view(&fx, RULES);
+        open.click("New rule");
+        assert!(
+            open.find("Apply to existing mail").is_empty(),
+            "nothing saved to apply"
+        );
+        open.press("escape");
+        open.click("newsletters");
+        editor(&open, |e| e.invoke_value_edited(0, "letters@".into()));
+        open.click("Apply to existing mail");
+        assert!(wires.sent().is_empty(), "an unsaved edit is not applied");
+        editor(&open, |e| e.invoke_value_edited(0, "news@".into()));
+        open.click("Apply to existing mail");
+        assert_eq!(wires.sent().len(), 1);
+    }
+
+    #[test]
+    fn a_heading_sorts_the_rules_and_the_number_keeps_their_order() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = rules_view(&fx, &two_rules());
+        let shown = || -> Vec<(String, String)> {
+            let rules = open.window().get_rules();
+            (rules.iter())
+                .map(|r| (r.number.to_string(), r.label.to_string()))
+                .collect()
+        };
+        let pair = |n: &str, name: &str| (n.to_string(), name.to_string());
+        assert_eq!(shown(), [pair("1", "newsletters"), pair("2", "receipts")]);
+        open.click("Actions");
+        assert_eq!(
+            shown(),
+            [pair("1", "newsletters"), pair("2", "receipts")],
+            "archive before flag"
+        );
+        open.click("Actions");
+        assert_eq!(shown(), [pair("2", "receipts"), pair("1", "newsletters")]);
+        assert_eq!(
+            open.find("Actions ↓").len(),
+            0,
+            "the arrow is drawn, not part of the label"
+        );
+        open.click("receipts");
+        assert_eq!(
+            draft_name(&open).as_deref(),
+            Some("receipts"),
+            "a click opens the rule it shows"
+        );
+        open.press("escape");
+        open.click("#");
+        assert_eq!(shown(), [pair("1", "newsletters"), pair("2", "receipts")]);
+        open.click("#");
+        assert_eq!(shown(), [pair("2", "receipts"), pair("1", "newsletters")]);
     }
 
     #[test]

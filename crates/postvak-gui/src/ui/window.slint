@@ -7,7 +7,7 @@ import { AccountDialog, ApplyConfirmDialog, HistoryDialog, KeyHelp, KeysDialog, 
 import { AccountFields } from "account.slint";
 import { BodyInfo, BodyPane, PageInfo, SelectedData, StripData, ToolButton } from "body.slint";
 import { ProposalData, RuleData, RulesPane, Sheet } from "rules.slint";
-import { RuleEditor, UnsavedDialog } from "rule_editor.slint";
+import { RuleDialog, RuleEditor, UnsavedDialog } from "rule_editor.slint";
 import { AboutDialog } from "about.slint";
 import { ListPane, RowData } from "list.slint";
 
@@ -17,7 +17,7 @@ export enum Pane { body, folders, list }
 export enum MenuAction { about, add-account, add-to-selection, archive, delete, documentation, flag, history, junk, keys, mark-folder-read, move, open-at-login, original-colours, read-or-unread, save-eml, save-eml-as, search, select-all, sync-now, text-or-html, theme-dark, theme-light, theme-system, view-source }
 
 // A dialog that closes; the same names as `state::Dialog`.
-export enum Dialog { help, unsaved, apply-confirm, account, about, source, move, history }
+export enum Dialog { help, unsaved, apply-confirm, rule, account, about, source, move, history }
 
 // Which menu items would do something now; the others are disabled.
 export struct MenuState {
@@ -130,6 +130,9 @@ export component MailWindow inherits Window {
     in property <string> rules-counts;
     in property <[ProposalData]> proposals;
     in property <[RuleData]> rules;
+    // The column the Rules table is sorted by, or -1.
+    in property <int> rules-sort: -1;
+    in property <bool> rules-ascending: true;
     in property <[TableColumn]> sheet-columns;
     in property <[[StandardListViewItem]]> sheet-cells;
     in-out property <int> sheet-row: -1;
@@ -207,7 +210,6 @@ export component MailWindow inherits Window {
     callback rule-from();
     callback edit-rule(int);
     callback set-enabled(int, bool);
-    callback apply-rule(int);
     callback confirm-apply-rule();
     callback restore(int);
     callback purge-trash();
@@ -566,11 +568,12 @@ export component MailWindow inherits Window {
                         banner: root.rules-banner;
                         offers: root.rules-offers;
                         counts: root.rules-counts;
-                        close-icon: root.close-icon;
                         new-rule => { root.new-rule(); }
                         edit-rule(i) => { root.edit-rule(i); }
                         proposals: root.proposals;
                         rules: root.rules;
+                        rules-sort: root.rules-sort;
+                        rules-ascending: root.rules-ascending;
                         columns: root.sheet-columns;
                         cells: root.sheet-cells;
                         current-row <=> root.sheet-row;
@@ -582,7 +585,6 @@ export component MailWindow inherits Window {
                         reject(i) => { root.reject-rule(i); }
                         preview(i) => { root.preview-rule(i); }
                         set-enabled(i, enabled) => { root.set-enabled(i, enabled); }
-                        apply-rule(i) => { root.apply-rule(i); }
                         restore(i) => { root.restore(i); }
                         purge => { root.purge-trash(); }
                         sort(column, ascending) => { root.sort-sheet(column, ascending); }
@@ -659,6 +661,14 @@ export component MailWindow inherits Window {
         close-icon: root.close-icon;
         save(fields) => { root.save-account(fields); }
         close => { root.close-dialog(Dialog.account); }
+    }
+
+    if RuleEditor.open: RuleDialog {
+        x: (root.width - self.width) / 2;
+        y: Theme.top-bar + Theme.inset;
+        room: root.height - 2 * (Theme.top-bar + Theme.inset);
+        close-icon: root.close-icon;
+        close => { root.close-dialog(Dialog.rule); }
     }
 
     if root.apply-confirm != "": ApplyConfirmDialog {

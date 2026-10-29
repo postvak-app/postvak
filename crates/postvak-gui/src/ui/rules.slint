@@ -2,7 +2,6 @@
 import { ScrollView, StandardTableView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Heading, Note, Switch, TextButton } from "common.slint";
-import { RuleEditor, RuleEditorPane } from "rule_editor.slint";
 
 export enum Sheet { rules, activity, backups }
 
@@ -17,11 +16,15 @@ export struct ProposalData {
 }
 
 export struct RuleData {
+    // Its place in the order rules run in, from 1.
+    number: string,
     label: string,
     enabled: bool,
-    scope: string,
+    account: string,
+    folder: string,
     by: string,
-    summary: string,
+    conditions: string,
+    actions: string,
     // Open in the editor.
     selected: bool,
 }
@@ -52,6 +55,46 @@ component Chip inherits Rectangle {
     }
 }
 
+// The Rules table's column widths; Name, Conditions and Actions share what is left.
+global Columns {
+    out property <length> number: 3 * Theme.pad;
+    out property <length> switch: 3 * Theme.row / 2;
+    out property <length> account: 120px;
+    out property <length> folder: 120px;
+}
+
+// One cell of the Rules table, cut short when it does not fit.
+component Cell inherits Text {
+    color: Theme.pane.text;
+    overflow: elide;
+    vertical-alignment: center;
+}
+
+// A Rules table heading; a click sorts by its column, a second reverses it.
+component ColumnHeading inherits TouchArea {
+    in property <string> text;
+    in property <int> column;
+    in property <int> sort;
+    in property <bool> ascending;
+    callback sorted(int, bool);
+    mouse-cursor: pointer;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-description: "Sort by this column";
+    accessible-action-default => { self.clicked(); }
+    clicked => { root.sorted(root.column, root.sort != root.column || !root.ascending); }
+    Text {
+        accessible-role: none;
+        width: 100%;
+        text: root.text + (root.sort != root.column ? "" : root.ascending ? " ↑" : " ↓");
+        font-size: Theme.small-size;
+        font-weight: 600;
+        color: Theme.pane.muted;
+        overflow: elide;
+        vertical-alignment: center;
+    }
+}
+
 export component RulesPane inherits Rectangle {
     in property <Sheet> sheet;
     // Rules.
@@ -62,12 +105,14 @@ export component RulesPane inherits Rectangle {
     in property <string> counts;
     in property <[ProposalData]> proposals;
     in property <[RuleData]> rules;
+    // The Rules table's sorted column, or -1, as `sort` reports it.
+    in property <int> rules-sort: -1;
+    in property <bool> rules-ascending: true;
     // Activity and Backups.
     in property <[TableColumn]> columns;
     in property <[[StandardListViewItem]]> cells;
     in property <string> empty;
     in property <string> purge-hint;
-    in property <string> close-icon;
     // The chosen row of Backups, or -1.
     in-out property <int> current-row: -1;
     callback open-rules-file();
@@ -78,7 +123,6 @@ export component RulesPane inherits Rectangle {
     callback reject(int);
     callback preview(int);
     callback set-enabled(int, bool);
-    callback apply-rule(int);
     callback restore(int);
     callback purge();
     callback sort(int, bool);
@@ -181,177 +225,234 @@ export component RulesPane inherits Rectangle {
             sort-descending(column) => { root.sort(column, false); }
         }
 
-        if root.sheet == Sheet.rules: HorizontalLayout {
+        if root.sheet == Sheet.rules: rules-scroll := ScrollView {
             vertical-stretch: 1;
-            spacing: Theme.inset;
-            ScrollView {
-                width: 460px;
-                VerticalLayout {
-                    alignment: start;
-                    spacing: Theme.pad;
-
-                    for proposal[i] in root.proposals: Rectangle {
-                        border-width: 1px;
-                        border-color: Theme.pane.border;
-                        border-radius: Theme.pad;
-                        VerticalLayout {
-                            padding: Theme.pad;
-                            spacing: Theme.pad / 2;
+            VerticalLayout {
+                width: rules-scroll.visible-width;
+                alignment: start;
+                spacing: Theme.pad;
+                for proposal[i] in root.proposals: Rectangle {
+                    border-width: 1px;
+                    border-color: Theme.pane.border;
+                    border-radius: Theme.pad;
+                    VerticalLayout {
+                        padding: Theme.pad;
+                        spacing: Theme.pad / 2;
+                        HorizontalLayout {
+                            spacing: Theme.pad;
+                            Text {
+                                text: proposal.label;
+                                font-weight: 600;
+                                color: Theme.pane.strong;
+                                overflow: elide;
+                                vertical-alignment: center;
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Chip {
+                                    text: proposal.by;
+                                    tint: Theme.pane.warning;
+                                }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                        Summary { text: proposal.summary; }
+                        Note { text: "Adds to rules.toml"; }
+                        // Every line is added, so each gets a diff's "+" and tint.
+                        Rectangle {
+                            background: Theme.pane.added;
+                            border-radius: Theme.pad / 2;
+                            // The marks and the lines share font and size, so each "+" sits beside its line.
                             HorizontalLayout {
+                                padding: Theme.pad / 2;
+                                padding-left: Theme.pad;
                                 spacing: Theme.pad;
                                 Text {
-                                    text: proposal.label;
-                                    font-weight: 600;
-                                    color: Theme.pane.strong;
-                                    overflow: elide;
-                                    vertical-alignment: center;
+                                    accessible-role: none;
+                                    text: proposal.marks;
+                                    font-family: Theme.mono-font;
+                                    font-size: Theme.small-size;
+                                    color: Theme.pane.success;
                                 }
-                                VerticalLayout {
-                                    alignment: center;
-                                    Chip {
-                                        text: proposal.by;
-                                        tint: Theme.pane.warning;
-                                    }
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: proposal.toml;
+                                    font-family: Theme.mono-font;
+                                    font-size: Theme.small-size;
+                                    color: Theme.pane.text;
                                 }
-                                Rectangle { horizontal-stretch: 1; }
-                            }
-                            Summary { text: proposal.summary; }
-                            Note { text: "Adds to rules.toml"; }
-                            // Every line is added, so each gets a diff's "+" and tint.
-                            Rectangle {
-                                background: Theme.pane.added;
-                                border-radius: Theme.pad / 2;
-                                // The marks and the lines share font and size, so each "+" sits beside its line.
-                                HorizontalLayout {
-                                    padding: Theme.pad / 2;
-                                    padding-left: Theme.pad;
-                                    spacing: Theme.pad;
-                                    Text {
-                                        accessible-role: none;
-                                        text: proposal.marks;
-                                        font-family: Theme.mono-font;
-                                        font-size: Theme.small-size;
-                                        color: Theme.pane.success;
-                                    }
-                                    Text {
-                                        horizontal-stretch: 1;
-                                        text: proposal.toml;
-                                        font-family: Theme.mono-font;
-                                        font-size: Theme.small-size;
-                                        color: Theme.pane.text;
-                                    }
-                                }
-                            }
-                            HorizontalLayout {
-                                spacing: Theme.pad / 2;
-                                TextButton {
-                                    text: "Approve";
-                                    framed: true;
-                                    palette: Theme.pane;
-                                    clicked => { root.approve(i); }
-                                }
-                                TextButton {
-                                    text: "Reject";
-                                    framed: true;
-                                    palette: Theme.pane;
-                                    clicked => { root.reject(i); }
-                                }
-                                TextButton {
-                                    text: "Preview on cached mail";
-                                    palette: Theme.pane;
-                                    hint: "Counts what it would do to the mail already downloaded; changes nothing";
-                                    clicked => { root.preview(i); }
-                                }
-                                Rectangle { horizontal-stretch: 1; }
-                            }
-                            if proposal.preview != "": Text {
-                                text: proposal.preview;
-                                color: Theme.pane.secondary;
-                                wrap: word-wrap;
                             }
                         }
+                        HorizontalLayout {
+                            spacing: Theme.pad / 2;
+                            TextButton {
+                                text: "Approve";
+                                framed: true;
+                                palette: Theme.pane;
+                                clicked => { root.approve(i); }
+                            }
+                            TextButton {
+                                text: "Reject";
+                                framed: true;
+                                palette: Theme.pane;
+                                clicked => { root.reject(i); }
+                            }
+                            TextButton {
+                                text: "Preview on cached mail";
+                                palette: Theme.pane;
+                                hint: "Counts what it would do to the mail already downloaded; changes nothing";
+                                clicked => { root.preview(i); }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                        if proposal.preview != "": Text {
+                            text: proposal.preview;
+                            color: Theme.pane.secondary;
+                            wrap: word-wrap;
+                        }
                     }
+                }
 
-                    if root.rules.length == 0: Text {
-                        text: "rules.toml has no rules yet.";
-                        color: Theme.pane.muted;
+                if root.rules.length == 0: Text {
+                    text: "rules.toml has no rules yet.";
+                    color: Theme.pane.muted;
+                }
+                if root.rules.length > 0: HorizontalLayout {
+                    height: Theme.row;
+                    padding-left: Theme.pad;
+                    padding-right: Theme.pad;
+                    spacing: Theme.pad;
+                    ColumnHeading {
+                        width: Columns.number;
+                        text: "#";
+                        column: 0;
+                        sort: root.rules-sort;
+                        ascending: root.rules-ascending;
+                        sorted(column, ascending) => { root.sort(column, ascending); }
                     }
-                    for rule[i] in root.rules: Rectangle {
+                    Rectangle { width: Columns.switch; }
+                    ColumnHeading {
+                        horizontal-stretch: 2;
+                        preferred-width: 0;
+                        min-width: 0;
+                        text: "Name";
+                        column: 1;
+                        sort: root.rules-sort;
+                        ascending: root.rules-ascending;
+                        sorted(column, ascending) => { root.sort(column, ascending); }
+                    }
+                    ColumnHeading {
+                        width: Columns.account;
+                        text: "Account";
+                        column: 2;
+                        sort: root.rules-sort;
+                        ascending: root.rules-ascending;
+                        sorted(column, ascending) => { root.sort(column, ascending); }
+                    }
+                    ColumnHeading {
+                        width: Columns.folder;
+                        text: "Folder";
+                        column: 3;
+                        sort: root.rules-sort;
+                        ascending: root.rules-ascending;
+                        sorted(column, ascending) => { root.sort(column, ascending); }
+                    }
+                    ColumnHeading {
+                        horizontal-stretch: 3;
+                        preferred-width: 0;
+                        min-width: 0;
+                        text: "Conditions";
+                        column: 4;
+                        sort: root.rules-sort;
+                        ascending: root.rules-ascending;
+                        sorted(column, ascending) => { root.sort(column, ascending); }
+                    }
+                    ColumnHeading {
+                        horizontal-stretch: 2;
+                        preferred-width: 0;
+                        min-width: 0;
+                        text: "Actions";
+                        column: 5;
+                        sort: root.rules-sort;
+                        ascending: root.rules-ascending;
+                        sorted(column, ascending) => { root.sort(column, ascending); }
+                    }
+                }
+                // A click on a row, anywhere but its switch, opens the rule.
+                for rule[i] in root.rules: TouchArea {
+                    height: Theme.row + Theme.pad;
+                    mouse-cursor: pointer;
+                    accessible-role: button;
+                    accessible-label: rule.label;
+                    accessible-description: "Open in the editor";
+                    accessible-action-default => { root.edit-rule(i); }
+                    clicked => { root.edit-rule(i); }
+                    Rectangle {
                         border-radius: Theme.pad / 2;
                         background: rule.selected ? Theme.pane.selected : mod(i, 2) == 0 ? Theme.pane.panel : transparent;
-                        HorizontalLayout {
-                            padding: Theme.pad;
-                            spacing: Theme.pad;
-                            VerticalLayout {
-                                alignment: start;
-                                Switch {
-                                    name: "Enable " + rule.label;
-                                    checked: rule.enabled;
-                                    toggled(on) => { root.set-enabled(i, on); }
-                                }
+                    }
+                    HorizontalLayout {
+                        padding-left: Theme.pad;
+                        padding-right: Theme.pad;
+                        spacing: Theme.pad;
+                        Cell {
+                            width: Columns.number;
+                            text: rule.number;
+                            color: Theme.pane.muted;
+                        }
+                        VerticalLayout {
+                            width: Columns.switch;
+                            alignment: center;
+                            Switch {
+                                name: "Enable " + rule.label;
+                                checked: rule.enabled;
+                                toggled(on) => { root.set-enabled(i, on); }
                             }
-                            VerticalLayout {
-                                spacing: Theme.pad / 2;
-                                HorizontalLayout {
-                                    spacing: Theme.pad;
-                                    TouchArea {
-                                        width: name.preferred-width;
-                                        mouse-cursor: pointer;
-                                        accessible-role: button;
-                                        accessible-label: rule.label;
-                                        accessible-description: "Open in the editor";
-                                        accessible-action-default => { root.edit-rule(i); }
-                                        clicked => { root.edit-rule(i); }
-                                        name := Text {
-                                            accessible-role: none;
-                                            text: rule.label;
-                                            font-weight: 600;
-                                            color: Theme.pane.strong;
-                                            overflow: elide;
-                                            vertical-alignment: center;
-                                        }
-                                    }
-                                    VerticalLayout {
-                                        alignment: center;
-                                        Chip { text: rule.scope; }
-                                    }
-                                    if rule.by != "": VerticalLayout {
-                                        alignment: center;
-                                        Chip {
-                                            text: rule.by;
-                                            tint: Theme.pane.warning;
-                                        }
-                                    }
-                                    Rectangle { horizontal-stretch: 1; }
-                                }
-                                Summary { text: rule.summary; }
-                                HorizontalLayout {
-                                    TextButton {
-                                        text: "Apply to existing mail";
-                                        flush: true;
-                                        palette: Theme.pane;
-                                        enabled: rule.enabled;
-                                        hint: "Runs this rule's actions, which may delete mail, on the mail its accounts already hold, now";
-                                        disabled-hint: "Turn the rule on first";
-                                        clicked => { root.apply-rule(i); }
-                                    }
-                                    Rectangle { horizontal-stretch: 1; }
+                        }
+                        HorizontalLayout {
+                            horizontal-stretch: 2;
+                            preferred-width: 0;
+                            min-width: 0;
+                            spacing: Theme.pad;
+                            Cell {
+                                accessible-role: none;
+                                text: rule.label;
+                                font-weight: 600;
+                                color: Theme.pane.strong;
+                            }
+                            if rule.by != "": VerticalLayout {
+                                alignment: center;
+                                Chip {
+                                    text: rule.by;
+                                    tint: Theme.pane.warning;
                                 }
                             }
                         }
+                        Cell {
+                            width: Columns.account;
+                            text: rule.account;
+                        }
+                        Cell {
+                            width: Columns.folder;
+                            text: rule.folder;
+                        }
+                        Cell {
+                            horizontal-stretch: 3;
+                            preferred-width: 0;
+                            min-width: 0;
+                            text: rule.conditions;
+                            color: Theme.pane.secondary;
+                        }
+                        Cell {
+                            horizontal-stretch: 2;
+                            preferred-width: 0;
+                            min-width: 0;
+                            text: rule.actions;
+                            color: Theme.pane.secondary;
+                        }
                     }
-                    Note { text: "Rules run top to bottom on every sync, only on mail that arrives after they are enabled."; }
                 }
-            }
-            if RuleEditor.open: RuleEditorPane {
-                horizontal-stretch: 1;
-                close-icon: root.close-icon;
-            }
-            if !RuleEditor.open: Text {
-                horizontal-stretch: 1;
-                text: "Choose a rule to edit it, or start a New rule.";
-                color: Theme.pane.muted;
-                wrap: word-wrap;
+                Note { text: "Rules run in the order of #, top to bottom in rules.toml, on every sync, only on mail that arrives after they are enabled."; }
             }
         }
     }
