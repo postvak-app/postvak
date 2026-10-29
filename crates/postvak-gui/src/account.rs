@@ -4,7 +4,7 @@
 use std::fmt;
 use std::sync::mpsc::{self, Receiver};
 
-use postvak_core::config::{AccountConfig, Config, PasswordSource};
+use postvak_core::config::{AccountConfig, Config, PasswordSource, Tls};
 use postvak_core::credentials::Secret;
 use postvak_core::message::clean;
 use postvak_core::paths::Paths;
@@ -19,12 +19,14 @@ pub(crate) const STOPPED: &str = "the save stopped before it finished";
 pub(crate) struct Fields {
     pub name: String,
     pub host: String,
-    /// Empty means 993.
+    /// Empty means 993, or 143 with `starttls`.
     pub port: String,
     pub username: String,
     pub password: String,
     /// Empty means the username.
     pub address: String,
+    /// STARTTLS rather than implicit TLS.
+    pub starttls: bool,
 }
 
 impl fmt::Debug for Fields {
@@ -36,6 +38,7 @@ impl fmt::Debug for Fields {
             .field("username", &self.username)
             .field("password", &"<redacted>")
             .field("address", &self.address)
+            .field("starttls", &self.starttls)
             .finish()
     }
 }
@@ -52,7 +55,13 @@ impl Fields {
         if let Some((label, _)) = required.iter().find(|(_, value)| value.trim().is_empty()) {
             return Err(format!("the {label} is required"));
         }
+        let tls = if self.starttls {
+            Tls::Starttls
+        } else {
+            Tls::Implicit
+        };
         let port = match self.port.trim() {
+            "" if self.starttls => 143,
             "" => 993,
             text => text
                 .parse()
@@ -61,7 +70,7 @@ impl Fields {
         let address = Some(self.address.trim())
             .filter(|address| !address.is_empty())
             .map(str::to_string);
-        let account = AccountConfig {
+        let mut account = AccountConfig {
             port,
             address,
             ..AccountConfig::new(
@@ -71,6 +80,10 @@ impl Fields {
                 PasswordSource::Keyring { keyring: true },
             )
         };
+        // Written only where the port alone would say otherwise.
+        if account.tls() != tls {
+            account.tls = Some(tls);
+        }
         Ok((account, Secret::new(self.password.clone())))
     }
 }
@@ -233,6 +246,27 @@ mod tests {
     }
 
     #[test]
+    fn typing_port_143_picks_starttls_and_another_port_keeps_it() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        open.window().invoke_menu_item(MenuAction::AddAccount);
+        fill_window(&open, "home", "imap.example.com");
+        let encryption = || {
+            open.get("Encryption")
+                .accessible_value()
+                .unwrap_or_default()
+        };
+        assert_eq!(encryption(), "TLS");
+        open.get("Port").set_accessible_value("143");
+        assert_eq!(encryption(), "STARTTLS");
+        open.get("Port").set_accessible_value("1143");
+        save_in(&open);
+        let config = Config::load(&fx.paths.config_file()).unwrap();
+        let home = config.account("home").unwrap();
+        assert_eq!((home.port, home.tls), (1143, Some(Tls::Starttls)));
+    }
+
+    #[test]
     fn a_failed_login_keeps_the_form_open_and_saves_nothing() {
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = fx.window();
@@ -367,6 +401,7 @@ mod tests {
             username: "me@example.com".into(),
             password: "hunter2".into(),
             address: String::new(),
+            starttls: false,
         }
     }
 
@@ -398,6 +433,23 @@ mod tests {
         let (account, _) = fields.account().unwrap();
         assert_eq!(account.port, 143);
         assert_eq!(account.address.as_deref(), Some("me@example.org"));
+    }
+
+    #[test]
+    fn the_encryption_choice_is_written_only_where_the_port_would_say_otherwise() {
+        let account = |port: &str, starttls| {
+            let fields = Fields {
+                port: port.into(),
+                starttls,
+                ..filled("work")
+            };
+            let (account, _) = fields.account().unwrap();
+            (account.port, account.tls)
+        };
+        assert_eq!(account("", true), (143, None));
+        assert_eq!(account("1143", true), (1143, Some(Tls::Starttls)));
+        assert_eq!(account("143", false), (143, Some(Tls::Implicit)));
+        assert_eq!(account("1993", false), (1993, None));
     }
 
     #[test]

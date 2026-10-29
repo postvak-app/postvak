@@ -38,6 +38,7 @@ pub(crate) fn account_fields(fields: AccountFields) -> account::Fields {
         username: fields.username.into(),
         password: fields.password.into(),
         address: fields.address.into(),
+        starttls: fields.starttls,
     }
 }
 
@@ -1027,12 +1028,14 @@ fn folder_item(entry: &Entry) -> FolderItem {
         Entry::Account {
             name,
             busy,
+            note,
             error,
             gap,
         } => FolderItem {
             kind: FolderKind::Account,
             label: name.into(),
             busy: *busy,
+            note: note.unwrap_or_default().into(),
             gap: *gap,
             error: error.as_deref().unwrap_or_default().into(),
             ..FolderItem::default()
