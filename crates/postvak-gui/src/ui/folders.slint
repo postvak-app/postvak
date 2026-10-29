@@ -31,8 +31,9 @@ export struct FolderItem {
     droppable: bool,
     // An account after the first, with space above it.
     gap: bool,
-    // An account heading: syncing, and its store error.
+    // An account heading: syncing, a note such as "unencrypted", and its store error.
     busy: bool,
+    note: string,
     error: string,
     // The right-click menu: the items above the separator, then those below.
     menu-head: [MenuChoice],
@@ -203,6 +204,12 @@ export component FolderPane inherits Rectangle {
                                 height: Theme.icon * 3 / 4;
                                 y: (parent.height - self.height) / 2;
                                 indeterminate: true;
+                            }
+                            if item.note != "": Text {
+                                text: item.note;
+                                font-size: Theme.small-size;
+                                color: Theme.frame.error;
+                                vertical-alignment: center;
                             }
                             Rectangle { horizontal-stretch: 1; }
                         }

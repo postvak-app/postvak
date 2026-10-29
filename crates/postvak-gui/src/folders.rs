@@ -11,10 +11,11 @@ use super::{icons, list, numbers, status};
 /// A line of the folder pane's scrolling part, top to bottom.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Entry {
-    /// An account's name, with a spinner while it syncs and its store error.
+    /// An account's name, with a spinner while it syncs, a note when it logged in without TLS, and its store error.
     Account {
         name: String,
         busy: bool,
+        note: Option<&'static str>,
         error: Option<String>,
         /// After the first account, with space above it.
         gap: bool,
@@ -131,6 +132,7 @@ pub(crate) fn entries(app: &App) -> Vec<Entry> {
         entries.push(Entry::Account {
             name: account.name.clone(),
             busy: account.busy(),
+            note: (account.encrypted == Some(false)).then_some("unencrypted"),
             error: account.store.as_ref().err().map(|e| clean(e, false)),
             gap: index > 0,
         });

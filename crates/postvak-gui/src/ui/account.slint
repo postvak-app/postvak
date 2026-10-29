@@ -1,6 +1,6 @@
 // The add-account form: on the first-run window and in the mail window's dialog. `account.rs` checks and saves what
 // `save` sends.
-import { LineEdit } from "std-widgets.slint";
+import { ComboBox, LineEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { TextButton } from "common.slint";
 
@@ -11,6 +11,7 @@ export struct AccountFields {
     username: string,
     password: string,
     address: string,
+    starttls: bool,
 }
 
 // A label and its field on one row; the label names the field for screen readers and tests.
@@ -23,6 +24,7 @@ component Field inherits HorizontalLayout {
     in property <bool> enabled: true;
     out property <string> text: edit.text;
     callback accepted();
+    callback edited(string);
 
     spacing: Theme.pad;
     Text {
@@ -45,6 +47,7 @@ component Field inherits HorizontalLayout {
             }
         }
         accepted => { root.accepted(); }
+        edited(text) => { root.edited(text); }
     }
 }
 
@@ -63,7 +66,8 @@ export component AccountForm inherits VerticalLayout {
             port: port-field.text,
             username: username-field.text,
             password: password-field.text,
-            address: address-field.text
+            address: address-field.text,
+            starttls: encryption.current-index == 1
         });
     }
 
@@ -81,11 +85,37 @@ export component AccountForm inherits VerticalLayout {
         enabled: !root.saving;
         accepted => { root.submit(); }
     }
+    // The usual ports pick their encryption; another port keeps the choice made.
     port-field := Field {
         label: "Port";
-        hint: "993";
+        hint: encryption.current-index == 1 ? "143" : "993";
         enabled: !root.saving;
         accepted => { root.submit(); }
+        edited(text) => {
+            if (text == "143") {
+                encryption.current-index = 1;
+            } else if (text == "993") {
+                encryption.current-index = 0;
+            }
+        }
+    }
+    // No plain-text choice: tls = "none" is only for config.toml and the CLI.
+    HorizontalLayout {
+        spacing: Theme.pad;
+        Text {
+            accessible-role: none;
+            width: 15 * Theme.pad;
+            text: "Encryption";
+            color: Theme.pane.text;
+            vertical-alignment: center;
+        }
+        encryption := ComboBox {
+            height: Theme.control;
+            horizontal-stretch: 1;
+            enabled: !root.saving;
+            model: ["TLS", "STARTTLS"];
+            accessible-label: "Encryption";
+        }
     }
     username-field := Field {
         label: "Username";

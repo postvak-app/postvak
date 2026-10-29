@@ -93,6 +93,9 @@ pub(crate) fn account_line(account: &Account) -> String {
     if account.queued > 0 {
         line.push_str(&format!(" · {} queued", account.queued));
     }
+    if account.encrypted == Some(false) {
+        line.push_str(" · unencrypted");
+    }
     if account.uidplus == Some(false) {
         line.push_str(" · server lacks UIDPLUS");
     }
@@ -176,6 +179,7 @@ mod tests {
             queued: 0,
             store: Err("no store".into()),
             uidplus: None,
+            encrypted: None,
             identity: None,
         }
     }
@@ -253,6 +257,30 @@ mod tests {
         }
         assert_eq!(driver.app.accounts[0].uidplus, Some(false));
         assert_eq!(count(&driver), 1, "a reconnect does not repeat it");
+    }
+
+    #[test]
+    fn a_login_without_tls_is_marked_in_the_sidebar_and_on_the_line_and_explained_once() {
+        let fx = Fixture::new(&["work"]);
+        let (open, wires) = fx.window();
+        assert!(open.find("unencrypted").is_empty());
+        let connected = Event::Connected {
+            account: "work".into(),
+            uidplus: true,
+            encrypted: false,
+        };
+        open.receive(&wires, [connected.clone(), connected]);
+        assert_eq!(open.find("unencrypted").len(), 1);
+        let explained = format!("work: {}", postvak_core::help::UNENCRYPTED);
+        open.with(|live| {
+            assert!(account_line(&live.app.accounts[0]).ends_with(" · unencrypted"));
+            let lines = live
+                .app
+                .history
+                .iter()
+                .filter(|line| line.text == explained);
+            assert_eq!(lines.count(), 1, "a reconnect does not repeat it");
+        });
     }
 
     #[test]

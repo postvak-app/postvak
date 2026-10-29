@@ -233,6 +233,8 @@ pub(crate) struct Account {
     pub store: Result<Store, String>,
     /// Whether the server offered UIDPLUS at the sync thread's last login; None before it logged in.
     pub uidplus: Option<bool>,
+    /// Whether the sync thread's last login ran over TLS; None before it logged in.
+    pub encrypted: Option<bool>,
     /// Who the account is, for `from:me` in a search; None when its config could not say.
     pub identity: Option<Identity>,
 }
@@ -680,6 +682,7 @@ fn account_state(
         queued: 0,
         store,
         uidplus: None,
+        encrypted: None,
         identity,
     };
     account.reload_folders();
@@ -706,11 +709,12 @@ impl App {
                      activity,
                      name,
                      uidplus,
-                     ..
+                     encrypted,
                  }| {
                     let identity = config.account(&name).and_then(|a| a.identity().ok());
                     Account {
                         uidplus,
+                        encrypted,
                         ..account_state(&paths, name, activity, identity)
                     }
                 },
@@ -1044,12 +1048,19 @@ impl App {
                 }
                 account.activity = Some(activity);
             }
-            Event::Connected { uidplus, .. } => {
+            Event::Connected {
+                uidplus, encrypted, ..
+            } => {
+                if !encrypted && self.accounts[index].encrypted != Some(false) {
+                    let line = format!("{}: {}", self.accounts[index].name, help::UNENCRYPTED);
+                    self.push_history(line);
+                }
                 if !uidplus && self.accounts[index].uidplus != Some(false) {
                     let line = format!("{}: {}", self.accounts[index].name, help::NO_UIDPLUS);
                     self.push_history(line);
                 }
                 self.accounts[index].uidplus = Some(uidplus);
+                self.accounts[index].encrypted = Some(encrypted);
             }
             Event::NewMail { .. } => {}
             // More bodies are searchable: an open search reloads, at most once a second, keeping its cursor as a
