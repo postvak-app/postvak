@@ -1,5 +1,5 @@
 //! The one process that owns the engine, serving it to the GUI, CLI and MCP over a private Unix socket.
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::net::Shutdown;
@@ -294,8 +294,8 @@ fn serve(
 ) -> anyhow::Result<()> {
     let mut watch = Watch::new(paths);
     let config = Config::load(&paths.config_file())?;
-    watch.warn(&config);
     migrate_stores(&config, paths);
+    watch.warn(&config);
     let (engine, events) = Engine::start(&config, paths, options.connect.clone());
     let shared = Arc::new(Shared {
         engine: Mutex::new(Some(engine)),
@@ -379,10 +379,15 @@ struct Watch {
     rules: FileWatch,
     /// The folder holding rules.toml, whose entries change when a file sync leaves a conflicting copy there.
     dir: FileWatch,
-    /// The configured accounts, for the rules' warnings.
+    /// The configured accounts, for the rules' warnings, and where their stores are.
     accounts: Vec<String>,
+    paths: Paths,
     /// Those that trust no authserv-id, for the warning about `authenticated`.
     untrusting: Vec<String>,
+    /// The folder warnings by account, each read again from its store only after that account synced.
+    folder_lines: BTreeMap<String, Vec<String>>,
+    /// The file's own warnings, without the folder ones.
+    file_lines: Vec<String>,
     /// The rules' warnings last logged, so each is logged once rather than on every change.
     warned: Vec<String>,
     checked: Instant,
@@ -396,7 +401,10 @@ impl Watch {
             dir: FileWatch::new(rules.parent().map(Path::to_path_buf).unwrap_or_default()),
             rules: FileWatch::new(rules),
             accounts: Vec::new(),
+            paths: paths.clone(),
             untrusting: Vec::new(),
+            folder_lines: BTreeMap::new(),
+            file_lines: Vec::new(),
             warned: Vec::new(),
             checked: Instant::now(),
         }
@@ -423,10 +431,39 @@ impl Watch {
         let untrusting: Vec<&str> = self.untrusting.iter().map(String::as_str).collect();
         let warnings =
             crate::rules::warnings(&self.rules.path, &file.rules, &accounts, &untrusting);
+        self.folder_lines = self
+            .accounts
+            .iter()
+            .map(|account| {
+                let lines = crate::rules::folder_warnings(&self.paths, &file.rules, &[account]);
+                (account.clone(), lines)
+            })
+            .collect();
+        self.file_lines = warnings;
+        self.log_new();
+    }
+
+    /// Logs the warnings of the file and of the folders that were not logged before.
+    fn log_new(&mut self) {
+        let warnings: Vec<String> = self
+            .file_lines
+            .iter()
+            .chain(self.folder_lines.values().flatten())
+            .cloned()
+            .collect();
         for warning in warnings.iter().filter(|w| !self.warned.contains(w)) {
             log::warn!("rules.toml: {}", crate::message::clean(warning, false));
         }
         self.warned = warnings;
+    }
+
+    /// Takes `account`'s folder warnings, read after it synced, and logs what is new.
+    fn synced(&mut self, account: &str, lines: Vec<String>) {
+        if !self.accounts.iter().any(|a| a == account) {
+            return;
+        }
+        self.folder_lines.insert(account.to_string(), lines);
+        self.log_new();
     }
 
     /// The config, loaded again once it changed, and whether the rules file changed; `poll` skips the check until
@@ -604,6 +641,18 @@ fn route_events(
         // The sync sends NewMail only for mail that should notify, rules included.
         if let Some(batch) = batches.hear(&event) {
             notify(&batch);
+        }
+        if let Event::Synced { account, .. } = &event {
+            // The folder warnings read what the account's store holds, which a sync changes. The store opens
+            // outside the lock, which the accept loop takes for every client.
+            let (paths, rules) = {
+                let watch = lock(&shared.watch);
+                (watch.paths.clone(), watch.rules.path.clone())
+            };
+            if let Ok(file) = crate::rules::load(&rules) {
+                let lines = crate::rules::folder_warnings(&paths, &file.rules, &[account]);
+                lock(&shared.watch).synced(account, lines);
+            }
         }
         let mut hub = lock(&shared.hub);
         match &event {

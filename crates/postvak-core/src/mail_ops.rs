@@ -1,4 +1,5 @@
 pub mod imap;
+pub mod utf7;
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
@@ -109,6 +110,18 @@ pub enum MailError {
     Protocol(String),
     #[error("connection lost: {0}")]
     Io(String),
+}
+
+impl MailError {
+    /// The same kind of error with its reason changed by `f`.
+    pub fn map_reason(self, f: impl FnOnce(String) -> String) -> MailError {
+        match self {
+            MailError::Connect(reason) => MailError::Connect(f(reason)),
+            MailError::Auth(reason) => MailError::Auth(f(reason)),
+            MailError::Protocol(reason) => MailError::Protocol(f(reason)),
+            MailError::Io(reason) => MailError::Io(f(reason)),
+        }
+    }
 }
 
 pub type MailResult<T> = Result<T, MailError>;
@@ -244,6 +257,8 @@ mod recording {
         pub fail_next_expunge: Option<MailError>,
         /// Makes the next `subscribe_folder` fail with this error, once, like a server refusing SUBSCRIBE.
         pub fail_next_subscribe: Option<MailError>,
+        /// Makes the next `create_folder` fail with this error, once, like a server refusing a name.
+        pub fail_next_create: Option<MailError>,
         /// Makes every `add_flags` fail with an I/O error once this many have succeeded, like a connection that dropped.
         pub fail_add_flags_after: Option<usize>,
         /// Makes `add_flags` panic, like a bug in a command.
@@ -700,6 +715,9 @@ mod recording {
 
         fn create_folder(&mut self, name: &str) -> MailResult<()> {
             self.calls.push(format!("create_folder {name}"));
+            if let Some(e) = self.fail_next_create.take() {
+                return Err(e);
+            }
             if self.mail.contains_key(name) {
                 return Err(MailError::Protocol(format!("[ALREADYEXISTS] {name}")));
             }

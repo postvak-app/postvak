@@ -6,7 +6,7 @@ pub use edit::rule_toml;
 pub mod engine;
 mod warnings;
 
-pub use warnings::warnings;
+pub use warnings::{folder_warnings, open_folder_warnings, warnings};
 
 use std::collections::BTreeMap;
 use std::io;
@@ -626,6 +626,18 @@ fn compile_rule(
             ));
         }
     }
+    let folders = rule
+        .folder
+        .iter()
+        .map(|folder| ("folder", folder, false))
+        .chain(rule.actions.iter().filter_map(|action| match action {
+            Action::Move(folder) => Some(("move folder", folder, true)),
+            _ => None,
+        }));
+    for (field, folder, target) in folders {
+        check_folder_shape(folder, target)
+            .map_err(|reason| invalid(&rule.name, format!("{field} {reason}")))?;
+    }
     for action in &rule.actions {
         if let Action::Tag(keyword) = action {
             check_keyword(keyword)
@@ -637,6 +649,27 @@ fn compile_rule(
         first_seen_at: 0,
         conditions: compile_match(&rule.name, &rule.matches, "match", 0)?,
     })
+}
+
+/// Refuses a folder name servers refuse or misread, by its levels between `/`, the delimiter the docs teach: a level
+/// starting or ending in whitespace, which looks like a folder that is not there. A move target, which may be created,
+/// also may not have an empty level (`/Lists`, `Lists//GitHub`, or `Lists/`, which RFC 3501 §6.3.3 makes only a
+/// parent for later folders) or IMAP's `LIST` wildcards `*` and `%`.
+fn check_folder_shape(name: &str, target: bool) -> Result<(), String> {
+    if target && name.contains(['*', '%']) {
+        return Err("must not contain * or %, which IMAP reads as wildcards".into());
+    }
+    for level in name.split('/') {
+        if target && level.is_empty() {
+            return Err("must not have an empty level: a leading, trailing or doubled /".into());
+        }
+        if level.trim() != level {
+            return Err(format!(
+                "level '{level}' must not start or end with whitespace"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn compile_match(
@@ -1198,6 +1231,66 @@ actions = { move = "Shopping", notify = true }
         // Exactly at the limit is fine.
         let at_limit = "a".repeat(MAX_NAME_CHARS);
         compile(&parse(&rule("", &at_limit, &at_limit)).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn rejects_folder_names_servers_refuse_or_misread() {
+        let rule = |extra: &str, target: &str| {
+            format!(
+                "[[rules]]\nname = \"x\"\n{extra}match.read = true\nactions.move = \"{target}\"\n"
+            )
+        };
+        let cases = [
+            (rule("", "Lists/*"), "move folder must not contain * or %"),
+            (rule("", "100%"), "move folder must not contain * or %"),
+            (
+                rule("", "Lists/"),
+                "move folder must not have an empty level",
+            ),
+            (
+                rule("", "/Lists"),
+                "move folder must not have an empty level",
+            ),
+            (
+                rule("", "Lists//GitHub"),
+                "move folder must not have an empty level",
+            ),
+            (
+                rule("", " Lists"),
+                "move folder level ' Lists' must not start or end with whitespace",
+            ),
+            (
+                rule("", "Lists "),
+                "move folder level 'Lists ' must not start or end with whitespace",
+            ),
+            (
+                rule("", "Lists / GitHub"),
+                "move folder level 'Lists ' must not start or end with whitespace",
+            ),
+            (
+                rule("folder = \"Lists/ GitHub\"\n", "Done"),
+                "folder level ' GitHub' must not start or end with whitespace",
+            ),
+        ];
+        for (text, want) in cases {
+            match parse(&text).and_then(|f| compile(&f)) {
+                Err(RulesError::Invalid { reason, .. }) => {
+                    assert!(
+                        reason.starts_with(want),
+                        "{reason} should start with {want}"
+                    )
+                }
+                other => panic!("expected Invalid ({want}), got {other:?}"),
+            }
+        }
+        // A watched folder may hold what a move target may not: it exists already, so the server accepted it.
+        for ok in [
+            rule("folder = \"100%\"\n", "Lists/GitHub"),
+            rule("folder = \"Lists/\"\n", "Archief/\u{c9}\u{e9}n"),
+            rule("", "Lists - Old/Q&A"),
+        ] {
+            compile(&parse(&ok).unwrap()).unwrap();
+        }
     }
 
     #[test]

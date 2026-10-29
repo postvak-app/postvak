@@ -828,8 +828,12 @@ pub fn run_rules_with(
     let mut folders: Vec<String> = rules
         .iter()
         .filter(|r| r.rule.enabled && r.applies_to_account(&account.name))
-        .map(|r| r.folder().to_string())
-        .collect();
+        .map(|r| {
+            // The store's spelling, so a rule written in NFD runs in the folder the server lists in NFC.
+            Ok(crate::folder_name::known(store, r.folder())?
+                .map_or_else(|| r.folder().to_string(), |f| f.name))
+        })
+        .collect::<Result<_, StoreError>>()?;
     folders.push("INBOX".to_string());
     folders.sort();
     folders.dedup();

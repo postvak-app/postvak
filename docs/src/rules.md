@@ -26,6 +26,10 @@ actions.read = true
 
 A tag is printable ASCII without spaces, backslashes or `( ) { % * " ]`, and `$PostvakRestored` is reserved. `name`, `account`, `folder` and `move` folders must not be blank, may not contain control characters, and are at most 255 characters.
 
+Folder names are written in plain text, `Archief/Één` included; Postvak encodes them as IMAP requires (modified UTF-7) and shows the server's folders decoded. A level of a `folder` or `move` folder (the parts between `/`) may not start or end with a space. A `move` folder also may not contain `*` or `%`, which IMAP reads as wildcards, or an empty level: `/Lists`, `Lists//GitHub` and `Lists/` are refused. A name typed with separate accents, as macOS can produce, finds the folder the server spells with precomposed letters (Unicode NFC) and the other way round, and a new folder is created in NFC.
+
+Like any invalid rule, one of these names stops the whole file from loading, so no rule runs until it is fixed; a file that loaded before Postvak checked them can stop after an upgrade, and `postvak rules check` names the rule. Postvak used to show non-ASCII folders in their encoded form, such as `&AMkA6Q-n` for `Één`. A rule that names a folder that way still finds the folder while the account has it, so it keeps watching and moving to `Één`; otherwise it means a folder with exactly that name. `rules check` warns about such a rule and gives the plain name to write instead.
+
 ## Conditions
 
 Text conditions take exactly one of:
@@ -82,7 +86,7 @@ actions.move = "Finance"
 |---|---|
 | `delete = true` | Saves the message as `.eml` in the local trash, then removes it from the server. Later rules don't run for that message. |
 | `archive = true` | Moves it to the server's Archive folder. Fails when the server has none. A rule cannot both archive and `move`. |
-| `move = "Folder/Sub"` | Moves it to that folder, creating the folder if needed and subscribing to it, so mail apps that show only subscribed folders list it. |
+| `move = "Folder/Sub"` | Moves it to that folder, creating the folder if needed and subscribing to it, so mail apps that show only subscribed folders list it. When the server refuses to create it and the move then fails, the error says both. `/` separates levels on most servers; see the warnings below for servers that use `.`. |
 | `read = true` | Marks it read; `false` marks it unread. |
 | `flagged = true` | Flags it; `false` removes the flag. |
 | `tag = "$label1"` | Adds that IMAP keyword, or each keyword of a list (`tag = ["$label1", "$work"]`), which Thunderbird and other clients show as tags. The server must accept custom keywords. |
@@ -244,7 +248,7 @@ A symlink from that folder to a `rules.toml` elsewhere works outside the Flatpak
 
 Every device that runs Postvak runs the rules itself. Moving or marking mail that another device already handled does nothing, but a deleted message's `.eml` backup is only on the device that deleted it.
 
-When two devices change the file before they sync, the sync keeps one version and leaves the other beside it, such as `rules.sync-conflict-20261024-101500-ABCDEFG.toml` from Syncthing or `rules (conflicted copy 2026-10-24 101500).toml` from Nextcloud. Postvak ignores that copy, so its changes are lost until you move them into `rules.toml`. `postvak rules check`, the Rules view, the MCP `rules_check` tool and the daemon's log warn about such a copy, and about a rule whose `account` is not set up on this device, since it never runs there; name each account the same on every device. They also warn about a rule that moves mail to the folder it watches (INBOX in any case), since that move does nothing, and about a rule that uses `authenticated` for an account without `trusted_authserv_ids`, since no mail is authenticated there.
+When two devices change the file before they sync, the sync keeps one version and leaves the other beside it, such as `rules.sync-conflict-20261024-101500-ABCDEFG.toml` from Syncthing or `rules (conflicted copy 2026-10-24 101500).toml` from Nextcloud. Postvak ignores that copy, so its changes are lost until you move them into `rules.toml`. `postvak rules check`, the Rules view, the MCP `rules_check` tool and the daemon's log warn about such a copy, and about a rule whose `account` is not set up on this device, since it never runs there; name each account the same on every device. They also warn about a rule that moves mail to the folder it watches (INBOX in any case), since that move does nothing, and about a rule that uses `authenticated` for an account without `trusted_authserv_ids`, since no mail is authenticated there. Once an account has synced, they warn about a `move` folder that account does not have yet and that does not fit its server: one with `/` on a server that separates levels with another character, such as `.` on Courier, where it would become one folder with `/` in its name, and a top-level name on a server that keeps every folder under `INBOX.`, where creating it usually fails. Neither is an error, since the same file can serve accounts on other servers.
 
 ## Proposals
 

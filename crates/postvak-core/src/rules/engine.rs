@@ -37,7 +37,10 @@ pub struct Plan {
 
 pub fn folder_needs_body(rules: &[CompiledRule], account: &str, folder: &str) -> bool {
     rules.iter().any(|r| {
-        r.rule.enabled && r.applies_to_account(account) && r.folder() == folder && r.needs_body()
+        r.rule.enabled
+            && r.applies_to_account(account)
+            && crate::folder_name::rule_names(r.folder(), folder)
+            && r.needs_body()
     })
 }
 
@@ -92,7 +95,7 @@ pub fn rule_matches(rule: &CompiledRule, msg: &Message, ctx: &Context) -> bool {
     !has_flag(&msg.flags, RESTORED_KEYWORD)
         && rule.rule.enabled
         && rule.applies_to_account(ctx.account)
-        && rule.folder() == msg.folder
+        && crate::folder_name::rule_names(rule.folder(), &msg.folder)
         && (ctx.mode != Mode::Normal || msg.internaldate >= rule.first_seen_at)
         // An unknown body is neither a match nor a mismatch, so `none` cannot turn a failed fetch into a hit.
         && (!rule.needs_body() || msg.body_text.is_some())
@@ -495,6 +498,20 @@ actions = { flagged = true }
             &ctx(&id, 200),
         );
         assert!(plan.actions.is_empty());
+    }
+
+    #[test]
+    fn a_rule_watching_a_folder_written_in_nfd_runs_in_the_folder_listed_in_nfc() {
+        let id = identity();
+        let toml = "[[rules]]\nname = \"n\"\nfolder = \"E\u{301}e\u{301}n\"\nmatch.body = { contains = \"x\" }\nactions.flagged = true\n";
+        let mut m = msg("a@x", "pieter@example.com", "s", 100, false);
+        m.folder = "\u{c9}\u{e9}n".into();
+        m.body_text = Some("x".into());
+        assert_eq!(
+            evaluate(&rules(toml, 0), &m, &ctx(&id, 200)).actions.len(),
+            1
+        );
+        assert!(folder_needs_body(&rules(toml, 0), "work", "\u{c9}\u{e9}n"));
     }
 
     #[test]

@@ -6,7 +6,7 @@ use postvak_core::help;
 use postvak_core::message::clean;
 use postvak_core::paths::Paths;
 use postvak_core::rules::{self, Rule};
-use postvak_core::store::LogEntry;
+use postvak_core::store::{LogEntry, Store};
 use postvak_core::trash::{Trash, TrashEntry};
 
 use postvak_core::time::date_time;
@@ -31,13 +31,8 @@ pub(crate) struct RulesState {
 
 impl RulesState {
     /// The file's rules, or the previous ones when it does not parse. A rule that does not compile is reported but
-    /// still listed, so it can be switched off. `untrusting` are the accounts that trust no authserv-id.
-    pub fn load(
-        path: &Path,
-        previous: Vec<Rule>,
-        accounts: &[&str],
-        untrusting: &[&str],
-    ) -> RulesState {
+    /// still listed, so it can be switched off.
+    pub fn load(path: &Path, previous: Vec<Rule>, accounts: &[Account]) -> RulesState {
         let (error, rules) = match rules::load(path) {
             Ok(file) => (
                 rules::compile(&file).err().map(|e| e.to_string()),
@@ -47,13 +42,31 @@ impl RulesState {
         };
         RulesState {
             error,
-            warnings: rules::warnings(path, &rules, accounts, untrusting),
+            warnings: warnings(path, &rules, accounts),
             previews: BTreeMap::new(),
             proposals: proposals(&rules),
             lines: rule_lines(&rules),
             rules,
         }
     }
+}
+
+/// What leaves the rules valid but not doing what was meant: `rules::warnings`, then what the accounts' folders show,
+/// read through the stores the window holds open rather than opening each again.
+pub(crate) fn warnings(path: &Path, rules: &[Rule], accounts: &[Account]) -> Vec<String> {
+    let names: Vec<&str> = accounts.iter().map(|a| a.name.as_str()).collect();
+    // The accounts that trust no authserv-id, for the warning about `authenticated`.
+    let untrusting: Vec<&str> = accounts
+        .iter()
+        .filter(|a| a.identity.as_ref().is_some_and(|id| !id.can_authenticate()))
+        .map(|a| a.name.as_str())
+        .collect();
+    let stores: Vec<(&str, &Store)> = accounts
+        .iter()
+        .filter_map(|a| Some((a.name.as_str(), a.store.as_ref().ok()?)))
+        .collect();
+    let file = rules::warnings(path, rules, &names, &untrusting);
+    [file, rules::open_folder_warnings(rules, &stores)].concat()
 }
 
 /// A rule waiting for approval, as the Rules view shows it.
@@ -667,6 +680,38 @@ mod tests {
         assert_eq!(banner.len(), 1);
         assert!(banner[0].contains("account 'gone'"), "{banner:?}");
         assert_eq!(open.find("newsletters").len(), 1);
+    }
+
+    /// The folder warnings read the store, which holds the account's folders only once it synced.
+    #[test]
+    fn a_folder_warning_shows_once_a_sync_brought_the_folders() {
+        let fx = Fixture::new(&["work"]);
+        let rule = "[[rules]]\nname = \"gh\"\nmatch.read = true\nactions.move = \"Lists/GitHub\"\n";
+        std::fs::write(fx.paths.rules_file(), rule).unwrap();
+        let (open, wires) = view(&fx, View::Rules);
+        assert!(open.labels_containing("'Lists/GitHub'").is_empty());
+        let store = postvak_core::store::Store::open_account(&fx.paths, "work").unwrap();
+        store
+            .upsert_folder(&postvak_core::store::Folder {
+                name: "INBOX".into(),
+                uidvalidity: 1,
+                last_uid: 0,
+                special_use: None,
+                delimiter: Some(".".into()),
+            })
+            .unwrap();
+        let synced = Event::Synced {
+            account: "work".into(),
+            new_messages: 0,
+            actions: 0,
+            requests: vec![],
+            errors: vec![],
+        };
+        wires.events.send(synced).unwrap();
+        open.tick();
+        let banner = open.labels_containing("'Lists/GitHub'");
+        assert_eq!(banner.len(), 1, "{banner:?}");
+        assert!(banner[0].contains("write 'Lists.GitHub'"), "{banner:?}");
     }
 
     #[test]

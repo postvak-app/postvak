@@ -579,6 +579,61 @@ fn rule_delete_keeps_a_backup_then_expunges() {
     }
 }
 
+/// A non-ASCII name goes out as modified UTF-7, which Dovecot insists on, and comes back as UTF-8.
+#[test]
+fn a_non_ascii_folder_is_created_listed_and_selected_by_its_utf8_name() {
+    let Some(host) = host() else { return };
+    let name = "Caf\u{e9} & \u{91cd}\u{8981}";
+    let mut ops = connect(&account(&host, PORT, "utf7"));
+    ops.create_folder(name).unwrap();
+    ops.append(name, &mail("accented"), &[]).unwrap();
+    let names: Vec<String> = ops
+        .list_folders()
+        .unwrap()
+        .into_iter()
+        .map(|f| f.name)
+        .collect();
+    assert!(names.iter().any(|n| n == name), "{names:?}");
+    ops.select(name).unwrap();
+    assert_eq!(all_envelopes(&mut ops).len(), 1);
+}
+
+/// A rule moving to a new folder written in NFD creates it in NFC, and the next sync stores it under its UTF-8 name.
+#[test]
+fn a_rule_moves_to_a_new_non_ascii_folder() {
+    let Some(host) = host() else { return };
+    let account = account(&host, PORT, "rule-utf7");
+    let home = home_with(
+        &account,
+        "[[rules]]\nname = \"archive\"\nmatch.subject = { contains = \"receipt\" }\n\
+         actions.move = \"Archief/E\u{301}e\u{301}n\"\n",
+    );
+    let paths = Paths::under(home.path());
+    let (events, received) = std::sync::mpsc::channel();
+    sync::run_once(&account, &paths, &events).unwrap();
+    wait_past_the_rule_clock();
+    connect(&account)
+        .append("INBOX", &mail("Your receipt"), &[])
+        .unwrap();
+    sync::run_once(&account, &paths, &events).unwrap();
+    sync::run_once(&account, &paths, &events).unwrap();
+    drop(events);
+    let errors: Vec<Event> = received
+        .iter()
+        .filter(|e| matches!(e, Event::Error { .. }))
+        .collect();
+    assert!(errors.is_empty(), "{errors:?}");
+
+    let nfc = "Archief/\u{c9}\u{e9}n";
+    let mut ops = connect(&account);
+    ops.select(nfc).unwrap();
+    assert_eq!(all_envelopes(&mut ops).len(), 1);
+    let store = Store::open(&paths.mail_db(&account.name)).unwrap();
+    let folder = store.folder(nfc).unwrap().expect("the folder is stored");
+    assert_ne!(folder.uidvalidity, 0, "synced, not a placeholder");
+    assert_eq!(store.message_count(nfc).unwrap(), 1);
+}
+
 #[test]
 fn cli_delete_moves_to_the_trash_folder() {
     let Some(host) = host() else { return };
