@@ -1393,7 +1393,7 @@ impl App {
         postvak_core::crash::note(&action);
         let cursor = self.list.cursor;
         self.apply_action(action);
-        if self.list.cursor != cursor && !self.list.cursor_shown() {
+        if self.list.cursor != cursor && !self.list.cursor_shown(self.search.is_some()) {
             self.list.follow_cursor = true;
         }
     }
@@ -1453,7 +1453,7 @@ impl App {
             UiAction::ListViewport { offset, height } => {
                 self.list.viewport = (offset, height);
                 // The list can stop short of the cursor while it still estimates its rows; then it is asked again.
-                if self.list.cursor_shown() {
+                if self.list.cursor_shown(self.search.is_some()) {
                     self.list.follow_cursor = false;
                 }
             }
@@ -1887,7 +1887,7 @@ impl App {
             viewport: self.list.viewport,
             ..ListState::default()
         };
-        self.list.follow_cursor = !self.list.cursor_shown();
+        self.list.follow_cursor = !self.list.cursor_shown(self.search.is_some());
     }
 
     pub(crate) fn view_account(&self) -> Option<usize> {

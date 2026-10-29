@@ -42,6 +42,7 @@ fn migration_list() -> Vec<M<'static>> {
         M::up(include_str!(
             "../migrations/021-thread-by-in-reply-to/up.sql"
         )),
+        M::up(include_str!("../migrations/022-list-preview/up.sql")),
     ]
 }
 
@@ -205,7 +206,10 @@ impl Message {
     }
 }
 
-/// What a list row shows; no headers or body.
+/// How much of the body text a summary's `preview` holds: the generated column's length (migration 022).
+pub const PREVIEW_CHARS: usize = 160;
+
+/// What a list row shows; no headers or body beyond the body's first `PREVIEW_CHARS` characters.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MessageSummary {
     pub uid: u32,
@@ -214,6 +218,10 @@ pub struct MessageSummary {
     pub subject: String,
     pub date: i64,
     pub flags: String,
+    /// The headers' guess that it carries an attachment, as the attachments filter makes it.
+    pub attachment: bool,
+    /// The start of the body text, untouched; empty until the body is indexed.
+    pub preview: String,
 }
 
 impl MessageSummary {
@@ -244,6 +252,8 @@ fn summary_from_row(row: &rusqlite::Row, offset: usize) -> rusqlite::Result<Mess
         subject: row.get(offset + 3)?,
         date: row.get(offset + 4)?,
         flags: row.get(offset + 5)?,
+        attachment: row.get(offset + 6)?,
+        preview: row.get(offset + 7)?,
     })
 }
 
@@ -311,7 +321,7 @@ pub enum Resume<'a> {
     },
 }
 
-const SUMMARY_COLUMNS: &str = "uid, COALESCE(from_addr, ''), COALESCE(to_addr, ''), COALESCE(subject, ''), internaldate, flags";
+const SUMMARY_COLUMNS: &str = "uid, COALESCE(from_addr, ''), COALESCE(to_addr, ''), COALESCE(subject, ''), internaldate, flags, has_attachment, COALESCE(preview, '')";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LogEntry {
@@ -1005,9 +1015,9 @@ impl Store {
             Ok(ThreadSummary {
                 thread_id: r.get(0)?,
                 latest: summary_from_row(r, 1)?,
-                count: r.get(8)?,
-                unread: r.get::<_, i64>(9)? > 0,
-                flagged: r.get::<_, i64>(10)? > 0,
+                count: r.get(10)?,
+                unread: r.get::<_, i64>(11)? > 0,
+                flagged: r.get::<_, i64>(12)? > 0,
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -3016,6 +3026,31 @@ mod tests {
     }
 
     #[test]
+    fn a_summary_previews_the_start_of_the_body_and_marks_an_attachment() {
+        let s = store_with_inbox();
+        let mut plain = msg("INBOX", 1, 10);
+        plain.body_text = Some(format!("Hi Robin,\n\n{}", "word ".repeat(100)));
+        let mut attached = msg("INBOX", 2, 20);
+        attached.headers = b"Content-Type: multipart/mixed; boundary=b\r\n\r\n".to_vec();
+        for m in [&plain, &attached] {
+            s.insert_message(m).unwrap();
+        }
+        let threads = s.thread_summaries("INBOX", 10, Filter::default()).unwrap();
+        let (attached, plain) = (&threads[0].latest, &threads[1].latest);
+        assert!(
+            plain.preview.starts_with("Hi Robin,\n\nword word"),
+            "{:?}",
+            plain.preview
+        );
+        assert_eq!(plain.preview.chars().count(), PREVIEW_CHARS);
+        assert!(!plain.attachment);
+        assert_eq!(attached.preview, "", "no body indexed yet");
+        assert!(attached.attachment);
+        let members = s.thread_members("INBOX", "m1@x").unwrap();
+        assert_eq!(members[0].preview, plain.preview);
+    }
+
+    #[test]
     fn thread_summaries_describe_the_latest_message() {
         let s = store_with_inbox();
         let mut first = msg("INBOX", 1, 10);
@@ -3043,6 +3078,8 @@ mod tests {
                         subject: "subject 2".into(),
                         date: 30,
                         flags: "\\Flagged".into(),
+                        attachment: false,
+                        preview: String::new(),
                     },
                     count: 2,
                     unread: true,
@@ -3057,6 +3094,8 @@ mod tests {
                         subject: "subject 3".into(),
                         date: 20,
                         flags: "\\Seen".into(),
+                        attachment: false,
+                        preview: String::new(),
                     },
                     count: 1,
                     unread: false,

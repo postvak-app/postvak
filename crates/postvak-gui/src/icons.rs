@@ -17,6 +17,7 @@ pub(crate) const INBOX: &str = "\u{E4AA}"; // tray
 pub(crate) const JUNK: &str = "\u{E4E4}"; // warning-octagon
 pub(crate) const MARK_UNREAD: &str = "\u{E218}"; // envelope-simple
 pub(crate) const MOVE: &str = "\u{EC2A}"; // folder-simple-dashed
+pub(crate) const PAPERCLIP: &str = "\u{E39A}"; // paperclip
 pub(crate) const RULES: &str = "\u{E266}"; // funnel
 pub(crate) const SAVE: &str = "\u{E20C}"; // download-simple
 pub(crate) const SEARCH: &str = "\u{E30C}"; // magnifying-glass
