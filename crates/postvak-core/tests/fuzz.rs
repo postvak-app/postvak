@@ -1028,6 +1028,7 @@ fn wire_samples() -> Vec<String> {
                         retry_at: 1_791_280_800,
                     }),
                     uidplus: Some(true),
+                    encrypted: Some(true),
                 }],
             })),
         },

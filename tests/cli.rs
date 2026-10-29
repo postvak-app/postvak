@@ -86,8 +86,9 @@ fn list_on_unknown_account_or_without_accounts_fails_and_says_what_to_do() {
     }
 }
 
-/// The wizard's answers in prompt order: name, host, port, CA file, username, address, storage, password command.
-const ADD_ANSWERS: &str = "late\n127.0.0.1\n1\n\nme@example.com\n\nc\nprintf x\n";
+/// The wizard's answers in prompt order: name, host, port, encryption, CA file, username, address, storage, password
+/// command.
+const ADD_ANSWERS: &str = "late\n127.0.0.1\n1\n\n\nme@example.com\n\nc\nprintf x\n";
 
 #[test]
 fn account_add_tests_the_login_first_and_saves_nothing_when_it_fails() {

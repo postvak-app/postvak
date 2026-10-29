@@ -132,6 +132,10 @@ pub trait MailOps {
     fn has_uidplus(&self) -> bool {
         true
     }
+    /// Whether the session runs over TLS; false only for a plain-text login under `tls = "none"`.
+    fn is_encrypted(&self) -> bool {
+        true
+    }
     fn list_folders(&mut self) -> MailResult<Vec<RemoteFolder>>;
     /// `list_folders` with the status of each folder the server reports in the same answer (LIST-STATUS, RFC 5819);
     /// without that extension every status is None.
@@ -273,6 +277,8 @@ mod recording {
         pub no_condstore: bool,
         /// Reports no UIDPLUS, like an older server.
         pub no_uidplus: bool,
+        /// Reports a plain-text session, like a login under `tls = "none"` to a server without STARTTLS.
+        pub unencrypted: bool,
         /// Answers `list_folders_status` with every folder's status, like a server with LIST-STATUS.
         pub list_status: bool,
         /// Leaves UIDNEXT out of SELECT answers, as RFC 9051 allows.
@@ -422,6 +428,10 @@ mod recording {
     impl MailOps for RecordingOps {
         fn has_uidplus(&self) -> bool {
             !self.no_uidplus
+        }
+
+        fn is_encrypted(&self) -> bool {
+            !self.unencrypted
         }
 
         fn list_folders(&mut self) -> MailResult<Vec<RemoteFolder>> {

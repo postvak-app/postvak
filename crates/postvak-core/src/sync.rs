@@ -99,10 +99,12 @@ pub enum Event {
         request: RequestId,
         message: String,
     },
-    /// The sync thread logged in; `uidplus` says whether the server can expunge just the messages asked.
+    /// The sync thread logged in; `uidplus` says whether the server can expunge just the messages asked, `encrypted`
+    /// whether the session runs over TLS.
     Connected {
         account: String,
         uidplus: bool,
+        encrypted: bool,
     },
     Error {
         account: String,
@@ -1905,6 +1907,7 @@ fn run_session(
     let _ = events.send(Event::Connected {
         account: account.name.clone(),
         uidplus: ops.has_uidplus(),
+        encrypted: ops.is_encrypted(),
     });
     let mut state = AccountSync::open(account, paths)?;
     let interval = Duration::from_secs(account.sync_interval_secs.max(10));

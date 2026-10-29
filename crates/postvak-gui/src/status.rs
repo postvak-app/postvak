@@ -235,6 +235,7 @@ mod tests {
         let connected = |uidplus| Event::Connected {
             account: "work".into(),
             uidplus,
+            encrypted: true,
         };
         let explained = format!("work: {}", postvak_core::help::NO_UIDPLUS);
         let count = |driver: &crate::test_support::Driver| {

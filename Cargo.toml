@@ -26,6 +26,7 @@ anyhow = "1"                                         # error context in the bina
 anyrender = "=0.14.0"                                # the drawing trait Blitz paints into; pinned to the version blitz-paint uses
 anyrender_vello_cpu = "=0.18.0"                      # CPU raster for Blitz, so HTML mail becomes an image in the window without a GPU path
 apple-native-keyring-store = { version = "1", features = ["keychain"] }  # macOS Keychain backend for keyring-core
+async-channel = "2"                                  # the untagged replies to CAPABILITY before login, to check for STARTTLS; already in the tree through async-imap
 async-imap = { version = "0.12", default-features = false, features = ["runtime-tokio"] }  # IMAP client, maintained, IDLE support
 base64 = "0.23"                                      # the reader's preview images on the daemon wire, as text rather than a JSON array of numbers; already in the tree through async-imap
 blitz-dom = { version = "=0.3.0-beta.4", default-features = false, features = ["system-fonts", "floats"] }  # HTML mail: style and layout (Stylo, Taffy, Parley); beta, so pinned exactly. No "svg": usvg reads an <image href> path from disk

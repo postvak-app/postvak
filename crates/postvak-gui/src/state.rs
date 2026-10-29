@@ -706,6 +706,7 @@ impl App {
                      activity,
                      name,
                      uidplus,
+                     ..
                  }| {
                     let identity = config.account(&name).and_then(|a| a.identity().ok());
                     Account {
@@ -4324,6 +4325,7 @@ mod tests {
                 since: 1_790_000_000,
             }),
             uidplus: None,
+            encrypted: None,
         }
     }
 

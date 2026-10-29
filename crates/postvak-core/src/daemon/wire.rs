@@ -113,6 +113,8 @@ pub struct AccountStatus {
     pub activity: Option<Activity>,
     /// Whether the server offered UIDPLUS at the account's last login; None before its first.
     pub uidplus: Option<bool>,
+    /// Whether the account's last login ran over TLS; false only under `tls = "none"`, None before its first.
+    pub encrypted: Option<bool>,
 }
 
 impl Status {

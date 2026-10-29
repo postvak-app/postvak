@@ -493,6 +493,7 @@ fn wire_messages_round_trip() {
                     name: "work".into(),
                     activity: Some(Activity::Idle { since: 7 }),
                     uidplus: Some(false),
+                    encrypted: Some(true),
                 }],
             })),
         },
@@ -566,20 +567,23 @@ fn reporting_errors_leaves_senders_and_subjects_out_of_the_log() {
 }
 
 #[test]
-fn the_log_notes_a_server_without_uidplus_and_not_one_with_it() {
-    let connected = |uidplus| Event::Connected {
+fn the_log_notes_a_server_without_uidplus_or_tls_and_not_one_with_both() {
+    let connected = |uidplus, encrypted| Event::Connected {
         account: "work".into(),
         uidplus,
+        encrypted,
     };
-    assert!(super::reported(&connected(false), false));
-    assert!(!super::reported(&connected(true), false));
+    assert!(super::reported(&connected(false, true), false));
+    assert!(super::reported(&connected(true, false), false));
+    assert!(!super::reported(&connected(true, true), false));
 }
 
 #[test]
-fn status_says_which_servers_lack_uidplus() {
+fn status_says_which_servers_lack_uidplus_or_tls() {
     let connector: crate::engine::Connector = std::sync::Arc::new(|account| {
         let mut ops = crate::mail_ops::RecordingOps::default().with_folder("INBOX", None);
         ops.no_uidplus = account.name == "work";
+        ops.unencrypted = account.name == "play";
         Ok(Box::new(ops) as Box<dyn crate::mail_ops::MailOps>)
     });
     let daemon = TestDaemon::start_with(options(connector, None));
@@ -605,6 +609,17 @@ fn status_says_which_servers_lack_uidplus() {
     assert!(status.lacks_uidplus("work"));
     assert!(!status.lacks_uidplus("play"));
     assert!(!status.lacks_uidplus("nobody"));
+    let encrypted = |name: &str| {
+        status
+            .accounts
+            .iter()
+            .find(|account| account.name == name)
+            .and_then(|account| account.encrypted)
+    };
+    assert_eq!(
+        (encrypted("work"), encrypted("play")),
+        (Some(true), Some(false))
+    );
 }
 
 mod client {
