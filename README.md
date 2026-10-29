@@ -3,6 +3,8 @@
 <p align="center">
   <a href="https://github.com/postvak-app/postvak/actions/workflows/ci.yml"><img src="https://github.com/postvak-app/postvak/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://postvak.pataar.nl/"><img src="https://img.shields.io/badge/docs-postvak.pataar.nl-orange" alt="Docs"></a>
+  <a href="https://postvak.pataar.nl/install.html"><img src="https://img.shields.io/badge/macOS-supported-black?logo=apple" alt="macOS: supported"></a>
+  <a href="https://postvak.pataar.nl/install.html"><img src="https://img.shields.io/badge/Linux-supported-black?logo=linux&logoColor=white" alt="Linux: supported"></a>
   <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="License: MIT OR Apache-2.0"></a>
 </p>
 
