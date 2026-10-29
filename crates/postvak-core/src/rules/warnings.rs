@@ -1,17 +1,25 @@
 //! What leaves rules.toml valid but not doing what its author meant: a conflicting copy a file sync left beside it,
-//! a rule for an account this device does not have, a rule moving mail to the folder it watches, and a folder written
-//! the way IMAP spells it on the wire, as Postvak showed non-ASCII names before it decoded them. `folder_warnings`
-//! adds what an account's own folders show: a move target written for another hierarchy or namespace.
+//! a rule for an account this device does not have, a rule moving mail to the folder it watches, a rule using
+//! `authenticated` for an account that trusts no server's `Authentication-Results`, and a folder written the way IMAP
+//! spells it on the wire, as Postvak showed non-ASCII names before it decoded them. `folder_warnings` adds what an
+//! account's own folders show: a move target written for another hierarchy or namespace.
 use std::fs;
 use std::path::Path;
 
-use super::{Action, Rule};
+use super::{Action, Match, Rule};
 use crate::folder_name;
 use crate::paths::Paths;
 use crate::store::{Folder, Store};
 
 /// One line per problem: conflicting copies by name, then rules in file order; empty when there is nothing to say.
-pub fn warnings(path: &Path, rules: &[Rule], accounts: &[&str]) -> Vec<String> {
+/// `accounts` are the accounts set up here, and `untrusting` those that trust no authserv-id
+/// ([`Identity::can_authenticate`](crate::config::Identity::can_authenticate)).
+pub fn warnings(
+    path: &Path,
+    rules: &[Rule],
+    accounts: &[&str],
+    untrusting: &[&str],
+) -> Vec<String> {
     let mut lines: Vec<String> = conflict_copies(path)
         .into_iter()
         .map(|name| {
@@ -29,6 +37,19 @@ pub fn warnings(path: &Path, rules: &[Rule], accounts: &[&str]) -> Vec<String> {
                 "rule '{}' is for account '{account}', which is not set up here, so it never runs",
                 rule.name
             ));
+        }
+        if uses_authenticated(&rule.matches) {
+            for account in untrusting
+                .iter()
+                .filter(|a| rule.account.as_deref().is_none_or(|own| own == **a))
+            {
+                lines.push(format!(
+                    "rule '{}' uses authenticated, but account '{account}' trusts no server's \
+                     Authentication-Results, so there authenticated = true never holds and false always does; list \
+                     your provider's server in its trusted_authserv_ids",
+                    rule.name
+                ));
+            }
         }
         let named =
             rule.folder
@@ -68,6 +89,16 @@ fn wire_spelling(name: &str) -> Option<String> {
         .then(|| crate::mail_ops::utf7::decode(name))
         .flatten()
         .filter(|plain| plain != name)
+}
+
+/// Whether `authenticated` is a condition, at any depth of `any` and `none`.
+fn uses_authenticated(m: &Match) -> bool {
+    m.authenticated.is_some()
+        || [&m.any, &m.none]
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(uses_authenticated)
 }
 
 /// INBOX is the same folder in any case (RFC 3501 §5.1); other names may differ by case alone on some servers.
@@ -209,16 +240,21 @@ mod tests {
     use super::*;
     use crate::rules::parse;
 
-    const RULES: &str = "[[rules]]\nname = \"codes\"\naccount = \"work\"\nmatch.seen = true\nactions = [\"flag\"]\n\n\
-                         [[rules]]\nname = \"all\"\nmatch.seen = true\nactions = [\"flag\"]\n\n\
-                         [[rules]]\nname = \"old\"\naccount = \"werk\"\nmatch.seen = true\nactions = [\"flag\"]\n";
+    const RULES: &str = "[[rules]]\nname = \"codes\"\naccount = \"work\"\nmatch.read = true\nactions = { flagged = true }\n\n\
+                         [[rules]]\nname = \"all\"\nmatch.read = true\nactions = { flagged = true }\n\n\
+                         [[rules]]\nname = \"old\"\naccount = \"werk\"\nmatch.read = true\nactions = { flagged = true }\n";
 
     #[test]
     fn a_rule_for_an_account_not_set_up_here_is_named() {
         let dir = tempfile::tempdir().unwrap();
         let rules = parse(RULES).unwrap().rules;
         assert_eq!(
-            warnings(&dir.path().join("rules.toml"), &rules, &["work", "home"]),
+            warnings(
+                &dir.path().join("rules.toml"),
+                &rules,
+                &["work", "home"],
+                &[]
+            ),
             ["rule 'old' is for account 'werk', which is not set up here, so it never runs"]
         );
     }
@@ -227,15 +263,15 @@ mod tests {
     fn a_rule_moving_mail_to_the_folder_it_watches_is_named() {
         let dir = tempfile::tempdir().unwrap();
         let rules = parse(
-            "[[rules]]\nname = \"lists\"\nfolder = \"Lists\"\nmatch.seen = true\nactions = [{ move = \"Lists\" }]\n\n\
-             [[rules]]\nname = \"inbox\"\nmatch.seen = true\nactions = [\"mark_read\", { move = \"Inbox\" }]\n\n\
-             [[rules]]\nname = \"case\"\nfolder = \"Lists\"\nmatch.seen = true\nactions = [{ move = \"lists\" }]\n\n\
-             [[rules]]\nname = \"away\"\nmatch.seen = true\nactions = [{ move = \"Lists\" }]\n",
+            "[[rules]]\nname = \"lists\"\nfolder = \"Lists\"\nmatch.read = true\nactions = { move = \"Lists\" }\n\n\
+             [[rules]]\nname = \"inbox\"\nmatch.read = true\nactions = { read = true, move = \"Inbox\" }\n\n\
+             [[rules]]\nname = \"case\"\nfolder = \"Lists\"\nmatch.read = true\nactions = { move = \"lists\" }\n\n\
+             [[rules]]\nname = \"away\"\nmatch.read = true\nactions = { move = \"Lists\" }\n",
         )
         .unwrap()
         .rules;
         assert_eq!(
-            warnings(&dir.path().join("rules.toml"), &rules, &[]),
+            warnings(&dir.path().join("rules.toml"), &rules, &[], &[]),
             [
                 "rule 'lists' moves mail to 'Lists', the folder it watches, so the move does nothing",
                 "rule 'inbox' moves mail to 'Inbox', the folder it watches, so the move does nothing",
@@ -249,15 +285,15 @@ mod tests {
     fn a_folder_written_in_its_wire_spelling_is_named() {
         let dir = tempfile::tempdir().unwrap();
         let rules = parse(
-            "[[rules]]\nname = \"watch\"\nfolder = \"&AMkA6Q-n\"\nmatch.seen = true\nactions = [\"flag\"]\n\n\
-             [[rules]]\nname = \"move\"\nmatch.seen = true\nactions = [{ move = \"Archief/&AMkA6Q-n\" }]\n\n\
-             [[rules]]\nname = \"amp\"\nmatch.seen = true\nactions = [{ move = \"Q&-A\" }]\n\n\
-             [[rules]]\nname = \"plain\"\nfolder = \"R&D\"\nmatch.seen = true\nactions = [{ move = \"Archief/\u{c9}\u{e9}n\" }]\n",
+            "[[rules]]\nname = \"watch\"\nfolder = \"&AMkA6Q-n\"\nmatch.read = true\nactions.flagged = true\n\n\
+             [[rules]]\nname = \"move\"\nmatch.read = true\nactions.move = \"Archief/&AMkA6Q-n\"\n\n\
+             [[rules]]\nname = \"amp\"\nmatch.read = true\nactions.move = \"Q&-A\"\n\n\
+             [[rules]]\nname = \"plain\"\nfolder = \"R&D\"\nmatch.read = true\nactions.move = \"Archief/\u{c9}\u{e9}n\"\n",
         )
         .unwrap()
         .rules;
         assert_eq!(
-            warnings(&dir.path().join("rules.toml"), &rules, &[]),
+            warnings(&dir.path().join("rules.toml"), &rules, &[], &[]),
             [
                 "rule 'watch' names folder '&AMkA6Q-n', which is how IMAP spells '\u{c9}\u{e9}n' on the wire; \
                  Postvak now takes folder names in plain text, so it means a folder literally called '&AMkA6Q-n': \
@@ -269,6 +305,34 @@ mod tests {
                  folder names in plain text, so it means a folder literally called 'Q&-A': write 'Q&A'",
             ],
             "'R&D' is not modified UTF-7, and a plain name is fine"
+        );
+    }
+
+    #[test]
+    fn a_rule_using_authenticated_for_an_account_that_trusts_no_server_is_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let rules = parse(
+            "[[rules]]\nname = \"junk\"\nmatch.from_domain = \"paypal.com\"\nmatch.authenticated = false\nactions = { flagged = true }\n\n\
+             [[rules]]\nname = \"deep\"\naccount = \"work\"\nmatch.read = true\nmatch.none = [{ any = [{ authenticated = true }] }]\nactions = { flagged = true }\n\n\
+             [[rules]]\nname = \"home only\"\naccount = \"home\"\nmatch.authenticated = true\nactions = { flagged = true }\n\n\
+             [[rules]]\nname = \"plain\"\nmatch.read = true\nactions = { flagged = true }\n",
+        )
+        .unwrap()
+        .rules;
+        let tail = "trusts no server's Authentication-Results, so there authenticated = true never holds and false \
+                    always does; list your provider's server in its trusted_authserv_ids";
+        assert_eq!(
+            warnings(
+                &dir.path().join("rules.toml"),
+                &rules,
+                &["work", "home", "gmail"],
+                &["work", "gmail"]
+            ),
+            [
+                format!("rule 'junk' uses authenticated, but account 'work' {tail}"),
+                format!("rule 'junk' uses authenticated, but account 'gmail' {tail}"),
+                format!("rule 'deep' uses authenticated, but account 'work' {tail}"),
+            ]
         );
     }
 
@@ -290,7 +354,12 @@ mod tests {
         }
         let rules = parse(RULES).unwrap().rules;
         assert_eq!(
-            warnings(&dir.path().join("rules.toml"), &rules, &["work", "werk"]),
+            warnings(
+                &dir.path().join("rules.toml"),
+                &rules,
+                &["work", "werk"],
+                &[]
+            ),
             [
                 "rules (Pieter's Conflicted Copy 2026-10-24).toml looks like a conflicting copy left by a file \
                  sync; move what you want to keep into rules.toml and delete it",
@@ -306,7 +375,7 @@ mod tests {
     fn a_missing_directory_has_nothing_to_say() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("missing/rules.toml");
-        assert!(warnings(&path, &[], &[]).is_empty());
+        assert!(warnings(&path, &[], &[], &[]).is_empty());
     }
 
     fn layout(account: &str, delimiter: &str, names: &[&str]) -> FolderLayout {
@@ -330,7 +399,7 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, target)| {
-                format!("[[rules]]\nname = \"r{i}\"\nmatch.seen = true\nactions = [{{ move = \"{target}\" }}]\n\n")
+                format!("[[rules]]\nname = \"r{i}\"\nmatch.read = true\nactions.move = \"{target}\"\n\n")
             })
             .collect();
         parse(&rules).unwrap().rules
@@ -369,7 +438,7 @@ mod tests {
     #[test]
     fn a_rule_for_one_account_is_checked_against_that_account_only() {
         let rules = parse(
-            "[[rules]]\nname = \"home\"\naccount = \"home\"\nmatch.seen = true\nactions = [{ move = \"A/B\" }]\n",
+            "[[rules]]\nname = \"home\"\naccount = \"home\"\nmatch.read = true\nactions.move = \"A/B\"\n",
         )
         .unwrap()
         .rules;

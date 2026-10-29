@@ -382,6 +382,8 @@ struct Watch {
     /// The configured accounts, for the rules' warnings, and where their stores are.
     accounts: Vec<String>,
     paths: Paths,
+    /// Those that trust no authserv-id, for the warning about `authenticated`.
+    untrusting: Vec<String>,
     /// The rules' warnings last logged, so each is logged once rather than on every change.
     warned: Vec<String>,
     checked: Instant,
@@ -396,6 +398,7 @@ impl Watch {
             rules: FileWatch::new(rules),
             accounts: Vec::new(),
             paths: paths.clone(),
+            untrusting: Vec::new(),
             warned: Vec::new(),
             checked: Instant::now(),
         }
@@ -404,6 +407,12 @@ impl Watch {
     /// Logs the rules' warnings that were not logged before, for `config`'s accounts.
     fn warn(&mut self, config: &Config) {
         self.accounts = config.accounts.iter().map(|a| a.name.clone()).collect();
+        self.untrusting = config
+            .accounts
+            .iter()
+            .filter(|a| !a.can_authenticate())
+            .map(|a| a.name.clone())
+            .collect();
         self.check_rules();
     }
 
@@ -413,7 +422,9 @@ impl Watch {
             return;
         };
         let accounts: Vec<&str> = self.accounts.iter().map(String::as_str).collect();
-        let warnings = crate::rules::warnings(&self.rules.path, &file.rules, &accounts);
+        let untrusting: Vec<&str> = self.untrusting.iter().map(String::as_str).collect();
+        let warnings =
+            crate::rules::warnings(&self.rules.path, &file.rules, &accounts, &untrusting);
         let folders = crate::rules::folder_warnings(&self.paths, &file.rules, &self.accounts);
         let warnings = [warnings, folders].concat();
         for warning in warnings.iter().filter(|w| !self.warned.contains(w)) {

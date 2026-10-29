@@ -27,7 +27,7 @@ Out of scope, recorded in §9: loading remote images, text selection inside the 
 | Thread | One render thread owning every Blitz document; the UI thread sends jobs and receives pixels | Render on the UI thread (15–25 ms per layout stalls `j`/`k`); one thread per message (Blitz documents are not `Send`, so each would live and die on its thread anyway) |
 | Tall mail | Laid out once per width, painted in 512 px strips as they scroll into view | One texture per message (long newsletters exceed GPU texture limits) |
 | Remote content | Not fetched until the user asks, per message: the first layout lists the remote URLs, `html/fetch.rs` downloads them (public hosts, capped in count, size and time) and the page is laid out again from memory; `cid:` and `data:` always resolve | Fetch by default; per-sender allow list now; fetching inside the net provider (the render thread would wait on the network) |
-| Colour scheme | Light, on a white page, in both app themes | Follow the app theme (most mail hardcodes dark text on no background) |
+| Colour scheme | Light, on a white page, in the light theme; in the dark theme adapted after style resolution, see `2026-10-28-html-dark-mode-design.md` | Follow the app theme by scheme alone (most mail hardcodes dark text on no background) |
 | Default view | HTML when the message has an HTML part, else text | Text first; remember per sender |
 | Versions | Exact pins (`=0.3.0-beta.2`) for the Blitz crates and the matching `anyrender` | Caret ranges (the beta crates already disagree on `anyrender` between minor versions) |
 
@@ -70,7 +70,7 @@ src/message.rs   html_body(raw) -> Option<HtmlBody { html, inline: Vec<InlinePar
 - **Width.** The body panel's inner width in points, at least 320; the page itself is laid out at no less than 601 (see Known gap). A width change re-lays out once the width has held still for 100 ms; meanwhile the old strips are drawn as they are, clipped or padded. A page wider than the panel (a fixed 600 px table in a 550 px panel) is laid out at its own width and scrolls sideways.
 - **Scale.** `pixels_per_point` becomes Blitz's hidpi scale; strips are painted at physical pixels and drawn at points.
 - **Strips.** 512 physical pixels tall, the full width, each painted with Blitz's viewport scrolled to its top; Blitz's paint offsets only place the document on the canvas. The view asks for the strips intersecting the visible rect plus one screen above and below, and drops textures more than three screens away. A strip not yet painted draws as white.
-- **Page.** A white rectangle the width of the panel, a 1 px border from the egui theme, the document painted over it with `ColorScheme::Light`. The rest of the panel follows the app theme.
+- **Page.** A white rectangle the width of the panel, a 1 px border from the egui theme, the document painted over it with `ColorScheme::Light`. The rest of the panel follows the app theme. In the dark theme the page is the dark pane's background and the document is styled with `ColorScheme::Dark` and adapted (`2026-10-28-html-dark-mode-design.md`).
 - **User agent CSS.** Blitz's own, plus `img { max-width: 100%; height: auto }` and `body { overflow-wrap: anywhere }`, so images and long URLs fit a narrow panel.
 - **Base URL.** `postvak://mail/`. Blitz panics on a relative URL it cannot resolve against its default base; this one resolves them to URLs the net provider refuses.
 - **Fonts.** System fonts through Blitz's `FontContext`. Tests build the context from the font egui bundles (Ubuntu Light), so snapshots do not depend on the machine.
@@ -122,6 +122,5 @@ Ran on Linux (CPU raster needs no GPU, so CI covers it); macOS reported separate
 
 - Remembering a per-sender choice to load remote content.
 - Selecting and copying text in the HTML view (Blitz has selection; wiring it means forwarding pointer drags).
-- Dark-mode rendering of mail that declares `color-scheme: dark` or has no colours of its own.
 - Remembering the view choice in `[ui]`.
 - Vello on the GPU if CPU paint shows up in profiles.

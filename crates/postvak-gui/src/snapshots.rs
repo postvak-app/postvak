@@ -14,7 +14,7 @@ use postvak_core::store::LogEntry;
 use postvak_core::sync::{Activity, Event};
 use postvak_core::trash::Trash;
 
-const RULES: &str = "[[rules]]\nname = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions = [\"archive\"]\n\n[[rules]]\nname = \"receipts\"\naccount = \"work\"\nmatch.subject = { contains = \"receipt\" }\nactions = [{ move = \"Receipts\" }]\n\n[[rules]]\nname = \"codes\"\nenabled = false\nproposed_by = \"agent\"\nmatch.subject = { contains = \"verification code\" }\nactions = [\"delete\"]\n";
+const RULES: &str = "[[rules]]\nname = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions = { archive = true }\n\n[[rules]]\nname = \"receipts\"\naccount = \"work\"\nmatch.subject = { contains = \"receipt\" }\nactions = { move = \"Receipts\" }\n\n[[rules]]\nname = \"codes\"\nenabled = false\nproposed_by = \"agent\"\nmatch.subject = { contains = \"verification code\" }\nactions = { delete = true }\n";
 
 /// Whether local times read as UTC, now and at the fixture time; a zone such as Europe/London is UTC in winter but
 /// not in September.
@@ -347,7 +347,7 @@ fn rule_editor() {
 #[test]
 fn apply_confirm() {
     let fx = Fixture::mailbox("light");
-    let tidy = "[[rules]]\nname = \"tidy\"\naccount = \"work\"\nmatch.subject = { contains = \"a\" }\nactions = [\"delete\"]\n";
+    let tidy = "[[rules]]\nname = \"tidy\"\naccount = \"work\"\nmatch.subject = { contains = \"a\" }\nactions = { delete = true }\n";
     std::fs::write(fx.paths.rules_file(), tidy).unwrap();
     let (open, _wires) = open(&fx);
     open.with(|live| live.app.select_view(View::Rules));
@@ -374,7 +374,7 @@ fn activity() {
             "move Receipts",
             "Your receipt for order 1042",
         ),
-        (9, "gui", "flag", "Re: Planning the offsite"),
+        (9, "gui", "flagged", "Re: Planning the offsite"),
     ];
     for (minutes, rule, action, subject) in entries {
         let entry = LogEntry {
@@ -467,6 +467,27 @@ fn html_message(theme: &str, width: f32, html: &str) -> (Fixture, Open, Wires) {
         .window()
         .set_size(slint::LogicalSize::new(width, 800.0));
     open.with(|live| live.app.select_view(work_inbox()));
+    wait_painted(&open);
+    (fx, open, wires)
+}
+
+/// Ticks the window until the HTML page is laid out and every strip in view is painted.
+fn wait_painted(open: &Open) {
+    wait_repainted(open, &[]);
+}
+
+/// The strips the HTML view shows now. Holding them keeps their memory from being reused by later strips.
+fn shown_strips(open: &Open) -> Vec<std::sync::Arc<crate::html::Pixels>> {
+    open.with(|live| {
+        let view = live.app.body.as_ref().and_then(|b| b.html_view.as_ref());
+        view.map(|v| v.strips.values().cloned().collect())
+            .unwrap_or_default()
+    })
+}
+
+/// As `wait_painted`, and none of the strips shown is one of `old`: a restyle keeps the old strips on screen until
+/// its layout arrives, so they alone do not say the page was painted again.
+fn wait_repainted(open: &Open, old: &[std::sync::Arc<crate::html::Pixels>]) {
     let painted = |open: &Open| {
         open.with(|live| {
             let view = live.app.body.as_ref().and_then(|b| b.html_view.as_ref());
@@ -474,11 +495,14 @@ fn html_message(theme: &str, width: f32, html: &str) -> (Fixture, Open, Wires) {
                 v.page.is_some()
                     && !v.requested.is_empty()
                     && v.requested.iter().all(|s| v.strips.contains_key(s))
+                    && !v
+                        .strips
+                        .values()
+                        .any(|new| old.iter().any(|old| std::sync::Arc::ptr_eq(new, old)))
             })
         })
     };
     open.tick_until(painted);
-    (fx, open, wires)
 }
 
 #[test]
@@ -487,10 +511,32 @@ fn html_light() {
     snapshot(&open, "gui_html_light");
 }
 
+/// The newsletter adapted to the dark theme.
 #[test]
 fn html_dark() {
     let (_fx, open, _wires) = newsletter("dark", 1280.0);
     snapshot(&open, "gui_html_dark");
+}
+
+/// The newsletter in the dark theme with Original colours on: as in the light theme, on a white page.
+#[test]
+fn html_dark_original_colours() {
+    let (_fx, open, _wires) = newsletter("dark", 1280.0);
+    let adapted = shown_strips(&open);
+    open.window().invoke_toggle_original_colours();
+    wait_repainted(&open, &adapted);
+    snapshot(&open, "gui_html_dark_original");
+}
+
+/// Mail with its own dark-mode CSS, shown as its sender wrote it for the dark theme.
+#[test]
+fn html_dark_own_css() {
+    let (_fx, open, _wires) = html_message(
+        "dark",
+        1280.0,
+        include_str!("../../../tests/fixtures/newsletter-dark-css.html"),
+    );
+    snapshot(&open, "gui_html_dark_own_css");
 }
 
 /// The software renderer casts every rectangle to `i16`, so a page background as tall as a very long message

@@ -22,6 +22,7 @@ use postvak_core::help;
 use postvak_core::message::clean_for_agent;
 use postvak_core::output::{self, Fields, RowKind};
 use postvak_core::rules::Action;
+use postvak_core::senders::GroupBy;
 
 const BODY_LIMIT: usize = 100 * 1024;
 /// Header blocks run to a few KB; DKIM, ARC and long Received chains rarely pass this.
@@ -129,6 +130,49 @@ struct RulesTestArgs {
     rule: postvak_core::rules::Rule,
     /// Only this account; default every visible account
     account: Option<String>,
+}
+
+fn twenty() -> u32 {
+    20
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SendersArgs {
+    /// Only this account; default every visible account
+    account: Option<String>,
+    /// Folder name as `folders` lists it; default INBOX
+    #[serde(default = "inbox")]
+    folder: String,
+    /// address (the default) or domain, the registrable domain of the address
+    #[serde(default)]
+    group_by: GroupBy,
+    /// At most this many groups per account, at most 500
+    #[serde(default = "fifty")]
+    limit: u32,
+    /// Only mail that arrived on or after this date: 2026-01-15, or 30d, 3w, 6mo, 1y back from now
+    after: Option<String>,
+    /// Only mail that arrived before this date: 2026-01-15, or 30d, 3w, 6mo, 1y back from now
+    before: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct CoverageArgs {
+    /// Only this account; default every visible account
+    account: Option<String>,
+    /// Folder name as `folders` lists it; default INBOX
+    #[serde(default = "inbox")]
+    folder: String,
+    /// Count the proposals still waiting for approval as if they were enabled
+    #[serde(default)]
+    include_pending: bool,
+    /// How to group the senders of unmatched mail: address (the default) or domain
+    #[serde(default)]
+    group_by: GroupBy,
+    /// At most this many unmatched senders and contested messages per account, at most 500; the counts cover everything
+    #[serde(default = "twenty")]
+    limit: u32,
 }
 
 /// The input schema of `rules_propose`: one rule's fields, or `rules`. Hosts refuse a top-level `anyOf`, so the two
@@ -290,9 +334,9 @@ struct SearchArgs {
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 enum How {
-    Flag,
+    Flagged,
     Read,
-    Unflag,
+    Unflagged,
     Unread,
 }
 
@@ -314,7 +358,7 @@ struct SelectionArgs {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct MarkArgs {
-    /// read, unread, flag or unflag
+    /// read, unread, flagged or unflagged
     how: How,
     /// Message uids in `folder`, as `list` returns them
     uids: Vec<u32>,
@@ -378,6 +422,9 @@ struct RestoreArgs {
 /// What the rule tools refuse, so an agent can tell before it writes such a rule.
 const UNSEEN_CONDITIONS: &str =
     "a header condition needs the read:headers scope and a body condition read:bodies";
+
+/// What the analysis tools do with a rule they may not run.
+const UNSEEN_RULES_SKIPPED: &str = "rules with a header condition, without the read:headers scope, or a body condition, without read:bodies, are left out and named in skipped_rules";
 
 /// Every tool, in any order; `Server::new` sorts them and listing filters by scope. `bodies` is whether
 /// `read:bodies` is granted, which changes what `search` covers.
@@ -455,6 +502,12 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
             Effect::ReadOnly,
             help::RULES_CHECK,
         ),
+        ToolDef::new::<CoverageArgs>(
+            "rules_coverage",
+            Scope::Read,
+            Effect::ReadOnly,
+            mail(&format!("{}; {UNSEEN_RULES_SKIPPED}", help::RULES_COVERAGE)),
+        ),
         ToolDef::new::<NoArgs>(
             "rules_list",
             Scope::Read,
@@ -501,6 +554,12 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
             mail(&format!("{}; {UNSEEN_CONDITIONS}", help::RULES_TEST)),
         ),
         ToolDef::new::<SearchArgs>("search", Scope::Read, Effect::ReadOnly, mail(&search)),
+        ToolDef::new::<SendersArgs>(
+            "senders",
+            Scope::Read,
+            Effect::ReadOnly,
+            mail(&format!("{}; {UNSEEN_RULES_SKIPPED}", help::SENDERS)),
+        ),
         ToolDef::new::<MessageArgs>(
             "show",
             Scope::ReadBodies,
@@ -652,9 +711,9 @@ fn dispatch(
         "mark" => {
             let a: MarkArgs = args(arguments)?;
             let action = match a.how {
-                How::Flag => Action::Flag,
+                How::Flagged => Action::Flag,
                 How::Read => Action::MarkRead,
-                How::Unflag => Action::Unflag,
+                How::Unflagged => Action::Unflag,
                 How::Unread => Action::MarkUnread,
             };
             backend.act(
@@ -697,6 +756,17 @@ fn dispatch(
         "rules_check" => {
             let _: NoArgs = args(arguments)?;
             backend.rules_check()
+        }
+        "rules_coverage" => {
+            let a: CoverageArgs = args(arguments)?;
+            backend.rules_coverage(
+                a.account.as_deref(),
+                &a.folder,
+                a.include_pending,
+                a.group_by,
+                a.limit,
+                sight,
+            )
         }
         "rules_list" => {
             let _: NoArgs = args(arguments)?;
@@ -764,6 +834,17 @@ fn dispatch(
                 a.cursor.as_deref(),
                 &fields,
             )?)
+        }
+        "senders" => {
+            let a: SendersArgs = args(arguments)?;
+            backend.senders(
+                a.account.as_deref(),
+                &a.folder,
+                a.group_by,
+                a.limit,
+                (a.after.as_deref(), a.before.as_deref()),
+                sight,
+            )
         }
         "unsubscribe" => {
             let a: UnsubscribeArgs = args(arguments)?;

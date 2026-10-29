@@ -1,3 +1,5 @@
+pub mod auth;
+
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 

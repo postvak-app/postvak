@@ -27,10 +27,10 @@ use postvak_core::daemon::wire::{
 };
 use postvak_core::mail_ops::utf7;
 use postvak_core::message::{
-    attachments, attachments_and_html, bare_addresses, body_text, clean, clean_for_agent,
+    attachments, attachments_and_html, auth, bare_addresses, body_text, clean, clean_for_agent,
     header_value, parse_headers, save_attachment, thread_id,
 };
-use postvak_core::rules::{self, Action, HeaderMatch, Match, OneOrMany, Rule, RuleFile, TextMatch};
+use postvak_core::rules::{self, Action, Match, OneOrMany, Rule, RuleFile, TextMatch};
 use postvak_core::search::{self, Scope};
 use postvak_core::store::{Folder, Message, Store};
 use postvak_core::sync::{Activity, Command, Event};
@@ -443,6 +443,9 @@ fn exercise_message_inner(raw: &[u8], folder: &str, uid: u32) {
     let _ = bare_addresses(&String::from_utf8_lossy(raw));
     let _ = attachments(raw);
     let _ = attachments_and_html(raw);
+    let _ = auth::all(raw);
+    let from = parsed.from.as_deref().unwrap_or_default();
+    let _ = auth::authenticated(raw, from, |_| true);
 }
 
 fn exercise_save(raw: &[u8]) {
@@ -663,7 +666,7 @@ fn identity() -> postvak_core::config::Identity {
     account.identity().unwrap()
 }
 
-/// Strings aimed at regex, humantime and glob syntax as well as plain junk.
+/// Strings aimed at regex, duration and glob syntax as well as plain junk.
 fn hostile_text() -> BoxedStrategy<String> {
     prop_oneof![
         ".{0,24}",
@@ -730,6 +733,8 @@ fn action() -> BoxedStrategy<Action> {
     prop_oneof![
         Just(Action::Delete),
         Just(Action::MarkRead),
+        Just(Action::MarkUnread),
+        Just(Action::Unflag),
         Just(Action::Flag),
         Just(Action::Archive),
         Just(Action::Notify),
@@ -741,17 +746,6 @@ fn action() -> BoxedStrategy<Action> {
     .boxed()
 }
 
-fn header_match() -> BoxedStrategy<HeaderMatch> {
-    (hostile_text(), text_match())
-        .prop_map(|(name, t)| HeaderMatch {
-            name,
-            contains: t.contains,
-            equals: t.equals,
-            regex: t.regex,
-        })
-        .boxed()
-}
-
 fn match_leaf() -> BoxedStrategy<Match> {
     let texts = (
         proptest::option::of(text_match()),
@@ -761,11 +755,18 @@ fn match_leaf() -> BoxedStrategy<Match> {
         proptest::option::of(text_match()),
     )
         .boxed();
+    let domains = (
+        proptest::option::of(values()),
+        proptest::option::of(values()),
+        proptest::option::of(any::<bool>()),
+    )
+        .boxed();
     let others = (
-        proptest::option::of(prop_oneof![
-            header_match().prop_map(OneOrMany::One),
-            proptest::collection::vec(header_match(), 0..3).prop_map(OneOrMany::Many),
-        ]),
+        proptest::option::of(proptest::collection::btree_map(
+            hostile_text(),
+            text_match(),
+            0..3,
+        )),
         proptest::option::of(hostile_text()),
         proptest::option::of(any::<bool>()),
         proptest::option::of(any::<bool>()),
@@ -775,11 +776,12 @@ fn match_leaf() -> BoxedStrategy<Match> {
         proptest::option::of(any::<bool>()),
     )
         .boxed();
-    (texts, others)
+    (texts, others, domains)
         .prop_map(
             |(
                 (from, to, cc, subject, body),
-                (header, older_than, seen, to_me, alias, tag, larger_than, flagged),
+                (header, older_than, read, to_me, alias, tag, larger_than, flagged),
+                (from_domain, to_domain, authenticated),
             )| {
                 Match {
                     from,
@@ -788,9 +790,12 @@ fn match_leaf() -> BoxedStrategy<Match> {
                     subject,
                     body,
                     header,
+                    from_domain,
+                    to_domain,
+                    authenticated,
                     older_than,
                     larger_than,
-                    seen,
+                    read,
                     flagged,
                     to_me,
                     alias,
@@ -877,6 +882,81 @@ proptest! {
         if let Ok(text) = toml::to_string(&file) {
             exercise_rules(&text);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Authentication-Results
+
+/// Header values as servers write them, comments, quotes and versions included.
+const AUTH_RESULTS: &[&str] = &[
+    "mx.soverin.net; dkim=pass (2048-bit key; unprotected) header.d=crates.io header.i=@crates.io header.b=\"AbC=\"; spf=pass smtp.mailfrom=bounces.crates.io; dmarc=pass (p=none dis=none) header.from=crates.io",
+    "mx.google.com;\r\n       dkim=pass header.i=@paypal.com header.s=pp-dkim1 header.b=x;\r\n       spf=pass (google.com: domain of x@paypal.com designates 1.2.3.4 as permitted sender) smtp.mailfrom=x@paypal.com;\r\n       dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=paypal.com",
+    "\"quoted.example\" 1; dkim/1 = pass reason=\"a; b\" header.d = example.org",
+    "example.net; none",
+    "(comment (nested) \\) still) mx.example; dmarc=fail",
+];
+
+/// Every parse of a value, and the verdict on it for a few From domains.
+fn exercise_auth(value: &str) {
+    if let Some(header) = auth::parse(value) {
+        for domain in ["paypal.com", "", ".", "co.uk", "a.b.c.d.e"] {
+            let _ = header.authenticates(domain);
+        }
+    }
+    let raw = format!("Authentication-Results: {value}\r\nFrom: a@paypal.com\r\n\r\n");
+    let _ = auth::authenticated(raw.as_bytes(), "a@paypal.com", |_| true);
+    for domain in [value, "", "."] {
+        let _ = auth::org_domain(domain);
+        let _ = auth::in_domain(domain, "paypal.com");
+        let _ = auth::address_domain(domain);
+    }
+}
+
+/// Fragments that sit on the grammar's edges: separators, comments, quotes and escapes.
+fn auth_piece() -> BoxedStrategy<String> {
+    prop_oneof![
+        "[a-z0-9.@/-]{0,8}",
+        prop::sample::select(vec![
+            ";",
+            "=",
+            "(",
+            ")",
+            "\"",
+            "\\",
+            " ",
+            "\r\n ",
+            "dkim=pass",
+            "dmarc=pass",
+            "header.d=",
+            "header.i=@",
+            "header.from=",
+            "\u{0}",
+            "\u{202e}",
+            "ü",
+        ])
+        .prop_map(str::to_string),
+    ]
+    .boxed()
+}
+
+proptest! {
+    #![proptest_config(config())]
+
+    #[test]
+    fn auth_results_arbitrary_text(value in ".{0,256}") {
+        exercise_auth(&value);
+    }
+
+    #[test]
+    fn auth_results_from_pieces(pieces in proptest::collection::vec(auth_piece(), 0..48)) {
+        exercise_auth(&pieces.concat());
+    }
+
+    #[test]
+    fn auth_results_mutated(seed in 0..AUTH_RESULTS.len(), donor in 0..AUTH_RESULTS.len(), ms in mutations()) {
+        let bytes = mutate(AUTH_RESULTS[seed].as_bytes().to_vec(), AUTH_RESULTS[donor].as_bytes(), &ms);
+        exercise_auth(&String::from_utf8_lossy(&bytes));
     }
 }
 

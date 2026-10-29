@@ -926,7 +926,7 @@ fn the_folder_warnings_are_checked_again_after_a_sync() {
     fs::create_dir_all(paths.rules_file().parent().unwrap()).unwrap();
     fs::write(
         paths.rules_file(),
-        "[[rules]]\nname = \"gh\"\nmatch.seen = true\nactions = [{ move = \"Lists/GitHub\" }]\n",
+        "[[rules]]\nname = \"gh\"\nmatch.read = true\nactions.move = \"Lists/GitHub\"\n",
     )
     .unwrap();
     let mut watch = super::Watch::new(&paths);
@@ -1258,7 +1258,7 @@ fn the_watch_warns_once_about_a_conflicting_copy_that_appears_beside_the_rules()
     let dir = paths.config_dir.clone();
     fs::write(
         paths.rules_file(),
-        "[[rules]]\nname = \"old\"\naccount = \"werk\"\nmatch.seen = true\nactions = [\"flag\"]\n",
+        "[[rules]]\nname = \"old\"\naccount = \"werk\"\nmatch.read = true\nactions = { flagged = true }\n",
     )
     .unwrap();
     let mut watch = super::Watch::new(&paths);

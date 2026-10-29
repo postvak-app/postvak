@@ -95,6 +95,7 @@ pub const RULES_APPLY_EXISTING: &str =
     "Run one enabled rule against mail that predates it; dry run lists what it would do";
 pub const RULES_APPROVE: &str = "Enable a disabled rule, such as a proposal";
 pub const RULES_CHECK: &str = "Validate rules.toml, and warn about what keeps it from doing what it says, such as a conflicting copy a file sync left beside it or a rule for an account not set up here";
+pub const RULES_COVERAGE: &str = "Run the rules over one folder's stored mail without acting: how many messages a rule matches, none matches and several match; the top senders of unmatched mail; for each contested message every rule that matches and what would run under the real precedence";
 pub const RULES_LIST: &str = "Every rule in file order, the order they run in: its position, its whole definition, whether it is enabled and who proposed it";
 pub const RULES_PROPOSE: &str = "Add rules, disabled, for a human to approve: the arguments are one rule (an entry of `rules` in rules_schema), or `rules`, a list of them stored in order, all or none; `before` or `after` names the rule to put them next to instead of at the end, and `replace` swaps your own pending proposal of the same name";
 pub const RULES_REJECT: &str = "Remove a pending proposal";
@@ -114,9 +115,10 @@ pub const SEARCH_SYNTAX: &str = "Operators:
   has:attachment                                  with an attachment, as guessed from the headers
   is:unread, is:read, is:flagged                  by flag
   before:2026-01-15, after:2026-01-01             by date, in local time; before: is exclusive, after: inclusive
-  after:7d, before:3w, after:6m, after:1y         days, weeks, months or years back from now
+  after:7d, before:3w, after:6mo, after:1y        days, weeks, months or years back from now
   account:work                                    one account, where several are searched
 Anything else, such as an unknown key or a date that does not parse, searches as a word.";
+pub const SENDERS: &str = "Group one folder's stored mail by sender address or registrable domain, the largest group first: message and unread counts, first and last date, a few subjects and the enabled rules that already match some of it";
 pub const SHOW: &str = "Show one message";
 pub const STATUS: &str = "The daemon's pid, version, uptime, client count and each account's activity, and whether its server offers UIDPLUS, without which a delete can also remove mail another app marks deleted at that moment";
 pub const SYNC: &str = "Ask the daemon to sync now and apply rules; reports new messages and actions per account, or why one could not sync";

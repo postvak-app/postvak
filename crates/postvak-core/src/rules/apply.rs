@@ -137,13 +137,8 @@ pub fn apply(
     let mut current = msg.clone();
     let mut executed = 0;
     for planned in &plan.actions {
-        let (flag, wanted) = match planned.action {
-            Action::Flag => ("\\Flagged", true),
-            Action::MarkRead => ("\\Seen", true),
-            Action::MarkUnread => ("\\Seen", false),
-            Action::Unflag => ("\\Flagged", false),
-            Action::Tag(ref keyword) => (keyword.as_str(), true),
-            _ => continue,
+        let Some((flag, wanted)) = flag_change(&planned.action) else {
+            continue;
         };
         if has_flag(&current.flags, flag) == wanted {
             continue;
@@ -162,6 +157,51 @@ pub fn apply(
         executed += 1;
     }
     Ok(executed)
+}
+
+/// The flag and its wanted state that `action` sets, when it is a flag change.
+fn flag_change(action: &Action) -> Option<(&str, bool)> {
+    match action {
+        Action::Flag => Some(("\\Flagged", true)),
+        Action::MarkRead => Some(("\\Seen", true)),
+        Action::MarkUnread => Some(("\\Seen", false)),
+        Action::Unflag => Some(("\\Flagged", false)),
+        Action::Tag(keyword) => Some((keyword.as_str(), true)),
+        _ => None,
+    }
+}
+
+/// The actions of `plan` that `apply` would carry out on `msg`, in plan order, without doing anything: a delete or junk
+/// report alone, or else each flag change not already in effect and the first move or archive unless it is into the
+/// message's own folder. Fails as `apply` would before running anything, such as an archive with no Archive folder.
+pub fn would_run<'a>(
+    plan: &'a Plan,
+    msg: &Message,
+    store: &Store,
+) -> Result<Vec<&'a PlannedAction>, ApplyError> {
+    let alone = |wins: fn(&Action) -> bool| plan.actions.iter().find(|p| wins(&p.action));
+    if let Some(planned) = alone(|a| matches!(a, Action::Delete | Action::Trash))
+        .or_else(|| alone(|a| matches!(a, Action::Junk | Action::NotJunk)))
+    {
+        return Ok(vec![planned]);
+    }
+    let first_move = first_move(plan, msg, store)?.map(|(planned, _)| planned);
+    let mut flags = msg.flags.clone();
+    let mut running = Vec::new();
+    for planned in &plan.actions {
+        match flag_change(&planned.action) {
+            Some((flag, wanted)) if has_flag(&flags, flag) != wanted => {
+                flags = with_flag(&flags, flag, wanted);
+                running.push(planned);
+            }
+            Some(_) => {}
+            None if first_move.is_some_and(|first| std::ptr::eq(first, planned)) => {
+                running.push(planned);
+            }
+            None => {}
+        }
+    }
+    Ok(running)
 }
 
 /// One message's outcome from `apply_many`: how many actions ran, or why none did.
@@ -826,7 +866,7 @@ mod tests {
             .rev()
             .map(|entry| entry.action)
             .collect();
-        assert_eq!(actions, ["mark_read", "move:Archive"]);
+        assert_eq!(actions, ["read", "move:Archive"]);
     }
 
     #[test]
@@ -1437,7 +1477,7 @@ mod tests {
             .into_iter()
             .map(|e| e.action)
             .collect();
-        assert_eq!(actions, ["unflag", "mark_unread"]);
+        assert_eq!(actions, ["flagged:false", "read:false"]);
     }
 
     #[test]

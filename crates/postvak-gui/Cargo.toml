@@ -34,6 +34,7 @@ postvak-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 slint.workspace = true
+stylo.workspace = true
 sys-locale.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
@@ -61,7 +62,9 @@ rusqlite.workspace = true
 tempfile.workspace = true
 
 [package.metadata.cargo-machete]
-ignored = ["fontique", "i-slint-common"]             # only set a feature: of the fontique Blitz uses, and of Slint's
+# fontique and i-slint-common only set a feature: of the fontique Blitz uses, and of Slint's; stylo is used, but its
+# library is named `style`, which cargo-machete does not see
+ignored = ["fontique", "i-slint-common", "stylo"]
 
 [lints]
 workspace = true

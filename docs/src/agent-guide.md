@@ -26,21 +26,33 @@ postvak attachment list 42 --folder INBOX
 - `list` and `search` return at most `--limit` rows over every account together, newest first. When more follow, the last line is `{"next": "…"}`: pass it as `--cursor` with the same other arguments for the next page, until a page ends without one. `--fields uid,from_addr,subject` keeps only those keys in each row (`compact` is account, folder, uid, date, from_addr, subject and flags), `account` always stays, and `--count-only` prints `{"count": N}` alone. The MCP tools take `cursor`, `fields` and `count_only` and return `next` beside `rows`.
 - Bodies are searched once the background index has read them, which takes a while after an account is added. `--server` also asks the mail server, which searches every body in a round trip per folder.
 
+## Finding what a rule should catch
+
+```sh
+postvak senders --folder INBOX --group-by domain --limit 30 --json
+postvak rules coverage --folder INBOX --json
+```
+
+- `senders` groups a folder's stored mail by sender (or `--group-by domain`), biggest group first, with counts, unread, first and last date (Unix seconds), a few subjects and the enabled `rules` that already match some of it. `--after 90d` or `--before 2026-01-01` narrow it. A large group with no rules is a candidate.
+- `rules coverage` runs the rules over the folder without acting: how many messages are `matched`, `unmatched` or `contested` (several rules match), the top `unmatched_senders`, and for each contested message every matching rule and the `acts` that would run, or in `fails` why nothing would. Run it with `--include-pending` after you propose, to show the human what the proposal changes and whether an earlier rule would take its mail first.
+
+Over MCP, rules your scopes may not run (a `header` condition without `read:headers`, a body condition without `read:bodies`) are left out and listed in `skipped_rules`.
+
 ## Writing a rule
 
 1. Run `postvak rules schema` for the JSON Schema. A rule is one entry of `rules`; `postvak guide rules` explains every key, with examples.
-2. Write the rule as JSON. Keep the conditions as narrow as the request allows. A `header` condition is often the surest: `postvak headers <uid>` prints every header of a message as rules see it, such as `List-Id`, `List-Unsubscribe`, `Auto-Submitted` or your provider's spam score, so read a few examples before you pick one:
+2. Write the rule as JSON. Keep the conditions as narrow as the request allows. A `header` condition is often the surest: `postvak headers <uid>` prints every header of a message as rules see it, such as `List-Id`, `List-Unsubscribe`, `Auto-Submitted` or your provider's spam score, so read a few examples before you pick one. For mail from one sender, match `from_domain` (`"from_domain": "paypal.com"` also covers `mail.paypal.com`, but not `notpaypal.com` or a display name that says PayPal) rather than a `from` substring. A rule that moves security, bank or payment mail should also say `"authenticated": true`, so mail that only claims to come from that domain stays where the human sees it; that needs the account's `trusted_authserv_ids`, and `rules check` warns when it is missing, which only the human can fix. A rule for sign-in codes from any sender:
 
 ```json
 {
   "name": "purge sign-in codes",
   "match": {
     "from": { "regex": "no-?reply@" },
-    "subject": { "regex": "(?i)sign.?in|verification code|magic link" },
+    "subject": { "regex": "sign.?in|verification code|magic link" },
     "older_than": "1h",
-    "seen": true
+    "read": true
   },
-  "actions": ["delete"]
+  "actions": { "delete": true }
 }
 ```
 
@@ -50,7 +62,7 @@ postvak attachment list 42 --folder INBOX
 
 Errors name the rule and the problem, for example `rule 'x': match.from: invalid regex: ...`. Fix the JSON and try again.
 
-Several rules, such as filters migrated from another mail app, go in one call: a JSON array, or `{"rules": [...]}`, on stdin. They are stored in the order given, or none is: an error names each failing rule by its index in the batch and its name, as in `rule 3 'x': ...`. Order matters, because rules run in file order: only the first `move` that matches runs, and `stop` skips the rules after it. `--before NAME` or `--after NAME` puts the proposals right next to that rule instead of at the end.
+Several rules, such as filters migrated from another mail app, go in one call: a JSON array, or `{"rules": [...]}`, on stdin. They are stored in the order given, or none is: an error names each failing rule by its index in the batch and its name, as in `rule 3 'x': ...`. Order matters, because rules run in file order: the first matching `move` and the first matching `notify` win, and `stop` skips the rules after it. `--before NAME` or `--after NAME` puts the proposals right next to that rule instead of at the end.
 
 `postvak rules list --json` reads back what is stored, in file order: each row is the whole rule, with `position`, its 0-based place in the file. To fix a proposal of yours that is still pending, propose it again with `--replace`, which swaps it in place, or take it back with `postvak rules withdraw NAME --by <your name>`. Both only touch a disabled rule whose `proposed_by` is your own; anything else is the human's to change.
 

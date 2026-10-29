@@ -43,7 +43,6 @@ fontique = "0.12"                                    # HTML mail: symbol fonts a
 futures-util = { version = "0.3", default-features = false }  # collect async-imap streams
 hickory-resolver = { version = "0.26", default-features = false, features = ["system-config", "tokio"] }  # DNS TXT lookups for BIMI sender logos; std has no TXT query
 html5ever = "=0.40.1"                                # HTML mail: parse as HTML ourselves, since Blitz's entry point parses XHTML-looking mail as XML; pinned to blitz-html's version
-humantime = "2"                                      # "1h", "2d" in rules
 i-slint-backend-testing = { version = "=1.18.1", features = ["renderer-software"] }  # headless GUI tests: key events, mock time, elements found by accessible label, snapshots from the software renderer
 i-slint-common = "=1.18.1"                           # Slint's own fontique loads fontconfig at runtime on Linux; one linked and one loaded copy do not build together
 keyring-core = "1"                                   # OS keyring API
@@ -57,6 +56,7 @@ objc2-core-foundation = { version = "0.3", default-features = false, features = 
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSURL"] }  # the Dock badge's label and the Save as… panel's paths; already in the tree through muda
 percent-encoding = "2"                               # HTML mail: decode cid: URLs; already in the tree through url
 png = "0.18"                                         # decodes the icons and reads and writes the GUI snapshots
+psl = "2"                                            # the registrable domain of a sender (mail.example.co.uk → example.co.uk) for sender statistics; the public suffix list compiled in, re-released as the list changes
 proptest = { version = "1", default-features = false, features = ["std"] }  # postvak-core's tests/fuzz.rs (hostile input never panics the parsers) and tests/sync_model.rs (random sync event sequences, shrunk)
 regex = "1"                                          # rule regex conditions and alias wildcards
 rmcp = { version = "3.5", default-features = false, features = ["server", "transport-io"] }  # MCP server for `postvak mcp`, hand-written handler on stdio
@@ -71,6 +71,7 @@ serde_json = "1"                                     # --json output
 serde_rusqlite = "0.43"                              # rows to structs
 signal-hook = { version = "0.4", default-features = false }  # stop the daemon cleanly on SIGTERM (docker stop, systemctl stop) and Ctrl-C; signal-hook-registry is already in the tree through zbus
 strsim = "0.11"                                      # edit distance for the close matches of search
+stylo = "=0.22.0"                                    # HTML mail: change the colours Blitz computed to adapt a page to the dark theme; pinned to blitz-dom's version, already in the tree
 slint = { version = "=1.18.1", features = ["unstable-winit-030"] }  # the GUI window (royalty-free licence: About shows AboutSlint); default features: winit with runtime-loaded X11/Wayland, femtovg and software renderers, AccessKit, the system tray; unstable-winit-030 to raise the window from the tray (pinned, so the unstable API cannot shift)
 slint-build = "=1.18.1"                              # compiles the window's ui/*.slint into Rust
 socket2 = { version = "0.6", features = ["all"] }     # TCP keepalive on the IMAP socket so dead connections fail; "all" exposes the retry count
