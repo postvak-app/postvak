@@ -1717,7 +1717,12 @@ impl App {
         self.move_picker = None;
         self.search = search;
         self.search_focused = focused;
-        self.list = ListState::default();
+        // The window keeps its scroll offset across lists, so the new list scrolls to its cursor from there.
+        self.list = ListState {
+            viewport: self.list.viewport,
+            ..ListState::default()
+        };
+        self.list.follow_cursor = !self.list.cursor_shown();
     }
 
     pub(crate) fn view_account(&self) -> Option<usize> {
