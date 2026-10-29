@@ -58,6 +58,11 @@ pub struct AccountConfig {
     /// Extra trusted root certificate (PEM), for servers with a private CA.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ca_file: Option<PathBuf>,
+    /// The servers whose `Authentication-Results` the `authenticated` rule condition believes, by authserv-id. Unset
+    /// or empty: none, so `authenticated = true` never holds. No default is guessed from `host`: a provider that writes
+    /// no such header leaves the topmost one to the sender, who can name any server in the provider's domain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trusted_authserv_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -73,6 +78,9 @@ pub struct UiConfig {
     /// Ask GitHub once a day whether a newer release is out.
     #[serde(default)]
     pub check_updates: bool,
+    /// How HTML mail looks in the dark theme: adapted to it, or in the sender's colours on a white page.
+    #[serde(default)]
+    pub html_colours: HtmlColours,
     /// Show the logo a sender's domain publishes (BIMI): a DNS lookup and an HTTPS fetch to that domain.
     #[serde(default)]
     pub sender_images: bool,
@@ -93,6 +101,17 @@ pub enum Theme {
     Light,
     #[default]
     System,
+}
+
+/// HTML mail in the dark theme (GUI only: the CLI and MCP never render HTML).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HtmlColours {
+    /// Styled with the dark colour scheme, and light pages turned dark.
+    #[default]
+    Adapt,
+    /// The sender's colours on a white page, as in the light theme.
+    Original,
 }
 
 impl Theme {
@@ -172,6 +191,18 @@ impl Config {
                 return Err(ConfigError::Invalid(format!(
                     "account '{name}': ca_file must be an absolute path"
                 )));
+            }
+            for id in account.trusted_authserv_ids.iter().flatten() {
+                let token = !id.is_empty()
+                    && id
+                        .chars()
+                        .all(|c| c.is_ascii_graphic() && !"\";()\\".contains(c));
+                if !token {
+                    return Err(ConfigError::Invalid(format!(
+                        "account '{name}': trusted_authserv_ids holds '{}'; each must be a server name such as mx.example.com",
+                        id.escape_default()
+                    )));
+                }
             }
             account.identity()?;
         }
@@ -313,6 +344,7 @@ impl AccountConfig {
             notify: default_true(),
             index_bodies: default_true(),
             ca_file: None,
+            trusted_authserv_ids: None,
         }
     }
 
@@ -320,13 +352,27 @@ impl AccountConfig {
         self.address.as_deref().unwrap_or(&self.username)
     }
 
+    /// Whether the account trusts any authserv-id; without one, `authenticated = true` never holds.
+    pub fn can_authenticate(&self) -> bool {
+        self.trusted_authserv_ids
+            .as_ref()
+            .is_some_and(|ids| !ids.is_empty())
+    }
+
     pub fn identity(&self) -> Result<Identity, ConfigError> {
         let aliases = regex::RegexSet::new(self.aliases.iter().map(|pattern| alias_regex(pattern)))
             .map_err(|e| ConfigError::Invalid(format!("account '{}': aliases: {e}", self.name)))?;
+        let authserv = self
+            .trusted_authserv_ids
+            .iter()
+            .flatten()
+            .map(|id| id.trim_end_matches('.').to_lowercase())
+            .collect();
         Ok(Identity {
             address: self.address().to_ascii_lowercase(),
             aliases,
             patterns: self.aliases.clone(),
+            authserv,
         })
     }
 }
@@ -342,6 +388,8 @@ pub struct Identity {
     aliases: regex::RegexSet,
     /// The alias patterns as configured, for code that matches them outside this type, such as a search.
     patterns: Vec<String>,
+    /// The trusted authserv-ids, lower-cased and without a trailing dot.
+    authserv: Vec<String>,
 }
 
 impl Identity {
@@ -358,6 +406,23 @@ impl Identity {
     /// The alias patterns as configured: whole addresses, with `*` for anything.
     pub fn alias_patterns(&self) -> &[String] {
         &self.patterns
+    }
+
+    /// Whether the account believes an `Authentication-Results` header written by this authserv-id.
+    pub fn trusts_authserv_id(&self, id: &str) -> bool {
+        self.authserv
+            .contains(&id.trim_end_matches('.').to_lowercase())
+    }
+
+    /// Whether the account trusts any authserv-id; without one, `authenticated = true` never holds.
+    pub fn can_authenticate(&self) -> bool {
+        !self.authserv.is_empty()
+    }
+
+    /// Whether the account's provider vouches for mail with these headers and this From field: see
+    /// [`auth::authenticated`](crate::message::auth::authenticated).
+    pub fn authenticated(&self, raw_headers: &[u8], from: &str) -> bool {
+        crate::message::auth::authenticated(raw_headers, from, |id| self.trusts_authserv_id(id))
     }
 }
 
@@ -391,6 +456,7 @@ username = "pieter"
 address = "pieter@home.test"
 password = { command = "pass show mail/home" }
 notify = false
+trusted_authserv_ids = ["mx.home.test"]
 "#;
 
     #[test]
@@ -442,6 +508,55 @@ notify = false
         assert!(id.is_me("p@example.org"));
         assert!(id.is_me("orders@shop.example.com"));
         assert!(!id.is_me("someone@example.com"));
+    }
+
+    #[test]
+    fn no_authserv_id_is_trusted_by_default() {
+        // A regression: the IMAP host's domain was trusted by default, so on a server that writes no
+        // Authentication-Results a sender's own header naming mx.example.org counted.
+        for host in ["imap.example.org", "127.0.0.1", "localhost"] {
+            let id = AccountConfig::new(
+                "a",
+                host,
+                "me@example.org",
+                PasswordSource::Keyring { keyring: true },
+            )
+            .identity()
+            .unwrap();
+            assert!(!id.can_authenticate(), "{host}");
+            assert!(!id.trusts_authserv_id("mx.example.org"), "{host}");
+            assert!(!id.authenticated(
+                b"Authentication-Results: mx.example.org; dmarc=pass header.from=paypal.com\r\n\r\n",
+                "service@paypal.com"
+            ));
+        }
+    }
+
+    #[test]
+    fn only_listed_authserv_ids_are_trusted() {
+        let text = SAMPLE.replace(
+            "aliases = [\"p@example.org\", \"*@shop.example.com\"]",
+            "trusted_authserv_ids = [\"mx.google.com\", \"Spam.Example.com\"]",
+        );
+        let cfg = Config::parse(&text).unwrap();
+        let work = cfg.account("work").unwrap().identity().unwrap();
+        assert!(work.trusts_authserv_id("mx.google.com"));
+        assert!(work.trusts_authserv_id("Spam.Example.com."));
+        assert!(work.can_authenticate());
+        assert!(!work.trusts_authserv_id("mx.example.com"));
+        let none = text.replace("[\"mx.google.com\", \"Spam.Example.com\"]", "[]");
+        let work = Config::parse(&none).unwrap().accounts[0]
+            .identity()
+            .unwrap();
+        assert!(!work.trusts_authserv_id("mx.example.com"));
+        assert!(!work.can_authenticate());
+        for bad in ["\"\"", "\"mx example\"", "\"a;dmarc=pass\""] {
+            let text = text.replace("\"mx.google.com\"", bad);
+            assert!(
+                matches!(Config::parse(&text), Err(ConfigError::Invalid(e)) if e.contains("trusted_authserv_ids")),
+                "{bad}"
+            );
+        }
     }
 
     #[test]
@@ -542,6 +657,25 @@ notify = false
         assert!(matches!(Config::parse(&blue), Err(ConfigError::Parse(_))));
         let typo = format!("{SAMPLE}\n[ui]\ntheme_ = \"dark\"\n");
         assert!(matches!(Config::parse(&typo), Err(ConfigError::Parse(_))));
+    }
+
+    #[test]
+    fn html_colours_default_to_adapt_and_parse() {
+        let ui =
+            |text: &str| Config::parse(&format!("{SAMPLE}\n{text}")).map(|c| c.ui.html_colours);
+        assert_eq!(ui("").unwrap(), HtmlColours::Adapt);
+        assert_eq!(
+            ui("[ui]\nhtml_colours = \"original\"\n").unwrap(),
+            HtmlColours::Original
+        );
+        assert_eq!(
+            ui("[ui]\nhtml_colours = \"adapt\"\n").unwrap(),
+            HtmlColours::Adapt
+        );
+        assert!(matches!(
+            ui("[ui]\nhtml_colours = \"inverted\"\n"),
+            Err(ConfigError::Parse(_))
+        ));
     }
 
     #[test]

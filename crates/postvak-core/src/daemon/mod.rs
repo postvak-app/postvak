@@ -1,5 +1,5 @@
 //! The one process that owns the engine, serving it to the GUI, CLI and MCP over a private Unix socket.
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::net::Shutdown;
@@ -294,8 +294,8 @@ fn serve(
 ) -> anyhow::Result<()> {
     let mut watch = Watch::new(paths);
     let config = Config::load(&paths.config_file())?;
-    watch.warn(&config);
     migrate_stores(&config, paths);
+    watch.warn(&config);
     let (engine, events) = Engine::start(&config, paths, options.connect.clone());
     let shared = Arc::new(Shared {
         engine: Mutex::new(Some(engine)),
@@ -382,6 +382,17 @@ struct Watch {
     /// The configured accounts, for the rules' warnings, and where their stores are.
     accounts: Vec<String>,
     paths: Paths,
+    /// Those that trust no authserv-id, for the warning about `authenticated`.
+    untrusting: Vec<String>,
+    /// The folder warnings by account, each read again from its store only after that account synced.
+    folder_lines: BTreeMap<String, Vec<String>>,
+    /// The folders each account syncs, read again from its store only after that account synced, for the warning
+    /// about a watched folder none of a rule's accounts syncs, which looks at them all at once.
+    synced: BTreeMap<String, crate::rules::AccountFolders>,
+    /// That warning's lines.
+    watched_lines: Vec<String>,
+    /// The file's own warnings, without the folder ones.
+    file_lines: Vec<String>,
     /// The rules' warnings last logged, so each is logged once rather than on every change.
     warned: Vec<String>,
     checked: Instant,
@@ -396,6 +407,11 @@ impl Watch {
             rules: FileWatch::new(rules),
             accounts: Vec::new(),
             paths: paths.clone(),
+            untrusting: Vec::new(),
+            folder_lines: BTreeMap::new(),
+            synced: BTreeMap::new(),
+            watched_lines: Vec::new(),
+            file_lines: Vec::new(),
             warned: Vec::new(),
             checked: Instant::now(),
         }
@@ -404,6 +420,12 @@ impl Watch {
     /// Logs the rules' warnings that were not logged before, for `config`'s accounts.
     fn warn(&mut self, config: &Config) {
         self.accounts = config.accounts.iter().map(|a| a.name.clone()).collect();
+        self.untrusting = config
+            .accounts
+            .iter()
+            .filter(|a| !a.can_authenticate())
+            .map(|a| a.name.clone())
+            .collect();
         self.check_rules();
     }
 
@@ -412,13 +434,69 @@ impl Watch {
         let Ok(file) = crate::rules::load(&self.rules.path) else {
             return;
         };
-        let names: Vec<&str> = self.accounts.iter().map(String::as_str).collect();
-        let accounts = crate::rules::account_folders(&self.paths, &names);
-        let warnings = crate::rules::warnings(&self.rules.path, &file.rules, &accounts);
+        let accounts: Vec<&str> = self.accounts.iter().map(String::as_str).collect();
+        let untrusting: Vec<&str> = self.untrusting.iter().map(String::as_str).collect();
+        let warnings =
+            crate::rules::warnings(&self.rules.path, &file.rules, &accounts, &untrusting);
+        self.folder_lines = self
+            .accounts
+            .iter()
+            .map(|account| {
+                let lines = crate::rules::folder_warnings(&self.paths, &file.rules, &[account]);
+                (account.clone(), lines)
+            })
+            .collect();
+        self.synced = crate::rules::account_folders(&self.paths, &self.accounts)
+            .into_iter()
+            .map(|folders| (folders.name.clone(), folders))
+            .collect();
+        self.watch_folders(&file.rules);
+        self.file_lines = warnings;
+        self.log_new();
+    }
+
+    /// Logs the warnings of the file and of the folders that were not logged before.
+    fn log_new(&mut self) {
+        let warnings: Vec<String> = self
+            .file_lines
+            .iter()
+            .chain(&self.watched_lines)
+            .chain(self.folder_lines.values().flatten())
+            .cloned()
+            .collect();
         for warning in warnings.iter().filter(|w| !self.warned.contains(w)) {
             log::warn!("rules.toml: {}", crate::message::clean(warning, false));
         }
         self.warned = warnings;
+    }
+
+    /// The warning about a watched folder no account syncs, from what each account synced, in config order.
+    fn watch_folders(&mut self, rules: &[crate::rules::Rule]) {
+        let synced: Vec<crate::rules::AccountFolders> = self
+            .accounts
+            .iter()
+            .filter_map(|account| self.synced.get(account).cloned())
+            .collect();
+        self.watched_lines = crate::rules::watched_folder_warnings(rules, &synced);
+    }
+
+    /// Takes `account`'s folder warnings and what `account_folders` read of it, read after it synced, with the `rules` they were
+    /// read for, and logs what is new.
+    fn synced(
+        &mut self,
+        account: &str,
+        lines: Vec<String>,
+        folders: Vec<crate::rules::AccountFolders>,
+        rules: &[crate::rules::Rule],
+    ) {
+        if !self.accounts.iter().any(|a| a == account) {
+            return;
+        }
+        self.folder_lines.insert(account.to_string(), lines);
+        self.synced
+            .extend(folders.into_iter().map(|f| (f.name.clone(), f)));
+        self.watch_folders(rules);
+        self.log_new();
     }
 
     /// The config, loaded again once it changed, and whether the rules file changed; `poll` skips the check until
@@ -596,6 +674,19 @@ fn route_events(
         // The sync sends NewMail only for mail that should notify, rules included.
         if let Some(batch) = batches.hear(&event) {
             notify(&batch);
+        }
+        if let Event::Synced { account, .. } = &event {
+            // The folder warnings read what the account's store holds, which a sync changes. The store opens
+            // outside the lock, which the accept loop takes for every client.
+            let (paths, rules) = {
+                let watch = lock(&shared.watch);
+                (watch.paths.clone(), watch.rules.path.clone())
+            };
+            if let Ok(file) = crate::rules::load(&rules) {
+                let lines = crate::rules::folder_warnings(&paths, &file.rules, &[account]);
+                let folders = crate::rules::account_folders(&paths, &[account]);
+                lock(&shared.watch).synced(account, lines, folders, &file.rules);
+            }
         }
         let mut hub = lock(&shared.hub);
         match &event {

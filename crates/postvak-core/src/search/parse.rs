@@ -113,31 +113,14 @@ fn filter(body: &str, quoted: bool, negated: bool, now: i64) -> Option<Filter> {
     ))
 }
 
-/// A date value: `YYYY-MM-DD` is local midnight of that day; `7d`, `3w`, `6m` and `1y` count back from `now`.
-fn date(value: &str, now: i64) -> Option<i64> {
-    if let Some(count) = value.strip_suffix(['d', 'w', 'm', 'y'])
-        && !count.is_empty()
-        && count.bytes().all(|b| b.is_ascii_digit())
-    {
-        let count: u32 = count.parse().ok()?;
-        let days = |n: u32| Some(now - i64::from(count) * i64::from(n) * 86_400);
-        return match value.as_bytes()[value.len() - 1] {
-            b'd' => days(1),
-            b'w' => days(7),
-            b'm' => months_back(now, count),
-            _ => months_back(now, count.checked_mul(12)?),
-        };
+/// A date value: `YYYY-MM-DD` is local midnight of that day; a `time::Span` such as `7d`, `3w`, `6mo` or `1y` counts
+/// back from `now`. What `before:` and `after:` read, and the `--before` and `--after` of sender statistics.
+pub fn date(value: &str, now: i64) -> Option<i64> {
+    if let Ok(span) = crate::time::Span::parse(value) {
+        return span.before(now);
     }
     let date = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").ok()?;
     local_midnight(date)
-}
-
-/// The same clock time `months` months before `now`, in local time: the calendar moves, not a fixed day count.
-fn months_back(now: i64, months: u32) -> Option<i64> {
-    let at = chrono::Local.timestamp_opt(now, 0).single()?;
-    // A day the earlier month lacks becomes its last day.
-    let earlier = at.checked_sub_months(chrono::Months::new(months))?;
-    Some(earlier.timestamp())
 }
 
 /// The start of `date` in local time; a day whose midnight falls in a DST gap starts at the first instant after it.
@@ -295,11 +278,11 @@ pub(crate) mod tests {
         assert_eq!(filters("after:2026-01-15"), [Filter::After(jan15)]);
         assert_eq!(filters("after:7d"), [Filter::After(NOW - 7 * 86_400)]);
         assert_eq!(filters("before:3w"), [Filter::Before(NOW - 21 * 86_400)]);
-        let six_months = months_back(NOW, 6).unwrap();
-        assert_eq!(filters("after:6m"), [Filter::After(six_months)]);
+        let six_months = crate::time::months_back(NOW, 6).unwrap();
+        assert_eq!(filters("after:6mo"), [Filter::After(six_months)]);
         assert_eq!(
             filters("after:1y"),
-            [Filter::After(months_back(NOW, 12).unwrap())]
+            [Filter::After(crate::time::months_back(NOW, 12).unwrap())]
         );
         assert!(NOW - six_months > 180 * 86_400 && NOW - six_months < 186 * 86_400);
     }
@@ -314,6 +297,7 @@ pub(crate) mod tests {
             "before:yesterday",
             "after:2026-13-01",
             "after:7x",
+            "after:6m",
             "after:d",
             "re:lunch",
         ] {

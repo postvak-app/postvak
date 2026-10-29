@@ -918,6 +918,109 @@ fn idle_shared() -> super::Shared {
     }
 }
 
+/// The folder warnings read the account's store, which holds nothing before its first sync; a sync reads again only
+/// the store of the account that synced, and the file's own warnings stay.
+#[test]
+fn the_folder_warnings_are_checked_again_after_a_sync() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::under(dir.path());
+    fs::create_dir_all(paths.rules_file().parent().unwrap()).unwrap();
+    fs::write(
+        paths.rules_file(),
+        "[[rules]]\nname = \"gh\"\nmatch.read = true\nactions.move = \"Lists/GitHub\"\n\n\
+         [[rules]]\nname = \"gone\"\naccount = \"gone\"\nmatch.read = true\nactions.flagged = true\n",
+    )
+    .unwrap();
+    let mut watch = super::Watch::new(&paths);
+    watch.accounts = vec!["work".into(), "home".into()];
+    watch.check_rules();
+    assert_eq!(watch.warned.len(), 1, "{:?}", watch.warned);
+    for account in ["work", "home"] {
+        let store = crate::store::Store::open_account(&paths, account).unwrap();
+        store
+            .upsert_folder(&crate::store::Folder {
+                name: "INBOX".into(),
+                uidvalidity: 1,
+                last_uid: 0,
+                special_use: None,
+                delimiter: Some(".".into()),
+            })
+            .unwrap();
+    }
+    let shared = super::Shared {
+        watch: std::sync::Mutex::new(watch),
+        ..idle_shared()
+    };
+    let (events, received) = std::sync::mpsc::channel();
+    events
+        .send(Event::Synced {
+            account: "work".into(),
+            new_messages: 0,
+            actions: 0,
+            requests: Vec::new(),
+            errors: Vec::new(),
+        })
+        .unwrap();
+    drop(events);
+    super::route_events(&shared, received, false, |_| {});
+    let warned = super::lock(&shared.watch).warned.clone();
+    assert_eq!(warned.len(), 2, "{warned:?}");
+    assert!(warned[0].contains("account 'gone'"), "{warned:?}");
+    assert!(
+        warned[1].contains("'Lists/GitHub'") && warned[1].contains("account 'work'"),
+        "{warned:?}"
+    );
+}
+
+/// A rule for every account watching a folder none of them syncs is named once the last of them finished a full
+/// pass, read from the store of each account as it syncs.
+#[test]
+fn a_watched_folder_no_account_syncs_is_named_once_every_account_synced() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::under(dir.path());
+    fs::create_dir_all(paths.rules_file().parent().unwrap()).unwrap();
+    fs::write(
+        paths.rules_file(),
+        "[[rules]]\nname = \"typo\"\nfolder = \"Newsleters\"\nmatch.read = true\nactions.flagged = true\n",
+    )
+    .unwrap();
+    let mut watch = super::Watch::new(&paths);
+    watch.accounts = vec!["work".into(), "home".into()];
+    watch.check_rules();
+    assert!(watch.warned.is_empty(), "{:?}", watch.warned);
+    let shared = super::Shared {
+        watch: std::sync::Mutex::new(watch),
+        ..idle_shared()
+    };
+    let synced = |account: &str| {
+        let store = crate::store::Store::open_account(&paths, account).unwrap();
+        store.set_folders_listed(1).unwrap();
+        drop(store);
+        let (events, received) = std::sync::mpsc::channel();
+        events
+            .send(Event::Synced {
+                account: account.into(),
+                new_messages: 0,
+                actions: 0,
+                requests: Vec::new(),
+                errors: Vec::new(),
+            })
+            .unwrap();
+        drop(events);
+        super::route_events(&shared, received, false, |_| {});
+        super::lock(&shared.watch).warned.clone()
+    };
+    assert_eq!(
+        synced("work"),
+        Vec::<String>::new(),
+        "home may yet have the folder"
+    );
+    assert_eq!(
+        synced("home"),
+        ["rule 'typo' watches 'Newsleters', which no account syncs, so it never runs"]
+    );
+}
+
 #[test]
 fn new_mail_notifies_even_on_an_account_with_notify_off() {
     let shared = idle_shared();
@@ -1211,7 +1314,7 @@ fn the_watch_warns_once_about_a_conflicting_copy_that_appears_beside_the_rules()
     let dir = paths.config_dir.clone();
     fs::write(
         paths.rules_file(),
-        "[[rules]]\nname = \"old\"\naccount = \"werk\"\nmatch.seen = true\nactions = [\"flag\"]\n",
+        "[[rules]]\nname = \"old\"\naccount = \"werk\"\nmatch.read = true\nactions = { flagged = true }\n",
     )
     .unwrap();
     let mut watch = super::Watch::new(&paths);

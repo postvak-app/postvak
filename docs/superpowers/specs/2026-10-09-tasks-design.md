@@ -77,11 +77,11 @@ A documented rule example, no new code:
 [[rules]]
 name = "forget done tasks"
 folder = "Tasks/Done"
-match.older_than = "90days"
-actions = ["delete"]
+match.older_than = "90d"
+actions.delete = true
 ```
 
-Completing a task rewrites it, so its arrival date in `Tasks/Done` is the completion date. **Verify during planning:** that `older_than` measures the server's INTERNALDATE and accepts `90days`.
+Completing a task rewrites it, so its arrival date in `Tasks/Done` is the completion date. **Verify during planning:** that `older_than` measures the server's INTERNALDATE and accepts `90d`.
 
 ## Engine
 

@@ -9,10 +9,15 @@ use postvak_core::config::{AccountConfig, Config};
 use postvak_core::daemon::Client;
 use postvak_core::daemon::client::LazyClient;
 use postvak_core::message;
-use postvak_core::output;
+use postvak_core::output::{self, Fields};
+use postvak_core::page;
+/// What `list` shows, a plain value like `Filter`.
+pub(crate) use postvak_core::page::ListRequest;
 use postvak_core::paths::Paths;
+use postvak_core::rules::edit::Place;
 use postvak_core::rules::{self, Action, Rule, RuleFile};
 use postvak_core::search::{self, Scope};
+use postvak_core::senders::{self, GroupBy};
 /// The `list` filter, a plain value, so the tools need not name the store.
 pub(crate) use postvak_core::store::Filter;
 use postvak_core::store::{Message, Store};
@@ -157,35 +162,57 @@ impl Backend {
         Ok(rows)
     }
 
+    /// The stores of the accounts `account` selects, each with its identity when `identity`, for a page of `list`
+    /// or `search`.
+    fn sources(&self, account: Option<&str>, identity: bool) -> Result<Vec<page::Source>> {
+        self.select(account)?
+            .into_iter()
+            .map(|acc| {
+                Ok(page::Source {
+                    store: self.store(&acc)?,
+                    identity: if identity {
+                        Some(acc.identity()?)
+                    } else {
+                        None
+                    },
+                    account: acc.name,
+                })
+            })
+            .collect()
+    }
+
+    /// A page of `list`, at most `limit` rows (or threads), after `cursor`, with the kept `fields`; and the cursor
+    /// of the next page when there is one.
     pub fn list(
         &self,
         account: Option<&str>,
-        folder: &str,
+        request: &ListRequest,
         limit: u32,
-        threads: bool,
-        filter: Filter,
-    ) -> Result<Vec<Value>> {
-        let limit = limit.min(MAX_LIMIT);
-        let mut rows = Vec::new();
-        for acc in self.select(account)? {
-            let store = self.store(&acc)?;
-            if threads {
-                for thread in store.threads(folder, limit, filter)? {
-                    for (m, depth) in thread.iter().zip(output::depths(&thread)) {
-                        rows.push(output::message(&acc.name, m, Some(depth))?);
-                    }
-                }
-            } else {
-                for m in store.messages(folder, limit, filter)? {
-                    rows.push(output::message(&acc.name, &m, None)?);
-                }
-            }
-        }
-        Ok(rows)
+        cursor: Option<&str>,
+        fields: &Fields,
+    ) -> Result<(Vec<Value>, Option<String>)> {
+        let found = page::list(
+            &self.sources(account, false)?,
+            request,
+            limit.min(MAX_LIMIT),
+            cursor,
+        )?;
+        let rows = found
+            .rows
+            .iter()
+            .map(|row| output::list_row(row, fields))
+            .collect::<serde_json::Result<_>>()?;
+        Ok((rows, found.next))
+    }
+
+    /// How many messages, or threads, `list` has in all.
+    pub fn list_count(&self, account: Option<&str>, request: &ListRequest) -> Result<u64> {
+        Ok(page::list_count(&self.sources(account, false)?, request)?)
     }
 
     /// `bodies` lets stored body text decide a match; without it only the header columns do.
-    /// `server` asks the mail server as well, which searches bodies, so it needs `bodies`.
+    /// `server` asks the mail server as well, which searches bodies, so it needs `bodies`; it returns one page and
+    /// takes no cursor.
     #[allow(clippy::too_many_arguments)] // the tool's own arguments, one per flag of `postvak search`
     pub fn search(
         &self,
@@ -196,34 +223,59 @@ impl Backend {
         bodies: bool,
         server: bool,
         exact: bool,
-    ) -> Result<Vec<Value>> {
+        cursor: Option<&str>,
+        fields: &Fields,
+    ) -> Result<(Vec<Value>, Option<String>)> {
         if server && !bodies {
             bail!("a server search matches message bodies, which needs the read:bodies scope");
+        }
+        if server && cursor.is_some() {
+            bail!(page::SERVER_TAKES_NO_CURSOR);
         }
         let limit = limit.min(MAX_LIMIT);
         let parsed = search::parse(query, postvak_core::time::now());
         let account = search::named_account(account, &parsed)?;
-        let scope = if bodies { Scope::All } else { Scope::Headers };
-        let mut rows = Vec::new();
-        for acc in self.select(account)? {
-            let store = self.store(&acc)?;
-            let mut found = store.search(
-                &parsed,
-                scope,
-                folder,
-                limit,
-                !exact,
-                Some(&acc.identity()?),
-            )?;
-            if server {
-                let hits = self.daemon.search_server(&acc.name, folder, query)?;
-                found = actions::with_server_hits(&store, found, &hits, limit)?;
-            }
-            for hit in &found {
-                rows.push(output::message(&acc.name, hit, None)?);
+        let sources = self.sources(account, true)?;
+        let request = page::SearchQuery {
+            query: &parsed,
+            scope: if bodies { Scope::All } else { Scope::Headers },
+            folder,
+            close: !exact,
+        };
+        let mut found = page::search(&sources, &request, limit, cursor)?;
+        if server {
+            for source in &sources {
+                let hits = self.daemon.search_server(&source.account, folder, query)?;
+                found =
+                    page::with_server_hits(found, &source.account, &source.store, &hits, limit)?;
             }
         }
-        Ok(rows)
+        let rows = found
+            .rows
+            .iter()
+            .map(|row| output::search_row(row, fields))
+            .collect::<serde_json::Result<_>>()?;
+        Ok((rows, found.next))
+    }
+
+    /// How many messages `search` finds in all, close matches included where they would show.
+    pub fn search_count(
+        &self,
+        query: &str,
+        account: Option<&str>,
+        folder: Option<&str>,
+        bodies: bool,
+        exact: bool,
+    ) -> Result<u64> {
+        let parsed = search::parse(query, postvak_core::time::now());
+        let account = search::named_account(account, &parsed)?;
+        let request = page::SearchQuery {
+            query: &parsed,
+            scope: if bodies { Scope::All } else { Scope::Headers },
+            folder,
+            close: !exact,
+        };
+        Ok(page::search_count(&self.sources(account, true)?, &request)?)
     }
 
     /// The account name, the message and its plain body text, fetched once if not stored yet.
@@ -490,15 +542,17 @@ impl Backend {
         }
     }
 
-    /// Rules scoped to a hidden account are left out; rules for every account stay.
+    /// Every rule in file order, each with its position in the file. Rules scoped to a hidden account are left out,
+    /// so positions may skip; rules for every account stay.
     pub fn rules_list(&self) -> Result<Vec<Value>> {
         let file = rules::load(&self.paths.rules_file())?;
-        Ok(file
-            .rules
-            .iter()
-            .filter(|r| self.is_visible(r.account.as_deref()))
-            .map(output::rule)
-            .collect())
+        let mut rows = Vec::new();
+        for (position, rule) in file.rules.iter().enumerate() {
+            if self.is_visible(rule.account.as_deref()) {
+                rows.push(output::rule(rule, position)?);
+            }
+        }
+        Ok(rows)
     }
 
     /// The number of rules, and what leaves the file valid but not doing what was meant. A server narrowed with
@@ -510,9 +564,25 @@ impl Backend {
         file.rules
             .retain(|r| !self.narrowed() || self.is_visible(r.account.as_deref()));
         let names = self.all_accounts();
-        let names: Vec<&str> = names.iter().map(String::as_str).collect();
-        let accounts = rules::account_folders(&self.paths, &names);
-        let warnings = rules::warnings(&path, &file.rules, &accounts);
+        let accounts: Vec<&str> = names.iter().map(String::as_str).collect();
+        let config = self.config();
+        let untrusting: Vec<&str> = config
+            .accounts
+            .iter()
+            .filter(|a| !a.can_authenticate())
+            .map(|a| a.name.as_str())
+            .collect();
+        let warnings = rules::warnings(&path, &file.rules, &accounts, &untrusting);
+        // Every account counts here: a rule for all of them is quiet when a hidden one syncs its folder, and the rules
+        // left are those for visible accounts or for all of them, so a warning names no hidden account.
+        let watched = rules::watched_folder_warnings(
+            &file.rules,
+            &rules::account_folders(&self.paths, &names),
+        );
+        // These name the account, so only the visible ones.
+        let shown: Vec<String> = self.visible().into_iter().map(|a| a.name).collect();
+        let folders = rules::folder_warnings(&self.paths, &file.rules, &shown);
+        let warnings = [warnings, watched, folders].concat();
         Ok(json!({ "rules": count, "warnings": warnings }))
     }
 
@@ -539,6 +609,85 @@ impl Backend {
             }
         }
         Ok(rows)
+    }
+
+    /// The rules the analysis tools run: the enabled ones, with `include_pending` the waiting proposals too, less those
+    /// `sight` may not run, whose names come back second.
+    fn analysis_rules(
+        &self,
+        include_pending: bool,
+        sight: Sight,
+    ) -> Result<(Vec<rules::CompiledRule>, Vec<String>)> {
+        let all = rules::coverage::rules(&rules::load(&self.paths.rules_file())?, include_pending)?;
+        let (seen, unseen): (Vec<_>, Vec<_>) = all
+            .into_iter()
+            .partition(|rule| refuse_unseen(std::slice::from_ref(rule), sight).is_ok());
+        let skipped = unseen
+            .into_iter()
+            .filter(|rule| self.is_visible(rule.rule.account.as_deref()))
+            .map(|rule| rule.rule.name)
+            .collect();
+        Ok((seen, skipped))
+    }
+
+    /// Sender statistics of `folder` in the visible accounts; `dates` is the `after` and `before` bounds as typed.
+    pub fn senders(
+        &self,
+        account: Option<&str>,
+        folder: &str,
+        by: GroupBy,
+        limit: u32,
+        dates: (Option<&str>, Option<&str>),
+        sight: Sight,
+    ) -> Result<Value> {
+        let now = time::now();
+        let date = |value: Option<&str>| {
+            value
+                .map(|v| {
+                    search::date(v, now).with_context(|| {
+                        format!("'{v}' is not a date; use 2026-01-15, or 30d, 3w, 6mo or 1y")
+                    })
+                })
+                .transpose()
+        };
+        let (after, before) = (date(dates.0)?, date(dates.1)?);
+        let (compiled, skipped) = self.analysis_rules(false, sight)?;
+        let mut rows = Vec::new();
+        for acc in self.select(account)? {
+            let store = self.store(&acc)?;
+            let identity = acc.identity()?;
+            let ctx = rules::coverage::context(&acc.name, &identity, now);
+            let found = senders::in_folder(&store, &compiled, &ctx, folder, after, before, by)?;
+            for sender in found.iter().take(limit.min(MAX_LIMIT) as usize) {
+                rows.push(output::sender(&acc.name, folder, sender)?);
+            }
+        }
+        Ok(json!({ "rows": rows, "skipped_rules": skipped }))
+    }
+
+    /// Rules coverage of `folder` in the visible accounts, one row per account.
+    pub fn rules_coverage(
+        &self,
+        account: Option<&str>,
+        folder: &str,
+        include_pending: bool,
+        by: GroupBy,
+        limit: u32,
+        sight: Sight,
+    ) -> Result<Value> {
+        let (compiled, skipped) = self.analysis_rules(include_pending, sight)?;
+        let limit = limit.min(MAX_LIMIT) as usize;
+        let mut rows = Vec::new();
+        for acc in self.select(account)? {
+            let store = self.store(&acc)?;
+            let identity = acc.identity()?;
+            let ctx = rules::coverage::context(&acc.name, &identity, time::now());
+            let mut coverage = rules::coverage::in_folder(&store, &compiled, &ctx, folder, by)?;
+            coverage.unmatched_senders.truncate(limit);
+            coverage.contests.truncate(limit);
+            rows.push(output::coverage(&acc.name, folder, &coverage)?);
+        }
+        Ok(json!({ "rows": rows, "skipped_rules": skipped }))
     }
 
     /// Runs one enabled rule over the existing mail of the visible accounts it applies to, through the daemon; a dry
@@ -596,24 +745,49 @@ impl Backend {
         Ok(rows)
     }
 
-    /// While accounts are hidden, a rule without `account` gets the only visible one, or is refused.
-    pub fn propose(&self, mut rule: Rule, by: &str, sight: Sight) -> Result<Value> {
-        refuse_unseen(
-            &rules::compile(&RuleFile {
+    /// Stores the rules of `proposals` disabled, all or none. While accounts are hidden, a rule without `account` gets
+    /// the only visible one, or is refused, and a rule of a hidden account can be neither replaced nor named as the
+    /// place. `arguments` are one rule's fields or `{"rules": [...]}`, as `rules::edit::read_proposals` reads them.
+    /// The result names each rule with the account it got.
+    pub fn propose(&self, arguments: Value, by: &str, sight: Sight) -> Result<Vec<Value>> {
+        let mut proposals = rules::edit::read_proposals(arguments)?;
+        // A rule that does not compile is left to propose_all, which names every failing rule of the batch.
+        for rule in &mut proposals.rules {
+            if let Ok(compiled) = rules::compile(&RuleFile {
                 rules: vec![rule.clone()],
-            })?,
-            sight,
-        )?;
-        match rule.account.as_deref() {
-            Some(account) if !self.is_visible(Some(account)) => {
-                bail!("no account named '{account}'")
+            }) {
+                refuse_unseen(&compiled, sight)?;
             }
-            None if self.narrowed() => rule.account = Some(self.single(None)?.name),
-            _ => {}
+            match rule.account.as_deref() {
+                Some(account) if !self.is_visible(Some(account)) => {
+                    bail!("no account named '{account}'")
+                }
+                None if self.narrowed() => rule.account = Some(self.single(None)?.name),
+                _ => {}
+            }
         }
-        let (name, account) = (rule.name.clone(), rule.account.clone());
-        rules::edit::propose(&self.paths.rules_file(), rule, by)?;
-        Ok(json!({ "proposed": name, "account": account, "enabled": false, "proposed_by": by }))
+        if let Place::Before(anchor) | Place::After(anchor) = &proposals.place {
+            self.ensure_rule_visible(anchor, false)?;
+        }
+        if proposals.replace {
+            for rule in &proposals.rules {
+                self.ensure_rule_visible(&rule.name, false)?;
+            }
+        }
+        let proposed: Vec<Value> = proposals
+            .rules
+            .iter()
+            .map(|r| json!({ "name": r.name, "account": r.account }))
+            .collect();
+        rules::edit::propose_all(&self.paths.rules_file(), proposals, by)?;
+        Ok(proposed)
+    }
+
+    /// Removes the caller's own pending proposal; a rule of a hidden account reads as absent.
+    pub fn withdraw(&self, name: &str, by: &str) -> Result<Value> {
+        self.ensure_rule_visible(name, false)?;
+        rules::edit::withdraw(&self.paths.rules_file(), name, by)?;
+        Ok(json!({ "withdrawn": name }))
     }
 
     /// Enables the rule and restarts its clock in every account, so it acts only on mail that arrives from now on.

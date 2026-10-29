@@ -46,6 +46,10 @@ pub(crate) fn action(item: MenuAction, app: &App) -> Option<UiAction> {
             app.body.as_ref().is_some_and(|b| b.html.is_some()),
             UiAction::ToggleHtml,
         ),
+        MenuAction::OriginalColours => act(
+            app.offers_original_colours(),
+            UiAction::ToggleOriginalColours,
+        ),
         MenuAction::ThemeDark => Some(UiAction::SetTheme(Theme::Dark)),
         MenuAction::ThemeLight => Some(UiAction::SetTheme(Theme::Light)),
         MenuAction::ThemeSystem => Some(UiAction::SetTheme(Theme::System)),
@@ -95,6 +99,7 @@ mod tests {
             Some(inbox()),
             Some(UiAction::OpenMovePicker),
             Some(UiAction::SetOpenAtLogin(true)),
+            None,
             Some(UiAction::ToggleRead),
             Some(UiAction::SaveEml),
             Some(UiAction::SaveEmlAs),
@@ -121,6 +126,7 @@ mod tests {
             MenuAction::MarkFolderRead,
             MenuAction::Move,
             MenuAction::OpenAtLogin,
+            MenuAction::OriginalColours,
             MenuAction::ReadOrUnread,
             MenuAction::SaveEml,
             MenuAction::SaveEmlAs,
@@ -231,9 +237,7 @@ mod tests {
         // Checked while the change runs, and off limits until it is done.
         assert!(driver.app.open_at_login.checked());
         assert_eq!(action(MenuAction::OpenAtLogin, &driver.app), None);
-        wait_for(&mut driver, |app| {
-            matches!(app.open_at_login, OpenAtLogin::Known(true))
-        });
+        driver.tick_until(|app| matches!(app.open_at_login, OpenAtLogin::Known(true)));
         assert_eq!(
             action(MenuAction::OpenAtLogin, &driver.app),
             Some(UiAction::SetOpenAtLogin(false))
@@ -247,9 +251,7 @@ mod tests {
         driver.app.set_open_at_login = |_, _| Err(anyhow::anyhow!("cancelled"));
         driver.tick();
         driver.apply(UiAction::SetOpenAtLogin(true));
-        wait_for(&mut driver, |app| {
-            matches!(app.open_at_login, OpenAtLogin::Known(false))
-        });
+        driver.tick_until(|app| matches!(app.open_at_login, OpenAtLogin::Known(false)));
         assert!(
             driver
                 .app
@@ -259,17 +261,5 @@ mod tests {
             "{:?}",
             driver.app.error
         );
-    }
-
-    /// Ticks until `done`, since the change runs on a thread of its own.
-    fn wait_for(driver: &mut crate::test_support::Driver, done: impl Fn(&App) -> bool) {
-        for _ in 0..500 {
-            driver.tick();
-            if done(&driver.app) {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        panic!("the change did not finish");
     }
 }

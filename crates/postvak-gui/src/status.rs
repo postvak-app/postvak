@@ -245,12 +245,10 @@ mod tests {
                 .filter(|line| line.text == explained)
                 .count()
         };
-        wires.events.send(connected(true)).unwrap();
-        driver.tick();
+        driver.receive(&wires, [connected(true)]);
         assert_eq!(count(&driver), 0);
         for _ in 0..2 {
-            wires.events.send(connected(false)).unwrap();
-            driver.tick();
+            driver.receive(&wires, [connected(false)]);
         }
         assert_eq!(driver.app.accounts[0].uidplus, Some(false));
         assert_eq!(count(&driver), 1, "a reconnect does not repeat it");
@@ -267,16 +265,9 @@ mod tests {
     }
 
     use crate::state::{UiAction, UpdateCheck};
-    use crate::test_support::{Fixture, Open, Wires, launched, message, unread};
+    use crate::test_support::{Fixture, launched, message, unread};
     use postvak_core::sync::Event;
     use postvak_core::time::clock;
-
-    fn send(open: &Open, wires: &Wires, events: impl IntoIterator<Item = Event>) {
-        for event in events {
-            wires.events.send(event).unwrap();
-        }
-        open.tick();
-    }
 
     fn activity(activity: Activity) -> Event {
         Event::Activity {
@@ -301,19 +292,19 @@ mod tests {
             done: 12_500,
             total: 48_213,
         };
-        send(&open, &wires, [activity(fetching)]);
+        open.receive(&wires, [activity(fetching)]);
         assert_eq!(open.find("work: INBOX headers 12,500 / 48,213").len(), 1);
         let offline = Activity::Offline {
             reason: "timeout".into(),
             retry_at: 1_790_000_300,
         };
-        send(&open, &wires, [activity(offline)]);
+        open.receive(&wires, [activity(offline)]);
         let line = format!("work: offline (timeout) · retry {}", clock(1_790_000_300));
         assert_eq!(open.find(&line).len(), 1);
         let stopped = Activity::NotRunning {
             reason: "could not start its sync thread".into(),
         };
-        send(&open, &wires, [activity(stopped)]);
+        open.receive(&wires, [activity(stopped)]);
         assert_eq!(
             open.find("work: not running (could not start its sync thread)")
                 .len(),
@@ -347,7 +338,7 @@ mod tests {
                 activity: rejected,
             },
         ];
-        send(&open, &wires, events);
+        open.receive(&wires, events);
         let line = format!(
             "work: login rejected (login failed: bad password) · retry {}",
             clock(1_790_003_600)
@@ -371,14 +362,14 @@ mod tests {
         let idle = || Activity::Idle {
             since: 1_790_000_000,
         };
-        send(&open, &wires, [of("home", idle()), of("work", idle())]);
+        open.receive(&wires, [of("home", idle()), of("work", idle())]);
         let up_to_date = |name: &str| format!("{name}: up to date · {}", clock(1_790_000_000));
         assert_eq!(open.find(&up_to_date("home")).len(), 1, "the first account");
         let offline = Activity::Offline {
             reason: "timeout".into(),
             retry_at: 1_790_000_300,
         };
-        send(&open, &wires, [of("work", offline)]);
+        open.receive(&wires, [of("work", offline)]);
         let work = format!("work: offline (timeout) · retry {}", clock(1_790_000_300));
         assert_eq!(open.find(&work).len(), 1, "offline beats up to date");
         assert!(open.find(&up_to_date("home")).is_empty());
@@ -386,7 +377,7 @@ mod tests {
             open.get(&work).accessible_description().unwrap(),
             format!("{}\n{work}", up_to_date("home"))
         );
-        send(&open, &wires, [error("boom")]);
+        open.receive(&wires, [error("boom")]);
         assert_eq!(open.find("work: boom").len(), 1, "a failure beats offline");
     }
 
@@ -394,7 +385,7 @@ mod tests {
     fn an_error_shows_on_the_account_line_and_in_the_history() {
         let fx = Fixture::new(&["work"]);
         let (open, wires) = fx.window();
-        send(&open, &wires, [error("login failed\u{1b}[2J")]);
+        open.receive(&wires, [error("login failed\u{1b}[2J")]);
         open.click("work: login failed[2J");
         assert!(open.with(|live| live.app.history_open));
         let history = open.window().get_history();
@@ -433,7 +424,7 @@ mod tests {
             requests: vec![],
             errors: vec![],
         };
-        send(&open, &wires, [synced]);
+        open.receive(&wires, [synced]);
         assert_eq!(open.with(|live| live.app.list.rows.len()), 1);
         assert_eq!(open.find("Inbox (1)").len(), 1);
     }
@@ -452,8 +443,7 @@ mod tests {
             let (mut driver, wires) = fx.driver();
             fx.add("work", message("INBOX", uid, "written by the daemon"));
             assert!(driver.app.list.rows.is_empty());
-            wires.events.send(completion).unwrap();
-            driver.tick();
+            driver.receive(&wires, [completion]);
             assert_eq!(driver.app.list.rows.len(), 1);
         }
     }
@@ -469,8 +459,7 @@ mod tests {
             actions: 2,
             errors: vec![],
         };
-        wires.events.send(applied).unwrap();
-        driver.tick();
+        driver.receive(&wires, [applied]);
         let notice = "work: 2 actions on 2 messages";
         assert_eq!(super::summary(&driver.app).text, notice);
         let synced = Event::Synced {
@@ -480,8 +469,7 @@ mod tests {
             requests: vec![],
             errors: vec![],
         };
-        wires.events.send(synced).unwrap();
-        driver.tick();
+        driver.receive(&wires, [synced]);
         assert_ne!(super::summary(&driver.app).text, notice);
         assert!(driver.app.notice.is_none());
         assert!(driver.app.history.iter().any(|line| line.text == notice));
@@ -513,10 +501,7 @@ mod tests {
                 total: 48_210,
             })
         };
-        for event in [indexing(0), indexing(12_345)] {
-            wires.events.send(event).unwrap();
-        }
-        driver.tick();
+        driver.receive(&wires, [indexing(0), indexing(12_345)]);
         let line = lines(&driver.app).pop().unwrap();
         assert_eq!(line.text, "work: up to date · indexing 12,345 of 48,210");
         assert_eq!(line.dot, Some(Dot::UpToDate));
@@ -550,22 +535,17 @@ mod tests {
             count: 10,
         };
         driver.at(10.0);
-        wires.events.send(indexed()).unwrap();
-        driver.tick();
+        driver.receive(&wires, [indexed()]);
         assert_eq!(driver.app.last_index_reload, 0.0, "no search open");
         driver.press("/ invoice");
         driver.at(20.0);
-        wires.events.send(indexed()).unwrap();
-        wires.events.send(indexed()).unwrap();
-        driver.tick();
+        driver.receive(&wires, [indexed(), indexed()]);
         assert_eq!(driver.app.last_index_reload, 20.0);
         driver.at(20.5);
-        wires.events.send(indexed()).unwrap();
-        driver.tick();
+        driver.receive(&wires, [indexed()]);
         assert_eq!(driver.app.last_index_reload, 20.0, "within the second");
         driver.at(21.2);
-        wires.events.send(indexed()).unwrap();
-        driver.tick();
+        driver.receive(&wires, [indexed()]);
         assert_eq!(driver.app.last_index_reload, 21.2);
         assert_eq!(
             driver.app.list.rows.len(),
@@ -598,10 +578,7 @@ mod tests {
             idle(),
             error("boom"),
         ];
-        for event in events {
-            wires.events.send(event).unwrap();
-        }
-        driver.tick();
+        driver.receive(&wires, events);
         let texts: Vec<&str> = driver
             .app
             .history
@@ -620,7 +597,7 @@ mod tests {
             reason: "login failed".into(),
             retry_at: 1_790_000_300,
         };
-        send(&open, &wires, [error("login failed"), activity(offline)]);
+        open.receive(&wires, [error("login failed"), activity(offline)]);
         assert_eq!(open.find("work: login failed").len(), 1);
     }
 

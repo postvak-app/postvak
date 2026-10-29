@@ -158,13 +158,22 @@ fi
 dmg=$out/postvak-$version-macos-$arch.dmg
 stage=$(mktemp -d)
 raw=$(mktemp -u).dmg
-trap 'rm -rf "$stage" "$raw"' EXIT
+rw=$(mktemp -u).dmg
+mnt=$(mktemp -d)
+trap 'rm -rf "$stage" "$raw" "$rw" "$mnt"' EXIT
 ditto "$app" "$stage/Postvak.app"
 ln -s /Applications "$stage/Applications"
 rm -f "$dmg"
 # makehybrid + convert instead of `hdiutil create -srcfolder`, which fails intermittently on CI runners.
 hdiutil makehybrid -hfs -hfs-volume-name Postvak -hfs-openfolder "$stage" -o "$raw" "$stage"
-hdiutil convert "$raw" -format UDZO -o "$dmg"
+# makehybrid gives every file a com.apple.FinderInfo that copies of the app keep and `codesign --verify --strict`
+# rejects; clearing it on a writable copy keeps the open-folder flag, which `bless` cannot set on Apple Silicon.
+hdiutil convert "$raw" -format UDRW -o "$rw"
+hdiutil attach -nobrowse -noverify -mountpoint "$mnt" "$rw"
+xattr -cr "$mnt/Postvak.app"
+hdiutil detach "$mnt"
+# ULMO (LZMA, macOS 10.15+) instead of UDZO (zlib): a third smaller, the most of it on the bundled dSYM.
+hdiutil convert "$rw" -format ULMO -o "$dmg"
 
 if [ "$identity" != - ]; then
     codesign --force --timestamp --sign "$identity" ${keychain_args[@]+"${keychain_args[@]}"} "$dmg"
