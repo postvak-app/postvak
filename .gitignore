@@ -11,3 +11,4 @@ mise.lock
 /tests/snapshots/*.old.png
 /dist/
 __pycache__/
+/.codegraph/

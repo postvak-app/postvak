@@ -79,7 +79,7 @@ The notification click test runs against a stand-in server on a private session 
 `crates/postvak-core/tests/sync_model.rs` runs random server events and sync passes against `RecordingOps`; search deeper with `PROPTEST_CASES=2000 cargo test -p postvak-core --features testing --test sync_model`.
 
 ## Build speed
-`mise install` brings kache, cargo-nextest and actionlint. Run `kache init` once per machine to make kache your `RUSTC_WRAPPER`; it edits your own `~/.cargo/config.toml`, so the repo does not do it for you. Edit loop: `cargo check`, `cargo nextest run`.
+`mise install` brings kache, cargo-nextest, actionlint and codegraph (run `codegraph init -y` once per clone; it re-indexes on its own after that). Run `kache init` once per machine to make kache your `RUSTC_WRAPPER`; it edits your own `~/.cargo/config.toml`, so the repo does not do it for you. Edit loop: `cargo check`, `cargo nextest run`.
 
 Run `packaging/icons.sh` after changing `assets/icon.svg`, `assets/logo.src.svg` or `assets/social-preview.src.svg`, and commit what it writes.
 
