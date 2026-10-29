@@ -153,6 +153,7 @@ Open the mail window; starts the daemon when needed
 
   Default value: `INBOX`
 * `--background` — Start out of the way, as at login: in the tray, minimized on macOS, or shown where there is no tray
+* `--rules` — Show the Rules view, where proposals wait for approval; with a window already open, that window shows it
 
 
 

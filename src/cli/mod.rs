@@ -116,6 +116,9 @@ enum Command {
         /// Start out of the way, as at login: in the tray, minimized on macOS, or shown where there is no tray
         #[arg(long, conflicts_with = "open")]
         background: bool,
+        /// Show the Rules view, where proposals wait for approval; with a window already open, that window shows it
+        #[arg(long, conflicts_with_all = ["open", "background"])]
+        rules: bool,
     },
     /// Open the window at login, hidden in the tray: a launch agent on macOS, an autostart entry on Linux
     Autostart {
@@ -566,6 +569,7 @@ pub fn run() -> Result<()> {
                 account: None,
                 folder: "INBOX".into(),
                 background: false,
+                rules: false,
             },
         }
     } else {
@@ -585,14 +589,21 @@ pub fn run() -> Result<()> {
         account,
         folder,
         background,
+        rules,
     } = cli.command
     {
-        let open = open.map(|uid| postvak_core::notify::Open {
-            account,
-            folder,
-            uid,
-        });
-        return cmd_gui(paths, safe_mode, open, background);
+        let show = if rules {
+            Some(postvak_core::notify::Show::Rules)
+        } else {
+            open.map(|uid| {
+                postvak_core::notify::Show::Message(postvak_core::notify::Open {
+                    account,
+                    folder,
+                    uid,
+                })
+            })
+        };
+        return cmd_gui(paths, safe_mode, show, background);
     }
     let paths = paths?;
     let config = Config::load(&paths.config_file())?;
@@ -1335,17 +1346,17 @@ fn opened_as_mac_app() -> bool {
 fn cmd_gui(
     paths: Result<Paths>,
     safe_mode: bool,
-    open: Option<postvak_core::notify::Open>,
+    show: Option<postvak_core::notify::Show>,
     background: bool,
 ) -> Result<()> {
-    postvak_gui::run(paths, safe_mode, open, background)
+    postvak_gui::run(paths, safe_mode, show, background)
 }
 
 #[cfg(not(feature = "gui"))]
 fn cmd_gui(
     _paths: Result<Paths>,
     _safe_mode: bool,
-    _open: Option<postvak_core::notify::Open>,
+    _show: Option<postvak_core::notify::Show>,
     _background: bool,
 ) -> Result<()> {
     bail!("this postvak was built without the GUI; install it with the default features")

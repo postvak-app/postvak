@@ -1,5 +1,5 @@
 //! One window per user. The first `postvak gui` holds `gui.lock` and, once its window shows, listens on `gui.sock`; a
-//! second one hands it what it was asked (show the window, open a message) and exits, so a click on the dock or a
+//! second one hands it what it was asked (show the window, open a message or the Rules view) and exits, so a click on the dock or a
 //! notification brings back the window that is already open instead of starting another.
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use postvak_core::notify::Open;
+use postvak_core::notify::Show;
 use postvak_core::paths::{self, Paths};
 
 /// How long a second start waits for the first window to listen, which it does once it shows.
@@ -18,10 +18,10 @@ const TRY_EVERY: Duration = Duration::from_millis(100);
 /// How long either side waits on the other once connected.
 const ANSWER: Duration = Duration::from_secs(2);
 
-/// What a second start asks the first window: to come to the front, and to open a message.
+/// What a second start asks the first window: to come to the front, and to show a message or the Rules view.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub(crate) struct Request {
-    pub open: Option<Open>,
+    pub show: Option<Show>,
 }
 
 pub(crate) enum Claim {
@@ -131,8 +131,8 @@ fn answer(stream: &UnixStream) -> io::Result<Request> {
 mod tests {
     use super::*;
 
-    fn open() -> Open {
-        Open {
+    fn open() -> postvak_core::notify::Open {
+        postvak_core::notify::Open {
             account: Some("work".into()),
             folder: "INBOX".into(),
             uid: 7,
@@ -151,9 +151,17 @@ mod tests {
             .listen(move |request| sent.send(request).unwrap())
             .unwrap();
 
-        let request = Request { open: Some(open()) };
+        let request = Request {
+            show: Some(Show::Message(open())),
+        };
         assert!(matches!(claim(&paths, &request), Claim::Handed));
         assert_eq!(received.recv_timeout(ANSWER).unwrap(), request);
+
+        let rules = Request {
+            show: Some(Show::Rules),
+        };
+        assert!(matches!(claim(&paths, &rules), Claim::Handed));
+        assert_eq!(received.recv_timeout(ANSWER).unwrap(), rules);
     }
 
     #[test]
