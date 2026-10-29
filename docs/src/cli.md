@@ -32,6 +32,10 @@ This document contains the help content for the `postvak` command-line program.
 * [`postvak rules list`↴](#postvak-rules-list)
 * [`postvak rules coverage`↴](#postvak-rules-coverage)
 * [`postvak rules apply-existing`↴](#postvak-rules-apply-existing)
+* [`postvak folder`↴](#postvak-folder)
+* [`postvak folder create`↴](#postvak-folder-create)
+* [`postvak folder delete`↴](#postvak-folder-delete)
+* [`postvak folder rename`↴](#postvak-folder-rename)
 * [`postvak folders`↴](#postvak-folders)
 * [`postvak list`↴](#postvak-list)
 * [`postvak search`↴](#postvak-search)
@@ -75,6 +79,7 @@ Your inbox, organized by rules you write
 * `sync` — Ask the daemon to sync now and apply rules; reports new messages and actions per account, or why one could not sync
 * `attachment` — List or save a message's attachments
 * `rules` — Inspect and test rules.toml
+* `folder` — Create, rename or delete a folder on the server
 * `folders` — List folders with message and unread counts
 * `list` — List recent messages, newest first, every account in one order
 * `search` — Search subject, addresses, attachment names and bodies, newest first; words, "phrases", -not and key:value operators such as from:acme, in:Archive, is:unread or after:7d; the last word also matches as a prefix; close matches such as corrected typos follow when exact hits are few
@@ -466,6 +471,71 @@ Run one enabled rule against mail that predates it; dry run lists what it would 
 * `--account <ACCOUNT>`
 * `--dry-run`
 * `--yes` — Run even when the rule would permanently delete mail from the server
+
+
+
+## `postvak folder`
+
+Create, rename or delete a folder on the server
+
+**Usage:** `postvak folder <COMMAND>`
+
+###### **Subcommands:**
+
+* `create` — Create a folder and subscribe to it
+* `delete` — Delete a folder; one holding mail needs --trash or --permanent
+* `rename` — Rename a folder and the folders under it; rules that name it follow
+
+
+
+## `postvak folder create`
+
+Create a folder and subscribe to it
+
+**Usage:** `postvak folder create [OPTIONS] <NAME>`
+
+###### **Arguments:**
+
+* `<NAME>`
+
+###### **Options:**
+
+* `--account <ACCOUNT>`
+
+
+
+## `postvak folder delete`
+
+Delete a folder; one holding mail needs --trash or --permanent
+
+**Usage:** `postvak folder delete [OPTIONS] <NAME>`
+
+###### **Arguments:**
+
+* `<NAME>`
+
+###### **Options:**
+
+* `--account <ACCOUNT>`
+* `--trash` — Move the mail to Trash first
+* `--permanent` — Delete the mail with the folder, keeping an .eml backup
+
+
+
+## `postvak folder rename`
+
+Rename a folder and the folders under it; rules that name it follow
+
+**Usage:** `postvak folder rename [OPTIONS] <FROM> <TO>`
+
+###### **Arguments:**
+
+* `<FROM>`
+* `<TO>`
+
+###### **Options:**
+
+* `--account <ACCOUNT>`
 
 
 

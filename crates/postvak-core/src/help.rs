@@ -81,6 +81,11 @@ pub const JUNK: &str = "Report messages as junk: tag them $Junk, which trains se
 pub const UNSUBSCRIBE: &str = "Leave a message's mailing list: by one-click POST when the sender offers it (RFC 8058), else print the page or address from its List-Unsubscribe header to open";
 /// Which keys each row of `list` and `search` keeps.
 pub const FIELDS: &str = "Only these keys in each JSON row, such as uid, from_addr, subject, date; compact stands for account, folder, uid, date, from_addr, subject and flags, plus depth in a thread view and match in a search; account always stays";
+pub const FOLDER: &str = "Create, rename or delete a folder on the server";
+pub const FOLDER_CREATE: &str = "Create a folder and subscribe to it";
+pub const FOLDER_DELETE: &str = "Delete a folder; one holding mail needs --trash or --permanent";
+pub const FOLDER_RENAME: &str =
+    "Rename a folder and the folders under it; rules that name it follow";
 pub const FOLDERS: &str = "List folders with message and unread counts";
 pub const HEADERS: &str =
     "Every header of one message, in order, unfolded and decoded as header rules see it; no body";
