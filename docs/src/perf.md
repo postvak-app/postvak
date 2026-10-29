@@ -202,3 +202,24 @@ What this shows:
 - A longer newsletter, taller than 32,767 physical pixels, panics the software renderer (#321), which is why the generated one has 30 sections.
 
 Not measured yet: drawing a frame of the list through the real window (`Fixture::window()`).
+
+## Choosing the renderer
+
+The GUI draws with Slint's default renderer, femtovg on OpenGL, and with the software renderer only in safe mode, after a failed start or when `SLINT_BACKEND` asks for it. An OpenGL context brings the driver's memory into the process, while a mail client mostly draws text and flat rectangles, and the HTML strips are painted on the CPU either way. Which default costs less is being measured (#315); femtovg stays the default until more than one machine has been measured.
+
+`scripts/startup.py`, run once per renderer and scale on the same mail home: release build of `main` at 35bcb6b, KDE Plasma 6 on Wayland, NVIDIA GeForce RTX 3080 with the proprietary driver 615.78, a 3440 × 1440 screen at scale 1, AMD Ryzen 9 5900XT (16 cores), 32 GB, Rust 1.99.1, 10,000 messages. Scale 2 is `SLINT_SCALE_FACTOR=2` on the same screen, not a HiDPI display. Median of five runs; GUI memory only, the daemon's did not change.
+
+| | femtovg, 1x | software, 1x | femtovg, 2x | software, 2x |
+| --- | --- | --- | --- | --- |
+| `first_frame` | 402 ms (315–741) | 179 ms (166–202) | 348 ms (305–411) | 178 ms (173–287) |
+| Idle, RSS / PSS / USS | 161 / 137 / 128 MB | 60 / 47 / 37 MB | 160 / 136 / 127 MB | 84 / 59 / 36 MB |
+| Newsletter open | 186 / 161 / 152 MB | 80 / 66 / 55 MB | 208 / 184 / 175 MB | 118 / 92 / 69 MB |
+| After the plain message | 181 / 157 / 147 MB | 75 / 61 / 50 MB | 189 / 164 / 155 MB | 99 / 72 / 49 MB |
+
+What this shows, on this machine:
+
+- The OpenGL context costs about 100 MB of private memory before anything is drawn; the software renderer's GUI uses less than a third of femtovg's.
+- femtovg's first frame comes about 220 ms later at 1x and 170 ms later at 2x, and varies more: creating the context and compiling its shaders. Every phase before it is the same for both.
+- At scale 2 the software renderer's RSS grows by the size of its buffers, which the compositor shares (USS stays at 36 MB); still about half of femtovg's.
+
+Not measured yet: Mesa on Intel or AMD, which the issue expects to cost less than NVIDIA's driver; a real HiDPI or 4K screen; X11; macOS; and CPU and frame times while scrolling a long list or HTML message, where the software renderer pays for drawing on the CPU.
