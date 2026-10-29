@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/postvak-app/postvak/compare/v0.9.0...v0.10.0) - 2026-10-29
+
+### Added
+
+- *(gui)* make dialogs modal and give buttons more room ([#422](https://github.com/postvak-app/postvak/pull/422))
+- *(gui)* edit a rule in a dialog and list the rules as a sortable table ([#421](https://github.com/postvak-app/postvak/pull/421))
+- *(account)* offer the authserv-id the INBOX shows for authenticated rules ([#414](https://github.com/postvak-app/postvak/pull/414))
+- *(rules)* add a younger_than condition, the opposite of older_than ([#413](https://github.com/postvak-app/postvak/pull/413))
+
+### Fixed
+
+- *(gui)* stop the idle window drawing again every 2 seconds ([#420](https://github.com/postvak-app/postvak/pull/420))
+- *(gui)* start another folder's list at the top ([#418](https://github.com/postvak-app/postvak/pull/418))
+
+### Other
+
+- free the worktree's target/ after merging in the issue skill ([#419](https://github.com/postvak-app/postvak/pull/419))
+- drop the attribution footer from the issue skill ([#417](https://github.com/postvak-app/postvak/pull/417))
+- *(gui)* take a scroll without showing the whole window again ([#415](https://github.com/postvak-app/postvak/pull/415))
+- set up codegraph, rust-analyzer and Claude Code for contributors ([#398](https://github.com/postvak-app/postvak/pull/398))
+
 ## [0.9.0](https://github.com/postvak-app/postvak/compare/v0.8.0...v0.9.0) - 2026-10-29
 
 ### Added
