@@ -424,6 +424,26 @@ mod tests {
     }
 
     #[test]
+    fn compact_thread_rows_keep_a_named_thread_id_to_drop_repeats_by() {
+        // The agent guide says to drop a thread repeated across pages by `account` and
+        // `thread_id`; `compact` leaves `thread_id` out, so naming it beside must keep it.
+        let names = ["compact".to_string(), "thread_id".to_string()];
+        let msg = Message {
+            uid: 4,
+            thread_id: "t1".into(),
+            ..Default::default()
+        };
+        let row = super::message("work", &msg, Some(0)).unwrap();
+        let compact = Fields::parse(&names[..1], RowKind::Thread).unwrap();
+        assert!(compact.apply(row.clone()).get("thread_id").is_none());
+        let kept = Fields::parse(&names, RowKind::Thread).unwrap().apply(row);
+        assert_eq!(kept["account"], "work");
+        assert_eq!(kept["thread_id"], "t1");
+        let guide = crate::help::AGENT_GUIDE;
+        assert!(guide.contains("`--fields compact,thread_id`"));
+    }
+
+    #[test]
     fn show_has_the_message_with_its_account_a_body_and_truncated() {
         let msg = Message {
             uid: 4,

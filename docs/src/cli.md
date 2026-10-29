@@ -503,7 +503,7 @@ List recent messages, newest first, every account in one order
 * `--attachments` — Only messages with attachments, guessed from the headers; with --threads, threads with one
 * `--cursor <CURSOR>` — Continue after the page that ended with this `next`, with the same other arguments; the rows of every account come newest first in one order, and the limit counts them together
 * `--fields <FIELDS>` — Only these keys in each JSON row, such as uid, from_addr, subject, date; compact stands for account, folder, uid, date, from_addr, subject and flags, plus depth in a thread view and match in a search; account always stays
-* `--count-only` — Return only how many match in all, messages or in a thread view threads, as {"count": N}, without rows
+* `--count-only` — Return only how many match in all, messages or in a thread view threads, as {"count": N}, without rows; takes no cursor or fields
 
 
 
@@ -540,7 +540,7 @@ Anything else, such as an unknown key or a date that does not parse, searches as
 * `--json`
 * `--cursor <CURSOR>` — Continue after the page that ended with this `next`, with the same other arguments; the rows of every account come newest first in one order, and the limit counts them together
 * `--fields <FIELDS>` — Only these keys in each JSON row, such as uid, from_addr, subject, date; compact stands for account, folder, uid, date, from_addr, subject and flags, plus depth in a thread view and match in a search; account always stays
-* `--count-only` — Return only how many match in all, messages or in a thread view threads, as {"count": N}, without rows
+* `--count-only` — Return only how many match in all, messages or in a thread view threads, as {"count": N}, without rows; takes no cursor or fields
 
 
 
