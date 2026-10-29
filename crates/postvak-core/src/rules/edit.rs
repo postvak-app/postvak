@@ -547,7 +547,7 @@ pub fn follow_rename(path: &Path, rename: &FolderRename) -> Result<Vec<String>, 
                 copy.account = Some(account);
                 let mut copied = rewritten(table, &copy)?;
                 if position > 0 {
-                    copied.set_position(None);
+                    clear_positions(&mut copied);
                     copied.decor_mut().set_prefix("\n");
                 }
                 rebuilt.push(copied);
@@ -560,6 +560,18 @@ pub fn follow_rename(path: &Path, rename: &FolderRename) -> Result<Vec<String>, 
         Ok(())
     })?;
     Ok(touched)
+}
+
+/// Drops the file positions of `table` and its subtables, so a copy of a header-style rule prints where it is put.
+fn clear_positions(table: &mut Table) {
+    table.set_position(None);
+    for (_, item) in table.iter_mut() {
+        match item {
+            Item::Table(nested) => clear_positions(nested),
+            Item::ArrayOfTables(array) => array.iter_mut().for_each(clear_positions),
+            _ => {}
+        }
+    }
 }
 
 /// A copy of `table` holding `rule`, with the unchanged lines and comments as written.
@@ -1537,5 +1549,34 @@ mod tests {
             rules_naming(&file, &rename),
             [("r".to_string(), false), ("all".to_string(), true)]
         );
+    }
+
+    const HEADERS: &str = "[[rules]]\nname = \"r\"\nfolder = \"Work\"\n\n[rules.match]\nread = true\n\n[rules.actions]\nflagged = true\n\n[[rules]]\nname = \"s\"\n\n[rules.match]\nread = false\n\n[rules.actions]\ndelete = true\n";
+
+    #[test]
+    fn follow_rename_splits_a_header_style_rule() {
+        let (_, text) = follow(HEADERS, &["a", "b", "c"], "b", "Work", "Job");
+        let rules = parse(&text).unwrap().rules;
+        let seen: Vec<_> = rules
+            .iter()
+            .map(|r| (r.name.as_str(), r.matches.read, r.actions.len()))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("r (a)", Some(true), 1),
+                ("r (c)", Some(true), 1),
+                ("r (b)", Some(true), 1),
+                ("s", Some(false), 1)
+            ]
+        );
+        assert_eq!(text.matches("[rules.match]").count(), 4, "{text}");
+    }
+
+    #[test]
+    fn follow_rename_leaves_a_file_no_rule_names_untouched() {
+        let (changed, text) = follow(HEADERS, &["a", "b"], "b", "Nowhere", "Job");
+        assert!(changed.is_empty());
+        assert_eq!(text, HEADERS);
     }
 }
