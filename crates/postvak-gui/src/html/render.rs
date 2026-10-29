@@ -146,21 +146,28 @@ fn run(
         batch.retain(|request| seen.insert(kind(request)));
         batch.reverse();
         for request in batch {
-            let generation = request.generation();
-            let reply =
-                match panic::catch_unwind(AssertUnwindSafe(|| handle(&mut current, request))) {
-                    Ok(reply) => reply,
-                    Err(_) => {
-                        current = None;
-                        Some(Reply::Failed { generation })
-                    }
-                };
-            if let Some(reply) = reply {
+            if let Some(reply) = answer(&mut current, request, &mut handle) {
                 if done.send(reply).is_err() {
                     return;
                 }
                 wake();
             }
+        }
+    }
+}
+
+/// `handle`'s answer to one request; a panic in it drops the document and answers `Failed`.
+fn answer(
+    current: &mut Option<Current>,
+    request: Request,
+    handle: &mut impl FnMut(&mut Option<Current>, Request) -> Option<Reply>,
+) -> Option<Reply> {
+    let generation = request.generation();
+    match panic::catch_unwind(AssertUnwindSafe(|| handle(current, request))) {
+        Ok(reply) => reply,
+        Err(_) => {
+            *current = None;
+            Some(Reply::Failed { generation })
         }
     }
 }
@@ -313,6 +320,9 @@ fn restyle(current: &mut Current, generation: u64, dark: bool) -> Reply {
         viewport.color_scheme = scheme(dark);
         current.doc.set_viewport(viewport);
         current.doc.resolve(0.0);
+        // A background picture only the new scheme's CSS names was asked for during the cascade: take it in, so it
+        // paints and `dark::adapt` sees it loaded, as `layout` does.
+        current.doc.handle_messages();
         if dark {
             current.originals = dark::adapt(&mut current.doc);
         }
@@ -550,8 +560,13 @@ mod tests {
     const NEWSLETTER: &str = include_str!("../../../../tests/fixtures/newsletter.html");
 
     fn load(generation: u64, html: &str, width: f32) -> Request {
+        load_as(generation, html, width, false)
+    }
+
+    /// `load`, styled for the dark theme or not.
+    fn load_as(generation: u64, html: &str, width: f32, dark: bool) -> Request {
         Request::Load(Load {
-            dark: false,
+            dark,
             fetched: Fetched::default(),
             generation,
             html: html.into(),
@@ -559,6 +574,16 @@ mod tests {
             scale: 1.0,
             width,
         })
+    }
+
+    /// Answers `requests` one at a time, as the loop answers each, but without merging them into batches: a paint
+    /// between two restyles is answered too.
+    fn one_by_one(requests: Vec<Request>) -> Vec<Reply> {
+        let mut current = None;
+        requests
+            .into_iter()
+            .filter_map(|request| answer(&mut current, request, &mut handle))
+            .collect()
     }
 
     /// Runs `requests` through the loop on this thread and returns the replies.
@@ -856,8 +881,16 @@ mod tests {
     #[test]
     fn markup_nested_too_deep_replies_failed() {
         // Just past the limit: html5ever parses nesting in quadratic time, so a deeper page only slows the test.
-        let got = replies(vec![load(3, &nested(MAX_DEPTH + 8), 400.0)], handle);
-        assert!(matches!(got[..], [Reply::Failed { generation: 3 }]));
+        for dark in [false, true] {
+            let got = replies(
+                vec![load_as(3, &nested(MAX_DEPTH + 8), 400.0, dark)],
+                handle,
+            );
+            assert!(
+                matches!(got[..], [Reply::Failed { generation: 3 }]),
+                "{dark}"
+            );
+        }
     }
 
     #[test]
@@ -866,25 +899,34 @@ mod tests {
         let painted = std::thread::Builder::new()
             .stack_size(STACK)
             .spawn(move || {
-                let mut current = None;
-                let laid = handle(&mut current, load(1, &html, 400.0));
-                let paint = Request::Paint {
-                    generation: 1,
+                let paint = |generation| Request::Paint {
+                    generation,
                     strip: 0,
                 };
-                let hit = Request::Hit {
-                    generation: 1,
-                    x: 5.0,
-                    y: 5.0,
-                };
-                handle(&mut current, hit);
-                matches!(laid, Some(Reply::Laid { .. }))
-                    && matches!(handle(&mut current, paint), Some(Reply::Strip { .. }))
+                // Light and dark, then switched to the other scheme: adapting walks the same depth.
+                [false, true].map(|dark| {
+                    let mut current = None;
+                    let laid = handle(&mut current, load_as(1, &html, 400.0, dark));
+                    let hit = Request::Hit {
+                        generation: 1,
+                        x: 5.0,
+                        y: 5.0,
+                    };
+                    handle(&mut current, hit);
+                    let restyle = Request::Restyle {
+                        generation: 2,
+                        dark: !dark,
+                    };
+                    matches!(laid, Some(Reply::Laid { .. }))
+                        && matches!(handle(&mut current, paint(1)), Some(Reply::Strip { .. }))
+                        && matches!(handle(&mut current, restyle), Some(Reply::Laid { .. }))
+                        && matches!(handle(&mut current, paint(2)), Some(Reply::Strip { .. }))
+                })
             })
             .unwrap()
             .join()
             .unwrap();
-        assert!(painted);
+        assert_eq!(painted, [true; 2]);
     }
 
     #[test]
@@ -1192,6 +1234,100 @@ mod tests {
         out
     }
 
+    /// A `size` × `size` PNG of one colour.
+    fn solid(size: u32, colour: [u8; 3]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut encoder = png::Encoder::new(&mut out, size, size);
+        encoder.set_color(png::ColorType::Rgb);
+        let mut writer = encoder.write_header().unwrap();
+        writer
+            .write_image_data(&colour.repeat((size * size) as usize))
+            .unwrap();
+        writer.finish().unwrap();
+        out
+    }
+
+    fn part(cid: &str, bytes: Vec<u8>) -> postvak_core::message::InlinePart {
+        postvak_core::message::InlinePart {
+            cid: cid.into(),
+            bytes,
+        }
+    }
+
+    /// The computed background colour of the first element `selector` matches.
+    fn background_of(current: &Current, selector: &str) -> [f32; 4] {
+        let doc = &current.doc;
+        let Some(style) = doc
+            .query_selector(selector)
+            .ok()
+            .flatten()
+            .and_then(|id| doc.get_node(id))
+            .and_then(|node| node.primary_styles())
+        else {
+            panic!("no style for {selector}");
+        };
+        let current_colour = style.clone_color();
+        let [r, g, b, a] = style
+            .get_background()
+            .background_color
+            .resolve_to_absolute(&current_colour)
+            .to_color_space(style::color::ColorSpace::Srgb)
+            .raw_components()
+            .to_owned();
+        [r, g, b, a]
+    }
+
+    fn reads_on_the_page(current: &Current, selector: &str) -> bool {
+        crate::theme::contrast(colour_of(current, selector), dark::PAGE) >= 4.5
+    }
+
+    #[test]
+    fn a_dark_header_above_a_white_article_leaves_the_page_light_and_adapted() {
+        let html = "<body><table width=100% bgcolor=#111><tr><td style=color:#fff>Brand</td></tr></table><table width=100% bgcolor=#fff><tr><td>Article</td></tr></table><p>Unsubscribe · 1 Main St</p></body>";
+        let dark = laid_out(html, true, Vec::new());
+        assert!(!dark.originals.is_empty(), "adapted");
+        // The article turns dark, its text and the footer read on the dark page, and the header stays as it was.
+        let article = background_of(&dark, "table + table");
+        assert!(
+            crate::theme::luminance([article[0], article[1], article[2]]) < 0.05,
+            "{article:?}"
+        );
+        assert!(reads_on_the_page(&dark, "table + table td"));
+        assert!(reads_on_the_page(&dark, "p"));
+        assert_eq!(colour_of(&dark, "td"), [1.0; 3]);
+        assert_eq!(background_of(&dark, "table")[..3], rgb([0x11; 3]));
+    }
+
+    #[test]
+    fn a_page_mostly_in_dark_containers_keeps_them_but_its_bare_text_reads() {
+        let html = "<body><table width=100% height=300 bgcolor=#111><tr><td style=color:#fff>Brand</td></tr></table><table width=100% bgcolor=#fff><tr><td>Article</td></tr></table><p>Unsubscribe · 1 Main St</p></body>";
+        let dark = laid_out(html, true, Vec::new());
+        // The sender's surfaces and the text on them stay; the footer on no surface of theirs is on the dark pane.
+        assert_eq!(background_of(&dark, "table + table"), [1.0; 4]);
+        assert_eq!(colour_of(&dark, "table + table td"), [0.0; 3]);
+        assert_eq!(colour_of(&dark, "td"), [1.0; 3]);
+        assert!(reads_on_the_page(&dark, "p"));
+    }
+
+    #[test]
+    fn text_beside_a_small_background_icon_is_adapted() {
+        let html = "<ul><li style=\"background:url(cid:check) no-repeat 0 4px;padding-left:20px;color:#333\">Done</li></ul>";
+        let dark = laid_out(html, true, vec![part("check", solid(12, [0, 160, 0]))]);
+        assert!(reads_on_the_page(&dark, "li"));
+        // The same icon sized to fill the box is what the text is on: it keeps the sender's colour.
+        let html = "<ul><li style=\"background:url(cid:check) no-repeat;background-size:100% 100%;color:#333\">Done</li></ul>";
+        let dark = laid_out(html, true, vec![part("check", solid(12, [250, 250, 250]))]);
+        assert_eq!(colour_of(&dark, "li"), rgb([0x33; 3]));
+    }
+
+    #[test]
+    fn text_on_a_hero_picture_that_fills_less_than_half_its_cell_keeps_its_colour() {
+        // The picture spans the cell's width but paints only 44% of it: the headline is on it, not beside it.
+        let html = "<table width=400 cellspacing=0 cellpadding=0><tr><td style=\"background:url(cid:hero) no-repeat top center;color:#333;height:900px;vertical-align:top\"><h1>Headline</h1><p>Body copy</p></td></tr></table>";
+        let dark = laid_out(html, true, vec![part("hero", solid(400, [240, 240, 240]))]);
+        assert_eq!(colour_of(&dark, "h1"), rgb([0x33; 3]));
+    }
+
     #[test]
     fn image_pixels_are_the_same_adapted_or_not() {
         let html = "<body style=\"margin:0;background:#ffffff\"><img src=\"cid:logo\" width=20 height=20 style=\"display:block\"></body>";
@@ -1278,25 +1414,59 @@ mod tests {
 
     #[test]
     fn a_dark_outer_table_counts_as_a_dark_page() {
-        let html = "<table width=\"100%\" bgcolor=\"#1b1b1b\"><tr><td style=\"color:#eeeeee\">Dark design</td></tr></table>";
+        let html = "<table width=\"100%\" bgcolor=\"#1b1b1b\"><tr><td style=\"color:#eeeeee\">Dark design<div style=\"background:#ffffff;color:#111111\">Coupon</div></td></tr></table>";
         let dark = laid_out(html, true, Vec::new());
-        assert!(dark.originals.is_empty());
+        assert_eq!(background_of(&dark, "table")[..3], rgb([0x1b; 3]));
         assert_eq!(colour_of(&dark, "td"), rgb([0xee; 3]));
+        // A page judged light would turn the white box inside dark; a dark page keeps the sender's surfaces.
+        assert_eq!(background_of(&dark, "div"), [1.0; 4]);
+        assert_eq!(colour_of(&dark, "div"), rgb([0x11; 3]));
+    }
+
+    /// A logo each scheme's CSS names a picture of its own for, with dark text on it, above a light article.
+    const SCHEMED: &str = "<style>.logo { height: 40px; color: #222222; background-image: url(cid:logo-light) } @media (prefers-color-scheme: dark) { .logo { background-image: url(cid:logo-dark) } }</style><body style=\"margin:0;background:#ffffff\"><div class=logo>Brand</div><p style=\"color:#333333\">Article</p></body>";
+
+    fn logos() -> Vec<postvak_core::message::InlinePart> {
+        vec![
+            part("logo-light", solid(8, [250, 220, 40])),
+            part("logo-dark", solid(8, [20, 40, 120])),
+        ]
     }
 
     #[test]
     fn a_restyle_paints_as_a_fresh_layout_would() {
-        let fresh = |dark| first_strip(&mut laid_out(NEWSLETTER, dark, Vec::new())).pixels;
-        let mut current = laid_out(NEWSLETTER, true, Vec::new());
-        let Reply::Laid { generation, .. } = restyle(&mut current, 2, false) else {
-            panic!("not laid out");
-        };
-        assert_eq!(generation, 2);
-        assert!(current.originals.is_empty());
-        assert!(first_strip(&mut current).pixels == fresh(false), "light");
-        restyle(&mut current, 3, true);
-        assert!(!current.originals.is_empty());
-        assert!(first_strip(&mut current).pixels == fresh(true), "dark");
+        type Parts = fn() -> Vec<postvak_core::message::InlinePart>;
+        let fixtures: [(&str, &str, Parts); 2] = [
+            ("newsletter", NEWSLETTER, Vec::new),
+            ("schemed", SCHEMED, logos),
+        ];
+        for (name, html, inline) in fixtures {
+            let fresh = |dark| first_strip(&mut laid_out(html, dark, inline())).pixels;
+            // From either scheme to the other and back, as the theme or the Original colours toggle switches it.
+            for start in [true, false] {
+                let mut current = laid_out(html, start, inline());
+                let Reply::Laid { generation, .. } = restyle(&mut current, 2, !start) else {
+                    panic!("not laid out");
+                };
+                assert_eq!(generation, 2);
+                assert_eq!(current.originals.is_empty(), start, "{name}");
+                assert!(
+                    first_strip(&mut current).pixels == fresh(!start),
+                    "{name}: from dark={start} to the other"
+                );
+                restyle(&mut current, 3, start);
+                assert_eq!(current.originals.is_empty(), !start, "{name}");
+                assert!(
+                    first_strip(&mut current).pixels == fresh(start),
+                    "{name}: back to dark={start}"
+                );
+            }
+        }
+        // The dark scheme's own logo is the one painted after the switch, and the text on it keeps its colour.
+        let mut current = laid_out(SCHEMED, false, logos());
+        restyle(&mut current, 2, true);
+        assert_eq!(pixel(&first_strip(&mut current), 300, 2), [20, 40, 120]);
+        assert_eq!(colour_of(&current, ".logo"), rgb([0x22; 3]));
     }
 
     /// Blitz lays a `<td>` with `display: block` out but paints nothing of it. `MIN_WIDTH` keeps responsive mail's
@@ -1342,6 +1512,17 @@ mod tests {
                     Request::Paint {
                         generation: 1,
                         strip,
+                    },
+                );
+            }
+            // Adapted to the dark theme and back.
+            for (generation, dark) in [(2, true), (3, false)] {
+                handle(&mut current, Request::Restyle { generation, dark });
+                handle(
+                    &mut current,
+                    Request::Paint {
+                        generation,
+                        strip: 0,
                     },
                 );
             }
@@ -1434,9 +1615,14 @@ mod tests {
         /// Hostile HTML through the render loop: every layout is answered, laid out or failed, and nothing takes the
         /// process down. Upstream panics the loop caught are named tests above, ignored until fixed.
         #[test]
-        fn hostile_html_never_panics(html in hostile_html(), width in 1.0f32..2000.0, scale in 0.5f32..3.0) {
+        fn hostile_html_never_panics(
+            html in hostile_html(),
+            width in 1.0f32..2000.0,
+            scale in 0.5f32..3.0,
+            dark in proptest::bool::ANY,
+        ) {
             let mut requests = vec![Request::Load(Load {
-                dark: false,
+                dark,
                 fetched: Fetched::default(),
                 generation: 1,
                 html,
@@ -1450,12 +1636,25 @@ mod tests {
             for (x, y) in [(0.0, 0.0), (width / 2.0, 40.0), (-5.0, 1e9), (f32::NAN, 3.0)] {
                 requests.push(Request::Hit { generation: 1, x, y });
             }
-            let got = replies(requests, handle);
+            // The other scheme and back, as the theme or the Original colours toggle switches it: dark adaptation
+            // and its undoing see the hostile page too.
+            for (generation, dark) in [(2, !dark), (3, dark)] {
+                requests.push(Request::Restyle { generation, dark });
+                requests.push(Request::Paint { generation, strip: 0 });
+            }
+            let got = one_by_one(requests);
             let answered = matches!(
                 got.first(),
                 Some(Reply::Laid { generation: 1, .. } | Reply::Failed { generation: 1 })
             );
             proptest::prop_assert!(answered, "the layout got no answer");
+            for generation in [2, 3] {
+                let restyled = got.iter().any(|reply| matches!(
+                    reply,
+                    Reply::Laid { generation: g, .. } | Reply::Failed { generation: g } if *g == generation
+                ));
+                proptest::prop_assert!(restyled, "restyle {} got no answer", generation);
+            }
         }
     }
 

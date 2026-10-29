@@ -2189,6 +2189,28 @@ async fn tools_returning_mail_say_its_fields_are_data() {
     }
 }
 
+#[tokio::test]
+async fn list_and_search_describe_paging_in_the_cli_words() {
+    let fx = fixture(&["work"]);
+    let client = connect(&fx, "read", &[]).await;
+    let tools = client.list_all_tools().await.unwrap();
+    for name in ["list", "search"] {
+        let tool = tools.iter().find(|t| t.name == name).unwrap();
+        let properties = &tool.input_schema["properties"];
+        for (argument, text) in [
+            ("cursor", postvak_core::help::CURSOR),
+            ("fields", postvak_core::help::FIELDS),
+            ("count_only", postvak_core::help::COUNT_ONLY),
+        ] {
+            assert_eq!(
+                properties[argument]["description"].as_str(),
+                Some(text),
+                "{name}.{argument}"
+            );
+        }
+    }
+}
+
 /// A message from `from` with `subject`; a higher uid is newer.
 fn from_sender(uid: u32, from: &str, subject: &str) -> Message {
     Message {

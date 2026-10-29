@@ -288,6 +288,18 @@ pub struct After {
     pub folder: String,
 }
 
+/// Where a page of one search continues in one account: after a position among the exact matches or the close ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resume<'a> {
+    Exact(&'a After),
+    /// `shown` when an earlier page showed this account's close matches: they keep showing even when exact matches
+    /// arrived since. Otherwise they show only while the exact tier is thin.
+    Close {
+        after: &'a After,
+        shown: bool,
+    },
+}
+
 const SUMMARY_COLUMNS: &str = "uid, COALESCE(from_addr, ''), COALESCE(to_addr, ''), COALESCE(subject, ''), internaldate, flags";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -982,12 +994,12 @@ impl Store {
 
     /// Like `search`, as a page: the exact matches newest first, then the close ones newest first, and with `after`
     /// only what follows that position in its tier. The close tier joins when the exact one, as a whole, holds
-    /// fewer than ten matches, so every page of one search agrees on it.
+    /// fewer than ten matches, and once a page showed it, it stays (see `Resume::Close`).
     pub fn search_after(
         &self,
         request: &SearchRequest,
         limit: u32,
-        after: Option<(Matched, &After)>,
+        after: Option<Resume>,
     ) -> Result<Vec<Hit>, StoreError> {
         let plan = request.plan(self);
         if plan.is_empty() || limit == 0 {
@@ -995,8 +1007,8 @@ impl Store {
         }
         let snippets = request.scope == Scope::All;
         let mut hits = match after {
-            Some((Matched::Close, _)) => Vec::new(),
-            Some((Matched::Exact, position)) => self.search_tier(
+            Some(Resume::Close { .. }) => Vec::new(),
+            Some(Resume::Exact(position)) => self.search_tier(
                 &plan.exact,
                 plan.exclude.as_deref(),
                 request.folder,
@@ -1022,15 +1034,16 @@ impl Store {
         if let Some(widened) = &plan.close
             && left > 0
         {
-            // Without a position, a page that is not full holds every exact match.
-            let thin = if after.is_none() {
-                hits.len() < CLOSE_MATCHES_BELOW
-            } else {
-                self.exact_is_thin(request, &plan)?
+            // Without a position, a page that is not full holds every exact match. Close matches an earlier page
+            // showed keep showing, so mail that arrived since does not hide the rest.
+            let thin = match after {
+                None => hits.len() < CLOSE_MATCHES_BELOW,
+                Some(Resume::Close { shown: true, .. }) => true,
+                Some(_) => self.exact_is_thin(request, &plan)?,
             };
             if thin {
                 let position = match after {
-                    Some((Matched::Close, position)) => Some(position),
+                    Some(Resume::Close { after, .. }) => Some(after),
                     _ => None,
                 };
                 hits.extend(self.search_tier(

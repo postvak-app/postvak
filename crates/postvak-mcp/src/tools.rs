@@ -240,12 +240,12 @@ struct ListArgs {
     /// Only messages with attachments, guessed from the headers; with `threads`, threads with one
     #[serde(default)]
     attachments: bool,
-    /// The `next` of the page before, to continue after it with the same other arguments; leave it out for the first page
+    #[schemars(description = help::CURSOR)]
     cursor: Option<String>,
-    /// Only these keys in each row, such as ["uid", "from_addr", "subject", "date"]; "compact" stands for account, folder, uid, date, from_addr, subject and flags, plus depth in a thread view; account always stays
+    #[schemars(description = help::FIELDS)]
     #[serde(default)]
     fields: Vec<String>,
-    /// Return only how many messages, or with `threads` threads, match in all, as {"count": N}, without rows; takes no cursor or fields
+    #[schemars(description = help::COUNT_ONLY)]
     #[serde(default)]
     count_only: bool,
 }
@@ -321,12 +321,12 @@ struct SearchArgs {
     /// Only what matches as typed: no close matches such as corrected typos
     #[serde(default)]
     exact: bool,
-    /// The `next` of the page before, to continue after it with the same other arguments; leave it out for the first page
+    #[schemars(description = help::CURSOR)]
     cursor: Option<String>,
-    /// Only these keys in each row, such as ["uid", "from_addr", "subject", "date"]; "compact" stands for account, folder, uid, date, from_addr, subject and flags, plus match; account always stays
+    #[schemars(description = help::FIELDS)]
     #[serde(default)]
     fields: Vec<String>,
-    /// Return only how many messages match in all, as {"count": N}, without rows; takes no cursor or fields
+    #[schemars(description = help::COUNT_ONLY)]
     #[serde(default)]
     count_only: bool,
 }
