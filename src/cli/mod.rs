@@ -444,7 +444,7 @@ enum AttachmentCommand {
 enum RulesCommand {
     #[command(about = postvak_core::help::RULES_CHECK)]
     Check,
-    /// Dry run: print what each rule would do to the cached messages; naming a rule previews it even while disabled
+    /// Dry run: print what each rule would do to the cached messages, and warn where `authenticated` cannot hold; naming a rule previews it even while disabled
     Test {
         #[arg(conflicts_with = "stdin")]
         name: Option<String>,
@@ -1677,6 +1677,9 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             for acc in config::select(&config.accounts, account.as_deref())? {
                 let store = Store::open_account(paths, &acc.name)?;
                 print_planned_actions(&rules, &store, acc, &acc.identity()?)?;
+                for warning in postvak_core::rules::preview_warnings(&rules, acc, &store) {
+                    eprintln!("warning: {}", clean(&warning, false));
+                }
             }
             Ok(())
         }

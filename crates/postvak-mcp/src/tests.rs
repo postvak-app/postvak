@@ -785,11 +785,18 @@ fn rules_test_sees_trusted_authserv_ids_added_while_running() {
     )
     .unwrap();
     let preview = |backend: &Backend| {
-        backend
+        let tested = backend
             .rules_test(rule.clone(), None, Sight::default())
-            .unwrap()
+            .unwrap();
+        let rows = tested["rows"].as_array().unwrap().len();
+        let warnings = tested["warnings"].as_array().unwrap().len();
+        (rows, warnings)
     };
-    assert!(preview(&backend).is_empty());
+    assert_eq!(
+        preview(&backend),
+        (0, 1),
+        "an account trusting no server warns that authenticated never holds"
+    );
 
     let config = std::fs::read_to_string(fx.paths.config_file()).unwrap();
     // A later modification time than the first write, on file systems with coarse timestamps too.
@@ -799,13 +806,13 @@ fn rules_test_sees_trusted_authserv_ids_added_while_running() {
         format!("{config}trusted_authserv_ids = [\"mx.provider.example\"]\n"),
     )
     .unwrap();
-    assert_eq!(preview(&backend).len(), 1);
+    assert_eq!(preview(&backend), (1, 0));
 
     std::thread::sleep(std::time::Duration::from_millis(1100));
     std::fs::write(fx.paths.config_file(), "not toml [").unwrap();
     assert_eq!(
-        preview(&backend).len(),
-        1,
+        preview(&backend),
+        (1, 0),
         "a broken edit keeps the last good config"
     );
 }

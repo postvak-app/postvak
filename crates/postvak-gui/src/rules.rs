@@ -932,6 +932,25 @@ mod tests {
     }
 
     #[test]
+    fn preview_warns_when_authenticated_cannot_hold_on_an_account() {
+        let fx = Fixture::new(&["work"]);
+        std::fs::write(
+            fx.paths.rules_file(),
+            "[[rules]]\nname = \"bank\"\nenabled = false\nproposed_by = \"agent\"\nmatch.authenticated = true\nactions = { flagged = true }\n",
+        )
+        .unwrap();
+        let (open, _wires) = view(&fx, View::Rules);
+        open.click("Preview on cached mail");
+        let shown = open.labels_containing("matches no cached message");
+        assert!(
+            shown.iter().any(|label| label.contains(
+                "\nrule 'bank' uses authenticated, but account 'work' trusts no server's"
+            )),
+            "{shown:?}"
+        );
+    }
+
+    #[test]
     fn agent_text_is_drawn_without_control_characters() {
         let sneaky = "[[rules]]\nname = \"codes\"\nenabled = false\nproposed_by = \"age\\u001bnt\"\nmatch.subject = { contains = \"\\u001b[2Jcode\" }\nactions = { delete = true }\n";
         let fx = Fixture::new(&["work"]);

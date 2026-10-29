@@ -340,12 +340,6 @@ component RuleEditorPane inherits ScrollView {
                 disabled-hint: "Turn the rule on and save it first";
                 clicked => { RuleEditor.apply(); }
             }
-            if RuleEditor.tested != "": Text {
-                text: RuleEditor.tested;
-                color: Theme.pane.secondary;
-                vertical-alignment: center;
-                overflow: elide;
-            }
             Rectangle { horizontal-stretch: 1; }
             if !RuleEditor.confirm-remove: TextButton {
                 text: "Remove rule";
@@ -370,6 +364,11 @@ component RuleEditorPane inherits ScrollView {
                 palette: Theme.pane;
                 clicked => { RuleEditor.save(); }
             }
+        }
+        if RuleEditor.tested != "": Text {
+            text: RuleEditor.tested;
+            color: Theme.pane.secondary;
+            wrap: word-wrap;
         }
         Note { text: "Saving a change restarts the rule: it acts only on mail that arrives after you save."; }
     }

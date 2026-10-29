@@ -597,25 +597,23 @@ impl Backend {
         Ok(serde_json::from_str(&rules::schema())?)
     }
 
-    /// Previews one rule as if enabled, on the cached mail of the visible accounts; rows never carry mail text.
-    /// A condition on text `sight` does not cover is refused, since its matches would reveal that text.
-    pub fn rules_test(
-        &self,
-        mut rule: Rule,
-        account: Option<&str>,
-        sight: Sight,
-    ) -> Result<Vec<Value>> {
+    /// Previews one rule as if enabled, on the cached mail of the visible accounts; rows never carry mail text, and
+    /// `warnings` say where `authenticated` cannot hold. A condition on text `sight` does not cover is refused, since
+    /// its matches would reveal that text.
+    pub fn rules_test(&self, mut rule: Rule, account: Option<&str>, sight: Sight) -> Result<Value> {
         rule.enabled = true;
         let compiled = rules::compile(&RuleFile { rules: vec![rule] })?;
         refuse_unseen(&compiled, sight)?;
         let mut rows = Vec::new();
+        let mut warnings = Vec::new();
         for acc in self.select(account)? {
             let store = self.store(&acc)?;
             for p in actions::planned(&compiled, &store, &acc, &acc.identity()?, time::now())? {
                 rows.push(output::planned_row(&acc.name, &p));
             }
+            warnings.extend(rules::preview_warnings(&compiled, &acc, &store));
         }
-        Ok(rows)
+        Ok(json!({ "rows": rows, "warnings": warnings }))
     }
 
     /// The rules the analysis tools run: the enabled ones, with `include_pending` the waiting proposals too, less those
