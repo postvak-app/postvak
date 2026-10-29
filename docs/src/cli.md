@@ -87,7 +87,7 @@ Your inbox, organized by rules you write
 * `senders` — Group one folder's stored mail by sender address or registrable domain, the largest group first: message and unread counts, first and last date, a few subjects and the enabled rules that already match some of it
 * `headers` — Every header of one message, in order, unfolded and decoded as header rules see it; no body
 * `show` — Show one message
-* `unsubscribe` — Leave a message's mailing list: by one-click POST when the sender offers it (RFC 8058), else print the page or address from its List-Unsubscribe header to open. Once the sender accepted it, offer to delete the message
+* `unsubscribe` — Leave a message's mailing list: by one-click POST when the sender offers it (RFC 8058), else print the page or address from its List-Unsubscribe header to open. Once the sender accepted it, delete can remove the message
 * `mark` — Mark messages read or unread, flagged or unflagged
 * `move` — Move messages to another folder, creating it if needed
 * `archive` — Move messages to the Archive folder
@@ -710,7 +710,7 @@ Show one message
 
 ## `postvak unsubscribe`
 
-Leave a message's mailing list: by one-click POST when the sender offers it (RFC 8058), else print the page or address from its List-Unsubscribe header to open. Once the sender accepted it, offer to delete the message
+Leave a message's mailing list: by one-click POST when the sender offers it (RFC 8058), else print the page or address from its List-Unsubscribe header to open. Once the sender accepted it, delete can remove the message
 
 **Usage:** `postvak unsubscribe [OPTIONS] <UID>`
 
