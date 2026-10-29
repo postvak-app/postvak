@@ -1,4 +1,5 @@
-//! Desktop notifications for new mail, sent by the daemon. A click on one opens the message in the window.
+//! Desktop notifications for new mail and for rule proposals waiting for approval, sent by the daemon. A click on one
+//! opens the message, or the Rules view, in the window.
 #[cfg(target_os = "linux")]
 mod dbus;
 #[cfg(target_os = "macos")]
@@ -44,14 +45,32 @@ impl Open {
     }
 }
 
-/// What one notification says, and the message a click on it opens.
+/// What the window shows when it starts or a later start hands it a request: what a notification click opens.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub enum Show {
+    Message(Open),
+    /// The Rules view, where proposals wait for approval.
+    Rules,
+}
+
+impl Show {
+    /// The `postvak` arguments that show it.
+    pub fn gui_args(&self) -> Vec<String> {
+        match self {
+            Show::Message(open) => open.gui_args(),
+            Show::Rules => vec!["gui".into(), "--rules".into()],
+        }
+    }
+}
+
+/// What one notification says, and what a click on it shows.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Notice {
     /// Plain text.
     pub title: String,
     /// Plain text; escaped where the server renders markup.
     pub body: String,
-    pub open: Open,
+    pub show: Show,
 }
 
 /// More new messages from one sync pass than this become one notification.
@@ -66,11 +85,11 @@ pub fn notices(batch: &[Mail]) -> Vec<Notice> {
     let notice = |mail: &Mail, title: String, body: String| Notice {
         title,
         body,
-        open: Open {
+        show: Show::Message(Open {
             account: Some(mail.account.clone()),
             folder: mail.folder.clone(),
             uid: mail.uid,
-        },
+        }),
     };
     let Some(newest) = batch.last().filter(|_| batch.len() > BURST) else {
         return batch
@@ -85,25 +104,40 @@ pub fn notices(batch: &[Mail]) -> Vec<Notice> {
             senders.push(name);
         }
     }
-    let body = match senders.len() {
-        0 => String::new(),
-        1 => format!("From {}", senders[0]),
-        n if n <= NAMED => format!(
-            "From {} and {}",
-            senders[..n - 1].join(", "),
-            senders[n - 1]
-        ),
-        n => format!(
-            "From {} and {} others",
-            senders[..NAMED].join(", "),
-            n - NAMED
-        ),
+    let body = if senders.is_empty() {
+        String::new()
+    } else {
+        format!("From {}", named(&senders))
     };
     vec![notice(
         newest,
         format!("{} new messages", batch.len()),
         body,
     )]
+}
+
+/// The notification for rule proposals that started waiting for approval, by name; a click opens the Rules view.
+pub fn proposals_notice(names: &[String]) -> Option<Notice> {
+    let title = match names.len() {
+        0 => return None,
+        1 => "A rule waits for your approval".to_string(),
+        n => format!("{n} rules wait for your approval"),
+    };
+    Some(Notice {
+        title,
+        body: named(names),
+        show: Show::Rules,
+    })
+}
+
+/// `a`, `a and b`, `a, b and c`, or the first `NAMED` and how many others.
+fn named(items: &[String]) -> String {
+    match items.len() {
+        0 => String::new(),
+        1 => items[0].clone(),
+        n if n <= NAMED => format!("{} and {}", items[..n - 1].join(", "), items[n - 1]),
+        n => format!("{} and {} others", items[..NAMED].join(", "), n - NAMED),
+    }
 }
 
 /// Each account's new mail, held until the sync pass that found it ends, so a burst becomes one notification. A pass
@@ -145,12 +179,12 @@ impl Batches {
 /// Sends the notifications from a thread of its own, so a slow notification server never holds up the daemon's
 /// events. On Linux that thread keeps one session bus connection, which also hears which ones were clicked.
 pub struct Notifier {
-    batches: mpsc::Sender<Vec<Mail>>,
+    notices: mpsc::Sender<Vec<Notice>>,
 }
 
 impl Notifier {
     pub fn new() -> Notifier {
-        let (batches, received) = mpsc::channel::<Vec<Mail>>();
+        let (notices, received) = mpsc::channel::<Vec<Notice>>();
         let spawned = std::thread::Builder::new()
             .name("notifications".into())
             .spawn(move || {
@@ -159,7 +193,7 @@ impl Notifier {
                 #[cfg(target_os = "macos")]
                 let center = mac::Center::new();
                 for batch in received {
-                    for notice in notices(&batch) {
+                    for notice in batch {
                         #[cfg(target_os = "linux")]
                         bus.notify(&notice);
                         #[cfg(target_os = "macos")]
@@ -170,12 +204,19 @@ impl Notifier {
         if let Err(e) = spawned {
             log::warn!("no desktop notifications: {e}");
         }
-        Notifier { batches }
+        Notifier { notices }
     }
 
     /// Notifies one account's new mail from one sync pass.
     pub fn new_mail(&self, batch: &[Mail]) {
-        let _ = self.batches.send(batch.to_vec());
+        let _ = self.notices.send(notices(batch));
+    }
+
+    /// Notifies the rule proposals, by name, that started waiting for approval.
+    pub fn proposals(&self, names: &[String]) {
+        let _ = self
+            .notices
+            .send(proposals_notice(names).into_iter().collect());
     }
 }
 
@@ -232,7 +273,7 @@ impl Drop for Slot {
     }
 }
 
-/// Opens the notice's message in the window: a running window shows it, else a new one starts. `token` is the
+/// Shows what the notice is about in the window: a running window shows it, else a new one starts. `token` is the
 /// notification server's activation token, which lets the window come to the front.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn open_in_window(notice: &Notice, token: Option<&str>) {
@@ -243,24 +284,25 @@ fn open_in_window(notice: &Notice, token: Option<&str>) {
             return;
         }
     };
-    match window_command(&exe, &notice.open, token).spawn() {
+    match window_command(&exe, &notice.show, token).spawn() {
         // Waited for, so it does not linger as a zombie of a daemon that runs for days.
         Ok(child) => crate::daemon::client::reap(child),
         Err(e) => log::warn!("could not open the message: {e}"),
     }
 }
 
-/// `postvak gui --open …`, with the token where a launched app looks for it, or without an inherited one.
+/// `postvak gui --open …` or `postvak gui --rules`, with the token where a launched app looks for it, or without an
+/// inherited one.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn window_command(
     exe: &std::path::Path,
-    open: &Open,
+    show: &Show,
     token: Option<&str>,
 ) -> std::process::Command {
     use std::process::{Command, Stdio};
     let mut command = Command::new(exe);
     command
-        .args(open.gui_args())
+        .args(show.gui_args())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -315,7 +357,7 @@ mod tests {
         assert_eq!(notices.len(), 3);
         assert_eq!(notices[1].title, "bob@x");
         assert_eq!(notices[1].body, "subject 2");
-        assert_eq!(notices[1].open.uid, 2);
+        assert!(matches!(&notices[1].show, Show::Message(open) if open.uid == 2));
     }
 
     #[test]
@@ -331,11 +373,11 @@ mod tests {
             [Notice {
                 title: "4 new messages".into(),
                 body: "From Carol, Alice and Bob".into(),
-                open: Open {
+                show: Show::Message(Open {
                     account: Some("work".into()),
                     folder: "INBOX".into(),
                     uid: 4,
-                },
+                }),
             }]
         );
         let many: Vec<_> = (1..=6)
@@ -357,6 +399,24 @@ mod tests {
     }
 
     #[test]
+    fn new_proposals_are_one_notification_that_opens_the_rules_view() {
+        let names = |n: usize| -> Vec<String> { (1..=n).map(|i| format!("r{i}")).collect() };
+        assert_eq!(proposals_notice(&[]), None);
+        assert_eq!(
+            proposals_notice(&names(1)),
+            Some(Notice {
+                title: "A rule waits for your approval".into(),
+                body: "r1".into(),
+                show: Show::Rules,
+            })
+        );
+        let five = proposals_notice(&names(5)).unwrap();
+        assert_eq!(five.title, "5 rules wait for your approval");
+        assert_eq!(five.body, "r1, r2, r3 and 2 others");
+        assert_eq!(Show::Rules.gui_args(), ["gui", "--rules"]);
+    }
+
+    #[test]
     fn only_max_waiting_notifications_wait_and_a_slot_frees_when_it_drops() {
         let waiting = Arc::new(Waiting::default());
         let slots: Vec<Slot> = (0..MAX_WAITING)
@@ -375,7 +435,8 @@ mod tests {
             folder: "INBOX/Team".into(),
             uid: 42,
         };
-        let command = window_command(std::path::Path::new("/usr/bin/postvak"), &open, Some("tok"));
+        let show = Show::Message(open);
+        let command = window_command(std::path::Path::new("/usr/bin/postvak"), &show, Some("tok"));
         let args: Vec<_> = command.get_args().collect();
         assert_eq!(
             args,
@@ -394,7 +455,7 @@ mod tests {
         assert!(envs.contains(&("DESKTOP_STARTUP_ID".as_ref(), Some("tok".as_ref()))));
 
         // Without one, a stale token the daemon inherited is not passed on.
-        let command = window_command(std::path::Path::new("/usr/bin/postvak"), &open, None);
+        let command = window_command(std::path::Path::new("/usr/bin/postvak"), &show, None);
         let envs: Vec<_> = command.get_envs().collect();
         assert!(envs.contains(&("XDG_ACTIVATION_TOKEN".as_ref(), None)));
     }
