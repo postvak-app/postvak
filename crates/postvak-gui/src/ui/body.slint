@@ -2,7 +2,7 @@
 // several messages selected, the selection. `body.rs` words it, `toolbar.rs` the actions.
 import { ListView, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { EmptyState, Hairline, Heading, IconButton, Keycap, Link, TextButton } from "common.slint";
+import { EmptyState, Hairline, Heading, HoverFill, IconButton, Keycap, Link, TextButton } from "common.slint";
 
 // A message action: its glyph, its accessible name, its hover hint and the label it shows beside the glyph while
 // several messages are selected.
@@ -11,6 +11,12 @@ export struct ToolButton {
     name: string,
     hint: string,
     label: string,
+}
+
+// An attachment of the shown message: its file name and its size, such as "2 KB".
+export struct AttachmentData {
+    name: string,
+    size: string,
 }
 
 // A selected message, as the selection lists it.
@@ -47,13 +53,15 @@ export struct BodyInfo {
     // HTML adapted to the dark theme, or that would be: "Original colours" shows; and whether it is on.
     adapts: bool,
     original-colours: bool,
-    attachments: [string],
+    attachments: [AttachmentData],
     // Listed before the whole message is here: Save waits for it.
     attachments-pending: bool,
     saved: string,
     unsubscribe: bool,
     // The sender accepted the one-click unsubscribe: Delete shows beside the note.
     unsubscribed: bool,
+    // There is an address to reply to: Reply shows.
+    reply: bool,
     links: [string],
 }
 
@@ -234,12 +242,14 @@ component HeaderLine inherits HorizontalLayout {
     spacing: Theme.pad / 2;
     Text {
         text: root.label;
+        font-size: Theme.small-size;
         color: Theme.pane.muted;
         vertical-alignment: center;
     }
     Text {
         horizontal-stretch: 1;
         text: root.value;
+        font-size: Theme.small-size;
         color: Theme.pane.muted;
         overflow: elide;
         vertical-alignment: center;
@@ -281,89 +291,226 @@ component Avatar inherits Rectangle {
     }
 }
 
-// Beside the message actions: Unsubscribe, the Text | HTML switch, Save .eml and View source.
-component MessageTools inherits HorizontalLayout {
-    in property <BodyInfo> info;
-    in property <string> save-icon;
-    in property <string> source-icon;
-    callback unsubscribe();
-    callback toggle-html();
-    callback toggle-original-colours();
-    callback save-eml();
-    callback open-source();
-    spacing: Theme.pad / 2;
-    if root.info.unsubscribe: VerticalLayout {
-        alignment: center;
-        TextButton {
-            text: "Unsubscribe";
-            palette: Theme.pane;
-            framed: true;
-            clicked => { root.unsubscribe(); }
+// One message action in an `ActionGroup`: its glyph, and its label when `labelled`.
+component GroupButton inherits Rectangle {
+    in property <ToolButton> tool;
+    in property <bool> labelled;
+    in property <bool> enabled;
+    callback clicked();
+    background: root.enabled && touch.pressed ? Theme.pane.pressed : transparent;
+    accessible-role: button;
+    accessible-label: root.tool.name;
+    accessible-description: root.tool.hint;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if (root.enabled) {
+            root.clicked();
         }
     }
-    if root.info.has-html: VerticalLayout {
-        alignment: center;
-        Rectangle {
-            border-radius: Theme.pad;
-            background: Theme.pane.panel;
-            HorizontalLayout {
-                padding: Theme.pad / 4;
-                TextButton {
-                    text: "Text";
-                    palette: Theme.pane;
-                    selected: !root.info.shows-html;
-                    clicked => {
-                        if (root.info.shows-html) {
-                            root.toggle-html();
-                        }
-                    }
-                }
-                TextButton {
-                    text: "HTML";
-                    palette: Theme.pane;
-                    selected: root.info.shows-html;
-                    enabled: root.info.text-note == "";
-                    disabled-hint: root.info.text-note;
-                    clicked => {
-                        if (!root.info.shows-html) {
-                            root.toggle-html();
-                        }
-                    }
-                }
+    HoverFill {
+        visible: root.enabled && !touch.pressed;
+        border-radius: 0;
+        hovered: touch.has-hover;
+        fill: Theme.pane.hover;
+    }
+    touch := TouchArea {
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+        Tooltip { text: @markdown("\{root.tool.hint}"); }
+    }
+    HorizontalLayout {
+        padding-left: Theme.pad * 3 / 2;
+        padding-right: self.padding-left;
+        spacing: Theme.pad * 3 / 4;
+        opacity: root.enabled ? 1 : 0.4;
+        Text {
+            accessible-role: none;
+            text: root.tool.icon;
+            font-family: Theme.icon-font;
+            font-size: Theme.icon;
+            color: Theme.pane.text;
+            vertical-alignment: center;
+        }
+        if root.labelled: Text {
+            accessible-role: none;
+            text: root.tool.label;
+            color: Theme.pane.text;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Message actions that belong together, in one outlined group with a hairline between them; `clicked` gets the index.
+component ActionGroup inherits Rectangle {
+    in property <[ToolButton]> buttons;
+    in property <bool> labelled;
+    in property <bool> enabled;
+    callback clicked(int);
+    width: buttons-row.preferred-width;
+    height: Theme.control + Theme.pad / 2;
+    border-radius: Theme.pad;
+    border-width: 1px;
+    border-color: Theme.pane.border;
+    background: Theme.pane.panel;
+    clip: true;
+    buttons-row := HorizontalLayout {
+        for button[i] in root.buttons: HorizontalLayout {
+            if i > 0: Rectangle {
+                width: 1px;
+                background: Theme.pane.border;
+            }
+            GroupButton {
+                tool: button;
+                labelled: root.labelled;
+                enabled: root.enabled;
+                clicked => { root.clicked(i); }
             }
         }
     }
-    if root.info.adapts && root.info.shows-html: VerticalLayout {
-        alignment: center;
-        TextButton {
-            text: "Original colours";
-            hint: "Show this message in its sender's colours";
-            palette: Theme.pane;
-            selected: root.info.original-colours;
-            clicked => { root.toggle-original-colours(); }
+}
+
+// An attachment as a chip: its glyph, name and size, and a button that saves it; Save as… is on its right-click menu.
+component AttachmentChip inherits Rectangle {
+    in property <AttachmentData> attachment;
+    in property <string> file-icon;
+    in property <string> save-icon;
+    // Listed before the whole message is here: saving waits for it.
+    in property <bool> pending;
+    callback save();
+    callback save-as();
+    property <string> label: root.attachment.name + " (" + root.attachment.size + ")";
+    height: Theme.action;
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: Theme.pane.border;
+    background: Theme.pane.faint;
+    ContextMenuArea {
+        Menu {
+            MenuItem {
+                title: "Save";
+                enabled: !root.pending;
+                activated => { root.save(); }
+            }
+            MenuItem {
+                title: "Save as…";
+                enabled: !root.pending;
+                activated => { root.save-as(); }
+            }
         }
     }
-    IconButton {
-        icon: root.save-icon;
-        name: "Save .eml";
-        hint: "Save .eml";
-        disabled-hint: root.info.missing;
-        enabled: root.info.downloaded;
-        palette: Theme.pane;
-        size: Theme.action;
-        glyph-size: Theme.large-icon;
-        clicked => { root.save-eml(); }
+    HorizontalLayout {
+        padding-left: Theme.pad * 3 / 2;
+        padding-right: Theme.pad * 3 / 4;
+        spacing: Theme.pad;
+        Text {
+            accessible-role: none;
+            text: root.file-icon;
+            font-family: Theme.icon-font;
+            font-size: Theme.icon;
+            color: Theme.pane.secondary;
+            vertical-alignment: center;
+        }
+        Text {
+            accessible-role: text;
+            accessible-label: root.label;
+            text: root.attachment.name;
+            color: Theme.pane.text;
+            vertical-alignment: center;
+        }
+        Text {
+            accessible-role: none;
+            text: root.attachment.size;
+            color: Theme.pane.muted;
+            vertical-alignment: center;
+        }
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: root.save-icon;
+                name: "Save " + root.label;
+                // What a screen reader hears too, so it says why the button is disabled.
+                hint: root.pending ? "Downloading the message…" : "Save to Downloads";
+                enabled: !root.pending;
+                palette: Theme.pane;
+
+                clicked => { root.save(); }
+            }
+        }
     }
-    IconButton {
-        icon: root.source-icon;
-        name: "View source";
-        hint: "View source";
-        disabled-hint: root.info.missing;
-        enabled: root.info.downloaded;
-        palette: Theme.pane;
-        size: Theme.action;
-        glyph-size: Theme.large-icon;
-        clicked => { root.open-source(); }
+}
+
+// Reply and the More menu: what else can be done with the shown message.
+component ReplyAndMore inherits HorizontalLayout {
+    in property <BodyInfo> info;
+    in property <string> more-icon;
+    in property <string> reply-icon;
+    in property <string> external-icon;
+    callback reply();
+    callback toggle-html();
+    callback toggle-original-colours();
+    callback unsubscribe();
+    callback save-eml();
+    callback open-source();
+    spacing: Theme.pad;
+    if root.info.reply: VerticalLayout {
+        alignment: center;
+        TextButton {
+            text: "Reply";
+            icon: root.reply-icon;
+            end-icon: root.external-icon;
+            hint: "Reply in your mail app";
+            framed: true;
+            palette: Theme.pane;
+            clicked => { root.reply(); }
+        }
+    }
+    VerticalLayout {
+        alignment: center;
+        more := ContextMenuArea {
+            width: Theme.control + Theme.pad / 2;
+            height: self.width;
+            Menu {
+                if root.info.has-html: MenuItem {
+                    title: root.info.shows-html ? "Show as text" : "Show as HTML";
+                    enabled: root.info.shows-html || root.info.text-note == "";
+                    activated => { root.toggle-html(); }
+                }
+                if root.info.adapts && root.info.shows-html: MenuItem {
+                    title: "Original colours";
+                    checkable: true;
+                    checked: root.info.original-colours;
+                    activated => { root.toggle-original-colours(); }
+                }
+                if root.info.unsubscribe: MenuItem {
+                    title: "Unsubscribe";
+                    activated => { root.unsubscribe(); }
+                }
+                if root.info.has-html || root.info.unsubscribe: MenuSeparator { }
+                MenuItem {
+                    title: "Save .eml";
+                    enabled: root.info.downloaded;
+                    activated => { root.save-eml(); }
+                }
+                MenuItem {
+                    title: "View source";
+                    enabled: root.info.downloaded;
+                    activated => { root.open-source(); }
+                }
+            }
+            IconButton {
+                icon: root.more-icon;
+                name: "More actions";
+                hint: "More actions";
+                palette: Theme.pane;
+                size: parent.width;
+                glyph-size: Theme.large-icon;
+                // Right-aligned under the button, as wide as the menu is.
+                clicked => { more.show({ x: self.width - 30 * Theme.pad, y: self.height + Theme.pad / 2 }); }
+            }
+        }
     }
 }
 
@@ -374,15 +521,24 @@ export component BodyPane inherits Rectangle {
     in property <string> save-icon;
     in property <string> source-icon;
     in property <string> rule-icon;
+    in property <string> more-icon;
+    in property <string> reply-icon;
+    in property <string> external-icon;
+    in property <string> file-icon;
     // The glyph above `info.empty`.
     in property <string> empty-icon;
+    // The message actions in two groups: those that move the message, then its flag and read state.
     in property <[ToolButton]> actions;
+    in property <[ToolButton]> marks;
     in property <bool> actions-enabled;
     // "3 messages selected" while two or more are, else empty; and those messages.
     in property <string> selection-title;
     in property <[SelectedData]> selection;
+    // The index of a message action, `marks` counted after `actions`.
     callback action(int);
     callback clear-selection();
+    // Write a reply in the user's mail app.
+    callback reply();
     callback toggle-html();
     callback toggle-original-colours();
     callback save-eml();
@@ -449,15 +605,15 @@ export component BodyPane inherits Rectangle {
 
     // Wide margins while there is room for them.
     property <length> margin: root.width > 80 * Theme.pad ? 2 * Theme.inset : Theme.inset;
-    // Room for the message actions and `MessageTools` on one line: the tools' labels are measured, their padding and
-    // icon buttons added.
-    property <length> tools: labels.preferred-width + (root.info.unsubscribe ? 2 * Theme.pad : 0px) + (root.info.has-html ? 3 * Theme.pad : 0px) + (root.info.adapts && root.info.shows-html ? 2 * Theme.pad : 0px) + 2 * Theme.action + 2 * Theme.pad;
-    property <bool> wide: root.width - 2 * root.margin >= root.actions.length * (Theme.action + Theme.pad / 2) + Theme.inset + root.tools;
+    // Room for the moving actions' labels beside the marks, Reply and More on one line: the labels are measured, the
+    // glyphs, padding and the rest added.
+    property <bool> roomy: root.width - 2 * root.margin >= labels.preferred-width + 4 * (Theme.icon + Theme.pad * 15 / 4) + 2 * (Theme.icon + 3 * Theme.pad) + 21 * Theme.pad;
+    // Room for Reply and More beside the unlabelled actions.
+    property <bool> fits: root.width - 2 * root.margin >= 6 * (Theme.icon + 3 * Theme.pad) + 21 * Theme.pad;
     labels := Text {
         visible: false;
         accessible-role: none;
-        text: (root.info.unsubscribe ? "Unsubscribe" : "") + (root.info.has-html ? "TextHTML" : "") + (root.info.adapts && root.info.shows-html ? "Original colours" : "");
-        font-weight: 600;
+        text: root.actions[0].label + root.actions[1].label + root.actions[2].label + root.actions[3].label;
     }
 
     if root.info.empty == "" || root.several: VerticalLayout {
@@ -467,51 +623,62 @@ export component BodyPane inherits Rectangle {
         padding-bottom: Theme.inset;
         spacing: Theme.pad;
 
-        // The message actions, then the view's choices on the right; with several messages, labelled. A pane too narrow
-        // for all of them cuts the bar off rather than growing.
+        // The message actions in their groups, then Reply and the More menu on the right, or on a line of their own
+        // while they do not fit beside them; the moving actions are labelled while there is room, and every one is while
+        // several messages are selected.
         Rectangle {
             min-width: 0px;
             height: Theme.action;
             clip: true;
-        HorizontalLayout {
-            spacing: Theme.pad / 2;
-            for button[i] in root.actions: IconButton {
-                icon: button.icon;
-                name: button.name;
-                hint: button.hint;
-                label: root.several ? button.label : "";
-                enabled: root.actions-enabled;
-                palette: Theme.pane;
-                size: Theme.action;
-                glyph-size: Theme.large-icon;
-                clicked => { root.action(i); }
+            HorizontalLayout {
+                spacing: Theme.pad;
+                VerticalLayout {
+                    alignment: center;
+                    ActionGroup {
+                        buttons: root.actions;
+                        labelled: root.several || root.roomy;
+                        enabled: root.actions-enabled;
+                        clicked(i) => { root.action(i); }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    ActionGroup {
+                        buttons: root.marks;
+                        labelled: root.several;
+                        enabled: root.actions-enabled;
+                        clicked(i) => { root.action(root.actions.length + i); }
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                if !root.several && root.fits: ReplyAndMore {
+                    info: root.info;
+                    more-icon: root.more-icon;
+                    reply-icon: root.reply-icon;
+                    external-icon: root.external-icon;
+                    reply => { root.reply(); }
+                    toggle-html => { root.toggle-html(); }
+                    toggle-original-colours => { root.toggle-original-colours(); }
+                    unsubscribe => { root.unsubscribe(); }
+                    save-eml => { root.save-eml(); }
+                    open-source => { root.open-source(); }
+                }
             }
+        }
+        if !root.several && !root.fits: HorizontalLayout {
             Rectangle { horizontal-stretch: 1; }
-            if !root.several && root.wide: MessageTools {
+            ReplyAndMore {
                 info: root.info;
-                save-icon: root.save-icon;
-                source-icon: root.source-icon;
-                unsubscribe => { root.unsubscribe(); }
+                more-icon: root.more-icon;
+                reply-icon: root.reply-icon;
+                external-icon: root.external-icon;
+                reply => { root.reply(); }
                 toggle-html => { root.toggle-html(); }
                 toggle-original-colours => { root.toggle-original-colours(); }
+                unsubscribe => { root.unsubscribe(); }
                 save-eml => { root.save-eml(); }
                 open-source => { root.open-source(); }
             }
-        }
-        }
-        // A narrow pane puts them on a line of their own.
-        if !root.several && !root.wide: HorizontalLayout {
-            MessageTools {
-                info: root.info;
-                save-icon: root.save-icon;
-                source-icon: root.source-icon;
-                unsubscribe => { root.unsubscribe(); }
-                toggle-html => { root.toggle-html(); }
-                toggle-original-colours => { root.toggle-original-colours(); }
-                save-eml => { root.save-eml(); }
-                open-source => { root.open-source(); }
-            }
-            Rectangle { horizontal-stretch: 1; }
         }
 
         if root.several: VerticalLayout {
@@ -574,7 +741,7 @@ export component BodyPane inherits Rectangle {
 
         if !root.several: VerticalLayout {
             vertical-stretch: 1;
-            padding-top: Theme.pad;
+            padding-top: Theme.pad * 5 / 2;
             spacing: Theme.pad;
 
             HorizontalLayout {
@@ -587,10 +754,12 @@ export component BodyPane inherits Rectangle {
                 }
                 if root.info.address != "": VerticalLayout {
                     alignment: start;
-                    IconButton {
+                    padding-top: Theme.pad / 4;
+                    TextButton {
+                        text: "Rule from sender";
                         icon: root.rule-icon;
-                        name: "New rule for mail from this sender";
                         hint: "New rule for mail from this sender";
+                        framed: true;
                         palette: Theme.pane;
                         clicked => { root.rule-from(); }
                     }
@@ -632,6 +801,7 @@ export component BodyPane inherits Rectangle {
                             Tooltip { text: @markdown("\{root.info.full-date}"); }
                             date := Text {
                                 text: root.info.short-date;
+                                font-size: Theme.small-size;
                                 color: Theme.pane.muted;
                                 vertical-alignment: center;
                             }
@@ -647,32 +817,16 @@ export component BodyPane inherits Rectangle {
                     }
                 }
             }
-            for attachment[i] in root.info.attachments: HorizontalLayout {
+            if root.info.attachments.length > 0: FlexboxLayout {
                 spacing: Theme.pad;
-                Text {
-                    text: attachment;
-                    color: Theme.pane.text;
-                    vertical-alignment: center;
+                for attachment[i] in root.info.attachments: AttachmentChip {
+                    attachment: attachment;
+                    file-icon: root.file-icon;
+                    save-icon: root.save-icon;
+                    pending: root.info.attachments-pending;
+                    save => { root.save-attachment(i); }
+                    save-as => { root.save-attachment-as(i); }
                 }
-                TextButton {
-                    text: "Save";
-                    framed: true;
-                    palette: Theme.pane;
-                    enabled: !root.info.attachments-pending;
-                    disabled-hint: "Downloading the message…";
-                    accessible-label: "Save " + attachment;
-                    clicked => { root.save-attachment(i); }
-                }
-                TextButton {
-                    text: "Save as…";
-                    framed: true;
-                    palette: Theme.pane;
-                    enabled: !root.info.attachments-pending;
-                    disabled-hint: "Downloading the message…";
-                    accessible-label: "Save " + attachment + " as";
-                    clicked => { root.save-attachment-as(i); }
-                }
-                Rectangle { horizontal-stretch: 1; }
             }
             if root.info.saved != "" && !root.info.unsubscribed: Text {
                 text: root.info.saved;
@@ -697,8 +851,9 @@ export component BodyPane inherits Rectangle {
                 Rectangle { horizontal-stretch: 1; }
             }
 
-            // More room under the headers' hairline than between them.
+            // More room around the headers' hairline than between them.
             VerticalLayout {
+                padding-top: Theme.pad;
                 padding-bottom: Theme.pad;
                 Hairline { }
             }

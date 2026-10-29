@@ -340,6 +340,29 @@ impl Open {
         self.get(label).invoke_accessible_default_action();
     }
 
+    /// Opens the menu of the button labelled `opener` and returns its item `title`. The testing backend shows menus but
+    /// does not activate their items, so a test checks the item, then invokes the callback the item is bound to.
+    pub fn menu_item(&self, opener: &str, title: &str) -> ElementHandle {
+        self.click(opener);
+        self.get(title)
+    }
+
+    /// Chooses `title` in the reader's More menu: the item must be there, and the callback it is bound to runs.
+    pub fn choose_more(&self, title: &str) {
+        self.menu_item("More actions", title);
+        // Choosing an item closes the menu.
+        self.press("escape");
+        let window = self.window();
+        match title {
+            "Original colours" => window.invoke_toggle_original_colours(),
+            "Save .eml" => window.invoke_save_eml(),
+            "Show as HTML" | "Show as text" => window.invoke_toggle_html(),
+            "Unsubscribe" => window.invoke_unsubscribe(),
+            "View source" => window.invoke_open_source(),
+            _ => panic!("the More menu has no {title:?}"),
+        }
+    }
+
     /// Clicks the middle of the one element labelled `label` with the mouse, for elements without an accessible action.
     pub fn tap(&self, label: &str) {
         self.press_on(label, slint::platform::PointerEventButton::Left);

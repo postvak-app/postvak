@@ -117,6 +117,9 @@ export component TextButton inherits Rectangle {
     in property <bool> danger;
     // Its text starts at its left edge, in line with the text above it; the hover fill still frames it.
     in property <bool> flush;
+    // Phosphor glyphs before and after the text, such as an arrow for an action that leaves Postvak.
+    in property <string> icon;
+    in property <string> end-icon;
     callback clicked();
 
     property <bool> pill: root.framed || root.primary || root.danger;
@@ -151,12 +154,29 @@ export component TextButton inherits Rectangle {
     HorizontalLayout {
         padding-left: root.pill ? 2 * Theme.pad : root.flush ? 0 : Theme.pad / 2;
         padding-right: root.pill ? 2 * Theme.pad : Theme.pad / 2;
+        spacing: Theme.pad * 3 / 4;
+        if root.icon != "": Text {
+            accessible-role: none;
+            text: root.icon;
+            font-family: Theme.icon-font;
+            font-size: Theme.icon - Theme.pad / 4;
+            color: root.text-color;
+            vertical-alignment: center;
+        }
         Text {
             accessible-role: none;
             text: root.text;
             color: root.primary ? Theme.on-brand : root.danger ? root.palette.faint : root.text-color;
             font-family: root.text-font;
             font-weight: root.selected || root.pill ? 600 : 500;
+            vertical-alignment: center;
+        }
+        if root.end-icon != "": Text {
+            accessible-role: none;
+            text: root.end-icon;
+            font-family: Theme.icon-font;
+            font-size: Theme.icon - Theme.pad / 4;
+            color: root.text-color;
             vertical-alignment: center;
         }
     }

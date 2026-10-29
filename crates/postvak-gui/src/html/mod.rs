@@ -785,7 +785,7 @@ mod view_tests {
         );
         reply(&faked, laid(faked.generation, 300.0, &[]));
         assert!(faked.open.window().get_page().dark);
-        assert_eq!(faked.open.find("Original colours").len(), 1);
+        faked.open.menu_item("More actions", "Original colours");
 
         faked
             .open
@@ -808,6 +808,7 @@ mod view_tests {
         faked.open.tick();
         assert_eq!(restyles(&faked.jobs), [false]);
         reply(&faked, laid(shown(&faked), 300.0, &[]));
+        faked.open.click("More actions");
         assert!(faked.open.find("Original colours").is_empty());
         assert!(!faked.open.window().get_menu().original_colours);
     }
@@ -820,6 +821,7 @@ mod view_tests {
         let faked = faked(&fx);
         reply(&faked, laid(faked.generation, 300.0, &[]));
         assert!(!faked.open.window().get_page().dark);
+        faked.open.click("More actions");
         assert!(faked.open.find("Original colours").is_empty());
         assert!(!faked.open.window().get_menu().original_colours);
     }
