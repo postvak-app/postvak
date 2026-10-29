@@ -124,4 +124,4 @@ Once the PR is open and the local checks passed, enable auto-merge with **squash
 - Never merge a red, conflicted or changes-requested PR, and never bypass branch protection.
 - If the user says "don't merge" at any point, disable auto-merge and stop there.
 
-After the merge: confirm the issue closed (via `Closes #…`), close it by hand with a comment if it didn't, remove the `in progress` label, unsubscribe from the PR, and give the user a short summary: the issue, the PR, what changed, what was compiled vs run where, and anything left over worth a new issue.
+After the merge: confirm the issue closed (via `Closes #…`), close it by hand with a comment if it didn't, remove the `in progress` label, unsubscribe from the PR, run `cargo clean` to free the worktree's `target/` (several GB), and give the user a short summary: the issue, the PR, what changed, what was compiled vs run where, and anything left over worth a new issue.
