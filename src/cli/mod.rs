@@ -1061,13 +1061,13 @@ fn cmd_folder(command: FolderCommand, config: &Config, paths: &Paths) -> Result<
             };
             let mode = match (trash, permanent) {
                 (true, _) if !has_trash => {
-                    bail!("the account has no Trash folder; use --permanent")
+                    bail!("{}", postvak_core::help::folder_no_trash())
                 }
                 (true, _) => sync::DeleteMode::Trash,
                 (_, true) => sync::DeleteMode::Permanent,
                 _ => bail!(
-                    "{} holds {count} messages; pass --trash or --permanent",
-                    clean(&name, false)
+                    "{}",
+                    postvak_core::help::folder_not_empty(&clean(&name, false), count)
                 ),
             };
             daemon.delete_folder(&acc.name, &name, Some(mode), count)?;
@@ -1093,24 +1093,37 @@ fn cmd_folder(command: FolderCommand, config: &Config, paths: &Paths) -> Result<
                 delimiter: delimiter.as_deref(),
             };
             let path = paths.rules_file();
-            let naming = postvak_core::rules::load(&path)
-                .map(|file| rules_naming(&file, &rename))
-                .unwrap_or_default();
+            let loaded = postvak_core::rules::load(&path);
+            let naming = loaded
+                .as_ref()
+                .map(|file| rules_naming(file, &rename))
+                .map_err(ToString::to_string);
             if let Err(e) = follow_rename(&path, &rename) {
-                let names: Vec<_> = naming.iter().map(|(name, _)| clean(name, false)).collect();
+                let names = naming.as_ref().map(|pairs| {
+                    pairs
+                        .iter()
+                        .map(|(name, _)| clean(name, false).to_string())
+                        .collect::<Vec<_>>()
+                });
                 bail!(
-                    "renamed on the server, but rules.toml was not updated: {e}; these rules still name {}: {}",
-                    clean(&from, false),
-                    names.join(", ")
+                    "{}",
+                    postvak_core::help::folder_rules_not_updated(
+                        &clean(&from, false),
+                        &e.to_string(),
+                        names.as_deref().map_err(|e| e.as_str()),
+                    )
                 );
             }
-            for (name, split) in naming {
+            for (name, split) in naming.unwrap_or_default() {
                 let name = clean(&name, false);
-                if split {
-                    println!("rule '{name}' split per account");
-                } else {
-                    println!("rule '{name}' now moves to {}", clean(&renamed, false));
-                }
+                println!(
+                    "{}",
+                    if split {
+                        postvak_core::help::folder_rule_split(&name)
+                    } else {
+                        postvak_core::help::folder_rule_followed(&name, &clean(&renamed, false))
+                    }
+                );
             }
             Ok(())
         }

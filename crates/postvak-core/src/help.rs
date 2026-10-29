@@ -134,6 +134,31 @@ pub const TRASH_LIST: &str = "Deleted mail kept as .eml backups for the retentio
 pub const TRASH_PURGE: &str = "Remove .eml backups older than the account's retention period";
 pub const TRASH_RESTORE: &str = "Append a trashed .eml back into its original folder";
 
+pub fn folder_no_trash() -> String {
+    "the account has no Trash folder; use --permanent".into()
+}
+
+pub fn folder_not_empty(name: &str, count: u32) -> String {
+    format!("{name} holds {count} messages; pass --trash or --permanent")
+}
+
+pub fn folder_rule_followed(rule: &str, to: &str) -> String {
+    format!("rule '{rule}' now moves to {to}")
+}
+
+pub fn folder_rule_split(rule: &str) -> String {
+    format!("rule '{rule}' split per account")
+}
+
+/// `rules` is the names that still name `from`, or why they could not be told because rules.toml did not load.
+pub fn folder_rules_not_updated(from: &str, error: &str, rules: Result<&[String], &str>) -> String {
+    let rest = match rules {
+        Ok(names) => format!("these rules still name {from}: {}", names.join(", ")),
+        Err(load_error) => format!("rules.toml could not be read: {load_error}"),
+    };
+    format!("renamed on the server, but rules.toml was not updated: {error}; {rest}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,5 +195,31 @@ mod tests {
         assert!(MCP_INSTRUCTIONS.contains("Call docs"));
         assert!(MCP_INSTRUCTIONS.contains("<untrusted_mail_content>"));
         assert!(MCP_INSTRUCTIONS.contains("dry_run"));
+    }
+
+    #[test]
+    fn folder_messages_read_as_the_brief_words_them() {
+        assert_eq!(
+            folder_not_empty("Old", 3),
+            "Old holds 3 messages; pass --trash or --permanent"
+        );
+        assert_eq!(
+            folder_no_trash(),
+            "the account has no Trash folder; use --permanent"
+        );
+        assert_eq!(
+            folder_rule_followed("a", "New"),
+            "rule 'a' now moves to New"
+        );
+        assert_eq!(folder_rule_split("a"), "rule 'a' split per account");
+        let names = ["a".to_string(), "b".to_string()];
+        assert_eq!(
+            folder_rules_not_updated("Old", "disk full", Ok(&names)),
+            "renamed on the server, but rules.toml was not updated: disk full; these rules still name Old: a, b"
+        );
+        assert_eq!(
+            folder_rules_not_updated("Old", "disk full", Err("bad toml")),
+            "renamed on the server, but rules.toml was not updated: disk full; rules.toml could not be read: bad toml"
+        );
     }
 }
