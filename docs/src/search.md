@@ -17,7 +17,7 @@ Every message's subject, sender, recipients (To, Cc and Delivered-To), attachmen
 | `has:attachment` | with an attachment, as guessed from the headers |
 | `is:unread`, `is:read`, `is:flagged` | by flag |
 | `before:2026-01-15`, `after:2026-01-01` | by date, in local time; `before:` is exclusive of that day, `after:` inclusive |
-| `after:7d`, `before:3w`, `after:6m`, `after:1y` | days, weeks, months or years back from now |
+| `after:7d`, `before:3w`, `after:6mo`, `after:1y` | days, weeks, months or years back from now |
 | `account:work` | one account, where several are searched: All inboxes in the window, and the CLI and MCP without `--account` |
 
 Operators combine with words in any order: `from:acme after:30d invoice` is the invoices Acme sent in the last month. A column operator's value is matched whole, never as a prefix and never widened to a close match. Nothing you type is read as query syntax: a bare address, an unbalanced quote, an unknown key such as `size:10` or a date that does not parse all search as words. A `-` before `in:`, `is:`, `has:`, `before:`, `after:` or `account:` is ignored.

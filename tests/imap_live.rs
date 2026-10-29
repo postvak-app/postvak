@@ -551,7 +551,7 @@ fn rule_delete_keeps_a_backup_then_expunges() {
     let account = account(&host, PORT, "rule-delete");
     let home = home_with(
         &account,
-        "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"sign-in code\" }\nactions = [\"delete\"]\n",
+        "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"sign-in code\" }\nactions = { delete = true }\n",
     );
     let paths = Paths::under(home.path());
     let (events, received) = std::sync::mpsc::channel();
@@ -647,7 +647,7 @@ fn cli_applies_a_rule_to_existing_mail_and_restores_it_through_the_daemon() {
     let account = account(&host, PORT, "cli-restore");
     let home = home_with(
         &account,
-        "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"sign-in code\" }\nactions = [\"delete\"]\n",
+        "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"sign-in code\" }\nactions = { delete = true }\n",
     );
     connect(&account)
         .append("INBOX", &mail("Your sign-in code"), &[])
@@ -702,7 +702,7 @@ fn sync_exits_nonzero_when_a_rule_fails_on_a_message() {
     let home = home_with(
         &account,
         &format!(
-            "[[rules]]\nname = \"impossible\"\nmatch.subject = {{ contains = \"move me\" }}\nactions = [{{ move = \"{target}\" }}]\n"
+            "[[rules]]\nname = \"impossible\"\nmatch.subject = {{ contains = \"move me\" }}\nactions = {{ move = \"{target}\" }}\n"
         ),
     );
     let first = postvak(home.path(), &["sync"]);

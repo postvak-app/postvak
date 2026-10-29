@@ -54,8 +54,8 @@ pub fn evaluate(rules: &[CompiledRule], msg: &Message, ctx: &Context) -> Plan {
         let mut stop = false;
         for action in &rule.rule.actions {
             match action {
-                Action::Notify => explicit_notify = Some(true),
-                Action::Silent => explicit_notify = Some(false),
+                Action::Notify => _ = explicit_notify.get_or_insert(true),
+                Action::Silent => _ = explicit_notify.get_or_insert(false),
                 Action::Stop => stop = true,
                 Action::Move(_) | Action::Archive if ctx.keep_in_folder => {}
                 _ => plan.actions.push(PlannedAction {
@@ -165,8 +165,10 @@ fn matches(c: &Conditions, msg: &Message, ctx: &Context) -> bool {
     {
         return false;
     }
-    if let Some(min_age) = c.older_than
-        && ctx.now - msg.internaldate < i64::try_from(min_age.as_secs()).unwrap_or(i64::MAX)
+    if let Some(span) = c.older_than
+        && span
+            .before(ctx.now)
+            .is_none_or(|cutoff| msg.internaldate > cutoff)
     {
         return false;
     }
@@ -175,8 +177,8 @@ fn matches(c: &Conditions, msg: &Message, ctx: &Context) -> bool {
     {
         return false;
     }
-    if let Some(seen) = c.seen
-        && msg.is_seen() != seen
+    if let Some(read) = c.read
+        && msg.is_seen() != read
     {
         return false;
     }
@@ -276,17 +278,17 @@ mod tests {
 [[rules]]
 name = "purge"
 match.from = { regex = "no-?reply@" }
-match.subject = { regex = "(?i)sign.?in|verification code" }
+match.subject = { regex = "sign.?in|verification code" }
 match.older_than = "1h"
-match.seen = true
-actions = ["delete"]
+match.read = true
+actions = { delete = true }
 "#;
 
     #[test]
     fn restored_mail_is_left_alone() {
         let id = identity();
         let rules = rules(
-            "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = [\"delete\"]\n",
+            "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = { delete = true }\n",
             0,
         );
         let mut m = msg("noreply@x.com", "me@example.com", "your code", 100, true);
@@ -357,7 +359,7 @@ actions = ["delete"]
     #[test]
     fn mail_kept_in_its_folder_gets_every_action_but_a_move_and_notifies() {
         let id = identity();
-        let toml = "[[rules]]\nname = \"lists\"\nmatch.from = { contains = \"alice\" }\nactions = [{ move = \"Lists\" }, \"mark_read\"]\n\n[[rules]]\nname = \"old\"\nmatch.from = { contains = \"alice\" }\nactions = [\"archive\"]\n";
+        let toml = "[[rules]]\nname = \"lists\"\nmatch.from = { contains = \"alice\" }\nactions = { move = \"Lists\", read = true }\n\n[[rules]]\nname = \"old\"\nmatch.from = { contains = \"alice\" }\nactions = { archive = true }\n";
         let rules = rules(toml, 0);
         let m = msg("alice@x", "pieter@example.com", "hi", HOUR, false);
         let moved = evaluate(&rules, &m, &ctx(&id, 2 * HOUR));
@@ -380,7 +382,7 @@ actions = ["delete"]
     fn equals_on_address_fields_compares_bare_addresses() {
         let id = identity();
         let from_rule = rules(
-            "[[rules]]\nname = \"gh\"\nmatch.from = { equals = \" NoReply@GitHub.com \" }\nactions = [\"flag\"]\n",
+            "[[rules]]\nname = \"gh\"\nmatch.from = { equals = \" NoReply@GitHub.com \" }\nactions = { flagged = true }\n",
             0,
         );
         let github = msg(
@@ -395,13 +397,13 @@ actions = ["delete"]
             1
         );
         let to_rule = rules(
-            "[[rules]]\nname = \"second\"\nmatch.to = { equals = \"b@x\" }\nactions = [\"flag\"]\n",
+            "[[rules]]\nname = \"second\"\nmatch.to = { equals = \"b@x\" }\nactions = { flagged = true }\n",
             0,
         );
         let two = msg("a@y", "A <a@x>, B <b@x>", "hi", 100, false);
         assert_eq!(evaluate(&to_rule, &two, &ctx(&id, 200)).actions.len(), 1);
         let subject_rule = rules(
-            "[[rules]]\nname = \"s\"\nmatch.subject = { equals = \"pr\" }\nactions = [\"flag\"]\n",
+            "[[rules]]\nname = \"s\"\nmatch.subject = { equals = \"pr\" }\nactions = { flagged = true }\n",
             0,
         );
         assert_eq!(
@@ -430,8 +432,8 @@ actions = ["delete"]
         let toml = r#"
 [[rules]]
 name = "github"
-match.header = { name = "List-Id", contains = "github.com" }
-actions = [{ move = "Lists/GitHub" }, "mark_read"]
+match.header.List-Id = { contains = "github.com" }
+actions = { move = "Lists/GitHub", read = true }
 "#;
         let plan = evaluate(
             &rules(toml, 0),
@@ -455,12 +457,12 @@ actions = [{ move = "Lists/GitHub" }, "mark_read"]
 [[rules]]
 name = "first"
 match.subject = { contains = "spam" }
-actions = ["delete"]
+actions = { delete = true }
 
 [[rules]]
 name = "second"
 match.subject = { contains = "spam" }
-actions = ["flag"]
+actions = { flagged = true }
 "#;
         let plan = evaluate(
             &rules(toml, 0),
@@ -478,14 +480,14 @@ actions = ["flag"]
 [[rules]]
 name = "other account"
 account = "home"
-match.seen = false
-actions = ["flag"]
+match.read = false
+actions = { flagged = true }
 
 [[rules]]
 name = "other folder"
 folder = "Archive"
-match.seen = false
-actions = ["flag"]
+match.read = false
+actions = { flagged = true }
 "#;
         let plan = evaluate(
             &rules(toml, 0),
@@ -502,12 +504,12 @@ actions = ["flag"]
 [[rules]]
 name = "lists"
 match.to_me = false
-actions = [{ move = "Lists" }]
+actions = { move = "Lists" }
 
 [[rules]]
 name = "shop"
 match.alias = "*@shop.example.com"
-actions = [{ move = "Shopping" }]
+actions = { move = "Shopping" }
 "#;
         let r = rules(toml, 0);
         let direct = msg("a@x", "Pieter <pieter@example.com>", "s", 100, false);
@@ -533,17 +535,17 @@ actions = [{ move = "Shopping" }]
 name = "plain"
 match.from = { contains = "a" }
 match.subject = { contains = "b" }
-actions = ["flag"]
+actions = { flagged = true }
 
 [[rules]]
 name = "top"
-match.header = { name = "List-Id", contains = "x" }
-actions = ["flag"]
+match.header.List-Id = { contains = "x" }
+actions = { flagged = true }
 
 [[rules]]
 name = "nested"
-match.any = [{ seen = true }, { none = [{ header = { name = "X-Spam", regex = "." } }] }]
-actions = ["flag"]
+match.any = [{ read = true }, { none = [{ header = { X-Spam = { regex = "." } } }] }]
+actions = { flagged = true }
 "#,
             0,
         );
@@ -558,7 +560,7 @@ actions = ["flag"]
 [[rules]]
 name = "unsubscribe"
 match.body = { contains = "unsubscribe" }
-actions = ["flag"]
+actions = { flagged = true }
 "#;
         let r = rules(toml, 0);
         assert!(folder_needs_body(&r, "work", "INBOX"));
@@ -575,13 +577,13 @@ actions = ["flag"]
         let toml = r#"
 [[rules]]
 name = "github"
-match.header = { name = "List-Id", contains = "github.com" }
-actions = [{ move = "Lists/GitHub" }, "notify"]
+match.header.List-Id = { contains = "github.com" }
+actions = { move = "Lists/GitHub", notify = true }
 
 [[rules]]
 name = "quiet"
 match.subject = { contains = "newsletter" }
-actions = ["silent"]
+actions = { notify = false }
 "#;
         let r = rules(toml, 0);
         let untouched = msg("a@x", "pieter@example.com", "hello", 100, false);
@@ -596,18 +598,59 @@ actions = ["silent"]
     }
 
     #[test]
+    fn the_first_matching_rule_that_says_notify_wins() {
+        let id = identity();
+        let toml = r#"
+[[rules]]
+name = "loud"
+match.subject = { contains = "deploy" }
+actions = { move = "Deploys", notify = true }
+
+[[rules]]
+name = "quiet"
+match.subject = { contains = "deploy" }
+actions = { move = "Elsewhere", notify = false }
+"#;
+        let plan = evaluate(
+            &rules(toml, 0),
+            &msg("a@x", "pieter@example.com", "deploy done", 100, false),
+            &ctx(&id, 200),
+        );
+        assert!(plan.notify);
+    }
+
+    #[test]
+    fn regex_ignores_case_unless_told_otherwise() {
+        let m = msg(
+            "No-Reply@Shop.example",
+            "pieter@example.com",
+            "Sign-In code",
+            100,
+            false,
+        );
+        assert!(fires(
+            "[[rules]]\nname = \"r\"\nmatch.from = { regex = \"no-?reply@\" }\nactions = { flagged = true }\n",
+            &m
+        ));
+        assert!(!fires(
+            "[[rules]]\nname = \"r\"\nmatch.subject = { regex = \"(?-i)sign-in\" }\nactions = { flagged = true }\n",
+            &m
+        ));
+    }
+
+    #[test]
     fn deleted_mail_never_notifies() {
         let id = identity();
         let toml = r#"
 [[rules]]
 name = "loud"
 match.subject = { contains = "x" }
-actions = ["notify"]
+actions = { notify = true }
 
 [[rules]]
 name = "purge"
 match.subject = { contains = "x" }
-actions = ["delete"]
+actions = { delete = true }
 "#;
         let plan = evaluate(
             &rules(toml, 0),
@@ -622,7 +665,7 @@ actions = ["delete"]
     #[test]
     fn huge_older_than_never_matches() {
         let id = identity();
-        let toml = "[[rules]]\nname = \"never\"\nmatch.older_than = \"300000000000y\"\nactions = [\"delete\"]\n";
+        let toml = "[[rules]]\nname = \"never\"\nmatch.older_than = \"1000000y\"\nactions = { delete = true }\n";
         let m = msg("a@x", "pieter@example.com", "s", 0, true);
         assert!(
             evaluate(&rules(toml, 0), &m, &ctx(&id, 10 * HOUR))
@@ -638,12 +681,12 @@ actions = ["delete"]
 [[rules]]
 name = "lists"
 match.to_me = false
-actions = [{ move = "Lists" }]
+actions = { move = "Lists" }
 
 [[rules]]
 name = "shop"
 match.alias = "orders@shop.example.com"
-actions = [{ move = "Shopping" }]
+actions = { move = "Shopping" }
 "#;
         let r = rules(toml, 0);
         let mut delivered = msg("a@x", "dev@lists.example", "s", 100, false);
@@ -665,7 +708,7 @@ actions = [{ move = "Shopping" }]
     fn to_me_ignores_an_address_inside_a_quoted_name() {
         let id = identity();
         let r = rules(
-            "[[rules]]\nname = \"lists\"\nmatch.to_me = false\nactions = [{ move = \"Lists\" }]\n",
+            "[[rules]]\nname = \"lists\"\nmatch.to_me = false\nactions = { move = \"Lists\" }\n",
             0,
         );
         let mut m = msg("a@x", "pieter@example.com", "s", 100, false);
@@ -676,7 +719,8 @@ actions = [{ move = "Shopping" }]
     #[test]
     fn older_than_boundary_is_inclusive() {
         let id = identity();
-        let toml = "[[rules]]\nname = \"age\"\nmatch.older_than = \"1h\"\nactions = [\"flag\"]\n";
+        let toml =
+            "[[rules]]\nname = \"age\"\nmatch.older_than = \"1h\"\nactions = { flagged = true }\n";
         let r = rules(toml, 0);
         let exact = msg("a@x", "pieter@example.com", "s", 1000, false);
         assert_eq!(
@@ -704,7 +748,7 @@ actions = [{ move = "Shopping" }]
 name = "shop but no receipts"
 match.from = { contains = "shop" }
 match.none = [{ subject = { contains = "receipt" } }, { from = { contains = "billing" } }]
-actions = ["flag"]
+actions = { flagged = true }
 "#;
         assert!(fires(toml, &msg("shop@x", "p@x", "Sale", 100, false)));
         assert!(!fires(
@@ -723,9 +767,9 @@ actions = ["flag"]
         let toml = r#"
 [[rules]]
 name = "x"
-match.seen = false
+match.read = false
 match.none = [{ from = { contains = "alice" }, subject = { contains = "lunch" } }]
-actions = ["flag"]
+actions = { flagged = true }
 "#;
         assert!(!fires(toml, &msg("alice@x", "p@x", "lunch?", 100, false)));
         assert!(fires(toml, &msg("alice@x", "p@x", "report", 100, false)));
@@ -739,7 +783,7 @@ actions = ["flag"]
 name = "x"
 match.subject = { contains = ["receipt", "INVOICE"] }
 match.from = { equals = ["a@x", "b@x"] }
-actions = ["flag"]
+actions = { flagged = true }
 "#;
         assert!(fires(
             toml,
@@ -755,9 +799,9 @@ actions = ["flag"]
         let toml = r#"
 [[rules]]
 name = "either"
-match.seen = false
+match.read = false
 match.any = [{ from = { contains = "alice" } }, { subject = { contains = "urgent" } }]
-actions = ["flag"]
+actions = { flagged = true }
 "#;
         assert!(fires(toml, &msg("alice@x", "p@x", "hi", 100, false)));
         assert!(fires(toml, &msg("bob@x", "p@x", "URGENT", 100, false)));
@@ -770,8 +814,8 @@ actions = ["flag"]
         let toml = r#"
 [[rules]]
 name = "both"
-match.header = [{ name = "List-Id", contains = "github.com" }, { name = "Subject", contains = "PR" }]
-actions = ["flag"]
+match.header = { List-Id = { contains = "github.com" }, Subject = { contains = "PR" } }
+actions = { flagged = true }
 "#;
         assert!(fires(
             toml,
@@ -786,7 +830,8 @@ actions = ["flag"]
 
     #[test]
     fn tag_matches_keywords_ignoring_case() {
-        let toml = "[[rules]]\nname = \"t\"\nmatch.tag = \"$label1\"\nactions = [\"flag\"]\n";
+        let toml =
+            "[[rules]]\nname = \"t\"\nmatch.tag = \"$label1\"\nactions = { flagged = true }\n";
         let mut m = msg("a@x", "p@x", "s", 100, false);
         assert!(!fires(toml, &m));
         m.flags = "\\Seen $Label1".into();
@@ -797,7 +842,7 @@ actions = ["flag"]
 
     #[test]
     fn rule_needing_a_missing_body_never_fires_even_negated() {
-        let toml = "[[rules]]\nname = \"b\"\nmatch.none = [{ body = { contains = \"keep\" } }]\nactions = [\"delete\"]\n";
+        let toml = "[[rules]]\nname = \"b\"\nmatch.none = [{ body = { contains = \"keep\" } }]\nactions = { delete = true }\n";
         let r = rules(toml, 0);
         assert!(folder_needs_body(&r, "work", "INBOX"));
         let mut m = msg("a@x", "p@x", "s", 100, false);
@@ -810,7 +855,7 @@ actions = ["flag"]
 
     #[test]
     fn flagged_matches_the_flagged_state() {
-        let toml = "[[rules]]\nname = \"f\"\nmatch.flagged = true\nactions = [\"mark_read\"]\n";
+        let toml = "[[rules]]\nname = \"f\"\nmatch.flagged = true\nactions = { read = true }\n";
         let mut m = msg("a@x", "p@x", "s", 100, false);
         assert!(!fires(toml, &m));
         m.flags = "\\Flagged".into();
@@ -821,7 +866,7 @@ actions = ["flag"]
 
     #[test]
     fn larger_than_compares_the_message_size() {
-        let toml = "[[rules]]\nname = \"big\"\nmatch.larger_than = \"1KB\"\nactions = [\"flag\"]\n";
+        let toml = "[[rules]]\nname = \"big\"\nmatch.larger_than = \"1KB\"\nactions = { flagged = true }\n";
         let mut m = msg("a@x", "p@x", "s", 100, false);
         assert!(!fires(toml, &m), "an unknown size is not large");
         m.size = Some(1024);
@@ -837,12 +882,12 @@ actions = ["flag"]
 [[rules]]
 name = "first"
 match.subject = { contains = "x" }
-actions = [{ tag = "$label1" }, "stop"]
+actions = { tag = "$label1", stop = true }
 
 [[rules]]
 name = "second"
 match.subject = { contains = "x" }
-actions = [{ move = "Later" }]
+actions = { move = "Later" }
 "#;
         let plan = evaluate(
             &rules(toml, 0),
@@ -861,7 +906,7 @@ actions = [{ move = "Later" }]
 
     #[test]
     fn header_matches_the_decoded_value() {
-        let toml = "[[rules]]\nname = \"h\"\nmatch.header = { name = \"X-Team\", contains = \"grüße\" }\nactions = [\"flag\"]\n";
+        let toml = "[[rules]]\nname = \"h\"\nmatch.header.X-Team = { contains = \"grüße\" }\nactions = { flagged = true }\n";
         let mut m = msg("a@x", "p@x", "s", 100, false);
         m.headers = b"X-Team: =?UTF-8?Q?Gr=C3=BC=C3=9Fe?=\r\n\r\n".to_vec();
         assert!(fires(toml, &m));
@@ -869,7 +914,7 @@ actions = [{ move = "Later" }]
 
     #[test]
     fn from_domain_matches_the_address_domain_and_its_subdomains_only() {
-        let toml = "[[rules]]\nname = \"ms\"\nmatch.from_domain = \"microsoft.com\"\nactions = [\"flag\"]\n";
+        let toml = "[[rules]]\nname = \"ms\"\nmatch.from_domain = \"microsoft.com\"\nactions = { flagged = true }\n";
         for (from, hit) in [
             ("Microsoft <account-security@microsoft.com>", true),
             ("x@AccountProtection.Microsoft.com", true),
@@ -890,7 +935,7 @@ actions = [{ move = "Later" }]
 
     #[test]
     fn domain_lists_match_any_and_to_domain_reads_the_to_header() {
-        let toml = "[[rules]]\nname = \"pp\"\nmatch.from_domain = [\"paypal.nl\", \"paypal.com\"]\nmatch.to_domain = \"example.org\"\nactions = [\"flag\"]\n";
+        let toml = "[[rules]]\nname = \"pp\"\nmatch.from_domain = [\"paypal.nl\", \"paypal.com\"]\nmatch.to_domain = \"example.org\"\nactions = { flagged = true }\n";
         assert!(fires(
             toml,
             &msg("a@paypal.nl", "Me <me@mail.example.org>", "s", 100, false)
@@ -924,7 +969,7 @@ actions = [{ move = "Later" }]
         let rule = |want: bool| {
             rules(
                 &format!(
-                    "[[rules]]\nname = \"a\"\nmatch.from_domain = \"paypal.com\"\nmatch.authenticated = {want}\nactions = [\"flag\"]\n"
+                    "[[rules]]\nname = \"a\"\nmatch.from_domain = \"paypal.com\"\nmatch.authenticated = {want}\nactions = {{ flagged = true }}\n"
                 ),
                 0,
             )
@@ -1026,7 +1071,7 @@ actions = [{ move = "Later" }]
     #[test]
     fn disabled_rules_are_skipped() {
         let id = identity();
-        let toml = "[[rules]]\nname = \"off\"\nenabled = false\nmatch.seen = false\nactions = [\"flag\"]\n";
+        let toml = "[[rules]]\nname = \"off\"\nenabled = false\nmatch.read = false\nactions = { flagged = true }\n";
         assert!(
             evaluate(
                 &rules(toml, 0),

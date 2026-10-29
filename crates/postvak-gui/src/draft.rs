@@ -1,6 +1,6 @@
 //! Rules in plain language, and rules as the editor's rows of conditions.
 use postvak_core::message::{bare_addresses, clean};
-use postvak_core::rules::{Action, HeaderMatch, Match, OneOrMany, Rule, TextMatch};
+use postvak_core::rules::{Action, Match, OneOrMany, Rule, TextMatch};
 
 /// `subject contains "a" or "b"`: a text condition, whose list matches any of its values.
 fn text_label(
@@ -47,18 +47,13 @@ pub(crate) fn match_labels(m: &Match) -> Vec<String> {
             ));
         }
     }
-    for h in m
-        .header
-        .as_ref()
-        .map(OneOrMany::as_slice)
-        .unwrap_or_default()
-    {
-        let field = format!("header {}", h.name);
+    for (name, t) in m.header.iter().flatten() {
+        let field = format!("header {name}");
         labels.push(text_label(
             &field,
-            h.contains.as_ref(),
-            h.equals.as_ref(),
-            h.regex.as_ref(),
+            t.contains.as_ref(),
+            t.equals.as_ref(),
+            t.regex.as_ref(),
         ));
     }
     for (field, domains) in [("from", &m.from_domain), ("to", &m.to_domain)] {
@@ -80,7 +75,7 @@ pub(crate) fn match_labels(m: &Match) -> Vec<String> {
     labels.extend(m.older_than.as_ref().map(|v| format!("older than {v}")));
     labels.extend(m.larger_than.as_ref().map(|v| format!("larger than {v}")));
     labels.extend(
-        m.seen
+        m.read
             .map(|read| if read { "read" } else { "unread" }.to_string()),
     );
     labels.extend(
@@ -107,7 +102,11 @@ pub(crate) fn match_labels(m: &Match) -> Vec<String> {
 
 pub(crate) fn action_label(action: &Action) -> String {
     match action {
+        Action::Flag => "flag".into(),
         Action::MarkRead => "mark read".into(),
+        Action::MarkUnread => "mark unread".into(),
+        Action::Silent => "silent".into(),
+        Action::Unflag => "unflag".into(),
         Action::Move(folder) => format!("move to {folder}"),
         Action::Tag(keyword) => format!("tag {keyword}"),
         other => other.label(),
@@ -184,7 +183,7 @@ pub(crate) enum Field {
     Authenticated,
     OlderThan,
     LargerThan,
-    Seen,
+    Read,
     Flagged,
     ToMe,
     Alias,
@@ -205,7 +204,7 @@ impl Field {
         Field::Authenticated,
         Field::OlderThan,
         Field::LargerThan,
-        Field::Seen,
+        Field::Read,
         Field::Flagged,
         Field::ToMe,
         Field::Alias,
@@ -224,7 +223,7 @@ impl Field {
             Field::Header => "header",
             Field::LargerThan => "larger than",
             Field::OlderThan => "older than",
-            Field::Seen => "seen",
+            Field::Read => "read",
             Field::Subject => "subject",
             Field::Tag => "tag",
             Field::To => "to",
@@ -245,7 +244,7 @@ impl Field {
     pub fn is_flag(self) -> bool {
         matches!(
             self,
-            Field::Authenticated | Field::Flagged | Field::Seen | Field::ToMe
+            Field::Authenticated | Field::Flagged | Field::Read | Field::ToMe
         )
     }
 }
@@ -357,19 +356,22 @@ pub(crate) fn conditions(m: &Match) -> (Vec<Condition>, Match) {
             None => *slot = Some(t.clone()),
         }
     }
-    let header = match &m.header {
-        Some(OneOrMany::One(h)) => row(
+    for (name, t) in m.header.iter().flatten() {
+        match row(
             Field::Header,
-            &h.name,
-            h.contains.as_ref(),
-            h.equals.as_ref(),
-            h.regex.as_ref(),
-        ),
-        _ => None,
-    };
-    match header {
-        Some(condition) => rows.push(condition),
-        None => kept.header = m.header.clone(),
+            name,
+            t.contains.as_ref(),
+            t.equals.as_ref(),
+            t.regex.as_ref(),
+        ) {
+            Some(condition) => rows.push(condition),
+            None => {
+                _ = kept
+                    .header
+                    .get_or_insert_default()
+                    .insert(name.clone(), t.clone())
+            }
+        }
     }
     let plain = |field, value: String| Condition {
         value,
@@ -391,7 +393,7 @@ pub(crate) fn conditions(m: &Match) -> (Vec<Condition>, Match) {
     );
     rows.extend(m.older_than.clone().map(|v| plain(Field::OlderThan, v)));
     rows.extend(m.larger_than.clone().map(|v| plain(Field::LargerThan, v)));
-    rows.extend(m.seen.map(|v| plain(Field::Seen, v.to_string())));
+    rows.extend(m.read.map(|v| plain(Field::Read, v.to_string())));
     rows.extend(m.flagged.map(|v| plain(Field::Flagged, v.to_string())));
     rows.extend(m.to_me.map(|v| plain(Field::ToMe, v.to_string())));
     rows.extend(m.alias.clone().map(|v| plain(Field::Alias, v)));
@@ -515,19 +517,14 @@ impl Draft {
                 Field::Cc => m.cc.replace(text_match(c)).is_some(),
                 Field::Flagged => m.flagged.replace(flag(c)?).is_some(),
                 Field::From => m.from.replace(text_match(c)).is_some(),
-                Field::Header => {
-                    let t = text_match(c);
-                    let header = HeaderMatch {
-                        name: c.header.clone(),
-                        contains: t.contains,
-                        equals: t.equals,
-                        regex: t.regex,
-                    };
-                    m.header.replace(OneOrMany::One(header)).is_some()
-                }
+                Field::Header => m
+                    .header
+                    .get_or_insert_default()
+                    .insert(c.header.clone(), text_match(c))
+                    .is_some(),
                 Field::LargerThan => m.larger_than.replace(c.value.clone()).is_some(),
                 Field::OlderThan => m.older_than.replace(c.value.clone()).is_some(),
-                Field::Seen => m.seen.replace(flag(c)?).is_some(),
+                Field::Read => m.read.replace(flag(c)?).is_some(),
                 Field::Subject => m.subject.replace(text_match(c)).is_some(),
                 Field::Tag => m.tag.replace(c.value.clone()).is_some(),
                 Field::To => m.to.replace(text_match(c)).is_some(),
@@ -614,18 +611,18 @@ match.to = { contains = "team" }
 match.cc = { regex = "(?i)boss" }
 match.subject = { contains = "code" }
 match.body = { regex = "\\d{6}" }
-match.header = { name = "List-Id", contains = "github.com" }
+match.header.List-Id = { contains = "github.com" }
 match.from_domain = "example.com"
 match.to_domain = "example.org"
 match.authenticated = true
 match.older_than = "1h"
 match.larger_than = "5MB"
-match.seen = true
+match.read = true
 match.flagged = false
 match.to_me = false
 match.alias = "*@shop.example.com"
 match.tag = "$label1"
-actions = [{ move = "Codes" }, { tag = "$label2" }, "mark_read", "flag", "silent", "stop"]
+actions = { move = "Codes", tag = "$label2", read = true, flagged = true, notify = false, stop = true }
 "#;
 
     /// What the form cannot edit: value lists, a header list, `any` and `none`.
@@ -634,11 +631,11 @@ actions = [{ move = "Codes" }, { tag = "$label2" }, "mark_read", "flag", "silent
 name = "grouped"
 match.subject = { contains = ["receipt", "invoice"] }
 match.from = { contains = "shop" }
-match.header = [{ name = "List-Id", contains = "a" }, { name = "X-Kind", equals = "b" }]
+match.header = { List-Id = { contains = "a" }, X-Kind = { equals = "b" } }
 match.from_domain = ["paypal.com", "paypal.nl"]
-match.any = [{ seen = true }, { to_me = false, alias = "x@example.com" }]
+match.any = [{ read = true }, { to_me = false, alias = "x@example.com" }]
 match.none = [{ tag = "$label1" }]
-actions = ["flag"]
+actions = { flagged = true }
 "#;
 
     fn rule(text: &str) -> Rule {
@@ -649,7 +646,7 @@ actions = ["flag"]
     fn the_summary_reads_conditions_then_actions() {
         assert_eq!(
             summary(&rule(
-                "[[rules]]\nname = \"x\"\nmatch.subject = { contains = \"verification code\" }\nactions = [\"delete\"]\n"
+                "[[rules]]\nname = \"x\"\nmatch.subject = { contains = \"verification code\" }\nactions = { delete = true }\n"
             )),
             "subject contains \"verification code\" → delete"
         );
@@ -658,7 +655,7 @@ actions = ["flag"]
             "from equals \"a@example.com\", to contains \"team\", cc matches regex \"(?i)boss\", \
              subject contains \"code\", body matches regex \"\\d{6}\", header List-Id contains \"github.com\", \
              from domain example.com, to domain example.org, authenticated, older than 1h, larger than 5MB, read, not flagged, not to me, alias *@shop.example.com, tag $label1 \
-             → move to Codes, tag $label2, mark read, flag, silent, stop"
+             → move to Codes, mark read, flag, tag $label2, silent, stop"
         );
     }
 
@@ -675,14 +672,15 @@ actions = ["flag"]
     #[test]
     fn the_summary_drops_control_characters() {
         let sneaky = rule(
-            "[[rules]]\nname = \"x\"\nmatch.subject = { contains = \"\\u001b[2Jcode\" }\nactions = [\"delete\"]\n",
+            "[[rules]]\nname = \"x\"\nmatch.subject = { contains = \"\\u001b[2Jcode\" }\nactions = { delete = true }\n",
         );
         assert_eq!(summary(&sneaky), "subject contains \"[2Jcode\" → delete");
     }
 
     #[test]
     fn the_preview_line_counts_messages_and_names_the_actions() {
-        let delete = rule("[[rules]]\nname = \"x\"\nmatch.seen = true\nactions = [\"delete\"]\n");
+        let delete =
+            rule("[[rules]]\nname = \"x\"\nmatch.read = true\nactions = { delete = true }\n");
         assert_eq!(
             preview_text(&delete, 4, false),
             "would delete 4 cached messages"
@@ -693,13 +691,14 @@ actions = ["flag"]
         );
         assert_eq!(preview_text(&delete, 0, false), "matches no cached message");
         let filed = rule(
-            "[[rules]]\nname = \"x\"\nmatch.seen = true\nactions = [{ move = \"Lists/GitHub\" }, \"mark_read\"]\n",
+            "[[rules]]\nname = \"x\"\nmatch.read = true\nactions = { move = \"Lists/GitHub\", read = true }\n",
         );
         assert_eq!(
             preview_text(&filed, 3, false),
             "would move and mark read 3 cached messages to Lists/GitHub"
         );
-        let flag = rule("[[rules]]\nname = \"x\"\nmatch.seen = true\nactions = [\"flag\"]\n");
+        let flag =
+            rule("[[rules]]\nname = \"x\"\nmatch.read = true\nactions = { flagged = true }\n");
         assert_eq!(
             preview_text(&flag, 2, true),
             "would flag 2 cached messages; only mail whose body is downloaded is checked"
@@ -723,15 +722,15 @@ actions = ["flag"]
     }
 
     #[test]
-    fn lists_any_and_none_are_kept_out_of_the_rows() {
+    fn lists_any_and_none_are_kept_out_of_the_rows_and_each_header_is_a_row() {
         let (rows, kept) = conditions(&rule(GROUPED).matches);
         assert_eq!(
             rows.iter().map(|c| c.field).collect::<Vec<_>>(),
-            [Field::From]
+            [Field::From, Field::Header, Field::Header]
         );
         assert!(
             kept.subject.is_some()
-                && kept.header.is_some()
+                && kept.header.is_none()
                 && kept.from_domain.is_some()
                 && kept.any.is_some()
                 && kept.none.is_some()
@@ -781,9 +780,9 @@ actions = ["flag"]
         );
         draft.conditions = vec![Condition {
             value: "maybe".into(),
-            ..Condition::new(Field::Seen)
+            ..Condition::new(Field::Read)
         }];
-        assert_eq!(draft.to_rule().unwrap_err(), "seen must be yes or no");
+        assert_eq!(draft.to_rule().unwrap_err(), "read must be yes or no");
     }
 
     #[test]
@@ -793,9 +792,9 @@ actions = ["flag"]
             ..Condition::new(Field::Subject)
         };
         assert_eq!(subject.with_field(Field::From).value, "code");
-        assert_eq!(subject.with_field(Field::Seen).value, "true");
+        assert_eq!(subject.with_field(Field::Read).value, "true");
         assert_eq!(
-            Condition::new(Field::Seen).with_field(Field::Subject).value,
+            Condition::new(Field::Read).with_field(Field::Subject).value,
             ""
         );
     }

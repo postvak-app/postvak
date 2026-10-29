@@ -197,17 +197,17 @@ mod tests {
 name = "off"
 enabled = false
 match.from = { contains = "shop" }
-actions = ["flag"]
+actions = { flagged = true }
 
 [[rules]]
 name = "receipts"
 match.subject = { contains = "receipt" }
-actions = ["archive"]
+actions = { archive = true }
 
 [[rules]]
 name = "news"
 match.from = { contains = "news@" }
-actions = ["mark_read"]
+actions = { read = true }
 "#,
             )
             .unwrap(),

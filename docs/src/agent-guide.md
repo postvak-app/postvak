@@ -48,11 +48,11 @@ Over MCP, rules your scopes may not run (a `header` condition without `read:head
   "name": "purge sign-in codes",
   "match": {
     "from": { "regex": "no-?reply@" },
-    "subject": { "regex": "(?i)sign.?in|verification code|magic link" },
+    "subject": { "regex": "sign.?in|verification code|magic link" },
     "older_than": "1h",
-    "seen": true
+    "read": true
   },
-  "actions": ["delete"]
+  "actions": { "delete": true }
 }
 ```
 
@@ -62,7 +62,7 @@ Over MCP, rules your scopes may not run (a `header` condition without `read:head
 
 Errors name the rule and the problem, for example `rule 'x': match.from: invalid regex: ...`. Fix the JSON and try again.
 
-Several rules, such as filters migrated from another mail app, go in one call: a JSON array, or `{"rules": [...]}`, on stdin. They are stored in the order given, or none is: an error names each failing rule by its index in the batch and its name, as in `rule 3 'x': ...`. Order matters, because rules run in file order: only the first `move` that matches runs, and `stop` skips the rules after it. `--before NAME` or `--after NAME` puts the proposals right next to that rule instead of at the end.
+Several rules, such as filters migrated from another mail app, go in one call: a JSON array, or `{"rules": [...]}`, on stdin. They are stored in the order given, or none is: an error names each failing rule by its index in the batch and its name, as in `rule 3 'x': ...`. Order matters, because rules run in file order: the first matching `move` and the first matching `notify` win, and `stop` skips the rules after it. `--before NAME` or `--after NAME` puts the proposals right next to that rule instead of at the end.
 
 `postvak rules list --json` reads back what is stored, in file order: each row is the whole rule, with `position`, its 0-based place in the file. To fix a proposal of yours that is still pending, propose it again with `--replace`, which swaps it in place, or take it back with `postvak rules withdraw NAME --by <your name>`. Both only touch a disabled rule whose `proposed_by` is your own; anything else is the human's to change.
 

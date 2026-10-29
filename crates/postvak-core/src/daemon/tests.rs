@@ -1211,7 +1211,7 @@ fn the_watch_warns_once_about_a_conflicting_copy_that_appears_beside_the_rules()
     let dir = paths.config_dir.clone();
     fs::write(
         paths.rules_file(),
-        "[[rules]]\nname = \"old\"\naccount = \"werk\"\nmatch.seen = true\nactions = [\"flag\"]\n",
+        "[[rules]]\nname = \"old\"\naccount = \"werk\"\nmatch.read = true\nactions = { flagged = true }\n",
     )
     .unwrap();
     let mut watch = super::Watch::new(&paths);

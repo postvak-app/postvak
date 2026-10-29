@@ -79,9 +79,9 @@ struct Paging {
 
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum Mark {
-    Flag,
+    Flagged,
     Read,
-    Unflag,
+    Unflagged,
     Unread,
 }
 
@@ -207,10 +207,10 @@ enum Command {
         /// At most this many groups per account
         #[arg(long, default_value_t = 50)]
         limit: u32,
-        /// Only mail that arrived on or after this date: 2026-01-15, or 30d, 3w, 6m, 1y back from now
+        /// Only mail that arrived on or after this date: 2026-01-15, or 30d, 3w, 6mo, 1y back from now
         #[arg(long)]
         after: Option<String>,
-        /// Only mail that arrived before this date: 2026-01-15, or 30d, 3w, 6m, 1y back from now
+        /// Only mail that arrived before this date: 2026-01-15, or 30d, 3w, 6mo, 1y back from now
         #[arg(long)]
         before: Option<String>,
         #[arg(long)]
@@ -820,9 +820,9 @@ pub fn run() -> Result<()> {
         }
         Command::Mark { how, selection } => {
             let action = match how {
-                Mark::Flag => Action::Flag,
+                Mark::Flagged => Action::Flag,
                 Mark::Read => Action::MarkRead,
-                Mark::Unflag => Action::Unflag,
+                Mark::Unflagged => Action::Unflag,
                 Mark::Unread => Action::MarkUnread,
             };
             cmd_act(&config, &paths, selection, action)
@@ -1154,7 +1154,7 @@ fn cmd_attachment(command: AttachmentCommand, config: &Config, paths: &Paths) ->
 fn parse_date(value: &str, now: i64) -> Result<i64> {
     postvak_core::search::date(value, now).with_context(|| {
         format!(
-            "'{}' is not a date; use 2026-01-15, or 30d, 3w, 6m or 1y",
+            "'{}' is not a date; use 2026-01-15, or 30d, 3w, 6mo or 1y",
             clean(value, false)
         )
     })

@@ -34,9 +34,9 @@
     <text x="1460" y="505">[[rules]]</text>
     <text x="1460" y="565">name = <tspan fill="#c94420">"purge sign-in codes"</tspan></text>
     <text x="1460" y="625">match.subject = { regex =</text>
-    <text x="1460" y="685">  <tspan fill="#c94420">"(?i)sign.?in|magic link"</tspan> }</text>
+    <text x="1460" y="685">  <tspan fill="#c94420">"sign.?in|magic link"</tspan> }</text>
     <text x="1460" y="745">match.older_than = <tspan fill="#c94420">"1h"</tspan></text>
-    <text x="1460" y="805">match.seen = <tspan fill="#c94420">true</tspan></text>
-    <text x="1460" y="865">actions = [<tspan fill="#c94420">"delete"</tspan>]</text>
+    <text x="1460" y="805">match.read = <tspan fill="#c94420">true</tspan></text>
+    <text x="1460" y="865">actions.delete = <tspan fill="#c94420">true</tspan></text>
   </g>
 </svg>

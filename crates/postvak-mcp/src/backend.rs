@@ -635,7 +635,7 @@ impl Backend {
             value
                 .map(|v| {
                     search::date(v, now).with_context(|| {
-                        format!("'{v}' is not a date; use 2026-01-15, or 30d, 3w, 6m or 1y")
+                        format!("'{v}' is not a date; use 2026-01-15, or 30d, 3w, 6mo or 1y")
                     })
                 })
                 .transpose()

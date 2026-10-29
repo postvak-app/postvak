@@ -683,7 +683,7 @@ mod tests {
         let fx = Fixture::new(&["work"]);
         std::fs::write(
             fx.paths.rules_file(),
-            "[[rules]]\nname = \"codes\"\nenabled = false\nproposed_by = \"agent\"\nmatch.subject = { contains = \"code\" }\nactions = [\"delete\"]\n",
+            "[[rules]]\nname = \"codes\"\nenabled = false\nproposed_by = \"agent\"\nmatch.subject = { contains = \"code\" }\nactions = { delete = true }\n",
         )
         .unwrap();
         let (open, _wires) = fx.window();

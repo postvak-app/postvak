@@ -108,9 +108,9 @@ mod tests {
     use super::*;
     use crate::rules::parse;
 
-    const RULES: &str = "[[rules]]\nname = \"codes\"\naccount = \"work\"\nmatch.seen = true\nactions = [\"flag\"]\n\n\
-                         [[rules]]\nname = \"all\"\nmatch.seen = true\nactions = [\"flag\"]\n\n\
-                         [[rules]]\nname = \"old\"\naccount = \"werk\"\nmatch.seen = true\nactions = [\"flag\"]\n";
+    const RULES: &str = "[[rules]]\nname = \"codes\"\naccount = \"work\"\nmatch.read = true\nactions = { flagged = true }\n\n\
+                         [[rules]]\nname = \"all\"\nmatch.read = true\nactions = { flagged = true }\n\n\
+                         [[rules]]\nname = \"old\"\naccount = \"werk\"\nmatch.read = true\nactions = { flagged = true }\n";
 
     #[test]
     fn a_rule_for_an_account_not_set_up_here_is_named() {
@@ -131,10 +131,10 @@ mod tests {
     fn a_rule_moving_mail_to_the_folder_it_watches_is_named() {
         let dir = tempfile::tempdir().unwrap();
         let rules = parse(
-            "[[rules]]\nname = \"lists\"\nfolder = \"Lists\"\nmatch.seen = true\nactions = [{ move = \"Lists\" }]\n\n\
-             [[rules]]\nname = \"inbox\"\nmatch.seen = true\nactions = [\"mark_read\", { move = \"Inbox\" }]\n\n\
-             [[rules]]\nname = \"case\"\nfolder = \"Lists\"\nmatch.seen = true\nactions = [{ move = \"lists\" }]\n\n\
-             [[rules]]\nname = \"away\"\nmatch.seen = true\nactions = [{ move = \"Lists\" }]\n",
+            "[[rules]]\nname = \"lists\"\nfolder = \"Lists\"\nmatch.read = true\nactions = { move = \"Lists\" }\n\n\
+             [[rules]]\nname = \"inbox\"\nmatch.read = true\nactions = { read = true, move = \"Inbox\" }\n\n\
+             [[rules]]\nname = \"case\"\nfolder = \"Lists\"\nmatch.read = true\nactions = { move = \"lists\" }\n\n\
+             [[rules]]\nname = \"away\"\nmatch.read = true\nactions = { move = \"Lists\" }\n",
         )
         .unwrap()
         .rules;
@@ -152,10 +152,10 @@ mod tests {
     fn a_rule_using_authenticated_for_an_account_that_trusts_no_server_is_named() {
         let dir = tempfile::tempdir().unwrap();
         let rules = parse(
-            "[[rules]]\nname = \"junk\"\nmatch.from_domain = \"paypal.com\"\nmatch.authenticated = false\nactions = [\"flag\"]\n\n\
-             [[rules]]\nname = \"deep\"\naccount = \"work\"\nmatch.seen = true\nmatch.none = [{ any = [{ authenticated = true }] }]\nactions = [\"flag\"]\n\n\
-             [[rules]]\nname = \"home only\"\naccount = \"home\"\nmatch.authenticated = true\nactions = [\"flag\"]\n\n\
-             [[rules]]\nname = \"plain\"\nmatch.seen = true\nactions = [\"flag\"]\n",
+            "[[rules]]\nname = \"junk\"\nmatch.from_domain = \"paypal.com\"\nmatch.authenticated = false\nactions = { flagged = true }\n\n\
+             [[rules]]\nname = \"deep\"\naccount = \"work\"\nmatch.read = true\nmatch.none = [{ any = [{ authenticated = true }] }]\nactions = { flagged = true }\n\n\
+             [[rules]]\nname = \"home only\"\naccount = \"home\"\nmatch.authenticated = true\nactions = { flagged = true }\n\n\
+             [[rules]]\nname = \"plain\"\nmatch.read = true\nactions = { flagged = true }\n",
         )
         .unwrap()
         .rules;

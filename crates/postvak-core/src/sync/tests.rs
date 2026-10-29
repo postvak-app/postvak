@@ -375,7 +375,7 @@ fn rules_run_deletes_old_seen_code_and_notifies_untouched_new_mail() {
     let trash = Trash::new(dir.path().to_path_buf());
     let acc = account();
     let identity = acc.identity().unwrap();
-    let toml = "[[rules]]\nname = \"purge\"\nmatch.from = { contains = \"noreply@\" }\nmatch.older_than = \"1h\"\nmatch.seen = true\nactions = [\"delete\"]\n";
+    let toml = "[[rules]]\nname = \"purge\"\nmatch.from = { contains = \"noreply@\" }\nmatch.older_than = \"1h\"\nmatch.read = true\nactions = { delete = true }\n";
     let rules = rules_from(toml, &store, 0);
     sync_all(&mut ops, &store).unwrap();
     ops.select("INBOX").unwrap();
@@ -460,8 +460,7 @@ fn body_rule_fetches_bodies_for_new_messages() {
     let trash = Trash::new(dir.path().to_path_buf());
     let acc = account();
     let identity = acc.identity().unwrap();
-    let toml =
-        "[[rules]]\nname = \"codes\"\nmatch.body = { contains = \"code\" }\nactions = [\"flag\"]\n";
+    let toml = "[[rules]]\nname = \"codes\"\nmatch.body = { contains = \"code\" }\nactions = { flagged = true }\n";
     let rules = rules_from(toml, &store, 0);
     sync_all(&mut ops, &store).unwrap();
     ops.add_mail(
@@ -497,8 +496,7 @@ fn body_rule_does_not_download_a_message_over_the_size_cap() {
     let trash = Trash::new(dir.path().to_path_buf());
     let acc = account();
     let identity = acc.identity().unwrap();
-    let toml =
-        "[[rules]]\nname = \"codes\"\nmatch.body = { contains = \"code\" }\nactions = [\"flag\"]\n";
+    let toml = "[[rules]]\nname = \"codes\"\nmatch.body = { contains = \"code\" }\nactions = { flagged = true }\n";
     let rules = rules_from(toml, &store, 0);
     sync_all(&mut ops, &store).unwrap();
     ops.add_mail(
@@ -568,7 +566,7 @@ fn a_body_rule_added_later_skips_mail_its_folder_already_had() {
     );
     pass(&mut ops, &[]);
     let rules = rules_from(
-        "[[rules]]\nname = \"codes\"\nfolder = \"Lists\"\nmatch.body = { contains = \"code\" }\nactions = [\"flag\"]\n",
+        "[[rules]]\nname = \"codes\"\nfolder = \"Lists\"\nmatch.body = { contains = \"code\" }\nactions = { flagged = true }\n",
         &store,
         0,
     );
@@ -605,8 +603,7 @@ fn body_rule_skips_body_fetch_on_first_sync() {
     let trash = Trash::new(dir.path().to_path_buf());
     let acc = account();
     let identity = acc.identity().unwrap();
-    let toml =
-        "[[rules]]\nname = \"codes\"\nmatch.body = { contains = \"code\" }\nactions = [\"flag\"]\n";
+    let toml = "[[rules]]\nname = \"codes\"\nmatch.body = { contains = \"code\" }\nactions = { flagged = true }\n";
     let rules = rules_from(toml, &store, 0);
     sync_all(&mut ops, &store).unwrap();
     run_rules(
@@ -634,7 +631,7 @@ fn disabled_rule_starts_its_clock_when_enabled() {
     let store = Store::open_in_memory().unwrap();
     let rule = |enabled: bool| {
         format!(
-            "[[rules]]\nname = \"codes\"\nenabled = {enabled}\nmatch.seen = true\nactions = [\"delete\"]\n"
+            "[[rules]]\nname = \"codes\"\nenabled = {enabled}\nmatch.read = true\nactions = {{ delete = true }}\n"
         )
     };
     std::fs::write(&path, rule(false)).unwrap();
@@ -661,7 +658,7 @@ fn editing_a_rule_in_place_restarts_its_clock() {
     let store = Store::open_in_memory().unwrap();
     let rule = |from: &str| {
         format!(
-            "[[rules]]\nname = \"purge\"\nmatch.from = {{ contains = \"{from}\" }}\nactions = [\"delete\"]\n"
+            "[[rules]]\nname = \"purge\"\nmatch.from = {{ contains = \"{from}\" }}\nactions = {{ delete = true }}\n"
         )
     };
     std::fs::write(&path, rule("noreply@shop.x")).unwrap();
@@ -684,7 +681,7 @@ fn removed_rule_forgets_its_first_seen() {
     let store = Store::open_in_memory().unwrap();
     let path = dir.path().join("rules.toml");
     let rule = |name: &str| {
-        format!("[[rules]]\nname = \"{name}\"\nmatch.seen = true\nactions = [\"flag\"]\n")
+        format!("[[rules]]\nname = \"{name}\"\nmatch.read = true\nactions = {{ flagged = true }}\n")
     };
     std::fs::write(&path, rule("a") + &rule("b")).unwrap();
     load_rules_for(&store, &path, 100).unwrap();
@@ -706,7 +703,7 @@ fn invalid_rules_file_keeps_previous_rules() {
     let path = dir.path().join("rules.toml");
     std::fs::write(
         &path,
-        "[[rules]]\nname = \"a\"\nmatch.seen = true\nactions = [\"flag\"]\n",
+        "[[rules]]\nname = \"a\"\nmatch.read = true\nactions = { flagged = true }\n",
     )
     .unwrap();
     let good = load_rules_for(&store, &path, 100).unwrap();
@@ -714,7 +711,7 @@ fn invalid_rules_file_keeps_previous_rules() {
     assert_eq!(good[0].first_seen_at, 100);
     std::fs::write(
         &path,
-        "[[rules]]\nname = \"a\"\nmatch.from = { regex = \"(\" }\nactions = [\"flag\"]\n",
+        "[[rules]]\nname = \"a\"\nmatch.from = { regex = \"(\" }\nactions = { flagged = true }\n",
     )
     .unwrap();
     let (events, reported) = std::sync::mpsc::channel();
@@ -728,7 +725,7 @@ fn invalid_rules_file_keeps_previous_rules() {
     let kept = rules.last_good.unwrap();
     assert_eq!(kept.len(), 1);
     assert!(
-        kept[0].rule.matches.seen.is_some(),
+        kept[0].rule.matches.read.is_some(),
         "previous rules kept after a bad edit"
     );
     let errors: Vec<Event> = reported.try_iter().collect();
@@ -789,7 +786,7 @@ fn an_invalid_rules_file_syncs_without_rules_and_says_so_once() {
     std::fs::create_dir_all(&paths.config_dir).unwrap();
     std::fs::write(
         paths.rules_file(),
-        "[[rules]]\nname = \"x\"\nmatch.from = { regex = \"(\" }\nactions = [\"delete\"]\n",
+        "[[rules]]\nname = \"x\"\nmatch.from = { regex = \"(\" }\nactions = { delete = true }\n",
     )
     .unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -891,7 +888,7 @@ fn a_command_that_panics_still_gets_its_answer() {
 }
 
 const INVALID_RULES: &str =
-    "[[rules]]\nname = \"x\"\nmatch.from = { regex = \"(\" }\nactions = [\"delete\"]\n";
+    "[[rules]]\nname = \"x\"\nmatch.from = { regex = \"(\" }\nactions = { delete = true }\n";
 
 #[test]
 fn mail_that_arrives_while_the_rules_file_is_invalid_notifies_once_across_restarts_and_gets_the_rules_once_fixed()
@@ -930,7 +927,7 @@ fn mail_that_arrives_while_the_rules_file_is_invalid_notifies_once_across_restar
     }
     write_rules(
         &paths.config_dir,
-        "[[rules]]\nname = \"codes\"\nmatch.body = { contains = \"code\" }\nactions = [\"flag\"]\n",
+        "[[rules]]\nname = \"codes\"\nmatch.body = { contains = \"code\" }\nactions = { flagged = true }\n",
     );
     state
         .pass(
@@ -1016,7 +1013,7 @@ fn failed_apply_skips_message_and_continues() {
     let acc = account();
     let identity = acc.identity().unwrap();
     let rules = rules_from(
-        "[[rules]]\nname = \"purge\"\nmatch.from = { contains = \"noreply@\" }\nactions = [\"delete\"]\n",
+        "[[rules]]\nname = \"purge\"\nmatch.from = { contains = \"noreply@\" }\nactions = { delete = true }\n",
         &store,
         0,
     );
@@ -1067,7 +1064,7 @@ fn missing_rule_folder_is_skipped() {
         })
         .unwrap();
     let rules = rules_from(
-        "[[rules]]\nname = \"old\"\nfolder = \"Gone\"\nmatch.seen = true\nactions = [\"flag\"]\n",
+        "[[rules]]\nname = \"old\"\nfolder = \"Gone\"\nmatch.read = true\nactions = { flagged = true }\n",
         &store,
         0,
     );
@@ -1107,7 +1104,7 @@ fn a_rule_folder_the_server_lost_is_reported_once_a_rule_would_act() {
     let acc = account();
     let identity = acc.identity().unwrap();
     let rules = rules_from(
-        "[[rules]]\nname = \"old\"\nfolder = \"Gone\"\nmatch.seen = true\nactions = [\"flag\"]\n",
+        "[[rules]]\nname = \"old\"\nfolder = \"Gone\"\nmatch.read = true\nactions = { flagged = true }\n",
         &store,
         0,
     );
@@ -1143,7 +1140,7 @@ fn rules_run_selects_each_folder_once() {
     let acc = account();
     let identity = acc.identity().unwrap();
     let rules = rules_from(
-        "[[rules]]\nname = \"all\"\nmatch.seen = false\nactions = [\"flag\"]\n",
+        "[[rules]]\nname = \"all\"\nmatch.read = false\nactions = { flagged = true }\n",
         &store,
         0,
     );
@@ -1179,7 +1176,7 @@ fn a_rules_pass_with_nothing_to_do_selects_no_folder() {
     let acc = account();
     let identity = acc.identity().unwrap();
     let rules = rules_from(
-        "[[rules]]\nname = \"news\"\nfolder = \"Lists\"\nmatch.from = { equals = \"nobody@x\" }\nactions = [\"flag\"]\n",
+        "[[rules]]\nname = \"news\"\nfolder = \"Lists\"\nmatch.from = { equals = \"nobody@x\" }\nactions = { flagged = true }\n",
         &store,
         0,
     );
@@ -1266,7 +1263,7 @@ fn special_use_falls_back_to_folder_name() {
     let acc = account();
     let identity = acc.identity().unwrap();
     let rules = rules_from(
-        "[[rules]]\nname = \"a\"\nmatch.from = { contains = \"a@x\" }\nactions = [\"archive\"]\n",
+        "[[rules]]\nname = \"a\"\nmatch.from = { contains = \"a@x\" }\nactions = { archive = true }\n",
         &store,
         0,
     );
@@ -1298,7 +1295,7 @@ fn flag_rule_acts_and_logs_once_across_passes() {
     let acc = account();
     let identity = acc.identity().unwrap();
     let rules = rules_from(
-        "[[rules]]\nname = \"boss\"\nmatch.from = { contains = \"boss@\" }\nactions = [\"flag\"]\n",
+        "[[rules]]\nname = \"boss\"\nmatch.from = { contains = \"boss@\" }\nactions = { flagged = true }\n",
         &store,
         0,
     );
@@ -1635,7 +1632,7 @@ fn rules_report_running_and_body_progress() {
     );
     sync_all(&mut ops, &store).unwrap();
     let rules = rules_from(
-        "[[rules]]\nname = \"codes\"\nmatch.body = { contains = \"code\" }\nactions = [\"flag\"]\n",
+        "[[rules]]\nname = \"codes\"\nmatch.body = { contains = \"code\" }\nactions = { flagged = true }\n",
         &store,
         0,
     );
@@ -1677,7 +1674,7 @@ fn a_dropped_connection_ends_the_rules_pass_at_once() {
     }
     sync_all(&mut ops, &store).unwrap();
     let rules = rules_from(
-        "[[rules]]\nname = \"all\"\nmatch.from = { contains = \"bob\" }\nactions = [\"flag\"]\n",
+        "[[rules]]\nname = \"all\"\nmatch.from = { contains = \"bob\" }\nactions = { flagged = true }\n",
         &store,
         0,
     );
@@ -1724,7 +1721,7 @@ fn rules_let_commands_run_between_body_fetches_and_skip_mail_they_moved() {
     }
     sync_all(&mut ops, &store).unwrap();
     let rules = rules_from(
-        "[[rules]]\nname = \"codes\"\nmatch.body = { contains = \"code\" }\nactions = [\"flag\"]\n",
+        "[[rules]]\nname = \"codes\"\nmatch.body = { contains = \"code\" }\nactions = { flagged = true }\n",
         &store,
         0,
     );
@@ -2000,7 +1997,7 @@ fn changed_uidvalidity_blocks_rules_on_stale_rows() {
     let acc = account();
     let identity = acc.identity().unwrap();
     let rules = rules_from(
-        "[[rules]]\nname = \"p\"\nfolder = \"Codes\"\nmatch.subject = { contains = \"code\" }\nactions = [\"delete\"]\n",
+        "[[rules]]\nname = \"p\"\nfolder = \"Codes\"\nmatch.subject = { contains = \"code\" }\nactions = { delete = true }\n",
         &store,
         0,
     );
@@ -2677,8 +2674,7 @@ fn mail_committed_by_a_pass_aborted_at_a_checkpoint_notifies_on_the_next_pass() 
 
 #[test]
 fn a_body_rule_fetches_the_body_of_mail_committed_by_an_aborted_pass() {
-    let rules =
-        "[[rules]]\nname = \"codes\"\nmatch.body = { contains = \"code\" }\nactions = [\"flag\"]\n";
+    let rules = "[[rules]]\nname = \"codes\"\nmatch.body = { contains = \"code\" }\nactions = { flagged = true }\n";
     let (events, store, _dir) = clean_pass_after_an_aborted_one(rules);
     let message = store.message("INBOX", 3).unwrap().unwrap();
     assert!(message.body_text.is_some(), "{events:?}");
@@ -3643,8 +3639,7 @@ fn write_rules(dir: &Path, toml: &str) -> PathBuf {
     path
 }
 
-const FLAG_NOREPLY: &str =
-    "[[rules]]\nname = \"codes\"\nmatch.from = { contains = \"noreply@\" }\nactions = [\"flag\"]\n";
+const FLAG_NOREPLY: &str = "[[rules]]\nname = \"codes\"\nmatch.from = { contains = \"noreply@\" }\nactions = { flagged = true }\n";
 
 #[test]
 fn apply_rule_acts_on_stored_messages_and_reports_the_run() {
@@ -4857,12 +4852,12 @@ fn opposing_move_rules_on_two_machines_stop_after_one_round() {
         Store::open_in_memory().unwrap(),
     );
     let to_lists = rules_from(
-        "[[rules]]\nname = \"a\"\nmatch.from = { contains = \"alice\" }\nactions = [{ move = \"Lists\" }]\n",
+        "[[rules]]\nname = \"a\"\nmatch.from = { contains = \"alice\" }\nactions = { move = \"Lists\" }\n",
         &a,
         0,
     );
     let to_inbox = rules_from(
-        "[[rules]]\nname = \"b\"\nfolder = \"Lists\"\nmatch.from = { contains = \"alice\" }\nactions = [{ move = \"INBOX\" }]\n",
+        "[[rules]]\nname = \"b\"\nfolder = \"Lists\"\nmatch.from = { contains = \"alice\" }\nactions = { move = \"INBOX\" }\n",
         &b,
         0,
     );
@@ -4909,7 +4904,7 @@ fn mail_dragged_back_out_of_a_rule_folder_stays() {
     let acc = account();
     let identity = acc.identity().unwrap();
     let rules = rules_from(
-        "[[rules]]\nname = \"a\"\nmatch.from = { contains = \"alice\" }\nactions = [{ move = \"Lists\" }, \"flag\"]\n",
+        "[[rules]]\nname = \"a\"\nmatch.from = { contains = \"alice\" }\nactions = { move = \"Lists\", flagged = true }\n",
         &store,
         0,
     );

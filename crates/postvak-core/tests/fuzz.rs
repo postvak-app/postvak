@@ -29,7 +29,7 @@ use postvak_core::message::{
     attachments, attachments_and_html, auth, bare_addresses, body_text, clean, clean_for_agent,
     header_value, parse_headers, save_attachment, thread_id,
 };
-use postvak_core::rules::{self, Action, HeaderMatch, Match, OneOrMany, Rule, RuleFile, TextMatch};
+use postvak_core::rules::{self, Action, Match, OneOrMany, Rule, RuleFile, TextMatch};
 use postvak_core::search::{self, Scope};
 use postvak_core::store::{Folder, Message, Store};
 use postvak_core::sync::{Activity, Command, Event};
@@ -625,7 +625,7 @@ fn identity() -> postvak_core::config::Identity {
     account.identity().unwrap()
 }
 
-/// Strings aimed at regex, humantime and glob syntax as well as plain junk.
+/// Strings aimed at regex, duration and glob syntax as well as plain junk.
 fn hostile_text() -> BoxedStrategy<String> {
     prop_oneof![
         ".{0,24}",
@@ -692,6 +692,8 @@ fn action() -> BoxedStrategy<Action> {
     prop_oneof![
         Just(Action::Delete),
         Just(Action::MarkRead),
+        Just(Action::MarkUnread),
+        Just(Action::Unflag),
         Just(Action::Flag),
         Just(Action::Archive),
         Just(Action::Notify),
@@ -701,17 +703,6 @@ fn action() -> BoxedStrategy<Action> {
         hostile_text().prop_map(Action::Tag),
     ]
     .boxed()
-}
-
-fn header_match() -> BoxedStrategy<HeaderMatch> {
-    (hostile_text(), text_match())
-        .prop_map(|(name, t)| HeaderMatch {
-            name,
-            contains: t.contains,
-            equals: t.equals,
-            regex: t.regex,
-        })
-        .boxed()
 }
 
 fn match_leaf() -> BoxedStrategy<Match> {
@@ -730,10 +721,11 @@ fn match_leaf() -> BoxedStrategy<Match> {
     )
         .boxed();
     let others = (
-        proptest::option::of(prop_oneof![
-            header_match().prop_map(OneOrMany::One),
-            proptest::collection::vec(header_match(), 0..3).prop_map(OneOrMany::Many),
-        ]),
+        proptest::option::of(proptest::collection::btree_map(
+            hostile_text(),
+            text_match(),
+            0..3,
+        )),
         proptest::option::of(hostile_text()),
         proptest::option::of(any::<bool>()),
         proptest::option::of(any::<bool>()),
@@ -747,7 +739,7 @@ fn match_leaf() -> BoxedStrategy<Match> {
         .prop_map(
             |(
                 (from, to, cc, subject, body),
-                (header, older_than, seen, to_me, alias, tag, larger_than, flagged),
+                (header, older_than, read, to_me, alias, tag, larger_than, flagged),
                 (from_domain, to_domain, authenticated),
             )| {
                 Match {
@@ -762,7 +754,7 @@ fn match_leaf() -> BoxedStrategy<Match> {
                     authenticated,
                     older_than,
                     larger_than,
-                    seen,
+                    read,
                     flagged,
                     to_me,
                     alias,
