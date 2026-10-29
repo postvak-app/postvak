@@ -3,7 +3,8 @@
 //! `authenticated` for an account that trusts no server's `Authentication-Results`, and a folder written the way IMAP
 //! spells it on the wire, as Postvak showed non-ASCII names before it decoded them. `folder_warnings` adds what an
 //! account's own folders show: a move target written for another hierarchy or namespace. `watched_folder_warnings`
-//! adds a rule watching a folder no account it is for syncs, once those accounts have synced all their folders.
+//! adds a rule watching a folder no account it is for syncs, and a move to a special folder's usual name where the
+//! account keeps that role in another folder, once those accounts have synced all their folders.
 use std::fs;
 use std::path::Path;
 
@@ -249,10 +250,10 @@ fn delimiter<'a>(synced: &[&'a Folder]) -> Option<&'a str> {
 
 /// An account set up here, and the folders it syncs; `synced` is `None` until a pass without errors went through
 /// every folder the server listed, since before that a folder may only not be reached yet.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AccountFolders {
     pub name: String,
-    pub synced: Option<Vec<String>>,
+    pub synced: Option<Vec<Folder>>,
 }
 
 impl AccountFolders {
@@ -296,12 +297,18 @@ pub fn account_folders(paths: &Paths, names: &[impl AsRef<str>]) -> Vec<AccountF
 /// One line per rule, in file order, watching a folder that no account it is for syncs, such as a misspelled name:
 /// only once every one of those accounts has synced all its folders. A rule for every account that one account can
 /// use stays quiet, since it runs there. INBOX matches in any case, and a folder as the engine finds it
-/// ([`folder_name::rule_names`]).
+/// ([`folder_name::rule_names`]). After each rule's line come those of [`role_by_name`] for its moves.
 pub fn watched_folder_warnings(rules: &[Rule], accounts: &[AccountFolders]) -> Vec<String> {
-    rules
-        .iter()
-        .filter_map(|rule| unsynced_folder(rule, accounts))
-        .collect()
+    let mut lines = Vec::new();
+    for rule in rules {
+        lines.extend(unsynced_folder(rule, accounts));
+        for action in &rule.actions {
+            if let Action::Move(target) = action {
+                lines.extend(role_by_name(rule, target, accounts));
+            }
+        }
+    }
+    lines
 }
 
 fn unsynced_folder(rule: &Rule, accounts: &[AccountFolders]) -> Option<String> {
@@ -313,12 +320,9 @@ fn unsynced_folder(rule: &Rule, accounts: &[AccountFolders]) -> Option<String> {
     // A rule for an account not set up here has its own warning.
     covered.peek()?;
     for account in covered {
-        if account
-            .synced
-            .as_ref()?
-            .iter()
-            .any(|folder| same_folder(folder, watched) || folder_name::rule_names(watched, folder))
-        {
+        if account.synced.as_ref()?.iter().any(|folder| {
+            same_folder(&folder.name, watched) || folder_name::rule_names(watched, &folder.name)
+        }) {
             return None;
         }
     }
@@ -330,6 +334,56 @@ fn unsynced_folder(rule: &Rule, accounts: &[AccountFolders]) -> Option<String> {
         "rule '{}' watches '{watched}', which {whom}, so it never runs",
         rule.name
     ))
+}
+
+/// The special-use role a folder of this name usually has, by its last level: `move = "Trash"` on Gmail creates a
+/// folder beside `[Gmail]/Trash`, and `move = "Junk"` on Outlook one beside `Junk Email`.
+fn role_of(target: &str) -> Option<&'static str> {
+    let last = target.rsplit('/').next().unwrap_or(target).to_lowercase();
+    Some(match last.as_str() {
+        "trash" => "Trash",
+        "junk" | "spam" => "Junk",
+        "archive" => "Archive",
+        "sent" => "Sent",
+        "drafts" => "Drafts",
+        _ => return None,
+    })
+}
+
+/// A line per account the rule is for where `target` is not a folder yet and its name is a special folder's, while
+/// the account keeps that role in another folder: only once that account has synced all its folders.
+fn role_by_name(rule: &Rule, target: &str, accounts: &[AccountFolders]) -> Vec<String> {
+    let Some(role) = role_of(target) else {
+        return Vec::new();
+    };
+    accounts
+        .iter()
+        .filter(|a| rule.account.as_deref().is_none_or(|name| name == a.name))
+        .filter_map(|account| {
+            let synced = account.synced.as_ref()?;
+            if synced
+                .iter()
+                .any(|f| same_folder(&f.name, target) || folder_name::rule_names(target, &f.name))
+            {
+                return None;
+            }
+            let special = synced
+                .iter()
+                .find(|f| f.special_use.as_deref() == Some(role))?;
+            let instead = if role == "Archive" {
+                "use the archive action instead".to_string()
+            } else {
+                format!("move to '{}' instead", special.name)
+            };
+            Some(format!(
+                "rule '{}' moves mail to '{target}', a new folder in account '{}', whose {} folder is '{}'; {instead}",
+                rule.name,
+                account.name,
+                role.to_lowercase(),
+                special.name
+            ))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -572,10 +626,74 @@ mod tests {
     }
 
     fn synced(name: &str, folders: &[&str]) -> AccountFolders {
+        with_roles(
+            name,
+            &folders.iter().map(|&f| (f, None)).collect::<Vec<_>>(),
+        )
+    }
+
+    fn with_roles(name: &str, folders: &[(&str, Option<&str>)]) -> AccountFolders {
         AccountFolders {
             name: name.to_string(),
-            synced: Some(folders.iter().map(|f| f.to_string()).collect()),
+            synced: Some(
+                folders
+                    .iter()
+                    .map(|&(folder, role)| Folder {
+                        name: folder.to_string(),
+                        uidvalidity: 1,
+                        last_uid: 0,
+                        special_use: role.map(str::to_string),
+                        delimiter: Some("/".into()),
+                    })
+                    .collect(),
+            ),
         }
+    }
+
+    #[test]
+    fn a_move_to_a_special_folders_name_names_the_folder_with_that_role() {
+        let rules = parse(
+            "[[rules]]\nname = \"bin\"\nmatch.read = true\nactions.move = \"Trash\"\n\n\
+             [[rules]]\nname = \"spam\"\nmatch.read = true\nactions.move = \"Spam\"\n\n\
+             [[rules]]\nname = \"keep\"\nmatch.read = true\nactions.move = \"Old/archive\"\n\n\
+             [[rules]]\nname = \"sent\"\nmatch.read = true\nactions.move = \"Sent\"\n\n\
+             [[rules]]\nname = \"lists\"\nmatch.read = true\nactions.move = \"Lists\"\n",
+        )
+        .unwrap()
+        .rules;
+        let gmail = with_roles(
+            "gmail",
+            &[
+                ("INBOX", None),
+                ("[Gmail]/Trash", Some("Trash")),
+                ("[Gmail]/Spam", Some("Junk")),
+                ("[Gmail]/Archive", Some("Archive")),
+            ],
+        );
+        // A folder named Sent that already exists is what the rule means, whatever its role.
+        let own = with_roles(
+            "own",
+            &[("INBOX", None), ("Sent", None), ("Sent Mail", Some("Sent"))],
+        );
+        assert_eq!(
+            watched_folder_warnings(&rules, &[gmail, own]),
+            [
+                "rule 'bin' moves mail to 'Trash', a new folder in account 'gmail', whose trash folder is \
+                 '[Gmail]/Trash'; move to '[Gmail]/Trash' instead",
+                "rule 'spam' moves mail to 'Spam', a new folder in account 'gmail', whose junk folder is \
+                 '[Gmail]/Spam'; move to '[Gmail]/Spam' instead",
+                "rule 'keep' moves mail to 'Old/archive', a new folder in account 'gmail', whose archive folder is \
+                 '[Gmail]/Archive'; use the archive action instead",
+            ]
+        );
+        let first_sync = AccountFolders {
+            name: "gmail".into(),
+            synced: None,
+        };
+        assert!(
+            watched_folder_warnings(&rules, &[first_sync]).is_empty(),
+            "before a complete pass, the target may exist"
+        );
     }
 
     #[test]

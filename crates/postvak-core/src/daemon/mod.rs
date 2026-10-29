@@ -387,7 +387,8 @@ struct Watch {
     /// The folder warnings by account, each read again from its store only after that account synced.
     folder_lines: BTreeMap<String, Vec<String>>,
     /// The folders each account syncs, read again from its store only after that account synced, for the warning
-    /// about a watched folder none of a rule's accounts syncs, which looks at them all at once.
+    /// about a watched folder none of a rule's accounts syncs, which looks at them all at once, and about a move to a
+    /// special folder's name.
     synced: BTreeMap<String, crate::rules::AccountFolders>,
     /// That warning's lines.
     watched_lines: Vec<String>,

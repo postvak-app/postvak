@@ -379,8 +379,12 @@ fn synced_folders_are_known_only_once_a_pass_went_through_them_all() {
         })
         .unwrap();
     sync_all(&mut ops, &store).unwrap();
+    let synced: Option<Vec<String>> = store
+        .synced_folders()
+        .unwrap()
+        .map(|folders| folders.into_iter().map(|f| f.name).collect());
     assert_eq!(
-        store.synced_folders().unwrap(),
+        synced,
         Some(vec!["INBOX".into(), "Lists".into(), "Trash".into()]),
         "a move's placeholder is not synced"
     );
