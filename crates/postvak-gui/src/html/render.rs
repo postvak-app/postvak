@@ -13,6 +13,7 @@ use blitz_dom::{
 };
 use blitz_traits::shell::{ColorScheme, Viewport};
 use fontique::{Blob, Collection, CollectionOptions, FallbackKey, Script, SourceCache};
+use style::values::computed::Display;
 
 use super::{Load, Pixels, Reply, Request, STRIP, Wake};
 use super::{dark, depth, net};
@@ -24,7 +25,8 @@ const STACK: usize = 64 * 1024 * 1024;
 
 /// The narrowest width a page is laid out at. Responsive mail stacks its columns below 600 px with
 /// `td { display: block }`, and Blitz paints nothing of such a cell (#313): at 601 px the media queries never match, and
-/// a narrower pane scrolls sideways instead of showing blank columns. Remove it once a pinned Blitz paints block cells.
+/// a narrower pane scrolls sideways instead of showing blank columns. `block_cells` covers mail that stacks at a wider
+/// breakpoint. Remove both once a pinned Blitz paints block cells.
 const MIN_WIDTH: f32 = 601.0;
 
 /// The thread's name, which the panic hook uses to keep Blitz's panic messages, which can quote the mail, off stderr.
@@ -230,32 +232,12 @@ fn layout(load: Load) -> Option<(Current, Reply)> {
     let scale = load.scale.max(0.5);
     // Never narrower than `MIN_WIDTH`: see there. A narrower pane scrolls sideways.
     let wide = load.width.max(MIN_WIDTH);
-    let width = physical(wide, scale).max(1);
-    let (provider, remote) = net::Inline::new(load.inline, load.fetched);
-    let config = DocumentConfig {
-        viewport: Some(Viewport::new(
-            width,
-            physical(800.0, scale),
-            scale,
-            scheme(load.dark),
-        )),
-        base_url: Some(BASE.into()),
-        ua_stylesheets: vec![UserAgentStylesheet::default_sheet(), MAIL_SHEET.clone()],
-        net_provider: Some(Arc::new(provider)),
-        font_ctx: fonts(),
-        ..Default::default()
-    };
-    let mut doc = BaseDocument::new(config);
-    // The parse stops early on most deep markup, but a node it moved can end up deeper than it landed.
-    if !depth::parse(&mut doc, &load.html, MAX_DEPTH) || deeper_than(&doc, MAX_DEPTH) {
-        return None;
+    let (mut doc, mut remote) = styled(&load, scale, wide, &[])?;
+    let cells = block_cells(&doc);
+    // Blitz does not rebuild a table's grid when a restyle changes a cell's display: style a fresh document.
+    if !cells.is_empty() {
+        (doc, remote) = styled(&load, scale, wide, &cells)?;
     }
-    font_colours(&mut doc);
-    // The provider answered every request synchronously; take its answers before the layout, and the background
-    // images the styles asked for after it, so they paint and `dark::adapt` sees which of them loaded.
-    doc.handle_messages();
-    doc.resolve(0.0);
-    doc.handle_messages();
     let originals = if load.dark {
         dark::adapt(&mut doc)
     } else {
@@ -276,6 +258,43 @@ fn layout(load: Load) -> Option<(Current, Reply)> {
     };
     let reply = laid(&mut current);
     Some((current, reply))
+}
+
+/// `load` parsed and styled at `wide` points, with the `td` and `th` at the positions `cells` turned back into cells
+/// (`block_cells`), and what its provider noted of remote content; None for markup nested too deep.
+fn styled(
+    load: &Load,
+    scale: f32,
+    wide: f32,
+    cells: &[usize],
+) -> Option<(BaseDocument, Arc<Mutex<BTreeSet<String>>>)> {
+    let (provider, remote) = net::Inline::new(load.inline.clone(), load.fetched.clone());
+    let config = DocumentConfig {
+        viewport: Some(Viewport::new(
+            physical(wide, scale).max(1),
+            physical(800.0, scale),
+            scale,
+            scheme(load.dark),
+        )),
+        base_url: Some(BASE.into()),
+        ua_stylesheets: vec![UserAgentStylesheet::default_sheet(), MAIL_SHEET.clone()],
+        net_provider: Some(Arc::new(provider)),
+        font_ctx: fonts(),
+        ..Default::default()
+    };
+    let mut doc = BaseDocument::new(config);
+    // The parse stops early on most deep markup, but a node it moved can end up deeper than it landed.
+    if !depth::parse(&mut doc, &load.html, MAX_DEPTH) || deeper_than(&doc, MAX_DEPTH) {
+        return None;
+    }
+    font_colours(&mut doc);
+    table_cells(&mut doc, cells);
+    // The provider answered every request synchronously; take its answers before the layout, and the background
+    // images the styles asked for after it, so they paint and `dark::adapt` sees which of them loaded.
+    doc.handle_messages();
+    doc.resolve(0.0);
+    doc.handle_messages();
+    Some((doc, remote))
 }
 
 fn scheme(dark: bool) -> ColorScheme {
@@ -401,6 +420,49 @@ fn font_colours(doc: &mut BaseDocument) {
                     .all(|c| c == '#' || c.is_ascii_alphanumeric());
             let style = node.attr(local_name!("style")).unwrap_or_default();
             plain.then(|| (id, format!("color: {colour}; {style}")))
+        })
+        .collect();
+    let mut mutator = doc.mutate();
+    for (id, style) in styles {
+        mutator.set_attribute(id, QualName::new(None, ns!(), local_name!("style")), &style);
+    }
+}
+
+/// Responsive mail stacks its columns with `td { display: block }` at whatever breakpoint it picks, and Blitz lays such
+/// a cell out one line high (#313): the positions among the page's `td` and `th` of those styled as neither a cell nor
+/// hidden, so the sender's `display: none` still hides one.
+fn block_cells(doc: &BaseDocument) -> Vec<usize> {
+    let Ok(cells) = doc.query_selector_all("td, th") else {
+        return Vec::new();
+    };
+    cells
+        .into_iter()
+        .enumerate()
+        .filter(|&(_, id)| {
+            doc.get_node(id)
+                .and_then(|node| node.primary_styles())
+                .is_some_and(|style| {
+                    !matches!(style.clone_display(), Display::TableCell | Display::None)
+                })
+        })
+        .map(|(position, _)| position)
+        .collect()
+}
+
+/// Makes the `td` and `th` at `positions` cells again, over any author style.
+fn table_cells(doc: &mut BaseDocument, positions: &[usize]) {
+    let Ok(cells) = doc.query_selector_all("td, th") else {
+        return;
+    };
+    let styles: Vec<_> = positions
+        .iter()
+        .filter_map(|&position| {
+            let id = *cells.get(position)?;
+            let style = doc
+                .get_node(id)?
+                .attr(local_name!("style"))
+                .unwrap_or_default();
+            Some((id, format!("{style}; display: table-cell !important")))
         })
         .collect();
     let mut mutator = doc.mutate();
@@ -927,6 +989,39 @@ mod tests {
             .join()
             .unwrap();
         assert_eq!(painted, [true; 2]);
+    }
+
+    #[test]
+    fn a_cell_a_stacking_media_query_makes_a_block_keeps_its_content_and_a_hidden_cell_stays_hidden()
+     {
+        let paragraphs = "<p>a</p><p>b</p><p>c</p><p>d</p><p>e</p>";
+        let page = |style: &str| {
+            format!(
+                "<style>@media (max-width:620px){{{style}}}</style><table width=\"600\"><tr>\
+                 <td class=\"column\">{paragraphs}</td><td class=\"hidden\" style=\"display:none\">x</td></tr></table>"
+            )
+        };
+        let height = |html: &str| laid_out(html, false, Vec::new()).height;
+        let plain = height(&page(""));
+        assert!(plain > 100, "{plain}");
+        for stack in [
+            ".column{display:block}",
+            ".column{display:inline-block!important}",
+        ] {
+            assert_eq!(height(&page(stack)), plain, "{stack}");
+        }
+        let current = laid_out(&page(".column{display:block}"), false, Vec::new());
+        let Some(hidden) = current
+            .doc
+            .query_selector(".hidden")
+            .ok()
+            .flatten()
+            .and_then(|id| current.doc.get_node(id))
+            .and_then(|node| node.primary_styles())
+        else {
+            panic!("no hidden cell");
+        };
+        assert_eq!(hidden.clone_display(), Display::None);
     }
 
     #[test]
