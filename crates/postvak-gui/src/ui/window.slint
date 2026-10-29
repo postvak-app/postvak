@@ -3,7 +3,7 @@ import { Palette as StdPalette } from "std-widgets.slint";
 import { Theme, ThemePreference } from "theme.slint";
 import { FolderItem, FolderPane } from "folders.slint";
 import { StatusBar, StatusLine } from "status.slint";
-import { AccountDialog, ApplyConfirmDialog, HistoryDialog, KeyHelp, KeysDialog, MoveDialog, SourceDialog } from "dialogs.slint";
+import { AccountDialog, ApplyConfirmDialog, HistoryDialog, KeyHelp, KeysDialog, MoveDialog, Scrim, SourceDialog } from "dialogs.slint";
 import { AccountFields } from "account.slint";
 import { BodyInfo, BodyPane, PageInfo, SelectedData, StripData, ToolButton } from "body.slint";
 import { ProposalData, RuleData, RulesPane, Sheet } from "rules.slint";
@@ -629,6 +629,9 @@ export component MailWindow inherits Window {
         close => { root.close-dialog(Dialog.move); }
     }
 
+    if root.source-open: Scrim {
+        close => { root.close-dialog(Dialog.source); }
+    }
     if root.source-open: SourceDialog {
         x: (root.width - self.width) / 2;
         y: (root.height - self.height) / 2;
@@ -639,6 +642,9 @@ export component MailWindow inherits Window {
         close => { root.close-dialog(Dialog.source); }
     }
 
+    if root.about-open: Scrim {
+        close => { root.close-dialog(Dialog.about); }
+    }
     if root.about-open: AboutDialog {
         x: (root.width - self.width) / 2;
         y: Theme.top-bar + Theme.inset;
@@ -652,6 +658,9 @@ export component MailWindow inherits Window {
         open-url(url) => { root.open-link(url); }
     }
 
+    if root.account-open: Scrim {
+        close => { root.close-dialog(Dialog.account); }
+    }
     if root.account-open: AccountDialog {
         x: (root.width - self.width) / 2;
         y: Theme.top-bar + Theme.inset;
@@ -663,6 +672,9 @@ export component MailWindow inherits Window {
         close => { root.close-dialog(Dialog.account); }
     }
 
+    if RuleEditor.open: Scrim {
+        close => { root.close-dialog(Dialog.rule); }
+    }
     if RuleEditor.open: RuleDialog {
         x: (root.width - self.width) / 2;
         y: Theme.top-bar + Theme.inset;
@@ -671,6 +683,9 @@ export component MailWindow inherits Window {
         close => { root.close-dialog(Dialog.rule); }
     }
 
+    if root.apply-confirm != "": Scrim {
+        close => { root.close-dialog(Dialog.apply-confirm); }
+    }
     if root.apply-confirm != "": ApplyConfirmDialog {
         x: (root.width - self.width) / 2;
         y: Theme.top-bar + Theme.inset;
@@ -680,20 +695,18 @@ export component MailWindow inherits Window {
         close => { root.close-dialog(Dialog.apply-confirm); }
     }
 
-    // Dims the panes behind the keys; a click on it closes them.
-    if root.help-open: Rectangle {
-        background: Theme.frame.background.transparentize(85%);
-        TouchArea {
-            clicked => { root.close-dialog(Dialog.help); }
-        }
+    if RuleEditor.unsaved: Scrim {
+        close => { root.close-dialog(Dialog.unsaved); }
     }
-
     if RuleEditor.unsaved: UnsavedDialog {
         x: (root.width - self.width) / 2;
         y: Theme.top-bar + Theme.inset;
         close-icon: root.close-icon;
     }
 
+    if root.help-open: Scrim {
+        close => { root.close-dialog(Dialog.help); }
+    }
     if root.help-open: KeysDialog {
         x: (root.width - self.width) / 2;
         y: Theme.top-bar + Theme.inset;

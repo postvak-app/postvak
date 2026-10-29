@@ -9,6 +9,14 @@ export struct KeyHelp {
     what: string,
 }
 
+// Dims the window under a dialog and keeps clicks and scrolls from reaching it; a click closes the dialog, as Esc does.
+export component Scrim inherits TouchArea {
+    callback close();
+    clicked => { root.close(); }
+    scroll-event(event) => { accept }
+    Rectangle { background: Theme.scrim; }
+}
+
 // A titled box with a close button; its content goes under the title.
 export component Dialog inherits Rectangle {
     in property <string> title;
@@ -19,7 +27,8 @@ export component Dialog inherits Rectangle {
     border-color: Theme.pane.border;
     border-width: 1px;
     border-radius: Theme.radius;
-    drop-shadow-blur: Theme.pad;
+    drop-shadow-blur: 3 * Theme.pad;
+    drop-shadow-offset-y: Theme.pad / 2;
     drop-shadow-color: Theme.shadow;
     accessible-role: groupbox;
     accessible-label: root.title;

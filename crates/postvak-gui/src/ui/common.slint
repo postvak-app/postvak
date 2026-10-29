@@ -115,7 +115,7 @@ export component TextButton inherits Rectangle {
     in property <bool> flush;
     callback clicked();
 
-    height: Theme.row;
+    height: Theme.control;
     border-radius: Theme.pad / 2;
     // A chosen option is pressed in, so the selection fill stays for the list row and folder alone.
     background: root.selected ? root.palette.pressed : root.framed ? root.palette.hover : transparent;
@@ -136,8 +136,8 @@ export component TextButton inherits Rectangle {
         fill: root.framed ? root.palette.pressed : root.palette.hover;
     }
     HorizontalLayout {
-        padding-left: root.framed ? Theme.pad : root.flush ? 0 : Theme.pad / 2;
-        padding-right: root.framed ? Theme.pad : Theme.pad / 2;
+        padding-left: root.framed ? 3 * Theme.pad / 2 : root.flush ? 0 : Theme.pad / 2;
+        padding-right: root.framed ? 3 * Theme.pad / 2 : Theme.pad / 2;
         Text {
             accessible-role: none;
             text: root.text;
