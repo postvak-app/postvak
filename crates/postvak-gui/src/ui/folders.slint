@@ -1,6 +1,6 @@
 // The folder pane on the frame: the wordmark, All inboxes, each account with its folders, and Rules, Activity and
 // Backups pinned at the bottom. `folders.rs` decides what is in it.
-import { ScrollView, Spinner } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Hairline, Heading, HoverFill } from "common.slint";
 
@@ -199,11 +199,16 @@ export component FolderPane inherits Rectangle {
                                 color: Theme.frame.muted;
                                 vertical-alignment: center;
                             }
-                            if item.busy: Spinner {
-                                width: Theme.icon * 3 / 4;
-                                height: Theme.icon * 3 / 4;
+                            // A pulsing dot in the accent rather than std-widgets' spinner, whose colour is the desktop's.
+                            if item.busy: Rectangle {
+                                width: Theme.pad * 3 / 4;
+                                height: self.width;
                                 y: (parent.height - self.height) / 2;
-                                indeterminate: true;
+                                border-radius: self.width / 2;
+                                background: Theme.frame.accent;
+                                opacity: 0.35 + 0.65 * abs(sin(animation-tick() / 1ms * 0.09deg));
+                                accessible-role: progress-indicator;
+                                accessible-label: "Syncing";
                             }
                             if item.note != "": Text {
                                 text: item.note;

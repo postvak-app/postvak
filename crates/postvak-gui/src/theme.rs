@@ -178,6 +178,22 @@ mod tests {
         }
     }
 
+    /// A primary button's text on the brand fill, hovered or not, and a danger button's on the error fill.
+    #[test]
+    fn filled_buttons_pass_aa_in_both_modes() {
+        crate::test_support::headless();
+        let window = StartupWindow::new().unwrap();
+        let theme = window.global::<Theme>();
+        for fill in [theme.get_brand(), theme.get_brand_hover()] {
+            let ratio = contrast(theme.get_on_brand(), fill);
+            assert!(ratio >= 4.5, "primary {fill:?}: {ratio}");
+        }
+        for p in [theme.get_paper(), theme.get_night()] {
+            let ratio = contrast(p.faint, p.error);
+            assert!(ratio >= 4.5, "danger on {:?}: {ratio}", p.panel);
+        }
+    }
+
     /// Regression: light links were once the frame colour, which next to the near-black text read as plain text.
     #[test]
     fn links_stand_apart_from_text_in_every_palette() {

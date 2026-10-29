@@ -209,8 +209,8 @@ export component RulesPane inherits Rectangle {
                 alignment: center;
                 TextButton {
                     text: "Purge";
-                    framed: true;
                     palette: Theme.pane;
+                    text-color: Theme.pane.error;
                     hint: root.purge-hint;
                     clicked => { root.purge(); }
                 }
@@ -219,7 +219,7 @@ export component RulesPane inherits Rectangle {
                 alignment: center;
                 TextButton {
                     text: "Restore";
-                    framed: true;
+                    primary: true;
                     palette: Theme.pane;
                     enabled: root.current-row >= 0;
                     disabled-hint: "Choose a backup first";
@@ -308,7 +308,7 @@ export component RulesPane inherits Rectangle {
                             spacing: Theme.pad / 2;
                             TextButton {
                                 text: "Approve";
-                                framed: true;
+                                primary: true;
                                 palette: Theme.pane;
                                 clicked => { root.approve(i); }
                             }

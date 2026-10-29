@@ -2,7 +2,7 @@
 // several messages selected, the selection. `body.rs` words it, `toolbar.rs` the actions.
 import { ListView, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Hairline, Heading, IconButton, Link, TextButton } from "common.slint";
+import { EmptyState, Hairline, Heading, IconButton, Link, TextButton } from "common.slint";
 
 // A message action: its glyph, its accessible name, its hover hint and the label it shows beside the glyph while
 // several messages are selected.
@@ -22,8 +22,9 @@ export struct SelectedData {
 }
 
 export struct BodyInfo {
-    // Instead of a message, when set.
+    // Instead of a message, when set, with a line under it.
     empty: string,
+    empty-hint: string,
     subject: string,
     initials: string,
     // Which of `Theme.avatars` the initials sit on.
@@ -402,14 +403,13 @@ export component BodyPane inherits Rectangle {
 
     property <bool> several: root.selection-title != "";
 
-    if root.info.empty != "" && !root.several: Text {
+    if root.info.empty != "" && !root.several: EmptyState {
         x: Theme.inset;
-        y: (root.height - self.height) / 2;
+        y: (root.height - self.preferred-height) / 2;
+        height: self.preferred-height;
         width: root.width - 2 * Theme.inset;
-        text: root.info.empty;
-        color: Theme.pane.muted;
-        horizontal-alignment: center;
-        wrap: word-wrap;
+        title: root.info.empty;
+        note: root.info.empty-hint;
     }
 
     // Wide margins while there is room for them.

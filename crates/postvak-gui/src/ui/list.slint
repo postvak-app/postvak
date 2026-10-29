@@ -2,7 +2,7 @@
 // texts; this file only places them.
 import { LineEdit, ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Heading, HoverFill, IconButton } from "common.slint";
+import { EmptyState, Heading, HoverFill, IconButton } from "common.slint";
 
 export struct RowData {
     unread: bool,
@@ -407,13 +407,11 @@ export component ListPane inherits Rectangle {
         }
     }
 
-    if root.empty != "": Text {
+    if root.empty != "": EmptyState {
         x: Theme.inset;
-        y: (root.height - self.height) / 2;
+        y: (root.height - self.preferred-height) / 2;
+        height: self.preferred-height;
         width: root.width - 2 * Theme.inset;
-        text: root.empty;
-        color: Theme.pane.muted;
-        horizontal-alignment: center;
-        wrap: word-wrap;
+        title: root.empty;
     }
 }

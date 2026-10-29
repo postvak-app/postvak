@@ -213,6 +213,7 @@ fn present_body(app: &App, window: &MailWindow) {
     };
     let info = BodyInfo {
         empty: pane.empty.unwrap_or_default().into(),
+        empty_hint: pane.hint.unwrap_or_default().into(),
         subject: text(pane.subject),
         initials: pane.initials.into(),
         tint: i32::try_from(pane.tint).unwrap_or_default(),
