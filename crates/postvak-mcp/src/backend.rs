@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use postvak_core::actions;
-use postvak_core::config::{AccountConfig, Config};
+use postvak_core::config::{self, AccountConfig, Config, SelectError};
 use postvak_core::daemon::Client;
 use postvak_core::daemon::client::LazyClient;
 use postvak_core::message;
@@ -105,26 +105,18 @@ impl Backend {
     /// The named visible account, or every visible one; none at all is an error that says what to do.
     fn select(&self, name: Option<&str>) -> Result<Vec<AccountConfig>> {
         let visible = self.visible();
-        if visible.is_empty() {
-            bail!("no accounts configured; ask the human to run `postvak account add`");
-        }
-        match name {
-            Some(name) => Ok(vec![
-                visible
-                    .into_iter()
-                    .find(|a| a.name == name)
-                    .with_context(|| format!("no account named '{name}'"))?,
-            ]),
-            None => Ok(visible),
-        }
+        Ok(config::select(&visible, name)?
+            .into_iter()
+            .cloned()
+            .collect())
     }
 
     /// One account: the named one, or the only visible one.
     fn single(&self, name: Option<&str>) -> Result<AccountConfig> {
-        let mut selected = self.select(name)?;
-        match (name, selected.len()) {
-            (Some(_), _) | (None, 1) => Ok(selected.swap_remove(0)),
-            (None, _) => bail!("several accounts are visible; pass account"),
+        match config::single(&self.visible(), name) {
+            Ok(account) => Ok(account.clone()),
+            Err(SelectError::Several) => bail!("several accounts are visible; pass account"),
+            Err(e) => Err(e.into()),
         }
     }
 
