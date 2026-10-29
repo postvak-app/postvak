@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 
 use super::fixture::{AT, mail};
-use super::state::{Focus, View};
+use super::state::{Focus, UiAction, View};
 use super::test_support::{Fixture, Open, Wires, message};
 use postvak_core::store::LogEntry;
 use postvak_core::sync::{Activity, Event};
@@ -357,6 +357,64 @@ fn apply_confirm() {
     open.tick();
     assert_eq!(open.find("Delete and apply").len(), 1);
     snapshot(&open, "gui_apply_confirm");
+}
+
+/// The mailbox with `actions` applied in turn, the folder dialog showing their outcome.
+fn folder_dialog(fx: &Fixture, actions: Vec<UiAction>) -> (Open, Wires) {
+    let (open, wires) = open(fx);
+    open.with(|live| {
+        actions
+            .into_iter()
+            .for_each(|action| live.app.apply(action))
+    });
+    open.tick();
+    (open, wires)
+}
+
+#[test]
+fn folder_new() {
+    let fx = Fixture::mailbox("light");
+    let new = vec![
+        UiAction::NewFolder(1, Some("Projects/Website".into())),
+        UiAction::FolderName("Launch".into()),
+    ];
+    let (open, _wires) = folder_dialog(&fx, new);
+    assert_eq!(open.find("Create").len(), 1);
+    snapshot(&open, "gui_folder_new");
+}
+
+#[test]
+fn folder_rename() {
+    let fx = Fixture::mailbox("light");
+    let site = "[[rules]]\nname = \"site\"\nmatch.subject = { contains = \"site\" }\nactions = { move = \"Projects/Website\" }\n\n[[rules]]\nname = \"deploys\"\naccount = \"work\"\nmatch.subject = { contains = \"deploy\" }\nactions = { move = \"Projects/Website\" }\n";
+    std::fs::write(fx.paths.rules_file(), site).unwrap();
+    let rename = vec![
+        UiAction::RenameFolder(1, "Projects/Website".into()),
+        UiAction::FolderName("Site".into()),
+    ];
+    let (open, _wires) = folder_dialog(&fx, rename);
+    assert_eq!(open.find("Rename").len(), 1);
+    snapshot(&open, "gui_folder_rename");
+}
+
+#[test]
+fn folder_delete_not_empty() {
+    let fx = Fixture::mailbox("light");
+    let delete = vec![
+        UiAction::DeleteFolder(1, "Receipts".into()),
+        UiAction::FolderConfirm(None),
+    ];
+    let (open, wires) = folder_dialog(&fx, delete);
+    let not_empty = Event::FolderNotEmpty {
+        account: "work".into(),
+        name: "Receipts".into(),
+        count: 12,
+        has_trash: true,
+        request: 1,
+    };
+    open.receive(&wires, [not_empty]);
+    assert_eq!(open.find("Move 12 messages to Trash").len(), 1);
+    snapshot(&open, "gui_folder_delete_not_empty");
 }
 
 #[test]

@@ -1,9 +1,9 @@
 // The mail window. It draws what `bind.rs` gives it and hands every key and click back as a callback.
 import { Palette as StdPalette } from "std-widgets.slint";
 import { Theme, ThemePreference } from "theme.slint";
-import { FolderItem, FolderPane } from "folders.slint";
+import { FolderItem, FolderPane, MenuChoice } from "folders.slint";
 import { StatusBar, StatusLine } from "status.slint";
-import { AccountDialog, ApplyConfirmDialog, HistoryDialog, KeyHelp, KeysDialog, MoveDialog, Scrim, SourceDialog } from "dialogs.slint";
+import { AccountDialog, ApplyConfirmDialog, FolderDialog, HistoryDialog, KeyHelp, KeysDialog, MoveDialog, Scrim, SourceDialog } from "dialogs.slint";
 import { AccountFields } from "account.slint";
 import { BodyInfo, BodyPane, PageInfo, SelectedData, StripData, ToolButton } from "body.slint";
 import { ProposalData, RuleData, RulesPane, Sheet } from "rules.slint";
@@ -17,7 +17,7 @@ export enum Pane { body, folders, list }
 export enum MenuAction { about, add-account, add-to-selection, archive, delete, documentation, flag, history, junk, keys, mark-folder-read, move, open-at-login, original-colours, read-or-unread, save-eml, save-eml-as, search, select-all, sync-now, text-or-html, theme-dark, theme-light, theme-system, view-source }
 
 // A dialog that closes; the same names as `state::Dialog`.
-export enum Dialog { help, unsaved, apply-confirm, rule, account, about, source, move, history }
+export enum Dialog { help, unsaved, apply-confirm, rule, folder, account, about, source, move, history }
 
 // Which menu items would do something now; the others are disabled.
 export struct MenuState {
@@ -115,6 +115,13 @@ export component MailWindow inherits Window {
     in property <bool> account-saving;
     in property <string> account-progress;
     in property <string> apply-confirm;
+    in property <bool> folder-open;
+    in property <string> folder-title;
+    in property <string> folder-text;
+    in property <bool> folder-field;
+    in property <string> folder-name;
+    in property <string> folder-error;
+    in property <[MenuChoice]> folder-buttons;
 
     in property <BodyInfo> body-info;
     in property <string> body-text;
@@ -211,6 +218,9 @@ export component MailWindow inherits Window {
     callback edit-rule(int);
     callback set-enabled(int, bool);
     callback confirm-apply-rule();
+    callback folder-edited(string);
+    callback folder-accepted();
+    callback folder-chosen(int);
     callback restore(int);
     callback purge-trash();
     callback sort-sheet(int, bool);
@@ -243,6 +253,11 @@ export component MailWindow inherits Window {
     }
     changed move-open => {
         if (!root.move-open) {
+            keys.focus();
+        }
+    }
+    changed folder-open => {
+        if (!root.folder-open) {
             keys.focus();
         }
     }
@@ -670,6 +685,25 @@ export component MailWindow inherits Window {
         close-icon: root.close-icon;
         save(fields) => { root.save-account(fields); }
         close => { root.close-dialog(Dialog.account); }
+    }
+
+    if root.folder-open: Scrim {
+        close => { root.close-dialog(Dialog.folder); }
+    }
+    if root.folder-open: FolderDialog {
+        x: (root.width - self.width) / 2;
+        y: Theme.top-bar + Theme.inset;
+        title: root.folder-title;
+        text: root.folder-text;
+        field: root.folder-field;
+        name: root.folder-name;
+        error: root.folder-error;
+        buttons: root.folder-buttons;
+        close-icon: root.close-icon;
+        edited(text) => { root.folder-edited(text); }
+        accepted => { root.folder-accepted(); }
+        chosen(i) => { root.folder-chosen(i); }
+        close => { root.close-dialog(Dialog.folder); }
     }
 
     if RuleEditor.open: Scrim {

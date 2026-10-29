@@ -1,11 +1,12 @@
 //! The folder pane without a toolkit: the tree of custom folders, the order of special ones, labels and unread counts.
 //! The window draws All inboxes, each account's folders and the Rules, Activity and Backups entries from it.
 
-use postvak_core::folder_name;
 use postvak_core::message::clean;
 use postvak_core::store::Folder;
+use postvak_core::sync::DeleteMode;
+use postvak_core::{folder_name, help};
 
-use super::state::{Account, App, FolderRow, UiAction, View};
+use super::state::{Account, App, FolderKind, FolderRow, UiAction, View};
 use super::{icons, list, numbers, status};
 
 /// A line of the folder pane's scrolling part, top to bottom.
@@ -13,6 +14,8 @@ use super::{icons, list, numbers, status};
 pub(crate) enum Entry {
     /// An account's name, with a spinner while it syncs, a note when it logged in without TLS, and its store error.
     Account {
+        /// Its place in `App::accounts`.
+        index: usize,
         name: String,
         busy: bool,
         note: Option<&'static str>,
@@ -42,7 +45,30 @@ pub(crate) struct FolderEntry {
     /// For a parent row: whether it is expanded, its account and path.
     pub branch: Option<(bool, usize, String)>,
     pub unread: u32,
+    /// Whether the folder may be renamed and deleted, as `FolderRow` says; false for a row that is no folder.
+    pub can_rename: bool,
+    pub can_delete: bool,
 }
+
+impl Entry {
+    /// The right-click menu, as `FolderEntry::menu`; an account's offers a new folder at its top level.
+    pub(crate) fn menu(&self) -> [Vec<(String, bool, UiAction)>; 2] {
+        match self {
+            Entry::Folder(folder) => folder.menu(),
+            Entry::Account { index, .. } => [
+                vec![(
+                    NEW_FOLDER.to_string(),
+                    true,
+                    UiAction::NewFolder(*index, None),
+                )],
+                vec![(status::sync_key().to_string(), true, UiAction::SyncNow)],
+            ],
+            Entry::Separator => Default::default(),
+        }
+    }
+}
+
+const NEW_FOLDER: &str = "New folder…";
 
 impl FolderEntry {
     fn new(icon: &'static str, label: String, unread: u32, view: View, app: &App) -> FolderEntry {
@@ -58,6 +84,8 @@ impl FolderEntry {
             view: Some(view),
             branch: None,
             unread,
+            can_rename: false,
+            can_delete: false,
         }
     }
 
@@ -84,7 +112,7 @@ impl FolderEntry {
     }
 
     /// What the right-click menu offers, as (title, enabled, action): Open and Collapse or Expand, then, below a
-    /// separator, marking read and syncing.
+    /// separator, a new folder under it, renaming and deleting it, marking read and syncing.
     pub(crate) fn menu(&self) -> [Vec<(String, bool, UiAction)>; 2] {
         let mut items = Vec::new();
         let folder = match &self.view {
@@ -104,6 +132,23 @@ impl FolderEntry {
         }
         let mut below = Vec::new();
         if let Some((account, folder)) = folder {
+            below.extend([
+                (
+                    NEW_FOLDER.to_string(),
+                    true,
+                    UiAction::NewFolder(account, Some(folder.clone())),
+                ),
+                (
+                    "Rename…".to_string(),
+                    self.can_rename,
+                    UiAction::RenameFolder(account, folder.clone()),
+                ),
+                (
+                    "Delete…".to_string(),
+                    self.can_delete,
+                    UiAction::DeleteFolder(account, folder.clone()),
+                ),
+            ]);
             let mark = UiAction::MarkFolderRead(account, folder);
             below.push(("Mark all as read".to_string(), self.unread > 0, mark));
         }
@@ -130,6 +175,7 @@ pub(crate) fn entries(app: &App) -> Vec<Entry> {
     }
     for (index, account) in app.accounts.iter().enumerate() {
         entries.push(Entry::Account {
+            index,
             name: account.name.clone(),
             busy: account.busy(),
             note: (account.encrypted == Some(false)).then_some("unencrypted"),
@@ -156,13 +202,11 @@ fn account_entries(app: &App, index: usize, account: &Account) -> Vec<Entry> {
             let icon = special_folder(&folder.name, folder.special_use.as_deref())
                 .map_or(icons::FOLDER, |(_, icon)| icon);
             let label = clean(label(&folder.name), false);
-            Entry::Folder(FolderEntry::new(
-                icon,
-                label,
-                folder.unread,
-                open(&folder.name),
-                app,
-            ))
+            Entry::Folder(FolderEntry {
+                can_rename: folder.can_rename,
+                can_delete: folder.can_delete,
+                ..FolderEntry::new(icon, label, folder.unread, open(&folder.name), app)
+            })
         })
         .collect();
     if !special.is_empty() && !custom.is_empty() {
@@ -171,11 +215,11 @@ fn account_entries(app: &App, index: usize, account: &Account) -> Vec<Entry> {
     let rows = tree(&account.folders);
     let is_collapsed = |path: &str| app.collapsed.contains(&(index, path.to_string()));
     for row in visible(&rows, is_collapsed) {
-        let unread = row
+        let stored = row
             .folder
             .as_ref()
-            .and_then(|name| account.folders.iter().find(|f| &f.name == name))
-            .map_or(0, |f| f.unread);
+            .and_then(|name| account.folders.iter().find(|f| &f.name == name));
+        let unread = stored.map_or(0, |f| f.unread);
         let expanded = !is_collapsed(&row.path);
         let label = clean(&row.label, false);
         let (count, name) = count_and_name(&label, unread);
@@ -193,6 +237,8 @@ fn account_entries(app: &App, index: usize, account: &Account) -> Vec<Entry> {
                 .has_children
                 .then(|| (expanded, index, row.path.clone())),
             unread,
+            can_rename: stored.is_some_and(|f| f.can_rename),
+            can_delete: stored.is_some_and(|f| f.can_delete),
         }));
     }
     entries
@@ -249,15 +295,11 @@ pub(crate) struct TreeRow {
 /// "Work" and "Work/Clients". An `INBOX` + delimiter prefix (Dovecot and Courier namespaces) is dropped when every
 /// custom folder has it; otherwise INBOX's children stay under an INBOX branch, apart from top-level namesakes.
 pub(crate) fn tree(folders: &[FolderRow]) -> Vec<TreeRow> {
+    let strip = under_inbox(folders);
     let custom: Vec<&FolderRow> = folders
         .iter()
         .filter(|f| !is_special(&f.name, f.special_use.as_deref()))
         .collect();
-    let strip = folder_name::under_inbox(
-        custom
-            .iter()
-            .map(|f| (f.name.as_str(), f.delimiter.as_deref())),
-    );
     let mut paths: Vec<(Vec<String>, &FolderRow)> = custom
         .into_iter()
         .map(|f| (segments(f, strip), f))
@@ -300,6 +342,92 @@ pub(crate) fn tree(folders: &[FolderRow]) -> Vec<TreeRow> {
         }
     }
     rows
+}
+
+/// Whether the account keeps its custom folders under `INBOX` + delimiter (`folder_name::under_inbox`).
+pub(crate) fn under_inbox(folders: &[FolderRow]) -> bool {
+    folder_name::under_inbox(
+        folders
+            .iter()
+            .filter(|f| !is_special(&f.name, f.special_use.as_deref()))
+            .map(|f| (f.name.as_str(), f.delimiter.as_deref())),
+    )
+}
+
+/// The folder dialog as the window shows it.
+pub(crate) struct Question {
+    pub title: &'static str,
+    pub text: String,
+    /// The name field's text as the dialog opens, for a new or renamed folder; None for a delete.
+    pub name: Option<String>,
+    pub error: Option<String>,
+    /// (title, enabled, what it confirms).
+    pub buttons: Vec<(String, bool, Option<DeleteMode>)>,
+}
+
+/// What the open folder dialog says and offers.
+pub(crate) fn question(app: &App) -> Option<Question> {
+    let dialog = app.folder_dialog.as_ref()?;
+    let ready = app.folder_ready();
+    let (title, text, name, buttons) = match &dialog.kind {
+        FolderKind::New { parent } => {
+            let text = parent
+                .as_deref()
+                .map(|parent| format!("In {}", clean(parent, false)))
+                .unwrap_or_default();
+            let create = ("Create".to_string(), ready, None);
+            ("New folder", text, Some(dialog.name.clone()), vec![create])
+        }
+        FolderKind::Rename { from, rules } => {
+            let to = app
+                .folder_target(dialog)
+                .filter(|_| !dialog.name.is_empty())
+                .unwrap_or_else(|| from.clone());
+            let lines: Vec<String> = rules
+                .iter()
+                .map(|(rule, split)| match split {
+                    true => help::folder_rule_split(&clean(rule, false)),
+                    false => help::folder_rule_followed(&clean(rule, false), &clean(&to, false)),
+                })
+                .collect();
+            let rename = ("Rename".to_string(), ready, None);
+            (
+                "Rename folder",
+                lines.join("\n"),
+                Some(dialog.name.clone()),
+                vec![rename],
+            )
+        }
+        FolderKind::Delete { folder, not_empty } => {
+            let folder = clean(folder, false);
+            let (text, buttons) = match not_empty {
+                _ if dialog.waiting.is_some() => ("Deleting…".to_string(), Vec::new()),
+                None => (
+                    format!("Delete {folder}?"),
+                    vec![("Delete".to_string(), ready, None)],
+                ),
+                Some((count, has_trash)) => {
+                    let messages = numbers::counted(u64::from(*count), "message", "messages");
+                    let mut buttons = Vec::new();
+                    if *has_trash {
+                        let trash = format!("Move {messages} to Trash");
+                        buttons.push((trash, ready, Some(DeleteMode::Trash)));
+                    }
+                    let permanent = format!("Delete {messages} permanently");
+                    buttons.push((permanent, ready, Some(DeleteMode::Permanent)));
+                    (format!("{folder} holds {messages}."), buttons)
+                }
+            };
+            ("Delete folder", text, None, buttons)
+        }
+    };
+    Some(Question {
+        title,
+        text,
+        name,
+        error: dialog.error.clone(),
+        buttons,
+    })
 }
 
 /// The name after a leading `INBOX` + delimiter, when it has one.
@@ -490,6 +618,30 @@ mod tests {
     }
 
     #[test]
+    fn right_clicking_an_account_offers_a_new_folder() {
+        let fx = Fixture::new(&["home", "work"]);
+        let (open, _wires) = fx.window();
+        assert!(open.find("New folder…").is_empty());
+        open.right_tap("work");
+        assert!(!open.find("New folder…").is_empty());
+    }
+
+    #[test]
+    fn the_folder_dialog_creates_from_its_button() {
+        let fx = Fixture::new(&["work"]);
+        let (open, wires) = fx.window();
+        open.with(|live| live.app.apply(UiAction::NewFolder(0, None)));
+        open.tick();
+        open.window().invoke_folder_edited("Lists".into());
+        open.tick();
+        open.click("Create");
+        let create = postvak_core::sync::Command::CreateFolder {
+            name: "Lists".into(),
+        };
+        assert_eq!(wires.sent(), [("work".to_string(), create)]);
+    }
+
+    #[test]
     fn a_folder_menu_marks_all_its_unread_mail_read() {
         let fx = Fixture::new(&["work"]);
         for uid in 1..=3 {
@@ -558,10 +710,94 @@ mod tests {
             titles("Inbox"),
             [
                 ("Open".to_string(), true),
+                ("New folder…".to_string(), true),
+                ("Rename…".to_string(), false),
+                ("Delete…".to_string(), false),
                 ("Mark all as read".to_string(), false),
                 sync
             ]
         );
+    }
+
+    /// The first three items below the separator of `label`'s menu, which manage the folder.
+    fn managing(app: &App, label: &str) -> Vec<(String, bool, UiAction)> {
+        let entry = entries(app)
+            .into_iter()
+            .find(|e| matches!(e, Entry::Folder(f) if f.label == label))
+            .unwrap();
+        entry.menu()[1][..3].to_vec()
+    }
+
+    fn enabled(items: &[(String, bool, UiAction)]) -> Vec<bool> {
+        items.iter().map(|(_, enabled, _)| *enabled).collect()
+    }
+
+    #[test]
+    fn menu_offers_folder_management() {
+        let fx = Fixture::new(&["work"]);
+        projects(&fx, "work");
+        let (app, _wires) = fx.app();
+        let website = "Projects/Website".to_string();
+        assert_eq!(
+            managing(&app, "Website"),
+            [
+                (
+                    "New folder…".to_string(),
+                    true,
+                    UiAction::NewFolder(0, Some(website.clone()))
+                ),
+                (
+                    "Rename…".to_string(),
+                    true,
+                    UiAction::RenameFolder(0, website.clone())
+                ),
+                (
+                    "Delete…".to_string(),
+                    true,
+                    UiAction::DeleteFolder(0, website)
+                ),
+            ]
+        );
+        let account = entries(&app)
+            .into_iter()
+            .find(|e| matches!(e, Entry::Account { .. }))
+            .unwrap();
+        assert_eq!(
+            account.menu()[0],
+            [(
+                "New folder…".to_string(),
+                true,
+                UiAction::NewFolder(0, None)
+            )]
+        );
+    }
+
+    #[test]
+    fn menu_disables_rename_and_delete_for_inbox_and_special_use() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Archive", Some("Archive"));
+        let (app, _wires) = fx.app();
+        for label in ["Inbox", "Archive"] {
+            assert_eq!(
+                enabled(&managing(&app, label)),
+                [true, false, false],
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn menu_disables_rename_above_a_protected_folder() {
+        let fx = Fixture::new(&["work"]);
+        let store = fx.store("work");
+        store.upsert_folder(&stored("Work")).unwrap();
+        let sent = Folder {
+            special_use: Some("Sent".into()),
+            ..stored("Work/Sent")
+        };
+        store.upsert_folder(&sent).unwrap();
+        let (app, _wires) = fx.app();
+        assert_eq!(enabled(&managing(&app, "Work")), [true, false, true]);
     }
 
     #[test]
@@ -742,6 +978,8 @@ mod tests {
 
     fn custom(name: &str, delimiter: &str) -> FolderRow {
         FolderRow {
+            can_delete: true,
+            can_rename: true,
             name: name.into(),
             special_use: None,
             unread: 0,

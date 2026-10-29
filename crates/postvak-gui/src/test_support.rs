@@ -557,9 +557,13 @@ impl Driver {
         }
     }
 
-    /// Text typed into the move picker's filter or the search field, as their `edited` callbacks send it.
+    /// Text typed into the folder dialog's name, the move picker's filter or the search field, as their `edited`
+    /// callbacks send it.
     fn type_text(&mut self, text: &str) {
-        if let Some(filter) = &self.app.move_picker {
+        if let Some(dialog) = &self.app.folder_dialog {
+            let name = format!("{}{text}", dialog.name);
+            self.apply(UiAction::FolderName(name));
+        } else if let Some(filter) = &self.app.move_picker {
             let filter = format!("{filter}{text}");
             self.apply(UiAction::MoveFilter(filter));
         } else if let Some(query) = &self.app.search {
@@ -568,9 +572,12 @@ impl Driver {
         }
     }
 
-    /// Enter in the move picker moves to the first folder shown; in the search field it opens the first hit.
+    /// Enter in the folder dialog's name confirms it; in the move picker it moves to the first folder shown; in the
+    /// search field it opens the first hit.
     fn enter(&mut self) {
-        if self.app.move_picker.is_some() {
+        if self.app.folder_dialog.is_some() {
+            self.apply(UiAction::FolderConfirm(None));
+        } else if self.app.move_picker.is_some() {
             if let Some(first) = self.app.move_targets().first() {
                 self.apply(UiAction::MoveTo(first.to_string()));
             }

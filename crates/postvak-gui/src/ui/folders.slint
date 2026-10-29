@@ -40,6 +40,25 @@ export struct FolderItem {
     menu-tail: [MenuChoice],
 }
 
+// A row's right-click menu: the items above the separator, then those below; `chosen` gets the group and the place.
+component RowMenu inherits ContextMenuArea {
+    in property <FolderItem> item;
+    callback chosen(int, int);
+    Menu {
+        for choice[j] in item.menu-head: MenuItem {
+            title: choice.title;
+            enabled: choice.enabled;
+            activated => { root.chosen(0, j); }
+        }
+        MenuSeparator { }
+        for choice[j] in item.menu-tail: MenuItem {
+            title: choice.title;
+            enabled: choice.enabled;
+            activated => { root.chosen(1, j); }
+        }
+    }
+}
+
 // A row that opens a view: indent, icon, label, the count and, on a parent, the chevron that folds it.
 component FolderRow inherits Rectangle {
     in property <FolderItem> item;
@@ -185,42 +204,48 @@ export component FolderPane inherits Rectangle {
                 for item[i] in root.items: VerticalLayout {
                     if item.kind == FolderKind.separator: Rectangle { height: Theme.pad; }
                     // In line with the folder names, small and quiet: it groups the folders without competing.
-                    if item.kind == FolderKind.account: VerticalLayout {
-                        padding-top: item.gap ? Theme.inset : Theme.pad;
-                        padding-bottom: Theme.pad / 2;
-                        HorizontalLayout {
-                            height: Theme.row;
-                            padding-left: Theme.pad + Theme.large-icon + Theme.pad * 3 / 2;
-                            spacing: Theme.pad;
-                            Text {
-                                text: item.label;
-                                font-size: Theme.small-size;
-                                letter-spacing: 0.5px;
-                                color: Theme.frame.muted;
-                                vertical-alignment: center;
+                    if item.kind == FolderKind.account: Rectangle {
+                        VerticalLayout {
+                            padding-top: item.gap ? Theme.inset : Theme.pad;
+                            padding-bottom: Theme.pad / 2;
+                            HorizontalLayout {
+                                height: Theme.row;
+                                padding-left: Theme.pad + Theme.large-icon + Theme.pad * 3 / 2;
+                                spacing: Theme.pad;
+                                Text {
+                                    text: item.label;
+                                    font-size: Theme.small-size;
+                                    letter-spacing: 0.5px;
+                                    color: Theme.frame.muted;
+                                    vertical-alignment: center;
+                                }
+                                if item.busy: Spinner {
+                                    width: Theme.icon * 3 / 4;
+                                    height: Theme.icon * 3 / 4;
+                                    y: (parent.height - self.height) / 2;
+                                    indeterminate: true;
+                                }
+                                if item.note != "": Text {
+                                    text: item.note;
+                                    font-size: Theme.small-size;
+                                    color: Theme.frame.error;
+                                    vertical-alignment: center;
+                                }
+                                Rectangle { horizontal-stretch: 1; }
                             }
-                            if item.busy: Spinner {
-                                width: Theme.icon * 3 / 4;
-                                height: Theme.icon * 3 / 4;
-                                y: (parent.height - self.height) / 2;
-                                indeterminate: true;
+                            if item.error != "": HorizontalLayout {
+                                padding-left: Theme.pad + Theme.large-icon + Theme.pad * 3 / 2;
+                                padding-right: Theme.pad;
+                                Text {
+                                    text: item.error;
+                                    color: Theme.frame.error;
+                                    wrap: word-wrap;
+                                }
                             }
-                            if item.note != "": Text {
-                                text: item.note;
-                                font-size: Theme.small-size;
-                                color: Theme.frame.error;
-                                vertical-alignment: center;
-                            }
-                            Rectangle { horizontal-stretch: 1; }
                         }
-                        if item.error != "": HorizontalLayout {
-                            padding-left: Theme.pad + Theme.large-icon + Theme.pad * 3 / 2;
-                            padding-right: Theme.pad;
-                            Text {
-                                text: item.error;
-                                color: Theme.frame.error;
-                                wrap: word-wrap;
-                            }
+                        RowMenu {
+                            item: item;
+                            chosen(group, j) => { root.menu(i, group, j); }
                         }
                     }
                     // The menu sits above the row: a TouchArea takes every button's press before its parent sees it.
@@ -234,20 +259,9 @@ export component FolderPane inherits Rectangle {
                             dragged-row(data) => { root.dragged-row(data) }
                             dropped(row) => { root.dropped(i, row); }
                         }
-                        ContextMenuArea {
-                            Menu {
-                                for choice[j] in item.menu-head: MenuItem {
-                                    title: choice.title;
-                                    enabled: choice.enabled;
-                                    activated => { root.menu(i, 0, j); }
-                                }
-                                MenuSeparator { }
-                                for choice[j] in item.menu-tail: MenuItem {
-                                    title: choice.title;
-                                    enabled: choice.enabled;
-                                    activated => { root.menu(i, 1, j); }
-                                }
-                            }
+                        RowMenu {
+                            item: item;
+                            chosen(group, j) => { root.menu(i, group, j); }
                         }
                     }
                 }

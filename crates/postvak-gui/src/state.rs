@@ -14,12 +14,14 @@ use postvak_core::credentials::Secret;
 use postvak_core::daemon::Client;
 use postvak_core::daemon::client::NewerDaemon;
 use postvak_core::daemon::wire::AccountStatus;
+use postvak_core::folder_name;
 use postvak_core::help;
 use postvak_core::message::{self, Attachment, HtmlBody, clean};
 use postvak_core::paths::{FileWatch, Paths};
+use postvak_core::rules::edit::FolderRename;
 use postvak_core::rules::{self as rule_file, Action, Rule, RuleFile, RulesError};
 use postvak_core::store::{Filter, LogEntry, Message, Store, StoreError};
-use postvak_core::sync::{Activity, Command, Event};
+use postvak_core::sync::{Activity, Command, DeleteMode, Event};
 use postvak_core::trash::Trash;
 use postvak_core::unsubscribe::{self, Method};
 
@@ -112,6 +114,33 @@ pub(crate) fn session(client: Client, wake: Waker) -> anyhow::Result<Connection>
 pub(crate) struct ApplyConfirm {
     pub rule: String,
     pub warning: String,
+}
+
+/// The folder dialog: a new folder's name, a folder's new name, or a delete and its question.
+pub(crate) struct FolderDialog {
+    pub account: usize,
+    pub kind: FolderKind,
+    /// What the name field holds: the new folder's name, or the last level of the renamed folder's.
+    pub name: String,
+    /// Why the name will not do, or why the daemon refused.
+    pub error: Option<String>,
+    /// The folder the sent command is about, until the daemon answers: the window cannot tell its own request ids.
+    pub waiting: Option<String>,
+}
+
+pub(crate) enum FolderKind {
+    /// Under `parent`, joined with its delimiter; at the top level without one.
+    New { parent: Option<String> },
+    /// `rules` name `from` or a folder under it, as `(name, will_split)`.
+    Rename {
+        from: String,
+        rules: Vec<(String, bool)>,
+    },
+    /// `not_empty` is the daemon's answer to the first try: the messages in it, and whether the account has Trash.
+    Delete {
+        folder: String,
+        not_empty: Option<(u32, bool)>,
+    },
 }
 
 /// The one-click unsubscribe in flight, for the message it came from.
@@ -298,12 +327,27 @@ fn folder_rows(
     }
     let mut folders = store.folders()?;
     folders::sort(&mut folders);
+    let names: Vec<String> = folders.iter().map(|f| f.name.clone()).collect();
     folders
         .into_iter()
         .map(|f| {
             let unread =
                 i64::from(store.unread_count(&f.name)?) + delta.get(f.name.as_str()).unwrap_or(&0);
+            let can_delete = folder_name::protected(store, &f.name)?.is_none();
+            // Asks the store only for a folder with children, so a reload does not scan the folders once per folder.
+            let has_children = f
+                .delimiter
+                .as_deref()
+                .filter(|d| !d.is_empty())
+                .is_some_and(|d| {
+                    let prefix = format!("{}{d}", f.name);
+                    names.iter().any(|name| name.starts_with(&prefix))
+                });
+            let can_rename = can_delete
+                && !(has_children && folder_name::protected_below(store, &f.name)?.is_some());
             Ok(FolderRow {
+                can_delete,
+                can_rename,
                 delimiter: f.delimiter,
                 special_use: f.special_use,
                 unread: u32::try_from(unread).unwrap_or(0),
@@ -315,6 +359,10 @@ fn folder_rows(
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct FolderRow {
+    /// Neither INBOX nor a special-use folder (`folder_name::protected`).
+    pub can_delete: bool,
+    /// Deletable, and no folder under it is protected.
+    pub can_rename: bool,
     pub delimiter: Option<String>,
     pub name: String,
     pub special_use: Option<String>,
@@ -362,6 +410,8 @@ pub(crate) enum UiAction {
     /// Open a rule in the editor.
     EditRule(String),
     Collapse,
+    /// Ask before deleting this folder of this account.
+    DeleteFolder(usize, String),
     /// Move the targeted rows into a folder dropped on.
     DropOn(View),
     /// Close the topmost open dialog; with none open, leave the search, else clear the selection.
@@ -370,6 +420,10 @@ pub(crate) enum UiAction {
     /// Shift-click: mark the rows from the cursor to this one, and move the cursor there.
     ExtendSelection(usize),
     SetFilter(Filter),
+    /// The folder dialog's button: create, rename or delete, a delete with what to do with its mail.
+    FolderConfirm(Option<DeleteMode>),
+    /// The folder dialog's name field changed.
+    FolderName(String),
     /// The pointer over the HTML page, in page points, or `None` once it left.
     HtmlHover(Option<[f32; 2]>),
     /// Select the HTML page's text between two points, in page points.
@@ -397,6 +451,8 @@ pub(crate) enum UiAction {
     MoveCursor(isize),
     MoveFilter(String),
     MoveTo(String),
+    /// Ask for the name of a folder to create in this account, under this folder or at the top level.
+    NewFolder(usize, Option<String>),
     /// Open an empty rule in the editor.
     NewRule,
     NextFocus,
@@ -412,6 +468,8 @@ pub(crate) enum UiAction {
     /// Count what a rule would do to the cached mail, without doing it.
     PreviewRule(String),
     RejectRule(String),
+    /// Ask for a new name for this folder of this account.
+    RenameFolder(usize, String),
     /// Start a new rule for mail from the sender of the message shown, given its From.
     RuleFrom(String),
     /// Remove the open rule from rules.toml; unconfirmed, it asks first.
@@ -493,6 +551,7 @@ pub(crate) enum Dialog {
     Unsaved,
     ApplyConfirm,
     Rule,
+    Folder,
     Account,
     About,
     Source,
@@ -501,11 +560,12 @@ pub(crate) enum Dialog {
 }
 
 impl Dialog {
-    const TOP_FIRST: [Dialog; 9] = [
+    const TOP_FIRST: [Dialog; 10] = [
         Dialog::Help,
         Dialog::Unsaved,
         Dialog::ApplyConfirm,
         Dialog::Rule,
+        Dialog::Folder,
         Dialog::Account,
         Dialog::About,
         Dialog::Source,
@@ -588,6 +648,7 @@ pub struct App {
     /// The rule waiting for the user to agree to the mail it would expunge, with the warning per account.
     pub(crate) apply_confirm: Option<ApplyConfirm>,
     pub(crate) help_open: bool,
+    pub(crate) folder_dialog: Option<FolderDialog>,
     /// Numbers HTML layouts, so a reply for an older one is dropped.
     pub(crate) html_generation: u64,
     /// The scale and width the window last gave the HTML view, so the next HTML message lays out at once.
@@ -787,6 +848,7 @@ impl App {
             edits_changed: false,
             load_list: load::load_from_paths,
             move_picker: None,
+            folder_dialog: None,
             account_form: None,
             paths,
             pending_arm: false,
@@ -1114,7 +1176,17 @@ impl App {
                 account.settling.clear();
                 account.queued = 0;
                 self.edits_changed = true;
-                self.note_error(Some(index), message);
+                let waiting = self
+                    .folder_dialog
+                    .as_mut()
+                    .filter(|dialog| dialog.account == index && dialog.waiting.is_some());
+                match waiting {
+                    Some(dialog) => {
+                        dialog.error = Some(clean(&message, false));
+                        dialog.waiting = None;
+                    }
+                    None => self.note_error(Some(index), message),
+                }
                 self.refresh(index);
             }
             Event::Error { message, .. } => self.note_error(Some(index), message),
@@ -1215,10 +1287,38 @@ impl App {
                 contents,
                 ..
             } => self.attachment_fetched(index, (folder, uid), attachment, name, contents),
-            Event::FolderCreated { .. }
-            | Event::FolderDeleted { .. }
-            | Event::FolderRenamed { .. } => self.refresh(index),
-            Event::FolderNotEmpty { .. } => {}
+            Event::FolderCreated { name, .. } => {
+                self.folder_answered(index, &name);
+                self.refresh(index);
+            }
+            Event::FolderDeleted { name, .. } => {
+                self.folder_answered(index, &name);
+                self.refresh(index);
+                let open = View::Folder {
+                    account: index,
+                    folder: name,
+                };
+                if self.view == open {
+                    self.select_view(View::Folder {
+                        account: index,
+                        folder: list::INBOX.into(),
+                    });
+                }
+            }
+            Event::FolderRenamed { from, to, .. } => self.folder_renamed(index, &from, &to),
+            Event::FolderNotEmpty {
+                name,
+                count,
+                has_trash,
+                ..
+            } => {
+                if let Some(dialog) = self.awaited(index, &name)
+                    && let FolderKind::Delete { not_empty, .. } = &mut dialog.kind
+                {
+                    *not_empty = Some((count, has_trash));
+                    dialog.waiting = None;
+                }
+            }
             Event::Restored { folder, .. } => {
                 let line = format!(
                     "{}: restored to {}",
@@ -1347,6 +1447,22 @@ impl App {
                 self.pending_arm = true;
             }
             UiAction::MoveFilter(filter) => self.move_picker = Some(filter),
+            UiAction::NewFolder(account, parent) => self.new_folder(account, parent),
+            UiAction::RenameFolder(account, from) => self.rename_folder(account, from),
+            UiAction::DeleteFolder(account, folder) => {
+                let kind = FolderKind::Delete {
+                    folder,
+                    not_empty: None,
+                };
+                self.open_folder_dialog(account, kind, String::new());
+            }
+            UiAction::FolderName(name) => {
+                if let Some(dialog) = self.folder_dialog.as_mut() {
+                    dialog.name = name;
+                }
+                self.check_folder_name();
+            }
+            UiAction::FolderConfirm(mode) => self.confirm_folder(mode),
             UiAction::MoveTo(folder) => {
                 self.move_picker = None;
                 if self.selected_account_count() > 1 {
@@ -1636,7 +1752,10 @@ impl App {
 
     /// Whether a text field has the keyboard, so letters are text rather than keys.
     pub(crate) fn typing(&self) -> bool {
-        self.search_focused || self.move_picker.is_some() || self.account_form.is_some()
+        self.search_focused
+            || self.move_picker.is_some()
+            || self.account_form.is_some()
+            || self.folder_dialog.is_some()
     }
 
     /// The `m` picker's folders: those of the selected rows' account that match the filter, without the folder the
@@ -3056,12 +3175,244 @@ impl App {
         }
     }
 
+    fn new_folder(&mut self, account: usize, parent: Option<String>) {
+        let folders = &self.accounts[account].folders;
+        let parent = parent
+            .or_else(|| folders::under_inbox(folders).then(|| list::INBOX.to_string()))
+            .filter(|parent| self.delimiter(account, parent).is_some());
+        self.open_folder_dialog(account, FolderKind::New { parent }, String::new());
+    }
+
+    fn rename_folder(&mut self, account: usize, from: String) {
+        let delimiter = self.delimiter(account, &from);
+        let level = delimiter
+            .as_deref()
+            .and_then(|d| from.rsplit_once(d))
+            .map_or(from.as_str(), |(_, level)| level)
+            .to_string();
+        let accounts: Vec<String> = self.accounts.iter().map(|a| a.name.clone()).collect();
+        let rename = FolderRename {
+            account: &self.accounts[account].name,
+            accounts: &accounts,
+            from: &from,
+            to: &from,
+            delimiter: delimiter.as_deref(),
+        };
+        let file = RuleFile {
+            rules: self.rules.rules.clone(),
+        };
+        let rules = rule_file::edit::rules_naming(&file, &rename);
+        self.open_folder_dialog(account, FolderKind::Rename { from, rules }, level);
+    }
+
+    fn open_folder_dialog(&mut self, account: usize, kind: FolderKind, name: String) {
+        self.folder_dialog = Some(FolderDialog {
+            account,
+            kind,
+            name,
+            error: None,
+            waiting: None,
+        });
+    }
+
+    /// The delimiter of the account's `folder`, else the one its other folders use; None on a server without levels.
+    fn delimiter(&self, account: usize, folder: &str) -> Option<String> {
+        let folders = &self.accounts[account].folders;
+        let own = folders.iter().find(|f| f.name == folder);
+        own.into_iter()
+            .chain(folders)
+            .find_map(|f| f.delimiter.clone())
+            .filter(|d| !d.is_empty())
+    }
+
+    /// The whole name the folder dialog would create or rename to: its parent, the delimiter and the field.
+    pub(crate) fn folder_target(&self, dialog: &FolderDialog) -> Option<String> {
+        let parent = match &dialog.kind {
+            FolderKind::New { parent } => parent.clone(),
+            FolderKind::Rename { from, .. } => {
+                let delimiter = self.delimiter(dialog.account, from)?;
+                from.rsplit_once(delimiter.as_str())
+                    .map(|(parent, _)| parent.to_string())
+            }
+            FolderKind::Delete { .. } => return None,
+        };
+        let prefix =
+            parent.and_then(|p| Some(format!("{p}{}", self.delimiter(dialog.account, &p)?)));
+        Some(format!("{}{}", prefix.unwrap_or_default(), dialog.name))
+    }
+
+    /// Whether the folder dialog's button would send: a name that changed and passed, and no answer awaited.
+    pub(crate) fn folder_ready(&self) -> bool {
+        let Some(dialog) = &self.folder_dialog else {
+            return false;
+        };
+        if dialog.waiting.is_some() || dialog.error.is_some() {
+            return false;
+        }
+        match &dialog.kind {
+            FolderKind::Rename { from, .. } => {
+                !dialog.name.is_empty() && self.folder_target(dialog).as_ref() != Some(from)
+            }
+            FolderKind::New { .. } => !dialog.name.is_empty(),
+            FolderKind::Delete { .. } => true,
+        }
+    }
+
+    /// The name the folder dialog would send in NFC, or why it will not do; None while there is nothing to check.
+    fn checked_folder_name(&self) -> Option<Result<String, String>> {
+        let dialog = self.folder_dialog.as_ref()?;
+        let target = self.folder_target(dialog)?;
+        let unchanged = matches!(&dialog.kind, FolderKind::Rename { from, .. } if *from == target);
+        if dialog.name.is_empty() || unchanged {
+            return None;
+        }
+        Some(match &self.accounts[dialog.account].store {
+            Ok(store) => folder_name::check_new(store, &target),
+            Err(e) => Err(e.clone()),
+        })
+    }
+
+    fn check_folder_name(&mut self) {
+        let error = self.checked_folder_name().and_then(Result::err);
+        if let Some(dialog) = self.folder_dialog.as_mut() {
+            dialog.error = error;
+        }
+    }
+
+    fn confirm_folder(&mut self, mode: Option<DeleteMode>) {
+        if !self.folder_ready() {
+            return;
+        }
+        let checked = self.checked_folder_name();
+        let Some(dialog) = &self.folder_dialog else {
+            return;
+        };
+        let (command, about) = match (&dialog.kind, checked) {
+            (FolderKind::New { .. }, Some(Ok(name))) => {
+                (Command::CreateFolder { name: name.clone() }, name)
+            }
+            (FolderKind::Rename { from, .. }, Some(Ok(to))) => (
+                Command::RenameFolder {
+                    from: from.clone(),
+                    to,
+                },
+                from.clone(),
+            ),
+            (FolderKind::Delete { folder, not_empty }, _) => {
+                let offered = match (mode, not_empty) {
+                    (None, None) => true,
+                    (Some(DeleteMode::Trash), Some((_, has_trash))) => *has_trash,
+                    (Some(DeleteMode::Permanent), Some(_)) => true,
+                    _ => false,
+                };
+                if !offered {
+                    return;
+                }
+                let command = Command::DeleteFolder {
+                    name: folder.clone(),
+                    mode,
+                    count: not_empty.map_or(0, |(count, _)| count),
+                };
+                (command, folder.clone())
+            }
+            _ => return,
+        };
+        let sent = self.send(dialog.account, command);
+        if let Some(dialog) = self.folder_dialog.as_mut() {
+            if sent {
+                dialog.waiting = Some(about);
+            } else {
+                dialog.error = Some(DAEMON_LOST.into());
+            }
+        }
+    }
+
+    /// The folder dialog when it waits for the daemon's answer about the account's `folder`.
+    fn awaited(&mut self, account: usize, folder: &str) -> Option<&mut FolderDialog> {
+        self.folder_dialog.as_mut().filter(|dialog| {
+            dialog.account == account
+                && dialog
+                    .waiting
+                    .as_deref()
+                    .is_some_and(|waiting| folder_name::same(waiting, folder))
+        })
+    }
+
+    /// The daemon did what the folder dialog asked: it closes.
+    fn folder_answered(&mut self, account: usize, folder: &str) {
+        if self.awaited(account, folder).is_some() {
+            self.folder_dialog = None;
+        }
+    }
+
+    /// Rules follow a rename by any front end, the view follows a shown folder, and the dialog that asked closes.
+    fn folder_renamed(&mut self, index: usize, from: &str, to: &str) {
+        self.folder_answered(index, from);
+        let delimiter = self.delimiter(index, from);
+        self.follow_rename(index, from, to, delimiter.as_deref());
+        self.refresh(index);
+        let View::Folder { account, folder } = &self.view else {
+            return;
+        };
+        let rest = match folder.strip_prefix(from) {
+            Some("") => Some(""),
+            Some(rest) => delimiter
+                .as_deref()
+                .and_then(|d| rest.strip_prefix(d).map(|_| rest)),
+            None => None,
+        };
+        if *account == index
+            && let Some(rest) = rest
+        {
+            let folder = format!("{to}{rest}");
+            self.select_view(View::Folder {
+                account: index,
+                folder,
+            });
+        }
+    }
+
+    fn follow_rename(&mut self, index: usize, from: &str, to: &str, delimiter: Option<&str>) {
+        let accounts: Vec<String> = self.accounts.iter().map(|a| a.name.clone()).collect();
+        let rename = FolderRename {
+            account: &self.accounts[index].name,
+            accounts: &accounts,
+            from,
+            to,
+            delimiter,
+        };
+        let path = self.paths.rules_file();
+        let naming = rule_file::load(&path)
+            .map(|file| rule_file::edit::rules_naming(&file, &rename))
+            .map_err(|e| e.to_string());
+        // Nothing to follow: rules.toml is left as it is, or not made.
+        if naming.as_ref().is_ok_and(Vec::is_empty) {
+            return;
+        }
+        match rule_file::edit::follow_rename(&path, &rename) {
+            Ok(_) => self.rules_changed(),
+            Err(e) => {
+                let names = naming.map(|pairs| {
+                    let names = pairs.into_iter().map(|(name, _)| clean(&name, false));
+                    names.collect::<Vec<_>>()
+                });
+                let message = help::folder_rules_not_updated(
+                    &clean(from, false),
+                    &e.to_string(),
+                    names.as_deref().map_err(String::as_str),
+                );
+                self.note_error(Some(index), message);
+            }
+        }
+    }
+
     fn dialog_open(&self, dialog: Dialog) -> bool {
         match dialog {
             Dialog::Help => self.help_open,
             Dialog::Unsaved => self.leave_draft.is_some(),
             Dialog::ApplyConfirm => self.apply_confirm.is_some(),
             Dialog::Rule => self.rule_draft.is_some() && self.view == View::Rules,
+            Dialog::Folder => self.folder_dialog.is_some(),
             Dialog::Account => self.account_form.is_some(),
             Dialog::About => self.about_open,
             Dialog::Source => self.body.as_ref().is_some_and(|b| b.source.is_some()),
@@ -3081,6 +3432,7 @@ impl App {
             Dialog::Unsaved => self.leave_draft = None,
             Dialog::ApplyConfirm => self.apply_confirm = None,
             Dialog::Rule => self.open_draft(None),
+            Dialog::Folder => self.folder_dialog = None,
             Dialog::Account => {
                 // During the login test nothing is saved yet and the save gives up; once it writes, it finishes
                 // first, so its account joins the window.
@@ -4701,5 +5053,268 @@ mod tests {
         assert!(wires.sent().is_empty());
         assert!(driver.app.move_picker.is_none());
         assert_eq!(driver.app.error.as_deref(), Some(MOVE_ONE_ACCOUNT));
+    }
+
+    fn slashed(name: &str) -> postvak_core::store::Folder {
+        postvak_core::store::Folder {
+            name: name.into(),
+            uidvalidity: 1,
+            last_uid: 0,
+            special_use: None,
+            delimiter: Some("/".into()),
+        }
+    }
+
+    /// The folder dialog's buttons, as (title, enabled).
+    fn buttons(driver: &Driver) -> Vec<(String, bool)> {
+        folders::question(&driver.app)
+            .unwrap()
+            .buttons
+            .into_iter()
+            .map(|(title, enabled, _)| (title, enabled))
+            .collect()
+    }
+
+    fn created(name: &str) -> Event {
+        Event::FolderCreated {
+            account: "work".into(),
+            name: name.into(),
+            request: 7,
+        }
+    }
+
+    fn deleted(name: &str) -> Event {
+        Event::FolderDeleted {
+            account: "work".into(),
+            name: name.into(),
+            request: 7,
+        }
+    }
+
+    fn renamed(from: &str, to: &str) -> Event {
+        Event::FolderRenamed {
+            account: "work".into(),
+            from: from.into(),
+            to: to.into(),
+            request: 7,
+        }
+    }
+
+    fn not_empty(name: &str, count: u32, has_trash: bool) -> Event {
+        Event::FolderNotEmpty {
+            account: "work".into(),
+            name: name.into(),
+            count,
+            has_trash,
+            request: 7,
+        }
+    }
+
+    fn delete(name: &str, mode: Option<DeleteMode>, count: u32) -> (String, Command) {
+        let command = Command::DeleteFolder {
+            name: name.into(),
+            mode,
+            count,
+        };
+        ("work".into(), command)
+    }
+
+    #[test]
+    fn new_folder_under_selected_joins_with_delimiter() {
+        let fx = Fixture::new(&["work"]);
+        fx.store("work")
+            .upsert_folder(&slashed("Projects/Website"))
+            .unwrap();
+        let (mut driver, wires) = fx.driver();
+        driver.apply(UiAction::NewFolder(0, Some("Projects/Website".into())));
+        driver.press("Q3 enter");
+        let create = Command::CreateFolder {
+            name: "Projects/Website/Q3".into(),
+        };
+        assert_eq!(wires.sent(), [("work".to_string(), create)]);
+        assert!(
+            driver.app.folder_dialog.is_some(),
+            "open until the daemon answers"
+        );
+        driver.receive(&wires, [created("Projects/Website/Q3")]);
+        assert!(driver.app.folder_dialog.is_none());
+    }
+
+    #[test]
+    fn new_folder_on_an_account_that_keeps_folders_under_inbox_goes_there() {
+        let fx = Fixture::new(&["work"]);
+        let clients = postvak_core::store::Folder {
+            delimiter: Some(".".into()),
+            ..slashed("INBOX.Clients")
+        };
+        fx.store("work").upsert_folder(&clients).unwrap();
+        let (mut driver, wires) = fx.driver();
+        driver.apply(UiAction::NewFolder(0, None));
+        driver.press("Q3 enter");
+        let create = Command::CreateFolder {
+            name: "INBOX.Q3".into(),
+        };
+        assert_eq!(wires.sent(), [("work".to_string(), create)]);
+    }
+
+    #[test]
+    fn new_folder_name_error_disables_confirm() {
+        let fx = Fixture::new(&["work"]);
+        let (mut driver, wires) = fx.driver();
+        driver.apply(UiAction::NewFolder(0, None));
+        assert_eq!(buttons(&driver), [("Create".to_string(), false)], "empty");
+        driver.press("INBOX");
+        let dialog = driver.app.folder_dialog.as_ref().unwrap();
+        assert_eq!(
+            dialog.error.as_deref(),
+            Some("a folder named INBOX already exists")
+        );
+        assert_eq!(buttons(&driver), [("Create".to_string(), false)]);
+        driver.press("enter");
+        assert!(wires.sent().is_empty());
+    }
+
+    #[test]
+    fn a_refusal_shows_in_the_folder_dialog() {
+        let fx = Fixture::new(&["work"]);
+        let (mut driver, wires) = fx.driver();
+        driver.apply(UiAction::NewFolder(0, None));
+        driver.press("Lists enter");
+        assert_eq!(wires.sent().len(), 1);
+        driver.receive(&wires, [refused("work", 0, "work is offline")]);
+        let dialog = driver.app.folder_dialog.as_ref().unwrap();
+        assert_eq!(dialog.error.as_deref(), Some("work is offline"));
+        assert_eq!(driver.app.accounts[0].error, None);
+        assert_eq!(buttons(&driver), [("Create".to_string(), false)]);
+        driver.press("2");
+        assert_eq!(
+            buttons(&driver),
+            [("Create".to_string(), true)],
+            "an edit tries again"
+        );
+    }
+
+    #[test]
+    fn rename_lists_rules_that_follow() {
+        let fx = Fixture::new(&["home", "work"]);
+        fx.store("work")
+            .upsert_folder(&slashed("Projects/Website"))
+            .unwrap();
+        let rules = "[[rules]]\nname = \"sites\"\nmatch.subject = { contains = \"site\" }\nactions = { move = \"Projects/Website\" }\n\n[[rules]]\nname = \"old\"\naccount = \"work\"\nfolder = \"Projects/Website/Old\"\nmatch.subject = { contains = \"old\" }\nactions = { flagged = true }\n\n[[rules]]\nname = \"home\"\naccount = \"home\"\nmatch.subject = { contains = \"site\" }\nactions = { move = \"Projects/Website\" }\n";
+        std::fs::write(fx.paths.rules_file(), rules).unwrap();
+        let (mut driver, wires) = fx.driver();
+        driver.apply(UiAction::RenameFolder(1, "Projects/Website".into()));
+        let dialog = driver.app.folder_dialog.as_ref().unwrap();
+        assert_eq!(dialog.name, "Website");
+        assert_eq!(
+            buttons(&driver),
+            [("Rename".to_string(), false)],
+            "unchanged"
+        );
+        driver.apply(UiAction::FolderName("Site".into()));
+        let question = folders::question(&driver.app).unwrap();
+        assert_eq!(
+            question.text,
+            [
+                help::folder_rule_split("sites"),
+                help::folder_rule_followed("old", "Projects/Site")
+            ]
+            .join("\n")
+        );
+        driver.press("enter");
+        let rename = Command::RenameFolder {
+            from: "Projects/Website".into(),
+            to: "Projects/Site".into(),
+        };
+        assert_eq!(wires.sent(), [("work".to_string(), rename)]);
+        driver.receive(&wires, [renamed("Projects/Website", "Projects/Site")]);
+        assert!(driver.app.folder_dialog.is_none());
+        let file = std::fs::read_to_string(fx.paths.rules_file()).unwrap();
+        assert!(file.contains("folder = \"Projects/Site/Old\""), "{file}");
+        assert!(file.contains("name = \"sites (work)\""), "{file}");
+    }
+
+    #[test]
+    fn delete_not_empty_offers_trash_and_permanent() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Old", None);
+        let (mut driver, wires) = fx.driver();
+        driver.apply(UiAction::DeleteFolder(0, "Old".into()));
+        assert!(wires.sent().is_empty(), "asks first");
+        driver.apply(UiAction::FolderConfirm(None));
+        assert_eq!(wires.sent(), [delete("Old", None, 0)]);
+        assert_eq!(folders::question(&driver.app).unwrap().text, "Deleting…");
+        driver.receive(&wires, [not_empty("Old", 3, true)]);
+        assert_eq!(
+            buttons(&driver),
+            [
+                ("Move 3 messages to Trash".to_string(), true),
+                ("Delete 3 messages permanently".to_string(), true)
+            ]
+        );
+        driver.apply(UiAction::FolderConfirm(Some(DeleteMode::Trash)));
+        assert_eq!(wires.sent(), [delete("Old", Some(DeleteMode::Trash), 3)]);
+        driver.receive(&wires, [deleted("Old")]);
+        assert!(driver.app.folder_dialog.is_none());
+    }
+
+    #[test]
+    fn delete_without_trash_offers_permanent_only() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Old", None);
+        let (mut driver, wires) = fx.driver();
+        driver.apply(UiAction::DeleteFolder(0, "Old".into()));
+        driver.apply(UiAction::FolderConfirm(None));
+        driver.receive(&wires, [not_empty("Old", 1, false)]);
+        assert_eq!(
+            buttons(&driver),
+            [("Delete 1 message permanently".to_string(), true)]
+        );
+        driver.apply(UiAction::FolderConfirm(Some(DeleteMode::Trash)));
+        assert_eq!(
+            wires.sent(),
+            [delete("Old", None, 0)],
+            "no Trash to move to"
+        );
+    }
+
+    #[test]
+    fn renamed_selected_folder_keeps_the_view() {
+        let fx = Fixture::new(&["work"]);
+        fx.store("work")
+            .upsert_folder(&slashed("Projects/Website"))
+            .unwrap();
+        let (mut driver, wires) = fx.driver();
+        let open = |folder: &str| View::Folder {
+            account: 0,
+            folder: folder.into(),
+        };
+        driver.apply(UiAction::SelectView(open("Projects/Website")));
+        driver.receive(&wires, [renamed("Projects/Website", "Projects/Site")]);
+        assert_eq!(driver.app.view, open("Projects/Site"));
+    }
+
+    #[test]
+    fn deleted_selected_folder_returns_to_inbox() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Old", None);
+        let (mut driver, wires) = fx.driver();
+        let open = |folder: &str| View::Folder {
+            account: 0,
+            folder: folder.into(),
+        };
+        driver.apply(UiAction::SelectView(open("Old")));
+        driver.receive(&wires, [deleted("Old")]);
+        assert_eq!(driver.app.view, open("INBOX"));
+    }
+
+    #[test]
+    fn escape_closes_the_folder_dialog() {
+        let fx = Fixture::new(&["work"]);
+        let (mut driver, _wires) = fx.driver();
+        driver.apply(UiAction::NewFolder(0, None));
+        assert_eq!(driver.app.top_dialog(), Some(Dialog::Folder));
+        driver.press("escape");
+        assert!(driver.app.folder_dialog.is_none());
     }
 }
