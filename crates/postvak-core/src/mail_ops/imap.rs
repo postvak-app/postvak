@@ -559,9 +559,7 @@ fn listed_folder(
     delimiter: Option<&str>,
     name: &str,
 ) -> Option<RemoteFolder> {
-    let nonexistent = |a: &NameAttribute<'_>| {
-        matches!(a, NameAttribute::Extension(s) if s.eq_ignore_ascii_case("\\NonExistent"))
-    };
+    let nonexistent = |a: &NameAttribute<'_>| matches!(a, NameAttribute::Extension(s) if s.eq_ignore_ascii_case("\\NonExistent"));
     if attrs.iter().any(nonexistent) {
         return None;
     }

@@ -360,6 +360,7 @@ fn synced_folders_are_known_only_once_a_pass_went_through_them_all() {
         name: "Bogus".into(),
         special_use: None,
         delimiter: None,
+        noselect: false,
     };
     ops.folders.push(bogus);
     sync_all(&mut ops, &store).unwrap();

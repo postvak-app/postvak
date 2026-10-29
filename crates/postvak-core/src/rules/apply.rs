@@ -349,7 +349,10 @@ fn move_many(
     if moving.is_empty() {
         return results;
     }
-    if store.is_noselect(&folder_name::nfc(target)).unwrap_or(false) {
+    if store
+        .is_noselect(&folder_name::nfc(target))
+        .unwrap_or(false)
+    {
         for msg in moving {
             results.push((msg.uid, Err(ApplyError::NoSelect(target.to_string()))));
         }
