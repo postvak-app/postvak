@@ -127,7 +127,7 @@ On macOS a notification shows the sender and the subject as Postvak's once Postv
 - [Flag certain people or topics](#flag-certain-people-or-topics): `any`, `flagged`
 - [Set large mail aside](#set-large-mail-aside): `larger_than`, `flagged`, `move`, `stop`
 - [Archive read mail after 30 days](#archive-read-mail-after-30-days): `read`, `older_than`, `archive`
-- [Tag spam by its score](#tag-spam-by-its-score): `header` with a regex
+- [Tag spam by its score](#tag-spam-by-its-score): `header` with a regex, `tag`, `junk`
 
 ### Delete sign-in codes
 
@@ -246,7 +246,7 @@ actions.archive = true
 
 ### Tag spam by its score
 
-Filter junk on your provider's spam score. Many servers score mail but only move it to Junk above a high threshold; SpamAssassin writes the score as stars in `X-Spam-Level`, and some providers use their own header, such as `X-Soverin-Spam-Level`. Look at the headers of a few spam and legitimate messages with `postvak headers UID` to find yours, tag first to see what a threshold catches, then change the action to `actions.junk = true` once it only catches spam:
+Filter junk on your provider's spam score. Many servers score mail but only move it to Junk above a high threshold; SpamAssassin writes the score as stars in `X-Spam-Level`, and some providers use their own header, such as `X-Soverin-Spam-Level`. Look at the headers of a few spam and legitimate messages with `postvak headers UID` to find yours, tag first to see what a threshold catches, then change the action once it only catches spam:
 
 ```toml
 [[rules]]
@@ -254,6 +254,15 @@ name = "spam suspects"
 match.header.X-Spam-Level = { regex = '^\*{2,}' }
 actions.tag = "$SpamSuspect"
 ```
+
+```toml
+[[rules]]
+name = "spam"
+match.header.X-Spam-Level = { regex = '^\*{5,}' }
+actions.junk = true
+```
+
+`junk` finds the account's Junk folder whatever the server calls it, such as `[Gmail]/Spam`, and tags the mail `$Junk` so the server's filter learns from it, as reporting it by hand does.
 
 ## Sharing rules between devices
 
