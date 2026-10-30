@@ -338,6 +338,20 @@ pub struct LogEntry {
     pub trash_file: Option<String>,
 }
 
+/// `Store::rule_actions`'s query: ?1 folder, ?2 uid, ?3 Message-ID, ?4 archive folder, ?5 internaldate. Every row must
+/// carry the message's own Message-ID, so a UID reused after a folder was recreated does not inherit old rows.
+const RULE_ACTIONS: &str =
+    "SELECT id, at, rule_name, folder, uid, message_id, subject, action, trash_file FROM rule_log
+     WHERE message_id IS ?3
+       AND ((folder = ?1 AND uid = ?2)
+        OR (folder, uid) IN (
+            SELECT l.folder, l.uid FROM rule_log l
+            WHERE l.message_id = ?3
+              AND (l.action = 'move:' || ?1 OR (l.action = 'archive' AND ?1 = ?4))
+              AND EXISTS (SELECT 1 FROM rule_moves m
+                          WHERE m.folder = l.folder AND m.message_id = ?3 AND m.internaldate = ?5)))
+     ORDER BY at DESC, id DESC";
+
 /// How often a rule acted: the messages it acted on since a time, each counted once, and when it last acted at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuleHits {
@@ -1509,17 +1523,7 @@ impl Store {
         msg: &Message,
         archive: Option<&str>,
     ) -> Result<Vec<LogEntry>, StoreError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, at, rule_name, folder, uid, message_id, subject, action, trash_file FROM rule_log
-             WHERE (folder = ?1 AND uid = ?2)
-                OR (folder, uid) IN (
-                    SELECT l.folder, l.uid FROM rule_log l
-                    WHERE l.message_id = ?3
-                      AND (l.action = 'move:' || ?1 OR (l.action = 'archive' AND ?1 = ?4))
-                      AND EXISTS (SELECT 1 FROM rule_moves m
-                                  WHERE m.folder = l.folder AND m.message_id = ?3 AND m.internaldate = ?5))
-             ORDER BY at DESC, id DESC",
-        )?;
+        let mut stmt = self.conn.prepare(RULE_ACTIONS)?;
         let rows = serde_rusqlite::from_rows::<LogEntry>(stmt.query(params![
             msg.folder,
             msg.uid,
@@ -1757,6 +1761,41 @@ mod tests {
                 last_fired: 100
             }]
         );
+    }
+
+    #[test]
+    fn rule_actions_ignore_rows_for_an_earlier_message_with_the_same_uid() {
+        let s = Store::open_in_memory().unwrap();
+        let mut old = msg("INBOX", 1, 10);
+        old.message_id = Some("<old@x>".into());
+        s.log_action(&logged("travel", 1, &old, "flagged")).unwrap();
+        let mut new = msg("INBOX", 1, 20);
+        new.message_id = Some("<new@x>".into());
+        assert!(s.rule_actions(&new, None).unwrap().is_empty());
+        let mut bare = msg("INBOX", 2, 10);
+        bare.message_id = None;
+        s.log_action(&logged("travel", 1, &bare, "flagged"))
+            .unwrap();
+        assert_eq!(
+            s.rule_actions(&bare, None).unwrap().len(),
+            1,
+            "no Message-ID on either side still matches"
+        );
+    }
+
+    #[test]
+    fn rule_actions_use_indexes_rather_than_scanning_the_log() {
+        let s = Store::open_in_memory().unwrap();
+        let mut stmt = s
+            .conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {RULE_ACTIONS}"))
+            .unwrap();
+        let plan: Vec<String> = stmt
+            .query_map(params![0, 0, "", "", 0], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(!plan.iter().any(|step| step == "SCAN rule_log"), "{plan:?}");
     }
 
     #[test]
