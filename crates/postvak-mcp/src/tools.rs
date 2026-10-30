@@ -140,6 +140,8 @@ struct RulesTestArgs {
     rule: postvak_core::rules::Rule,
     /// Only this account; default every visible account
     account: Option<String>,
+    #[schemars(description = help::AS_OF)]
+    as_of: Option<String>,
 }
 
 fn twenty() -> u32 {
@@ -183,6 +185,8 @@ struct CoverageArgs {
     /// At most this many unmatched senders and contested messages per account, at most 500; the counts cover everything
     #[serde(default = "twenty")]
     limit: u32,
+    #[schemars(description = help::AS_OF)]
+    as_of: Option<String>,
 }
 
 /// The input schema of `rules_propose`: one rule's fields, or `rules`. Hosts refuse a top-level `anyOf`, so the two
@@ -783,6 +787,7 @@ fn dispatch(
                 a.include_pending,
                 a.group_by,
                 a.limit,
+                as_of(a.as_of.as_deref())?,
                 sight,
             )
         }
@@ -827,7 +832,12 @@ fn dispatch(
         }
         "rules_test" => {
             let a: RulesTestArgs = args(arguments)?;
-            backend.rules_test(a.rule, a.account.as_deref(), sight)
+            backend.rules_test(
+                a.rule,
+                a.account.as_deref(),
+                as_of(a.as_of.as_deref())?,
+                sight,
+            )
         }
         "search" => {
             let a: SearchArgs = args(arguments)?;
@@ -913,6 +923,14 @@ fn page_of((rows, next): (Vec<Value>, Option<String>)) -> Result<Value> {
         page["next"] = next.into();
     }
     Ok(page)
+}
+
+/// The time a rules preview evaluates as of: `as_of`, or now.
+fn as_of(text: Option<&str>) -> Result<i64> {
+    let now = postvak_core::time::now();
+    text.map_or(Ok(now), |text| {
+        postvak_core::time::as_of(text, now).map_err(|e| anyhow!("as_of: {e}"))
+    })
 }
 
 /// A count stands alone: no cursor and no fields beside it.

@@ -1527,3 +1527,31 @@ fn folder_commands_need_an_account() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("run `postvak account add`"), "{stderr}");
 }
+
+#[test]
+fn rules_test_as_of_evaluates_older_than_at_that_time() {
+    let (home, _store) = seeded_home(&[message(42, "a@example.com", "Hello")]);
+    let rule = r#"{"name": "old", "match": {"older_than": "100y"}, "actions": {"flagged": true}}"#;
+    let now = postvak_stdin(home.path(), &["rules", "test", "--stdin"], rule);
+    assert!(now.status.success() && now.stdout.is_empty(), "{now:?}");
+
+    let later = postvak_stdin(
+        home.path(),
+        &["rules", "test", "--stdin", "--as-of", "101y"],
+        rule,
+    );
+    let stdout = String::from_utf8_lossy(&later.stdout);
+    assert!(stdout.contains("old\tINBOX/42\tflagged"), "{stdout}");
+    assert!(String::from_utf8_lossy(&later.stderr).starts_with("as of "));
+
+    let bad = postvak_stdin(
+        home.path(),
+        &["rules", "test", "--stdin", "--as-of", "soon"],
+        rule,
+    );
+    let stderr = String::from_utf8_lossy(&bad.stderr);
+    assert!(
+        !bad.status.success() && stderr.contains("expected a span"),
+        "{stderr}"
+    );
+}
