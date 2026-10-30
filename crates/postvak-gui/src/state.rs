@@ -420,6 +420,8 @@ pub(crate) enum UiAction {
     EditDraft(Box<Draft>),
     /// Open a rule in the editor.
     EditRule(String),
+    /// The reader's strip: move the shown message back to the folder the rule that last acted took it from.
+    MoveBack,
     /// The reader's strip: list every rule action on the message, or only the newest again.
     ToggleProvenance,
     /// The reader's strip: show each condition of the rule that last acted, or hide them again.
@@ -1483,6 +1485,7 @@ impl App {
                 }
             }
             UiAction::ToggleWhy => self.toggle_why(),
+            UiAction::MoveBack => self.move_back(),
             UiAction::ListViewport { offset, height } => {
                 self.list.viewport = (offset, height);
                 // The list can stop short of the cursor while it still estimates its rows; then it is asked again.
@@ -2682,6 +2685,24 @@ impl App {
         }
         self.push_history(note);
         self.unsubscribing = None;
+    }
+
+    /// Only the shown message, where a move of its row would take its whole thread.
+    fn move_back(&mut self) {
+        let Some(target) = body::pane(self).provenance.and_then(|p| p.move_back) else {
+            return;
+        };
+        let Some(body) = &self.body else { return };
+        let (account, (folder, uid)) = (body.account, body.key.clone());
+        self.pending_arm = true;
+        self.send_apply(
+            account,
+            folder,
+            vec![uid],
+            Action::Move(target),
+            Optimistic::Hidden,
+        );
+        self.rebuild_rows();
     }
 
     /// Only the shown message, where Delete would take its whole thread.

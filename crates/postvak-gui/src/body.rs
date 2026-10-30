@@ -576,6 +576,24 @@ mod tests {
     }
 
     #[test]
+    fn move_back_moves_only_the_shown_message_of_a_thread() {
+        let fx = Fixture::new(&["work"]);
+        filed_by_travel(&fx, true, &[]);
+        let mut earlier = message("Travel", 5, "Re: ticket");
+        earlier.thread_id = "<1@example.com>".into();
+        (earlier.date, earlier.internaldate) = (Some(1), 1);
+        fx.add("work", earlier);
+        let (open, wires) = fx.window();
+        open.click("Travel");
+        open.tick_until(|open| !open.find("Move back").is_empty());
+        open.click("Move back");
+        assert_eq!(
+            wires.sent(),
+            [work("Travel", &[7], Action::Move("INBOX".into()))]
+        );
+    }
+
+    #[test]
     fn your_own_actions_show_no_strip_and_a_removed_rule_offers_no_edit() {
         let fx = Fixture::new(&["work"]);
         fx.add("work", message("INBOX", 1, "mine"));

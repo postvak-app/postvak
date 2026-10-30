@@ -1143,12 +1143,7 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
         }));
     });
     window.on_move_back(move || {
-        on(one(|app| {
-            let body = app.body.as_ref()?;
-            let pane = body::pane(app);
-            pane.provenance?.move_back?;
-            Some(UiAction::MoveTo(body.provenance.first()?.folder.clone()))
-        }));
+        act(UiAction::MoveBack);
     });
     window.on_toggle_provenance(move || {
         act(UiAction::ToggleProvenance);
