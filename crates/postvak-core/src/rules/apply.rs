@@ -456,7 +456,7 @@ fn junk(
     }
     if target != msg.folder {
         move_to(&current, &target, ops, store)?;
-        if planned.action == Action::Junk && planned.rule != RULE_NAME {
+        if planned.action == Action::Junk && !crate::rules::is_actor(&planned.rule) {
             store.record_rule_move(msg)?;
         }
     }
@@ -1437,20 +1437,16 @@ mod tests {
     }
 
     #[test]
-    fn a_rule_junk_is_remembered_as_a_rule_move() {
-        let (ops, store, trash, _dir, msg) = setup();
-        let mut ops = with_junk(ops, &store);
-        ops.select("INBOX").unwrap();
-        apply(
-            &plan(vec![Action::Junk]),
-            &msg,
-            &mut ops,
-            &store,
-            &trash,
-            500,
-        )
-        .unwrap();
-        assert!(store.rule_moved_out(&msg).unwrap());
+    fn a_rule_junk_is_remembered_as_a_rule_move_and_a_direct_one_is_not() {
+        for (actor, remembered) in [("r", true), ("gui", false), ("mcp:claude-desktop", false)] {
+            let (ops, store, trash, _dir, msg) = setup();
+            let mut ops = with_junk(ops, &store);
+            ops.select("INBOX").unwrap();
+            let mut junk = plan(vec![Action::Junk]);
+            junk.actions[0].rule = actor.into();
+            apply(&junk, &msg, &mut ops, &store, &trash, 500).unwrap();
+            assert_eq!(store.rule_moved_out(&msg).unwrap(), remembered, "{actor}");
+        }
     }
 
     #[test]
