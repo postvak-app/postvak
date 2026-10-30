@@ -283,7 +283,7 @@ pub(crate) fn banner(app: &App) -> Option<String> {
         "" | "agent" | "mcp" => "An agent".to_string(),
         who => clean(who, false),
     };
-    let summary = super::draft::summary(rule);
+    let suggests = suggestion(rule);
     let affects = app
         .rules
         .dry_runs
@@ -297,10 +297,32 @@ pub(crate) fn banner(app: &App) -> Option<String> {
             )
         })
         .unwrap_or_default();
-    Some(format!(
-        "{who} suggests the rule {}: {summary}.{affects}",
-        clean(&rule.name, false)
-    ))
+    Some(format!("{who} suggests {suggests}.{affects}"))
+}
+
+/// What a proposal would do, said with its name as the canvas says it: "archiving kettle newsletters", from its first
+/// action that changes mail.
+fn suggestion(rule: &postvak_core::rules::Rule) -> String {
+    use postvak_core::rules::Action;
+    let name = clean(&rule.name, false);
+    let said = |action: &Action| match action {
+        Action::Archive => Some(format!("archiving {name}")),
+        Action::Delete => Some(format!("deleting {name}")),
+        Action::Flag => Some(format!("flagging {name}")),
+        Action::Junk => Some(format!("marking {name} as junk")),
+        Action::MarkRead => Some(format!("marking {name} read")),
+        Action::Move(folder) => Some(format!(
+            "moving {name} to {}",
+            clean(folders::label(folder), false)
+        )),
+        Action::Tag(keyword) => Some(format!("tagging {name} {}", clean(keyword, false))),
+        Action::Trash => Some(format!("moving {name} to Trash")),
+        _ => None,
+    };
+    rule.actions
+        .iter()
+        .find_map(said)
+        .unwrap_or_else(|| format!("the rule {name}"))
 }
 
 /// What an empty list says instead of rows; nothing before a search query is typed.
@@ -1140,10 +1162,8 @@ mod tests {
         let (open, _wires) = fx.window();
         open.tick_until(|open| !open.labels_containing("Would affect 1 message.").is_empty());
         assert_eq!(
-            open.labels_containing(
-                "Claude suggests the rule codes: subject contains \"code\" → delete."
-            )
-            .len(),
+            open.labels_containing("Claude suggests deleting codes. Would affect 1 message.")
+                .len(),
             1
         );
         open.click("Review");

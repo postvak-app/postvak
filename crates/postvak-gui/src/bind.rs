@@ -14,10 +14,10 @@ use super::rows::{ListModel, PageModel, model, sync, synced};
 use super::rules::SheetSort;
 use super::state::{self, App, Focus, UiAction, View};
 use super::ui::{
-    AccountFields, ActionData, AttachmentData, BodyInfo, ConditionData, Dialog, Dot, FolderItem,
-    FolderKind, KeyHelp, MailWindow, MenuAction, MenuChoice, MenuState, PageInfo, Pane,
-    ProposalData, ProvenanceData, Remote, RuleData, RuleEditor, SampleData, SelectedData, Sheet,
-    StatusLine, Theme, ThemePreference, ToolButton, WhyLine,
+    AccountFields, ActionData, AttachmentData, BodyInfo, CodeLine, ConditionData, Dialog, Dot,
+    FolderItem, FolderKind, KeyHelp, MailWindow, MenuAction, MenuChoice, MenuState, PageInfo, Pane,
+    ProposalData, ProvenanceData, Remote, RuleData, RuleEditor, RunData, SampleData, SelectedData,
+    Sheet, StatusLine, Theme, ThemePreference, ToolButton, WhyLine,
 };
 use super::{account, body, icons, list, menu, rules, status, theme, toolbar};
 use postvak_core::message::clean;
@@ -53,6 +53,7 @@ pub(crate) fn init(window: &MailWindow) {
     window.set_inbox_icon(icons::INBOX.into());
     window.set_envelope_icon(icons::MARK_UNREAD.into());
     window.set_rule_icon(icons::RULES.into());
+    window.set_check_icon(icons::CHECK.into());
     window.set_more_icon(icons::MORE.into());
     window.set_reply_icon(icons::REPLY.into());
     window.set_external_icon(icons::EXTERNAL.into());
@@ -277,6 +278,16 @@ fn provenance_data(pane: &body::Pane) -> ProvenanceData {
     }
 }
 
+/// Styled runs as the window draws them.
+fn runs(runs: &[rules::Run]) -> Vec<RunData> {
+    (runs.iter())
+        .map(|(text, kind)| RunData {
+            text: text.as_str().into(),
+            kind: *kind,
+        })
+        .collect()
+}
+
 /// A proposal's card, with its dry run once counted.
 fn proposal_data(app: &App, p: &rules::Proposal) -> ProposalData {
     let run = app.rules.dry_runs.get(&p.name);
@@ -308,7 +319,23 @@ fn proposal_data(app: &App, p: &rules::Proposal) -> ProposalData {
         }
         .into(),
         samples: model(samples),
+        more: run.map_or_else(String::new, rules::dry_run_more).into(),
         rest: run.map_or_else(String::new, rules::dry_run_rest).into(),
+        sentence: model(runs(&p.sentence)),
+        sentence_text: p
+            .sentence
+            .iter()
+            .map(|(text, _)| text.as_str())
+            .collect::<String>()
+            .into(),
+        code: model(
+            (p.code.iter())
+                .map(|(mark, line)| CodeLine {
+                    mark: mark.as_str().into(),
+                    runs: model(runs(line)),
+                })
+                .collect::<Vec<_>>(),
+        ),
         warnings: run
             .map_or_else(String::new, |run| run.warnings.join("\n"))
             .into(),
@@ -730,6 +757,10 @@ fn present_sheet(app: &App, window: &MailWindow) {
                 .map(|i| &app.rules.proposals[i])
                 .map(|p| proposal_data(app, p))
                 .collect();
+            let busiest = (app.rules.lines.iter())
+                .map(|r| r.hits.last_30d)
+                .max()
+                .unwrap_or(0);
             let lines: Vec<RuleData> = rules::shown_rules(&app.rules.lines, app.sheet_sort, filter)
                 .into_iter()
                 .map(|i| (i, &app.rules.lines[i]))
@@ -744,6 +775,10 @@ fn present_sheet(app: &App, window: &MailWindow) {
                     actions: r.actions.as_str().into(),
                     hits: rules::hit_cells(&r.hits).0.into(),
                     fired: rules::hit_cells(&r.hits).1.into(),
+                    // The square root, so a quiet rule's bar still shows beside a busy one's.
+                    bar: (r.hits.last_30d as f32 / busiest.max(1) as f32).sqrt(),
+                    watches: r.watches.as_str().into(),
+                    deletes: r.deletes,
                     selected: app
                         .rule_draft
                         .as_ref()

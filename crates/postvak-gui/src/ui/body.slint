@@ -267,7 +267,7 @@ component HtmlView inherits VerticalLayout {
 component HeaderLine inherits HorizontalLayout {
     in property <string> label;
     in property <string> value;
-    height: Theme.row;
+    height: 2 * Theme.pad;
     spacing: Theme.pad / 2;
     Text {
         text: root.label;
@@ -325,6 +325,8 @@ component GroupButton inherits Rectangle {
     in property <ToolButton> tool;
     in property <bool> labelled;
     in property <bool> enabled;
+    // The first in its group, with no hairline before it.
+    in property <bool> first;
     callback clicked();
     background: root.enabled && touch.pressed ? Theme.pane.pressed : transparent;
     accessible-role: button;
@@ -366,9 +368,16 @@ component GroupButton inherits Rectangle {
         if root.labelled: Text {
             accessible-role: none;
             text: root.tool.label;
+            font-size: Theme.compact-size;
             color: Theme.pane.text;
             vertical-alignment: center;
         }
+    }
+    // Over the button's left edge rather than beside it, so the hairlines add no width.
+    if !root.first: Rectangle {
+        x: 0;
+        width: 1px;
+        background: Theme.pane.border;
     }
 }
 
@@ -387,11 +396,8 @@ component ActionGroup inherits Rectangle {
     clip: true;
     buttons-row := HorizontalLayout {
         for button[i] in root.buttons: HorizontalLayout {
-            if i > 0: Rectangle {
-                width: 1px;
-                background: Theme.pane.border;
-            }
             GroupButton {
+                first: i == 0;
                 tool: button;
                 labelled: root.labelled;
                 enabled: root.enabled;
@@ -464,7 +470,7 @@ component AttachmentChip inherits Rectangle {
                 hint: root.pending ? "Downloading the message…" : "Save to Downloads";
                 enabled: !root.pending;
                 palette: Theme.pane;
-
+                size: Theme.control - Theme.pad / 4;
                 clicked => { root.save(); }
             }
         }
@@ -492,6 +498,7 @@ component ReplyAndMore inherits HorizontalLayout {
             end-icon: root.external-icon;
             hint: "Reply in your mail app";
             framed: true;
+            compact: true;
             palette: Theme.pane;
             clicked => { root.reply(); }
         }
@@ -662,7 +669,7 @@ export component BodyPane inherits Rectangle {
         // several messages are selected.
         Rectangle {
             min-width: 0px;
-            height: Theme.action;
+            height: Theme.control + Theme.pad / 2;
             clip: true;
             HorizontalLayout {
                 spacing: Theme.pad;
@@ -794,14 +801,16 @@ export component BodyPane inherits Rectangle {
                         icon: root.rule-icon;
                         hint: "New rule for mail from this sender";
                         framed: true;
+                        compact: true;
                         palette: Theme.pane;
                         clicked => { root.rule-from(); }
                     }
                 }
             }
 
+            // The sender beside the avatar, the date centred on it.
             HorizontalLayout {
-                padding-top: Theme.pad;
+                padding-top: Theme.pad * 5 / 4;
                 padding-bottom: Theme.pad;
                 spacing: Theme.pad * 3 / 2;
                 VerticalLayout {
@@ -810,8 +819,9 @@ export component BodyPane inherits Rectangle {
                 }
                 VerticalLayout {
                     alignment: center;
+                    spacing: Theme.pad / 4;
                     HorizontalLayout {
-                        height: Theme.row;
+                        height: Theme.row - Theme.pad / 2;
                         spacing: Theme.pad;
                         // The address gives way first in a narrow pane.
                         Text {
@@ -829,17 +839,6 @@ export component BodyPane inherits Rectangle {
                             vertical-alignment: center;
                         }
                         Rectangle { horizontal-stretch: 1; }
-                        TouchArea {
-                            width: date.preferred-width;
-                            accessible-role: none;
-                            Tooltip { text: @markdown("\{root.info.full-date}"); }
-                            date := Text {
-                                text: root.info.short-date;
-                                font-size: Theme.small-size;
-                                color: Theme.pane.muted;
-                                vertical-alignment: center;
-                            }
-                        }
                     }
                     if root.info.to != "": HeaderLine {
                         label: "to";
@@ -850,9 +849,24 @@ export component BodyPane inherits Rectangle {
                         value: root.info.cc;
                     }
                 }
+                VerticalLayout {
+                    alignment: center;
+                    TouchArea {
+                        width: date.preferred-width;
+                        height: date.preferred-height;
+                        accessible-role: none;
+                        Tooltip { text: @markdown("\{root.info.full-date}"); }
+                        date := Text {
+                            text: root.info.short-date;
+                            font-size: Theme.small-size;
+                            color: Theme.pane.muted;
+                        }
+                    }
+                }
             }
             if root.info.provenance.shown: VerticalLayout {
                 spacing: Theme.pad / 2;
+                padding-bottom: Theme.pad * 3 / 4;
                 Rectangle {
                     height: Theme.action;
                     border-radius: Theme.pad;
@@ -860,7 +874,7 @@ export component BodyPane inherits Rectangle {
                     HorizontalLayout {
                         padding-left: Theme.pad * 3 / 2;
                         padding-right: self.padding-left;
-                        spacing: Theme.pad;
+                        spacing: Theme.pad * 5 / 4;
                         Text {
                             accessible-role: none;
                             text: root.rule-icon;
@@ -881,14 +895,14 @@ export component BodyPane inherits Rectangle {
                                 Text {
                                     accessible-role: none;
                                     text: root.info.provenance.verb;
-                                    font-size: Theme.small-size;
+                                    font-size: Theme.compact-size;
                                     color: Theme.pane.secondary;
                                     vertical-alignment: center;
                                 }
                                 if root.info.provenance.target != "": Text {
                                     accessible-role: none;
                                     text: root.info.provenance.target;
-                                    font-size: Theme.small-size;
+                                    font-size: Theme.compact-size;
                                     font-weight: 600;
                                     color: Theme.pane.text;
                                     vertical-alignment: center;
@@ -896,7 +910,7 @@ export component BodyPane inherits Rectangle {
                                 Text {
                                     accessible-role: none;
                                     text: "by rule";
-                                    font-size: Theme.small-size;
+                                    font-size: Theme.compact-size;
                                     color: Theme.pane.secondary;
                                     vertical-alignment: center;
                                 }
@@ -904,14 +918,14 @@ export component BodyPane inherits Rectangle {
                                     accessible-role: none;
                                     text: root.info.provenance.rule;
                                     font-family: Theme.mono-font;
-                                    font-size: Theme.small-size;
+                                    font-size: Theme.compact-size;
                                     color: Theme.pane.text;
                                     vertical-alignment: center;
                                 }
                                 Text {
                                     accessible-role: none;
                                     text: root.info.provenance.when + (root.info.provenance.removed ? " (removed)" : "");
-                                    font-size: Theme.small-size;
+                                    font-size: Theme.compact-size;
                                     color: Theme.pane.secondary;
                                     overflow: elide;
                                     vertical-alignment: center;
@@ -999,8 +1013,8 @@ export component BodyPane inherits Rectangle {
 
             // More room around the headers' hairline than between them.
             VerticalLayout {
-                padding-top: Theme.pad;
-                padding-bottom: Theme.pad;
+                padding-top: Theme.pad * 5 / 4;
+                padding-bottom: Theme.pad * 5 / 4;
                 Hairline { }
             }
 
@@ -1035,6 +1049,9 @@ export component BodyPane inherits Rectangle {
                         color: Theme.pane.muted;
                     }
                     if root.text != "": TextInput {
+                        // A comfortable measure, as the canvas sets it.
+                        max-width: 80 * Theme.pad;
+                        line-height-factor: 1.2;
                         text: root.text;
                         read-only: true;
                         single-line: false;

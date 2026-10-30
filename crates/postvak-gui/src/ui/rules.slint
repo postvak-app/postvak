@@ -1,9 +1,22 @@
 // The Rules, Activity and Backups views, in place of the list and the body. `rules.rs` words them.
 import { LineEdit, ScrollView, StandardTableView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Heading, Link, Note, Switch, TextButton } from "common.slint";
+import { Hairline, Heading, Link, Note, Switch, TextButton } from "common.slint";
 
 export enum Sheet { rules, activity, backups }
+
+// A run of a proposal's sentence or TOML in one style; `kind` is one of `rules::RUN_*`: 0 plain, 1 strong, 2 token,
+// 3 key, 4 string, 5 literal, 6 table heading.
+export struct RunData {
+    text: string,
+    kind: int,
+}
+
+// One line of a proposal's TOML: its diff mark and its runs.
+export struct CodeLine {
+    mark: string,
+    runs: [RunData],
+}
 
 // A message a proposal's dry run would act on.
 export struct SampleData {
@@ -23,12 +36,17 @@ export struct ProposalData {
     toml: string,
     // A diff's mark for each line of `toml`.
     marks: string,
-    // The dry run on the cached mail: still counting; the count and what it means; the newest few messages; the line
-    // under them; what makes it less than it seems; or why it could not be counted.
+    // What it does as a sentence, as runs and as plain text for screen readers; and its TOML, line by line.
+    sentence: [RunData],
+    sentence-text: string,
+    code: [CodeLine],
+    // The dry run on the cached mail: still counting; the count and what it means; the newest few messages; how many
+    // more, and the line under them; what makes it less than it seems; or why it could not be counted.
     counting: bool,
     count: string,
     count-label: string,
     samples: [SampleData],
+    more: string,
     rest: string,
     warnings: string,
     error: string,
@@ -47,17 +65,14 @@ export struct RuleData {
     // Messages it acted on in the last 30 days, or "no matches yet"; and when it last did, or "—".
     hits: string,
     fired: string,
+    // The bar before `hits`, from 0 to 1 of the busiest rule's.
+    bar: float,
+    // "work · Inbox".
+    watches: string,
+    // It deletes mail: Then shows a delete mark and that a backup is kept.
+    deletes: bool,
     // Open in the editor.
     selected: bool,
-}
-
-// What a rule matches and what it does, in one line.
-component Summary inherits Text {
-    // The mono font has no "→"; this one does, so the arrow looks the same on every system.
-    font-family: Theme.text-font;
-    font-size: Theme.small-size;
-    color: Theme.pane.secondary;
-    wrap: word-wrap;
 }
 
 // A small rounded label, such as "work · INBOX" or "proposed by agent".
@@ -77,14 +92,32 @@ component Chip inherits Rectangle {
     }
 }
 
-// The Rules table's column widths; Name, Conditions and Actions share what is left.
+// The Rules table's column widths; Name, Watches, When and Then share what is left.
 global Columns {
     out property <length> number: 3 * Theme.pad;
     out property <length> switch: 3 * Theme.row / 2;
-    out property <length> account: 120px;
-    out property <length> folder: 120px;
-    out property <length> hits: 14 * Theme.pad;
-    out property <length> fired: 10 * Theme.pad;
+    out property <length> hits: 17 * Theme.pad;
+    out property <length> fired: 11 * Theme.pad;
+}
+
+// What each run kind of a proposal's TOML is drawn in, on the dark code block, in both themes.
+global Code {
+    out property <color> plain: Theme.night.text;
+    out property <color> key: Theme.account-dots[0];
+    out property <color> string: Theme.account-dots[2];
+    out property <color> literal: Theme.account-dots[1];
+    out property <color> table: Theme.brand-soft;
+    // Behind an added line, and a removed one.
+    out property <color> added: Theme.account-dots[2].with-alpha(0.12);
+    out property <color> removed: Theme.night.error.with-alpha(0.12);
+}
+
+// Small capitals over a title: "AGENT PROPOSAL", "DRY RUN ON CACHED MAIL".
+component Eyebrow inherits Text {
+    font-size: Theme.caps-size;
+    font-weight: 600;
+    letter-spacing: Theme.caps-size * 0.12;
+    color: Theme.pane.accent;
 }
 
 // One cell of the Rules table, cut short when it does not fit.
@@ -110,12 +143,293 @@ component ColumnHeading inherits TouchArea {
     Text {
         accessible-role: none;
         width: 100%;
-        text: root.text + (root.sort != root.column ? "" : root.ascending ? " ↑" : " ↓");
-        font-size: Theme.small-size;
+        text: root.text.to-uppercase() + (root.sort != root.column ? "" : root.ascending ? " ↑" : " ↓");
+        font-size: Theme.caps-size;
         font-weight: 600;
+        letter-spacing: Theme.caps-size * 0.12;
         color: Theme.pane.muted;
         overflow: elide;
         vertical-alignment: center;
+    }
+}
+
+// A proposal's TOML on the dark code block the canvas gives it: a window bar naming what it does to rules.toml, then
+// each line coloured by kind, an added line tinted green and a removed one red.
+component ProposalCode inherits Rectangle {
+    in property <ProposalData> proposal;
+    background: Theme.frame.background;
+    border-radius: Theme.radius + Theme.pad / 4;
+    drop-shadow-color: #0f121c40;
+    drop-shadow-blur: 4 * Theme.pad;
+    drop-shadow-offset-y: 2 * Theme.pad;
+    accessible-role: text;
+    accessible-label: root.proposal.toml;
+    VerticalLayout {
+        HorizontalLayout {
+            height: Theme.row + Theme.pad * 5 / 4;
+            padding-left: Theme.pad * 7 / 4;
+            padding-right: Theme.pad * 7 / 4;
+            spacing: Theme.pad * 3 / 4;
+            for dot in 3: VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: Theme.pad * 5 / 4;
+                    height: self.width;
+                    border-radius: self.width / 2;
+                    background: Theme.frame.border;
+                }
+            }
+            Text {
+                text: root.proposal.note;
+                font-family: Theme.mono-font;
+                font-size: Theme.small-size;
+                color: Theme.frame.muted;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        Hairline { palette: Theme.frame; }
+        VerticalLayout {
+            padding-top: Theme.pad * 3 / 2;
+            padding-bottom: Theme.pad * 3 / 2;
+            for line in root.proposal.code: Rectangle {
+                height: Theme.row - Theme.pad / 4;
+                background: line.mark == "+" ? Code.added : line.mark == "-" ? Code.removed : transparent;
+                HorizontalLayout {
+                    padding-left: 2 * Theme.pad;
+                    padding-right: 2 * Theme.pad;
+                    Text {
+                        accessible-role: none;
+                        text: line.mark + " ";
+                        font-family: Theme.mono-font;
+                        font-size: Theme.compact-size;
+                        color: line.mark == "-" ? Theme.night.error : Code.string;
+                        vertical-alignment: center;
+                    }
+                    for run in line.runs: Text {
+                        accessible-role: none;
+                        text: run.text;
+                        font-family: Theme.mono-font;
+                        font-size: Theme.compact-size;
+                        color: run.kind == 3 ? Code.key : run.kind == 4 ? Code.string : run.kind == 5 ? Code.literal : run.kind == 6 ? Code.table : Code.plain;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+            }
+        }
+    }
+}
+
+// A proposal's dry run on the cached mail: the count in display type, the newest messages it would act on in a framed
+// list, and what approving does.
+component ProposalDryRun inherits VerticalLayout {
+    in property <ProposalData> proposal;
+    alignment: start;
+    spacing: Theme.pad;
+    Eyebrow {
+        text: "Dry run on cached mail".to-uppercase();
+        color: Theme.pane.muted;
+    }
+    if root.proposal.counting: Note { text: "Counting…"; }
+    // Beside the TOML, wrapped text would not get its height from the column's width, and the card would cut its
+    // buttons off; so each line is drawn whole or cut short.
+    if root.proposal.error != "": Text {
+        text: root.proposal.error;
+        color: Theme.pane.error;
+        overflow: elide;
+    }
+    if !root.proposal.counting && root.proposal.error == "": HorizontalLayout {
+        spacing: Theme.pad * 5 / 4;
+        Text {
+            text: root.proposal.count;
+            font-family: Theme.heading-font;
+            font-weight: 600;
+            font-size: Theme.count-size;
+            letter-spacing: -0.8px;
+            color: Theme.pane.heading;
+            vertical-alignment: bottom;
+        }
+        VerticalLayout {
+            alignment: end;
+            padding-bottom: Theme.pad * 3 / 4;
+            Text {
+                text: root.proposal.count-label;
+                font-size: Theme.lede-size;
+                color: Theme.pane.secondary;
+            }
+        }
+        Rectangle { horizontal-stretch: 1; }
+    }
+    if root.proposal.samples.length > 0: Rectangle {
+        border-radius: Theme.radius;
+        border-width: 1px;
+        border-color: Theme.pane.border;
+        VerticalLayout {
+            for sample[i] in root.proposal.samples: Rectangle {
+                height: Theme.action;
+                HorizontalLayout {
+                    padding-left: Theme.pad * 3 / 2;
+                    padding-right: Theme.pad * 3 / 2;
+                    spacing: Theme.pad;
+                    Text {
+                        horizontal-stretch: 1;
+                        text: sample.subject;
+                        color: Theme.pane.text;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: sample.date;
+                        color: Theme.pane.muted;
+                        vertical-alignment: center;
+                    }
+                }
+                if i + 1 < root.proposal.samples.length: Hairline { y: parent.height - 1px; }
+            }
+        }
+    }
+    if !root.proposal.counting && root.proposal.error == "": HorizontalLayout {
+        spacing: 0;
+        if root.proposal.more != "": Text {
+            text: root.proposal.more;
+            font-size: Theme.compact-size;
+            color: Theme.pane.accent;
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: root.proposal.rest;
+            font-size: Theme.compact-size;
+            color: Theme.pane.muted;
+            overflow: elide;
+        }
+    }
+    if root.proposal.warnings != "": Text {
+        text: root.proposal.warnings;
+        font-size: Theme.small-size;
+        color: Theme.pane.warning;
+        overflow: elide;
+    }
+}
+
+// A proposal as the canvas draws it: an accent bar, who proposed it, its name, what it does in a sentence, its TOML
+// beside its dry run (above it in a narrow pane), and Approve, Reject and Edit before approving.
+component ProposalCard inherits Rectangle {
+    in property <ProposalData> proposal;
+    in property <string> check-icon;
+    callback approve();
+    callback reject();
+    callback edit();
+    property <bool> wide: root.width > 100 * Theme.pad;
+    background: Theme.pane.faint;
+    border-radius: Theme.radius + Theme.pad / 2;
+    border-width: 1px;
+    border-color: Theme.pane.border;
+    VerticalLayout {
+        padding: 3 * Theme.pad;
+        HorizontalLayout {
+            Rectangle {
+                width: Theme.pad * 7 / 2;
+                height: Theme.pad / 2;
+                border-radius: Theme.pad / 4;
+                background: Theme.brand-glow.with-alpha(1);
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        VerticalLayout {
+            padding-top: Theme.pad * 7 / 4;
+            Eyebrow { text: root.proposal.by.to-uppercase(); }
+        }
+        VerticalLayout {
+            padding-top: Theme.pad * 3 / 4;
+            Text {
+                text: root.proposal.label;
+                font-family: Theme.heading-font;
+                font-weight: 600;
+                font-size: Theme.card-title-size;
+                letter-spacing: -0.42px;
+                color: Theme.pane.heading;
+                overflow: elide;
+            }
+        }
+        // The sentence, its values as tokens; it wraps between runs.
+        VerticalLayout {
+            padding-top: Theme.pad;
+            Rectangle {
+                accessible-role: text;
+                accessible-label: root.proposal.sentence-text;
+                FlexboxLayout {
+                    spacing-vertical: Theme.pad / 2;
+                    for run in root.proposal.sentence: Rectangle {
+                        background: run.kind == 2 ? Theme.pane.panel : transparent;
+                        border-radius: Theme.pad / 2;
+                        HorizontalLayout {
+                            padding-left: run.kind == 2 ? Theme.pad * 3 / 4 : 0;
+                            padding-right: self.padding-left;
+                            Text {
+                                accessible-role: none;
+                                text: run.text;
+                                font-family: run.kind == 2 ? Theme.mono-font : Theme.text-font;
+                                font-size: run.kind == 2 ? Theme.compact-size : Theme.lede-size;
+                                font-weight: run.kind == 1 ? 700 : 500;
+                                color: run.kind == 2 ? Theme.pane.text : Theme.pane.secondary;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        VerticalLayout {
+            padding-top: Theme.pad * 9 / 4;
+            if root.wide: HorizontalLayout {
+                spacing: 3 * Theme.pad;
+                ProposalCode {
+                    horizontal-stretch: 55;
+                    preferred-width: 0;
+                    min-width: 0;
+                    proposal: root.proposal;
+                }
+                ProposalDryRun {
+                    horizontal-stretch: 45;
+                    preferred-width: 0;
+                    min-width: 0;
+                    proposal: root.proposal;
+                }
+            }
+            if !root.wide: VerticalLayout {
+                spacing: 3 * Theme.pad;
+                ProposalCode { proposal: root.proposal; }
+                ProposalDryRun { proposal: root.proposal; }
+            }
+        }
+        HorizontalLayout {
+            padding-top: Theme.pad * 11 / 4;
+            spacing: Theme.pad * 3 / 2;
+            TextButton {
+                text: "Approve rule";
+                icon: root.check-icon;
+                primary: true;
+                palette: Theme.pane;
+                clicked => { root.approve(); }
+            }
+            TextButton {
+                text: "Reject";
+                framed: true;
+                palette: Theme.pane;
+                clicked => { root.reject(); }
+            }
+            VerticalLayout {
+                alignment: center;
+                padding-left: Theme.pad * 3 / 4;
+                Link {
+                    text: "Edit before approving →";
+                    clicked => { root.edit(); }
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
     }
 }
 
@@ -128,6 +442,7 @@ export component RulesPane inherits Rectangle {
     // "1 rule · 2 proposals".
     in property <string> counts;
     in property <[ProposalData]> proposals;
+    in property <string> check-icon;
     in property <[RuleData]> rules;
     // The Rules table's sorted column, or -1, as `sort` reports it.
     in property <int> rules-sort: -1;
@@ -190,16 +505,32 @@ export component RulesPane inherits Rectangle {
         }
         // The sheet's title, with its action at the end.
         HorizontalLayout {
-            height: Theme.control;
+            min-height: Theme.control;
             spacing: Theme.pad;
-            Heading {
-                text: root.sheet == Sheet.rules ? "Rules" : root.sheet == Sheet.activity ? "Activity" : "Backups";
+            if root.sheet != Sheet.rules: Heading {
+                text: root.sheet == Sheet.activity ? "Activity" : "Backups";
                 vertical-alignment: center;
             }
-            if root.sheet == Sheet.rules: Text {
-                text: root.counts;
-                color: Theme.pane.muted;
-                vertical-alignment: center;
+            // Rules leads with a small-capitals line, then its title in the reader's subject size and its counts.
+            if root.sheet == Sheet.rules: VerticalLayout {
+                spacing: Theme.pad * 3 / 4;
+                Eyebrow { text: "AUTOMATION"; }
+                HorizontalLayout {
+                    spacing: Theme.pad * 3 / 2;
+                    Heading {
+                        text: "Rules";
+                        font-size: Theme.subject-size;
+                        letter-spacing: -0.6px;
+                    }
+                    VerticalLayout {
+                        alignment: end;
+                        padding-bottom: Theme.pad * 3 / 4;
+                        Text {
+                            text: root.counts;
+                            color: Theme.pane.muted;
+                        }
+                    }
+                }
             }
             Rectangle { horizontal-stretch: 1; }
             if root.sheet == Sheet.rules: HorizontalLayout {
@@ -207,7 +538,7 @@ export component RulesPane inherits Rectangle {
                 spacing: Theme.pad;
                 // Narrows the proposals and the table to the rules with every word typed in what a row shows.
                 VerticalLayout {
-                    alignment: center;
+                    alignment: end;
                     LineEdit {
                         width: 10 * Theme.row;
                         height: Theme.control;
@@ -217,7 +548,7 @@ export component RulesPane inherits Rectangle {
                     }
                 }
                 VerticalLayout {
-                    alignment: center;
+                    alignment: end;
                     TextButton {
                         text: "Open rules.toml";
                         framed: true;
@@ -226,7 +557,7 @@ export component RulesPane inherits Rectangle {
                     }
                 }
                 VerticalLayout {
-                    alignment: center;
+                    alignment: end;
                     TextButton {
                         text: "New rule";
                         primary: true;
@@ -280,225 +611,80 @@ export component RulesPane inherits Rectangle {
                 width: rules-scroll.visible-width;
                 alignment: start;
                 spacing: Theme.pad;
-                for proposal[i] in root.proposals: Rectangle {
-                    border-width: 1px;
-                    border-color: Theme.pane.border;
-                    border-radius: Theme.radius;
-                    background: Theme.pane.faint;
-                    VerticalLayout {
-                        padding: Theme.inset;
-                        spacing: Theme.pad;
-                        Text {
-                            text: proposal.by;
-                            font-size: Theme.caps-size;
-                            font-weight: 600;
-                            letter-spacing: 1px;
-                            color: Theme.pane.accent;
-                        }
-                        Text {
-                            text: proposal.label;
-                            font-family: Theme.heading-font;
-                            font-size: Theme.heading-size;
-                            color: Theme.pane.heading;
-                            overflow: elide;
-                        }
-                        Summary { text: proposal.summary; }
-                        Note { text: proposal.note; }
-                        // A new rule's lines are all added, so the block gets a diff's tint; an edit's are mixed.
-                        Rectangle {
-                            background: proposal.edits ? transparent : Theme.pane.added;
-                            border-width: proposal.edits ? 1px : 0;
-                            border-color: Theme.pane.border;
-                            border-radius: Theme.pad / 2;
-                            // The marks and the lines share font and size, so each "+" sits beside its line.
-                            HorizontalLayout {
-                                padding: Theme.pad / 2;
-                                padding-left: Theme.pad;
-                                spacing: Theme.pad;
-                                Text {
-                                    accessible-role: none;
-                                    text: proposal.marks;
-                                    font-family: Theme.mono-font;
-                                    font-size: Theme.small-size;
-                                    color: proposal.edits ? Theme.pane.text : Theme.pane.success;
-                                }
-                                Text {
-                                    horizontal-stretch: 1;
-                                    text: proposal.toml;
-                                    font-family: Theme.mono-font;
-                                    font-size: Theme.small-size;
-                                    color: Theme.pane.text;
-                                }
-                            }
-                        }
-                        // The dry run on the cached mail, counted as soon as the proposal is here.
-                        Rectangle {
-                            border-radius: Theme.pad;
-                            background: Theme.pane.panel;
-                            VerticalLayout {
-                                padding: Theme.pad * 3 / 2;
-                                spacing: Theme.pad / 2;
-                                Note {
-                                    text: "Dry run on cached mail";
-                                    font-weight: 600;
-                                }
-                                if proposal.counting: Note { text: "Counting…"; }
-                                if proposal.error != "": Text {
-                                    text: proposal.error;
-                                    color: Theme.pane.error;
-                                    wrap: word-wrap;
-                                }
-                                if !proposal.counting && proposal.error == "": HorizontalLayout {
-                                    spacing: Theme.pad;
-                                    Text {
-                                        text: proposal.count;
-                                        font-family: Theme.heading-font;
-                                        font-size: Theme.title-size;
-                                        color: Theme.pane.heading;
-                                        vertical-alignment: center;
-                                    }
-                                    Text {
-                                        text: proposal.count-label;
-                                        color: Theme.pane.secondary;
-                                        vertical-alignment: center;
-                                    }
-                                    Rectangle { horizontal-stretch: 1; }
-                                }
-                                for sample in proposal.samples: HorizontalLayout {
-                                    spacing: Theme.pad;
-                                    Text {
-                                        horizontal-stretch: 1;
-                                        text: sample.subject;
-                                        color: Theme.pane.text;
-                                        overflow: elide;
-                                    }
-                                    Text {
-                                        text: sample.date;
-                                        font-size: Theme.small-size;
-                                        color: Theme.pane.muted;
-                                    }
-                                }
-                                if !proposal.counting && proposal.error == "": Note { text: proposal.rest; }
-                                if proposal.warnings != "": Text {
-                                    text: proposal.warnings;
-                                    font-size: Theme.small-size;
-                                    color: Theme.pane.warning;
-                                    wrap: word-wrap;
-                                }
-                            }
-                        }
-                        HorizontalLayout {
-                            spacing: Theme.pad;
-                            TextButton {
-                                text: "Approve rule";
-                                primary: true;
-                                palette: Theme.pane;
-                                clicked => { root.approve(i); }
-                            }
-                            TextButton {
-                                text: "Reject";
-                                framed: true;
-                                palette: Theme.pane;
-                                clicked => { root.reject(i); }
-                            }
-                            VerticalLayout {
-                                alignment: center;
-                                Link {
-                                    text: "Edit before approving →";
-                                    clicked => { root.edit-proposal(i); }
-                                }
-                            }
-                            Rectangle { horizontal-stretch: 1; }
-                        }
-                    }
+                for proposal[i] in root.proposals: ProposalCard {
+                    proposal: proposal;
+                    check-icon: root.check-icon;
+                    approve => { root.approve(i); }
+                    reject => { root.reject(i); }
+                    edit => { root.edit-proposal(i); }
                 }
 
                 if root.rules.length == 0: Text {
                     text: root.rules-empty;
                     color: Theme.pane.muted;
                 }
-                if root.rules.length > 0: HorizontalLayout {
-                    height: Theme.row;
-                    padding-left: Theme.pad;
-                    padding-right: Theme.pad;
-                    spacing: Theme.pad;
-                    ColumnHeading {
-                        width: Columns.number;
-                        text: "#";
-                        column: 0;
-                        sort: root.rules-sort;
-                        ascending: root.rules-ascending;
-                        sorted(column, ascending) => { root.sort(column, ascending); }
+                if root.rules.length > 0: VerticalLayout {
+                    HorizontalLayout {
+                        height: Theme.action;
+                        padding-left: Theme.pad * 3 / 2;
+                        padding-right: Theme.pad * 3 / 2;
+                        spacing: 3 * Theme.pad;
+                        ColumnHeading {
+                            width: Columns.number;
+                            text: "#";
+                            column: 0;
+                            sort: root.rules-sort;
+                            ascending: root.rules-ascending;
+                            sorted(column, ascending) => { root.sort(column, ascending); }
+                        }
+                        Text {
+                            width: Columns.switch;
+                            text: "ON";
+                            font-size: Theme.caps-size;
+                            font-weight: 600;
+                            letter-spacing: Theme.caps-size * 0.12;
+                            color: Theme.pane.muted;
+                            vertical-alignment: center;
+                        }
+                        for heading[k] in [
+                            { text: "Name", column: 1, stretch: 15 },
+                            { text: "Watches", column: 2, stretch: 21 },
+                            { text: "When", column: 3, stretch: 27 },
+                            { text: "Then", column: 4, stretch: 18 },
+                        ]: ColumnHeading {
+                            horizontal-stretch: heading.stretch;
+                            preferred-width: 0;
+                            min-width: 0;
+                            text: heading.text;
+                            column: heading.column;
+                            sort: root.rules-sort;
+                            ascending: root.rules-ascending;
+                            sorted(column, ascending) => { root.sort(column, ascending); }
+                        }
+                        ColumnHeading {
+                            width: Columns.hits;
+                            text: "Last 30 days";
+                            column: 5;
+                            sort: root.rules-sort;
+                            ascending: root.rules-ascending;
+                            sorted(column, ascending) => { root.sort(column, ascending); }
+                        }
+                        ColumnHeading {
+                            width: Columns.fired;
+                            text: "Last fired";
+                            column: 6;
+                            sort: root.rules-sort;
+                            ascending: root.rules-ascending;
+                            sorted(column, ascending) => { root.sort(column, ascending); }
+                        }
                     }
-                    Rectangle { width: Columns.switch; }
-                    ColumnHeading {
-                        horizontal-stretch: 2;
-                        preferred-width: 0;
-                        min-width: 0;
-                        text: "Name";
-                        column: 1;
-                        sort: root.rules-sort;
-                        ascending: root.rules-ascending;
-                        sorted(column, ascending) => { root.sort(column, ascending); }
-                    }
-                    ColumnHeading {
-                        width: Columns.account;
-                        text: "Account";
-                        column: 2;
-                        sort: root.rules-sort;
-                        ascending: root.rules-ascending;
-                        sorted(column, ascending) => { root.sort(column, ascending); }
-                    }
-                    ColumnHeading {
-                        width: Columns.folder;
-                        text: "Folder";
-                        column: 3;
-                        sort: root.rules-sort;
-                        ascending: root.rules-ascending;
-                        sorted(column, ascending) => { root.sort(column, ascending); }
-                    }
-                    ColumnHeading {
-                        horizontal-stretch: 3;
-                        preferred-width: 0;
-                        min-width: 0;
-                        text: "Conditions";
-                        column: 4;
-                        sort: root.rules-sort;
-                        ascending: root.rules-ascending;
-                        sorted(column, ascending) => { root.sort(column, ascending); }
-                    }
-                    ColumnHeading {
-                        horizontal-stretch: 2;
-                        preferred-width: 0;
-                        min-width: 0;
-                        text: "Actions";
-                        column: 5;
-                        sort: root.rules-sort;
-                        ascending: root.rules-ascending;
-                        sorted(column, ascending) => { root.sort(column, ascending); }
-                    }
-                    ColumnHeading {
-                        width: Columns.hits;
-                        text: "Last 30 days";
-                        column: 6;
-                        sort: root.rules-sort;
-                        ascending: root.rules-ascending;
-                        sorted(column, ascending) => { root.sort(column, ascending); }
-                    }
-                    ColumnHeading {
-                        width: Columns.fired;
-                        text: "Last fired";
-                        column: 7;
-                        sort: root.rules-sort;
-                        ascending: root.rules-ascending;
-                        sorted(column, ascending) => { root.sort(column, ascending); }
-                    }
+                    Hairline { }
                 }
                 // A click on a row, anywhere but its switch, opens the rule; a drag moves it, in run order only.
                 for rule[i] in root.rules: row := Rectangle {
                     // Over the lower half of this row, a drop puts the rule below it.
                     property <bool> drop-below;
-                    height: Theme.row + Theme.pad;
+                    height: Theme.action + Theme.pad;
                     drag := DragArea {
                         enabled: root.rules-reorderable;
                         allow-move: true;
@@ -515,17 +701,17 @@ export component RulesPane inherits Rectangle {
                             accessible-action-default => { root.edit-rule(i); }
                             clicked => { root.edit-rule(i); }
                             Rectangle {
-                                border-radius: Theme.pad / 2;
-                                background: rule.selected ? Theme.pane.selected : mod(i, 2) == 0 ? Theme.pane.panel : transparent;
+                                background: rule.selected ? Theme.pane.selected : transparent;
                             }
+                            Hairline { y: parent.height - 1px; }
                             HorizontalLayout {
-                                padding-left: Theme.pad;
-                                padding-right: Theme.pad;
-                                spacing: Theme.pad;
+                                padding-left: Theme.pad * 3 / 2;
+                                padding-right: Theme.pad * 3 / 2;
+                                spacing: 3 * Theme.pad;
                                 Cell {
                                     width: Columns.number;
                                     text: rule.number;
-                                    color: Theme.pane.muted;
+                                    color: Theme.pane.secondary;
                                 }
                                 VerticalLayout {
                                     width: Columns.switch;
@@ -537,15 +723,16 @@ export component RulesPane inherits Rectangle {
                                     }
                                 }
                                 HorizontalLayout {
-                                    horizontal-stretch: 2;
+                                    horizontal-stretch: 15;
                                     preferred-width: 0;
                                     min-width: 0;
                                     spacing: Theme.pad;
                                     Cell {
                                         accessible-role: none;
                                         text: rule.label;
-                                        font-weight: 600;
-                                        color: Theme.pane.strong;
+                                        font-family: Theme.mono-font;
+                                        font-size: Theme.compact-size;
+                                        color: rule.enabled ? Theme.pane.text : Theme.pane.muted;
                                     }
                                     if rule.by != "": VerticalLayout {
                                         alignment: center;
@@ -556,36 +743,67 @@ export component RulesPane inherits Rectangle {
                                     }
                                 }
                                 Cell {
-                                    width: Columns.account;
-                                    text: rule.account;
+                                    horizontal-stretch: 21;
+                                    preferred-width: 0;
+                                    min-width: 0;
+                                    text: rule.watches;
+                                    color: Theme.pane.secondary;
                                 }
                                 Cell {
-                                    width: Columns.folder;
-                                    text: rule.folder;
-                                }
-                                Cell {
-                                    horizontal-stretch: 3;
+                                    horizontal-stretch: 27;
                                     preferred-width: 0;
                                     min-width: 0;
                                     text: rule.conditions;
                                     color: Theme.pane.secondary;
                                 }
-                                Cell {
-                                    horizontal-stretch: 2;
+                                HorizontalLayout {
+                                    horizontal-stretch: 18;
                                     preferred-width: 0;
                                     min-width: 0;
-                                    text: rule.actions;
-                                    color: Theme.pane.secondary;
+                                    spacing: Theme.pad * 3 / 4;
+                                    // A delete is marked, and said to keep a backup.
+                                    if rule.deletes: VerticalLayout {
+                                        alignment: center;
+                                        Rectangle {
+                                            width: mark.preferred-width + Theme.pad * 3 / 2;
+                                            height: mark.preferred-height + Theme.pad / 4;
+                                            border-radius: Theme.pad / 2;
+                                            background: Theme.pane.error.with-alpha(0.14);
+                                            mark := Text {
+                                                text: "delete";
+                                                font-size: Theme.small-size;
+                                                font-weight: 600;
+                                                color: Theme.pane.error;
+                                            }
+                                        }
+                                    }
+                                    Cell {
+                                        text: rule.deletes ? "backed up" : rule.actions;
+                                        color: Theme.pane.secondary;
+                                    }
                                 }
-                                Cell {
+                                HorizontalLayout {
                                     width: Columns.hits;
-                                    text: rule.hits;
-                                    color: rule.fired == "—" ? Theme.pane.muted : Theme.pane.text;
+                                    spacing: Theme.pad;
+                                    if rule.bar > 0: VerticalLayout {
+                                        alignment: center;
+                                        Rectangle {
+                                            width: max(Theme.pad * 3 / 4, 10 * Theme.pad * rule.bar);
+                                            height: Theme.pad;
+                                            border-radius: Theme.pad / 4;
+                                            background: Theme.brand-glow.with-alpha(0.6);
+                                        }
+                                    }
+                                    Cell {
+                                        text: rule.hits;
+                                        font-italic: rule.fired == "—";
+                                        color: rule.fired == "—" ? Theme.pane.muted : Theme.pane.secondary;
+                                    }
                                 }
                                 Cell {
                                     width: Columns.fired;
                                     text: rule.fired;
-                                    color: Theme.pane.muted;
+                                    color: Theme.pane.secondary;
                                 }
                             }
                         }
