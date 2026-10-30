@@ -18,6 +18,7 @@ mod list;
 mod load;
 mod logos;
 mod menu;
+mod motion;
 mod numbers;
 mod opener;
 mod persist;
@@ -197,6 +198,7 @@ impl Start<'_> {
         launch::watch(window.window(), marker.cloned());
         opener::attach(&window);
         let _scheme = follow_desktop_scheme(&window)?;
+        motion::follow(&window);
         let layout = persist::path(&paths);
         if !safe_mode {
             restore(&window, persist::load(&layout));

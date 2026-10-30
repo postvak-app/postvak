@@ -140,6 +140,41 @@ pub fn spawn_sandboxed(
     Ok(())
 }
 
+/// The desktop's settings (`org.freedesktop.portal.Settings`) in each of `namespaces`, by namespace and key.
+pub type Settings = HashMap<String, HashMap<String, OwnedValue>>;
+
+/// Reads the settings in `namespaces`; a namespace the desktop does not have is left out.
+pub fn settings(bus: &Connection, namespaces: &[&str]) -> Result<Settings> {
+    let reply = bus
+        .call_method(
+            Some(DESTINATION),
+            PATH,
+            Some("org.freedesktop.portal.Settings"),
+            "ReadAll",
+            &(namespaces,),
+        )
+        .context("reading the desktop's settings")?;
+    Ok(reply.body().deserialize()?)
+}
+
+/// Calls `changed` with the settings in `namespaces` now, then again each time one of them changes. Blocks while the
+/// session bus lasts, so on a thread of its own.
+pub fn follow_settings(namespaces: &[&str], mut changed: impl FnMut(&Settings)) -> Result<()> {
+    let bus = Connection::session().context("no session bus for the desktop's settings")?;
+    let portal = Proxy::new(&bus, DESTINATION, PATH, "org.freedesktop.portal.Settings")?;
+    // Listening before the first read, so a change in between is not missed.
+    let changes = portal.receive_signal("SettingChanged")?;
+    changed(&settings(&bus, namespaces)?);
+    for change in changes {
+        let (namespace, _key, _value): (String, String, OwnedValue) =
+            change.body().deserialize()?;
+        if namespaces.contains(&namespace.as_str()) {
+            changed(&settings(&bus, namespaces)?);
+        }
+    }
+    Ok(())
+}
+
 /// `exe` and `args` as `Spawn` takes them: each with a closing NUL.
 fn spawn_argv(exe: &std::path::Path, args: &[&str]) -> Vec<Vec<u8>> {
     std::iter::once(path_bytes(exe))

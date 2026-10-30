@@ -255,7 +255,7 @@ export component FolderPane inherits Rectangle {
                                     y: (parent.height - self.height) / 2;
                                     border-radius: self.width / 2;
                                     background: Theme.account-dots[mod(item.tint, Theme.account-dots.length)];
-                                    opacity: item.busy ? 0.35 + 0.65 * abs(sin(animation-tick() / 1ms * 0.09deg)) : 1;
+                                    opacity: item.busy ? Theme.pulse : 1;
                                     if item.busy: Rectangle {
                                         accessible-role: progress-indicator;
                                         accessible-label: "Syncing";

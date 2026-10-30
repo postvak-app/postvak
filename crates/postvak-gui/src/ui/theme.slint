@@ -95,14 +95,21 @@ export global Theme {
     out property <color> frame-glow: dark ? #e8562f24 : #e8562f2e;
     // The dot before each account's heading, in turn: the website's code colours, which read on both frames.
     out property <[color]> account-dots: [#9fb6e6, #e6b85c, #9ccb8f, #f3b39d];
+    // Whether the desktop asks for less motion (`motion.rs`): every duration below is then 0, and the pulses hold
+    // still.
+    in property <bool> reduce-motion;
     // How long a hover background takes to fade in or out; selection and presses change at once.
-    out property <duration> hover-fade: 90ms;
+    out property <duration> hover-fade: reduce-motion ? 0ms : 90ms;
     // How long a message turning read or unread, or an account's status dot, takes to fade.
-    out property <duration> state-fade: 120ms;
+    out property <duration> state-fade: reduce-motion ? 0ms : 120ms;
+    // How long a dialog and the dim behind it take to fade in; closing is at once. Keys reach the dialog meanwhile.
+    out property <duration> dialog-fade: reduce-motion ? 0ms : 120ms;
     // How long a message that arrives while the window is open takes to fade in.
-    out property <duration> arrive-fade: 150ms;
+    out property <duration> arrive-fade: reduce-motion ? 0ms : 150ms;
     // How long the sync progress takes to glide from one fetched chunk to the next.
-    out property <duration> progress-glide: 240ms;
+    out property <duration> progress-glide: reduce-motion ? 0ms : 240ms;
+    // The opacity of a dot while its account or folder syncs: a slow pulse, or a steady dim one.
+    out property <float> pulse: reduce-motion ? 0.6 : 0.35 + 0.65 * abs(sin(animation-tick() / 1ms * 0.09deg));
 
     // Type sizes: secondary labels, the interface, the message text, pane headings, the list's title, the reader's subject.
     out property <length> small-size: 12px;
