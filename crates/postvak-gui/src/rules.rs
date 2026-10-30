@@ -295,7 +295,7 @@ pub(crate) fn would_be(rule: &Rule, count: usize) -> String {
             Action::Flag => Some("flagged".into()),
             Action::Unflag => Some("unflagged".into()),
             Action::Tag(keyword) => Some(format!("tagged {}", clean(keyword, false))),
-            Action::Notify | Action::Silent | Action::Stop => None,
+            Action::After(_) | Action::Notify | Action::Silent | Action::Stop => None,
         })
         .unwrap_or_else(|| "matched".into());
     let noun = super::numbers::noun(count as u64, "message", "messages");
@@ -389,9 +389,31 @@ pub(crate) fn sentence(rule: &Rule) -> Vec<Run> {
     runs.push(plain(" arrives in "));
     runs.push((format!("{account} / {folder}"), RUN_TOKEN));
     runs.push(plain(", "));
-    join(&mut runs, rule.actions.iter().map(action_runs).collect());
+    join(&mut runs, action_parts(&rule.actions));
     runs.push(plain("."));
     runs
+}
+
+/// The actions in the sentence's words, in file order; with `after`, the actions that wait come first, followed by
+/// when they run, then `notify` and `stop`, which hold at once.
+fn action_parts(actions: &[rules::Action]) -> Vec<Vec<Run>> {
+    use rules::Action;
+    let (waits, acts): (Vec<_>, Vec<_>) = actions
+        .iter()
+        .partition(|action| matches!(action, Action::After(_)));
+    if waits.is_empty() {
+        return acts.into_iter().map(action_runs).collect();
+    }
+    let (later, now): (Vec<_>, Vec<_>) = acts.into_iter().partition(|a| a.waits_with_after());
+    let mut parts: Vec<Vec<Run>> = later.into_iter().map(action_runs).collect();
+    if let Some(last) = parts.last_mut() {
+        for (i, wait) in waits.into_iter().enumerate() {
+            last.push((if i == 0 { " " } else { " or " }.into(), RUN_PLAIN));
+            last.extend(action_runs(wait));
+        }
+    }
+    parts.extend(now.into_iter().map(action_runs));
+    parts
 }
 
 /// `parts` one after another: commas between them and "and" before the last.
@@ -438,6 +460,10 @@ fn action_runs(action: &rules::Action) -> Vec<Run> {
     let plain = |text: &str| (text.to_string(), RUN_PLAIN);
     let token = |text: String| (text, RUN_TOKEN);
     match action {
+        Action::After(when) if rules::Wait::parse(when) == Ok(rules::Wait::Read) => {
+            vec![plain("once it is "), strong("read")]
+        }
+        Action::After(when) => vec![strong("after"), plain(" "), token(clean(when, false))],
         Action::Archive => vec![strong("archive"), plain(" it")],
         Action::Delete => vec![strong("delete"), plain(" it")],
         Action::Flag => vec![strong("flag"), plain(" it")],
@@ -1698,6 +1724,24 @@ mod tests {
     }
 
     #[test]
+    fn a_delay_reads_after_the_actions() {
+        let rule = postvak_core::rules::parse(
+            "[[rules]]\nname = \"shop\"\naccount = \"work\"\nmatch.from = { contains = \"shop\" }\nactions = { move = \"Shopping\", stop = true, after = [\"15min\", \"read\"] }\n",
+        )
+        .unwrap()
+        .rules
+        .remove(0);
+        let text: String = super::sentence(&rule)
+            .iter()
+            .map(|(t, _)| t.as_str())
+            .collect();
+        assert_eq!(
+            text,
+            "When mail from shop arrives in work / Inbox, move it to Shopping after 15min or once it is read and stop later rules."
+        );
+    }
+
+    #[test]
     fn toml_lines_split_into_keys_strings_and_literals() {
         use super::{RUN_KEY, RUN_LITERAL, RUN_PLAIN, RUN_STRING, RUN_TABLE};
         let run = |t: &str, k| (t.to_string(), k);
@@ -1996,7 +2040,7 @@ mod editor_tests {
             e.invoke_add_condition();
             e.invoke_field_chosen(0, 3);
             e.invoke_value_edited(0, "receipt".into());
-            e.invoke_action_chosen(5);
+            e.invoke_action_chosen(6);
             e.invoke_action_value_edited(0, "Receipts".into());
         });
         open.click("Save");

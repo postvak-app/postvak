@@ -70,6 +70,20 @@ impl Span {
         }
     }
 
+    /// The moment this span after `from`; `None` when that lies outside the calendar.
+    pub fn after(self, from: i64) -> Option<i64> {
+        match self {
+            Span::Seconds(seconds) => from.checked_add(i64::try_from(seconds).ok()?),
+            Span::Months(months) => {
+                let at = chrono::Local.timestamp_opt(from, 0).single()?;
+                Some(
+                    at.checked_add_months(chrono::Months::new(months))?
+                        .timestamp(),
+                )
+            }
+        }
+    }
+
     /// The moment this span before `now`; `None` when that lies outside the calendar.
     pub fn before(self, now: i64) -> Option<i64> {
         match self {

@@ -273,7 +273,7 @@ component RuleEditorPane inherits ScrollView {
             }
             if action.takes-value: Field {
                 horizontal-stretch: 1;
-                placeholder-text: action.name == "Tag" ? "$label1" : "Folder";
+                placeholder-text: action.name == "Tag" ? "$label1" : action.name == "After" ? "15min or read" : "Folder";
                 accessible-label: action.name + " value";
                 value: action.value;
                 value-edited(text) => { RuleEditor.action-value-edited(i, text); }

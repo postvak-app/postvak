@@ -564,9 +564,9 @@ fn present_editor(app: &App, window: &MailWindow) {
         .iter()
         .map(|action| {
             let value = match action {
-                postvak_core::rules::Action::Move(v) | postvak_core::rules::Action::Tag(v) => {
-                    Some(v)
-                }
+                postvak_core::rules::Action::After(v)
+                | postvak_core::rules::Action::Move(v)
+                | postvak_core::rules::Action::Tag(v) => Some(v),
                 _ => None,
             };
             ActionData {
@@ -851,7 +851,9 @@ fn connect_editor(window: &MailWindow, on: fn(Ask) -> bool) {
         on(edit_draft(move |_, d| {
             let action = usize::try_from(i).ok().and_then(|i| d.actions.get_mut(i));
             if let Some(
-                postvak_core::rules::Action::Move(value) | postvak_core::rules::Action::Tag(value),
+                postvak_core::rules::Action::After(value)
+                | postvak_core::rules::Action::Move(value)
+                | postvak_core::rules::Action::Tag(value),
             ) = action
             {
                 *value = text.into();

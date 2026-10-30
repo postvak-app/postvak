@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use crate::config::Identity;
 use crate::rules::apply::{ApplyError, plan_for, would_run};
-use crate::rules::engine::{Context, Mode, Plan, folder_needs_body, matching};
+use crate::rules::engine::{Context, Due, Mode, Plan, PlannedAction, folder_needs_body, matching};
 use crate::rules::{CompiledRule, Rule, RuleFile, RulesError, compile};
 use crate::senders::{GroupBy, Sender, senders};
 use crate::store::{Message, Store, StoreError};
@@ -29,6 +29,9 @@ pub struct Contest {
 pub struct Act {
     pub rule: String,
     pub action: String,
+    /// When it runs, if its rule's `after` has not come yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waits: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -128,20 +131,28 @@ pub fn in_folder(
     Ok(coverage)
 }
 
-/// What `apply` would run of `plan`, as `would_run` says, or why `apply` would fail before running anything.
+/// What `apply` would run of `plan`, as `would_run` says, then what waits for its rule's `after`; or why `apply` would
+/// fail before running anything.
 fn acts(
     plan: &Plan,
     msg: &Message,
     store: &Store,
 ) -> Result<(Vec<Act>, Option<String>), StoreError> {
+    let act = |planned: &PlannedAction, waits: Option<&Due>| Act {
+        rule: planned.rule.clone(),
+        action: planned.action.label(),
+        waits: waits.map(Due::describe),
+    };
     match would_run(plan, msg, store) {
         Ok(running) => Ok((
             running
                 .into_iter()
-                .map(|planned| Act {
-                    rule: planned.rule.clone(),
-                    action: planned.action.label(),
-                })
+                .map(|planned| act(planned, None))
+                .chain(
+                    plan.waiting
+                        .iter()
+                        .map(|(planned, due)| act(planned, Some(due))),
+                )
                 .collect(),
             None,
         )),
@@ -267,7 +278,8 @@ actions = { flagged = true }
             noise.acts,
             [Act {
                 rule: "noise".into(),
-                action: "delete".into()
+                action: "delete".into(),
+                waits: None,
             }]
         );
         // The earlier delivery rule takes the move the shop rule was written for; the shop rule's flag still runs.
@@ -366,7 +378,8 @@ actions = { move = "Lists" }
             coverage.contests[0].acts,
             [Act {
                 rule: "stay".into(),
-                action: "flagged".into()
+                action: "flagged".into(),
+                waits: None,
             }]
         );
     }
@@ -397,7 +410,8 @@ actions = { archive = true }
             coverage.contests[0].acts,
             [Act {
                 rule: "lists".into(),
-                action: "read".into()
+                action: "read".into(),
+                waits: None,
             }]
         );
     }

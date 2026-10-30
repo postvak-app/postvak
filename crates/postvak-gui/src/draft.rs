@@ -110,6 +110,7 @@ pub(crate) fn action_label(action: &Action) -> String {
         Action::Unflag => "unflag".into(),
         Action::Move(folder) => format!("move to {folder}"),
         Action::Tag(keyword) => format!("tag {keyword}"),
+        Action::After(when) => format!("after {when}"),
         other => other.label(),
     }
 }
@@ -136,6 +137,7 @@ pub(crate) fn preview_text(rule: &Rule, matched: usize, needs_body: bool) -> Str
     let verbs: Vec<String> = rule
         .actions
         .iter()
+        .filter(|action| !matches!(action, Action::After(_)))
         .map(|action| match action {
             Action::Move(_) => "move".into(),
             Action::Notify => "notify about".into(),
@@ -406,8 +408,9 @@ pub(crate) fn conditions(m: &Match) -> (Vec<Condition>, Match) {
     (rows, kept)
 }
 
-/// The actions "+ Add action" offers, in its order; Move to and Tag start with an empty value.
-pub(crate) const ACTIONS: [Action; 10] = [
+/// The actions "+ Add action" offers, in its order; After, Move to and Tag start with an empty value.
+pub(crate) const ACTIONS: [Action; 11] = [
+    Action::After(String::new()),
     Action::Archive,
     Action::Delete,
     Action::Flag,
@@ -423,6 +426,7 @@ pub(crate) const ACTIONS: [Action; 10] = [
 /// An action as a chip or menu entry names it.
 pub(crate) fn action_name(action: &Action) -> &'static str {
     match action {
+        Action::After(_) => "After",
         Action::Archive => "Archive",
         Action::Delete => "Delete",
         Action::Flag => "Flag",
