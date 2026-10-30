@@ -229,6 +229,11 @@ pub struct Actions {
     /// Adds this IMAP keyword, or each of a list; Thunderbird shows them as tags (e.g. $label1)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tag: Option<OneOrMany<String>>,
+    // Last, out of order: serde reads a list into a struct by position, so the old `actions = ["delete"]` stays refused.
+    /// Waits before the other actions run: a span such as 15min or 3d after the message arrived, "read" until it is
+    /// read, or a list of them, whichever comes first. Until then notify and stop already apply
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    after: Option<OneOrMany<String>>,
 }
 
 impl Actions {
@@ -254,6 +259,12 @@ impl Actions {
         )
         .chain(either(self.notify, Action::Notify, Action::Silent))
         .chain(when(self.stop, Action::Stop))
+        .chain(
+            self.after
+                .iter()
+                .flat_map(OneOrMany::as_slice)
+                .map(|when| Action::After(when.clone())),
+        )
         .collect()
     }
 
@@ -261,6 +272,7 @@ impl Actions {
     pub fn from_list(list: &[Action]) -> Result<Actions, String> {
         let mut table = Actions::default();
         let mut tags = Vec::new();
+        let mut after = Vec::new();
         for action in list {
             let (key, slot, value) = match action {
                 Action::Archive => ("archive", &mut table.archive, true),
@@ -283,6 +295,10 @@ impl Actions {
                     tags.push(keyword.clone());
                     continue;
                 }
+                Action::After(when) => {
+                    after.push(when.clone());
+                    continue;
+                }
                 Action::Trash | Action::NotJunk => {
                     return Err(format!("{} is not a rule action", action.label()));
                 }
@@ -297,12 +313,17 @@ impl Actions {
         if table.junk == Some(true) && (table.archive == Some(true) || table.move_to.is_some()) {
             return Err("actions cannot both junk and move or archive".into());
         }
-        table.tag = match tags.len() {
-            0 => None,
-            1 => tags.pop().map(OneOrMany::One),
-            _ => Some(OneOrMany::Many(tags)),
-        };
+        table.tag = one_or_many(tags);
+        table.after = one_or_many(after);
         Ok(table)
+    }
+}
+
+fn one_or_many(mut values: Vec<String>) -> Option<OneOrMany<String>> {
+    match values.len() {
+        0 => None,
+        1 => values.pop().map(OneOrMany::One),
+        _ => Some(OneOrMany::Many(values)),
     }
 }
 
@@ -353,9 +374,20 @@ pub enum Action {
     Move(String),
     /// Add this IMAP keyword, which Thunderbird shows as a tag (e.g. $label1)
     Tag(String),
+    /// The rule's other actions wait until this span after arrival, such as 15min, or until the message is read
+    /// (`read`); of several, the first that comes
+    After(String),
 }
 
 impl Action {
+    /// Whether `after` delays this action: everything but `after` itself and `notify` and `stop`, which hold at once.
+    pub fn waits_with_after(&self) -> bool {
+        !matches!(
+            self,
+            Action::After(_) | Action::Notify | Action::Silent | Action::Stop
+        )
+    }
+
     /// The label of the command a user gave for this action: `delete` sends `Trash` outside the Trash folder.
     pub fn command_label(&self) -> String {
         match self {
@@ -382,6 +414,7 @@ impl Action {
             Action::NotJunk => "not_junk".into(),
             Action::Move(folder) => format!("move:{folder}"),
             Action::Tag(keyword) => format!("tag:{keyword}"),
+            Action::After(when) => format!("after:{when}"),
         }
     }
 }
@@ -528,6 +561,26 @@ pub struct CompiledRule {
     /// clock, so a widened rule never acts on older mail.
     pub definition: String,
     pub(crate) conditions: Conditions,
+    /// What the rule's actions wait for, any one of them; empty when they run at once.
+    pub(crate) after: Vec<Wait>,
+}
+
+/// One value of `actions.after`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Wait {
+    Read,
+    Span(crate::time::Span),
+}
+
+impl Wait {
+    pub fn parse(text: &str) -> Result<Wait, String> {
+        if text.trim().eq_ignore_ascii_case("read") {
+            return Ok(Wait::Read);
+        }
+        crate::time::Span::parse(text)
+            .map(Wait::Span)
+            .map_err(|e| format!("{e}, or read"))
+    }
 }
 
 /// A compiled `Match`: every set condition must hold.
@@ -706,6 +759,22 @@ fn compile_rule(
                 .map_err(|reason| invalid(&rule.name, format!("tag {reason}")))?;
         }
     }
+    let after = rule
+        .actions
+        .iter()
+        .filter_map(|action| match action {
+            Action::After(when) => Some(
+                Wait::parse(when).map_err(|e| invalid(&rule.name, format!("actions.after: {e}"))),
+            ),
+            _ => None,
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if !after.is_empty() && !rule.actions.iter().any(Action::waits_with_after) {
+        return Err(invalid(
+            &rule.name,
+            "actions.after needs an action to wait with, such as move or delete",
+        ));
+    }
     let resolved = lists::resolve(&rule.name, &rule.matches, lists, "match")?;
     let definition = serde_json::to_string(&(&rule.account, &rule.folder, &resolved, actions))
         .map_err(|e| invalid(&rule.name, e.to_string()))?;
@@ -714,6 +783,7 @@ fn compile_rule(
         first_seen_at: 0,
         definition,
         conditions: compile_match(&rule.name, &resolved, "match", 0)?,
+        after,
     })
 }
 
@@ -1004,7 +1074,8 @@ mod tests {
         assert_eq!(
             keys,
             [
-                "archive", "delete", "flagged", "junk", "move", "notify", "read", "stop", "tag"
+                "after", "archive", "delete", "flagged", "junk", "move", "notify", "read", "stop",
+                "tag"
             ],
             "actions only users take stay out of the schema"
         );
@@ -1619,5 +1690,42 @@ actions = { tag = "$label4", move = "Shop" }
                 format!("[[rules]]\nname = \"x\"\nmatch.read = true\nactions.{action} = true\n");
             assert!(parse(&text).is_err(), "{action}");
         }
+    }
+
+    #[test]
+    fn after_round_trips_and_refuses_what_it_cannot_wait_for() {
+        let toml = "[[rules]]\nname = \"r\"\nmatch.read = false\nactions = { move = \"Shop\", after = [\"read\", \"2d\"] }\n";
+        let file = parse(toml).unwrap();
+        assert_eq!(
+            file.rules[0].actions,
+            [
+                Action::Move("Shop".into()),
+                Action::After("read".into()),
+                Action::After("2d".into())
+            ]
+        );
+        let compiled = compile(&file).unwrap();
+        assert_eq!(
+            compiled[0].after,
+            [
+                Wait::Read,
+                Wait::Span(crate::time::Span::Seconds(2 * 86_400))
+            ]
+        );
+        let again = parse(&toml::to_string(&file).unwrap()).unwrap();
+        assert_eq!(again.rules[0].actions, file.rules[0].actions);
+        let refused = |actions: &str| {
+            let text =
+                format!("[[rules]]\nname = \"r\"\nmatch.read = false\nactions = {{ {actions} }}\n");
+            compile(&parse(&text).unwrap()).unwrap_err().to_string()
+        };
+        assert_eq!(
+            refused("move = \"Shop\", after = \"soon\""),
+            "rule 'r': actions.after: expected a span such as 30min, 1h, 2d, 3w, 6mo or 1y, got 'soon', or read"
+        );
+        assert_eq!(
+            refused("stop = true, notify = false, after = \"1h\""),
+            "rule 'r': actions.after needs an action to wait with, such as move or delete"
+        );
     }
 }

@@ -235,10 +235,14 @@ pub fn rule(
 
 /// One row of a dry run: what `rule` would do to the message.
 pub fn planned_row(account: &str, planned: &Planned) -> Value {
-    json!({
+    let mut row = json!({
         "account": account, "rule": planned.rule, "folder": planned.message.folder,
         "uid": planned.message.uid, "action": planned.action.label(), "subject": planned.message.subject,
-    })
+    });
+    if let Some(due) = planned.waits {
+        row["waits"] = due.describe().into();
+    }
+    row
 }
 
 /// One group of sender statistics, in `folder` of `account`.
@@ -537,6 +541,7 @@ mod tests {
                 ..Default::default()
             },
             action: crate::rules::Action::Flag,
+            waits: None,
         };
         assert_eq!(
             planned_row("work", &planned),

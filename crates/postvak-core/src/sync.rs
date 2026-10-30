@@ -396,6 +396,7 @@ pub enum DeleteMode {
 #[derive(Serialize, Deserialize)]
 #[serde(remote = "Action", rename_all = "snake_case")]
 enum ActionDef {
+    After(String),
     Archive,
     Delete,
     Flag,
@@ -1573,7 +1574,7 @@ fn describe(action: &Action, count: usize) -> String {
         Action::MarkRead => "marking read",
         Action::MarkUnread => "marking unread",
         Action::Move(_) => "moving",
-        Action::Notify | Action::Silent | Action::Stop => "updating",
+        Action::After(_) | Action::Notify | Action::Silent | Action::Stop => "updating",
         Action::Tag(_) => "tagging",
         Action::Unflag => "unflagging",
     };

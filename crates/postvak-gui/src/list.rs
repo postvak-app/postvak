@@ -192,7 +192,9 @@ impl Optimistic {
             Action::MarkRead => Some(Optimistic::Seen(true)),
             Action::MarkUnread => Some(Optimistic::Seen(false)),
             Action::Unflag => Some(Optimistic::Flagged(false)),
-            Action::Notify | Action::Silent | Action::Stop | Action::Tag(_) => None,
+            Action::After(_) | Action::Notify | Action::Silent | Action::Stop | Action::Tag(_) => {
+                None
+            }
         }
     }
 }

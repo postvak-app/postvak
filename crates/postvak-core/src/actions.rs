@@ -8,7 +8,7 @@ use crate::config::{AccountConfig, Identity};
 use crate::mail_ops::{MailError, MailOps, SelectInfo, Structure};
 use crate::message::{self, Attachment, HtmlBody, InlinePart, clean};
 use crate::rules::apply::{ApplyError, apply_many, ensure_raw, move_target, plan_for};
-use crate::rules::engine::{Context, Mode, PlannedAction};
+use crate::rules::engine::{Context, Due, Mode, PlannedAction};
 use crate::rules::{Action, CompiledRule};
 use crate::search::Term;
 use crate::store::{Folder, Hit, Matched, Message, Store, StoreError};
@@ -398,6 +398,8 @@ pub struct Planned {
     pub rule: String,
     pub message: Message,
     pub action: Action,
+    /// When the action runs, if the rule's `after` has not come yet.
+    pub waits: Option<Due>,
 }
 
 /// What `rules` would do to every message cached in `store`, evaluated as `rules apply-existing` would.
@@ -419,11 +421,18 @@ pub fn planned(
     let mut planned = Vec::new();
     for folder in store.folders()? {
         for message in store.messages_in_folder(&folder.name)? {
-            for PlannedAction { rule, action } in plan_for(rules, &message, &ctx, store)?.actions {
+            let plan = plan_for(rules, &message, &ctx, store)?;
+            let now = plan.actions.into_iter().map(|planned| (planned, None));
+            let waiting = plan
+                .waiting
+                .into_iter()
+                .map(|(planned, due)| (planned, Some(due)));
+            for (PlannedAction { rule, action }, waits) in now.chain(waiting) {
                 planned.push(Planned {
                     rule,
                     message: message.clone(),
                     action,
+                    waits,
                 });
             }
         }
@@ -431,8 +440,11 @@ pub fn planned(
     Ok(planned)
 }
 
-/// Whether `planned` would remove the message from the server for good rather than move or flag it.
+/// Whether `planned` would remove the message from the server for good now rather than move or flag it, or wait.
 pub fn expunges(store: &Store, planned: &Planned) -> Result<bool, StoreError> {
+    if planned.waits.is_some() {
+        return Ok(false);
+    }
     Ok(match planned.action {
         Action::Delete => true,
         Action::Trash => move_target(store, &planned.message.folder, &Action::Trash)?.is_none(),
@@ -529,6 +541,7 @@ mod tests {
                 rule: "r".into(),
                 message: message.clone(),
                 action,
+                waits: None,
             };
             expunges(&store, &planned).unwrap()
         };
@@ -569,6 +582,26 @@ mod tests {
             )
         );
         assert_eq!(warning("flagged = true"), None);
+        assert_eq!(
+            warning("delete = true, after = \"read\""),
+            None,
+            "a waiting delete expunges nothing yet"
+        );
+    }
+
+    #[test]
+    fn planned_rows_say_what_waits_and_until_when() {
+        let (_ops, store, _trash, _dir) = setup();
+        let password = crate::config::PasswordSource::Keyring { keyring: true };
+        let account = AccountConfig::new("work", "h", "me@example.com", password);
+        let identity = account.identity().unwrap();
+        let toml = "[[rules]]\nname = \"r\"\nmatch.subject = { contains = \"hi\" }\nactions = { flagged = true, after = \"read\" }\n";
+        let rules = crate::rules::compile(&crate::rules::parse(toml).unwrap()).unwrap();
+        let planned = planned(&rules, &store, &account, &identity, 0).unwrap();
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].action, Action::Flag);
+        let row = crate::output::planned_row("work", &planned[0]);
+        assert_eq!(row["waits"], "once read");
     }
 
     /// `setup` with messages 5, 6 and 7 in INBOX, 6 already read, and an Archive folder.

@@ -120,6 +120,7 @@ actions.move = "Finance"
 | `tag = "$label1"` | Adds that IMAP keyword, or each keyword of a list (`tag = ["$label1", "$work"]`), which Thunderbird and other clients show as tags. The server must accept custom keywords. |
 | `notify = true` | Notifies even when the message was moved; `false` never notifies. |
 | `stop = true` | Later rules don't run for that message. |
+| `after = "15min"` | The rule's other actions wait: for a span after the message arrived (`30min`, `1h`, `2d`, as for `older_than`), until it is read (`"read"`), or for the first of a list (`after = ["read", "2d"]`). Meanwhile the rule's `stop` and `notify` already hold, so `stop` keeps the rules below from acting on the message while it waits; without `stop` they run as if this rule had not matched yet. A waiting move does not count as a move, so the message still notifies. A rule needs an action to wait with, such as `move` or `delete`. `rules apply-existing` acts on older mail whose wait is over; older mail still waiting is left alone, then and later, since the rule only acts on mail that arrives after it was enabled. |
 
 The order of the keys does not matter: flags and tags are set before a move. When several rules match a message, the first one in the file decides each thing only one rule can decide: a delete in any matching rule wins over everything else, then a `junk`, then the first `move` or `archive` runs, and the first `notify` says whether it notifies. After a rule with `stop`, later rules in the file don't run for that message; earlier ones already did.
 
@@ -127,7 +128,7 @@ A rule sees what the matching rules above it changed: `read`, `flagged` and `tag
 
 ## When rules act
 
-- On every sync, in file order. Because rules run again on each sync, `older_than`, `younger_than` and `read` can fire or stop firing later, for example an hour after you read a sign-in code. To see what such a rule will do later, preview it as of that time: `postvak rules test --as-of 1h` or `--as-of 2026-11-01T14:00` (and `rules coverage --as-of`). Only the clock moves; the mail and whether it is read, flagged or tagged stay as they are now.
+- On every sync, in file order. Because rules run again on each sync, `older_than`, `younger_than` and `read` can fire or stop firing later, for example an hour after you read a sign-in code, and actions waiting for `after` run on the first sync once it has come: a full sync runs every `sync_interval_secs`, so up to that much later. To see what such a rule will do later, preview it as of that time: `postvak rules test --as-of 1h` or `--as-of 2026-11-01T14:00` (and `rules coverage --as-of`). Only the clock moves; the mail and whether it is read, flagged or tagged stay as they are now.
 - A rule acts only on mail that arrived after the rule was enabled, so adding a rule never touches your history. `postvak rules apply-existing NAME` is the explicit opt-in. Run it with `--dry-run` first. When the rule would delete mail from the server for good (`delete`), it prints how many messages per account and how long their `.eml` backups are kept, then asks you to type `yes`; without a terminal it refuses unless you pass `--yes`. Moves and flags run without asking.
 - A rule approved with `postvak rules approve` acts on mail that arrives after the approval. A rule you add or enable by editing the file acts on mail that arrives after the next sync picks it up.
 - Renaming a rule, editing its account, folder, match or actions, changing a list it uses, or disabling and enabling it again, restarts that clock.
@@ -147,8 +148,8 @@ On macOS a notification shows the sender and the subject as Postvak's once Postv
 - [Delete sign-in codes](#delete-sign-in-codes): `from`, `subject`, `older_than`, `read`, `delete`
 - [Move list mail out of the inbox](#move-list-mail-out-of-the-inbox): `to_me`, `header`, `move`, `notify`
 - [Give an alias its own folder](#give-an-alias-its-own-folder): `alias`, `move`, `notify`
-- [Move shop mail after notifying](#move-shop-mail-after-notifying): `older_than`, `move`
-- [Leave important mail in INBOX for your phone](#leave-important-mail-in-inbox-for-your-phone): `younger_than`, `stop`
+- [Move shop mail after notifying](#move-shop-mail-after-notifying): `after`, `move`
+- [Leave important mail in INBOX for your phone](#leave-important-mail-in-inbox-for-your-phone): `any`, `after`, `stop`
 - [Tag shop mail except receipts](#tag-shop-mail-except-receipts): `none`, `tag`
 - [Flag certain people or topics](#flag-certain-people-or-topics): `any`, `flagged`
 - [Set large mail aside](#set-large-mail-aside): `larger_than`, `flagged`, `move`, `stop`
@@ -196,30 +197,33 @@ actions.notify = true
 
 ### Move shop mail after notifying
 
-Leave shop mail in INBOX for 15 minutes before moving it, so mail apps on your other devices, which mostly notify only for INBOX, see it first. Postvak notifies too, since nothing moved the message when it arrived. The move runs on the first full sync after those 15 minutes, so up to `sync_interval_secs` later:
+Leave shop mail in INBOX for 15 minutes, or until you read it, before moving it, so mail apps on your other devices, which mostly notify only for INBOX, see it first. Postvak notifies too, since nothing moved the message when it arrived. The move runs on the first full sync after that, so up to `sync_interval_secs` later:
 
 ```toml
 [[rules]]
 name = "shop mail, after notifying"
 match.from = { contains = "shop.example.com" }
-match.older_than = "15min"
 actions.move = "Shopping"
+actions.after = ["read", "15min"]
 ```
 
 ### Leave important mail in INBOX for your phone
 
-When several rules move mail you want your phone to notify about, or a later rule moves everything else, hold the mail back with one rule near the top of the file instead. For 15 minutes after it arrives, `stop` keeps the rules below it from moving it; after that they run as usual:
+When a later rule moves everything else, give the rule for the mail you want your phone to notify about `after` and `stop`. While it waits, `stop` keeps the rules below it from moving the message; after 15 minutes the rule moves it itself:
 
 ```toml
 [[rules]]
-name = "hold important mail for the phone"
-match.younger_than = "15min"
+name = "important mail, after the phone saw it"
 match.any = [
   { from_domain = ["bank.example", "work.example"] },
   { subject = { regex = "sign-?in alert|new device" } },
 ]
+actions.move = "Important"
+actions.after = "15min"
 actions.stop = true
 ```
+
+To hold mail back for the rules below to decide on later, rather than act on it yourself, put a rule with `younger_than = "15min"` and `stop = true` near the top of the file instead.
 
 ### Tag shop mail except receipts
 

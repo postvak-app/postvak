@@ -24,6 +24,17 @@
       "description": "What a rule does, each at most once and in any order: flags and tags are set before a move, and a delete wins over\nthe rest",
       "type": "object",
       "properties": {
+        "after": {
+          "description": "Waits before the other actions run: a span such as 15min or 3d after the message arrived, \"read\" until it is\nread, or a list of them, whichever comes first. Until then notify and stop already apply",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OneOrMany"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "archive": {
           "description": "true moves the message to the server's Archive folder",
           "type": [

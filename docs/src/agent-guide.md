@@ -34,7 +34,7 @@ postvak rules coverage --folder INBOX --json
 ```
 
 - `senders` groups a folder's stored mail by sender (or `--group-by domain`), biggest group first, with counts, unread, first and last date (Unix seconds), a few subjects, the enabled `rules` that already match some of it and the `lists` those rules use. `--after 90d` or `--before 2026-01-01` narrow it. A large group with no rules is a candidate.
-- `rules coverage` runs the rules over the folder without acting: how many messages are `matched`, `unmatched` or `contested` (several rules match), the top `unmatched_senders`, and for each contested message every matching rule, the `lists` they use and the `acts` that would run, or in `fails` why nothing would. Run it with `--include-pending` after you propose, to show the human what the proposal changes and whether an earlier rule would take its mail first.
+- `rules coverage` runs the rules over the folder without acting: how many messages are `matched`, `unmatched` or `contested` (several rules match), the top `unmatched_senders`, and for each contested message every matching rule, the `lists` they use and the `acts` that would run, or in `fails` why nothing would; an act waiting for its rule's `after` says when it runs in `waits`. Run it with `--include-pending` after you propose, to show the human what the proposal changes and whether an earlier rule would take its mail first.
 
 Over MCP, rules your scopes may not run (a `header` condition without `read:headers`, a body condition without `read:bodies`) are left out and listed in `skipped_rules`.
 
@@ -56,7 +56,7 @@ Over MCP, rules your scopes may not run (a `header` condition without `read:head
 }
 ```
 
-3. Preview it with `postvak rules test --stdin < rule.json`. Each line is `rule`, `folder/uid`, `action` and `subject`, separated by tabs. The preview includes mail older than the rule, so you see everything the pattern catches. Check that every hit is mail the human wants handled.
+3. Preview it with `postvak rules test --stdin < rule.json`. Each line is `rule`, `folder/uid`, `action` and `subject`, separated by tabs; an action waiting for the rule's `after` ends in `(waits: runs …)`, which says when it runs. The preview includes mail older than the rule, so you see everything the pattern catches. Check that every hit is mail the human wants handled.
 4. Propose it with `postvak rules propose --by <your name> < rule.json`. It is stored disabled, with `proposed_by = "cli:<your name>"`, after the last rule.
 5. Tell the human the rule name and what the preview showed. They approve or reject it. Once approved, the rule acts on mail that arrives after that moment.
 

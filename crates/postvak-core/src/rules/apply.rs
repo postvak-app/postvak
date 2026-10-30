@@ -78,7 +78,8 @@ pub fn plan_for(
     store: &Store,
 ) -> Result<Plan, StoreError> {
     let plan = evaluate(rules, msg, ctx);
-    let moves = plan.actions.iter().any(|planned| {
+    let waiting = plan.waiting.iter().map(|(planned, _)| planned);
+    let moves = plan.actions.iter().chain(waiting).any(|planned| {
         matches!(
             planned.action,
             Action::Move(_) | Action::Archive | Action::Junk
@@ -212,7 +213,7 @@ pub fn apply_many(
 ) -> Vec<Applied> {
     let plan = Plan {
         actions: vec![planned.clone()],
-        notify: false,
+        ..Plan::default()
     };
     let per_message = |ops: &mut dyn MailOps| -> Vec<Applied> {
         msgs.iter()
@@ -721,7 +722,7 @@ mod tests {
                     action,
                 })
                 .collect(),
-            notify: false,
+            ..Plan::default()
         }
     }
 

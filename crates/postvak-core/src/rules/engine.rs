@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use crate::config::Identity;
 use crate::message::{auth, bare_addresses, header_text};
-use crate::rules::{Action, CompiledRule, Conditions, Match, Rule};
+use crate::rules::{Action, CompiledRule, Conditions, Match, Rule, Wait};
 use crate::store::{Message, has_flag, with_flag};
 
 /// Set by `trash restore`; rules never act on, or notify about, mail carrying it.
@@ -35,6 +35,31 @@ pub struct PlannedAction {
 pub struct Plan {
     pub actions: Vec<PlannedAction>,
     pub notify: bool,
+    /// Actions of matching rules whose `after` has not come yet, with when it comes; nothing runs them this pass.
+    pub waiting: Vec<(PlannedAction, Due)>,
+}
+
+/// When a waiting rule's actions run: at `at`, the first of its spans to end, or once the message is read.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Due {
+    pub at: Option<i64>,
+    pub read: bool,
+}
+
+impl Due {
+    /// "at 2026-10-30 15:04 or once read", in local time.
+    pub fn describe(&self) -> String {
+        let at = self
+            .at
+            .map(|at| format!("at {}", crate::time::date_time(at)));
+        let read = self.read.then(|| "once read".to_string());
+        let parts: Vec<String> = at.into_iter().chain(read).collect();
+        if parts.is_empty() {
+            "never".into()
+        } else {
+            parts.join(" or ")
+        }
+    }
 }
 
 pub fn folder_needs_body(rules: &[CompiledRule], account: &str, folder: &str) -> bool {
@@ -52,20 +77,28 @@ pub fn evaluate(rules: &[CompiledRule], msg: &Message, ctx: &Context) -> Plan {
     }
     let mut plan = Plan::default();
     let mut explicit_notify: Option<bool> = None;
-    for (_, rule) in matching(rules, msg, ctx) {
+    for (_, rule, waits) in matching_with_waits(rules, msg, ctx) {
         let mut stop = false;
         for action in &rule.rule.actions {
             match action {
                 Action::Notify => _ = explicit_notify.get_or_insert(true),
                 Action::Silent => _ = explicit_notify.get_or_insert(false),
                 Action::Stop => stop = true,
+                Action::After(_) => {}
                 Action::Move(_) | Action::Archive | Action::Junk if ctx.keep_in_folder => {}
-                _ => plan.actions.push(PlannedAction {
-                    rule: rule.rule.name.clone(),
-                    action: action.clone(),
-                }),
+                _ => {
+                    let planned = PlannedAction {
+                        rule: rule.rule.name.clone(),
+                        action: action.clone(),
+                    };
+                    match waits {
+                        Some(due) => plan.waiting.push((planned, due)),
+                        None => plan.actions.push(planned),
+                    }
+                }
             }
-            if *action == Action::Delete {
+            // A waiting delete leaves the message where it is, so the rules below still see it.
+            if *action == Action::Delete && waits.is_none() {
                 stop = true;
             }
         }
@@ -100,28 +133,65 @@ pub fn matching<'r>(
     msg: &Message,
     ctx: &Context,
 ) -> impl Iterator<Item = (usize, &'r CompiledRule)> {
+    matching_with_waits(rules, msg, ctx).map(|(at, rule, _)| (at, rule))
+}
+
+/// `matching`, with when each rule's actions run if its `after` has not come yet. A waiting rule's `stop` already
+/// holds, but its flag changes and delete wait with its other actions.
+fn matching_with_waits<'r>(
+    rules: &'r [CompiledRule],
+    msg: &Message,
+    ctx: &Context,
+) -> impl Iterator<Item = (usize, &'r CompiledRule, Option<Due>)> {
     // Only the flags change, so only they are copied, and only once a rule changes one.
     let mut flags = Cow::Borrowed(msg.flags.as_str());
     // After a `stop` or delete no rule acts, so what a later one would set never happens and is not carried on.
     let mut acting = true;
-    rules.iter().enumerate().filter(move |(_, rule)| {
+    rules.iter().enumerate().filter_map(move |(at, rule)| {
         if !rule_matches(rule, msg, &flags, ctx) {
-            return false;
+            return None;
         }
+        let waits = waits(rule, msg, &flags, ctx.now);
         if acting {
-            for (flag, set) in rule.rule.actions.iter().filter_map(flag_change) {
-                if has_flag(&flags, flag) != set {
-                    flags = Cow::Owned(with_flag(&flags, flag, set));
+            if waits.is_none() {
+                for (flag, set) in rule.rule.actions.iter().filter_map(flag_change) {
+                    if has_flag(&flags, flag) != set {
+                        flags = Cow::Owned(with_flag(&flags, flag, set));
+                    }
                 }
             }
-            acting = !rule
-                .rule
-                .actions
-                .iter()
-                .any(|action| matches!(action, Action::Stop | Action::Delete));
+            acting = !rule.rule.actions.iter().any(|action| {
+                *action == Action::Stop || (*action == Action::Delete && waits.is_none())
+            });
         }
-        true
+        Some((at, rule, waits))
     })
+}
+
+/// When `rule`'s actions run on `msg` carrying `flags`, or None when they run now: no `after`, or one has come.
+fn waits(rule: &CompiledRule, msg: &Message, flags: &str, now: i64) -> Option<Due> {
+    if rule.after.is_empty() {
+        return None;
+    }
+    let mut due = Due::default();
+    for wait in &rule.after {
+        match *wait {
+            Wait::Read if has_flag(flags, "\\Seen") => return None,
+            Wait::Read => due.read = true,
+            Wait::Span(span) => {
+                // The same cutoff as `older_than`, so `after = "1h"` acts when `older_than = "1h"` would match.
+                if span
+                    .before(now)
+                    .is_some_and(|cutoff| msg.internaldate <= cutoff)
+                {
+                    return None;
+                }
+                let end = span.after(msg.internaldate);
+                due.at = due.at.into_iter().chain(end).min();
+            }
+        }
+    }
+    Some(due)
 }
 
 /// The flag and its wanted state that `action` sets, when it is a flag change.
@@ -1377,6 +1447,143 @@ actions = { move = "Later" }
             )
             .actions
             .is_empty()
+        );
+    }
+
+    const SHOP_AFTER: &str = r#"
+[[rules]]
+name = "shop"
+match.from_domain = "shop.example"
+actions.move = "Shopping"
+actions.after = "15min"
+
+[[rules]]
+name = "rest"
+match.read = false
+actions.archive = true
+"#;
+
+    const SHOP_ALONE: &str = "[[rules]]\nname = \"shop\"\nmatch.from_domain = \"shop.example\"\nactions = { move = \"Shopping\", after = \"15min\" }\n";
+
+    fn names(planned: &[PlannedAction]) -> Vec<(&str, String)> {
+        planned
+            .iter()
+            .map(|p| (p.rule.as_str(), p.action.label()))
+            .collect()
+    }
+
+    #[test]
+    fn after_waits_with_the_actions_and_notifies_meanwhile() {
+        let id = identity();
+        let r = rules(SHOP_AFTER, 0);
+        let m = msg("a@shop.example", "pieter@example.com", "s", 1000, false);
+        let waiting = evaluate(&r, &m, &ctx(&id, 1000 + 15 * 60 - 1));
+        assert_eq!(names(&waiting.actions), [("rest", "archive".to_string())]);
+        assert_eq!(
+            waiting.waiting,
+            [(
+                PlannedAction {
+                    rule: "shop".into(),
+                    action: Action::Move("Shopping".into()),
+                },
+                Due {
+                    at: Some(1000 + 15 * 60),
+                    read: false
+                }
+            )]
+        );
+        let due = evaluate(&r, &m, &ctx(&id, 1000 + 15 * 60));
+        assert_eq!(
+            names(&due.actions),
+            [
+                ("shop", "move:Shopping".to_string()),
+                ("rest", "archive".to_string())
+            ]
+        );
+        assert!(due.waiting.is_empty());
+        let alone = rules(SHOP_ALONE, 0);
+        assert!(
+            evaluate(&alone, &m, &ctx(&id, 1000)).notify,
+            "a waiting move is no move yet"
+        );
+    }
+
+    #[test]
+    fn a_waiting_rules_stop_holds_the_rules_below_at_once() {
+        let id = identity();
+        let toml = SHOP_AFTER.replace("actions.after", "actions.stop = true\nactions.after");
+        let r = rules(&toml, 0);
+        let m = msg("a@shop.example", "pieter@example.com", "s", 1000, false);
+        let plan = evaluate(&r, &m, &ctx(&id, 1000));
+        assert!(plan.actions.is_empty());
+        assert_eq!(plan.waiting.len(), 1);
+        assert!(plan.notify);
+    }
+
+    #[test]
+    fn after_read_waits_until_read_and_a_list_takes_the_first() {
+        let id = identity();
+        let toml = "[[rules]]\nname = \"r\"\nmatch.from = { contains = \"a@\" }\nactions = { delete = true, after = [\"read\", \"2d\"] }\n[[rules]]\nname = \"flag\"\nmatch.from = { contains = \"a@\" }\nactions = { flagged = true }\n";
+        let r = rules(toml, 0);
+        let unread = msg("a@x", "pieter@example.com", "s", 1000, false);
+        let plan = evaluate(&r, &unread, &ctx(&id, 1000));
+        assert_eq!(
+            names(&plan.actions),
+            [("flag", "flagged".to_string())],
+            "a waiting delete stops nothing"
+        );
+        assert_eq!(
+            plan.waiting[0].1,
+            Due {
+                at: Some(1000 + 2 * 86_400),
+                read: true
+            }
+        );
+        let read = msg("a@x", "pieter@example.com", "s", 1000, true);
+        assert_eq!(
+            names(&evaluate(&r, &read, &ctx(&id, 1000)).actions),
+            [("r", "delete".to_string())]
+        );
+        assert_eq!(
+            names(&evaluate(&r, &unread, &ctx(&id, 1000 + 2 * 86_400)).actions),
+            [("r", "delete".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_waiting_flag_change_is_not_seen_by_the_rules_below() {
+        let id = identity();
+        let toml = "[[rules]]\nname = \"mark\"\nmatch.read = false\nactions = { read = true, after = \"1h\" }\n[[rules]]\nname = \"read ones\"\nmatch.read = true\nactions = { flagged = true }\n";
+        let m = msg("a@x", "pieter@example.com", "s", 1000, false);
+        let r = rules(toml, 0);
+        assert!(evaluate(&r, &m, &ctx(&id, 1000)).actions.is_empty());
+        assert_eq!(
+            names(&evaluate(&r, &m, &ctx(&id, 1000 + HOUR)).actions),
+            [
+                ("mark", "read".to_string()),
+                ("read ones", "flagged".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn due_says_when_in_words() {
+        assert_eq!(Due::default().describe(), "never");
+        assert_eq!(
+            Due {
+                at: None,
+                read: true
+            }
+            .describe(),
+            "once read"
+        );
+        assert!(
+            Due {
+                at: Some(0),
+                read: true
+            }
+            .describe()
+            .ends_with(" or once read")
         );
     }
 }

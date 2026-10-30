@@ -523,6 +523,47 @@ fn rules_run_deletes_old_seen_code_and_notifies_untouched_new_mail() {
 }
 
 #[test]
+fn a_rule_with_after_notifies_first_and_moves_once_due() {
+    let mut ops = RecordingOps::default()
+        .with_folder("INBOX", None)
+        .with_folder("Shopping", None);
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open_in_memory().unwrap();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let acc = account();
+    let identity = acc.identity().unwrap();
+    let toml = "[[rules]]\nname = \"shop\"\nmatch.from = { contains = \"shop@\" }\nactions = { move = \"Shopping\", after = \"15min\" }\n";
+    let rules = rules_from(toml, &store, 0);
+    sync_all(&mut ops, &store).unwrap();
+    ops.add_mail("INBOX", 3, 12 * H, &headers("shop@x", "sale", "m3@x"), None);
+    sync_all(&mut ops, &store).unwrap();
+    let run_at = |ops: &mut RecordingOps, now: i64| {
+        run_rules(
+            ops,
+            &store,
+            &trash,
+            &rules,
+            &acc,
+            &identity,
+            Mode::Normal,
+            now,
+        )
+        .unwrap()
+    };
+    let waiting = run_at(&mut ops, 12 * H + 60);
+    assert_eq!(waiting.actions, 0);
+    assert!(store.message("INBOX", 3).unwrap().is_some());
+    assert!(matches!(
+        &waiting.events[..],
+        [Event::NewMail { uid: 3, .. }]
+    ));
+    let due = run_at(&mut ops, 12 * H + 15 * 60);
+    assert_eq!(due.actions, 1);
+    assert_eq!(store.message("INBOX", 3).unwrap(), None);
+    assert!(due.events.is_empty(), "notified once, on arrival");
+}
+
+#[test]
 fn resync_after_uidvalidity_change_does_not_notify() {
     let mut ops = ops_with_inbox();
     let dir = tempfile::tempdir().unwrap();

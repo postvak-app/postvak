@@ -1957,8 +1957,12 @@ fn print_planned_actions(
     now: i64,
 ) -> Result<()> {
     for p in postvak_core::actions::planned(rules, store, account, identity, now)? {
+        let waits = p
+            .waits
+            .map(|due| format!(" (waits: runs {})", due.describe()))
+            .unwrap_or_default();
         println!(
-            "{}\t{}/{}\t{}\t{}",
+            "{}\t{}/{}\t{}{waits}\t{}",
             clean(&p.rule, false),
             clean(&p.message.folder, false),
             p.message.uid,
