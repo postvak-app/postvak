@@ -121,7 +121,7 @@ export component StatusBar inherits VerticalLayout {
                             border-width: root.line.dot == Dot.failed ? 1.5px : 0px;
                             border-color: Theme.frame.error;
                             background: root.line.dot == Dot.up-to-date ? Theme.frame.success : root.line.dot == Dot.offline ? Theme.frame.muted : root.line.syncing ? Theme.frame.accent : Theme.frame.accent.transparentize(100%);
-                            opacity: root.line.syncing && root.line.dot != Dot.failed ? 0.35 + 0.65 * abs(sin(animation-tick() / 1ms * 0.09deg)) : 1;
+                            opacity: root.line.syncing && root.line.dot != Dot.failed ? Theme.pulse : 1;
                             animate background, border-color, border-width {
                                 duration: Theme.state-fade;
                                 easing: ease-out;

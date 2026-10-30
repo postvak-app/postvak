@@ -28,6 +28,8 @@ fn utc() -> bool {
 /// Compares the window with `tests/snapshots/{name}.png`.
 fn snapshot(open: &Open, name: &str) {
     open.tick();
+    // Past every fade, such as a dialog's as it opens: one period of the syncing pulse, so the pulse shows as before.
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_secs(2));
     let png = open.png();
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/snapshots")
@@ -355,6 +357,25 @@ fn keys_help() {
     open.press("?");
     assert!(open.with(|live| live.app.help_open));
     snapshot(&open, "gui_keys_help");
+}
+
+/// A dialog fades in: drawn as it opens it differs from the same dialog once the fade is over. When the desktop asks
+/// for less motion it is whole at once.
+#[test]
+fn a_dialog_fades_in_unless_the_desktop_asks_for_less_motion() {
+    use slint::ComponentHandle;
+    for reduced in [false, true] {
+        let (_fx, open, _wires) = inbox("light");
+        open.window()
+            .global::<super::ui::Theme>()
+            .set_reduce_motion(reduced);
+        open.press("?");
+        open.tick();
+        let opening = pixels(&open.png());
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_secs(2));
+        let opened = pixels(&open.png());
+        assert_eq!(opening == opened, reduced, "reduced motion {reduced}");
+    }
 }
 
 #[test]

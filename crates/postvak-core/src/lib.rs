@@ -13,6 +13,7 @@ pub mod folder_ops;
 pub mod help;
 pub mod mail_ops;
 pub mod message;
+pub mod motion;
 pub mod net;
 pub mod notify;
 pub mod output;

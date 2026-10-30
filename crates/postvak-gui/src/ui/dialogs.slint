@@ -13,17 +13,35 @@ export struct KeyHelp {
 // Dims the window under a dialog and keeps clicks and scrolls from reaching it; a click closes the dialog, as Esc does.
 export component Scrim inherits TouchArea {
     callback close();
+    // 0 as it opens, then fades to 1.
+    out property <float> shown: 0;
+    animate shown {
+        duration: Theme.dialog-fade;
+        easing: ease-out;
+    }
+    init => { root.shown = 1; }
     clicked => { root.close(); }
     scroll-event(event) => { accept }
-    Rectangle { background: Theme.scrim; }
+    Rectangle {
+        background: Theme.scrim;
+        opacity: root.shown;
+    }
 }
 
-// A titled box with a close button; its content goes under the title.
+// A titled box with a close button, which fades in as it opens; its content goes under the title.
 export component Dialog inherits Rectangle {
     in property <string> title;
     in property <string> close-icon;
     callback close();
+    // 0 as it opens, then fades to 1; it takes keys and clicks meanwhile.
+    out property <float> shown: 0;
+    animate shown {
+        duration: Theme.dialog-fade;
+        easing: ease-out;
+    }
+    init => { root.shown = 1; }
 
+    opacity: root.shown;
     background: Theme.pane.background;
     border-color: Theme.pane.border;
     border-width: 1px;
