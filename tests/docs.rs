@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use postvak_core::config::Config;
-use postvak_core::rules::{Rule, RuleFile, compile, parse};
+use postvak_core::rules::{Rule, compile, compile_with, parse};
 
 fn read(path: &str) -> String {
     std::fs::read_to_string(format!("{}/{path}", env!("CARGO_MANIFEST_DIR"))).unwrap()
@@ -45,7 +45,7 @@ fn proposal_examples_parse_and_validate() {
     assert!(!blocks.is_empty());
     for block in blocks {
         let rule: Rule = serde_json::from_str(&block).unwrap_or_else(|e| panic!("{e}\n{block}"));
-        compile(&RuleFile { rules: vec![rule] }).unwrap_or_else(|e| panic!("{e}\n{block}"));
+        compile_with(&[rule], &Default::default()).unwrap_or_else(|e| panic!("{e}\n{block}"));
     }
 }
 

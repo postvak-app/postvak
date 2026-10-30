@@ -3,6 +3,13 @@
   "title": "RuleFile",
   "type": "object",
   "properties": {
+    "lists": {
+      "description": "Named values that conditions refer to with { list = \"name\" }, so several rules share one copy",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/NamedList"
+      }
+    },
     "rules": {
       "type": "array",
       "default": [],
@@ -87,6 +94,30 @@
       },
       "additionalProperties": false
     },
+    "Domain": {
+      "description": "A domain such as example.com, or { list = \"name\" } for every domain of that list",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/ListRef"
+        }
+      ]
+    },
+    "ListRef": {
+      "description": "The domains of a list in [lists]",
+      "type": "object",
+      "properties": {
+        "list": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "list"
+      ]
+    },
     "Match": {
       "type": "object",
       "properties": {
@@ -158,7 +189,7 @@
           "description": "The From address's domain or any subdomain of it, never the display name; a list matches any of them",
           "anyOf": [
             {
-              "$ref": "#/$defs/OneOrMany"
+              "$ref": "#/$defs/OneOrMany2"
             },
             {
               "type": "null"
@@ -239,7 +270,7 @@
           "description": "The domain, or any subdomain, of an address in the To header, not Cc; a list matches any of them",
           "anyOf": [
             {
-              "$ref": "#/$defs/OneOrMany"
+              "$ref": "#/$defs/OneOrMany2"
             },
             {
               "type": "null"
@@ -263,6 +294,20 @@
       },
       "additionalProperties": false
     },
+    "NamedList": {
+      "description": "Domains for from_domain and to_domain, or a text condition (one of contains, equals, regex) for from, to, cc, subject,\nbody and header; a list cannot refer to another list",
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "$ref": "#/$defs/TextMatch"
+        }
+      ]
+    },
     "OneOrMany": {
       "description": "One value, or a list of them",
       "anyOf": [
@@ -273,6 +318,20 @@
           "type": "array",
           "items": {
             "type": "string"
+          }
+        }
+      ]
+    },
+    "OneOrMany2": {
+      "description": "One value, or a list of them",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Domain"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Domain"
           }
         }
       ]
@@ -334,7 +393,7 @@
       ]
     },
     "TextMatch": {
-      "description": "Exactly one of contains, equals, regex",
+      "description": "Exactly one of contains, equals, regex, list",
       "type": "object",
       "properties": {
         "contains": {
@@ -357,6 +416,13 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "list": {
+          "description": "The name of a text list in [lists], whose condition this is",
+          "type": [
+            "string",
+            "null"
           ]
         },
         "regex": {

@@ -30,7 +30,9 @@ use postvak_core::message::{
     attachments, attachments_and_html, auth, bare_addresses, body_text, clean, clean_for_agent,
     header_value, parse_headers, save_attachment, thread_id,
 };
-use postvak_core::rules::{self, Action, Match, OneOrMany, Rule, RuleFile, TextMatch};
+use postvak_core::rules::{
+    self, Action, Domain, ListRef, Lists, Match, NamedList, OneOrMany, Rule, RuleFile, TextMatch,
+};
 use postvak_core::search::{self, Scope};
 use postvak_core::store::{Folder, Message, Store};
 use postvak_core::sync::{Activity, Command, Event};
@@ -715,18 +717,49 @@ fn values() -> BoxedStrategy<OneOrMany<String>> {
     .boxed()
 }
 
+/// A list name the structured rules refer to, which `lists()` may or may not define, or hostile text.
+fn list_name() -> BoxedStrategy<String> {
+    prop_oneof![
+        prop::sample::select(vec!["domains", "text", "missing"]).prop_map(str::to_string),
+        hostile_text(),
+    ]
+    .boxed()
+}
+
 fn text_match() -> BoxedStrategy<TextMatch> {
     (
         proptest::option::of(values()),
         proptest::option::of(values()),
         proptest::option::of(hostile_text()),
+        proptest::option::of(list_name()),
     )
-        .prop_map(|(contains, equals, regex)| TextMatch {
+        .prop_map(|(contains, equals, regex, list)| TextMatch {
             contains,
             equals,
             regex,
+            list,
         })
         .boxed()
+}
+
+fn domains() -> BoxedStrategy<OneOrMany<Domain>> {
+    let domain = prop_oneof![
+        hostile_text().prop_map(Domain::Name),
+        list_name().prop_map(|list| Domain::List(ListRef { list })),
+    ];
+    prop_oneof![
+        domain.clone().prop_map(OneOrMany::One),
+        proptest::collection::vec(domain, 0..3).prop_map(OneOrMany::Many),
+    ]
+    .boxed()
+}
+
+fn lists() -> BoxedStrategy<Lists> {
+    let list = prop_oneof![
+        proptest::collection::vec(hostile_text(), 0..3).prop_map(NamedList::Domains),
+        text_match().prop_map(NamedList::Text),
+    ];
+    proptest::collection::btree_map(list_name(), list, 0..3).boxed()
 }
 
 fn action() -> BoxedStrategy<Action> {
@@ -756,8 +789,8 @@ fn match_leaf() -> BoxedStrategy<Match> {
     )
         .boxed();
     let domains = (
-        proptest::option::of(values()),
-        proptest::option::of(values()),
+        proptest::option::of(domains()),
+        proptest::option::of(domains()),
         proptest::option::of(any::<bool>()),
         proptest::option::of(hostile_text()),
     )
@@ -880,8 +913,8 @@ proptest! {
     }
 
     #[test]
-    fn rules_structured(rules in proptest::collection::vec(rule(), 0..4)) {
-        let file = RuleFile { rules };
+    fn rules_structured(rules in proptest::collection::vec(rule(), 0..4), lists in lists()) {
+        let file = RuleFile { rules, lists };
         let _ = rules::compile(&file);
         if let Ok(text) = toml::to_string(&file) {
             exercise_rules(&text);

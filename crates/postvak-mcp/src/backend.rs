@@ -16,7 +16,7 @@ use postvak_core::page;
 pub(crate) use postvak_core::page::ListRequest;
 use postvak_core::paths::{FileWatch, Paths};
 use postvak_core::rules::edit::Place;
-use postvak_core::rules::{self, Action, Rule, RuleFile};
+use postvak_core::rules::{self, Action, Rule};
 use postvak_core::search::{self, Scope};
 use postvak_core::senders::{self, GroupBy};
 /// The `list` filter, a plain value, so the tools need not name the store.
@@ -562,7 +562,7 @@ impl Backend {
         for (position, rule) in file.rules.iter().enumerate() {
             if self.is_visible(rule.account.as_deref()) {
                 let found = hits.get(&rule.name).copied().unwrap_or_default();
-                rows.push(output::rule(rule, position, &found)?);
+                rows.push(output::rule(rule, &file.lists, position, &found)?);
             }
         }
         Ok(rows)
@@ -619,7 +619,7 @@ impl Backend {
         sight: Sight,
     ) -> Result<Value> {
         rule.enabled = true;
-        let compiled = rules::compile(&RuleFile { rules: vec![rule] })?;
+        let compiled = rules::compile_for(&self.paths.rules_file(), &[rule])?;
         refuse_unseen(&compiled, sight)?;
         let mut rows = Vec::new();
         let mut warnings = Vec::new();
@@ -775,11 +775,10 @@ impl Backend {
     /// The result names each rule with the account it got.
     pub fn propose(&self, arguments: Value, by: &str, sight: Sight) -> Result<Vec<Value>> {
         let mut proposals = rules::edit::read_proposals(arguments)?;
+        let lists = rules::load(&self.paths.rules_file())?.lists;
         // A rule that does not compile is left to propose_all, which names every failing rule of the batch.
         for rule in &mut proposals.rules {
-            if let Ok(compiled) = rules::compile(&RuleFile {
-                rules: vec![rule.clone()],
-            }) {
+            if let Ok(compiled) = rules::compile_with(std::slice::from_ref(rule), &lists) {
                 refuse_unseen(&compiled, sight)?;
             }
             match rule.account.as_deref() {
@@ -868,7 +867,7 @@ impl Backend {
 fn refuse_named_unseen(paths: &Paths, name: &str, sight: Sight) -> Result<()> {
     let file = rules::load(&paths.rules_file())?;
     let named: Vec<Rule> = file.rules.into_iter().filter(|r| r.name == name).collect();
-    refuse_unseen(&rules::compile(&RuleFile { rules: named })?, sight)
+    refuse_unseen(&rules::compile_with(&named, &file.lists)?, sight)
 }
 
 /// Which mail text the granted scopes show the agent: `read:bodies` and `read:headers`.

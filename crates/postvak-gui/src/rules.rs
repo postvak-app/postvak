@@ -6,7 +6,7 @@ use postvak_core::help;
 use postvak_core::message::clean;
 use postvak_core::paths::Paths;
 use postvak_core::rules::hits::Hits;
-use postvak_core::rules::{self, Rule};
+use postvak_core::rules::{self, Lists, Rule, RuleFile};
 use postvak_core::store::{LogEntry, Store};
 use postvak_core::trash::{Trash, TrashEntry};
 
@@ -27,6 +27,7 @@ pub(crate) struct RulesState {
     /// Each proposal's dry run on the cached mail, by name, once counted; a reload drops them.
     pub dry_runs: BTreeMap<String, DryRun>,
     pub rules: Vec<Rule>,
+    pub lists: Lists,
     /// The rules as the view words them, worded once per load rather than on every frame.
     pub proposals: Vec<Proposal>,
     pub lines: Vec<RuleLine>,
@@ -42,12 +43,9 @@ impl RulesState {
 
     /// The file's rules, or the previous ones when it does not parse. A rule that does not compile is reported but
     /// still listed, so it can be switched off.
-    pub fn load(path: &Path, previous: Vec<Rule>, accounts: &[Account]) -> RulesState {
-        let (error, rules) = match rules::load(path) {
-            Ok(file) => (
-                rules::compile(&file).err().map(|e| e.to_string()),
-                file.rules,
-            ),
+    pub fn load(path: &Path, previous: RuleFile, accounts: &[Account]) -> RulesState {
+        let (error, RuleFile { rules, lists }) = match rules::load(path) {
+            Ok(file) => (rules::compile(&file).err().map(|e| e.to_string()), file),
             Err(e) => (Some(e.to_string()), previous),
         };
         let mut state = RulesState {
@@ -58,6 +56,7 @@ impl RulesState {
             proposals: proposals(&rules),
             lines: rule_lines(&rules),
             rules,
+            lists,
         };
         state.check(path, accounts);
         state
@@ -211,8 +210,15 @@ pub(crate) struct DryRun {
 }
 
 /// `rule`'s dry run on the cached mail of `accounts`, read from config.toml and the stores only, as `postvak rules test`
-/// runs it. It opens the stores itself, so it can run off the window thread.
-pub(crate) fn dry_run(paths: &Paths, accounts: &[String], rule: &Rule, now: i64) -> DryRun {
+/// runs it, with the lists of the rules the window shows. It opens the stores itself, so it can run off the window
+/// thread.
+pub(crate) fn dry_run(
+    paths: &Paths,
+    accounts: &[String],
+    lists: &Lists,
+    rule: &Rule,
+    now: i64,
+) -> DryRun {
     let failed = |error: String| DryRun {
         error: Some(error),
         ..DryRun::default()
@@ -221,7 +227,7 @@ pub(crate) fn dry_run(paths: &Paths, accounts: &[String], rule: &Rule, now: i64)
         enabled: true,
         ..rule.clone()
     };
-    let compiled = match rules::compile(&rules::RuleFile { rules: vec![rule] }) {
+    let compiled = match rules::compile_with(&[rule], lists) {
         Ok(compiled) => compiled,
         Err(e) => return failed(e.to_string()),
     };
@@ -1354,7 +1360,13 @@ mod tests {
         let fx = Fixture::new(&["work"]);
         std::fs::write(fx.paths.mail_db("work"), "not a database, not even close").unwrap();
         let rule = postvak_core::rules::parse(RULES).unwrap().rules.remove(1);
-        let run = super::dry_run(&fx.paths, &["work".to_string()], &rule, 0);
+        let run = super::dry_run(
+            &fx.paths,
+            &["work".to_string()],
+            &Default::default(),
+            &rule,
+            0,
+        );
         assert!(
             run.error
                 .as_deref()

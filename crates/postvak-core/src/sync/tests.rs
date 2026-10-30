@@ -41,7 +41,7 @@ fn rules_from(toml: &str, store: &Store, now: i64) -> Vec<CompiledRule> {
     let mut compiled = compile(&parse(toml).unwrap()).unwrap();
     for r in &mut compiled {
         r.first_seen_at = store
-            .rule_first_seen(&r.rule.name, &r.rule.definition().unwrap(), now)
+            .rule_first_seen(&r.rule.name, &r.definition, now)
             .unwrap();
     }
     compiled

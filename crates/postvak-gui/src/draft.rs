@@ -1,14 +1,18 @@
 //! Rules in plain language, and rules as the editor's rows of conditions.
 use postvak_core::message::{bare_addresses, clean};
-use postvak_core::rules::{Action, Match, OneOrMany, Rule, TextMatch};
+use postvak_core::rules::{Action, Domain, ListRef, Match, OneOrMany, Rule, TextMatch};
 
 /// `subject contains "a" or "b"`: a text condition, whose list matches any of its values.
-fn text_label(
-    field: &str,
-    contains: Option<&OneOrMany<String>>,
-    equals: Option<&OneOrMany<String>>,
-    regex: Option<&String>,
-) -> String {
+fn text_label(field: &str, t: &TextMatch) -> String {
+    let TextMatch {
+        contains,
+        equals,
+        regex,
+        list,
+    } = t;
+    if let Some(list) = list {
+        return format!("{field} in list {list}");
+    }
     let quoted = |values: &OneOrMany<String>| {
         let quoted: Vec<String> = values
             .as_slice()
@@ -22,7 +26,7 @@ fn text_label(
         (None, Some(values)) => format!("{field} equals {}", quoted(values)),
         (None, None) => format!(
             "{field} matches regex \"{}\"",
-            regex.map_or("", String::as_str)
+            regex.as_deref().unwrap_or_default()
         ),
     }
 }
@@ -39,29 +43,21 @@ pub(crate) fn match_labels(m: &Match) -> Vec<String> {
         ("body", &m.body),
     ] {
         if let Some(t) = condition {
-            labels.push(text_label(
-                field,
-                t.contains.as_ref(),
-                t.equals.as_ref(),
-                t.regex.as_ref(),
-            ));
+            labels.push(text_label(field, t));
         }
     }
     for (name, t) in m.header.iter().flatten() {
-        let field = format!("header {name}");
-        labels.push(text_label(
-            &field,
-            t.contains.as_ref(),
-            t.equals.as_ref(),
-            t.regex.as_ref(),
-        ));
+        labels.push(text_label(&format!("header {name}"), t));
     }
     for (field, domains) in [("from", &m.from_domain), ("to", &m.to_domain)] {
         if let Some(domains) = domains {
-            labels.push(format!(
-                "{field} domain {}",
-                domains.as_slice().join(" or ")
-            ));
+            let domains: Vec<String> = (domains.as_slice().iter())
+                .map(|domain| match domain {
+                    Domain::Name(name) => name.clone(),
+                    Domain::List(ListRef { list }) => format!("list {list}"),
+                })
+                .collect();
+            labels.push(format!("{field} domain {}", domains.join(" or ")));
         }
     }
     labels.extend(m.authenticated.map(|authenticated| {
@@ -386,7 +382,7 @@ pub(crate) fn conditions(m: &Match) -> (Vec<Condition>, Match) {
         (Field::ToDomain, &m.to_domain, &mut kept.to_domain),
     ] {
         match domains {
-            Some(OneOrMany::One(domain)) => rows.push(plain(field, domain.clone())),
+            Some(OneOrMany::One(Domain::Name(domain))) => rows.push(plain(field, domain.clone())),
             Some(list) => *slot = Some(list.clone()),
             None => {}
         }
@@ -516,11 +512,11 @@ impl Draft {
                 Field::Authenticated => m.authenticated.replace(flag(c)?).is_some(),
                 Field::FromDomain => m
                     .from_domain
-                    .replace(OneOrMany::One(c.value.clone()))
+                    .replace(OneOrMany::One(Domain::Name(c.value.clone())))
                     .is_some(),
                 Field::ToDomain => m
                     .to_domain
-                    .replace(OneOrMany::One(c.value.clone()))
+                    .replace(OneOrMany::One(Domain::Name(c.value.clone())))
                     .is_some(),
                 Field::Body => m.body.replace(text_match(c)).is_some(),
                 Field::Cc => m.cc.replace(text_match(c)).is_some(),
@@ -679,6 +675,22 @@ actions = { flagged = true }
              header X-Kind equals \"b\", from domain paypal.com or paypal.nl, any of (read; not to me and alias x@example.com), none of (tag $label1) \
              → flag"
         );
+    }
+
+    #[test]
+    fn list_references_read_by_name_stay_out_of_the_rows_and_save_as_they_were() {
+        let referring = rule(
+            "[[rules]]\nname = \"x\"\nmatch.subject = { list = \"alerts\" }\n\
+             match.from_domain = [{ list = \"kids\" }, \"extra.example\"]\nmatch.to_domain = { list = \"work\" }\n\
+             actions = { flagged = true }\n",
+        );
+        assert_eq!(
+            summary(&referring),
+            "subject in list alerts, from domain list kids or extra.example, to domain list work → flag"
+        );
+        let (rows, kept) = conditions(&referring.matches);
+        assert!(rows.is_empty(), "{rows:?}");
+        assert_eq!(kept, referring.matches);
     }
 
     #[test]
