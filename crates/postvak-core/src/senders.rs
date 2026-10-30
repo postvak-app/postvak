@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::message::bare_addresses;
 use crate::rules::CompiledRule;
-use crate::rules::engine::{Context, folder_needs_body, rule_matches};
+use crate::rules::engine::{Context, folder_needs_body, matching};
 use crate::store::{Message, Store, StoreError};
 
 /// How many subjects a group shows, newest first.
@@ -60,7 +60,7 @@ pub fn sender_key(from: &str, by: GroupBy) -> String {
 }
 
 /// `messages` grouped by sender, the largest group first, then the most recent. A message counts toward a rule when
-/// `rule_matches` says so under `ctx`; disabled rules never match. `messages` come newest first, as the store reads
+/// `matching` says so under `ctx`; disabled rules never match. `messages` come newest first, as the store reads
 /// them, so the example subjects are the newest.
 pub fn senders(
     messages: &[Message],
@@ -99,8 +99,8 @@ pub fn senders(
         {
             group.subjects.push(subject.to_string());
         }
-        for (seen, rule) in matched.iter_mut().zip(rules) {
-            *seen = *seen || rule_matches(rule, msg, ctx);
+        for (at, _) in matching(rules, msg, ctx) {
+            matched[at] = true;
         }
     }
     let mut out: Vec<Sender> = groups

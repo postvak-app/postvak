@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use crate::config::Identity;
 use crate::rules::apply::{ApplyError, plan_for, would_run};
-use crate::rules::engine::{Context, Mode, Plan, folder_needs_body, rule_matches};
+use crate::rules::engine::{Context, Mode, Plan, folder_needs_body, matching};
 use crate::rules::{CompiledRule, Rule, RuleFile, RulesError, compile};
 use crate::senders::{GroupBy, Sender, senders};
 use crate::store::{Message, Store, StoreError};
@@ -102,12 +102,10 @@ pub fn in_folder(
     };
     let mut unmatched = Vec::new();
     for msg in messages {
-        let matching: Vec<String> = rules
-            .iter()
-            .filter(|rule| rule_matches(rule, &msg, ctx))
-            .map(|rule| rule.rule.name.clone())
+        let names: Vec<String> = matching(rules, &msg, ctx)
+            .map(|(_, rule)| rule.rule.name.clone())
             .collect();
-        match matching.len() {
+        match names.len() {
             0 => {
                 coverage.unmatched += 1;
                 unmatched.push(msg);
@@ -119,7 +117,7 @@ pub fn in_folder(
                 let (acts, fails) = acts(&plan_for(rules, &msg, ctx, store)?, &msg, store)?;
                 coverage.contests.push(Contest {
                     message: msg,
-                    rules: matching,
+                    rules: names,
                     acts,
                     fails,
                 });
@@ -282,6 +280,29 @@ actions = { flagged = true }
             .map(|a| (a.rule.as_str(), a.action.as_str()))
             .collect();
         assert_eq!(acts, [("delivery", "move:Deliveries"), ("shop", "flagged")]);
+    }
+
+    /// #411: a rule that matches on a tag an earlier rule sets counts as a match, as it acts in the same pass.
+    #[test]
+    fn a_rule_matching_an_earlier_rules_tag_contests_the_message() {
+        let store = store(&[(1, "news@list.example", "Weekly")]);
+        let contest = contest(
+            &store,
+            "INBOX",
+            r#"
+[[rules]]
+name = "tag"
+match.from = { contains = "@list.example" }
+actions.tag = "$list"
+
+[[rules]]
+name = "route"
+match.tag = "$list"
+actions.read = true
+"#,
+        );
+        assert_eq!(contest.rules, ["tag", "route"]);
+        assert_eq!(acted(&contest), [("tag", "tag:$list"), ("route", "read")]);
     }
 
     #[test]

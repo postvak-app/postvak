@@ -57,7 +57,7 @@ All three ignore case.
 | `flagged` | `true` or `false` | Flagged or unflagged mail. |
 | `to_me` | `true` or `false` | Your address or an alias is among the recipients: To, Cc or Delivered-To. `false` catches list and bcc mail. |
 | `alias` | address, `*` as wildcard | An address among the same recipients is that alias. `*` matches any run of characters; nothing else is special, so this is no regex. |
-| `tag` | IMAP keyword, such as `$label1` | Mail carrying that keyword, ignoring case. Thunderbird shows keywords as tags. |
+| `tag` | IMAP keyword, such as `$label1` | Mail carrying that keyword, ignoring case, including one a rule above it in the file just added. Thunderbird shows keywords as tags. |
 | `any` | list of conditions | Holds when at least one entry holds. |
 | `none` | list of conditions | Holds when no entry holds. |
 
@@ -95,6 +95,8 @@ actions.move = "Finance"
 | `stop = true` | Later rules don't run for that message. |
 
 The order of the keys does not matter: flags and tags are set before a move. When several rules match a message, the first one in the file decides each thing only one rule can decide: a delete in any matching rule wins over everything else, then the first `move` or `archive` runs, and the first `notify` says whether it notifies. After a rule with `stop`, later rules in the file don't run for that message; earlier ones already did.
+
+A rule sees what the matching rules above it changed: `read`, `flagged` and `tag` test the message as those rules left it, in the same sync, not only once the change is back from the server. So one rule can tag mail and a later one route on that tag, as in `none = [{ tag = "Security" }]` after a rule that tags security alerts. A rule below never changes what a rule above it saw.
 
 ## When rules act
 
