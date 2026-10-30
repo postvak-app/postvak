@@ -1570,31 +1570,38 @@ mod tests {
         assert!(strip(html, 300.0).pixels.iter().any(|&p| is_red(p)));
     }
 
-    /// Below `MIN_WIDTH` a page is still laid out at it, and two cells a sender stacked inline stay side by side with
-    /// their backgrounds and text (#313).
+    /// Two cells a sender made blocks inline, in a pane narrower than the table: both backgrounds and both texts are
+    /// painted (#313). Whether the cells end up side by side, as `block_cells` lays them out, or stacked, as a fixed
+    /// Blitz would, is left open.
     #[test]
     fn two_block_cells_in_a_narrow_pane_paint_both_backgrounds_and_their_text() {
         let html = "<table width=600 cellpadding=0 cellspacing=0><tr>\
             <td width=300 style=\"display:block;background:#ff0000;color:#ffffff\">MMMM</td>\
             <td width=300 style=\"display:block;background:#0000ff;color:#ffffff\">MMMM</td></tr></table>";
         let image = strip(html, 400.0);
-        let red = at(&image, is_red);
-        let blue = at(&image, |p| p.b() > 200 && p.r() < 60 && p.g() < 60);
-        assert!(!red.is_empty() && !blue.is_empty());
-        // Side by side, on the same rows.
-        let split = blue.iter().map(|&(x, _)| x).min().unwrap_or(0);
-        assert!(red.iter().all(|&(x, _)| x < split));
-        let rows = |points: &[(usize, usize)]| {
-            (
-                points.iter().map(|&(_, y)| y).min(),
-                points.iter().map(|&(_, y)| y).max(),
-            )
-        };
-        assert_eq!(rows(&red), rows(&blue));
-        // White text on each background.
         let white = at(&image, |p| p.r() > 200 && p.g() > 200 && p.b() > 200);
-        assert!(white.iter().any(|&(x, _)| x < split), "no text on red");
-        assert!(white.iter().any(|&(x, _)| x >= split), "no text on blue");
+        let backgrounds: [(&str, &dyn Fn(Colour) -> bool); 2] = [
+            ("red", &is_red),
+            ("blue", &|p: Colour| p.b() > 200 && p.r() < 60 && p.g() < 60),
+        ];
+        for (name, test) in backgrounds {
+            let painted = at(&image, test);
+            let (Some(left), Some(right), Some(top), Some(bottom)) = (
+                painted.iter().map(|&(x, _)| x).min(),
+                painted.iter().map(|&(x, _)| x).max(),
+                painted.iter().map(|&(_, y)| y).min(),
+                painted.iter().map(|&(_, y)| y).max(),
+            ) else {
+                panic!("no {name} background");
+            };
+            // The white text is drawn on the background, inside its box.
+            assert!(
+                white
+                    .iter()
+                    .any(|&(x, y)| (left..=right).contains(&x) && (top..=bottom).contains(&y)),
+                "no text on {name}"
+            );
+        }
     }
 
     /// Lays out and paints `html`, reporting whether an upstream crate panicked.
