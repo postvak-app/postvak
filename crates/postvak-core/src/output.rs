@@ -247,7 +247,12 @@ pub fn sender(account: &str, folder: &str, sender: &Sender) -> serde_json::Resul
 
 /// Rules coverage of `folder` in `account`: the counts, the unmatched mail's top senders and the contested messages,
 /// each a message row with every matching rule and what would act.
-pub fn coverage(account: &str, folder: &str, coverage: &Coverage) -> serde_json::Result<Value> {
+pub fn coverage(
+    account: &str,
+    folder: &str,
+    coverage: &Coverage,
+    as_of: i64,
+) -> serde_json::Result<Value> {
     let contested = coverage
         .contests
         .iter()
@@ -261,7 +266,7 @@ pub fn coverage(account: &str, folder: &str, coverage: &Coverage) -> serde_json:
         })
         .collect::<serde_json::Result<Vec<Value>>>()?;
     Ok(json!({
-        "account": account, "folder": folder, "messages": coverage.messages, "matched": coverage.matched,
+        "account": account, "folder": folder, "as_of": as_of, "messages": coverage.messages, "matched": coverage.matched,
         "unmatched": coverage.unmatched, "contested": coverage.contested,
         "unmatched_senders": coverage.unmatched_senders, "contested_messages": contested,
     }))
