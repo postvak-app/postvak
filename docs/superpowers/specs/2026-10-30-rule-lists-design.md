@@ -23,7 +23,20 @@ Anything that compiles a rule outside its file (a proposal's check, `rules test 
 - GUI: a reference reads by name (`subject in list alerts`, `from domain list kids or extra.example`), is kept out of the editor's rows like other conditions the form cannot edit, and is saved as written.
 - Agents can propose rules that refer to existing lists.
 
-## Later (stacked on this)
+## List proposals
 
-1. List proposals: `rules propose` / MCP `rules_propose` take a new or changed list, `withdraw`, `approve` and `reject` work on it, its preview names every rule it affects, and approving restarts their clocks.
-2. The rule editor offers existing lists when editing a domain or subject condition and shows a list's values on demand.
+One list change changes every rule that uses it, so agents change lists the way they change rules: by proposal, which a human approves.
+
+- Storage: `[[list_proposals]]` entries with `name`, `proposed_by` and `value`, kept apart from `[lists]`, so a pending change can never reach a rule. The whole-file check validates each value and allows one pending change per list; whether approving would break a rule is checked when proposing and when approving, so a stale proposal never stops the rules.
+- Proposing: `rules propose` / `rules_propose` take `lists` (name to value), alone or beside `rules`, in the same all-or-none batch. Refused when the value is malformed, equals the current list, would leave any rule invalid, or the list has another proposer's pending change; `replace` swaps the proposer's own. Rules in a batch compile against approved lists only.
+- Addressing: `--list` on `rules approve`, `reject` and `withdraw`; the MCP tools take `{"list": "kids"}` instead of `{"name": …}`.
+- Approving writes the value into `[lists]` (a new `[lists]` table goes above the rules; a changed value keeps its comment), drops the proposal, and restarts the clock of every rule that uses the list in every account's store.
+- Preview: `rules::coverage::list_change` counts, for each enabled rule that uses the list in an account, the stored messages of its folder it matches now and once approved, and how many it gains and loses. `rules test --list`, MCP `rules_test` with `list`, and the window's card show it. `rules coverage --include-pending` applies pending list changes.
+- Listing: `rules lists` / `rules_lists` give every list, its values, the rules that use it and its pending change.
+- A server narrowed to some accounts refuses to propose or approve a change of a list that a rule of a hidden account, or of every account, uses.
+- The daemon notifies about a new list change as about a new rule proposal ("A list change waits for your approval"). The GUI shows it among the proposals: the list's line before and after, a sentence naming the rules it reaches, and the dry run per rule and account; Approve change and Reject, no Edit. The inbox banner counts list changes too.
+- Deleting a list stays a manual edit.
+
+## Later
+
+The rule editor offers existing lists when editing a domain or subject condition and shows a list's values on demand.

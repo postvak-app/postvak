@@ -292,39 +292,43 @@ fn runs(runs: &[rules::Run]) -> Vec<RunData> {
         .collect()
 }
 
-/// A proposal's card, with its dry run once counted.
-fn proposal_data(app: &App, p: &rules::Proposal) -> ProposalData {
-    let run = app.rules.dry_runs.get(&p.name);
-    let rule = app.rules.rules.iter().find(|r| r.name == p.name);
-    let now = chrono::Local::now();
-    let samples = run.map_or_else(Vec::new, |run| {
-        (run.samples.iter())
-            .map(|(subject, at)| SampleData {
-                subject: subject.as_str().into(),
-                date: list::list_date(*at, &now).into(),
-            })
-            .collect()
-    });
+/// A list change's card, with its dry run once counted.
+fn list_proposal_data(app: &App, p: &rules::Proposal) -> ProposalData {
+    let run = app.rules.list_runs.get(&p.name);
+    let (count, label, lines) = run.map(rules::list_run_lines).unwrap_or_default();
+    ProposalData {
+        list: true,
+        counting: run.is_none(),
+        count: count.to_string().into(),
+        count_label: label.into(),
+        samples: model(
+            (lines.into_iter())
+                .map(|(rule, change)| SampleData {
+                    subject: rule.into(),
+                    date: change.into(),
+                })
+                .collect::<Vec<_>>(),
+        ),
+        rest: "Nothing changes until approved; then the rules act as changed on new mail.".into(),
+        error: run
+            .and_then(|run| run.error.clone())
+            .unwrap_or_default()
+            .into(),
+        ..card_data(p)
+    }
+}
+
+/// What every proposal's card shows whether or not its dry run is counted: who, what, and its TOML.
+fn card_data(p: &rules::Proposal) -> ProposalData {
     ProposalData {
         label: p.label.as_str().into(),
         by: p.by.as_str().into(),
         summary: p.summary.as_str().into(),
         note: p.note.as_str().into(),
         edits: p.edits,
+        list: p.list,
         toml: p.toml.as_str().into(),
         marks: p.marks.as_str().into(),
-        counting: run.is_none(),
-        count: run
-            .map_or_else(String::new, |run| run.count.to_string())
-            .into(),
-        count_label: match (run, rule) {
-            (Some(run), Some(rule)) => rules::would_be(rule, run.count),
-            _ => String::new(),
-        }
-        .into(),
-        samples: model(samples),
-        more: run.map_or_else(String::new, rules::dry_run_more).into(),
-        rest: run.map_or_else(String::new, rules::dry_run_rest).into(),
         sentence: model(runs(&p.sentence)),
         sentence_text: p
             .sentence
@@ -340,6 +344,39 @@ fn proposal_data(app: &App, p: &rules::Proposal) -> ProposalData {
                 })
                 .collect::<Vec<_>>(),
         ),
+        ..ProposalData::default()
+    }
+}
+
+/// A proposal's card, with its dry run once counted.
+fn proposal_data(app: &App, p: &rules::Proposal) -> ProposalData {
+    if p.list {
+        return list_proposal_data(app, p);
+    }
+    let run = app.rules.dry_runs.get(&p.name);
+    let rule = app.rules.file.rules.iter().find(|r| r.name == p.name);
+    let now = chrono::Local::now();
+    let samples = run.map_or_else(Vec::new, |run| {
+        (run.samples.iter())
+            .map(|(subject, at)| SampleData {
+                subject: subject.as_str().into(),
+                date: list::list_date(*at, &now).into(),
+            })
+            .collect()
+    });
+    ProposalData {
+        counting: run.is_none(),
+        count: run
+            .map_or_else(String::new, |run| run.count.to_string())
+            .into(),
+        count_label: match (run, rule) {
+            (Some(run), Some(rule)) => rules::would_be(rule, run.count),
+            _ => String::new(),
+        }
+        .into(),
+        samples: model(samples),
+        more: run.map_or_else(String::new, rules::dry_run_more).into(),
+        rest: run.map_or_else(String::new, rules::dry_run_rest).into(),
         warnings: run
             .map_or_else(String::new, |run| run.warnings.join("\n"))
             .into(),
@@ -347,6 +384,7 @@ fn proposal_data(app: &App, p: &rules::Proposal) -> ProposalData {
             .and_then(|run| run.error.clone())
             .unwrap_or_default()
             .into(),
+        ..card_data(p)
     }
 }
 
@@ -1303,7 +1341,12 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     });
     window.on_approve_rule(move |i| {
         on(one(move |app| {
-            Some(UiAction::ApproveRule(proposal(app, i)?))
+            let p = proposal(app, i)?;
+            Some(if p.list {
+                UiAction::ApproveList(p.name.clone())
+            } else {
+                UiAction::ApproveRule(p.name.clone())
+            })
         }));
     });
     window.on_trust_authserv(move |i| {
@@ -1314,7 +1357,12 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     });
     window.on_reject_rule(move |i| {
         on(one(move |app| {
-            Some(UiAction::RejectRule(proposal(app, i)?))
+            let p = proposal(app, i)?;
+            Some(if p.list {
+                UiAction::RejectList(p.name.clone())
+            } else {
+                UiAction::RejectRule(p.name.clone())
+            })
         }));
     });
     window.on_reply(move || {
@@ -1364,7 +1412,10 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     connect_editor(window, on);
     connect_preferences(window, on);
     window.on_edit_proposal(move |i| {
-        on(one(move |app| Some(UiAction::EditRule(proposal(app, i)?))));
+        on(one(move |app| {
+            let p = proposal(app, i)?;
+            (!p.list).then(|| UiAction::EditRule(p.name.clone()))
+        }));
     });
     window.on_set_enabled(move |i, enabled| {
         on(one(move |app| {
@@ -1427,9 +1478,9 @@ fn rule_line(app: &App, index: i32) -> Option<&rules::RuleLine> {
 }
 
 /// The name of the proposal the Rules view shows at `index`.
-fn proposal(app: &App, index: i32) -> Option<String> {
+fn proposal(app: &App, index: i32) -> Option<&rules::Proposal> {
     let shown = rules::shown_proposals(&app.rules.proposals, &app.rules_filter);
-    Some(app.rules.proposals.get(*nth(&shown, index)?)?.name.clone())
+    app.rules.proposals.get(*nth(&shown, index)?)
 }
 
 /// A pill with `label`, drawn from SVG with the window's own fonts.

@@ -8,7 +8,8 @@ use serde::Serialize;
 use crate::config::Identity;
 use crate::rules::apply::{ApplyError, plan_for, would_run};
 use crate::rules::engine::{Context, Due, Mode, Plan, PlannedAction, folder_needs_body, matching};
-use crate::rules::{CompiledRule, Rule, RuleFile, RulesError, compile};
+use crate::rules::lists::{users, with_proposals};
+use crate::rules::{CompiledRule, Rule, RuleFile, RulesError, compile, compile_with};
 use crate::senders::{GroupBy, Sender, senders};
 use crate::store::{Message, Store, StoreError};
 
@@ -64,10 +65,12 @@ pub fn context<'a>(account: &'a str, identity: &'a Identity, now: i64) -> Contex
 }
 
 /// The rules of `file` that coverage runs: the enabled ones, and with `include_pending` the proposals still waiting
-/// for a human too, each where it stands in the file, and a pending edit in place of the rule it edits.
+/// for a human too, each where it stands in the file, a pending edit in place of the rule it edits, and each pending
+/// list change applied.
 pub fn rules(file: &RuleFile, include_pending: bool) -> Result<Vec<CompiledRule>, RulesError> {
     let mut file = file.clone();
     if include_pending {
+        file.lists = with_proposals(&file.lists, &file.list_proposals);
         for rule in &mut file.rules {
             rule.enabled |= rule.proposed_by.is_some();
         }
@@ -163,6 +166,95 @@ fn acts(
         Err(ApplyError::Store(e)) => Err(e),
         Err(e) => Ok((Vec::new(), Some(e.to_string()))),
     }
+}
+
+/// What approving a list change does to one enabled rule that uses the list, over the stored mail of the folder it
+/// watches: how many messages it matches now and once approved, and how many of them it gains and loses.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ListEffect {
+    pub rule: String,
+    pub folder: String,
+    pub before: u32,
+    pub after: u32,
+    pub gained: u32,
+    pub lost: u32,
+}
+
+/// What approving the pending change of list `name` does to each enabled rule of `file` that uses it in `ctx`'s
+/// account, matched as coverage matches: over mail that predates the rule too, each rule on its own.
+pub fn list_change(
+    file: &RuleFile,
+    name: &str,
+    store: &Store,
+    ctx: &Context,
+) -> Result<Vec<ListEffect>, RulesError> {
+    let proposal = (file.list_proposals.iter())
+        .find(|p| p.name == name)
+        .ok_or_else(|| RulesError::List {
+            list: name.to_string(),
+            reason: "has no pending change".into(),
+        })?;
+    let affected: Vec<Rule> = users(&file.rules, name)
+        .into_iter()
+        .filter(|rule| rule.enabled && rule.account.as_deref().is_none_or(|a| a == ctx.account))
+        .cloned()
+        .collect();
+    let now = compile_with(&affected, &file.lists)?;
+    let approved = compile_with(
+        &affected,
+        &with_proposals(&file.lists, std::slice::from_ref(proposal)),
+    )?;
+    let hits = |rule: &CompiledRule, msg: &Message| {
+        matching(std::slice::from_ref(rule), msg, ctx)
+            .next()
+            .is_some()
+    };
+    // Rules that share a list mostly watch the same folder, which is read once.
+    let mut folders: HashMap<&str, Vec<Message>> = HashMap::new();
+    let mut effects = Vec::new();
+    for (old, new) in now.iter().zip(&approved) {
+        let folder = old.folder();
+        if !folders.contains_key(folder) {
+            let body = (now.iter().chain(&approved))
+                .any(|rule| rule.folder() == folder && rule.needs_body());
+            folders.insert(folder, store.messages_between(folder, None, None, body)?);
+        }
+        let mut effect = ListEffect {
+            rule: old.rule.name.clone(),
+            folder: folder.to_string(),
+            ..ListEffect::default()
+        };
+        for msg in folders.get(folder).into_iter().flatten() {
+            let (was, will) = (hits(old, msg), hits(new, msg));
+            effect.before += u32::from(was);
+            effect.after += u32::from(will);
+            effect.gained += u32::from(will && !was);
+            effect.lost += u32::from(was && !will);
+        }
+        effects.push(effect);
+    }
+    Ok(effects)
+}
+
+/// `list_change` in each of `accounts`, opening each one's store: what `rules test --list`, the MCP preview and the
+/// window's card show.
+pub fn list_change_in(
+    paths: &crate::paths::Paths,
+    accounts: &[&crate::config::AccountConfig],
+    file: &RuleFile,
+    name: &str,
+    now: i64,
+) -> Result<Vec<(String, ListEffect)>, RulesError> {
+    let mut effects = Vec::new();
+    for account in accounts {
+        let store = Store::open_account(paths, &account.name)?;
+        let identity = account.identity()?;
+        let ctx = context(&account.name, &identity, now);
+        for effect in list_change(file, name, &store, &ctx)? {
+            effects.push((account.name.clone(), effect));
+        }
+    }
+    Ok(effects)
 }
 
 #[cfg(test)]
@@ -559,5 +651,61 @@ actions = { flagged = true, tag = "$later" }
         let groups = senders(&restored, &rules, &ctx, GroupBy::Address);
         assert_eq!(groups[0].sender, "a@noise.example");
         assert!(groups[0].rules.is_empty(), "{:?}", groups[0].rules);
+    }
+
+    #[test]
+    fn a_list_change_counts_what_each_rule_using_it_gains_and_loses() {
+        let store = store(&[
+            (1, "a@school.example", "Trip"),
+            (2, "b@club.example", "Match"),
+            (3, "c@other.example", "Hi"),
+        ]);
+        let id = identity();
+        let file = parse(
+            r#"
+[lists]
+kids = ["school.example"]
+
+[[list_proposals]]
+name = "kids"
+proposed_by = "agent"
+value = ["club.example", "other.example"]
+
+[[rules]]
+name = "kids"
+match.from_domain = { list = "kids" }
+actions.flagged = true
+
+[[rules]]
+name = "off"
+enabled = false
+match.from_domain = { list = "kids" }
+actions.flagged = true
+
+[[rules]]
+name = "unrelated"
+match.read = false
+actions.flagged = true
+"#,
+        )
+        .unwrap();
+        let effects = list_change(&file, "kids", &store, &context("work", &id, 10_000)).unwrap();
+        assert_eq!(
+            effects,
+            [ListEffect {
+                rule: "kids".into(),
+                folder: "INBOX".into(),
+                before: 1,
+                after: 2,
+                gained: 2,
+                lost: 1,
+            }]
+        );
+        assert!(
+            rules(&file, true).unwrap()[0]
+                .definition
+                .contains("club.example")
+        );
+        assert!(list_change(&file, "other", &store, &context("work", &id, 10_000)).is_err());
     }
 }

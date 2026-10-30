@@ -233,6 +233,25 @@ pub fn rule(
     Ok(row)
 }
 
+/// The rows of `rules lists`: every list in rules.toml or in a pending change, by name, with its `values` (`null` for a
+/// list only proposed), the rules that use it in file order (those `shown` keeps), and its `pending` change.
+pub fn list_rows(file: &crate::rules::RuleFile, shown: impl Fn(&Rule) -> bool) -> Vec<Value> {
+    crate::rules::lists::names(file)
+        .into_iter()
+        .map(|name| {
+            let used_by: Vec<&str> = crate::rules::lists::users(&file.rules, name)
+                .into_iter()
+                .filter(|rule| shown(rule))
+                .map(|rule| rule.name.as_str())
+                .collect();
+            let pending = (file.list_proposals.iter())
+                .find(|p| p.name == name)
+                .map(|p| json!({ "proposed_by": p.proposed_by, "values": p.value }));
+            json!({ "name": name, "values": file.lists.get(name), "used_by": used_by, "pending": pending })
+        })
+        .collect()
+}
+
 /// One row of a dry run: what `rule` would do to the message.
 pub fn planned_row(account: &str, planned: &Planned) -> Value {
     let mut row = json!({

@@ -274,17 +274,29 @@ pub(crate) fn banner(app: &App) -> Option<String> {
     if !inbox || app.search.is_some() {
         return None;
     }
-    let waiting: Vec<_> = (app.rules.rules.iter())
+    let waiting: Vec<_> = (app.rules.file.rules.iter())
         .filter(|rule| super::rules::is_proposal(rule))
         .collect();
-    let [rule] = waiting.as_slice() else {
-        return (!waiting.is_empty()).then(|| format!("{} rules waiting for you", waiting.len()));
+    let lists = &app.rules.file.list_proposals;
+    let rule = match (waiting.as_slice(), lists.as_slice()) {
+        ([], []) => return None,
+        ([], [list]) => {
+            let who = agent(&list.proposed_by);
+            return Some(format!(
+                "{who} suggests changing list {}.",
+                clean(&list.name, false)
+            ));
+        }
+        ([rule], []) => rule,
+        (_, []) => return Some(format!("{} rules waiting for you", waiting.len())),
+        _ => {
+            return Some(format!(
+                "{} proposals waiting for you",
+                waiting.len() + lists.len()
+            ));
+        }
     };
-    let who = match super::rules::proposer(rule.proposed_by.as_deref().unwrap_or_default()) {
-        who if who.starts_with("claude") => "Claude".to_string(),
-        "" | "agent" | "mcp" => "An agent".to_string(),
-        who => clean(who, false),
-    };
+    let who = agent(rule.proposed_by.as_deref().unwrap_or_default());
     let suggests = suggestion(rule);
     let affects = app
         .rules
@@ -300,6 +312,15 @@ pub(crate) fn banner(app: &App) -> Option<String> {
         })
         .unwrap_or_default();
     Some(format!("{who} suggests {suggests}.{affects}"))
+}
+
+/// Who proposed something, as the banner names them: Claude, an agent, or the proposer's own name.
+fn agent(proposed_by: &str) -> String {
+    match super::rules::proposer(proposed_by) {
+        who if who.starts_with("claude") => "Claude".to_string(),
+        "" | "agent" | "mcp" => "An agent".to_string(),
+        who => clean(who, false),
+    }
 }
 
 /// What a proposal would do, said with its name as the canvas says it: "archiving kettle newsletters", from its first
@@ -1182,6 +1203,26 @@ mod tests {
         assert_eq!(open.labels_containing("2 rules waiting for you").len(), 1);
         open.click("Receipts");
         assert!(open.find("Review").is_empty());
+    }
+
+    #[test]
+    fn the_banner_names_a_list_change_and_counts_it_with_rules() {
+        let fx = Fixture::new(&["work"]);
+        let change = "[lists]\nkids = [\"a.example\"]\n\n[[list_proposals]]\nname = \"kids\"\nproposed_by = \"mcp:claude\"\nvalue = [\"b.example\"]\n";
+        std::fs::write(fx.paths.rules_file(), change).unwrap();
+        let (open, _wires) = fx.window();
+        assert_eq!(
+            open.labels_containing("Claude suggests changing list kids.")
+                .len(),
+            1
+        );
+        drop(open);
+        std::fs::write(fx.paths.rules_file(), format!("{change}\n{PROPOSAL}")).unwrap();
+        let (open, _wires) = fx.window();
+        assert_eq!(
+            open.labels_containing("2 proposals waiting for you").len(),
+            1
+        );
     }
 
     #[test]

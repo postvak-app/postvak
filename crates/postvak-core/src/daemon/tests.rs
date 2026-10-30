@@ -1,3 +1,4 @@
+use crate::notify::Proposed;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
@@ -1364,11 +1365,8 @@ fn the_watch_warns_once_about_a_conflicting_copy_that_appears_beside_the_rules()
 
 #[test]
 fn only_proposals_that_start_waiting_after_the_first_load_notify() {
-    let rules = |file: &str| {
-        toml::from_str::<crate::rules::RuleFile>(file)
-            .unwrap()
-            .rules
-    };
+    let rules = |file: &str| toml::from_str::<crate::rules::RuleFile>(file).unwrap();
+    let rule = |name: &str| Proposed::Rule(name.into());
     let proposal = |name: &str| {
         format!(
             "[[rules]]\nname = \"{name}\"\nenabled = false\nproposed_by = \"mcp:host\"\nmatch.read = true\nactions = {{ flagged = true }}\n"
@@ -1380,10 +1378,25 @@ fn only_proposals_that_start_waiting_after_the_first_load_notify() {
     let first = rules(&(proposal("old") + enabled));
     assert!(super::new_proposals(&mut waiting, &first).is_empty());
     let added = rules(&(proposal("old") + &proposal("new") + &proposal("b") + enabled));
-    assert_eq!(super::new_proposals(&mut waiting, &added), ["b", "new"]);
+    assert_eq!(
+        super::new_proposals(&mut waiting, &added),
+        [rule("b"), rule("new")]
+    );
     assert!(super::new_proposals(&mut waiting, &added).is_empty());
     // Approved, then proposed again under the same name.
     let approved = rules(&(proposal("old") + enabled));
     assert!(super::new_proposals(&mut waiting, &approved).is_empty());
-    assert_eq!(super::new_proposals(&mut waiting, &added), ["b", "new"]);
+    assert_eq!(
+        super::new_proposals(&mut waiting, &added),
+        [rule("b"), rule("new")]
+    );
+    // A list change with a rule's name is a proposal of its own.
+    let list = rules(
+        &(proposal("old")
+            + "[[list_proposals]]\nname = \"old\"\nproposed_by = \"cli\"\nvalue = [\"a.example\"]\n"),
+    );
+    assert_eq!(
+        super::new_proposals(&mut waiting, &list),
+        [Proposed::List("old".into())]
+    );
 }

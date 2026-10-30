@@ -608,6 +608,67 @@ impl Backend {
         Ok(serde_json::from_str(&rules::schema())?)
     }
 
+    /// Every list with its values, the rules this server sees that use it, and its pending change.
+    pub fn rules_lists(&self) -> Result<Vec<Value>> {
+        let file = rules::load(&self.paths.rules_file())?;
+        Ok(output::list_rows(&file, |rule| {
+            self.is_visible(rule.account.as_deref())
+        }))
+    }
+
+    /// While accounts are hidden, a list a rule of a hidden account, or of every account, uses cannot be changed: the
+    /// change would reach mail this server does not see.
+    fn ensure_list_visible(&self, file: &rules::RuleFile, name: &str) -> Result<()> {
+        let hidden = rules::lists::users(&file.rules, name)
+            .into_iter()
+            .any(|rule| {
+                !self.is_visible(rule.account.as_deref())
+                    || (rule.account.is_none() && self.narrowed())
+            });
+        if hidden {
+            bail!("list '{name}' is used by rules for accounts this server does not see");
+        }
+        Ok(())
+    }
+
+    /// The rules that use list `name`, compiled as approving its pending change leaves them, refused when `sight` does
+    /// not cover a condition of theirs.
+    fn list_change_seen(&self, file: &rules::RuleFile, name: &str, sight: Sight) -> Result<()> {
+        let users: Vec<Rule> = rules::lists::users(&file.rules, name)
+            .into_iter()
+            .cloned()
+            .collect();
+        let pending: Vec<rules::ListProposal> = (file.list_proposals.iter())
+            .filter(|p| p.name == name)
+            .cloned()
+            .collect();
+        let changed = rules::lists::with_proposals(&file.lists, &pending);
+        refuse_unseen(&rules::compile_with(&users, &changed)?, sight)
+    }
+
+    /// What approving the pending change of list `name` does to each rule that uses it, in each visible account.
+    pub fn rules_test_list(
+        &self,
+        name: &str,
+        account: Option<&str>,
+        sight: Sight,
+    ) -> Result<Value> {
+        let file = rules::load(&self.paths.rules_file())?;
+        self.list_change_seen(&file, name, sight)?;
+        let accounts = self.select(account)?;
+        let effects = rules::coverage::list_change_in(
+            &self.paths,
+            &accounts.iter().collect::<Vec<_>>(),
+            &file,
+            name,
+            time::now(),
+        )?;
+        let rows = (effects.iter())
+            .map(|(account, effect)| output::with_account(account, effect))
+            .collect::<serde_json::Result<Vec<_>>>()?;
+        Ok(json!({ "rows": rows }))
+    }
+
     /// Previews one rule as if enabled, on the cached mail of the visible accounts; rows never carry mail text, and
     /// `warnings` say where `authenticated` cannot hold. A condition on text `sight` does not cover is refused, since
     /// its matches would reveal that text. It evaluates as of `now`, which the result names.
@@ -792,6 +853,10 @@ impl Backend {
         if let Place::Before(anchor) | Place::After(anchor) = &proposals.place {
             self.ensure_rule_visible(anchor, false)?;
         }
+        let file = rules::load(&self.paths.rules_file())?;
+        for name in proposals.lists.keys() {
+            self.ensure_list_visible(&file, name)?;
+        }
         if proposals.replace || proposals.edit {
             for rule in &proposals.rules {
                 // An edit reaches every account its rule does, so a narrowed server may not edit a rule for all of them.
@@ -809,6 +874,7 @@ impl Backend {
                 };
                 json!({ "name": name, "account": r.account })
             })
+            .chain(proposals.lists.keys().map(|name| json!({ "list": name })))
             .collect();
         rules::edit::propose_all(&self.paths.rules_file(), proposals, by)?;
         Ok(proposed)
@@ -827,6 +893,26 @@ impl Backend {
         refuse_named_unseen(&self.paths, name, sight)?;
         let approved = rules::edit::approve_from_now(&self.paths, name, time::now())?;
         Ok(json!({ "rule": approved, "enabled": true }))
+    }
+
+    /// Removes the caller's own pending change of list `name`.
+    pub fn withdraw_list(&self, name: &str, by: &str) -> Result<Value> {
+        rules::edit::withdraw_list(&self.paths.rules_file(), name, by)?;
+        Ok(json!({ "withdrawn_list": name }))
+    }
+
+    /// Writes the pending change of list `name` into [lists] and restarts the clock of the rules that use it.
+    pub fn approve_list(&self, name: &str, sight: Sight) -> Result<Value> {
+        let file = rules::load(&self.paths.rules_file())?;
+        self.ensure_list_visible(&file, name)?;
+        self.list_change_seen(&file, name, sight)?;
+        let users = rules::edit::approve_list_from_now(&self.paths, name, time::now())?;
+        Ok(json!({ "list": name, "approved": true, "rules": users }))
+    }
+
+    pub fn reject_list(&self, name: &str) -> Result<Value> {
+        rules::edit::reject_list(&self.paths.rules_file(), name)?;
+        Ok(json!({ "rejected_list": name }))
     }
 
     pub fn reject(&self, name: &str) -> Result<Value> {

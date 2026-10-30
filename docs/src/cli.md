@@ -31,6 +31,7 @@ This document contains the help content for the `postvak` command-line program.
 * [`postvak rules reject`↴](#postvak-rules-reject)
 * [`postvak rules move`↴](#postvak-rules-move)
 * [`postvak rules list`↴](#postvak-rules-list)
+* [`postvak rules lists`↴](#postvak-rules-lists)
 * [`postvak rules coverage`↴](#postvak-rules-coverage)
 * [`postvak rules apply-existing`↴](#postvak-rules-apply-existing)
 * [`postvak folder`↴](#postvak-folder)
@@ -316,12 +317,13 @@ Inspect and test rules.toml
 * `check` — Validate rules.toml, and warn about what keeps it from doing what it says, such as a conflicting copy a file sync left beside it or a rule for an account not set up here
 * `test` — Dry run: print what each rule would do to the cached messages, and warn where `authenticated` cannot hold; naming a rule previews it even while disabled
 * `schema` — JSON Schema for rules.toml; a proposal is one entry of `rules`
-* `propose` — Read one rule, a JSON array of rules or {"rules": [...]} on stdin and add them disabled, in order, for a human to approve; all or none are stored
-* `withdraw` — Remove your own pending proposal: a disabled rule whose proposed_by is yours; anything else is left for a human
-* `approve` — Enable a disabled rule, such as a proposal, or write an edit proposal over the rule it edits
-* `reject` — Remove a pending proposal
+* `propose` — Read one rule, a JSON array of rules or {"rules": [...]} on stdin and add them disabled, in order, for a human to approve; all or none are stored. {"lists": {...}} proposes new values for named lists, alone or beside "rules"
+* `withdraw` — Remove your own pending proposal: a disabled rule whose proposed_by is yours, or with `list` your pending change of that list; anything else is left for a human
+* `approve` — Enable a disabled rule, such as a proposal, or write an edit proposal over the rule it edits; with `list`, write that list's pending change into [lists] and restart the clock of every rule that uses it
+* `reject` — Remove a pending proposal; with `list`, that list's pending change, whoever proposed it
 * `move` — Move a rule right before or after another, which changes the order the rules run in: earlier rules run first
-* `list` — Every rule in file order, the order they run in: its position, its whole definition, whether it is enabled and who proposed it
+* `list` — Every rule in file order, the order they run in: its position, its whole definition, whether it is enabled, who proposed it and the values of the lists it uses
+* `lists` — Every named list in rules.toml, which conditions refer to with {"list": "name"}: its values, the rules that use it, and its pending change with who proposed it
 * `coverage` — Run the rules over one folder's stored mail without acting: how many messages a rule matches, none matches and several match; the top senders of unmatched mail; for each contested message every rule that matches and what would run under the real precedence
 * `apply-existing` — Run one enabled rule against mail that predates it; dry run lists what it would do
 
@@ -350,6 +352,7 @@ Dry run: print what each rule would do to the cached messages, and warn where `a
 * `--account <ACCOUNT>`
 * `--stdin` — Preview one rule read as JSON from stdin instead of rules.toml
 * `--as-of <AS_OF>` — Evaluate as if it were this time, to see what older_than and younger_than will do: a span ahead of now (15min, 1d), a local date (2026-11-01), a local time (2026-11-01T14:00) or an RFC 3339 timestamp; the mail and its read, flagged and tags stay as they are now, and nothing is applied
+* `--list <LIST>` — Preview approving this list's pending change: per rule that uses it, the cached messages it matches now and after
 
 
 
@@ -365,7 +368,7 @@ JSON Schema for rules.toml; a proposal is one entry of `rules`
 
 ## `postvak rules propose`
 
-Read one rule, a JSON array of rules or {"rules": [...]} on stdin and add them disabled, in order, for a human to approve; all or none are stored
+Read one rule, a JSON array of rules or {"rules": [...]} on stdin and add them disabled, in order, for a human to approve; all or none are stored. {"lists": {...}} proposes new values for named lists, alone or beside "rules"
 
 **Usage:** `postvak rules propose [OPTIONS]`
 
@@ -381,7 +384,7 @@ Read one rule, a JSON array of rules or {"rules": [...]} on stdin and add them d
 
 ## `postvak rules withdraw`
 
-Remove your own pending proposal: a disabled rule whose proposed_by is yours; anything else is left for a human
+Remove your own pending proposal: a disabled rule whose proposed_by is yours, or with `list` your pending change of that list; anything else is left for a human
 
 **Usage:** `postvak rules withdraw [OPTIONS] <NAME>`
 
@@ -392,30 +395,39 @@ Remove your own pending proposal: a disabled rule whose proposed_by is yours; an
 ###### **Options:**
 
 * `--by <BY>` — Who proposed it, as given to `rules propose --by`
+* `--list` — NAME is a list with a pending change, not a rule
 
 
 
 ## `postvak rules approve`
 
-Enable a disabled rule, such as a proposal, or write an edit proposal over the rule it edits
+Enable a disabled rule, such as a proposal, or write an edit proposal over the rule it edits; with `list`, write that list's pending change into [lists] and restart the clock of every rule that uses it
 
-**Usage:** `postvak rules approve <NAME>`
+**Usage:** `postvak rules approve [OPTIONS] <NAME>`
 
 ###### **Arguments:**
 
 * `<NAME>`
+
+###### **Options:**
+
+* `--list` — NAME is a list with a pending change, not a rule
 
 
 
 ## `postvak rules reject`
 
-Remove a pending proposal
+Remove a pending proposal; with `list`, that list's pending change, whoever proposed it
 
-**Usage:** `postvak rules reject <NAME>`
+**Usage:** `postvak rules reject [OPTIONS] <NAME>`
 
 ###### **Arguments:**
 
 * `<NAME>`
+
+###### **Options:**
+
+* `--list` — NAME is a list with a pending change, not a rule
 
 
 
@@ -438,9 +450,21 @@ Move a rule right before or after another, which changes the order the rules run
 
 ## `postvak rules list`
 
-Every rule in file order, the order they run in: its position, its whole definition, whether it is enabled and who proposed it
+Every rule in file order, the order they run in: its position, its whole definition, whether it is enabled, who proposed it and the values of the lists it uses
 
 **Usage:** `postvak rules list [OPTIONS]`
+
+###### **Options:**
+
+* `--json`
+
+
+
+## `postvak rules lists`
+
+Every named list in rules.toml, which conditions refer to with {"list": "name"}: its values, the rules that use it, and its pending change with who proposed it
+
+**Usage:** `postvak rules lists [OPTIONS]`
 
 ###### **Options:**
 

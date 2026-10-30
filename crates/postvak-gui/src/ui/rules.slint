@@ -33,6 +33,8 @@ export struct ProposalData {
     note: string,
     // An edit, whose `marks` hold "-" and " " too.
     edits: bool,
+    // A change of a named list rather than a rule: approved as it is, never edited first.
+    list: bool,
     toml: string,
     // A diff's mark for each line of `toml`.
     marks: string,
@@ -482,7 +484,7 @@ component ProposalCard inherits Rectangle {
             padding-top: Theme.pad * 11 / 4;
             spacing: Theme.pad * 3 / 2;
             TextButton {
-                text: "Approve rule";
+                text: root.proposal.list ? "Approve change" : "Approve rule";
                 icon: root.check-icon;
                 primary: true;
                 palette: Theme.pane;
@@ -494,7 +496,7 @@ component ProposalCard inherits Rectangle {
                 palette: Theme.pane;
                 clicked => { root.reject(); }
             }
-            VerticalLayout {
+            if !root.proposal.list: VerticalLayout {
                 alignment: center;
                 padding-left: Theme.pad * 3 / 4;
                 Link {

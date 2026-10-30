@@ -1531,6 +1531,7 @@ async fn tools_list_per_scope_set_is_exact_and_alphabetical() {
                 "rules_check",
                 "rules_coverage",
                 "rules_list",
+                "rules_lists",
                 "rules_propose",
                 "rules_schema",
                 "rules_test",
@@ -2698,4 +2699,95 @@ fn wrap_body_renames_the_wrapper_spelled_with_look_alike_letters() {
     }
     let (kept, _) = super::tools::wrap_body("Привет, мир");
     assert!(kept.contains("Привет, мир"), "{kept}");
+}
+
+const KIDS_RULES: &str = "[lists]\nkids = [\"school.example\"]\n\n[[rules]]\nname = \"kids\"\naccount = \"work\"\nmatch.from_domain = { list = \"kids\" }\nactions = { flagged = true }\n";
+
+#[tokio::test]
+async fn an_agent_proposes_a_list_change_that_a_human_approves() {
+    let fx = fixture(&["work"]);
+    std::fs::write(fx.paths.rules_file(), KIDS_RULES).unwrap();
+    let agent = connect(&fx, "read,rules:propose", &[]).await;
+    let proposed = call(
+        &agent,
+        "rules_propose",
+        json!({ "lists": { "kids": ["school.example", "club.example"] } }),
+    )
+    .await;
+    assert_ne!(proposed.is_error, Some(true), "{proposed:?}");
+    assert_eq!(
+        proposed.structured_content.unwrap()["proposed"],
+        json!([{ "list": "kids" }])
+    );
+
+    let listed = rows(&call(&agent, "rules_lists", json!({})).await);
+    assert_eq!(
+        listed,
+        [json!({
+            "name": "kids", "values": ["school.example"], "used_by": ["kids"],
+            "pending": { "proposed_by": "mcp:test-host", "values": ["school.example", "club.example"] },
+        })]
+    );
+    let preview = call(&agent, "rules_test", json!({ "list": "kids" })).await;
+    assert_ne!(preview.is_error, Some(true), "{preview:?}");
+    assert_eq!(
+        preview.structured_content.unwrap()["rows"][0]["rule"],
+        "kids"
+    );
+    let refused = error_text(&call(&agent, "rules_approve", json!({ "list": "kids" })).await);
+    assert!(
+        refused.contains("not allowed with these scopes"),
+        "{refused}"
+    );
+
+    let human = connect(&fx, "read,rules:write", &[]).await;
+    let approved = call(&human, "rules_approve", json!({ "list": "kids" })).await;
+    assert_ne!(approved.is_error, Some(true), "{approved:?}");
+    let file = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
+    assert!(file.list_proposals.is_empty());
+    assert_eq!(
+        rows(&call(&human, "rules_lists", json!({})).await)[0]["values"],
+        json!(["school.example", "club.example"])
+    );
+    let both = error_text(
+        &call(
+            &human,
+            "rules_reject",
+            json!({ "name": "kids", "list": "kids" }),
+        )
+        .await,
+    );
+    assert!(both.contains("give one of name and list"), "{both}");
+}
+
+#[tokio::test]
+async fn a_narrowed_server_cannot_change_a_list_a_hidden_accounts_rule_uses() {
+    let fx = fixture(&["home", "work"]);
+    std::fs::write(fx.paths.rules_file(), KIDS_RULES).unwrap();
+    let client = connect(&fx, "read,rules:propose", &["home"]).await;
+    let refused = error_text(
+        &call(
+            &client,
+            "rules_propose",
+            json!({ "lists": { "kids": ["a.example"] } }),
+        )
+        .await,
+    );
+    assert!(
+        refused.contains("accounts this server does not see"),
+        "{refused}"
+    );
+    assert!(
+        rows(&call(&client, "rules_lists", json!({})).await)[0]["used_by"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let fresh = call(
+        &client,
+        "rules_propose",
+        json!({ "lists": { "new": ["a.example"] } }),
+    )
+    .await;
+    assert_ne!(fresh.is_error, Some(true), "{fresh:?}");
 }

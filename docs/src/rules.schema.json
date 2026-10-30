@@ -3,6 +3,13 @@
   "title": "RuleFile",
   "type": "object",
   "properties": {
+    "list_proposals": {
+      "description": "New lists and changes to lists that an agent proposed; each changes nothing until a human approves it",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ListProposal"
+      }
+    },
     "lists": {
       "description": "Named values that conditions refer to with { list = \"name\" }, so several rules share one copy",
       "type": "object",
@@ -114,6 +121,30 @@
         {
           "$ref": "#/$defs/ListRef"
         }
+      ]
+    },
+    "ListProposal": {
+      "description": "A new list, or a change to one, that an agent proposed; it changes nothing until a human approves it",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "The list it adds or changes",
+          "type": "string"
+        },
+        "proposed_by": {
+          "description": "Who proposed it; set by `rules propose`",
+          "type": "string"
+        },
+        "value": {
+          "description": "The list once approved",
+          "$ref": "#/$defs/NamedList"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "proposed_by",
+        "value"
       ]
     },
     "ListRef": {

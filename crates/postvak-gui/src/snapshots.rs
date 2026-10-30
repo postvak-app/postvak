@@ -540,6 +540,23 @@ fn rule_edit_proposal() {
     snapshot(&open, "gui_rule_edit_proposal");
 }
 
+/// A pending change of a list a rule uses: the list's line before and after, and its dry run per rule.
+#[test]
+fn rule_list_proposal() {
+    let fx = Fixture::mailbox("light");
+    let rules = "[lists]\nnewsletters = { contains = \"news@\" }\n\n[[rules]]\nname = \"newsletters\"\nmatch.from = { list = \"newsletters\" }\nactions = { archive = true }\n\n[[list_proposals]]\nname = \"newsletters\"\nproposed_by = \"mcp:claude-code\"\nvalue = { contains = [\"news@\", \"shop@\"] }\n";
+    std::fs::write(fx.paths.rules_file(), rules).unwrap();
+    let (open, _wires) = open(&fx);
+    open.with(|live| live.app.select_view(View::Rules));
+    open.tick_until(|open| {
+        !open
+            .labels_containing("for the rules that use it")
+            .is_empty()
+    });
+    assert_eq!(open.find("Approve change").len(), 1);
+    snapshot(&open, "gui_rule_list_proposal");
+}
+
 #[test]
 fn rule_editor() {
     let fx = Fixture::mailbox("light");
