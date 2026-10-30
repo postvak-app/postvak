@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0](https://github.com/postvak-app/postvak/compare/v0.11.0...v0.12.0) - 2026-10-30
+
+### Added
+
+- *(gui)* reader and folder pane feedback, remembered remote content, long proposals ([#462](https://github.com/postvak-app/postvak/pull/462))
+- *(gui)* Preferences dialog that edits config.toml ([#467](https://github.com/postvak-app/postvak/pull/467))
+- *(gui)* make the rule proposal's text selectable ([#463](https://github.com/postvak-app/postvak/pull/463))
+- make accept loop poll interval configurable ([#461](https://github.com/postvak-app/postvak/pull/461))
+
+### Fixed
+
+- *(gui)* bring the browser to the front for links in the Flatpak ([#466](https://github.com/postvak-app/postvak/pull/466))
+- *(gui)* stop each tray click leaving a launch entry on Plasma's task bar ([#465](https://github.com/postvak-app/postvak/pull/465))
+- *(rules)* a direct move from the GUI or MCP is not remembered as a rule's move ([#464](https://github.com/postvak-app/postvak/pull/464))
+
+### Other
+
+- specs for undo and the Phase 5 screens; remove stale specs and plans ([#459](https://github.com/postvak-app/postvak/pull/459))
+
 ## [0.11.0](https://github.com/postvak-app/postvak/compare/v0.10.0...v0.11.0) - 2026-10-30
 
 ### Added
