@@ -89,7 +89,7 @@ actions.flagged = true
 - A name `[lists]` does not have, or a list used where the other kind belongs, makes the file invalid, as does a malformed list that no rule uses yet. A list cannot refer to another list.
 - Changing a list changes every rule that uses it, and restarts each one's clock (see [When rules act](#when-rules-act)).
 - `rules list --json` and the MCP `rules_list` tool show the reference in `match` and, under `lists`, the values of each list the rule uses. `rules coverage` and `senders` name the lists beside the rules that match.
-- The window shows a reference by name, such as `subject in list security_subjects`, and keeps it when you save the rule; change a list's values in `rules.toml`.
+- The window shows a reference by name, such as `subject in list security_subjects`. In the rule dialog a text or domain condition can be **in list**, picking one of the lists of its kind, with the list's values under the row; change the values in `rules.toml`. A domain list mixed with domains in place is shown as it is and kept on save.
 - `postvak rules lists` (MCP `rules_lists`) shows every list with its values, the rules that use it and any pending change; `--json` gives one row per list with `name`, `values`, `used_by` and `pending`.
 
 An agent changes lists the way it changes rules, by proposal, since one list change changes every rule that uses it. `rules propose` takes `{"lists": {"kids": ["school.example", "club.example"]}}`, alone or beside `"rules"`, and stores each list as a pending change after the rules, which changes nothing until approved:

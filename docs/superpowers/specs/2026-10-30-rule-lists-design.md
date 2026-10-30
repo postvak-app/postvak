@@ -37,6 +37,8 @@ One list change changes every rule that uses it, so agents change lists the way 
 - The daemon notifies about a new list change as about a new rule proposal ("A list change waits for your approval"). The GUI shows it among the proposals: the list's line before and after, a sentence naming the rules it reaches, and the dry run per rule and account; Approve change and Reject, no Edit. The inbox banner counts list changes too.
 - Deleting a list stays a manual edit.
 
-## Later
+## Rule editor
 
-The rule editor offers existing lists when editing a domain or subject condition and shows a list's values on demand.
+- `draft::Op::List` ("in list") joins contains, equals and matches regex on text fields; domain fields get a choice of "is" or "in list". With it, the value is a choice of the approved lists of the field's kind, sorted by name, and the chosen list's values show in a muted line under the row. Pending list changes are not offered, since rules see only approved lists.
+- A rule's `{ list = "…" }` on a text field, or a lone `{ list = "…" }` on a domain field, opens as such a row and saves back as the same reference. A domain list that mixes a reference with domains stays a kept, read-only condition.
+- Moving a list row to a field of the other kind (text to domain or back) starts the row afresh, so a text list's name never lands on a domain field; switching between "in list" and a value clears the value. Saving a list row with no list chosen says "choose a list for …".

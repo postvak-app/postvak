@@ -18,6 +18,13 @@ export struct ConditionData {
     flag: bool,
     // Takes a header name.
     named: bool,
+    // Takes a domain, or a list of them.
+    domain: bool,
+    // Names a list in [lists] of its kind: `list-index` the one chosen (-1 for none) and `list-values` its values in
+    // words.
+    listed: bool,
+    list-index: int,
+    list-values: string,
 }
 
 export struct ActionData {
@@ -46,6 +53,10 @@ export global RuleEditor {
     in property <[ActionData]> actions;
     in property <[string]> fields;
     in property <[string]> ops;
+    // A domain condition's tests, then the lists a text and a domain condition can name.
+    in property <[string]> domain-ops;
+    in property <[string]> text-lists;
+    in property <[string]> domain-lists;
     in property <[string]> action-choices;
     // Save would rename a saved rule.
     in property <bool> renaming;
@@ -64,6 +75,7 @@ export global RuleEditor {
     callback folder-edited(string);
     callback field-chosen(int, int);
     callback op-chosen(int, int);
+    callback list-chosen(int, int);
     callback header-edited(int, string);
     callback value-edited(int, string);
     callback add-condition();
@@ -118,48 +130,66 @@ component ConditionRow {
     in property <ConditionData> condition;
     in property <string> remove-icon;
     in property <int> number;
-    HorizontalLayout {
-        spacing: Theme.pad;
-        Choice {
-            width: 120px;
-            model: RuleEditor.fields;
-            index: root.condition.field;
-            accessible-label: "Condition " + root.number + " field";
-            index-chosen(i) => { RuleEditor.field-chosen(root.number - 1, i); }
+    VerticalLayout {
+        spacing: Theme.pad / 2;
+        HorizontalLayout {
+            spacing: Theme.pad;
+            Choice {
+                width: 120px;
+                model: RuleEditor.fields;
+                index: root.condition.field;
+                accessible-label: "Condition " + root.number + " field";
+                index-chosen(i) => { RuleEditor.field-chosen(root.number - 1, i); }
+            }
+            if root.condition.named: Field {
+                width: 120px;
+                placeholder-text: "Header";
+                accessible-label: "Condition " + root.number + " header";
+                value: root.condition.header;
+                value-edited(text) => { RuleEditor.header-edited(root.number - 1, text); }
+            }
+            if root.condition.text || root.condition.domain: Choice {
+                width: 140px;
+                model: root.condition.domain ? RuleEditor.domain-ops : RuleEditor.ops;
+                index: root.condition.op;
+                accessible-label: "Condition " + root.number + " test";
+                index-chosen(i) => { RuleEditor.op-chosen(root.number - 1, i); }
+            }
+            if root.condition.listed: Choice {
+                horizontal-stretch: 1;
+                model: root.condition.domain ? RuleEditor.domain-lists : RuleEditor.text-lists;
+                index: root.condition.list-index;
+                accessible-label: "Condition " + root.number + " list";
+                index-chosen(i) => { RuleEditor.list-chosen(root.number - 1, i); }
+            }
+            if root.condition.flag: Choice {
+                horizontal-stretch: 1;
+                model: ["yes", "no"];
+                index: root.condition.value == "true" ? 0 : 1;
+                accessible-label: "Condition " + root.number + " value";
+                index-chosen(i) => { RuleEditor.value-edited(root.number - 1, i == 0 ? "true" : "false"); }
+            }
+            if !root.condition.flag && !root.condition.listed: Field {
+                horizontal-stretch: 1;
+                accessible-label: "Condition " + root.number + " value";
+                value: root.condition.value;
+                value-edited(text) => { RuleEditor.value-edited(root.number - 1, text); }
+            }
+            IconButton {
+                icon: root.remove-icon;
+                name: "Remove condition " + root.number;
+                hint: "Remove this condition";
+                palette: Theme.pane;
+                clicked => { RuleEditor.remove-condition(root.number - 1); }
+            }
         }
-        if root.condition.named: Field {
-            width: 120px;
-            placeholder-text: "Header";
-            accessible-label: "Condition " + root.number + " header";
-            value: root.condition.header;
-            value-edited(text) => { RuleEditor.header-edited(root.number - 1, text); }
-        }
-        if root.condition.text: Choice {
-            width: 140px;
-            model: RuleEditor.ops;
-            index: root.condition.op;
-            accessible-label: "Condition " + root.number + " test";
-            index-chosen(i) => { RuleEditor.op-chosen(root.number - 1, i); }
-        }
-        if root.condition.flag: Choice {
-            horizontal-stretch: 1;
-            model: ["yes", "no"];
-            index: root.condition.value == "true" ? 0 : 1;
-            accessible-label: "Condition " + root.number + " value";
-            index-chosen(i) => { RuleEditor.value-edited(root.number - 1, i == 0 ? "true" : "false"); }
-        }
-        if !root.condition.flag: Field {
-            horizontal-stretch: 1;
-            accessible-label: "Condition " + root.number + " value";
-            value: root.condition.value;
-            value-edited(text) => { RuleEditor.value-edited(root.number - 1, text); }
-        }
-        IconButton {
-            icon: root.remove-icon;
-            name: "Remove condition " + root.number;
-            hint: "Remove this condition";
-            palette: Theme.pane;
-            clicked => { RuleEditor.remove-condition(root.number - 1); }
+        // What the chosen list holds, under the row; rules.toml is where it changes.
+        if root.condition.listed && root.condition.list-values != "": Text {
+            text: root.condition.list-values;
+            font-size: Theme.small-size;
+            color: Theme.pane.muted;
+            overflow: elide;
+            accessible-label: "Condition " + root.number + " list values";
         }
     }
 }
