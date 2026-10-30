@@ -61,10 +61,16 @@ fn hello_is_answered_with_protocol_version_and_pid() {
 
 #[test]
 fn a_client_is_served_as_it_connects_not_at_the_next_poll() {
-    let daemon = TestDaemon::start();
+    // A poll this long leaves a loaded runner half a second to answer, and a daemon that waits for its next check is
+    // still nearly a second late.
+    let poll = Duration::from_secs(1);
+    let daemon = TestDaemon::start_with(Options {
+        poll,
+        ..options(recording_connector(), None)
+    });
     for _ in 0..5 {
         // Long enough for the accept loop to be between its checks.
-        std::thread::sleep(super::POLL + Duration::from_millis(30));
+        std::thread::sleep(poll + Duration::from_millis(30));
         let started = Instant::now();
         let mut client = TestClient::connect(&daemon.paths.daemon_socket());
         client.send(&ClientMessage::Hello {
@@ -73,7 +79,7 @@ fn a_client_is_served_as_it_connects_not_at_the_next_poll() {
         });
         assert!(matches!(client.recv(), Some(DaemonMessage::Hello { .. })));
         assert!(
-            started.elapsed() < super::POLL / 2,
+            started.elapsed() < poll / 2,
             "hello took {:?}",
             started.elapsed()
         );

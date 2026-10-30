@@ -59,6 +59,8 @@ pub struct Options {
     pub notify: bool,
     /// Stops on SIGTERM and SIGINT as on `daemon stop`; tests, which run many daemons in one process, turn it off.
     pub signals: bool,
+    /// How often the accept loop checks while no client connects; `POLL` but in a test that times a connect against it.
+    pub poll: Duration,
 }
 
 impl Options {
@@ -69,6 +71,7 @@ impl Options {
             login: imap_login(),
             notify: true,
             signals: true,
+            poll: POLL,
         }
     }
 
@@ -333,7 +336,7 @@ fn serve(
             }
         })?;
     let (accepted, acceptor) = acceptor(listener)?;
-    let connections = accept_until_done(&shared, &accepted, options.idle_exit);
+    let connections = accept_until_done(&shared, &accepted, options.idle_exit, options.poll);
     // Connects fail at once from here on instead of waiting out the hello timeout; the socket file and lock remain.
     drop(accepted);
     wake_acceptor(&paths.daemon_socket(), acceptor);
@@ -605,12 +608,13 @@ fn accept_until_done(
     shared: &Arc<Shared>,
     accepted: &Receiver<io::Result<UnixStream>>,
     idle_exit: Option<Duration>,
+    poll: Duration,
 ) -> Vec<Connection> {
     let mut connections: Vec<Connection> = Vec::new();
     let mut next_client: ClientId = 0;
     while !done(shared, idle_exit) {
         apply_file_changes(shared, true);
-        match wait_for_client(accepted) {
+        match wait_for_client(accepted, poll) {
             Ok(Ok(stream)) => {
                 next_client += 1;
                 match open_connection(shared, stream, next_client) {
@@ -622,7 +626,7 @@ fn accept_until_done(
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
                 log::error!("the accept thread stopped; no new clients can connect");
-                std::thread::sleep(POLL);
+                std::thread::sleep(poll);
             }
         }
         connections.retain(|connection| !connection.reader.is_finished());
@@ -630,10 +634,11 @@ fn accept_until_done(
     connections
 }
 
-/// The next accepted client, waiting up to `POLL`. On macOS the daemon's main thread runs its run loop meanwhile, in
+/// The next accepted client, waiting up to `poll`. On macOS the daemon's main thread runs its run loop meanwhile, in
 /// short slices so a client still connects at once: a click on a notification arrives there (see `notify::mac`).
 fn wait_for_client(
     accepted: &Receiver<io::Result<UnixStream>>,
+    poll: Duration,
 ) -> Result<io::Result<UnixStream>, RecvTimeoutError> {
     #[cfg(target_os = "macos")]
     {
@@ -641,7 +646,7 @@ fn wait_for_client(
         const SLICE: Duration = Duration::from_millis(20);
         // The name behind kCFRunLoopDefaultMode; modes match by name.
         let mode = CFString::from_static_str("kCFRunLoopDefaultMode");
-        let until = Instant::now() + POLL;
+        let until = Instant::now() + poll;
         loop {
             match accepted.try_recv() {
                 Ok(client) => return Ok(client),
@@ -663,7 +668,7 @@ fn wait_for_client(
         }
     }
     #[cfg(not(target_os = "macos"))]
-    accepted.recv_timeout(POLL)
+    accepted.recv_timeout(poll)
 }
 
 fn done(shared: &Shared, idle_exit: Option<Duration>) -> bool {
