@@ -323,7 +323,7 @@ impl Live {
             let weak = live.window.as_weak();
             tray.on_open(move || {
                 if let Some(window) = weak.upgrade() {
-                    raise(&window);
+                    raise_from_tray(&window);
                 }
             });
             tray.on_sync(|| {
@@ -444,6 +444,23 @@ fn raise(window: &ui::MailWindow) {
             });
         }
     });
+}
+
+/// On Wayland a click on the tray comes with an activation token, which Slint gives the next native window it creates,
+/// and Plasma keeps a launch entry on its task bar until a window uses it. So an open window comes back as a new one,
+/// which the token brings to the front.
+fn raise_from_tray(window: &ui::MailWindow) {
+    let wayland = window
+        .window()
+        .with_winit_window(on_wayland)
+        .unwrap_or(false);
+    if !wayland {
+        raise(window);
+        return;
+    }
+    if let Err(e) = window.hide().and_then(|()| window.show()) {
+        log::warn!("could not show the window: {e}");
+    }
 }
 
 fn on_wayland(native: &slint::winit_030::winit::window::Window) -> bool {

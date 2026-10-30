@@ -1169,7 +1169,7 @@ dependencies = [
 [[package]]
 name = "const-field-offset"
 version = "0.2.1"
-source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#5b3ec4d4950e93edea402c327cf2a26dc6241268"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#121354c0c4ed417857cc32d9aa795d735b99e537"
 dependencies = [
  "const-field-offset-macro",
  "field-offset",
@@ -1178,7 +1178,7 @@ dependencies = [
 [[package]]
 name = "const-field-offset-macro"
 version = "0.2.1"
-source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#5b3ec4d4950e93edea402c327cf2a26dc6241268"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#121354c0c4ed417857cc32d9aa795d735b99e537"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2595,7 +2595,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-linuxkms"
 version = "1.18.1"
-source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#5b3ec4d4950e93edea402c327cf2a26dc6241268"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#121354c0c4ed417857cc32d9aa795d735b99e537"
 dependencies = [
  "bytemuck",
  "calloop 0.14.5",
@@ -2618,7 +2618,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-selector"
 version = "1.18.1"
-source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#5b3ec4d4950e93edea402c327cf2a26dc6241268"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#121354c0c4ed417857cc32d9aa795d735b99e537"
 dependencies = [
  "cfg-if",
  "cfg_aliases",
@@ -2634,7 +2634,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-testing"
 version = "1.18.1"
-source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#5b3ec4d4950e93edea402c327cf2a26dc6241268"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#121354c0c4ed417857cc32d9aa795d735b99e537"
 dependencies = [
  "cfg_aliases",
  "i-slint-common",
@@ -2646,7 +2646,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-winit"
 version = "1.18.1"
-source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#5b3ec4d4950e93edea402c327cf2a26dc6241268"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#121354c0c4ed417857cc32d9aa795d735b99e537"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -2692,7 +2692,7 @@ dependencies = [
 [[package]]
 name = "i-slint-common"
 version = "1.18.1"
-source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#5b3ec4d4950e93edea402c327cf2a26dc6241268"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#121354c0c4ed417857cc32d9aa795d735b99e537"
 dependencies = [
  "derive_more",
  "fontique 0.11.1",
@@ -2708,7 +2708,7 @@ dependencies = [
 [[package]]
 name = "i-slint-compiler"
 version = "1.18.1"
-source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#5b3ec4d4950e93edea402c327cf2a26dc6241268"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#121354c0c4ed417857cc32d9aa795d735b99e537"
 dependencies = [
  "annotate-snippets",
  "by_address",
@@ -2741,7 +2741,7 @@ dependencies = [
 [[package]]
 name = "i-slint-core"
 version = "1.18.1"
-source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#5b3ec4d4950e93edea402c327cf2a26dc6241268"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#121354c0c4ed417857cc32d9aa795d735b99e537"
 dependencies = [
  "accesskit",
  "async-channel 2.5.0",
@@ -2795,7 +2795,7 @@ dependencies = [
 [[package]]
 name = "i-slint-core-macros"
 version = "1.18.1"
-source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#5b3ec4d4950e93edea402c327cf2a26dc6241268"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#121354c0c4ed417857cc32d9aa795d735b99e537"
 dependencies = [
  "quote",
  "serde_json",
@@ -2805,7 +2805,7 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-femtovg"
 version = "1.18.1"
-source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#5b3ec4d4950e93edea402c327cf2a26dc6241268"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#121354c0c4ed417857cc32d9aa795d735b99e537"
 dependencies = [
  "cfg-if",
  "const-field-offset",
@@ -2825,7 +2825,7 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-skia"
 version = "1.18.1"
-source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#5b3ec4d4950e93edea402c327cf2a26dc6241268"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#121354c0c4ed417857cc32d9aa795d735b99e537"
 dependencies = [
  "bytemuck",
  "cfg-if",
@@ -2863,7 +2863,7 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-software"
 version = "1.18.1"
-source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#5b3ec4d4950e93edea402c327cf2a26dc6241268"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#121354c0c4ed417857cc32d9aa795d735b99e537"
 dependencies = [
  "bytemuck",
  "clru",
@@ -5836,7 +5836,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "slint"
 version = "1.18.1"
-source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#5b3ec4d4950e93edea402c327cf2a26dc6241268"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#121354c0c4ed417857cc32d9aa795d735b99e537"
 dependencies = [
  "const-field-offset",
  "i-slint-backend-linuxkms",
@@ -5858,7 +5858,7 @@ dependencies = [
 [[package]]
 name = "slint-build"
 version = "1.18.1"
-source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#5b3ec4d4950e93edea402c327cf2a26dc6241268"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#121354c0c4ed417857cc32d9aa795d735b99e537"
 dependencies = [
  "derive_more",
  "fontique 0.11.1",
@@ -5870,7 +5870,7 @@ dependencies = [
 [[package]]
 name = "slint-macros"
 version = "1.18.1"
-source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#5b3ec4d4950e93edea402c327cf2a26dc6241268"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#121354c0c4ed417857cc32d9aa795d735b99e537"
 dependencies = [
  "i-slint-compiler",
  "proc-macro2",
@@ -7076,7 +7076,7 @@ checksum = "6a02e4885ed3bc0f2de90ea6dd45ebcbb66dacffe03547fadbb0eeae2770887d"
 [[package]]
 name = "vtable"
 version = "0.5.0"
-source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#5b3ec4d4950e93edea402c327cf2a26dc6241268"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#121354c0c4ed417857cc32d9aa795d735b99e537"
 dependencies = [
  "const-field-offset",
  "portable-atomic",
@@ -7087,7 +7087,7 @@ dependencies = [
 [[package]]
 name = "vtable-macro"
 version = "0.5.0"
-source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#5b3ec4d4950e93edea402c327cf2a26dc6241268"
+source = "git+https://github.com/pataar/slint?branch=clipboard-1.18.1#121354c0c4ed417857cc32d9aa795d735b99e537"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -171,7 +171,9 @@ inherits = "release"
 # the tray icon registering without its own D-Bus name in a Flatpak (https://github.com/slint-ui/slint/pull/14204), and
 # with femtovg drawing a rounded clip on whole pixels, so a context menu opened at Wayland's fractional pointer position
 # is not blurry (https://github.com/pataar/slint/tree/femtovg-clip-layer-pixel-align, #343), and with two empty images
-# equal, so the idle window does not draw again on every tick (https://github.com/slint-ui/slint/pull/13669, #416).
+# equal, so the idle window does not draw again on every tick (https://github.com/slint-ui/slint/pull/13669, #416), and
+# with a tray click's activation token given to the next window, so Plasma keeps no launch entry on its task bar for it
+# (https://github.com/slint-ui/slint/pull/14609).
 # Every Slint crate comes from the fork, or two copies of i-slint-core meet. Removing it once a Slint release has the fix:
 # https://github.com/postvak-app/postvak/issues/233.
 [patch.crates-io]
