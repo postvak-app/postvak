@@ -120,6 +120,52 @@ component Eyebrow inherits Text {
     color: Theme.pane.accent;
 }
 
+/* A line of text that can be selected and copied, cut short when it does not fit.
+
+A TextInput cannot elide, so the elided Text shows it and an invisible read-only TextInput over it takes the selection. */
+component SelectableLine {
+    in property <string> text;
+    in property <brush> color;
+    in property <string> font-family;
+    in property <length> font-size;
+    in property <int> font-weight;
+    in property <length> letter-spacing;
+    in property <TextVerticalAlignment> vertical-alignment;
+    min-height: shown.preferred-height;
+    preferred-width: shown.preferred-width;
+    Rectangle {
+        clip: true;
+        shown := Text {
+            accessible-role: none;
+            width: 100%;
+            height: 100%;
+            text: root.text;
+            color: root.color;
+            font-family: root.font-family;
+            font-size: root.font-size;
+            font-weight: root.font-weight;
+            letter-spacing: root.letter-spacing;
+            vertical-alignment: root.vertical-alignment;
+            overflow: elide;
+        }
+        TextInput {
+            width: 100%;
+            height: 100%;
+            text: root.text;
+            read-only: true;
+            color: transparent;
+            font-family: root.font-family;
+            font-size: root.font-size;
+            font-weight: root.font-weight;
+            letter-spacing: root.letter-spacing;
+            vertical-alignment: root.vertical-alignment;
+            selection-background-color: Theme.pane.selected;
+            selection-foreground-color: Theme.pane.on-accent;
+            accessible-label: root.text;
+        }
+    }
+}
+
 // One cell of the Rules table, cut short when it does not fit.
 component Cell inherits Text {
     color: Theme.pane.text;
@@ -192,33 +238,60 @@ component ProposalCode inherits Rectangle {
             Rectangle { horizontal-stretch: 1; }
         }
         Hairline { palette: Theme.frame; }
-        VerticalLayout {
-            padding-top: Theme.pad * 3 / 2;
-            padding-bottom: Theme.pad * 3 / 2;
-            for line in root.proposal.code: Rectangle {
-                height: Theme.row - Theme.pad / 4;
-                background: line.mark == "+" ? Code.added : line.mark == "-" ? Code.removed : transparent;
-                HorizontalLayout {
-                    padding-left: 2 * Theme.pad;
-                    padding-right: 2 * Theme.pad;
-                    Text {
-                        accessible-role: none;
-                        text: line.mark + " ";
-                        font-family: Theme.mono-font;
-                        font-size: Theme.compact-size;
-                        color: line.mark == "-" ? Theme.night.error : Code.string;
-                        vertical-alignment: center;
+        // The lines are drawn in colour, run by run; an invisible read-only TextInput over them, line for line, takes
+        // the selection, so the TOML can be copied without its diff marks.
+        Rectangle {
+            lines := VerticalLayout {
+                padding-top: Theme.pad * 3 / 2;
+                padding-bottom: Theme.pad * 3 / 2;
+                for line in root.proposal.code: Rectangle {
+                    height: Theme.row - Theme.pad / 4;
+                    background: line.mark == "+" ? Code.added : line.mark == "-" ? Code.removed : transparent;
+                    HorizontalLayout {
+                        padding-left: 2 * Theme.pad;
+                        padding-right: 2 * Theme.pad;
+                        Text {
+                            accessible-role: none;
+                            text: line.mark + " ";
+                            font-family: Theme.mono-font;
+                            font-size: Theme.compact-size;
+                            color: line.mark == "-" ? Theme.night.error : Code.string;
+                            vertical-alignment: center;
+                        }
+                        for run in line.runs: Text {
+                            accessible-role: none;
+                            text: run.text;
+                            font-family: Theme.mono-font;
+                            font-size: Theme.compact-size;
+                            color: run.kind == 3 ? Code.key : run.kind == 4 ? Code.string : run.kind == 5 ? Code.literal : run.kind == 6 ? Code.table : Code.plain;
+                            vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
                     }
-                    for run in line.runs: Text {
-                        accessible-role: none;
-                        text: run.text;
-                        font-family: Theme.mono-font;
-                        font-size: Theme.compact-size;
-                        color: run.kind == 3 ? Code.key : run.kind == 4 ? Code.string : run.kind == 5 ? Code.literal : run.kind == 6 ? Code.table : Code.plain;
-                        vertical-alignment: center;
-                    }
-                    Rectangle { horizontal-stretch: 1; }
                 }
+            }
+            // Measures the "+ " every line starts with, and the font's natural line height.
+            gutter := Text {
+                visible: false;
+                text: "+ ";
+                font-family: Theme.mono-font;
+                font-size: Theme.compact-size;
+            }
+            TextInput {
+                x: 2 * Theme.pad + gutter.preferred-width;
+                y: lines.padding-top;
+                width: parent.width - self.x - 2 * Theme.pad;
+                height: parent.height - lines.padding-top - lines.padding-bottom;
+                accessible-role: none;
+                text: root.proposal.toml;
+                read-only: true;
+                single-line: false;
+                color: transparent;
+                font-family: Theme.mono-font;
+                font-size: Theme.compact-size;
+                line-height-factor: (Theme.row - Theme.pad / 4) / (gutter.font-metrics.ascent - gutter.font-metrics.descent);
+                selection-background-color: Theme.night.selected;
+                selection-foreground-color: Theme.night.on-accent;
             }
         }
     }
@@ -237,10 +310,9 @@ component ProposalDryRun inherits VerticalLayout {
     if root.proposal.counting: Note { text: "Counting…"; }
     // Beside the TOML, wrapped text would not get its height from the column's width, and the card would cut its
     // buttons off; so each line is drawn whole or cut short.
-    if root.proposal.error != "": Text {
+    if root.proposal.error != "": SelectableLine {
         text: root.proposal.error;
         color: Theme.pane.error;
-        overflow: elide;
     }
     if !root.proposal.counting && root.proposal.error == "": HorizontalLayout {
         spacing: Theme.pad * 5 / 4;
@@ -275,11 +347,10 @@ component ProposalDryRun inherits VerticalLayout {
                     padding-left: Theme.pad * 3 / 2;
                     padding-right: Theme.pad * 3 / 2;
                     spacing: Theme.pad;
-                    Text {
+                    SelectableLine {
                         horizontal-stretch: 1;
                         text: sample.subject;
                         color: Theme.pane.text;
-                        overflow: elide;
                         vertical-alignment: center;
                     }
                     Text {
@@ -307,11 +378,10 @@ component ProposalDryRun inherits VerticalLayout {
             overflow: elide;
         }
     }
-    if root.proposal.warnings != "": Text {
+    if root.proposal.warnings != "": SelectableLine {
         text: root.proposal.warnings;
         font-size: Theme.small-size;
         color: Theme.pane.warning;
-        overflow: elide;
     }
 }
 
@@ -345,14 +415,13 @@ component ProposalCard inherits Rectangle {
         }
         VerticalLayout {
             padding-top: Theme.pad * 3 / 4;
-            Text {
+            SelectableLine {
                 text: root.proposal.label;
                 font-family: Theme.heading-font;
                 font-weight: 600;
                 font-size: Theme.card-title-size;
                 letter-spacing: -0.42px;
                 color: Theme.pane.heading;
-                overflow: elide;
             }
         }
         // The sentence, its values as tokens; it wraps between runs.

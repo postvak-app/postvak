@@ -1,6 +1,5 @@
 use std::io;
 
-use crate::actions::RULE_NAME;
 use crate::folder_name;
 use crate::mail_ops::{MailError, MailOps, delete_message, delete_messages};
 use crate::message::body_text;
@@ -155,7 +154,7 @@ pub fn apply(
         store.log_action(&log_entry(planned, msg, now))?;
         move_to(&current, &target, ops, store)?;
         // After the move: a failed one must not keep the rule from trying again.
-        if planned.rule != RULE_NAME {
+        if !crate::rules::is_actor(&planned.rule) {
             store.record_rule_move(msg)?;
         }
         executed += 1;
@@ -371,7 +370,7 @@ fn move_many(
         let mut done = store.remove_message(&msg.folder, msg.uid);
         // After the move: a failed one must not keep the rule from trying again. A trash is no rule move.
         if done.is_ok()
-            && planned.rule != RULE_NAME
+            && !crate::rules::is_actor(&planned.rule)
             && matches!(planned.action, Action::Move(_) | Action::Archive)
         {
             done = store.record_rule_move(msg);
@@ -662,6 +661,7 @@ fn move_to(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actions::RULE_NAME;
     use crate::mail_ops::RecordingOps;
 
     fn setup() -> (RecordingOps, Store, Trash, tempfile::TempDir, Message) {
@@ -1303,6 +1303,28 @@ mod tests {
         )
         .unwrap();
         assert!(store.rule_moved_out(&msg).unwrap());
+    }
+
+    #[test]
+    fn a_direct_move_from_any_front_end_is_not_a_rule_move() {
+        for actor in ["gui", "mcp", "mcp:claude-desktop"] {
+            let (mut ops, store, trash, _dir, msg) = setup();
+            let mut direct = plan(vec![Action::Archive]);
+            direct.actions[0].rule = actor.into();
+            apply(&direct, &msg, &mut ops, &store, &trash, 500).unwrap();
+            assert!(!store.rule_moved_out(&msg).unwrap(), "{actor}, one message");
+
+            let (mut ops, store, trash, _dir, msg) = setup();
+            apply_many(
+                &direct.actions[0],
+                std::slice::from_ref(&msg),
+                &mut ops,
+                &store,
+                &trash,
+                500,
+            );
+            assert!(!store.rule_moved_out(&msg).unwrap(), "{actor}, a batch");
+        }
     }
 
     #[test]
