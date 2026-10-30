@@ -1137,14 +1137,15 @@ mod tests {
         )
         .unwrap();
         let (open, _wires) = view(&fx, View::Rules);
-        open.tick_until(|open| {
-            !open
-                .labels_containing(
-                    "rule 'bank' uses authenticated, but account 'work' trusts no server's",
-                )
-                .is_empty()
-        });
-        assert_eq!(dry_run_shown(&open).0, "0");
+        // The view's warnings above the cards say it too, at once; wait for the card's own dry run.
+        open.tick_until(|open| dry_run_shown(open).0 == "0");
+        let card = open.window().get_proposals().row_data(0).unwrap();
+        assert!(
+            card.warnings
+                .contains("rule 'bank' uses authenticated, but account 'work' trusts no server's"),
+            "{}",
+            card.warnings
+        );
     }
 
     #[test]
