@@ -1996,7 +1996,7 @@ mod editor_tests {
             e.invoke_add_condition();
             e.invoke_field_chosen(0, 3);
             e.invoke_value_edited(0, "receipt".into());
-            e.invoke_action_chosen(4);
+            e.invoke_action_chosen(5);
             e.invoke_action_value_edited(0, "Receipts".into());
         });
         open.click("Save");

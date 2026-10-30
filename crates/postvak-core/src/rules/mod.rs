@@ -209,6 +209,10 @@ pub struct Actions {
     /// true flags the message, false unflags it
     #[serde(default, skip_serializing_if = "Option::is_none")]
     flagged: Option<bool>,
+    /// true tags the message $Junk, which trains server spam filters, and moves it to the server's Junk folder; other
+    /// actions but delete don't run
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    junk: Option<bool>,
     /// Moves the message to this folder, creating it if needed
     #[serde(default, rename = "move", skip_serializing_if = "Option::is_none")]
     move_to: Option<String>,
@@ -234,6 +238,7 @@ impl Actions {
         [
             when(self.delete, Action::Delete),
             when(self.archive, Action::Archive),
+            when(self.junk, Action::Junk),
             self.move_to.map(Action::Move),
             either(self.read, Action::MarkRead, Action::MarkUnread),
             either(self.flagged, Action::Flag, Action::Unflag),
@@ -260,6 +265,7 @@ impl Actions {
                 Action::Archive => ("archive", &mut table.archive, true),
                 Action::Delete => ("delete", &mut table.delete, true),
                 Action::Flag => ("flagged", &mut table.flagged, true),
+                Action::Junk => ("junk", &mut table.junk, true),
                 Action::Unflag => ("flagged", &mut table.flagged, false),
                 Action::MarkRead => ("read", &mut table.read, true),
                 Action::MarkUnread => ("read", &mut table.read, false),
@@ -276,7 +282,7 @@ impl Actions {
                     tags.push(keyword.clone());
                     continue;
                 }
-                Action::Trash | Action::Junk | Action::NotJunk => {
+                Action::Trash | Action::NotJunk => {
                     return Err(format!("{} is not a rule action", action.label()));
                 }
             };
@@ -286,6 +292,9 @@ impl Actions {
         }
         if table.archive == Some(true) && table.move_to.is_some() {
             return Err("actions cannot both move and archive".into());
+        }
+        if table.junk == Some(true) && (table.archive == Some(true) || table.move_to.is_some()) {
+            return Err("actions cannot both junk and move or archive".into());
         }
         table.tag = match tags.len() {
             0 => None,
@@ -952,7 +961,7 @@ mod tests {
         assert_eq!(
             keys,
             [
-                "archive", "delete", "flagged", "move", "notify", "read", "stop", "tag"
+                "archive", "delete", "flagged", "junk", "move", "notify", "read", "stop", "tag"
             ],
             "actions only users take stay out of the schema"
         );
@@ -1067,8 +1076,26 @@ actions = { move = "Shopping", notify = true }
             refused(vec![Action::Archive, Action::Move("A".into())]),
             "actions cannot both move and archive"
         );
-        assert_eq!(refused(vec![Action::Junk]), "junk is not a rule action");
+        assert_eq!(
+            refused(vec![Action::Junk, Action::Archive]),
+            "actions cannot both junk and move or archive"
+        );
+        assert_eq!(
+            refused(vec![Action::NotJunk]),
+            "not_junk is not a rule action"
+        );
         assert_eq!(refused(Vec::new()), "actions must not be empty");
+    }
+
+    #[test]
+    fn junk_is_a_rule_action() {
+        let file = parse(
+            "[[rules]]\nname = \"x\"\nmatch.read = true\nactions = { junk = true, read = true }\n",
+        )
+        .unwrap();
+        assert_eq!(file.rules[0].actions, [Action::Junk, Action::MarkRead]);
+        compile(&file).unwrap();
+        assert!(toml::to_string(&file).unwrap().contains("junk = true"));
     }
 
     #[test]
@@ -1544,7 +1571,7 @@ actions = { tag = "$label4", move = "Shop" }
 
     #[test]
     fn user_only_actions_are_not_rule_actions() {
-        for action in ["junk", "not_junk", "trash"] {
+        for action in ["not_junk", "trash"] {
             let text =
                 format!("[[rules]]\nname = \"x\"\nmatch.read = true\nactions.{action} = true\n");
             assert!(parse(&text).is_err(), "{action}");

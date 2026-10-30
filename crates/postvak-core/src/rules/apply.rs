@@ -79,10 +79,12 @@ pub fn plan_for(
     store: &Store,
 ) -> Result<Plan, StoreError> {
     let plan = evaluate(rules, msg, ctx);
-    let moves = plan
-        .actions
-        .iter()
-        .any(|planned| matches!(planned.action, Action::Move(_) | Action::Archive));
+    let moves = plan.actions.iter().any(|planned| {
+        matches!(
+            planned.action,
+            Action::Move(_) | Action::Archive | Action::Junk
+        )
+    });
     if !moves || !store.rule_moved_out(msg)? {
         return Ok(plan);
     }
@@ -455,6 +457,9 @@ fn junk(
     }
     if target != msg.folder {
         move_to(&current, &target, ops, store)?;
+        if planned.action == Action::Junk && planned.rule != RULE_NAME {
+            store.record_rule_move(msg)?;
+        }
     }
     Ok(())
 }
@@ -1407,6 +1412,23 @@ mod tests {
         );
         assert!(store.message("INBOX", 5).unwrap().is_none());
         assert_eq!(store.log(10).unwrap()[0].action, "junk");
+    }
+
+    #[test]
+    fn a_rule_junk_is_remembered_as_a_rule_move() {
+        let (ops, store, trash, _dir, msg) = setup();
+        let mut ops = with_junk(ops, &store);
+        ops.select("INBOX").unwrap();
+        apply(
+            &plan(vec![Action::Junk]),
+            &msg,
+            &mut ops,
+            &store,
+            &trash,
+            500,
+        )
+        .unwrap();
+        assert!(store.rule_moved_out(&msg).unwrap());
     }
 
     #[test]
