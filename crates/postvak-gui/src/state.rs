@@ -209,6 +209,11 @@ pub(crate) struct BodyState {
     pub reading: Option<u64>,
     /// The links in `text` that open, found once with it.
     pub links: Vec<String>,
+    /// What rules did to this message, newest first; whether the strip lists them all; and, while Why? is open, each
+    /// condition of the newest one's rule worded with whether the message meets it.
+    pub provenance: Vec<LogEntry>,
+    pub provenance_open: bool,
+    pub why: Option<Vec<(String, bool)>>,
 }
 
 impl BodyState {
@@ -236,6 +241,9 @@ impl BodyState {
             shown_at: now,
             source: None,
             links: Vec::new(),
+            provenance: Vec::new(),
+            provenance_open: false,
+            why: None,
             text: None,
         }
     }
@@ -412,6 +420,12 @@ pub(crate) enum UiAction {
     EditDraft(Box<Draft>),
     /// Open a rule in the editor.
     EditRule(String),
+    /// The reader's strip: move the shown message back to the folder the rule that last acted took it from.
+    MoveBack,
+    /// The reader's strip: list every rule action on the message, or only the newest again.
+    ToggleProvenance,
+    /// The reader's strip: show each condition of the rule that last acted, or hide them again.
+    ToggleWhy,
     Collapse,
     /// Ask before deleting this folder of this account.
     DeleteFolder(usize, String),
@@ -468,8 +482,6 @@ pub(crate) enum UiAction {
     OpenUrl(String),
     OpenRulesFile,
     OpenSource,
-    /// Count what a rule would do to the cached mail, without doing it.
-    PreviewRule(String),
     RejectRule(String),
     /// Ask for a new name for this folder of this account.
     RenameFolder(usize, String),
@@ -649,6 +661,12 @@ pub struct App {
     /// Sends a one-click unsubscribe; tests swap it so nothing leaves the machine.
     pub(crate) post_unsubscribe: fn(&str) -> Result<(), String>,
     pub(crate) unsubscribing: Option<Unsubscribing>,
+    /// Each rule's hits as last counted, and the count under way.
+    pub(crate) rule_hits: HashMap<String, rule_file::hits::Hits>,
+    counting_hits: Option<Receiver<HashMap<String, rule_file::hits::Hits>>>,
+    /// The proposals or the cached mail changed since their dry runs were counted; and the run under way.
+    dry_runs_stale: bool,
+    dry_running: Option<Receiver<BTreeMap<String, rules::DryRun>>>,
     pub(crate) saving_as: Option<SavingAs>,
     /// Attachments of messages too large to download whole, asked of the daemon one by one, until they arrive.
     pub(crate) fetching: Vec<Fetching>,
@@ -836,6 +854,10 @@ impl App {
             check_login: test_login,
             post_unsubscribe: |url| unsubscribe::one_click(url).map_err(|e| e.to_string()),
             unsubscribing: None,
+            rule_hits: HashMap::new(),
+            counting_hits: None,
+            dry_runs_stale: true,
+            dry_running: None,
             saving_as: None,
             fetching: Vec::new(),
             ask_save_path: save_as::ask,
@@ -928,6 +950,9 @@ impl App {
         self.check_release();
         self.receive_open_at_login();
         self.receive_unsubscribe();
+        self.receive_hits();
+        self.receive_dry_runs();
+        self.run_dry_runs();
         self.receive_save_as();
         self.receive_list();
         if std::mem::take(&mut self.view_dirty) {
@@ -1231,6 +1256,10 @@ impl App {
                 self.refresh(index);
                 // The folder warnings read what the stores hold, which a sync changes.
                 self.rules.check(&self.paths.rules_file(), &self.accounts);
+                if self.view == View::Rules {
+                    self.count_hits();
+                }
+                self.dry_runs_stale = true;
             }
             Event::ActionDone {
                 folder, results, ..
@@ -1450,6 +1479,13 @@ impl App {
                 }
             }
             UiAction::Expand => self.expand(),
+            UiAction::ToggleProvenance => {
+                if let Some(body) = &mut self.body {
+                    body.provenance_open = !body.provenance_open;
+                }
+            }
+            UiAction::ToggleWhy => self.toggle_why(),
+            UiAction::MoveBack => self.move_back(),
             UiAction::ListViewport { offset, height } => {
                 self.list.viewport = (offset, height);
                 // The list can stop short of the cursor while it still estimates its rows; then it is asked again.
@@ -1517,12 +1553,6 @@ impl App {
                 }
             }
             UiAction::OpenRulesFile => self.open_rules_file(),
-            UiAction::PreviewRule(name) => {
-                if let Some(rule) = self.rules.rules.iter().find(|rule| rule.name == name) {
-                    let text = self.preview(rule.clone());
-                    self.rules.previews.insert(name, text);
-                }
-            }
             UiAction::RejectRule(name) => {
                 self.edit_rules(|path| rule_file::edit::reject(path, &name));
             }
@@ -1868,6 +1898,9 @@ impl App {
     }
 
     pub(crate) fn select_view(&mut self, view: View) {
+        if view == View::Rules {
+            self.count_hits();
+        }
         self.view = view;
         self.sheet_sort = None;
         self.rules_filter.clear();
@@ -2223,7 +2256,9 @@ impl App {
             mut attachments,
             mut html,
             has_raw,
+            provenance,
         } = read;
+        body.provenance = provenance;
         let preview = (message.is_some() && !has_raw)
             .then(|| {
                 self.previews
@@ -2546,6 +2581,79 @@ impl App {
         }
     }
 
+    /// Shows or hides Why?: each condition of the rule that last acted on the shown message, checked against it now.
+    fn toggle_why(&mut self) {
+        let Some(body) = &self.body else { return };
+        if body.why.is_some() {
+            if let Some(body) = &mut self.body {
+                body.why = None;
+            }
+            return;
+        }
+        let found = (|| {
+            let entry = body.provenance.first()?;
+            let rule = self
+                .rules
+                .rules
+                .iter()
+                .find(|r| r.name == entry.rule_name)?;
+            let message = body.message.as_ref()?;
+            let account = &self.accounts[body.account].name;
+            let config = Config::load(&self.paths.config_file()).ok()?;
+            let identity = config.account(account)?.identity().ok()?;
+            let ctx = rule_file::coverage::context(account, &identity, postvak_core::time::now());
+            let lines = rule_file::engine::explain(rule, message, &ctx)
+                .into_iter()
+                .map(|(single, met)| (draft::match_labels(&single).join(", "), met))
+                .collect();
+            Some(lines)
+        })();
+        if let Some(body) = &mut self.body {
+            body.why = Some(found.unwrap_or_default());
+        }
+    }
+
+    /// Counts each rule's hits in every account's store on a thread of its own; one count at a time.
+    fn count_hits(&mut self) {
+        if self.counting_hits.is_some() {
+            return;
+        }
+        let paths = self.paths.clone();
+        let names: Vec<String> = self.accounts.iter().map(|a| a.name.clone()).collect();
+        self.counting_hits = Some(worker::oneshot("rule-hits", self.wake.clone(), move || {
+            let counted = names
+                .iter()
+                .map(|name| Store::open_account(&paths, name))
+                .collect::<Result<Vec<_>, _>>()
+                .and_then(|stores| {
+                    rule_file::hits::total(
+                        &stores.iter().collect::<Vec<_>>(),
+                        postvak_core::time::now(),
+                    )
+                });
+            counted.unwrap_or_else(|e| {
+                log::warn!("could not count the rules' hits: {e}");
+                HashMap::new()
+            })
+        }));
+    }
+
+    fn receive_hits(&mut self) {
+        let Some(answer) = &self.counting_hits else {
+            return;
+        };
+        match worker::poll(answer) {
+            None => {}
+            Some(found) => {
+                self.counting_hits = None;
+                if let Ok(hits) = found {
+                    self.rules.set_hits(&hits);
+                    self.rule_hits = hits;
+                }
+            }
+        }
+    }
+
     /// Takes the answer to a one-click unsubscribe; the note goes on its message while that still shows.
     fn receive_unsubscribe(&mut self) {
         let Some(Unsubscribing {
@@ -2577,6 +2685,24 @@ impl App {
         }
         self.push_history(note);
         self.unsubscribing = None;
+    }
+
+    /// Only the shown message, where a move of its row would take its whole thread.
+    fn move_back(&mut self) {
+        let Some(target) = body::pane(self).provenance.and_then(|p| p.move_back) else {
+            return;
+        };
+        let Some(body) = &self.body else { return };
+        let (account, (folder, uid)) = (body.account, body.key.clone());
+        self.pending_arm = true;
+        self.send_apply(
+            account,
+            folder,
+            vec![uid],
+            Action::Move(target),
+            Optimistic::Hidden,
+        );
+        self.rebuild_rows();
     }
 
     /// Only the shown message, where Delete would take its whole thread.
@@ -3528,6 +3654,8 @@ impl App {
             std::mem::take(&mut self.rules.rules),
             &self.accounts,
         );
+        self.rules.set_hits(&self.rule_hits);
+        self.dry_runs_stale = true;
         let on_disk = self.rule_draft_opened.as_ref().and_then(|opened| {
             let name = opened.original.as_deref()?;
             let rule = self.rules.rules.iter().find(|rule| rule.name == name)?;
@@ -3644,53 +3772,52 @@ impl App {
     /// What `rule` would do to every account's cached mail if it were enabled, as `postvak rules test` shows it. Reads
     /// config.toml and the stores only. ponytail: scans the cache on the window thread; move it to a thread if large
     /// stores stall the window.
-    fn preview(&self, mut rule: Rule) -> String {
-        rule.enabled = true;
-        let compiled = match rule_file::compile(&RuleFile {
-            rules: vec![rule.clone()],
-        }) {
-            Ok(compiled) => compiled,
-            Err(e) => return e.to_string(),
-        };
-        let config = match Config::load(&self.paths.config_file()) {
-            Ok(config) => config,
-            Err(e) => return e.to_string(),
-        };
-        let mut matched = HashSet::new();
-        let mut warnings = Vec::new();
-        for account in &self.accounts {
-            let Ok(store) = &account.store else { continue };
-            let Some(settings) = config.account(&account.name) else {
-                continue;
-            };
-            let planned = settings
-                .identity()
-                .map_err(|e| e.to_string())
-                .and_then(|identity| {
-                    postvak_core::actions::planned(
-                        &compiled,
-                        store,
-                        settings,
-                        &identity,
-                        postvak_core::time::now(),
-                    )
-                    .map_err(|e| e.to_string())
-                });
-            match planned {
-                Ok(planned) => matched.extend(
-                    planned
-                        .into_iter()
-                        .map(|p| (account.name.clone(), p.message.folder, p.message.uid)),
-                ),
-                Err(e) => return format!("{}: {e}", account.name),
-            }
-            warnings.extend(rule_file::preview_warnings(&compiled, settings, store));
+    fn preview(&self, rule: Rule) -> String {
+        let names: Vec<String> = self.accounts.iter().map(|a| a.name.clone()).collect();
+        let run = rules::dry_run(&self.paths, &names, &rule, postvak_core::time::now());
+        if let Some(error) = run.error {
+            return error;
         }
-        let needs_body = compiled.iter().any(|compiled| compiled.needs_body());
-        std::iter::once(draft::preview_text(&rule, matched.len(), needs_body))
-            .chain(warnings.iter().map(|w| clean(w, false)))
+        std::iter::once(draft::preview_text(&rule, run.count, run.needs_body))
+            .chain(run.warnings)
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Counts each proposal's dry run on a thread of its own once the proposals or the cached mail changed; one run at
+    /// a time, and a change during it starts another after it.
+    fn run_dry_runs(&mut self) {
+        if !self.dry_runs_stale || self.dry_running.is_some() {
+            return;
+        }
+        self.dry_runs_stale = false;
+        let proposals: Vec<Rule> = (self.rules.rules.iter())
+            .filter(|rule| rules::is_proposal(rule))
+            .cloned()
+            .collect();
+        if proposals.is_empty() {
+            return;
+        }
+        let paths = self.paths.clone();
+        let names: Vec<String> = self.accounts.iter().map(|a| a.name.clone()).collect();
+        self.dry_running = Some(worker::oneshot("dry-runs", self.wake.clone(), move || {
+            let now = postvak_core::time::now();
+            (proposals.iter())
+                .map(|rule| (rule.name.clone(), rules::dry_run(&paths, &names, rule, now)))
+                .collect()
+        }));
+    }
+
+    fn receive_dry_runs(&mut self) {
+        let Some(answer) = &self.dry_running else {
+            return;
+        };
+        if let Some(found) = worker::poll(answer) {
+            self.dry_running = None;
+            if let Ok(runs) = found {
+                self.rules.dry_runs = runs;
+            }
+        }
     }
 
     fn open_rules_file(&mut self) {

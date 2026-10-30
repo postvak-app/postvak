@@ -197,6 +197,124 @@ fn reader_attachments() {
     snapshot(&open, "gui_reader_attachments");
 }
 
+/// A message the rule `travel` moved from INBOX to Travel, open in Travel, with the rule in rules.toml.
+fn filed(theme: &str) -> (Fixture, Open, Wires) {
+    let fx = Fixture::mailbox(theme);
+    fx.folder("work", "Travel", None);
+    std::fs::write(
+        fx.paths.rules_file(),
+        "[[rules]]\nname = \"travel\"\nmatch.from = { contains = \"rail\" }\nactions = { move = \"Travel\" }\n",
+    )
+    .unwrap();
+    let ticket = mail(
+        97,
+        "Northwind Rail <tickets@northwind-rail.example>",
+        "Your e-ticket: Utrecht to Koeln",
+        "",
+        "Your ticket for Thursday is attached.",
+    );
+    let store = fx.store("work");
+    store
+        .log_action(&LogEntry {
+            id: 0,
+            at: ticket.internaldate + 60,
+            rule_name: "travel".into(),
+            folder: "INBOX".into(),
+            uid: 97,
+            message_id: ticket.message_id.clone(),
+            subject: ticket.subject.clone(),
+            action: "move:Travel".into(),
+            trash_file: None,
+        })
+        .unwrap();
+    store.record_rule_move(&ticket).unwrap();
+    fx.add(
+        "work",
+        postvak_core::store::Message {
+            folder: "Travel".into(),
+            uid: 3,
+            ..ticket
+        },
+    );
+    let (open, wires) = open(&fx);
+    open.with(|live| {
+        live.app.select_view(View::Folder {
+            account: 1,
+            folder: "Travel".into(),
+        })
+    });
+    open.tick_until(|open| !open.labels_containing("by rule travel").is_empty());
+    (fx, open, wires)
+}
+
+#[test]
+fn reader_provenance_light() {
+    let (_fx, open, _wires) = filed("light");
+    snapshot(&open, "gui_reader_provenance_light");
+}
+
+#[test]
+fn reader_provenance_dark() {
+    let (_fx, open, _wires) = filed("dark");
+    open.click("Why?");
+    snapshot(&open, "gui_reader_provenance_dark");
+}
+
+/// The Rules view with a proposal whose dry run finds cached mail, and `newsletters` last fired on the fixture's date,
+/// more than 30 days ago: a fixed time keeps the snapshot from changing with the clock.
+#[test]
+fn rules_hits_and_proposal() {
+    let fx = Fixture::mailbox("light");
+    std::fs::write(fx.paths.rules_file(), RULES).unwrap();
+    fx.add(
+        "work",
+        mail(
+            98,
+            "Bank <no-reply@bank.example>",
+            "Your verification code",
+            "",
+            "123456",
+        ),
+    );
+    let store = fx.store("work");
+    for uid in [1, 2, 3] {
+        store
+            .log_action(&LogEntry {
+                id: 0,
+                at: AT - i64::from(uid) * 3_600,
+                rule_name: "newsletters".into(),
+                folder: "INBOX".into(),
+                uid,
+                message_id: None,
+                subject: None,
+                action: "archive".into(),
+                trash_file: None,
+            })
+            .unwrap();
+    }
+    let (open, _wires) = open(&fx);
+    open.with(|live| live.app.select_view(View::Rules));
+    open.tick_until(|open| {
+        !open.labels_containing("would be deleted").is_empty()
+            && slint::Model::row_data(&open.window().get_rules(), 0).is_some_and(|r| r.hits == "0")
+    });
+    snapshot(&open, "gui_rules_hits_and_proposal");
+}
+
+#[test]
+fn inbox_banner() {
+    let fx = Fixture::mailbox("light");
+    std::fs::write(
+        fx.paths.rules_file(),
+        "[[rules]]\nname = \"tea\"\nenabled = false\nproposed_by = \"mcp:claude-desktop\"\nmatch.subject = { contains = \"tea\" }\nactions = { archive = true }\n",
+    )
+    .unwrap();
+    let (open, _wires) = open(&fx);
+    open.with(|live| live.app.select_view(work_inbox()));
+    open.tick_until(|open| !open.labels_containing("Would affect").is_empty());
+    snapshot(&open, "gui_inbox_banner");
+}
+
 #[test]
 fn all_inboxes() {
     let fx = Fixture::mailbox("dark");
@@ -364,7 +482,8 @@ fn rules() {
     let (open, _wires) = open(&fx);
     open.with(|live| live.app.select_view(View::Rules));
     open.tick();
-    assert_eq!(open.find("Approve").len(), 1);
+    open.tick_until(|open| !open.labels_containing("would be deleted").is_empty());
+    assert_eq!(open.find("Approve rule").len(), 1);
     snapshot(&open, "gui_rules");
 }
 
@@ -375,11 +494,8 @@ fn rule_edit_proposal() {
     std::fs::write(fx.paths.rules_file(), edit).unwrap();
     let (open, _wires) = open(&fx);
     open.with(|live| live.app.select_view(View::Rules));
-    open.tick();
-    assert_eq!(
-        open.find("Changes rule 'newsletters' in rules.toml").len(),
-        1
-    );
+    open.tick_until(|open| !open.labels_containing("would be archived").is_empty());
+    assert_eq!(open.find("Changes rule 'newsletters' · 1 line").len(), 1);
     snapshot(&open, "gui_rule_edit_proposal");
 }
 

@@ -19,6 +19,34 @@ export struct AttachmentData {
     size: string,
 }
 
+// One condition of a rule, worded, and whether the shown message meets it.
+export struct WhyLine {
+    text: string,
+    met: bool,
+}
+
+// What rules did to the shown message, worded by `body::provenance`; `shown` is false when they did nothing.
+export struct ProvenanceData {
+    shown: bool,
+    // The newest action: "Moved to", the folder it names, the rule and when; and the whole sentence for screen readers.
+    verb: string,
+    target: string,
+    rule: string,
+    when: string,
+    sentence: string,
+    // The rule is no longer in rules.toml.
+    removed: bool,
+    // Where Move back returns the message, or empty when it cannot.
+    move-back: string,
+    // How many older actions "and N more" lists, whether it lists them now, and every action as a sentence.
+    more: int,
+    open: bool,
+    all: [string],
+    // Why? is open, with each condition of the rule.
+    why-open: bool,
+    why: [WhyLine],
+}
+
 // A selected message, as the selection lists it.
 export struct SelectedData {
     who: string,
@@ -62,6 +90,7 @@ export struct BodyInfo {
     unsubscribed: bool,
     // There is an address to reply to: Reply shows.
     reply: bool,
+    provenance: ProvenanceData,
     links: [string],
 }
 
@@ -539,6 +568,11 @@ export component BodyPane inherits Rectangle {
     callback clear-selection();
     // Write a reply in the user's mail app.
     callback reply();
+    // The provenance strip: open the rule that acted, move the message back, list every action, show Why?.
+    callback edit-shown-rule();
+    callback move-back();
+    callback toggle-provenance();
+    callback toggle-why();
     callback toggle-html();
     callback toggle-original-colours();
     callback save-eml();
@@ -814,6 +848,118 @@ export component BodyPane inherits Rectangle {
                     if root.info.cc != "": HeaderLine {
                         label: "cc";
                         value: root.info.cc;
+                    }
+                }
+            }
+            if root.info.provenance.shown: VerticalLayout {
+                spacing: Theme.pad / 2;
+                Rectangle {
+                    height: Theme.action;
+                    border-radius: Theme.pad;
+                    background: Theme.pane.panel;
+                    HorizontalLayout {
+                        padding-left: Theme.pad * 3 / 2;
+                        padding-right: self.padding-left;
+                        spacing: Theme.pad;
+                        Text {
+                            accessible-role: none;
+                            text: root.rule-icon;
+                            font-family: Theme.icon-font;
+                            font-size: Theme.icon;
+                            color: Theme.pane.accent;
+                            vertical-alignment: center;
+                        }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            min-width: 0;
+                            clip: true;
+                            accessible-role: AccessibleRole.text;
+                            accessible-label: root.info.provenance.sentence;
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: Theme.pad / 2;
+                                Text {
+                                    accessible-role: none;
+                                    text: root.info.provenance.verb;
+                                    font-size: Theme.small-size;
+                                    color: Theme.pane.secondary;
+                                    vertical-alignment: center;
+                                }
+                                if root.info.provenance.target != "": Text {
+                                    accessible-role: none;
+                                    text: root.info.provenance.target;
+                                    font-size: Theme.small-size;
+                                    font-weight: 600;
+                                    color: Theme.pane.text;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    accessible-role: none;
+                                    text: "by rule";
+                                    font-size: Theme.small-size;
+                                    color: Theme.pane.secondary;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    accessible-role: none;
+                                    text: root.info.provenance.rule;
+                                    font-family: Theme.mono-font;
+                                    font-size: Theme.small-size;
+                                    color: Theme.pane.text;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    accessible-role: none;
+                                    text: root.info.provenance.when + (root.info.provenance.removed ? " (removed)" : "");
+                                    font-size: Theme.small-size;
+                                    color: Theme.pane.secondary;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        if root.info.provenance.more > 0: Link {
+                            text: "and " + root.info.provenance.more + " more";
+                            clicked => { root.toggle-provenance(); }
+                        }
+                        if !root.info.provenance.removed: Link {
+                            text: "Edit rule";
+                            clicked => { root.edit-shown-rule(); }
+                        }
+                        if root.info.provenance.move-back != "": Link {
+                            text: "Move back";
+                            clicked => { root.move-back(); }
+                        }
+                        if !root.info.provenance.removed: Link {
+                            text: "Why?";
+                            clicked => { root.toggle-why(); }
+                        }
+                    }
+                }
+                if root.info.provenance.open: VerticalLayout {
+                    padding-left: Theme.pad * 3 / 2;
+                    for line in root.info.provenance.all: Text {
+                        text: line;
+                        font-size: Theme.small-size;
+                        color: Theme.pane.secondary;
+                    }
+                }
+                if root.info.provenance.why-open: VerticalLayout {
+                    padding-left: Theme.pad * 3 / 2;
+                    if root.info.provenance.why.length == 0: Text {
+                        text: "The rule's conditions could not be checked.";
+                        font-size: Theme.small-size;
+                        color: Theme.pane.muted;
+                    }
+                    for line in root.info.provenance.why: Text {
+                        text: (line.met ? "Met: " : "Not met: ") + line.text;
+                        font-size: Theme.small-size;
+                        color: line.met ? Theme.pane.success : Theme.pane.muted;
+                    }
+                    Text {
+                        text: "Checked against the rule as it reads now.";
+                        font-size: Theme.small-size;
+                        color: Theme.pane.muted;
                     }
                 }
             }

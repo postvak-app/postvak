@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use postvak_core::message::{clean, display_name, header_value};
-use postvak_core::store::Message;
+use postvak_core::rules::Rule;
+use postvak_core::store::{LogEntry, Message};
 use postvak_core::sync::Activity;
 use postvak_core::time::local_time;
 
@@ -56,6 +57,11 @@ pub(crate) struct Pane {
     pub unsubscribed: bool,
     /// There is an address to reply to: Reply shows.
     pub reply: bool,
+    /// What rules did to the message, when they did anything; whether the strip lists every action; and Why?'s
+    /// conditions with whether the message meets each, while open.
+    pub provenance: Option<Provenance>,
+    pub provenance_open: bool,
+    pub why: Option<Vec<(String, bool)>>,
     /// The links in the text that open, in order, once each.
     pub links: Vec<String>,
 }
@@ -143,6 +149,17 @@ pub(crate) fn pane(app: &App) -> Pane {
         unsubscribe: postvak_core::unsubscribe::method(&message.headers).is_some(),
         unsubscribed: body.unsubscribed,
         reply: reply_url(message).is_some(),
+        provenance: provenance(
+            &body.provenance,
+            &app.rules.rules,
+            &message.folder,
+            &(app.accounts[body.account].folders.iter())
+                .map(|f| f.name.clone())
+                .collect::<Vec<_>>(),
+            &chrono::Local::now(),
+        ),
+        provenance_open: body.provenance_open,
+        why: body.why.clone(),
         links: body.links.clone(),
     }
 }
@@ -259,6 +276,92 @@ pub(crate) fn name_and_address(from: &str) -> (String, Option<String>) {
         .map(|(address, _)| address.trim().to_string())
         .filter(|address| !address.is_empty() && *address != name);
     (name, address)
+}
+
+/// What the reader's strip says rules did to the shown message: the newest action in words, and what it offers.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct Provenance {
+    /// "Moved to", "Archived", "Flagged" …
+    pub verb: String,
+    /// The folder or tag the verb names, or empty.
+    pub target: String,
+    pub rule: String,
+    /// "at 07:02", or "on 14 Oct" for an older day.
+    pub when: String,
+    /// The rule is no longer in rules.toml, so Edit rule cannot open it.
+    pub removed: bool,
+    /// Where Move back returns the message: the folder the rule moved it out of, while that exists.
+    pub move_back: Option<String>,
+    /// Every rule action on it, newest first, one sentence each, for "and N more".
+    pub all: Vec<String>,
+}
+
+/// The strip for `entries`, a message's rule actions newest first as `Store::rule_actions` gives them; None without
+/// any. `folder` is where the message is now and `folders` the account's.
+pub(crate) fn provenance(
+    entries: &[LogEntry],
+    rules: &[Rule],
+    folder: &str,
+    folders: &[String],
+    now: &chrono::DateTime<chrono::Local>,
+) -> Option<Provenance> {
+    let newest = entries.first()?;
+    let (verb, target) = action_words(&newest.action);
+    let moved = newest.action.starts_with("move:") || newest.action == "archive";
+    let move_back = (moved && newest.folder != folder && folders.contains(&newest.folder))
+        .then(|| newest.folder.clone());
+    let when = |at: i64| {
+        let day = list::list_date(at, now);
+        if day.contains(' ') {
+            format!("on {day}")
+        } else {
+            format!("at {day}")
+        }
+    };
+    let all = entries
+        .iter()
+        .map(|e| {
+            let (verb, target) = action_words(&e.action);
+            let target = if target.is_empty() {
+                String::new()
+            } else {
+                format!(" {target}")
+            };
+            format!(
+                "{verb}{target} by rule {} {}",
+                clean(&e.rule_name, false),
+                when(e.at)
+            )
+        })
+        .collect();
+    Some(Provenance {
+        verb: verb.into(),
+        target,
+        rule: clean(&newest.rule_name, false),
+        when: when(newest.at),
+        removed: !rules.iter().any(|r| r.name == newest.rule_name),
+        move_back,
+        all,
+    })
+}
+
+/// A logged action, as `Action::label` writes it, in words: the verb and what it names.
+fn action_words(action: &str) -> (&'static str, String) {
+    let (key, value) = action.split_once(':').unwrap_or((action, ""));
+    match (key, value) {
+        ("move", folder) => ("Moved to", clean(crate::folders::label(folder), false)),
+        ("archive", _) => ("Archived", String::new()),
+        ("delete", _) => ("Deleted", String::new()),
+        ("trash", _) => ("Moved to Trash", String::new()),
+        ("junk", _) => ("Moved to Junk", String::new()),
+        ("not_junk", _) => ("Marked not junk", String::new()),
+        ("read", "false") => ("Marked unread", String::new()),
+        ("read", _) => ("Marked read", String::new()),
+        ("flagged", "false") => ("Unflagged", String::new()),
+        ("flagged", _) => ("Flagged", String::new()),
+        ("tag", keyword) => ("Tagged", clean(keyword, false)),
+        _ => ("Acted on", String::new()),
+    }
 }
 
 /// What a `mailto:` URL may leave as it is; the rest is escaped, since the subject is a stranger's text.
@@ -384,6 +487,211 @@ mod tests {
     use crate::test_support::{Driver, Fixture, Wires, launched, message, synced, unread, work};
     use postvak_core::rules::Action;
     use postvak_core::sync::{Command, Event};
+
+    fn log(rule: &str, folder: &str, action: &str, at: i64) -> postvak_core::store::LogEntry {
+        postvak_core::store::LogEntry {
+            id: 0,
+            at,
+            rule_name: rule.into(),
+            folder: folder.into(),
+            uid: 1,
+            message_id: Some("<1@example.com>".into()),
+            subject: None,
+            action: action.into(),
+            trash_file: None,
+        }
+    }
+
+    fn rule(name: &str) -> postvak_core::rules::Rule {
+        let toml = format!(
+            "[[rules]]\nname = \"{name}\"\nmatch.read = true\nactions = {{ archive = true }}\n"
+        );
+        postvak_core::rules::parse(&toml).unwrap().rules.remove(0)
+    }
+
+    /// Message 1 moved from INBOX to Travel by the rule `travel`, shown in Travel; `extra` adds log rows after the move.
+    fn filed_by_travel(fx: &Fixture, rule_in_file: bool, extra: &[(&str, &str)]) {
+        fx.folder("work", "Travel", None);
+        let rules = "[[rules]]\nname = \"travel\"\nmatch.from = { contains = \"sender1@\" }\nmatch.subject = { contains = \"invoice\" }\nactions = { move = \"Travel\" }\n";
+        std::fs::write(fx.paths.rules_file(), if rule_in_file { rules } else { "" }).unwrap();
+        let inbox = message("INBOX", 1, "ticket");
+        let store = fx.store("work");
+        let now = postvak_core::time::now();
+        let mut logged = log("travel", "INBOX", "move:Travel", now - 60);
+        logged.message_id = inbox.message_id.clone();
+        store.log_action(&logged).unwrap();
+        for (rule, action) in extra {
+            let mut row = log(rule, "Travel", action, now);
+            row.uid = 7;
+            store.log_action(&row).unwrap();
+        }
+        store.record_rule_move(&inbox).unwrap();
+        fx.add(
+            "work",
+            Message {
+                folder: "Travel".into(),
+                uid: 7,
+                ..inbox
+            },
+        );
+    }
+
+    #[test]
+    fn a_rule_move_says_who_moved_it_and_edit_rule_opens_the_rule() {
+        let fx = Fixture::new(&["work"]);
+        filed_by_travel(&fx, true, &[]);
+        let (open, _wires) = fx.window();
+        open.click("Travel");
+        open.tick_until(|open| !open.labels_containing("by rule travel").is_empty());
+        assert_eq!(
+            open.labels_containing("Moved to Travel by rule travel at ")
+                .len(),
+            1
+        );
+        open.click("Edit rule");
+        let opened = open.with(|live| {
+            (
+                live.app.view == View::Rules,
+                live.app
+                    .rule_draft
+                    .as_ref()
+                    .and_then(|d| d.original.clone()),
+            )
+        });
+        assert_eq!(opened, (true, Some("travel".to_string())));
+    }
+
+    #[test]
+    fn move_back_returns_the_message_to_where_the_rule_took_it() {
+        let fx = Fixture::new(&["work"]);
+        filed_by_travel(&fx, true, &[]);
+        let (open, wires) = fx.window();
+        open.click("Travel");
+        open.tick_until(|open| !open.find("Move back").is_empty());
+        open.click("Move back");
+        assert_eq!(
+            wires.sent(),
+            [work("Travel", &[7], Action::Move("INBOX".into()))]
+        );
+    }
+
+    #[test]
+    fn move_back_moves_only_the_shown_message_of_a_thread() {
+        let fx = Fixture::new(&["work"]);
+        filed_by_travel(&fx, true, &[]);
+        let mut earlier = message("Travel", 5, "Re: ticket");
+        earlier.thread_id = "<1@example.com>".into();
+        (earlier.date, earlier.internaldate) = (Some(1), 1);
+        fx.add("work", earlier);
+        let (open, wires) = fx.window();
+        open.click("Travel");
+        open.tick_until(|open| !open.find("Move back").is_empty());
+        open.click("Move back");
+        assert_eq!(
+            wires.sent(),
+            [work("Travel", &[7], Action::Move("INBOX".into()))]
+        );
+    }
+
+    #[test]
+    fn your_own_actions_show_no_strip_and_a_removed_rule_offers_no_edit() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "mine"));
+        let mut mine = log("gui", "INBOX", "flagged", postvak_core::time::now());
+        mine.message_id = Some("<1@example.com>".into());
+        fx.store("work").log_action(&mine).unwrap();
+        let (open, _wires) = fx.window();
+        assert!(open.labels_containing("by rule").is_empty());
+
+        let fx = Fixture::new(&["work"]);
+        filed_by_travel(&fx, false, &[]);
+        let (open, _wires) = fx.window();
+        open.click("Travel");
+        open.tick_until(|open| !open.labels_containing("(removed)").is_empty());
+        assert!(open.find("Edit rule").is_empty());
+    }
+
+    #[test]
+    fn why_marks_each_condition_and_more_lists_every_action() {
+        let fx = Fixture::new(&["work"]);
+        filed_by_travel(&fx, true, &[("travel", "flagged")]);
+        let (open, _wires) = fx.window();
+        open.click("Travel");
+        open.tick_until(|open| !open.find("Why?").is_empty());
+        assert_eq!(open.labels_containing("Flagged by rule travel").len(), 1);
+        open.click("and 1 more");
+        assert_eq!(
+            open.labels_containing("Moved to Travel by rule travel")
+                .len(),
+            1
+        );
+        open.click("Why?");
+        assert_eq!(open.labels_containing("Met: from contains").len(), 1);
+        assert_eq!(open.labels_containing("Not met: subject contains").len(), 1);
+    }
+
+    #[test]
+    fn provenance_words_a_move_and_offers_to_move_it_back() {
+        let now = chrono::Local::now();
+        let at = now.timestamp();
+        let folders = ["INBOX".to_string(), "Travel".to_string()];
+        let entries = [log("travel", "INBOX", "move:Travel", at)];
+        let shown = provenance(&entries, &[rule("travel")], "Travel", &folders, &now).unwrap();
+        assert_eq!(
+            (shown.verb.as_str(), shown.target.as_str()),
+            ("Moved to", "Travel")
+        );
+        assert_eq!(shown.rule, "travel");
+        assert!(shown.when.starts_with("at "), "{}", shown.when);
+        assert_eq!(shown.move_back.as_deref(), Some("INBOX"));
+        assert!(!shown.removed);
+        assert_eq!(shown.all.len(), 1);
+    }
+
+    #[test]
+    fn provenance_hides_move_back_when_the_folder_is_gone_or_the_message_is_there() {
+        let now = chrono::Local::now();
+        let entries = [log("travel", "INBOX", "move:Travel", now.timestamp())];
+        let gone = provenance(
+            &entries,
+            &[rule("travel")],
+            "Travel",
+            &["Travel".into()],
+            &now,
+        )
+        .unwrap();
+        assert_eq!(gone.move_back, None);
+        let flagged = [log("travel", "INBOX", "flagged", now.timestamp())];
+        let there = provenance(
+            &flagged,
+            &[rule("travel")],
+            "INBOX",
+            &["INBOX".into()],
+            &now,
+        )
+        .unwrap();
+        assert_eq!((there.verb.as_str(), there.move_back), ("Flagged", None));
+    }
+
+    #[test]
+    fn provenance_says_when_the_rule_is_gone_and_words_an_archive_without_a_folder() {
+        let now = chrono::Local::now();
+        let entries = [log("old", "INBOX", "archive", now.timestamp())];
+        let shown = provenance(
+            &entries,
+            &[],
+            "Archive",
+            &["INBOX".into(), "Archive".into()],
+            &now,
+        )
+        .unwrap();
+        assert!(shown.removed);
+        assert_eq!(
+            (shown.verb.as_str(), shown.target.as_str()),
+            ("Archived", "")
+        );
+        assert_eq!(provenance(&[], &[], "INBOX", &[], &now), None);
+    }
 
     #[test]
     fn reply_opens_a_reply_to_the_sender_in_the_mail_app() {

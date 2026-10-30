@@ -204,10 +204,16 @@ pub fn show(
 
 /// A rule's listing row: its whole definition as `rules propose` takes it, and `position`, its 0-based place in
 /// rules.toml, where an earlier rule runs first. `account` is the rule's own scope, `null` for every account.
-pub fn rule(rule: &Rule, position: usize) -> serde_json::Result<Value> {
+pub fn rule(
+    rule: &Rule,
+    position: usize,
+    hits: &crate::rules::hits::Hits,
+) -> serde_json::Result<Value> {
     let mut row = serde_json::to_value(rule)?;
     if let Value::Object(map) = &mut row {
         map.insert("position".into(), position.into());
+        map.insert("hits_30d".into(), hits.last_30d.into());
+        map.insert("last_fired".into(), json!(hits.last_fired));
         for (key, value) in [
             ("account", &rule.account),
             ("folder", &rule.folder),
@@ -306,9 +312,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            super::rule(&rule, 3).unwrap(),
+            super::rule(
+                &rule,
+                3,
+                &crate::rules::hits::Hits {
+                    last_30d: 3,
+                    last_fired: None
+                }
+            )
+            .unwrap(),
             serde_json::json!({
-                "name": "a", "position": 3, "enabled": true, "account": null, "folder": null, "proposed_by": null, "replaces": null,
+                "name": "a", "position": 3, "hits_30d": 3, "last_fired": null, "enabled": true, "account": null, "folder": null, "proposed_by": null, "replaces": null,
                 "match": {"subject": {"contains": "x"}}, "actions": {"move": "X"},
             })
         );

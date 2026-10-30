@@ -16,8 +16,8 @@ use super::state::{self, App, Focus, UiAction, View};
 use super::ui::{
     AccountFields, ActionData, AttachmentData, BodyInfo, ConditionData, Dialog, Dot, FolderItem,
     FolderKind, KeyHelp, MailWindow, MenuAction, MenuChoice, MenuState, PageInfo, Pane,
-    ProposalData, Remote, RuleData, RuleEditor, SelectedData, Sheet, StatusLine, Theme,
-    ThemePreference, ToolButton,
+    ProposalData, ProvenanceData, Remote, RuleData, RuleEditor, SampleData, SelectedData, Sheet,
+    StatusLine, Theme, ThemePreference, ToolButton, WhyLine,
 };
 use super::{account, body, icons, list, menu, rules, status, theme, toolbar};
 use postvak_core::message::clean;
@@ -185,6 +185,7 @@ fn present_folder_dialog(app: &App, window: &MailWindow) {
 
 fn present_list(app: &App, window: &MailWindow) {
     window.set_list_title(list::title(&app.view).unwrap_or_default().into());
+    window.set_list_banner(list::banner(app).unwrap_or_default().into());
     window.set_filter_label(list::filter_label(app.filter).unwrap_or_default().into());
     let filter = list::FILTERS.iter().position(|(_, f)| *f == app.filter);
     window.set_list_filter(
@@ -229,6 +230,95 @@ fn present_list(app: &App, window: &MailWindow) {
     });
 }
 
+/// The provenance strip as the window draws it; an empty one when no rule acted on the message.
+fn provenance_data(pane: &body::Pane) -> ProvenanceData {
+    let Some(p) = &pane.provenance else {
+        return ProvenanceData::default();
+    };
+    let target = if p.target.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", p.target)
+    };
+    let removed = if p.removed { " (removed)" } else { "" };
+    let why = pane
+        .why
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|(text, met)| WhyLine {
+            text: text.as_str().into(),
+            met: *met,
+        });
+    ProvenanceData {
+        shown: true,
+        verb: p.verb.as_str().into(),
+        target: p.target.as_str().into(),
+        rule: p.rule.as_str().into(),
+        when: p.when.as_str().into(),
+        sentence: format!("{}{target} by rule {} {}{removed}", p.verb, p.rule, p.when).into(),
+        removed: p.removed,
+        move_back: p
+            .move_back
+            .as_deref()
+            .map(crate::folders::label)
+            .unwrap_or_default()
+            .into(),
+        more: i32::try_from(p.all.len().saturating_sub(1)).unwrap_or(i32::MAX),
+        open: pane.provenance_open,
+        all: model(
+            p.all
+                .iter()
+                .map(|line| SharedString::from(line.as_str()))
+                .collect::<Vec<_>>(),
+        ),
+        why_open: pane.why.is_some(),
+        why: model(why.collect::<Vec<_>>()),
+    }
+}
+
+/// A proposal's card, with its dry run once counted.
+fn proposal_data(app: &App, p: &rules::Proposal) -> ProposalData {
+    let run = app.rules.dry_runs.get(&p.name);
+    let rule = app.rules.rules.iter().find(|r| r.name == p.name);
+    let now = chrono::Local::now();
+    let samples = run.map_or_else(Vec::new, |run| {
+        (run.samples.iter())
+            .map(|(subject, at)| SampleData {
+                subject: subject.as_str().into(),
+                date: list::list_date(*at, &now).into(),
+            })
+            .collect()
+    });
+    ProposalData {
+        label: p.label.as_str().into(),
+        by: p.by.as_str().into(),
+        summary: p.summary.as_str().into(),
+        note: p.note.as_str().into(),
+        edits: p.edits,
+        toml: p.toml.as_str().into(),
+        marks: p.marks.as_str().into(),
+        counting: run.is_none(),
+        count: run
+            .map_or_else(String::new, |run| run.count.to_string())
+            .into(),
+        count_label: match (run, rule) {
+            (Some(run), Some(rule)) => rules::would_be(rule, run.count),
+            _ => String::new(),
+        }
+        .into(),
+        samples: model(samples),
+        rest: run.map_or_else(String::new, rules::dry_run_rest).into(),
+        warnings: run
+            .map_or_else(String::new, |run| run.warnings.join("\n"))
+            .into(),
+        error: run
+            .and_then(|run| run.error.clone())
+            .unwrap_or_default()
+            .into(),
+    }
+}
+
 fn present_body(app: &App, window: &MailWindow) {
     let pane = body::pane(app);
     let text = |value: Option<String>| SharedString::from(value.unwrap_or_default());
@@ -250,6 +340,7 @@ fn present_body(app: &App, window: &MailWindow) {
             .as_ref()
             .and_then(|(_, svg)| slint::Image::load_from_svg_data(svg.as_bytes()).ok())
     };
+    let provenance = provenance_data(&pane);
     let info = BodyInfo {
         empty: pane.empty.unwrap_or_default().into(),
         empty_hint: pane.hint.unwrap_or_default().into(),
@@ -287,6 +378,7 @@ fn present_body(app: &App, window: &MailWindow) {
         unsubscribe: pane.unsubscribe,
         unsubscribed: pane.unsubscribed,
         reply: pane.reply,
+        provenance,
         links: strings(shown.links.clone(), pane.links),
     };
     if info != shown {
@@ -636,20 +728,7 @@ fn present_sheet(app: &App, window: &MailWindow) {
             let proposals: Vec<ProposalData> = rules::shown_proposals(&app.rules.proposals, filter)
                 .into_iter()
                 .map(|i| &app.rules.proposals[i])
-                .map(|p| ProposalData {
-                    label: p.label.as_str().into(),
-                    by: p.by.as_str().into(),
-                    summary: p.summary.as_str().into(),
-                    note: p.note.as_str().into(),
-                    edits: p.edits,
-                    toml: p.toml.as_str().into(),
-                    marks: p.marks.as_str().into(),
-                    preview: app
-                        .rules
-                        .previews
-                        .get(&p.name)
-                        .map_or_else(SharedString::new, Into::into),
-                })
+                .map(|p| proposal_data(app, p))
                 .collect();
             let lines: Vec<RuleData> = rules::shown_rules(&app.rules.lines, app.sheet_sort, filter)
                 .into_iter()
@@ -663,6 +742,8 @@ fn present_sheet(app: &App, window: &MailWindow) {
                     by: r.by.as_str().into(),
                     conditions: r.conditions.as_str().into(),
                     actions: r.actions.as_str().into(),
+                    hits: rules::hit_cells(&r.hits).0.into(),
+                    fired: rules::hit_cells(&r.hits).1.into(),
                     selected: app
                         .rule_draft
                         .as_ref()
@@ -1049,6 +1130,30 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
             Some(UiAction::OpenUrl(body::reply_url(message)?))
         }));
     });
+    window.on_edit_shown_rule(move || {
+        on(Box::new(|app: &App| {
+            let name = app.body.as_ref().and_then(|b| b.provenance.first());
+            name.map(|entry| {
+                vec![
+                    UiAction::SelectView(View::Rules),
+                    UiAction::EditRule(entry.rule_name.clone()),
+                ]
+            })
+            .unwrap_or_default()
+        }));
+    });
+    window.on_move_back(move || {
+        act(UiAction::MoveBack);
+    });
+    window.on_toggle_provenance(move || {
+        act(UiAction::ToggleProvenance);
+    });
+    window.on_review_proposals(move || {
+        act(UiAction::SelectView(View::Rules));
+    });
+    window.on_toggle_why(move || {
+        act(UiAction::ToggleWhy);
+    });
     window.on_rule_from(move || {
         on(one(|app| {
             let message = app.body.as_ref()?.message.as_ref()?;
@@ -1064,10 +1169,8 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
         }));
     });
     connect_editor(window, on);
-    window.on_preview_rule(move |i| {
-        on(one(move |app| {
-            Some(UiAction::PreviewRule(proposal(app, i)?))
-        }));
+    window.on_edit_proposal(move |i| {
+        on(one(move |app| Some(UiAction::EditRule(proposal(app, i)?))));
     });
     window.on_set_enabled(move |i, enabled| {
         on(one(move |app| {

@@ -43,6 +43,7 @@ fn migration_list() -> Vec<M<'static>> {
             "../migrations/021-thread-by-in-reply-to/up.sql"
         )),
         M::up(include_str!("../migrations/022-list-preview/up.sql")),
+        M::up(include_str!("../migrations/023-rule-log-index/up.sql")),
     ]
 }
 
@@ -347,6 +348,28 @@ pub struct LogEntry {
     pub subject: Option<String>,
     pub action: String,
     pub trash_file: Option<String>,
+}
+
+/// `Store::rule_actions`'s query: ?1 folder, ?2 uid, ?3 Message-ID, ?4 archive folder, ?5 internaldate. Every row must
+/// carry the message's own Message-ID, so a UID reused after a folder was recreated does not inherit old rows.
+const RULE_ACTIONS: &str =
+    "SELECT id, at, rule_name, folder, uid, message_id, subject, action, trash_file FROM rule_log
+     WHERE message_id IS ?3
+       AND ((folder = ?1 AND uid = ?2)
+        OR (folder, uid) IN (
+            SELECT l.folder, l.uid FROM rule_log l
+            WHERE l.message_id = ?3
+              AND (l.action = 'move:' || ?1 OR (l.action = 'archive' AND ?1 = ?4))
+              AND EXISTS (SELECT 1 FROM rule_moves m
+                          WHERE m.folder = l.folder AND m.message_id = ?3 AND m.internaldate = ?5)))
+     ORDER BY at DESC, id DESC";
+
+/// How often a rule acted: the messages it acted on since a time, each counted once, and when it last acted at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleHits {
+    pub rule: String,
+    pub messages: u64,
+    pub last_fired: i64,
 }
 
 /// serde's `Vec<u8>` only accepts sequences; rusqlite offers BLOBs as bytes.
@@ -1504,6 +1527,47 @@ impl Store {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
+    /// What rules, not direct actions, did to this copy of `msg`, newest first: what they did where it is, and, when a
+    /// rule moved it here, what they did where it was. `rule_moves` ties that move to this copy by Message-ID and
+    /// internaldate. `archive` is the account's archive folder, since the log keeps no destination for an archive.
+    pub fn rule_actions(
+        &self,
+        msg: &Message,
+        archive: Option<&str>,
+    ) -> Result<Vec<LogEntry>, StoreError> {
+        let mut stmt = self.conn.prepare(RULE_ACTIONS)?;
+        let rows = serde_rusqlite::from_rows::<LogEntry>(stmt.query(params![
+            msg.folder,
+            msg.uid,
+            msg.message_id,
+            archive,
+            msg.internaldate
+        ])?);
+        let mut entries = rows.collect::<Result<Vec<_>, _>>()?;
+        entries.retain(|e| !crate::rules::is_actor(&e.rule_name));
+        Ok(entries)
+    }
+
+    /// Each rule's hits: the messages it acted on at or after `since`, and when it last acted; direct actions left out.
+    pub fn rule_hits(&self, since: i64) -> Result<Vec<RuleHits>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT rule_name,
+                    COUNT(DISTINCT CASE WHEN at >= ?1 THEN folder || char(0) || uid END),
+                    MAX(at)
+             FROM rule_log GROUP BY rule_name ORDER BY rule_name",
+        )?;
+        let rows = stmt.query_map(params![since], |r| {
+            Ok(RuleHits {
+                rule: r.get(0)?,
+                messages: u64::try_from(r.get::<_, i64>(1)?).unwrap_or_default(),
+                last_fired: r.get(2)?,
+            })
+        })?;
+        let mut hits = rows.collect::<Result<Vec<_>, _>>()?;
+        hits.retain(|h| !crate::rules::is_actor(&h.rule));
+        Ok(hits)
+    }
+
     pub fn message_count(&self, folder: &str) -> Result<u32, StoreError> {
         Ok(self.conn.query_row(
             "SELECT COUNT(*) FROM messages WHERE folder = ?1",
@@ -1669,6 +1733,123 @@ mod tests {
         let mut logged: Vec<String> = s.log(10).unwrap().into_iter().map(|e| e.folder).collect();
         logged.sort();
         assert_eq!(logged, ["Archive/Work", "Archive/Work/Clients", "Workshop"]);
+    }
+
+    fn logged(rule: &str, at: i64, msg: &Message, action: &str) -> LogEntry {
+        LogEntry {
+            id: 0,
+            at,
+            rule_name: rule.into(),
+            folder: msg.folder.clone(),
+            uid: msg.uid,
+            message_id: msg.message_id.clone(),
+            subject: msg.subject.clone(),
+            action: action.into(),
+            trash_file: None,
+        }
+    }
+
+    #[test]
+    fn rule_hits_count_messages_once_and_skip_actors() {
+        let s = Store::open_in_memory().unwrap();
+        let (one, two, three) = (
+            msg("INBOX", 1, 10),
+            msg("INBOX", 2, 10),
+            msg("INBOX", 3, 10),
+        );
+        for entry in [
+            logged("travel", 100, &one, "read"),
+            logged("travel", 100, &one, "move:Travel"),
+            logged("travel", 10, &two, "read"),
+            logged("gui", 100, &three, "trash"),
+        ] {
+            s.log_action(&entry).unwrap();
+        }
+        assert_eq!(
+            s.rule_hits(50).unwrap(),
+            [RuleHits {
+                rule: "travel".into(),
+                messages: 1,
+                last_fired: 100
+            }]
+        );
+    }
+
+    #[test]
+    fn rule_actions_ignore_rows_for_an_earlier_message_with_the_same_uid() {
+        let s = Store::open_in_memory().unwrap();
+        let mut old = msg("INBOX", 1, 10);
+        old.message_id = Some("<old@x>".into());
+        s.log_action(&logged("travel", 1, &old, "flagged")).unwrap();
+        let mut new = msg("INBOX", 1, 20);
+        new.message_id = Some("<new@x>".into());
+        assert!(s.rule_actions(&new, None).unwrap().is_empty());
+        let mut bare = msg("INBOX", 2, 10);
+        bare.message_id = None;
+        s.log_action(&logged("travel", 1, &bare, "flagged"))
+            .unwrap();
+        assert_eq!(
+            s.rule_actions(&bare, None).unwrap().len(),
+            1,
+            "no Message-ID on either side still matches"
+        );
+    }
+
+    #[test]
+    fn rule_actions_use_indexes_rather_than_scanning_the_log() {
+        let s = Store::open_in_memory().unwrap();
+        let mut stmt = s
+            .conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {RULE_ACTIONS}"))
+            .unwrap();
+        let plan: Vec<String> = stmt
+            .query_map(params![0, 0, "", "", 0], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(!plan.iter().any(|step| step == "SCAN rule_log"), "{plan:?}");
+    }
+
+    #[test]
+    fn rule_actions_finds_the_moved_copy_and_not_its_twins() {
+        let s = Store::open_in_memory().unwrap();
+        let mut inbox = msg("INBOX", 1, 10);
+        inbox.message_id = Some("<a@x>".into());
+        s.log_action(&logged("travel", 1, &inbox, "flagged"))
+            .unwrap();
+        s.log_action(&logged("travel", 2, &inbox, "move:Travel"))
+            .unwrap();
+        s.log_action(&logged("gui", 3, &inbox, "read")).unwrap();
+        s.record_rule_move(&inbox).unwrap();
+        let moved = Message {
+            folder: "Travel".into(),
+            uid: 7,
+            ..inbox.clone()
+        };
+        let actions: Vec<(String, i64)> = s
+            .rule_actions(&moved, None)
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.action, e.at))
+            .collect();
+        assert_eq!(
+            actions,
+            [("move:Travel".to_string(), 2), ("flagged".to_string(), 1)]
+        );
+        let sent = Message {
+            folder: "Sent".into(),
+            uid: 3,
+            internaldate: 11,
+            ..inbox.clone()
+        };
+        assert!(s.rule_actions(&sent, None).unwrap().is_empty());
+        let in_place: Vec<String> = s
+            .rule_actions(&inbox, None)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.action)
+            .collect();
+        assert_eq!(in_place, ["move:Travel", "flagged"]);
     }
 
     fn msg(folder: &str, uid: u32, internaldate: i64) -> Message {

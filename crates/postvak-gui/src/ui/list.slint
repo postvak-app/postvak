@@ -2,7 +2,7 @@
 // texts; this file only places them.
 import { LineEdit, ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { EmptyState, Heading, HoverFill, IconButton, Keycap } from "common.slint";
+import { EmptyState, Heading, HoverFill, IconButton, Keycap, TextButton } from "common.slint";
 
 export struct RowData {
     unread: bool,
@@ -269,6 +269,9 @@ export component ListPane inherits Rectangle {
     // Shown instead of rows, or empty, under `empty-icon`.
     in property <string> empty;
     in property <string> empty-icon;
+    // Over an inbox's rows while rule proposals wait, or empty; Review opens the Rules view.
+    in property <string> banner;
+    callback review();
     in property <[RowData]> rows;
     in property <int> marked-count;
     in-out property <length> list-y;
@@ -429,6 +432,48 @@ export component ListPane inherits Rectangle {
                         height: self.width;
                         border-radius: self.width / 2;
                         background: Theme.pane.accent;
+                    }
+                }
+            }
+        }
+
+        if root.banner != "": VerticalLayout {
+            padding-left: Theme.inset;
+            padding-right: Theme.inset;
+            padding-bottom: Theme.pad;
+            Rectangle {
+                border-radius: Theme.radius;
+                border-width: 1px;
+                border-color: Theme.pane.border;
+                background: Theme.pane.faint;
+                HorizontalLayout {
+                    padding: Theme.pad * 3 / 2;
+                    spacing: Theme.pad * 3 / 2;
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: Theme.pad / 2;
+                        Text {
+                            text: "AGENT PROPOSAL";
+                            font-size: Theme.caps-size;
+                            font-weight: 600;
+                            letter-spacing: 1px;
+                            color: Theme.pane.accent;
+                        }
+                        Text {
+                            text: root.banner;
+                            font-size: Theme.small-size;
+                            color: Theme.pane.text;
+                            wrap: word-wrap;
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        TextButton {
+                            text: "Review";
+                            primary: true;
+                            palette: Theme.pane;
+                            clicked => { root.review(); }
+                        }
                     }
                 }
             }

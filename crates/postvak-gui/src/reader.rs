@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use postvak_core::message::{self, Attachment, HtmlBody};
 use postvak_core::paths::Paths;
-use postvak_core::store::{Message, Store};
+use postvak_core::store::{LogEntry, Message, Store};
 
 use super::html::Wake;
 use super::list::RowKey;
@@ -24,6 +24,8 @@ pub(crate) struct Read {
     pub html: Option<HtmlBody>,
     /// Whether the store holds the raw bytes, which the HTML view and the attachments need.
     pub has_raw: bool,
+    /// What rules did to this copy of the message, newest first.
+    pub provenance: Vec<LogEntry>,
 }
 
 /// One message to read, numbered so an answer that a later request overtook is dropped.
@@ -44,11 +46,23 @@ pub(crate) fn read(store: &Store, key: &RowKey) -> Read {
         .as_deref()
         .map(message::attachments_and_html)
         .unwrap_or_default();
+    let message = store.message(&key.0, key.1).ok().flatten();
+    let archive = store.folders().ok().and_then(|folders| {
+        folders
+            .into_iter()
+            .find(|f| f.special_use.as_deref() == Some("Archive"))
+            .map(|f| f.name)
+    });
+    let provenance = message
+        .as_ref()
+        .and_then(|m| store.rule_actions(m, archive.as_deref()).ok())
+        .unwrap_or_default();
     Read {
-        message: store.message(&key.0, key.1).ok().flatten(),
+        message,
         attachments,
         html,
         has_raw: raw.is_some(),
+        provenance,
     }
 }
 
