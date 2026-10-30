@@ -37,6 +37,7 @@ mod status;
 mod test_support;
 mod theme;
 mod toolbar;
+mod undo;
 mod update;
 mod worker;
 

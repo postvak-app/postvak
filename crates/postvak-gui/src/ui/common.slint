@@ -242,20 +242,83 @@ export component EmptyState inherits VerticalLayout {
 // A key drawn as a key, inline with text.
 export component Keycap inherits Rectangle {
     in property <string> key;
+    in property <Palette> palette: Theme.pane;
     height: 9 * Theme.pad / 4;
     width: max(self.height, label.preferred-width + Theme.pad);
     border-radius: Theme.pad / 2;
     border-width: 1px;
-    border-color: Theme.pane.border;
-    background: Theme.pane.faint;
+    border-color: root.palette.border;
+    background: root.palette.faint;
     label := Text {
         accessible-role: none;
         text: root.key;
         font-family: Theme.mono-font;
         font-size: 11px;
-        color: Theme.pane.muted;
+        color: root.palette.muted;
         horizontal-alignment: center;
         vertical-alignment: center;
+    }
+}
+
+/* After an action, at the foot of a pane: what it did, and Undo with its key while it can still be undone.
+
+The window ends it after a while; the pointer on it keeps it. Its parent places it and gives it at most its own width. */
+export component Toast inherits Rectangle {
+    in property <string> text;
+    in property <bool> undo;
+    callback undo-clicked();
+    callback hover(bool);
+    property <bool> shown;
+    init => { root.shown = true; }
+
+    opacity: root.shown ? 1 : 0;
+    animate opacity {
+        duration: Theme.state-fade;
+        easing: ease-out;
+    }
+    preferred-width: layout.preferred-width;
+    height: Theme.control + Theme.pad;
+    border-radius: self.height / 2;
+    border-width: 1px;
+    border-color: Theme.frame.border;
+    background: Theme.frame.background;
+    drop-shadow-blur: 3 * Theme.pad;
+    drop-shadow-offset-y: Theme.pad / 2;
+    drop-shadow-color: Theme.shadow;
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.text;
+
+    TouchArea {
+        changed has-hover => { root.hover(self.has-hover); }
+    }
+    layout := HorizontalLayout {
+        padding-left: Theme.inset;
+        padding-right: root.undo ? Theme.pad : Theme.inset;
+        spacing: Theme.pad;
+        Text {
+            text: root.text;
+            color: Theme.frame.text;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if root.undo: VerticalLayout {
+            alignment: center;
+            TextButton {
+                text: "Undo";
+                small: true;
+                palette: Theme.frame;
+                text-color: Theme.frame.accent;
+                hint: "Put back what this did";
+                clicked => { root.undo-clicked(); }
+            }
+        }
+        if root.undo: VerticalLayout {
+            alignment: center;
+            Keycap {
+                key: "z";
+                palette: Theme.frame;
+            }
+        }
     }
 }
 

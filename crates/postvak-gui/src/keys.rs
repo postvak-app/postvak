@@ -83,6 +83,10 @@ pub(crate) fn action(press: &Press, focus: Focus, typing: bool) -> Option<UiActi
     if press.is("/") {
         return Some(UiAction::StartSearch);
     }
+    let lower_z = matches!(&press.key, Key::Text(t) if t.eq_ignore_ascii_case("z"));
+    if press.is("z") || (press.command && !press.alt && lower_z) {
+        return Some(UiAction::Undo);
+    }
     let down = press.is("j") || press.is_named(Named::Down);
     let up = press.is("k") || press.is_named(Named::Up);
     match focus {
@@ -132,7 +136,7 @@ pub(crate) fn action(press: &Press, focus: Focus, typing: bool) -> Option<UiActi
 }
 
 /// The `?` window. Keys are spelled out, so every glyph is in the bundled fonts.
-pub(crate) const HELP: [(&str, &str); 16] = [
+pub(crate) const HELP: [(&str, &str); 17] = [
     ("j / k, Down / Up", "next or previous row"),
     ("Right / Left", "expand or collapse a thread"),
     ("x", "add the row to the selection, or take it out"),
@@ -150,6 +154,10 @@ pub(crate) const HELP: [(&str, &str); 16] = [
     ("u", "mark read or unread"),
     ("s", "flag or unflag"),
     ("v", "show HTML mail as text, or as HTML again"),
+    (
+        "z, Ctrl+Z (Cmd+Z on macOS)",
+        "undo the last action taken in this window",
+    ),
     ("/", "search this account; in All inboxes, every account"),
     ("Esc", "close a popup, leave search, clear the selection"),
     ("Tab", "next pane: folders, list, body"),
@@ -194,6 +202,7 @@ mod tests {
             ("v", UiAction::ToggleHtml),
             ("?", UiAction::ToggleHelp),
             ("/", UiAction::StartSearch),
+            ("z", UiAction::Undo),
         ];
         for (text, want) in cases {
             assert_eq!(on_list(Press::text(text)), Some(want), "{text}");
@@ -223,6 +232,11 @@ mod tests {
             ..Press::text(text)
         };
         assert_eq!(on_list(command("r")), Some(UiAction::SyncNow));
+        assert_eq!(on_list(command("z")), Some(UiAction::Undo));
+        assert_eq!(
+            action(&command("z"), Focus::Folders, false),
+            Some(UiAction::Undo)
+        );
         assert_eq!(on_list(command("e")), None);
         assert_eq!(on_list(command("j")), None);
         assert_eq!(on_list(Press::text("r")), None);

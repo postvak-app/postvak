@@ -227,6 +227,7 @@ fn filed(theme: &str) -> (Fixture, Open, Wires) {
             subject: ticket.subject.clone(),
             action: "move:Travel".into(),
             trash_file: None,
+            ..LogEntry::default()
         })
         .unwrap();
     store.record_rule_move(&ticket).unwrap();
@@ -291,6 +292,7 @@ fn rules_hits_and_proposal() {
                 subject: None,
                 action: "archive".into(),
                 trash_file: None,
+                ..LogEntry::default()
             })
             .unwrap();
     }
@@ -487,6 +489,34 @@ fn dragging_a_row_over_a_folder() {
     let row = open.labels_containing("Linus Example").remove(0);
     open.drag_over(&row, "Receipts");
     snapshot(&open, "gui_drag");
+}
+
+/// INBOX after archiving the open message: the toast says so and offers Undo with its key.
+fn archived(theme: &str) -> (Fixture, Open, Wires) {
+    let (fx, open, wires) = inbox(theme);
+    open.press("e");
+    assert!(open.with(|live| live.app.toast.is_some()));
+    (fx, open, wires)
+}
+
+#[test]
+fn toast_light() {
+    let (_fx, open, _wires) = archived("light");
+    snapshot(&open, "gui_toast_light");
+}
+
+#[test]
+fn toast_dark() {
+    let (_fx, open, _wires) = archived("dark");
+    snapshot(&open, "gui_toast_dark");
+}
+
+#[test]
+fn toast_after_a_partial_undo() {
+    let (_fx, open, _wires) = inbox("light");
+    let text = "Moved 1 message back to Inbox; 1 changed since, left alone";
+    open.with(|live| live.app.toast = Some(super::undo::Toast::new(text.into(), false)));
+    snapshot(&open, "gui_toast_partial_undo");
 }
 
 #[test]
@@ -688,6 +718,7 @@ fn activity() {
             subject: Some(subject.into()),
             action: action.into(),
             trash_file: None,
+            ..LogEntry::default()
         };
         fx.store("work").log_action(&entry).unwrap();
     }

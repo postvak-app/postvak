@@ -518,6 +518,7 @@ async fn account_filter_hides_other_accounts_everywhere() {
             subject: None,
             action: "flagged".into(),
             trash_file: None,
+            ..LogEntry::default()
         };
         fx.store(account).log_action(&entry).unwrap();
     }
@@ -654,6 +655,7 @@ async fn rules_list_rows_carry_hit_counts() {
             subject: None,
             action: "delete".into(),
             trash_file: None,
+            ..LogEntry::default()
         })
         .unwrap();
     let client = connect(&fx, "read", &[]).await;
@@ -1566,6 +1568,7 @@ async fn tools_list_per_scope_set_is_exact_and_alphabetical() {
                 "rules_apply_existing",
                 "trash_purge",
                 "trash_restore",
+                "undo",
                 "unsubscribe",
             ],
         ),
@@ -1616,6 +1619,7 @@ async fn annotations_mark_reads_and_destructive_tools() {
             "rules_withdraw",
             "sync",
             "trash_restore",
+            "undo",
         ]
         .contains(&name);
         match (destructive, changes) {
@@ -1655,6 +1659,41 @@ async fn dry_run_reports_from_the_store_without_connecting() {
     let text = error_text(&call(&client, "archive", json!({ "uids": [1] })).await);
     assert!(text.contains("no daemon"), "{text}");
     assert!(!fx.paths.daemon_socket().exists());
+}
+
+#[tokio::test]
+async fn undo_previews_from_the_store_and_needs_an_action_in_the_log() {
+    let fx = fixture(&["work"]);
+    let mut read = fixture_message("INBOX", 1, "Old news", "x");
+    read.flags = "\\Seen".into();
+    fx.add("work", read);
+    let store = fx.store("work");
+    store
+        .log_action(&postvak_core::store::LogEntry {
+            at: 1_790_000_000,
+            rule_name: "mcp:test-host".into(),
+            folder: "INBOX".into(),
+            uid: 1,
+            message_id: Some("<1@example.com>".into()),
+            action: "read".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store.stamp_actions(0).unwrap();
+    let action = store.log(1).unwrap()[0].action_id.unwrap();
+    let client = connect(&fx, "mail:modify", &[]).await;
+    let report = call(
+        &client,
+        "undo",
+        json!({ "action": action, "dry_run": true }),
+    )
+    .await;
+    let report = report.structured_content.unwrap();
+    assert_eq!(report["dry_run"], true);
+    assert_eq!(report["rows"][0]["outcome"], "put_back");
+    assert_eq!(report["rows"][0]["action"], "read");
+    let text = error_text(&call(&client, "undo", json!({ "action": 42, "dry_run": true })).await);
+    assert!(text.contains("no action 42"), "{text}");
 }
 
 #[tokio::test]
@@ -2648,6 +2687,7 @@ async fn every_field_a_stranger_wrote_leaves_inside_the_wrapper() {
         subject: Some(hostile.into()),
         action: "flagged".into(),
         trash_file: None,
+        ..LogEntry::default()
     };
     fx.store("work").log_action(&entry).unwrap();
     let client = connect(&fx, "read,read:headers", &[]).await;

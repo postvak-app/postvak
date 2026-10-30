@@ -192,6 +192,7 @@ mod tests {
             pending: Default::default(),
             settling: Vec::new(),
             queued: 0,
+            apply_queue: Default::default(),
             store: Err("no store".into()),
             uidplus: None,
             encrypted: None,

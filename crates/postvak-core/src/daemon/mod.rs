@@ -151,7 +151,8 @@ pub fn report(event: &Event) {
         | Event::Indexed { .. }
         | Event::Restored { .. }
         | Event::RuleApplied { .. }
-        | Event::ServerSearchDone { .. } => {}
+        | Event::ServerSearchDone { .. }
+        | Event::Undone { .. } => {}
     }
 }
 

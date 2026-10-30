@@ -1,6 +1,6 @@
 # Undo
 
-Status: draft, 2026-10-30. Phase 4 of the GUI redesign toward the Claude Design canvas (https://claude.ai/artifact/FZbXdN5FXZ6RdxL9jP6Te7). The canvas shows a toast after an action, "Archived 1 message · Undo z"; nothing in Postvak can reverse an archive, move or mark today except doing the opposite by hand. Not yet reviewed with the owner: the calls marked as such below are the author's.
+Status: implemented, 2026-10-30; the owner accepted the calls below. Phase 4 of the GUI redesign toward the Claude Design canvas (https://claude.ai/artifact/FZbXdN5FXZ6RdxL9jP6Te7). The canvas shows a toast after an action, "Archived 1 message · Undo z"; nothing in Postvak can reverse an archive, move or mark today except doing the opposite by hand. Not yet reviewed with the owner: the calls marked as such below are the author's.
 
 Surfaces: CLI, MCP and GUI together. The toast and its key are the GUI's; `postvak undo` and the MCP `undo` tool reverse the same things through the same library code.
 
@@ -65,6 +65,17 @@ Surfaces: CLI, MCP and GUI together. The toast and its key are the GUI's; `postv
 - A delete's undo restores without the old flags rather than storing flags in the backup; widening the backup format is not worth it for this.
 
 ## Left to the builder
+
+What the build chose:
+
+- Columns on `rule_log` (`action_id`, `internaldate`, `target`, `undoes`, migration 024). An action's id is the id of its first row; the sync thread stamps the rows a command or a rules pass wrote, which it can because it is the only writer of its account's log.
+- No COPYUID: a moved copy is found by Message-ID and internaldate, after syncing the folder it went to.
+- The toast is `Toast` in `ui/common.slint`, at the foot of the list pane and of the Activity view, centred and no wider than the pane.
+- The Activity view has one Undo button for the chosen row, as Backups has Restore, rather than a link per row: the table cannot hold links.
+- The rows are not put back optimistically while the undo runs; the list reloads when the daemon answers.
+- Snapshots: `gui_toast_light`, `gui_toast_dark` and `gui_toast_partial_undo`.
+
+What was left open:
 
 - The migration's shape: columns on `rule_log` or a table of actions; how a rule pass gets its id.
 - Whether to read COPYUID (UIDPLUS) to record the new UID of a moved message, falling back to Message-ID and internaldate; it would make the lookup exact on servers that send it.

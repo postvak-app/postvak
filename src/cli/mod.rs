@@ -308,6 +308,19 @@ enum Command {
         #[command(subcommand)]
         command: TrashCommand,
     },
+    #[command(about = postvak_core::help::UNDO)]
+    Undo {
+        /// The action's number, as `log` shows it
+        action: Option<i64>,
+        /// Required with a number when several accounts are set up
+        #[arg(long)]
+        account: Option<String>,
+        /// Show what would be put back without touching the server
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Manage accounts
     Account {
         #[command(subcommand)]
@@ -930,6 +943,12 @@ pub fn run() -> Result<()> {
             let action = if not { Action::NotJunk } else { Action::Junk };
             cmd_act(&config, &paths, selection, action)
         }
+        Command::Undo {
+            action,
+            account,
+            dry_run,
+            json,
+        } => cmd_undo(&config, &paths, action, account.as_deref(), dry_run, json),
         Command::Log {
             account,
             limit,
@@ -941,8 +960,9 @@ pub fn run() -> Result<()> {
                     if json {
                         print_json(postvak_core::output::with_account(&acc.name, &e)?);
                     } else {
+                        let action = e.action_id.map(|id| format!("#{id}")).unwrap_or_default();
                         println!(
-                            "{}  {}  {:<20} {:<12} {}/{}  {}",
+                            "{}  {}  {action:<6} {:<20} {:<12} {}/{}  {}",
                             acc.name,
                             time::date_time(e.at),
                             clean(&e.rule_name, false),
@@ -1026,6 +1046,57 @@ fn doc_pages() -> clap::builder::PossibleValuesParser {
 }
 
 /// Runs a direct action on the selected uids; `--dry-run` only reads the local store.
+fn cmd_undo(
+    config: &Config,
+    paths: &Paths,
+    action: Option<i64>,
+    account: Option<&str>,
+    dry_run: bool,
+    json: bool,
+) -> Result<()> {
+    let (account, action) = match action {
+        Some(action) => (
+            config::single(&config.accounts, account)?.name.clone(),
+            action,
+        ),
+        None => {
+            let accounts = config::select(&config.accounts, account)?;
+            postvak_core::actions::newest_direct_action(paths, &accounts)?.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "nothing to undo: no action of the CLI, the window or an agent is left"
+                )
+            })?
+        }
+    };
+    let report = if dry_run {
+        postvak_core::actions::preview_undo(&Store::open_account(paths, &account)?, action)?
+    } else {
+        LazyClient::new(paths).undo(&account, action, postvak_core::actions::RULE_NAME)?
+    };
+    if json {
+        let mut row = postvak_core::output::with_account(&account, &report)?;
+        row["dry_run"] = dry_run.into();
+        print_json(row);
+        return Ok(());
+    }
+    let verb = if dry_run { "would undo" } else { "undid" };
+    println!("{account}: {verb} action #{action}");
+    for row in &report.rows {
+        let outcome = match &row.error {
+            Some(error) => format!("{}: {}", row.outcome.text(), clean(error, false)),
+            None => row.outcome.text().to_string(),
+        };
+        println!(
+            "  {:<12} {}/{}  {}  {outcome}",
+            clean(&row.action, false),
+            clean(&row.folder, false),
+            row.uid,
+            clean(row.subject.as_deref().unwrap_or(""), false)
+        );
+    }
+    Ok(())
+}
+
 fn cmd_act(config: &Config, paths: &Paths, selection: Selection, action: Action) -> Result<()> {
     let acc = config::single(&config.accounts, selection.account.as_deref())?;
     let store = Store::open_account(paths, &acc.name)?;

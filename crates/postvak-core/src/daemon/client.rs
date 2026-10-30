@@ -113,6 +113,7 @@ impl Inbox {
                 account,
                 folder,
                 results,
+                action,
                 request,
             })) => {
                 self.own.insert(request);
@@ -120,6 +121,17 @@ impl Inbox {
                     account,
                     folder,
                     results,
+                    action,
+                    request: 0,
+                });
+            }
+            // The window shows what its own undo did; nobody else is told.
+            Outcome::Ok(Payload::Event(Event::Undone {
+                account, report, ..
+            })) => {
+                self.publish(Event::Undone {
+                    account,
+                    report,
                     request: 0,
                 });
             }
@@ -285,6 +297,23 @@ impl LazyClient {
     pub fn restore(&self, account: &str, file: PathBuf) -> anyhow::Result<String> {
         self.request(account, Command::Restore { file }, |reply| match reply {
             Event::Restored { folder, .. } => Ok(folder),
+            other => Err(other),
+        })
+    }
+
+    /// Puts back what logged action `action` did, through the daemon, as done `by`.
+    pub fn undo(
+        &self,
+        account: &str,
+        action: i64,
+        by: &str,
+    ) -> anyhow::Result<crate::actions::UndoReport> {
+        let command = Command::Undo {
+            action,
+            by: by.into(),
+        };
+        self.request(account, command, |reply| match reply {
+            Event::Undone { report, .. } => Ok(report),
             other => Err(other),
         })
     }
@@ -654,7 +683,8 @@ pub(super) fn reply_timeout(command: &Command) -> Option<Duration> {
         | Command::FetchAttachment { .. }
         | Command::FetchBody { .. }
         | Command::RenameFolder { .. }
-        | Command::Restore { .. } => Some(REPLY_TIMEOUT),
+        | Command::Restore { .. }
+        | Command::Undo { .. } => Some(REPLY_TIMEOUT),
     }
 }
 

@@ -44,6 +44,7 @@ fn migration_list() -> Vec<M<'static>> {
         )),
         M::up(include_str!("../migrations/022-list-preview/up.sql")),
         M::up(include_str!("../migrations/023-rule-log-index/up.sql")),
+        M::up(include_str!("../migrations/024-undo/up.sql")),
     ]
 }
 
@@ -336,7 +337,7 @@ pub enum Resume<'a> {
 
 const SUMMARY_COLUMNS: &str = "uid, COALESCE(from_addr, ''), COALESCE(to_addr, ''), COALESCE(subject, ''), internaldate, flags, has_attachment, COALESCE(preview, '')";
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct LogEntry {
     #[serde(default)]
     pub id: i64,
@@ -348,12 +349,27 @@ pub struct LogEntry {
     pub subject: Option<String>,
     pub action: String,
     pub trash_file: Option<String>,
+    /// The action this row is part of, which `undo` takes; None on rows an undo wrote and on rows from before undo.
+    #[serde(default)]
+    pub action_id: Option<i64>,
+    /// The message's internaldate, which finds it again after a move, since its uid changes.
+    #[serde(default)]
+    pub internaldate: Option<i64>,
+    /// The folder a move, archive, junk or trash took the message to.
+    #[serde(default)]
+    pub target: Option<String>,
+    /// The action this row reverses, on a row an undo wrote.
+    #[serde(default)]
+    pub undoes: Option<i64>,
 }
+
+const LOG_COLUMNS: &str = "id, at, rule_name, folder, uid, message_id, subject, action, trash_file, action_id, internaldate, target, undoes";
 
 /// `Store::rule_actions`'s query: ?1 folder, ?2 uid, ?3 Message-ID, ?4 archive folder, ?5 internaldate. Every row must
 /// carry the message's own Message-ID, so a UID reused after a folder was recreated does not inherit old rows.
-const RULE_ACTIONS: &str =
-    "SELECT id, at, rule_name, folder, uid, message_id, subject, action, trash_file FROM rule_log
+const RULE_ACTIONS: &str = concat!(
+    "SELECT id, at, rule_name, folder, uid, message_id, subject, action, trash_file, action_id, internaldate, target, undoes",
+    " FROM rule_log
      WHERE message_id IS ?3
        AND ((folder = ?1 AND uid = ?2)
         OR (folder, uid) IN (
@@ -362,7 +378,8 @@ const RULE_ACTIONS: &str =
               AND (l.action = 'move:' || ?1 OR (l.action = 'archive' AND ?1 = ?4))
               AND EXISTS (SELECT 1 FROM rule_moves m
                           WHERE m.folder = l.folder AND m.message_id = ?3 AND m.internaldate = ?5)))
-     ORDER BY at DESC, id DESC";
+     ORDER BY at DESC, id DESC"
+);
 
 /// How often a rule acted: the messages it acted on since a time, each counted once, and when it last acted at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1512,18 +1529,122 @@ impl Store {
 
     pub fn log_action(&self, entry: &LogEntry) -> Result<(), StoreError> {
         self.conn.execute(
-            "INSERT INTO rule_log (at, rule_name, folder, uid, message_id, subject, action, trash_file)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![entry.at, entry.rule_name, entry.folder, entry.uid, entry.message_id, entry.subject, entry.action, entry.trash_file],
+            "INSERT INTO rule_log (at, rule_name, folder, uid, message_id, subject, action, trash_file, internaldate, target)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                entry.at,
+                entry.rule_name,
+                entry.folder,
+                entry.uid,
+                entry.message_id,
+                entry.subject,
+                entry.action,
+                entry.trash_file,
+                entry.internaldate,
+                entry.target
+            ],
         )?;
         Ok(())
     }
 
     pub fn log(&self, limit: u32) -> Result<Vec<LogEntry>, StoreError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, at, rule_name, folder, uid, message_id, subject, action, trash_file FROM rule_log ORDER BY id DESC LIMIT ?1",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {LOG_COLUMNS} FROM rule_log ORDER BY id DESC LIMIT ?1"
+        ))?;
         let rows = serde_rusqlite::from_rows::<LogEntry>(stmt.query(params![limit])?);
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// The newest row's id, or 0; what `stamp_actions` and `mark_undo` take to name the rows written after it.
+    pub fn last_log_id(&self) -> Result<i64, StoreError> {
+        Ok(self
+            .conn
+            .query_row("SELECT COALESCE(MAX(id), 0) FROM rule_log", [], |r| {
+                r.get(0)
+            })?)
+    }
+
+    /* Groups the rows written after `after` into actions, one per rule (or front end) and folder: each gets the id of
+    its first row. The account's sync thread is the only writer of its log, so those rows are one command's or one rules
+    pass's. Rows an undo wrote stay out of every action, so an undo is never offered for undoing. */
+    pub fn stamp_actions(&self, after: i64) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE rule_log SET action_id = (
+                 SELECT MIN(r.id) FROM rule_log r
+                 WHERE r.id > ?1 AND r.undoes IS NULL AND r.rule_name = rule_log.rule_name AND r.folder = rule_log.folder)
+             WHERE id > ?1 AND undoes IS NULL AND action_id IS NULL",
+            params![after],
+        )?;
+        Ok(())
+    }
+
+    /// The first action among the rows written after `after`.
+    pub fn first_action_after(&self, after: i64) -> Result<Option<i64>, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT MIN(action_id) FROM rule_log WHERE id > ?1",
+            params![after],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Marks the rows written after `after` as reversing `action`.
+    pub fn mark_undo(&self, after: i64, action: i64) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE rule_log SET undoes = ?2, action_id = NULL WHERE id > ?1",
+            params![after, action],
+        )?;
+        Ok(())
+    }
+
+    /// The rows of `action`, oldest first.
+    pub fn action_rows(&self, action: i64) -> Result<Vec<LogEntry>, StoreError> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {LOG_COLUMNS} FROM rule_log WHERE action_id = ?1 ORDER BY id"
+        ))?;
+        let rows = serde_rusqlite::from_rows::<LogEntry>(stmt.query(params![action])?);
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Whether an undo of `action` ran.
+    pub fn is_undone(&self, action: i64) -> Result<bool, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM rule_log WHERE undoes = ?1)",
+            params![action],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// The newest direct action not undone yet, by when it ran: its id and time. A rule's action is never it.
+    pub fn newest_direct_action(&self) -> Result<Option<(i64, i64)>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT action_id, rule_name, at FROM rule_log
+             WHERE id = action_id AND NOT EXISTS (SELECT 1 FROM rule_log u WHERE u.undoes = rule_log.id)
+             ORDER BY id DESC",
+        )?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            if crate::rules::is_actor(&row.get::<_, String>(1)?) {
+                return Ok(Some((row.get(0)?, row.get(2)?)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The messages in `folder` with this Message-ID and internaldate: a moved message found again under its new uid.
+    pub fn messages_by_id(
+        &self,
+        folder: &str,
+        message_id: &str,
+        internaldate: i64,
+    ) -> Result<Vec<Message>, StoreError> {
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT {MESSAGE_COLUMNS} FROM messages WHERE folder = ?1 AND message_id = ?2 AND internaldate = ?3"
+        ))?;
+        let rows = serde_rusqlite::from_rows::<Message>(stmt.query(params![
+            folder,
+            message_id,
+            internaldate
+        ])?);
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
@@ -1719,6 +1840,7 @@ mod tests {
                 subject: None,
                 action: "flag".into(),
                 trash_file: None,
+                ..LogEntry::default()
             })
             .unwrap();
         }
@@ -1746,6 +1868,7 @@ mod tests {
             subject: msg.subject.clone(),
             action: action.into(),
             trash_file: None,
+            ..LogEntry::default()
         }
     }
 
@@ -2417,6 +2540,7 @@ mod tests {
                 subject: None,
                 action: "delete".into(),
                 trash_file: Some(format!("{i}.eml")),
+                ..LogEntry::default()
             })
             .unwrap();
         }

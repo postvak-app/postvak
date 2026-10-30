@@ -312,6 +312,7 @@ fn list_and_log_show_the_account() {
             subject: Some("Your invoice".into()),
             action: "flagged".into(),
             trash_file: None,
+            ..LogEntry::default()
         })
         .unwrap();
     let stdout = String::from_utf8_lossy(&postvak(home.path(), &["list"]).stdout).to_string();
@@ -329,6 +330,44 @@ fn list_and_log_show_the_account() {
         let line: serde_json::Value = serde_json::from_slice(first).unwrap();
         assert_eq!(line["account"], "work", "{args:?}");
     }
+}
+
+#[test]
+fn undo_without_a_number_previews_the_newest_direct_action_never_a_rules() {
+    let mut read = message(42, "billing@example.com", "Your invoice");
+    read.flags = "\\Seen \\Flagged".into();
+    let message_id = read.message_id.clone();
+    let (home, store) = seeded_home(&[read]);
+    let log = |rule: &str, action: &str| {
+        store
+            .log_action(&LogEntry {
+                at: 1_000,
+                rule_name: rule.into(),
+                folder: "INBOX".into(),
+                uid: 42,
+                message_id: message_id.clone(),
+                subject: Some("Your invoice".into()),
+                action: action.into(),
+                ..LogEntry::default()
+            })
+            .unwrap();
+        store
+            .stamp_actions(store.last_log_id().unwrap() - 1)
+            .unwrap();
+    };
+    log("gui", "read");
+    log("bills", "flagged");
+    let stdout = String::from_utf8_lossy(&postvak(home.path(), &["log"]).stdout).to_string();
+    assert!(stdout.contains("#1") && stdout.contains("#2"), "{stdout}");
+    let lines = json_lines(&postvak(home.path(), &["undo", "--dry-run", "--json"]));
+    assert_eq!(lines[0]["action"], 1, "{lines:?}");
+    assert_eq!(lines[0]["rows"][0]["outcome"], "put_back");
+    let stdout = String::from_utf8_lossy(&postvak(home.path(), &["undo", "2", "--dry-run"]).stdout)
+        .to_string();
+    assert!(
+        stdout.contains("would undo action #2") && stdout.contains("put back"),
+        "{stdout}"
+    );
 }
 
 /// The JSON lines of `out`'s stdout.

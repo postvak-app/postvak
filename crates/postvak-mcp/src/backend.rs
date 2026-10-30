@@ -479,6 +479,25 @@ impl Backend {
         Ok(json!({ "account": acc.name, "restored_to": folder }))
     }
 
+    /// Puts back what logged action `action` did, as done `by` the agent; `dry_run` reads the local store only.
+    pub fn undo(
+        &self,
+        account: Option<&str>,
+        action: i64,
+        dry_run: bool,
+        by: &str,
+    ) -> Result<Value> {
+        let acc = self.single(account)?;
+        let report = if dry_run {
+            actions::preview_undo(&self.store(&acc)?, action)?
+        } else {
+            self.daemon.undo(&acc.name, action, by)?
+        };
+        let mut row = output::with_account(&acc.name, &report)?;
+        row["dry_run"] = dry_run.into();
+        Ok(row)
+    }
+
     /// Asks the daemon for one sync with rules per visible account; a refusal is that account's `error`.
     pub fn sync(&self, account: Option<&str>) -> Result<Vec<Value>> {
         let mut rows = Vec::new();

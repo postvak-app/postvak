@@ -15,6 +15,9 @@ use crate::store::{Folder, Hit, Matched, Message, Store, StoreError};
 use crate::sync::LostConnection;
 use crate::trash::Trash;
 
+mod undo;
+pub use undo::{UndoOutcome, UndoReport, UndoRow, newest_direct_action, preview_undo, undo};
+
 /// The rule name the CLI logs direct actions under.
 pub const RULE_NAME: &str = "cli";
 
@@ -32,6 +35,10 @@ pub enum ActionError {
     Store(#[from] StoreError),
     #[error("{0} has not been synced yet; run `postvak sync` first")]
     UnknownFolder(String),
+    #[error("no action {0} in the log; `postvak log` shows each action's number")]
+    NoSuchAction(i64),
+    #[error("action {0} was undone already")]
+    AlreadyUndone(i64),
     #[error("attachment {index} of {folder}/{uid}: {reason}")]
     Attachment {
         folder: String,

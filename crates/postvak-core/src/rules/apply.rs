@@ -122,7 +122,7 @@ pub fn apply(
         };
         match trash_folder {
             Some(folder) => {
-                store.log_action(&log_entry(planned, msg, now))?;
+                store.log_action(&log_entry(planned, msg, Some(&folder), now))?;
                 move_to(msg, &folder, ops, store)?;
             }
             None => delete(planned, msg, ops, store, trash, now)?,
@@ -147,12 +147,12 @@ pub fn apply(
         if has_flag(&current.flags, flag) == wanted {
             continue;
         }
-        store.log_action(&log_entry(planned, msg, now))?;
+        store.log_action(&log_entry(planned, msg, None, now))?;
         set_flag(&mut current, flag, wanted, ops, store)?;
         executed += 1;
     }
     if let Some((planned, target)) = first_move {
-        store.log_action(&log_entry(planned, msg, now))?;
+        store.log_action(&log_entry(planned, msg, Some(&target), now))?;
         move_to(&current, &target, ops, store)?;
         // After the move: a failed one must not keep the rule from trying again.
         if !crate::rules::is_actor(&planned.rule) {
@@ -257,13 +257,14 @@ pub fn apply_many(
 fn log_each<'a>(
     planned: &PlannedAction,
     msgs: impl IntoIterator<Item = &'a Message>,
+    target: Option<&str>,
     store: &Store,
     now: i64,
     results: &mut Vec<Applied>,
 ) -> Vec<&'a Message> {
     let mut logged = Vec::new();
     for msg in msgs {
-        match store.log_action(&log_entry(planned, msg, now)) {
+        match store.log_action(&log_entry(planned, msg, target, now)) {
             Ok(()) => logged.push(msg),
             Err(e) => results.push((msg.uid, Err(e.into()))),
         }
@@ -304,7 +305,7 @@ fn set_flag_many(
         .iter()
         .partition(|msg| has_flag(&msg.flags, flag) != wanted);
     results.extend(unchanged.iter().map(|msg| (msg.uid, Ok(0))));
-    let changing = log_each(planned, changing, store, now, &mut results);
+    let changing = log_each(planned, changing, None, store, now, &mut results);
     if changing.is_empty() {
         return results;
     }
@@ -335,7 +336,7 @@ fn move_many(
     now: i64,
 ) -> Vec<Applied> {
     let mut results = Vec::new();
-    let moving = log_each(planned, msgs, store, now, &mut results);
+    let moving = log_each(planned, msgs, Some(target), store, now, &mut results);
     if moving.is_empty() {
         return results;
     }
@@ -446,7 +447,7 @@ fn junk(
         Action::Junk => (junk_folder(store)?, "$Junk", "$NotJunk"),
         _ => ("INBOX".to_string(), "$NotJunk", "$Junk"),
     };
-    store.log_action(&log_entry(planned, msg, now))?;
+    store.log_action(&log_entry(planned, msg, Some(&target), now))?;
     let mut current = msg.clone();
     for (flag, wanted) in [(opposite, false), (keyword, true)] {
         if has_flag(&current.flags, flag) != wanted
@@ -464,9 +465,9 @@ fn junk(
     Ok(())
 }
 
-fn log_entry(planned: &PlannedAction, msg: &Message, now: i64) -> LogEntry {
+/// `target` is the folder a move takes the message to.
+fn log_entry(planned: &PlannedAction, msg: &Message, target: Option<&str>, now: i64) -> LogEntry {
     LogEntry {
-        id: 0,
         at: now,
         rule_name: planned.rule.clone(),
         folder: msg.folder.clone(),
@@ -474,7 +475,9 @@ fn log_entry(planned: &PlannedAction, msg: &Message, now: i64) -> LogEntry {
         message_id: msg.message_id.clone(),
         subject: msg.subject.clone(),
         action: planned.action.label(),
-        trash_file: None,
+        internaldate: Some(msg.internaldate),
+        target: target.map(str::to_string),
+        ..LogEntry::default()
     }
 }
 
@@ -503,7 +506,7 @@ fn back_up(
 ) -> Result<(), ApplyError> {
     let raw = ensure_raw(msg, ops, store)?;
     let path = trash.save(&msg.folder, msg.uid, &raw, now)?;
-    let mut entry = log_entry(planned, msg, now);
+    let mut entry = log_entry(planned, msg, None, now);
     // A user delete that falls back to expunging is logged as what happened, not as a move to Trash.
     entry.action = Action::Delete.label();
     entry.trash_file = Some(path.to_string_lossy().into_owned());

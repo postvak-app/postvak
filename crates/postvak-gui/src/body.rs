@@ -499,6 +499,7 @@ mod tests {
             subject: None,
             action: action.into(),
             trash_file: None,
+            ..Default::default()
         }
     }
 

@@ -59,7 +59,7 @@ The install also prints a hint with the granted scopes and how to widen them. It
 | `rules:propose` | Proposing rules, which are stored disabled until you approve them, and withdrawing its own proposals while they are still pending. | `rules_propose`, `rules_withdraw` |
 | `rules:write` | Approving and rejecting rules, turning them on or off, and changing their order. | `rules_approve`, `rules_move`, `rules_reject`, `rules_set_enabled` |
 | `files:write` | Writing attachment files into your Downloads folder, or the `--save-dir` you set, and the directories below it. The file name and content come from the sender. | `attachment_save` |
-| `mail:modify` | Acting on mail and the trash. | `archive`, `delete`, `junk`, `mark`, `move`, `rules_apply_existing`, `trash_purge`, `trash_restore`, `unsubscribe` |
+| `mail:modify` | Acting on mail and the trash. | `archive`, `delete`, `junk`, `mark`, `move`, `rules_apply_existing`, `trash_purge`, `trash_restore`, `undo`, `unsubscribe` |
 
 The default is `read,rules:propose`. Four example grants:
 
@@ -131,6 +131,7 @@ The names follow the CLI commands. A tool that lists things returns the CLI's `-
 - `rules_apply_existing` runs one enabled rule over the mail each account already holds, the way `postvak rules apply-existing` does, and reports `evaluated`, `actions` and `errors` per account. With `dry_run` it lists the planned rows from the local store. When the rule would delete mail from the server for good, it refuses with how many messages per account until it is called again with `yes`.
 - `trash_purge` deletes the backups older than each account's `trash_retention_days`, for good; it reports `removed` per account.
 - `trash_restore` restores a backup, given as the bare file name `trash_list` returns.
+- `undo` puts back what one logged action did, named by the `action_id` that `log` returns: mail goes back to its folder, read, flagged and tag changes are reversed, and deleted mail is restored from its backup. Each row says `put_back`, `restored`, or why it was left alone (`changed_since`, `ambiguous`, `backup_gone`, `nothing_to_undo`, `failed`). It takes a rule's action too.
 
 With more than one visible account, every tool that acts on one message needs `account`.
 
