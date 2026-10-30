@@ -23,10 +23,10 @@ use super::{dark, depth, net};
 const MAX_DEPTH: usize = 512;
 const STACK: usize = 64 * 1024 * 1024;
 
-/// The narrowest width a page is laid out at. Responsive mail stacks its columns below 600 px with
-/// `td { display: block }`, and Blitz paints nothing of such a cell (#313): at 601 px the media queries never match, and
-/// a narrower pane scrolls sideways instead of showing blank columns. `block_cells` covers mail that stacks at a wider
-/// breakpoint. Remove both once a pinned Blitz paints block cells.
+/// The narrowest width a page is laid out at. Responsive mail's queries below about 600 px stack its columns with
+/// `td { display: block }`, which `block_cells` undoes (#313), and also hide parts and resize text: at 601 px they never
+/// match, so such mail keeps its whole desktop layout, and a narrower pane scrolls sideways. Remove both once a pinned
+/// Blitz lays out block cells.
 const MIN_WIDTH: f32 = 601.0;
 
 /// The thread's name, which the panic hook uses to keep Blitz's panic messages, which can quote the mail, off stderr.
@@ -1564,27 +1564,44 @@ mod tests {
         assert_eq!(colour_of(&current, ".logo"), rgb([0x22; 3]));
     }
 
-    /// Blitz lays a `<td>` with `display: block` out but paints nothing of it. `MIN_WIDTH` keeps responsive mail's
-    /// media queries from making one; an inline `display: block` still does, hence this stays ignored until a
-    /// pinned Blitz fixes it (#313, upstream report still to be filed).
     #[test]
-    #[ignore = "BUG: Blitz 0.3.0-beta.4 does not paint a <td> with display: block (#313)"]
     fn a_table_cell_shown_as_a_block_is_painted() {
         let html = "<table width=100%><tr><td style=\"display:block;background:#ff0000\">one</td></tr></table>";
-        let mut current = None;
-        handle(&mut current, load(1, html, 300.0));
-        let Some(Reply::Strip { image, .. }) = handle(
-            &mut current,
-            Request::Paint {
-                generation: 1,
-                strip: 0,
-            },
-        ) else {
-            panic!("no strip");
-        };
-        let image = colours(&image);
-        let red = Colour([255, 0, 0, 255]);
-        assert!(image.pixels.contains(&red));
+        assert!(strip(html, 300.0).pixels.iter().any(|&p| is_red(p)));
+    }
+
+    /// Two cells a sender made blocks inline, in a pane narrower than the table: both backgrounds and both texts are
+    /// painted (#313). Whether the cells end up side by side, as `block_cells` lays them out, or stacked, as a fixed
+    /// Blitz would, is left open.
+    #[test]
+    fn two_block_cells_in_a_narrow_pane_paint_both_backgrounds_and_their_text() {
+        let html = "<table width=600 cellpadding=0 cellspacing=0><tr>\
+            <td width=300 style=\"display:block;background:#ff0000;color:#ffffff\">MMMM</td>\
+            <td width=300 style=\"display:block;background:#0000ff;color:#ffffff\">MMMM</td></tr></table>";
+        let image = strip(html, 400.0);
+        let white = at(&image, |p| p.r() > 200 && p.g() > 200 && p.b() > 200);
+        let backgrounds: [(&str, &dyn Fn(Colour) -> bool); 2] = [
+            ("red", &is_red),
+            ("blue", &|p: Colour| p.b() > 200 && p.r() < 60 && p.g() < 60),
+        ];
+        for (name, test) in backgrounds {
+            let painted = at(&image, test);
+            let (Some(left), Some(right), Some(top), Some(bottom)) = (
+                painted.iter().map(|&(x, _)| x).min(),
+                painted.iter().map(|&(x, _)| x).max(),
+                painted.iter().map(|&(_, y)| y).min(),
+                painted.iter().map(|&(_, y)| y).max(),
+            ) else {
+                panic!("no {name} background");
+            };
+            // The white text is drawn on the background, inside its box.
+            assert!(
+                white
+                    .iter()
+                    .any(|&(x, y)| (left..=right).contains(&x) && (top..=bottom).contains(&y)),
+                "no text on {name}"
+            );
+        }
     }
 
     /// Lays out and paints `html`, reporting whether an upstream crate panicked.
