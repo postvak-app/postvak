@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0](https://github.com/postvak-app/postvak/compare/v0.11.0...v0.12.0) - 2026-10-30
+
+### Added
+
+- *(gui)* pick a named list for a condition in the rule editor ([#476](https://github.com/postvak-app/postvak/pull/476))
+- *(rules)* agents propose list changes for a human to approve ([#475](https://github.com/postvak-app/postvak/pull/475))
+- *(rules)* a delay on a rule's actions (actions.after) ([#473](https://github.com/postvak-app/postvak/pull/473))
+- *(rules)* named lists that several rules share ([#472](https://github.com/postvak-app/postvak/pull/472))
+- *(rules)* preview rules as of another time with --as-of and as_of ([#471](https://github.com/postvak-app/postvak/pull/471))
+- *(gui)* reader and folder pane feedback, remembered remote content, long proposals ([#462](https://github.com/postvak-app/postvak/pull/462))
+- *(gui)* Preferences dialog that edits config.toml ([#467](https://github.com/postvak-app/postvak/pull/467))
+- *(gui)* make the rule proposal's text selectable ([#463](https://github.com/postvak-app/postvak/pull/463))
+- make accept loop poll interval configurable ([#461](https://github.com/postvak-app/postvak/pull/461))
+
+### Fixed
+
+- *(gui)* no task bar entries on Plasma for the tray and the scheme probe ([#468](https://github.com/postvak-app/postvak/pull/468))
+- *(gui)* bring the browser to the front for links in the Flatpak ([#466](https://github.com/postvak-app/postvak/pull/466))
+- *(gui)* stop each tray click leaving a launch entry on Plasma's task bar ([#465](https://github.com/postvak-app/postvak/pull/465))
+- *(rules)* a direct move from the GUI or MCP is not remembered as a rule's move ([#464](https://github.com/postvak-app/postvak/pull/464))
+
+### Other
+
+- specs for undo and the Phase 5 screens; remove stale specs and plans ([#459](https://github.com/postvak-app/postvak/pull/459))
+
 ## [0.11.0](https://github.com/postvak-app/postvak/compare/v0.10.0...v0.11.0) - 2026-10-30
 
 ### Added
