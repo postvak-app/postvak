@@ -261,6 +261,48 @@ pub(crate) fn results(app: &App) -> String {
     format!("{count} · {note}")
 }
 
+/// What the banner above an inbox's rows says while rule proposals wait for approval; None in other views, in a
+/// search and with nothing waiting. One proposal is named, with how much mail it would touch once its dry run is in.
+pub(crate) fn banner(app: &App) -> Option<String> {
+    let inbox = match &app.view {
+        View::AllInboxes => true,
+        View::Folder { folder, .. } => folder.eq_ignore_ascii_case("INBOX"),
+        _ => false,
+    };
+    if !inbox || app.search.is_some() {
+        return None;
+    }
+    let waiting: Vec<_> = (app.rules.rules.iter())
+        .filter(|rule| super::rules::is_proposal(rule))
+        .collect();
+    let [rule] = waiting.as_slice() else {
+        return (!waiting.is_empty()).then(|| format!("{} rules waiting for you", waiting.len()));
+    };
+    let who = match super::rules::proposer(rule.proposed_by.as_deref().unwrap_or_default()) {
+        who if who.starts_with("claude") => "Claude".to_string(),
+        "" | "agent" | "mcp" => "An agent".to_string(),
+        who => clean(who, false),
+    };
+    let summary = super::draft::summary(rule);
+    let affects = app
+        .rules
+        .dry_runs
+        .get(&rule.name)
+        .filter(|run| run.error.is_none())
+        .map(|run| {
+            let noun = super::numbers::noun(run.count as u64, "message", "messages");
+            format!(
+                " Would affect {} {noun}.",
+                super::numbers::count(run.count as u64)
+            )
+        })
+        .unwrap_or_default();
+    Some(format!(
+        "{who} suggests the rule {}: {summary}.{affects}",
+        clean(&rule.name, false)
+    ))
+}
+
 /// What an empty list says instead of rows; nothing before a search query is typed.
 pub(crate) fn empty(view: &View, search: Option<&str>, filter: Filter) -> String {
     let kind =
@@ -1086,6 +1128,38 @@ mod tests {
         open.click("Clear filter");
         assert_eq!(open.with(|live| live.app.filter), Filter::default());
         assert!(open.find("Clear filter").is_empty());
+    }
+
+    const PROPOSAL: &str = "[[rules]]\nname = \"codes\"\nenabled = false\nproposed_by = \"mcp:claude-desktop\"\nmatch.subject = { contains = \"code\" }\nactions = { delete = true }\n";
+
+    #[test]
+    fn the_inbox_says_a_proposal_waits_and_review_opens_rules() {
+        let fx = Fixture::new(&["work"]);
+        std::fs::write(fx.paths.rules_file(), PROPOSAL).unwrap();
+        fx.add("work", message("INBOX", 1, "your code is 1234"));
+        let (open, _wires) = fx.window();
+        open.tick_until(|open| !open.labels_containing("Would affect 1 message.").is_empty());
+        assert_eq!(
+            open.labels_containing(
+                "Claude suggests the rule codes: subject contains \"code\" → delete."
+            )
+            .len(),
+            1
+        );
+        open.click("Review");
+        assert_eq!(open.with(|live| live.app.view.clone()), View::Rules);
+    }
+
+    #[test]
+    fn the_banner_counts_several_and_leaves_other_folders_alone() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Receipts", None);
+        let second = PROPOSAL.replace("codes", "more codes");
+        std::fs::write(fx.paths.rules_file(), format!("{PROPOSAL}\n{second}")).unwrap();
+        let (open, _wires) = fx.window();
+        assert_eq!(open.labels_containing("2 rules waiting for you").len(), 1);
+        open.click("Receipts");
+        assert!(open.find("Review").is_empty());
     }
 
     #[test]

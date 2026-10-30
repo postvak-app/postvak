@@ -185,6 +185,7 @@ fn present_folder_dialog(app: &App, window: &MailWindow) {
 
 fn present_list(app: &App, window: &MailWindow) {
     window.set_list_title(list::title(&app.view).unwrap_or_default().into());
+    window.set_list_banner(list::banner(app).unwrap_or_default().into());
     window.set_filter_label(list::filter_label(app.filter).unwrap_or_default().into());
     let filter = list::FILTERS.iter().position(|(_, f)| *f == app.filter);
     window.set_list_filter(
@@ -1151,6 +1152,9 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     });
     window.on_toggle_provenance(move || {
         act(UiAction::ToggleProvenance);
+    });
+    window.on_review_proposals(move || {
+        act(UiAction::SelectView(View::Rules));
     });
     window.on_toggle_why(move || {
         act(UiAction::ToggleWhy);

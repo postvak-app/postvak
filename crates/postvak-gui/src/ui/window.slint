@@ -107,6 +107,8 @@ export component MailWindow inherits Window {
     in property <bool> history-open;
     in property <[string]> history;
 
+    // Over an inbox's rows while rule proposals wait.
+    in property <string> list-banner;
     in property <string> list-title;
     in property <int> list-filter;
     in property <string> filter-label;
@@ -231,6 +233,7 @@ export component MailWindow inherits Window {
     callback new-rule();
     callback rule-from();
     callback reply();
+    callback review-proposals();
     callback edit-shown-rule();
     callback move-back();
     callback toggle-provenance();
@@ -532,6 +535,8 @@ export component MailWindow inherits Window {
                     focused: root.focused-pane == Pane.list;
                     list := ListPane {
                         title: root.list-title;
+                        banner: root.list-banner;
+                        review => { root.review-proposals(); }
                         filter: root.list-filter;
                         filter-label: root.filter-label;
                         filter-icon: root.filter-icon;
