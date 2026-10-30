@@ -9,15 +9,16 @@ import { BodyInfo, BodyPane, PageInfo, SelectedData, StripData, ToolButton } fro
 import { ProposalData, RuleData, RulesPane, Sheet } from "rules.slint";
 import { RuleDialog, RuleEditor, UnsavedDialog } from "rule_editor.slint";
 import { AboutDialog } from "about.slint";
+import { Preferences, PreferencesDialog } from "preferences.slint";
 import { ListPane, RowData } from "list.slint";
 
 export enum Pane { body, folders, list }
 
 // The menu items that act on the app; `menu.rs` says what each does.
-export enum MenuAction { about, add-account, add-to-selection, archive, delete, documentation, flag, history, junk, keys, mark-folder-read, move, new-folder, open-at-login, original-colours, read-or-unread, save-eml, save-eml-as, search, select-all, sync-now, text-or-html, theme-dark, theme-light, theme-system, view-source }
+export enum MenuAction { about, add-account, add-to-selection, archive, delete, documentation, flag, history, junk, keys, mark-folder-read, move, new-folder, open-at-login, original-colours, preferences, read-or-unread, save-eml, save-eml-as, search, select-all, sync-now, text-or-html, theme-dark, theme-light, theme-system, view-source }
 
 // A dialog that closes; the same names as `state::Dialog`.
-export enum Dialog { help, unsaved, apply-confirm, rule, folder, account, about, source, move, history }
+export enum Dialog { help, unsaved, apply-confirm, rule, folder, account, about, preferences, source, move, history }
 
 // Which menu items would do something now; the others are disabled.
 export struct MenuState {
@@ -297,6 +298,12 @@ export component MailWindow inherits Window {
             keys.focus();
         }
     }
+    property <bool> preferences-open: Preferences.open;
+    changed preferences-open => {
+        if (!root.preferences-open) {
+            keys.focus();
+        }
+    }
 
     title: "Postvak";
     // macOS shows it in the Dock, which expects Apple's margin.
@@ -335,6 +342,11 @@ export component MailWindow inherits Window {
                 checked: root.menu.opens-at-login;
                 enabled: root.menu.open-at-login;
                 activated => { root.menu-item(MenuAction.open-at-login); }
+            }
+            MenuItem {
+                title: "Preferences…";
+                shortcut: @keys(Control + ",");
+                activated => { root.menu-item(MenuAction.preferences); }
             }
             MenuSeparator { }
             MenuItem {
@@ -731,6 +743,18 @@ export component MailWindow inherits Window {
         close-icon: root.close-icon;
         close => { root.close-dialog(Dialog.about); }
         open-url(url) => { root.open-link(url); }
+    }
+
+    if Preferences.open: Scrim {
+        close => { root.close-dialog(Dialog.preferences); }
+    }
+    if Preferences.open: PreferencesDialog {
+        x: (root.width - self.width) / 2;
+        y: Theme.top-bar + Theme.inset;
+        room: root.height - 2 * (Theme.top-bar + Theme.inset);
+        close-icon: root.close-icon;
+        remove-icon: root.close-icon;
+        close => { root.close-dialog(Dialog.preferences); }
     }
 
     if root.account-open: Scrim {

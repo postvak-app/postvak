@@ -702,6 +702,46 @@ fn add_account_dark() {
     add_account("dark", "gui_add_account_dark");
 }
 
+/// Preferences over the inbox, at `section`; the work account has an alias and a trusted authserv-id.
+fn preferences(theme: &str, section: super::preferences::Section, name: &str) {
+    let (fx, open, _wires) = inbox(theme);
+    let path = fx.paths.config_file();
+    postvak_core::config::update_account(&path, "work", |a| {
+        a.aliases = vec!["*@shop.example.com".into()];
+        a.trusted_authserv_ids = Some(vec!["mx.example.com".into()]);
+    })
+    .unwrap();
+    open.window()
+        .invoke_menu_item(super::ui::MenuAction::Preferences);
+    open.with(|live| {
+        live.app.apply(UiAction::PreferencesSection(section));
+        live.app.apply(UiAction::PreferencesAccount(1));
+    });
+    open.tick();
+    assert_eq!(open.find("Preferences").len(), 1);
+    slint::ComponentHandle::window(&open.window())
+        .dispatch_event(slint::platform::WindowEvent::WindowActiveChanged(false));
+    snapshot(&open, name);
+}
+
+#[test]
+fn preferences_general_light() {
+    preferences(
+        "light",
+        super::preferences::Section::General,
+        "gui_preferences_general_light",
+    );
+}
+
+#[test]
+fn preferences_accounts_dark() {
+    preferences(
+        "dark",
+        super::preferences::Section::Accounts,
+        "gui_preferences_accounts_dark",
+    );
+}
+
 /// INBOX of `work` with the newsletter open as HTML, in a window `width` points wide, once it is painted.
 fn newsletter(theme: &str, width: f32) -> (Fixture, Open, Wires) {
     html_message(

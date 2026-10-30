@@ -270,17 +270,56 @@ pub fn save_account(path: &Path, account: &AccountConfig) -> Result<Config, Conf
     })
 }
 
+/// Changes account `name` as config.toml reads now and writes it with [`save_account`]; returns the config the file
+/// then holds.
+pub fn update_account(
+    path: &Path,
+    name: &str,
+    change: impl FnOnce(&mut AccountConfig),
+) -> Result<Config, ConfigError> {
+    let mut account = Config::load(path)?
+        .account(name)
+        .cloned()
+        .ok_or_else(|| ConfigError::Invalid(format!("no account named '{name}'")))?;
+    change(&mut account);
+    save_account(path, &account)
+}
+
+/// Changes `[ui]` as config.toml reads now, keeping the rest of the file's text and comments. A setting left at its
+/// default is only written when the file already had it. Nothing is written unless the whole file validates; returns
+/// the config it now holds.
+pub fn update_ui(path: &Path, change: impl FnOnce(&mut UiConfig)) -> Result<Config, ConfigError> {
+    let defaults = to_table(&UiConfig::default())?;
+    edit_toml(path, LOCK, |doc| {
+        let mut ui = Config::parse(&doc.to_string())?.ui;
+        change(&mut ui);
+        let new = to_table(&ui)?;
+        let item = doc.entry("ui").or_insert_with(|| {
+            let mut table = toml_edit::Table::new();
+            // No `[ui]` header while it holds nothing.
+            table.set_implicit(true);
+            toml_edit::Item::Table(table)
+        });
+        // `ui = { … }` holds the same table inline.
+        if item.is_inline_table() {
+            let inline = std::mem::take(item);
+            *item = toml_edit::Item::Table(
+                inline
+                    .into_table()
+                    .map_err(|_| ConfigError::Invalid("`ui` must be a table".into()))?,
+            );
+        }
+        let table = item
+            .as_table_mut()
+            .ok_or_else(|| ConfigError::Invalid("`ui` must be a table".into()))?;
+        merge_table(table, &new, &defaults);
+        Config::parse(&doc.to_string())
+    })
+}
+
 /// Sets `[ui] theme`, keeping the rest of the file's text and comments.
 pub fn save_theme(path: &Path, theme: Theme) -> Result<(), ConfigError> {
-    edit_toml(path, LOCK, |doc| {
-        let ui = doc
-            .entry("ui")
-            .or_insert_with(toml_edit::table)
-            .as_table_like_mut()
-            .ok_or_else(|| ConfigError::Invalid("`ui` must be a table".into()))?;
-        ui.insert("theme", toml_edit::value(theme.as_str()));
-        Ok(())
-    })
+    update_ui(path, |ui| ui.theme = theme).map(drop)
 }
 
 /// Sets `[ui] remote_content`, or removes it when `domains` is empty, keeping the rest of the file's text and comments.
@@ -842,6 +881,63 @@ trusted_authserv_ids = ["mx.home.test"]
         );
         let cfg = Config::load(&path).unwrap();
         assert_eq!((cfg.ui.theme, cfg.accounts.len()), (Theme::Light, 2));
+    }
+
+    #[test]
+    fn update_ui_keeps_comments_and_writes_only_what_differs_from_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let text = format!("{SAMPLE}\n[ui]\n# mine\ntheme = \"dark\" # at night\n");
+        std::fs::write(&path, &text).unwrap();
+        let cfg = update_ui(&path, |ui| ui.check_updates = true).unwrap();
+        assert!(cfg.ui.check_updates);
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.starts_with(&text), "{saved}");
+        assert!(saved.ends_with("check_updates = true\n"), "{saved}");
+        assert!(!saved.contains("sender_images"), "{saved}");
+
+        update_ui(&path, |ui| ui.check_updates = false).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("check_updates = false"), "{saved}");
+        assert!(saved.contains("theme = \"dark\" # at night"), "{saved}");
+    }
+
+    #[test]
+    fn update_ui_edits_an_inline_table_and_adds_no_empty_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, SAMPLE).unwrap();
+        update_ui(&path, |ui| ui.theme = Theme::System).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), SAMPLE);
+
+        std::fs::write(&path, format!("ui = {{ theme = \"light\" }}\n{SAMPLE}")).unwrap();
+        let cfg = update_ui(&path, |ui| ui.sender_images = true).unwrap();
+        assert_eq!((cfg.ui.theme, cfg.ui.sender_images), (Theme::Light, true));
+        assert_eq!(Config::load(&path).unwrap().ui, cfg.ui);
+    }
+
+    #[test]
+    fn update_account_changes_one_account_and_refuses_an_unknown_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, SAMPLE).unwrap();
+        let first = Config::load(&path).unwrap().accounts[0].name.clone();
+        let cfg = update_account(&path, &first, |a| a.notify = false).unwrap();
+        assert!(!cfg.accounts[0].notify);
+        assert_eq!(
+            cfg.accounts[1].trusted_authserv_ids.as_deref(),
+            Some(&["mx.home.test".to_string()][..])
+        );
+        assert!(matches!(
+            update_account(&path, "nope", |a| a.notify = false),
+            Err(ConfigError::Invalid(_))
+        ));
+        let zero = update_account(&path, &first, |a| a.trash_retention_days = 0);
+        assert!(matches!(zero, Err(ConfigError::Invalid(_))));
+        assert_eq!(
+            Config::load(&path).unwrap().accounts[0].trash_retention_days,
+            30
+        );
     }
 
     #[test]
