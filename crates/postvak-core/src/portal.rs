@@ -101,6 +101,33 @@ pub fn save_file(
     file_path(&uri).map(Some)
 }
 
+/// Opens `uri` with the desktop's default app (`OpenURI.OpenURI`), which comes to the front with `activation_token`.
+/// Blocks until the app started, so not on the window's thread.
+pub fn open_uri(uri: &str, activation_token: Option<&str>) -> Result<()> {
+    request("OpenURI", "OpenURI", |token| {
+        (
+            "",
+            uri.to_string(),
+            open_uri_options(token, activation_token),
+        )
+    })?;
+    Ok(())
+}
+
+fn open_uri_options<'a>(
+    handle_token: &str,
+    activation_token: Option<&str>,
+) -> HashMap<&'a str, Value<'static>> {
+    let mut options = HashMap::from([("handle_token", Value::from(handle_token.to_string()))]);
+    if let Some(activation_token) = activation_token {
+        options.insert(
+            "activation_token",
+            Value::from(activation_token.to_string()),
+        );
+    }
+    options
+}
+
 /// Runs `exe` with `args` in a new sandbox of this Flatpak app (`org.freedesktop.portal.Flatpak.Spawn`), with
 /// `envs` added and stdout and stderr to `output`. Returns once it started: the new sandbox is not this process's
 /// child and lives on after this one ends.
@@ -225,6 +252,14 @@ mod tests {
             PathBuf::from("/home/me/My Mail/report.pdf")
         );
         assert!(file_path("https://example.com/report.pdf").is_err());
+    }
+
+    #[test]
+    fn the_activation_token_goes_to_the_portal_only_when_there_is_one() {
+        let with = open_uri_options("postvak7_0", Some("tok"));
+        assert_eq!(with.get("activation_token"), Some(&Value::from("tok")));
+        assert_eq!(with.get("handle_token"), Some(&Value::from("postvak7_0")));
+        assert!(!open_uri_options("postvak7_0", None).contains_key("activation_token"));
     }
 
     #[test]

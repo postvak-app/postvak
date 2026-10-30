@@ -41,6 +41,19 @@ pub(crate) fn on_event(event: &WindowEvent) {
 }
 
 fn start(target: &OsStr, text: bool, token: Option<&str>) -> std::io::Result<()> {
+    // The Flatpak's xdg-open asks the portal without the token, so a link would open behind the window.
+    #[cfg(target_os = "linux")]
+    if postvak_core::paths::flatpak_id().is_some()
+        && let Some(uri) = uri(target)
+    {
+        let (uri, token) = (uri.to_owned(), token.map(str::to_owned));
+        worker::spawn("opener-portal", move || {
+            if let Err(e) = postvak_core::portal::open_uri(&uri, token.as_deref()) {
+                log::warn!("could not open a link: {e:#}");
+            }
+        });
+        return Ok(());
+    }
     let mut command = command(target, text, token);
     let opener = command.get_program().to_string_lossy().into_owned();
     let mut child = command.spawn()?;
@@ -51,6 +64,14 @@ fn start(target: &OsStr, text: bool, token: Option<&str>) -> std::io::Result<()>
         Err(e) => log::warn!("{opener}: {e}"),
     });
     Ok(())
+}
+
+/// `target` when it is a URI rather than a local file, which the OpenURI portal refuses.
+#[cfg(any(target_os = "linux", test))]
+fn uri(target: &OsStr) -> Option<&str> {
+    target
+        .to_str()
+        .filter(|t| !std::path::Path::new(t).is_absolute())
 }
 
 /// The opener for `target`, handed `token` under both names a launched app looks for it by.
@@ -175,7 +196,20 @@ mod linux {
 mod tests {
     use std::ffi::OsStr;
 
-    use super::{Open, Pending, command};
+    use super::{Open, Pending, command, uri};
+
+    #[test]
+    fn a_link_is_a_uri_and_a_local_file_is_not() {
+        assert_eq!(
+            uri(OsStr::new("https://example.org")),
+            Some("https://example.org")
+        );
+        assert_eq!(
+            uri(OsStr::new("mailto:a@example.org")),
+            Some("mailto:a@example.org")
+        );
+        assert_eq!(uri(OsStr::new("/home/me/.config/postvak/rules.toml")), None);
+    }
 
     fn open(target: &str) -> Open {
         Open {
