@@ -1,7 +1,9 @@
+use std::borrow::Cow;
+
 use crate::config::Identity;
 use crate::message::{auth, bare_addresses, header_text};
 use crate::rules::{Action, CompiledRule, Conditions};
-use crate::store::{Message, has_flag};
+use crate::store::{Message, has_flag, with_flag};
 
 /// Set by `trash restore`; rules never act on, or notify about, mail carrying it.
 pub const RESTORED_KEYWORD: &str = "$PostvakRestored";
@@ -50,10 +52,7 @@ pub fn evaluate(rules: &[CompiledRule], msg: &Message, ctx: &Context) -> Plan {
     }
     let mut plan = Plan::default();
     let mut explicit_notify: Option<bool> = None;
-    for rule in rules {
-        if !rule_matches(rule, msg, ctx) {
-            continue;
-        }
+    for (_, rule) in matching(rules, msg, ctx) {
         let mut stop = false;
         for action in &rule.rule.actions {
             match action {
@@ -88,18 +87,63 @@ pub fn evaluate(rules: &[CompiledRule], msg: &Message, ctx: &Context) -> Plan {
     plan
 }
 
-/// Whether `rule` alone would match `msg`: the checks `evaluate` makes before it plans a rule's actions. Whether an
-/// earlier rule's `stop` or delete keeps it from acting is left to `evaluate`. What coverage and sender statistics
-/// report as a rule's match.
-pub fn rule_matches(rule: &CompiledRule, msg: &Message, ctx: &Context) -> bool {
-    !has_flag(&msg.flags, RESTORED_KEYWORD)
+/// The rules that match `msg`, in file order, with their positions in `rules`. Each is checked against the message as
+/// the rules above it that matched left it, so a rule sees their `read`, `flagged` and `tag` changes in the same pass,
+/// as it would on the next sync; changes of rules below a `stop` or delete, which never act, are not carried on. Whether
+/// an earlier rule's `stop` or delete keeps a matching rule from acting is left to `evaluate`. What coverage and sender
+/// statistics report as the rules' matches.
+pub fn matching<'r>(
+    rules: &'r [CompiledRule],
+    msg: &Message,
+    ctx: &Context,
+) -> impl Iterator<Item = (usize, &'r CompiledRule)> {
+    // Only the flags change, so only they are copied, and only once a rule changes one.
+    let mut flags = Cow::Borrowed(msg.flags.as_str());
+    // After a `stop` or delete no rule acts, so what a later one would set never happens and is not carried on.
+    let mut acting = true;
+    rules.iter().enumerate().filter(move |(_, rule)| {
+        if !rule_matches(rule, msg, &flags, ctx) {
+            return false;
+        }
+        if acting {
+            for (flag, set) in rule.rule.actions.iter().filter_map(flag_change) {
+                if has_flag(&flags, flag) != set {
+                    flags = Cow::Owned(with_flag(&flags, flag, set));
+                }
+            }
+            acting = !rule
+                .rule
+                .actions
+                .iter()
+                .any(|action| matches!(action, Action::Stop | Action::Delete));
+        }
+        true
+    })
+}
+
+/// The flag and its wanted state that `action` sets, when it is a flag change.
+pub(crate) fn flag_change(action: &Action) -> Option<(&str, bool)> {
+    match action {
+        Action::Flag => Some(("\\Flagged", true)),
+        Action::MarkRead => Some(("\\Seen", true)),
+        Action::MarkUnread => Some(("\\Seen", false)),
+        Action::Unflag => Some(("\\Flagged", false)),
+        Action::Tag(keyword) => Some((keyword.as_str(), true)),
+        _ => None,
+    }
+}
+
+/// Whether `rule` alone would match `msg` carrying `flags`: the checks `evaluate` makes before it plans a rule's
+/// actions.
+fn rule_matches(rule: &CompiledRule, msg: &Message, flags: &str, ctx: &Context) -> bool {
+    !has_flag(flags, RESTORED_KEYWORD)
         && rule.rule.enabled
         && rule.applies_to_account(ctx.account)
         && crate::folder_name::rule_names(rule.folder(), &msg.folder)
         && (ctx.mode != Mode::Normal || msg.internaldate >= rule.first_seen_at)
         // An unknown body is neither a match nor a mismatch, so `none` cannot turn a failed fetch into a hit.
         && (!rule.needs_body() || msg.body_text.is_some())
-        && matches(&rule.conditions, msg, ctx)
+        && matches(&rule.conditions, msg, flags, ctx)
 }
 
 fn field(value: &Option<String>) -> &str {
@@ -118,7 +162,7 @@ fn in_any_domain(addresses: &str, domains: &[String]) -> bool {
         })
 }
 
-fn matches(c: &Conditions, msg: &Message, ctx: &Context) -> bool {
+fn matches(c: &Conditions, msg: &Message, flags: &str, ctx: &Context) -> bool {
     if let Some(m) = &c.from
         && !m.is_address_match(field(&msg.from_addr))
     {
@@ -188,17 +232,17 @@ fn matches(c: &Conditions, msg: &Message, ctx: &Context) -> bool {
         return false;
     }
     if let Some(read) = c.read
-        && msg.is_seen() != read
+        && has_flag(flags, "\\Seen") != read
     {
         return false;
     }
     if let Some(flagged) = c.flagged
-        && msg.is_flagged() != flagged
+        && has_flag(flags, "\\Flagged") != flagged
     {
         return false;
     }
     if let Some(tag) = &c.tag
-        && !has_flag(&msg.flags, tag)
+        && !has_flag(flags, tag)
     {
         return false;
     }
@@ -218,10 +262,10 @@ fn matches(c: &Conditions, msg: &Message, ctx: &Context) -> bool {
             return false;
         }
     }
-    if c.none.iter().any(|entry| matches(entry, msg, ctx)) {
+    if c.none.iter().any(|entry| matches(entry, msg, flags, ctx)) {
         return false;
     }
-    c.any.is_empty() || c.any.iter().any(|branch| matches(branch, msg, ctx))
+    c.any.is_empty() || c.any.iter().any(|branch| matches(branch, msg, flags, ctx))
 }
 
 #[cfg(test)]
@@ -941,6 +985,103 @@ actions = { flagged = true }
         assert!(!fires(toml, &m));
         m.size = Some(1025);
         assert!(fires(toml, &m));
+    }
+
+    /// #411: a later rule sees the tag an earlier one set in the same pass, so "Junk, unless tagged Security" keeps
+    /// the security alert in place on its first pass rather than only once the tag is synced back.
+    #[test]
+    fn later_rules_see_the_tags_and_flags_earlier_rules_set() {
+        let id = identity();
+        let toml = r#"
+[[rules]]
+name = "security"
+match.subject = { contains = "sign-in" }
+actions = { tag = "Security", read = true, flagged = true }
+
+[[rules]]
+name = "marketing"
+match.from = { contains = "proton" }
+match.none = [{ tag = "security" }]
+actions.move = "Junk"
+
+[[rules]]
+name = "unread"
+match.read = false
+actions.tag = "$todo"
+
+[[rules]]
+name = "flagged"
+match.flagged = true
+actions.tag = "$seen-flag"
+"#;
+        let compiled = rules(toml, 0);
+        let alert = msg("news@proton.me", "p@x", "New sign-in", 100, false);
+        let plan = evaluate(&compiled, &alert, &ctx(&id, 200));
+        let fired: Vec<&str> = plan.actions.iter().map(|a| a.rule.as_str()).collect();
+        assert_eq!(fired, ["security", "security", "security", "flagged"]);
+        let names: Vec<&str> = matching(&compiled, &alert, &ctx(&id, 200))
+            .map(|(_, rule)| rule.rule.name.as_str())
+            .collect();
+        assert_eq!(names, ["security", "flagged"]);
+
+        let promo = msg("news@proton.me", "p@x", "Sale", 100, false);
+        let plan = evaluate(&compiled, &promo, &ctx(&id, 200));
+        let fired: Vec<&str> = plan.actions.iter().map(|a| a.rule.as_str()).collect();
+        assert_eq!(fired, ["marketing", "unread"]);
+    }
+
+    /// A rule after a `stop` never acts, so a tag it would set does not make a later rule match.
+    #[test]
+    fn rules_after_a_stop_do_not_carry_their_tags_on() {
+        let toml = r#"
+[[rules]]
+name = "stop"
+match.subject = { contains = "x" }
+actions.stop = true
+
+[[rules]]
+name = "tag"
+match.subject = { contains = "x" }
+actions.tag = "$late"
+
+[[rules]]
+name = "route"
+match.tag = "$late"
+actions.move = "Late"
+"#;
+        let id = identity();
+        let compiled = rules(toml, 0);
+        let m = msg("a@x", "p@x", "x", 100, false);
+        let names: Vec<&str> = matching(&compiled, &m, &ctx(&id, 200))
+            .map(|(_, rule)| rule.rule.name.as_str())
+            .collect();
+        assert_eq!(names, ["stop", "tag"]);
+    }
+
+    #[test]
+    fn an_earlier_rule_clearing_a_flag_hides_it_from_later_rules() {
+        let toml = r#"
+[[rules]]
+name = "unflag"
+match.subject = { contains = "x" }
+actions.flagged = false
+
+[[rules]]
+name = "flagged"
+match.flagged = true
+actions.read = true
+"#;
+        let mut m = msg("a@x", "p@x", "x", 100, false);
+        m.flags = "\\Flagged $Work".into();
+        let id = identity();
+        let compiled = rules(toml, 0);
+        let plan = evaluate(&compiled, &m, &ctx(&id, 200));
+        let fired: Vec<&str> = plan.actions.iter().map(|a| a.rule.as_str()).collect();
+        assert_eq!(fired, ["unflag"]);
+        assert_eq!(
+            m.flags, "\\Flagged $Work",
+            "the message itself is left as it is"
+        );
     }
 
     #[test]
