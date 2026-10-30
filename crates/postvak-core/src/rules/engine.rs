@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use crate::config::Identity;
 use crate::message::{auth, bare_addresses, header_text};
 use crate::rules::{Action, CompiledRule, Conditions};
@@ -50,10 +52,7 @@ pub fn evaluate(rules: &[CompiledRule], msg: &Message, ctx: &Context) -> Plan {
     }
     let mut plan = Plan::default();
     let mut explicit_notify: Option<bool> = None;
-    for rule in rules {
-        if !rule_matches(rule, msg, ctx) {
-            continue;
-        }
+    for (_, rule) in matching(rules, msg, ctx) {
         let mut stop = false;
         for action in &rule.rule.actions {
             match action {
@@ -88,10 +87,54 @@ pub fn evaluate(rules: &[CompiledRule], msg: &Message, ctx: &Context) -> Plan {
     plan
 }
 
-/// Whether `rule` alone would match `msg`: the checks `evaluate` makes before it plans a rule's actions. Whether an
-/// earlier rule's `stop` or delete keeps it from acting is left to `evaluate`. What coverage and sender statistics
-/// report as a rule's match.
-pub fn rule_matches(rule: &CompiledRule, msg: &Message, ctx: &Context) -> bool {
+/// The rules that match `msg`, in file order, with their positions in `rules`. Each is checked against the message as
+/// the rules above it that matched left it, so a rule sees their `read`, `flagged` and `tag` changes in the same pass,
+/// as it would on the next sync. Whether an earlier rule's `stop` or delete keeps it from acting is left to `evaluate`.
+/// What coverage and sender statistics report as the rules' matches.
+pub fn matching<'r>(
+    rules: &'r [CompiledRule],
+    msg: &Message,
+    ctx: &Context,
+) -> impl Iterator<Item = (usize, &'r CompiledRule)> {
+    let mut msg = Cow::Borrowed(msg);
+    rules.iter().enumerate().filter(move |(_, rule)| {
+        if !rule_matches(rule, &msg, ctx) {
+            return false;
+        }
+        for action in &rule.rule.actions {
+            set_flag(&mut msg, action);
+        }
+        true
+    })
+}
+
+/// `msg` with the flag or keyword `action` sets or clears; other actions leave it as it is.
+fn set_flag(msg: &mut Cow<Message>, action: &Action) {
+    let (flag, set) = match action {
+        Action::MarkRead => ("\\Seen", true),
+        Action::MarkUnread => ("\\Seen", false),
+        Action::Flag => ("\\Flagged", true),
+        Action::Unflag => ("\\Flagged", false),
+        Action::Tag(keyword) => (keyword.as_str(), true),
+        _ => return,
+    };
+    if has_flag(&msg.flags, flag) == set {
+        return;
+    }
+    let flags = &mut msg.to_mut().flags;
+    *flags = if set {
+        format!("{flags} {flag}").trim_start().to_string()
+    } else {
+        flags
+            .split_whitespace()
+            .filter(|f| !f.eq_ignore_ascii_case(flag))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+}
+
+/// Whether `rule` alone would match `msg`: the checks `evaluate` makes before it plans a rule's actions.
+fn rule_matches(rule: &CompiledRule, msg: &Message, ctx: &Context) -> bool {
     !has_flag(&msg.flags, RESTORED_KEYWORD)
         && rule.rule.enabled
         && rule.applies_to_account(ctx.account)
@@ -941,6 +984,72 @@ actions = { flagged = true }
         assert!(!fires(toml, &m));
         m.size = Some(1025);
         assert!(fires(toml, &m));
+    }
+
+    /// #411: a later rule sees the tag an earlier one set in the same pass, so "Junk, unless tagged Security" keeps
+    /// the security alert in place on its first pass rather than only once the tag is synced back.
+    #[test]
+    fn later_rules_see_the_tags_and_flags_earlier_rules_set() {
+        let id = identity();
+        let toml = r#"
+[[rules]]
+name = "security"
+match.subject = { contains = "sign-in" }
+actions = { tag = "Security", read = true, flagged = true }
+
+[[rules]]
+name = "marketing"
+match.from = { contains = "proton" }
+match.none = [{ tag = "security" }]
+actions.move = "Junk"
+
+[[rules]]
+name = "unread"
+match.read = false
+actions.tag = "$todo"
+
+[[rules]]
+name = "flagged"
+match.flagged = true
+actions.tag = "$seen-flag"
+"#;
+        let compiled = rules(toml, 0);
+        let alert = msg("news@proton.me", "p@x", "New sign-in", 100, false);
+        let plan = evaluate(&compiled, &alert, &ctx(&id, 200));
+        let fired: Vec<&str> = plan.actions.iter().map(|a| a.rule.as_str()).collect();
+        assert_eq!(fired, ["security", "security", "security", "flagged"]);
+        let names: Vec<&str> = matching(&compiled, &alert, &ctx(&id, 200))
+            .map(|(_, rule)| rule.rule.name.as_str())
+            .collect();
+        assert_eq!(names, ["security", "flagged"]);
+
+        let promo = msg("news@proton.me", "p@x", "Sale", 100, false);
+        let plan = evaluate(&compiled, &promo, &ctx(&id, 200));
+        let fired: Vec<&str> = plan.actions.iter().map(|a| a.rule.as_str()).collect();
+        assert_eq!(fired, ["marketing", "unread"]);
+    }
+
+    #[test]
+    fn an_earlier_rule_clearing_a_flag_hides_it_from_later_rules() {
+        let toml = r#"
+[[rules]]
+name = "unflag"
+match.subject = { contains = "x" }
+actions.flagged = false
+
+[[rules]]
+name = "flagged"
+match.flagged = true
+actions.read = true
+"#;
+        let mut m = msg("a@x", "p@x", "x", 100, false);
+        m.flags = "\\Flagged $Work".into();
+        let id = identity();
+        let compiled = rules(toml, 0);
+        let plan = evaluate(&compiled, &m, &ctx(&id, 200));
+        let fired: Vec<&str> = plan.actions.iter().map(|a| a.rule.as_str()).collect();
+        assert_eq!(fired, ["unflag"]);
+        assert_eq!(m.flags, "\\Flagged $Work", "the message itself is left as it is");
     }
 
     #[test]
