@@ -10,14 +10,16 @@ use super::draft::{self, ACTIONS, Condition, Draft, Field, Op};
 use super::folders::{self, Entry, FolderEntry};
 use super::html::{self, HtmlState};
 use super::keys::{self, Key, Named, Press};
+use super::preferences::{self, Section, Setting};
 use super::rows::{ListModel, PageModel, model, sync, synced};
 use super::rules::SheetSort;
-use super::state::{self, App, Focus, UiAction, View};
+use super::state::{self, App, Focus, OpenAtLogin, UiAction, View};
 use super::ui::{
-    AccountFields, ActionData, AttachmentData, BodyInfo, CodeLine, ConditionData, Dialog, Dot,
-    FolderItem, FolderKind, KeyHelp, MailWindow, MenuAction, MenuChoice, MenuState, PageInfo, Pane,
-    ProposalData, ProvenanceData, Remote, RuleData, RuleEditor, RunData, SampleData, SelectedData,
-    Sheet, StatusLine, Theme, ThemePreference, ToolButton, WhyLine,
+    AccountFields, AccountPreferences, ActionData, AttachmentData, BodyInfo, CodeLine,
+    ConditionData, Dialog, Dot, FolderItem, FolderKind, KeyHelp, MailWindow, MenuAction,
+    MenuChoice, MenuState, PageInfo, Pane, Preferences, ProposalData, ProvenanceData, Remote,
+    RuleData, RuleEditor, RunData, SampleData, SelectedData, Sheet, StatusLine, Theme,
+    ThemePreference, ToolButton, WhyLine,
 };
 use super::{account, body, icons, list, menu, rules, status, theme, toolbar};
 use postvak_core::message::clean;
@@ -128,6 +130,7 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
     present_body(app, window);
     present_sheet(app, window);
     present_editor(app, window);
+    present_preferences(app, window);
 
     let enabled = |item: MenuAction| menu::action(item, app).is_some();
     window.set_menu(MenuState {
@@ -596,6 +599,151 @@ fn present_editor(app: &App, window: &MailWindow) {
     editor.set_confirm_remove(draft.confirm_remove);
     editor.set_applies(draft_applies(app));
     editor.set_saved(draft.original.is_some());
+}
+
+const THEMES: [config::Theme; 3] = [
+    config::Theme::System,
+    config::Theme::Light,
+    config::Theme::Dark,
+];
+const HTML_COLOURS: [config::HtmlColours; 2] =
+    [config::HtmlColours::Adapt, config::HtmlColours::Original];
+
+fn present_preferences(app: &App, window: &MailWindow) {
+    let shown = window.global::<Preferences>();
+    let Some(prefs) = &app.preferences else {
+        shown.set_open(false);
+        return;
+    };
+    shown.set_open(true);
+    shown.set_section(i32::from(prefs.section == Section::Accounts));
+    shown.set_theme(index_of(&THEMES, &app.theme));
+    shown.set_opens_at_login(app.open_at_login.checked());
+    shown.set_open_at_login_enabled(matches!(app.open_at_login, OpenAtLogin::Known(_)));
+    let ui = &prefs.config.ui;
+    shown.set_check_updates(ui.check_updates);
+    shown.set_sender_images(ui.sender_images);
+    shown.set_html_colours(index_of(&HTML_COLOURS, &ui.html_colours));
+    let names = prefs
+        .config
+        .accounts
+        .iter()
+        .map(|a| clean(&a.name, false).into())
+        .collect();
+    sync(shown.get_accounts(), names, |m| shown.set_accounts(m));
+    shown.set_account(i32::try_from(prefs.account).unwrap_or(0));
+    if let Some(account) = prefs.config.accounts.get(prefs.account) {
+        let old = shown.get_current();
+        let words = |items: &[String]| items.iter().map(|i| clean(i, false).into()).collect();
+        let labels = |choices: &[(u64, String)]| choices.iter().map(|(_, w)| w.into()).collect();
+        let place = |choices: &[(u64, String)], value: u64| {
+            index_of(&choices.iter().map(|(v, _)| *v).collect::<Vec<_>>(), &value)
+        };
+        let sync_choices = preferences::sync_choices(account.sync_interval_secs);
+        let keep_choices = preferences::keep_choices(account.trash_retention_days);
+        shown.set_current(AccountPreferences {
+            address: clean(account.address(), false).into(),
+            server: clean(&format!("{}:{}", account.host, account.port), false).into(),
+            notify: account.notify,
+            index_bodies: account.index_bodies,
+            sync: place(&sync_choices, account.sync_interval_secs),
+            sync_choices: synced(old.sync_choices, labels(&sync_choices)),
+            keep: place(&keep_choices, account.trash_retention_days),
+            keep_choices: synced(old.keep_choices, labels(&keep_choices)),
+            aliases: synced(old.aliases, words(&account.aliases)),
+            authserv_ids: synced(
+                old.authserv_ids,
+                words(account.trusted_authserv_ids.as_deref().unwrap_or_default()),
+            ),
+        });
+    }
+    shown.set_error(prefs.error.as_deref().unwrap_or_default().into());
+}
+
+/// An `Ask` for a change to the account Preferences shows.
+fn account_setting(
+    setting: impl FnOnce(&config::AccountConfig) -> Option<Setting> + 'static,
+) -> Ask {
+    one(move |app| {
+        let prefs = app.preferences.as_ref()?;
+        setting(prefs.config.accounts.get(prefs.account)?).map(UiAction::SetPreference)
+    })
+}
+
+fn connect_preferences(window: &MailWindow, on: fn(Ask) -> bool) {
+    let prefs = window.global::<Preferences>();
+    let act = move |action: Option<UiAction>| on(Box::new(move |_| action.into_iter().collect()));
+    let set = move |setting: Setting| act(Some(UiAction::SetPreference(setting)));
+    prefs.on_section_chosen(move |i| {
+        let section = if i == 1 {
+            Section::Accounts
+        } else {
+            Section::General
+        };
+        act(Some(UiAction::PreferencesSection(section)));
+    });
+    prefs.on_theme_chosen(move |i| {
+        act(nth(THEMES, i).map(UiAction::SetTheme));
+    });
+    prefs.on_open_at_login_toggled(move |on| {
+        act(Some(UiAction::SetOpenAtLogin(on)));
+    });
+    prefs.on_check_updates_toggled(move |on| {
+        set(Setting::CheckUpdates(on));
+    });
+    prefs.on_sender_images_toggled(move |on| {
+        set(Setting::SenderImages(on));
+    });
+    prefs.on_html_colours_chosen(move |i| {
+        act(nth(HTML_COLOURS, i).map(|c| UiAction::SetPreference(Setting::HtmlColours(c))));
+    });
+    prefs.on_account_chosen(move |i| {
+        act(usize::try_from(i).ok().map(UiAction::PreferencesAccount));
+    });
+    prefs.on_notify_toggled(move |checked| {
+        on(account_setting(move |a| {
+            Some(Setting::Notify(a.name.clone(), checked))
+        }));
+    });
+    prefs.on_index_bodies_toggled(move |checked| {
+        on(account_setting(move |a| {
+            Some(Setting::IndexBodies(a.name.clone(), checked))
+        }));
+    });
+    prefs.on_sync_chosen(move |i| {
+        on(account_setting(move |a| {
+            let (secs, _) = nth(preferences::sync_choices(a.sync_interval_secs), i)?;
+            Some(Setting::SyncEvery(a.name.clone(), secs))
+        }));
+    });
+    prefs.on_keep_chosen(move |i| {
+        on(account_setting(move |a| {
+            let (days, _) = nth(preferences::keep_choices(a.trash_retention_days), i)?;
+            Some(Setting::KeepDeleted(a.name.clone(), days))
+        }));
+    });
+    prefs.on_add_alias(move |text| {
+        let alias = text.to_string();
+        on(account_setting(move |a| {
+            Some(Setting::AddAlias(a.name.clone(), alias))
+        }));
+    });
+    prefs.on_remove_alias(move |i| {
+        on(account_setting(move |a| {
+            Some(Setting::RemoveAlias(
+                a.name.clone(),
+                usize::try_from(i).ok()?,
+            ))
+        }));
+    });
+    prefs.on_remove_authserv_id(move |i| {
+        on(account_setting(move |a| {
+            Some(Setting::RemoveAuthservId(
+                a.name.clone(),
+                usize::try_from(i).ok()?,
+            ))
+        }));
+    });
 }
 
 fn index_of<T: PartialEq>(all: &[T], item: &T) -> i32 {
@@ -1204,6 +1352,7 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
         }));
     });
     connect_editor(window, on);
+    connect_preferences(window, on);
     window.on_edit_proposal(move |i| {
         on(one(move |app| Some(UiAction::EditRule(proposal(app, i)?))));
     });
@@ -1437,6 +1586,7 @@ fn dialog_of(dialog: Dialog) -> state::Dialog {
         Dialog::Folder => state::Dialog::Folder,
         Dialog::Account => state::Dialog::Account,
         Dialog::About => state::Dialog::About,
+        Dialog::Preferences => state::Dialog::Preferences,
         Dialog::Source => state::Dialog::Source,
         Dialog::Move => state::Dialog::Move,
         Dialog::History => state::Dialog::History,

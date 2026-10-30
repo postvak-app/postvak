@@ -1,0 +1,327 @@
+// Preferences: the settings config.toml holds, each saved as it changes. `bind.rs` fills `Preferences` from
+// `App.preferences` and turns its callbacks into `UiAction::SetPreference`.
+import { LineEdit, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Hairline, IconButton, Note, Switch, TextButton } from "common.slint";
+import { Dialog } from "dialogs.slint";
+import { Choice, Label } from "rule_editor.slint";
+
+export struct AccountPreferences {
+    address: string,
+    server: string,
+    notify: bool,
+    index-bodies: bool,
+    sync-choices: [string],
+    // Index into `sync-choices`.
+    sync: int,
+    keep-choices: [string],
+    // Index into `keep-choices`.
+    keep: int,
+    aliases: [string],
+    authserv-ids: [string],
+}
+
+export global Preferences {
+    in property <bool> open;
+    // 0 General, 1 Accounts.
+    in property <int> section;
+    // 0 System, 1 Light, 2 Dark.
+    in property <int> theme;
+    in property <bool> opens-at-login;
+    // Known, and not changing right now.
+    in property <bool> open-at-login-enabled;
+    in property <bool> check-updates;
+    in property <bool> sender-images;
+    // 0 Adapt to the theme, 1 Original.
+    in property <int> html-colours;
+    in property <[string]> accounts;
+    // Index into `accounts`.
+    in property <int> account;
+    in property <AccountPreferences> current;
+    // Why the last change was not saved.
+    in property <string> error;
+    callback section-chosen(int);
+    callback theme-chosen(int);
+    callback open-at-login-toggled(bool);
+    callback check-updates-toggled(bool);
+    callback sender-images-toggled(bool);
+    callback html-colours-chosen(int);
+    callback account-chosen(int);
+    callback notify-toggled(bool);
+    callback index-bodies-toggled(bool);
+    callback sync-chosen(int);
+    callback keep-chosen(int);
+    callback add-alias(string);
+    callback remove-alias(int);
+    callback remove-authserv-id(int);
+}
+
+/* One setting: its name with its control on the right, and what it does under both.
+
+Notes are one line: inside the scroll view a layout measures wrapped text at a width it is not drawn at, which cuts
+off the end of the list. */
+component OneLine inherits Note {
+    wrap: no-wrap;
+    overflow: elide;
+}
+
+component Setting inherits VerticalLayout {
+    in property <string> label;
+    in property <string> note;
+    spacing: Theme.pad / 2;
+    HorizontalLayout {
+        spacing: Theme.inset;
+        // The control carries the name, so a screen reader says it once.
+        Text {
+            horizontal-stretch: 1;
+            text: root.label;
+            color: Theme.pane.text;
+            vertical-alignment: center;
+            overflow: elide;
+            accessible-role: none;
+        }
+        @children
+    }
+    if root.note != "": OneLine { text: root.note; }
+}
+
+component SwitchSetting inherits Setting {
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    callback toggled(bool);
+    Switch {
+        name: root.label;
+        checked: root.checked;
+        opacity: root.enabled ? 1 : 0.5;
+        toggled(on) => {
+            if (root.enabled) {
+                root.toggled(on);
+            }
+        }
+    }
+}
+
+component ChoiceSetting inherits Setting {
+    in property <[string]> model;
+    in property <int> index;
+    callback index-chosen(int);
+    Choice {
+        width: 160px;
+        model: root.model;
+        index: root.index;
+        accessible-label: root.label;
+        index-chosen(i) => { root.index-chosen(i); }
+    }
+}
+
+// A list of values, each with a Remove; `noun` names the buttons.
+component Removable inherits VerticalLayout {
+    in property <[string]> items;
+    in property <string> noun;
+    in property <string> remove-icon;
+    callback remove(int);
+    for item[i] in root.items: HorizontalLayout {
+        spacing: Theme.pad;
+        Text {
+            horizontal-stretch: 1;
+            text: item;
+            color: Theme.pane.text;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        IconButton {
+            icon: root.remove-icon;
+            name: "Remove " + root.noun + " " + item;
+            hint: "Remove";
+            palette: Theme.pane;
+            clicked => { root.remove(i); }
+        }
+    }
+}
+
+component General inherits VerticalLayout {
+    alignment: start;
+    spacing: Theme.inset;
+    ChoiceSetting {
+        label: "Theme";
+        model: ["System", "Light", "Dark"];
+        index: Preferences.theme;
+        index-chosen(i) => { Preferences.theme-chosen(i); }
+    }
+    SwitchSetting {
+        label: "Open at login";
+        note: "Starts Postvak in the background when you log in.";
+        checked: Preferences.opens-at-login;
+        enabled: Preferences.open-at-login-enabled;
+        toggled(on) => { Preferences.open-at-login-toggled(on); }
+    }
+    SwitchSetting {
+        label: "Check for updates";
+        note: "Asks GitHub once a day for a newer release.";
+        checked: Preferences.check-updates;
+        toggled(on) => { Preferences.check-updates-toggled(on); }
+    }
+    SwitchSetting {
+        label: "Show sender logos";
+        note: "Fetches the logo a sender's domain publishes (BIMI).";
+        checked: Preferences.sender-images;
+        toggled(on) => { Preferences.sender-images-toggled(on); }
+    }
+    ChoiceSetting {
+        label: "HTML mail colours";
+        note: "How HTML mail looks in the dark theme.";
+        model: ["Adapt to the theme", "Original"];
+        index: Preferences.html-colours;
+        index-chosen(i) => { Preferences.html-colours-chosen(i); }
+    }
+}
+
+component Accounts inherits VerticalLayout {
+    in property <string> remove-icon;
+    alignment: start;
+    spacing: Theme.inset;
+    if Preferences.accounts.length == 0: Note { text: "No accounts yet: File ▸ Add account…"; }
+    if Preferences.accounts.length > 1: Choice {
+        model: Preferences.accounts;
+        index: Preferences.account;
+        accessible-label: "Account";
+        index-chosen(i) => { Preferences.account-chosen(i); }
+    }
+    if Preferences.accounts.length > 0: VerticalLayout {
+        spacing: Theme.inset;
+        VerticalLayout {
+            Text {
+                text: Preferences.current.address;
+                color: Theme.pane.strong;
+                font-weight: 600;
+            }
+            Note { text: Preferences.current.server; }
+        }
+        SwitchSetting {
+            label: "Notifications";
+            note: "A desktop notification for new mail.";
+            checked: Preferences.current.notify;
+            toggled(on) => { Preferences.notify-toggled(on); }
+        }
+        ChoiceSetting {
+            label: "Sync every";
+            note: "New Inbox mail arrives sooner, through IDLE.";
+            model: Preferences.current.sync-choices;
+            index: Preferences.current.sync;
+            index-chosen(i) => { Preferences.sync-chosen(i); }
+        }
+        ChoiceSetting {
+            label: "Keep deleted mail for";
+            note: "How long the .eml backup of deleted mail is kept.";
+            model: Preferences.current.keep-choices;
+            index: Preferences.current.keep;
+            index-chosen(i) => { Preferences.keep-chosen(i); }
+        }
+        SwitchSetting {
+            label: "Search message text";
+            note: "Off, the server searches the text of mail not opened.";
+            checked: Preferences.current.index-bodies;
+            toggled(on) => { Preferences.index-bodies-toggled(on); }
+        }
+        Hairline { }
+        VerticalLayout {
+            spacing: Theme.pad / 2;
+            Label { text: "Aliases"; }
+            OneLine { text: "Your other addresses; * matches any part."; }
+            Removable {
+                items: Preferences.current.aliases;
+                noun: "alias";
+                remove-icon: root.remove-icon;
+                remove(i) => { Preferences.remove-alias(i); }
+            }
+            HorizontalLayout {
+                spacing: Theme.pad;
+                alias := LineEdit {
+                    horizontal-stretch: 1;
+                    height: Theme.control;
+                    placeholder-text: "me@example.org";
+                    accessible-label: "New alias";
+                    accepted => { add.clicked(); }
+                }
+                add := TextButton {
+                    text: "Add";
+                    framed: true;
+                    palette: Theme.pane;
+                    enabled: alias.text != "";
+                    clicked => {
+                        Preferences.add-alias(alias.text);
+                        if (Preferences.error == "") {
+                            alias.text = "";
+                        }
+                    }
+                }
+            }
+        }
+        if Preferences.current.authserv-ids.length > 0: VerticalLayout {
+            spacing: Theme.pad / 2;
+            Label { text: "Trusted authserv-ids"; }
+            OneLine { text: "Servers whose Authentication-Results rules believe."; }
+            Removable {
+                items: Preferences.current.authserv-ids;
+                noun: "authserv-id";
+                remove-icon: root.remove-icon;
+                remove(i) => { Preferences.remove-authserv-id(i); }
+            }
+        }
+    }
+}
+
+export component PreferencesDialog {
+    in property <string> close-icon;
+    in property <string> remove-icon;
+    // The most height there is room for; the settings scroll beyond it.
+    in property <length> room;
+    callback close();
+    width: Theme.dialog-large;
+    Dialog {
+        title: "Preferences";
+        close-icon: root.close-icon;
+        close => { root.close(); }
+        HorizontalLayout {
+            spacing: Theme.inset;
+            VerticalLayout {
+                width: 4 * Theme.control;
+                alignment: start;
+                spacing: Theme.pad / 2;
+                TextButton {
+                    text: "General";
+                    selected: Preferences.section == 0;
+                    flush: true;
+                    palette: Theme.pane;
+                    clicked => { Preferences.section-chosen(0); }
+                }
+                TextButton {
+                    text: "Accounts";
+                    selected: Preferences.section == 1;
+                    flush: true;
+                    palette: Theme.pane;
+                    clicked => { Preferences.section-chosen(1); }
+                }
+            }
+            scroll := ScrollView {
+                horizontal-stretch: 1;
+                height: min(settings.preferred-height, root.room - 4 * Theme.control);
+                settings := VerticalLayout {
+                    // Not `visible-width`: that changes with the scroll bar, which the height decides, so the
+                    // wrapped notes would be measured at a width they are not drawn at.
+                    width: scroll.width;
+                    spacing: Theme.inset;
+                    // Room for the scroll bar.
+                    padding-right: Theme.inset;
+                    if Preferences.error != "": Text {
+                        text: Preferences.error;
+                        color: Theme.pane.error;
+                        wrap: word-wrap;
+                    }
+                    if Preferences.section == 0: General { }
+                    if Preferences.section == 1: Accounts { remove-icon: root.remove-icon; }
+                }
+            }
+        }
+    }
+}

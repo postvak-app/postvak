@@ -33,6 +33,7 @@ use super::html::{self, Fetcher, HtmlState, Renderer, Reply, Wake};
 use super::list::{self, ListState, Optimistic, Row, RowKey};
 use super::load::{self, ListQuery, LoadFn, Loaded, Loading};
 use super::logos::Logos;
+use super::preferences::{self, Section, Setting};
 use super::reader::{self, Read, ReadFn, Reader};
 use super::rules::{self, RulesState, SheetSort, TrashRow};
 use super::save_as;
@@ -527,6 +528,12 @@ pub(crate) enum UiAction {
     SetTheme(Theme),
     /// File ▸ Open at login, turned on or off.
     SetOpenAtLogin(bool),
+    /// File ▸ Preferences…, opened or closed.
+    TogglePreferences,
+    PreferencesSection(Section),
+    /// The account Preferences shows, by its index in config.toml.
+    PreferencesAccount(usize),
+    SetPreference(Setting),
     StartSearch,
     StepFolder(isize),
     /// Count what the open rule would do to the cached mail.
@@ -579,13 +586,14 @@ pub(crate) enum Dialog {
     Folder,
     Account,
     About,
+    Preferences,
     Source,
     Move,
     History,
 }
 
 impl Dialog {
-    const TOP_FIRST: [Dialog; 10] = [
+    const TOP_FIRST: [Dialog; 11] = [
         Dialog::Help,
         Dialog::Unsaved,
         Dialog::ApplyConfirm,
@@ -593,6 +601,7 @@ impl Dialog {
         Dialog::Folder,
         Dialog::Account,
         Dialog::About,
+        Dialog::Preferences,
         Dialog::Source,
         Dialog::Move,
         Dialog::History,
@@ -631,6 +640,16 @@ impl OpenAtLogin {
             OpenAtLogin::Unknown => false,
         }
     }
+}
+
+/// The Preferences dialog while it is open, over config.toml as it read at the last open or save.
+pub(crate) struct PreferencesState {
+    pub(crate) section: Section,
+    /// Index into `config.accounts`.
+    pub(crate) account: usize,
+    pub(crate) config: Config,
+    /// Why the last change was not saved.
+    pub(crate) error: Option<String>,
 }
 
 pub struct App {
@@ -676,6 +695,7 @@ pub struct App {
     pub(crate) fetcher: Option<Fetcher>,
     pub(crate) focus: Focus,
     pub(crate) about_open: bool,
+    pub(crate) preferences: Option<PreferencesState>,
     /// The rule waiting for the user to agree to the mail it would expunge, with the warning per account.
     pub(crate) apply_confirm: Option<ApplyConfirm>,
     pub(crate) help_open: bool,
@@ -864,6 +884,7 @@ impl App {
             fetcher: None,
             focus: Focus::List,
             about_open: false,
+            preferences: None,
             apply_confirm: None,
             help_open: false,
             html_generation: 0,
@@ -1708,6 +1729,33 @@ impl App {
                     worker::oneshot("open-at-login", self.wake.clone(), move || set(&paths, on));
                 self.open_at_login = OpenAtLogin::Changing(on, answer);
             }
+            UiAction::TogglePreferences if self.preferences.is_some() => {
+                self.close(Dialog::Preferences)
+            }
+            UiAction::TogglePreferences => match Config::load(&self.paths.config_file()) {
+                Ok(config) => {
+                    self.preferences = Some(PreferencesState {
+                        section: Section::default(),
+                        account: 0,
+                        config,
+                        error: None,
+                    })
+                }
+                Err(e) => self.note_error(None, format!("could not read config.toml: {e}")),
+            },
+            UiAction::PreferencesSection(section) => {
+                if let Some(prefs) = self.preferences.as_mut() {
+                    prefs.section = section;
+                }
+            }
+            UiAction::PreferencesAccount(index) => {
+                if let Some(prefs) = self.preferences.as_mut()
+                    && index < prefs.config.accounts.len()
+                {
+                    prefs.account = index;
+                }
+            }
+            UiAction::SetPreference(setting) => self.set_preference(&setting),
             UiAction::StartSearch => {
                 if self.view.lists_mail() {
                     // The field takes the keyboard as it appears.
@@ -3578,6 +3626,7 @@ impl App {
             Dialog::Folder => self.folder_dialog.is_some(),
             Dialog::Account => self.account_form.is_some(),
             Dialog::About => self.about_open,
+            Dialog::Preferences => self.preferences.is_some(),
             Dialog::Source => self.body.as_ref().is_some_and(|b| b.source.is_some()),
             Dialog::Move => self.move_picker.is_some(),
             Dialog::History => self.history_open,
@@ -3608,6 +3657,7 @@ impl App {
                 }
             }
             Dialog::About => self.about_open = false,
+            Dialog::Preferences => self.preferences = None,
             Dialog::Source => {
                 if let Some(body) = self.body.as_mut() {
                     body.source = None;
@@ -3629,6 +3679,58 @@ impl App {
     fn notice(&mut self, text: String) {
         self.push_history(text.clone());
         self.notice = Some(text);
+    }
+
+    /// Saves a change made in Preferences, which the daemon notices itself, and shows it in the window at once.
+    fn set_preference(&mut self, setting: &Setting) {
+        if self.preferences.is_none() {
+            return;
+        }
+        let saved = preferences::save(&self.paths.config_file(), setting);
+        if let Ok(config) = &saved {
+            // Absorbs this write, so the poll does not take it for an outside edit.
+            self.config_watch.changed();
+            self.follow_config(config);
+        }
+        if let Some(prefs) = self.preferences.as_mut() {
+            match saved {
+                Ok(config) => {
+                    prefs.config = config;
+                    prefs.error = None;
+                }
+                Err(e) => prefs.error = Some(format!("Not saved: {e}")),
+            }
+        }
+    }
+
+    /// What the window shows of config.toml, made to match `config` as this window saved it.
+    fn follow_config(&mut self, config: &Config) {
+        if self.html_colours != config.ui.html_colours {
+            self.html_colours = config.ui.html_colours;
+            self.restyle_html();
+        }
+        if self.logos.enabled() != config.ui.sender_images {
+            self.logos = Logos::new(config.ui.sender_images, self.paths.cache_dir.clone());
+        }
+        match (&self.update, config.ui.check_updates) {
+            (UpdateCheck::Done(None), true) => self.update = UpdateCheck::Waiting,
+            (_, false) => self.update = UpdateCheck::Done(None),
+            _ => {}
+        }
+        for account_config in &config.accounts {
+            self.retention.insert(
+                account_config.name.clone(),
+                account_config.trash_retention_days,
+            );
+            if let Some(account) = self
+                .accounts
+                .iter_mut()
+                .find(|a| a.name == account_config.name)
+            {
+                account.identity = account_config.identity().ok();
+            }
+        }
+        self.rules.check(&self.paths.rules_file(), &self.accounts);
     }
 
     /// Trusts `id` for `name` in config.toml, which the daemon notices itself, and shows the account's new identity.

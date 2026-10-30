@@ -108,20 +108,16 @@ pub fn test_login(
 /// returns the config the file then holds. The user's yes to what [`rules::authserv_offers`](crate::rules::authserv_offers)
 /// offers.
 pub fn trust_authserv_id(paths: &Paths, name: &str, id: &str) -> Result<Config, ConfigError> {
-    let path = paths.config_file();
-    let mut account = Config::load(&path)?
-        .account(name)
-        .cloned()
-        .ok_or_else(|| ConfigError::Invalid(format!("no account named '{name}'")))?;
     let id = id.trim_end_matches('.').to_lowercase();
-    let ids = account.trusted_authserv_ids.get_or_insert_with(Vec::new);
-    if !ids
-        .iter()
-        .any(|known| known.trim_end_matches('.').eq_ignore_ascii_case(&id))
-    {
-        ids.push(id);
-    }
-    config::save_account(&path, &account)
+    config::update_account(&paths.config_file(), name, |account| {
+        let ids = account.trusted_authserv_ids.get_or_insert_with(Vec::new);
+        if !ids
+            .iter()
+            .any(|known| known.trim_end_matches('.').eq_ignore_ascii_case(&id))
+        {
+            ids.push(id);
+        }
+    })
 }
 
 #[cfg(test)]

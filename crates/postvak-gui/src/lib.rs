@@ -23,6 +23,7 @@ mod numbers;
 mod opener;
 mod persist;
 mod phases;
+mod preferences;
 mod reader;
 mod rows;
 mod rules;
