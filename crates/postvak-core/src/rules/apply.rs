@@ -4,9 +4,9 @@ use crate::actions::RULE_NAME;
 use crate::folder_name;
 use crate::mail_ops::{MailError, MailOps, delete_message, delete_messages};
 use crate::message::body_text;
-use crate::rules::engine::{Context, Plan, PlannedAction, evaluate};
+use crate::rules::engine::{Context, Plan, PlannedAction, evaluate, flag_change};
 use crate::rules::{Action, CompiledRule};
-use crate::store::{Folder, LogEntry, Message, Store, StoreError, has_flag};
+use crate::store::{Folder, LogEntry, Message, Store, StoreError, has_flag, with_flag};
 use crate::trash::Trash;
 
 #[derive(Debug, thiserror::Error)]
@@ -159,18 +159,6 @@ pub fn apply(
         executed += 1;
     }
     Ok(executed)
-}
-
-/// The flag and its wanted state that `action` sets, when it is a flag change.
-fn flag_change(action: &Action) -> Option<(&str, bool)> {
-    match action {
-        Action::Flag => Some(("\\Flagged", true)),
-        Action::MarkRead => Some(("\\Seen", true)),
-        Action::MarkUnread => Some(("\\Seen", false)),
-        Action::Unflag => Some(("\\Flagged", false)),
-        Action::Tag(keyword) => Some((keyword.as_str(), true)),
-        _ => None,
-    }
 }
 
 /// The actions of `plan` that `apply` would carry out on `msg`, in plan order, without doing anything: a delete or junk
@@ -516,18 +504,6 @@ fn back_up(
     entry.trash_file = Some(path.to_string_lossy().into_owned());
     store.log_action(&entry)?;
     Ok(())
-}
-
-/// `flags` with `flag` added or removed.
-fn with_flag(flags: &str, flag: &str, wanted: bool) -> String {
-    let mut kept: Vec<&str> = flags
-        .split(' ')
-        .filter(|f| !f.is_empty() && !f.eq_ignore_ascii_case(flag))
-        .collect();
-    if wanted {
-        kept.push(flag);
-    }
-    kept.join(" ")
 }
 
 fn set_flag(

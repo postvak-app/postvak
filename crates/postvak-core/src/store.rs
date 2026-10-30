@@ -187,6 +187,18 @@ pub fn has_flag(flags: &str, flag: &str) -> bool {
         .any(|f| f.eq_ignore_ascii_case(flag))
 }
 
+/// `flags` with `flag` added or removed, split as `has_flag` splits them.
+pub fn with_flag(flags: &str, flag: &str, wanted: bool) -> String {
+    let mut kept: Vec<&str> = flags
+        .split_whitespace()
+        .filter(|f| !f.eq_ignore_ascii_case(flag))
+        .collect();
+    if wanted {
+        kept.push(flag);
+    }
+    kept.join(" ")
+}
+
 impl Message {
     pub fn is_seen(&self) -> bool {
         has_flag(&self.flags, "\\Seen")
