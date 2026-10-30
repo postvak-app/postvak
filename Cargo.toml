@@ -5,7 +5,7 @@ default-members = [".", "crates/*"]
 resolver = "3"
 
 [workspace.package]
-version = "0.10.0"
+version = "0.11.0"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT OR Apache-2.0"
@@ -18,9 +18,9 @@ categories = ["command-line-utilities", "email"]
 
 [workspace.dependencies]
 # Pinned exactly: their APIs are internal and change between patch releases, so a published binary builds only with its own.
-postvak-core = { version = "=0.10.0", path = "crates/postvak-core" }  # sync, store, rules and the daemon: everything below the front ends
-postvak-gui = { version = "=0.10.0", path = "crates/postvak-gui" }    # the Slint window, behind the `gui` feature
-postvak-mcp = { version = "=0.10.0", path = "crates/postvak-mcp" }    # the MCP server, behind the `mcp` feature
+postvak-core = { version = "=0.11.0", path = "crates/postvak-core" }  # sync, store, rules and the daemon: everything below the front ends
+postvak-gui = { version = "=0.11.0", path = "crates/postvak-gui" }    # the Slint window, behind the `gui` feature
+postvak-mcp = { version = "=0.11.0", path = "crates/postvak-mcp" }    # the MCP server, behind the `mcp` feature
 
 anyhow = "1"                                         # error context in the binary and sync loop
 anyrender = "=0.14.0"                                # the drawing trait Blitz paints into; pinned to the version blitz-paint uses

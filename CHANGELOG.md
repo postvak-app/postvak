@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0](https://github.com/postvak-app/postvak/compare/v0.10.0...v0.11.0) - 2026-10-30
+
+### Added
+
+- *(gui)* fade dialogs in, and follow the desktop's reduced motion ([#457](https://github.com/postvak-app/postvak/pull/457))
+- *(gui)* match the reader, proposal card, rules table and inbox banner to the canvas ([#456](https://github.com/postvak-app/postvak/pull/456))
+- show which rule acted on a message, how often rules act, and proposals with their dry run ([#454](https://github.com/postvak-app/postvak/pull/454))
+- *(gui)* group the reader's actions and add Reply, a More menu and attachment chips ([#452](https://github.com/postvak-app/postvak/pull/452))
+- *(rules)* warn in rule previews where authenticated cannot hold ([#451](https://github.com/postvak-app/postvak/pull/451))
+- *(gui)* give list rows an avatar, a preview line and date headings ([#447](https://github.com/postvak-app/postvak/pull/447))
+- *(gui)* bring the folder pane in line with the redesign canvas ([#439](https://github.com/postvak-app/postvak/pull/439))
+- offer to delete a message after its one-click unsubscribe succeeds ([#445](https://github.com/postvak-app/postvak/pull/445))
+- *(gui)* give buttons a primary and danger style and lift the dark panes ([#438](https://github.com/postvak-app/postvak/pull/438))
+- create, rename and delete folders ([#437](https://github.com/postvak-app/postvak/pull/437))
+- *(rules)* change the order rules run in by dragging a row, rules move or rules_move ([#424](https://github.com/postvak-app/postvak/pull/424))
+- *(rules)* let agents propose edits to existing rules for a human to approve ([#430](https://github.com/postvak-app/postvak/pull/430))
+- *(sync)* fetch a folder's newest mail first on its first sync ([#432](https://github.com/postvak-app/postvak/pull/432))
+- notify when a rule proposal waits for approval ([#429](https://github.com/postvak-app/postvak/pull/429))
+- *(gui)* filter the rules in the Rules view ([#423](https://github.com/postvak-app/postvak/pull/423))
+
+### Fixed
+
+- *(rules)* later rules see the read, flagged and tag changes of earlier rules in the same pass ([#453](https://github.com/postvak-app/postvak/pull/453))
+- *(gui)* bring the browser to the front when a link opens ([#450](https://github.com/postvak-app/postvak/pull/450))
+- *(mcp)* reload config.toml when it changes, so new trusted_authserv_ids apply ([#442](https://github.com/postvak-app/postvak/pull/442))
+- *(store)* thread a reply without References by the message its In-Reply-To names ([#433](https://github.com/postvak-app/postvak/pull/433))
+- *(sync)* find special-use folders by common synonyms and under INBOX ([#431](https://github.com/postvak-app/postvak/pull/431))
+- *(flatpak)* start the daemon in a sandbox of its own ([#425](https://github.com/postvak-app/postvak/pull/425))
+- *(gui)* render HTML mail that stacks its table cells above 600 px ([#428](https://github.com/postvak-app/postvak/pull/428))
+- *(sync)* use a \All folder named Archive as the archive when none is marked ([#426](https://github.com/postvak-app/postvak/pull/426))
+
+### Other
+
+- *(gui)* un-ignore the block-cell test and cover block cells in a narrow pane ([#455](https://github.com/postvak-app/postvak/pull/455))
+- *(perf)* measure femtovg against the software renderer on NVIDIA and Wayland ([#446](https://github.com/postvak-app/postvak/pull/446))
+- *(skills)* review and simplify the diff in the issue skill ([#444](https://github.com/postvak-app/postvak/pull/444))
+- *(agents)* stack PRs with gh stack, rebasing only stacked branches ([#441](https://github.com/postvak-app/postvak/pull/441))
+- lead the comparison page with what Postvak does and a scannable feature table ([#436](https://github.com/postvak-app/postvak/pull/436))
+- serve the docs under /docs/ and the landing page at the root ([#435](https://github.com/postvak-app/postvak/pull/435))
+- *(release)* build x86_64 macOS on an Apple silicon runner ([#434](https://github.com/postvak-app/postvak/pull/434))
+
 ## [0.10.0](https://github.com/postvak-app/postvak/compare/v0.9.0...v0.10.0) - 2026-10-29
 
 ### Added
