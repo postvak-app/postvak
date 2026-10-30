@@ -82,7 +82,7 @@ export global RuleEditor {
 }
 
 // A line of the form: a small muted label above its fields.
-component Label inherits Text {
+export component Label inherits Text {
     font-size: Theme.small-size;
     font-weight: 600;
     color: Theme.pane.muted;
@@ -105,7 +105,7 @@ component Field inherits LineEdit {
 }
 
 // A drop-down that shows `index` and reports choices; like `Field`, it is put right by hand when `index` changes.
-component Choice inherits ComboBox {
+export component Choice inherits ComboBox {
     in property <int> index;
     callback index-chosen(int);
     height: Theme.control;

@@ -69,6 +69,10 @@ impl Logos {
         self.known.get(brand)?.as_ref()
     }
 
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
     #[cfg(test)]
     pub fn started(&self) -> bool {
         self.worker.is_some()
