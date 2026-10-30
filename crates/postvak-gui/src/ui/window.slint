@@ -227,7 +227,7 @@ export component MailWindow inherits Window {
     callback approve-rule(int);
     callback trust-authserv(int);
     callback reject-rule(int);
-    callback preview-rule(int);
+    callback edit-proposal(int);
     callback new-rule();
     callback rule-from();
     callback reply();
@@ -641,7 +641,7 @@ export component MailWindow inherits Window {
                         approve(i) => { root.approve-rule(i); }
                         trust(i) => { root.trust-authserv(i); }
                         reject(i) => { root.reject-rule(i); }
-                        preview(i) => { root.preview-rule(i); }
+                        edit-proposal(i) => { root.edit-proposal(i); }
                         set-enabled(i, enabled) => { root.set-enabled(i, enabled); }
                         restore(i) => { root.restore(i); }
                         purge => { root.purge-trash(); }

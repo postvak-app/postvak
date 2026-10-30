@@ -1,22 +1,37 @@
 // The Rules, Activity and Backups views, in place of the list and the body. `rules.rs` words them.
 import { LineEdit, ScrollView, StandardTableView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Heading, Note, Switch, TextButton } from "common.slint";
+import { Heading, Link, Note, Switch, TextButton } from "common.slint";
 
 export enum Sheet { rules, activity, backups }
 
+// A message a proposal's dry run would act on.
+export struct SampleData {
+    subject: string,
+    date: string,
+}
+
 export struct ProposalData {
     label: string,
+    // "Agent proposal · claude-desktop".
     by: string,
     summary: string,
-    // "Adds to rules.toml", or the rule an edit changes.
+    // "rules.toml · adds 6 lines", or the rule an edit changes.
     note: string,
     // An edit, whose `marks` hold "-" and " " too.
     edits: bool,
     toml: string,
     // A diff's mark for each line of `toml`.
     marks: string,
-    preview: string,
+    // The dry run on the cached mail: still counting; the count and what it means; the newest few messages; the line
+    // under them; what makes it less than it seems; or why it could not be counted.
+    counting: bool,
+    count: string,
+    count-label: string,
+    samples: [SampleData],
+    rest: string,
+    warnings: string,
+    error: string,
 }
 
 export struct RuleData {
@@ -134,7 +149,7 @@ export component RulesPane inherits Rectangle {
     callback approve(int);
     callback trust(int);
     callback reject(int);
-    callback preview(int);
+    callback edit-proposal(int);
     callback set-enabled(int, bool);
     callback restore(int);
     callback purge();
@@ -268,27 +283,24 @@ export component RulesPane inherits Rectangle {
                 for proposal[i] in root.proposals: Rectangle {
                     border-width: 1px;
                     border-color: Theme.pane.border;
-                    border-radius: Theme.pad;
+                    border-radius: Theme.radius;
+                    background: Theme.pane.faint;
                     VerticalLayout {
-                        padding: Theme.pad;
-                        spacing: Theme.pad / 2;
-                        HorizontalLayout {
-                            spacing: Theme.pad;
-                            Text {
-                                text: proposal.label;
-                                font-weight: 600;
-                                color: Theme.pane.strong;
-                                overflow: elide;
-                                vertical-alignment: center;
-                            }
-                            VerticalLayout {
-                                alignment: center;
-                                Chip {
-                                    text: proposal.by;
-                                    tint: Theme.pane.warning;
-                                }
-                            }
-                            Rectangle { horizontal-stretch: 1; }
+                        padding: Theme.inset;
+                        spacing: Theme.pad;
+                        Text {
+                            text: proposal.by;
+                            font-size: Theme.caps-size;
+                            font-weight: 600;
+                            letter-spacing: 1px;
+                            color: Theme.pane.accent;
+                        }
+                        Text {
+                            text: proposal.label;
+                            font-family: Theme.heading-font;
+                            font-size: Theme.heading-size;
+                            color: Theme.pane.heading;
+                            overflow: elide;
                         }
                         Summary { text: proposal.summary; }
                         Note { text: proposal.note; }
@@ -319,10 +331,66 @@ export component RulesPane inherits Rectangle {
                                 }
                             }
                         }
+                        // The dry run on the cached mail, counted as soon as the proposal is here.
+                        Rectangle {
+                            border-radius: Theme.pad;
+                            background: Theme.pane.panel;
+                            VerticalLayout {
+                                padding: Theme.pad * 3 / 2;
+                                spacing: Theme.pad / 2;
+                                Note {
+                                    text: "Dry run on cached mail";
+                                    font-weight: 600;
+                                }
+                                if proposal.counting: Note { text: "Counting…"; }
+                                if proposal.error != "": Text {
+                                    text: proposal.error;
+                                    color: Theme.pane.error;
+                                    wrap: word-wrap;
+                                }
+                                if !proposal.counting && proposal.error == "": HorizontalLayout {
+                                    spacing: Theme.pad;
+                                    Text {
+                                        text: proposal.count;
+                                        font-family: Theme.heading-font;
+                                        font-size: Theme.title-size;
+                                        color: Theme.pane.heading;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: proposal.count-label;
+                                        color: Theme.pane.secondary;
+                                        vertical-alignment: center;
+                                    }
+                                    Rectangle { horizontal-stretch: 1; }
+                                }
+                                for sample in proposal.samples: HorizontalLayout {
+                                    spacing: Theme.pad;
+                                    Text {
+                                        horizontal-stretch: 1;
+                                        text: sample.subject;
+                                        color: Theme.pane.text;
+                                        overflow: elide;
+                                    }
+                                    Text {
+                                        text: sample.date;
+                                        font-size: Theme.small-size;
+                                        color: Theme.pane.muted;
+                                    }
+                                }
+                                if !proposal.counting && proposal.error == "": Note { text: proposal.rest; }
+                                if proposal.warnings != "": Text {
+                                    text: proposal.warnings;
+                                    font-size: Theme.small-size;
+                                    color: Theme.pane.warning;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
                         HorizontalLayout {
-                            spacing: Theme.pad / 2;
+                            spacing: Theme.pad;
                             TextButton {
-                                text: "Approve";
+                                text: "Approve rule";
                                 primary: true;
                                 palette: Theme.pane;
                                 clicked => { root.approve(i); }
@@ -333,18 +401,14 @@ export component RulesPane inherits Rectangle {
                                 palette: Theme.pane;
                                 clicked => { root.reject(i); }
                             }
-                            TextButton {
-                                text: "Preview on cached mail";
-                                palette: Theme.pane;
-                                hint: "Counts what it would do to the mail already downloaded; changes nothing";
-                                clicked => { root.preview(i); }
+                            VerticalLayout {
+                                alignment: center;
+                                Link {
+                                    text: "Edit before approving →";
+                                    clicked => { root.edit-proposal(i); }
+                                }
                             }
                             Rectangle { horizontal-stretch: 1; }
-                        }
-                        if proposal.preview != "": Text {
-                            text: proposal.preview;
-                            color: Theme.pane.secondary;
-                            wrap: word-wrap;
                         }
                     }
                 }

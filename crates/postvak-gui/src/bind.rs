@@ -16,8 +16,8 @@ use super::state::{self, App, Focus, UiAction, View};
 use super::ui::{
     AccountFields, ActionData, AttachmentData, BodyInfo, ConditionData, Dialog, Dot, FolderItem,
     FolderKind, KeyHelp, MailWindow, MenuAction, MenuChoice, MenuState, PageInfo, Pane,
-    ProposalData, ProvenanceData, Remote, RuleData, RuleEditor, SelectedData, Sheet, StatusLine,
-    Theme, ThemePreference, ToolButton, WhyLine,
+    ProposalData, ProvenanceData, Remote, RuleData, RuleEditor, SampleData, SelectedData, Sheet,
+    StatusLine, Theme, ThemePreference, ToolButton, WhyLine,
 };
 use super::{account, body, icons, list, menu, rules, status, theme, toolbar};
 use postvak_core::message::clean;
@@ -273,6 +273,48 @@ fn provenance_data(pane: &body::Pane) -> ProvenanceData {
         ),
         why_open: pane.why.is_some(),
         why: model(why.collect::<Vec<_>>()),
+    }
+}
+
+/// A proposal's card, with its dry run once counted.
+fn proposal_data(app: &App, p: &rules::Proposal) -> ProposalData {
+    let run = app.rules.dry_runs.get(&p.name);
+    let rule = app.rules.rules.iter().find(|r| r.name == p.name);
+    let now = chrono::Local::now();
+    let samples = run.map_or_else(Vec::new, |run| {
+        (run.samples.iter())
+            .map(|(subject, at)| SampleData {
+                subject: subject.as_str().into(),
+                date: list::list_date(*at, &now).into(),
+            })
+            .collect()
+    });
+    ProposalData {
+        label: p.label.as_str().into(),
+        by: p.by.as_str().into(),
+        summary: p.summary.as_str().into(),
+        note: p.note.as_str().into(),
+        edits: p.edits,
+        toml: p.toml.as_str().into(),
+        marks: p.marks.as_str().into(),
+        counting: run.is_none(),
+        count: run
+            .map_or_else(String::new, |run| run.count.to_string())
+            .into(),
+        count_label: match (run, rule) {
+            (Some(run), Some(rule)) => rules::would_be(rule, run.count),
+            _ => String::new(),
+        }
+        .into(),
+        samples: model(samples),
+        rest: run.map_or_else(String::new, rules::dry_run_rest).into(),
+        warnings: run
+            .map_or_else(String::new, |run| run.warnings.join("\n"))
+            .into(),
+        error: run
+            .and_then(|run| run.error.clone())
+            .unwrap_or_default()
+            .into(),
     }
 }
 
@@ -685,20 +727,7 @@ fn present_sheet(app: &App, window: &MailWindow) {
             let proposals: Vec<ProposalData> = rules::shown_proposals(&app.rules.proposals, filter)
                 .into_iter()
                 .map(|i| &app.rules.proposals[i])
-                .map(|p| ProposalData {
-                    label: p.label.as_str().into(),
-                    by: p.by.as_str().into(),
-                    summary: p.summary.as_str().into(),
-                    note: p.note.as_str().into(),
-                    edits: p.edits,
-                    toml: p.toml.as_str().into(),
-                    marks: p.marks.as_str().into(),
-                    preview: app
-                        .rules
-                        .previews
-                        .get(&p.name)
-                        .map_or_else(SharedString::new, Into::into),
-                })
+                .map(|p| proposal_data(app, p))
                 .collect();
             let lines: Vec<RuleData> = rules::shown_rules(&app.rules.lines, app.sheet_sort, filter)
                 .into_iter()
@@ -1141,10 +1170,8 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
         }));
     });
     connect_editor(window, on);
-    window.on_preview_rule(move |i| {
-        on(one(move |app| {
-            Some(UiAction::PreviewRule(proposal(app, i)?))
-        }));
+    window.on_edit_proposal(move |i| {
+        on(one(move |app| Some(UiAction::EditRule(proposal(app, i)?))));
     });
     window.on_set_enabled(move |i, enabled| {
         on(one(move |app| {

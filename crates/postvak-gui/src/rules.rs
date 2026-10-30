@@ -24,8 +24,8 @@ pub(crate) struct RulesState {
     pub warnings: Vec<String>,
     /// (account, authserv-id) pairs the Rules view offers to trust, from `rules::authserv_offers`.
     pub offers: Vec<(String, String)>,
-    /// "Preview on cached mail" results by proposal name; a reload drops them.
-    pub previews: BTreeMap<String, String>,
+    /// Each proposal's dry run on the cached mail, by name, once counted; a reload drops them.
+    pub dry_runs: BTreeMap<String, DryRun>,
     pub rules: Vec<Rule>,
     /// The rules as the view words them, worded once per load rather than on every frame.
     pub proposals: Vec<Proposal>,
@@ -54,7 +54,7 @@ impl RulesState {
             error,
             warnings: Vec::new(),
             offers: Vec::new(),
-            previews: BTreeMap::new(),
+            dry_runs: BTreeMap::new(),
             proposals: proposals(&rules),
             lines: rule_lines(&rules),
             rules,
@@ -112,10 +112,10 @@ pub(crate) fn offer_label(account: &str, id: &str) -> String {
 pub(crate) struct Proposal {
     pub name: String,
     pub label: String,
-    /// "proposed by agent", or "edit proposed by agent".
+    /// "Agent proposal · claude-desktop", or "Edit proposal · …" for an edit.
     pub by: String,
     pub summary: String,
-    /// What it does to rules.toml: "Adds to rules.toml", or names the rule an edit changes.
+    /// What it does to rules.toml: "rules.toml · adds 6 lines", or "Changes rule 'x' · 2 lines".
     pub note: String,
     /// Whether it changes a rule rather than adding one, so `marks` holds "-" and " " too.
     pub edits: bool,
@@ -188,6 +188,133 @@ pub(crate) fn shown_proposals(proposals: &[Proposal], filter: &str) -> Vec<usize
         .collect()
 }
 
+/// How many messages a proposal's card names before "N more".
+pub(crate) const SAMPLES: usize = 3;
+
+/// What a rule would do to the cached mail if it were on: how many messages it would act on, the newest few, whether it
+/// needs bodies, and what makes the answer less than it seems; or why it could not be counted.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct DryRun {
+    pub count: usize,
+    /// The newest `SAMPLES` messages it would act on: subject and date.
+    pub samples: Vec<(String, i64)>,
+    pub needs_body: bool,
+    pub warnings: Vec<String>,
+    pub error: Option<String>,
+}
+
+/// `rule`'s dry run on the cached mail of `accounts`, read from config.toml and the stores only, as `postvak rules test`
+/// runs it. It opens the stores itself, so it can run off the window thread.
+pub(crate) fn dry_run(paths: &Paths, accounts: &[String], rule: &Rule, now: i64) -> DryRun {
+    let failed = |error: String| DryRun {
+        error: Some(error),
+        ..DryRun::default()
+    };
+    let rule = Rule {
+        enabled: true,
+        ..rule.clone()
+    };
+    let compiled = match rules::compile(&rules::RuleFile { rules: vec![rule] }) {
+        Ok(compiled) => compiled,
+        Err(e) => return failed(e.to_string()),
+    };
+    let config = match postvak_core::config::Config::load(&paths.config_file()) {
+        Ok(config) => config,
+        Err(e) => return failed(e.to_string()),
+    };
+    let mut matched = BTreeMap::new();
+    let mut warnings = Vec::new();
+    for name in accounts {
+        let Ok(store) = Store::open_account(paths, name) else {
+            continue;
+        };
+        let Some(settings) = config.account(name) else {
+            continue;
+        };
+        let planned = settings
+            .identity()
+            .map_err(|e| e.to_string())
+            .and_then(|identity| {
+                postvak_core::actions::planned(&compiled, &store, settings, &identity, now)
+                    .map_err(|e| e.to_string())
+            });
+        match planned {
+            Ok(planned) => {
+                for p in planned {
+                    let at = p.message.date.unwrap_or(p.message.internaldate);
+                    let subject = clean(p.message.subject.as_deref().unwrap_or_default(), false);
+                    matched.insert(
+                        (name.clone(), p.message.folder, p.message.uid),
+                        (subject, at),
+                    );
+                }
+            }
+            Err(e) => return failed(format!("{name}: {e}")),
+        }
+        warnings.extend(rules::preview_warnings(&compiled, settings, &store));
+    }
+    let mut samples: Vec<(String, i64)> = matched.into_values().collect();
+    samples.sort_by_key(|(_, at)| std::cmp::Reverse(*at));
+    let count = samples.len();
+    samples.truncate(SAMPLES);
+    DryRun {
+        count,
+        samples,
+        needs_body: compiled.iter().any(|c| c.needs_body()),
+        warnings: warnings.iter().map(|w| clean(w, false)).collect(),
+        error: None,
+    }
+}
+
+/// What a dry run's count means, from the rule's first action that changes mail: "38 messages would be archived".
+pub(crate) fn would_be(rule: &Rule, count: usize) -> String {
+    use postvak_core::rules::Action;
+    let verb = rule
+        .actions
+        .iter()
+        .find_map(|action| match action {
+            Action::Archive => Some("archived".to_string()),
+            Action::Move(folder) => Some(format!(
+                "moved to {}",
+                clean(super::folders::label(folder), false)
+            )),
+            Action::Delete => Some("deleted".into()),
+            Action::Trash => Some("moved to Trash".into()),
+            Action::Junk => Some("moved to Junk".into()),
+            Action::NotJunk => Some("marked not junk".into()),
+            Action::MarkRead => Some("marked read".into()),
+            Action::MarkUnread => Some("marked unread".into()),
+            Action::Flag => Some("flagged".into()),
+            Action::Unflag => Some("unflagged".into()),
+            Action::Tag(keyword) => Some(format!("tagged {}", clean(keyword, false))),
+            Action::Notify | Action::Silent | Action::Stop => None,
+        })
+        .unwrap_or_else(|| "matched".into());
+    let noun = super::numbers::noun(count as u64, "message", "messages");
+    format!("{noun} would be {verb}")
+}
+
+/// The line under a dry run's samples: how many it leaves out, and that approving is what makes it act.
+pub(crate) fn dry_run_rest(run: &DryRun) -> String {
+    let more = run.count.saturating_sub(run.samples.len());
+    let more = if more > 0 {
+        format!("{} more · ", super::numbers::count(more as u64))
+    } else {
+        String::new()
+    };
+    let body = if run.needs_body {
+        " Only mail whose body is downloaded is checked."
+    } else {
+        ""
+    };
+    format!("{more}Nothing is deleted. Runs on new mail once approved.{body}")
+}
+
+/// Who proposed a rule as the card names them: an MCP client or CLI user by name, without the `mcp:` or `cli:`.
+pub(crate) fn proposer(by: &str) -> &str {
+    by.split_once(':').map_or(by, |(_, who)| who)
+}
+
 /// The Last 30 days and Last fired cells of a rule: its count and when it last acted, or that it never has.
 pub(crate) fn hit_cells(hits: &Hits) -> (String, String) {
     match hits.last_fired {
@@ -242,7 +369,7 @@ fn proposals(rules: &[Rule]) -> Vec<Proposal> {
                 .replaces
                 .as_deref()
                 .and_then(|target| rules.iter().find(|r| r.name == target));
-            let (note, lines) = match edited {
+            let lines = match edited {
                 Some(old) => {
                     // Compared as the rule will read once approved: its own name and `enabled`, no proposal keys.
                     let new = Rule {
@@ -252,27 +379,33 @@ fn proposals(rules: &[Rule]) -> Vec<Proposal> {
                         replaces: old.replaces.clone(),
                         ..rule.clone()
                     };
-                    let note = format!("Changes rule '{}' in rules.toml", clean(&old.name, false));
-                    (note, diff(&toml(old), &toml(&new)))
+                    diff(&toml(old), &toml(&new))
                 }
-                None => {
-                    let lines = toml(rule)
-                        .lines()
-                        .map(|line| ('+', line.to_owned()))
-                        .collect();
-                    ("Adds to rules.toml".to_owned(), lines)
-                }
+                None => toml(rule)
+                    .lines()
+                    .map(|line| ('+', line.to_owned()))
+                    .collect(),
             };
             let (marks, toml): (Vec<String>, Vec<String>) = lines
                 .into_iter()
                 .map(|(mark, line)| (mark.to_string(), line))
                 .unzip();
+            let changed = marks.iter().filter(|mark| mark.as_str() != " ").count();
+            let lines = super::numbers::noun(changed as u64, "line", "lines");
+            let note = match edited {
+                Some(old) => format!(
+                    "Changes rule '{}' · {changed} {lines}",
+                    clean(&old.name, false)
+                ),
+                None => format!("rules.toml · adds {changed} {lines}"),
+            };
+            let who = proposer(&by);
             Proposal {
                 name: rule.name.clone(),
                 label: clean(&rule.name, false),
                 by: match edited {
-                    Some(_) => format!("edit proposed by {by}"),
-                    None => format!("proposed by {by}"),
+                    Some(_) => format!("Edit proposal · {who}"),
+                    None => format!("Agent proposal · {who}"),
                 },
                 summary: draft::summary(rule),
                 note,
@@ -841,10 +974,10 @@ mod tests {
         // A clock left from when the rule ran before must not let it act on older mail.
         fx.store("work").restart_rule_clock("codes", 1).unwrap();
         let (open, wires) = rules_view(&fx);
-        assert_eq!(open.find("proposed by agent").len(), 1);
+        assert_eq!(open.find("Agent proposal · agent").len(), 1);
         assert_eq!(open.find("subject contains \"code\" → delete").len(), 1);
         assert_eq!(open.labels_containing("name = \"codes\"").len(), 1);
-        open.click("Approve");
+        open.click("Approve rule");
         assert!(enabled(&fx, "codes"));
         assert!(fx.store("work").rule_first_seen("codes", "", 0).unwrap() > 1);
         assert!(
@@ -853,7 +986,7 @@ mod tests {
                 .starts_with("# keep me\n")
         );
         assert!(wires.sent().is_empty());
-        assert!(open.find("Approve").is_empty());
+        assert!(open.find("Approve rule").is_empty());
     }
 
     const EDIT: &str = "[[rules]]\nname = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions = { archive = true }\n\n[[rules]]\nname = \"newsletters (edit)\"\nenabled = false\nproposed_by = \"agent\"\nreplaces = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions = { read = true }\n";
@@ -862,15 +995,18 @@ mod tests {
     fn an_edit_shows_what_it_changes_in_its_rule() {
         let rules = postvak_core::rules::parse(EDIT).unwrap().rules;
         let edit = &super::proposals(&rules)[0];
-        assert_eq!(edit.by, "edit proposed by agent");
-        assert_eq!(edit.note, "Changes rule 'newsletters' in rules.toml");
+        assert_eq!(edit.by, "Edit proposal · agent");
+        assert_eq!(edit.note, "Changes rule 'newsletters' · 2 lines");
         assert_eq!(
             edit.toml,
             "[[rules]]\nname = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions.archive = true\nactions.read = true"
         );
         assert_eq!(edit.marks, " \n \n \n-\n+");
         let new = &super::proposals(&postvak_core::rules::parse(RULES).unwrap().rules)[0];
-        assert_eq!(new.note, "Adds to rules.toml");
+        assert_eq!(
+            new.note,
+            format!("rules.toml · adds {} lines", new.toml.lines().count())
+        );
         assert_eq!(new.marks, vec!["+"; new.toml.lines().count()].join("\n"));
     }
 
@@ -879,11 +1015,8 @@ mod tests {
         let fx = Fixture::new(&["work"]);
         std::fs::write(fx.paths.rules_file(), EDIT).unwrap();
         let (open, _wires) = view(&fx, View::Rules);
-        assert_eq!(
-            open.find("Changes rule 'newsletters' in rules.toml").len(),
-            1
-        );
-        open.click("Approve");
+        assert_eq!(open.find("Changes rule 'newsletters' · 2 lines").len(), 1);
+        open.click("Approve rule");
         let file = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
         assert_eq!(file.rules.len(), 1);
         assert_eq!(file.rules[0].name, "newsletters");
@@ -957,20 +1090,45 @@ mod tests {
         assert_eq!(shown(&open), (1, 1));
     }
 
+    /// The first proposal card's dry run: its count, what the count means, and its sample subjects.
+    fn dry_run_shown(open: &Open) -> (String, String, Vec<String>) {
+        let proposals = open.window().get_proposals();
+        let Some(card) = proposals.row_data(0) else {
+            return Default::default();
+        };
+        let samples = (0..card.samples.row_count())
+            .filter_map(|i| card.samples.row_data(i))
+            .map(|s| s.subject.to_string())
+            .collect();
+        (
+            card.count.to_string(),
+            card.count_label.to_string(),
+            samples,
+        )
+    }
+
     #[test]
-    fn preview_counts_what_a_proposal_would_do_to_cached_mail() {
+    fn a_proposal_counts_its_dry_run_without_a_click() {
         let fx = Fixture::new(&["work"]);
         fx.add("work", message("INBOX", 1, "your code is 1234"));
         fx.add("work", message("INBOX", 2, "lunch"));
         let (open, wires) = rules_view(&fx);
-        open.click("Preview on cached mail");
-        assert_eq!(open.find("would delete 1 cached message").len(), 1);
+        open.tick_until(|open| dry_run_shown(open).0 == "1");
+        assert_eq!(
+            dry_run_shown(&open),
+            (
+                "1".to_string(),
+                "message would be deleted".to_string(),
+                vec!["your code is 1234".to_string()]
+            )
+        );
+        assert!(open.find("Preview on cached mail").is_empty());
         assert!(wires.sent().is_empty());
-        assert!(!enabled(&fx, "codes"), "a preview changes nothing");
+        assert!(!enabled(&fx, "codes"), "a dry run changes nothing");
     }
 
     #[test]
-    fn preview_warns_when_authenticated_cannot_hold_on_an_account() {
+    fn a_dry_run_warns_when_authenticated_cannot_hold_on_an_account() {
         let fx = Fixture::new(&["work"]);
         std::fs::write(
             fx.paths.rules_file(),
@@ -978,14 +1136,47 @@ mod tests {
         )
         .unwrap();
         let (open, _wires) = view(&fx, View::Rules);
-        open.click("Preview on cached mail");
-        let shown = open.labels_containing("matches no cached message");
-        assert!(
-            shown.iter().any(|label| label.contains(
-                "\nrule 'bank' uses authenticated, but account 'work' trusts no server's"
-            )),
-            "{shown:?}"
-        );
+        open.tick_until(|open| {
+            !open
+                .labels_containing(
+                    "rule 'bank' uses authenticated, but account 'work' trusts no server's",
+                )
+                .is_empty()
+        });
+        assert_eq!(dry_run_shown(&open).0, "0");
+    }
+
+    #[test]
+    fn a_failed_dry_run_shows_why_and_leaves_approve_enabled() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        std::fs::write(fx.paths.config_file(), "not toml [").unwrap();
+        std::fs::write(fx.paths.rules_file(), RULES).unwrap();
+        touch(&fx.paths.rules_file());
+        open.with(|live| live.app.select_view(View::Rules));
+        open.advance(5.0);
+        open.tick_until(|open| {
+            let proposals = open.window().get_proposals();
+            proposals
+                .row_data(0)
+                .is_some_and(|card| !card.error.is_empty())
+        });
+        // Approving reads config.toml too, so here it would fail on its own; the dry run must not be what blocks it.
+        assert_eq!(open.get("Approve rule").accessible_enabled(), Some(true));
+    }
+
+    #[test]
+    fn edit_before_approving_opens_the_proposal_in_the_dialog() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = rules_view(&fx);
+        open.click("Edit before approving →");
+        let opened = open.with(|live| {
+            live.app
+                .rule_draft
+                .as_ref()
+                .and_then(|d| d.original.clone())
+        });
+        assert_eq!(opened.as_deref(), Some("codes"));
     }
 
     #[test]
@@ -994,7 +1185,7 @@ mod tests {
         let fx = Fixture::new(&["work"]);
         std::fs::write(fx.paths.rules_file(), sneaky).unwrap();
         let (open, _wires) = view(&fx, View::Rules);
-        assert_eq!(open.find("proposed by agent").len(), 1);
+        assert_eq!(open.find("Agent proposal · agent").len(), 1);
         assert_eq!(open.find("subject contains \"[2Jcode\" → delete").len(), 1);
         assert!(open.labels_containing("\u{1b}").is_empty());
     }
@@ -1006,7 +1197,7 @@ mod tests {
         open.click("Reject");
         let file = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
         assert!(file.rules.iter().all(|r| r.name != "codes"));
-        assert!(open.find("Approve").is_empty());
+        assert!(open.find("Approve rule").is_empty());
     }
 
     #[test]

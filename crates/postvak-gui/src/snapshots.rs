@@ -364,7 +364,8 @@ fn rules() {
     let (open, _wires) = open(&fx);
     open.with(|live| live.app.select_view(View::Rules));
     open.tick();
-    assert_eq!(open.find("Approve").len(), 1);
+    open.tick_until(|open| !open.labels_containing("would be deleted").is_empty());
+    assert_eq!(open.find("Approve rule").len(), 1);
     snapshot(&open, "gui_rules");
 }
 
@@ -375,11 +376,8 @@ fn rule_edit_proposal() {
     std::fs::write(fx.paths.rules_file(), edit).unwrap();
     let (open, _wires) = open(&fx);
     open.with(|live| live.app.select_view(View::Rules));
-    open.tick();
-    assert_eq!(
-        open.find("Changes rule 'newsletters' in rules.toml").len(),
-        1
-    );
+    open.tick_until(|open| !open.labels_containing("would be archived").is_empty());
+    assert_eq!(open.find("Changes rule 'newsletters' · 1 line").len(), 1);
     snapshot(&open, "gui_rule_edit_proposal");
 }
 

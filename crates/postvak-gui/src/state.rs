@@ -480,8 +480,6 @@ pub(crate) enum UiAction {
     OpenUrl(String),
     OpenRulesFile,
     OpenSource,
-    /// Count what a rule would do to the cached mail, without doing it.
-    PreviewRule(String),
     RejectRule(String),
     /// Ask for a new name for this folder of this account.
     RenameFolder(usize, String),
@@ -664,6 +662,9 @@ pub struct App {
     /// Each rule's hits as last counted, and the count under way.
     pub(crate) rule_hits: HashMap<String, rule_file::hits::Hits>,
     counting_hits: Option<Receiver<HashMap<String, rule_file::hits::Hits>>>,
+    /// The proposals or the cached mail changed since their dry runs were counted; and the run under way.
+    dry_runs_stale: bool,
+    dry_running: Option<Receiver<BTreeMap<String, rules::DryRun>>>,
     pub(crate) saving_as: Option<SavingAs>,
     /// Attachments of messages too large to download whole, asked of the daemon one by one, until they arrive.
     pub(crate) fetching: Vec<Fetching>,
@@ -853,6 +854,8 @@ impl App {
             unsubscribing: None,
             rule_hits: HashMap::new(),
             counting_hits: None,
+            dry_runs_stale: true,
+            dry_running: None,
             saving_as: None,
             fetching: Vec::new(),
             ask_save_path: save_as::ask,
@@ -946,6 +949,8 @@ impl App {
         self.receive_open_at_login();
         self.receive_unsubscribe();
         self.receive_hits();
+        self.receive_dry_runs();
+        self.run_dry_runs();
         self.receive_save_as();
         self.receive_list();
         if std::mem::take(&mut self.view_dirty) {
@@ -1252,6 +1257,7 @@ impl App {
                 if self.view == View::Rules {
                     self.count_hits();
                 }
+                self.dry_runs_stale = true;
             }
             Event::ActionDone {
                 folder, results, ..
@@ -1544,12 +1550,6 @@ impl App {
                 }
             }
             UiAction::OpenRulesFile => self.open_rules_file(),
-            UiAction::PreviewRule(name) => {
-                if let Some(rule) = self.rules.rules.iter().find(|rule| rule.name == name) {
-                    let text = self.preview(rule.clone());
-                    self.rules.previews.insert(name, text);
-                }
-            }
             UiAction::RejectRule(name) => {
                 self.edit_rules(|path| rule_file::edit::reject(path, &name));
             }
@@ -3634,6 +3634,7 @@ impl App {
             &self.accounts,
         );
         self.rules.set_hits(&self.rule_hits);
+        self.dry_runs_stale = true;
         let on_disk = self.rule_draft_opened.as_ref().and_then(|opened| {
             let name = opened.original.as_deref()?;
             let rule = self.rules.rules.iter().find(|rule| rule.name == name)?;
@@ -3750,53 +3751,52 @@ impl App {
     /// What `rule` would do to every account's cached mail if it were enabled, as `postvak rules test` shows it. Reads
     /// config.toml and the stores only. ponytail: scans the cache on the window thread; move it to a thread if large
     /// stores stall the window.
-    fn preview(&self, mut rule: Rule) -> String {
-        rule.enabled = true;
-        let compiled = match rule_file::compile(&RuleFile {
-            rules: vec![rule.clone()],
-        }) {
-            Ok(compiled) => compiled,
-            Err(e) => return e.to_string(),
-        };
-        let config = match Config::load(&self.paths.config_file()) {
-            Ok(config) => config,
-            Err(e) => return e.to_string(),
-        };
-        let mut matched = HashSet::new();
-        let mut warnings = Vec::new();
-        for account in &self.accounts {
-            let Ok(store) = &account.store else { continue };
-            let Some(settings) = config.account(&account.name) else {
-                continue;
-            };
-            let planned = settings
-                .identity()
-                .map_err(|e| e.to_string())
-                .and_then(|identity| {
-                    postvak_core::actions::planned(
-                        &compiled,
-                        store,
-                        settings,
-                        &identity,
-                        postvak_core::time::now(),
-                    )
-                    .map_err(|e| e.to_string())
-                });
-            match planned {
-                Ok(planned) => matched.extend(
-                    planned
-                        .into_iter()
-                        .map(|p| (account.name.clone(), p.message.folder, p.message.uid)),
-                ),
-                Err(e) => return format!("{}: {e}", account.name),
-            }
-            warnings.extend(rule_file::preview_warnings(&compiled, settings, store));
+    fn preview(&self, rule: Rule) -> String {
+        let names: Vec<String> = self.accounts.iter().map(|a| a.name.clone()).collect();
+        let run = rules::dry_run(&self.paths, &names, &rule, postvak_core::time::now());
+        if let Some(error) = run.error {
+            return error;
         }
-        let needs_body = compiled.iter().any(|compiled| compiled.needs_body());
-        std::iter::once(draft::preview_text(&rule, matched.len(), needs_body))
-            .chain(warnings.iter().map(|w| clean(w, false)))
+        std::iter::once(draft::preview_text(&rule, run.count, run.needs_body))
+            .chain(run.warnings)
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Counts each proposal's dry run on a thread of its own once the proposals or the cached mail changed; one run at
+    /// a time, and a change during it starts another after it.
+    fn run_dry_runs(&mut self) {
+        if !self.dry_runs_stale || self.dry_running.is_some() {
+            return;
+        }
+        self.dry_runs_stale = false;
+        let proposals: Vec<Rule> = (self.rules.rules.iter())
+            .filter(|rule| rules::is_proposal(rule))
+            .cloned()
+            .collect();
+        if proposals.is_empty() {
+            return;
+        }
+        let paths = self.paths.clone();
+        let names: Vec<String> = self.accounts.iter().map(|a| a.name.clone()).collect();
+        self.dry_running = Some(worker::oneshot("dry-runs", self.wake.clone(), move || {
+            let now = postvak_core::time::now();
+            (proposals.iter())
+                .map(|rule| (rule.name.clone(), rules::dry_run(&paths, &names, rule, now)))
+                .collect()
+        }));
+    }
+
+    fn receive_dry_runs(&mut self) {
+        let Some(answer) = &self.dry_running else {
+            return;
+        };
+        if let Some(found) = worker::poll(answer) {
+            self.dry_running = None;
+            if let Ok(runs) = found {
+                self.rules.dry_runs = runs;
+            }
+        }
     }
 
     fn open_rules_file(&mut self) {
