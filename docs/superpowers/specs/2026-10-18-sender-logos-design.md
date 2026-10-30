@@ -1,6 +1,6 @@
 # Sender logos (BIMI) — design
 
-Status: draft, 2026-10-18. Issue: postvak-app/postvak#162.
+Status: implemented (#201), 2026-10-18. Issue: postvak-app/postvak#162.
 
 ## Goal
 
@@ -8,7 +8,7 @@ Mail from a bank, a shop or GitHub should be easy to spot, and a fake one easier
 
 ## Surfaces
 
-GUI only. This is the named exception to the surface parity rule: a logo is a picture in the reader's header, and the CLI and MCP have nowhere to show one. Nothing changes in `help`, `output` or the daemon wire protocol. The message list has no avatars, so it gets no logos either.
+GUI only. This is the named exception to the surface parity rule: a logo is a picture in the reader's header, and the CLI and MCP have nowhere to show one. Nothing changes in `help`, `output` or the daemon wire protocol. The message list's avatars (#447) keep to initials: a logo per row would mean a lookup per row.
 
 ## Decisions
 
