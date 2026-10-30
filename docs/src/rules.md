@@ -87,6 +87,7 @@ actions.move = "Finance"
 |---|---|
 | `delete = true` | Saves the message as `.eml` in the local trash, then removes it from the server. Later rules don't run for that message. |
 | `archive = true` | Moves it to the server's Archive folder. Fails when the server has none. A rule cannot both archive and `move`. |
+| `junk = true` | Reports it as junk, as the Junk button does: tags it `$Junk`, which trains the server's spam filter, and moves it to the server's Junk folder. Fails when the server has none. Only a delete wins over it; the rules' other actions don't run for that message. A rule cannot both junk and `move` or `archive`. |
 | `move = "Folder/Sub"` | Moves it to that folder, creating the folder if needed and subscribing to it, so mail apps that show only subscribed folders list it. When the server refuses to create it and the move then fails, the error says both. A folder that only groups others and cannot hold mail, such as Gmail's `[Gmail]`, is refused. `/` separates levels on most servers; see the warnings below for servers that use `.`. |
 | `read = true` | Marks it read; `false` marks it unread. |
 | `flagged = true` | Flags it; `false` removes the flag. |
@@ -94,7 +95,7 @@ actions.move = "Finance"
 | `notify = true` | Notifies even when the message was moved; `false` never notifies. |
 | `stop = true` | Later rules don't run for that message. |
 
-The order of the keys does not matter: flags and tags are set before a move. When several rules match a message, the first one in the file decides each thing only one rule can decide: a delete in any matching rule wins over everything else, then the first `move` or `archive` runs, and the first `notify` says whether it notifies. After a rule with `stop`, later rules in the file don't run for that message; earlier ones already did.
+The order of the keys does not matter: flags and tags are set before a move. When several rules match a message, the first one in the file decides each thing only one rule can decide: a delete in any matching rule wins over everything else, then a `junk`, then the first `move` or `archive` runs, and the first `notify` says whether it notifies. After a rule with `stop`, later rules in the file don't run for that message; earlier ones already did.
 
 A rule sees what the matching rules above it changed: `read`, `flagged` and `tag` test the message as those rules left it, in the same sync, not only once the change is back from the server. So one rule can tag mail and a later one route on that tag, as in `none = [{ tag = "Security" }]` after a rule that tags security alerts. A rule below never changes what a rule above it saw.
 
@@ -104,12 +105,12 @@ A rule sees what the matching rules above it changed: `read`, `flagged` and `tag
 - A rule acts only on mail that arrived after the rule was enabled, so adding a rule never touches your history. `postvak rules apply-existing NAME` is the explicit opt-in. Run it with `--dry-run` first. When the rule would delete mail from the server for good (`delete`), it prints how many messages per account and how long their `.eml` backups are kept, then asks you to type `yes`; without a terminal it refuses unless you pass `--yes`. Moves and flags run without asking.
 - A rule approved with `postvak rules approve` acts on mail that arrives after the approval. A rule you add or enable by editing the file acts on mail that arrives after the next sync picks it up.
 - Renaming a rule, editing its account, folder, match or actions, or disabling and enabling it again, restarts that clock.
-- Rules move a message out of a folder once. When it comes back, because you moved it back or a rule on another machine did, no rule moves or archives it again; the other actions still run. So two rules that move mail between two folders stop after one round. Postvak tells messages apart by Message-ID and arrival time, which servers keep when mail moves.
+- Rules move a message out of a folder once. When it comes back, because you moved it back or a rule on another machine did, no rule moves, archives or junks it again; the other actions still run. So two rules that move mail between two folders stop after one round. Postvak tells messages apart by Message-ID and arrival time, which servers keep when mail moves.
 - Mail restored with `postvak trash restore` carries the `$PostvakRestored` keyword. Rules never act on it again. This needs a server that accepts custom keywords; without one, the same rule can delete restored mail again.
 
 ## Notifications
 
-New INBOX mail notifies unless a rule moved, archived or deleted it, or a matching rule says `notify = false`; marking, flagging and tagging still notify. `notify = true` forces a notification for moved mail. When several matching rules set `notify`, the first one wins. Only INBOX mail notifies, so `notify` on a rule for another folder does nothing. With `notify = false` on the account, only rules that say `notify = true` notify. Deleted mail, and mail found by the first sync of a folder, never notifies.
+New INBOX mail notifies unless a rule moved, archived, junked or deleted it, or a matching rule says `notify = false`; marking, flagging and tagging still notify. `notify = true` forces a notification for moved mail. When several matching rules set `notify`, the first one wins. Only INBOX mail notifies, so `notify` on a rule for another folder does nothing. With `notify = false` on the account, only rules that say `notify = true` notify. Deleted mail, and mail found by the first sync of a folder, never notifies.
 
 On Linux a notification shows the sender and the subject with Postvak's icon, and asks the desktop for its new-mail sound, which follows Do Not Disturb and your volume; your desktop's notification settings list Postvak, so you can turn the sound or the popups off there. When one sync finds more than three new messages for an account, they come as one notification ("12 new messages", naming the senders), which opens the newest. Plasma shows the account beside Postvak's name. Clicking a notification opens the message in the window, which starts if it is not open. On Wayland an open window cannot bring itself to the front, so Plasma highlights it on the task bar and GNOME says "Postvak is ready".
 
@@ -126,7 +127,7 @@ On macOS a notification shows the sender and the subject as Postvak's once Postv
 - [Flag certain people or topics](#flag-certain-people-or-topics): `any`, `flagged`
 - [Set large mail aside](#set-large-mail-aside): `larger_than`, `flagged`, `move`, `stop`
 - [Archive read mail after 30 days](#archive-read-mail-after-30-days): `read`, `older_than`, `archive`
-- [Tag spam by its score](#tag-spam-by-its-score): `header` with a regex
+- [Tag spam by its score](#tag-spam-by-its-score): `header` with a regex, `tag`, `junk`
 
 ### Delete sign-in codes
 
@@ -245,7 +246,7 @@ actions.archive = true
 
 ### Tag spam by its score
 
-Filter junk on your provider's spam score. Many servers score mail but only move it to Junk above a high threshold; SpamAssassin writes the score as stars in `X-Spam-Level`, and some providers use their own header, such as `X-Soverin-Spam-Level`. Look at the headers of a few spam and legitimate messages with `postvak headers UID` to find yours, tag first to see what a threshold catches, then change the action to `actions.move = "Junk"` once it only catches spam:
+Filter junk on your provider's spam score. Many servers score mail but only move it to Junk above a high threshold; SpamAssassin writes the score as stars in `X-Spam-Level`, and some providers use their own header, such as `X-Soverin-Spam-Level`. Look at the headers of a few spam and legitimate messages with `postvak headers UID` to find yours, tag first to see what a threshold catches, then change the action once it only catches spam:
 
 ```toml
 [[rules]]
@@ -253,6 +254,15 @@ name = "spam suspects"
 match.header.X-Spam-Level = { regex = '^\*{2,}' }
 actions.tag = "$SpamSuspect"
 ```
+
+```toml
+[[rules]]
+name = "spam"
+match.header.X-Spam-Level = { regex = '^\*{5,}' }
+actions.junk = true
+```
+
+`junk` finds the account's Junk folder whatever the server calls it, such as `[Gmail]/Spam`, and tags the mail `$Junk` so the server's filter learns from it, as reporting it by hand does.
 
 ## Sharing rules between devices
 
@@ -267,7 +277,7 @@ A symlink from that folder to a `rules.toml` elsewhere works outside the Flatpak
 
 Every device that runs Postvak runs the rules itself. Moving or marking mail that another device already handled does nothing, but a deleted message's `.eml` backup is only on the device that deleted it.
 
-When two devices change the file before they sync, the sync keeps one version and leaves the other beside it, such as `rules.sync-conflict-20261024-101500-ABCDEFG.toml` from Syncthing or `rules (conflicted copy 2026-10-24 101500).toml` from Nextcloud. Postvak ignores that copy, so its changes are lost until you move them into `rules.toml`. `postvak rules check`, the Rules view, the MCP `rules_check` tool and the daemon's log warn about such a copy, and about a rule whose `account` is not set up on this device, since it never runs there; name each account the same on every device. They also warn about a rule that moves mail to the folder it watches (INBOX in any case), since that move does nothing, and about a rule that uses `authenticated` for an account without `trusted_authserv_ids`, since no mail is authenticated there, naming the server its INBOX offers (see [Authenticated mail](#authenticated-mail)). They warn about a rule watching a folder that none of the accounts it is for syncs, such as a misspelled name, once each of those accounts has finished a pass through all its folders without errors; a rule for every account stays quiet while one account syncs the folder. Once an account has finished such a pass, they also warn about a `move` to a folder it does not have that is named like a special one (Trash, Junk, Spam, Archive, Sent, Drafts) while the account keeps that role in another folder, such as `[Gmail]/Trash`: move to that folder instead, or use `archive` for the archive. Once an account has synced, they warn about a `move` folder that account does not have yet and that does not fit its server: one with `/` on a server that separates levels with another character, such as `.` on Courier, where it would become one folder with `/` in its name, and a top-level name on a server that keeps every folder under `INBOX.`, where creating it usually fails. Neither is an error, since the same file can serve accounts on other servers.
+When two devices change the file before they sync, the sync keeps one version and leaves the other beside it, such as `rules.sync-conflict-20261024-101500-ABCDEFG.toml` from Syncthing or `rules (conflicted copy 2026-10-24 101500).toml` from Nextcloud. Postvak ignores that copy, so its changes are lost until you move them into `rules.toml`. `postvak rules check`, the Rules view, the MCP `rules_check` tool and the daemon's log warn about such a copy, and about a rule whose `account` is not set up on this device, since it never runs there; name each account the same on every device. They also warn about a rule that moves mail to the folder it watches (INBOX in any case), since that move does nothing, and about a rule that uses `authenticated` for an account without `trusted_authserv_ids`, since no mail is authenticated there, naming the server its INBOX offers (see [Authenticated mail](#authenticated-mail)). They warn about a rule watching a folder that none of the accounts it is for syncs, such as a misspelled name, once each of those accounts has finished a pass through all its folders without errors; a rule for every account stays quiet while one account syncs the folder. Once an account has finished such a pass, they also warn about a `move` to a folder it does not have that is named like a special one (Trash, Junk, Spam, Archive, Sent, Drafts) while the account keeps that role in another folder, such as `[Gmail]/Trash`: move to that folder instead, or use `archive` for the archive and `junk` for the junk folder. Once an account has synced, they warn about a `move` folder that account does not have yet and that does not fit its server: one with `/` on a server that separates levels with another character, such as `.` on Courier, where it would become one folder with `/` in its name, and a top-level name on a server that keeps every folder under `INBOX.`, where creating it usually fails. Neither is an error, since the same file can serve accounts on other servers.
 
 ## Proposals
 

@@ -407,10 +407,11 @@ pub(crate) fn conditions(m: &Match) -> (Vec<Condition>, Match) {
 }
 
 /// The actions "+ Add action" offers, in its order; Move to and Tag start with an empty value.
-pub(crate) const ACTIONS: [Action; 9] = [
+pub(crate) const ACTIONS: [Action; 10] = [
     Action::Archive,
     Action::Delete,
     Action::Flag,
+    Action::Junk,
     Action::MarkRead,
     Action::Move(String::new()),
     Action::Notify,
@@ -425,6 +426,7 @@ pub(crate) fn action_name(action: &Action) -> &'static str {
         Action::Archive => "Archive",
         Action::Delete => "Delete",
         Action::Flag => "Flag",
+        Action::Junk => "Junk",
         Action::MarkRead => "Mark read",
         Action::Move(_) => "Move to",
         Action::Notify => "Notify",

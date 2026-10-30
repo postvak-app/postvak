@@ -38,6 +38,13 @@
             "null"
           ]
         },
+        "junk": {
+          "description": "true tags the message $Junk, which trains server spam filters, and moves it to the server's Junk folder; other\nactions but delete don't run",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "move": {
           "description": "Moves the message to this folder, creating it if needed",
           "type": [

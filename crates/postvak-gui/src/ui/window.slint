@@ -15,7 +15,7 @@ import { ListPane, RowData } from "list.slint";
 export enum Pane { body, folders, list }
 
 // The menu items that act on the app; `menu.rs` says what each does.
-export enum MenuAction { about, add-account, add-to-selection, archive, delete, documentation, flag, history, junk, keys, mark-folder-read, move, open-at-login, original-colours, preferences, read-or-unread, save-eml, save-eml-as, search, select-all, sync-now, text-or-html, theme-dark, theme-light, theme-system, view-source }
+export enum MenuAction { about, add-account, add-to-selection, archive, delete, documentation, flag, history, junk, keys, mark-folder-read, move, new-folder, open-at-login, original-colours, preferences, read-or-unread, save-eml, save-eml-as, search, select-all, sync-now, text-or-html, theme-dark, theme-light, theme-system, view-source }
 
 // A dialog that closes; the same names as `state::Dialog`.
 export enum Dialog { help, unsaved, apply-confirm, rule, folder, account, about, preferences, source, move, history }
@@ -31,6 +31,7 @@ export struct MenuState {
     original-colours: bool,
     shows-original-colours: bool,
     mark-folder-read: bool,
+    new-folder: bool,
     open-at-login: bool,
     opens-at-login: bool,
 }
@@ -224,6 +225,7 @@ export component MailWindow inherits Window {
     callback page-select(length, length, length, length);
     callback page-clicked(length, length);
     callback load-remote();
+    callback forget-remote(string);
     callback page-open-link();
     callback menu-item(MenuAction);
     callback close-window();
@@ -471,6 +473,11 @@ export component MailWindow inherits Window {
                 activated => { root.menu-item(MenuAction.sync-now); }
             }
             MenuItem {
+                title: "New folder…";
+                enabled: root.menu.new-folder;
+                activated => { root.menu-item(MenuAction.new-folder); }
+            }
+            MenuItem {
                 title: "Mark folder read";
                 enabled: root.menu.mark-folder-read;
                 activated => { root.menu-item(MenuAction.mark-folder-read); }
@@ -627,6 +634,7 @@ export component MailWindow inherits Window {
                         page-select(fx, fy, tx, ty) => { root.page-select(fx, fy, tx, ty); }
                         page-clicked(x, y) => { root.page-clicked(x, y); }
                         load-remote => { root.load-remote(); }
+                        forget-remote(domain) => { root.forget-remote(domain); }
                         page-open-link => { root.page-open-link(); }
                         page-copy-link => { root.copy-text(root.page.link); }
                     }

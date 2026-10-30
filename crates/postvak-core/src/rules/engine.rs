@@ -59,7 +59,7 @@ pub fn evaluate(rules: &[CompiledRule], msg: &Message, ctx: &Context) -> Plan {
                 Action::Notify => _ = explicit_notify.get_or_insert(true),
                 Action::Silent => _ = explicit_notify.get_or_insert(false),
                 Action::Stop => stop = true,
-                Action::Move(_) | Action::Archive if ctx.keep_in_folder => {}
+                Action::Move(_) | Action::Archive | Action::Junk if ctx.keep_in_folder => {}
                 _ => plan.actions.push(PlannedAction {
                     rule: rule.rule.name.clone(),
                     action: action.clone(),
@@ -80,7 +80,10 @@ pub fn evaluate(rules: &[CompiledRule], msg: &Message, ctx: &Context) -> Plan {
             None => {
                 ctx.notify_default
                     && !plan.actions.iter().any(|a| {
-                        matches!(a.action, Action::Delete | Action::Move(_) | Action::Archive)
+                        matches!(
+                            a.action,
+                            Action::Delete | Action::Move(_) | Action::Archive | Action::Junk
+                        )
                     })
             }
         };
@@ -466,6 +469,24 @@ actions = { delete = true }
         let actions: Vec<_> = kept.actions.iter().map(|a| &a.action).collect();
         assert_eq!(actions, [&Action::MarkRead]);
         assert!(kept.notify);
+    }
+
+    #[test]
+    fn junk_is_a_move_for_notifying_and_for_mail_kept_in_its_folder() {
+        let id = identity();
+        let rules = rules(
+            "[[rules]]\nname = \"spam\"\nmatch.from = { contains = \"alice\" }\nactions = { junk = true }\n",
+            0,
+        );
+        let m = msg("alice@x", "pieter@example.com", "hi", HOUR, false);
+        let junked = evaluate(&rules, &m, &ctx(&id, 2 * HOUR));
+        assert_eq!(junked.actions.len(), 1);
+        assert!(!junked.notify);
+        let kept = Context {
+            keep_in_folder: true,
+            ..ctx(&id, 2 * HOUR)
+        };
+        assert!(evaluate(&rules, &m, &kept).actions.is_empty());
     }
 
     #[test]

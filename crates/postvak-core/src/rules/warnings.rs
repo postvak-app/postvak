@@ -460,10 +460,9 @@ fn role_by_name(rule: &Rule, target: &str, accounts: &[AccountFolders]) -> Vec<S
             let special = synced
                 .iter()
                 .find(|f| f.special_use.as_deref() == Some(role))?;
-            let instead = if role == "Archive" {
-                "use the archive action instead".to_string()
-            } else {
-                format!("move to '{}' instead", special.name)
+            let instead = match role {
+                "Archive" | "Junk" => format!("use the {} action instead", role.to_lowercase()),
+                _ => format!("move to '{}' instead", special.name),
             };
             Some(format!(
                 "rule '{}' moves mail to '{target}', a new folder in account '{}', whose {} folder is '{}'; {instead}",
@@ -853,7 +852,7 @@ mod tests {
                 "rule 'bin' moves mail to 'Trash', a new folder in account 'gmail', whose trash folder is \
                  '[Gmail]/Trash'; move to '[Gmail]/Trash' instead",
                 "rule 'spam' moves mail to 'Spam', a new folder in account 'gmail', whose junk folder is \
-                 '[Gmail]/Spam'; move to '[Gmail]/Spam' instead",
+                 '[Gmail]/Spam'; use the junk action instead",
                 "rule 'keep' moves mail to 'Old/archive', a new folder in account 'gmail', whose archive folder is \
                  '[Gmail]/Archive'; use the archive action instead",
             ]

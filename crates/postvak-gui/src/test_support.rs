@@ -357,7 +357,6 @@ impl Open {
             "Original colours" => window.invoke_toggle_original_colours(),
             "Save .eml" => window.invoke_save_eml(),
             "Show as HTML" | "Show as text" => window.invoke_toggle_html(),
-            "Unsubscribe" => window.invoke_unsubscribe(),
             "View source" => window.invoke_open_source(),
             _ => panic!("the More menu has no {title:?}"),
         }
@@ -711,6 +710,26 @@ Content-Type: multipart/related; boundary=\"b\"\r\n\r\n\
 --b\r\nContent-Type: image/png\r\nContent-ID: <dot@example.com>\r\nContent-Transfer-Encoding: base64\r\n\r\n{DOT}\r\n--b--\r\n"
     )
     .into_bytes()
+}
+
+/// Adds message `uid` to work's INBOX as `add_html` does, from news@example.org with a DMARC pass that
+/// mx.example.org wrote, which work trusts once `trust_example_org` ran.
+pub(crate) fn add_authenticated_html(fx: &Fixture, uid: u32, html: &str) {
+    let mut m = message("INBOX", uid, &format!("news {uid}"));
+    m.from_addr = Some("News <news@example.org>".into());
+    m.headers = format!(
+        "Authentication-Results: mx.example.org; dmarc=pass header.from=example.org\r\nSubject: news {uid}\r\n\r\n"
+    )
+    .into_bytes();
+    fx.add("work", m);
+    fx.store("work")
+        .set_raw("INBOX", uid, &raw(html), "text")
+        .unwrap();
+}
+
+/// Has the last account in config.toml, work in a fixture of one, trust mx.example.org's Authentication-Results.
+pub(crate) fn trust_example_org(fx: &Fixture) {
+    fx.append_config("trusted_authserv_ids = [\"mx.example.org\"]\n");
 }
 
 /// Adds message `uid` to work's INBOX with `html` as its body and `text` as its extracted text.

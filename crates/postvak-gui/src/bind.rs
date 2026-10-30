@@ -142,6 +142,7 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
         original_colours: enabled(MenuAction::OriginalColours),
         shows_original_colours: app.body.as_ref().is_some_and(|b| b.original_colours),
         mark_folder_read: enabled(MenuAction::MarkFolderRead),
+        new_folder: enabled(MenuAction::NewFolder),
         open_at_login: enabled(MenuAction::OpenAtLogin),
         opens_at_login: app.open_at_login.checked(),
     });
@@ -480,6 +481,10 @@ fn present_page(app: &App, window: &MailWindow) {
         width,
         height,
         remote,
+        remembered: view
+            .and_then(|_| app.remembered_sender())
+            .unwrap_or_default()
+            .into(),
         link: link.unwrap_or_default().into(),
     });
     let selection = view
@@ -1263,6 +1268,9 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     });
     window.on_load_remote(move || {
         act(UiAction::LoadRemote);
+    });
+    window.on_forget_remote(move |domain| {
+        act(UiAction::ForgetRemote(domain.into()));
     });
     window.on_save_account(move |fields| {
         act(UiAction::SaveAccount(account_fields(fields)));

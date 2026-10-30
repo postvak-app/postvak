@@ -729,6 +729,76 @@ mod view_tests {
         assert_eq!(fetch_jobs.try_recv().unwrap().urls, [background]);
     }
 
+    /// Asks for remote content on the shown page, as the next layout to come in, and returns the download it starts.
+    fn ask_for_remote(
+        faked: &Faked,
+        fetch_jobs: &Receiver<super::FetchJob>,
+        url: &str,
+    ) -> Option<super::FetchJob> {
+        let generation = loads(&faked.jobs)
+            .pop()
+            .map_or(faked.generation, |load| load.generation);
+        reply(faked, laid(generation, 300.0, &[url]));
+        fetch_jobs.try_recv().ok()
+    }
+
+    fn remembered(fx: &Fixture) -> std::collections::BTreeSet<String> {
+        postvak_core::config::Config::load(&fx.paths.config_file())
+            .unwrap()
+            .ui
+            .remote_content
+    }
+
+    #[test]
+    fn loading_remote_content_from_a_vouched_sender_remembers_its_domain_for_the_next_message() {
+        let fx = Fixture::new(&["work"]);
+        crate::test_support::trust_example_org(&fx);
+        crate::test_support::add_authenticated_html(&fx, 1, "<p>one</p>");
+        crate::test_support::add_authenticated_html(&fx, 2, "<p>two</p>");
+        let faked = faked(&fx);
+        let (fetcher, fetch_jobs, _fetched) = Fetcher::fake();
+        faked.open.with(|live| live.app.fetcher = Some(fetcher));
+        let image = "https://cdn.example.org/a.png";
+        assert!(
+            ask_for_remote(&faked, &fetch_jobs, image).is_none(),
+            "asks first"
+        );
+        faked.open.click("Load remote content");
+        assert_eq!(fetch_jobs.try_recv().unwrap().urls, [image]);
+        assert_eq!(remembered(&fx), ["example.org".to_string()].into());
+        faked.open.press("j");
+        let job = ask_for_remote(&faked, &fetch_jobs, image).expect("loads without asking");
+        assert_eq!(job.urls, [image]);
+        assert_eq!(
+            faked
+                .open
+                .find("Remote content loads for example.org.")
+                .len(),
+            1
+        );
+        faked
+            .open
+            .click("Stop loading remote content from example.org");
+        assert!(remembered(&fx).is_empty());
+    }
+
+    #[test]
+    fn a_sender_the_provider_does_not_vouch_for_is_not_remembered() {
+        let fx = Fixture::new(&["work"]);
+        crate::test_support::add_authenticated_html(&fx, 1, "<p>one</p>");
+        crate::test_support::add_authenticated_html(&fx, 2, "<p>two</p>");
+        let faked = faked(&fx);
+        let (fetcher, fetch_jobs, _fetched) = Fetcher::fake();
+        faked.open.with(|live| live.app.fetcher = Some(fetcher));
+        let image = "https://cdn.example.org/a.png";
+        ask_for_remote(&faked, &fetch_jobs, image);
+        faked.open.click("Load remote content");
+        assert!(fetch_jobs.try_recv().is_ok());
+        assert!(remembered(&fx).is_empty());
+        faked.open.press("j");
+        assert!(ask_for_remote(&faked, &fetch_jobs, image).is_none());
+    }
+
     #[test]
     fn a_download_for_a_message_no_longer_shown_is_dropped() {
         let fx = Fixture::new(&["work"]);

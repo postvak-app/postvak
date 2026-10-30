@@ -1611,7 +1611,7 @@ mod tests {
             &format!("List-Unsubscribe: <https://list.example/u>\r\n{post}"),
         );
         let (open, _wires) = fx.window();
-        open.choose_more("Unsubscribe");
+        open.click("Unsubscribe");
         open.tick_until(|open| !open.labels_containing("Unsubscribed").is_empty());
         assert!(crate::test_support::launched().is_empty());
         let fx = Fixture::new(&["work"]);
@@ -1620,7 +1620,7 @@ mod tests {
             &format!("List-Unsubscribe: <https://list.example/refuse>\r\n{post}"),
         );
         let (open, _wires) = fx.window();
-        open.choose_more("Unsubscribe");
+        open.click("Unsubscribe");
         open.tick_until(|open| !open.labels_containing("Could not unsubscribe").is_empty());
         assert!(open.find(DELETE_UNSUBSCRIBED).is_empty());
     }
@@ -1636,7 +1636,7 @@ mod tests {
         );
         let (open, wires) = fx.window();
         assert!(open.find(DELETE_UNSUBSCRIBED).is_empty());
-        open.choose_more("Unsubscribe");
+        open.click("Unsubscribe");
         open.tick_until(|open| !open.find(DELETE_UNSUBSCRIBED).is_empty());
         wires.sent();
         open.click(DELETE_UNSUBSCRIBED);
@@ -1654,7 +1654,7 @@ mod tests {
         let fx = Fixture::new(&["work"]);
         list_mail(&fx, "List-Unsubscribe: <https://list.example/page>");
         let (open, _wires) = fx.window();
-        open.choose_more("Unsubscribe");
+        open.click("Unsubscribe");
         assert_eq!(
             crate::test_support::launched(),
             ["https://list.example/page"]
