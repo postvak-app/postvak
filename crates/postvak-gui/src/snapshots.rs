@@ -570,6 +570,22 @@ fn rule_editor() {
     snapshot(&open, "gui_rule_editor");
 }
 
+/// A rule whose conditions name lists: a text list on the subject and a domain list on the sender, each with its values
+/// under the row.
+#[test]
+fn rule_editor_lists() {
+    let fx = Fixture::mailbox("light");
+    let rules = "[lists]\nkids = [\"school.example\", \"daycare.example\", \"club.example\"]\nsecurity = { regex = \"sign-?in alert|new device\" }\n\n[[rules]]\nname = \"kids\"\nmatch.from_domain = { list = \"kids\" }\nmatch.subject = { list = \"security\" }\nactions.flagged = true\n";
+    std::fs::write(fx.paths.rules_file(), rules).unwrap();
+    let (open, _wires) = open(&fx);
+    open.with(|live| live.app.select_view(View::Rules));
+    open.tick();
+    open.click("kids");
+    open.tick();
+    assert_eq!(open.find("Save").len(), 1);
+    snapshot(&open, "gui_rule_editor_lists");
+}
+
 #[test]
 fn apply_confirm() {
     let fx = Fixture::mailbox("light");

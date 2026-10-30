@@ -558,12 +558,29 @@ fn draft_applies(app: &App) -> bool {
         .is_some_and(|d| d.original.is_some() && d.enabled && !app.draft_edited())
 }
 
+/// The approved lists a condition on `field` may name, sorted: text lists for a text field, domain lists for a domain
+/// field.
+fn lists_for(app: &App, field: Field) -> Vec<&str> {
+    use postvak_core::rules::NamedList;
+    (app.rules.file.lists.iter())
+        .filter(|(_, list)| match list {
+            NamedList::Domains(_) => field.is_domain(),
+            NamedList::Text(_) => field.is_text(),
+        })
+        .map(|(name, _)| name.as_str())
+        .collect()
+}
+
 /// The editor's fixed choices, which never change while the window is open.
 fn init_editor(window: &MailWindow) {
     let editor = window.global::<RuleEditor>();
     let labels = |items: Vec<&str>| model(items.into_iter().map(SharedString::from));
     editor.set_fields(labels(Field::ALL.map(Field::label).to_vec()));
     editor.set_ops(labels(Op::ALL.map(Op::label).to_vec()));
+    let domain = Field::FromDomain;
+    editor.set_domain_ops(labels(
+        domain.ops().iter().map(|op| op.label_on(domain)).collect(),
+    ));
     editor.set_action_choices(labels(ACTIONS.iter().map(draft::action_name).collect()));
 }
 
@@ -587,16 +604,40 @@ fn present_editor(app: &App, window: &MailWindow) {
     let conditions: Vec<ConditionData> = draft
         .conditions
         .iter()
-        .map(|c| ConditionData {
-            field: index_of(&Field::ALL, &c.field),
-            header: clean(&c.header, false).into(),
-            op: index_of(&Op::ALL, &c.op),
-            value: clean(&c.value, false).into(),
-            text: c.field.is_text(),
-            flag: c.field.is_flag(),
-            named: c.field == Field::Header,
+        .map(|c| {
+            let listed = c.op == Op::List;
+            ConditionData {
+                field: index_of(&Field::ALL, &c.field),
+                header: clean(&c.header, false).into(),
+                op: index_of(c.field.ops(), &c.op),
+                value: clean(&c.value, false).into(),
+                text: c.field.is_text(),
+                flag: c.field.is_flag(),
+                named: c.field == Field::Header,
+                domain: c.field.is_domain(),
+                listed,
+                list_index: position_of(&lists_for(app, c.field), &c.value.as_str()).unwrap_or(-1),
+                list_values: (app.rules.file.lists.get(&c.value))
+                    .filter(|_| listed)
+                    .map(|list| clean(&list.words(), false))
+                    .unwrap_or_default()
+                    .into(),
+            }
         })
         .collect();
+    // Each kind's lists once for every row, kept in place so an open choice survives a redraw.
+    let names = |field: Field| -> Vec<SharedString> {
+        lists_for(app, field)
+            .into_iter()
+            .map(|name| clean(name, false).into())
+            .collect()
+    };
+    sync(editor.get_text_lists(), names(Field::Subject), |m| {
+        editor.set_text_lists(m)
+    });
+    sync(editor.get_domain_lists(), names(Field::FromDomain), |m| {
+        editor.set_domain_lists(m)
+    });
     let actions: Vec<ActionData> = draft
         .actions
         .iter()
@@ -790,10 +831,14 @@ fn connect_preferences(window: &MailWindow, on: fn(Ask) -> bool) {
 }
 
 fn index_of<T: PartialEq>(all: &[T], item: &T) -> i32 {
+    position_of(all, item).unwrap_or(0)
+}
+
+/// Where `item` is in `all`, as the window counts rows; None when it is not there.
+fn position_of<T: PartialEq>(all: &[T], item: &T) -> Option<i32> {
     all.iter()
         .position(|x| x == item)
         .and_then(|i| i32::try_from(i).ok())
-        .unwrap_or(0)
 }
 
 /// An `Ask` that changes a copy of the open rule and hands it back when it differs.
@@ -849,8 +894,20 @@ fn connect_editor(window: &MailWindow, on: fn(Ask) -> bool) {
     });
     editor.on_op_chosen(move |row, i| {
         on(edit_draft(move |_, d| {
-            if let (Some(op), Some(c)) = (nth(Op::ALL, i), condition(d, row)) {
+            let Some(c) = condition(d, row) else { return };
+            if let Some(&op) = nth(c.field.ops(), i) {
+                if (op == Op::List) != (c.op == Op::List) {
+                    c.value.clear();
+                }
                 c.op = op;
+            }
+        }));
+    });
+    editor.on_list_chosen(move |row, i| {
+        on(edit_draft(move |app, d| {
+            let Some(c) = condition(d, row) else { return };
+            if let Some(name) = nth(lists_for(app, c.field), i) {
+                c.value = name.to_string();
             }
         }));
     });

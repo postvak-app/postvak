@@ -2287,6 +2287,42 @@ mod editor_tests {
     }
 
     #[test]
+    fn a_condition_picks_a_list_of_its_kind_and_shows_its_values() {
+        let fx = Fixture::new(&["work"]);
+        let lists = "[lists]\nalerts = { regex = \"new device\" }\nkids = [\"school.example\", \"club.example\"]\nzoo = [\"zoo.example\"]\n\n";
+        let (open, _wires) = rules_view(&fx, &format!("{lists}{RULES}"));
+        open.click("New rule");
+        editor(&open, |e| {
+            e.invoke_name_edited("kids".into());
+            e.invoke_add_condition();
+            e.invoke_field_chosen(0, 6);
+            e.invoke_op_chosen(0, 1);
+            e.invoke_list_chosen(0, 0);
+            e.invoke_action_chosen(2);
+        });
+        let window = open.window();
+        let global = window.global::<RuleEditor>();
+        let row = slint::Model::row_data(&global.get_conditions(), 0).unwrap();
+        assert!(row.domain && row.listed && row.op == 1);
+        let names = |model: slint::ModelRc<slint::SharedString>| -> Vec<String> {
+            slint::Model::iter(&model).map(|s| s.to_string()).collect()
+        };
+        assert_eq!(names(global.get_domain_lists()), ["kids", "zoo"]);
+        assert_eq!(names(global.get_text_lists()), ["alerts"]);
+        assert_eq!(names(global.get_domain_ops()), ["is", "in list"]);
+        assert_eq!(
+            (row.list_index, row.list_values.as_str()),
+            (0, "school.example or club.example")
+        );
+        open.click("Save");
+        let saved = file(&fx);
+        assert!(
+            saved.contains("name = \"kids\"\nmatch.from_domain = { list = \"kids\" }\n"),
+            "{saved}"
+        );
+    }
+
+    #[test]
     fn escape_closes_an_unchanged_rule_without_asking() {
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = open_newsletters(&fx);

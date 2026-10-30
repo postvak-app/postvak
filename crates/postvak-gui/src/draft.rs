@@ -221,6 +221,23 @@ impl Field {
         )
     }
 
+    /// Fields that take a domain, or a list of domains.
+    pub fn is_domain(self) -> bool {
+        matches!(self, Field::FromDomain | Field::ToDomain)
+    }
+
+    /// The tests a condition on this field offers, in the editor's order: a domain field is a domain or in a list, and
+    /// a field with a plain value offers none.
+    pub fn ops(self) -> &'static [Op] {
+        if self.is_domain() {
+            &[Op::Contains, Op::List]
+        } else if self.is_text() {
+            &Op::ALL
+        } else {
+            &[]
+        }
+    }
+
     /// Fields whose value is yes or no.
     pub fn is_flag(self) -> bool {
         matches!(
@@ -235,16 +252,27 @@ pub(crate) enum Op {
     Contains,
     Equals,
     Regex,
+    /// The value names a list in `[lists]`: a text list on a text field, a domain list on a domain field.
+    List,
 }
 
 impl Op {
-    pub const ALL: [Op; 3] = [Op::Contains, Op::Equals, Op::Regex];
+    pub const ALL: [Op; 4] = [Op::Contains, Op::Equals, Op::Regex, Op::List];
+
+    /// How the editor names this test on a field like `field`: a domain is simply "is".
+    pub fn label_on(self, field: Field) -> &'static str {
+        match (self, field.is_domain()) {
+            (Op::Contains, true) => "is",
+            _ => self.label(),
+        }
+    }
 
     pub fn label(self) -> &'static str {
         match self {
             Op::Contains => "contains",
             Op::Equals => "equals",
             Op::Regex => "matches regex",
+            Op::List => "in list",
         }
     }
 }
@@ -275,9 +303,12 @@ impl Condition {
         }
     }
 
-    /// This condition on `field`: the value stays unless it switches between yes/no and text.
+    /// This condition on `field`: the value stays unless it switches between yes/no and text, or a list's name would
+    /// move between a text and a domain field, which take different lists.
     pub fn with_field(&self, field: Field) -> Condition {
-        if field.is_flag() != self.field.is_flag() {
+        let list_moves = self.op == Op::List
+            && (field.is_domain() != self.field.is_domain() || !field.ops().contains(&Op::List));
+        if field.is_flag() != self.field.is_flag() || list_moves {
             return Condition::new(field);
         }
         Condition {
@@ -287,18 +318,14 @@ impl Condition {
     }
 }
 
-/// A text condition with one operator and one value as a row; `None` for anything else, which the form keeps.
-fn row(
-    field: Field,
-    header: &str,
-    contains: Option<&OneOrMany<String>>,
-    equals: Option<&OneOrMany<String>>,
-    regex: Option<&String>,
-) -> Option<Condition> {
-    let (op, value) = match (contains, equals, regex) {
-        (Some(OneOrMany::One(value)), None, None) => (Op::Contains, value.clone()),
-        (None, Some(OneOrMany::One(value)), None) => (Op::Equals, value.clone()),
-        (None, None, Some(value)) => (Op::Regex, value.clone()),
+/// A text condition with one operator and one value, or a list's name alone, as a row; `None` for anything else, which
+/// the form keeps.
+fn row(field: Field, header: &str, t: &TextMatch) -> Option<Condition> {
+    let (op, value) = match (&t.contains, &t.equals, &t.regex, &t.list) {
+        (Some(OneOrMany::One(value)), None, None, None) => (Op::Contains, value.clone()),
+        (None, Some(OneOrMany::One(value)), None, None) => (Op::Equals, value.clone()),
+        (None, None, Some(value), None) => (Op::Regex, value.clone()),
+        (None, None, None, Some(list)) => (Op::List, list.clone()),
         _ => return None,
     };
     Some(Condition {
@@ -326,25 +353,13 @@ pub(crate) fn conditions(m: &Match) -> (Vec<Condition>, Match) {
         (Field::Body, &m.body, &mut kept.body),
     ] {
         let Some(t) = condition else { continue };
-        match row(
-            field,
-            "",
-            t.contains.as_ref(),
-            t.equals.as_ref(),
-            t.regex.as_ref(),
-        ) {
+        match row(field, "", t) {
             Some(condition) => rows.push(condition),
             None => *slot = Some(t.clone()),
         }
     }
     for (name, t) in m.header.iter().flatten() {
-        match row(
-            Field::Header,
-            name,
-            t.contains.as_ref(),
-            t.equals.as_ref(),
-            t.regex.as_ref(),
-        ) {
+        match row(Field::Header, name, t) {
             Some(condition) => rows.push(condition),
             None => {
                 _ = kept
@@ -364,6 +379,10 @@ pub(crate) fn conditions(m: &Match) -> (Vec<Condition>, Match) {
     ] {
         match domains {
             Some(OneOrMany::One(Domain::Name(domain))) => rows.push(plain(field, domain.clone())),
+            Some(OneOrMany::One(Domain::List(ListRef { list }))) => rows.push(Condition {
+                op: Op::List,
+                ..plain(field, list.clone())
+            }),
             Some(list) => *slot = Some(list.clone()),
             None => {}
         }
@@ -490,17 +509,14 @@ impl Draft {
     pub fn to_rule(&self) -> Result<Rule, String> {
         let mut m = self.kept.clone();
         for c in &self.conditions {
+            if c.op == Op::List && c.value.trim().is_empty() {
+                return Err(format!("choose a list for {}", c.field.label()));
+            }
             let twice = match c.field {
                 Field::Alias => m.alias.replace(c.value.clone()).is_some(),
                 Field::Authenticated => m.authenticated.replace(flag(c)?).is_some(),
-                Field::FromDomain => m
-                    .from_domain
-                    .replace(OneOrMany::One(Domain::Name(c.value.clone())))
-                    .is_some(),
-                Field::ToDomain => m
-                    .to_domain
-                    .replace(OneOrMany::One(Domain::Name(c.value.clone())))
-                    .is_some(),
+                Field::FromDomain => m.from_domain.replace(domain(c)).is_some(),
+                Field::ToDomain => m.to_domain.replace(domain(c)).is_some(),
                 Field::Body => m.body.replace(text_match(c)).is_some(),
                 Field::Cc => m.cc.replace(text_match(c)).is_some(),
                 Field::Flagged => m.flagged.replace(flag(c)?).is_some(),
@@ -579,7 +595,21 @@ fn text_match(c: &Condition) -> TextMatch {
             regex: Some(c.value.clone()),
             ..TextMatch::default()
         },
+        Op::List => TextMatch {
+            list: Some(c.value.clone()),
+            ..TextMatch::default()
+        },
     }
+}
+
+/// A domain row as `from_domain` or `to_domain` holds it: the domain, or `{ list = "…" }`.
+fn domain(c: &Condition) -> OneOrMany<Domain> {
+    OneOrMany::One(match c.op {
+        Op::List => Domain::List(ListRef {
+            list: c.value.clone(),
+        }),
+        _ => Domain::Name(c.value.clone()),
+    })
 }
 
 fn flag(c: &Condition) -> Result<bool, String> {
@@ -661,7 +691,7 @@ actions = { flagged = true }
     }
 
     #[test]
-    fn list_references_read_by_name_stay_out_of_the_rows_and_save_as_they_were() {
+    fn a_list_reference_is_a_row_and_a_mixed_domain_list_is_kept() {
         let referring = rule(
             "[[rules]]\nname = \"x\"\nmatch.subject = { list = \"alerts\" }\n\
              match.from_domain = [{ list = \"kids\" }, \"extra.example\"]\nmatch.to_domain = { list = \"work\" }\n\
@@ -672,8 +702,57 @@ actions = { flagged = true }
             "subject in list alerts, from domain list kids or extra.example, to domain list work → flag"
         );
         let (rows, kept) = conditions(&referring.matches);
-        assert!(rows.is_empty(), "{rows:?}");
-        assert_eq!(kept, referring.matches);
+        let shown: Vec<(Field, Op, &str)> = rows
+            .iter()
+            .map(|c| (c.field, c.op, c.value.as_str()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (Field::Subject, Op::List, "alerts"),
+                (Field::ToDomain, Op::List, "work")
+            ]
+        );
+        assert!(kept.from_domain.is_some() && kept.subject.is_none() && kept.to_domain.is_none());
+        let draft = Draft {
+            conditions: rows,
+            kept,
+            name: "x".into(),
+            actions: referring.actions.clone(),
+            ..Draft::new()
+        };
+        assert_eq!(draft.to_rule().unwrap().matches, referring.matches);
+    }
+
+    #[test]
+    fn a_list_row_needs_a_list_and_does_not_carry_its_name_to_the_other_kind_of_field() {
+        let listed = Condition {
+            op: Op::List,
+            value: "kids".into(),
+            ..Condition::new(Field::FromDomain)
+        };
+        assert_eq!(listed.with_field(Field::ToDomain).value, "kids");
+        for field in [Field::Subject, Field::OlderThan, Field::Tag] {
+            let moved = listed.with_field(field);
+            assert_eq!(
+                (moved.op, moved.value.as_str()),
+                (Op::Contains, ""),
+                "{field:?}"
+            );
+        }
+        let draft = Draft {
+            conditions: vec![Condition {
+                value: String::new(),
+                ..listed
+            }],
+            name: "x".into(),
+            actions: vec![Action::Flag],
+            ..Draft::new()
+        };
+        assert_eq!(
+            draft.to_rule().unwrap_err(),
+            "choose a list for from domain"
+        );
     }
 
     #[test]
