@@ -120,12 +120,15 @@ export component TextButton inherits Rectangle {
     // Phosphor glyphs before and after the text, such as an arrow for an action that leaves Postvak.
     in property <string> icon;
     in property <string> end-icon;
+    // A pill in the reader's denser type; and a small one, as low as a row, for a card's own action.
+    in property <bool> compact;
+    in property <bool> small;
     callback clicked();
 
     property <bool> pill: root.framed || root.primary || root.danger;
     property <color> fill: root.primary ? Theme.brand : root.danger ? root.palette.error : transparent;
 
-    height: root.pill ? Theme.control + Theme.pad / 2 : Theme.control;
+    height: root.small ? Theme.row + Theme.pad / 4 : root.pill ? Theme.control + Theme.pad / 2 : Theme.control;
     border-radius: root.pill ? self.height / 2 : Theme.pad / 2;
     border-width: root.framed && !root.primary && !root.danger ? 1px : 0px;
     border-color: root.palette.border;
@@ -152,8 +155,8 @@ export component TextButton inherits Rectangle {
         fill: root.primary ? Theme.brand-hover : root.danger ? root.palette.error.darker(20%) : root.palette.hover;
     }
     HorizontalLayout {
-        padding-left: root.pill ? 2 * Theme.pad : root.flush ? 0 : Theme.pad / 2;
-        padding-right: root.pill ? 2 * Theme.pad : Theme.pad / 2;
+        padding-left: root.small ? Theme.pad * 3 / 2 : root.compact ? Theme.pad * 7 / 4 : root.pill ? 2 * Theme.pad : root.flush ? 0 : Theme.pad / 2;
+        padding-right: root.small ? Theme.pad * 3 / 2 : root.compact ? Theme.pad * 7 / 4 : root.pill ? 2 * Theme.pad : Theme.pad / 2;
         spacing: Theme.pad * 3 / 4;
         if root.icon != "": Text {
             accessible-role: none;
@@ -168,6 +171,7 @@ export component TextButton inherits Rectangle {
             text: root.text;
             color: root.primary ? Theme.on-brand : root.danger ? root.palette.faint : root.text-color;
             font-family: root.text-font;
+            font-size: root.small ? Theme.small-size : root.compact ? Theme.compact-size : Theme.text-size;
             font-weight: root.selected || root.pill ? 600 : 500;
             vertical-alignment: center;
         }
@@ -175,7 +179,7 @@ export component TextButton inherits Rectangle {
             accessible-role: none;
             text: root.end-icon;
             font-family: Theme.icon-font;
-            font-size: Theme.icon - Theme.pad / 4;
+            font-size: Theme.small-size;
             color: root.text-color;
             vertical-alignment: center;
         }

@@ -836,10 +836,16 @@ fn the_inbox_lines_up_on_the_grid() {
         title - inset,
         "the rows sit in from the list's edge"
     );
+    // The canvas tops them alike: the 32px groups and the 36px field.
+    let top = |label: &str| {
+        open.get(&open.labels_containing(label).remove(0))
+            .absolute_position()
+            .y
+    };
     assert_eq!(
-        edge(&open, "Archive message").1,
-        edge(&open, "Search").1,
-        "the reader's actions and the search field share a line"
+        top("Archive message"),
+        top("Search"),
+        "the reader's actions and the search field start on one line"
     );
     assert_eq!(
         edge(&open, "Archive message").1,

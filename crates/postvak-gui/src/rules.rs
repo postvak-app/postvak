@@ -123,6 +123,9 @@ pub(crate) struct Proposal {
     pub toml: String,
     /// One mark beside each line of `toml`, as a diff marks lines: "+" added, "-" removed, " " unchanged.
     pub marks: String,
+    /// What it does as a sentence, and each line of `toml` with its mark, both split into styled runs.
+    pub sentence: Vec<Run>,
+    pub code: Vec<(String, Vec<Run>)>,
 }
 
 impl Proposal {
@@ -147,6 +150,10 @@ pub(crate) struct RuleLine {
     pub actions: String,
     /// How often it acted, once counted; until then, none.
     pub hits: Hits,
+    /// "work · Inbox": the account and folder it watches.
+    pub watches: String,
+    /// It deletes mail, which the table marks; a deleted message is kept as an .eml backup.
+    pub deletes: bool,
 }
 
 impl RuleLine {
@@ -295,13 +302,21 @@ pub(crate) fn would_be(rule: &Rule, count: usize) -> String {
     format!("{noun} would be {verb}")
 }
 
-/// The line under a dry run's samples: how many it leaves out, and that approving is what makes it act.
-pub(crate) fn dry_run_rest(run: &DryRun) -> String {
+/// How many messages a dry run counted beyond its samples, "35 more", or empty.
+pub(crate) fn dry_run_more(run: &DryRun) -> String {
     let more = run.count.saturating_sub(run.samples.len());
-    let more = if more > 0 {
-        format!("{} more · ", super::numbers::count(more as u64))
+    if more == 0 {
+        return String::new();
+    }
+    format!("{} more", super::numbers::count(more as u64))
+}
+
+/// The line under a dry run's samples, after `dry_run_more`: that approving is what makes it act.
+pub(crate) fn dry_run_rest(run: &DryRun) -> String {
+    let more = if dry_run_more(run).is_empty() {
+        ""
     } else {
-        String::new()
+        " · "
     };
     let body = if run.needs_body {
         " Only mail whose body is downloaded is checked."
@@ -327,13 +342,168 @@ pub(crate) fn hit_cells(hits: &Hits) -> (String, String) {
     }
 }
 
-/// "1 rule · 2 proposals", beside the Rules title.
+/// "5 rules · 1 waiting for you", beside the Rules title; the rules alone while no proposal waits.
 pub(crate) fn counts(rules: usize, proposals: usize) -> String {
+    let rules = super::numbers::counted(rules as u64, "rule", "rules");
+    if proposals == 0 {
+        return rules;
+    }
     format!(
-        "{} · {}",
-        super::numbers::counted(rules as u64, "rule", "rules"),
-        super::numbers::counted(proposals as u64, "proposal", "proposals")
+        "{rules} · {} waiting for you",
+        super::numbers::count(proposals as u64)
     )
+}
+
+/// A run of a proposal's sentence or TOML drawn in one style: one of the `RUN_` kinds.
+pub(crate) type Run = (String, i32);
+pub(crate) const RUN_PLAIN: i32 = 0;
+/// A verb or field of the sentence, in bold.
+pub(crate) const RUN_STRONG: i32 = 1;
+/// A value of the sentence, as a token in the code face.
+pub(crate) const RUN_TOKEN: i32 = 2;
+pub(crate) const RUN_KEY: i32 = 3;
+pub(crate) const RUN_STRING: i32 = 4;
+/// `true`, `false` or a number.
+pub(crate) const RUN_LITERAL: i32 = 5;
+/// A table heading such as `[[rules]]`.
+pub(crate) const RUN_TABLE: i32 = 6;
+
+/// What a rule does, in a sentence: "When mail **from** `news@` arrives in `work / Inbox`, **archive** it and **mark it
+/// read**." A condition the sentence has no words for shows as the rules table words it.
+pub(crate) fn sentence(rule: &Rule) -> Vec<Run> {
+    let plain = |text: &str| (text.to_string(), RUN_PLAIN);
+    let mut runs = vec![plain("When mail ")];
+    let conditions: Vec<Vec<Run>> = draft::match_labels(&rule.matches)
+        .iter()
+        .map(|label| condition_runs(&clean(label, false)))
+        .collect();
+    join(&mut runs, conditions);
+    let account = rule
+        .account
+        .as_deref()
+        .map_or("every account".into(), |a| clean(a, false));
+    let folder = clean(
+        super::folders::label(rule.folder.as_deref().unwrap_or("INBOX")),
+        false,
+    );
+    runs.push(plain(" arrives in "));
+    runs.push((format!("{account} / {folder}"), RUN_TOKEN));
+    runs.push(plain(", "));
+    join(&mut runs, rule.actions.iter().map(action_runs).collect());
+    runs.push(plain("."));
+    runs
+}
+
+/// `parts` one after another: commas between them and "and" before the last.
+fn join(runs: &mut Vec<Run>, parts: Vec<Vec<Run>>) {
+    let count = parts.len();
+    for (i, part) in parts.into_iter().enumerate() {
+        if i > 0 {
+            let between = if i + 1 == count { " and " } else { ", " };
+            runs.push((between.into(), RUN_PLAIN));
+        }
+        runs.extend(part);
+    }
+}
+
+/// A condition as the rules table words it, `from contains "news@"`, put in the sentence's words: **from** `news@`.
+fn condition_runs(label: &str) -> Vec<Run> {
+    let fields = [
+        ("body ", "with body"),
+        ("cc ", "cc"),
+        ("from ", "from"),
+        ("subject ", "with subject"),
+        ("to ", "to"),
+    ];
+    for (prefix, said) in fields {
+        let value = label
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.strip_prefix("contains \""))
+            .and_then(|rest| rest.strip_suffix('"'));
+        if let Some(value) = value {
+            return vec![
+                (said.into(), RUN_STRONG),
+                (" ".into(), RUN_PLAIN),
+                (value.into(), RUN_TOKEN),
+            ];
+        }
+    }
+    vec![(label.into(), RUN_TOKEN)]
+}
+
+/// An action in the sentence's words: its verb in bold, then what it acts on.
+fn action_runs(action: &rules::Action) -> Vec<Run> {
+    use rules::Action;
+    let strong = |text: &str| (text.to_string(), RUN_STRONG);
+    let plain = |text: &str| (text.to_string(), RUN_PLAIN);
+    let token = |text: String| (text, RUN_TOKEN);
+    match action {
+        Action::Archive => vec![strong("archive"), plain(" it")],
+        Action::Delete => vec![strong("delete"), plain(" it")],
+        Action::Flag => vec![strong("flag"), plain(" it")],
+        Action::Junk => vec![strong("mark it junk")],
+        Action::MarkRead => vec![strong("mark it read")],
+        Action::MarkUnread => vec![strong("mark it unread")],
+        Action::Move(folder) => vec![
+            strong("move"),
+            plain(" it to "),
+            token(clean(super::folders::label(folder), false)),
+        ],
+        Action::NotJunk => vec![strong("mark it not junk")],
+        Action::Notify => vec![strong("notify"), plain(" you")],
+        Action::Silent => vec![strong("leave"), plain(" you unnotified")],
+        Action::Stop => vec![strong("stop"), plain(" later rules")],
+        Action::Tag(keyword) => vec![strong("tag"), plain(" it "), token(clean(keyword, false))],
+        Action::Trash => vec![strong("move"), plain(" it to "), token("Trash".into())],
+        Action::Unflag => vec![strong("unflag"), plain(" it")],
+    }
+}
+
+/// One line of TOML split into what the code block colours: keys, strings, literals and table headings.
+pub(crate) fn toml_runs(line: &str) -> Vec<Run> {
+    if line.trim_start().starts_with('[') {
+        return vec![(line.into(), RUN_TABLE)];
+    }
+    let chars: Vec<char> = line.chars().collect();
+    let mut runs: Vec<Run> = Vec::new();
+    let mut push = |text: String, kind: i32| match runs.last_mut() {
+        Some(last) if last.1 == kind && kind == RUN_PLAIN => last.0.push_str(&text),
+        _ => runs.push((text, kind)),
+    };
+    let word = |c: char| c.is_alphanumeric() || "_.-+".contains(c);
+    let mut i = 0;
+    while i < chars.len() {
+        let start = i;
+        if chars[i] == '"' {
+            i += 1;
+            while i < chars.len() && chars[i] != '"' {
+                i += if chars[i] == '\\' { 2 } else { 1 };
+            }
+            i = (i + 1).min(chars.len());
+            push(chars[start..i].iter().collect(), RUN_STRING);
+        } else if word(chars[i]) {
+            while i < chars.len() && word(chars[i]) {
+                i += 1;
+            }
+            let text: String = chars[start..i].iter().collect();
+            let before_equals = chars[i..].iter().find(|c| !c.is_whitespace()) == Some(&'=');
+            let literal = text == "true" || text == "false" || text.parse::<f64>().is_ok();
+            let kind = if before_equals {
+                RUN_KEY
+            } else if literal {
+                RUN_LITERAL
+            } else {
+                RUN_PLAIN
+            };
+            push(text, kind);
+        } else {
+            while i < chars.len() && chars[i] != '"' && !word(chars[i]) {
+                i += 1;
+            }
+            push(chars[start..i].iter().collect(), RUN_PLAIN);
+        }
+    }
+    runs
 }
 
 /// Whether the list shows `rule` as a proposal rather than a rule.
@@ -387,6 +557,9 @@ fn proposals(rules: &[Rule]) -> Vec<Proposal> {
                     .map(|line| ('+', line.to_owned()))
                     .collect(),
             };
+            let code = (lines.iter())
+                .map(|(mark, line)| (mark.to_string(), toml_runs(line)))
+                .collect();
             let (marks, toml): (Vec<String>, Vec<String>) = lines
                 .into_iter()
                 .map(|(mark, line)| (mark.to_string(), line))
@@ -409,6 +582,8 @@ fn proposals(rules: &[Rule]) -> Vec<Proposal> {
                     None => format!("Agent proposal · {who}"),
                 },
                 summary: draft::summary(rule),
+                sentence: sentence(rule),
+                code,
                 note,
                 edits: edited.is_some(),
                 marks: marks.join("\n"),
@@ -459,6 +634,7 @@ fn rule_lines(rules: &[Rule]) -> Vec<RuleLine> {
             .as_deref()
             .map_or("Inbox".into(), |f| clean(crate::folders::label(f), false));
         let actions: Vec<String> = rule.actions.iter().map(draft::action_label).collect();
+        let watches = format!("{account} · {folder}");
         RuleLine {
             name: rule.name.clone(),
             label: clean(&rule.name, false),
@@ -473,6 +649,8 @@ fn rule_lines(rules: &[Rule]) -> Vec<RuleLine> {
             conditions: clean(&draft::match_labels(&rule.matches).join(", "), false),
             actions: clean(&actions.join(", "), false),
             hits: Hits::default(),
+            watches,
+            deletes: rule.actions.contains(&rules::Action::Delete),
         }
     };
     rules
@@ -534,19 +712,19 @@ pub(crate) fn shown_rules(lines: &[RuleLine], sort: Option<SheetSort>, filter: &
         .collect()
 }
 
-/// The order the Rules table shows `lines` in, as indices into them. Its columns are #, Name, Account, Folder,
-/// Conditions, Actions, Last 30 days and Last fired; # is the order they run in, which is also the order without `sort`.
-/// The last two sort by their numbers and times, a rule that never fired first.
+/// The order the Rules table shows `lines` in, as indices into them. Its columns are #, Name, Watches, When, Then,
+/// Last 30 days and Last fired; # is the order they run in, which is also the order without `sort`. The last two sort by
+/// their numbers and times, a rule that never fired first.
 fn rule_order(lines: &[RuleLine], sort: Option<SheetSort>) -> Vec<usize> {
     match sort {
         Some(SheetSort {
             column: 0,
             ascending: false,
         }) => (0..lines.len()).rev().collect(),
-        Some(SheetSort { column, ascending }) if column >= 6 => {
+        Some(SheetSort { column, ascending }) if column >= 5 => {
             let keys: Vec<[(u64, i64); 1]> = (lines.iter())
                 .map(|l| match column {
-                    6 => [(l.hits.last_30d, 0)],
+                    5 => [(l.hits.last_30d, 0)],
                     _ => [(0, l.hits.last_fired.unwrap_or(i64::MIN))],
                 })
                 .collect();
@@ -559,8 +737,8 @@ fn rule_order(lines: &[RuleLine], sort: Option<SheetSort>) -> Vec<usize> {
             )
         }
         Some(sort) if sort.column > 0 => {
-            let cells: Vec<[&str; 5]> = (lines.iter())
-                .map(|l| [&*l.label, &l.account, &l.folder, &l.conditions, &l.actions])
+            let cells: Vec<[&str; 4]> = (lines.iter())
+                .map(|l| [&*l.label, &l.watches, &l.conditions, &l.actions])
                 .collect();
             sheet_order(
                 &cells,
@@ -975,8 +1153,12 @@ mod tests {
         // A clock left from when the rule ran before must not let it act on older mail.
         fx.store("work").restart_rule_clock("codes", 1).unwrap();
         let (open, wires) = rules_view(&fx);
-        assert_eq!(open.find("Agent proposal · agent").len(), 1);
-        assert_eq!(open.find("subject contains \"code\" → delete").len(), 1);
+        assert_eq!(open.find("AGENT PROPOSAL · AGENT").len(), 1);
+        assert_eq!(
+            open.find("When mail with subject code arrives in every account / Inbox, delete it.")
+                .len(),
+            1
+        );
         assert_eq!(open.labels_containing("name = \"codes\"").len(), 1);
         open.click("Approve rule");
         assert!(enabled(&fx, "codes"));
@@ -1029,12 +1211,12 @@ mod tests {
 
     #[test]
     fn the_header_counts_rules_and_proposals_and_rows_say_what_they_do() {
-        assert_eq!(super::counts(1, 2), "1 rule · 2 proposals");
-        assert_eq!(super::counts(0, 1), "0 rules · 1 proposal");
+        assert_eq!(super::counts(1, 2), "1 rule · 2 waiting for you");
+        assert_eq!(super::counts(5, 0), "5 rules");
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = rules_view(&fx);
-        assert_eq!(open.find("1 rule · 1 proposal").len(), 1);
-        assert_eq!(open.find("every account").len(), 1);
+        assert_eq!(open.find("1 rule · 1 waiting for you").len(), 1);
+        assert_eq!(open.find("every account · Inbox").len(), 1);
         assert_eq!(open.find("from contains \"news@\"").len(), 1);
         assert_eq!(open.find("archive").len(), 1);
         let folders: Vec<String> = open.with(|live| {
@@ -1076,7 +1258,7 @@ mod tests {
         assert_eq!(shown(&open), (0, 1));
         assert_eq!(open.find("No rule matches “CODE”.").len(), 1);
         assert_eq!(
-            open.find("1 rule · 1 proposal").len(),
+            open.find("1 rule · 1 waiting for you").len(),
             1,
             "the header still counts them all"
         );
@@ -1200,8 +1382,11 @@ mod tests {
         let fx = Fixture::new(&["work"]);
         std::fs::write(fx.paths.rules_file(), sneaky).unwrap();
         let (open, _wires) = view(&fx, View::Rules);
-        assert_eq!(open.find("Agent proposal · agent").len(), 1);
-        assert_eq!(open.find("subject contains \"[2Jcode\" → delete").len(), 1);
+        assert_eq!(open.find("AGENT PROPOSAL · AGENT").len(), 1);
+        assert_eq!(
+            open.labels_containing("with subject [2Jcode arrives").len(),
+            1
+        );
         assert!(open.labels_containing("\u{1b}").is_empty());
     }
 
@@ -1446,6 +1631,8 @@ mod tests {
             conditions: String::new(),
             actions: String::new(),
             hits: Default::default(),
+            watches: String::new(),
+            deletes: false,
         };
         let lines = ["a", "b", "c"].map(line);
         let moved = |from, to, below| super::dropped(&lines, None, "", from, to, below);
@@ -1491,6 +1678,51 @@ mod tests {
     }
 
     #[test]
+    fn a_proposal_reads_as_a_sentence_with_its_values_as_tokens() {
+        let rule = postvak_core::rules::parse(
+            "[[rules]]\nname = \"kettle\"\naccount = \"work\"\nmatch.from = { contains = \"news@kettle.example\" }\nactions = { archive = true, read = true }\n",
+        )
+        .unwrap()
+        .rules
+        .remove(0);
+        let runs = super::sentence(&rule);
+        let text: String = runs.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(
+            text,
+            "When mail from news@kettle.example arrives in work / Inbox, archive it and mark it read."
+        );
+        assert!(runs.contains(&("news@kettle.example".to_string(), super::RUN_TOKEN)));
+        assert!(runs.contains(&("from".to_string(), super::RUN_STRONG)));
+        assert!(runs.contains(&("mark it read".to_string(), super::RUN_STRONG)));
+    }
+
+    #[test]
+    fn toml_lines_split_into_keys_strings_and_literals() {
+        use super::{RUN_KEY, RUN_LITERAL, RUN_PLAIN, RUN_STRING, RUN_TABLE};
+        let run = |t: &str, k| (t.to_string(), k);
+        assert_eq!(super::toml_runs("[[rules]]"), [run("[[rules]]", RUN_TABLE)]);
+        assert_eq!(
+            super::toml_runs("match.from = { contains = \"a\\\"b\" }"),
+            [
+                run("match.from", RUN_KEY),
+                run(" = { ", RUN_PLAIN),
+                run("contains", RUN_KEY),
+                run(" = ", RUN_PLAIN),
+                run("\"a\\\"b\"", RUN_STRING),
+                run(" }", RUN_PLAIN),
+            ]
+        );
+        assert_eq!(
+            super::toml_runs("actions.read = true"),
+            [
+                run("actions.read", RUN_KEY),
+                run(" = ", RUN_PLAIN),
+                run("true", RUN_LITERAL)
+            ]
+        );
+    }
+
+    #[test]
     fn the_hit_columns_sort_by_number_and_time_not_text() {
         use postvak_core::rules::hits::Hits;
         let line = |name: &str, last_30d, last_fired| super::RuleLine {
@@ -1506,6 +1738,8 @@ mod tests {
                 last_30d,
                 last_fired,
             },
+            watches: String::new(),
+            deletes: false,
         };
         let lines = [
             line("ten", 10, Some(200)),
@@ -1518,8 +1752,8 @@ mod tests {
                 ascending: true,
             })
         };
-        assert_eq!(super::shown_rules(&lines, by(6), ""), [2, 1, 0]);
-        assert_eq!(super::shown_rules(&lines, by(7), ""), [2, 0, 1]);
+        assert_eq!(super::shown_rules(&lines, by(5), ""), [2, 1, 0]);
+        assert_eq!(super::shown_rules(&lines, by(6), ""), [2, 0, 1]);
     }
 
     #[test]
@@ -1869,16 +2103,16 @@ mod editor_tests {
         };
         let pair = |n: &str, name: &str| (n.to_string(), name.to_string());
         assert_eq!(shown(), [pair("1", "newsletters"), pair("2", "receipts")]);
-        open.click("Actions");
+        open.click("Then");
         assert_eq!(
             shown(),
             [pair("1", "newsletters"), pair("2", "receipts")],
             "archive before flag"
         );
-        open.click("Actions");
+        open.click("Then");
         assert_eq!(shown(), [pair("2", "receipts"), pair("1", "newsletters")]);
         assert_eq!(
-            open.find("Actions ↓").len(),
+            open.find("Then ↓").len(),
             0,
             "the arrow is drawn, not part of the label"
         );

@@ -80,6 +80,8 @@ export component MailWindow inherits Window {
     in property <string> inbox-icon;
     in property <string> envelope-icon;
     in property <string> rule-icon;
+    // Approve rule's tick.
+    in property <string> check-icon;
     // The reader's More menu, Reply and the arrow that says it opens the mail app, and an attachment.
     in property <string> more-icon;
     in property <string> reply-icon;
@@ -628,6 +630,7 @@ export component MailWindow inherits Window {
                         new-rule => { root.new-rule(); }
                         edit-rule(i) => { root.edit-rule(i); }
                         proposals: root.proposals;
+                        check-icon: root.check-icon;
                         rules: root.rules;
                         rules-sort: root.rules-sort;
                         rules-empty: root.rules-empty;
