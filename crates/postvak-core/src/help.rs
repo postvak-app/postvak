@@ -104,6 +104,8 @@ pub const RULES_APPLY_EXISTING: &str =
 pub const RULES_APPROVE: &str =
     "Enable a disabled rule, such as a proposal, or write an edit proposal over the rule it edits";
 pub const RULES_CHECK: &str = "Validate rules.toml, and warn about what keeps it from doing what it says, such as a conflicting copy a file sync left beside it or a rule for an account not set up here";
+/// The `--as-of` option of `rules test` and `rules coverage`, and the `as_of` argument of their MCP tools.
+pub const AS_OF: &str = "Evaluate as if it were this time, to see what older_than and younger_than will do: a span ahead of now (15min, 1d), a local date (2026-11-01), a local time (2026-11-01T14:00) or an RFC 3339 timestamp; the mail and its read, flagged and tags stay as they are now, and nothing is applied";
 pub const RULES_COVERAGE: &str = "Run the rules over one folder's stored mail without acting: how many messages a rule matches, none matches and several match; the top senders of unmatched mail; for each contested message every rule that matches and what would run under the real precedence";
 pub const RULES_LIST: &str = "Every rule in file order, the order they run in: its position, its whole definition, whether it is enabled and who proposed it";
 pub const RULES_PROPOSE: &str = "Add rules, disabled, for a human to approve: the arguments are one rule (an entry of `rules` in rules_schema), or `rules`, a list of them stored in order, all or none; `before` or `after` names the rule to put them next to instead of at the end, and `replace` swaps your own pending proposal of the same name; `edit` proposes changes to the existing rules of these names, each stored as '<name> (edit)' while the rule runs unchanged until a human approves";

@@ -77,6 +77,54 @@ impl Span {
             Span::Months(months) => months_back(now, months),
         }
     }
+
+    /// The moment this span after `now`; `None` when that lies outside the calendar.
+    pub fn after(self, now: i64) -> Option<i64> {
+        match self {
+            Span::Seconds(seconds) => now.checked_add(i64::try_from(seconds).ok()?),
+            Span::Months(months) => months_ahead(now, months),
+        }
+    }
+}
+
+/// The moment a rules preview evaluates as of: a span after `now` (`15min`, `1d`), a local date (its midnight), a
+/// local `YYYY-MM-DDTHH:MM[:SS]`, or an RFC 3339 timestamp.
+pub fn as_of(text: &str, now: i64) -> Result<i64, String> {
+    let text = text.trim();
+    if let Ok(at) = chrono::DateTime::parse_from_rfc3339(text) {
+        return Ok(at.timestamp());
+    }
+    let naive = chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S")
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M"))
+        .ok()
+        .or_else(|| midnight(text));
+    if let Some(naive) = naive {
+        return local(naive).ok_or_else(|| {
+            format!("'{text}' does not exist in local time: a clock change skips it")
+        });
+    }
+    let span = Span::parse(text)
+        .map_err(|e| format!("{e} (or give a date such as 2026-11-01 or 2026-11-01T14:00)"))?;
+    span.after(now)
+        .ok_or_else(|| format!("'{text}' is too far ahead"))
+}
+
+/// The local midnight starting a `YYYY-MM-DD` date.
+pub(crate) fn local_date(text: &str) -> Option<i64> {
+    local(midnight(text)?)
+}
+
+fn midnight(text: &str) -> Option<chrono::NaiveDateTime> {
+    let date = chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").ok()?;
+    Some(date.and_time(chrono::NaiveTime::MIN))
+}
+
+/// A local wall-clock time as a timestamp, the earlier one where clocks go back; `None` for one a clock change skips.
+pub(crate) fn local(naive: chrono::NaiveDateTime) -> Option<i64> {
+    chrono::Local
+        .from_local_datetime(&naive)
+        .earliest()
+        .map(|at| at.timestamp())
 }
 
 /// The same clock time `months` months before `now`, in local time: the calendar moves, not a fixed day count.
@@ -85,6 +133,13 @@ pub(crate) fn months_back(now: i64, months: u32) -> Option<i64> {
     // A day the earlier month lacks becomes its last day.
     let earlier = at.checked_sub_months(chrono::Months::new(months))?;
     Some(earlier.timestamp())
+}
+
+/// The same clock time `months` months after `now`, in local time, as `months_back` counts.
+fn months_ahead(now: i64, months: u32) -> Option<i64> {
+    let at = chrono::Local.timestamp_opt(now, 0).single()?;
+    let later = at.checked_add_months(chrono::Months::new(months))?;
+    Some(later.timestamp())
 }
 
 #[cfg(test)]
@@ -117,5 +172,42 @@ mod tests {
         assert_eq!(Span::Seconds(60).before(1_000), Some(940));
         assert_eq!(Span::parse("1000000y").unwrap().before(0), None);
         assert_eq!(Span::Seconds(u64::MAX).before(0), None);
+        assert_eq!(Span::Seconds(u64::MAX).after(0), None);
+    }
+
+    #[test]
+    fn as_of_takes_a_span_ahead_a_local_date_or_time_or_rfc_3339() {
+        let now = 1_792_843_200;
+        assert_eq!(as_of("15min", now), Ok(now + 900));
+        assert_eq!(as_of(" 1d ", now), Ok(now + 86_400));
+        let month = as_of("1mo", now).unwrap();
+        // A DST change in between moves it by an hour.
+        assert!((28 * 86_400 - 3_600..=31 * 86_400 + 3_600).contains(&(month - now)));
+        let midnight = chrono::NaiveDate::from_ymd_opt(2026, 11, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        assert_eq!(as_of("2026-11-01", now), Ok(local(midnight).unwrap()));
+        assert_eq!(
+            as_of("2026-11-01T14:30", now),
+            Ok(local(midnight).unwrap() + 14 * 3_600 + 30 * 60)
+        );
+        assert_eq!(
+            as_of("2026-11-01T14:30:15", now),
+            Ok(local(midnight).unwrap() + 14 * 3_600 + 30 * 60 + 15)
+        );
+        assert_eq!(as_of("2026-10-24T12:00:00Z", 0), Ok(now));
+        assert_eq!(as_of("2026-10-24T14:00:00+02:00", 0), Ok(now));
+        assert_eq!(
+            as_of("6m", now),
+            Err("'6m' is ambiguous: write 6min for minutes or 6mo for months (or give a date such as 2026-11-01 or 2026-11-01T14:00)".into())
+        );
+        assert_eq!(
+            as_of("1000000y", now),
+            Err("'1000000y' is too far ahead".into())
+        );
+        for text in ["", "soon", "-1d", "2026-13-01", "2026-11-01 14:00"] {
+            assert!(as_of(text, now).is_err(), "{text}");
+        }
     }
 }

@@ -1,8 +1,6 @@
 //! The query syntax: words, `"phrases"`, `-not` and `key:value` operators. Anything else is a word, so parsing
 //! cannot fail.
 
-use chrono::TimeZone;
-
 use super::{Column, Filter, Query, Term};
 
 /// Reads a query. Whitespace separates tokens; a token with a `"` in it is a phrase that runs to the next `"` or the
@@ -119,17 +117,7 @@ pub fn date(value: &str, now: i64) -> Option<i64> {
     if let Ok(span) = crate::time::Span::parse(value) {
         return span.before(now);
     }
-    let date = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").ok()?;
-    local_midnight(date)
-}
-
-/// The start of `date` in local time; a day whose midnight falls in a DST gap starts at the first instant after it.
-fn local_midnight(date: chrono::NaiveDate) -> Option<i64> {
-    let midnight = date.and_hms_opt(0, 0, 0)?;
-    chrono::Local
-        .from_local_datetime(&midnight)
-        .earliest()
-        .map(|at| at.timestamp())
+    crate::time::local_date(value)
 }
 
 #[cfg(test)]
@@ -273,7 +261,7 @@ pub(crate) mod tests {
 
     #[test]
     fn dates_are_local_midnights_and_relative_ones_count_back_from_now() {
-        let jan15 = local_midnight(chrono::NaiveDate::from_ymd_opt(2026, 1, 15).unwrap()).unwrap();
+        let jan15 = crate::time::local_date("2026-01-15").unwrap();
         assert_eq!(filters("before:2026-01-15"), [Filter::Before(jan15)]);
         assert_eq!(filters("after:2026-01-15"), [Filter::After(jan15)]);
         assert_eq!(filters("after:7d"), [Filter::After(NOW - 7 * 86_400)]);

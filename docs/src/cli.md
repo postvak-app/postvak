@@ -349,6 +349,7 @@ Dry run: print what each rule would do to the cached messages, and warn where `a
 
 * `--account <ACCOUNT>`
 * `--stdin` — Preview one rule read as JSON from stdin instead of rules.toml
+* `--as-of <AS_OF>` — Evaluate as if it were this time, to see what older_than and younger_than will do: a span ahead of now (15min, 1d), a local date (2026-11-01), a local time (2026-11-01T14:00) or an RFC 3339 timestamp; the mail and its read, flagged and tags stay as they are now, and nothing is applied
 
 
 
@@ -473,6 +474,7 @@ Run the rules over one folder's stored mail without acting: how many messages a 
 * `--limit <LIMIT>` — At most this many unmatched senders and contested messages per account; the counts cover everything
 
   Default value: `20`
+* `--as-of <AS_OF>` — Evaluate as if it were this time, to see what older_than and younger_than will do: a span ahead of now (15min, 1d), a local date (2026-11-01), a local time (2026-11-01T14:00) or an RFC 3339 timestamp; the mail and its read, flagged and tags stay as they are now, and nothing is applied
 * `--json`
 
 

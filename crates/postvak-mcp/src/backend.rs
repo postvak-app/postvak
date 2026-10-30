@@ -610,8 +610,14 @@ impl Backend {
 
     /// Previews one rule as if enabled, on the cached mail of the visible accounts; rows never carry mail text, and
     /// `warnings` say where `authenticated` cannot hold. A condition on text `sight` does not cover is refused, since
-    /// its matches would reveal that text.
-    pub fn rules_test(&self, mut rule: Rule, account: Option<&str>, sight: Sight) -> Result<Value> {
+    /// its matches would reveal that text. It evaluates as of `now`, which the result names.
+    pub fn rules_test(
+        &self,
+        mut rule: Rule,
+        account: Option<&str>,
+        now: i64,
+        sight: Sight,
+    ) -> Result<Value> {
         rule.enabled = true;
         let compiled = rules::compile(&RuleFile { rules: vec![rule] })?;
         refuse_unseen(&compiled, sight)?;
@@ -619,12 +625,12 @@ impl Backend {
         let mut warnings = Vec::new();
         for acc in self.select(account)? {
             let store = self.store(&acc)?;
-            for p in actions::planned(&compiled, &store, &acc, &acc.identity()?, time::now())? {
+            for p in actions::planned(&compiled, &store, &acc, &acc.identity()?, now)? {
                 rows.push(output::planned_row(&acc.name, &p));
             }
             warnings.extend(rules::preview_warnings(&compiled, &acc, &store));
         }
-        Ok(json!({ "rows": rows, "warnings": warnings }))
+        Ok(json!({ "rows": rows, "warnings": warnings, "as_of": now }))
     }
 
     /// The rules the analysis tools run: the enabled ones, with `include_pending` the waiting proposals too, less those
@@ -681,7 +687,8 @@ impl Backend {
         Ok(json!({ "rows": rows, "skipped_rules": skipped }))
     }
 
-    /// Rules coverage of `folder` in the visible accounts, one row per account.
+    /// Rules coverage of `folder` in the visible accounts as of `now`, one row per account.
+    #[allow(clippy::too_many_arguments)]
     pub fn rules_coverage(
         &self,
         account: Option<&str>,
@@ -689,6 +696,7 @@ impl Backend {
         include_pending: bool,
         by: GroupBy,
         limit: u32,
+        now: i64,
         sight: Sight,
     ) -> Result<Value> {
         let (compiled, skipped) = self.analysis_rules(include_pending, sight)?;
@@ -697,11 +705,11 @@ impl Backend {
         for acc in self.select(account)? {
             let store = self.store(&acc)?;
             let identity = acc.identity()?;
-            let ctx = rules::coverage::context(&acc.name, &identity, time::now());
+            let ctx = rules::coverage::context(&acc.name, &identity, now);
             let mut coverage = rules::coverage::in_folder(&store, &compiled, &ctx, folder, by)?;
             coverage.unmatched_senders.truncate(limit);
             coverage.contests.truncate(limit);
-            rows.push(output::coverage(&acc.name, folder, &coverage)?);
+            rows.push(output::coverage(&acc.name, folder, &coverage, now)?);
         }
         Ok(json!({ "rows": rows, "skipped_rules": skipped }))
     }

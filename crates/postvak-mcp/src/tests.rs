@@ -811,7 +811,12 @@ fn rules_test_sees_trusted_authserv_ids_added_while_running() {
     .unwrap();
     let preview = |backend: &Backend| {
         let tested = backend
-            .rules_test(rule.clone(), None, Sight::default())
+            .rules_test(
+                rule.clone(),
+                None,
+                postvak_core::time::now(),
+                Sight::default(),
+            )
             .unwrap();
         let rows = tested["rows"].as_array().unwrap().len();
         let warnings = tested["warnings"].as_array().unwrap().len();
@@ -860,6 +865,47 @@ async fn rules_test_previews_subjects() {
             .unwrap()
             .contains("secret body")
     );
+}
+
+#[tokio::test]
+async fn rules_test_and_coverage_evaluate_as_of_another_time() {
+    let fx = fixture(&["work"]);
+    fx.add("work", fixture_message("INBOX", 1, "Hello", ""));
+    std::fs::write(
+        fx.paths.rules_file(),
+        "[[rules]]\nname = \"old\"\nmatch.older_than = \"100y\"\nactions = { flagged = true }\n",
+    )
+    .unwrap();
+    let client = connect(&fx, "read", &[]).await;
+    let rule =
+        json!({ "name": "old", "match": { "older_than": "100y" }, "actions": { "flagged": true } });
+    assert!(rows(&call(&client, "rules_test", json!({ "rule": rule })).await).is_empty());
+
+    let later = call(
+        &client,
+        "rules_test",
+        json!({ "rule": rule, "as_of": "2127-01-01T00:00:00Z" }),
+    )
+    .await;
+    assert_eq!(rows(&later).len(), 1);
+    assert_eq!(
+        later.structured_content.unwrap()["as_of"],
+        4_954_435_200_i64
+    );
+
+    let coverage = rows(&call(&client, "rules_coverage", json!({ "as_of": "101y" })).await);
+    assert_eq!(coverage[0]["matched"], 1);
+    assert!(coverage[0]["as_of"].as_i64().unwrap() > postvak_core::time::now());
+
+    let text = error_text(
+        &call(
+            &client,
+            "rules_test",
+            json!({ "rule": rule, "as_of": "6m" }),
+        )
+        .await,
+    );
+    assert!(text.contains("as_of: '6m' is ambiguous"), "{text}");
 }
 
 #[tokio::test]
