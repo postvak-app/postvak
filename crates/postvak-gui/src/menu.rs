@@ -36,6 +36,7 @@ pub(crate) fn action(item: MenuAction, app: &App) -> Option<UiAction> {
             OpenAtLogin::Unknown | OpenAtLogin::Changing(..) => None,
         },
         MenuAction::Move => act(message, UiAction::OpenMovePicker),
+        MenuAction::NewFolder => new_folder(app),
         MenuAction::ReadOrUnread => act(message, UiAction::ToggleRead),
         MenuAction::SaveEml => act(downloaded, UiAction::SaveEml),
         MenuAction::SaveEmlAs => act(downloaded, UiAction::SaveEmlAs),
@@ -55,6 +56,14 @@ pub(crate) fn action(item: MenuAction, app: &App) -> Option<UiAction> {
         MenuAction::ThemeSystem => Some(UiAction::SetTheme(Theme::System)),
         MenuAction::ViewSource => act(downloaded, UiAction::OpenSource),
     }
+}
+
+/// Mailbox ▸ New folder…: at the top level of the shown folder's account, or of the only account.
+fn new_folder(app: &App) -> Option<UiAction> {
+    let account = app
+        .view_account()
+        .or((app.accounts.len() == 1).then_some(0))?;
+    Some(UiAction::NewFolder(account, None))
 }
 
 /// Mailbox ▸ Mark folder read: the shown folder, while it has unread mail.
@@ -98,6 +107,7 @@ mod tests {
             Some(UiAction::ToggleHelp),
             Some(inbox()),
             Some(UiAction::OpenMovePicker),
+            Some(UiAction::NewFolder(0, None)),
             Some(UiAction::SetOpenAtLogin(true)),
             None,
             Some(UiAction::ToggleRead),
@@ -125,6 +135,7 @@ mod tests {
             MenuAction::Keys,
             MenuAction::MarkFolderRead,
             MenuAction::Move,
+            MenuAction::NewFolder,
             MenuAction::OpenAtLogin,
             MenuAction::OriginalColours,
             MenuAction::ReadOrUnread,

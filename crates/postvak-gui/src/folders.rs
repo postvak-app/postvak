@@ -160,7 +160,7 @@ impl FolderEntry {
 }
 
 /// The scrolling part of the folder pane: All inboxes when there is more than one account, then per account its
-/// name, its special folders, a separator and its custom folders as a tree.
+/// name (a lone account's only with a note or error), its special folders, a separator and its custom folders as a tree.
 pub(crate) fn entries(app: &App) -> Vec<Entry> {
     let mut entries = Vec::new();
     if app.shows_all_inboxes() {
@@ -175,16 +175,21 @@ pub(crate) fn entries(app: &App) -> Vec<Entry> {
         entries.push(Entry::Folder(all));
         entries.push(Entry::Separator);
     }
+    let several = app.accounts.len() > 1;
     for (index, account) in app.accounts.iter().enumerate() {
-        entries.push(Entry::Account {
-            index,
-            name: account.name.clone(),
-            busy: account.busy(),
-            note: (account.encrypted == Some(false)).then_some("unencrypted"),
-            error: account.store.as_ref().err().map(|e| clean(e, false)),
-            gap: index > 0,
-            tint: index,
-        });
+        let note = (account.encrypted == Some(false)).then_some("unencrypted");
+        let error = account.store.as_ref().err().map(|e| clean(e, false));
+        if several || note.is_some() || error.is_some() {
+            entries.push(Entry::Account {
+                index,
+                name: account.name.clone(),
+                busy: account.busy(),
+                note,
+                error,
+                gap: index > 0,
+                tint: index,
+            });
+        }
         entries.extend(account_entries(app, index, account));
     }
     entries
@@ -765,18 +770,40 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn an_account_heading_offers_a_new_top_level_folder() {
+        let fx = Fixture::new(&["home", "work"]);
+        let (app, _wires) = fx.app();
         let account = entries(&app)
             .into_iter()
-            .find(|e| matches!(e, Entry::Account { .. }))
+            .find(|e| matches!(e, Entry::Account { index: 1, .. }))
             .unwrap();
         assert_eq!(
             account.menu()[0],
             [(
                 "New folder…".to_string(),
                 true,
-                UiAction::NewFolder(0, None)
+                UiAction::NewFolder(1, None)
             )]
         );
+    }
+
+    #[test]
+    fn a_lone_account_has_no_heading_unless_it_has_something_to_say() {
+        let fx = Fixture::new(&["work"]);
+        let (app, _wires) = fx.app();
+        let heading = |app: &App| {
+            entries(app)
+                .iter()
+                .any(|e| matches!(e, Entry::Account { .. }))
+        };
+        assert!(!heading(&app));
+        drop(app);
+        fx.break_store("work");
+        let (app, _wires) = fx.app();
+        assert!(heading(&app));
     }
 
     #[test]

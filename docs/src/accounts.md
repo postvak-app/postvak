@@ -43,6 +43,7 @@ notify = true
 [ui]
 check_updates = false
 html_colours = "adapt"
+remote_content = []
 sender_images = false
 theme = "system"
 ```
@@ -50,6 +51,8 @@ theme = "system"
 `theme` is `"system"` (follow the OS, the default), `"light"` or `"dark"`. The mail window's theme switch writes it.
 
 `html_colours` is how HTML mail looks in the dark theme: `"adapt"` (the default) turns light pages dark and keeps text readable, unless the mail brings its own dark design; `"original"` shows every message in its sender's colours on a white page, as in the light theme. With `"adapt"`, the reader's **Original colours** switch shows the open message in its sender's colours (see [HTML mail](gui.md#html-mail)); with `"original"` there is nothing to switch, so it is hidden. Only the mail window reads it; the CLI and MCP never render HTML.
+
+`remote_content` lists the sender domains whose HTML mail loads remote content without asking, while the account's provider vouches for the sender (`trusted_authserv_ids`); without a trusted authserv-id it does nothing. The mail window adds a domain when you load remote content from such a sender, and removes it with **Stop loading** (see [HTML mail](gui.md#html-mail)).
 
 `check_updates` (off by default) lets the mail window ask GitHub at most once a day whether a newer release is out, and link to its release notes at the foot of the folder pane. The request is a plain HTTPS request to `api.github.com` with the user agent `postvak/<version>`: it carries nothing about your accounts or mail, though GitHub sees your IP address as with any request. Postvak never updates itself; upgrade the way you installed it (`brew upgrade postvak`, `cargo install postvak`, a new AppImage). Set `check_updates = true` to turn the check on.
 

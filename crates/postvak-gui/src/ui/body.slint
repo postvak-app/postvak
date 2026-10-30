@@ -112,6 +112,8 @@ export struct PageInfo {
     width: length,
     height: length,
     remote: Remote,
+    // The sender domain whose remote content loads without asking, while it did for this page; or empty.
+    remembered: string,
     // The link under the pointer, or empty.
     link: string,
 }
@@ -128,6 +130,7 @@ component HtmlView inherits VerticalLayout {
     callback select(length, length, length, length);
     callback clicked(length, length);
     callback load-remote();
+    callback forget-remote(string);
     callback open-link();
     callback copy-link();
 
@@ -155,6 +158,23 @@ component HtmlView inherits VerticalLayout {
             framed: true;
             palette: Theme.pane;
             clicked => { root.load-remote(); }
+        }
+        Rectangle { horizontal-stretch: 1; }
+    }
+    if root.page.remembered != "" && root.page.remote != Remote.not-loaded: HorizontalLayout {
+        spacing: Theme.pad;
+        Text {
+            text: "Remote content loads for " + root.page.remembered + ".";
+            color: Theme.pane.muted;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        TextButton {
+            text: "Stop loading";
+            framed: true;
+            palette: Theme.pane;
+            accessible-label: "Stop loading remote content from " + root.page.remembered;
+            clicked => { root.forget-remote(root.page.remembered); }
         }
         Rectangle { horizontal-stretch: 1; }
     }
@@ -503,6 +523,16 @@ component ReplyAndMore inherits HorizontalLayout {
             clicked => { root.reply(); }
         }
     }
+    if root.info.unsubscribe: VerticalLayout {
+        alignment: center;
+        TextButton {
+            text: "Unsubscribe";
+            framed: true;
+            compact: true;
+            palette: Theme.pane;
+            clicked => { root.unsubscribe(); }
+        }
+    }
     VerticalLayout {
         alignment: center;
         more := ContextMenuArea {
@@ -520,11 +550,7 @@ component ReplyAndMore inherits HorizontalLayout {
                     checked: root.info.original-colours;
                     activated => { root.toggle-original-colours(); }
                 }
-                if root.info.unsubscribe: MenuItem {
-                    title: "Unsubscribe";
-                    activated => { root.unsubscribe(); }
-                }
-                if root.info.has-html || root.info.unsubscribe: MenuSeparator { }
+                if root.info.has-html: MenuSeparator { }
                 MenuItem {
                     title: "Save .eml";
                     enabled: root.info.downloaded;
@@ -600,6 +626,7 @@ export component BodyPane inherits Rectangle {
     callback page-select(length, length, length, length);
     callback page-clicked(length, length);
     callback load-remote();
+    callback forget-remote(string);
     callback page-open-link();
     callback page-copy-link();
 
@@ -648,9 +675,11 @@ export component BodyPane inherits Rectangle {
     property <length> margin: root.width > 80 * Theme.pad ? 2 * Theme.inset : Theme.inset;
     // Room for the moving actions' labels beside the marks, Reply and More on one line: the labels are measured, the
     // glyphs, padding and the rest added.
-    property <bool> roomy: root.width - 2 * root.margin >= labels.preferred-width + 4 * (Theme.icon + Theme.pad * 15 / 4) + 2 * (Theme.icon + 3 * Theme.pad) + 21 * Theme.pad;
+    property <bool> roomy: root.width - 2 * root.margin >= labels.preferred-width + 4 * (Theme.icon + Theme.pad * 15 / 4) + 2 * (Theme.icon + 3 * Theme.pad) + 21 * Theme.pad + root.unsubscribe-room;
+    // The Unsubscribe button's width, while it shows.
+    property <length> unsubscribe-room: root.info.unsubscribe ? 14 * Theme.pad : 0px;
     // Room for Reply and More beside the unlabelled actions.
-    property <bool> fits: root.width - 2 * root.margin >= 6 * (Theme.icon + 3 * Theme.pad) + 21 * Theme.pad;
+    property <bool> fits: root.width - 2 * root.margin >= 6 * (Theme.icon + 3 * Theme.pad) + 21 * Theme.pad + root.unsubscribe-room;
     labels := Text {
         visible: false;
         accessible-role: none;
@@ -1002,7 +1031,7 @@ export component BodyPane inherits Rectangle {
                     wrap: word-wrap;
                 }
                 TextButton {
-                    text: "Delete";
+                    text: "Delete message";
                     framed: true;
                     palette: Theme.pane;
                     accessible-label: "Delete the unsubscribed message";
@@ -1029,6 +1058,7 @@ export component BodyPane inherits Rectangle {
                 select(fx, fy, tx, ty) => { root.page-select(fx, fy, tx, ty); }
                 clicked(x, y) => { root.page-clicked(x, y); }
                 load-remote => { root.load-remote(); }
+                forget-remote(domain) => { root.forget-remote(domain); }
                 open-link => { root.page-open-link(); }
                 copy-link => { root.page-copy-link(); }
             }

@@ -460,6 +460,8 @@ pub(crate) enum UiAction {
     },
     /// Download the remote content the shown HTML page asked for, and lay it out again with it.
     LoadRemote,
+    /// Stop loading remote content from this sender domain without asking.
+    ForgetRemote(String),
     ListViewport {
         offset: f32,
         height: f32,
@@ -699,6 +701,8 @@ pub struct App {
     pub(crate) list: ListState,
     /// Sender logos, with `[ui] sender_images = true`.
     pub(crate) logos: Logos,
+    /// `[ui] remote_content`: the sender domains whose remote content loads without asking.
+    pub(crate) remote_content: BTreeSet<String>,
     /// How long `tick` waits for a list reload before it lets the window draw and applies the rows when they come;
     /// tests wait as long as it takes.
     pub(crate) list_budget: Duration,
@@ -876,6 +880,7 @@ impl App {
             last_reconnect: 0.0,
             list: ListState::default(),
             logos: Logos::new(config.ui.sender_images, paths.cache_dir.clone()),
+            remote_content: config.ui.remote_content.clone(),
             list_budget: LIST_BUDGET,
             list_generation: 0,
             list_applied: 0,
@@ -1452,7 +1457,19 @@ impl App {
             UiAction::HtmlSelect { from, to } => self.html_select(from, to),
             UiAction::HtmlVisible { top, bottom } => self.html_visible(top, bottom),
             UiAction::HtmlWidth { scale, width } => self.html_size = Some((scale, width)),
-            UiAction::LoadRemote => self.load_remote(),
+            UiAction::LoadRemote => {
+                self.load_remote();
+                if let Some(domain) = self.vouched_sender()
+                    && self.remote_content.insert(domain)
+                {
+                    self.save_remote_content();
+                }
+            }
+            UiAction::ForgetRemote(domain) => {
+                if self.remote_content.remove(&domain) {
+                    self.save_remote_content();
+                }
+            }
             UiAction::ClearSelection => self.list.marked.clear(),
             UiAction::Close(dialog) => self.close(dialog),
             UiAction::Escape => {
@@ -2734,8 +2751,40 @@ impl App {
         }
     }
 
+    /// The shown message's sender domain (the registrable part), while the account's provider vouches for the sender.
+    pub(crate) fn vouched_sender(&self) -> Option<String> {
+        let body = self.body.as_ref()?;
+        let message = body.message.as_ref()?;
+        let from = message.from_addr.as_deref()?;
+        let identity = self.accounts.get(body.account)?.identity.as_ref()?;
+        if !identity.authenticated(&message.headers, from) {
+            return None;
+        }
+        let [address] = message::bare_addresses(from).try_into().ok()?;
+        Some(message::auth::org_domain(&message::auth::address_domain(
+            &address,
+        )?))
+    }
+
+    /// The shown message's sender domain, when its remote content loads without asking.
+    pub(crate) fn remembered_sender(&self) -> Option<String> {
+        self.vouched_sender()
+            .filter(|domain| self.remote_content.contains(domain))
+    }
+
+    fn save_remote_content(&mut self) {
+        match config::save_remote_content(&self.paths.config_file(), &self.remote_content) {
+            // Absorbs this write, so the poll does not take it for an outside edit.
+            Ok(()) => {
+                self.config_watch.changed();
+            }
+            Err(e) => self.note_error(None, format!("could not save remote content settings: {e}")),
+        }
+    }
+
     /// Takes the render thread's replies for the shown layout; replies for an older one are dropped.
     fn receive_html(&mut self) {
+        let remembered = self.remembered_sender().is_some();
         let Some(renderer) = &self.renderer else {
             return;
         };
@@ -2767,8 +2816,10 @@ impl App {
                         continue;
                     }
                     view.page = Some((width, height));
-                    // Once the user loaded remote content, what it asks for in turn (images in a stylesheet) follows.
-                    let follow = !view.fetched.is_empty() && view.fetched.len() < html::MAX_REMOTE;
+                    /* Once the user loaded remote content, what it asks for in turn (images in a stylesheet) follows; from a
+                    remembered sender it loads unasked. */
+                    let follow = (remembered || !view.fetched.is_empty())
+                        && view.fetched.len() < html::MAX_REMOTE;
                     view.remote = remote;
                     if follow && !view.remote.is_empty() && view.fetching.is_none() {
                         self.load_remote();

@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -95,6 +96,10 @@ pub struct UiConfig {
     /// How HTML mail looks in the dark theme: adapted to it, or in the sender's colours on a white page.
     #[serde(default)]
     pub html_colours: HtmlColours,
+    /// Sender domains whose HTML mail loads remote content without asking, while the account's provider vouches for the
+    /// sender (`trusted_authserv_ids`). The GUI adds one when you load remote content from such a sender.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub remote_content: BTreeSet<String>,
     /// Show the logo a sender's domain publishes (BIMI): a DNS lookup and an HTTPS fetch to that domain.
     #[serde(default)]
     pub sender_images: bool,
@@ -274,6 +279,26 @@ pub fn save_theme(path: &Path, theme: Theme) -> Result<(), ConfigError> {
             .as_table_like_mut()
             .ok_or_else(|| ConfigError::Invalid("`ui` must be a table".into()))?;
         ui.insert("theme", toml_edit::value(theme.as_str()));
+        Ok(())
+    })
+}
+
+/// Sets `[ui] remote_content`, or removes it when `domains` is empty, keeping the rest of the file's text and comments.
+pub fn save_remote_content(path: &Path, domains: &BTreeSet<String>) -> Result<(), ConfigError> {
+    edit_toml(path, LOCK, |doc| {
+        let ui = doc
+            .entry("ui")
+            .or_insert_with(toml_edit::table)
+            .as_table_like_mut()
+            .ok_or_else(|| ConfigError::Invalid("`ui` must be a table".into()))?;
+        if domains.is_empty() {
+            ui.remove("remote_content");
+        } else {
+            ui.insert(
+                "remote_content",
+                toml_edit::value(domains.iter().collect::<toml_edit::Array>()),
+            );
+        }
         Ok(())
     })
 }
@@ -781,6 +806,22 @@ trusted_authserv_ids = ["mx.home.test"]
             ui("[ui]\nhtml_colours = \"inverted\"\n"),
             Err(ConfigError::Parse(_))
         ));
+    }
+
+    #[test]
+    fn save_remote_content_writes_the_domains_and_drops_the_key_when_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, format!("# my accounts\n{SAMPLE}")).unwrap();
+        let domains = BTreeSet::from(["news.example".to_string(), "bank.example".to_string()]);
+        save_remote_content(&path, &domains).unwrap();
+        assert_eq!(Config::load(&path).unwrap().ui.remote_content, domains);
+        save_remote_content(&path, &BTreeSet::new()).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            saved.starts_with("# my accounts\n") && !saved.contains("remote_content"),
+            "{saved}"
+        );
     }
 
     #[test]
