@@ -225,8 +225,9 @@ pub(crate) fn dry_run(paths: &Paths, accounts: &[String], rule: &Rule, now: i64)
     let mut matched = BTreeMap::new();
     let mut warnings = Vec::new();
     for name in accounts {
-        let Ok(store) = Store::open_account(paths, name) else {
-            continue;
+        let store = match Store::open_account(paths, name) {
+            Ok(store) => store,
+            Err(e) => return failed(format!("{name}: {e}")),
         };
         let Some(settings) = config.account(name) else {
             continue;
@@ -1163,6 +1164,20 @@ mod tests {
         });
         // Approving reads config.toml too, so here it would fail on its own; the dry run must not be what blocks it.
         assert_eq!(open.get("Approve rule").accessible_enabled(), Some(true));
+    }
+
+    #[test]
+    fn a_store_that_will_not_open_fails_the_dry_run_rather_than_undercounting() {
+        let fx = Fixture::new(&["work"]);
+        std::fs::write(fx.paths.mail_db("work"), "not a database, not even close").unwrap();
+        let rule = postvak_core::rules::parse(RULES).unwrap().rules.remove(1);
+        let run = super::dry_run(&fx.paths, &["work".to_string()], &rule, 0);
+        assert!(
+            run.error
+                .as_deref()
+                .is_some_and(|e| e.starts_with("work: ")),
+            "{run:?}"
+        );
     }
 
     #[test]
