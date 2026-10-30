@@ -19,7 +19,7 @@ use postvak_core::output::{Fields, RowKind};
 use postvak_core::page;
 use postvak_core::paths::Paths;
 use postvak_core::rules::edit::{FolderRename, Place, rules_after_rename};
-use postvak_core::rules::{Action, CompiledRule, Rule, RuleFile};
+use postvak_core::rules::{Action, CompiledRule, Rule};
 use postvak_core::store::{Filter, Message, Store};
 use postvak_core::sync::{self, Event};
 use postvak_core::time;
@@ -1334,8 +1334,17 @@ fn sender_line(account: &str, sender: &postvak_core::senders::Sender) -> String 
             },
             false
         ),
-        clean(&sender.rules.join(", "), false)
+        clean(&with_lists(&sender.rules, &sender.lists), false)
     )
+}
+
+/// `hold, kids-folder (lists kids, security)`: rule names, and the lists they refer to.
+fn with_lists(rules: &[String], lists: &[String]) -> String {
+    let rules = rules.join(", ");
+    if lists.is_empty() {
+        return rules;
+    }
+    format!("{rules} (lists {})", lists.join(", "))
 }
 
 /// The account, its store and the stored message `folder/uid`.
@@ -1574,7 +1583,12 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             for (position, r) in file.rules.iter().enumerate() {
                 let found = hits.get(&r.name).copied().unwrap_or_default();
                 if json {
-                    print_json(postvak_core::output::rule(r, position, &found)?);
+                    print_json(postvak_core::output::rule(
+                        r,
+                        &file.lists,
+                        position,
+                        &found,
+                    )?);
                 } else {
                     let edits = r
                         .replaces
@@ -1675,7 +1689,7 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             let rules = if stdin {
                 let mut rule = read_rule_json()?;
                 rule.enabled = true;
-                postvak_core::rules::compile(&RuleFile { rules: vec![rule] })?
+                postvak_core::rules::compile_for(&paths.rules_file(), &[rule])?
             } else {
                 let mut rules = compiled_rules(paths, name.as_deref())?;
                 if name.is_some() {
@@ -1816,7 +1830,10 @@ fn print_coverage(account: &str, folder: &str, coverage: &postvak_core::rules::c
             m.uid,
             clean(m.subject.as_deref().unwrap_or(""), false)
         );
-        println!("    match: {}", clean(&contest.rules.join(", "), false));
+        println!(
+            "    match: {}",
+            clean(&with_lists(&contest.rules, &contest.lists), false)
+        );
         let acts: Vec<String> = contest
             .acts
             .iter()
