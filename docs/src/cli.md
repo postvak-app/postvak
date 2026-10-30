@@ -55,6 +55,7 @@ This document contains the help content for the `postvak` command-line program.
 * [`postvak trash list`↴](#postvak-trash-list)
 * [`postvak trash restore`↴](#postvak-trash-restore)
 * [`postvak trash purge`↴](#postvak-trash-purge)
+* [`postvak undo`↴](#postvak-undo)
 * [`postvak account`↴](#postvak-account)
 * [`postvak account add`↴](#postvak-account-add)
 * [`postvak account list`↴](#postvak-account-list)
@@ -94,8 +95,9 @@ Your inbox, organized by rules you write
 * `archive` — Move messages to the Archive folder
 * `delete` — Move messages to Trash; inside Trash, or without one, delete them keeping a local .eml backup
 * `junk` — Report messages as junk: tag them $Junk, which trains server spam filters, and move them to the Junk folder; --not tags them $NotJunk and moves them to INBOX
-* `log` — Show what rules did, newest first
+* `log` — Show what rules and direct actions did, newest first, with the number of the action each row is part of, which undo takes
 * `trash` — Deleted mail kept for the retention period
+* `undo` — Put back what one logged action did: move its mail back, reverse its read, flagged and tag changes, and restore what it deleted from the backups; mail changed since is left alone and said so. Without a number, the newest action of the CLI, the window or an agent that is not undone yet, never a rule's
 * `account` — Manage accounts
 * `crashes` — List the local crash reports, newest first; they are never sent anywhere
 * `guide` — Print the agent guide, how an LLM should drive Postvak, or another page of the documentation
@@ -863,7 +865,7 @@ Report messages as junk: tag them $Junk, which trains server spam filters, and m
 
 ## `postvak log`
 
-Show what rules did, newest first
+Show what rules and direct actions did, newest first, with the number of the action each row is part of, which undo takes
 
 **Usage:** `postvak log [OPTIONS]`
 
@@ -928,6 +930,24 @@ Remove .eml backups older than the account's retention period
 ###### **Options:**
 
 * `--account <ACCOUNT>`
+
+
+
+## `postvak undo`
+
+Put back what one logged action did: move its mail back, reverse its read, flagged and tag changes, and restore what it deleted from the backups; mail changed since is left alone and said so. Without a number, the newest action of the CLI, the window or an agent that is not undone yet, never a rule's
+
+**Usage:** `postvak undo [OPTIONS] [ACTION]`
+
+###### **Arguments:**
+
+* `<ACTION>` — The action's number, as `log` shows it
+
+###### **Options:**
+
+* `--account <ACCOUNT>` — Required with a number when several accounts are set up
+* `--dry-run` — Show what would be put back without touching the server
+* `--json`
 
 
 

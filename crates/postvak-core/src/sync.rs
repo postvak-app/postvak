@@ -69,6 +69,9 @@ pub enum Event {
         account: String,
         folder: String,
         results: EventResults,
+        /// The action's id in the log, which `Command::Undo` takes; None when nothing was logged.
+        #[serde(default)]
+        action: Option<i64>,
         request: RequestId,
     },
     BodyReady {
@@ -161,6 +164,11 @@ pub enum Event {
         folder: String,
         request: RequestId,
     },
+    Undone {
+        account: String,
+        report: actions::UndoReport,
+        request: RequestId,
+    },
     RuleApplied {
         account: String,
         request: RequestId,
@@ -192,6 +200,7 @@ impl Event {
             | Event::FolderRenamed { request, .. }
             | Event::Restored { request, .. }
             | Event::RuleApplied { request, .. }
+            | Event::Undone { request, .. }
             | Event::ServerSearchDone { request, .. } => vec![*request],
             Event::Synced { requests, .. } => requests.clone(),
             Event::Activity { .. }
@@ -375,6 +384,11 @@ pub enum Command {
     },
     Restore {
         file: PathBuf,
+    },
+    /// Puts back what logged action `action` did, logged as done `by` (`gui`, `cli`, `mcp:<client>`).
+    Undo {
+        action: i64,
+        by: String,
     },
     /// Searches the server for messages with every word of `query`, in `folder` or every synced folder.
     SearchServer {
@@ -967,6 +981,34 @@ pub fn run_rules_with(
     folders.dedup();
 
     let mut run = RulesRun::default();
+    let logged_before = store.last_log_id()?;
+    let result = run_rules_in(
+        ops, store, trash, rules, account, &ctx, &folders, checkpoint, &mut run,
+    );
+    stamp_actions(store, logged_before);
+    result?;
+    if mode == Mode::Normal {
+        // Folders no rule looks at count as seen up to their last uid, so a rule added for one later finds no old
+        // mail fresh.
+        store.mark_rules_seen_except(&folders)?;
+    }
+    Ok(run)
+}
+
+/// The rules pass over each of `folders`; `run_rules_with` numbers the actions it logged, also when it ends early.
+#[allow(clippy::too_many_arguments)]
+fn run_rules_in(
+    ops: &mut dyn MailOps,
+    store: &Store,
+    trash: &Trash,
+    rules: &[CompiledRule],
+    account: &AccountConfig,
+    ctx: &Context,
+    folders: &[String],
+    checkpoint: &mut Checkpoint<'_>,
+    run: &mut RulesRun,
+) -> Result<(), SyncError> {
+    let (mode, now) = (ctx.mode, ctx.now);
     'folders: for folder in folders.iter().cloned() {
         // Before any select, so a command run here leaves nothing to select again.
         checkpoint(
@@ -1042,7 +1084,7 @@ pub fn run_rules_with(
                 }
                 bodies_done += 1;
             }
-            let plan = plan_for(rules, &msg, &ctx, store)?;
+            let plan = plan_for(rules, &msg, ctx, store)?;
             run.evaluated += 1;
             let notifies = is_fresh && msg.uid > notified_uid && plan.notify && folder == "INBOX";
             // A notification waits for the SELECT too: mail a resync finds never notifies.
@@ -1080,12 +1122,7 @@ pub fn run_rules_with(
             }
         }
     }
-    if mode == Mode::Normal {
-        // Folders no rule looks at count as seen up to their last uid, so a rule added for one later finds no old
-        // mail fresh.
-        store.mark_rules_seen_except(&folders)?;
-    }
-    Ok(run)
+    Ok(())
 }
 
 /// Selects the folder of `stored` unless `selected` says it still is, and checks it is the folder the store holds.
@@ -1205,6 +1242,32 @@ fn sync_now(ops: &mut dyn MailOps, store: &Store, folder: &str) {
     }
 }
 
+/// The folders, as the store spells them, that `action`'s moves took mail to.
+fn undo_targets(store: &Store, action: i64) -> Vec<String> {
+    let rows = store.action_rows(action).unwrap_or_default();
+    let mut targets: Vec<String> = rows
+        .into_iter()
+        .filter_map(|row| row.target)
+        .filter_map(|target| crate::folder_name::known(store, &target).ok().flatten())
+        .map(|folder| folder.name)
+        .collect();
+    targets.sort();
+    targets.dedup();
+    targets
+}
+
+/// Groups the log rows written after `before` into actions; returns the first one's id, which names a direct action's
+/// one. A failure only costs the undo of these rows, so it is logged rather than failing what already ran.
+fn stamp_actions(store: &Store, before: i64) -> Option<i64> {
+    let stamped = store
+        .stamp_actions(before)
+        .and_then(|()| store.first_action_after(before));
+    stamped.unwrap_or_else(|e| {
+        log::warn!("could not number the actions just logged, so they cannot be undone: {e}");
+        None
+    })
+}
+
 /// Runs one command other than `SyncNow` and sends its answer; `Err` only for a lost connection.
 #[allow(clippy::too_many_arguments)]
 fn run_command(
@@ -1250,7 +1313,9 @@ fn run_command(
                     what: describe(&action, uids.len()),
                 },
             });
+            let logged_before = store.last_log_id().unwrap_or(i64::MAX);
             let outcome = actions::run(ops, store, trash, &folder, &uids, &action, &by, now());
+            let action_id = stamp_actions(store, logged_before);
             let (results, lost) = match outcome {
                 Ok(results) => split_lost(results),
                 Err(e) => (
@@ -1281,6 +1346,7 @@ fn run_command(
                 account: name(),
                 folder,
                 results,
+                action: action_id,
                 request,
             });
             return match lost {
@@ -1426,6 +1492,32 @@ fn run_command(
                         has_trash,
                         request,
                     },
+                })
+                .map_err(SyncError::from)
+        }
+        Command::Undo { action, by } => {
+            run.used_connection = true;
+            let _ = events.send(Event::Activity {
+                account: name(),
+                activity: Activity::RunningCommand {
+                    what: format!("undoing action {action}"),
+                },
+            });
+            // The folders the action moved mail into, synced first so the moved copies are found under their new uids.
+            for target in undo_targets(store, action) {
+                sync_now(ops, store, &target);
+            }
+            actions::undo(ops, store, trash, action, &by, now())
+                .map(|report| {
+                    for folder in report.folders_put_back() {
+                        sync_now(ops, store, &folder);
+                    }
+                    run.next = NextPass::Inbox;
+                    Event::Undone {
+                        account: name(),
+                        report,
+                        request,
+                    }
                 })
                 .map_err(SyncError::from)
         }

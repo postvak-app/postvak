@@ -1,7 +1,7 @@
 // The Rules, Activity and Backups views, in place of the list and the body. `rules.rs` words them.
 import { LineEdit, ScrollView, StandardTableView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Hairline, Heading, Link, Note, Switch, TextButton } from "common.slint";
+import { Hairline, Heading, Link, Note, Switch, TextButton, Toast } from "common.slint";
 
 export enum Sheet { rules, activity, backups }
 
@@ -543,6 +543,11 @@ export component RulesPane inherits Rectangle {
     callback edit-proposal(int);
     callback set-enabled(int, bool);
     callback restore(int);
+    // Activity: whether each shown row's action can still be undone, and the Undo for the chosen one.
+    in property <[bool]> undoable;
+    callback undo(int);
+    in property <string> toast;
+    callback toast-hover(bool);
     callback purge();
     callback sort(int, bool);
     // The payload a dragged rule row carries, and the pill beside the pointer: its name, fill and text colours.
@@ -650,6 +655,17 @@ export component RulesPane inherits Rectangle {
                     text-color: Theme.pane.error;
                     hint: root.purge-hint;
                     clicked => { root.purge(); }
+                }
+            }
+            if root.sheet == Sheet.activity && root.cells.length > 0: VerticalLayout {
+                alignment: center;
+                TextButton {
+                    text: "Undo";
+                    primary: true;
+                    palette: Theme.pane;
+                    enabled: root.current-row >= 0 && root.undoable[root.current-row];
+                    disabled-hint: "Choose an action that can still be undone";
+                    clicked => { root.undo(root.current-row); }
                 }
             }
             if root.sheet == Sheet.backups && root.cells.length > 0: VerticalLayout {
@@ -905,5 +921,13 @@ export component RulesPane inherits Rectangle {
                 Note { text: "Rules run in the order of #, top to bottom in rules.toml, on every sync, only on mail that arrives after they are enabled. Sorted by #, drag a row to change the order."; }
             }
         }
+    }
+
+    if root.toast != "": Toast {
+        text: root.toast;
+        width: min(self.preferred-width, root.width - 2 * Theme.inset);
+        x: (root.width - self.width) / 2;
+        y: root.height - self.height - Theme.inset;
+        hover(hovered) => { root.toast-hover(hovered); }
     }
 }

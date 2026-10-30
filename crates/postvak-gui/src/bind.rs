@@ -191,6 +191,11 @@ fn present_folder_dialog(app: &App, window: &MailWindow) {
 fn present_list(app: &App, window: &MailWindow) {
     window.set_list_title(list::title(&app.view).unwrap_or_default().into());
     window.set_list_banner(list::banner(app).unwrap_or_default().into());
+    let (toast, toast_undo) = app.toast.as_ref().map_or((String::new(), false), |toast| {
+        (toast.text.clone(), toast.undo)
+    });
+    window.set_toast(toast.into());
+    window.set_toast_undo(toast_undo);
     window.set_filter_label(list::filter_label(app.filter).unwrap_or_default().into());
     let filter = list::FILTERS.iter().position(|(_, f)| *f == app.filter);
     window.set_list_filter(
@@ -1056,6 +1061,14 @@ fn present_sheet(app: &App, window: &MailWindow) {
             let rows = rules::activity_cells(app);
             present_table(window, &rules::ACTIVITY_COLUMNS, &rows, app.sheet_sort);
             window.set_sheet_empty(rules::NO_ACTIVITY.into());
+            let undoable = rules::activity_undoable(app);
+            let shown = rules::sheet_order(&rows, app.sheet_sort)
+                .into_iter()
+                .map(|i| undoable.get(i).copied().unwrap_or_default())
+                .collect();
+            sync(window.get_sheet_undoable(), shown, |m| {
+                window.set_sheet_undoable(m)
+            });
         }
         View::Trash => {
             window.set_sheet(Sheet::Backups);
@@ -1499,6 +1512,20 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     });
     window.on_purge_trash(move || {
         act(UiAction::PurgeTrash);
+    });
+    window.on_undo(move || {
+        act(UiAction::Undo);
+    });
+    window.on_undo_row(move |i| {
+        on(one(move |app| {
+            let order = rules::sheet_order(&rules::activity_cells(app), app.sheet_sort);
+            let (account, entry) = app.activity_log.get(*nth(&order, i)?)?;
+            let account = app.accounts.iter().position(|a| a.name == *account)?;
+            Some(UiAction::UndoAction(account, entry.action_id?))
+        }));
+    });
+    window.on_toast_hover(move |hovered| {
+        act(UiAction::ToastHover(hovered));
     });
     window.on_restore(move |i| {
         on(one(move |app| {

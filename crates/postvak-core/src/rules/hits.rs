@@ -44,6 +44,7 @@ mod tests {
                 subject: None,
                 action: "read".into(),
                 trash_file: None,
+                ..LogEntry::default()
             })
             .unwrap();
     }

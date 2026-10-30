@@ -2,7 +2,7 @@
 // texts; this file only places them.
 import { LineEdit, ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { EmptyState, Heading, HoverFill, IconButton, Keycap, TextButton } from "common.slint";
+import { EmptyState, Heading, HoverFill, IconButton, Keycap, TextButton, Toast } from "common.slint";
 
 export struct RowData {
     unread: bool,
@@ -272,6 +272,11 @@ export component ListPane inherits Rectangle {
     // Over an inbox's rows while rule proposals wait, or empty; Review opens the Rules view.
     in property <string> banner;
     callback review();
+    // At the foot of the rows after an action, or empty; with `toast-undo` it offers Undo.
+    in property <string> toast;
+    in property <bool> toast-undo;
+    callback undo();
+    callback toast-hover(bool);
     in property <[RowData]> rows;
     in property <int> marked-count;
     in-out property <length> list-y;
@@ -547,5 +552,15 @@ export component ListPane inherits Rectangle {
         height: self.preferred-height;
         width: root.width - 2 * Theme.inset;
         title: root.empty;
+    }
+
+    if root.toast != "": Toast {
+        text: root.toast;
+        undo: root.toast-undo;
+        width: min(self.preferred-width, root.width - 2 * Theme.inset);
+        x: (root.width - self.width) / 2;
+        y: root.height - self.height - Theme.inset;
+        undo-clicked => { root.undo(); }
+        hover(hovered) => { root.toast-hover(hovered); }
     }
 }

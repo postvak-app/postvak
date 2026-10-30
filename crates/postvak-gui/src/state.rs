@@ -37,6 +37,7 @@ use super::preferences::{self, Section, Setting};
 use super::reader::{self, Read, ReadFn, Reader};
 use super::rules::{self, RulesState, SheetSort, TrashRow};
 use super::save_as;
+use super::undo::{self, Taken, Toast, UndoState};
 use super::worker::{self, Stopped};
 
 /// The status line when `m` is pressed with marked rows from more than one account.
@@ -65,6 +66,9 @@ pub(crate) const READ_DELAY: f64 = 1.0;
 
 /// Seconds between attempts to reach the daemon again.
 const RECONNECT: f64 = 5.0;
+
+/// How many of this window's gestures `z` can still reach.
+const MAX_TAKEN: usize = 50;
 
 /// How long a frame waits for a list reload after a sync event: a quarter of a 120 Hz frame. A small mailbox's rows come
 /// in time and show in the same frame; a large one's show when they come.
@@ -271,6 +275,8 @@ pub(crate) struct Account {
     /// that new is applied, so an older load still running does not bring the row back as it was.
     pub settling: Vec<(RowKey, Optimistic, u64)>,
     pub queued: usize,
+    /// One entry per `Apply` sent, oldest first, naming the gesture it belongs to; each `ActionDone` takes the oldest.
+    pub apply_queue: VecDeque<Option<u64>>,
     pub store: Result<Store, String>,
     /// Whether the server offered UIDPLUS at the sync thread's last login; None before it logged in.
     pub uidplus: Option<bool>,
@@ -557,6 +563,12 @@ pub(crate) enum UiAction {
     /// Run the rule the expunge question is about
     ConfirmApplyRule,
     SyncNow,
+    /// Put back the newest gesture of this window not undone yet.
+    Undo,
+    /// Put back logged action `id` of an account, as the Activity view offers it.
+    UndoAction(usize, i64),
+    /// The pointer is over the toast, which keeps it.
+    ToastHover(bool),
     /// Aim the next action at the marked rows when `row` is one of them, else at `row` alone.
     TargetRow(usize),
     ToggleFlag,
@@ -679,6 +691,11 @@ pub struct App {
     pub(crate) error: Option<String>,
     /// The outcome of the last purge or rule run, shown in the status row until the next sync or the history opens.
     pub(crate) notice: Option<String>,
+    /// The gestures taken in this window, oldest first, which `z` undoes newest first.
+    pub(crate) taken: Vec<Taken>,
+    pub(crate) next_taken: u64,
+    /// At the foot of the list pane: what the last action or undo did.
+    pub(crate) toast: Option<Toast>,
     /// Each account's trash retention in days, from config.toml as the window opened or added the account.
     pub(crate) retention: BTreeMap<String, u64>,
     pub(crate) events: Receiver<Event>,
@@ -825,6 +842,7 @@ fn account_state(
         pending: HashMap::new(),
         settling: Vec::new(),
         queued: 0,
+        apply_queue: VecDeque::new(),
         store,
         uidplus: None,
         encrypted: None,
@@ -966,6 +984,9 @@ impl App {
             view_dirty: false,
             retention,
             notice: None,
+            taken: Vec::new(),
+            next_taken: 0,
+            toast: None,
         };
         app.reload_view();
         super::phases::mark("first_list");
@@ -1009,6 +1030,7 @@ impl App {
         }
         self.paint_visible();
         self.mark_read_after_delay(now);
+        self.expire_toast(now);
         self.request_tick(self.last_poll + POLL);
         if self.daemon_lost {
             self.request_tick(self.last_reconnect + RECONNECT);
@@ -1182,6 +1204,7 @@ impl App {
             | Event::Indexed { account, .. }
             | Event::NewMail { account, .. }
             | Event::Restored { account, .. }
+            | Event::Undone { account, .. }
             | Event::RuleApplied { account, .. }
             | Event::ServerSearchDone { account, .. }
             | Event::Synced { account, .. } => account,
@@ -1252,7 +1275,9 @@ impl App {
                 account.pending.clear();
                 account.settling.clear();
                 account.queued = 0;
+                account.apply_queue.clear();
                 self.edits_changed = true;
+                self.undo_answered(index, None);
                 let waiting = self
                     .folder_dialog
                     .as_mut()
@@ -1298,8 +1323,12 @@ impl App {
                 self.dry_runs_stale = true;
             }
             Event::ActionDone {
-                folder, results, ..
+                folder,
+                results,
+                action,
+                ..
             } => {
+                self.action_done(index, action);
                 let account = &mut self.accounts[index];
                 account.queued = account.queued.saturating_sub(1);
                 // The next load reads the store after this change; until one does, a done edit stays shown. A failed
@@ -1398,6 +1427,12 @@ impl App {
                     *not_empty = Some((count, has_trash));
                     dialog.waiting = None;
                 }
+            }
+            // Another client's undo, or the broadcast copy of our own: the stores changed.
+            Event::Undone { request, .. } if request != 0 => self.refresh(index),
+            Event::Undone { report, .. } => {
+                self.undo_answered(index, Some(report));
+                self.refresh(index);
             }
             Event::Restored { folder, .. } => {
                 let line = format!(
@@ -1813,6 +1848,20 @@ impl App {
                 }
             }
             UiAction::SyncNow => self.sync_all(),
+            UiAction::Undo => self.undo_newest(),
+            UiAction::UndoAction(account, action) => {
+                let id = self.take(String::new(), 0);
+                if let Some(taken) = self.taken.iter_mut().find(|taken| taken.id == id) {
+                    taken.actions.push((account, action));
+                }
+                self.send_undo(id);
+            }
+            UiAction::ToastHover(hovered) => {
+                if let Some(toast) = &mut self.toast {
+                    toast.hovered = hovered;
+                    toast.until = None;
+                }
+            }
             UiAction::TargetRow(row) => {
                 if let Some(id) = self.list.rows.get(row).map(list::Row::id)
                     && !self.list.marked.contains(&id)
@@ -3177,6 +3226,8 @@ impl App {
             body.read_sent = true;
         }
         self.pending_arm |= optimistic == Optimistic::Hidden;
+        let count = targets.iter().map(|(_, _, uids)| uids.len()).sum();
+        let id = self.take(undo::done_text(&action, count), 0);
         for (account, folder, uids) in targets {
             let action = match action {
                 Action::Archive if self.is_archive(account, &folder) => {
@@ -3185,7 +3236,21 @@ impl App {
                 Action::Junk if self.is_junk(account, &folder) => Action::NotJunk,
                 _ => action.clone(),
             };
-            self.send_apply(account, folder, uids, action, optimistic);
+            if self.send_apply(account, folder, uids, action, optimistic) {
+                if let Some(last) = self.accounts[account].apply_queue.back_mut() {
+                    *last = Some(id);
+                }
+                if let Some(taken) = self.taken.iter_mut().find(|taken| taken.id == id) {
+                    taken.waiting += 1;
+                }
+            }
+        }
+        if let Some(taken) = self
+            .taken
+            .iter()
+            .find(|taken| taken.id == id && taken.waiting > 0)
+        {
+            self.toast = Some(Toast::new(taken.done.clone(), true));
         }
         self.list.marked.clear();
         self.rebuild_rows();
@@ -3212,7 +3277,8 @@ impl App {
         }
     }
 
-    /// Sends one `Apply` and records its optimistic edit, which the matching `ActionDone` clears.
+    /// Sends one `Apply` and records its optimistic edit, which the matching `ActionDone` clears; false when the daemon
+    /// is gone.
     pub(crate) fn send_apply(
         &mut self,
         account: usize,
@@ -3220,7 +3286,7 @@ impl App {
         uids: Vec<u32>,
         action: Action,
         optimistic: Optimistic,
-    ) {
+    ) -> bool {
         let keys: Vec<RowKey> = uids.iter().map(|&uid| (folder.clone(), uid)).collect();
         if self.send(
             account,
@@ -3233,12 +3299,144 @@ impl App {
         ) {
             let state = &mut self.accounts[account];
             state.queued += 1;
+            state.apply_queue.push_back(None);
             for key in keys {
                 state.pending.entry(key).or_default().push(optimistic);
             }
             state.reload_folders();
+            true
         } else {
             self.note_error(Some(account), DAEMON_LOST.into());
+            false
+        }
+    }
+
+    /// Our own `ActionDone` for `account`: its action joins the gesture whose `Apply` it answers, and an undo asked while
+    /// that gesture waited goes out once it is complete.
+    fn action_done(&mut self, account: usize, action: Option<i64>) {
+        let Some(Some(id)) = self.accounts[account].apply_queue.pop_front() else {
+            return;
+        };
+        let Some(taken) = self.taken.iter_mut().find(|taken| taken.id == id) else {
+            return;
+        };
+        taken.waiting = taken.waiting.saturating_sub(1);
+        taken.actions.extend(action.map(|action| (account, action)));
+        if taken.waiting == 0 && taken.state == UndoState::Asked {
+            self.send_undo(id);
+        }
+    }
+
+    /// Records a gesture of this window, which `z` can undo; its id.
+    fn take(&mut self, done: String, waiting: usize) -> u64 {
+        let id = self.next_taken;
+        self.next_taken += 1;
+        self.taken.push(Taken {
+            id,
+            done,
+            actions: Vec::new(),
+            waiting,
+            state: UndoState::Open,
+        });
+        // Only the newest are within reach of `z`.
+        if self.taken.len() > MAX_TAKEN {
+            self.taken.remove(0);
+        }
+        id
+    }
+
+    /// Undoes the newest gesture not undone yet; one still waiting for the daemon is undone once it answered.
+    fn undo_newest(&mut self) {
+        let Some(taken) = self
+            .taken
+            .iter_mut()
+            .rev()
+            .find(|taken| taken.state == UndoState::Open && !taken.done.is_empty())
+        else {
+            self.toast = Some(Toast::new("Nothing to undo".into(), false));
+            return;
+        };
+        if taken.waiting > 0 {
+            taken.state = UndoState::Asked;
+            self.toast = Some(Toast::new("Undoing…".into(), false));
+        } else {
+            let id = taken.id;
+            self.send_undo(id);
+        }
+    }
+
+    /// Sends an `Undo` for each action of gesture `id`.
+    fn send_undo(&mut self, id: u64) {
+        let Some(actions) = self
+            .taken
+            .iter()
+            .find(|taken| taken.id == id)
+            .map(|taken| taken.actions.clone())
+        else {
+            return;
+        };
+        let mut left = 0;
+        for (account, action) in actions {
+            let command = Command::Undo {
+                action,
+                by: "gui".into(),
+            };
+            if self.send(account, command) {
+                left += 1;
+            } else {
+                self.note_error(Some(account), DAEMON_LOST.into());
+            }
+        }
+        let Some(taken) = self.taken.iter_mut().find(|taken| taken.id == id) else {
+            return;
+        };
+        if left == 0 {
+            taken.state = UndoState::Undone;
+            self.toast = Some(Toast::new("Nothing to undo".into(), false));
+        } else {
+            taken.state = UndoState::Undoing {
+                left,
+                reports: Vec::new(),
+            };
+            self.toast = Some(Toast::new("Undoing…".into(), false));
+        }
+    }
+
+    /// An answer to one of this window's undos: once every account answered, the toast says what came back.
+    fn undo_answered(&mut self, account: usize, report: Option<postvak_core::actions::UndoReport>) {
+        let undoing = self.taken.iter_mut().find(|taken| {
+            matches!(taken.state, UndoState::Undoing { .. })
+                && taken.actions.iter().any(|(acc, action)| {
+                    *acc == account
+                        && report
+                            .as_ref()
+                            .is_none_or(|report| report.action == *action)
+                })
+        });
+        let Some(taken) = undoing else { return };
+        let UndoState::Undoing { left, reports } = &mut taken.state else {
+            return;
+        };
+        *left = left.saturating_sub(1);
+        reports.extend(report);
+        if *left == 0 {
+            let text = undo::undone_text(reports);
+            taken.state = UndoState::Undone;
+            self.toast = Some(Toast::new(text, false));
+        }
+    }
+
+    /// Ends the toast once its time is up and the pointer is not on it.
+    fn expire_toast(&mut self, now: f64) {
+        let Some(toast) = &mut self.toast else { return };
+        if toast.hovered {
+            return;
+        }
+        let until = *toast.until.get_or_insert(now + undo::TOAST_SECONDS);
+        if now >= until {
+            self.toast = None;
+        } else {
+            self.request_tick(until);
         }
     }
 
@@ -4220,8 +4418,96 @@ mod tests {
             account: account.into(),
             folder: "INBOX".into(),
             results,
+            action: None,
             request,
         }
+    }
+
+    fn toast(driver: &Driver) -> Option<(&str, bool)> {
+        driver
+            .app
+            .toast
+            .as_ref()
+            .map(|toast| (toast.text.as_str(), toast.undo))
+    }
+
+    fn undos(wires: &Wires) -> Vec<(String, Command)> {
+        wires
+            .sent()
+            .into_iter()
+            .filter(|(_, command)| matches!(command, Command::Undo { .. }))
+            .collect()
+    }
+
+    #[test]
+    fn z_undoes_the_last_gesture_once_the_daemon_numbered_it() {
+        use postvak_core::actions::{UndoOutcome, UndoReport, UndoRow};
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2]);
+        let (mut driver, wires) = fx.driver();
+        driver.press("e");
+        assert_eq!(toast(&driver), Some(("Archived 1 message", true)));
+        // Pressed before the daemon answered: the undo waits for the action's number.
+        driver.press("z");
+        assert_eq!(toast(&driver), Some(("Undoing…", false)));
+        assert_eq!(undos(&wires), []);
+        let archived = Event::ActionDone {
+            account: "work".into(),
+            folder: "INBOX".into(),
+            results: vec![(2, Ok(1))],
+            action: Some(7),
+            request: 0,
+        };
+        driver.receive(&wires, [archived]);
+        let undo = Command::Undo {
+            action: 7,
+            by: "gui".into(),
+        };
+        assert_eq!(undos(&wires), [("work".to_string(), undo)]);
+        let report = UndoReport {
+            action: 7,
+            rows: vec![UndoRow {
+                folder: "INBOX".into(),
+                uid: 2,
+                subject: None,
+                action: "archive".into(),
+                outcome: UndoOutcome::PutBack,
+                error: None,
+            }],
+        };
+        let undone = Event::Undone {
+            account: "work".into(),
+            report,
+            request: 0,
+        };
+        driver.receive(&wires, [undone]);
+        assert_eq!(
+            toast(&driver),
+            Some(("Moved 1 message back to Inbox", false))
+        );
+        driver.press("z");
+        assert_eq!(toast(&driver), Some(("Nothing to undo", false)));
+        assert_eq!(undos(&wires), []);
+    }
+
+    #[test]
+    fn the_toast_goes_after_a_while_unless_the_pointer_is_on_it() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1]);
+        let (mut driver, _wires) = fx.driver();
+        driver.press("u");
+        assert!(driver.app.toast.is_some());
+        driver.apply(UiAction::ToastHover(true));
+        driver.now = 20.0;
+        driver.tick();
+        assert!(driver.app.toast.is_some(), "the pointer keeps it");
+        driver.apply(UiAction::ToastHover(false));
+        driver.now = 27.0;
+        driver.tick();
+        assert!(driver.app.toast.is_some(), "it gets its full time again");
+        driver.now = 28.5;
+        driver.tick();
+        assert_eq!(driver.app.toast, None);
     }
 
     fn refused(account: &str, request: u64, message: &str) -> Event {

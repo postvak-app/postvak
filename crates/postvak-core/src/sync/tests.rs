@@ -4128,6 +4128,7 @@ fn events_and_commands_round_trip_as_json() {
             account: "a".into(),
             folder: "INBOX".into(),
             results: vec![(1, Ok(1)), (2, Err("e".into()))],
+            action: None,
             request: 4,
         },
     ] {
@@ -5920,4 +5921,270 @@ fn a_rename_during_a_full_pass_keeps_the_renamed_folder_and_ends_the_pass() {
     assert_eq!(state.store.message_count("Jobs").unwrap(), 1);
     assert_eq!(state.store.message_count("Jobs/Sub").unwrap(), 1);
     assert_eq!(next, NextPass::Full);
+}
+
+fn gui_apply(uids: &[u32], action: Action) -> Command {
+    Command::Apply {
+        folder: "INBOX".into(),
+        uids: uids.to_vec(),
+        action,
+        by: "gui".into(),
+    }
+}
+
+fn gui_undo(action: i64) -> Command {
+    Command::Undo {
+        action,
+        by: "gui".into(),
+    }
+}
+
+/// The action id of the one `ActionDone` among `events`.
+fn action_of(events: &[Event]) -> i64 {
+    events
+        .iter()
+        .find_map(|e| match e {
+            Event::ActionDone { action, .. } => *action,
+            _ => None,
+        })
+        .unwrap()
+}
+
+fn undone(events: &[Event]) -> actions::UndoReport {
+    events
+        .iter()
+        .find_map(|e| match e {
+            Event::Undone { report, .. } => Some(report.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no Undone in {events:?}"))
+}
+
+fn outcomes(report: &actions::UndoReport) -> Vec<(u32, actions::UndoOutcome)> {
+    report
+        .rows
+        .iter()
+        .map(|row| (row.uid, row.outcome))
+        .collect()
+}
+
+#[test]
+fn undo_moves_trashed_mail_back_and_refuses_a_second_time() {
+    let (mut ops, store, dir) = synced();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let (_, events) = drain(
+        &mut ops,
+        &store,
+        &trash,
+        vec![gui_apply(&[1, 2], Action::Trash)],
+    );
+    let action = action_of(&events);
+    assert_eq!(store.messages_in_folder("Trash").unwrap().len(), 2);
+
+    let (run, events) = drain(&mut ops, &store, &trash, vec![gui_undo(action)]);
+    assert_eq!(run.unwrap().next, NextPass::Inbox);
+    let report = undone(&events);
+    assert_eq!(report.action, action);
+    assert_eq!(
+        outcomes(&report),
+        [
+            (1, actions::UndoOutcome::PutBack),
+            (2, actions::UndoOutcome::PutBack)
+        ]
+    );
+    assert!(store.messages_in_folder("Trash").unwrap().is_empty());
+    let ids: Vec<Option<String>> = store
+        .messages_in_folder("INBOX")
+        .unwrap()
+        .into_iter()
+        .map(|m| m.message_id)
+        .collect();
+    assert_eq!(ids.len(), 2, "{ids:?}");
+    assert!(store.is_undone(action).unwrap());
+    assert_eq!(
+        store.newest_direct_action().unwrap(),
+        None,
+        "an undo is not offered for undoing"
+    );
+
+    let (_, events) = drain(&mut ops, &store, &trash, vec![gui_undo(action)]);
+    assert!(
+        events.iter().any(|e| matches!(e,
+            Event::CommandFailed { message, .. } if message.contains("undone already"))),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn undo_clears_a_flag_the_action_set_and_leaves_one_it_did_not() {
+    let (mut ops, store, dir) = synced();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let (_, events) = drain(
+        &mut ops,
+        &store,
+        &trash,
+        vec![gui_apply(&[1], Action::MarkRead)],
+    );
+    let first = action_of(&events);
+    // Message 2 read by a second action: undoing the first leaves it read.
+    let (second, _) = drain(
+        &mut ops,
+        &store,
+        &trash,
+        vec![gui_apply(&[2], Action::MarkRead)],
+    );
+    second.unwrap();
+    let (_, events) = drain(&mut ops, &store, &trash, vec![gui_undo(first)]);
+    assert_eq!(
+        outcomes(&undone(&events)),
+        [(1, actions::UndoOutcome::PutBack)]
+    );
+    let seen = |uid| {
+        crate::store::has_flag(
+            &store.message("INBOX", uid).unwrap().unwrap().flags,
+            "\\Seen",
+        )
+    };
+    assert!(!seen(1));
+    assert!(seen(2));
+    assert!(
+        ops.calls.iter().any(|c| c == "remove_flags INBOX 1 \\Seen"),
+        "{:?}",
+        ops.calls
+    );
+}
+
+#[test]
+fn undo_restores_a_deleted_message_from_its_backup() {
+    let (mut ops, store, dir) = synced();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let (_, events) = drain(
+        &mut ops,
+        &store,
+        &trash,
+        vec![gui_apply(&[1], Action::Delete)],
+    );
+    let action = action_of(&events);
+    assert_eq!(store.messages_in_folder("INBOX").unwrap().len(), 1);
+    let (_, events) = drain(&mut ops, &store, &trash, vec![gui_undo(action)]);
+    assert_eq!(
+        outcomes(&undone(&events)),
+        [(1, actions::UndoOutcome::Restored)]
+    );
+    assert_eq!(store.messages_in_folder("INBOX").unwrap().len(), 2);
+    assert!(trash.list().unwrap().is_empty());
+}
+
+#[test]
+fn undo_leaves_mail_that_moved_on_since_alone() {
+    let (mut ops, store, dir) = synced();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let (_, events) = drain(
+        &mut ops,
+        &store,
+        &trash,
+        vec![gui_apply(&[1, 2], Action::Trash)],
+    );
+    let action = action_of(&events);
+    // Another client empties one of them out of Trash.
+    let gone = ops.mail["Trash"][0].uid;
+    ops.mail.get_mut("Trash").unwrap().retain(|m| m.uid != gone);
+    ops.calls.clear();
+    let (_, events) = drain(&mut ops, &store, &trash, vec![gui_undo(action)]);
+    let report = undone(&events);
+    assert_eq!(report.count(actions::UndoOutcome::PutBack), 1);
+    assert_eq!(report.count(actions::UndoOutcome::ChangedSince), 1);
+    assert_eq!(store.messages_in_folder("INBOX").unwrap().len(), 1);
+    assert_eq!(
+        ops.calls.iter().filter(|c| c.starts_with("move ")).count(),
+        1,
+        "{:?}",
+        ops.calls
+    );
+}
+
+#[test]
+fn an_unknown_action_is_refused() {
+    let (mut ops, store, dir) = synced();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let (_, events) = drain(&mut ops, &store, &trash, vec![gui_undo(42)]);
+    assert!(
+        events.iter().any(|e| matches!(e,
+            Event::CommandFailed { message, .. } if message.contains("no action 42"))),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn a_rules_pass_numbers_one_action_per_rule_and_folder_and_undo_keeps_it_from_filing_again() {
+    let (mut ops, store, dir) = synced();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let rules = rules_from(
+        "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = { move = \"Codes\", flagged = true }\n\
+         [[rules]]\nname = \"all\"\nmatch.from = { contains = \"x\" }\nactions = { read = true }\n",
+        &store,
+        0,
+    );
+    let acc = account();
+    let identity = acc.identity().unwrap();
+    run_rules(
+        &mut ops,
+        &store,
+        &trash,
+        &rules,
+        &acc,
+        &identity,
+        Mode::Normal,
+        20 * H,
+    )
+    .unwrap();
+    let log = store.log(10).unwrap();
+    let action_of_rule = |rule: &str| {
+        let ids: Vec<Option<i64>> = log
+            .iter()
+            .filter(|e| e.rule_name == rule)
+            .map(|e| e.action_id)
+            .collect();
+        assert!(ids.windows(2).all(|w| w[0] == w[1]), "{rule}: {ids:?}");
+        ids[0].unwrap()
+    };
+    let codes = action_of_rule("codes");
+    assert_ne!(codes, action_of_rule("all"));
+    assert_eq!(
+        store.newest_direct_action().unwrap(),
+        None,
+        "a rule's action is never the default"
+    );
+
+    sync_all(&mut ops, &store).unwrap();
+    let (_, events) = drain(&mut ops, &store, &trash, vec![gui_undo(codes)]);
+    let report = undone(&events);
+    assert_eq!(report.count(actions::UndoOutcome::PutBack), 2, "{report:?}");
+    let back = store
+        .messages_in_folder("INBOX")
+        .unwrap()
+        .into_iter()
+        .find(|m| m.message_id.as_deref() == Some("m2@x"))
+        .unwrap();
+    assert!(
+        !crate::store::has_flag(&back.flags, "\\Flagged"),
+        "{}",
+        back.flags
+    );
+    run_rules(
+        &mut ops,
+        &store,
+        &trash,
+        &rules,
+        &acc,
+        &identity,
+        Mode::Normal,
+        21 * H,
+    )
+    .unwrap();
+    assert_eq!(
+        store.message("INBOX", back.uid).unwrap().map(|m| m.folder),
+        Some("INBOX".to_string()),
+        "the rule that filed it does not file it again"
+    );
 }

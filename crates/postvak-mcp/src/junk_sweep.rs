@@ -231,6 +231,7 @@ fn junk_fixture() -> Fixture {
             subject: Some("Code 1234".into()),
             action: "flagged".into(),
             trash_file: None,
+            ..Default::default()
         })
         .unwrap();
     postvak_core::trash::Trash::new(fx.paths.trash_dir("work"))

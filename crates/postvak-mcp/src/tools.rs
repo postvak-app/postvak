@@ -452,6 +452,18 @@ struct RestoreArgs {
     dry_run: bool,
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct UndoArgs {
+    /// The action's number, as log returns it in action_id
+    action: i64,
+    /// Required when several accounts are visible
+    account: Option<String>,
+    /// Report what would be put back without touching the server
+    #[serde(default)]
+    dry_run: bool,
+}
+
 /// What the rule tools refuse, so an agent can tell before it writes such a rule.
 const UNSEEN_CONDITIONS: &str =
     "a header condition needs the read:headers scope and a body condition read:bodies";
@@ -633,6 +645,12 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
             Scope::MailModify,
             Effect::Changes,
             help::TRASH_RESTORE,
+        ),
+        ToolDef::new::<UndoArgs>(
+            "undo",
+            Scope::MailModify,
+            Effect::Changes,
+            mail(help::UNDO_MCP),
         ),
         ToolDef::new::<UnsubscribeArgs>(
             "unsubscribe",
@@ -942,6 +960,10 @@ fn dispatch(
         "trash_restore" => {
             let a: RestoreArgs = args(arguments)?;
             backend.trash_restore(a.account.as_deref(), &a.file, a.dry_run)
+        }
+        "undo" => {
+            let a: UndoArgs = args(arguments)?;
+            backend.undo(a.account.as_deref(), a.action, a.dry_run, &by)
         }
         _ => bail!("unknown tool {name}"),
     }

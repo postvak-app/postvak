@@ -1,5 +1,5 @@
 //! The Rules, Activity and Trash views: what replaces the list and body columns.
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use postvak_core::help;
@@ -980,6 +980,24 @@ pub(crate) fn activity_cells(app: &App) -> Vec<[String; 6]> {
     app.activity_log.iter().map(row).collect()
 }
 
+/// Whether each Activity row's action can still be undone: it is part of an action, and no undo of it is in the log.
+pub(crate) fn activity_undoable(app: &App) -> Vec<bool> {
+    // Action ids are per account's store.
+    let undone: HashSet<(&str, i64)> = app
+        .activity_log
+        .iter()
+        .filter_map(|(account, entry)| Some((account.as_str(), entry.undoes?)))
+        .collect();
+    app.activity_log
+        .iter()
+        .map(|(account, entry)| {
+            entry
+                .action_id
+                .is_some_and(|id| !undone.contains(&(account.as_str(), id)))
+        })
+        .collect()
+}
+
 /// The Backups view's rows, cell by cell.
 pub(crate) fn trash_cells(app: &App) -> Vec<[String; 5]> {
     let row = |row: &TrashRow| {
@@ -1800,6 +1818,7 @@ mod tests {
             subject: Some(subject.into()),
             action: "archive".into(),
             trash_file: None,
+            ..LogEntry::default()
         };
         fx.store(account).log_action(&entry).unwrap();
     }
@@ -1839,6 +1858,37 @@ mod tests {
         assert_eq!(order, expected);
         assert_eq!(open.find("work newest").len(), 1);
         assert_eq!(open.find("Subject").len(), 1);
+    }
+
+    #[test]
+    fn activity_offers_undo_for_actions_not_undone_in_their_own_account() {
+        let fx = Fixture::new(&["home", "work"]);
+        for (account, at) in [("home", 100), ("work", 200)] {
+            logged(&fx, account, at, account);
+            fx.store(account).stamp_actions(0).unwrap();
+        }
+        // Home's action 1 was undone; work's action 1 is another action, in another store.
+        let home = fx.store("home");
+        let before = home.last_log_id().unwrap();
+        logged(&fx, "home", 300, "home undo");
+        home.mark_undo(before, 1).unwrap();
+        let (open, _wires) = view(&fx, View::Activity);
+        let undoable = open.with(|live| {
+            live.app
+                .activity_log
+                .iter()
+                .map(|(_, entry)| entry.subject.clone().unwrap_or_default())
+                .zip(super::activity_undoable(&live.app))
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            undoable,
+            [
+                ("home undo".to_string(), false),
+                ("work".to_string(), true),
+                ("home".to_string(), false)
+            ]
+        );
     }
 
     #[test]
@@ -2052,6 +2102,7 @@ mod tests {
                 subject: None,
                 action: "archive".into(),
                 trash_file: None,
+                ..LogEntry::default()
             })
             .unwrap();
         let (open, _wires) = view(&fx, View::Rules);
