@@ -9,7 +9,7 @@ use crate::folder_name;
 use crate::message::clean;
 use crate::paths::{Paths, edit_toml};
 use crate::rules::{
-    Action, Lists, Rule, RuleFile, RulesError, compile, compile_with, invalid, parse,
+    Action, Lists, NamedList, Rule, RuleFile, RulesError, compile, compile_with, invalid, parse,
 };
 use crate::store::Store;
 
@@ -43,20 +43,28 @@ pub struct Proposals {
     pub replace: bool,
     /// Each rule changes the existing rule of its name once approved, which runs as it is until then.
     pub edit: bool,
+    /// New lists and new values for lists, each stored as a `[[list_proposals]]` entry until approved.
+    pub lists: Lists,
 }
 
 /// What `rules propose` reads on stdin and `rules_propose` takes: one rule, an array of rules, or `{"rules": [...]}`.
-/// Either object may also carry `before` or `after` (a rule's name), `replace` and `edit`. A rule that does not parse is named
-/// by its index in the batch.
+/// Either object may also carry `before` or `after` (a rule's name), `replace` and `edit`, and `lists`, the lists to
+/// add or change by name; `{"lists": {...}}` alone proposes lists only. A rule that does not parse is named by its
+/// index in the batch.
 pub fn read_proposals(value: serde_json::Value) -> Result<Proposals, RulesError> {
     use serde_json::Value as Json;
+    let mut lists = Lists::new();
     let (items, mut object) = match value {
         Json::Array(items) => (items, serde_json::Map::new()),
         Json::Object(mut object) => match object.remove("rules") {
             Some(Json::Array(items)) => (items, object),
+            Some(Json::Null) | None if !object.contains_key("name") => {
+                // No rule, such as lists alone: what is left is the batch's own keys.
+                (Vec::new(), object)
+            }
             Some(Json::Null) | None => {
                 let mut rule = serde_json::Map::new();
-                for key in ["before", "after", "edit", "replace"] {
+                for key in ["after", "before", "edit", "lists", "replace"] {
                     if let Some(value) = object.remove(key) {
                         rule.insert(key.to_string(), value);
                     }
@@ -97,6 +105,10 @@ pub fn read_proposals(value: serde_json::Value) -> Result<Proposals, RulesError>
     };
     let replace = flag("replace", &mut object)?;
     let edit = flag("edit", &mut object)?;
+    if let Some(value) = object.remove("lists") {
+        lists = serde_json::from_value(value)
+            .map_err(|e| RulesError::Parse(format!("`lists`: {e}")))?;
+    }
     if edit && place != Place::End {
         return Err(RulesError::Parse(
             "an edit keeps its rule's place: give `edit` without `before` or `after`".into(),
@@ -128,22 +140,25 @@ pub fn read_proposals(value: serde_json::Value) -> Result<Proposals, RulesError>
         place,
         replace,
         edit,
+        lists,
     })
 }
 
-/// Stores every rule of `proposals` disabled and attributed to `by`, in the order given, or none of them: the whole
-/// batch is checked first, and each rule that fails is named by its index. A name already in the file is refused,
-/// unless `replace` is set and that rule is `by`'s own pending proposal; a replaced rule keeps its place unless the
-/// batch names one. With `edit`, each rule is stored as `<name> (edit)` right after the rule it changes.
+/// Stores every rule of `proposals` disabled and attributed to `by`, in the order given, and each of its lists as a
+/// pending change, or none of them: the whole batch is checked first, and each rule that fails is named by its index.
+/// A name already in the file is refused, unless `replace` is set and that rule is `by`'s own pending proposal; a
+/// replaced rule keeps its place unless the batch names one. With `edit`, each rule is stored as `<name> (edit)`
+/// right after the rule it changes. Rules are checked against the approved lists only.
 pub fn propose_all(path: &Path, proposals: Proposals, by: &str) -> Result<(), RulesError> {
     let Proposals {
         mut rules,
         place,
         replace,
         edit,
+        lists,
     } = proposals;
-    if rules.is_empty() {
-        return Err(RulesError::Batch("no rules to propose".into()));
+    if rules.is_empty() && lists.is_empty() {
+        return Err(RulesError::Batch("no rules or lists to propose".into()));
     }
     for rule in &mut rules {
         rule.enabled = false;
@@ -159,29 +174,214 @@ pub fn propose_all(path: &Path, proposals: Proposals, by: &str) -> Result<(), Ru
         .map(rule_table)
         .collect::<Result<Vec<_>, _>>()?;
     edit_file(path, |doc| {
-        let RuleFile {
-            rules: existing,
-            lists,
-        } = parse(&doc.to_string())?;
-        if edit {
-            check_edits(&existing, &rules)?;
-        }
-        check_batch(&existing, &lists, &rules, by, replace, &place)?;
-        if !edit {
-            return place_tables(doc, tables, &place);
-        }
-        for (rule, table) in rules.iter().zip(tables) {
-            // A pending edit being replaced stays where it is; a new one goes right after its rule.
-            let place = match &rule.replaces {
-                Some(target) if !existing.iter().any(|r| r.name == rule.name) => {
-                    Place::After(target.clone())
+        let file = parse(&doc.to_string())?;
+        check_list_batch(&file, &lists, by, replace)?;
+        if !rules.is_empty() {
+            if edit {
+                check_edits(&file.rules, &rules)?;
+            }
+            check_batch(&file.rules, &file.lists, &rules, by, replace, &place)?;
+            if edit {
+                for (rule, table) in rules.iter().zip(tables) {
+                    // A pending edit being replaced stays where it is; a new one goes right after its rule.
+                    let place = match &rule.replaces {
+                        Some(target) if !file.rules.iter().any(|r| r.name == rule.name) => {
+                            Place::After(target.clone())
+                        }
+                        _ => Place::End,
+                    };
+                    place_tables(doc, vec![table], &place)?;
                 }
-                _ => Place::End,
-            };
-            place_tables(doc, vec![table], &place)?;
+            } else {
+                place_tables(doc, tables, &place)?;
+            }
         }
-        Ok(())
+        write_list_proposals(doc, lists, by)
     })
+}
+
+/// Every list of `batch` is well formed, differs from the list it changes, has no pending change but `by`'s own with
+/// `replace`, and leaves every rule of `file` valid once approved.
+fn check_list_batch(
+    file: &RuleFile,
+    batch: &Lists,
+    by: &str,
+    replace: bool,
+) -> Result<(), RulesError> {
+    for (name, value) in batch {
+        let refused = |reason: String| RulesError::List {
+            list: name.clone(),
+            reason,
+        };
+        let alone = Lists::from([(name.clone(), value.clone())]);
+        crate::rules::lists::check(&alone)?;
+        if file.lists.get(name) == Some(value) {
+            return Err(refused("already holds these values".into()));
+        }
+        match file.list_proposals.iter().find(|p| &p.name == name) {
+            Some(pending) if !(replace && pending.proposed_by == by) => {
+                return Err(refused(format!(
+                    "already has a pending change by {}; it must be approved, rejected or withdrawn first",
+                    pending.proposed_by
+                )));
+            }
+            _ => {}
+        }
+        let mut changed = file.lists.clone();
+        changed.extend(alone);
+        compile_with(&file.rules, &changed)
+            .map_err(|e| refused(format!("the change would break the rules: {e}")))?;
+    }
+    Ok(())
+}
+
+/// Stores each list of `lists` as a `[[list_proposals]]` entry by `by`, in place of a pending change of the same name.
+fn write_list_proposals(doc: &mut DocumentMut, lists: Lists, by: &str) -> Result<(), RulesError> {
+    for (name, value) in lists {
+        let mut table = Table::new();
+        table["name"] = toml_edit::value(name.as_str());
+        table["proposed_by"] = toml_edit::value(by);
+        table["value"] = Item::Value(list_value(&value)?);
+        let proposals = doc
+            .entry("list_proposals")
+            .or_insert_with(|| Item::ArrayOfTables(ArrayOfTables::new()))
+            .as_array_of_tables_mut()
+            .ok_or_else(|| {
+                RulesError::Parse("list_proposals must be [[list_proposals]] tables".into())
+            })?;
+        let pending = (proposals.iter())
+            .position(|t| t.get("name").and_then(|v| v.as_str()) == Some(name.as_str()));
+        match pending.and_then(|index| proposals.get_mut(index)) {
+            Some(pending) => *pending = table,
+            None => proposals.push(table),
+        }
+    }
+    Ok(())
+}
+
+/// `value` as an inline TOML value: an array of domains, or `{ regex = "…" }`.
+fn list_value(value: &NamedList) -> Result<Value, RulesError> {
+    let text = toml::to_string(&std::collections::BTreeMap::from([("v", value)]))
+        .map_err(|e| RulesError::Parse(e.to_string()))?;
+    match parse_doc(&text)?.remove("v") {
+        Some(Item::Value(value)) => Ok(value),
+        Some(Item::Table(table)) => Ok(Value::InlineTable(table.into_inline_table())),
+        _ => Err(RulesError::Parse(
+            "a list must be an array or a table".into(),
+        )),
+    }
+}
+
+/// Runs `change` on the `[[list_proposals]]` entry for `name` and its index; refused when there is none.
+fn edit_list_proposal(
+    path: &Path,
+    name: &str,
+    change: impl FnOnce(&mut DocumentMut, usize, &crate::rules::ListProposal) -> Result<(), RulesError>,
+) -> Result<(), RulesError> {
+    edit_file(path, |doc| {
+        let file = parse(&doc.to_string())?;
+        let index = (file.list_proposals.iter())
+            .position(|p| p.name == name)
+            .ok_or_else(|| RulesError::List {
+                list: name.to_string(),
+                reason: "has no pending change".into(),
+            })?;
+        change(doc, index, &file.list_proposals[index])
+    })
+}
+
+/// Drops entry `index` of `[[list_proposals]]`, and the array once it is empty.
+fn remove_list_proposal(doc: &mut DocumentMut, index: usize) -> Result<(), RulesError> {
+    let proposals = doc
+        .get_mut("list_proposals")
+        .and_then(Item::as_array_of_tables_mut)
+        .ok_or_else(|| {
+            RulesError::Parse("list_proposals must be [[list_proposals]] tables".into())
+        })?;
+    let orphaned = remove_at(proposals, index);
+    if proposals.is_empty() {
+        doc.remove("list_proposals");
+    }
+    // A comment above the last entry stays at the file's end; a blank line alone does not.
+    if let Some(orphaned) = orphaned.filter(|o| !o.trim().is_empty()) {
+        let trailing = format!("{orphaned}{}", doc.trailing().as_str().unwrap_or(""));
+        doc.set_trailing(trailing);
+    }
+    Ok(())
+}
+
+/// Removes the pending change of list `name` when `by` proposed it; another proposer's is left for a human.
+pub fn withdraw_list(path: &Path, name: &str, by: &str) -> Result<(), RulesError> {
+    edit_list_proposal(path, name, |doc, index, proposal| {
+        if proposal.proposed_by != by {
+            return Err(RulesError::List {
+                list: name.to_string(),
+                reason: format!("has no pending change by {by}; only a human can remove it"),
+            });
+        }
+        remove_list_proposal(doc, index)
+    })
+}
+
+/// Removes the pending change of list `name`, whoever proposed it.
+pub fn reject_list(path: &Path, name: &str) -> Result<(), RulesError> {
+    edit_list_proposal(path, name, |doc, index, _| remove_list_proposal(doc, index))
+}
+
+/// Writes the pending change of list `name` into `[lists]`, keeping a comment beside the old value, and removes the
+/// proposal. Refused when the change would break a rule; returns the rules that use the list.
+fn approve_list(path: &Path, name: &str) -> Result<Vec<String>, RulesError> {
+    edit_list_proposal(path, name, |doc, index, proposal| {
+        let mut value = list_value(&proposal.value)?;
+        let lists = doc.entry("lists").or_insert_with(|| {
+            let mut table = Table::new();
+            // Before every parsed table, which count from 0: above the rules, where a reader looks for what they use.
+            table.set_position(Some(-1));
+            Item::Table(table)
+        });
+        let lists = lists
+            .as_table_like_mut()
+            .ok_or_else(|| RulesError::Parse("lists must be a table".into()))?;
+        if let Some(old) = lists.get(name).and_then(Item::as_value) {
+            *value.decor_mut() = old.decor().clone();
+        }
+        lists.insert(name, Item::Value(value));
+        remove_list_proposal(doc, index)
+    })?;
+    let file = crate::rules::load(path)?;
+    Ok(crate::rules::lists::users(&file.rules, name)
+        .into_iter()
+        .map(|rule| rule.name.clone())
+        .collect())
+}
+
+/// Approves the pending change of list `name` and restarts the clock of every rule that uses it, in the store of every
+/// account in config.toml, so they act as changed only on mail that arrives from now on. Returns those rules.
+pub fn approve_list_from_now(
+    paths: &Paths,
+    name: &str,
+    now: i64,
+) -> Result<Vec<String>, RulesError> {
+    let config = Config::load(&paths.config_file())?;
+    let users = approve_list(&paths.rules_file(), name)?;
+    restart_clocks(paths, &config, &users, now)?;
+    Ok(users)
+}
+
+/// Starts the clock of each of `rules` at `now` in the store of every account in `config`.
+fn restart_clocks(
+    paths: &Paths,
+    config: &Config,
+    rules: &[String],
+    now: i64,
+) -> Result<(), RulesError> {
+    for account in &config.accounts {
+        let store = Store::open_account(paths, &account.name)?;
+        for rule in rules {
+            store.restart_rule_clock(rule, now)?;
+        }
+    }
+    Ok(())
 }
 
 /// The name an edit of `name` is stored under until a human approves it.
@@ -572,9 +772,7 @@ fn approve_edit(
 pub fn approve_from_now(paths: &Paths, name: &str, now: i64) -> Result<String, RulesError> {
     let config = Config::load(&paths.config_file())?;
     let approved = approve(&paths.rules_file(), name)?;
-    for account in &config.accounts {
-        Store::open_account(paths, &account.name)?.restart_rule_clock(&approved, now)?;
-    }
+    restart_clocks(paths, &config, std::slice::from_ref(&approved), now)?;
     Ok(approved)
 }
 
@@ -843,6 +1041,13 @@ fn free_name(taken: &[String], wanted: &str) -> String {
         number += 1;
     }
     name
+}
+
+/// List `name` as its line in `[lists]`: `kids = ["school.example"]`.
+pub fn list_toml(name: &str, value: &NamedList) -> Result<String, RulesError> {
+    let mut table = Table::new();
+    table.insert(name, Item::Value(list_value(value)?));
+    Ok(table.to_string())
 }
 
 /// `rule` as rules.toml holds it, in the docs' style: what a proposal adds to the file.
@@ -2178,6 +2383,225 @@ mod tests {
             rule.replace("{\"name\"", "{\"edit\": true, \"after\": \"x\", \"name\""),
         ] {
             assert!(read(&bad).is_err(), "{bad}");
+        }
+    }
+
+    const KIDS: &str = "# my lists\n[lists]\nkids = [\"school.example\"] # the school\n\n[[rules]]\nname = \"kids\"\nmatch.from_domain = { list = \"kids\" }\nactions = { flagged = true }\n";
+
+    fn lists(json: &str) -> Proposals {
+        read_proposals(serde_json::from_str(json).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_list_change_is_stored_apart_and_changes_nothing_until_approved() {
+        let (_dir, path) = rules_file(KIDS);
+        propose_all(
+            &path,
+            lists(r#"{"lists": {"kids": ["school.example", "club.example"]}}"#),
+            "mcp:a",
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with(KIDS), "{text}");
+        assert!(
+            text.ends_with("\n[[list_proposals]]\nname = \"kids\"\nproposed_by = \"mcp:a\"\nvalue = [\"school.example\", \"club.example\"]\n"),
+            "{text}"
+        );
+        let file = parse(&text).unwrap();
+        assert_eq!(
+            file.lists["kids"],
+            NamedList::Domains(vec!["school.example".into()])
+        );
+
+        assert_eq!(approve_list(&path, "kids").unwrap(), ["kids"]);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.starts_with(
+                "# my lists\n[lists]\nkids = [\"school.example\", \"club.example\"] # the school\n"
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("list_proposals"), "{text}");
+    }
+
+    #[test]
+    fn a_new_list_goes_above_the_rules_once_approved() {
+        let (_dir, path) = rules_file(HUMAN);
+        propose_all(
+            &path,
+            lists(r#"{"lists": {"alerts": {"regex": "new device"}}}"#),
+            "cli",
+        )
+        .unwrap();
+        assert_eq!(approve_list(&path, "alerts").unwrap(), Vec::<String>::new());
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.starts_with("[lists]\nalerts = { regex = \"new device\" }\n"),
+            "{text}"
+        );
+        assert!(text.ends_with(HUMAN), "{text}");
+    }
+
+    #[test]
+    fn a_list_change_that_would_break_a_rule_or_changes_nothing_is_refused() {
+        let (_dir, path) = rules_file(KIDS);
+        for (json, wanted) in [
+            (
+                r#"{"lists": {"kids": {"contains": "x"}}}"#,
+                "list 'kids': the change would break the rules: rule 'kids'",
+            ),
+            (
+                r#"{"lists": {"kids": ["school.example"]}}"#,
+                "list 'kids': already holds these values",
+            ),
+            (
+                r#"{"lists": {"kids": ["not a domain"]}}"#,
+                "list 'kids': lists.kids: 'not a domain' is not a domain",
+            ),
+        ] {
+            let error = propose_all(&path, lists(json), "cli")
+                .unwrap_err()
+                .to_string();
+            assert!(error.starts_with(wanted), "{json}: {error}");
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), KIDS);
+    }
+
+    #[test]
+    fn only_the_proposer_replaces_or_withdraws_a_list_change_and_a_human_rejects_it() {
+        let (_dir, path) = rules_file(KIDS);
+        propose_all(
+            &path,
+            lists(r#"{"lists": {"kids": ["a.example"]}}"#),
+            "mcp:a",
+        )
+        .unwrap();
+        let other = propose_all(
+            &path,
+            lists(r#"{"lists": {"kids": ["b.example"]}, "replace": true}"#),
+            "mcp:b",
+        );
+        assert!(
+            other
+                .unwrap_err()
+                .to_string()
+                .contains("already has a pending change by mcp:a")
+        );
+        assert!(
+            propose_all(
+                &path,
+                lists(r#"{"lists": {"kids": ["c.example"]}}"#),
+                "mcp:a"
+            )
+            .is_err(),
+            "needs replace"
+        );
+        propose_all(
+            &path,
+            lists(r#"{"lists": {"kids": ["c.example"]}, "replace": true}"#),
+            "mcp:a",
+        )
+        .unwrap();
+        let file = load(&path).unwrap();
+        assert_eq!(file.list_proposals.len(), 1);
+        assert_eq!(
+            file.list_proposals[0].value,
+            NamedList::Domains(vec!["c.example".into()])
+        );
+
+        assert!(withdraw_list(&path, "kids", "mcp:b").is_err());
+        withdraw_list(&path, "kids", "mcp:a").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), KIDS);
+
+        propose_all(
+            &path,
+            lists(r#"{"lists": {"kids": ["a.example"]}}"#),
+            "mcp:a",
+        )
+        .unwrap();
+        let commented = std::fs::read_to_string(&path).unwrap().replace(
+            "[[list_proposals]]",
+            "# asked for by the school\n[[list_proposals]]",
+        );
+        std::fs::write(&path, commented).unwrap();
+        reject_list(&path, "kids").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            format!("{KIDS}\n# asked for by the school\n")
+        );
+        std::fs::write(&path, KIDS).unwrap();
+        assert!(
+            reject_list(&path, "kids")
+                .unwrap_err()
+                .to_string()
+                .contains("has no pending change")
+        );
+    }
+
+    #[test]
+    fn rules_and_lists_go_in_one_batch_and_rules_see_only_approved_lists() {
+        let (_dir, path) = rules_file(KIDS);
+        let batch = r#"{"lists": {"club": ["club.example"]}, "rules": [{"name": "club", "match": {"from_domain": {"list": "club"}}, "actions": {"flagged": true}}]}"#;
+        let error = propose_all(&path, lists(batch), "cli")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no list named 'club'"), "{error}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), KIDS);
+        let batch = r#"{"lists": {"club": ["club.example"]}, "rules": [{"name": "more kids", "match": {"from_domain": {"list": "kids"}}, "actions": {"read": true}}]}"#;
+        propose_all(&path, lists(batch), "cli").unwrap();
+        let file = load(&path).unwrap();
+        assert_eq!((file.rules.len(), file.list_proposals.len()), (2, 1));
+    }
+
+    #[test]
+    fn one_rule_written_flat_may_carry_lists_beside_it() {
+        let flat = lists(
+            r#"{"name": "x", "match": {"read": true}, "actions": {"flagged": true}, "lists": {"club": ["club.example"]}}"#,
+        );
+        assert_eq!((flat.rules.len(), flat.lists.len()), (1, 1));
+        let alone = lists(r#"{"lists": {"club": ["club.example"]}, "replace": true}"#);
+        assert!(alone.rules.is_empty() && alone.replace);
+    }
+
+    #[test]
+    fn a_list_change_written_as_an_inline_array_is_refused_rather_than_left_behind() {
+        let inline = format!(
+            "list_proposals = [{{ name = \"kids\", proposed_by = \"cli\", value = [\"a.example\"] }}]\n{KIDS}"
+        );
+        assert_eq!(parse(&inline).unwrap().list_proposals.len(), 1);
+        let (_dir, path) = rules_file(&inline);
+        let error = approve_list(&path, "kids").unwrap_err().to_string();
+        assert!(
+            error.contains("must be [[list_proposals]] tables"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), inline);
+    }
+
+    #[test]
+    fn approving_a_list_change_restarts_the_clock_of_the_rules_that_use_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        std::fs::create_dir_all(&paths.config_dir).unwrap();
+        std::fs::write(paths.config_file(), TWO_ACCOUNTS).unwrap();
+        std::fs::write(paths.rules_file(), format!("{KIDS}\n[[rules]]\nname = \"other\"\nmatch.read = true\nactions = {{ flagged = true }}\n")).unwrap();
+        propose_all(
+            &paths.rules_file(),
+            lists(r#"{"lists": {"kids": ["a.example"]}}"#),
+            "cli",
+        )
+        .unwrap();
+        for account in ["work", "home"] {
+            assert_eq!(first_seen(&paths, account, "kids", 1), 1);
+            assert_eq!(first_seen(&paths, account, "other", 1), 1);
+        }
+        assert_eq!(
+            approve_list_from_now(&paths, "kids", 500).unwrap(),
+            ["kids"]
+        );
+        for account in ["work", "home"] {
+            assert_eq!(first_seen(&paths, account, "kids", 900), 500, "{account}");
+            assert_eq!(first_seen(&paths, account, "other", 900), 1, "{account}");
         }
     }
 }

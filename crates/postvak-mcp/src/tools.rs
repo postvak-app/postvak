@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 use super::{Backend, Scope};
 use postvak_core::help;
 use postvak_core::message::clean_for_agent;
+use postvak_core::notify::Proposed;
 use postvak_core::output::{self, Fields, RowKind};
 use postvak_core::rules::Action;
 use postvak_core::senders::GroupBy;
@@ -102,10 +103,24 @@ fn fifty() -> u32 {
 #[serde(deny_unknown_fields)]
 struct NoArgs {}
 
+/// A pending proposal: a rule by `name`, or a list's pending change by `list`; give one of them
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct NameArgs {
-    name: String,
+struct ProposalArgs {
+    /// The rule
+    name: Option<String>,
+    /// The list whose pending change this is, instead of a rule
+    list: Option<String>,
+}
+
+impl ProposalArgs {
+    fn proposed(self) -> Result<Proposed> {
+        match (self.name, self.list) {
+            (Some(name), None) => Ok(Proposed::Rule(name)),
+            (None, Some(list)) => Ok(Proposed::List(list)),
+            _ => bail!("give one of name and list"),
+        }
+    }
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -136,8 +151,10 @@ struct SetEnabledArgs {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RulesTestArgs {
-    /// One rule, an entry of `rules` in rules_schema; previewed as if enabled
-    rule: postvak_core::rules::Rule,
+    /// One rule, an entry of `rules` in rules_schema; previewed as if enabled. Give this or list
+    rule: Option<postvak_core::rules::Rule>,
+    /// A list with a pending change: previews what approving it does to the rules that use it. Give this or rule
+    list: Option<String>,
     /// Only this account; default every visible account
     account: Option<String>,
     #[schemars(description = help::AS_OF)]
@@ -506,7 +523,7 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
             Effect::Destructive,
             help::RULES_APPLY_EXISTING,
         ),
-        ToolDef::new::<NameArgs>(
+        ToolDef::new::<ProposalArgs>(
             "rules_approve",
             Scope::RulesWrite,
             Effect::Destructive,
@@ -530,6 +547,12 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
             Effect::ReadOnly,
             help::RULES_LIST,
         ),
+        ToolDef::new::<NoArgs>(
+            "rules_lists",
+            Scope::Read,
+            Effect::ReadOnly,
+            help::RULES_LISTS,
+        ),
         ToolDef::new::<MoveRuleArgs>(
             "rules_move",
             Scope::RulesWrite,
@@ -542,7 +565,7 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
             Effect::Changes,
             format!("{}; {UNSEEN_CONDITIONS}", help::RULES_PROPOSE),
         ),
-        ToolDef::new::<NameArgs>(
+        ToolDef::new::<ProposalArgs>(
             "rules_reject",
             Scope::RulesWrite,
             Effect::Changes,
@@ -563,7 +586,7 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
             Effect::Destructive,
             help::RULES_SET_ENABLED,
         ),
-        ToolDef::new::<NameArgs>(
+        ToolDef::new::<ProposalArgs>(
             "rules_withdraw",
             Scope::RulesPropose,
             Effect::Changes,
@@ -771,10 +794,10 @@ fn dispatch(
                 sight,
             )?)
         }
-        "rules_approve" => {
-            let a: NameArgs = args(arguments)?;
-            backend.approve(&a.name, sight)
-        }
+        "rules_approve" => match args::<ProposalArgs>(arguments)?.proposed()? {
+            Proposed::Rule(name) => backend.approve(&name, sight),
+            Proposed::List(list) => backend.approve_list(&list, sight),
+        },
         "rules_check" => {
             let _: NoArgs = args(arguments)?;
             backend.rules_check()
@@ -795,9 +818,14 @@ fn dispatch(
             let _: NoArgs = args(arguments)?;
             rows(backend.rules_list()?)
         }
+        "rules_lists" => {
+            let _: NoArgs = args(arguments)?;
+            rows(backend.rules_lists()?)
+        }
         "rules_propose" => {
             let arguments = arguments.unwrap_or_default();
-            let batch = arguments.get("rules").is_some_and(Value::is_array);
+            let batch = arguments.get("rules").is_some_and(Value::is_array)
+                || arguments.contains_key("lists");
             let mut proposed = backend.propose(Value::Object(arguments), &by, sight)?;
             match proposed.pop() {
                 // One rule's fields: the result names the rule, as it did before batches.
@@ -814,10 +842,10 @@ fn dispatch(
             let a: MoveRuleArgs = args(arguments)?;
             backend.move_rule(&a.name, a.before, a.after)
         }
-        "rules_reject" => {
-            let a: NameArgs = args(arguments)?;
-            backend.reject(&a.name)
-        }
+        "rules_reject" => match args::<ProposalArgs>(arguments)?.proposed()? {
+            Proposed::Rule(name) => backend.reject(&name),
+            Proposed::List(list) => backend.reject_list(&list),
+        },
         "rules_schema" => {
             let _: NoArgs = args(arguments)?;
             backend.rules_schema()
@@ -826,18 +854,25 @@ fn dispatch(
             let a: SetEnabledArgs = args(arguments)?;
             backend.set_enabled(&a.name, a.enabled, sight)
         }
-        "rules_withdraw" => {
-            let a: NameArgs = args(arguments)?;
-            backend.withdraw(&a.name, &by)
-        }
+        "rules_withdraw" => match args::<ProposalArgs>(arguments)?.proposed()? {
+            Proposed::Rule(name) => backend.withdraw(&name, &by),
+            Proposed::List(list) => backend.withdraw_list(&list, &by),
+        },
         "rules_test" => {
             let a: RulesTestArgs = args(arguments)?;
-            backend.rules_test(
-                a.rule,
-                a.account.as_deref(),
-                as_of(a.as_of.as_deref())?,
-                sight,
-            )
+            match (a.rule, a.list, a.as_of) {
+                (Some(rule), None, as_of_text) => backend.rules_test(
+                    rule,
+                    a.account.as_deref(),
+                    as_of(as_of_text.as_deref())?,
+                    sight,
+                ),
+                (None, Some(list), None) => {
+                    backend.rules_test_list(&list, a.account.as_deref(), sight)
+                }
+                (None, Some(_), Some(_)) => bail!("as_of previews a rule, not a list change"),
+                _ => bail!("give one of rule and list"),
+            }
         }
         "search" => {
             let a: SearchArgs = args(arguments)?;
@@ -1059,6 +1094,7 @@ const UNWRAPPED_TOOLS: &[&str] = &[
     "rules_approve",
     "rules_check",
     "rules_list",
+    "rules_lists",
     "rules_move",
     "rules_propose",
     "rules_reject",

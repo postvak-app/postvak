@@ -2,13 +2,13 @@ pub mod apply;
 pub mod coverage;
 pub mod edit;
 
-pub use edit::rule_toml;
+pub use edit::{list_toml, rule_toml};
 pub mod engine;
 pub mod hits;
 pub mod lists;
 mod warnings;
 
-pub use lists::{Domain, ListRef, Lists, NamedList};
+pub use lists::{Domain, ListProposal, ListRef, Lists, NamedList};
 
 pub use warnings::{
     AccountFolders, account_folders, authenticated_warnings, authserv_offers, folder_warnings,
@@ -64,6 +64,9 @@ pub struct RuleFile {
     /// Named values that conditions refer to with { list = "name" }, so several rules share one copy
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub lists: Lists,
+    /// New lists and changes to lists that an agent proposed; each changes nothing until a human approves it
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub list_proposals: Vec<ListProposal>,
     #[serde(default)]
     pub rules: Vec<Rule>,
 }
@@ -688,6 +691,7 @@ pub fn enabled_rule(path: &Path, name: &str) -> Result<CompiledRule, RulesError>
 
 pub fn compile(file: &RuleFile) -> Result<Vec<CompiledRule>, RulesError> {
     lists::check(&file.lists)?;
+    lists::check_proposals(&file.list_proposals)?;
     compile_with(&file.rules, &file.lists)
 }
 

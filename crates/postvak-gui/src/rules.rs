@@ -5,8 +5,9 @@ use std::path::Path;
 use postvak_core::help;
 use postvak_core::message::clean;
 use postvak_core::paths::Paths;
+use postvak_core::rules::coverage::ListEffect;
 use postvak_core::rules::hits::Hits;
-use postvak_core::rules::{self, Lists, Rule, RuleFile};
+use postvak_core::rules::{self, ListProposal, Lists, NamedList, Rule, RuleFile};
 use postvak_core::store::{LogEntry, Store};
 use postvak_core::trash::{Trash, TrashEntry};
 
@@ -26,8 +27,9 @@ pub(crate) struct RulesState {
     pub offers: Vec<(String, String)>,
     /// Each proposal's dry run on the cached mail, by name, once counted; a reload drops them.
     pub dry_runs: BTreeMap<String, DryRun>,
-    pub rules: Vec<Rule>,
-    pub lists: Lists,
+    /// Each pending list change's dry run, by list name, once counted.
+    pub list_runs: BTreeMap<String, ListRun>,
+    pub file: RuleFile,
     /// The rules as the view words them, worded once per load rather than on every frame.
     pub proposals: Vec<Proposal>,
     pub lines: Vec<RuleLine>,
@@ -44,7 +46,7 @@ impl RulesState {
     /// The file's rules, or the previous ones when it does not parse. A rule that does not compile is reported but
     /// still listed, so it can be switched off.
     pub fn load(path: &Path, previous: RuleFile, accounts: &[Account]) -> RulesState {
-        let (error, RuleFile { rules, lists }) = match rules::load(path) {
+        let (error, file) = match rules::load(path) {
             Ok(file) => (rules::compile(&file).err().map(|e| e.to_string()), file),
             Err(e) => (Some(e.to_string()), previous),
         };
@@ -53,10 +55,10 @@ impl RulesState {
             warnings: Vec::new(),
             offers: Vec::new(),
             dry_runs: BTreeMap::new(),
-            proposals: proposals(&rules),
-            lines: rule_lines(&rules),
-            rules,
-            lists,
+            list_runs: BTreeMap::new(),
+            proposals: proposals(&file),
+            lines: rule_lines(&file.rules),
+            file,
         };
         state.check(path, accounts);
         state
@@ -74,8 +76,8 @@ impl RulesState {
             .filter(|a| a.identity.as_ref().is_some_and(|id| !id.can_authenticate()))
             .map(|a| a.name.as_str())
             .collect();
-        self.warnings = warnings(path, &self.rules, accounts, &untrusting, &synced);
-        self.offers = rules::authserv_offers(&self.rules, &untrusting, &synced);
+        self.warnings = warnings(path, &self.file.rules, accounts, &untrusting, &synced);
+        self.offers = rules::authserv_offers(&self.file.rules, &untrusting, &synced);
     }
 }
 
@@ -125,6 +127,8 @@ pub(crate) struct Proposal {
     /// What it does as a sentence, and each line of `toml` with its mark, both split into styled runs.
     pub sentence: Vec<Run>,
     pub code: Vec<(String, Vec<Run>)>,
+    /// A change of the list `name` rather than a rule.
+    pub list: bool,
 }
 
 impl Proposal {
@@ -558,7 +562,14 @@ pub(crate) fn banner(state: &RulesState) -> Option<String> {
     (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
-fn proposals(rules: &[Rule]) -> Vec<Proposal> {
+/// The rules waiting for approval, then the list changes.
+fn proposals(file: &RuleFile) -> Vec<Proposal> {
+    let mut proposals = rule_proposals(&file.rules);
+    proposals.extend(file.list_proposals.iter().map(|p| list_proposal(file, p)));
+    proposals
+}
+
+fn rule_proposals(rules: &[Rule]) -> Vec<Proposal> {
     let toml = |rule: &Rule| {
         let toml = rules::rule_toml(rule).unwrap_or_else(|e| e.to_string());
         clean(&toml, true).trim_end().to_owned()
@@ -589,14 +600,8 @@ fn proposals(rules: &[Rule]) -> Vec<Proposal> {
                     .map(|line| ('+', line.to_owned()))
                     .collect(),
             };
-            let code = (lines.iter())
-                .map(|(mark, line)| (mark.to_string(), toml_runs(line)))
-                .collect();
-            let (marks, toml): (Vec<String>, Vec<String>) = lines
-                .into_iter()
-                .map(|(mark, line)| (mark.to_string(), line))
-                .unzip();
-            let changed = marks.iter().filter(|mark| mark.as_str() != " ").count();
+            let (code, marks, toml) = card_lines(&lines);
+            let changed = lines.iter().filter(|(mark, _)| *mark != ' ').count();
             let lines = super::numbers::noun(changed as u64, "line", "lines");
             let note = match edited {
                 Some(old) => format!(
@@ -618,11 +623,143 @@ fn proposals(rules: &[Rule]) -> Vec<Proposal> {
                 code,
                 note,
                 edits: edited.is_some(),
-                marks: marks.join("\n"),
-                toml: toml.join("\n"),
+                marks,
+                toml,
+                list: false,
             }
         })
         .collect()
+}
+
+/// A pending list change as the Rules view shows it: the list's line as it is and as the change has it, and the rules
+/// it reaches.
+fn list_proposal(file: &RuleFile, proposal: &ListProposal) -> Proposal {
+    let name = clean(&proposal.name, false);
+    let line = |value: &NamedList| {
+        let toml = rules::list_toml(&proposal.name, value).unwrap_or_else(|e| e.to_string());
+        clean(&toml, true).trim_end().to_owned()
+    };
+    let old = file.lists.get(&proposal.name);
+    let lines = match old {
+        Some(old) => diff(&line(old), &line(&proposal.value)),
+        None => vec![('+', line(&proposal.value))],
+    };
+    let (code, marks, toml) = card_lines(&lines);
+    let users: Vec<String> = rules::lists::users(&file.rules, &proposal.name)
+        .into_iter()
+        .map(|rule| clean(&rule.name, false))
+        .collect();
+    let plain = |text: &str| (text.to_string(), RUN_PLAIN);
+    let token = |text: &str| (text.to_string(), RUN_TOKEN);
+    let kind = match proposal.value {
+        NamedList::Domains(_) => " to the domains ",
+        NamedList::Text(_) => " to text that ",
+    };
+    let mut sentence = vec![
+        plain("Sets list "),
+        token(&name),
+        plain(kind),
+        token(&clean(&proposal.value.words(), false)),
+    ];
+    sentence.push(plain(&match users.as_slice() {
+        [] => ". No rule uses it yet.".to_string(),
+        [one] => format!(", which rule '{one}' uses."),
+        many => format!(", which {} rules use.", many.len()),
+    }));
+    let rules_word = super::numbers::noun(users.len() as u64, "rule", "rules");
+    Proposal {
+        name: proposal.name.clone(),
+        label: format!("List {name}"),
+        by: format!(
+            "List proposal · {}",
+            proposer(&clean(&proposal.proposed_by, false))
+        ),
+        summary: format!("list {name}: {}", clean(&proposal.value.words(), false)),
+        note: match old {
+            Some(_) => format!(
+                "Changes list '{name}' · used by {} {rules_word}",
+                users.len()
+            ),
+            None => format!("rules.toml · adds list '{name}'"),
+        },
+        edits: old.is_some(),
+        code,
+        marks,
+        toml,
+        sentence,
+        list: true,
+    }
+}
+
+/// A card's diff lines: each mark with its line in styled runs, then the marks and the lines, each joined by newlines.
+fn card_lines(lines: &[(char, String)]) -> (Vec<(String, Vec<Run>)>, String, String) {
+    let code = (lines.iter())
+        .map(|(mark, line)| (mark.to_string(), toml_runs(line)))
+        .collect();
+    let marks: Vec<String> = lines.iter().map(|(mark, _)| mark.to_string()).collect();
+    let toml: Vec<&str> = lines.iter().map(|(_, line)| line.as_str()).collect();
+    (code, marks.join("\n"), toml.join("\n"))
+}
+
+/// What approving a list change does to each rule that uses it, account by account, or why it could not be counted.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct ListRun {
+    pub effects: Vec<(String, ListEffect)>,
+    pub error: Option<String>,
+}
+
+/// The dry run of the pending change of list `name` on the cached mail of `accounts`, as `postvak rules test --list`
+/// runs it. It opens the stores itself, so it can run off the window thread.
+pub(crate) fn list_dry_run(
+    paths: &Paths,
+    accounts: &[String],
+    file: &RuleFile,
+    name: &str,
+    now: i64,
+) -> ListRun {
+    let config = match postvak_core::config::Config::load(&paths.config_file()) {
+        Ok(config) => config,
+        Err(e) => {
+            return ListRun {
+                error: Some(e.to_string()),
+                ..ListRun::default()
+            };
+        }
+    };
+    let accounts: Vec<_> = accounts
+        .iter()
+        .filter_map(|name| config.account(name))
+        .collect();
+    match rules::coverage::list_change_in(paths, &accounts, file, name, now) {
+        Ok(effects) => ListRun {
+            effects,
+            error: None,
+        },
+        Err(e) => ListRun {
+            error: Some(e.to_string()),
+            ..ListRun::default()
+        },
+    }
+}
+
+/// A list change's dry run as its card shows it: how many messages change which rules match them, what that count
+/// means, and one line per rule and account with what it matches now and once approved.
+pub(crate) fn list_run_lines(run: &ListRun) -> (usize, String, Vec<(String, String)>) {
+    let changed: u32 = run.effects.iter().map(|(_, e)| e.gained + e.lost).sum();
+    let label = match (run.effects.is_empty(), changed) {
+        (true, _) => "messages: no rule uses this list yet".to_string(),
+        (false, 1) => "message changes for the rules that use it".to_string(),
+        (false, _) => "messages change for the rules that use it".to_string(),
+    };
+    let lines = (run.effects.iter())
+        .map(|(account, e)| {
+            (
+                clean(&format!("{} · {account}/{}", e.rule, e.folder), false),
+                format!("{} → {} (+{} −{})", e.before, e.after, e.gained, e.lost),
+            )
+        })
+        .collect();
+    (changed as usize, label, lines)
 }
 
 /// `old` and `new` line by line, each marked as a diff marks it: ' ' in both, '-' only in `old`, '+' only in `new`.
@@ -932,6 +1069,7 @@ mod tests {
     use std::path::Path;
     use std::time::{Duration, SystemTime};
 
+    use super::{ListEffect, ListRun, NamedList};
     use crate::state::View;
     use crate::test_support::{Fixture, Open, Wires, message};
     use postvak_core::store::LogEntry;
@@ -1209,7 +1347,7 @@ mod tests {
     #[test]
     fn an_edit_shows_what_it_changes_in_its_rule() {
         let rules = postvak_core::rules::parse(EDIT).unwrap().rules;
-        let edit = &super::proposals(&rules)[0];
+        let edit = &super::rule_proposals(&rules)[0];
         assert_eq!(edit.by, "Edit proposal · agent");
         assert_eq!(edit.note, "Changes rule 'newsletters' · 2 lines");
         assert_eq!(
@@ -1217,7 +1355,7 @@ mod tests {
             "[[rules]]\nname = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions.archive = true\nactions.read = true"
         );
         assert_eq!(edit.marks, " \n \n \n-\n+");
-        let new = &super::proposals(&postvak_core::rules::parse(RULES).unwrap().rules)[0];
+        let new = &super::rule_proposals(&postvak_core::rules::parse(RULES).unwrap().rules)[0];
         assert_eq!(
             new.note,
             format!("rules.toml · adds {} lines", new.toml.lines().count())
@@ -1238,6 +1376,88 @@ mod tests {
         assert_eq!(
             file.rules[0].actions,
             vec![postvak_core::rules::Action::MarkRead]
+        );
+    }
+
+    const KIDS: &str = "[lists]\nkids = [\"school.example\"]\n\n[[rules]]\nname = \"kids\"\nmatch.from_domain = { list = \"kids\" }\nactions = { flagged = true }\n\n[[list_proposals]]\nname = \"kids\"\nproposed_by = \"mcp:claude\"\nvalue = [\"school.example\", \"club.example\"]\n";
+
+    #[test]
+    fn a_list_change_shows_its_line_before_and_after_and_the_rules_it_reaches() {
+        let file = postvak_core::rules::parse(KIDS).unwrap();
+        let card = &super::proposals(&file)[0];
+        assert!(card.list && card.edits);
+        assert_eq!(card.by, "List proposal · claude");
+        assert_eq!(card.note, "Changes list 'kids' · used by 1 rule");
+        assert_eq!(card.marks, "-\n+");
+        assert_eq!(
+            card.toml,
+            "kids = [\"school.example\"]\nkids = [\"school.example\", \"club.example\"]"
+        );
+        let sentence: String = card
+            .sentence
+            .iter()
+            .map(|(text, _)| text.as_str())
+            .collect();
+        assert_eq!(
+            sentence,
+            "Sets list kids to the domains school.example or club.example, which rule 'kids' uses."
+        );
+    }
+
+    #[test]
+    fn approving_a_list_change_writes_it_and_offers_no_edit() {
+        let fx = Fixture::new(&["work"]);
+        std::fs::write(fx.paths.rules_file(), KIDS).unwrap();
+        fx.store("work").restart_rule_clock("kids", 1).unwrap();
+        let (open, _wires) = view(&fx, View::Rules);
+        assert_eq!(open.find("LIST PROPOSAL · CLAUDE").len(), 1);
+        assert!(open.find("Edit before approving →").is_empty());
+        open.click("Approve change");
+        let file = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
+        assert!(file.list_proposals.is_empty());
+        assert_eq!(
+            file.lists["kids"],
+            NamedList::Domains(vec!["school.example".into(), "club.example".into()])
+        );
+        assert!(fx.store("work").rule_first_seen("kids", "", 0).unwrap() > 1);
+    }
+
+    #[test]
+    fn rejecting_a_list_change_keeps_the_list() {
+        let fx = Fixture::new(&["work"]);
+        std::fs::write(fx.paths.rules_file(), KIDS).unwrap();
+        let (open, _wires) = view(&fx, View::Rules);
+        open.click("Reject");
+        let file = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
+        assert!(file.list_proposals.is_empty());
+        assert_eq!(
+            file.lists["kids"],
+            NamedList::Domains(vec!["school.example".into()])
+        );
+    }
+
+    #[test]
+    fn a_list_runs_lines_name_each_rule_and_what_it_matches_now_and_after() {
+        let effect = ListEffect {
+            rule: "kids".into(),
+            folder: "INBOX".into(),
+            before: 1,
+            after: 2,
+            gained: 2,
+            lost: 1,
+        };
+        let run = ListRun {
+            effects: vec![("work".into(), effect)],
+            error: None,
+        };
+        let (count, label, lines) = super::list_run_lines(&run);
+        assert_eq!(
+            (count, label.as_str()),
+            (3, "messages change for the rules that use it")
+        );
+        assert_eq!(
+            lines,
+            [("kids · work/INBOX".to_string(), "1 → 2 (+2 −1)".to_string())]
         );
     }
 

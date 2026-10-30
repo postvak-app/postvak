@@ -90,6 +90,18 @@ actions.flagged = true
 - Changing a list changes every rule that uses it, and restarts each one's clock (see [When rules act](#when-rules-act)).
 - `rules list --json` and the MCP `rules_list` tool show the reference in `match` and, under `lists`, the values of each list the rule uses. `rules coverage` and `senders` name the lists beside the rules that match.
 - The window shows a reference by name, such as `subject in list security_subjects`, and keeps it when you save the rule; change a list's values in `rules.toml`.
+- `postvak rules lists` (MCP `rules_lists`) shows every list with its values, the rules that use it and any pending change; `--json` gives one row per list with `name`, `values`, `used_by` and `pending`.
+
+An agent changes lists the way it changes rules, by proposal, since one list change changes every rule that uses it. `rules propose` takes `{"lists": {"kids": ["school.example", "club.example"]}}`, alone or beside `"rules"`, and stores each list as a pending change after the rules, which changes nothing until approved:
+
+```toml
+[[list_proposals]]
+name = "kids"
+proposed_by = "mcp:claude"
+value = ["school.example", "club.example"]
+```
+
+A change is refused when it would break a rule that uses the list (a domain list turned into a text list, say), when it leaves the list as it is, and while the list has another proposer's pending change; `replace` swaps your own. A proposed rule may refer only to lists already approved. `rules test --list kids` shows what approving would do: for each enabled rule that uses the list, the cached messages it matches now and after, and how many it gains and loses. `rules approve --list kids` writes the change into `[lists]` and restarts the clock of every rule that uses it; `rules reject --list kids` drops it, and `rules withdraw --list kids --by WHO` takes back your own. `rules coverage --include-pending` counts pending list changes as approved. The window shows a list change among the proposals, with the list's line before and after and its dry run, and a new one brings the same notification as a new rule.
 
 ## Authenticated mail
 

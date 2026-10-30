@@ -151,7 +151,7 @@ pub(crate) fn pane(app: &App) -> Pane {
         reply: reply_url(message).is_some(),
         provenance: provenance(
             &body.provenance,
-            &app.rules.rules,
+            &app.rules.file.rules,
             &message.folder,
             &(app.accounts[body.account].folders.iter())
                 .map(|f| f.name.clone())

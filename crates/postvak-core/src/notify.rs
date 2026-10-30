@@ -116,16 +116,36 @@ pub fn notices(batch: &[Mail]) -> Vec<Notice> {
     )]
 }
 
-/// The notification for rule proposals that started waiting for approval, by name; a click opens the Rules view.
-pub fn proposals_notice(names: &[String]) -> Option<Notice> {
-    let title = match names.len() {
-        0 => return None,
-        1 => "A rule waits for your approval".to_string(),
-        n => format!("{n} rules wait for your approval"),
+/// A proposal that waits for approval: a rule, or a change of the list of that name.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Proposed {
+    Rule(String),
+    List(String),
+}
+
+/// The notification for proposals that started waiting for approval, by name; a click opens the Rules view.
+pub fn proposals_notice(proposed: &[Proposed]) -> Option<Notice> {
+    let lists = proposed
+        .iter()
+        .filter(|p| matches!(p, Proposed::List(_)))
+        .count();
+    let title = match (proposed.len(), lists) {
+        (0, _) => return None,
+        (1, 0) => "A rule waits for your approval".to_string(),
+        (1, _) => "A list change waits for your approval".to_string(),
+        (n, 0) => format!("{n} rules wait for your approval"),
+        (n, l) if l == n => format!("{n} list changes wait for your approval"),
+        (n, _) => format!("{n} proposals wait for your approval"),
     };
+    let names: Vec<String> = (proposed.iter())
+        .map(|p| match p {
+            Proposed::Rule(name) => name.clone(),
+            Proposed::List(name) => format!("list {name}"),
+        })
+        .collect();
     Some(Notice {
         title,
-        body: named(names),
+        body: named(&names),
         show: Show::Rules,
     })
 }
@@ -213,10 +233,10 @@ impl Notifier {
     }
 
     /// Notifies the rule proposals, by name, that started waiting for approval.
-    pub fn proposals(&self, names: &[String]) {
+    pub fn proposals(&self, proposed: &[Proposed]) {
         let _ = self
             .notices
-            .send(proposals_notice(names).into_iter().collect());
+            .send(proposals_notice(proposed).into_iter().collect());
     }
 }
 
@@ -400,7 +420,9 @@ mod tests {
 
     #[test]
     fn new_proposals_are_one_notification_that_opens_the_rules_view() {
-        let names = |n: usize| -> Vec<String> { (1..=n).map(|i| format!("r{i}")).collect() };
+        let names = |n: usize| -> Vec<Proposed> {
+            (1..=n).map(|i| Proposed::Rule(format!("r{i}"))).collect()
+        };
         assert_eq!(proposals_notice(&[]), None);
         assert_eq!(
             proposals_notice(&names(1)),
@@ -414,6 +436,22 @@ mod tests {
         assert_eq!(five.title, "5 rules wait for your approval");
         assert_eq!(five.body, "r1, r2, r3 and 2 others");
         assert_eq!(Show::Rules.gui_args(), ["gui", "--rules"]);
+        let list = [Proposed::List("kids".into())];
+        assert_eq!(
+            proposals_notice(&list).map(|n| (n.title, n.body)),
+            Some((
+                "A list change waits for your approval".into(),
+                "list kids".into()
+            ))
+        );
+        let both = [Proposed::Rule("r1".into()), Proposed::List("kids".into())];
+        assert_eq!(
+            proposals_notice(&both).map(|n| (n.title, n.body)),
+            Some((
+                "2 proposals wait for your approval".into(),
+                "r1 and list kids".into()
+            ))
+        );
     }
 
     #[test]

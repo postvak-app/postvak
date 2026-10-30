@@ -21,6 +21,35 @@ pub enum NamedList {
     Text(TextMatch),
 }
 
+impl NamedList {
+    /// The list in words: `a.example or b.example`, `contains "x" or "y"` or `matches regex "…"`.
+    pub fn words(&self) -> String {
+        let quoted = |values: &OneOrMany<String>| {
+            let quoted: Vec<String> = values
+                .as_slice()
+                .iter()
+                .map(|v| format!("\"{v}\""))
+                .collect();
+            quoted.join(" or ")
+        };
+        match self {
+            NamedList::Domains(domains) => domains.join(" or "),
+            NamedList::Text(TextMatch {
+                contains: Some(values),
+                ..
+            }) => format!("contains {}", quoted(values)),
+            NamedList::Text(TextMatch {
+                equals: Some(values),
+                ..
+            }) => format!("equals {}", quoted(values)),
+            NamedList::Text(t) => format!(
+                "matches regex \"{}\"",
+                t.regex.as_deref().unwrap_or_default()
+            ),
+        }
+    }
+}
+
 /// A domain such as example.com, or { list = "name" } for every domain of that list
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged, expecting = "a domain, or { list = \"name\" }")]
@@ -45,6 +74,60 @@ impl<'de> Deserialize<'de> for ListRef {
             _ => Err(serde::de::Error::custom("expected { list = \"name\" }")),
         }
     }
+}
+
+/// A new list, or a change to one, that an agent proposed; it changes nothing until a human approves it
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ListProposal {
+    /// The list it adds or changes
+    pub name: String,
+    /// Who proposed it; set by `rules propose`
+    pub proposed_by: String,
+    /// The list once approved
+    pub value: NamedList,
+}
+
+/// Each proposal's list is well formed, and no list has two pending changes. Whether approving one would break a rule
+/// is checked when it is proposed and when it is approved, so a stale proposal never stops the rules.
+pub(crate) fn check_proposals(proposals: &[ListProposal]) -> Result<(), RulesError> {
+    let mut names = BTreeSet::new();
+    for proposal in proposals {
+        if !names.insert(proposal.name.as_str()) {
+            return Err(RulesError::List {
+                list: proposal.name.clone(),
+                reason: "has two pending changes in [[list_proposals]]".into(),
+            });
+        }
+        check(&Lists::from([(
+            proposal.name.clone(),
+            proposal.value.clone(),
+        )]))?;
+    }
+    Ok(())
+}
+
+/// `lists` as they read once `proposals` are approved.
+pub fn with_proposals(lists: &Lists, proposals: &[ListProposal]) -> Lists {
+    let mut lists = lists.clone();
+    for proposal in proposals {
+        lists.insert(proposal.name.clone(), proposal.value.clone());
+    }
+    lists
+}
+
+/// Every list `file` holds or has a pending change of, by name and sorted.
+pub fn names(file: &super::RuleFile) -> BTreeSet<&str> {
+    (file.lists.keys().map(String::as_str))
+        .chain(file.list_proposals.iter().map(|p| p.name.as_str()))
+        .collect()
+}
+
+/// The rules of `rules` that refer to the list `name`, at any depth.
+pub fn users<'r>(rules: &'r [super::Rule], name: &str) -> Vec<&'r super::Rule> {
+    (rules.iter())
+        .filter(|rule| used_by([*rule]).iter().any(|used| used == name))
+        .collect()
 }
 
 /// Every list is well formed on its own, whether a rule uses it or not.

@@ -101,21 +101,22 @@ pub const NO_UIDPLUS: &str = "the server lacks UIDPLUS: a delete also removes an
 pub const MOVE: &str = "Move messages to another folder, creating it if needed";
 pub const RULES_APPLY_EXISTING: &str =
     "Run one enabled rule against mail that predates it; dry run lists what it would do";
-pub const RULES_APPROVE: &str =
-    "Enable a disabled rule, such as a proposal, or write an edit proposal over the rule it edits";
+pub const RULES_APPROVE: &str = "Enable a disabled rule, such as a proposal, or write an edit proposal over the rule it edits; with `list`, write that list's pending change into [lists] and restart the clock of every rule that uses it";
 pub const RULES_CHECK: &str = "Validate rules.toml, and warn about what keeps it from doing what it says, such as a conflicting copy a file sync left beside it or a rule for an account not set up here";
 /// The `--as-of` option of `rules test` and `rules coverage`, and the `as_of` argument of their MCP tools.
 pub const AS_OF: &str = "Evaluate as if it were this time, to see what older_than and younger_than will do: a span ahead of now (15min, 1d), a local date (2026-11-01), a local time (2026-11-01T14:00) or an RFC 3339 timestamp; the mail and its read, flagged and tags stay as they are now, and nothing is applied";
 pub const RULES_COVERAGE: &str = "Run the rules over one folder's stored mail without acting: how many messages a rule matches, none matches and several match; the top senders of unmatched mail; for each contested message every rule that matches and what would run under the real precedence";
-pub const RULES_LIST: &str = "Every rule in file order, the order they run in: its position, its whole definition, whether it is enabled and who proposed it";
-pub const RULES_PROPOSE: &str = "Add rules, disabled, for a human to approve: the arguments are one rule (an entry of `rules` in rules_schema), or `rules`, a list of them stored in order, all or none; `before` or `after` names the rule to put them next to instead of at the end, and `replace` swaps your own pending proposal of the same name; `edit` proposes changes to the existing rules of these names, each stored as '<name> (edit)' while the rule runs unchanged until a human approves";
-pub const RULES_REJECT: &str = "Remove a pending proposal";
+pub const RULES_LIST: &str = "Every rule in file order, the order they run in: its position, its whole definition, whether it is enabled, who proposed it and the values of the lists it uses";
+pub const RULES_LISTS: &str = "Every named list in rules.toml, which conditions refer to with {\"list\": \"name\"}: its values, the rules that use it, and its pending change with who proposed it";
+pub const RULES_PROPOSE: &str = "Add rules, disabled, for a human to approve: the arguments are one rule (an entry of `rules` in rules_schema), or `rules`, a list of them stored in order, all or none; `before` or `after` names the rule to put them next to instead of at the end, and `replace` swaps your own pending proposal of the same name; `edit` proposes changes to the existing rules of these names, each stored as '<name> (edit)' while the rule runs unchanged until a human approves; `lists` adds or changes named lists, such as {\"kids\": [\"school.example\"]} or {\"alerts\": {\"regex\": \"new device\"}}, each stored as a pending change that alters nothing until approved, and refused when it would break a rule; rules may refer only to lists already approved";
+pub const RULES_REJECT: &str =
+    "Remove a pending proposal; with `list`, that list's pending change, whoever proposed it";
 pub const RULES_MOVE: &str = "Move a rule right before or after another, which changes the order the rules run in: earlier rules run first";
-pub const RULES_WITHDRAW: &str = "Remove your own pending proposal: a disabled rule whose proposed_by is yours; anything else is left for a human";
+pub const RULES_WITHDRAW: &str = "Remove your own pending proposal: a disabled rule whose proposed_by is yours, or with `list` your pending change of that list; anything else is left for a human";
 pub const RULES_SCHEMA: &str = "JSON Schema for rules.toml; a proposal is one entry of `rules`";
 pub const RULES_SET_ENABLED: &str =
     "Turn a rule on or off; turning one on lets it act on new mail, deletes included";
-pub const RULES_TEST: &str = "Dry run: what this rule would do to the cached messages; previews subjects, never bodies, and warns where `authenticated` cannot hold";
+pub const RULES_TEST: &str = "Dry run: what this rule would do to the cached messages; previews subjects, never bodies, and warns where `authenticated` cannot hold. With `list`, what approving that list's pending change does to each enabled rule that uses it: the cached messages it matches now and after, and how many it gains and loses";
 pub const SEARCH: &str = "Search subject, addresses, attachment names and bodies, newest first; words, \"phrases\", -not and key:value operators such as from:acme, in:Archive, is:unread or after:7d; the last word also matches as a prefix; close matches such as corrected typos follow when exact hits are few";
 /// The operators `search` takes, one line each; the CLI prints it after `postvak search --help` and the MCP tool
 /// description carries it.

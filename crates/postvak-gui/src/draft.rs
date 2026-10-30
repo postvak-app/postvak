@@ -1,33 +1,12 @@
 //! Rules in plain language, and rules as the editor's rows of conditions.
 use postvak_core::message::{bare_addresses, clean};
-use postvak_core::rules::{Action, Domain, ListRef, Match, OneOrMany, Rule, TextMatch};
+use postvak_core::rules::{Action, Domain, ListRef, Match, NamedList, OneOrMany, Rule, TextMatch};
 
 /// `subject contains "a" or "b"`: a text condition, whose list matches any of its values.
 fn text_label(field: &str, t: &TextMatch) -> String {
-    let TextMatch {
-        contains,
-        equals,
-        regex,
-        list,
-    } = t;
-    if let Some(list) = list {
-        return format!("{field} in list {list}");
-    }
-    let quoted = |values: &OneOrMany<String>| {
-        let quoted: Vec<String> = values
-            .as_slice()
-            .iter()
-            .map(|v| format!("\"{v}\""))
-            .collect();
-        quoted.join(" or ")
-    };
-    match (contains, equals) {
-        (Some(values), _) => format!("{field} contains {}", quoted(values)),
-        (None, Some(values)) => format!("{field} equals {}", quoted(values)),
-        (None, None) => format!(
-            "{field} matches regex \"{}\"",
-            regex.as_deref().unwrap_or_default()
-        ),
+    match &t.list {
+        Some(list) => format!("{field} in list {list}"),
+        None => format!("{field} {}", NamedList::Text(t.clone()).words()),
     }
 }
 

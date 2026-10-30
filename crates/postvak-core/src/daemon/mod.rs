@@ -1,4 +1,5 @@
 //! The one process that owns the engine, serving it to the GUI, CLI and MCP over a private Unix socket.
+use crate::notify::Proposed;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, IsTerminal, Write};
@@ -415,9 +416,9 @@ struct Watch {
     /// The rules' warnings last logged, so each is logged once rather than on every change.
     warned: Vec<String>,
     /// The proposals waiting for approval when the file last loaded; None before it first did.
-    waiting: Option<BTreeSet<String>>,
+    waiting: Option<BTreeSet<Proposed>>,
     /// Those that started waiting since, to notify.
-    proposed: Vec<String>,
+    proposed: Vec<Proposed>,
     checked: Instant,
 }
 
@@ -476,7 +477,7 @@ impl Watch {
         self.watch_folders(&file.rules);
         self.file_lines = warnings;
         self.log_new();
-        let proposed = new_proposals(&mut self.waiting, &file.rules);
+        let proposed = new_proposals(&mut self.waiting, &file);
         self.proposed.extend(proposed);
     }
 
@@ -554,17 +555,18 @@ impl Watch {
     }
 }
 
-/// The proposals in `rules` waiting for approval that `waiting` did not hold, which then holds them all. The first
-/// load only learns them, so the proposals that waited before the daemon started do not notify again.
+/// The proposals in `file` waiting for approval, rules and list changes, that `waiting` did not hold, which then holds
+/// them all. The first load only learns them, so the proposals that waited before the daemon started do not notify
+/// again.
 fn new_proposals(
-    waiting: &mut Option<BTreeSet<String>>,
-    rules: &[crate::rules::Rule],
-) -> Vec<String> {
-    let now: BTreeSet<String> = rules
-        .iter()
+    waiting: &mut Option<BTreeSet<Proposed>>,
+    file: &crate::rules::RuleFile,
+) -> Vec<Proposed> {
+    let rules = (file.rules.iter())
         .filter(|rule| !rule.enabled && rule.proposed_by.is_some())
-        .map(|rule| rule.name.clone())
-        .collect();
+        .map(|rule| Proposed::Rule(rule.name.clone()));
+    let lists = (file.list_proposals.iter()).map(|p| Proposed::List(p.name.clone()));
+    let now: BTreeSet<Proposed> = rules.chain(lists).collect();
     let new = match waiting {
         Some(before) => now.difference(before).cloned().collect(),
         None => Vec::new(),

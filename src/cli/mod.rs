@@ -446,22 +446,25 @@ enum RulesCommand {
     Check,
     /// Dry run: print what each rule would do to the cached messages, and warn where `authenticated` cannot hold; naming a rule previews it even while disabled
     Test {
-        #[arg(conflicts_with = "stdin")]
+        #[arg(conflicts_with_all = ["stdin", "list"])]
         name: Option<String>,
         #[arg(long)]
         account: Option<String>,
         /// Preview one rule read as JSON from stdin instead of rules.toml
-        #[arg(long)]
+        #[arg(long, conflicts_with = "list")]
         stdin: bool,
         #[arg(long, value_parser = as_of_arg, help = postvak_core::help::AS_OF)]
         as_of: Option<i64>,
+        /// Preview approving this list's pending change: per rule that uses it, the cached messages it matches now and after
+        #[arg(long, value_name = "LIST", conflicts_with = "as_of")]
+        list: Option<String>,
     },
     #[command(
         about = postvak_core::help::RULES_SCHEMA,
         after_help = "`postvak guide rules` explains every key, with examples."
     )]
     Schema,
-    /// Read one rule, a JSON array of rules or {"rules": [...]} on stdin and add them disabled, in order, for a human to approve; all or none are stored
+    /// Read one rule, a JSON array of rules or {"rules": [...]} on stdin and add them disabled, in order, for a human to approve; all or none are stored. {"lists": {...}} proposes new values for named lists, alone or beside "rules"
     Propose {
         /// Who proposes it, recorded as proposed_by = "cli:WHO"
         #[arg(long)]
@@ -485,11 +488,24 @@ enum RulesCommand {
         /// Who proposed it, as given to `rules propose --by`
         #[arg(long)]
         by: Option<String>,
+        /// NAME is a list with a pending change, not a rule
+        #[arg(long)]
+        list: bool,
     },
     #[command(about = postvak_core::help::RULES_APPROVE)]
-    Approve { name: String },
+    Approve {
+        name: String,
+        /// NAME is a list with a pending change, not a rule
+        #[arg(long)]
+        list: bool,
+    },
     #[command(about = postvak_core::help::RULES_REJECT)]
-    Reject { name: String },
+    Reject {
+        name: String,
+        /// NAME is a list with a pending change, not a rule
+        #[arg(long)]
+        list: bool,
+    },
     #[command(about = postvak_core::help::RULES_MOVE)]
     Move {
         name: String,
@@ -502,6 +518,11 @@ enum RulesCommand {
     },
     #[command(about = postvak_core::help::RULES_LIST)]
     List {
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = postvak_core::help::RULES_LISTS)]
+    Lists {
         #[arg(long)]
         json: bool,
     },
@@ -1688,10 +1709,38 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             Ok(())
         }
         RulesCommand::Test {
+            list: Some(list),
+            account,
+            ..
+        } => {
+            let file = postvak_core::rules::load(&paths.rules_file())?;
+            let accounts = config::select(&config.accounts, account.as_deref())?;
+            let effects = postvak_core::rules::coverage::list_change_in(
+                paths,
+                &accounts,
+                &file,
+                &list,
+                time::now(),
+            )?;
+            for (account, effect) in effects {
+                println!(
+                    "{account}\t{}\t{}\t{} -> {} messages\t+{} -{}",
+                    clean(&effect.rule, false),
+                    clean(&effect.folder, false),
+                    effect.before,
+                    effect.after,
+                    effect.gained,
+                    effect.lost
+                );
+            }
+            Ok(())
+        }
+        RulesCommand::Test {
             name,
             account,
             stdin,
             as_of,
+            list: None,
         } => {
             let now = as_of_or_now(as_of);
             let rules = if stdin {
@@ -1755,6 +1804,9 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                     }
                 })
                 .map(|name| format!("'{}'", clean(&name, false)))
+                .chain(
+                    (proposals.lists.keys()).map(|name| format!("list '{}'", clean(name, false))),
+                )
                 .collect();
             postvak_core::rules::edit::propose_all(&paths.rules_file(), proposals, &cli_by(by))?;
             println!(
@@ -1763,12 +1815,81 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             );
             Ok(())
         }
-        RulesCommand::Withdraw { name, by } => {
+        RulesCommand::Withdraw {
+            name,
+            by,
+            list: true,
+        } => {
+            postvak_core::rules::edit::withdraw_list(&paths.rules_file(), &name, &cli_by(by))?;
+            println!("withdrew the change of list '{}'", clean(&name, false));
+            Ok(())
+        }
+        RulesCommand::Approve { name, list: true } => {
+            let users =
+                postvak_core::rules::edit::approve_list_from_now(paths, &name, time::now())?;
+            let users: Vec<String> = users
+                .iter()
+                .map(|r| format!("'{}'", clean(r, false)))
+                .collect();
+            println!(
+                "changed list '{}'; {} act as changed on mail that arrives from now on",
+                clean(&name, false),
+                if users.is_empty() {
+                    "no rule uses it yet; rules that use it".to_string()
+                } else {
+                    users.join(", ")
+                }
+            );
+            Ok(())
+        }
+        RulesCommand::Reject { name, list: true } => {
+            postvak_core::rules::edit::reject_list(&paths.rules_file(), &name)?;
+            println!("removed the change of list '{}'", clean(&name, false));
+            Ok(())
+        }
+        RulesCommand::Lists { json } => {
+            let file = postvak_core::rules::load(&paths.rules_file())?;
+            if json {
+                for row in postvak_core::output::list_rows(&file, |_| true) {
+                    print_json(row);
+                }
+                return Ok(());
+            }
+            for name in postvak_core::rules::lists::names(&file) {
+                let used: Vec<&str> = postvak_core::rules::lists::users(&file.rules, name)
+                    .into_iter()
+                    .map(|rule| rule.name.as_str())
+                    .collect();
+                let values = file
+                    .lists
+                    .get(name)
+                    .map_or("(none yet)".into(), |l| l.words());
+                println!(
+                    "{}\t{}\tused by {}",
+                    clean(name, false),
+                    clean(&values, false),
+                    if used.is_empty() {
+                        "no rule".to_string()
+                    } else {
+                        clean(&used.join(", "), false)
+                    }
+                );
+                if let Some(pending) = file.list_proposals.iter().find(|p| p.name == name) {
+                    println!(
+                        "  pending by {}: {}",
+                        clean(&pending.proposed_by, false),
+                        clean(&pending.value.words(), false)
+                    );
+                }
+            }
+            Ok(())
+        }
+        RulesCommand::Withdraw { name, by, .. } => {
             postvak_core::rules::edit::withdraw(&paths.rules_file(), &name, &cli_by(by))?;
             println!("withdrew proposal '{}'", clean(&name, false));
             Ok(())
         }
-        RulesCommand::Approve { name } => {
+        RulesCommand::Approve { name, .. } => {
             let approved = postvak_core::rules::edit::approve_from_now(paths, &name, time::now())?;
             if approved == name {
                 println!(
@@ -1784,7 +1905,7 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             }
             Ok(())
         }
-        RulesCommand::Reject { name } => {
+        RulesCommand::Reject { name, .. } => {
             postvak_core::rules::edit::reject(&paths.rules_file(), &name)?;
             println!("removed proposal '{}'", clean(&name, false));
             Ok(())

@@ -401,6 +401,12 @@ impl View {
     }
 }
 
+/// The proposals' dry runs, by rule name, and the pending list changes', by list name.
+type DryRuns = (
+    BTreeMap<String, rules::DryRun>,
+    BTreeMap<String, rules::ListRun>,
+);
+
 /// What the window asks for; `App::apply` carries it out.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum UiAction {
@@ -408,6 +414,8 @@ pub(crate) enum UiAction {
     About,
     Act(Action),
     ApproveRule(String),
+    /// Approve the pending change of this list.
+    ApproveList(String),
     /// Add this authserv-id to this account's trusted_authserv_ids, as the Rules view offered.
     TrustAuthserv {
         account: String,
@@ -486,6 +494,8 @@ pub(crate) enum UiAction {
     OpenRulesFile,
     OpenSource,
     RejectRule(String),
+    /// Remove the pending change of this list.
+    RejectList(String),
     /// Ask for a new name for this folder of this account.
     RenameFolder(usize, String),
     /// Start a new rule for mail from the sender of the message shown, given its From.
@@ -687,7 +697,7 @@ pub struct App {
     counting_hits: Option<Receiver<HashMap<String, rule_file::hits::Hits>>>,
     /// The proposals or the cached mail changed since their dry runs were counted; and the run under way.
     dry_runs_stale: bool,
-    dry_running: Option<Receiver<BTreeMap<String, rules::DryRun>>>,
+    dry_running: Option<Receiver<DryRuns>>,
     pub(crate) saving_as: Option<SavingAs>,
     /// Attachments of messages too large to download whole, asked of the daemon one by one, until they arrive.
     pub(crate) fetching: Vec<Fetching>,
@@ -1471,6 +1481,13 @@ impl App {
                         .map(drop)
                 });
             }
+            UiAction::ApproveList(name) => {
+                let paths = self.paths.clone();
+                self.edit_rules(|_| {
+                    rule_file::edit::approve_list_from_now(&paths, &name, postvak_core::time::now())
+                        .map(drop)
+                });
+            }
             UiAction::TrustAuthserv { account, id } => self.trust_authserv(&account, &id),
             UiAction::Collapse => self.collapse(),
             UiAction::DropOn(view) => self.drop_on(view),
@@ -1511,7 +1528,7 @@ impl App {
                 });
             }
             UiAction::EditRule(name) => {
-                let rule = self.rules.rules.iter().find(|rule| rule.name == name);
+                let rule = self.rules.file.rules.iter().find(|rule| rule.name == name);
                 if let Some(draft) = rule.map(Draft::from_rule) {
                     self.open_draft(Some(draft));
                 }
@@ -1593,6 +1610,9 @@ impl App {
             UiAction::OpenRulesFile => self.open_rules_file(),
             UiAction::RejectRule(name) => {
                 self.edit_rules(|path| rule_file::edit::reject(path, &name));
+            }
+            UiAction::RejectList(name) => {
+                self.edit_rules(|path| rule_file::edit::reject_list(path, &name));
             }
             UiAction::RemoveRule { confirmed } => self.remove_draft(confirmed),
             UiAction::RuleFrom(from) => {
@@ -2659,6 +2679,7 @@ impl App {
             let entry = body.provenance.first()?;
             let rule = self
                 .rules
+                .file
                 .rules
                 .iter()
                 .find(|r| r.name == entry.rule_name)?;
@@ -2667,7 +2688,7 @@ impl App {
             let config = Config::load(&self.paths.config_file()).ok()?;
             let identity = config.account(account)?.identity().ok()?;
             let ctx = rule_file::coverage::context(account, &identity, postvak_core::time::now());
-            let lines = rule_file::engine::explain(rule, &self.rules.lists, message, &ctx)
+            let lines = rule_file::engine::explain(rule, &self.rules.file.lists, message, &ctx)
                 .into_iter()
                 .map(|(single, met)| (draft::match_labels(&single).join(", "), met))
                 .collect();
@@ -3384,6 +3405,7 @@ impl App {
     fn apply_rule(&mut self, name: &str) {
         let Some(scope) = self
             .rules
+            .file
             .rules
             .iter()
             .find(|rule| rule.name == name && rule.enabled)
@@ -3441,7 +3463,7 @@ impl App {
 
     fn send_apply_rule(&mut self, name: &str) {
         for index in 0..self.accounts.len() {
-            let covered = self.rules.rules.iter().any(|rule| {
+            let covered = self.rules.file.rules.iter().any(|rule| {
                 rule.name == name
                     && rule.enabled
                     && rule
@@ -3479,11 +3501,7 @@ impl App {
             to: &from,
             delimiter: delimiter.as_deref(),
         };
-        let file = RuleFile {
-            rules: self.rules.rules.clone(),
-            lists: self.rules.lists.clone(),
-        };
-        let rules = rule_file::edit::rules_naming(&file, &rename);
+        let rules = rule_file::edit::rules_naming(&self.rules.file, &rename);
         self.open_folder_dialog(account, FolderKind::Rename { from, rules }, level);
     }
 
@@ -3805,17 +3823,19 @@ impl App {
         self.rules_watch.changed();
         self.rules = RulesState::load(
             &self.paths.rules_file(),
-            RuleFile {
-                rules: std::mem::take(&mut self.rules.rules),
-                lists: std::mem::take(&mut self.rules.lists),
-            },
+            std::mem::take(&mut self.rules.file),
             &self.accounts,
         );
         self.rules.set_hits(&self.rule_hits);
         self.dry_runs_stale = true;
         let on_disk = self.rule_draft_opened.as_ref().and_then(|opened| {
             let name = opened.original.as_deref()?;
-            let rule = self.rules.rules.iter().find(|rule| rule.name == name)?;
+            let rule = self
+                .rules
+                .file
+                .rules
+                .iter()
+                .find(|rule| rule.name == name)?;
             Some(Draft::from_rule(rule))
         });
         let Some(on_disk) = on_disk else { return };
@@ -3934,7 +3954,7 @@ impl App {
         let run = rules::dry_run(
             &self.paths,
             &names,
-            &self.rules.lists,
+            &self.rules.file.lists,
             &rule,
             postvak_core::time::now(),
         );
@@ -3954,26 +3974,32 @@ impl App {
             return;
         }
         self.dry_runs_stale = false;
-        let proposals: Vec<Rule> = (self.rules.rules.iter())
-            .filter(|rule| rules::is_proposal(rule))
-            .cloned()
-            .collect();
-        if proposals.is_empty() {
+        let file = &self.rules.file;
+        if !file.rules.iter().any(rules::is_proposal) && file.list_proposals.is_empty() {
             return;
         }
         let paths = self.paths.clone();
-        let lists = self.rules.lists.clone();
+        let file = file.clone();
         let names: Vec<String> = self.accounts.iter().map(|a| a.name.clone()).collect();
         self.dry_running = Some(worker::oneshot("dry-runs", self.wake.clone(), move || {
             let now = postvak_core::time::now();
-            (proposals.iter())
+            let runs = (file.rules.iter().filter(|rule| rules::is_proposal(rule)))
                 .map(|rule| {
                     (
                         rule.name.clone(),
-                        rules::dry_run(&paths, &names, &lists, rule, now),
+                        rules::dry_run(&paths, &names, &file.lists, rule, now),
                     )
                 })
-                .collect()
+                .collect();
+            let list_runs = (file.list_proposals.iter())
+                .map(|p| {
+                    (
+                        p.name.clone(),
+                        rules::list_dry_run(&paths, &names, &file, &p.name, now),
+                    )
+                })
+                .collect();
+            (runs, list_runs)
         }));
     }
 
@@ -3983,8 +4009,9 @@ impl App {
         };
         if let Some(found) = worker::poll(answer) {
             self.dry_running = None;
-            if let Ok(runs) = found {
+            if let Ok((runs, list_runs)) = found {
                 self.rules.dry_runs = runs;
+                self.rules.list_runs = list_runs;
             }
         }
     }

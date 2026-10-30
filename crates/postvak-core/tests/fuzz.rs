@@ -31,7 +31,8 @@ use postvak_core::message::{
     header_value, parse_headers, save_attachment, thread_id,
 };
 use postvak_core::rules::{
-    self, Action, Domain, ListRef, Lists, Match, NamedList, OneOrMany, Rule, RuleFile, TextMatch,
+    self, Action, Domain, ListProposal, ListRef, Lists, Match, NamedList, OneOrMany, Rule,
+    RuleFile, TextMatch,
 };
 use postvak_core::search::{self, Scope};
 use postvak_core::store::{Folder, Message, Store};
@@ -913,8 +914,12 @@ proptest! {
     }
 
     #[test]
-    fn rules_structured(rules in proptest::collection::vec(rule(), 0..4), lists in lists()) {
-        let file = RuleFile { rules, lists };
+    fn rules_structured(rules in proptest::collection::vec(rule(), 0..4), lists in lists(), proposed in lists()) {
+        let list_proposals = proposed
+            .into_iter()
+            .map(|(name, value)| ListProposal { name, proposed_by: "agent".into(), value })
+            .collect();
+        let file = RuleFile { rules, lists, list_proposals };
         let _ = rules::compile(&file);
         if let Ok(text) = toml::to_string(&file) {
             exercise_rules(&text);
