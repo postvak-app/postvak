@@ -5,7 +5,10 @@ pub mod edit;
 pub use edit::rule_toml;
 pub mod engine;
 pub mod hits;
+pub mod lists;
 mod warnings;
+
+pub use lists::{Domain, ListRef, Lists, NamedList};
 
 pub use warnings::{
     AccountFolders, account_folders, authenticated_warnings, authserv_offers, folder_warnings,
@@ -25,6 +28,8 @@ pub enum RulesError {
     Parse(String),
     #[error("rule '{rule}': {reason}")]
     Invalid { rule: String, reason: String },
+    #[error("list '{list}': {reason}")]
+    List { list: String, reason: String },
     #[error("no rule named '{0}'")]
     NotFound(String),
     /// A batch of proposals refused as a whole; each failing rule is named by its index.
@@ -56,6 +61,9 @@ pub(crate) fn invalid(rule: &str, reason: impl Into<String>) -> RulesError {
 #[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RuleFile {
+    /// Named values that conditions refer to with { list = "name" }, so several rules share one copy
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lists: Lists,
     #[serde(default)]
     pub rules: Vec<Rule>,
 }
@@ -89,16 +97,6 @@ pub struct Rule {
     pub actions: Vec<Action>,
 }
 
-impl Rule {
-    /// What the rule does, as JSON: editing any of it restarts the rule's clock, so a widened rule never acts on older mail.
-    pub fn definition(&self) -> Result<String, RulesError> {
-        let actions =
-            Actions::from_list(&self.actions).map_err(|reason| invalid(&self.name, reason))?;
-        serde_json::to_string(&(&self.account, &self.folder, &self.matches, actions))
-            .map_err(|e| invalid(&self.name, e.to_string()))
-    }
-}
-
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Match {
@@ -123,10 +121,10 @@ pub struct Match {
     pub header: Option<BTreeMap<String, TextMatch>>,
     /// The From address's domain or any subdomain of it, never the display name; a list matches any of them
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub from_domain: Option<OneOrMany<String>>,
+    pub from_domain: Option<OneOrMany<Domain>>,
     /// The domain, or any subdomain, of an address in the To header, not Cc; a list matches any of them
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub to_domain: Option<OneOrMany<String>>,
+    pub to_domain: Option<OneOrMany<Domain>>,
     /// An Authentication-Results header from a server in the account's trusted_authserv_ids says DMARC passed for the From domain, or without a DMARC verdict, DKIM passed for a domain aligned with it; never true without that list
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authenticated: Option<bool>,
@@ -180,7 +178,7 @@ impl<T> OneOrMany<T> {
     }
 }
 
-/// Exactly one of contains, equals, regex
+/// Exactly one of contains, equals, regex, list
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TextMatch {
@@ -193,6 +191,9 @@ pub struct TextMatch {
     /// Rust regex syntax, case-insensitive like the others; (?-i) makes it case-sensitive
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub regex: Option<String>,
+    /// The name of a text list in [lists], whose condition this is
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list: Option<String>,
 }
 
 /// What a rule does, each at most once and in any order: flags and tags are set before a move, and a delete wins over
@@ -556,6 +557,9 @@ impl Matcher {
 pub struct CompiledRule {
     pub rule: Rule,
     pub first_seen_at: i64,
+    /// What the rule does, its lists resolved, as JSON: editing any of it, or a list it uses, restarts the rule's
+    /// clock, so a widened rule never acts on older mail.
+    pub definition: String,
     pub(crate) conditions: Conditions,
     /// What the rule's actions wait for, any one of them; empty when they run at once.
     pub(crate) after: Vec<Wait>,
@@ -650,6 +654,22 @@ impl CompiledRule {
 /// Longest rule name, account or folder; agents propose rules, so no field may grow without bound.
 const MAX_NAME_CHARS: usize = 255;
 
+/// A name, account, folder or list name is not blank, holds no control characters and has at most `MAX_NAME_CHARS`.
+fn check_name(field: &str, value: &str) -> Result<(), String> {
+    if value.chars().any(char::is_control) {
+        return Err(format!("{field} must not contain control characters"));
+    }
+    if value.trim().is_empty() {
+        return Err(format!("{field} must not be empty"));
+    }
+    if value.chars().count() > MAX_NAME_CHARS {
+        return Err(format!(
+            "{field} must be at most {MAX_NAME_CHARS} characters"
+        ));
+    }
+    Ok(())
+}
+
 /// Deepest nesting of `none` and `any`; Thunderbird's filters need two levels at most.
 const MAX_DEPTH: usize = 8;
 
@@ -667,15 +687,33 @@ pub fn enabled_rule(path: &Path, name: &str) -> Result<CompiledRule, RulesError>
 }
 
 pub fn compile(file: &RuleFile) -> Result<Vec<CompiledRule>, RulesError> {
+    lists::check(&file.lists)?;
+    compile_with(&file.rules, &file.lists)
+}
+
+/// `rules` compiled against the lists of the rules file at `path`, as if they were in it: a proposal, or a rule
+/// previewed on its own. The file is read only when a rule refers to a list, so a broken file stops no other preview.
+pub fn compile_for(path: &Path, rules: &[Rule]) -> Result<Vec<CompiledRule>, RulesError> {
+    let lists = match lists::used_by(rules).is_empty() {
+        true => Lists::new(),
+        false => load(path)?.lists,
+    };
+    compile_with(rules, &lists)
+}
+
+/// `rules` compiled against `lists`, which a whole file's `compile` has checked; a malformed list a rule refers to is
+/// still refused, as the rule's own condition.
+pub fn compile_with(rules: &[Rule], lists: &Lists) -> Result<Vec<CompiledRule>, RulesError> {
     let mut names = std::collections::HashSet::new();
-    file.rules
+    rules
         .iter()
-        .map(|rule| compile_rule(rule, &mut names))
+        .map(|rule| compile_rule(rule, lists, &mut names))
         .collect()
 }
 
 fn compile_rule(
     rule: &Rule,
+    lists: &Lists,
     names: &mut std::collections::HashSet<String>,
 ) -> Result<CompiledRule, RulesError> {
     if rule.name.trim().is_empty() {
@@ -687,7 +725,8 @@ fn compile_rule(
     if rule.actions.is_empty() {
         return Err(invalid(&rule.name, "actions must not be empty"));
     }
-    Actions::from_list(&rule.actions).map_err(|reason| invalid(&rule.name, reason))?;
+    let actions =
+        Actions::from_list(&rule.actions).map_err(|reason| invalid(&rule.name, reason))?;
     let strings = [
         ("name", Some(&rule.name)),
         ("account", rule.account.as_ref()),
@@ -700,21 +739,7 @@ fn compile_rule(
         _ => None,
     }));
     for (field, value) in strings {
-        if value.chars().any(char::is_control) {
-            return Err(invalid(
-                &rule.name,
-                format!("{field} must not contain control characters"),
-            ));
-        }
-        if value.trim().is_empty() {
-            return Err(invalid(&rule.name, format!("{field} must not be empty")));
-        }
-        if value.chars().count() > MAX_NAME_CHARS {
-            return Err(invalid(
-                &rule.name,
-                format!("{field} must be at most {MAX_NAME_CHARS} characters"),
-            ));
-        }
+        check_name(field, value).map_err(|reason| invalid(&rule.name, reason))?;
     }
     let folders = rule
         .folder
@@ -750,10 +775,14 @@ fn compile_rule(
             "actions.after needs an action to wait with, such as move or delete",
         ));
     }
+    let resolved = lists::resolve(&rule.name, &rule.matches, lists, "match")?;
+    let definition = serde_json::to_string(&(&rule.account, &rule.folder, &resolved, actions))
+        .map_err(|e| invalid(&rule.name, e.to_string()))?;
     Ok(CompiledRule {
         rule: rule.clone(),
         first_seen_at: 0,
-        conditions: compile_match(&rule.name, &rule.matches, "match", 0)?,
+        definition,
+        conditions: compile_match(&rule.name, &resolved, "match", 0)?,
         after,
     })
 }
@@ -879,9 +908,23 @@ fn compile_match(
                 .collect(),
         }
     };
-    let domains = |key: &str, list: &Option<OneOrMany<String>>| {
+    let domains = |key: &str, list: &Option<OneOrMany<Domain>>| {
+        let path = format!("{path}.{key}");
         list.as_ref()
-            .map(|list| domain_list(rule, &format!("{path}.{key}"), list.as_slice()))
+            .map(|list| {
+                let names = list
+                    .as_slice()
+                    .iter()
+                    .map(|domain| match domain {
+                        Domain::Name(name) => Ok(name.clone()),
+                        Domain::List(ListRef { list }) => Err(invalid(
+                            rule,
+                            format!("{path}: list '{list}' is not resolved"),
+                        )),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                domain_list(rule, &path, &names)
+            })
             .transpose()
     };
     let any = branches("any", &m.any)?;

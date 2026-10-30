@@ -39,6 +39,8 @@ pub struct Sender {
     pub subjects: Vec<String>,
     /// The rules that match at least one message of the group, in rules.toml order.
     pub rules: Vec<String>,
+    /// The lists in rules.toml those rules refer to, sorted.
+    pub lists: Vec<String>,
 }
 
 /// The group `from` belongs to: its first address, or that address's registrable domain. A host the public suffix
@@ -82,6 +84,7 @@ pub fn senders(
                     last: msg.internaldate,
                     subjects: Vec::new(),
                     rules: Vec::new(),
+                    lists: Vec::new(),
                 },
                 vec![false; rules.len()],
             ));
@@ -106,12 +109,14 @@ pub fn senders(
     let mut out: Vec<Sender> = groups
         .into_iter()
         .map(|(mut group, matched)| {
-            group.rules = rules
+            let matching: Vec<&CompiledRule> = rules
                 .iter()
                 .zip(matched)
                 .filter(|(_, matched)| *matched)
-                .map(|(rule, _)| rule.rule.name.clone())
+                .map(|(rule, _)| rule)
                 .collect();
+            group.rules = matching.iter().map(|rule| rule.rule.name.clone()).collect();
+            group.lists = crate::rules::lists::used_by(matching.iter().map(|rule| &rule.rule));
             group
         })
         .collect();
@@ -193,6 +198,9 @@ mod tests {
         let rules = compile(
             &parse(
                 r#"
+[lists]
+newsletters = { contains = "news@" }
+
 [[rules]]
 name = "off"
 enabled = false
@@ -206,7 +214,7 @@ actions = { archive = true }
 
 [[rules]]
 name = "news"
-match.from = { contains = "news@" }
+match.from = { list = "newsletters" }
 actions = { read = true }
 "#,
             )
@@ -233,6 +241,7 @@ actions = { read = true }
                 last: 500,
                 subjects: vec!["Sale".into(), "Hello".into(), "Old".into()],
                 rules: vec!["news".into()],
+                lists: vec!["newsletters".into()],
             }
         );
         // Equal counts: the more recent group first.

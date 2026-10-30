@@ -858,7 +858,7 @@ impl App {
         super::phases::mark("stores_opened");
         let rules_path = paths.rules_file();
         let rules_dir = paths.config_dir.clone();
-        let rules = RulesState::load(&rules_path, Vec::new(), &accounts);
+        let rules = RulesState::load(&rules_path, RuleFile::default(), &accounts);
         let mut app = App {
             accounts,
             activity_log: Vec::new(),
@@ -2667,7 +2667,7 @@ impl App {
             let config = Config::load(&self.paths.config_file()).ok()?;
             let identity = config.account(account)?.identity().ok()?;
             let ctx = rule_file::coverage::context(account, &identity, postvak_core::time::now());
-            let lines = rule_file::engine::explain(rule, message, &ctx)
+            let lines = rule_file::engine::explain(rule, &self.rules.lists, message, &ctx)
                 .into_iter()
                 .map(|(single, met)| (draft::match_labels(&single).join(", "), met))
                 .collect();
@@ -3481,6 +3481,7 @@ impl App {
         };
         let file = RuleFile {
             rules: self.rules.rules.clone(),
+            lists: self.rules.lists.clone(),
         };
         let rules = rule_file::edit::rules_naming(&file, &rename);
         self.open_folder_dialog(account, FolderKind::Rename { from, rules }, level);
@@ -3804,7 +3805,10 @@ impl App {
         self.rules_watch.changed();
         self.rules = RulesState::load(
             &self.paths.rules_file(),
-            std::mem::take(&mut self.rules.rules),
+            RuleFile {
+                rules: std::mem::take(&mut self.rules.rules),
+                lists: std::mem::take(&mut self.rules.lists),
+            },
             &self.accounts,
         );
         self.rules.set_hits(&self.rule_hits);
@@ -3927,7 +3931,13 @@ impl App {
     /// stores stall the window.
     fn preview(&self, rule: Rule) -> String {
         let names: Vec<String> = self.accounts.iter().map(|a| a.name.clone()).collect();
-        let run = rules::dry_run(&self.paths, &names, &rule, postvak_core::time::now());
+        let run = rules::dry_run(
+            &self.paths,
+            &names,
+            &self.rules.lists,
+            &rule,
+            postvak_core::time::now(),
+        );
         if let Some(error) = run.error {
             return error;
         }
@@ -3952,11 +3962,17 @@ impl App {
             return;
         }
         let paths = self.paths.clone();
+        let lists = self.rules.lists.clone();
         let names: Vec<String> = self.accounts.iter().map(|a| a.name.clone()).collect();
         self.dry_running = Some(worker::oneshot("dry-runs", self.wake.clone(), move || {
             let now = postvak_core::time::now();
             (proposals.iter())
-                .map(|rule| (rule.name.clone(), rules::dry_run(&paths, &names, rule, now)))
+                .map(|rule| {
+                    (
+                        rule.name.clone(),
+                        rules::dry_run(&paths, &names, &lists, rule, now),
+                    )
+                })
                 .collect()
         }));
     }

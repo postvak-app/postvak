@@ -8,7 +8,9 @@ use crate::config::Config;
 use crate::folder_name;
 use crate::message::clean;
 use crate::paths::{Paths, edit_toml};
-use crate::rules::{Action, Rule, RuleFile, RulesError, compile, invalid, parse};
+use crate::rules::{
+    Action, Lists, Rule, RuleFile, RulesError, compile, compile_with, invalid, parse,
+};
 use crate::store::Store;
 
 /// Appends `rule` disabled and attributed to `by`, so it only acts once a human approves it.
@@ -157,11 +159,14 @@ pub fn propose_all(path: &Path, proposals: Proposals, by: &str) -> Result<(), Ru
         .map(rule_table)
         .collect::<Result<Vec<_>, _>>()?;
     edit_file(path, |doc| {
-        let existing = parse(&doc.to_string())?.rules;
+        let RuleFile {
+            rules: existing,
+            lists,
+        } = parse(&doc.to_string())?;
         if edit {
             check_edits(&existing, &rules)?;
         }
-        check_batch(&existing, &rules, by, replace, &place)?;
+        check_batch(&existing, &lists, &rules, by, replace, &place)?;
         if !edit {
             return place_tables(doc, tables, &place);
         }
@@ -214,6 +219,7 @@ fn is_pending(rule: &Rule) -> bool {
 /// `rules check` words it.
 fn check_batch(
     existing: &[Rule],
+    lists: &Lists,
     batch: &[Rule],
     by: &str,
     replace: bool,
@@ -222,9 +228,7 @@ fn check_batch(
     let mut errors: Vec<(usize, RulesError)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for (index, rule) in batch.iter().enumerate() {
-        if let Err(e) = compile(&RuleFile {
-            rules: vec![rule.clone()],
-        }) {
+        if let Err(e) = compile_with(std::slice::from_ref(rule), lists) {
             errors.push((index, e));
             continue;
         }
@@ -855,6 +859,7 @@ pub fn rule_toml(rule: &Rule) -> Result<String, RulesError> {
 fn rule_table(rule: &Rule) -> Result<Table, RulesError> {
     let text = toml::to_string(&RuleFile {
         rules: vec![rule.clone()],
+        ..RuleFile::default()
     })
     .map_err(|e| RulesError::Parse(e.to_string()))?;
     let mut table = parse_doc(&text)?
@@ -1070,6 +1075,24 @@ mod tests {
             added.actions,
             [Action::Move("Codes".into()), Action::MarkRead]
         );
+    }
+
+    #[test]
+    fn a_proposal_may_use_the_files_lists_but_not_an_unknown_one() {
+        let lists = "[lists]\nkids = [\"school.example\"]\n\n";
+        let (_dir, path) = rules_file(&format!("{lists}{HUMAN}"));
+        let mut rule = proposal("kids");
+        rule.matches = serde_json::from_str(r#"{"from_domain": {"list": "kids"}}"#).unwrap();
+        propose(&path, rule.clone(), "cli").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with(lists), "{text}");
+        assert_eq!(parse(&text).unwrap().rules[1].matches, rule.matches);
+
+        rule.name = "typo".into();
+        rule.matches = serde_json::from_str(r#"{"from_domain": {"list": "kid"}}"#).unwrap();
+        let error = propose(&path, rule, "cli").unwrap_err().to_string();
+        assert!(error.contains("no list named 'kid'"), "{error}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
     }
 
     #[test]

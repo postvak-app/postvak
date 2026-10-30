@@ -203,9 +203,11 @@ pub fn show(
 }
 
 /// A rule's listing row: its whole definition as `rules propose` takes it, and `position`, its 0-based place in
-/// rules.toml, where an earlier rule runs first. `account` is the rule's own scope, `null` for every account.
+/// rules.toml, where an earlier rule runs first. `account` is the rule's own scope, `null` for every account. `lists`
+/// holds the values of each list in rules.toml the rule refers to, by name.
 pub fn rule(
     rule: &Rule,
+    lists: &crate::rules::Lists,
     position: usize,
     hits: &crate::rules::hits::Hits,
 ) -> serde_json::Result<Value> {
@@ -214,6 +216,11 @@ pub fn rule(
         map.insert("position".into(), position.into());
         map.insert("hits_30d".into(), hits.last_30d.into());
         map.insert("last_fired".into(), json!(hits.last_fired));
+        let used: serde_json::Map<String, Value> = crate::rules::lists::used_by([rule])
+            .into_iter()
+            .filter_map(|name| Some((name.clone(), serde_json::to_value(lists.get(&name)?).ok()?)))
+            .collect();
+        map.insert("lists".into(), used.into());
         for (key, value) in [
             ("account", &rule.account),
             ("folder", &rule.folder),
@@ -260,6 +267,7 @@ pub fn coverage(
             Ok(json!({
                 "message": message(account, &contest.message, None)?,
                 "rules": contest.rules,
+                "lists": contest.lists,
                 "acts": contest.acts,
                 "fails": contest.fails,
             }))
@@ -315,14 +323,19 @@ mod tests {
     }
 
     #[test]
-    fn rule_rows_carry_the_whole_rule_and_its_position() {
+    fn rule_rows_carry_the_whole_rule_its_position_and_its_lists() {
         let rule: Rule = serde_json::from_str(
-            r#"{"name": "a", "match": {"subject": {"contains": "x"}}, "actions": {"move": "X"}}"#,
+            r#"{"name": "a", "match": {"subject": {"contains": "x"}, "from_domain": [{"list": "kids"}, "x.example"]}, "actions": {"move": "X"}}"#,
         )
         .unwrap();
+        let lists =
+            crate::rules::parse("[lists]\nkids = [\"school.example\"]\nother = [\"o.example\"]\n")
+                .unwrap()
+                .lists;
         assert_eq!(
             super::rule(
                 &rule,
+                &lists,
                 3,
                 &crate::rules::hits::Hits {
                     last_30d: 3,
@@ -332,7 +345,8 @@ mod tests {
             .unwrap(),
             serde_json::json!({
                 "name": "a", "position": 3, "hits_30d": 3, "last_fired": null, "enabled": true, "account": null, "folder": null, "proposed_by": null, "replaces": null,
-                "match": {"subject": {"contains": "x"}}, "actions": {"move": "X"},
+                "match": {"subject": {"contains": "x"}, "from_domain": [{"list": "kids"}, "x.example"]}, "actions": {"move": "X"},
+                "lists": {"kids": ["school.example"]},
             })
         );
     }

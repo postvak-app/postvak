@@ -18,6 +18,8 @@ pub struct Contest {
     pub message: Message,
     /// Every rule that matches it, in rules.toml order, whether or not it gets to act.
     pub rules: Vec<String>,
+    /// The lists in rules.toml those rules refer to, sorted.
+    pub lists: Vec<String>,
     /// What would run, rule by rule, after a delete, `stop` and the first move have had their say; a flag change already
     /// in effect does not run.
     pub acts: Vec<Act>,
@@ -105,9 +107,10 @@ pub fn in_folder(
     };
     let mut unmatched = Vec::new();
     for msg in messages {
-        let names: Vec<String> = matching(rules, &msg, ctx)
-            .map(|(_, rule)| rule.rule.name.clone())
+        let matched: Vec<&Rule> = matching(rules, &msg, ctx)
+            .map(|(_, rule)| &rule.rule)
             .collect();
+        let names: Vec<String> = matched.iter().map(|rule| rule.name.clone()).collect();
         match names.len() {
             0 => {
                 coverage.unmatched += 1;
@@ -119,6 +122,7 @@ pub fn in_folder(
                 coverage.contested += 1;
                 let (acts, fails) = acts(&plan_for(rules, &msg, ctx, store)?, &msg, store)?;
                 coverage.contests.push(Contest {
+                    lists: crate::rules::lists::used_by(matched),
                     message: msg,
                     rules: names,
                     acts,
@@ -302,9 +306,12 @@ actions = { flagged = true }
             &store,
             "INBOX",
             r#"
+[lists]
+lists = ["list.example"]
+
 [[rules]]
 name = "tag"
-match.from = { contains = "@list.example" }
+match.from_domain = { list = "lists" }
 actions.tag = "$list"
 
 [[rules]]
@@ -314,6 +321,7 @@ actions.read = true
 "#,
         );
         assert_eq!(contest.rules, ["tag", "route"]);
+        assert_eq!(contest.lists, ["lists"]);
         assert_eq!(acted(&contest), [("tag", "tag:$list"), ("route", "read")]);
     }
 

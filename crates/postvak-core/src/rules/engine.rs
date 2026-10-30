@@ -222,7 +222,12 @@ fn rule_matches(rule: &CompiledRule, msg: &Message, flags: &str, ctx: &Context) 
 /// Each condition of `rule` on its own, one per key of its `match` and one per header, with whether `msg` meets it: what
 /// the reader's Why? lists. Whether the rule is on, its account, folder and first-seen time are left out, since the
 /// message may since have left the folder the rule watches.
-pub fn explain(rule: &Rule, msg: &Message, ctx: &Context) -> Vec<(Match, bool)> {
+pub fn explain(
+    rule: &Rule,
+    lists: &crate::rules::Lists,
+    msg: &Message,
+    ctx: &Context,
+) -> Vec<(Match, bool)> {
     let Ok(serde_json::Value::Object(keys)) = serde_json::to_value(&rule.matches) else {
         return Vec::new();
     };
@@ -245,8 +250,7 @@ pub fn explain(rule: &Rule, msg: &Message, ctx: &Context) -> Vec<(Match, bool)> 
                 matches: single.clone(),
                 ..rule.clone()
             };
-            let compiled =
-                crate::rules::compile(&crate::rules::RuleFile { rules: vec![alone] }).ok()?;
+            let compiled = crate::rules::compile_with(&[alone], lists).ok()?;
             let met = compiled
                 .first()
                 .is_some_and(|c| matches(&c.conditions, msg, &msg.flags, ctx));
@@ -906,10 +910,11 @@ actions = { delete = true }
             false,
         );
         moved.folder = "Travel".into();
-        let explained: Vec<(String, bool)> = explain(&rule, &moved, &ctx(&id, 200))
-            .into_iter()
-            .map(|(single, met)| (serde_json::to_string(&single).unwrap(), met))
-            .collect();
+        let explained: Vec<(String, bool)> =
+            explain(&rule, &Default::default(), &moved, &ctx(&id, 200))
+                .into_iter()
+                .map(|(single, met)| (serde_json::to_string(&single).unwrap(), met))
+                .collect();
         assert_eq!(
             explained,
             [

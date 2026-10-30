@@ -609,7 +609,7 @@ mod tests {
             "me@example.com",
             crate::config::PasswordSource::Keyring { keyring: true },
         );
-        let rules = crate::rules::compile(&crate::rules::RuleFile { rules }).unwrap();
+        let rules = crate::rules::compile_with(&rules, &Default::default()).unwrap();
         let warned = preview_warnings(&rules, &account, &store);
         assert_eq!(warned.len(), 1);
         assert!(
@@ -621,8 +621,7 @@ mod tests {
         let work_only = parse("[[rules]]\nname = \"bank\"\naccount = \"work\"\nmatch.authenticated = true\nactions = { flagged = true }\n")
             .unwrap()
             .rules;
-        let work_only =
-            crate::rules::compile(&crate::rules::RuleFile { rules: work_only }).unwrap();
+        let work_only = crate::rules::compile_with(&work_only, &Default::default()).unwrap();
         assert!(
             preview_warnings(&work_only, &account, &store).is_empty(),
             "a rule for another account does not run here"
