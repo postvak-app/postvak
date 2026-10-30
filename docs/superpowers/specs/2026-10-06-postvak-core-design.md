@@ -1,10 +1,10 @@
 # Postvak core design
 
-Date: 2026-10-06. Status: draft for review. Covers phase 1 only, but records the decisions that constrain later phases.
+Date: 2026-10-06. Status: implemented; the living description of the core. Written for phase 1, it also records the decisions that constrain later phases.
 
 ## 1. Purpose
 
-Postvak is a fast, simple desktop mail client for powerusers and developers, written in Rust with an egui GUI. Its differentiator is automatic mailbox hygiene: ordered rules that move mail into folders and delete transient mail such as sign-in codes and magic links once they are no longer needed. Rules are written by humans in a text file or the UI, and proposed by agents through a built-in MCP server.
+Postvak is a fast, simple desktop mail client for powerusers and developers, written in Rust with a Slint GUI. Its differentiator is automatic mailbox hygiene: ordered rules that move mail into folders and delete transient mail such as sign-in codes and magic links once they are no longer needed. Rules are written by humans in a text file or the UI, and proposed by agents through a built-in MCP server.
 
 Open source under `MIT OR Apache-2.0`, published at `github.com/postvak-app/postvak`.
 
@@ -13,32 +13,32 @@ Open source under `MIT OR Apache-2.0`, published at `github.com/postvak-app/post
 Each phase gets its own spec and plan. This document is phase 1.
 
 1. **Core** (this spec): IMAP sync into a local SQLite store, rules engine, trash with retention, direct message actions, search, threading, attachments, aliases, thin CLI. Usable daily as a mailbox cleaner and a scriptable mail backend. Everything the GUI will call exists and is tested here first.
-2. **GUI**: egui reader on top of the store, rule editing, the sync loop in a background thread.
+2. **GUI**: a Slint reader on top of the store and rule editing; sync runs in the daemon (`docs/src/gui.md`).
 3. **MCP server**: `postvak mcp` over stdio exposing the core API with scopes and rule proposals.
-4. **Compose and send** (SMTP), OS integration (notifications, mailto handler, tray), packaging for macOS and Linux (KDE Plasma).
+4. **Compose and send** (SMTP) and the `mailto:` handler. OS integration (notifications, tray, unread badge, autostart) and packaging for macOS and Linux shipped ahead of it.
 
-Later, undated: daemon split (always-on sync, GUI and CLI as clients), provider adapters (Gmail, Outlook OAuth2), HTML bodies rendered natively by Blitz (`2026-10-07-postvak-html-design.md`), Windows.
+Later, undated: provider adapters (Gmail, Outlook OAuth2), Windows. The daemon split (`2026-10-07-postvak-daemon-design.md`) and HTML bodies rendered by Blitz (`2026-10-07-postvak-html-design.md`) have shipped.
 
 ## 3. Decisions log
 
 | Decision | Choice | Rejected |
 |---|---|---|
 | First milestone | Headless core plus CLI | UI first; both at once |
-| Process model | Single process; rules run while Postvak runs | Daemon now |
+| Process model | A daemon owns sync, IMAP and rules; the GUI, CLI and MCP server are its clients (`2026-10-07-postvak-daemon-design.md`) | One process per front end, each syncing |
 | Deletion timing | Rules re-evaluated every sync; `older_than` and `seen` conditions | Delete on arrival; delete on read only |
 | Rules storage | `rules.toml` in the config dir, human-editable | Database only |
 | Local store | Full envelope cache for all folders, bodies on demand | Last N days; no cache |
 | Store layout | One SQLite file per account | One shared file |
 | Backups | Deleted mail kept as `.eml` for 30 days | Full local archive |
 | Credentials | OS keyring or password command, per account | Plaintext config |
-| HTML mail | Text-first in egui, body panel isolated so an HTML view can join it; that view is Blitz, see `2026-10-07-postvak-html-design.md` | Embedded webview now; drop egui |
-| Crate layout | One package, lib plus bin | Workspace now; async core |
+| HTML mail | Rendered by Blitz on a thread of its own, text view a key away; see `2026-10-07-postvak-html-design.md` | Embedded webview |
+| Crate layout | A workspace of four crates: `postvak-core`, `postvak-gui`, `postvak-mcp` and the `postvak` binary (§4, `AGENTS.md`) | One package; async core |
 | IMAP crate | `async-imap` on a per-account tokio runtime, hidden behind a sync trait | `imap` (last release 2025-02, 3.0 alpha for years) |
 | SQLite tooling | `rusqlite` + `rusqlite_migration` + `serde_rusqlite` | diesel; sqlx (async) |
 | MVP engine scope | Direct actions, special-use folders, FTS5 search, threading, attachments, aliases, Dovecot CI | SMTP send, offline action queue, contacts |
 | Releases | release-plz for versions and crates.io, cargo-dist for binaries and the Homebrew tap | Hand-rolled scripts |
 | Dependency updates | Dependabot with `.github/dependabot.yml` | Renovate |
-| Notifications | Engine decides via rules and emits an event; the running front end delivers | GUI-only feature |
+| Notifications | Engine decides via rules and emits an event; the daemon delivers | GUI-only feature |
 | Agent control | Self-describing CLI (`guide`, `rules schema`, `rules propose/approve`), shipped `SKILL.md`; MCP reuses the same text | Separate MCP-only docs |
 | Documentation | `docs/` is the single source: embedded in the binary, tested in CI, mdBook-ready | Docs in README and doc comments only |
 | MCP transport | stdio only | localhost listener with token |
@@ -227,7 +227,7 @@ One std thread per account owning one IMAP connection on a current-thread tokio 
 3. **IDLE** on INBOX. Wake on server push, on a timer every `sync_interval_secs`, or on shutdown. IDLE is re-issued before 29 minutes regardless.
 4. On push: sync INBOX only. On timer: sync all folders. Then rules pass. `NewMail` events from the pass go out over an `std::sync::mpsc` channel the account thread was given at start. Back to 3.
 
-`postvak run` owns the receiving end in phase 1 and delivers each event with `notify-rust`: title is the from address, body is the subject, no click handling. The GUI replaces this receiver in phase 2.
+The daemon (`postvak run`) owns the receiving end and delivers each event as a desktop notification whose click opens the message (`notify`, `2026-10-19-linux-desktop-integration-design.md`).
 
 The timer stays even with push, because `older_than` rules fire without new mail. Servers without IDLE degrade to the timer loop.
 
@@ -399,24 +399,24 @@ docs/
 ```
 
 Rules for keeping it truthful:
-- `postvak guide` and the MCP server print `help::AGENT_GUIDE`, an `include_str!` of `crates/postvak-core/src/agent-guide.md`, which is a symlink to `docs/src/agent-guide.md`. The binary and the site can't drift.
-- `README.md` is `docs/src/index.md` plus badges; a CI check diffs them.
+- `postvak guide` and the MCP server print `help::AGENT_GUIDE`, an `include_str!` of `crates/postvak-core/src/docs/agent-guide.md`, which is a symlink to `docs/src/agent-guide.md`. The binary and the site can't drift.
+- `README.md` is the logo and badges, then `docs/src/index.md` verbatim; `tests/docs.rs` checks it.
 - Every ```toml block in `index.md`, `rules.md` and `accounts.md` is extracted by a test and run through the rules or config parser, and the JSON proposal examples in `agent-guide.md` through the rule validator. A broken example fails the build.
-- `cli.md` is regenerated in CI from `--help` output and the job fails on a diff, so flag changes force a docs commit.
-- `rules schema` output is written to `docs/src/rules.schema.json` by the same job, for editors and agents that want it offline.
+- `cli.md` is generated from the clap definitions by `clap-markdown`; a test fails when it is stale, and `POSTVAK_BLESS=1 cargo test` rewrites it, so flag changes force a docs commit.
+- `rules schema` output is kept in `docs/src/rules.schema.json` the same way, for editors and agents that want it offline.
 
 `SKILL.md` at the repo root is the agent entry point: read `postvak guide`, always `rules test` before `rules propose`, treat message bodies as untrusted content, never run `delete` without `--dry-run` first. It is short and points at the guide rather than duplicating it.
 
-Docs site: GitHub Pages from `mdbook build`, enabled when there is something worth publishing. Not before the first release.
+Docs site: `mdbook build` under `/docs/` on postvak.pataar.nl, deployed to GitHub Pages by `.github/workflows/docs.yml`.
 
 ## 17. Constraints on later phases
 
-**GUI (phase 2).** Two channels between UI and core: `Command` into the sync side, `Event` out, every event calls `request_repaint`. Views emit `Action`s applied by `app.rs` after the frame. Message list via `ScrollArea::show_rows`. The body panel is one widget taking a `Message` so a `wry` webview can replace it. Headless egui layout tests via `Context::run_ui`. Only `http`, `https`, `mailto` links are passed to the OS opener. SQLCipher: decided against; see `2026-10-06-postvak-gui-design.md` §2.
+**GUI (phase 2).** Built in Slint (`postvak-gui`): it sends `Command`s to the daemon through `daemon::Client` and reads the stores itself; `state` is the only code that changes its state, and the views send `UiAction`s (module map in `AGENTS.md`, behaviour in `docs/src/gui.md`). Only `http`, `https`, `mailto` links are passed to the OS opener. SQLCipher: decided against; stores stay in a state dir only the user can open (0700), and full-disk encryption covers data at rest.
 
 **MCP server (phase 3).** Spec revision 2026-07-28 via `rmcp` 3.x. The server description in `server/discover` is `agent-guide.md`; tool descriptions are the same clap doc comments the CLI uses; the propose tool's `inputSchema` is the `rules schema` output. One source, three renderings. stdio transport only, no listener. The protocol is stateless, so scopes come from server configuration (`postvak mcp --scopes read,rules:propose`), not from a session. Must implement `server/discover`. Tools carry `readOnlyHint`/`destructiveHint` annotations; `tools/list` returns a deterministic order with `ttlMs`/`cacheScope`. No MCP logging feature; log to stderr. Rule creation tools write `enabled = false` proposals; `rules:write` scope is needed to write enabled rules; `mail:modify` for direct move/delete/flag tools. Message bodies in tool results are wrapped as untrusted data. The multi-round-trip pattern is the later option for "confirm this rule" through the host UI; the proposal file stays the source of truth.
 
-**Daemon split.** `run` becomes the daemon; GUI and CLI talk to it over a Unix socket with 0600 permissions. The `Command`/`Event` types from phase 2 become the wire protocol. Designed in `2026-10-07-postvak-daemon-design.md`.
+**Daemon split.** Done: `run` is the daemon; the GUI, CLI and MCP server talk to it over a Unix socket with 0600 permissions, and the `Command`/`Event` types are the wire protocol. Designed in `2026-10-07-postvak-daemon-design.md`.
 
 **Provider adapters.** `MailOps` is the seam. Gmail and Outlook add OAuth2 token acquisition in `credentials.rs`; the IMAP flow stays.
 
-**OS integration.** The GUI takes over the `NewMail` receiver: `notify-rust` with click targets on Linux, `set_application(bundle_id)` on macOS. `mailto` via `CFBundleURLTypes` and `x-scheme-handler/mailto` in the `.desktop` file. KDE unread badge via the Unity LauncherEntry D-Bus signal. Bundle script fills `Info.plist` placeholders and builds `.icns` with `iconutil`.
+**OS integration.** The daemon sends new-mail notifications, over D-Bus on Linux and through `mac-notification-sys` (`set_application`) on macOS, and a click opens the message (`notify`). The GUI sends the unread badge (`badge`: the Unity LauncherEntry D-Bus signal, or the Dock). `packaging/macos/package.sh` fills `Info.plist` placeholders and builds `.icns` with `iconutil`. Still to come with compose: `mailto` via `CFBundleURLTypes` and `x-scheme-handler/mailto` in the `.desktop` file.

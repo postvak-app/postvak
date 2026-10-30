@@ -72,7 +72,9 @@ A message a rule acted on shows a strip under its sender saying what the rule di
 
 ## Message list
 
-Each row shows a dot when it is unread, then on its first line the sender (the recipient in Sent and Drafts), darker when unread, a flag (or a check when marked) and the date, and on its second line the subject with the thread's message count. In All inboxes the account name comes before the sender, and in search results the folder before the subject, as "[Archive] …"; a search hit that matched in its body shows the text around the match in place of the subject. Dates read "09:30" today, "Sun 18:00" within the past week, "3 Sep" earlier this year and "10 Dec 2025" before that. A long sender or subject is cut off with "…".
+Each row starts with the sender's initials on a colour picked from their address, as in the reader, then three lines. The first has a dot when the message is unread, the sender (the recipient in Sent and Drafts), a pill with the number of messages in a thread, a flag (or a check when marked) and the date. The second is the subject, and the third the start of the message's text, muted, with a paperclip when it has an attachment. Unread senders and subjects are darker and bolder. In All inboxes the account name comes before the sender, and in search results the folder before the subject, as "[Archive] …"; a search hit that matched in its body shows the text around the match in place of the subject. Dates read "09:30" today, "Sun 18:00" within the past week, "3 Sep" earlier this year and "10 Dec 2025" before that. A long sender, subject or text is cut off with "…".
+
+Headings group the rows by date: Today, Yesterday, This week, then each month, with its year once it is not this year's. Search results have no date headings; close matches follow under their own.
 
 While rule proposals wait for your approval, a card above an inbox's messages (and All inboxes') says so: with one, who proposed it, what it does and how many messages it would affect; with more, how many wait. **Review** opens Rules. It stays until the proposals are approved or rejected.
 

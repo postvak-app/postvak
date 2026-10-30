@@ -1,8 +1,8 @@
 # Postvak daemon design
 
-Date: 2026-10-07. Status: draft for review. Phase 4. It builds on:
+Date: 2026-10-07. Status: implemented. Phase 4. It builds on:
 - the core spec `2026-10-06-postvak-core-design.md` (§17 "Daemon split");
-- the GUI spec `2026-10-06-postvak-gui-design.md` (the `Command` and `Event` types);
+- the `Command` and `Event` types in `crates/postvak-core/src/sync.rs`, which the GUI already used with the engine;
 - the MCP spec `2026-10-07-postvak-mcp-design.md` (§10, and `Backend` as the switch-over point).
 
 ## 1. Purpose and scope
@@ -17,7 +17,7 @@ In scope:
 - **Cleanup:** removal of the code that exists only because several processes could sync.
 - **Docs:** a "Background sync" page and updates elsewhere.
 
-Out of scope, recorded in §11: Windows, reads over the socket, remote or multi-user daemons, click-to-open notifications.
+Out of scope, recorded in §11: Windows, reads over the socket, remote or multi-user daemons. Click-to-open notifications came later (`2026-10-19-linux-desktop-integration-design.md`).
 
 ## 2. Decisions log
 
@@ -35,7 +35,7 @@ Out of scope, recorded in §11: Windows, reads over the socket, remote or multi-
 
 ## 3. Process layout
 
-- **The daemon** is the only process that calls `Engine::start`, takes account locks or opens IMAP connections for an existing account. `account add` still logs in directly, because it tests an account that does not exist yet.
+- **The daemon** is the only process that calls `Engine::start`, takes account locks or opens IMAP connections for an existing account. `account add` tests the login of an account that does not exist yet through the daemon too, as `TestLogin` (`2026-10-19-account-login-test-design.md`).
 - **Clients** read the stores, rules.toml and config.toml themselves. Previews, `--dry-run`, rule edits (propose, approve, reject, set enabled) and every read stay local; they need neither IMAP nor a lock.
 - **Notifications:** the daemon sends new-mail notifications using each account's `notify` setting. The GUI no longer sends any.
 
@@ -225,7 +225,6 @@ Commands already queued when an account goes offline are failed with the same te
 - Windows, with named pipes.
 - Serving reads over the socket.
 - Remote or multi-user daemons.
-- Notifications that open the message when clicked.
 
 ## 12. Documentation
 

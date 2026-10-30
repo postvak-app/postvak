@@ -1,6 +1,6 @@
 # Surface parity — design
 
-Status: draft, 2026-10-13
+Status: implemented, 2026-10-13; amended 2026-10-19 and 2026-10-24 as marked. The two named exceptions below still hold.
 
 ## Goal
 
@@ -20,12 +20,12 @@ One rule violation: `postvak account add` opens its own IMAP connection to test 
 ## Decisions
 
 - **Account add saves first and syncs through the daemon.** No login probe before saving. The daemon watches `config.toml`, starts the new account's thread; the CLI and MCP wait for it to list the account and request one sync, while the GUI shows the sync the daemon starts on its own. A wrong password surfaces as that sync's error; running add again with the same name replaces the account. The CLI's "Testing login..." line goes. (Superseded by `2026-10-19-account-login-test-design.md`: the daemon now tests the login before anything is saved.)
-- **Over MCP, account add takes a password command only.** A plain password would pass through the agent host's context and logs. Keyring passwords stay CLI and GUI.
+- **Over MCP, account add takes a password command only.** A plain password would pass through the agent host's context and logs. Keyring passwords stay CLI and GUI. (Moot since 2026-10-24: see the second exception below.)
 - **Account add gets its own scope, `accounts:write`.** Adding an account is neither mail nor rules, and a host should be able to grant everything else without it. It is not in the default scope set. (Superseded 2026-10-24: see the second exception below.)
 - **`attachment_save` gets its own scope, `files:write`, not in the default set:** the file name and content come from the sender and the agent picks the directory, so a read-only grant must not write files. (Amended 2026-10-24: the agent picks a directory only inside one save folder, the Downloads folder or `postvak mcp --save-dir`; `..` and symlinks are resolved before the check, so a prompt-injected agent cannot place a file where it runs at login.)
 - **`trash_purge` and `rules_apply_existing` are `mail:modify`.** Purge deletes backups for good; apply-existing acts on stored mail.
 - **GUI password entry is keyring only.** A GUI user has no terminal for a password command.
-- **Rule editing has a form only in the GUI.** The GUI's rules editor saves a whole rule, removes one, and starts a draft from a message's sender (`docs/superpowers/plans/2026-10-08-rules-editor.md`), all through `rules::edit::save_rule` and `remove_rule`. The CLI and agents get no equivalent: a person at a terminal edits rules.toml, and an agent proposes (`rules propose`, `rules_propose`) for a person to approve, so neither needs a form or a way to rewrite or delete a rule outright. Propose, check and schema stay agent and CLI features, and so do withdrawing one's own proposal, batches and placement (`2026-10-28-rule-proposals-design.md`). This is the first named exception.
+- **Rule editing has a form only in the GUI.** The GUI's rules editor saves a whole rule, removes one, and starts a draft from a message's sender (`docs/src/gui.md`, Rules), all through `rules::edit::save_rule` and `remove_rule`. The CLI and agents get no equivalent: a person at a terminal edits rules.toml, and an agent proposes (`rules propose`, `rules_propose`) for a person to approve, so neither needs a form or a way to rewrite or delete a rule outright; an agent changes a rule by proposing an edit (`2026-10-29-rule-edit-proposals-design.md`). Propose, check and schema stay agent and CLI features, and so do withdrawing one's own proposal, batches and placement (`2026-10-28-rule-proposals-design.md`). This is the first named exception.
 - **Account add is CLI and GUI only (2026-10-24).** A password command runs as `sh -c` as the user, so `account_add` let a prompt-injected agent run any command. The MCP tool and the `accounts:write` scope are removed; a host config that still names the scope starts without it and warns on stderr. This is the second named exception.
 
 ## Library
@@ -55,28 +55,27 @@ No wire changes. `Status`, `SyncNow` and `ApplyRule` are already there.
 
 ## MCP
 
-Six tools. Arguments mirror the CLI flags.
+Five tools; `account_add` was built and then removed (the second exception above). Arguments mirror the CLI flags.
 
 | Tool | Scope | Arguments | Result |
 |---|---|---|---|
-| `account_add` | `accounts:write` | `name`, `host`, `port` (default 993), `username`, `password_command`, `address`, `ca_file` | the account row, then the sync result for that account |
 | `accounts` | `read` | none | `output::account` rows |
 | `status` | `read` | none | `output::status` |
 | `attachment_save` | `files:write` | `account`, `folder`, `uid`, `n`, `dir` | the written path |
 | `trash_purge` | `mail:modify` | `account` (optional, all when absent) | per account the removed count |
 | `rules_apply_existing` | `mail:modify` | `name`, `account` (optional), `dry_run` | dry run: planned rows; otherwise per account evaluated, actions and errors |
 
-`Scope::AccountsWrite` is added to `Scope::ALL`, `parse_scopes`, the two `--scopes` help strings and the scope table in `docs/src/mcp.md`. `backend.rs` stays the only MCP code touching store, rules or the daemon. `account_add` calls `account::add`, waits for the daemon to list the account, then requests `SyncNow`, the same as the CLI.
+`Scope::FilesWrite` is added to `parse_scopes`, the two `--scopes` help strings and the scope table in `docs/src/mcp.md`. `backend.rs` stays the only MCP code touching store, rules or the daemon.
 
 ## GUI
 
-Three additions. Each is a `UiAction` carried out in `app.rs`; the view modules only draw.
+Three additions. Each is a `UiAction` carried out in `state.rs`; the view modules only draw.
 
-- **Account form.** Fields: name, host, port, username, password, address. The first-run screen in `startup.rs` shows it instead of pointing at the terminal, and a toolbar button opens the same form when accounts exist. Save runs `account::add` with a keyring secret on a worker thread, since the OS keyring may prompt. The daemon starts the new account from the saved config and syncs it itself, so the window only adds the account to its list and shows the sync on its status line. Esc closes the form. (Since `2026-10-19-account-login-test-design.md`, the thread first tests the login through the daemon.)
-- **Purge.** A "Purge" button in the Trash view with the retention days in its hover text. It runs `Trash::purge` for every account and shows the total removed in the status row.
-- **Apply to existing mail.** A button per enabled rule in the Rules view. It sends `ApplyRule` for each account the rule applies to and shows evaluated and action counts in the status row. No dry run in the GUI; the row text is the result.
+- **Account form.** Fields: name, host, port, username, password, address. The first-run screen in `startup.rs` shows it instead of pointing at the terminal, and Mailbox ▸ Add account… opens the same form when accounts exist. Save runs `account::add` with a keyring secret on a worker thread, since the OS keyring may prompt. The daemon starts the new account from the saved config and syncs it itself, so the window only adds the account to its list and shows the sync on its status line. Esc closes the form. (Since `2026-10-19-account-login-test-design.md`, the thread first tests the login through the daemon.)
+- **Purge.** A "Purge" button in the Backups view with the retention days in its hover text. It runs `Trash::purge` for every account and shows the total removed in the status row.
+- **Apply to existing mail.** A button in the dialog of a saved, enabled rule. It sends `ApplyRule` for each account the rule applies to and shows evaluated and action counts in the status row. When it would delete mail for good it first asks, with the counts per account.
 
-Layout follows `theme.rs`: rows `ROW`, buttons `CONTROL`, `INSET` and `PAD`.
+Layout follows `Theme` in `ui/theme.slint`: rows `row`, buttons `control`, `inset` and `pad`.
 
 ## Errors
 
@@ -89,21 +88,21 @@ Layout follows `theme.rs`: rows `ROW`, buttons `CONTROL`, `INSET` and `PAD`.
 
 - `account::add` unit tests: replaces an account of the same name, refuses a keyring account without a secret, stores the secret before config is written, leaves config untouched on a validation error.
 - CLI black-box test in `tests/cli.rs`: `account add` with a password command, then `account list --json` shows it.
-- MCP: `tools_list_per_scope_set_is_exact_and_alphabetical` gains the six tools and the new scope; one test per tool against `Fixture`; `account_add` with a plain `password` argument is rejected by the schema.
-- GUI with `egui_kittest`: the first-run form saves and the window leaves the problem screen; the toolbar opens the form; purge and apply buttons produce the status-row text. Snapshots for the form, light and dark.
+- MCP: `tools_list_per_scope_set_is_exact_and_alphabetical` gains the five tools and the new scope; one test per tool against `Fixture`.
+- GUI, in the window under Slint's testing backend: the first-run form saves and the window leaves the problem screen; the menu opens the form; purge and apply buttons produce the status-row text. Snapshots for the form, light and dark.
 - `tests/architecture.rs` unchanged; it must keep passing.
-- Docs: `mcp.md` scope table and tools, `cli.md` blessed, `accounts.md` gains the GUI form and the MCP tool.
+- Docs: `mcp.md` scope table and tools, `cli.md` blessed, `accounts.md` gains the GUI form.
 
 ## Sequencing
 
 Three PRs, each leaving the rule truer:
 
 1. `feat: account add through the library, and MCP accounts, status and attachment_save` — the library module, the CLI wizard on top of it, the three read-side tools.
-2. `feat(mcp): account_add, trash_purge and rules_apply_existing` — the write tools and the new scope.
+2. `feat(mcp): account_add, trash_purge and rules_apply_existing` — the write tools and the new scope (`account_add` and its scope were removed again in #249).
 3. `feat(gui): account form, trash purge and apply rule to existing mail`.
 
 ## Out of scope
 
 - Editing or removing an account from the GUI or MCP; the CLI has neither either.
-- The GUI rules editor itself; `docs/superpowers/plans/2026-10-08-rules-editor.md` covers it, and the exception above names what it adds to the GUI alone.
+- The GUI rules editor itself (`docs/src/gui.md`); the exception above names what it adds to the GUI alone.
 - Testing the login before saving; `2026-10-19-account-login-test-design.md` adds it.

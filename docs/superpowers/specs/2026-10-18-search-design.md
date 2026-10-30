@@ -1,6 +1,6 @@
 # Search — design
 
-Status: decisions settled with the owner on 2026-10-19; the plan is `../plans/2026-10-19-search.md`.
+Status: implemented (#235); decisions settled with the owner on 2026-10-19.
 
 ## Goal
 

@@ -1,6 +1,6 @@
 # Postvak MCP design
 
-Date: 2026-10-07. Status: draft for review. Phase 3 of `2026-10-06-postvak-core-design.md`; that spec's §17 "MCP server (phase 3)" constraints apply and are restated where this design builds on them.
+Date: 2026-10-07. Status: implemented. Phase 3 of `2026-10-06-postvak-core-design.md`; that spec's §17 "MCP server (phase 3)" constraints apply and are restated where this design builds on them.
 
 ## 1. Purpose and scope
 
@@ -11,10 +11,9 @@ In scope:
 - Scopes and an account filter from the command line, set once in the host's config.
 - Tools mirroring the CLI's agent surface, with results in the CLI's `--json` shapes.
 - `postvak mcp install` for Claude Desktop, Claude Code, and a JSON snippet for other hosts.
-- The GUI noticing store writes made by other processes.
 - Website documentation.
 
-Out of scope, recorded in §10: the daemon and socket, saving attachments to disk, host-UI confirmation through elicitation, install targets beyond the three above.
+Out of scope, recorded in §10: host-UI confirmation through elicitation, install targets beyond the three above. The daemon and saving attachments came later (§4, §5).
 
 ## 2. Decisions log
 
@@ -22,14 +21,13 @@ Out of scope, recorded in §10: the daemon and socket, saving attachments to dis
 |---|---|---|
 | Agent role | Rule author and inbox assistant equally | Rules only; triage only |
 | Confirming changes | The host's per-tool approval, `destructiveHint`, and a `dry_run` argument on every changing tool | Preview tokens; MCP elicitation |
-| Data and IMAP access | Like the CLI one-shots: reads from the local store, each action on its own short IMAP connection, no account lock | The server running its own engine; a socket to the GUI or daemon (the long-term goal, §10) |
-| Backend boundary | One concrete `Backend` struct the tools call; its internals switch to the daemon socket later | A trait with one implementation now |
-| Bodies | Their own scope, `read:bodies`; `read` sees headers only | `read` includes bodies |
-| Scopes | `read`, `read:bodies`, `rules:propose`, `rules:write`, `mail:modify`; default `read,rules:propose` | Per-session grants (the protocol is stateless) |
+| Data and IMAP access | Reads from the local store; every action and sync goes to the daemon as a `Command`, which owns the IMAP connections | The server running its own engine; its own short IMAP connection per action |
+| Backend boundary | One concrete `Backend` struct the tools call, talking to the daemon through `daemon::Client` | A trait with one implementation |
+| Bodies | Their own scope, `read:bodies`; `read` sees the envelope only, and `read:headers` adds every header of a message | `read` includes bodies |
+| Scopes | `read`, `read:headers`, `read:bodies`, `rules:propose`, `rules:write`, `mail:modify`, `files:write`; default `read,rules:propose` | Per-session grants (the protocol is stateless) |
 | Hidden tools | Tools outside the granted scopes are left out of `tools/list` | Listed but refused |
 | Texts | One source: the agent guide's ground rules are the server description and the documentation pages come from the `docs` tool, the CLI help strings are the tool descriptions, `rules schema` is the propose input schema, CLI `--json` rows are the result rows | MCP-only docs |
 | Install | `postvak mcp install claude-desktop|claude-code|json`, re-runnable, `--remove`, `--dry-run` | Manual setup only |
-| Concurrency gap | GUI polls SQLite `data_version` with its 2 s file poll | Accept stale GUI rows until the next sync |
 
 ## 3. Command line
 
@@ -38,33 +36,34 @@ postvak mcp [--scopes LIST] [--account NAME]...
 postvak mcp install <claude-desktop|claude-code|json> [--scopes LIST] [--account NAME]... [--remove] [--dry-run]
 ```
 
-`postvak mcp` without a subcommand runs the server; hosts call it. `--scopes` is a comma-separated list of the five scopes, default `read,rules:propose`; an unknown scope is an error naming the valid ones. `--account` (repeatable) limits the accounts the server sees at all; a name not in `config.toml` is an error. With no `--account`, every account is visible.
+`postvak mcp` without a subcommand runs the server; hosts call it. `--scopes` is a comma-separated list of the scopes (§2), default `read,rules:propose`; an unknown scope is an error naming the valid ones. `--account` (repeatable) limits the accounts the server sees at all; a name not in `config.toml` is an error. With no `--account`, every account is visible.
 
 The server exits non-zero at start when no accounts are configured.
 
 ## 4. Architecture
 
 ```
-src/mcp/
-  mod.rs       run(): parse scopes, build Backend, serve rmcp on stdio
-  backend.rs   Backend: store reads, actions over a short IMAP connection, sync; the only code touching store or IMAP
+crates/postvak-mcp/src/
+  lib.rs       run(): parse scopes, build Backend, serve rmcp on stdio
+  backend.rs   Backend: store reads, and actions and sync as daemon Commands; the only code touching store, rules or the daemon
   tools.rs     tool definitions, scope filtering, result shaping, untrusted wrapping
   install.rs   postvak mcp install
-src/help.rs    help strings shared by clap and the MCP tool descriptions
-src/output.rs  JSON row builders shared by the CLI's --json and the MCP results
+crates/postvak-core/src/help.rs    help strings shared by clap and the MCP tool descriptions
+crates/postvak-core/src/output.rs  JSON row builders shared by the CLI's --json and the MCP results
 ```
 
-- `mcp` is a library module behind a default-on `mcp` cargo feature (`dep:rmcp`); `--no-default-features` builds without it, like `gui`. `postvak mcp` exists in every build and explains when the feature is off, as `postvak gui` does.
-- The tools never touch `Store`, `MailOps` or `rules.toml` directly; they call `Backend`. When the daemon (§10) exists, `Backend`'s internals send `Command`s over the socket instead, and the tools do not change.
-- `Backend` reuses the library: `Store` for reads, `actions::run` for direct actions (so a delete writes its `.eml` backup exactly as `postvak delete` does), `trash::Trash::restore`, `rules::edit` for proposals and approvals, and `sync::run_once` for `sync`.
+- `postvak-mcp` is a crate behind the binary's default-on `mcp` cargo feature; `--no-default-features` builds without it, like `gui`. `postvak mcp` exists in every build and explains when the feature is off, as `postvak gui` does.
+- The tools never touch `Store`, `MailOps` or `rules.toml` directly; they call `Backend`, whose changes go to the daemon as `Command`s over its socket (`2026-10-07-postvak-daemon-design.md`).
+- `Backend` reuses the library: `Store` for reads, `Command::Apply` through the daemon for direct actions (so a delete writes its `.eml` backup exactly as `postvak delete` does), `trash::Trash::restore`, `rules::edit` for proposals and approvals, and `Command::SyncNow` for `sync`.
 - Refactor of existing code, approved: the CLI's agent-facing help strings move to `postvak::help` constants that the clap derive attributes reference, and the CLI's `--json` row builders move to `postvak::output`. The CLI output and `docs/src/cli.md` do not change.
 
 ## 5. Tools
 
-Tool names follow the CLI commands so the agent guide's examples carry over. Results are structured JSON in the CLI's `--json` row shapes, each row with an `account` key.
+Tool names follow the CLI commands so the agent guide's examples carry over. `docs/src/mcp.md` is the user-facing list. Results are structured JSON in the CLI's `--json` row shapes, each row with an `account` key.
 
 | Scope | Tool | Notes |
 |---|---|---|
+| `read` | `accounts`, `status` | the visible accounts; the daemon and each account's activity |
 | `read` | `folders` | per account: folder, total, unread, special use |
 | `read` | `list` | `folder`, `limit` (default 50, max 500), `threads`; headers and flags only |
 | `read` | `search` | FTS5 over subject, from and to; also body text when `read:bodies` is granted; same limits as `list` |
@@ -75,28 +74,26 @@ Tool names follow the CLI commands so the agent guide's examples carry over. Res
 | `read` | `rules_test` | a rule as JSON in, the preview lines out; the preview reports subjects, never bodies |
 | `read` | `senders`, `rules_coverage` | sender statistics and rules coverage of a folder; see `2026-10-28-senders-and-coverage-design.md` |
 | `read` | `sync` | §6 |
+| `read:headers` | `headers` | every header of one message, wrapped (§7) |
 | `read:bodies` | `show` | headers plus the body, wrapped (§7) |
-| `read:bodies` | `attachments` | names, types, sizes; no saving |
+| `read:bodies` | `attachments` | names, types, sizes |
+| `files:write` | `attachment_save` | saves one attachment inside one save folder (Downloads, or `postvak mcp --save-dir`); not in the default scopes |
 | `rules:propose` | `rules_propose`, `rules_withdraw` | stored disabled with `proposed_by = "mcp:<client>"`; batches and withdrawing its own: `2026-10-28-rule-proposals-design.md` |
-| `rules:write` | `rules_approve`, `rules_reject`, `rules_set_enabled` | |
-| `mail:modify` | `mark`, `move`, `archive`, `delete`, `trash_restore` | each takes `dry_run` |
+| `rules:write` | `rules_approve`, `rules_reject`, `rules_set_enabled`, `rules_move` | |
+| `mail:modify` | `mark`, `move`, `archive`, `delete`, `junk`, `trash_restore`, `trash_purge`, `rules_apply_existing`, `unsubscribe` | each changing tool takes `dry_run` |
 
 - `tools/list` returns the granted tools in alphabetical order, with `ttlMs` and `cacheScope` set, since the list depends only on the server's arguments.
 - Annotations:
   - read tools: `readOnlyHint`;
-  - `delete`, `rules_approve`, `rules_set_enabled`: `destructiveHint`. Enabling a rule can delete mail, so turning one on counts as destructive;
-  - `mark`, `move`, `archive`, `trash_restore`: neither hint.
+  - `delete`, `rules_apply_existing`, `rules_approve`, `rules_move`, `rules_set_enabled`, `trash_purge`, `unsubscribe`: `destructiveHint`. Enabling or moving a rule can delete mail, so both count as destructive;
+  - the other changing tools: neither hint.
 - A `dry_run` call reports what would happen from the local store, like the CLI's `--dry-run`, and opens no connection.
 - `<client>` in `proposed_by` is the host's client name when the protocol provides it, else `"mcp"` alone.
 - Every tool takes an optional `account`; with more than one visible account, `show`, `attachments` and the changing tools require it, as the CLI does.
 
 ## 6. Sync
 
-`sync` runs per visible account. It tries the account lock (`<state>/accounts/<name>/sync.lock`):
-- free: take it, run one sync with rules (`sync::run_once`), release it, and report new messages and actions;
-- held: report `{"account": "...", "synced_by": "another Postvak process", "pid": N}` and do not sync, so rules never run twice.
-
-The lock helper moves from `engine.rs` to a small public function both use.
+`sync` asks the daemon for one sync with rules per visible account (`Command::SyncNow`) and reports `new_messages`, `actions` and `errors`, or an `error` when the account could not sync. The daemon is the only process that syncs, so rules never run twice.
 
 ## 7. Safety
 
@@ -125,12 +122,10 @@ The lock helper moves from `engine.rs` to a small public function both use.
 
 ## 9. GUI change
 
-The GUI's 2 s file poll also reads SQLite's `PRAGMA data_version` on each account's store. When it changes and the change was not the GUI's own write, the shown view and the folder counts reload. An agent's archive therefore disappears from the open window within about 2 s.
+None needed: every mailbox write happens in the daemon, whose events reach the open window, so an agent's archive disappears from it at once.
 
 ## 10. Later
 
-- The daemon: `run` becomes the daemon, the GUI, CLI and MCP talk to it over a 0600 Unix socket, and the phase 2 `Command`/`Event` types become the wire protocol. This is the long-term shape; `Backend` (§4) is where MCP switches over.
-- Saving attachments to disk through MCP.
 - Elicitation for "confirm this rule" or "confirm this delete" through the host's UI; the proposal file stays the source of truth.
 - Install targets for Cursor, VS Code and Codex; their configs take the `json` snippet today.
 
