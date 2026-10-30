@@ -65,6 +65,7 @@ pub fn options(connect: Connector, idle_exit: Option<Duration>) -> Options {
         login: refuse_wrong(),
         notify: false,
         signals: false,
+        poll: super::POLL,
     }
 }
 
