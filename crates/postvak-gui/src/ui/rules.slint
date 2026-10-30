@@ -157,6 +157,8 @@ component ColumnHeading inherits TouchArea {
 // each line coloured by kind, an added line tinted green and a removed one red.
 component ProposalCode inherits Rectangle {
     in property <ProposalData> proposal;
+    // A long line is cut at the block's edge rather than drawn over the dry run; the accessible label has it whole.
+    clip: true;
     background: Theme.frame.background;
     border-radius: Theme.radius + Theme.pad / 4;
     drop-shadow-color: #0f121c40;
@@ -359,7 +361,7 @@ component ProposalCard inherits Rectangle {
             Rectangle {
                 accessible-role: text;
                 accessible-label: root.proposal.sentence-text;
-                FlexboxLayout {
+                sentence := FlexboxLayout {
                     spacing-vertical: Theme.pad / 2;
                     for run in root.proposal.sentence: Rectangle {
                         background: run.kind == 2 ? Theme.pane.panel : transparent;
@@ -375,6 +377,9 @@ component ProposalCard inherits Rectangle {
                                 font-weight: run.kind == 1 ? 700 : 500;
                                 color: run.kind == 2 ? Theme.pane.text : Theme.pane.secondary;
                                 vertical-alignment: center;
+                                // A long run wraps within the line; a short one does not, as wrapping one would make it taller.
+                                max-width: sentence.width - 2 * Theme.pad;
+                                wrap: run.text.character-count > 40 ? word-wrap : no-wrap;
                             }
                         }
                     }

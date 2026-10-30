@@ -303,6 +303,26 @@ fn rules_hits_and_proposal() {
     snapshot(&open, "gui_rules_hits_and_proposal");
 }
 
+/// A proposal whose condition and TOML lines are longer than the card: the sentence wraps and the code block cuts its
+/// lines at its edge.
+#[test]
+fn rules_long_proposal() {
+    let fx = Fixture::mailbox("light");
+    let domains: Vec<String> = (1..=30).map(|n| format!("\"brand{n}.example\"")).collect();
+    std::fs::write(
+        fx.paths.rules_file(),
+        format!(
+            "[[rules]]\nname = \"Brand impersonation\"\nenabled = false\nproposed_by = \"mcp:claude-code\"\nmatch.none = [{{ from_domain = [{}] }}]\nactions = {{ move = \"Junk\" }}\n",
+            domains.join(", ")
+        ),
+    )
+    .unwrap();
+    let (open, _wires) = open(&fx);
+    open.with(|live| live.app.select_view(View::Rules));
+    open.tick_until(|open| !open.labels_containing("would be moved").is_empty());
+    snapshot(&open, "gui_rules_long_proposal");
+}
+
 #[test]
 fn inbox_banner() {
     let fx = Fixture::mailbox("light");
