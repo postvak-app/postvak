@@ -79,6 +79,37 @@ pub fn warnings(path: &Path, rules: &[Rule], accounts: &[&str]) -> Vec<String> {
     lines
 }
 
+/// What `rules check` warns about: [`warnings`] against every account in `accounts`, then what the folders of the
+/// `shown` ones show. Whether a rule for every account watches a folder none syncs depends on all of them, so while some
+/// are not shown only the rules naming an account are checked for that.
+pub fn check_warnings(
+    paths: &Paths,
+    rules: &[Rule],
+    accounts: &[&str],
+    shown: &[&AccountConfig],
+) -> Vec<String> {
+    let names: Vec<&str> = shown.iter().map(|a| a.name.as_str()).collect();
+    let untrusting: Vec<&str> = shown
+        .iter()
+        .filter(|a| !a.can_authenticate())
+        .map(|a| a.name.as_str())
+        .collect();
+    let synced = account_folders(paths, &names);
+    let hiding = shown.len() < accounts.len();
+    let watched: Vec<Rule> = rules
+        .iter()
+        .filter(|r| !hiding || r.account.is_some())
+        .cloned()
+        .collect();
+    [
+        warnings(&paths.rules_file(), rules, accounts),
+        authenticated_warnings(rules, &untrusting, &synced),
+        watched_folder_warnings(&watched, &synced),
+        folder_warnings(paths, rules, &names),
+    ]
+    .concat()
+}
+
 /// One line per rule using `authenticated` and account of `untrusting` it runs on, in file order: those accounts trust
 /// no authserv-id ([`Identity::can_authenticate`](crate::config::Identity::can_authenticate)), so no mail is
 /// authenticated there. Where `accounts` holds the id that account's INBOX offers, the line names it and the command

@@ -2058,21 +2058,12 @@ fn read_rule_json() -> Result<Rule> {
 /// side-effect free and cover mail that predates the rule. A `name` that matches no rule is an error.
 /// What `rules check` warns about after the rules compiled.
 fn rules_warnings(paths: &Paths, config: &Config) -> Result<Vec<String>> {
-    let path = paths.rules_file();
-    let accounts: Vec<&str> = config.accounts.iter().map(|a| a.name.as_str()).collect();
-    let untrusting: Vec<&str> = config
-        .accounts
-        .iter()
-        .filter(|a| !a.can_authenticate())
-        .map(|a| a.name.as_str())
-        .collect();
-    let rules = postvak_core::rules::load(&path)?.rules;
-    let warnings = postvak_core::rules::warnings(&path, &rules, &accounts);
-    let synced = postvak_core::rules::account_folders(paths, &accounts);
-    let authenticated = postvak_core::rules::authenticated_warnings(&rules, &untrusting, &synced);
-    let watched = postvak_core::rules::watched_folder_warnings(&rules, &synced);
-    let folders = postvak_core::rules::folder_warnings(paths, &rules, &accounts);
-    Ok([warnings, authenticated, watched, folders].concat())
+    let rules = postvak_core::rules::load(&paths.rules_file())?.rules;
+    let accounts: Vec<&AccountConfig> = config.accounts.iter().collect();
+    let names: Vec<&str> = accounts.iter().map(|a| a.name.as_str()).collect();
+    Ok(postvak_core::rules::check_warnings(
+        paths, &rules, &names, &accounts,
+    ))
 }
 
 fn compiled_rules(paths: &Paths, name: Option<&str>) -> Result<Vec<CompiledRule>> {

@@ -82,7 +82,8 @@ impl RulesState {
 }
 
 /// What leaves the rules valid but not doing what was meant: `rules::warnings`, then what the accounts' folders show,
-/// read through the stores the window holds open rather than opening each again.
+/// read through the stores the window holds open rather than opening each again; `rules::check_warnings` is the same
+/// list for `rules check`.
 fn warnings(
     path: &Path,
     rules: &[Rule],
