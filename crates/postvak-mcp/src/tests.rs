@@ -817,6 +817,7 @@ fn rules_test_sees_trusted_authserv_ids_added_while_running() {
                 rule.clone(),
                 None,
                 postvak_core::time::now(),
+                None,
                 Sight::default(),
             )
             .unwrap();
@@ -908,6 +909,47 @@ async fn rules_test_and_coverage_evaluate_as_of_another_time() {
         .await,
     );
     assert!(text.contains("as_of: '6m' is ambiguous"), "{text}");
+}
+
+#[tokio::test]
+async fn rules_test_and_coverage_preview_mail_as_if_it_just_arrived() {
+    let fx = fixture(&["work"]);
+    fx.add("work", fixture_message("INBOX", 1, "Hello", ""));
+    std::fs::write(
+        fx.paths.rules_file(),
+        "[[rules]]\nname = \"hold\"\nmatch.younger_than = \"15min\"\nactions = { flagged = true }\n",
+    )
+    .unwrap();
+    let client = connect(&fx, "read", &[]).await;
+    let rule = json!({ "name": "hold", "match": { "younger_than": "15min" }, "actions": { "flagged": true } });
+    let test = |extra: Value| {
+        let mut arguments = json!({ "rule": rule });
+        arguments
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        call(&client, "rules_test", arguments)
+    };
+    assert!(rows(&test(json!({})).await).is_empty());
+    assert_eq!(rows(&test(json!({ "as_arrival": true })).await).len(), 1);
+    assert!(rows(&test(json!({ "as_arrival": true, "as_of": "20min" })).await).is_empty());
+
+    let coverage = |arguments| call(&client, "rules_coverage", arguments);
+    assert_eq!(rows(&coverage(json!({})).await)[0]["matched"], 0);
+    assert_eq!(
+        rows(&coverage(json!({ "as_arrival": true })).await)[0]["matched"],
+        1
+    );
+
+    let text = error_text(
+        &call(
+            &client,
+            "rules_test",
+            json!({ "list": "kids", "as_arrival": true }),
+        )
+        .await,
+    );
+    assert!(text.contains("not a list change"), "{text}");
 }
 
 #[tokio::test]

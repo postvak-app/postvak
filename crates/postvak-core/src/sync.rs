@@ -966,6 +966,7 @@ pub fn run_rules_with(
         mode,
         notify_default: account.notify,
         keep_in_folder: false,
+        arrived_at: None,
     };
     let mut folders: Vec<String> = rules
         .iter()
@@ -1805,6 +1806,7 @@ fn notify_unruled(
         mode: Mode::Normal,
         notify_default: account.notify,
         keep_in_folder: false,
+        arrived_at: None,
     };
     // Only mail above `notified_uid` can notify, and the highest of it is all the rest needs.
     let messages = store.messages_without_body("INBOX", notified_uid)?;

@@ -683,12 +683,14 @@ impl Backend {
 
     /// Previews one rule as if enabled, on the cached mail of the visible accounts; rows never carry mail text, and
     /// `warnings` say where `authenticated` cannot hold. A condition on text `sight` does not cover is refused, since
-    /// its matches would reveal that text. It evaluates as of `now`, which the result names.
+    /// its matches would reveal that text. It evaluates as of `now`, which the result names, and with `arrived_at` as if
+    /// every message arrived then.
     pub fn rules_test(
         &self,
         mut rule: Rule,
         account: Option<&str>,
         now: i64,
+        arrived_at: Option<i64>,
         sight: Sight,
     ) -> Result<Value> {
         rule.enabled = true;
@@ -698,7 +700,7 @@ impl Backend {
         let mut warnings = Vec::new();
         for acc in self.select(account)? {
             let store = self.store(&acc)?;
-            for p in actions::planned(&compiled, &store, &acc, &acc.identity()?, now)? {
+            for p in actions::planned(&compiled, &store, &acc, &acc.identity()?, now, arrived_at)? {
                 rows.push(output::planned_row(&acc.name, &p));
             }
             warnings.extend(rules::preview_warnings(&compiled, &acc, &store));
@@ -760,7 +762,8 @@ impl Backend {
         Ok(json!({ "rows": rows, "skipped_rules": skipped }))
     }
 
-    /// Rules coverage of `folder` in the visible accounts as of `now`, one row per account.
+    /// Rules coverage of `folder` in the visible accounts as of `now`, with `arrived_at` as if every message arrived
+    /// then, one row per account.
     #[allow(clippy::too_many_arguments)]
     pub fn rules_coverage(
         &self,
@@ -770,6 +773,7 @@ impl Backend {
         by: GroupBy,
         limit: u32,
         now: i64,
+        arrived_at: Option<i64>,
         sight: Sight,
     ) -> Result<Value> {
         let (compiled, skipped) = self.analysis_rules(include_pending, sight)?;
@@ -778,7 +782,8 @@ impl Backend {
         for acc in self.select(account)? {
             let store = self.store(&acc)?;
             let identity = acc.identity()?;
-            let ctx = rules::coverage::context(&acc.name, &identity, now);
+            let mut ctx = rules::coverage::context(&acc.name, &identity, now);
+            ctx.arrived_at = arrived_at;
             let mut coverage = rules::coverage::in_folder(&store, &compiled, &ctx, folder, by)?;
             coverage.unmatched_senders.truncate(limit);
             coverage.contests.truncate(limit);
@@ -829,7 +834,9 @@ impl Backend {
         for acc in accounts {
             if dry_run {
                 let store = self.store(&acc)?;
-                for p in actions::planned(&compiled, &store, &acc, &acc.identity()?, time::now())? {
+                for p in
+                    actions::planned(&compiled, &store, &acc, &acc.identity()?, time::now(), None)?
+                {
                     rows.push(output::planned_row(&acc.name, &p));
                 }
                 continue;

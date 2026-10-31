@@ -1586,6 +1586,27 @@ fn folder_commands_need_an_account() {
 }
 
 #[test]
+fn rules_test_as_arrival_waits_from_now_and_as_of_counts_from_the_arrival() {
+    let (home, _store) = seeded_home(&[message(42, "a@example.com", "Hello")]);
+    let rule = r#"{"name": "later", "match": {"from": {"contains": "a@"}}, "actions": {"move": "Done", "after": "15min"}}"#;
+    let args =
+        |extra: &[&'static str]| [&["rules", "test", "--stdin", "--as-arrival"], extra].concat();
+    let arrived = postvak_stdin(home.path(), &args(&[]), rule);
+    let stdout = String::from_utf8_lossy(&arrived.stdout);
+    assert!(
+        stdout.contains("later\tINBOX/42\tmove:Done (waits: runs at "),
+        "{stdout}"
+    );
+    assert!(
+        String::from_utf8_lossy(&arrived.stderr).starts_with("as if every message arrived at ")
+    );
+
+    let due = postvak_stdin(home.path(), &args(&["--as-of", "15min"]), rule);
+    let stdout = String::from_utf8_lossy(&due.stdout);
+    assert!(stdout.contains("later\tINBOX/42\tmove:Done\t"), "{stdout}");
+}
+
+#[test]
 fn rules_test_as_of_evaluates_older_than_at_that_time() {
     let (home, _store) = seeded_home(&[message(42, "a@example.com", "Hello")]);
     let rule = r#"{"name": "old", "match": {"older_than": "100y"}, "actions": {"flagged": true}}"#;
