@@ -445,6 +445,24 @@ fn trash_list_shows_subjects() {
 }
 
 #[test]
+fn trash_restore_refuses_a_file_outside_the_trash_before_asking_the_daemon() {
+    let (home, _store) = seeded_home(&[]);
+    let outside = home.path().join("1-INBOX-1.eml");
+    std::fs::write(&outside, b"Subject: not a backup\r\n\r\n").unwrap();
+    let out = postvak(
+        home.path(),
+        &["trash", "restore", outside.to_str().unwrap()],
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(
+        stderr.contains("is not a backup in this account's trash"),
+        "{stderr}"
+    );
+    assert!(!Paths::under(home.path()).daemon_socket().exists());
+}
+
+#[test]
 fn error_lines_strip_control_characters() {
     let (home, _store) = seeded_home(&[]);
     let out = postvak(home.path(), &["list", "--account", "x\u{1b}[2Jy"]);

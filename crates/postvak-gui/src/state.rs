@@ -696,7 +696,7 @@ pub struct App {
     pub(crate) next_taken: u64,
     /// At the foot of the list pane: what the last action or undo did.
     pub(crate) toast: Option<Toast>,
-    /// Each account's trash retention in days, from config.toml as the window opened or added the account.
+    /// Each account's trash retention in days, from config.toml as the window opened, added the account or last purged.
     pub(crate) retention: BTreeMap<String, u64>,
     pub(crate) events: Receiver<Event>,
     pub(crate) fetch_release: fn() -> anyhow::Result<String>,
@@ -3621,8 +3621,18 @@ impl App {
         });
     }
 
-    /// Removes each account's backups past its retention, as `postvak trash purge` does; the view lists the rest.
+    /// Removes each account's backups past its retention in config.toml now, as `postvak trash purge` does; the view
+    /// lists the rest.
     fn purge_trash(&mut self) {
+        match Config::load(&self.paths.config_file()) {
+            Ok(config) => {
+                for account in config.accounts {
+                    self.retention
+                        .insert(account.name, account.trash_retention_days);
+                }
+            }
+            Err(e) => return self.note_error(None, format!("could not purge: {e}")),
+        }
         let now = postvak_core::time::now();
         let mut failures = Vec::new();
         let mut removed = 0;

@@ -443,7 +443,7 @@ struct MoveArgs {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RestoreArgs {
-    /// A file name as trash_list returns it
+    /// A backup as trash_list returns it, or its path in the trash directory
     file: String,
     /// Required when several accounts are visible
     account: Option<String>,

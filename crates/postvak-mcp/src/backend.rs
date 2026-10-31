@@ -1,5 +1,5 @@
 //! The only MCP code that touches the store, rules.toml or the daemon; the daemon owns every IMAP connection.
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result, anyhow, bail};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
@@ -24,7 +24,7 @@ pub(crate) use postvak_core::store::Filter;
 use postvak_core::store::{Message, Store};
 use postvak_core::sync::{Command, Event};
 use postvak_core::time;
-use postvak_core::trash::Trash;
+use postvak_core::trash::{Trash, TrashEntry};
 
 const MAX_LIMIT: u32 = 500;
 
@@ -457,19 +457,12 @@ impl Backend {
         )
     }
 
-    /// Restores a backup named as `trash_list` prints it; paths are refused, so nothing outside the trash directory is read.
+    /// Restores a backup named as `trash_list` or `postvak trash list` prints it; nothing outside the trash directory is read.
     pub fn trash_restore(&self, account: Option<&str>, file: &str, dry_run: bool) -> Result<Value> {
-        let bare = std::path::Path::new(file)
-            .file_name()
-            .is_some_and(|name| name == file);
-        let Some((_, folder, _)) = Trash::parse_name(file).filter(|_| bare) else {
-            bail!("file must be a name as trash_list returns it");
-        };
         let acc = self.single(account)?;
-        let path = self.paths.trash_dir(&acc.name).join(file);
-        if !path.is_file() {
-            bail!("no trash file {file}; see trash_list");
-        }
+        let TrashEntry { path, folder, .. } = Trash::new(self.paths.trash_dir(&acc.name))
+            .resolve(Path::new(file))
+            .map_err(|e| anyhow!("{e}; see trash_list"))?;
         if dry_run {
             return Ok(
                 json!({ "account": acc.name, "file": file, "dry_run": true, "would": format!("restore to {folder}") }),

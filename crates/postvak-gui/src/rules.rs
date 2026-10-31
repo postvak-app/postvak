@@ -1306,6 +1306,38 @@ mod tests {
     }
 
     #[test]
+    fn purge_reads_the_retention_config_toml_holds_now() {
+        let fx = Fixture::new(&["work"]);
+        let dir = fx.paths.trash_dir("work");
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = postvak_core::time::now();
+        let old = Trash::new(dir)
+            .save(
+                "INBOX",
+                1,
+                b"From: a@example.com\r\n\r\nx\r\n",
+                now - 10 * 86_400,
+            )
+            .unwrap();
+        let (open, _wires) = view(&fx, View::Trash);
+        let path = fx.paths.config_file();
+        let mut account = postvak_core::config::Config::load(&path).unwrap().accounts[0].clone();
+        account.trash_retention_days = 7;
+        postvak_core::config::save_account(&path, &account).unwrap();
+        open.with(|live| live.app.apply(crate::state::UiAction::PurgeTrash));
+        assert!(
+            !old.exists(),
+            "the 7 days set outside the window count, not the 30 it opened with"
+        );
+        open.with(|live| {
+            assert_eq!(
+                super::purge_hint(&live.app),
+                "Remove .eml backups older than the account's retention period (work: 7 days)"
+            );
+        });
+    }
+
+    #[test]
     fn a_failing_account_is_named_and_the_others_are_still_purged() {
         let fx = Fixture::new(&["broken", "work"]);
         std::fs::write(fx.paths.trash_dir("broken"), "not a directory").unwrap();
