@@ -714,11 +714,7 @@ impl Backend {
         let now = time::now();
         let date = |value: Option<&str>| {
             value
-                .map(|v| {
-                    search::date(v, now).with_context(|| {
-                        format!("'{v}' is not a date; use 2026-01-15, or 30d, 3w, 6mo or 1y")
-                    })
-                })
+                .map(|v| search::date(v, now).with_context(|| postvak_core::help::not_a_date(v)))
                 .transpose()
         };
         let (after, before) = (date(dates.0)?, date(dates.1)?);

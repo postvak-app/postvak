@@ -1410,12 +1410,8 @@ fn cmd_attachment(command: AttachmentCommand, config: &Config, paths: &Paths) ->
 
 /// A `--after` or `--before` value, read as `after:` and `before:` are in search.
 fn parse_date(value: &str, now: i64) -> Result<i64> {
-    postvak_core::search::date(value, now).with_context(|| {
-        format!(
-            "'{}' is not a date; use 2026-01-15, or 30d, 3w, 6mo or 1y",
-            clean(value, false)
-        )
-    })
+    postvak_core::search::date(value, now)
+        .with_context(|| postvak_core::help::not_a_date(&clean(value, false)))
 }
 
 /// `account  count  unread  first..last  sender  rules`.
