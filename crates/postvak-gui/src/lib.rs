@@ -355,8 +355,9 @@ impl Live {
         let actions = ask(&self.app);
         let scrolled = actions.iter().all(state::UiAction::is_scroll);
         let answered = self.apply(actions);
-        // A scroll comes every frame of a wheel animation and is already on screen, unless the list follows the cursor.
-        if !(answered && scrolled && !self.app.list.follow_cursor) {
+        // A scroll comes every frame of a wheel animation and is already on screen, unless the list follows the cursor
+        // or brought a logo into view.
+        if !(answered && scrolled && !self.app.list.follow_cursor && !self.app.list.logos_changed) {
             self.tick();
         }
         answered

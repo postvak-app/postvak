@@ -2,7 +2,7 @@
 // texts; this file only places them.
 import { LineEdit, ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { EmptyState, Heading, HoverFill, IconButton, Keycap, TextButton, Toast } from "common.slint";
+import { Avatar, EmptyState, Heading, HoverFill, IconButton, Keycap, TextButton, Toast } from "common.slint";
 
 export struct RowData {
     unread: bool,
@@ -20,9 +20,11 @@ export struct RowData {
     preview: string,
     // The paperclip glyph when the message carries an attachment, or empty.
     clip: string,
-    // The avatar's letters and which of `Theme.avatars` they sit on.
+    // The avatar's letters and which of `Theme.avatars` they sit on, or the sender's logo when `has-logo`.
     initials: string,
     tint: int,
+    logo: image,
+    has-logo: bool,
     // The cursor row.
     selected: bool,
     marked: bool,
@@ -82,6 +84,8 @@ component ListRow inherits Rectangle {
     }
 
     property <length> strip: data.section == "" ? 0px : Theme.section;
+    // A marked row is a lighter shade of the cursor's; else the hover fill or the pane shows behind the row.
+    property <color> fill: data.selected ? Theme.pane.selected : data.marked ? Theme.pane.selected.mix(Theme.pane.panel, 60%) : touch.has-hover ? Theme.pane.hover : Theme.pane.background;
     // One of the row's three lines.
     property <length> line: 5 * Theme.pad / 2;
     height: Theme.list-row + root.strip;
@@ -107,8 +111,7 @@ component ListRow inherits Rectangle {
         y: root.strip;
         height: Theme.list-row;
         border-radius: Theme.pad;
-        // A marked row is a lighter shade of the cursor's, apart from the hover fill.
-        background: data.selected ? Theme.pane.selected : data.marked ? Theme.pane.selected.mix(Theme.pane.panel, 60%) : transparent;
+        background: data.selected || data.marked ? root.fill : transparent;
 
     HoverFill {
         visible: !data.selected && !data.marked;
@@ -136,18 +139,15 @@ component ListRow inherits Rectangle {
 
         VerticalLayout {
             alignment: start;
-            Rectangle {
+            Avatar {
                 width: 4 * Theme.pad;
                 height: self.width;
-                border-radius: self.width / 2;
-                background: Theme.avatars[mod(data.tint, Theme.avatars.length)];
-                Text {
-                    accessible-role: none;
-                    text: data.initials;
-                    font-size: Theme.small-size;
-                    font-weight: 600;
-                    color: Theme.pane.heading;
-                }
+                initials: data.initials;
+                tint: data.tint;
+                logo: data.logo;
+                has-logo: data.has-logo;
+                under: root.fill;
+                font-size: Theme.small-size;
             }
         }
 

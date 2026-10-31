@@ -2,7 +2,7 @@
 // several messages selected, the selection. `body.rs` words it, `toolbar.rs` the actions.
 import { ListView, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { EmptyState, Hairline, Heading, HoverFill, IconButton, Keycap, Link, TextButton } from "common.slint";
+import { Avatar, EmptyState, Hairline, Heading, HoverFill, IconButton, Keycap, Link, TextButton } from "common.slint";
 
 // A message action: its glyph, its accessible name, its hover hint and the label it shows beside the glyph while
 // several messages are selected.
@@ -301,41 +301,6 @@ component HeaderLine inherits HorizontalLayout {
         font-size: Theme.small-size;
         color: Theme.pane.muted;
         overflow: elide;
-        vertical-alignment: center;
-    }
-}
-
-// The sender's logo cut to a circle, or else their initials on their colour. The software renderer does not clip to
-// a rounded rectangle, so the logo's corners are painted over in the reader's background instead.
-component Avatar inherits Rectangle {
-    in property <BodyInfo> info;
-    width: Theme.avatar;
-    height: Theme.avatar;
-    border-radius: self.width / 2;
-    background: root.info.has-logo ? transparent : Theme.avatars[root.info.tint];
-    if root.info.has-logo: Image {
-        accessible-role: none;
-        width: parent.width;
-        height: parent.height;
-        source: root.info.logo;
-        image-fit: cover;
-    }
-    if root.info.has-logo: Path {
-        width: parent.width;
-        height: parent.height;
-        viewbox-width: 2;
-        viewbox-height: 2;
-        fill: Theme.pane.background;
-        fill-rule: evenodd;
-        commands: "M 0 0 L 2 0 L 2 2 L 0 2 Z M 1 0 A 1 1 0 1 0 1 2 A 1 1 0 1 0 1 0 Z";
-    }
-    if !root.info.has-logo: Text {
-        accessible-role: none;
-        text: root.info.initials;
-        font-size: Theme.text-size;
-        font-weight: 600;
-        color: Theme.pane.heading;
-        horizontal-alignment: center;
         vertical-alignment: center;
     }
 }
@@ -844,7 +809,14 @@ export component BodyPane inherits Rectangle {
                 spacing: Theme.pad * 3 / 2;
                 VerticalLayout {
                     alignment: start;
-                    Avatar { info: root.info; }
+                    Avatar {
+                        width: Theme.avatar;
+                        height: Theme.avatar;
+                        initials: root.info.initials;
+                        tint: root.info.tint;
+                        logo: root.info.logo;
+                        has-logo: root.info.has-logo;
+                    }
                 }
                 VerticalLayout {
                     alignment: center;

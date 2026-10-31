@@ -1,9 +1,12 @@
 //! The message list without a toolkit: one row per thread, followed by its members when expanded; columns, dates and
 //! the accessible row names. The window draws it (`ui/list.slint`, `rows.rs`).
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
+use std::sync::Arc;
 
 use chrono::{DateTime, Datelike, TimeZone};
 
+use postvak_core::bimi::Brand;
 use postvak_core::message::{clean, display_name};
 use postvak_core::rules::Action;
 use postvak_core::store::{Message, MessageSummary, ThreadSummary};
@@ -45,6 +48,8 @@ pub struct Row {
     pub attachment: bool,
     /// The start of the body text; empty until the body is indexed.
     pub preview: String,
+    /// The sender's logo record and its SVG, drawn instead of the initials; set while the row is in view.
+    pub logo: Option<(String, Arc<str>)>,
 }
 
 impl Row {
@@ -75,6 +80,7 @@ impl Row {
             snippet: None,
             attachment: false,
             preview: String::new(),
+            logo: None,
         }
     }
 
@@ -96,6 +102,7 @@ impl Row {
             snippet: None,
             attachment: message.attachment,
             preview: message.preview.clone(),
+            logo: None,
         }
     }
 }
@@ -123,6 +130,10 @@ pub(crate) struct ListState {
     pub threads: Vec<(usize, ThreadSummary)>,
     /// Scroll offset and height of the list from the last frame.
     pub viewport: (f32, f32),
+    /// The brand of each row that came into view, None for one without; read once, as each needs a store query.
+    pub brands: HashMap<(usize, RowKey), Option<Brand>>,
+    /// Set when a scroll brought a logo into view, so the window draws the rows again.
+    pub logos_changed: bool,
 }
 
 impl ListState {
@@ -579,6 +590,33 @@ pub fn offset_showing(
     }
 }
 
+/// The rows the list shows at `viewport` (offset and height): each is `LIST_ROW` high, below its heading strip if it
+/// has one.
+pub fn visible<Tz: TimeZone>(
+    rows: &[Row],
+    search: bool,
+    (offset, height): (f32, f32),
+    now: &DateTime<Tz>,
+) -> Range<usize>
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let (mut first, mut top) = (None, 0.0);
+    for index in 0..rows.len() {
+        if section(rows, index, search, now).is_some() {
+            top += super::theme::SECTION;
+        }
+        if top >= offset + height {
+            return first.unwrap_or(index)..index;
+        }
+        top += LIST_ROW;
+        if first.is_none() && top > offset {
+            first = Some(index);
+        }
+    }
+    first.unwrap_or(rows.len())..rows.len()
+}
+
 /// The folder All inboxes shows from each account; sync stores and queries it by this exact name.
 pub const INBOX: &str = "INBOX";
 
@@ -894,6 +932,27 @@ mod tests {
     }
 
     #[test]
+    fn visible_rows_count_the_heading_strips_above_them() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 6, 12, 0, 0).unwrap();
+        let today = now.timestamp() - 3600;
+        let mut rows: Vec<Row> = (0..4)
+            .map(|uid| {
+                let mut row = Row::from_message(0, &message("INBOX", uid, "x"));
+                row.date = today;
+                row
+            })
+            .collect();
+        rows[2].member = true;
+        rows[3].date = today - 86_400;
+        // Today's strip, rows 0 to 2, Yesterday's strip, row 3: rows span 32-112, 112-192, 192-272 and 304-384.
+        assert_eq!(visible(&rows, false, (0.0, 100.0), &now), 0..1);
+        assert_eq!(visible(&rows, false, (120.0, 100.0), &now), 1..3);
+        assert_eq!(visible(&rows, false, (280.0, 30.0), &now), 3..4);
+        assert_eq!(visible(&rows, false, (0.0, 1000.0), &now), 0..4);
+        assert!(visible(&rows, false, (0.0, 0.0), &now).is_empty());
+    }
+
+    #[test]
     fn the_account_tag_comes_before_the_sender() {
         let now = Utc.with_ymd_and_hms(2026, 10, 6, 12, 0, 0).unwrap();
         let row = Row::from_message(1, &message("INBOX", 1, "hello"));
@@ -965,6 +1024,7 @@ mod tests {
             snippet: None,
             attachment: false,
             preview: String::new(),
+            logo: None,
         };
         let now = Utc.with_ymd_and_hms(2026, 10, 6, 12, 0, 0).unwrap();
         let text = row_text(&row, &columns(&row, None, false, false, &now));
@@ -1059,6 +1119,50 @@ mod tests {
 
     fn uids(open: &crate::test_support::Open) -> Vec<u32> {
         open.with(|live| live.app.list.rows.iter().map(|r| r.uid).collect())
+    }
+
+    #[test]
+    fn a_row_in_view_shows_its_senders_logo() {
+        let fx = Fixture::new(&["work"]);
+        fx.append_config("[ui]\nsender_images = true\n");
+        fx.add("work", crate::test_support::branded("INBOX", 1, "merged"));
+        fx.add("work", message("INBOX", 2, "plain"));
+        crate::test_support::cache_github_logo(&fx.paths);
+        let (mut driver, _wires) = fx.driver();
+        assert_eq!(
+            driver.app.list.rows[0].uid, 2,
+            "the reader shows the plain one"
+        );
+        assert!(!driver.app.logos.started(), "no row is in view yet");
+        driver.apply(UiAction::ListViewport {
+            offset: 0.0,
+            height: 600.0,
+        });
+        driver.tick_until(|app| app.list.rows.iter().any(|row| row.logo.is_some()));
+        let logos: Vec<_> = driver
+            .app
+            .list
+            .rows
+            .iter()
+            .map(|row| (row.uid, row.logo.as_ref().map(|(key, _)| key.as_str())))
+            .collect();
+        assert_eq!(logos, [(2, None), (1, Some("default._bimi.github.com"))]);
+    }
+
+    #[test]
+    fn the_window_draws_a_rows_logo() {
+        use slint::Model;
+        let fx = Fixture::new(&["work"]);
+        fx.append_config("[ui]\nsender_images = true\n");
+        fx.add("work", crate::test_support::branded("INBOX", 1, "merged"));
+        crate::test_support::cache_github_logo(&fx.paths);
+        let (open, _wires) = fx.window();
+        open.tick_until(|open| {
+            open.window()
+                .get_rows()
+                .row_data(0)
+                .is_some_and(|row| row.has_logo)
+        });
     }
 
     #[test]

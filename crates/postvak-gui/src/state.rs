@@ -1015,6 +1015,8 @@ impl App {
         if std::mem::take(&mut self.view_dirty) {
             self.refresh_view();
         }
+        self.show_row_logos();
+        self.list.logos_changed = false;
         self.poll_files(now);
         let typing_search = self.search_focused;
         self.sync_body(now, typing_search);
@@ -1038,6 +1040,51 @@ impl App {
     }
 
     /// Asks for `tick` at `at` (seconds on the window's clock) at the latest.
+    /// Puts the logos that are in on the rows in view, reading the brand of a row new to the view and asking for its
+    /// logo; whether a row changed. Sent and Drafts show the recipient's initials, so their rows get none.
+    fn show_row_logos(&mut self) -> bool {
+        let mut changed = false;
+        if !self.logos.enabled() || self.shows_recipient() {
+            for row in &mut self.list.rows {
+                changed |= row.logo.take().is_some();
+            }
+            return changed;
+        }
+        let now = chrono::Local::now();
+        let shown = list::visible(
+            &self.list.rows,
+            self.search.is_some(),
+            self.list.viewport,
+            &now,
+        );
+        for index in shown {
+            let row = &self.list.rows[index];
+            let brand = match self.list.brands.get(&row.id()) {
+                Some(brand) => brand.clone(),
+                None => {
+                    let brand = self.accounts[row.account]
+                        .store
+                        .as_ref()
+                        .ok()
+                        .and_then(|store| store.headers(&row.folder, row.uid).ok().flatten())
+                        .and_then(|headers| self.logos.brand(&headers));
+                    self.list.brands.insert(row.id(), brand.clone());
+                    brand
+                }
+            };
+            // Asked each time, as a logo setting turned off and on again starts with none known.
+            let logo = brand.and_then(|brand| {
+                self.logos.want(&brand, &self.wake);
+                Some((brand.record_name(), self.logos.svg(&brand)?.clone()))
+            });
+            if self.list.rows[index].logo != logo {
+                self.list.rows[index].logo = logo;
+                changed = true;
+            }
+        }
+        changed
+    }
+
     pub(crate) fn request_tick(&mut self, at: f64) {
         self.next_tick = Some(self.next_tick.map_or(at, |next| next.min(at)));
     }
@@ -1578,6 +1625,7 @@ impl App {
             UiAction::MoveBack => self.move_back(),
             UiAction::ListViewport { offset, height } => {
                 self.list.viewport = (offset, height);
+                self.list.logos_changed = self.show_row_logos();
                 // The list can stop short of the cursor while it still estimates its rows; then it is asked again.
                 if self.list.cursor_shown(self.search.is_some()) {
                     self.list.follow_cursor = false;

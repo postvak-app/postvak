@@ -380,3 +380,41 @@ export component Switch inherits Rectangle {
         clicked => { root.toggled(!root.checked); }
     }
 }
+
+// The sender's logo cut to a circle, or else their initials on their colour. The software renderer does not clip to
+// a rounded rectangle, so the logo's corners are painted over in `under`, the colour behind the avatar.
+export component Avatar inherits Rectangle {
+    in property <string> initials;
+    in property <int> tint;
+    in property <image> logo;
+    in property <bool> has-logo;
+    in property <color> under: Theme.pane.background;
+    in property <length> font-size: Theme.text-size;
+    border-radius: self.width / 2;
+    background: root.has-logo ? transparent : Theme.avatars[mod(root.tint, Theme.avatars.length)];
+    if root.has-logo: Image {
+        accessible-role: none;
+        width: parent.width;
+        height: parent.height;
+        source: root.logo;
+        image-fit: cover;
+    }
+    if root.has-logo: Path {
+        width: parent.width;
+        height: parent.height;
+        viewbox-width: 2;
+        viewbox-height: 2;
+        fill: root.under;
+        fill-rule: evenodd;
+        commands: "M 0 0 L 2 0 L 2 2 L 0 2 Z M 1 0 A 1 1 0 1 0 1 2 A 1 1 0 1 0 1 0 Z";
+    }
+    if !root.has-logo: Text {
+        accessible-role: none;
+        text: root.initials;
+        font-size: root.font-size;
+        font-weight: 600;
+        color: Theme.pane.heading;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}

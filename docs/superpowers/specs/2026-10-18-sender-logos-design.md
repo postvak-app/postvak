@@ -8,7 +8,7 @@ Mail from a bank, a shop or GitHub should be easy to spot, and a fake one easier
 
 ## Surfaces
 
-GUI only. This is the named exception to the surface parity rule: a logo is a picture in the reader's header, and the CLI and MCP have nowhere to show one. Nothing changes in `help`, `output` or the daemon wire protocol. The message list's avatars (#447) keep to initials: a logo per row would mean a lookup per row.
+GUI only. This is the named exception to the surface parity rule: a logo is a picture in the reader's header and the message list's avatars, and the CLI and MCP have nowhere to show one. Nothing changes in `help`, `output` or the daemon wire protocol.
 
 ## Decisions
 
@@ -33,8 +33,9 @@ GUI only. This is the named exception to the surface parity rule: a logo is a pi
 - `Internet` implements `Net`. TXT goes through `hickory-resolver` with the system's resolvers, the name fully qualified so search domains are never tried. The GET is `html::fetch::get`, the downloader HTML mail uses: public hosts only, checked on every redirect, never logged. A body over 32 KiB counts as no logo.
 - `Logos` holds per brand a pending, ready (the SVG) or no logo. One worker thread looks brands up in turn and wakes the window. Tests swap `Logos::net`; the fixture uses an offline one.
 - `load_body` takes the brand from the message's headers and asks for its logo. `tick` takes the worker's answers.
+- The list reads a row's brand only once the row is in view (`list::visible` over the reported viewport), from its headers alone (`Store::headers`, as the thread summaries leave headers out), once per row and list. Sent and Drafts show the recipient, so their rows get no logo. `Row::logo` carries the record name and SVG; the list model draws each record's SVG once.
 - `body::Pane` carries the record name and SVG. `bind` draws it with Slint's own SVG support (`Image::load_from_svg_data`), only when the record changes. An SVG Slint cannot draw shows the initials.
-- `Avatar` in `body.slint` shows the image. The software renderer does not clip to a rounded rectangle, so a path in the reader's background paints over the corners outside the circle.
+- `Avatar` in `common.slint` shows the image, in the reader and on each row. The software renderer does not clip to a rounded rectangle, so a path in the colour behind the avatar (the reader's background, or the row's fill) paints over the corners outside the circle.
 
 ## Dependencies
 
@@ -44,5 +45,7 @@ GUI only. This is the named exception to the surface parity rule: a logo is a pi
 
 - `bimi`: DMARC parsing (comments, other domains, a forged lower header), the selector, domain and location checks, and the cache flow with a fake `Net`.
 - `logos`: the brand only with the setting on; a cached logo comes in once; a failed lookup caches nothing.
+- `list`: which rows are in view, strips included; a row in view gets its logo, the others are not looked up; the window draws a row's logo.
+- `store`: `headers` reads one message's headers.
 - `body`: the pane carries the logo; no logo without a DMARC pass or with the setting off, and no worker then; the window draws the logo once.
 - Snapshot `gui_sender_logo`.
