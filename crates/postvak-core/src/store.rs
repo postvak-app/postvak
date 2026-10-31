@@ -45,6 +45,7 @@ fn migration_list() -> Vec<M<'static>> {
         M::up(include_str!("../migrations/022-list-preview/up.sql")),
         M::up(include_str!("../migrations/023-rule-log-index/up.sql")),
         M::up(include_str!("../migrations/024-undo/up.sql")),
+        M::up(include_str!("../migrations/025-apply-existing/up.sql")),
     ]
 }
 
@@ -1608,6 +1609,15 @@ impl Store {
         Ok(())
     }
 
+    /// Marks the rows written after `after` as an apply-existing run's, which `rule_hits` leaves out.
+    pub fn mark_apply_existing(&self, after: i64) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE rule_log SET apply_existing = 1 WHERE id > ?1",
+            params![after],
+        )?;
+        Ok(())
+    }
+
     /// The rows of `action`, oldest first.
     pub fn action_rows(&self, action: i64) -> Result<Vec<LogEntry>, StoreError> {
         let mut stmt = self.conn.prepare(&format!(
@@ -1681,13 +1691,14 @@ impl Store {
         Ok(entries)
     }
 
-    /// Each rule's hits: the messages it acted on at or after `since`, and when it last acted; direct actions left out.
+    /// Each rule's hits: the messages it acted on at or after `since`, and when it last acted; direct actions and
+    /// apply-existing runs left out.
     pub fn rule_hits(&self, since: i64) -> Result<Vec<RuleHits>, StoreError> {
         let mut stmt = self.conn.prepare(
             "SELECT rule_name,
                     COUNT(DISTINCT CASE WHEN at >= ?1 THEN folder || char(0) || uid END),
                     MAX(at)
-             FROM rule_log GROUP BY rule_name ORDER BY rule_name",
+             FROM rule_log WHERE NOT apply_existing GROUP BY rule_name ORDER BY rule_name",
         )?;
         let rows = stmt.query_map(params![since], |r| {
             Ok(RuleHits {
@@ -1900,6 +1911,25 @@ mod tests {
         ] {
             s.log_action(&entry).unwrap();
         }
+        assert_eq!(
+            s.rule_hits(50).unwrap(),
+            [RuleHits {
+                rule: "travel".into(),
+                messages: 1,
+                last_fired: 100
+            }]
+        );
+    }
+
+    #[test]
+    fn rule_hits_leave_out_only_the_rows_marked_apply_existing() {
+        let s = Store::open_in_memory().unwrap();
+        s.log_action(&logged("travel", 100, &msg("INBOX", 1, 10), "read"))
+            .unwrap();
+        let before = s.last_log_id().unwrap();
+        s.log_action(&logged("travel", 200, &msg("INBOX", 2, 10), "read"))
+            .unwrap();
+        s.mark_apply_existing(before).unwrap();
         assert_eq!(
             s.rule_hits(50).unwrap(),
             [RuleHits {

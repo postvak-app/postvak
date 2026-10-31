@@ -429,8 +429,8 @@ fn font_colours(doc: &mut BaseDocument) {
 }
 
 /// Responsive mail stacks its columns with `td { display: block }` at whatever breakpoint it picks, and Blitz lays such
-/// a cell out one line high (#313): the positions among the page's `td` and `th` of those styled as neither a cell nor
-/// hidden, so the sender's `display: none` still hides one.
+/// a cell out one line high (#313), as it does a floated one: the positions among the page's `td` and `th` of those
+/// styled as neither a cell nor hidden, so the sender's `display: none` still hides one.
 fn block_cells(doc: &BaseDocument) -> Vec<usize> {
     let Ok(cells) = doc.query_selector_all("td, th") else {
         return Vec::new();
@@ -462,7 +462,11 @@ fn table_cells(doc: &mut BaseDocument, positions: &[usize]) {
                 .get_node(id)?
                 .attr(local_name!("style"))
                 .unwrap_or_default();
-            Some((id, format!("{style}; display: table-cell !important")))
+            // A float would make the cell a block again.
+            Some((
+                id,
+                format!("{style}; display: table-cell !important; float: none !important"),
+            ))
         })
         .collect();
     let mut mutator = doc.mutate();
@@ -1568,6 +1572,14 @@ mod tests {
     fn a_table_cell_shown_as_a_block_is_painted() {
         let html = "<table width=100%><tr><td style=\"display:block;background:#ff0000\">one</td></tr></table>";
         assert!(strip(html, 300.0).pixels.iter().any(|&p| is_red(p)));
+    }
+
+    /// A floated cell computes to a block too; mail that floats the cell holding the whole message laid out 42 points
+    /// high.
+    #[test]
+    fn a_floated_table_cell_keeps_its_content() {
+        let html = "<table><tr><td style=\"float:left\"><div style=\"height:2000px\">x</div></td></tr></table>";
+        assert!(laid_out(html, false, Vec::new()).height >= 2000);
     }
 
     /// Two cells a sender made blocks inline, in a pane narrower than the table: both backgrounds and both texts are

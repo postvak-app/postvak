@@ -2,7 +2,7 @@
 // several messages selected, the selection. `body.rs` words it, `toolbar.rs` the actions.
 import { ListView, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Avatar, EmptyState, Hairline, Heading, HoverFill, IconButton, Keycap, Link, TextButton } from "common.slint";
+import { Avatar, EmptyState, Hairline, Heading, HoverFill, IconButton, Keycap, Link, SelectableLine, TextButton } from "common.slint";
 
 // A message action: its glyph, its accessible name, its hover hint and the label it shows beside the glyph while
 // several messages are selected.
@@ -295,12 +295,11 @@ component HeaderLine inherits HorizontalLayout {
         color: Theme.pane.muted;
         vertical-alignment: center;
     }
-    Text {
+    SelectableLine {
         horizontal-stretch: 1;
         text: root.value;
         font-size: Theme.small-size;
         color: Theme.pane.muted;
-        overflow: elide;
         vertical-alignment: center;
     }
 }
@@ -781,11 +780,19 @@ export component BodyPane inherits Rectangle {
 
             HorizontalLayout {
                 spacing: Theme.pad;
-                Heading {
+                TextInput {
                     horizontal-stretch: 1;
                     text: root.info.subject;
-                    font-size: Theme.subject-size;
+                    read-only: true;
+                    single-line: false;
                     wrap: word-wrap;
+                    font-family: Theme.heading-font;
+                    font-weight: 600;
+                    font-size: Theme.subject-size;
+                    color: Theme.pane.heading;
+                    selection-background-color: Theme.pane.selected;
+                    selection-foreground-color: Theme.pane.on-accent;
+                    accessible-label: root.info.subject;
                 }
                 if root.info.address != "": VerticalLayout {
                     alignment: start;
@@ -825,18 +832,16 @@ export component BodyPane inherits Rectangle {
                         height: Theme.row - Theme.pad / 2;
                         spacing: Theme.pad;
                         // The address gives way first in a narrow pane.
-                        Text {
+                        SelectableLine {
                             min-width: min(self.preferred-width, 4 * Theme.inset);
                             text: root.info.name;
                             font-weight: 600;
                             color: Theme.pane.strong;
-                            overflow: elide;
                             vertical-alignment: center;
                         }
-                        if root.info.address != "": Text {
+                        if root.info.address != "": SelectableLine {
                             text: root.info.address;
                             color: Theme.pane.muted;
-                            overflow: elide;
                             vertical-alignment: center;
                         }
                         Rectangle { horizontal-stretch: 1; }

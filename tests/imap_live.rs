@@ -738,7 +738,6 @@ fn cli_applies_a_rule_to_existing_mail_and_restores_it_through_the_daemon() {
     let restored = std::process::Command::new(env!("CARGO_BIN_EXE_postvak"))
         .args(["trash", "restore"])
         .arg(backup.file_name())
-        .current_dir(&trash_dir)
         .env("POSTVAK_HOME", home.path())
         .env("POSTVAK_IDLE_EXIT_SECS", "1")
         .output()

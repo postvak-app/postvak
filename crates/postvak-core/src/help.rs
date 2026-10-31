@@ -34,6 +34,11 @@ pub static DOC_PAGES: &[DocPage] = &[
         summary: "Every command and flag of the postvak command line",
         text: include_str!("docs/cli.md"),
     },
+    DocPage {
+        name: "mcp",
+        summary: "The MCP server: each scope and the tools it unlocks, and what the tools return",
+        text: include_str!("docs/mcp.md"),
+    },
 ];
 
 /// The page called `name`, if there is one.
@@ -66,7 +71,7 @@ Ground rules:
 
 Which tools you have depends on the scopes the human granted. You cannot add mail accounts; never ask the human for a password.
 
-Call docs for the rest. Without a page it lists them: agent-guide is the full guide, rules explains every rule key with examples, search the search syntax.";
+Call docs for the rest. Without a page it lists them: agent-guide is the full guide, rules explains every rule key with examples, search the search syntax, mcp which scopes unlock which tools.";
 pub const ACCOUNT_ADD: &str = "Add an IMAP account; the daemon tests the login first and nothing is saved when it fails, then syncs it once";
 pub const ACCOUNT_LIST: &str =
     "Each configured account: name, username and server; never the password source";
@@ -81,7 +86,7 @@ pub const CURSOR: &str = "Continue after the page that ended with this `next`, w
 pub const DELETE: &str =
     "Move messages to Trash; inside Trash, or without one, delete them keeping a local .eml backup";
 /// The MCP `docs` tool's description.
-pub const DOCS: &str = "A page of Postvak's documentation, as Markdown: agent-guide (how to use these tools), rules (every rule key, with examples), search (the search syntax) or cli (the command line); without a page, the list of pages";
+pub const DOCS: &str = "A page of Postvak's documentation, as Markdown: agent-guide (how to use these tools), rules (every rule key, with examples), search (the search syntax), cli (the command line) or mcp (the scopes and the tools each unlocks); without a page, the list of pages";
 pub const JUNK: &str = "Report messages as junk: tag them $Junk, which trains server spam filters, and move them to the Junk folder; --not tags them $NotJunk and moves them to INBOX";
 pub const UNSUBSCRIBE: &str = "Leave a message's mailing list: by one-click POST when the sender offers it (RFC 8058), else print the page or address from its List-Unsubscribe header to open. Once the sender accepted it, delete can remove the message";
 /// Which keys each row of `list` and `search` keeps.

@@ -1041,6 +1041,8 @@ Print the agent guide, how an LLM should drive Postvak, or another page of the d
     The search syntax: words, phrases, operators and close matches
   - `cli`:
     Every command and flag of the postvak command line
+  - `mcp`:
+    The MCP server: each scope and the tools it unlocks, and what the tools return
 
 
 

@@ -34,7 +34,7 @@ Surfaces: hit counts ship on the CLI, MCP and GUI together. The provenance strip
 
 ## Hit counts (Rules table, CLI, MCP)
 
-- Two columns at the end of the Rules table, as on the canvas: **Last 30 days** and **Last fired**. A hit is one message a rule acted on, counted once however many actions it took on it. Counts are summed over every account the rule watches (one store per account). Rules applied by hand with Apply to existing mail count too; they are in the same log.
+- Two columns at the end of the Rules table, as on the canvas: **Last 30 days** and **Last fired**. A hit is one message a rule acted on, counted once however many actions it took on it. Counts are summed over every account the rule watches (one store per account). Runs of Apply to existing mail are left out of both columns, so they show how often a rule acts on mail as it syncs; their log rows carry an `apply_existing` mark (#482). Rows logged before that mark existed count as before.
 - Last fired is the newest such action, worded like the list's dates. A rule with no hits ever reads "no matches yet" and "—"; one with hits only longer ago reads 0 and its date.
 - Both columns sort like every other column (`SheetSort`), numerically and by time.
 - The counts are read off the window thread and refreshed after a sync event, not live.
