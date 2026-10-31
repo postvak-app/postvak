@@ -54,6 +54,11 @@ pub fn doc_index() -> String {
         .collect()
 }
 
+/// The error for a `--before` or `--after` of sender statistics that `search::date` does not read.
+pub fn not_a_date(value: &str) -> String {
+    format!("'{value}' is not a date; use 2026-01-15, or 30d, 3w, 6mo or 1y")
+}
+
 /// What the MCP server sends hosts as its instructions. Hosts may cut long instructions short, so this keeps
 /// to the ground rules and leaves the rest to the `docs` tool.
 pub const MCP_INSTRUCTIONS: &str = "Postvak gives you a person's mail, synced to their computer, and their mail rules.

@@ -7,9 +7,10 @@ use serde::{Deserialize, Serialize};
 use crate::config::{AccountConfig, Identity};
 use crate::mail_ops::{MailError, MailOps, SelectInfo, Structure};
 use crate::message::{self, Attachment, HtmlBody, InlinePart, clean};
+use crate::paths::Paths;
 use crate::rules::apply::{ApplyError, apply_many, ensure_raw, move_target, plan_for};
-use crate::rules::engine::{Context, Due, Mode, PlannedAction};
-use crate::rules::{Action, CompiledRule};
+use crate::rules::engine::{Context, Due, Mode, PlannedAction, folder_needs_body, folder_rules};
+use crate::rules::{Action, CompiledRule, RulesError};
 use crate::search::Term;
 use crate::store::{Folder, Hit, Matched, Message, Store, StoreError};
 use crate::sync::LostConnection;
@@ -430,7 +431,18 @@ pub fn planned(
     };
     let mut planned = Vec::new();
     for folder in store.folders()? {
-        for message in store.messages_in_folder(&folder.name)? {
+        if folder_rules(rules, &account.name, &folder.name)
+            .next()
+            .is_none()
+        {
+            continue;
+        }
+        let messages = if folder_needs_body(rules, &account.name, &folder.name) {
+            store.messages_in_folder(&folder.name)?
+        } else {
+            store.messages_without_body(&folder.name, 0)?
+        };
+        for message in messages {
             let plan = plan_for(rules, &message, &ctx, store)?;
             let now = plan.actions.into_iter().map(|planned| (planned, None));
             let waiting = plan
@@ -482,6 +494,40 @@ pub fn expunge_warning(
             account.trash_retention_days
         )
     }))
+}
+
+/// The accounts of `accounts` that `rules` apply to: the ones `rules apply-existing` runs in.
+pub fn covered_accounts<'a>(
+    rules: &[CompiledRule],
+    accounts: &[&'a AccountConfig],
+) -> Vec<&'a AccountConfig> {
+    accounts
+        .iter()
+        .copied()
+        .filter(|account| rules.iter().any(|r| r.applies_to_account(&account.name)))
+        .collect()
+}
+
+/// [`expunge_warning`] for each of `accounts`, read from its store: what every surface asks to confirm before `rules
+/// apply-existing` deletes mail. Empty when nothing would be expunged.
+pub fn expunge_warnings(
+    paths: &Paths,
+    rules: &[CompiledRule],
+    accounts: &[&AccountConfig],
+    now: i64,
+) -> Result<Vec<String>, RulesError> {
+    let mut warnings = Vec::new();
+    for account in accounts {
+        let store = Store::open_account(paths, &account.name)?;
+        warnings.extend(expunge_warning(
+            rules,
+            &store,
+            account,
+            &account.identity()?,
+            now,
+        )?);
+    }
+    Ok(warnings)
 }
 
 #[cfg(test)]
@@ -612,6 +658,52 @@ mod tests {
         assert_eq!(planned[0].action, Action::Flag);
         let row = crate::output::planned_row("work", &planned[0]);
         assert_eq!(row["waits"], "once read");
+    }
+
+    #[test]
+    fn planning_reads_bodies_only_where_a_rule_tests_them() {
+        let (_ops, store, _trash, _dir) = setup();
+        store
+            .upsert_folder(&Folder {
+                name: "Archive".into(),
+                uidvalidity: 1,
+                last_uid: 9,
+                special_use: None,
+                delimiter: None,
+            })
+            .unwrap();
+        for folder in ["INBOX", "Archive"] {
+            store
+                .insert_message(&Message {
+                    folder: folder.into(),
+                    uid: 9,
+                    thread_id: "t9".into(),
+                    subject: Some("hi".into()),
+                    headers: b"Subject: hi\r\n\r\n".to_vec(),
+                    body_text: Some("invoice".into()),
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+        let password = crate::config::PasswordSource::Keyring { keyring: true };
+        let account = AccountConfig::new("work", "h", "me@example.com", password);
+        let identity = account.identity().unwrap();
+        let plan = |toml: &str| {
+            let rules = crate::rules::compile(&crate::rules::parse(toml).unwrap()).unwrap();
+            planned(&rules, &store, &account, &identity, 0, None).unwrap()
+        };
+
+        let by_subject = plan(
+            "[[rules]]\nname = \"r\"\nmatch.subject = { contains = \"hi\" }\nactions = { flagged = true }\n",
+        );
+        assert!(by_subject.iter().all(|p| p.message.folder == "INBOX"));
+        assert!(by_subject.iter().all(|p| p.message.body_text.is_none()));
+
+        let by_body = plan(
+            "[[rules]]\nname = \"r\"\nfolder = \"Archive\"\nmatch.body = { contains = \"invoice\" }\nactions = { flagged = true }\n",
+        );
+        assert_eq!(by_body.len(), 1);
+        assert_eq!(by_body[0].message.folder, "Archive");
     }
 
     /// `setup` with messages 5, 6 and 7 in INBOX, 6 already read, and an Archive folder.

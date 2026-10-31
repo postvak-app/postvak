@@ -16,7 +16,7 @@ const MCP_RULES_TYPES: [&str; 2] = ["Rule", "Action"];
 
 /// Functions outside `rules/edit.rs` that may write next to the rules path, as `(file, fn, reason)`.
 const RULES_WRITE_EXCEPTIONS: [(&str, &str, &str); 1] = [(
-    "crates/postvak-gui/src/state.rs",
+    "crates/postvak-gui/src/state/rules_view.rs",
     "open_rules_file",
     "creates an empty rules.toml when there is none, so the editor has a file to open; never changes an existing one",
 )];
@@ -429,14 +429,14 @@ fn check_owned_writes(source: &Source, owned: &OwnedFile) -> Vec<String> {
     out
 }
 
-/// Rule 3: in `postvak-gui`, `state.rs` is the only code that changes state; the view modules draw from `&App` and
+/// Rule 3: in `postvak-gui`, `state` is the only code that changes state; the view modules draw from `&App` and
 /// return `UiAction`s. So a view never takes `&mut App`, reaches the daemon, or edits rules.
 fn check_gui_views(source: &Source) -> Vec<String> {
-    const RULE: &str = "in postvak-gui, state.rs is the only code that changes state; views draw and return UiActions";
+    const RULE: &str = "in postvak-gui, state is the only code that changes state; views draw and return UiActions";
     let Some(file) = source.path.strip_prefix("crates/postvak-gui/src/") else {
         return Vec::new();
     };
-    if matches!(file, "lib.rs" | "state.rs" | "test_support.rs") {
+    if matches!(file, "lib.rs" | "test_support.rs") || file.starts_with("state/") {
         return Vec::new();
     }
     let mut out = Vec::new();
@@ -791,16 +791,16 @@ mod checks_fire {
         assert!(violations("crates/postvak-core/src/rules/edit.rs", bad).is_empty());
         let excepted =
             "fn open_rules_file(&mut self) { write_atomic(&self.paths.rules_file(), b\"\"); }";
-        assert!(violations("crates/postvak-gui/src/state.rs", excepted).is_empty());
+        assert!(violations("crates/postvak-gui/src/state/rules_view.rs", excepted).is_empty());
     }
 
     #[test]
     fn config_toml_writes_outside_config_rs_are_flagged() {
         let bad = "fn save(paths: &Paths) {\n    write_atomic(&paths.config_file(), b\"x\").unwrap();\n}\n";
-        let found = violations("crates/postvak-gui/src/state.rs", bad);
+        let found = violations("crates/postvak-gui/src/state/mod.rs", bad);
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(
-            found[0].starts_with("crates/postvak-gui/src/state.rs:2: `fn save`"),
+            found[0].starts_with("crates/postvak-gui/src/state/mod.rs:2: `fn save`"),
             "{found:?}"
         );
         assert!(found[0].contains("config::save_account"), "{found:?}");
@@ -833,7 +833,7 @@ mod checks_fire {
         }
         assert!(
             violations(
-                "crates/postvak-gui/src/state.rs",
+                "crates/postvak-gui/src/state/acting.rs",
                 "fn f(app: &mut App) { self.client.send(c); }"
             )
             .is_empty()

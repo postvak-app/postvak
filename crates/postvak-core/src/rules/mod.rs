@@ -11,8 +11,8 @@ mod warnings;
 pub use lists::{Domain, ListProposal, ListRef, Lists, NamedList};
 
 pub use warnings::{
-    AccountFolders, account_folders, authenticated_warnings, authserv_offers, folder_warnings,
-    open_folder_warnings, preview_warnings, warnings, watched_folder_warnings,
+    AccountFolders, authenticated_warnings, authserv_offers, check_warnings, open_folder_warnings,
+    preview_warnings, store_warnings, warnings, watched_folder_warnings,
 };
 
 use std::collections::BTreeMap;

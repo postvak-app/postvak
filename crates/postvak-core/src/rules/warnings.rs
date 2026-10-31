@@ -1,7 +1,7 @@
 //! What leaves rules.toml valid but not doing what its author meant: a conflicting copy a file sync left beside it,
 //! an edit proposal whose rule is gone, a rule for an account this device does not have, a rule moving mail to the folder it watches, a rule using
 //! `authenticated` for an account that trusts no server's `Authentication-Results`, and a folder written the way IMAP
-//! spells it on the wire, as Postvak showed non-ASCII names before it decoded them. `folder_warnings` adds what an
+//! spells it on the wire, as Postvak showed non-ASCII names before it decoded them. `open_folder_warnings` adds what an
 //! account's own folders show: a move target written for another hierarchy or namespace. `watched_folder_warnings`
 //! adds a rule watching a folder no account it is for syncs, and a move to a special folder's usual name where the
 //! account keeps that role in another folder, once those accounts have synced all their folders.
@@ -77,6 +77,37 @@ pub fn warnings(path: &Path, rules: &[Rule], accounts: &[&str]) -> Vec<String> {
         }
     }
     lines
+}
+
+/// What `rules check` warns about: [`warnings`] against every account in `accounts`, then what the folders of the
+/// `shown` ones show. Whether a rule for every account watches a folder none syncs depends on all of them, so while some
+/// are not shown only the rules naming an account are checked for that.
+pub fn check_warnings(
+    paths: &Paths,
+    rules: &[Rule],
+    accounts: &[&str],
+    shown: &[&AccountConfig],
+) -> Vec<String> {
+    let names: Vec<&str> = shown.iter().map(|a| a.name.as_str()).collect();
+    let untrusting: Vec<&str> = shown
+        .iter()
+        .filter(|a| !a.can_authenticate())
+        .map(|a| a.name.as_str())
+        .collect();
+    let (folder_lines, synced) = store_warnings(paths, rules, &names);
+    let hiding = shown.len() < accounts.len();
+    let watched: Vec<Rule> = rules
+        .iter()
+        .filter(|r| !hiding || r.account.is_some())
+        .cloned()
+        .collect();
+    [
+        warnings(&paths.rules_file(), rules, accounts),
+        authenticated_warnings(rules, &untrusting, &synced),
+        watched_folder_warnings(&watched, &synced),
+        folder_lines,
+    ]
+    .concat()
 }
 
 /// One line per rule using `authenticated` and account of `untrusting` it runs on, in file order: those accounts trust
@@ -207,39 +238,49 @@ fn conflict_copies(path: &Path) -> Vec<String> {
     names
 }
 
-/// An account's folders, as `folder_warnings` reads them from its store.
+/// An account's folders, as `open_folder_warnings` reads them from its store.
 struct FolderLayout {
     account: String,
     folders: Vec<Folder>,
 }
 
-/// What a move target's name gets wrong for the folders of the accounts its rule runs on, read from their stores: see
-/// `layout_warnings`. An account without a store, or whose store does not open, has nothing to say yet. Each store is
-/// opened, so a caller holding them open uses [`open_folder_warnings`] instead.
-pub fn folder_warnings(paths: &Paths, rules: &[Rule], accounts: &[impl AsRef<str>]) -> Vec<String> {
-    let stores: Vec<(&str, Store)> = accounts
+/// What the stores of `names` show of `rules`, each opened once and only when it exists, so a check creates no files:
+/// the move targets whose names do not fit an account's folders ([`open_folder_warnings`]), and each account's synced
+/// folders ([`AccountFolders::read`]). A caller holding the stores open uses those two instead.
+pub fn store_warnings(
+    paths: &Paths,
+    rules: &[Rule],
+    names: &[impl AsRef<str>],
+) -> (Vec<String>, Vec<AccountFolders>) {
+    let stores: Vec<(&str, Option<Store>)> = names
         .iter()
-        .filter_map(|account| {
-            let account = account.as_ref();
-            let db = paths.mail_db(account);
-            // Opening creates a missing store, and a check should leave no files behind.
-            if !db.exists() {
-                return None;
-            }
-            Store::open(&db)
-                .inspect_err(|e| log::debug!("{account}: could not open the store: {e}"))
-                .ok()
-                .map(|store| (account, store))
+        .map(|name| {
+            let name = name.as_ref();
+            let db = paths.mail_db(name);
+            let store = db
+                .exists()
+                .then(|| {
+                    Store::open(&db)
+                        .inspect_err(|e| log::debug!("{name}: could not open the store: {e}"))
+                        .ok()
+                })
+                .flatten();
+            (name, store)
         })
         .collect();
     let open: Vec<(&str, &Store)> = stores
         .iter()
-        .map(|(account, store)| (*account, store))
+        .filter_map(|(name, store)| Some((*name, store.as_ref()?)))
         .collect();
-    open_folder_warnings(rules, &open)
+    let folders = stores
+        .iter()
+        .map(|(name, store)| AccountFolders::read(name, store.as_ref()))
+        .collect();
+    (open_folder_warnings(rules, &open), folders)
 }
 
-/// [`folder_warnings`] over stores already open, as (account, store).
+/// What a move target's name gets wrong for the folders of the accounts its rule runs on, read from their open stores,
+/// as (account, store): see `layout_warnings`. A store whose folders do not read has nothing to say yet.
 pub fn open_folder_warnings(rules: &[Rule], stores: &[(&str, &Store)]) -> Vec<String> {
     let layouts: Vec<FolderLayout> = stores
         .iter()
@@ -362,26 +403,6 @@ impl AccountFolders {
             authserv_id,
         }
     }
-}
-
-/// [`AccountFolders::read`] for each of `names`, opening only the stores that exist, so a check creates no files.
-pub fn account_folders(paths: &Paths, names: &[impl AsRef<str>]) -> Vec<AccountFolders> {
-    names
-        .iter()
-        .map(|name| {
-            let name = name.as_ref();
-            let db = paths.mail_db(name);
-            let store = db
-                .exists()
-                .then(|| {
-                    Store::open(&db)
-                        .inspect_err(|e| log::debug!("{name}: could not open the store: {e}"))
-                        .ok()
-                })
-                .flatten();
-            AccountFolders::read(name, store.as_ref())
-        })
-        .collect()
 }
 
 /// One line per rule, in file order, watching a folder that no account it is for syncs, such as a misspelled name:
@@ -784,14 +805,18 @@ mod tests {
             .unwrap();
         drop(store);
         let rules = moves(&["A/B"]);
-        assert!(folder_warnings(&paths, &rules, &["work", "new"]).is_empty());
+        assert!(
+            store_warnings(&paths, &rules, &["work", "new"])
+                .0
+                .is_empty()
+        );
         assert!(!paths.mail_db("new").exists(), "a check creates no store");
         let store = Store::open_account(&paths, "work").unwrap();
         store
             .upsert_folder(&layout("work", ".", &["INBOX"]).folders[0])
             .unwrap();
         drop(store);
-        assert_eq!(folder_warnings(&paths, &rules, &["work"]).len(), 1);
+        assert_eq!(store_warnings(&paths, &rules, &["work"]).0.len(), 1);
     }
 
     fn synced(name: &str, folders: &[&str]) -> AccountFolders {
@@ -915,14 +940,14 @@ mod tests {
             .upsert_folder(&layout("work", "/", &["INBOX"]).folders[0])
             .unwrap();
         assert_eq!(
-            account_folders(&paths, &["work"])[0].synced,
+            store_warnings(&paths, &[], &["work"]).1[0].synced,
             None,
             "no pass went through every folder yet"
         );
         store.set_folders_listed(1).unwrap();
         drop(store);
         assert_eq!(
-            account_folders(&paths, &["work", "new"]),
+            store_warnings(&paths, &[], &["work", "new"]).1,
             [
                 synced("work", &["INBOX"]),
                 AccountFolders {

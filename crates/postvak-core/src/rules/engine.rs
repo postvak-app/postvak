@@ -69,13 +69,21 @@ impl Due {
     }
 }
 
-pub fn folder_needs_body(rules: &[CompiledRule], account: &str, folder: &str) -> bool {
-    rules.iter().any(|r| {
+/// The enabled rules of `account` that watch `folder`: the only ones `evaluate` can match on its mail.
+pub fn folder_rules<'a>(
+    rules: &'a [CompiledRule],
+    account: &'a str,
+    folder: &'a str,
+) -> impl Iterator<Item = &'a CompiledRule> {
+    rules.iter().filter(move |r| {
         r.rule.enabled
             && r.applies_to_account(account)
             && crate::folder_name::rule_names(r.folder(), folder)
-            && r.needs_body()
     })
+}
+
+pub fn folder_needs_body(rules: &[CompiledRule], account: &str, folder: &str) -> bool {
+    folder_rules(rules, account, folder).any(CompiledRule::needs_body)
 }
 
 pub fn evaluate(rules: &[CompiledRule], msg: &Message, ctx: &Context) -> Plan {

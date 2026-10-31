@@ -97,7 +97,7 @@ Release build, the same machine as the search table, 100k messages over three ac
 
 ## Reloads after a sync event
 
-The window reloads the shown list whenever sync reports changes. That reload runs on a thread of its own with its own store connections; the frame waits for it at most 2 ms (`LIST_BUDGET` in `state.rs`, a quarter of a 120 Hz frame), so a small mailbox's rows still show in the same frame, and a large one's show when the thread wakes the window. While a reload runs, the next waits for it and then starts once; the rows already loaded are rebuilt meanwhile only when edits changed, since rebuilding a large list costs milliseconds. A view change reads on the window thread, as before, and drops a reload still running; a keystroke in the search field does not (below).
+The window reloads the shown list whenever sync reports changes. That reload runs on a thread of its own with its own store connections; the frame waits for it at most 2 ms (`LIST_BUDGET` in `state/mod.rs`, a quarter of a 120 Hz frame), so a small mailbox's rows still show in the same frame, and a large one's show when the thread wakes the window. While a reload runs, the next waits for it and then starts once; the rows already loaded are rebuilt meanwhile only when edits changed, since rebuilding a large list costs milliseconds. A view change reads on the window thread, as before, and drops a reload still running; a keystroke in the search field does not (below).
 
 An archive, move or delete hides its rows at once and its `ActionDone` arrives after the daemon changed the store. A reload that started before then still holds the old rows, so the edit stays on the rows until a reload that started after it is applied.
 
