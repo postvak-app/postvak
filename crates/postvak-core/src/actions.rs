@@ -410,13 +410,15 @@ pub struct Planned {
     pub waits: Option<Due>,
 }
 
-/// What `rules` would do to every message cached in `store`, evaluated as `rules apply-existing` would.
+/// What `rules` would do to every message cached in `store`, evaluated as `rules apply-existing` would; with
+/// `arrived_at`, as if every message arrived then.
 pub fn planned(
     rules: &[CompiledRule],
     store: &Store,
     account: &AccountConfig,
     identity: &Identity,
     now: i64,
+    arrived_at: Option<i64>,
 ) -> Result<Vec<Planned>, StoreError> {
     let ctx = Context {
         account: &account.name,
@@ -425,6 +427,7 @@ pub fn planned(
         mode: Mode::ApplyExisting,
         notify_default: false,
         keep_in_folder: false,
+        arrived_at,
     };
     let mut planned = Vec::new();
     for folder in store.folders()? {
@@ -480,7 +483,7 @@ pub fn expunge_warning(
     now: i64,
 ) -> Result<Option<String>, StoreError> {
     let mut count = 0;
-    for p in planned(rules, store, account, identity, now)? {
+    for p in planned(rules, store, account, identity, now, None)? {
         count += usize::from(expunges(store, &p)?);
     }
     Ok((count > 0).then(|| {
@@ -650,7 +653,7 @@ mod tests {
         let identity = account.identity().unwrap();
         let toml = "[[rules]]\nname = \"r\"\nmatch.subject = { contains = \"hi\" }\nactions = { flagged = true, after = \"read\" }\n";
         let rules = crate::rules::compile(&crate::rules::parse(toml).unwrap()).unwrap();
-        let planned = planned(&rules, &store, &account, &identity, 0).unwrap();
+        let planned = planned(&rules, &store, &account, &identity, 0, None).unwrap();
         assert_eq!(planned.len(), 1);
         assert_eq!(planned[0].action, Action::Flag);
         let row = crate::output::planned_row("work", &planned[0]);
@@ -687,7 +690,7 @@ mod tests {
         let identity = account.identity().unwrap();
         let plan = |toml: &str| {
             let rules = crate::rules::compile(&crate::rules::parse(toml).unwrap()).unwrap();
-            planned(&rules, &store, &account, &identity, 0).unwrap()
+            planned(&rules, &store, &account, &identity, 0, None).unwrap()
         };
 
         let by_subject = plan(

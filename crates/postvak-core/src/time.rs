@@ -87,6 +87,14 @@ impl Span {
     }
 }
 
+/// The moment a rules preview evaluates as of, `as_of` or now, and with `as_arrival` when every message arrived: now,
+/// the same now `as_of` is read against, so `15min` is exactly 15 minutes after the arrival.
+pub fn preview_clock(as_of: Option<&str>, as_arrival: bool) -> Result<(i64, Option<i64>), String> {
+    let now = self::now();
+    let at = as_of.map_or(Ok(now), |text| self::as_of(text, now))?;
+    Ok((at, as_arrival.then_some(now)))
+}
+
 /// The moment a rules preview evaluates as of: a span after `now` (`15min`, `1d`), a local date (its midnight), a
 /// local `YYYY-MM-DDTHH:MM[:SS]`, or an RFC 3339 timestamp.
 pub fn as_of(text: &str, now: i64) -> Result<i64, String> {
@@ -209,5 +217,15 @@ mod tests {
         for text in ["", "soon", "-1d", "2026-13-01", "2026-11-01 14:00"] {
             assert!(as_of(text, now).is_err(), "{text}");
         }
+    }
+
+    #[test]
+    fn preview_clock_reads_as_of_against_the_arrival() {
+        let (at, arrived_at) = preview_clock(Some("15min"), true).unwrap();
+        assert_eq!(arrived_at.map(|arrived_at| at - arrived_at), Some(900));
+        let (at, arrived_at) = preview_clock(None, true).unwrap();
+        assert_eq!(arrived_at, Some(at));
+        assert_eq!(preview_clock(Some("15min"), false).unwrap().1, None);
+        assert!(preview_clock(Some("soon"), true).is_err());
     }
 }

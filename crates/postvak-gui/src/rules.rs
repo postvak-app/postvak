@@ -254,7 +254,7 @@ pub(crate) fn dry_run(
             .identity()
             .map_err(|e| e.to_string())
             .and_then(|identity| {
-                postvak_core::actions::planned(&compiled, &store, settings, &identity, now)
+                postvak_core::actions::planned(&compiled, &store, settings, &identity, now, None)
                     .map_err(|e| e.to_string())
             });
         match planned {

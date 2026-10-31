@@ -467,9 +467,11 @@ enum RulesCommand {
         #[arg(long, conflicts_with = "list")]
         stdin: bool,
         #[arg(long, value_parser = as_of_arg, help = postvak_core::help::AS_OF)]
-        as_of: Option<i64>,
+        as_of: Option<String>,
+        #[arg(long, help = postvak_core::help::AS_ARRIVAL)]
+        as_arrival: bool,
         /// Preview approving this list's pending change: per rule that uses it, the cached messages it matches now and after
-        #[arg(long, value_name = "LIST", conflicts_with = "as_of")]
+        #[arg(long, value_name = "LIST", conflicts_with_all = ["as_of", "as_arrival"])]
         list: Option<String>,
     },
     #[command(
@@ -555,7 +557,9 @@ enum RulesCommand {
         #[arg(long, default_value_t = 20)]
         limit: u32,
         #[arg(long, value_parser = as_of_arg, help = postvak_core::help::AS_OF)]
-        as_of: Option<i64>,
+        as_of: Option<String>,
+        #[arg(long, help = postvak_core::help::AS_ARRIVAL)]
+        as_arrival: bool,
         #[arg(long)]
         json: bool,
     },
@@ -1687,9 +1691,10 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             group_by,
             limit,
             as_of,
+            as_arrival,
             json,
         } => {
-            let now = as_of_or_now(as_of);
+            let (now, arrived_at) = preview_clock(as_of.as_deref(), as_arrival)?;
             let rules = postvak_core::rules::coverage::rules(
                 &postvak_core::rules::load(&paths.rules_file())?,
                 include_pending,
@@ -1697,7 +1702,8 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             for acc in config::select(&config.accounts, account.as_deref())? {
                 let store = Store::open_account(paths, &acc.name)?;
                 let identity = acc.identity()?;
-                let ctx = postvak_core::rules::coverage::context(&acc.name, &identity, now);
+                let mut ctx = postvak_core::rules::coverage::context(&acc.name, &identity, now);
+                ctx.arrived_at = arrived_at;
                 let mut coverage = postvak_core::rules::coverage::in_folder(
                     &store,
                     &rules,
@@ -1734,7 +1740,14 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             if dry_run {
                 for acc in accounts {
                     let store = Store::open_account(paths, &acc.name)?;
-                    print_planned_actions(&rules, &store, acc, &acc.identity()?, time::now())?;
+                    print_planned_actions(
+                        &rules,
+                        &store,
+                        acc,
+                        &acc.identity()?,
+                        time::now(),
+                        None,
+                    )?;
                 }
                 return Ok(());
             }
@@ -1788,9 +1801,10 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             account,
             stdin,
             as_of,
+            as_arrival,
             list: None,
         } => {
-            let now = as_of_or_now(as_of);
+            let (now, arrived_at) = preview_clock(as_of.as_deref(), as_arrival)?;
             let rules = if stdin {
                 let mut rule = read_rule_json()?;
                 rule.enabled = true;
@@ -1804,7 +1818,7 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             };
             for acc in config::select(&config.accounts, account.as_deref())? {
                 let store = Store::open_account(paths, &acc.name)?;
-                print_planned_actions(&rules, &store, acc, &acc.identity()?, now)?;
+                print_planned_actions(&rules, &store, acc, &acc.identity()?, now, arrived_at)?;
                 for warning in postvak_core::rules::preview_warnings(&rules, acc, &store) {
                     eprintln!("warning: {}", clean(&warning, false));
                 }
@@ -2083,19 +2097,24 @@ fn confirm_expunges(
     Ok(())
 }
 
-fn as_of_arg(text: &str) -> Result<i64, String> {
-    time::as_of(text, time::now())
+fn as_of_arg(text: &str) -> Result<String, String> {
+    time::as_of(text, time::now()).map(|_| text.to_string())
 }
 
-/// The time a rules preview evaluates as of; one asked for is said on stderr, so the output says which it used.
-fn as_of_or_now(as_of: Option<i64>) -> i64 {
-    match as_of {
-        Some(at) => {
-            eprintln!("as of {}", time::date_time(at));
-            at
-        }
-        None => time::now(),
+/// `time::preview_clock`, with each time asked for said on stderr, so the output says which it used.
+fn preview_clock(as_of: Option<&str>, as_arrival: bool) -> Result<(i64, Option<i64>)> {
+    let (at, arrived_at) =
+        time::preview_clock(as_of, as_arrival).map_err(|e| anyhow::anyhow!("--as-of: {e}"))?;
+    if let Some(arrived_at) = arrived_at {
+        eprintln!(
+            "as if every message arrived at {}",
+            time::date_time(arrived_at)
+        );
     }
+    if as_of.is_some() {
+        eprintln!("as of {}", time::date_time(at));
+    }
+    Ok((at, arrived_at))
 }
 
 fn print_planned_actions(
@@ -2104,8 +2123,9 @@ fn print_planned_actions(
     account: &AccountConfig,
     identity: &Identity,
     now: i64,
+    arrived_at: Option<i64>,
 ) -> Result<()> {
-    for p in postvak_core::actions::planned(rules, store, account, identity, now)? {
+    for p in postvak_core::actions::planned(rules, store, account, identity, now, arrived_at)? {
         let waits = p
             .waits
             .map(|due| format!(" (waits: runs {})", due.describe()))

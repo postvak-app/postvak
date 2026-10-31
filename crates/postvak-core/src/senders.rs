@@ -167,6 +167,7 @@ mod tests {
             mode: Mode::ApplyExisting,
             notify_default: false,
             keep_in_folder: false,
+            arrived_at: None,
         }
     }
 
