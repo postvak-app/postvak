@@ -30,6 +30,8 @@ pub enum PageError {
     Cursor,
     #[error(transparent)]
     Store(#[from] StoreError),
+    #[error(transparent)]
+    Config(#[from] crate::config::ConfigError),
 }
 
 /// What a listing pages through; a cursor works only for the kind that made it.
@@ -101,6 +103,25 @@ pub struct Source {
     pub account: String,
     pub store: Store,
     pub identity: Option<Identity>,
+}
+
+/// The stores of `accounts`, each with its identity when `identity` (what `from:me` reads), for a page of `list` or
+/// `search`.
+pub fn sources<'a>(
+    paths: &crate::paths::Paths,
+    accounts: impl IntoIterator<Item = &'a crate::config::AccountConfig>,
+    identity: bool,
+) -> Result<Vec<Source>, PageError> {
+    accounts
+        .into_iter()
+        .map(|account| {
+            Ok(Source {
+                account: account.name.clone(),
+                store: Store::open_account(paths, &account.name)?,
+                identity: identity.then(|| account.identity()).transpose()?,
+            })
+        })
+        .collect()
 }
 
 /// One page and, when more rows follow, the cursor for the next.

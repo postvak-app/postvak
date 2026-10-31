@@ -1,5 +1,5 @@
 //! The HTML view of a message, without a toolkit: the render thread's protocol, the strips it paints as plain pixels,
-//! and which strips to ask for. `state.rs` owns `HtmlState` and talks to the render thread; the window draws it.
+//! and which strips to ask for. `state` owns `HtmlState` and talks to the render thread; the window draws it.
 pub(crate) mod dark;
 mod depth;
 mod fetch;

@@ -780,7 +780,11 @@ pub fn run() -> Result<()> {
                 RowKind::Message
             };
             let fields = Fields::parse(&paging.fields, kind)?;
-            let sources = sources(&config, &paths, account.as_deref(), false)?;
+            let sources = page::sources(
+                &paths,
+                config::select(&config.accounts, account.as_deref())?,
+                false,
+            )?;
             if paging.count_only {
                 print_count(page::list_count(&sources, &request)?, json);
                 return Ok(());
@@ -810,7 +814,7 @@ pub fn run() -> Result<()> {
             let fields = Fields::parse(&paging.fields, RowKind::Hit)?;
             let parsed = postvak_core::search::parse(&query, postvak_core::time::now());
             let account = postvak_core::search::named_account(account.as_deref(), &parsed)?;
-            let sources = sources(&config, &paths, account, true)?;
+            let sources = page::sources(&paths, config::select(&config.accounts, account)?, true)?;
             let request = page::SearchQuery {
                 query: &parsed,
                 scope: postvak_core::search::Scope::All,
@@ -1406,12 +1410,8 @@ fn cmd_attachment(command: AttachmentCommand, config: &Config, paths: &Paths) ->
 
 /// A `--after` or `--before` value, read as `after:` and `before:` are in search.
 fn parse_date(value: &str, now: i64) -> Result<i64> {
-    postvak_core::search::date(value, now).with_context(|| {
-        format!(
-            "'{}' is not a date; use 2026-01-15, or 30d, 3w, 6mo or 1y",
-            clean(value, false)
-        )
-    })
+    postvak_core::search::date(value, now)
+        .with_context(|| postvak_core::help::not_a_date(&clean(value, false)))
 }
 
 /// `account  count  unread  first..last  sender  rules`.
@@ -1466,28 +1466,6 @@ fn print_json(value: serde_json::Value) {
 
 /// The stores of the accounts `name` selects, each with its identity when `identity`, for a page of `list` or
 /// `search`.
-fn sources(
-    config: &Config,
-    paths: &Paths,
-    name: Option<&str>,
-    identity: bool,
-) -> Result<Vec<page::Source>> {
-    config::select(&config.accounts, name)?
-        .into_iter()
-        .map(|acc| {
-            Ok(page::Source {
-                account: acc.name.clone(),
-                store: Store::open_account(paths, &acc.name)?,
-                identity: if identity {
-                    Some(acc.identity()?)
-                } else {
-                    None
-                },
-            })
-        })
-        .collect()
-}
-
 /// A count of `list` or `search`: `{"count": N}` with `--json`, else the number.
 fn print_count(count: u64, json: bool) {
     if json {
@@ -1749,11 +1727,10 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                 &paths.rules_file(),
                 &name,
             )?];
-            let accounts: Vec<&AccountConfig> =
-                config::select(&config.accounts, account.as_deref())?
-                    .into_iter()
-                    .filter(|acc| rules.iter().any(|r| r.applies_to_account(&acc.name)))
-                    .collect();
+            let accounts = postvak_core::actions::covered_accounts(
+                &rules,
+                &config::select(&config.accounts, account.as_deref())?,
+            );
             if dry_run {
                 for acc in accounts {
                     let store = Store::open_account(paths, &acc.name)?;
@@ -2059,21 +2036,12 @@ fn read_rule_json() -> Result<Rule> {
 /// side-effect free and cover mail that predates the rule. A `name` that matches no rule is an error.
 /// What `rules check` warns about after the rules compiled.
 fn rules_warnings(paths: &Paths, config: &Config) -> Result<Vec<String>> {
-    let path = paths.rules_file();
-    let accounts: Vec<&str> = config.accounts.iter().map(|a| a.name.as_str()).collect();
-    let untrusting: Vec<&str> = config
-        .accounts
-        .iter()
-        .filter(|a| !a.can_authenticate())
-        .map(|a| a.name.as_str())
-        .collect();
-    let rules = postvak_core::rules::load(&path)?.rules;
-    let warnings = postvak_core::rules::warnings(&path, &rules, &accounts);
-    let synced = postvak_core::rules::account_folders(paths, &accounts);
-    let authenticated = postvak_core::rules::authenticated_warnings(&rules, &untrusting, &synced);
-    let watched = postvak_core::rules::watched_folder_warnings(&rules, &synced);
-    let folders = postvak_core::rules::folder_warnings(paths, &rules, &accounts);
-    Ok([warnings, authenticated, watched, folders].concat())
+    let rules = postvak_core::rules::load(&paths.rules_file())?.rules;
+    let accounts: Vec<&AccountConfig> = config.accounts.iter().collect();
+    let names: Vec<&str> = accounts.iter().map(|a| a.name.as_str()).collect();
+    Ok(postvak_core::rules::check_warnings(
+        paths, &rules, &names, &accounts,
+    ))
 }
 
 fn compiled_rules(paths: &Paths, name: Option<&str>) -> Result<Vec<CompiledRule>> {
@@ -2097,23 +2065,12 @@ fn confirm_expunges(
     accounts: &[&AccountConfig],
 ) -> Result<()> {
     use std::io::IsTerminal as _;
-    let mut any = false;
-    for acc in accounts {
-        let store = Store::open_account(paths, &acc.name)?;
-        let warning = postvak_core::actions::expunge_warning(
-            rules,
-            &store,
-            acc,
-            &acc.identity()?,
-            time::now(),
-        )?;
-        if let Some(warning) = warning {
-            any = true;
-            eprintln!("{warning}");
-        }
-    }
-    if !any {
+    let warnings = postvak_core::actions::expunge_warnings(paths, rules, accounts, time::now())?;
+    if warnings.is_empty() {
         return Ok(());
+    }
+    for warning in &warnings {
+        eprintln!("{warning}");
     }
     if !io::stdin().is_terminal() {
         bail!(

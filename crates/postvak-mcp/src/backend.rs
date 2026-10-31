@@ -164,23 +164,12 @@ impl Backend {
         Ok(rows)
     }
 
-    /// The stores of the accounts `account` selects, each with its identity when `identity`, for a page of `list`
-    /// or `search`.
     fn sources(&self, account: Option<&str>, identity: bool) -> Result<Vec<page::Source>> {
-        self.select(account)?
-            .into_iter()
-            .map(|acc| {
-                Ok(page::Source {
-                    store: self.store(&acc)?,
-                    identity: if identity {
-                        Some(acc.identity()?)
-                    } else {
-                        None
-                    },
-                    account: acc.name,
-                })
-            })
-            .collect()
+        Ok(page::sources(
+            &self.paths,
+            &self.select(account)?,
+            identity,
+        )?)
     }
 
     /// A page of `list`, at most `limit` rows (or threads), after `cursor`, with the kept `fields`; and the cursor
@@ -590,29 +579,9 @@ impl Backend {
             .retain(|r| !self.narrowed() || self.is_visible(r.account.as_deref()));
         let names = self.all_accounts();
         let accounts: Vec<&str> = names.iter().map(String::as_str).collect();
-        let warnings = rules::warnings(&path, &file.rules, &accounts);
-        // These name the account, so only the visible ones.
         let visible = self.visible();
-        let shown: Vec<String> = visible.iter().map(|a| a.name.clone()).collect();
-        let untrusting: Vec<&str> = visible
-            .iter()
-            .filter(|a| !a.can_authenticate())
-            .map(|a| a.name.as_str())
-            .collect();
-        let shown_folders = rules::account_folders(&self.paths, &shown);
-        let authenticated = rules::authenticated_warnings(&file.rules, &untrusting, &shown_folders);
-        // Whether a rule for every account watches a folder none syncs depends on the hidden accounts too, so while
-        // any is hidden only the rules for a visible account are checked.
-        let hiding = shown.len() < names.len();
-        let watched_rules: Vec<rules::Rule> = file
-            .rules
-            .iter()
-            .filter(|r| !hiding || r.account.is_some())
-            .cloned()
-            .collect();
-        let watched = rules::watched_folder_warnings(&watched_rules, &shown_folders);
-        let folders = rules::folder_warnings(&self.paths, &file.rules, &shown);
-        let warnings = [warnings, authenticated, watched, folders].concat();
+        let shown: Vec<&AccountConfig> = visible.iter().collect();
+        let warnings = rules::check_warnings(&self.paths, &file.rules, &accounts, &shown);
         Ok(json!({ "rules": count, "warnings": warnings }))
     }
 
@@ -738,11 +707,7 @@ impl Backend {
         let now = time::now();
         let date = |value: Option<&str>| {
             value
-                .map(|v| {
-                    search::date(v, now).with_context(|| {
-                        format!("'{v}' is not a date; use 2026-01-15, or 30d, 3w, 6mo or 1y")
-                    })
-                })
+                .map(|v| search::date(v, now).with_context(|| postvak_core::help::not_a_date(v)))
                 .transpose()
         };
         let (after, before) = (date(dates.0)?, date(dates.1)?);
@@ -801,23 +766,11 @@ impl Backend {
         self.ensure_rule_visible(name, false)?;
         let compiled = vec![rules::enabled_rule(&self.paths.rules_file(), name)?];
         refuse_unseen(&compiled, sight)?;
-        let accounts: Vec<_> = self
-            .select(account)?
-            .into_iter()
-            .filter(|acc| compiled.iter().any(|r| r.applies_to_account(&acc.name)))
-            .collect();
+        let selected = self.select(account)?;
+        let accounts = actions::covered_accounts(&compiled, &selected.iter().collect::<Vec<_>>());
         if !dry_run && !yes {
-            let mut warnings = Vec::new();
-            for acc in &accounts {
-                let store = self.store(acc)?;
-                warnings.extend(actions::expunge_warning(
-                    &compiled,
-                    &store,
-                    acc,
-                    &acc.identity()?,
-                    time::now(),
-                )?);
-            }
+            let warnings =
+                actions::expunge_warnings(&self.paths, &compiled, &accounts, time::now())?;
             if !warnings.is_empty() {
                 bail!(
                     "{}; check with dry_run, then call again with yes once the user agrees",
@@ -828,8 +781,8 @@ impl Backend {
         let mut rows = Vec::new();
         for acc in accounts {
             if dry_run {
-                let store = self.store(&acc)?;
-                for p in actions::planned(&compiled, &store, &acc, &acc.identity()?, time::now())? {
+                let store = self.store(acc)?;
+                for p in actions::planned(&compiled, &store, acc, &acc.identity()?, time::now())? {
                     rows.push(output::planned_row(&acc.name, &p));
                 }
                 continue;

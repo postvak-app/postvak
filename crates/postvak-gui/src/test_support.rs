@@ -254,6 +254,12 @@ impl Open {
         self.tick();
     }
 
+    /// Clicks Apply to existing mail and waits for the check of what the rule would expunge.
+    pub fn apply_to_existing(&self) {
+        self.click("Apply to existing mail");
+        self.tick_until(|open| open.with(|live| live.app.expunge_check.is_none()));
+    }
+
     /// Ticks until `done` holds; for answers from other threads.
     pub fn tick_until(&self, done: impl Fn(&Open) -> bool) {
         wait_until(|| {
