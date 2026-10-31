@@ -164,23 +164,12 @@ impl Backend {
         Ok(rows)
     }
 
-    /// The stores of the accounts `account` selects, each with its identity when `identity`, for a page of `list`
-    /// or `search`.
     fn sources(&self, account: Option<&str>, identity: bool) -> Result<Vec<page::Source>> {
-        self.select(account)?
-            .into_iter()
-            .map(|acc| {
-                Ok(page::Source {
-                    store: self.store(&acc)?,
-                    identity: if identity {
-                        Some(acc.identity()?)
-                    } else {
-                        None
-                    },
-                    account: acc.name,
-                })
-            })
-            .collect()
+        Ok(page::sources(
+            &self.paths,
+            &self.select(account)?,
+            identity,
+        )?)
     }
 
     /// A page of `list`, at most `limit` rows (or threads), after `cursor`, with the kept `fields`; and the cursor

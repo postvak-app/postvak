@@ -780,7 +780,11 @@ pub fn run() -> Result<()> {
                 RowKind::Message
             };
             let fields = Fields::parse(&paging.fields, kind)?;
-            let sources = sources(&config, &paths, account.as_deref(), false)?;
+            let sources = page::sources(
+                &paths,
+                config::select(&config.accounts, account.as_deref())?,
+                false,
+            )?;
             if paging.count_only {
                 print_count(page::list_count(&sources, &request)?, json);
                 return Ok(());
@@ -810,7 +814,7 @@ pub fn run() -> Result<()> {
             let fields = Fields::parse(&paging.fields, RowKind::Hit)?;
             let parsed = postvak_core::search::parse(&query, postvak_core::time::now());
             let account = postvak_core::search::named_account(account.as_deref(), &parsed)?;
-            let sources = sources(&config, &paths, account, true)?;
+            let sources = page::sources(&paths, config::select(&config.accounts, account)?, true)?;
             let request = page::SearchQuery {
                 query: &parsed,
                 scope: postvak_core::search::Scope::All,
@@ -1466,28 +1470,6 @@ fn print_json(value: serde_json::Value) {
 
 /// The stores of the accounts `name` selects, each with its identity when `identity`, for a page of `list` or
 /// `search`.
-fn sources(
-    config: &Config,
-    paths: &Paths,
-    name: Option<&str>,
-    identity: bool,
-) -> Result<Vec<page::Source>> {
-    config::select(&config.accounts, name)?
-        .into_iter()
-        .map(|acc| {
-            Ok(page::Source {
-                account: acc.name.clone(),
-                store: Store::open_account(paths, &acc.name)?,
-                identity: if identity {
-                    Some(acc.identity()?)
-                } else {
-                    None
-                },
-            })
-        })
-        .collect()
-}
-
 /// A count of `list` or `search`: `{"count": N}` with `--json`, else the number.
 fn print_count(count: u64, json: bool) {
     if json {
