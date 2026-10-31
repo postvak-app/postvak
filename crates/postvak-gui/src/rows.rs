@@ -1,7 +1,7 @@
 //! The message list and the HTML page's strips as Slint models. It keeps the rows the app lists and makes a row's texts only when the window
 //! shows that row, so a folder of thousands of threads costs only the rows on screen.
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use chrono::Local;
 use std::rc::Rc;
@@ -79,9 +79,20 @@ struct Shown {
 pub(crate) struct ListModel {
     shown: RefCell<Shown>,
     notify: ModelNotify,
+    /// Each sender logo drawn, by its record; None for one the window cannot draw, which shows the initials.
+    logos: RefCell<HashMap<String, Option<Image>>>,
 }
 
 impl ListModel {
+    /// `svg` drawn once for the record `key`, as rows scroll in and out of view.
+    fn logo(&self, (key, svg): &(String, Arc<str>)) -> Option<Image> {
+        self.logos
+            .borrow_mut()
+            .entry(key.clone())
+            .or_insert_with(|| Image::load_from_svg_data(svg.as_bytes()).ok())
+            .clone()
+    }
+
     /// Takes the app's rows. A list of another length or kind resets the model; otherwise only the rows that look
     /// different change, so Slint keeps the elements of the others and a row turning read can fade.
     pub(crate) fn update(&self, app: &App) {
@@ -182,6 +193,7 @@ impl Model for ListModel {
         let now = Local::now();
         let section = list::section(&shown.rows, index, shown.search, &now).unwrap_or_default();
         let columns = list::columns(row, account, shown.recipient, shown.search, &now);
+        let logo = row.logo.as_ref().and_then(|logo| self.logo(logo));
         let mut name = list::row_text(row, &columns);
         if marked {
             name = format!("✔ {name}");
@@ -216,6 +228,8 @@ impl Model for ListModel {
             clip: if row.attachment { icons::PAPERCLIP } else { "" }.into(),
             initials: columns.initials.into(),
             tint: i32::try_from(columns.tint).unwrap_or_default(),
+            has_logo: logo.is_some(),
+            logo: logo.unwrap_or_default(),
             selected: index == shown.cursor,
             marked,
             arrived,

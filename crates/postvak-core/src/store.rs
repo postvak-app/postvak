@@ -1339,6 +1339,18 @@ impl Store {
         }
     }
 
+    /// One message's headers alone, for a list row, whose summary leaves them out.
+    pub fn headers(&self, folder: &str, uid: u32) -> Result<Option<Vec<u8>>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT headers FROM messages WHERE folder = ?1 AND uid = ?2",
+                params![folder, uid],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
     pub fn raw(&self, folder: &str, uid: u32) -> Result<Option<Vec<u8>>, StoreError> {
         Ok(self
             .conn
@@ -2120,6 +2132,15 @@ mod tests {
         );
         s.remove_message("INBOX", 1).unwrap();
         assert_eq!(s.message("INBOX", 1).unwrap(), None);
+    }
+
+    #[test]
+    fn headers_reads_one_messages_headers() {
+        let s = store_with_inbox();
+        let message = msg("INBOX", 1, 10);
+        s.insert_message(&message).unwrap();
+        assert_eq!(s.headers("INBOX", 1).unwrap(), Some(message.headers));
+        assert_eq!(s.headers("INBOX", 2).unwrap(), None);
     }
 
     fn fts_hits(s: &Store, query: &str) -> i64 {
