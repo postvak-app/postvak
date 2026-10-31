@@ -1254,6 +1254,7 @@ impl App {
             | Event::Undone { account, .. }
             | Event::RuleApplied { account, .. }
             | Event::ServerSearchDone { account, .. }
+            | Event::ServerSearchFailed { account, .. }
             | Event::Synced { account, .. } => account,
         };
         let Some(index) = self.accounts.iter().position(|a| &a.name == name) else {
@@ -1312,6 +1313,19 @@ impl App {
                         .server_hits
                         .extend(hits.into_iter().map(|hit| (index, hit)));
                     self.view_dirty = true;
+                }
+            }
+            Event::ServerSearchFailed { query, message, .. } => {
+                let account = self.accounts[index].name.clone();
+                let message = clean(&message, false);
+                self.push_history(format!("{account}: server search failed: {message}"));
+                // Another client's search for the same text is broadcast too; only a round this window runs counts.
+                if self.list.server_searching > 0
+                    && self.search.as_deref() == Some(query.as_str())
+                    && !self.list.server_failed.contains(&account)
+                {
+                    self.list.server_searching -= 1;
+                    self.list.server_failed.push(account);
                 }
             }
             Event::CommandFailed { message, .. } => {
@@ -3499,6 +3513,7 @@ impl App {
         };
         let covered = self.covered_accounts();
         self.list.server_hits.clear();
+        self.list.server_failed.clear();
         self.list.server_searching = 0;
         self.list.server_asked = true;
         for account in covered {
@@ -4867,6 +4882,34 @@ mod tests {
         assert!(!list::results(&driver.app).contains("searching the server"));
         driver.press("escape escape");
         assert_eq!(driver.uids(), [3, 2, 1]);
+    }
+
+    /// #275: a failed server search arrived as a bare failure, so the line said "with what the server found" and the
+    /// account's pending edits were dropped.
+    #[test]
+    fn a_failed_server_search_keeps_the_local_results_and_says_so() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2, 3]);
+        let (mut driver, wires) = fx.driver();
+        driver.press("e");
+        driver.press("/ subject");
+        let local = driver.uids();
+        assert!(!local.is_empty());
+        driver.press("enter");
+        let failed = |query: &str| Event::ServerSearchFailed {
+            account: "work".into(),
+            request: 9,
+            query: query.into(),
+            message: "NO [UNAVAILABLE] try later".into(),
+        };
+        driver.receive(&wires, [failed("old query"), failed("subject")]);
+        assert_eq!(driver.uids(), local);
+        assert!(
+            list::results(&driver.app).ends_with("· the server search failed for work"),
+            "{}",
+            list::results(&driver.app)
+        );
+        assert_eq!(driver.app.accounts[0].queued, 1);
     }
 
     /// #268: the line under the search field said "1 results · in 1 messages".

@@ -1881,6 +1881,25 @@ async fn a_server_search_finds_a_body_not_downloaded_yet() {
     assert_eq!(found[0]["uid"], 1);
 }
 
+/// #275: a server that could not search failed the whole call, where the CLI kept the local results.
+#[tokio::test]
+async fn a_failed_server_search_returns_the_local_results_and_names_the_account() {
+    let fx = fixture_with_daemon(&["work"], connector_with_mail());
+    let client = connect(&fx, "read, read:bodies", &[]).await;
+    rows(&call(&client, "sync", json!({})).await);
+    let args = json!({ "query": "body", "folder": "Nowhere", "server": true });
+    let page = call(&client, "search", args).await;
+    let page = page.structured_content.unwrap();
+    assert_eq!(page["rows"], json!([]), "{page}");
+    assert_eq!(page["server_error"][0]["account"], "work", "{page}");
+    assert!(
+        page["server_error"][0]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("Nowhere")),
+        "{page}"
+    );
+}
+
 #[tokio::test]
 async fn a_server_search_needs_the_bodies_scope() {
     let fx = fixture(&["work"]);

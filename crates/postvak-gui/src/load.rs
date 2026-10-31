@@ -4,6 +4,7 @@
 
 use std::sync::mpsc::Receiver;
 
+use postvak_core::actions;
 use postvak_core::config::Identity;
 use postvak_core::paths::Paths;
 use postvak_core::search::{self, Scope};
@@ -59,36 +60,39 @@ pub(crate) fn load(stores: &[LoadStore<'_>], query: &ListQuery) -> Loaded {
             .collect();
         let mut hits = Vec::new();
         for &&(account, name, store, identity) in &searched {
-            match store.search(
-                &parsed,
-                Scope::All,
-                None,
-                list::SEARCH_LIMIT,
-                true,
-                identity,
-            ) {
-                Ok(found) => hits.extend(found.iter().map(|hit| {
-                    let mut row = Row::from_message(account, &hit.message);
-                    row.close = hit.matched == Matched::Close;
-                    row.snippet = hit.snippet.clone();
-                    row
-                })),
-                Err(e) => log::warn!("[{name}] search failed: {e}"),
-            }
-        }
-        for (account, (hit_folder, uid)) in &query.server_hits {
-            let known = hits
+            let found = store
+                .search(
+                    &parsed,
+                    Scope::All,
+                    None,
+                    list::SEARCH_LIMIT,
+                    true,
+                    identity,
+                )
+                .unwrap_or_else(|e| {
+                    log::warn!("[{name}] search failed: {e}");
+                    Vec::new()
+                });
+            let server: Vec<RowKey> = query
+                .server_hits
                 .iter()
-                .any(|row| row.account == *account && row.folder == *hit_folder && row.uid == *uid);
-            let store = stores
-                .iter()
-                .find(|(index, ..)| index == account)
-                .map(|(_, _, store, _)| store);
-            if let (false, Some(store)) = (known, store)
-                && let Ok(Some(message)) = store.message(hit_folder, *uid)
-            {
-                hits.push(Row::from_message(*account, &message));
-            }
+                .filter(|(index, _)| *index == account)
+                .map(|(_, hit)| hit.clone())
+                .collect();
+            // Uncut here: `merge_hits` below orders by tier first, so no exact match gives way to a newer close one.
+            let found = match actions::with_server_hits(store, found.clone(), &server, u32::MAX) {
+                Ok(merged) => merged,
+                Err(e) => {
+                    log::warn!("[{name}] could not add the server's hits: {e}");
+                    found
+                }
+            };
+            hits.extend(found.iter().map(|hit| {
+                let mut row = Row::from_message(account, &hit.message);
+                row.close = hit.matched == Matched::Close;
+                row.snippet = hit.snippet.clone();
+                row
+            }));
         }
         loaded.hits = Some(list::merge_hits(hits, list::SEARCH_LIMIT));
         for &&(_, name, store, _) in &searched {

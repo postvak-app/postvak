@@ -214,7 +214,7 @@ impl Backend {
 
     /// `bodies` lets stored body text decide a match; without it only the header columns do.
     /// `server` asks the mail server as well, which searches bodies, so it needs `bodies`; it returns one page and
-    /// takes no cursor.
+    /// takes no cursor, and an account whose server fails keeps its local results and is named in the errors.
     #[allow(clippy::too_many_arguments)] // the tool's own arguments, one per flag of `postvak search`
     pub fn search(
         &self,
@@ -227,7 +227,7 @@ impl Backend {
         exact: bool,
         cursor: Option<&str>,
         fields: &Fields,
-    ) -> Result<(Vec<Value>, Option<String>)> {
+    ) -> Result<(Vec<Value>, Option<String>, Vec<page::ServerError>)> {
         if server && !bodies {
             bail!("a server search matches message bodies, which needs the read:bodies scope");
         }
@@ -245,19 +245,18 @@ impl Backend {
             close: !exact,
         };
         let mut found = page::search(&sources, &request, limit, cursor)?;
+        let mut server_errors = Vec::new();
         if server {
-            for source in &sources {
-                let hits = self.daemon.search_server(&source.account, folder, query)?;
-                found =
-                    page::with_server_hits(found, &source.account, &source.store, &hits, limit)?;
-            }
+            (found, server_errors) = page::with_server_search(found, &sources, limit, |account| {
+                self.daemon.search_server(account, folder, query)
+            })?;
         }
         let rows = found
             .rows
             .iter()
             .map(|row| output::search_row(row, fields))
             .collect::<serde_json::Result<_>>()?;
-        Ok((rows, found.next))
+        Ok((rows, found.next, server_errors))
     }
 
     /// How many messages `search` finds in all, close matches included where they would show.

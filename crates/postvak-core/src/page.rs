@@ -408,9 +408,39 @@ pub fn search_count(sources: &[Source], query: &SearchQuery) -> Result<u64, Page
     Ok(count)
 }
 
+/// An account whose mail server could not search; its local results stand.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ServerError {
+    pub account: String,
+    pub message: String,
+}
+
+/// Adds what each source's mail server finds, as `ask` reports it per account, to a first page, at most `limit`. A
+/// server that fails leaves that account's local results as they are and is named in the errors.
+pub fn with_server_search(
+    mut page: Page<SearchRow>,
+    sources: &[Source],
+    limit: u32,
+    mut ask: impl FnMut(&str) -> anyhow::Result<Vec<(String, u32)>>,
+) -> Result<(Page<SearchRow>, Vec<ServerError>), PageError> {
+    let mut errors = Vec::new();
+    for source in sources {
+        match ask(&source.account) {
+            Ok(hits) => {
+                page = with_server_hits(page, &source.account, &source.store, &hits, limit)?;
+            }
+            Err(e) => errors.push(ServerError {
+                account: source.account.clone(),
+                message: format!("{e:#}"),
+            }),
+        }
+    }
+    Ok((page, errors))
+}
+
 /// Adds the messages the mail server found in `account` to a first page, in order, at most `limit`; the page then
 /// has no next, since a later page could not tell which server hits it already showed.
-pub fn with_server_hits(
+fn with_server_hits(
     page: Page<SearchRow>,
     account: &str,
     store: &Store,
@@ -766,6 +796,44 @@ mod tests {
         let uids: Vec<u32> = merged.rows.iter().map(|r| r.hit.message.uid).collect();
         assert_eq!(uids, [2, 1]);
         assert_eq!(merged.next, None);
+    }
+
+    /// #275: MCP failed the whole search when one server could not search; the CLI kept the local results.
+    #[test]
+    fn a_failed_server_keeps_its_local_results_and_is_named() {
+        let sources = [
+            source("home", &[("INBOX", 1, 10, "invoice")]),
+            source(
+                "work",
+                &[("INBOX", 1, 20, "invoice"), ("INBOX", 2, 30, "other")],
+            ),
+        ];
+        let query = crate::search::parse("invoice", 0);
+        let query = SearchQuery {
+            query: &query,
+            scope: Scope::All,
+            folder: None,
+            close: false,
+        };
+        let page = search(&sources, &query, 10, None).unwrap();
+        let (merged, errors) = with_server_search(page, &sources, 10, |account| match account {
+            "home" => Err(anyhow::anyhow!("NO [UNAVAILABLE] try later")),
+            _ => Ok(vec![("INBOX".to_string(), 2)]),
+        })
+        .unwrap();
+        let rows: Vec<(&str, u32)> = merged
+            .rows
+            .iter()
+            .map(|r| (r.account.as_str(), r.hit.message.uid))
+            .collect();
+        assert_eq!(rows, [("work", 2), ("work", 1), ("home", 1)]);
+        assert_eq!(
+            errors,
+            [ServerError {
+                account: "home".into(),
+                message: "NO [UNAVAILABLE] try later".into(),
+            }]
+        );
     }
 
     #[test]

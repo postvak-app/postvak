@@ -288,9 +288,10 @@ impl LazyClient {
             query: query.into(),
         };
         self.request(account, command, |reply| match reply {
-            Event::ServerSearchDone { hits, .. } => Ok(hits),
+            Event::ServerSearchDone { hits, .. } => Ok(Ok(hits)),
+            Event::ServerSearchFailed { message, .. } => Ok(Err(anyhow!(message))),
             other => Err(other),
-        })
+        })?
     }
 
     /// Appends a trashed `.eml` back into its folder through the daemon; the folder it went to.

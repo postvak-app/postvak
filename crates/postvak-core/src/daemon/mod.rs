@@ -152,6 +152,7 @@ pub fn report(event: &Event) {
         | Event::Restored { .. }
         | Event::RuleApplied { .. }
         | Event::ServerSearchDone { .. }
+        | Event::ServerSearchFailed { .. }
         | Event::Undone { .. } => {}
     }
 }
