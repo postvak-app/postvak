@@ -986,6 +986,13 @@ pub fn run_rules_with(
         ops, store, trash, rules, account, &ctx, &folders, checkpoint, &mut run,
     );
     stamp_actions(store, logged_before);
+    if mode == Mode::ApplyExisting
+        && let Err(e) = store.mark_apply_existing(logged_before)
+    {
+        log::warn!(
+            "could not mark the actions just logged as apply-existing, so they count as rule hits: {e}"
+        );
+    }
     result?;
     if mode == Mode::Normal {
         // Folders no rule looks at count as seen up to their last uid, so a rule added for one later finds no old

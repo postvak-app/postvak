@@ -329,7 +329,7 @@ To change a rule that is already there, an agent runs `rules propose --edit` wit
 
 To review a proposal:
 
-- `postvak rules list` shows every rule in file order, the order they run in, with its state and proposer; a pending proposal is `off` with a proposer, and an edit adds which rule it edits, then how many messages the rule acted on in the last 30 days. `--json` adds each rule's whole definition, the values of the `lists` it uses, its 0-based `position` in the file, `hits_30d` (those messages, each counted once, over every account) and `last_fired` (when it last acted, as Unix seconds, or `null` if never). Actions you took yourself are not counted.
+- `postvak rules list` shows every rule in file order, the order they run in, with its state and proposer; a pending proposal is `off` with a proposer, and an edit adds which rule it edits, then how many messages the rule acted on in the last 30 days. `--json` adds each rule's whole definition, the values of the `lists` it uses, its 0-based `position` in the file, `hits_30d` (those messages, each counted once, over every account) and `last_fired` (when it last acted, as Unix seconds, or `null` if never). Actions you took yourself and runs of `rules apply-existing` are not counted.
 - `postvak rules test NAME` previews what a proposal would do.
 - `postvak rules coverage --include-pending` shows what the proposals change for a folder as a whole; see [Coverage](#coverage).
 - `postvak rules approve NAME` enables it, or for an edit writes it over the rule it edits.
