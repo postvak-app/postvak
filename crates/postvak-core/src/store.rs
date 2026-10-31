@@ -939,8 +939,9 @@ impl Store {
         self.messages_after(folder, limit, filter, None)
     }
 
-    /// The messages in `folder` that `filter` keeps, newest first, at most `limit`; with `after`, only those after
-    /// that position. One folder's `internaldate` and `uid` order it, so `after.folder` plays no part.
+    /// The messages in `folder` that `filter` keeps, newest first, at most `limit`, read without their body text; with
+    /// `after`, only those after that position. One folder's `internaldate` and `uid` order it, so `after.folder` plays
+    /// no part.
     pub fn messages_after(
         &self,
         folder: &str,
@@ -951,10 +952,12 @@ impl Store {
         let order = "ORDER BY internaldate DESC, uid DESC LIMIT ?2";
         match after {
             None => self.query_messages(
+                BODILESS_COLUMNS,
                 &format!("WHERE folder = ?1 AND {} {order}", filter.sql()),
                 params![folder, limit],
             ),
             Some(after) => self.query_messages(
+                BODILESS_COLUMNS,
                 &format!(
                     "WHERE folder = ?1 AND {} AND (internaldate, uid) < (?3, ?4) {order}",
                     filter.sql()
@@ -990,21 +993,23 @@ impl Store {
         Ok(u64::try_from(count).unwrap_or(0))
     }
 
-    /// `SELECT` every message column, then `tail`; the statement is cached, so a repeated `tail` is prepared once.
+    /// `SELECT` the message `columns` (`MESSAGE_COLUMNS` or `BODILESS_COLUMNS`), then `tail`; the statement is cached,
+    /// so a repeated `tail` is prepared once.
     fn query_messages(
         &self,
+        columns: &str,
         tail: &str,
         params: impl rusqlite::Params,
     ) -> Result<Vec<Message>, StoreError> {
         let mut stmt = self
             .conn
-            .prepare_cached(&format!("SELECT {MESSAGE_COLUMNS} FROM messages {tail}"))?;
+            .prepare_cached(&format!("SELECT {columns} FROM messages {tail}"))?;
         let rows = serde_rusqlite::from_rows::<Message>(stmt.query(params)?);
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
     /// Threads in `folder` with a member `filter` keeps, the most recently active first; each thread's messages oldest
-    /// first.
+    /// first, read without their body text.
     pub fn threads(
         &self,
         folder: &str,
@@ -1048,6 +1053,7 @@ impl Store {
         ids.iter()
             .map(|id| {
                 self.query_messages(
+                    BODILESS_COLUMNS,
                     "WHERE folder = ?1 AND thread_id = ?2 ORDER BY internaldate, uid",
                     params![folder, id],
                 )
@@ -1088,7 +1094,11 @@ impl Store {
     }
 
     pub fn messages_in_folder(&self, folder: &str) -> Result<Vec<Message>, StoreError> {
-        self.query_messages("WHERE folder = ?1 ORDER BY uid", params![folder])
+        self.query_messages(
+            MESSAGE_COLUMNS,
+            "WHERE folder = ?1 ORDER BY uid",
+            params![folder],
+        )
     }
 
     /// The messages in `folder` with a uid above `after`, oldest first, read without their body text: what the rules
@@ -1098,11 +1108,11 @@ impl Store {
         folder: &str,
         after: u32,
     ) -> Result<Vec<Message>, StoreError> {
-        let mut stmt = self.conn.prepare_cached(&format!(
-            "SELECT {BODILESS_COLUMNS} FROM messages WHERE folder = ?1 AND uid > ?2 ORDER BY uid"
-        ))?;
-        let rows = serde_rusqlite::from_rows::<Message>(stmt.query(params![folder, after])?);
-        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        self.query_messages(
+            BODILESS_COLUMNS,
+            "WHERE folder = ?1 AND uid > ?2 ORDER BY uid",
+            params![folder, after],
+        )
     }
 
     /// The messages in `folder` that arrived at or after `after` and before `before`, newest first; with their body
@@ -3136,6 +3146,22 @@ mod tests {
             one.contains("INDEX messages_internaldate (folder=? AND internaldate>?)"),
             "{one}"
         );
+    }
+
+    #[test]
+    fn listing_pages_leave_out_the_body_text() {
+        let s = store_with_inbox();
+        s.insert_message(&msg("INBOX", 1, 1)).unwrap();
+        s.set_raw("INBOX", 1, b"Subject: x\r\n\r\nbody", "body")
+            .unwrap();
+        let listed = s.messages("INBOX", 10, Filter::default()).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].body_text.is_none());
+        let threads = s
+            .threads_after("INBOX", 10, Filter::default(), None)
+            .unwrap();
+        assert_eq!(threads.len(), 1);
+        assert!(threads[0][0].body_text.is_none());
     }
 
     #[test]
