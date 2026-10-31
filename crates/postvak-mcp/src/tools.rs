@@ -126,7 +126,7 @@ impl ProposalArgs {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct DocsArgs {
-    /// agent-guide, rules, search or cli; leave it out for the list of pages
+    /// agent-guide, rules, search, cli or mcp; leave it out for the list of pages
     #[serde(default)]
     page: Option<String>,
 }

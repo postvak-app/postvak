@@ -140,7 +140,7 @@ A rule sees what the matching rules above it changed: `read`, `flagged` and `tag
 
 ## When rules act
 
-- On every sync, in file order. Because rules run again on each sync, `older_than`, `younger_than` and `read` can fire or stop firing later, for example an hour after you read a sign-in code, and actions waiting for `after` run on the first sync once it has come: a full sync runs every `sync_interval_secs`, so up to that much later. To see what such a rule will do later, preview it as of that time: `postvak rules test --as-of 1h` or `--as-of 2026-11-01T14:00` (and `rules coverage --as-of`). Only the clock moves; the mail and whether it is read, flagged or tagged stay as they are now.
+- On every sync, in file order. Because rules run again on each sync, `older_than`, `younger_than` and `read` can fire or stop firing later, for example an hour after you read a sign-in code, and actions waiting for `after` run on the first sync once it has come: a full sync runs every `sync_interval_secs` (120 seconds unless the account sets it), so up to that much later. To see what such a rule will do later, preview it as of that time: `postvak rules test --as-of 1h` or `--as-of 2026-11-01T14:00` (and `rules coverage --as-of`). Only the clock moves; the mail and whether it is read, flagged or tagged stay as they are now.
 - A rule acts only on mail that arrived after the rule was enabled, so adding a rule never touches your history. `postvak rules apply-existing NAME` is the explicit opt-in. Run it with `--dry-run` first. When the rule would delete mail from the server for good (`delete`), it prints how many messages per account and how long their `.eml` backups are kept, then asks you to type `yes`; without a terminal it refuses unless you pass `--yes`. Moves and flags run without asking.
 - A rule approved with `postvak rules approve` acts on mail that arrives after the approval. A rule you add or enable by editing the file acts on mail that arrives after the next sync picks it up.
 - Renaming a rule, editing its account, folder, match or actions, changing a list it uses, or disabling and enabling it again, restarts that clock.
@@ -209,7 +209,7 @@ actions.notify = true
 
 ### Move shop mail after notifying
 
-Leave shop mail in INBOX for 15 minutes, or until you read it, before moving it, so mail apps on your other devices, which mostly notify only for INBOX, see it first. Postvak notifies too, since nothing moved the message when it arrived. The move runs on the first full sync after that, so up to `sync_interval_secs` later:
+Leave shop mail in INBOX for 15 minutes, or until you read it, before moving it, so mail apps on your other devices, which mostly notify only for INBOX, see it first. Postvak notifies too, since nothing moved the message when it arrived. The move runs on the first full sync after that, so up to `sync_interval_secs` (120 seconds by default) later:
 
 ```toml
 [[rules]]
@@ -235,7 +235,7 @@ actions.after = "15min"
 actions.stop = true
 ```
 
-To hold mail back for the rules below to decide on later, rather than act on it yourself, put a rule with `younger_than = "15min"` and `stop = true` near the top of the file instead.
+To hold mail back for the rules below to decide on later, rather than act on it yourself, put a rule with `younger_than = "15min"` and `stop = true` near the top of the file instead. That holds every rule below it for those 15 minutes, the ones that only tag, flag or mark read too, so another rule or mail app routing on such a tag sees the message without it until then. To delay only the moves, give each moving rule its own `after` instead.
 
 ### Tag shop mail except receipts
 
