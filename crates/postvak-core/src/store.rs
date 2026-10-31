@@ -1009,18 +1009,8 @@ impl Store {
     }
 
     /// Threads in `folder` with a member `filter` keeps, the most recently active first; each thread's messages oldest
-    /// first, read without their body text.
-    pub fn threads(
-        &self,
-        folder: &str,
-        limit: u32,
-        filter: Filter,
-    ) -> Result<Vec<Vec<Message>>, StoreError> {
-        self.threads_after(folder, limit, filter, None)
-    }
-
-    /// Like `threads`; with `after`, only the threads after that position, where a thread's `internaldate` is its
-    /// latest message's and its `uid` the highest of its members'. `after.folder` plays no part.
+    /// first, read without their body text. With `after`, only the threads after that position, where a thread's
+    /// `internaldate` is its latest message's and its `uid` the highest of its members'. `after.folder` plays no part.
     pub fn threads_after(
         &self,
         folder: &str,
@@ -2094,13 +2084,18 @@ mod tests {
             s.insert_message(m).unwrap();
         }
         let uids: Vec<Vec<u32>> = s
-            .threads("INBOX", 10, Filter::default())
+            .threads_after("INBOX", 10, Filter::default(), None)
             .unwrap()
             .iter()
             .map(|thread| thread.iter().map(|m| m.uid).collect())
             .collect();
         assert_eq!(uids, [vec![1, 3], vec![2]]);
-        assert_eq!(s.threads("INBOX", 1, Filter::default()).unwrap().len(), 1);
+        assert_eq!(
+            s.threads_after("INBOX", 1, Filter::default(), None)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -3381,7 +3376,7 @@ mod tests {
             .collect();
         assert_eq!(summaries, ["t1", "t2"]);
         let threads: Vec<usize> = s
-            .threads("INBOX", 10, unread)
+            .threads_after("INBOX", 10, unread, None)
             .unwrap()
             .iter()
             .map(Vec::len)
