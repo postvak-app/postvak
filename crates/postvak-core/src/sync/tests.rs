@@ -4038,6 +4038,20 @@ fn apply_rule_acts_on_stored_messages_and_reports_the_run() {
 }
 
 #[test]
+fn apply_rule_is_left_out_of_the_rules_hits() {
+    let (mut ops, store, dir) = synced();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let rules = write_rules(dir.path(), FLAG_NOREPLY);
+    let apply_rule = Command::ApplyRule {
+        name: "codes".into(),
+    };
+    let (run, _) = drain_with_rules(&mut ops, &store, &trash, &rules, vec![apply_rule]);
+    run.unwrap();
+    assert_eq!(store.log(1).unwrap()[0].rule_name, "codes");
+    assert_eq!(store.rule_hits(0).unwrap(), []);
+}
+
+#[test]
 fn apply_rule_refuses_a_disabled_or_unknown_rule() {
     let (mut ops, store, dir) = synced();
     let trash = Trash::new(dir.path().to_path_buf());
