@@ -463,18 +463,15 @@ impl Watch {
         };
         let accounts: Vec<&str> = self.accounts.iter().map(String::as_str).collect();
         let warnings = crate::rules::warnings(&self.rules.path, &file.rules, &accounts);
-        self.folder_lines = self
-            .accounts
-            .iter()
-            .map(|account| {
-                let lines = crate::rules::folder_warnings(&self.paths, &file.rules, &[account]);
-                (account.clone(), lines)
-            })
-            .collect();
-        self.synced = crate::rules::account_folders(&self.paths, &self.accounts)
-            .into_iter()
-            .map(|folders| (folders.name.clone(), folders))
-            .collect();
+        self.folder_lines.clear();
+        self.synced.clear();
+        for account in &self.accounts {
+            let (lines, folders) =
+                crate::rules::store_warnings(&self.paths, &file.rules, &[account]);
+            self.folder_lines.insert(account.clone(), lines);
+            self.synced
+                .extend(folders.into_iter().map(|f| (f.name.clone(), f)));
+        }
         self.watch_folders(&file.rules);
         self.file_lines = warnings;
         self.log_new();
@@ -513,7 +510,7 @@ impl Watch {
         .concat();
     }
 
-    /// Takes `account`'s folder warnings and what `account_folders` read of it after it synced, with the `rules` they
+    /// Takes `account`'s folder warnings and what `store_warnings` read of it after it synced, with the `rules` they
     /// were read for, and logs what is new.
     fn synced(
         &mut self,
@@ -748,8 +745,8 @@ fn route_events(
                 (watch.paths.clone(), watch.rules.path.clone())
             };
             if let Ok(file) = crate::rules::load(&rules) {
-                let lines = crate::rules::folder_warnings(&paths, &file.rules, &[account]);
-                let folders = crate::rules::account_folders(&paths, &[account]);
+                let (lines, folders) =
+                    crate::rules::store_warnings(&paths, &file.rules, &[account]);
                 lock(&shared.watch).synced(account, lines, folders, &file.rules);
             }
         }
