@@ -1447,7 +1447,11 @@ fn content_sits_inset_from_its_pane_at_every_size() {
         assert_eq!(search.left - list.left, inset, "{size:?}: search");
         assert_eq!(list.right() - search.right(), inset, "{size:?}: search");
         // The reader's margin widens once there is room for it.
-        let margin = heading("Lunch on Friday?") - body.left;
+        let subject = all(&open, "TextInput")
+            .into_iter()
+            .find(|t| t.label == "Lunch on Friday?")
+            .unwrap();
+        let margin = subject.left - body.left;
         assert!(
             [inset, 2.0 * inset].contains(&margin),
             "{size:?}: subject at {margin}"

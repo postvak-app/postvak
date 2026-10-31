@@ -418,3 +418,50 @@ export component Avatar inherits Rectangle {
         vertical-alignment: center;
     }
 }
+
+/* A line of text that can be selected and copied, cut short when it does not fit.
+
+A TextInput cannot elide, so the elided Text shows it and an invisible read-only TextInput over it takes the selection. */
+export component SelectableLine {
+    in property <string> text;
+    in property <brush> color;
+    in property <string> font-family;
+    in property <length> font-size;
+    in property <int> font-weight;
+    in property <length> letter-spacing;
+    in property <TextVerticalAlignment> vertical-alignment;
+    min-width: 0;
+    min-height: shown.preferred-height;
+    preferred-width: shown.preferred-width;
+    Rectangle {
+        clip: true;
+        shown := Text {
+            accessible-role: none;
+            width: 100%;
+            height: 100%;
+            text: root.text;
+            color: root.color;
+            font-family: root.font-family;
+            font-size: root.font-size;
+            font-weight: root.font-weight;
+            letter-spacing: root.letter-spacing;
+            vertical-alignment: root.vertical-alignment;
+            overflow: elide;
+        }
+        TextInput {
+            width: 100%;
+            height: 100%;
+            text: root.text;
+            read-only: true;
+            color: transparent;
+            font-family: root.font-family;
+            font-size: root.font-size;
+            font-weight: root.font-weight;
+            letter-spacing: root.letter-spacing;
+            vertical-alignment: root.vertical-alignment;
+            selection-background-color: Theme.pane.selected;
+            selection-foreground-color: Theme.pane.on-accent;
+            accessible-label: root.text;
+        }
+    }
+}
