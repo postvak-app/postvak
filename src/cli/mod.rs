@@ -2144,19 +2144,19 @@ fn as_of_arg(text: &str) -> Result<String, String> {
     time::as_of(text, time::now()).map(|_| text.to_string())
 }
 
-/// The time a rules preview evaluates as of, and with `as_arrival` when every message arrived: both read against one
-/// `now`, so `--as-of 15min` is exactly 15 minutes after the arrival. Each one asked for is said on stderr.
+/// `time::preview_clock`, with each time asked for said on stderr, so the output says which it used.
 fn preview_clock(as_of: Option<&str>, as_arrival: bool) -> Result<(i64, Option<i64>)> {
-    let now = time::now();
-    let arrived_at = as_arrival.then(|| {
-        eprintln!("as if every message arrived at {}", time::date_time(now));
-        now
-    });
-    let Some(text) = as_of else {
-        return Ok((now, arrived_at));
-    };
-    let at = time::as_of(text, now).map_err(|e| anyhow::anyhow!("--as-of: {e}"))?;
-    eprintln!("as of {}", time::date_time(at));
+    let (at, arrived_at) =
+        time::preview_clock(as_of, as_arrival).map_err(|e| anyhow::anyhow!("--as-of: {e}"))?;
+    if let Some(arrived_at) = arrived_at {
+        eprintln!(
+            "as if every message arrived at {}",
+            time::date_time(arrived_at)
+        );
+    }
+    if as_of.is_some() {
+        eprintln!("as of {}", time::date_time(at));
+    }
     Ok((at, arrived_at))
 }
 

@@ -922,17 +922,15 @@ async fn rules_test_and_coverage_preview_mail_as_if_it_just_arrived() {
     .unwrap();
     let client = connect(&fx, "read", &[]).await;
     let rule = json!({ "name": "hold", "match": { "younger_than": "15min" }, "actions": { "flagged": true } });
-    let test = |extra: Value| {
-        let mut arguments = json!({ "rule": rule });
-        arguments
-            .as_object_mut()
-            .unwrap()
-            .extend(extra.as_object().unwrap().clone());
-        call(&client, "rules_test", arguments)
-    };
-    assert!(rows(&test(json!({})).await).is_empty());
-    assert_eq!(rows(&test(json!({ "as_arrival": true })).await).len(), 1);
-    assert!(rows(&test(json!({ "as_arrival": true, "as_of": "20min" })).await).is_empty());
+    let test = |arguments| call(&client, "rules_test", arguments);
+    assert!(rows(&test(json!({ "rule": rule })).await).is_empty());
+    assert_eq!(
+        rows(&test(json!({ "rule": rule, "as_arrival": true })).await).len(),
+        1
+    );
+    assert!(
+        rows(&test(json!({ "rule": rule, "as_arrival": true, "as_of": "20min" })).await).is_empty()
+    );
 
     let coverage = |arguments| call(&client, "rules_coverage", arguments);
     assert_eq!(rows(&coverage(json!({})).await)[0]["matched"], 0);

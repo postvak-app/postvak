@@ -988,14 +988,9 @@ fn page_of((rows, next): (Vec<Value>, Option<String>)) -> Result<Value> {
     Ok(page)
 }
 
-/// The time a rules preview evaluates as of, `as_of` or now, and with `as_arrival` when every message arrived: now, the
-/// same now `as_of` is read against.
+/// `time::preview_clock`, its error naming `as_of`.
 fn preview_clock(as_of: Option<&str>, as_arrival: bool) -> Result<(i64, Option<i64>)> {
-    let now = postvak_core::time::now();
-    let at = as_of.map_or(Ok(now), |text| {
-        postvak_core::time::as_of(text, now).map_err(|e| anyhow!("as_of: {e}"))
-    })?;
-    Ok((at, as_arrival.then_some(now)))
+    postvak_core::time::preview_clock(as_of, as_arrival).map_err(|e| anyhow!("as_of: {e}"))
 }
 
 /// A count stands alone: no cursor and no fields beside it.
