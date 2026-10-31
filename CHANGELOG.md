@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0](https://github.com/postvak-app/postvak/compare/v0.12.0...v0.13.0) - 2026-10-31
+
+### Added
+
+- *(rules)* preview stored mail as if it just arrived with --as-arrival ([#491](https://github.com/postvak-app/postvak/pull/491))
+- *(gui)* select and copy the reader's subject, sender and recipients ([#486](https://github.com/postvak-app/postvak/pull/486))
+- *(gui)* sender logos on the message list's rows ([#478](https://github.com/postvak-app/postvak/pull/478))
+
+### Fixed
+
+- *(trash)* restore takes a backup's name or path everywhere, and the window's purge reads retention from config.toml ([#489](https://github.com/postvak-app/postvak/pull/489))
+- *(rules)* leave apply-existing runs out of hits_30d and last_fired ([#488](https://github.com/postvak-app/postvak/pull/488))
+- *(gui)* show HTML mail whose stylesheet floats a table cell ([#480](https://github.com/postvak-app/postvak/pull/480))
+
+### Other
+
+- share front-end logic in core, read less mail, split the GUI state by job ([#490](https://github.com/postvak-app/postvak/pull/490))
+- *(mcp)* serve the mcp page from the docs tool, give the sync default and how a stop hold delays tag rules ([#487](https://github.com/postvak-app/postvak/pull/487))
+
 ## [0.12.0](https://github.com/postvak-app/postvak/compare/v0.11.0...v0.12.0) - 2026-10-30
 
 ### Added
