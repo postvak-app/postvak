@@ -1175,7 +1175,7 @@ mod tests {
         let (open, wires) = view(&fx, View::Rules);
         let warning = "work: would permanently delete 1 message from the server; .eml backups kept locally for 30 days";
         open.click("codes");
-        open.click("Apply to existing mail");
+        open.apply_to_existing();
         open.tick();
         assert!(wires.sent().is_empty(), "sent before confirming");
         assert_eq!(open.find(warning).len(), 1);
@@ -1183,7 +1183,7 @@ mod tests {
         open.tick();
         assert!(open.find(warning).is_empty());
         assert!(wires.sent().is_empty(), "cancel sent it");
-        open.click("Apply to existing mail");
+        open.apply_to_existing();
         open.tick();
         open.click("Delete and apply");
         open.tick();
@@ -1207,7 +1207,7 @@ mod tests {
         let (open, wires) = view(&fx, View::Rules);
         let apply = |rule: &str| {
             open.click(rule);
-            open.click("Apply to existing mail");
+            open.apply_to_existing();
             open.press("escape");
         };
         apply("only-work");
@@ -1251,7 +1251,7 @@ mod tests {
         std::fs::write(fx.paths.rules_file(), gone).unwrap();
         let (open, wires) = view(&fx, View::Rules);
         open.click("old");
-        open.click("Apply to existing mail");
+        open.apply_to_existing();
         assert!(wires.sent().is_empty());
         let why = "rule 'old' names account 'gone', which this window does not list";
         assert_eq!(
@@ -2425,10 +2425,10 @@ mod editor_tests {
         open.press("escape");
         open.click("newsletters");
         editor(&open, |e| e.invoke_value_edited(0, "letters@".into()));
-        open.click("Apply to existing mail");
+        open.apply_to_existing();
         assert!(wires.sent().is_empty(), "an unsaved edit is not applied");
         editor(&open, |e| e.invoke_value_edited(0, "news@".into()));
-        open.click("Apply to existing mail");
+        open.apply_to_existing();
         assert_eq!(wires.sent().len(), 1);
     }
 

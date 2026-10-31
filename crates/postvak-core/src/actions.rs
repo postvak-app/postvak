@@ -7,9 +7,10 @@ use serde::{Deserialize, Serialize};
 use crate::config::{AccountConfig, Identity};
 use crate::mail_ops::{MailError, MailOps, SelectInfo, Structure};
 use crate::message::{self, Attachment, HtmlBody, InlinePart, clean};
+use crate::paths::Paths;
 use crate::rules::apply::{ApplyError, apply_many, ensure_raw, move_target, plan_for};
 use crate::rules::engine::{Context, Due, Mode, PlannedAction, folder_needs_body, folder_rules};
-use crate::rules::{Action, CompiledRule};
+use crate::rules::{Action, CompiledRule, RulesError};
 use crate::search::Term;
 use crate::store::{Folder, Hit, Matched, Message, Store, StoreError};
 use crate::sync::LostConnection;
@@ -490,6 +491,40 @@ pub fn expunge_warning(
             account.trash_retention_days
         )
     }))
+}
+
+/// The accounts of `accounts` that `rules` apply to: the ones `rules apply-existing` runs in.
+pub fn covered_accounts<'a>(
+    rules: &[CompiledRule],
+    accounts: &[&'a AccountConfig],
+) -> Vec<&'a AccountConfig> {
+    accounts
+        .iter()
+        .copied()
+        .filter(|account| rules.iter().any(|r| r.applies_to_account(&account.name)))
+        .collect()
+}
+
+/// [`expunge_warning`] for each of `accounts`, read from its store: what every surface asks to confirm before `rules
+/// apply-existing` deletes mail. Empty when nothing would be expunged.
+pub fn expunge_warnings(
+    paths: &Paths,
+    rules: &[CompiledRule],
+    accounts: &[&AccountConfig],
+    now: i64,
+) -> Result<Vec<String>, RulesError> {
+    let mut warnings = Vec::new();
+    for account in accounts {
+        let store = Store::open_account(paths, &account.name)?;
+        warnings.extend(expunge_warning(
+            rules,
+            &store,
+            account,
+            &account.identity()?,
+            now,
+        )?);
+    }
+    Ok(warnings)
 }
 
 #[cfg(test)]

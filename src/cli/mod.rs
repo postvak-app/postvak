@@ -1749,11 +1749,10 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                 &paths.rules_file(),
                 &name,
             )?];
-            let accounts: Vec<&AccountConfig> =
-                config::select(&config.accounts, account.as_deref())?
-                    .into_iter()
-                    .filter(|acc| rules.iter().any(|r| r.applies_to_account(&acc.name)))
-                    .collect();
+            let accounts = postvak_core::actions::covered_accounts(
+                &rules,
+                &config::select(&config.accounts, account.as_deref())?,
+            );
             if dry_run {
                 for acc in accounts {
                     let store = Store::open_account(paths, &acc.name)?;
@@ -2097,23 +2096,12 @@ fn confirm_expunges(
     accounts: &[&AccountConfig],
 ) -> Result<()> {
     use std::io::IsTerminal as _;
-    let mut any = false;
-    for acc in accounts {
-        let store = Store::open_account(paths, &acc.name)?;
-        let warning = postvak_core::actions::expunge_warning(
-            rules,
-            &store,
-            acc,
-            &acc.identity()?,
-            time::now(),
-        )?;
-        if let Some(warning) = warning {
-            any = true;
-            eprintln!("{warning}");
-        }
-    }
-    if !any {
+    let warnings = postvak_core::actions::expunge_warnings(paths, rules, accounts, time::now())?;
+    if warnings.is_empty() {
         return Ok(());
+    }
+    for warning in &warnings {
+        eprintln!("{warning}");
     }
     if !io::stdin().is_terminal() {
         bail!(

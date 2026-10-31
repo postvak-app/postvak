@@ -407,6 +407,9 @@ impl View {
     }
 }
 
+/// A rule asked to apply, with what it would expunge in each account, or why that could not be read.
+pub(crate) type ExpungeCheck = (String, Result<Vec<String>, String>);
+
 /// The proposals' dry runs, by rule name, and the pending list changes', by list name.
 type DryRuns = (
     BTreeMap<String, rules::DryRun>,
@@ -727,6 +730,8 @@ pub struct App {
     pub(crate) preferences: Option<PreferencesState>,
     /// The rule waiting for the user to agree to the mail it would expunge, with the warning per account.
     pub(crate) apply_confirm: Option<ApplyConfirm>,
+    /// The rule asked to apply, with what it would expunge, read off the window thread as it reads every folder.
+    pub(crate) expunge_check: Option<Receiver<ExpungeCheck>>,
     pub(crate) help_open: bool,
     pub(crate) folder_dialog: Option<FolderDialog>,
     /// Numbers HTML layouts, so a reply for an older one is dropped.
@@ -918,6 +923,7 @@ impl App {
             about_open: false,
             preferences: None,
             apply_confirm: None,
+            expunge_check: None,
             help_open: false,
             html_generation: 0,
             html_size: None,
@@ -1010,6 +1016,7 @@ impl App {
         self.receive_hits();
         self.receive_dry_runs();
         self.run_dry_runs();
+        self.receive_expunge_check();
         self.receive_save_as();
         self.receive_list();
         if std::mem::take(&mut self.view_dirty) {
@@ -3668,43 +3675,43 @@ impl App {
             self.note_error(None, message);
             return;
         }
-        match self.expunge_warnings(name) {
-            Ok(warnings) if warnings.is_empty() => self.send_apply_rule(name),
-            Ok(warnings) => {
+        if self.expunge_check.is_some() {
+            return;
+        }
+        let paths = self.paths.clone();
+        let names: Vec<String> = self.accounts.iter().map(|a| a.name.clone()).collect();
+        let rule = name.to_string();
+        self.expunge_check = Some(worker::oneshot(
+            "expunge-check",
+            self.wake.clone(),
+            move || {
+                let warnings = expunge_warnings(&paths, &rule, &names).map_err(|e| e.to_string());
+                (rule, warnings)
+            },
+        ));
+    }
+
+    fn receive_expunge_check(&mut self) {
+        let Some(answer) = &self.expunge_check else {
+            return;
+        };
+        let Some(found) = worker::poll(answer) else {
+            return;
+        };
+        self.expunge_check = None;
+        match found {
+            Ok((rule, Ok(warnings))) if warnings.is_empty() => self.send_apply_rule(&rule),
+            Ok((rule, Ok(warnings))) => {
                 self.apply_confirm = Some(ApplyConfirm {
-                    rule: name.into(),
+                    rule,
                     warning: warnings.join("\n"),
                 });
             }
-            Err(e) => self.note_error(None, format!("could not plan rule '{name}': {e}")),
-        }
-    }
-
-    /// What `name` would expunge in each account of the window it covers, planned from the stores.
-    fn expunge_warnings(&self, name: &str) -> anyhow::Result<Vec<String>> {
-        let compiled = [rule_file::enabled_rule(&self.paths.rules_file(), name)?];
-        let config = Config::load(&self.paths.config_file())?;
-        let mut warnings = Vec::new();
-        for account in &self.accounts {
-            if !compiled[0].applies_to_account(&account.name) {
-                continue;
+            Ok((rule, Err(e))) => {
+                self.note_error(None, format!("could not plan rule '{rule}': {e}"))
             }
-            let store = account
-                .store
-                .as_ref()
-                .map_err(|e| anyhow::anyhow!("{}: {e}", account.name))?;
-            let config = config
-                .account(&account.name)
-                .ok_or_else(|| anyhow::anyhow!("no account named '{}'", account.name))?;
-            warnings.extend(postvak_core::actions::expunge_warning(
-                &compiled,
-                store,
-                config,
-                &config.identity()?,
-                postvak_core::time::now(),
-            )?);
+            Err(Stopped) => self.note_error(None, "could not plan the rule".into()),
         }
-        Ok(warnings)
     }
 
     fn send_apply_rule(&mut self, name: &str) {
@@ -4396,6 +4403,25 @@ impl App {
         entries.extend([View::Rules, View::Activity, View::Trash]);
         entries
     }
+}
+
+/// What rule `name` would expunge in each of the window's `accounts` it covers, planned from their stores.
+fn expunge_warnings(paths: &Paths, name: &str, accounts: &[String]) -> anyhow::Result<Vec<String>> {
+    let compiled = [rule_file::enabled_rule(&paths.rules_file(), name)?];
+    let config = Config::load(&paths.config_file())?;
+    let accounts = accounts
+        .iter()
+        .map(|account| {
+            config
+                .account(account)
+                .ok_or_else(|| anyhow::anyhow!("no account named '{account}'"))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let covered = postvak_core::actions::covered_accounts(&compiled, &accounts);
+    let now = postvak_core::time::now();
+    Ok(postvak_core::actions::expunge_warnings(
+        paths, &compiled, &covered, now,
+    )?)
 }
 
 /// The note for HTML too large to lay out, which then shows as text.

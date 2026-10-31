@@ -808,23 +808,11 @@ impl Backend {
         self.ensure_rule_visible(name, false)?;
         let compiled = vec![rules::enabled_rule(&self.paths.rules_file(), name)?];
         refuse_unseen(&compiled, sight)?;
-        let accounts: Vec<_> = self
-            .select(account)?
-            .into_iter()
-            .filter(|acc| compiled.iter().any(|r| r.applies_to_account(&acc.name)))
-            .collect();
+        let selected = self.select(account)?;
+        let accounts = actions::covered_accounts(&compiled, &selected.iter().collect::<Vec<_>>());
         if !dry_run && !yes {
-            let mut warnings = Vec::new();
-            for acc in &accounts {
-                let store = self.store(acc)?;
-                warnings.extend(actions::expunge_warning(
-                    &compiled,
-                    &store,
-                    acc,
-                    &acc.identity()?,
-                    time::now(),
-                )?);
-            }
+            let warnings =
+                actions::expunge_warnings(&self.paths, &compiled, &accounts, time::now())?;
             if !warnings.is_empty() {
                 bail!(
                     "{}; check with dry_run, then call again with yes once the user agrees",
@@ -835,8 +823,8 @@ impl Backend {
         let mut rows = Vec::new();
         for acc in accounts {
             if dry_run {
-                let store = self.store(&acc)?;
-                for p in actions::planned(&compiled, &store, &acc, &acc.identity()?, time::now())? {
+                let store = self.store(acc)?;
+                for p in actions::planned(&compiled, &store, acc, &acc.identity()?, time::now())? {
                     rows.push(output::planned_row(&acc.name, &p));
                 }
                 continue;
