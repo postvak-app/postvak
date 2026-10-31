@@ -218,4 +218,14 @@ mod tests {
             assert!(as_of(text, now).is_err(), "{text}");
         }
     }
+
+    #[test]
+    fn preview_clock_reads_as_of_against_the_arrival() {
+        let (at, arrived_at) = preview_clock(Some("15min"), true).unwrap();
+        assert_eq!(arrived_at.map(|arrived_at| at - arrived_at), Some(900));
+        let (at, arrived_at) = preview_clock(None, true).unwrap();
+        assert_eq!(arrived_at, Some(at));
+        assert_eq!(preview_clock(Some("15min"), false).unwrap().1, None);
+        assert!(preview_clock(Some("soon"), true).is_err());
+    }
 }

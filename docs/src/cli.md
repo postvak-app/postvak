@@ -354,7 +354,7 @@ Dry run: print what each rule would do to the cached messages, and warn where `a
 * `--account <ACCOUNT>`
 * `--stdin` — Preview one rule read as JSON from stdin instead of rules.toml
 * `--as-of <AS_OF>` — Evaluate as if it were this time, to see what older_than and younger_than will do: a span ahead of now (15min, 1d), a local date (2026-11-01), a local time (2026-11-01T14:00) or an RFC 3339 timestamp; the mail and its read, flagged and tags stay as they are now, and nothing is applied
-* `--as-arrival` — Evaluate every stored message as if it arrived just now, to see what younger_than and older_than holds and after waits do to new mail; with as_of, that much later, such as 20min; the mail and its read, flagged and tags stay as they are now, and nothing is applied
+* `--as-arrival` — Evaluate every stored message as if it arrived just now, to see what a hold (younger_than, older_than) or an after wait does to new mail; an as-of time then counts from that arrival, such as 20min; the mail and its read, flagged and tags stay as they are now, and nothing is applied
 * `--list <LIST>` — Preview approving this list's pending change: per rule that uses it, the cached messages it matches now and after
 
 
@@ -502,7 +502,7 @@ Run the rules over one folder's stored mail without acting: how many messages a 
 
   Default value: `20`
 * `--as-of <AS_OF>` — Evaluate as if it were this time, to see what older_than and younger_than will do: a span ahead of now (15min, 1d), a local date (2026-11-01), a local time (2026-11-01T14:00) or an RFC 3339 timestamp; the mail and its read, flagged and tags stay as they are now, and nothing is applied
-* `--as-arrival` — Evaluate every stored message as if it arrived just now, to see what younger_than and older_than holds and after waits do to new mail; with as_of, that much later, such as 20min; the mail and its read, flagged and tags stay as they are now, and nothing is applied
+* `--as-arrival` — Evaluate every stored message as if it arrived just now, to see what a hold (younger_than, older_than) or an after wait does to new mail; an as-of time then counts from that arrival, such as 20min; the mail and its read, flagged and tags stay as they are now, and nothing is applied
 * `--json`
 
 
