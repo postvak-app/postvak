@@ -112,6 +112,32 @@ impl Trash {
         Ok(removed)
     }
 
+    /// The backup `file` names: a bare name is looked up in this trash, a path must lead to a backup directly in it.
+    pub fn resolve(&self, file: &Path) -> Result<TrashEntry, RestoreError> {
+        let not_in_trash = || RestoreError::NotInTrash(file.display().to_string());
+        let bare = file.file_name() == Some(file.as_os_str());
+        let path = if bare {
+            self.dir.join(file)
+        } else {
+            file.to_path_buf()
+        };
+        let path = path.canonicalize().map_err(|_| not_in_trash())?;
+        let in_trash = self.dir.canonicalize().ok().as_deref() == path.parent();
+        let parsed = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(Trash::parse_name);
+        match parsed {
+            Some((saved_at, folder, uid)) if in_trash && path.is_file() => Ok(TrashEntry {
+                path,
+                folder,
+                uid,
+                saved_at,
+            }),
+            _ => Err(not_in_trash()),
+        }
+    }
+
     /// Appends the backup to its original folder with the restored keyword, then removes the file. Returns the folder.
     /// A folder the store does not know, such as one deleted since, is created and subscribed first.
     pub fn restore(
@@ -120,16 +146,9 @@ impl Trash {
         store: &Store,
         file: &Path,
     ) -> Result<String, RestoreError> {
-        let not_in_trash = || RestoreError::NotInTrash(file.display().to_string());
-        let file = file.canonicalize().map_err(|_| not_in_trash())?;
-        let in_trash = self.dir.canonicalize().ok().as_deref() == file.parent();
-        let parsed = file
-            .file_name()
-            .and_then(|n| n.to_str())
-            .and_then(Trash::parse_name);
-        let (Some((_, folder, _)), true) = (parsed, in_trash) else {
-            return Err(not_in_trash());
-        };
+        let TrashEntry {
+            path: file, folder, ..
+        } = self.resolve(file)?;
         let raw = std::fs::read(&file)?;
         if crate::folder_name::known(store, &folder)?.is_none() {
             // A refused create leaves the APPEND's error to report, as a rule move does.
@@ -144,7 +163,7 @@ impl Trash {
         Ok(folder)
     }
 
-    pub fn parse_name(name: &str) -> Option<(i64, String, u32)> {
+    fn parse_name(name: &str) -> Option<(i64, String, u32)> {
         let stem = name.strip_suffix(".eml")?;
         let (ts, rest) = stem.split_once('-')?;
         let (encoded, uid) = rest.rsplit_once('-')?;
@@ -213,6 +232,40 @@ mod tests {
         assert_eq!(std::fs::read(&first).unwrap(), b"first message");
         assert_eq!(std::fs::read(&second).unwrap(), b"other message");
         assert_eq!(second.file_name().unwrap(), "1001-INBOX-2.eml");
+    }
+
+    #[test]
+    fn resolve_takes_a_bare_name_or_a_path_inside_the_trash_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let trash = Trash::new(dir.path().join("trash"));
+        let path = trash.save("Lists/GitHub", 7, b"raw", 1000).unwrap();
+        let name = path.file_name().unwrap().to_str().unwrap();
+        for file in [name, path.to_str().unwrap()] {
+            let entry = trash.resolve(Path::new(file)).unwrap();
+            assert_eq!(entry.path, path.canonicalize().unwrap(), "{file}");
+            assert_eq!((entry.folder.as_str(), entry.uid), ("Lists/GitHub", 7));
+        }
+        std::fs::write(dir.path().join("1-INBOX-1.eml"), b"outside").unwrap();
+        std::fs::write(dir.path().join("trash/notes.txt"), b"not a backup").unwrap();
+        std::fs::create_dir(dir.path().join("trash/2-INBOX-2.eml")).unwrap();
+        let outside = dir.path().join("1-INBOX-1.eml");
+        let sneaky = format!("{}/../1-INBOX-1.eml", trash.dir.display());
+        for file in [
+            outside.to_str().unwrap(),
+            &sneaky,
+            "1-INBOX-9.eml",
+            "notes.txt",
+            "2-INBOX-2.eml",
+            "..",
+        ] {
+            assert!(
+                matches!(
+                    trash.resolve(Path::new(file)),
+                    Err(RestoreError::NotInTrash(_))
+                ),
+                "{file}"
+            );
+        }
     }
 
     #[test]

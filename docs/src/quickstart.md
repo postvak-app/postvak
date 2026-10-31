@@ -26,5 +26,5 @@ postvak run              # keep syncing and applying rules in the foreground
 postvak service install  # run in the background at login
 ```
 
-Deleted mail is kept as `.eml` for 30 days: `postvak trash list` and `postvak trash restore FILE`.
+Deleted mail is kept as `.eml` for 30 days: `postvak trash list` and `postvak trash restore FILE`, where FILE is the path the list prints or just its file name.
 

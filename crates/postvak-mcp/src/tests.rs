@@ -1697,14 +1697,16 @@ async fn undo_previews_from_the_store_and_needs_an_action_in_the_log() {
 }
 
 #[tokio::test]
-async fn trash_restore_refuses_paths() {
+async fn trash_restore_refuses_what_is_not_a_backup_in_the_trash() {
     let fx = fixture(&["work"]);
     let client = connect(&fx, "mail:modify", &[]).await;
+    // The last parses as a backup name, so only resolving it keeps it from reading outside the trash.
     for file in [
         "../config/config.toml",
         "/etc/passwd",
         "..",
         "sub/1-INBOX-1.eml",
+        "1-x/../../../../tmp/evil-1.eml",
     ] {
         let text = error_text(
             &call(
@@ -1714,20 +1716,11 @@ async fn trash_restore_refuses_paths() {
             )
             .await,
         );
-        assert!(text.contains("trash_list"), "{file}: {text}");
+        assert!(
+            text.contains("is not a backup in this account's trash; see trash_list"),
+            "{file}: {text}"
+        );
     }
-    // It parses as a backup name, so only the bare-name check stands between it and a path outside the trash.
-    let sneaky = "1-x/../../../../tmp/evil-1.eml";
-    assert!(postvak_core::trash::Trash::parse_name(sneaky).is_some());
-    let text = error_text(
-        &call(
-            &client,
-            "trash_restore",
-            json!({ "file": sneaky, "dry_run": true }),
-        )
-        .await,
-    );
-    assert!(text.contains("file must be a name"), "{text}");
 }
 
 #[tokio::test]
@@ -1750,6 +1743,21 @@ async fn trash_list_names_backups_and_restore_takes_the_name() {
         &modify,
         "trash_restore",
         json!({ "file": listed[0]["file"], "dry_run": true }),
+    )
+    .await;
+    assert_eq!(
+        report.structured_content.unwrap()["would"],
+        "restore to Lists/News"
+    );
+    // The path `postvak trash list` prints names the same backup.
+    let path = fx
+        .paths
+        .trash_dir("work")
+        .join("1790000000-Lists%2FNews-7.eml");
+    let report = call(
+        &modify,
+        "trash_restore",
+        json!({ "file": path, "dry_run": true }),
     )
     .await;
     assert_eq!(

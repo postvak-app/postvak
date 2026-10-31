@@ -2186,7 +2186,8 @@ fn cmd_trash(command: TrashCommand, config: &Config, paths: &Paths) -> Result<()
         }
         TrashCommand::Restore { file, account } => {
             let acc = config::single(&config.accounts, account.as_deref())?;
-            let folder = LazyClient::new(paths).restore(&acc.name, std::path::absolute(&file)?)?;
+            let backup = Trash::new(paths.trash_dir(&acc.name)).resolve(Path::new(&file))?;
+            let folder = LazyClient::new(paths).restore(&acc.name, backup.path)?;
             println!(
                 "restored to {}; rules leave restored mail alone",
                 clean(&folder, false)
