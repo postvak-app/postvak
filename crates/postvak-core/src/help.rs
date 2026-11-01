@@ -54,6 +54,11 @@ pub fn doc_index() -> String {
         .collect()
 }
 
+/// The error for a `--before` or `--after` of sender statistics that `search::date` does not read.
+pub fn not_a_date(value: &str) -> String {
+    format!("'{value}' is not a date; use 2026-01-15, or 30d, 3w, 6mo or 1y")
+}
+
 /// What the MCP server sends hosts as its instructions. Hosts may cut long instructions short, so this keeps
 /// to the ground rules and leaves the rest to the `docs` tool.
 pub const MCP_INSTRUCTIONS: &str = "Postvak gives you a person's mail, synced to their computer, and their mail rules.
@@ -110,6 +115,8 @@ pub const RULES_APPROVE: &str = "Enable a disabled rule, such as a proposal, or 
 pub const RULES_CHECK: &str = "Validate rules.toml, and warn about what keeps it from doing what it says, such as a conflicting copy a file sync left beside it or a rule for an account not set up here";
 /// The `--as-of` option of `rules test` and `rules coverage`, and the `as_of` argument of their MCP tools.
 pub const AS_OF: &str = "Evaluate as if it were this time, to see what older_than and younger_than will do: a span ahead of now (15min, 1d), a local date (2026-11-01), a local time (2026-11-01T14:00) or an RFC 3339 timestamp; the mail and its read, flagged and tags stay as they are now, and nothing is applied";
+/// The `--as-arrival` option of `rules test` and `rules coverage`, and the `as_arrival` argument of their MCP tools.
+pub const AS_ARRIVAL: &str = "Evaluate every stored message as if it arrived just now, to see what a hold (younger_than, older_than) or an after wait does to new mail; an as-of time then counts from that arrival, such as 20min; the mail and its read, flagged and tags stay as they are now, and nothing is applied";
 pub const RULES_COVERAGE: &str = "Run the rules over one folder's stored mail without acting: how many messages a rule matches, none matches and several match; the top senders of unmatched mail; for each contested message every rule that matches and what would run under the real precedence";
 pub const RULES_LIST: &str = "Every rule in file order, the order they run in: its position, its whole definition, whether it is enabled, who proposed it and the values of the lists it uses";
 pub const RULES_LISTS: &str = "Every named list in rules.toml, which conditions refer to with {\"list\": \"name\"}: its values, the rules that use it, and its pending change with who proposed it";

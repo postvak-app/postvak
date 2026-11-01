@@ -3,6 +3,8 @@
 //! the answer, so most mail still opens in the frame that chose it. Requests coalesce, so stepping through the list
 //! fast reads only the message the cursor stopped on.
 
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
@@ -123,8 +125,8 @@ impl Reader {
     }
 }
 
-/// Reads until the app hangs up, each time only the newest request, over a connection of its own: SQLite's
-/// write-ahead log lets it read while the daemon writes.
+/// Reads until the app hangs up, each time only the newest request, over connections of its own, kept open per
+/// account: SQLite's write-ahead log lets them read while the daemon writes.
 fn run(
     paths: &Paths,
     read: ReadFn,
@@ -132,10 +134,17 @@ fn run(
     done: &Sender<(u64, Read)>,
     wake: &Wake,
 ) {
+    let mut stores: HashMap<String, Store> = HashMap::new();
     while let Ok(first) = jobs.recv() {
         let request = jobs.try_iter().last().unwrap_or(first);
-        let found = match Store::open_account(paths, &request.account) {
-            Ok(store) => read(&store, &request.key),
+        let store = match stores.entry(request.account.clone()) {
+            Entry::Occupied(open) => Ok(open.into_mut()),
+            Entry::Vacant(slot) => {
+                Store::open_account(paths, &request.account).map(|s| slot.insert(s))
+            }
+        };
+        let found = match store {
+            Ok(store) => read(store, &request.key),
             Err(e) => {
                 log::warn!(
                     "[{}] could not open the store to read a message: {e}",

@@ -1,5 +1,5 @@
 //! The HTML view of a message, without a toolkit: the render thread's protocol, the strips it paints as plain pixels,
-//! and which strips to ask for. `state.rs` owns `HtmlState` and talks to the render thread; the window draws it.
+//! and which strips to ask for. `state` owns `HtmlState` and talks to the render thread; the window draws it.
 pub(crate) mod dark;
 mod depth;
 mod fetch;
@@ -32,6 +32,10 @@ pub const MAX_WIDTH: f32 = 5_000.0;
 
 /// Seconds the panel width must hold still before the page is laid out again.
 pub const SETTLE: f64 = 0.1;
+
+/// Seconds a new message's page may take to appear before the view says it is rendering; a faster one appears at once,
+/// with no note before it.
+pub const SLOW: f64 = 0.3;
 
 pub const TOO_LARGE: &str = "Too large to render; showing text.";
 pub const FAILED: &str = "Could not render HTML; showing text.";
@@ -199,6 +203,13 @@ pub(crate) struct HtmlState {
     pub fetching: Option<u64>,
     /// Set once the current generation is laid out: the page width and height in points.
     pub page: Option<(f32, f32)>,
+    /// The page has appeared: it was laid out and the strips in view painted. Until then the view shows no page, so
+    /// it appears whole rather than as an empty page its strips fill; a later layout keeps it on screen.
+    pub shown: bool,
+    /// The page took longer than `SLOW` to appear, so the view says it is rendering.
+    pub slow: bool,
+    /// When the window first saw this view waiting for its page, on its clock.
+    pub started: Option<f64>,
     /// Remote URLs the last layout asked for and `fetched` lacks.
     pub remote: BTreeSet<String>,
     pub requested: BTreeSet<u32>,
@@ -230,11 +241,34 @@ impl HtmlState {
             selected_at: None,
             selection: None,
             sent: (scale, width),
+            shown: false,
+            slow: false,
+            started: None,
             strips: BTreeMap::new(),
             wanted: None,
             visible: (0.0, 0.0),
         }
     }
+}
+
+impl HtmlState {
+    /// Laid out, and every strip in view painted.
+    pub fn painted_in_view(&self) -> bool {
+        let Some((_, height)) = self.page else {
+            return false;
+        };
+        let (top, bottom) = self.visible;
+        visible_strips(top, bottom, height, self.sent.0)
+            .all(|strip| self.strips.contains_key(&strip))
+    }
+}
+
+/// The strips covering `top..bottom` (points) of a page `height` points tall.
+pub fn visible_strips(top: f32, bottom: f32, height: f32, scale: f32) -> Range<u32> {
+    let points = STRIP as f32 / scale.max(0.5);
+    let first = (top.max(0.0) / points).floor() as u32;
+    let end = (bottom.min(height) / points).ceil() as u32;
+    first..end.max(first)
 }
 
 /// The strips covering `top..bottom` (points) plus one screen either side, within a page `height` points tall.
@@ -282,6 +316,16 @@ mod tests {
         );
         assert!(Pixels::new(2, 3, vec![0; 23]).is_none());
         assert!(Pixels::new(u32::MAX, u32::MAX, Vec::new()).is_none());
+    }
+
+    #[test]
+    fn visible_strips_cover_only_the_view() {
+        // At scale 1 a strip is 512 points.
+        assert_eq!(visible_strips(1000.0, 1400.0, 5000.0, 1.0), 1..3);
+        assert_eq!(visible_strips(0.0, 400.0, 5000.0, 2.0), 0..2);
+        assert_eq!(visible_strips(0.0, 800.0, 100.0, 1.0), 0..1);
+        assert_eq!(visible_strips(0.0, 800.0, 0.0, 1.0), 0..0);
+        assert_eq!(visible_strips(0.0, 0.0, 5000.0, 1.0), 0..0);
     }
 
     #[test]
@@ -333,7 +377,7 @@ mod view_tests {
 
     use super::{
         FAILED, FetchDone, Fetcher, Load, MAX_HEIGHT, MAX_HTML, MAX_WIDTH, Renderer, Reply,
-        Request, TOO_LARGE,
+        Request, SETTLE, SLOW, TOO_LARGE,
     };
     use crate::state::App;
     use crate::test_support::{Fixture, Open, Wires, add_html, launched, message};
@@ -525,7 +569,7 @@ mod view_tests {
         let faked = faked(&fx);
         reply(&faked, laid(faked.generation - 1, 900.0, &[]));
         assert_eq!(view(&faked.open, |v| v.page).flatten(), None);
-        reply(&faked, laid(faked.generation, 300.0, &[]));
+        appear(&faked, faked.generation, &[]);
         assert_eq!(
             view(&faked.open, |v| v.page).flatten(),
             Some((400.0, 300.0))
@@ -550,6 +594,115 @@ mod view_tests {
             })
             .collect();
         assert_eq!(paints, [0]);
+    }
+
+    /// A painted strip of layout `generation`.
+    fn strip(generation: u64, strip: u32) -> Reply {
+        let Some(image) = super::Pixels::new(4, 2, vec![255; 32]) else {
+            panic!("bad pixels");
+        };
+        Reply::Strip {
+            generation,
+            strip,
+            image,
+        }
+    }
+
+    /// Answers layout `generation` as 300 points tall, asking for `remote`, and paints the strip in view, so the
+    /// page appears.
+    fn appear(faked: &Faked, generation: u64, remote: &[&str]) {
+        reply(faked, laid(generation, 300.0, remote));
+        reply(faked, strip(generation, 0));
+    }
+
+    /// The window shows the page (and its strips) and says it is rendering.
+    fn shows(faked: &Faked) -> (bool, usize, bool) {
+        let window = faked.open.window();
+        (
+            window.get_page().ready,
+            slint::Model::row_count(&window.get_strips()),
+            !faked.open.find("Rendering…").is_empty(),
+        )
+    }
+
+    #[test]
+    fn a_new_page_appears_whole_once_the_strips_in_view_are_painted() {
+        let fx = Fixture::new(&["work"]);
+        add_html(&fx, 1, "<p>x</p>", "text");
+        let faked = faked(&fx);
+        reply(
+            &faked,
+            laid(faked.generation, 300.0, &["https://example.com/a.png"]),
+        );
+        // Laid out but not painted: no empty page, and no remote content note that would move it once it appears.
+        assert_eq!(shows(&faked), (false, 0, false));
+        assert!(faked.open.find("Remote content not loaded.").is_empty());
+        reply(&faked, strip(faked.generation, 0));
+        assert_eq!(shows(&faked), (true, 1, false));
+        assert_eq!(faked.open.find("Remote content not loaded.").len(), 1);
+    }
+
+    #[test]
+    fn the_next_message_starts_from_the_part_of_the_view_on_screen() {
+        let fx = Fixture::new(&["work"]);
+        add_html(&fx, 1, "<p>one</p>", "one");
+        add_html(&fx, 2, "<p>two</p>", "two");
+        let faked = faked(&fx);
+        appear(&faked, faked.generation, &[]);
+        let shown = view(&faked.open, |v| v.visible).unwrap();
+        assert!(shown.1 > 0.0, "visible {shown:?}");
+        // The window reports the part on screen only when it changes, which the next message need not do: without
+        // it, the next page would count as painted in view before any strip was, and appear empty.
+        faked.open.press("j");
+        let [load] = &loads(&faked.jobs)[..] else {
+            panic!("no layout for the next message");
+        };
+        assert_eq!(
+            view(&faked.open, |v| (v.generation, v.visible)),
+            Some((load.generation, shown))
+        );
+        reply(&faked, laid(load.generation, 300.0, &[]));
+        assert_eq!(shows(&faked), (false, 0, false));
+        reply(&faked, strip(load.generation, 0));
+        assert_eq!(shows(&faked), (true, 1, false));
+    }
+
+    #[test]
+    fn a_page_slow_to_appear_says_it_is_rendering() {
+        let fx = Fixture::new(&["work"]);
+        add_html(&fx, 1, "<p>x</p>", "text");
+        let faked = faked(&fx);
+        faked.open.advance(SLOW / 2.0);
+        faked.open.tick();
+        assert_eq!(shows(&faked), (false, 0, false));
+        faked.open.advance(SLOW);
+        faked.open.tick();
+        assert_eq!(shows(&faked), (false, 0, true));
+        reply(&faked, laid(faked.generation, 300.0, &[]));
+        reply(&faked, strip(faked.generation, 0));
+        assert_eq!(shows(&faked), (true, 1, false));
+    }
+
+    #[test]
+    fn a_new_layout_of_a_shown_page_keeps_it_on_screen() {
+        let fx = Fixture::new(&["work"]);
+        add_html(&fx, 1, "<p>x</p>", "text");
+        let faked = faked(&fx);
+        reply(&faked, laid(faked.generation, 300.0, &[]));
+        reply(&faked, strip(faked.generation, 0));
+        let (scale, width) = view(&faked.open, |v| v.sent).unwrap();
+        faked
+            .open
+            .with(|live| live.app.html_size = Some((scale, width + 50.0)));
+        faked.open.tick();
+        faked.open.advance(SETTLE * 2.0);
+        faked.open.tick();
+        let [load] = &loads(&faked.jobs)[..] else {
+            panic!("no new layout");
+        };
+        reply(&faked, laid(load.generation, 300.0, &[]));
+        assert!(faked.open.window().get_page().ready);
+        assert!(faked.open.find("Rendering…").is_empty());
     }
 
     #[test]
@@ -683,7 +836,7 @@ mod view_tests {
         let (fetcher, fetch_jobs, fetched) = Fetcher::fake();
         faked.open.with(|live| live.app.fetcher = Some(fetcher));
         let hero = "https://cdn.example.com/hero.png";
-        reply(&faked, laid(faked.generation, 300.0, &[hero]));
+        appear(&faked, faked.generation, &[hero]);
         assert_eq!(faked.open.find("Remote content not loaded.").len(), 1);
         faked.open.click("Load remote content");
         assert_eq!(faked.open.find("Loading remote content…").len(), 1);
@@ -712,7 +865,7 @@ mod view_tests {
         let (fetcher, fetch_jobs, fetched) = Fetcher::fake();
         faked.open.with(|live| live.app.fetcher = Some(fetcher));
         let css = "https://cdn.example.com/style.css";
-        reply(&faked, laid(faked.generation, 300.0, &[css]));
+        appear(&faked, faked.generation, &[css]);
         faked.open.click("Load remote content");
         let job = fetch_jobs.try_recv().unwrap();
         let bytes = BTreeMap::from([(css.to_string(), b"body{}".to_vec())]);
@@ -738,7 +891,7 @@ mod view_tests {
         let generation = loads(&faked.jobs)
             .pop()
             .map_or(faked.generation, |load| load.generation);
-        reply(faked, laid(generation, 300.0, &[url]));
+        appear(faked, generation, &[url]);
         fetch_jobs.try_recv().ok()
     }
 
@@ -807,10 +960,7 @@ mod view_tests {
         let faked = faked(&fx);
         let (fetcher, fetch_jobs, fetched) = Fetcher::fake();
         faked.open.with(|live| live.app.fetcher = Some(fetcher));
-        reply(
-            &faked,
-            laid(faked.generation, 300.0, &["https://example.com/a.png"]),
-        );
+        appear(&faked, faked.generation, &["https://example.com/a.png"]);
         faked.open.click("Load remote content");
         let job = fetch_jobs.try_recv().unwrap();
         faked.open.press("j");
@@ -853,7 +1003,7 @@ mod view_tests {
             Some(true),
             "the dark theme lays out dark"
         );
-        reply(&faked, laid(faked.generation, 300.0, &[]));
+        appear(&faked, faked.generation, &[]);
         assert!(faked.open.window().get_page().dark);
         faked.open.menu_item("More actions", "Original colours");
 

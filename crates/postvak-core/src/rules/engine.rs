@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use crate::config::Identity;
-use crate::message::{auth, bare_addresses, header_text};
+use crate::message::{auth, bare_addresses, display_names, header_text};
 use crate::rules::{Action, CompiledRule, Conditions, Match, Rule, Wait};
 use crate::store::{Message, has_flag, with_flag};
 
@@ -23,6 +23,14 @@ pub struct Context<'a> {
     pub notify_default: bool,
     /// The message came back to a folder a rule moved it out of: no rule moves or archives it again.
     pub keep_in_folder: bool,
+    /// Previews only: `older_than`, `younger_than`, `arrived_days`, `arrived_hours` and `after` read this as the
+    /// message's arrival, not its internaldate.
+    pub arrived_at: Option<i64>,
+}
+
+/// When `msg` arrived, as far as the time conditions of `ctx` go.
+fn arrival(msg: &Message, ctx: &Context) -> i64 {
+    ctx.arrived_at.unwrap_or(msg.internaldate)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -62,13 +70,21 @@ impl Due {
     }
 }
 
-pub fn folder_needs_body(rules: &[CompiledRule], account: &str, folder: &str) -> bool {
-    rules.iter().any(|r| {
+/// The enabled rules of `account` that watch `folder`: the only ones `evaluate` can match on its mail.
+pub fn folder_rules<'a>(
+    rules: &'a [CompiledRule],
+    account: &'a str,
+    folder: &'a str,
+) -> impl Iterator<Item = &'a CompiledRule> {
+    rules.iter().filter(move |r| {
         r.rule.enabled
             && r.applies_to_account(account)
             && crate::folder_name::rule_names(r.folder(), folder)
-            && r.needs_body()
     })
+}
+
+pub fn folder_needs_body(rules: &[CompiledRule], account: &str, folder: &str) -> bool {
+    folder_rules(rules, account, folder).any(CompiledRule::needs_body)
 }
 
 pub fn evaluate(rules: &[CompiledRule], msg: &Message, ctx: &Context) -> Plan {
@@ -151,7 +167,7 @@ fn matching_with_waits<'r>(
         if !rule_matches(rule, msg, &flags, ctx) {
             return None;
         }
-        let waits = waits(rule, msg, &flags, ctx.now);
+        let waits = waits(rule, msg, &flags, ctx);
         if acting {
             if waits.is_none() {
                 for (flag, set) in rule.rule.actions.iter().filter_map(flag_change) {
@@ -169,7 +185,7 @@ fn matching_with_waits<'r>(
 }
 
 /// When `rule`'s actions run on `msg` carrying `flags`, or None when they run now: no `after`, or one has come.
-fn waits(rule: &CompiledRule, msg: &Message, flags: &str, now: i64) -> Option<Due> {
+fn waits(rule: &CompiledRule, msg: &Message, flags: &str, ctx: &Context) -> Option<Due> {
     if rule.after.is_empty() {
         return None;
     }
@@ -181,12 +197,12 @@ fn waits(rule: &CompiledRule, msg: &Message, flags: &str, now: i64) -> Option<Du
             Wait::Span(span) => {
                 // The same cutoff as `older_than`, so `after = "1h"` acts when `older_than = "1h"` would match.
                 if span
-                    .before(now)
-                    .is_some_and(|cutoff| msg.internaldate <= cutoff)
+                    .before(ctx.now)
+                    .is_some_and(|cutoff| arrival(msg, ctx) <= cutoff)
                 {
                     return None;
                 }
-                let end = span.after(msg.internaldate);
+                let end = span.after(arrival(msg, ctx));
                 due.at = due.at.into_iter().chain(end).min();
             }
         }
@@ -281,6 +297,13 @@ fn matches(c: &Conditions, msg: &Message, flags: &str, ctx: &Context) -> bool {
     {
         return false;
     }
+    if let Some(m) = &c.from_name
+        && !display_names(field(&msg.from_addr))
+            .iter()
+            .any(|name| m.is_match(name))
+    {
+        return false;
+    }
     if let Some(m) = &c.to
         && !m.is_address_match(field(&msg.to_addr))
     {
@@ -328,14 +351,21 @@ fn matches(c: &Conditions, msg: &Message, flags: &str, ctx: &Context) -> bool {
     if let Some(span) = c.older_than
         && span
             .before(ctx.now)
-            .is_none_or(|cutoff| msg.internaldate > cutoff)
+            .is_none_or(|cutoff| arrival(msg, ctx) > cutoff)
     {
         return false;
     }
     if let Some(span) = c.younger_than
         && span
             .before(ctx.now)
-            .is_some_and(|cutoff| msg.internaldate <= cutoff)
+            .is_some_and(|cutoff| arrival(msg, ctx) <= cutoff)
+    {
+        return false;
+    }
+    if c.arrived_days
+        .is_some_and(|days| !days.contains_at(arrival(msg, ctx)))
+        || c.arrived_hours
+            .is_some_and(|hours| !hours.contains_at(arrival(msg, ctx)))
     {
         return false;
     }
@@ -438,6 +468,7 @@ mod tests {
             mode: Mode::Normal,
             notify_default: true,
             keep_in_folder: false,
+            arrived_at: None,
         }
     }
 
@@ -1145,6 +1176,48 @@ actions = { flagged = true }
         assert!(fires(toml, &m));
     }
 
+    #[test]
+    fn arrived_days_and_hours_read_the_local_arrival_each_on_its_own() {
+        let local = |day: u32, h: u32, m: u32| {
+            // 2026-11-02 is a Monday.
+            let naive = chrono::NaiveDate::from_ymd_opt(2026, 11, day)
+                .and_then(|date| date.and_hms_opt(h, m, 0))
+                .unwrap();
+            crate::time::local(naive).unwrap()
+        };
+        let rule = |cond: &str| {
+            format!("[[rules]]\nname = \"x\"\n{cond}\nactions = {{ flagged = true }}\n")
+        };
+        let at = |ts: i64| msg("a@x", "p@x", "s", ts, false);
+        let weekend = rule("match.arrived_days = \"sat-sun\"");
+        assert!(fires(&weekend, &at(local(7, 12, 0))));
+        assert!(!fires(&weekend, &at(local(6, 23, 59))));
+        let night = rule("match.arrived_days = \"fri\"\nmatch.arrived_hours = \"22:00-07:00\"");
+        assert!(fires(&night, &at(local(6, 23, 0))));
+        assert!(
+            fires(&night, &at(local(6, 3, 0))),
+            "the weekday and the clock count apart"
+        );
+        assert!(!fires(&night, &at(local(7, 3, 0))));
+        assert!(!fires(&night, &at(local(6, 12, 0))));
+        let outside = rule("match.none = [{ arrived_hours = \"09:00-18:00\" }]");
+        assert!(fires(&outside, &at(local(3, 8, 0))));
+        assert!(!fires(&outside, &at(local(3, 9, 0))));
+    }
+
+    #[test]
+    fn arrived_hours_follow_the_preview_arrival() {
+        let id = identity();
+        let toml = "[[rules]]\nname = \"x\"\nmatch.arrived_hours = \"12:00-13:00\"\nactions = { flagged = true }\n";
+        let noon = chrono::NaiveDate::from_ymd_opt(2026, 11, 2)
+            .and_then(|date| date.and_hms_opt(12, 30, 0))
+            .unwrap();
+        let mut c = ctx(&id, 200);
+        c.arrived_at = crate::time::local(noon);
+        let m = msg("a@x", "p@x", "s", 0, false);
+        assert!(!evaluate(&rules(toml, 0), &m, &c).actions.is_empty());
+    }
+
     /// #411: a later rule sees the tag an earlier one set in the same pass, so "Junk, unless tagged Security" keeps
     /// the security alert in place on its first pass rather than only once the tag is synced back.
     #[test]
@@ -1298,6 +1371,48 @@ actions = { move = "Later" }
                 "{from}"
             );
         }
+    }
+
+    #[test]
+    fn from_name_matches_any_display_name_and_never_the_address() {
+        let toml = "[[rules]]\nname = \"pp\"\nmatch.from_name = { contains = \"paypal\" }\nmatch.none = [{ from_domain = \"paypal.com\" }]\nactions = { flagged = true }\n";
+        for (from, hit) in [
+            ("PayPal Service <billing@random.example>", true),
+            ("\"PayPal, Inc.\" <billing@random.example>", true),
+            ("\"Say \\\"PayPal\\\"\" <x@random.example>", true),
+            ("PayPal <service@paypal.com>", false),
+            ("paypal@random.example", false),
+            ("<paypal@random.example>", false),
+            ("Shop <paypal@random.example>", false),
+            ("a@x.example, PayPal <b@random.example>", true),
+        ] {
+            assert_eq!(
+                fires(toml, &msg(from, "p@x", "s", 100, false)),
+                hit,
+                "{from}"
+            );
+        }
+        let equals = "[[rules]]\nname = \"e\"\nmatch.from_name = { equals = \"Say \\\"PayPal\\\"\" }\nactions = { flagged = true }\n";
+        assert!(fires(
+            equals,
+            &msg(
+                "\"Say \\\"PayPal\\\"\" <x@y.example>",
+                "p@x",
+                "s",
+                100,
+                false
+            )
+        ));
+        assert!(!fires(
+            equals,
+            &msg(
+                "\"Say \\\"PayPal\\\" now\" <x@y.example>",
+                "p@x",
+                "s",
+                100,
+                false
+            )
+        ));
     }
 
     #[test]
@@ -1505,6 +1620,35 @@ actions.archive = true
         assert!(
             evaluate(&alone, &m, &ctx(&id, 1000)).notify,
             "a waiting move is no move yet"
+        );
+    }
+
+    #[test]
+    fn arrived_at_stands_in_for_the_arrival_of_old_mail() {
+        let id = identity();
+        let hold = rules(
+            "[[rules]]\nname = \"hold\"\nmatch.younger_than = \"15min\"\nactions = { flagged = true }\n",
+            0,
+        );
+        let shop = rules(SHOP_ALONE, 0);
+        let old = msg("a@shop.example", "pieter@example.com", "s", 1000, false);
+        let now = 10 * HOUR;
+        let arrived = |now| Context {
+            arrived_at: Some(10 * HOUR),
+            ..ctx(&id, now)
+        };
+        assert!(evaluate(&hold, &old, &ctx(&id, now)).actions.is_empty());
+        assert_eq!(evaluate(&hold, &old, &arrived(now)).actions.len(), 1);
+        assert!(
+            evaluate(&hold, &old, &arrived(now + 20 * 60))
+                .actions
+                .is_empty()
+        );
+        let waiting = evaluate(&shop, &old, &arrived(now));
+        assert_eq!(waiting.waiting[0].1.at, Some(now + 15 * 60));
+        assert_eq!(
+            names(&evaluate(&shop, &old, &arrived(now + 15 * 60)).actions),
+            [("shop", "move:Shopping".to_string())]
         );
     }
 

@@ -45,6 +45,7 @@ All three ignore case. A text condition can also be `{ list = "name" }` alone, f
 | Key | Takes | Matches |
 |---|---|---|
 | `from`, `to`, `cc`, `subject` | text condition | That header. |
+| `from_name` | text condition | A display name in From, without its quotes, never the address: `"PayPal Service" <billing@random.example>` has the name `PayPal Service`. A From without a display name never matches; with several addresses, any name may match. |
 | `body` | text condition | The plain-text body; HTML mail is converted. Postvak downloads the body of new mail in the rule's folder for this. |
 | `header` | a table of header names, each with a text condition | Any header, such as `match.header.List-Id = { contains = "github" }`, unfolded and with encoded words (`=?UTF-8?…?=`) decoded. Of a repeated header only the last copy, nearest the body, counts. Every header named must match. |
 | `from_domain` | domain, or a list of them; `{ list = "name" }` stands for a domain list's domains | The From address is in that domain or a subdomain of it: `paypal.com` matches `service@paypal.com` and `x@mail.paypal.com`, not `x@notpaypal.com`. Only the address counts, never the display name, and case does not matter. A list matches when any domain does. |
@@ -52,6 +53,8 @@ All three ignore case. A text condition can also be `{ list = "name" }` alone, f
 | `authenticated` | `true` or `false` | Your provider vouches that the mail comes from its From domain. Needs the account's `trusted_authserv_ids` (see [Authenticated mail](#authenticated-mail)). |
 | `older_than` | span: `30min`, `1h`, `2d`, `3w`, `6mo`, `1y` | Mail that arrived at least this long ago. Units may be written out (`2days`); a bare `m` is refused, since it could mean minutes or months. Months and years follow the calendar. |
 | `younger_than` | span, as for `older_than` | Mail that arrived less than this long ago: the opposite of `older_than`. |
+| `arrived_days` | days: `mon-fri`, `sat,sun`, `fri-mon` | Mail that arrived on one of these days, in local time. Write a day by its first three letters or in full; a range such as `fri-mon` wraps past Sunday. |
+| `arrived_hours` | hours: `09:00-18:00`, `22:00-07:00` | Mail that arrived between these local times, the end not included; an end before the start wraps past midnight. With `arrived_days` too, each is checked on its own: `fri` with `22:00-07:00` matches Friday 03:00, not Saturday 03:00. |
 | `larger_than` | size: `500KB`, `5MB`, `1GB` | Mail larger than this. A bare number is bytes, and `1KB` is 1024 bytes. |
 | `read` | `true` or `false` | Read or unread mail. |
 | `flagged` | `true` or `false` | Flagged or unflagged mail. |
@@ -61,7 +64,7 @@ All three ignore case. A text condition can also be `{ list = "name" }` alone, f
 | `any` | list of conditions | Holds when at least one entry holds. |
 | `none` | list of conditions | Holds when no entry holds. |
 
-Keys named after a header (`from`, `to`, `cc`, `from_domain`, `to_domain`) read that header alone; `to_me` and `alias` read every recipient.
+Keys named after a header (`from`, `from_name`, `to`, `cc`, `from_domain`, `to_domain`) read that header alone; `to_me` and `alias` read every recipient.
 
 Each entry of `any` and `none` is a set of conditions that must all hold, written like `match` itself, so `none = [{ from = …, subject = … }]` only excludes mail that matches both. To exclude either, give each its own entry. Entries can hold `any` and `none` again, up to eight levels deep. A rule whose conditions need the body never fires on a message whose body could not be downloaded, even through `none`.
 
@@ -85,7 +88,7 @@ match.any = [{ from_domain = [{ list = "kids" }, "doctor.example"] }, { subject 
 actions.flagged = true
 ```
 
-- A list of domains goes in `from_domain` and `to_domain`, mixed with domains written in place if you like. A table with one of `contains`, `equals` or `regex` is a text list, for `from`, `to`, `cc`, `subject`, `body` and a `header`; there it stands alone, with nothing else beside `list`.
+- A list of domains goes in `from_domain` and `to_domain`, mixed with domains written in place if you like. A table with one of `contains`, `equals` or `regex` is a text list, for `from`, `from_name`, `to`, `cc`, `subject`, `body` and a `header`; there it stands alone, with nothing else beside `list`.
 - A name `[lists]` does not have, or a list used where the other kind belongs, makes the file invalid, as does a malformed list that no rule uses yet. A list cannot refer to another list.
 - Changing a list changes every rule that uses it, and restarts each one's clock (see [When rules act](#when-rules-act)).
 - `rules list --json` and the MCP `rules_list` tool show the reference in `match` and, under `lists`, the values of each list the rule uses. `rules coverage` and `senders` name the lists beside the rules that match.
@@ -119,6 +122,21 @@ match.authenticated = true
 actions.move = "Finance"
 ```
 
+With `from_name` it catches display-name spoofing, mail whose name claims a sender its address does not back:
+
+```toml
+[lists]
+bank_names = { contains = ["paypal", "ing bank"] }
+banks = ["paypal.com", "ing.nl"]
+
+[[rules]]
+name = "display name says a bank, the address doesn't"
+match.from_name = { list = "bank_names" }
+match.none = [{ from_domain = { list = "banks" }, authenticated = true }]
+actions.tag = "$Suspicious"
+actions.flagged = true
+```
+
 ## Actions
 
 | Key | Effect |
@@ -140,7 +158,7 @@ A rule sees what the matching rules above it changed: `read`, `flagged` and `tag
 
 ## When rules act
 
-- On every sync, in file order. Because rules run again on each sync, `older_than`, `younger_than` and `read` can fire or stop firing later, for example an hour after you read a sign-in code, and actions waiting for `after` run on the first sync once it has come: a full sync runs every `sync_interval_secs` (120 seconds unless the account sets it), so up to that much later. To see what such a rule will do later, preview it as of that time: `postvak rules test --as-of 1h` or `--as-of 2026-11-01T14:00` (and `rules coverage --as-of`). Only the clock moves; the mail and whether it is read, flagged or tagged stay as they are now.
+- On every sync, in file order. Because rules run again on each sync, `older_than`, `younger_than` and `read` can fire or stop firing later, for example an hour after you read a sign-in code, and actions waiting for `after` run on the first sync once it has come: a full sync runs every `sync_interval_secs` (120 seconds unless the account sets it), so up to that much later. To see what such a rule will do later, preview it as of that time: `postvak rules test --as-of 1h` or `--as-of 2026-11-01T14:00` (and `rules coverage --as-of`). Only the clock moves; the mail and whether it is read, flagged or tagged stay as they are now. To see what a hold or an `after` wait does to new mail, add `--as-arrival`: every stored message counts as arrived just now, so `--as-arrival` shows a `younger_than = "15min"` hold catching it and `--as-arrival --as-of 20min` shows it let go.
 - A rule acts only on mail that arrived after the rule was enabled, so adding a rule never touches your history. `postvak rules apply-existing NAME` is the explicit opt-in. Run it with `--dry-run` first. When the rule would delete mail from the server for good (`delete`), it prints how many messages per account and how long their `.eml` backups are kept, then asks you to type `yes`; without a terminal it refuses unless you pass `--yes`. Moves and flags run without asking.
 - A rule approved with `postvak rules approve` acts on mail that arrives after the approval. A rule you add or enable by editing the file acts on mail that arrives after the next sync picks it up.
 - Renaming a rule, editing its account, folder, match or actions, changing a list it uses, or disabling and enabling it again, restarts that clock.
@@ -153,7 +171,7 @@ New INBOX mail notifies unless a rule moved, archived, junked or deleted it, or 
 
 On Linux a notification shows the sender and the subject with Postvak's icon, and asks the desktop for its new-mail sound, which follows Do Not Disturb and your volume; your desktop's notification settings list Postvak, so you can turn the sound or the popups off there. When one sync finds more than three new messages for an account, they come as one notification ("12 new messages", naming the senders), which opens the newest. Plasma shows the account beside Postvak's name. Clicking a notification opens the message in the window, which starts if it is not open. On Wayland an open window cannot bring itself to the front, so Plasma highlights it on the task bar and GNOME says "Postvak is ready".
 
-On macOS a notification shows the sender and the subject as Postvak's once Postvak.app is installed (the DMG or `brew install --cask postvak`); with only the `postvak` command installed, macOS shows them under its default sender. Bursts of new mail come as one notification, as on Linux. Clicking a notification opens the message in the window, which starts if it is not open. Notification Center keeps notifications until you clear them, so only the latest 64 open their message; a click on an older one just brings Postvak to the front. System Settings › Notifications › Postvak turns the sound or the banners off.
+On macOS a notification shows the sender and the subject as Postvak's once Postvak.app is installed (the DMG or `brew install --cask postvak`); with only the `postvak` command installed, macOS shows them under its default sender. A new-mail notification plays the system's notification sound, which follows Focus and your volume. Bursts of new mail come as one notification, as on Linux. Clicking a notification opens the message in the window, which starts if it is not open. Notification Center keeps notifications until you clear them, so only the latest 64 open their message; a click on an older one just brings Postvak to the front. System Settings › Notifications › Postvak turns the sound or the banners off.
 
 ## Examples
 
@@ -166,6 +184,7 @@ On macOS a notification shows the sender and the subject as Postvak's once Postv
 - [Flag certain people or topics](#flag-certain-people-or-topics): `any`, `flagged`
 - [Set large mail aside](#set-large-mail-aside): `larger_than`, `flagged`, `move`, `stop`
 - [Archive read mail after 30 days](#archive-read-mail-after-30-days): `read`, `older_than`, `archive`
+- [Quiet work mail after hours](#quiet-work-mail-after-hours): `from_domain`, `any`, `arrived_days`, `arrived_hours`, `notify`
 - [Tag spam by its score](#tag-spam-by-its-score): `header` with a regex, `tag`, `junk`
 
 ### Delete sign-in codes
@@ -285,6 +304,20 @@ match.read = true
 match.older_than = "30d"
 actions.archive = true
 ```
+
+### Quiet work mail after hours
+
+Work mail that arrives in the evening or at the weekend stays in INBOX without a notification:
+
+```toml
+[[rules]]
+name = "quiet work mail after hours"
+match.from_domain = "work.example"
+match.any = [{ arrived_days = "sat-sun" }, { none = [{ arrived_hours = "08:00-18:00" }] }]
+actions.notify = false
+```
+
+Local time is the time zone of the machine the daemon runs on. The Docker image has no time zone data and runs on UTC: mount the host's with `-v /etc/localtime:/etc/localtime:ro`.
 
 ### Tag spam by its score
 

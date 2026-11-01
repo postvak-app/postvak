@@ -159,6 +159,9 @@ struct RulesTestArgs {
     account: Option<String>,
     #[schemars(description = help::AS_OF)]
     as_of: Option<String>,
+    #[schemars(description = help::AS_ARRIVAL)]
+    #[serde(default)]
+    as_arrival: bool,
 }
 
 fn twenty() -> u32 {
@@ -204,6 +207,9 @@ struct CoverageArgs {
     limit: u32,
     #[schemars(description = help::AS_OF)]
     as_of: Option<String>,
+    #[schemars(description = help::AS_ARRIVAL)]
+    #[serde(default)]
+    as_arrival: bool,
 }
 
 /// The input schema of `rules_propose`: one rule's fields, or `rules`. Hosts refuse a top-level `anyOf`, so the two
@@ -823,13 +829,15 @@ fn dispatch(
         }
         "rules_coverage" => {
             let a: CoverageArgs = args(arguments)?;
+            let (now, arrived_at) = preview_clock(a.as_of.as_deref(), a.as_arrival)?;
             backend.rules_coverage(
                 a.account.as_deref(),
                 &a.folder,
                 a.include_pending,
                 a.group_by,
                 a.limit,
-                as_of(a.as_of.as_deref())?,
+                now,
+                arrived_at,
                 sight,
             )
         }
@@ -879,17 +887,15 @@ fn dispatch(
         },
         "rules_test" => {
             let a: RulesTestArgs = args(arguments)?;
-            match (a.rule, a.list, a.as_of) {
-                (Some(rule), None, as_of_text) => backend.rules_test(
-                    rule,
-                    a.account.as_deref(),
-                    as_of(as_of_text.as_deref())?,
-                    sight,
-                ),
-                (None, Some(list), None) => {
-                    backend.rules_test_list(&list, a.account.as_deref(), sight)
+            match (a.rule, a.list) {
+                (Some(rule), None) => {
+                    let (now, arrived_at) = preview_clock(a.as_of.as_deref(), a.as_arrival)?;
+                    backend.rules_test(rule, a.account.as_deref(), now, arrived_at, sight)
                 }
-                (None, Some(_), Some(_)) => bail!("as_of previews a rule, not a list change"),
+                (None, Some(_)) if a.as_of.is_some() || a.as_arrival => {
+                    bail!("as_of and as_arrival preview a rule, not a list change")
+                }
+                (None, Some(list)) => backend.rules_test_list(&list, a.account.as_deref(), sight),
                 _ => bail!("give one of rule and list"),
             }
         }
@@ -988,12 +994,9 @@ fn page_of((rows, next): (Vec<Value>, Option<String>)) -> Result<Value> {
     Ok(page)
 }
 
-/// The time a rules preview evaluates as of: `as_of`, or now.
-fn as_of(text: Option<&str>) -> Result<i64> {
-    let now = postvak_core::time::now();
-    text.map_or(Ok(now), |text| {
-        postvak_core::time::as_of(text, now).map_err(|e| anyhow!("as_of: {e}"))
-    })
+/// `time::preview_clock`, its error naming `as_of`.
+fn preview_clock(as_of: Option<&str>, as_arrival: bool) -> Result<(i64, Option<i64>)> {
+    postvak_core::time::preview_clock(as_of, as_arrival).map_err(|e| anyhow!("as_of: {e}"))
 }
 
 /// A count stands alone: no cursor and no fields beside it.

@@ -89,7 +89,7 @@ impl Fixture {
         app.reconnect = |_, _| Err(anyhow::anyhow!("no daemon in tests"));
         app.fetch_release = || Err(anyhow::anyhow!("no network in tests"));
         app.read_open_at_login = |_| Ok(false);
-        app.set_open_at_login = |_, _| Ok(String::new());
+        app.set_open_at_login = |_, _| Ok(Default::default());
         app.ask_save_path = |_, _, _| {
             let (_, answer) = std::sync::mpsc::channel();
             answer
@@ -252,6 +252,12 @@ impl Open {
     pub fn receive(&self, wires: &Wires, events: impl IntoIterator<Item = Event>) {
         wires.send(events);
         self.tick();
+    }
+
+    /// Clicks Apply to existing mail and waits for the check of what the rule would expunge.
+    pub fn apply_to_existing(&self) {
+        self.click("Apply to existing mail");
+        self.tick_until(|open| open.with(|live| live.app.expunge_check.is_none()));
     }
 
     /// Ticks until `done` holds; for answers from other threads.

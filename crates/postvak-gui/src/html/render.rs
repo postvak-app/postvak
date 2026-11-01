@@ -169,6 +169,8 @@ fn answer(
         Ok(reply) => reply,
         Err(_) => {
             *current = None;
+            // The panic may have left the shared font collection's lock poisoned: scan the fonts again next time.
+            FONTS.with_borrow_mut(|fonts| *fonts = None);
             Some(Reply::Failed { generation })
         }
     }
@@ -493,15 +495,27 @@ fn physical(points: f32, scale: f32) -> u32 {
     (points * scale).ceil() as u32
 }
 
-/// System fonts, except in tests: there the bundled Hanken Grotesk alone, so a render looks the same on every machine.
+thread_local! {
+    /// The render thread's fonts, scanned for its first message and cloned for each later one: a clone shares the
+    /// scanned system fonts and the font files already read, where a scan takes milliseconds per hundred fonts.
+    /// Fonts installed while the thread runs show from the next start.
+    static FONTS: std::cell::RefCell<Option<FontContext>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The thread's fonts for a new document: system fonts, except in tests, where the bundled Hanken Grotesk alone, so a
+/// render looks the same on every machine.
 fn fonts() -> Option<FontContext> {
+    Some(FONTS.with_borrow_mut(|fonts| fonts.get_or_insert_with(load_fonts).clone()))
+}
+
+fn load_fonts() -> FontContext {
     #[cfg(test)]
     {
         let font = include_bytes!("../../assets/fonts/HankenGrotesk-Medium.ttf");
-        Some(blitz_dom::build_single_font_ctx(font))
+        blitz_dom::build_single_font_ctx(font)
     }
     #[cfg(not(test))]
-    Some(system_fonts())
+    system_fonts()
 }
 
 /// The system fonts as Blitz would load them, plus symbol fonts for glyphs like `⟶` that the mail's fonts and the
@@ -1034,6 +1048,37 @@ mod tests {
             panic!("blitz fell over")
         });
         assert!(matches!(got[..], [Reply::Failed { generation: 7 }]));
+    }
+
+    #[test]
+    fn the_fonts_load_once_per_thread_and_a_mails_own_stay_with_it() {
+        assert!(FONTS.with_borrow(Option::is_none));
+        let Some(mut first) = fonts() else {
+            panic!("no fonts");
+        };
+        assert!(FONTS.with_borrow(Option::is_some));
+        // What a mail's `@font-face` registers goes into its document's copy, not the cached one.
+        let font = include_bytes!("../../assets/fonts/BricolageGrotesque-SemiBold.ttf");
+        first
+            .collection
+            .register_fonts(Blob::new(Arc::new(font.as_slice()) as _), None);
+        assert!(first.collection.family_id("Bricolage Grotesque").is_some());
+        let Some(mut next) = fonts() else {
+            panic!("no fonts");
+        };
+        assert_eq!(next.collection.family_id("Bricolage Grotesque"), None);
+        assert!(next.collection.family_id("Hanken Grotesk").is_some());
+    }
+
+    #[test]
+    fn a_panic_drops_the_cached_fonts() {
+        let mut current = None;
+        answer(&mut current, load(1, "<p>x</p>", 400.0), &mut handle);
+        assert!(FONTS.with_borrow(Option::is_some));
+        answer(&mut current, load(2, "<p>x</p>", 400.0), &mut |_, _| {
+            panic!("blitz fell over")
+        });
+        assert!(FONTS.with_borrow(Option::is_none));
     }
 
     /// The first strip of `html` laid out at `width`, as colours.

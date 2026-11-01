@@ -1,6 +1,6 @@
 //! The add-account form without a toolkit: what its fields mean, and the save, which runs on a thread since the OS
 //! keyring may prompt and the first sync that tests the login takes a while. The first-run window (`lib.rs`) and the
-//! mail window (`state.rs`) both use it.
+//! mail window (`state`) both use it.
 use std::fmt;
 use std::sync::mpsc::{self, Receiver};
 

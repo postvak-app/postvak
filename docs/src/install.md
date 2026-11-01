@@ -52,7 +52,13 @@ Keep the file where you run it from: the daemon it starts, `service install` and
 
 ## Flatpak on Linux
 
-Postvak has its own Flatpak repository, so it installs as a desktop app and `flatpak update` (or your software centre) brings each new release. The Freedesktop runtime it needs comes from Flathub:
+Postvak has its own Flatpak repository, so it installs as a desktop app and `flatpak update` (or your software centre) brings each new release. The quickest way is its `.flatpakref`, which adds the repository, and Flathub for the Freedesktop runtime it needs, in one step; opening [the file](https://postvak.pataar.nl/flatpak/postvak.flatpakref) in a software centre such as Discover or GNOME Software does the same:
+
+```sh
+flatpak install --user https://postvak.pataar.nl/flatpak/postvak.flatpakref
+```
+
+Or add the remotes yourself:
 
 ```sh
 flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
@@ -73,10 +79,10 @@ The sandbox may use the network, the display, the password keyring (Secret Servi
 
 Two commands work differently inside the sandbox, because it cannot write files for programs outside it:
 
-- `mcp install json` prints an entry that runs `flatpak run io.github.postvak_app.postvak mcp`; add it to your MCP host yourself. `mcp install claude-code` prints the `claude mcp add` commands to run, and `mcp install claude-desktop` says which `mcp install json` to run instead.
+- `mcp install json` prints an entry that runs `flatpak run io.github.postvak_app.postvak mcp`; add it to your MCP host yourself. `mcp install claude-code`, `codex`, `copilot` and `gemini` print the commands to run, and `mcp install claude-desktop`, `cursor` and `opencode` print the entry to add to that host's file.
 - `service install` prints a systemd user unit that runs `flatpak run io.github.postvak_app.postvak run`, and the commands to enable it; `service remove` prints the commands to undo that.
 
-Opening at login (File ▸ Open at login, or `autostart on`) works in the sandbox too: Postvak asks the desktop through its Background portal, which writes the host's autostart entry and may ask you first.
+Opening at login (File ▸ Open at login, or `autostart on`) works in the sandbox too: Postvak asks the desktop through its Background portal, which writes the host's autostart entry and may ask you first. Only the portals of Plasma and GNOME offer it; elsewhere, such as on Hyprland, Postvak says so and which line to add to your compositor's startup instead (see [below](#hyprland-sway-and-other-compositors)).
 
 ## Desktop entry on Linux
 
@@ -89,3 +95,22 @@ packaging/linux/install.sh --uninstall                    # add the same --prefi
 ```
 
 The entry runs `postvak gui`, so `postvak` must be on your `PATH`. The window's Wayland app id, `io.github.postvak_app.postvak`, matches the entry, so docks and task switchers show the right name and icon.
+
+## Hyprland, Sway and other compositors
+
+Postvak reaches the desktop only through freedesktop standards, so it runs on a Wayland compositor such as Hyprland (and Omarchy, which is built on it), Sway, niri, river or labwc, and on an X11 window manager such as i3, as well as on Plasma and GNOME. A compositor brings less of a desktop with it, so what works depends on what else you run:
+
+- **Tray:** a bar with a tray, such as Waybar's `tray` module, shows Postvak's icon, and closing the window keeps Postvak there. Without one, closing the window quits.
+- **Notifications:** any notification daemon, such as mako, dunst or SwayNotificationCenter, shows new mail. A click opens the message where the daemon runs a notification's default action on click: mako does, dunst only with `mouse_left_click = do_action`.
+- **Keyring:** the password keyring needs a Secret Service, such as GNOME Keyring or KeePassXC with its Secret Service on. Without one, use a password command (see [Accounts](accounts.md)).
+- **Theme, reduced motion and Save as…:** these come from the Settings and FileChooser portals, which `xdg-desktop-portal-gtk` provides; the compositor's own portal (`xdg-desktop-portal-hyprland`, `-wlr`) lacks them. Without the Settings portal the System theme may not follow a dark desktop, so pick Light or Dark under View ▸ Theme; without the FileChooser portal Save as… fails, and the save button still saves to Downloads.
+- **Unread count:** there is no dock entry to show it on, so it shows in the tray icon's tooltip only.
+- **Window rules:** the window's Wayland app id (its class in Hyprland) is `io.github.postvak_app.postvak`.
+
+**Opening at login** (File ▸ Open at login, or `postvak autostart on`) writes an entry in `~/.config/autostart`, which these compositors do not read themselves. A session manager that has systemd start those entries, such as uwsm, does; Omarchy starts Hyprland that way, so the entry works there. Without one, Postvak keeps the entry but says it may not open and which line to add instead, as `postvak autostart status` does too. On Hyprland that is, in `~/.config/hypr/hyprland.conf`:
+
+```
+exec-once = postvak gui --background
+```
+
+Sway and i3 take `exec postvak gui --background` in their config, niri `spawn-at-startup "postvak" "gui" "--background"` in `config.kdl`. Postvak's own line names the full path of the binary or AppImage it runs from. In the Flatpak, the command is `flatpak run io.github.postvak_app.postvak gui --background`, as these compositors' portals have no Background portal for Postvak to ask.

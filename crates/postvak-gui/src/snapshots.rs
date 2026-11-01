@@ -625,7 +625,7 @@ fn apply_confirm() {
     open.with(|live| live.app.select_view(View::Rules));
     open.tick();
     open.click("tidy");
-    open.click("Apply to existing mail");
+    open.apply_to_existing();
     open.tick();
     assert_eq!(open.find("Delete and apply").len(), 1);
     snapshot(&open, "gui_apply_confirm");

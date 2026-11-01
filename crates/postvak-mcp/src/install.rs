@@ -1,4 +1,4 @@
-//! `postvak mcp install`: registers the server with Claude Desktop or Claude Code, or prints a snippet for other hosts.
+//! `postvak mcp install`: registers the server with an agent host, through its CLI or its config file, or prints a snippet for other hosts.
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
@@ -11,7 +11,12 @@ use postvak_core::paths::{flatpak_id, stable_exe, write_atomic_keeping_dir_mode}
 pub enum Target {
     ClaudeCode,
     ClaudeDesktop,
+    Codex,
+    Copilot,
+    Cursor,
+    Gemini,
     Json,
+    Opencode,
 }
 
 /// The command a host runs. The binary path is absolute: hosts started from the Dock do not inherit the shell's PATH.
@@ -83,22 +88,73 @@ pub fn json_snippet(entry: &Entry) -> String {
     format!("{snippet:#}\n")
 }
 
-/// Claude Desktop's config: `~/Library/Application Support/Claude/` on macOS, `~/.config/Claude/` on Linux.
-pub fn claude_desktop_path() -> Result<PathBuf> {
-    let dirs = directories::BaseDirs::new().context("no home directory found")?;
-    Ok(dirs
-        .config_dir()
-        .join("Claude")
-        .join("claude_desktop_config.json"))
+/// A host whose config Postvak edits itself: its name, the file, and the key that holds its servers.
+struct ConfigFile {
+    app: &'static str,
+    path: PathBuf,
+    section: &'static str,
 }
 
-/// Sets `mcpServers.postvak`, or removes it when `entry` is None, keeping every other key.
+impl ConfigFile {
+    fn of(target: Target) -> Result<Option<ConfigFile>> {
+        let dirs = directories::BaseDirs::new().context("no home directory found")?;
+        let (app, path, section) = match target {
+            // `~/Library/Application Support/Claude/` on macOS, `~/.config/Claude/` on Linux.
+            Target::ClaudeDesktop => (
+                "Claude Desktop",
+                dirs.config_dir().join("Claude/claude_desktop_config.json"),
+                "mcpServers",
+            ),
+            Target::Cursor => (
+                "Cursor",
+                dirs.home_dir().join(".cursor/mcp.json"),
+                "mcpServers",
+            ),
+            // opencode reads `$XDG_CONFIG_HOME` or `~/.config` on macOS too, where `config_dir` is elsewhere.
+            Target::Opencode => (
+                "opencode",
+                std::env::var_os("XDG_CONFIG_HOME")
+                    .map(PathBuf::from)
+                    .filter(|dir| dir.is_absolute())
+                    .unwrap_or_else(|| dirs.home_dir().join(".config"))
+                    .join("opencode/opencode.json"),
+                "mcp",
+            ),
+            Target::ClaudeCode
+            | Target::Codex
+            | Target::Copilot
+            | Target::Gemini
+            | Target::Json => {
+                return Ok(None);
+            }
+        };
+        Ok(Some(ConfigFile { app, path, section }))
+    }
+
+    /// The server's entry under `section`: opencode takes the whole command line as one array.
+    fn server(&self, entry: &Entry) -> Value {
+        match self.section {
+            "mcp" => json!({ "type": "local", "command": entry.argv(), "enabled": true }),
+            _ => entry.server(),
+        }
+    }
+
+    fn snippet(&self, entry: &Entry) -> String {
+        format!(
+            "{:#}\n",
+            json!({ self.section: { "postvak": self.server(entry) } })
+        )
+    }
+}
+
+/// Sets `<section>.postvak` to `server`, or removes it when `server` is None, keeping every other key.
 /// Returns the new file text, or None when there is nothing to change. The old file is copied to `.bak`
 /// unless it already is Postvak's own output, so the user's original survives re-runs. A file that is
 /// not a JSON object is refused untouched; `dry_run` writes nothing.
-pub fn edit_claude_desktop(
+pub fn edit_config(
     path: &Path,
-    entry: Option<&Entry>,
+    section: &str,
+    server: Option<Value>,
     dry_run: bool,
 ) -> Result<Option<String>> {
     let old = match std::fs::read_to_string(path) {
@@ -106,7 +162,7 @@ pub fn edit_claude_desktop(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
     };
-    if old.is_none() && entry.is_none() {
+    if old.is_none() && server.is_none() {
         return Ok(None);
     }
     let mut config: Value = match old.as_deref() {
@@ -122,21 +178,21 @@ pub fn edit_claude_desktop(
     let Some(root) = config.as_object_mut() else {
         bail!("{} is not a JSON object", path.display());
     };
-    match entry {
-        Some(entry) => {
+    match server {
+        Some(server) => {
             let Some(servers) = root
-                .entry("mcpServers")
+                .entry(section)
                 .or_insert_with(|| json!({}))
                 .as_object_mut()
             else {
-                bail!("mcpServers in {} is not a JSON object", path.display());
+                bail!("{section} in {} is not a JSON object", path.display());
             };
-            servers.insert("postvak".into(), entry.server());
+            servers.insert("postvak".into(), server);
         }
-        None => match root.get_mut("mcpServers") {
+        None => match root.get_mut(section) {
             Some(servers) => {
                 let Some(servers) = servers.as_object_mut() else {
-                    bail!("mcpServers in {} is not a JSON object", path.display());
+                    bail!("{section} in {} is not a JSON object", path.display());
                 };
                 if servers.remove("postvak").is_none() {
                     return Ok(None);
@@ -155,18 +211,42 @@ pub fn edit_claude_desktop(
     Ok(Some(text))
 }
 
-/// `claude` invocations at user scope; an add follows a remove so a re-run replaces the old entry.
-pub fn claude_code_commands(entry: Option<&Entry>) -> Vec<Vec<String>> {
+/// The program that registers servers and the host's name, for hosts that have one.
+fn host_cli(target: Target) -> Option<(&'static str, &'static str)> {
+    match target {
+        Target::ClaudeCode => Some(("claude", "Claude Code")),
+        Target::Codex => Some(("codex", "Codex")),
+        Target::Copilot => Some(("copilot", "Copilot CLI")),
+        Target::Gemini => Some(("gemini", "Gemini CLI")),
+        Target::ClaudeDesktop | Target::Cursor | Target::Json | Target::Opencode => None,
+    }
+}
+
+/// The host's own invocations at user scope; an add follows a remove so a re-run replaces the old entry.
+pub fn cli_commands(program: &str, entry: Option<&Entry>) -> Vec<Vec<String>> {
+    // Codex and Copilot keep servers per user only; Claude Code and Gemini default to the project.
+    let scope: &[&str] = match program {
+        "claude" | "gemini" => &["--scope", "user"],
+        _ => &[],
+    };
     let base = |verb: &str| {
-        ["claude", "mcp", verb, "--scope", "user", "postvak"]
-            .map(String::from)
-            .to_vec()
+        let mut words = vec![program, "mcp", verb];
+        words.extend(scope);
+        words.push("postvak");
+        words.into_iter().map(String::from).collect::<Vec<_>>()
     };
     let mut commands = vec![base("remove")];
     if let Some(entry) = entry {
         let mut add = base("add");
-        add.push("--".into());
-        add.extend(entry.argv());
+        // Gemini takes the command as a positional and only the arguments after `--`.
+        if program == "gemini" {
+            add.push(entry.command.display().to_string());
+            add.push("--".into());
+            add.extend(entry.args.iter().cloned());
+        } else {
+            add.push("--".into());
+            add.extend(entry.argv());
+        }
         commands.push(add);
     }
     commands
@@ -226,34 +306,28 @@ fn install_from(
         None => entry,
     };
     let wanted = (!remove).then_some(&entry);
-    let out = match (target, flatpak) {
-        (Target::Json, _) => json_snippet(&entry),
-        // The sandbox cannot reach Claude Desktop's config; Claude Code is not on its PATH, so that prints commands.
-        (Target::ClaudeDesktop, Some(_)) if remove => {
-            bail!(
-                "the Flatpak cannot edit Claude Desktop's config; remove mcpServers.postvak from claude_desktop_config.json yourself"
-            )
+    let out = if let Some((program, app)) = host_cli(target) {
+        // In the Flatpak the host's CLI is not on PATH, so this prints the commands.
+        install_cli(program, app, wanted, remove, dry_run)?
+    } else if let Some(file) = ConfigFile::of(target)? {
+        // The sandbox cannot reach another app's config.
+        match flatpak {
+            Some(_) if remove => bail!(
+                "the Flatpak cannot edit {}'s config; remove {}.postvak from {} yourself",
+                file.app,
+                file.section,
+                file.path.display()
+            ),
+            Some(_) => bail!(
+                "the Flatpak cannot edit {}'s config; add this to {} yourself:\n{}",
+                file.app,
+                file.path.display(),
+                file.snippet(&entry)
+            ),
+            None => install_file(&file, wanted, &entry, dry_run)?,
         }
-        (Target::ClaudeDesktop, Some(id)) => {
-            let mut json = [
-                "flatpak", "run", id, "mcp", "install", "json", "--scopes", scopes,
-            ]
-            .map(String::from)
-            .to_vec();
-            for account in accounts {
-                json.extend(["--account".to_string(), account.clone()]);
-            }
-            if let Some(dir) = &save_dir {
-                json.extend(["--save-dir".to_string(), dir.display().to_string()]);
-            }
-            bail!(
-                "the Flatpak cannot edit Claude Desktop's config; run `{}` and add that entry to \
-                 claude_desktop_config.json yourself",
-                shell_words(&json)
-            )
-        }
-        (Target::ClaudeDesktop, None) => install_claude_desktop(wanted, &entry, dry_run)?,
-        (Target::ClaudeCode, _) => install_claude_code(wanted, remove, dry_run)?,
+    } else {
+        json_snippet(&entry)
     };
     let hint = (!remove).then(|| {
         format!(
@@ -265,31 +339,42 @@ fn install_from(
 }
 
 /// Real runs never echo the config: it may hold other servers' secrets.
-fn install_claude_desktop(wanted: Option<&Entry>, entry: &Entry, dry_run: bool) -> Result<String> {
-    let path = claude_desktop_path()?;
-    let changed = edit_claude_desktop(&path, wanted, dry_run)?.is_some();
-    let path = path.display();
+fn install_file(
+    file: &ConfigFile,
+    wanted: Option<&Entry>,
+    entry: &Entry,
+    dry_run: bool,
+) -> Result<String> {
+    let server = wanted.map(|entry| file.server(entry));
+    let changed = edit_config(&file.path, file.section, server, dry_run)?.is_some();
+    let (app, path, section) = (file.app, file.path.display(), file.section);
     Ok(match (wanted.is_some(), changed, dry_run) {
         (false, false, _) => format!("nothing to remove in {path}\n"),
-        (false, true, true) => format!("would remove mcpServers.postvak from {path}\n"),
+        (false, true, true) => format!("would remove {section}.postvak from {path}\n"),
         (false, true, false) => {
-            format!("removed Postvak from {path}\nRestart Claude Desktop to apply.\n")
+            format!("removed Postvak from {path}\nRestart {app} to apply.\n")
         }
-        (true, _, true) => format!("would write to {path}:\n{}", json_snippet(entry)),
+        (true, _, true) => format!("would write to {path}:\n{}", file.snippet(entry)),
         (true, _, false) => {
-            format!("updated {path}\nRestart Claude Desktop to load Postvak.\n")
+            format!("updated {path}\nRestart {app} to load Postvak.\n")
         }
     })
 }
 
-fn install_claude_code(wanted: Option<&Entry>, remove: bool, dry_run: bool) -> Result<String> {
-    let commands = claude_code_commands(wanted);
-    if dry_run || !on_path("claude") {
-        let mut out = String::from(if dry_run {
-            "would run:\n"
+fn install_cli(
+    program: &str,
+    app: &str,
+    wanted: Option<&Entry>,
+    remove: bool,
+    dry_run: bool,
+) -> Result<String> {
+    let commands = cli_commands(program, wanted);
+    if dry_run || !on_path(program) {
+        let mut out = if dry_run {
+            "would run:\n".to_string()
         } else {
-            "claude is not on PATH; run:\n"
-        });
+            format!("{program} is not on PATH; run:\n")
+        };
         for command in &commands {
             out.push_str(&format!("  {}\n", shell_words(command)));
         }
@@ -306,9 +391,9 @@ fn install_claude_code(wanted: Option<&Entry>, remove: bool, dry_run: bool) -> R
         }
     }
     Ok(if remove {
-        "removed from Claude Code\n".into()
+        format!("removed from {app}\n")
     } else {
-        "registered with Claude Code at user scope\n".into()
+        format!("registered with {app} at user scope\n")
     })
 }
 
@@ -364,7 +449,7 @@ mod tests {
     }
 
     #[test]
-    fn in_a_flatpak_claude_desktop_says_what_to_run_with_the_same_flags() {
+    fn in_a_flatpak_a_config_host_gets_the_entry_to_add_by_hand() {
         let accounts = ["work".to_string()];
         let id = Some("io.github.postvak_app.postvak");
         let error = install_from(
@@ -377,10 +462,20 @@ mod tests {
             id,
         )
         .unwrap_err();
+        let error = error.to_string();
+        assert!(error.contains("claude_desktop_config.json"), "{error}");
         assert!(
-            error
-                .to_string()
-                .contains("`flatpak run io.github.postvak_app.postvak mcp install json --scopes read --account work`"),
+            error.contains(
+                r#""args": [
+        "run",
+        "io.github.postvak_app.postvak",
+        "mcp",
+        "--scopes",
+        "read",
+        "--account",
+        "work"
+      ]"#
+            ),
             "{error}"
         );
         let error =
@@ -395,7 +490,7 @@ mod tests {
     fn desktop_config_is_created_when_missing() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("Claude/claude_desktop_config.json");
-        edit_claude_desktop(&path, Some(&entry()), false).unwrap();
+        edit_config(&path, "mcpServers", Some(entry().server()), false).unwrap();
         let config: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(config["mcpServers"]["postvak"]["args"][0], "mcp");
@@ -407,7 +502,7 @@ mod tests {
         let path = dir.path().join("claude_desktop_config.json");
         let old = r#"{"theme":"dark","mcpServers":{"other":{"command":"x"}}}"#;
         std::fs::write(&path, old).unwrap();
-        edit_claude_desktop(&path, Some(&entry()), false).unwrap();
+        edit_config(&path, "mcpServers", Some(entry().server()), false).unwrap();
         let config: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(config["theme"], "dark");
@@ -424,7 +519,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("claude_desktop_config.json");
         std::fs::write(&path, "{ not json").unwrap();
-        assert!(edit_claude_desktop(&path, Some(&entry()), false).is_err());
+        assert!(edit_config(&path, "mcpServers", Some(entry().server()), false).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
         assert!(!dir.path().join("claude_desktop_config.json.bak").exists());
     }
@@ -442,14 +537,22 @@ mod tests {
             r#"{"mcpServers":{"other":{"command":"x"},"postvak":{"command":"p"}}}"#,
         )
         .unwrap();
-        assert!(edit_claude_desktop(&path, None, false).unwrap().is_some());
+        assert!(
+            edit_config(&path, "mcpServers", None, false)
+                .unwrap()
+                .is_some()
+        );
         let config = read_json(&path);
         assert!(config["mcpServers"].get("postvak").is_none());
         assert_eq!(config["mcpServers"]["other"]["command"], "x");
 
         let bare = dir.path().join("bare.json");
         std::fs::write(&bare, r#"{"theme":"dark"}"#).unwrap();
-        assert!(edit_claude_desktop(&bare, None, false).unwrap().is_none());
+        assert!(
+            edit_config(&bare, "mcpServers", None, false)
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             std::fs::read_to_string(&bare).unwrap(),
             r#"{"theme":"dark"}"#
@@ -457,7 +560,7 @@ mod tests {
 
         let missing = dir.path().join("none.json");
         assert!(
-            edit_claude_desktop(&missing, None, false)
+            edit_config(&missing, "mcpServers", None, false)
                 .unwrap()
                 .is_none()
         );
@@ -468,7 +571,7 @@ mod tests {
     fn dry_run_writes_neither_config_nor_backup() {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("none.json");
-        let preview = edit_claude_desktop(&missing, Some(&entry()), true)
+        let preview = edit_config(&missing, "mcpServers", Some(entry().server()), true)
             .unwrap()
             .unwrap();
         assert!(preview.contains("postvak") && !missing.exists());
@@ -476,7 +579,7 @@ mod tests {
         let path = dir.path().join("claude_desktop_config.json");
         let old = r#"{"theme":"dark"}"#;
         std::fs::write(&path, old).unwrap();
-        edit_claude_desktop(&path, Some(&entry()), true).unwrap();
+        edit_config(&path, "mcpServers", Some(entry().server()), true).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), old);
         assert!(!dir.path().join("claude_desktop_config.json.bak").exists());
     }
@@ -488,14 +591,14 @@ mod tests {
         let bak = dir.path().join("claude_desktop_config.json.bak");
         let original = r#"{"theme":"dark"}"#;
         std::fs::write(&path, original).unwrap();
-        edit_claude_desktop(&path, Some(&entry()), false).unwrap();
+        edit_config(&path, "mcpServers", Some(entry().server()), false).unwrap();
         let wider = Entry::new(
             Path::new("/opt/homebrew/bin/postvak"),
             "read,read:bodies",
             &[],
             None,
         );
-        edit_claude_desktop(&path, Some(&wider), false).unwrap();
+        edit_config(&path, "mcpServers", Some(wider.server()), false).unwrap();
         assert_eq!(std::fs::read_to_string(&bak).unwrap(), original);
         assert_eq!(
             read_json(&path)["mcpServers"]["postvak"]["args"][2],
@@ -510,7 +613,7 @@ mod tests {
         let path = dir.path().join("claude_desktop_config.json");
         std::fs::write(&path, "{}\n ").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        edit_claude_desktop(&path, Some(&entry()), false).unwrap();
+        edit_config(&path, "mcpServers", Some(entry().server()), false).unwrap();
         let bak = dir.path().join("claude_desktop_config.json.bak");
         assert_eq!(
             std::fs::metadata(bak).unwrap().permissions().mode() & 0o777,
@@ -525,9 +628,10 @@ mod tests {
         let folder = dir.path().join("Claude");
         std::fs::create_dir(&folder).unwrap();
         std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
-        edit_claude_desktop(
+        edit_config(
             &folder.join("claude_desktop_config.json"),
-            Some(&entry()),
+            "mcpServers",
+            Some(entry().server()),
             false,
         )
         .unwrap();
@@ -539,7 +643,7 @@ mod tests {
 
     #[test]
     fn claude_code_replaces_an_existing_entry() {
-        let commands = claude_code_commands(Some(&entry()));
+        let commands = cli_commands("claude", Some(&entry()));
         assert_eq!(
             commands[0],
             ["claude", "mcp", "remove", "--scope", "user", "postvak"]
@@ -549,7 +653,83 @@ mod tests {
             ["claude", "mcp", "add", "--scope", "user", "postvak", "--"]
         );
         assert_eq!(commands[1][7], "/opt/homebrew/bin/postvak");
-        assert_eq!(claude_code_commands(None).len(), 1);
+        assert_eq!(cli_commands("claude", None).len(), 1);
+    }
+
+    #[test]
+    fn codex_and_copilot_take_the_whole_command_after_the_separator() {
+        for program in ["codex", "copilot"] {
+            let commands = cli_commands(program, Some(&entry()));
+            assert_eq!(commands[0], [program, "mcp", "remove", "postvak"]);
+            assert_eq!(
+                shell_words(&commands[1]),
+                format!(
+                    "{program} mcp add postvak -- /opt/homebrew/bin/postvak mcp --scopes read,rules:propose --account work"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn gemini_takes_the_command_before_the_separator_and_its_arguments_after() {
+        let commands = cli_commands("gemini", Some(&entry()));
+        assert_eq!(
+            commands[0],
+            ["gemini", "mcp", "remove", "--scope", "user", "postvak"]
+        );
+        assert_eq!(
+            shell_words(&commands[1]),
+            "gemini mcp add --scope user postvak /opt/homebrew/bin/postvak -- mcp --scopes read,rules:propose --account work"
+        );
+    }
+
+    #[test]
+    fn opencode_takes_the_command_line_as_one_array_under_mcp() {
+        let file = ConfigFile {
+            app: "opencode",
+            path: PathBuf::new(),
+            section: "mcp",
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("opencode.json");
+        std::fs::write(
+            &path,
+            r#"{"$schema":"https://opencode.ai/config.json","theme":"dark"}"#,
+        )
+        .unwrap();
+        edit_config(&path, "mcp", Some(file.server(&entry())), false).unwrap();
+        let config = read_json(&path);
+        assert_eq!(config["theme"], "dark");
+        assert_eq!(
+            config["mcp"]["postvak"],
+            serde_json::json!({
+                "type": "local",
+                "command": ["/opt/homebrew/bin/postvak", "mcp", "--scopes", "read,rules:propose", "--account", "work"],
+                "enabled": true
+            })
+        );
+        assert!(edit_config(&path, "mcp", None, false).unwrap().is_some());
+        assert!(read_json(&path)["mcp"].get("postvak").is_none());
+    }
+
+    #[test]
+    fn every_target_has_exactly_one_way_in() {
+        use Target::*;
+        for target in [
+            ClaudeCode,
+            ClaudeDesktop,
+            Codex,
+            Copilot,
+            Cursor,
+            Gemini,
+            Json,
+            Opencode,
+        ] {
+            let ways = usize::from(host_cli(target).is_some())
+                + usize::from(ConfigFile::of(target).unwrap().is_some())
+                + usize::from(target == Json);
+            assert_eq!(ways, 1, "{target:?}");
+        }
     }
 
     #[test]
@@ -576,7 +756,7 @@ mod tests {
         std::fs::write(&target, "{}").unwrap();
         let link = dir.path().join("claude_desktop_config.json");
         std::os::unix::fs::symlink(&target, &link).unwrap();
-        edit_claude_desktop(&link, Some(&entry()), false).unwrap();
+        edit_config(&link, "mcpServers", Some(entry().server()), false).unwrap();
         assert!(
             std::fs::symlink_metadata(&link)
                 .unwrap()

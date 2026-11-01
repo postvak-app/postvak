@@ -82,7 +82,8 @@ impl RulesState {
 }
 
 /// What leaves the rules valid but not doing what was meant: `rules::warnings`, then what the accounts' folders show,
-/// read through the stores the window holds open rather than opening each again.
+/// read through the stores the window holds open rather than opening each again; `rules::check_warnings` is the same
+/// list for `rules check`.
 fn warnings(
     path: &Path,
     rules: &[Rule],
@@ -253,7 +254,7 @@ pub(crate) fn dry_run(
             .identity()
             .map_err(|e| e.to_string())
             .and_then(|identity| {
-                postvak_core::actions::planned(&compiled, &store, settings, &identity, now)
+                postvak_core::actions::planned(&compiled, &store, settings, &identity, now, None)
                     .map_err(|e| e.to_string())
             });
         match planned {
@@ -1175,7 +1176,7 @@ mod tests {
         let (open, wires) = view(&fx, View::Rules);
         let warning = "work: would permanently delete 1 message from the server; .eml backups kept locally for 30 days";
         open.click("codes");
-        open.click("Apply to existing mail");
+        open.apply_to_existing();
         open.tick();
         assert!(wires.sent().is_empty(), "sent before confirming");
         assert_eq!(open.find(warning).len(), 1);
@@ -1183,7 +1184,7 @@ mod tests {
         open.tick();
         assert!(open.find(warning).is_empty());
         assert!(wires.sent().is_empty(), "cancel sent it");
-        open.click("Apply to existing mail");
+        open.apply_to_existing();
         open.tick();
         open.click("Delete and apply");
         open.tick();
@@ -1207,7 +1208,7 @@ mod tests {
         let (open, wires) = view(&fx, View::Rules);
         let apply = |rule: &str| {
             open.click(rule);
-            open.click("Apply to existing mail");
+            open.apply_to_existing();
             open.press("escape");
         };
         apply("only-work");
@@ -1251,7 +1252,7 @@ mod tests {
         std::fs::write(fx.paths.rules_file(), gone).unwrap();
         let (open, wires) = view(&fx, View::Rules);
         open.click("old");
-        open.click("Apply to existing mail");
+        open.apply_to_existing();
         assert!(wires.sent().is_empty());
         let why = "rule 'old' names account 'gone', which this window does not list";
         assert_eq!(
@@ -2353,7 +2354,7 @@ mod editor_tests {
         editor(&open, |e| {
             e.invoke_name_edited("receipts".into());
             e.invoke_add_condition();
-            e.invoke_field_chosen(0, 3);
+            e.invoke_field_chosen(0, 4);
             e.invoke_value_edited(0, "receipt".into());
             e.invoke_action_chosen(6);
             e.invoke_action_value_edited(0, "Receipts".into());
@@ -2378,7 +2379,7 @@ mod editor_tests {
         editor(&open, |e| {
             e.invoke_name_edited("kids".into());
             e.invoke_add_condition();
-            e.invoke_field_chosen(0, 6);
+            e.invoke_field_chosen(0, 7);
             e.invoke_op_chosen(0, 1);
             e.invoke_list_chosen(0, 0);
             e.invoke_action_chosen(2);
@@ -2457,10 +2458,10 @@ mod editor_tests {
         open.press("escape");
         open.click("newsletters");
         editor(&open, |e| e.invoke_value_edited(0, "letters@".into()));
-        open.click("Apply to existing mail");
+        open.apply_to_existing();
         assert!(wires.sent().is_empty(), "an unsaved edit is not applied");
         editor(&open, |e| e.invoke_value_edited(0, "news@".into()));
-        open.click("Apply to existing mail");
+        open.apply_to_existing();
         assert_eq!(wires.sent().len(), 1);
     }
 
@@ -2774,7 +2775,10 @@ mod editor_tests {
             let draft = live.app.rule_draft.clone().unwrap();
             draft.conditions.iter().map(|c| c.field).collect::<Vec<_>>()
         });
-        assert_eq!(fields, [crate::draft::Field::From, crate::draft::Field::To]);
+        assert_eq!(
+            fields,
+            [crate::draft::Field::From, crate::draft::Field::FromName]
+        );
         open.click("Remove condition 2");
         open.click("Remove archive");
         open.click("+ Add action");

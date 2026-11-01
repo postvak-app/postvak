@@ -421,30 +421,58 @@ fn is_body_text(part: &MessagePart<'_>) -> bool {
 
 /// "Alice <alice@x>, bob@y" is "Alice"; without a name, the first address.
 pub fn display_name(field: &str) -> String {
-    let field = field.trim();
-    if let Some(rest) = field.strip_prefix('"')
-        && let Some((name, _)) = rest.split_once('"')
-        && !name.trim().is_empty()
-    {
-        return name.trim().to_string();
-    }
-    let first = field.split(',').next().unwrap_or("").trim();
-    match first.split_once('<') {
-        Some((name, address)) => {
-            let name = name.trim().trim_matches('"').trim();
-            if name.is_empty() {
-                address.trim_end_matches('>').trim().to_string()
-            } else {
-                name.to_string()
-            }
-        }
-        None => first.to_string(),
+    mailboxes(field)
+        .first()
+        .map(|part| mailbox_name(part).unwrap_or_else(|| mailbox_address(part).to_string()))
+        .unwrap_or_default()
+}
+
+/// The lowercase addresses of an address field as `format_address` writes it.
+pub fn bare_addresses(field: &str) -> Vec<String> {
+    mailboxes(field)
+        .into_iter()
+        .map(|part| mailbox_address(part).to_ascii_lowercase())
+        .collect()
+}
+
+/// The display names of an address field as `format_address` writes it, unquoted; a mailbox without one has none.
+pub fn display_names(field: &str) -> Vec<String> {
+    mailboxes(field)
+        .into_iter()
+        .filter_map(mailbox_name)
+        .collect()
+}
+
+/// A mailbox's address: inside `<…>`, or the whole mailbox without one.
+fn mailbox_address(part: &str) -> &str {
+    match (part.rfind('<'), part.rfind('>')) {
+        (Some(start), Some(end)) if end > start => part[start + 1..end].trim(),
+        _ => part,
     }
 }
 
-/// The lowercase addresses of an address field as `format_address` writes it. A comma inside a quoted name or
-/// inside `<…>` does not separate addresses.
-pub fn bare_addresses(field: &str) -> Vec<String> {
+/// A mailbox's display name, unquoted; none without `<…>` or with an empty name.
+fn mailbox_name(part: &str) -> Option<String> {
+    let name = part[..part.strip_suffix('>')?.rfind('<')?].trim();
+    let name = match name.strip_prefix('"').and_then(|n| n.strip_suffix('"')) {
+        Some(quoted) => unescape(quoted.trim()),
+        None => name.to_string(),
+    };
+    (!name.is_empty()).then_some(name)
+}
+
+/// A quoted name's text: `\x` is `x`.
+fn unescape(quoted: &str) -> String {
+    let mut name = String::with_capacity(quoted.len());
+    let mut chars = quoted.chars();
+    while let Some(c) = chars.next() {
+        name.extend(if c == '\\' { chars.next() } else { Some(c) });
+    }
+    name
+}
+
+/// The mailboxes of an address field, trimmed; a comma inside a quoted name or inside `<…>` separates none.
+fn mailboxes(field: &str) -> Vec<&str> {
     let mut parts = Vec::new();
     let (mut start, mut quoted, mut escaped, mut angle) = (0, false, false, false);
     for (i, c) in field.char_indices() {
@@ -464,17 +492,8 @@ pub fn bare_addresses(field: &str) -> Vec<String> {
     parts.push(&field[start..]);
     parts
         .into_iter()
-        .filter_map(|part| {
-            let part = part.trim();
-            if part.is_empty() {
-                return None;
-            }
-            let addr = match (part.rfind('<'), part.rfind('>')) {
-                (Some(start), Some(end)) if end > start => &part[start + 1..end],
-                _ => part,
-            };
-            Some(addr.trim().to_ascii_lowercase())
-        })
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
         .collect()
 }
 
@@ -774,6 +793,17 @@ mod tests {
     }
 
     #[test]
+    fn display_names_are_unquoted_and_skip_mailboxes_without_one() {
+        assert_eq!(
+            display_names(
+                "a@x.example, \"Doe, \\\"J\\\"\" <j@x.example>, \"\" <e@x.example>, Bob <b@x.example>, Pay<Pal"
+            ),
+            ["Doe, \"J\"", "Bob"]
+        );
+        assert!(display_names("").is_empty());
+    }
+
+    #[test]
     fn display_name_prefers_the_name_then_the_address() {
         assert_eq!(display_name("Alice <alice@example.com>"), "Alice");
         assert_eq!(
@@ -786,6 +816,14 @@ mod tests {
             "plain@example.com"
         );
         assert_eq!(display_name(""), "");
+        assert_eq!(
+            display_name("\"Say \\\"PayPal\\\"\" <x@example.com>"),
+            "Say \"PayPal\""
+        );
+        assert_eq!(
+            display_name("Bob <b@example.com>, \"Alice\" <a@example.com>"),
+            "Bob"
+        );
     }
 
     /// "ignore previous instructions" as Unicode tag characters: invisible on screen, readable to a model.

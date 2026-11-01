@@ -16,6 +16,7 @@ pub(crate) fn match_labels(m: &Match) -> Vec<String> {
     let mut labels = Vec::new();
     for (field, condition) in [
         ("from", &m.from),
+        ("from name", &m.from_name),
         ("to", &m.to),
         ("cc", &m.cc),
         ("subject", &m.subject),
@@ -49,6 +50,12 @@ pub(crate) fn match_labels(m: &Match) -> Vec<String> {
     }));
     labels.extend(m.older_than.as_ref().map(|v| format!("older than {v}")));
     labels.extend(m.younger_than.as_ref().map(|v| format!("younger than {v}")));
+    labels.extend(m.arrived_days.as_ref().map(|v| format!("arrived on {v}")));
+    labels.extend(
+        m.arrived_hours
+            .as_ref()
+            .map(|v| format!("arrived between {v}")),
+    );
     labels.extend(m.larger_than.as_ref().map(|v| format!("larger than {v}")));
     labels.extend(
         m.read
@@ -151,6 +158,7 @@ pub(crate) fn preview_text(rule: &Rule, matched: usize, needs_body: bool) -> Str
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Field {
     From,
+    FromName,
     To,
     Cc,
     Subject,
@@ -161,6 +169,8 @@ pub(crate) enum Field {
     Authenticated,
     OlderThan,
     YoungerThan,
+    ArrivedDays,
+    ArrivedHours,
     LargerThan,
     Read,
     Flagged,
@@ -171,8 +181,9 @@ pub(crate) enum Field {
 
 impl Field {
     /// In the order the rules docs list them.
-    pub const ALL: [Field; 17] = [
+    pub const ALL: [Field; 20] = [
         Field::From,
+        Field::FromName,
         Field::To,
         Field::Cc,
         Field::Subject,
@@ -183,6 +194,8 @@ impl Field {
         Field::Authenticated,
         Field::OlderThan,
         Field::YoungerThan,
+        Field::ArrivedDays,
+        Field::ArrivedHours,
         Field::LargerThan,
         Field::Read,
         Field::Flagged,
@@ -194,12 +207,15 @@ impl Field {
     pub fn label(self) -> &'static str {
         match self {
             Field::Alias => "alias",
+            Field::ArrivedDays => "arrived on",
+            Field::ArrivedHours => "arrived between",
             Field::Authenticated => "authenticated",
             Field::Body => "body",
             Field::Cc => "cc",
             Field::Flagged => "flagged",
             Field::From => "from",
             Field::FromDomain => "from domain",
+            Field::FromName => "from name",
             Field::Header => "header",
             Field::LargerThan => "larger than",
             Field::OlderThan => "older than",
@@ -217,7 +233,13 @@ impl Field {
     pub fn is_text(self) -> bool {
         matches!(
             self,
-            Field::Body | Field::Cc | Field::From | Field::Header | Field::Subject | Field::To
+            Field::Body
+                | Field::Cc
+                | Field::From
+                | Field::FromName
+                | Field::Header
+                | Field::Subject
+                | Field::To
         )
     }
 
@@ -347,6 +369,7 @@ pub(crate) fn conditions(m: &Match) -> (Vec<Condition>, Match) {
     let mut rows = Vec::new();
     for (field, condition, slot) in [
         (Field::From, &m.from, &mut kept.from),
+        (Field::FromName, &m.from_name, &mut kept.from_name),
         (Field::To, &m.to, &mut kept.to),
         (Field::Cc, &m.cc, &mut kept.cc),
         (Field::Subject, &m.subject, &mut kept.subject),
@@ -393,6 +416,12 @@ pub(crate) fn conditions(m: &Match) -> (Vec<Condition>, Match) {
     );
     rows.extend(m.older_than.clone().map(|v| plain(Field::OlderThan, v)));
     rows.extend(m.younger_than.clone().map(|v| plain(Field::YoungerThan, v)));
+    rows.extend(m.arrived_days.clone().map(|v| plain(Field::ArrivedDays, v)));
+    rows.extend(
+        m.arrived_hours
+            .clone()
+            .map(|v| plain(Field::ArrivedHours, v)),
+    );
     rows.extend(m.larger_than.clone().map(|v| plain(Field::LargerThan, v)));
     rows.extend(m.read.map(|v| plain(Field::Read, v.to_string())));
     rows.extend(m.flagged.map(|v| plain(Field::Flagged, v.to_string())));
@@ -514,6 +543,8 @@ impl Draft {
             }
             let twice = match c.field {
                 Field::Alias => m.alias.replace(c.value.clone()).is_some(),
+                Field::ArrivedDays => m.arrived_days.replace(c.value.clone()).is_some(),
+                Field::ArrivedHours => m.arrived_hours.replace(c.value.clone()).is_some(),
                 Field::Authenticated => m.authenticated.replace(flag(c)?).is_some(),
                 Field::FromDomain => m.from_domain.replace(domain(c)).is_some(),
                 Field::ToDomain => m.to_domain.replace(domain(c)).is_some(),
@@ -521,6 +552,7 @@ impl Draft {
                 Field::Cc => m.cc.replace(text_match(c)).is_some(),
                 Field::Flagged => m.flagged.replace(flag(c)?).is_some(),
                 Field::From => m.from.replace(text_match(c)).is_some(),
+                Field::FromName => m.from_name.replace(text_match(c)).is_some(),
                 Field::Header => m
                     .header
                     .get_or_insert_default()
@@ -627,6 +659,7 @@ mod tests {
 [[rules]]
 name = "everything"
 match.from = { equals = "a@example.com" }
+match.from_name = { contains = "PayPal" }
 match.to = { contains = "team" }
 match.cc = { regex = "(?i)boss" }
 match.subject = { contains = "code" }
@@ -637,6 +670,8 @@ match.to_domain = "example.org"
 match.authenticated = true
 match.older_than = "1h"
 match.younger_than = "1d"
+match.arrived_days = "mon-fri"
+match.arrived_hours = "09:00-18:00"
 match.larger_than = "5MB"
 match.read = true
 match.flagged = false
@@ -673,9 +708,9 @@ actions = { flagged = true }
         );
         assert_eq!(
             summary(&rule(ALL_FIELDS)),
-            "from equals \"a@example.com\", to contains \"team\", cc matches regex \"(?i)boss\", \
+            "from equals \"a@example.com\", from name contains \"PayPal\", to contains \"team\", cc matches regex \"(?i)boss\", \
              subject contains \"code\", body matches regex \"\\d{6}\", header List-Id contains \"github.com\", \
-             from domain example.com, to domain example.org, authenticated, older than 1h, younger than 1d, larger than 5MB, read, not flagged, not to me, alias *@shop.example.com, tag $label1 \
+             from domain example.com, to domain example.org, authenticated, older than 1h, younger than 1d, arrived on mon-fri, arrived between 09:00-18:00, larger than 5MB, read, not flagged, not to me, alias *@shop.example.com, tag $label1 \
              → move to Codes, mark read, flag, tag $label2, silent, stop"
         );
     }
@@ -801,7 +836,7 @@ actions = { flagged = true }
             (Op::Equals, "a@example.com")
         );
         assert_eq!(
-            (rows[5].header.as_str(), rows[5].op),
+            (rows[6].header.as_str(), rows[6].op),
             ("List-Id", Op::Contains)
         );
         assert_eq!(kept, Match::default());
