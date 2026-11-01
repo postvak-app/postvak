@@ -60,8 +60,11 @@ pub fn ensure_structure(
     ops: &mut dyn MailOps,
     store: &Store,
 ) -> Result<(), ApplyError> {
-    let structure = match store.raw(&msg.folder, msg.uid)? {
-        Some(raw) => message::structure(&raw),
+    let structure = match store
+        .raw(&msg.folder, msg.uid)?
+        .and_then(|raw| message::structure(&raw))
+    {
+        Some(structure) => Some(structure),
         None => ops.fetch_structures(&[msg.uid])?.remove(&msg.uid),
     };
     let Some(structure) = structure else {

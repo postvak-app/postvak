@@ -553,34 +553,34 @@ pub fn param(params: &[(String, String)], key: &str) -> Option<String> {
 }
 
 /// The attachment names and part types `fetch_structures` would report, from the whole message; None when it does not
-/// parse. The names are those of `attachments`, so none from inside an enclosed message.
+/// parse. Like BODYSTRUCTURE's, the names include those inside an enclosed message.
 pub fn structure(raw: &[u8]) -> Option<Structure> {
     let msg = MessageParser::default().parse(raw)?;
-    let mut part_types = Vec::new();
+    let mut out = Structure::default();
     let mut pending = vec![msg.root_part()];
     while let Some(part) = pending.pop() {
         if matches!(part.kind(), PartKind::Multipart) {
             pending.extend(part.children().rev());
             continue;
         }
-        part_types.push(match part.content_type() {
+        let nested = part.nested();
+        out.part_types.push(match part.content_type() {
             Some(ct) => {
                 format!("{}/{}", ct.ctype(), ct.subtype().unwrap_or_default()).to_ascii_lowercase()
             }
+            // A digest's parts default to message/rfc822.
+            None if nested.is_some() => "message/rfc822".into(),
             None => "text/plain".into(),
         });
-        if let Some(inner) = part.nested() {
+        if !is_body_text(&part) {
+            out.attachment_names
+                .extend(part.attachment_name().map(str::to_string));
+        }
+        if let Some(inner) = nested {
             pending.push(inner.root_part());
         }
     }
-    Some(Structure {
-        attachment_names: attachments_of(&msg)
-            .into_iter()
-            .filter_map(|a| a.name)
-            .collect(),
-        part_types,
-        ..Structure::default()
-    })
+    Some(out)
 }
 
 pub fn attachments(raw: &[u8]) -> Vec<Attachment> {
@@ -1419,6 +1419,28 @@ JVBERi0=\r\n\
             let err = save_attachment(WITH_ATTACHMENTS, missing, dir.path()).unwrap_err();
             assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
         }
+    }
+
+    #[test]
+    fn structure_names_attachments_inside_an_enclosed_message_as_bodystructure_does() {
+        let raw = b"Subject: fwd\r\nContent-Type: multipart/mixed; boundary=\"o\"\r\n\r\n\
+--o\r\nContent-Type: text/plain\r\n\r\nsee below\r\n\
+--o\r\nContent-Type: message/rfc822\r\n\r\n\
+Subject: inner\r\nContent-Type: multipart/mixed; boundary=\"i\"\r\n\r\n\
+--i\r\nContent-Type: text/html\r\n\r\n<p>hi</p>\r\n\
+--i\r\nContent-Type: application/pdf; name=\"q3.pdf\"\r\nContent-Disposition: attachment; filename=\"q3.pdf\"\r\n\r\n%PDF\r\n\
+--i--\r\n\r\n--o--\r\n";
+        let s = structure(raw).unwrap();
+        assert_eq!(s.attachment_names, ["q3.pdf"]);
+        assert_eq!(
+            s.part_types,
+            [
+                "text/plain",
+                "message/rfc822",
+                "text/html",
+                "application/pdf"
+            ]
+        );
     }
 
     #[test]

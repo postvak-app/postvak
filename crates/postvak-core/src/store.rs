@@ -565,8 +565,6 @@ fn thread_summaries_sql(filter: Filter) -> String {
     )
 }
 
-/// The index backlog at `?1`, newest first, at most `?2`: each half read from its own partial index up to the
-/// limit, then the newest of both. One condition over both halves would read every row.
 /// `attachment_names` and `part_types` as the store keeps them: one per line, and no names as NULL.
 pub fn structure_columns(structure: &Structure) -> (Option<String>, Option<String>) {
     let names = &structure.attachment_names;
@@ -574,6 +572,8 @@ pub fn structure_columns(structure: &Structure) -> (Option<String>, Option<Strin
     (names, Some(structure.part_types.join("\n")))
 }
 
+/// The index backlog at `?1`, newest first, at most `?2`: each part read from its own partial index up to the
+/// limit, then the newest of all. One condition over every part would read every row.
 fn backlog_sql() -> String {
     format!(
         "SELECT * FROM (SELECT {MESSAGE_COLUMNS} FROM messages WHERE {NEVER}
@@ -1407,8 +1407,8 @@ impl Store {
         Ok((remaining, u64::try_from(total).unwrap_or(0)))
     }
 
-    /// How many messages wait for the indexer, from the two partial indexes rather than every row: once indexing is done
-    /// both are empty, so the check each idle turn makes costs nothing.
+    /// How many messages wait for the indexer, from the partial indexes rather than every row: once indexing is done
+    /// all are empty, so the check each idle turn makes costs nothing.
     pub fn backlog_remaining(&self, now: i64) -> Result<u64, StoreError> {
         let never: i64 = self.conn.query_row(
             &format!("SELECT count(*) FROM messages WHERE {NEVER}"),
@@ -1426,7 +1426,8 @@ impl Store {
         Ok(u64::try_from(never + later).unwrap_or(0))
     }
 
-    /// The next messages to index, newest first: never tried, or tried without text more than a day before `now`.
+    /// The next messages to index, newest first: never tried, or tried without text or structure more than a day before
+    /// `now`.
     pub fn backlog(&self, now: i64, limit: u32) -> Result<Vec<Message>, StoreError> {
         let mut stmt = self.conn.prepare_cached(&backlog_sql())?;
         let rows = serde_rusqlite::from_rows::<Message>(stmt.query(params![now, limit])?);
@@ -1443,16 +1444,17 @@ impl Store {
         structure: Option<&Structure>,
         at: i64,
     ) -> Result<(), StoreError> {
+        let (names, types) = structure.map(structure_columns).unwrap_or_default();
+        // One statement, so the search index's update trigger rewrites the row once.
         self.conn
             .prepare_cached(
-                "UPDATE messages SET indexed_at = ?3, body_text = COALESCE(?4, body_text)
+                "UPDATE messages SET indexed_at = ?3, body_text = COALESCE(?4, body_text),
+                    attachment_names = CASE WHEN ?6 IS NULL THEN attachment_names ELSE ?5 END,
+                    part_types = COALESCE(?6, part_types)
                  WHERE folder = ?1 AND uid = ?2",
             )?
-            .execute(params![folder, uid, at, text])?;
-        match structure {
-            Some(structure) => self.set_structure(folder, uid, structure),
-            None => Ok(()),
-        }
+            .execute(params![folder, uid, at, text, names, types])?;
+        Ok(())
     }
 
     /// Stores the attachment names and part types of the message's structure, leaving its index pass and text alone.
