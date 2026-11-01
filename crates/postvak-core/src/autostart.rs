@@ -212,6 +212,7 @@ fn kdl_string(arg: &str) -> String {
 }
 
 /// The command a Flatpak's login start runs, for a desktop without the Background portal.
+#[cfg(any(target_os = "linux", test))]
 fn flatpak_command() -> Vec<String> {
     ["flatpak", "run", APP_ID]
         .into_iter()
@@ -221,6 +222,7 @@ fn flatpak_command() -> Vec<String> {
 }
 
 /// Says that the desktop could not be asked to start a Flatpak at login, and how to do it without the portal.
+#[cfg(any(target_os = "linux", test))]
 fn no_background_portal(compositor: Option<&str>) -> String {
     let hint = startup_hint(compositor, &flatpak_command());
     format!(
