@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0](https://github.com/postvak-app/postvak/compare/v0.13.0...v0.14.0) - 2026-11-01
+
+### Added
+
+- *(mcp)* install for Codex, Copilot CLI, Gemini CLI, Cursor and opencode ([#515](https://github.com/postvak-app/postvak/pull/515))
+- *(rules)* match on the local weekday and time of arrival ([#512](https://github.com/postvak-app/postvak/pull/512))
+- *(flatpak)* publish a .flatpakref for one-step install ([#513](https://github.com/postvak-app/postvak/pull/513))
+- *(rules)* a from_name condition, to catch display-name spoofing ([#511](https://github.com/postvak-app/postvak/pull/511))
+- *(autostart)* warn when the compositor does not read the autostart folder ([#509](https://github.com/postvak-app/postvak/pull/509))
+
+### Fixed
+
+- *(gui)* show a quoted sender name unescaped, as from_name rules read it ([#514](https://github.com/postvak-app/postvak/pull/514))
+- *(gui)* keep sender logos on list rows when the rows are rebuilt ([#510](https://github.com/postvak-app/postvak/pull/510))
+- *(notify)* play the default sound for new mail on macOS ([#496](https://github.com/postvak-app/postvak/pull/496))
+- *(release)* build aarch64-apple-darwin on macos-15 ([#493](https://github.com/postvak-app/postvak/pull/493))
+
+### Other
+
+- say the local mail store and .eml backups are not encrypted ([#507](https://github.com/postvak-app/postvak/pull/507))
+- *(deps)* bump cargo-dist, nextest, sccache, CI actions and Cargo.lock ([#506](https://github.com/postvak-app/postvak/pull/506))
+- *(mise)* bump kache to 1.2.2 ([#505](https://github.com/postvak-app/postvak/pull/505))
+- *(gui)* show HTML mail whole, and scan fonts once per render thread ([#495](https://github.com/postvak-app/postvak/pull/495))
+
 ## [0.13.0](https://github.com/postvak-app/postvak/compare/v0.12.0...v0.13.0) - 2026-10-31
 
 ### Added
