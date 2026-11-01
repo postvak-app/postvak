@@ -744,6 +744,8 @@ pub struct App {
     pub(crate) html_generation: u64,
     /// The scale and width the window last gave the HTML view, so the next HTML message lays out at once.
     pub(crate) html_size: Option<(f32, f32)>,
+    /// The part of the HTML view on screen as the window last reported it, in points, for the next message's page.
+    pub(crate) html_shown: (f32, f32),
     /// `[ui] html_colours`: whether HTML mail is adapted to the dark theme.
     pub(crate) html_colours: HtmlColours,
     /// Whether the window shows the dark theme; System follows the desktop, which only the window knows.
@@ -933,6 +935,7 @@ impl App {
             help_open: false,
             html_generation: 0,
             html_size: None,
+            html_shown: (0.0, 0.0),
             history: VecDeque::new(),
             history_open: false,
             launch: crate::opener::open,
@@ -1044,6 +1047,7 @@ impl App {
             self.html_width(scale, width, now);
         }
         self.paint_visible();
+        self.html_progress(now);
         self.mark_read_after_delay(now);
         self.expire_toast(now);
         self.request_tick(self.last_poll + POLL);

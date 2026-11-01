@@ -504,11 +504,13 @@ fn present_body(app: &App, window: &MailWindow) {
 }
 
 fn present_page(app: &App, window: &MailWindow) {
-    let view = app
+    let waiting = app
         .body
         .as_ref()
         .filter(|b| b.shows_html())
         .and_then(|b| b.html_view.as_ref());
+    // Nothing of the page, not even its notes, until it can show whole.
+    let view = waiting.filter(|v| v.shown);
     let remote = match view {
         Some(v) if v.fetching.is_some() => Remote::Loading,
         Some(v) if !v.remote.is_empty() => Remote::NotLoaded,
@@ -519,7 +521,8 @@ fn present_page(app: &App, window: &MailWindow) {
         .and_then(|v| v.hover.as_deref())
         .map(|href| clean(href, false));
     window.set_page(PageInfo {
-        ready: view.is_some_and(|v| v.page.is_some()),
+        ready: view.is_some(),
+        rendering: waiting.is_some_and(|v| !v.shown && v.slow),
         dark: view.is_some_and(|v| v.dark),
         width,
         height,
