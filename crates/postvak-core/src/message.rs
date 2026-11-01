@@ -445,6 +445,45 @@ pub fn display_name(field: &str) -> String {
 /// The lowercase addresses of an address field as `format_address` writes it. A comma inside a quoted name or
 /// inside `<…>` does not separate addresses.
 pub fn bare_addresses(field: &str) -> Vec<String> {
+    mailboxes(field)
+        .into_iter()
+        .map(|part| {
+            let addr = match (part.rfind('<'), part.rfind('>')) {
+                (Some(start), Some(end)) if end > start => &part[start + 1..end],
+                _ => part,
+            };
+            addr.trim().to_ascii_lowercase()
+        })
+        .collect()
+}
+
+/// The display names of an address field as `format_address` writes it, unquoted; a mailbox without one has none.
+pub fn display_names(field: &str) -> Vec<String> {
+    mailboxes(field)
+        .into_iter()
+        .filter_map(|part| {
+            let name = part[..part.strip_suffix('>')?.rfind('<')?].trim();
+            let name = match name.strip_prefix('"').and_then(|n| n.strip_suffix('"')) {
+                Some(quoted) => unescape(quoted.trim()),
+                None => name.to_string(),
+            };
+            (!name.is_empty()).then_some(name)
+        })
+        .collect()
+}
+
+/// A quoted name's text: `\x` is `x`.
+fn unescape(quoted: &str) -> String {
+    let mut name = String::with_capacity(quoted.len());
+    let mut chars = quoted.chars();
+    while let Some(c) = chars.next() {
+        name.extend(if c == '\\' { chars.next() } else { Some(c) });
+    }
+    name
+}
+
+/// The mailboxes of an address field, trimmed; a comma inside a quoted name or inside `<…>` separates none.
+fn mailboxes(field: &str) -> Vec<&str> {
     let mut parts = Vec::new();
     let (mut start, mut quoted, mut escaped, mut angle) = (0, false, false, false);
     for (i, c) in field.char_indices() {
@@ -464,17 +503,8 @@ pub fn bare_addresses(field: &str) -> Vec<String> {
     parts.push(&field[start..]);
     parts
         .into_iter()
-        .filter_map(|part| {
-            let part = part.trim();
-            if part.is_empty() {
-                return None;
-            }
-            let addr = match (part.rfind('<'), part.rfind('>')) {
-                (Some(start), Some(end)) if end > start => &part[start + 1..end],
-                _ => part,
-            };
-            Some(addr.trim().to_ascii_lowercase())
-        })
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
         .collect()
 }
 
@@ -771,6 +801,17 @@ mod tests {
             ]
         );
         assert!(header_fields(b"").is_empty());
+    }
+
+    #[test]
+    fn display_names_are_unquoted_and_skip_mailboxes_without_one() {
+        assert_eq!(
+            display_names(
+                "a@x.example, \"Doe, \\\"J\\\"\" <j@x.example>, \"\" <e@x.example>, Bob <b@x.example>, Pay<Pal"
+            ),
+            ["Doe, \"J\"", "Bob"]
+        );
+        assert!(display_names("").is_empty());
     }
 
     #[test]
