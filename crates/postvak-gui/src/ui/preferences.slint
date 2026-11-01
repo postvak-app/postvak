@@ -68,7 +68,7 @@ component OneLine inherits Note {
 component Setting inherits VerticalLayout {
     in property <string> label;
     in property <string> note;
-    spacing: Theme.pad / 2;
+    spacing: Theme.pad * 3 / 4;
     HorizontalLayout {
         spacing: Theme.inset;
         // The control carries the name, so a screen reader says it once.
@@ -141,7 +141,7 @@ component Removable inherits VerticalLayout {
 
 component General inherits VerticalLayout {
     alignment: start;
-    spacing: Theme.inset;
+    spacing: 3 * Theme.pad;
     ChoiceSetting {
         label: "Theme";
         model: ["System", "Light", "Dark"];
@@ -179,7 +179,7 @@ component General inherits VerticalLayout {
 component Accounts inherits VerticalLayout {
     in property <string> remove-icon;
     alignment: start;
-    spacing: Theme.inset;
+    spacing: 3 * Theme.pad;
     if Preferences.accounts.length == 0: Note { text: "No accounts yet: File ▸ Add account…"; }
     if Preferences.accounts.length > 1: Choice {
         model: Preferences.accounts;
@@ -188,7 +188,7 @@ component Accounts inherits VerticalLayout {
         index-chosen(i) => { Preferences.account-chosen(i); }
     }
     if Preferences.accounts.length > 0: VerticalLayout {
-        spacing: Theme.inset;
+        spacing: 3 * Theme.pad;
         VerticalLayout {
             Text {
                 text: Preferences.current.address;
@@ -277,13 +277,14 @@ export component PreferencesDialog {
     // The most height there is room for; the settings scroll beyond it.
     in property <length> room;
     callback close();
-    width: Theme.dialog-large;
+    width: Theme.dialog-x-large;
     Dialog {
         title: "Preferences";
         close-icon: root.close-icon;
         close => { root.close(); }
         HorizontalLayout {
-            spacing: Theme.inset;
+            spacing: 2 * Theme.inset;
+            padding-top: Theme.pad;
             VerticalLayout {
                 width: 4 * Theme.control;
                 alignment: start;
@@ -313,6 +314,7 @@ export component PreferencesDialog {
                     spacing: Theme.inset;
                     // Room for the scroll bar.
                     padding-right: Theme.inset;
+                    padding-bottom: Theme.pad;
                     if Preferences.error != "": Text {
                         text: Preferences.error;
                         color: Theme.pane.error;
