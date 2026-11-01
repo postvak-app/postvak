@@ -493,8 +493,7 @@ impl Walk {
         | BodyStructure::Basic { common, .. }
         | BodyStructure::Message { common, .. } = body
         {
-            out.part_types
-                .push(format!("{}/{}", common.ty.ty, common.ty.subtype).to_ascii_lowercase());
+            out.part_types.push(content_type(common));
         }
         match body {
             BodyStructure::Text { common, other, .. } => {
@@ -574,13 +573,18 @@ impl Walk {
             .map(str::to_string);
         out.attachments.push(PartRef {
             section: self.section(),
-            content_type: format!("{}/{}", common.ty.ty, common.ty.subtype).to_ascii_lowercase(),
+            content_type: content_type(common),
             name,
             content_id,
             transfer_encoding: encoding_name(&other.transfer_encoding),
             octets: other.octets,
         });
     }
+}
+
+/// "type/subtype", lowercase.
+fn content_type(common: &BodyContentCommon<'_>) -> String {
+    format!("{}/{}", common.ty.ty, common.ty.subtype).to_ascii_lowercase()
 }
 
 fn is_attachment(common: &BodyContentCommon<'_>) -> bool {

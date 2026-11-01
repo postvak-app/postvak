@@ -334,24 +334,23 @@ fn matches(c: &Conditions, msg: &Message, flags: &str, ctx: &Context) -> bool {
     {
         return false;
     }
-    let mut names = field(&msg.attachment_names).lines();
+    // No attachment is stored as NULL, not as an empty list.
     if c.has_attachment
-        .is_some_and(|wanted| wanted != names.clone().next().is_some())
+        .is_some_and(|wanted| wanted != msg.attachment_names.is_some())
     {
         return false;
     }
     if let Some(m) = &c.attachment
-        && !names.any(|name| m.is_match(name))
+        && !field(&msg.attachment_names)
+            .lines()
+            .any(|name| m.is_match(name))
     {
         return false;
     }
     if let Some(pattern) = &c.has_part
         && !field(&msg.part_types)
             .lines()
-            .any(|ty| match pattern.ends_with('/') {
-                true => ty.starts_with(pattern.as_str()),
-                false => ty == pattern,
-            })
+            .any(|ty| ty == pattern || (pattern.ends_with('/') && ty.starts_with(pattern.as_str())))
     {
         return false;
     }

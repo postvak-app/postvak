@@ -567,6 +567,13 @@ fn thread_summaries_sql(filter: Filter) -> String {
 
 /// The index backlog at `?1`, newest first, at most `?2`: each half read from its own partial index up to the
 /// limit, then the newest of both. One condition over both halves would read every row.
+/// `attachment_names` and `part_types` as the store keeps them: one per line, and no names as NULL.
+pub fn structure_columns(structure: &Structure) -> (Option<String>, Option<String>) {
+    let names = &structure.attachment_names;
+    let names = (!names.is_empty()).then(|| names.join("\n"));
+    (names, Some(structure.part_types.join("\n")))
+}
+
 fn backlog_sql() -> String {
     format!(
         "SELECT * FROM (SELECT {MESSAGE_COLUMNS} FROM messages WHERE {NEVER}
@@ -1455,13 +1462,12 @@ impl Store {
         uid: u32,
         structure: &Structure,
     ) -> Result<(), StoreError> {
-        let names = &structure.attachment_names;
-        let names = (!names.is_empty()).then(|| names.join("\n"));
+        let (names, types) = structure_columns(structure);
         self.conn
             .prepare_cached(
                 "UPDATE messages SET attachment_names = ?3, part_types = ?4 WHERE folder = ?1 AND uid = ?2",
             )?
-            .execute(params![folder, uid, names, structure.part_types.join("\n")])?;
+            .execute(params![folder, uid, names, types])?;
         Ok(())
     }
 

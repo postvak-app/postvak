@@ -5,7 +5,9 @@ use crate::mail_ops::{MailError, MailOps, delete_message, delete_messages};
 use crate::message::{self, body_text};
 use crate::rules::engine::{Context, Plan, PlannedAction, evaluate, flag_change};
 use crate::rules::{Action, CompiledRule};
-use crate::store::{Folder, LogEntry, Message, Store, StoreError, has_flag, with_flag};
+use crate::store::{
+    Folder, LogEntry, Message, Store, StoreError, has_flag, structure_columns, with_flag,
+};
 use crate::trash::Trash;
 
 #[derive(Debug, thiserror::Error)]
@@ -66,10 +68,7 @@ pub fn ensure_structure(
         return Ok(());
     };
     store.set_structure(&msg.folder, msg.uid, &structure)?;
-    if let Some(stored) = store.message(&msg.folder, msg.uid)? {
-        msg.attachment_names = stored.attachment_names;
-        msg.part_types = stored.part_types;
-    }
+    (msg.attachment_names, msg.part_types) = structure_columns(&structure);
     Ok(())
 }
 
