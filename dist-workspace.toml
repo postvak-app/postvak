@@ -20,6 +20,10 @@ github-attestations = true
 "actions/download-artifact" = "9000827ccba6bdab643e8b6fd33ac0654aef8333" # v8.0.2
 "actions/upload-artifact" = "cf430e030ddbb5b0abf93d22962f4752f3646cd9" # v7.0.2
 
+# dist's default for this target is macos-14, which GitHub is retiring: its brownouts cancel the job before it starts (v0.13.0).
+[dist.github-custom-runners.aarch64-apple-darwin]
+runner = "macos-15"
+
 # GitHub's Intel Macs build about 2.5x slower than the Apple silicon ones, which cross-compile x86_64 fine (as macos-app.yml does).
 [dist.github-custom-runners.x86_64-apple-darwin]
 runner = "macos-15"
