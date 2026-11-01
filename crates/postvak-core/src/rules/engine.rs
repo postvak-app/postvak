@@ -103,13 +103,15 @@ pub fn evaluate(rules: &[CompiledRule], msg: &Message, ctx: &Context) -> Plan {
                 Action::After(_) => {}
                 Action::Move(_) | Action::Archive | Action::Junk if ctx.keep_in_folder => {}
                 _ => {
-                    let planned = PlannedAction {
-                        rule: rule.rule.name.clone(),
-                        action: action.clone(),
-                    };
-                    match waits {
-                        Some(due) => plan.waiting.push((planned, due)),
-                        None => plan.actions.push(planned),
+                    if let Some(action) = resolved(action, rule, msg, ctx) {
+                        let planned = PlannedAction {
+                            rule: rule.rule.name.clone(),
+                            action,
+                        };
+                        match waits {
+                            Some(due) => plan.waiting.push((planned, due)),
+                            None => plan.actions.push(planned),
+                        }
                     }
                 }
             }
@@ -137,6 +139,53 @@ pub fn evaluate(rules: &[CompiledRule], msg: &Message, ctx: &Context) -> Plan {
             }
         };
     plan
+}
+
+/// In a `move` folder, the `+tag` of the recipient address, filled in per message.
+pub(crate) const SUBADDRESS: &str = "{subaddress}";
+
+/// `action` with `{subaddress}` in a move filled in from `msg`, or None when `msg` has no usable tag.
+fn resolved(action: &Action, rule: &CompiledRule, msg: &Message, ctx: &Context) -> Option<Action> {
+    match action {
+        Action::Move(target) if target.contains(SUBADDRESS) => {
+            let tag = subaddress(rule, msg, ctx)?;
+            Some(Action::Move(target.replace(SUBADDRESS, &tag)))
+        }
+        _ => Some(action.clone()),
+    }
+}
+
+/* The `+tag`, lower-cased, of the first recipient with a safe tag that is the rule's `alias`, or without one is your own
+address with or without its tag. The sender picks the tag and it may name a new folder, so only one level of up to 64
+ASCII letters, digits, `-` and `_` counts. */
+fn subaddress(rule: &CompiledRule, msg: &Message, ctx: &Context) -> Option<String> {
+    // `bare_addresses` lower-cases, so the tag is too.
+    recipients(msg).into_iter().find_map(|recipient| {
+        let (local, domain) = recipient.rsplit_once('@')?;
+        let (base, tag) = local.split_once('+')?;
+        let safe = (1..=64).contains(&tag.len())
+            && tag
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+        if !safe {
+            return None;
+        }
+        let ours = match &rule.conditions.alias {
+            Some(alias) => alias.is_match(&recipient),
+            None => {
+                ctx.identity.is_me(&recipient) || ctx.identity.is_me(&format!("{base}@{domain}"))
+            }
+        };
+        ours.then(|| tag.to_string())
+    })
+}
+
+/// The bare addresses of `msg`'s Delivered-To, To and Cc: first the one the receiving server wrote.
+fn recipients(msg: &Message) -> Vec<String> {
+    [&msg.delivered_to, &msg.to_addr, &msg.cc_addr]
+        .into_iter()
+        .flat_map(|f| bare_addresses(field(f)))
+        .collect()
 }
 
 /// The rules that match `msg`, in file order, with their positions in `rules`. Each is checked against the message as
@@ -390,10 +439,7 @@ fn matches(c: &Conditions, msg: &Message, flags: &str, ctx: &Context) -> bool {
         return false;
     }
     if c.to_me.is_some() || c.alias.is_some() {
-        let recipients: Vec<String> = [&msg.to_addr, &msg.cc_addr, &msg.delivered_to]
-            .into_iter()
-            .flat_map(|f| bare_addresses(field(f)))
-            .collect();
+        let recipients = recipients(msg);
         if let Some(to_me) = c.to_me
             && recipients.iter().any(|r| ctx.identity.is_me(r)) != to_me
         {
@@ -778,6 +824,77 @@ actions = { move = "Shopping" }
                 .map(|a| a.rule.as_str())
                 .collect::<Vec<_>>(),
             vec!["shop"]
+        );
+    }
+
+    #[test]
+    fn a_move_to_subaddress_takes_the_tag_of_your_own_address_or_skips_the_move() {
+        let id = identity();
+        let toml = r#"
+[[rules]]
+name = "tags"
+match.read = false
+actions = { move = "Tags/{subaddress}", read = true }
+"#;
+        let r = rules(toml, 0);
+        let planned = |to: &str| {
+            evaluate(&r, &msg("a@x", to, "s", 100, false), &ctx(&id, 200))
+                .actions
+                .into_iter()
+                .map(|a| a.action)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            planned("Someone <dev+x@lists.example>, Pieter <Pieter+GitHub@example.com>"),
+            vec![Action::Move("Tags/github".into()), Action::MarkRead]
+        );
+        for refused in [
+            "pieter@example.com",
+            "pieter+@example.com",
+            "pieter+a.b@example.com",
+            "pieter+a/b@example.com",
+            "pieter+a%b@example.com",
+            &format!("pieter+{}@example.com", "a".repeat(65)),
+            "dev+news@lists.example",
+        ] {
+            assert_eq!(planned(refused), vec![Action::MarkRead], "{refused}");
+        }
+        assert_eq!(
+            planned("pieter+a.b@example.com, pieter+ok@example.com")[0],
+            Action::Move("Tags/ok".into())
+        );
+        assert_eq!(
+            planned(&format!("pieter+{}@example.com", "a".repeat(64)))[0],
+            Action::Move(format!("Tags/{}", "a".repeat(64)))
+        );
+
+        // The receiving server writes Delivered-To; the sender writes To and Cc.
+        let mut delivered = msg("a@x", "pieter+old@example.com", "s", 100, false);
+        delivered.delivered_to = Some("pieter+new@example.com".into());
+        assert_eq!(
+            evaluate(&r, &delivered, &ctx(&id, 200)).actions[0].action,
+            Action::Move("Tags/new".into())
+        );
+
+        let alias = rules(
+            r#"
+[[rules]]
+name = "shop"
+match.alias = "me+*@shop.example.com"
+actions.move = "Shop/{subaddress}"
+"#,
+            0,
+        );
+        let shop = msg(
+            "a@x",
+            "pieter+no@example.com, me+Orders_2@shop.example.com",
+            "s",
+            100,
+            false,
+        );
+        assert_eq!(
+            evaluate(&alias, &shop, &ctx(&id, 200)).actions[0].action,
+            Action::Move("Shop/orders_2".into())
         );
     }
 

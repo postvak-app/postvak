@@ -228,7 +228,8 @@ pub struct Actions {
     /// actions but delete don't run
     #[serde(default, skip_serializing_if = "Option::is_none")]
     junk: Option<bool>,
-    /// Moves the message to this folder, creating it if needed
+    /// Moves the message to this folder, creating it if needed; {subaddress} is the +tag of your address the message
+    /// was sent to, and without a tag of letters, digits, - and _ the message is not moved
     #[serde(default, rename = "move", skip_serializing_if = "Option::is_none")]
     move_to: Option<String>,
     /// true notifies even when the message was moved, false never notifies; the first matching rule that says wins
@@ -770,6 +771,16 @@ fn compile_rule(
     for (field, folder, target) in folders {
         crate::folder_name::check_shape(folder, target)
             .map_err(|reason| invalid(&rule.name, format!("{field} {reason}")))?;
+    }
+    // In the first level the sender's tag could name any folder, Trash among them.
+    if rule.actions.iter().any(|action| {
+        matches!(action, Action::Move(folder)
+            if folder.split('/').next().is_some_and(|level| level.contains(engine::SUBADDRESS)))
+    }) {
+        return Err(invalid(
+            &rule.name,
+            "move folder must keep {subaddress} below a folder of your own, such as Tags/{subaddress}",
+        ));
     }
     for action in &rule.actions {
         if let Action::Tag(keyword) = action {
@@ -1466,6 +1477,14 @@ actions = { move = "Shopping", notify = true }
             (
                 rule("", "Lists / GitHub"),
                 "move folder level 'Lists ' must not start or end with whitespace",
+            ),
+            (
+                rule("", "{subaddress}"),
+                "move folder must keep {subaddress} below a folder of your own, such as Tags/{subaddress}",
+            ),
+            (
+                rule("", "x{subaddress}/y"),
+                "move folder must keep {subaddress} below a folder of your own, such as Tags/{subaddress}",
             ),
             (
                 rule("folder = \"Lists/ GitHub\"\n", "Done"),

@@ -71,7 +71,7 @@
           ]
         },
         "move": {
-          "description": "Moves the message to this folder, creating it if needed",
+          "description": "Moves the message to this folder, creating it if needed; {subaddress} is the +tag of your address the message\nwas sent to, and without a tag of letters, digits, - and _ the message is not moved",
           "type": [
             "string",
             "null"

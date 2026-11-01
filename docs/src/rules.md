@@ -144,7 +144,7 @@ actions.flagged = true
 | `delete = true` | Saves the message as `.eml` in the local trash, then removes it from the server. Later rules don't run for that message. |
 | `archive = true` | Moves it to the server's Archive folder. Fails when the server has none. A rule cannot both archive and `move`. |
 | `junk = true` | Reports it as junk, as the Junk button does: tags it `$Junk`, which trains the server's spam filter, and moves it to the server's Junk folder. Fails when the server has none. Only a delete wins over it; the rules' other actions don't run for that message. A rule cannot both junk and `move` or `archive`. |
-| `move = "Folder/Sub"` | Moves it to that folder, creating the folder if needed and subscribing to it, so mail apps that show only subscribed folders list it. When the server refuses to create it and the move then fails, the error says both. A folder that only groups others and cannot hold mail, such as Gmail's `[Gmail]`, is refused. `/` separates levels on most servers; see the warnings below for servers that use `.`. |
+| `move = "Folder/Sub"` | Moves it to that folder, creating the folder if needed and subscribing to it, so mail apps that show only subscribed folders list it. When the server refuses to create it and the move then fails, the error says both. A folder that only groups others and cannot hold mail, such as Gmail's `[Gmail]`, is refused. `/` separates levels on most servers; see the warnings below for servers that use `.`. `{subaddress}` in the folder is the `+tag` of the address the message was sent to, lower-cased: see [Give each +tag its own folder](#give-each-tag-its-own-folder). |
 | `read = true` | Marks it read; `false` marks it unread. |
 | `flagged = true` | Flags it; `false` removes the flag. |
 | `tag = "$label1"` | Adds that IMAP keyword, or each keyword of a list (`tag = ["$label1", "$work"]`), which Thunderbird and other clients show as tags. The server must accept custom keywords. |
@@ -178,6 +178,7 @@ On macOS a notification shows the sender and the subject as Postvak's once Postv
 - [Delete sign-in codes](#delete-sign-in-codes): `from`, `subject`, `older_than`, `read`, `delete`
 - [Move list mail out of the inbox](#move-list-mail-out-of-the-inbox): `to_me`, `header`, `move`, `notify`
 - [Give an alias its own folder](#give-an-alias-its-own-folder): `alias`, `move`, `notify`
+- [Give each +tag its own folder](#give-each-tag-its-own-folder): `alias`, `move` with `{subaddress}`
 - [Move shop mail after notifying](#move-shop-mail-after-notifying): `after`, `move`
 - [Leave important mail in INBOX for your phone](#leave-important-mail-in-inbox-for-your-phone): `any`, `after`, `stop`
 - [Tag shop mail except receipts](#tag-shop-mail-except-receipts): `none`, `tag`
@@ -225,6 +226,19 @@ match.alias = "*@shop.example.com"
 actions.move = "Shopping"
 actions.notify = true
 ```
+
+### Give each +tag its own folder
+
+Sort mail sent to `me+github@example.com`, `me+shop@example.com` and any other tag into a folder per tag, without a rule for each:
+
+```toml
+[[rules]]
+name = "plus addresses to folders"
+match.alias = "me+*@example.com"
+actions.move = "Tags/{subaddress}"
+```
+
+`{subaddress}` is the part after `+` of the first recipient (Delivered-To, which your server writes, then To and Cc) with a usable tag that is the rule's `alias`, or without one, your own address or an alias with or without a tag. It is lower-cased, so `me+GitHub@` and `me+github@` share `Tags/github`, and a folder that does not exist yet is created. Anyone can write to any tag, so only a tag of up to 64 ASCII letters, digits, `-` and `_` counts: a message without one, or with another tag such as `me+a.b@`, is not moved, and the rule's other actions still run. `{subaddress}` must sit below a folder you name, as in `Tags/{subaddress}`, so a tag such as `trash` cannot reach a folder of your own. `rules test` shows the folder each message would go to.
 
 ### Move shop mail after notifying
 
