@@ -1,5 +1,5 @@
 //! Unix timestamps: the current one, and shown in local time.
-use chrono::TimeZone;
+use chrono::{Datelike, TimeZone, Timelike};
 
 pub fn now() -> i64 {
     chrono::Utc::now().timestamp()
@@ -85,6 +85,85 @@ impl Span {
             Span::Months(months) => months_ahead(now, months),
         }
     }
+}
+
+/// Days of the week: `mon-fri`, `sat,sun`, each day by its first three letters or in full; a range such as `fri-mon`
+/// wraps past Sunday.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Weekdays(u8);
+
+impl Weekdays {
+    pub fn parse(text: &str) -> Result<Weekdays, String> {
+        let expected = || format!("expected days such as mon-fri or sat,sun, got '{text}'");
+        let day = |name: &str| {
+            name.trim()
+                .parse::<chrono::Weekday>()
+                .map_err(|_| expected())
+        };
+        let mut days = 0u8;
+        for part in text.split(',') {
+            let (first, last) = match part.split_once('-') {
+                Some((first, last)) => (day(first)?, day(last)?),
+                None => (day(part)?, day(part)?),
+            };
+            let mut at = first;
+            days |= 1 << at.num_days_from_monday();
+            while at != last {
+                at = at.succ();
+                days |= 1 << at.num_days_from_monday();
+            }
+        }
+        Ok(Weekdays(days))
+    }
+
+    pub fn contains(self, day: chrono::Weekday) -> bool {
+        self.0 & (1 << day.num_days_from_monday()) != 0
+    }
+}
+
+/// A daily window `HH:MM-HH:MM`, its start included and its end not; an end before the start wraps past midnight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hours {
+    start: u16,
+    end: u16,
+}
+
+impl Hours {
+    pub fn parse(text: &str) -> Result<Hours, String> {
+        let expected = || format!("expected hours such as 09:00-18:00, got '{text}'");
+        let minute = |clock: &str| {
+            let (hours, minutes) = clock.trim().split_once(':').ok_or_else(expected)?;
+            match (hours.parse::<u16>(), minutes.parse::<u16>()) {
+                (Ok(h), Ok(m)) if h < 24 && m < 60 && minutes.len() == 2 => Ok(h * 60 + m),
+                _ => Err(expected()),
+            }
+        };
+        let (start, end) = text.split_once('-').ok_or_else(expected)?;
+        let hours = Hours {
+            start: minute(start)?,
+            end: minute(end)?,
+        };
+        if hours.start == hours.end {
+            return Err(format!("'{text}' starts where it ends"));
+        }
+        Ok(hours)
+    }
+
+    /// Whether `minute`, counted from midnight, falls in the window.
+    pub fn contains(self, minute: u16) -> bool {
+        if self.start < self.end {
+            (self.start..self.end).contains(&minute)
+        } else {
+            minute >= self.start || minute < self.end
+        }
+    }
+}
+
+/// The local weekday of `ts` and its minute counted from midnight.
+pub fn local_day_minute(ts: i64) -> Option<(chrono::Weekday, u16)> {
+    let at = chrono::Local.timestamp_opt(ts, 0).single()?;
+    let minute = u16::try_from(at.hour() * 60 + at.minute()).ok()?;
+    Some((at.weekday(), minute))
 }
 
 /// The moment a rules preview evaluates as of, `as_of` or now, and with `as_arrival` when every message arrived: now,
@@ -216,6 +295,51 @@ mod tests {
         );
         for text in ["", "soon", "-1d", "2026-13-01", "2026-11-01 14:00"] {
             assert!(as_of(text, now).is_err(), "{text}");
+        }
+    }
+
+    #[test]
+    fn weekdays_take_days_ranges_and_lists_and_wrap_past_sunday() {
+        use chrono::Weekday::*;
+        let days = |text: &str| {
+            Weekdays::parse(text).map(|days| {
+                [Mon, Tue, Wed, Thu, Fri, Sat, Sun]
+                    .into_iter()
+                    .filter(|day| days.contains(*day))
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(days("mon-fri"), Ok(vec![Mon, Tue, Wed, Thu, Fri]));
+        assert_eq!(days("Sat, sunday"), Ok(vec![Sat, Sun]));
+        assert_eq!(days("fri-mon"), Ok(vec![Mon, Fri, Sat, Sun]));
+        assert_eq!(days("wed"), Ok(vec![Wed]));
+        assert_eq!(days("mon-tue,thu"), Ok(vec![Mon, Tue, Thu]));
+        for text in ["", "weekend", "mon-", "mon,,tue", "mon-tue-wed"] {
+            assert!(Weekdays::parse(text).is_err(), "{text}");
+        }
+    }
+
+    #[test]
+    fn hours_include_the_start_not_the_end_and_wrap_past_midnight() {
+        let at = |h: u16, m: u16| h * 60 + m;
+        let day = Hours::parse("09:00-18:00").unwrap();
+        assert!(day.contains(at(9, 0)) && day.contains(at(17, 59)));
+        assert!(!day.contains(at(8, 59)) && !day.contains(at(18, 0)));
+        let night = Hours::parse(" 22:00 - 7:30 ").unwrap();
+        assert!(night.contains(at(23, 0)) && night.contains(at(0, 0)) && night.contains(at(7, 29)));
+        assert!(!night.contains(at(7, 30)) && !night.contains(at(12, 0)));
+        let evening = Hours::parse("18:00-00:00").unwrap();
+        assert!(evening.contains(at(23, 59)) && !evening.contains(at(0, 0)));
+        for text in [
+            "",
+            "9-17",
+            "09:00",
+            "09:00-09:00",
+            "24:00-01:00",
+            "09:60-10:00",
+            "x-y",
+        ] {
+            assert!(Hours::parse(text).is_err(), "{text}");
         }
     }
 

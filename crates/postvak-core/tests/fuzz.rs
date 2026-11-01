@@ -794,6 +794,8 @@ fn match_leaf() -> BoxedStrategy<Match> {
         proptest::option::of(domains()),
         proptest::option::of(any::<bool>()),
         proptest::option::of(hostile_text()),
+        proptest::option::of(hostile_text()),
+        proptest::option::of(hostile_text()),
     )
         .boxed();
     let others = (
@@ -816,7 +818,7 @@ fn match_leaf() -> BoxedStrategy<Match> {
             |(
                 (from, to, cc, subject, body),
                 (header, older_than, read, to_me, alias, tag, larger_than, flagged),
-                (from_domain, to_domain, authenticated, younger_than),
+                (from_domain, to_domain, authenticated, younger_than, arrived_days, arrived_hours),
             )| {
                 Match {
                     from,
@@ -830,6 +832,8 @@ fn match_leaf() -> BoxedStrategy<Match> {
                     authenticated,
                     older_than,
                     younger_than,
+                    arrived_days,
+                    arrived_hours,
                     larger_than,
                     read,
                     flagged,

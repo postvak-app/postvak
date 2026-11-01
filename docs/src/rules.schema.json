@@ -180,6 +180,20 @@
             "$ref": "#/$defs/Match"
           }
         },
+        "arrived_days": {
+          "description": "Arrived on one of these local weekdays: mon-fri, sat,sun or fri-mon, each day by its first three letters or in\nfull",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "arrived_hours": {
+          "description": "Arrived between these local times, such as 09:00-18:00, the end not included; 22:00-07:00 wraps past midnight.\nRead apart from arrived_days: with fri, mail from Friday 03:00 matches and from Saturday 03:00 does not",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "authenticated": {
           "description": "An Authentication-Results header from a server in the account's trusted_authserv_ids says DMARC passed for the From domain, or without a DMARC verdict, DKIM passed for a domain aligned with it; never true without that list",
           "type": [

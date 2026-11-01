@@ -52,6 +52,8 @@ All three ignore case. A text condition can also be `{ list = "name" }` alone, f
 | `authenticated` | `true` or `false` | Your provider vouches that the mail comes from its From domain. Needs the account's `trusted_authserv_ids` (see [Authenticated mail](#authenticated-mail)). |
 | `older_than` | span: `30min`, `1h`, `2d`, `3w`, `6mo`, `1y` | Mail that arrived at least this long ago. Units may be written out (`2days`); a bare `m` is refused, since it could mean minutes or months. Months and years follow the calendar. |
 | `younger_than` | span, as for `older_than` | Mail that arrived less than this long ago: the opposite of `older_than`. |
+| `arrived_days` | days: `mon-fri`, `sat,sun`, `fri-mon` | Mail that arrived on one of these days, in local time. Write a day by its first three letters or in full; a range such as `fri-mon` wraps past Sunday. |
+| `arrived_hours` | hours: `09:00-18:00`, `22:00-07:00` | Mail that arrived between these local times, the end not included; an end before the start wraps past midnight. With `arrived_days` too, each is checked on its own: `fri` with `22:00-07:00` matches Friday 03:00, not Saturday 03:00. |
 | `larger_than` | size: `500KB`, `5MB`, `1GB` | Mail larger than this. A bare number is bytes, and `1KB` is 1024 bytes. |
 | `read` | `true` or `false` | Read or unread mail. |
 | `flagged` | `true` or `false` | Flagged or unflagged mail. |
@@ -166,6 +168,7 @@ On macOS a notification shows the sender and the subject as Postvak's once Postv
 - [Flag certain people or topics](#flag-certain-people-or-topics): `any`, `flagged`
 - [Set large mail aside](#set-large-mail-aside): `larger_than`, `flagged`, `move`, `stop`
 - [Archive read mail after 30 days](#archive-read-mail-after-30-days): `read`, `older_than`, `archive`
+- [Quiet work mail after hours](#quiet-work-mail-after-hours): `from_domain`, `any`, `arrived_days`, `arrived_hours`, `notify`
 - [Tag spam by its score](#tag-spam-by-its-score): `header` with a regex, `tag`, `junk`
 
 ### Delete sign-in codes
@@ -285,6 +288,20 @@ match.read = true
 match.older_than = "30d"
 actions.archive = true
 ```
+
+### Quiet work mail after hours
+
+Work mail that arrives in the evening or at the weekend stays in INBOX without a notification:
+
+```toml
+[[rules]]
+name = "quiet work mail after hours"
+match.from_domain = "work.example"
+match.any = [{ arrived_days = "sat-sun" }, { none = [{ arrived_hours = "08:00-18:00" }] }]
+actions.notify = false
+```
+
+Local time is the time zone of the machine the daemon runs on; in the Docker image, set `TZ`.
 
 ### Tag spam by its score
 
