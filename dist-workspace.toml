@@ -2,7 +2,7 @@
 members = ["cargo:."]
 
 [dist]
-cargo-dist-version = "0.33.0"
+cargo-dist-version = "0.33.1"
 ci = "github"
 installers = ["homebrew"]
 tap = "postvak-app/homebrew-tap"
