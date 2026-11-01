@@ -3,9 +3,9 @@
 //! while it waits for clients (`daemon::wait_for_client`), and wakes the thread that waits on that notification.
 use std::sync::Arc;
 
-use mac_notification_sys::{Notification, NotificationResponse};
+use mac_notification_sys::{Notification, NotificationResponse, Sound};
 
-use super::{Notice, Waiting, open_in_window};
+use super::{Notice, Show, Waiting, open_in_window};
 use crate::paths::APP_ID;
 
 pub(super) struct Center {
@@ -47,7 +47,9 @@ impl Center {
 /// Posts `notice` and, with `wait`, blocks until it is clicked or dismissed; whether it was clicked.
 fn post(notice: &Notice, wait: bool) -> bool {
     let mut options = Notification::new();
-    options.wait_for_click(wait);
+    options
+        .wait_for_click(wait)
+        .maybe_sound(sound(&notice.show));
     match mac_notification_sys::send_notification(&notice.title, None, &notice.body, Some(&options))
     {
         Ok(NotificationResponse::Click) => true,
@@ -56,5 +58,28 @@ fn post(notice: &Notice, wait: bool) -> bool {
             log::warn!("could not post a notification: {e}");
             false
         }
+    }
+}
+
+/// The system's default sound for new mail, as on Linux, where the desktop plays its sound theme's; macOS leaves a
+/// notification without one silent. Proposals stay quiet. System Settings › Notifications › Postvak turns it off.
+fn sound(show: &Show) -> Option<Sound> {
+    matches!(show, Show::Message(_)).then_some(Sound::Default)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::notify::Open;
+
+    #[test]
+    fn new_mail_plays_the_default_sound_and_a_proposal_none() {
+        let open = Open {
+            account: Some("work".into()),
+            folder: "INBOX".into(),
+            uid: 4,
+        };
+        assert!(matches!(sound(&Show::Message(open)), Some(Sound::Default)));
+        assert!(sound(&Show::Rules).is_none());
     }
 }
