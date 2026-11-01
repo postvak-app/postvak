@@ -1,6 +1,6 @@
 # Agents over MCP
 
-`postvak mcp` lets an agent host such as Claude Desktop or Claude Code read your mail, propose rules and, when you allow it, act on mail. It speaks MCP on stdin and stdout, and the host starts it. It can do nothing you did not grant: each capability is a scope, and the host's config sets the scopes.
+`postvak mcp` lets an agent host such as Claude Desktop, Claude Code, Codex or Cursor read your mail, propose rules and, when you allow it, act on mail. It speaks MCP on stdin and stdout, and the host starts it. It can do nothing you did not grant: each capability is a scope, and the host's config sets the scopes.
 
 The defaults are privacy-friendly. An agent sees folders and headers but no message bodies, cannot change or delete mail, and can only propose rules, which stay off until you approve them. Bodies, acting on mail and approving rules are each a separate scope you add on purpose, and `--account` hides every other account from the agent.
 
@@ -12,13 +12,28 @@ For Claude Desktop, register the server and restart the app:
 postvak mcp install claude-desktop
 ```
 
-For Claude Code:
+For a host with a command line of its own, the install runs that command:
 
 ```sh
-postvak mcp install claude-code
+postvak mcp install claude-code   # claude mcp add --scope user
+postvak mcp install codex         # codex mcp add
+postvak mcp install copilot       # GitHub Copilot CLI: copilot mcp add
+postvak mcp install gemini        # gemini mcp add --scope user
 ```
 
-The Claude Desktop install edits `claude_desktop_config.json` and keeps every other server in it. The file is rewritten pretty-printed with sorted keys, and the original is saved next to it as `claude_desktop_config.json.bak`. Re-running the install does not replace that backup unless you changed the file in between. The Claude Code install runs `claude mcp remove` and then `claude mcp add --scope user`, so a re-run replaces the old entry. With `--dry-run`, or when `claude` is not on your `PATH`, it prints those commands instead of running them.
+For a host that keeps its servers in a file, the install edits that file; restart the host afterwards:
+
+```sh
+postvak mcp install claude-desktop  # claude_desktop_config.json
+postvak mcp install cursor          # ~/.cursor/mcp.json
+postvak mcp install opencode        # ~/.config/opencode/opencode.json
+```
+
+A file install keeps every other server and setting in the file. The file is rewritten pretty-printed with sorted keys, and the original is saved next to it with `.bak` added, such as `claude_desktop_config.json.bak`. Re-running the install does not replace that backup unless you changed the file in between. opencode reads `opencode.jsonc` too; if your settings are there, use `--dry-run` and copy the entry across yourself, since the install would write a separate `opencode.json`.
+
+A command install first removes Postvak's entry and then adds it, at user scope, so a re-run replaces the old entry. With `--dry-run`, or when the host's command is not on your `PATH`, it prints those commands instead of running them.
+
+VS Code's agent mode is not one of the targets: it reads a different file format, under `servers`. Add Postvak there with **MCP: Add Server**, using the command and arguments that `postvak mcp install json` prints. Hosts that run in the cloud, such as Devin, cannot start a program on your computer, so they cannot use Postvak.
 
 For any other host, `postvak mcp install json` prints a snippet for its config:
 
@@ -45,7 +60,7 @@ Options for `postvak mcp install`:
 - `--account NAME` limits the server to one account. Repeat it for more.
 - `--save-dir DIR` sets the folder `attachment_save` writes into, instead of your Downloads folder. Your home folder, a folder above it, and hidden folders or `Library` inside it are refused, as they hold what runs at login.
 - `--remove` takes the entry out again.
-- `--dry-run` shows only the postvak entry, or for Claude Code the `claude` commands, and writes nothing.
+- `--dry-run` shows only the postvak entry, or for a host with a command line the commands, and writes nothing.
 
 The install also prints a hint with the granted scopes and how to widen them. It goes to stderr, so the output of `install json` stays pure JSON.
 
