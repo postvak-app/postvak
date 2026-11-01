@@ -811,6 +811,11 @@ pub struct App {
     /// The result of the reconnect attempt in flight; at most one runs.
     pub(crate) reconnecting: Option<Receiver<anyhow::Result<Connection>>>,
     pub(crate) requested: HashSet<(usize, RowKey)>,
+    /// The one preview fetch each account runs at a time, so stepping fast does not queue a download per row passed.
+    pub(crate) fetching_body: HashMap<usize, RowKey>,
+    /// Bodies wanted while their account's fetch runs: the shown message and its neighbours, emptied when the cursor
+    /// moves on.
+    pub(crate) waiting_bodies: Vec<(usize, RowKey)>,
     /// What large messages show while the rest of them downloads, newest last, until each is stored.
     pub(crate) previews: Vec<((usize, RowKey), Preview)>,
     pub(crate) rules: RulesState,
@@ -975,6 +980,8 @@ impl App {
             body_generation: 0,
             reconnecting: None,
             requested: HashSet::new(),
+            fetching_body: HashMap::new(),
+            waiting_bodies: Vec::new(),
             previews: Vec::new(),
             rules,
             rules_watch: FileWatch::new(rules_path),
@@ -1248,6 +1255,8 @@ impl App {
             self.error = None;
         }
         self.requested.clear();
+        self.fetching_body.clear();
+        self.waiting_bodies.clear();
         for account in &mut self.accounts {
             if let Some(status) = states.iter().find(|status| status.name == account.name) {
                 account.activity = status.activity.clone();
@@ -1371,6 +1380,8 @@ impl App {
                 account.apply_queue.clear();
                 self.edits_changed = true;
                 self.undo_answered(index, None);
+                // The refusal may be the running body fetch's; the next one asked for may go.
+                self.fetching_body.remove(&index);
                 let waiting = self
                     .folder_dialog
                     .as_mut()
@@ -1480,6 +1491,9 @@ impl App {
                 if stored {
                     self.previews.retain(|(held, _)| *held != key);
                 }
+                if self.fetching_body.get(&index) == Some(&key.1) {
+                    self.body_fetch_ended(index);
+                }
                 self.reload_body(key.0, key.1, now);
             }
             Event::AttachmentFetched {
@@ -1556,6 +1570,8 @@ impl App {
             Some(index) => {
                 // A body fetch that failed is retried the next time its message is shown.
                 self.requested.retain(|(account, _)| *account != index);
+                self.fetching_body.remove(&index);
+                self.waiting_bodies.retain(|(account, _)| *account != index);
                 self.fetching.retain(|fetch| fetch.account != index);
                 self.accounts[index].error = Some(message.clone());
                 format!("{}: {message}", self.accounts[index].name)

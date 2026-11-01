@@ -31,6 +31,7 @@ impl App {
         if self.body_follows_cursor() {
             return;
         }
+        self.waiting_bodies.clear();
         let current = self.list.rows.get(self.list.cursor).map(Row::id);
         self.body = current.map(|(account, key)| BodyState::chosen(account, key, now, armed));
         self.read_body(now);
@@ -152,16 +153,43 @@ impl App {
         }
     }
 
-    /// Asks the sync thread for a body once per message.
+    /// Asks the sync thread for a body once per message; while the account's last fetch runs, it waits its turn.
     pub(super) fn request_body(&mut self, account: usize, key: &RowKey) {
-        if self.requested.insert((account, key.clone())) {
-            let (folder, uid) = key.clone();
-            let command = Command::FetchBody {
-                folder,
-                uid,
-                preview: true,
-            };
-            self.send(account, command);
+        let wanted = (account, key.clone());
+        if self.requested.contains(&wanted) || self.waiting_bodies.contains(&wanted) {
+            return;
+        }
+        if self.fetching_body.contains_key(&account) {
+            self.waiting_bodies.push(wanted);
+        } else {
+            self.fetch_body(wanted);
+        }
+    }
+
+    fn fetch_body(&mut self, (account, key): (usize, RowKey)) {
+        self.requested.insert((account, key.clone()));
+        self.fetching_body.insert(account, key.clone());
+        let (folder, uid) = key;
+        let command = Command::FetchBody {
+            folder,
+            uid,
+            preview: true,
+        };
+        self.send(account, command);
+    }
+
+    /// Starts the account's next waiting fetch, the shown message's first.
+    pub(super) fn body_fetch_ended(&mut self, account: usize) {
+        self.fetching_body.remove(&account);
+        let shown = self.body.as_ref().map(|b| (b.account, b.key.clone()));
+        let next = self
+            .waiting_bodies
+            .iter()
+            .position(|wanted| Some(wanted) == shown.as_ref())
+            .or_else(|| self.waiting_bodies.iter().position(|(a, _)| *a == account));
+        if let Some(next) = next {
+            let wanted = self.waiting_bodies.remove(next);
+            self.fetch_body(wanted);
         }
     }
 
