@@ -23,7 +23,8 @@ pub struct Context<'a> {
     pub notify_default: bool,
     /// The message came back to a folder a rule moved it out of: no rule moves or archives it again.
     pub keep_in_folder: bool,
-    /// Previews only: `older_than`, `younger_than` and `after` read this as the message's arrival, not its internaldate.
+    /// Previews only: `older_than`, `younger_than`, `arrived_days`, `arrived_hours` and `after` read this as the
+    /// message's arrival, not its internaldate.
     pub arrived_at: Option<i64>,
 }
 
@@ -358,6 +359,13 @@ fn matches(c: &Conditions, msg: &Message, flags: &str, ctx: &Context) -> bool {
         && span
             .before(ctx.now)
             .is_some_and(|cutoff| arrival(msg, ctx) <= cutoff)
+    {
+        return false;
+    }
+    if c.arrived_days
+        .is_some_and(|days| !days.contains_at(arrival(msg, ctx)))
+        || c.arrived_hours
+            .is_some_and(|hours| !hours.contains_at(arrival(msg, ctx)))
     {
         return false;
     }
@@ -1166,6 +1174,48 @@ actions = { flagged = true }
         assert!(!fires(toml, &m));
         m.size = Some(1025);
         assert!(fires(toml, &m));
+    }
+
+    #[test]
+    fn arrived_days_and_hours_read_the_local_arrival_each_on_its_own() {
+        let local = |day: u32, h: u32, m: u32| {
+            // 2026-11-02 is a Monday.
+            let naive = chrono::NaiveDate::from_ymd_opt(2026, 11, day)
+                .and_then(|date| date.and_hms_opt(h, m, 0))
+                .unwrap();
+            crate::time::local(naive).unwrap()
+        };
+        let rule = |cond: &str| {
+            format!("[[rules]]\nname = \"x\"\n{cond}\nactions = {{ flagged = true }}\n")
+        };
+        let at = |ts: i64| msg("a@x", "p@x", "s", ts, false);
+        let weekend = rule("match.arrived_days = \"sat-sun\"");
+        assert!(fires(&weekend, &at(local(7, 12, 0))));
+        assert!(!fires(&weekend, &at(local(6, 23, 59))));
+        let night = rule("match.arrived_days = \"fri\"\nmatch.arrived_hours = \"22:00-07:00\"");
+        assert!(fires(&night, &at(local(6, 23, 0))));
+        assert!(
+            fires(&night, &at(local(6, 3, 0))),
+            "the weekday and the clock count apart"
+        );
+        assert!(!fires(&night, &at(local(7, 3, 0))));
+        assert!(!fires(&night, &at(local(6, 12, 0))));
+        let outside = rule("match.none = [{ arrived_hours = \"09:00-18:00\" }]");
+        assert!(fires(&outside, &at(local(3, 8, 0))));
+        assert!(!fires(&outside, &at(local(3, 9, 0))));
+    }
+
+    #[test]
+    fn arrived_hours_follow_the_preview_arrival() {
+        let id = identity();
+        let toml = "[[rules]]\nname = \"x\"\nmatch.arrived_hours = \"12:00-13:00\"\nactions = { flagged = true }\n";
+        let noon = chrono::NaiveDate::from_ymd_opt(2026, 11, 2)
+            .and_then(|date| date.and_hms_opt(12, 30, 0))
+            .unwrap();
+        let mut c = ctx(&id, 200);
+        c.arrived_at = crate::time::local(noon);
+        let m = msg("a@x", "p@x", "s", 0, false);
+        assert!(!evaluate(&rules(toml, 0), &m, &c).actions.is_empty());
     }
 
     /// #411: a later rule sees the tag an earlier one set in the same pass, so "Junk, unless tagged Security" keeps

@@ -140,6 +140,14 @@ pub struct Match {
     /// Arrived less than this long ago, the opposite of older_than: holds mail back while it is new
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub younger_than: Option<String>,
+    /// Arrived on one of these local weekdays: mon-fri, sat,sun or fri-mon, each day by its first three letters or in
+    /// full
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrived_days: Option<String>,
+    /// Arrived between these local times, such as 09:00-18:00, the end not included; 22:00-07:00 wraps past midnight.
+    /// Read apart from arrived_days: with fri, mail from Friday 03:00 matches and from Saturday 03:00 does not
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrived_hours: Option<String>,
     /// Larger than this size, e.g. 500KB, 5MB; a bare number is bytes and 1KB is 1024 bytes
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub larger_than: Option<String>,
@@ -605,6 +613,8 @@ pub(crate) struct Conditions {
     pub(crate) authenticated: Option<bool>,
     pub(crate) older_than: Option<crate::time::Span>,
     pub(crate) younger_than: Option<crate::time::Span>,
+    pub(crate) arrived_days: Option<crate::time::Weekdays>,
+    pub(crate) arrived_hours: Option<crate::time::Hours>,
     pub(crate) larger_than: Option<u64>,
     pub(crate) read: Option<bool>,
     pub(crate) flagged: Option<bool>,
@@ -819,6 +829,8 @@ fn compile_match(
         || m.authenticated.is_some()
         || m.older_than.is_some()
         || m.younger_than.is_some()
+        || m.arrived_days.is_some()
+        || m.arrived_hours.is_some()
         || m.larger_than.is_some()
         || m.read.is_some()
         || m.flagged.is_some()
@@ -882,6 +894,22 @@ fn compile_match(
             })
             .transpose()
     };
+    let arrived_days = m
+        .arrived_days
+        .as_deref()
+        .map(|text| {
+            crate::time::Weekdays::parse(text)
+                .map_err(|e| invalid(rule, format!("{path}.arrived_days: {e}")))
+        })
+        .transpose()?;
+    let arrived_hours = m
+        .arrived_hours
+        .as_deref()
+        .map(|text| {
+            crate::time::Hours::parse(text)
+                .map_err(|e| invalid(rule, format!("{path}.arrived_hours: {e}")))
+        })
+        .transpose()?;
     let larger_than = m
         .larger_than
         .as_deref()
@@ -951,6 +979,8 @@ fn compile_match(
         authenticated: m.authenticated,
         older_than: span("older_than", &m.older_than)?,
         younger_than: span("younger_than", &m.younger_than)?,
+        arrived_days,
+        arrived_hours,
         larger_than,
         read: m.read,
         flagged: m.flagged,
@@ -1623,6 +1653,31 @@ actions = { tag = "$label4", move = "Shop" }
                     assert!(reason.contains("match.larger_than"), "{reason}")
                 }
                 other => panic!("expected Invalid for {bad:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn arrived_days_and_hours_are_checked_when_compiled() {
+        let rule = |cond: &str| {
+            format!("[[rules]]\nname = \"x\"\n{cond}\nactions = {{ flagged = true }}\n")
+        };
+        compile(
+            &parse(&rule(
+                "match.arrived_days = \"mon-fri\"\nmatch.arrived_hours = \"9:00-17:30\"",
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        for (cond, key) in [
+            ("match.arrived_days = \"weekend\"", "match.arrived_days"),
+            ("match.arrived_hours = \"9-17\"", "match.arrived_hours"),
+        ] {
+            match compile(&parse(&rule(cond)).unwrap()) {
+                Err(RulesError::Invalid { reason, .. }) => {
+                    assert!(reason.contains(key), "{reason}")
+                }
+                other => panic!("expected Invalid for {cond}, got {other:?}"),
             }
         }
     }
