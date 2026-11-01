@@ -2,7 +2,7 @@ use std::io;
 
 use crate::folder_name;
 use crate::mail_ops::{MailError, MailOps, delete_message, delete_messages};
-use crate::message::body_text;
+use crate::message::{self, body_text};
 use crate::rules::engine::{Context, Plan, PlannedAction, evaluate, flag_change};
 use crate::rules::{Action, CompiledRule};
 use crate::store::{Folder, LogEntry, Message, Store, StoreError, has_flag, with_flag};
@@ -49,6 +49,28 @@ pub fn ensure_body_text(
         return Ok(body_text(&raw));
     }
     download(msg, ops, store).map(|(_, text)| text)
+}
+
+/// Reads the message's attachment names and part types into `msg`, from the stored message when it is here and from
+/// its BODYSTRUCTURE alone otherwise. A structure the server does not give leaves them unknown.
+pub fn ensure_structure(
+    msg: &mut Message,
+    ops: &mut dyn MailOps,
+    store: &Store,
+) -> Result<(), ApplyError> {
+    let structure = match store.raw(&msg.folder, msg.uid)? {
+        Some(raw) => message::structure(&raw),
+        None => ops.fetch_structures(&[msg.uid])?.remove(&msg.uid),
+    };
+    let Some(structure) = structure else {
+        return Ok(());
+    };
+    store.set_structure(&msg.folder, msg.uid, &structure)?;
+    if let Some(stored) = store.message(&msg.folder, msg.uid)? {
+        msg.attachment_names = stored.attachment_names;
+        msg.part_types = stored.part_types;
+    }
+    Ok(())
 }
 
 /// Fetches the whole message and stores it with its body text.

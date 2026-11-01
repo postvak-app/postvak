@@ -410,7 +410,7 @@ fn run(scale: u32, runs: usize) {
         .collect();
     for uid in inbox {
         stores[0]
-            .set_indexed("INBOX", uid, Some(&text), &[], T0)
+            .set_indexed("INBOX", uid, Some(&text), None, T0)
             .unwrap();
     }
     report(

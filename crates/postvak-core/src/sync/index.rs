@@ -181,13 +181,17 @@ pub(crate) fn slice(
                 Err(ActionError::UnknownFolder(msg.folder.clone()))
             };
             match indexed {
-                Ok((text, names)) => {
-                    store.set_indexed(&msg.folder, msg.uid, Some(&text), &names, at)?
-                }
+                Ok((text, structure)) => store.set_indexed(
+                    &msg.folder,
+                    msg.uid,
+                    text.as_deref(),
+                    structure.as_ref(),
+                    at,
+                )?,
                 Err(e) if e.is_lost_connection() => return Err(e.into()),
                 Err(e) => {
                     log::warn!("{}/{}: indexing failed: {e}", msg.folder, msg.uid);
-                    store.set_indexed(&msg.folder, msg.uid, None, &[], at)?;
+                    store.set_indexed(&msg.folder, msg.uid, None, None, at)?;
                 }
             }
             done += 1;
@@ -208,26 +212,24 @@ fn finish(
     Ok(IndexOutcome::Progressed)
 }
 
-/// The message's text and attachment names: from its text parts, or from the whole message when the server gives
-/// no structure and the message is small enough; headers only otherwise.
+/// The message's text and structure: from its text parts, or from the whole message when the server gives no
+/// structure and the message is small enough; headers only otherwise. A message indexed before part types were stored
+/// keeps its text and gets its structure alone; None for either leaves the stored one as it is.
 fn index_one(
     ops: &mut dyn MailOps,
     msg: &Message,
     structure: Option<Structure>,
-) -> Result<(String, Vec<String>), ActionError> {
+) -> Result<(Option<String>, Option<Structure>), ActionError> {
+    if msg.indexed_at.is_some() && msg.body_text.is_some() {
+        return Ok((None, structure));
+    }
     let Some(structure) = structure else {
         if msg.size.is_some_and(|size| size > FALLBACK_RAW_LIMIT) {
-            return Ok((String::new(), Vec::new()));
+            return Ok((Some(String::new()), None));
         }
         return Ok(match ops.fetch_raw(msg.uid)? {
-            Some(raw) => (
-                message::body_text(&raw),
-                message::attachments(&raw)
-                    .into_iter()
-                    .filter_map(|a| a.name)
-                    .collect(),
-            ),
-            None => (String::new(), Vec::new()),
+            Some(raw) => (Some(message::body_text(&raw)), message::structure(&raw)),
+            None => (Some(String::new()), None),
         });
     };
     let mut parts = Vec::new();
@@ -236,7 +238,7 @@ fn index_one(
             parts.push((part.clone(), bytes));
         }
     }
-    Ok((message::text_from_parts(&parts), structure.attachment_names))
+    Ok((Some(message::text_from_parts(&parts)), Some(structure)))
 }
 
 /// The parts worth fetching: every text part outside a `multipart/alternative`, and of each alternative its first

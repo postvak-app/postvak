@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use mail_parser::{AddressList, HeaderForm, MessageParser, MessagePart, PartKind, TextList};
 use serde::Serialize;
 
-use crate::mail_ops::{PartRef, TextPart};
+use crate::mail_ops::{PartRef, Structure, TextPart};
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Parsed {
@@ -550,6 +550,37 @@ pub fn param(params: &[(String, String)], key: &str) -> Option<String> {
     let msg = MessageParser::default().parse(header.as_bytes())?;
     let name = msg.content_type()?.attribute(key)?.trim().to_string();
     (!name.is_empty()).then_some(name)
+}
+
+/// The attachment names and part types `fetch_structures` would report, from the whole message; None when it does not
+/// parse. The names are those of `attachments`, so none from inside an enclosed message.
+pub fn structure(raw: &[u8]) -> Option<Structure> {
+    let msg = MessageParser::default().parse(raw)?;
+    let mut part_types = Vec::new();
+    let mut pending = vec![msg.root_part()];
+    while let Some(part) = pending.pop() {
+        if matches!(part.kind(), PartKind::Multipart) {
+            pending.extend(part.children().rev());
+            continue;
+        }
+        part_types.push(match part.content_type() {
+            Some(ct) => {
+                format!("{}/{}", ct.ctype(), ct.subtype().unwrap_or_default()).to_ascii_lowercase()
+            }
+            None => "text/plain".into(),
+        });
+        if let Some(inner) = part.nested() {
+            pending.push(inner.root_part());
+        }
+    }
+    Some(Structure {
+        attachment_names: attachments_of(&msg)
+            .into_iter()
+            .filter_map(|a| a.name)
+            .collect(),
+        part_types,
+        ..Structure::default()
+    })
 }
 
 pub fn attachments(raw: &[u8]) -> Vec<Attachment> {

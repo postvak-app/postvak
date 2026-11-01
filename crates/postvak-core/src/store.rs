@@ -6,6 +6,7 @@ use rusqlite_migration::{M, Migrations};
 use serde::{Deserialize, Serialize};
 
 use crate::config::Identity;
+use crate::mail_ops::Structure;
 use crate::paths::Paths;
 use crate::search::{self, Candidate, Plan, Query, Scope, Vocab};
 
@@ -46,6 +47,7 @@ fn migration_list() -> Vec<M<'static>> {
         M::up(include_str!("../migrations/023-rule-log-index/up.sql")),
         M::up(include_str!("../migrations/024-undo/up.sql")),
         M::up(include_str!("../migrations/025-apply-existing/up.sql")),
+        M::up(include_str!("../migrations/026-part-types/up.sql")),
     ]
 }
 
@@ -157,6 +159,10 @@ pub struct Message {
     /// Attachment file names, one per line, once the indexer has read the message's structure.
     #[serde(skip_serializing, default)]
     pub attachment_names: Option<String>,
+    /// The MIME type of every part but a multipart, one per line; None until the message's structure is known, which
+    /// is what tells "no attachments" from "not known yet".
+    #[serde(skip_serializing, default)]
+    pub part_types: Option<String>,
     /// When the indexer last tried this message; None until it has.
     #[serde(skip_serializing, default)]
     pub indexed_at: Option<i64>,
@@ -421,11 +427,14 @@ const NEVER: &str = "indexed_at IS NULL";
 /// The messages the indexer tried without finding text more than a day before `?1`, spelled as the partial index
 /// `messages_retry` (migration 014) so a count and the backlog read it. Together with `NEVER` these are the backlog.
 const RETRY: &str = "body_text IS NULL AND indexed_at IS NOT NULL AND indexed_at < ?1 - 86400";
+/// Messages indexed with text but without part types more than a day before `?1`: mail indexed before part types were
+/// stored, whose structure alone is fetched again. Spelled as the partial index `messages_restructure` (migration 026).
+const RESTRUCTURE: &str = "part_types IS NULL AND body_text IS NOT NULL AND indexed_at IS NOT NULL AND indexed_at < ?1 - 86400";
 
-const MESSAGE_COLUMNS: &str = "folder, uid, message_id, from_addr, to_addr, cc_addr, delivered_to, in_reply_to, refs, thread_id, subject, date, internaldate, flags, size, headers, body_text, attachment_names, indexed_at";
+const MESSAGE_COLUMNS: &str = "folder, uid, message_id, from_addr, to_addr, cc_addr, delivered_to, in_reply_to, refs, thread_id, subject, date, internaldate, flags, size, headers, body_text, attachment_names, part_types, indexed_at";
 /// `MESSAGE_COLUMNS` without the body text and the index columns. Those sit behind `raw` in the row, so reading them walks
 /// a stored message's overflow pages, and an indexed body's text is the largest column read.
-const BODILESS_COLUMNS: &str = "folder, uid, message_id, from_addr, to_addr, cc_addr, delivered_to, in_reply_to, refs, thread_id, subject, date, internaldate, flags, size, headers, NULL AS body_text, NULL AS attachment_names, NULL AS indexed_at";
+const BODILESS_COLUMNS: &str = "folder, uid, message_id, from_addr, to_addr, cc_addr, delivered_to, in_reply_to, refs, thread_id, subject, date, internaldate, flags, size, headers, NULL AS body_text, NULL AS attachment_names, NULL AS part_types, NULL AS indexed_at";
 
 /// The SQL of one search tier: `?1` the FTS expression (NULL when empty), `?2` the folder (NULL for all), then the
 /// plan's parameters, the excluded expression when `exclude`, the position to start after when `after`, and the
@@ -564,6 +573,9 @@ fn backlog_sql() -> String {
                         ORDER BY internaldate DESC, uid DESC LIMIT ?2)
          UNION ALL
          SELECT * FROM (SELECT {MESSAGE_COLUMNS} FROM messages WHERE {RETRY}
+                        ORDER BY internaldate DESC, uid DESC LIMIT ?2)
+         UNION ALL
+         SELECT * FROM (SELECT {MESSAGE_COLUMNS} FROM messages WHERE {RESTRUCTURE}
                         ORDER BY internaldate DESC, uid DESC LIMIT ?2)
          ORDER BY internaldate DESC, uid DESC LIMIT ?2"
     )
@@ -846,7 +858,7 @@ impl Store {
 
     pub fn insert_message(&self, m: &Message) -> Result<(), StoreError> {
         let sql = format!(
-            "INSERT OR IGNORE INTO messages ({MESSAGE_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)"
+            "INSERT OR IGNORE INTO messages ({MESSAGE_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)"
         );
         self.conn.prepare_cached(&sql)?.execute(params![
             m.folder,
@@ -867,6 +879,7 @@ impl Store {
             m.headers,
             m.body_text,
             m.attachment_names,
+            m.part_types,
             m.indexed_at
         ])?;
         Ok(())
@@ -1395,12 +1408,15 @@ impl Store {
             [],
             |r| r.get(0),
         )?;
-        let retry: i64 = self.conn.query_row(
-            &format!("SELECT count(*) FROM messages WHERE {RETRY}"),
+        let later: i64 = self.conn.query_row(
+            &format!(
+                "SELECT (SELECT count(*) FROM messages WHERE {RETRY})
+                      + (SELECT count(*) FROM messages WHERE {RESTRUCTURE})"
+            ),
             params![now],
             |r| r.get(0),
         )?;
-        Ok(u64::try_from(never + retry).unwrap_or(0))
+        Ok(u64::try_from(never + later).unwrap_or(0))
     }
 
     /// The next messages to index, newest first: never tried, or tried without text more than a day before `now`.
@@ -1411,24 +1427,41 @@ impl Store {
     }
 
     /// Records an index pass at `at`: `text` is None when the fetch failed, so the message is retried a day later,
-    /// and Some("") when the message has no text. Never touches `raw`.
+    /// and Some("") when the message has no text; `structure` is None when it is not known. Never touches `raw`.
     pub fn set_indexed(
         &self,
         folder: &str,
         uid: u32,
         text: Option<&str>,
-        names: &[String],
+        structure: Option<&Structure>,
         at: i64,
     ) -> Result<(), StoreError> {
+        self.conn
+            .prepare_cached(
+                "UPDATE messages SET indexed_at = ?3, body_text = COALESCE(?4, body_text)
+                 WHERE folder = ?1 AND uid = ?2",
+            )?
+            .execute(params![folder, uid, at, text])?;
+        match structure {
+            Some(structure) => self.set_structure(folder, uid, structure),
+            None => Ok(()),
+        }
+    }
+
+    /// Stores the attachment names and part types of the message's structure, leaving its index pass and text alone.
+    pub fn set_structure(
+        &self,
+        folder: &str,
+        uid: u32,
+        structure: &Structure,
+    ) -> Result<(), StoreError> {
+        let names = &structure.attachment_names;
         let names = (!names.is_empty()).then(|| names.join("\n"));
         self.conn
             .prepare_cached(
-                "UPDATE messages SET indexed_at = ?3,
-                    body_text = CASE WHEN ?4 IS NULL THEN body_text ELSE ?4 END,
-                    attachment_names = CASE WHEN ?4 IS NULL THEN attachment_names ELSE ?5 END
-                 WHERE folder = ?1 AND uid = ?2",
+                "UPDATE messages SET attachment_names = ?3, part_types = ?4 WHERE folder = ?1 AND uid = ?2",
             )?
-            .execute(params![folder, uid, at, text, names])?;
+            .execute(params![folder, uid, names, structure.part_types.join("\n")])?;
         Ok(())
     }
 
@@ -1445,7 +1478,7 @@ impl Store {
     #[cfg(any(test, feature = "testing"))]
     pub fn forget_indexing(&self) -> Result<(), StoreError> {
         self.conn.execute(
-            "UPDATE messages SET indexed_at = NULL, body_text = NULL, attachment_names = NULL",
+            "UPDATE messages SET indexed_at = NULL, body_text = NULL, attachment_names = NULL, part_types = NULL",
             [],
         )?;
         Ok(())
@@ -2240,7 +2273,7 @@ mod tests {
         assert_eq!(uids(s.backlog(1_000, 10).unwrap()), [2, 3, 1]);
         assert_eq!(uids(s.backlog(1_000, 2).unwrap()), [2, 3]);
         assert_eq!(s.backlog_count(1_000).unwrap(), (3, 3));
-        s.set_indexed("Archive", 2, Some("pineapple"), &[], 1_000)
+        s.set_indexed("Archive", 2, Some("pineapple"), None, 1_000)
             .unwrap();
         assert_eq!(uids(s.backlog(1_000, 10).unwrap()), [3, 1]);
         assert_eq!(s.backlog_count(1_000).unwrap(), (2, 3));
@@ -2254,7 +2287,11 @@ mod tests {
             "INBOX",
             1,
             Some("pineapple pie"),
-            &["Q3 report.pdf".into(), "notes.txt".into()],
+            Some(&Structure {
+                attachment_names: vec!["Q3 report.pdf".into(), "notes.txt".into()],
+                part_types: vec!["text/plain".into(), "application/pdf".into()],
+                ..Structure::default()
+            }),
             50,
         )
         .unwrap();
@@ -2264,6 +2301,7 @@ mod tests {
             m.attachment_names.as_deref(),
             Some("Q3 report.pdf\nnotes.txt")
         );
+        assert_eq!(m.part_types.as_deref(), Some("text/plain\napplication/pdf"));
         assert_eq!(m.indexed_at, Some(50));
         assert_eq!(fts_hits(&s, "pineapple"), 1);
         assert_eq!(fts_hits(&s, "notes"), 1);
@@ -2280,14 +2318,18 @@ mod tests {
     fn a_failed_index_keeps_the_text_unknown_and_is_retried_after_a_day() {
         let s = store_with_inbox();
         s.insert_message(&msg("INBOX", 1, 10)).unwrap();
-        s.set_indexed("INBOX", 1, None, &[], 1_000).unwrap();
+        s.set_indexed("INBOX", 1, None, None, 1_000).unwrap();
         let m = s.message("INBOX", 1).unwrap().unwrap();
         assert_eq!((m.body_text, m.indexed_at), (None, Some(1_000)));
         assert!(s.backlog(1_000, 10).unwrap().is_empty());
         assert_eq!(s.backlog_count(1_000 + 86_399).unwrap(), (0, 1));
         assert_eq!(s.backlog(1_000 + 86_401, 10).unwrap().len(), 1);
         // A message indexed without text is done, not failed.
-        s.set_indexed("INBOX", 1, Some(""), &["a.pdf".into()], 2_000)
+        let structure = Structure {
+            attachment_names: vec!["a.pdf".into()],
+            ..Structure::default()
+        };
+        s.set_indexed("INBOX", 1, Some(""), Some(&structure), 2_000)
             .unwrap();
         assert!(s.backlog(2_000 + 1_000_000, 10).unwrap().is_empty());
         assert_eq!(

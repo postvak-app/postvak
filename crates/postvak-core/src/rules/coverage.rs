@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use crate::config::Identity;
 use crate::rules::apply::{ApplyError, plan_for, would_run};
-use crate::rules::engine::{Context, Due, Mode, Plan, PlannedAction, folder_needs_body, matching};
+use crate::rules::engine::{Context, Due, Mode, Plan, PlannedAction, folder_reads_index, matching};
 use crate::rules::lists::{users, with_proposals};
 use crate::rules::{CompiledRule, Rule, RuleFile, RulesError, compile, compile_with};
 use crate::senders::{GroupBy, Sender, senders};
@@ -103,8 +103,8 @@ pub fn in_folder(
     folder: &str,
     by: GroupBy,
 ) -> Result<Coverage, StoreError> {
-    let with_body = folder_needs_body(rules, ctx.account, folder);
-    let messages = store.messages_between(folder, None, None, with_body)?;
+    let with_index = folder_reads_index(rules, ctx.account, folder);
+    let messages = store.messages_between(folder, None, None, with_index)?;
     let mut coverage = Coverage {
         messages: u32::try_from(messages.len()).unwrap_or(u32::MAX),
         ..Coverage::default()
@@ -217,7 +217,7 @@ pub fn list_change(
         let folder = old.folder();
         if !folders.contains_key(folder) {
             let body = (now.iter().chain(&approved))
-                .any(|rule| rule.folder() == folder && rule.needs_body());
+                .any(|rule| rule.folder() == folder && rule.reads_index());
             folders.insert(folder, store.messages_between(folder, None, None, body)?);
         }
         let mut effect = ListEffect {

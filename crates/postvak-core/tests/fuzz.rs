@@ -814,12 +814,19 @@ fn match_leaf() -> BoxedStrategy<Match> {
         proptest::option::of(any::<bool>()),
     )
         .boxed();
-    (texts, others, domains)
+    let parts = (
+        proptest::option::of(any::<bool>()),
+        proptest::option::of(text_match()),
+        proptest::option::of(hostile_text()),
+    )
+        .boxed();
+    (texts, others, domains, parts)
         .prop_map(
             |(
                 (from, from_name, to, cc, subject, body),
                 (header, older_than, read, to_me, alias, tag, larger_than, flagged),
                 (from_domain, to_domain, authenticated, younger_than, arrived_days, arrived_hours),
+                (has_attachment, attachment, has_part),
             )| {
                 Match {
                     from,
@@ -829,6 +836,9 @@ fn match_leaf() -> BoxedStrategy<Match> {
                     subject,
                     body,
                     header,
+                    has_attachment,
+                    attachment,
+                    has_part,
                     from_domain,
                     to_domain,
                     authenticated,

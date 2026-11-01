@@ -9,7 +9,7 @@ use crate::mail_ops::{MailError, MailOps, SelectInfo, Structure};
 use crate::message::{self, Attachment, HtmlBody, InlinePart, clean};
 use crate::paths::Paths;
 use crate::rules::apply::{ApplyError, apply_many, ensure_raw, move_target, plan_for};
-use crate::rules::engine::{Context, Due, Mode, PlannedAction, folder_needs_body, folder_rules};
+use crate::rules::engine::{Context, Due, Mode, PlannedAction, folder_reads_index, folder_rules};
 use crate::rules::{Action, CompiledRule, RulesError};
 use crate::search::Term;
 use crate::store::{Folder, Hit, Matched, Message, Store, StoreError};
@@ -237,7 +237,7 @@ fn fetch_preview(
             &msg.folder,
             msg.uid,
             Some(&message::text_from_parts(&parts)),
-            &structure.attachment_names,
+            Some(&structure),
             crate::time::now(),
         )?;
     }
@@ -437,7 +437,7 @@ pub fn planned(
         {
             continue;
         }
-        let messages = if folder_needs_body(rules, &account.name, &folder.name) {
+        let messages = if folder_reads_index(rules, &account.name, &folder.name) {
             store.messages_in_folder(&folder.name)?
         } else {
             store.messages_without_body(&folder.name, 0)?
