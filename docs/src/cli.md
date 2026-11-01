@@ -1080,7 +1080,7 @@ Register `postvak mcp` with an agent host; re-run it to change the scopes
 
 * `<TARGET>`
 
-  Possible values: `claude-code`, `claude-desktop`, `json`
+  Possible values: `claude-code`, `claude-desktop`, `codex`, `copilot`, `cursor`, `gemini`, `json`, `opencode`
 
 
 ###### **Options:**

@@ -425,7 +425,12 @@ enum McpCommand {
 enum InstallTarget {
     ClaudeCode,
     ClaudeDesktop,
+    Codex,
+    Copilot,
+    Cursor,
+    Gemini,
     Json,
+    Opencode,
 }
 
 #[derive(Subcommand)]
@@ -1601,7 +1606,12 @@ fn cmd_mcp(
             let target = match target {
                 InstallTarget::ClaudeCode => Target::ClaudeCode,
                 InstallTarget::ClaudeDesktop => Target::ClaudeDesktop,
+                InstallTarget::Codex => Target::Codex,
+                InstallTarget::Copilot => Target::Copilot,
+                InstallTarget::Cursor => Target::Cursor,
+                InstallTarget::Gemini => Target::Gemini,
                 InstallTarget::Json => Target::Json,
+                InstallTarget::Opencode => Target::Opencode,
             };
             let (stdout, hint) = install(
                 target,
