@@ -89,7 +89,7 @@ impl Fixture {
         app.reconnect = |_, _| Err(anyhow::anyhow!("no daemon in tests"));
         app.fetch_release = || Err(anyhow::anyhow!("no network in tests"));
         app.read_open_at_login = |_| Ok(false);
-        app.set_open_at_login = |_, _| Ok(String::new());
+        app.set_open_at_login = |_, _| Ok(Default::default());
         app.ask_save_path = |_, _, _| {
             let (_, answer) = std::sync::mpsc::channel();
             answer

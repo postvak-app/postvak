@@ -69,22 +69,185 @@ pub fn is_on(paths: &Paths) -> Result<bool> {
     })
 }
 
-/// Turns opening at login on or off; what it did, to print. In a Flatpak the desktop may ask the user first.
-pub fn set(paths: &Paths, on: bool) -> Result<String> {
+/// What [`set`] did, and what keeps it from working in this session, if anything.
+#[derive(Debug, Default)]
+pub struct Changed {
+    /// What it did, to print.
+    pub done: String,
+    /// Why the login start it turned on may not happen here, and what to do instead.
+    pub warning: Option<String>,
+}
+
+/// Turns opening at login on or off. In a Flatpak the desktop may ask the user first.
+pub fn set(paths: &Paths, on: bool) -> Result<Changed> {
     let target = Target::current()?;
     let file = target.file(paths)?;
+    let done = set_in(target, &file, paths, on)?;
+    let warning = match (target, on) {
+        (Target::Xdg, true) => xdg_warning(&file, paths),
+        _ => None,
+    };
+    Ok(Changed { done, warning })
+}
+
+/// Why an autostart entry that is on may not open the window at login in this session: a compositor or window manager
+/// that starts nothing from the autostart folder itself, where no session manager does it either.
+pub fn warning(paths: &Paths) -> Result<Option<String>> {
+    let target = Target::current()?;
+    Ok(match target {
+        Target::Xdg if is_on(paths)? => xdg_warning(&target.file(paths)?, paths),
+        _ => None,
+    })
+}
+
+fn xdg_warning(file: &Path, paths: &Paths) -> Option<String> {
+    let compositor = compositor(|name| std::env::var(name).ok())?;
+    if autostart_target_active() {
+        return None;
+    }
+    let exe = paths::stable_exe().ok()?;
+    let folder = file.parent().unwrap_or(file);
+    Some(unread_entry(
+        compositor,
+        folder,
+        &command(&exe, paths.home.as_deref()),
+    ))
+}
+
+/// Compositors and window managers that start nothing from the autostart folder themselves, as `XDG_CURRENT_DESKTOP`
+/// names them. Desktops such as Plasma, GNOME and Xfce do; a session manager such as uwsm can do it for these.
+const NO_XDG_AUTOSTART: [&str; 6] = ["Hyprland", "sway", "niri", "river", "labwc", "i3"];
+
+/// The compositor of this session when it is one of [`NO_XDG_AUTOSTART`]: from `XDG_CURRENT_DESKTOP`, which may list
+/// several names, or from the socket variable a compositor sets for its clients when a display manager set no name.
+fn compositor(env: impl Fn(&str) -> Option<String>) -> Option<&'static str> {
+    let named = env("XDG_CURRENT_DESKTOP").and_then(|desktops| {
+        desktops.split(':').find_map(|desktop| {
+            NO_XDG_AUTOSTART
+                .into_iter()
+                .find(|known| known.eq_ignore_ascii_case(desktop.trim()))
+        })
+    });
+    named.or_else(|| {
+        [
+            ("HYPRLAND_INSTANCE_SIGNATURE", "Hyprland"),
+            ("SWAYSOCK", "sway"),
+            ("NIRI_SOCKET", "niri"),
+        ]
+        .into_iter()
+        .find(|(variable, _)| env(variable).is_some_and(|value| !value.is_empty()))
+        .map(|(_, compositor)| compositor)
+    })
+}
+
+/// Whether systemd started the autostart folder's entries in this session (`systemd-xdg-autostart-generator`), as
+/// uwsm and some other session managers have it do.
+fn autostart_target_active() -> bool {
+    std::process::Command::new("systemctl")
+        .args([
+            "--user",
+            "is-active",
+            "--quiet",
+            "xdg-desktop-autostart.target",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Says that `compositor` does not read the autostart `folder`, and how to start `command` at login there instead.
+fn unread_entry(compositor: &str, folder: &Path, command: &[String]) -> String {
+    format!(
+        "{compositor} does not start the entries in {} unless a session manager such as uwsm does; to open Postvak at \
+         login there, {}",
+        folder.display(),
+        startup_hint(Some(compositor), command)
+    )
+}
+
+/// Where to put `command` so that `compositor` runs it at login, in that compositor's own syntax.
+fn startup_hint(compositor: Option<&str>, command: &[String]) -> String {
+    let line = shell_line(command);
+    match compositor {
+        Some("Hyprland") => {
+            format!("add `exec-once = {line}` to ~/.config/hypr/hyprland.conf")
+        }
+        Some("sway") => format!("add `exec {line}` to ~/.config/sway/config"),
+        Some("i3") => format!("add `exec {line}` to ~/.config/i3/config"),
+        Some("niri") => {
+            let args: Vec<String> = command.iter().map(|arg| kdl_string(arg)).collect();
+            format!(
+                "add `spawn-at-startup {}` to ~/.config/niri/config.kdl",
+                args.join(" ")
+            )
+        }
+        Some("labwc") => format!("add `{line} &` to ~/.config/labwc/autostart"),
+        Some("river") => format!(
+            "add `riverctl spawn {}` to ~/.config/river/init",
+            shell_arg(&line)
+        ),
+        _ => format!("add `{line}` to your desktop's startup commands"),
+    }
+}
+
+/// `command` as one line for `sh`, each argument quoted when it needs to be.
+fn shell_line(command: &[String]) -> String {
+    let args: Vec<String> = command.iter().map(|arg| shell_arg(arg)).collect();
+    args.join(" ")
+}
+
+fn shell_arg(arg: &str) -> String {
+    let safe = |c: char| c.is_ascii_alphanumeric() || "_-./:=@%+,".contains(c);
+    if !arg.is_empty() && arg.chars().all(safe) {
+        arg.to_string()
+    } else {
+        format!("'{}'", arg.replace('\'', "'\\''"))
+    }
+}
+
+fn kdl_string(arg: &str) -> String {
+    format!("\"{}\"", arg.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// The command a Flatpak's login start runs, for a desktop without the Background portal.
+fn flatpak_command() -> Vec<String> {
+    ["flatpak", "run", APP_ID]
+        .into_iter()
+        .chain(GUI_ARGS)
+        .map(String::from)
+        .collect()
+}
+
+/// Says that the desktop could not be asked to start a Flatpak at login, and how to do it without the portal.
+fn no_background_portal(compositor: Option<&str>) -> String {
+    let hint = startup_hint(compositor, &flatpak_command());
+    format!(
+        "the desktop has no Background portal to open Postvak at login (the portals of Hyprland and other compositors \
+         lack it); {hint}"
+    )
+}
+
+fn set_in(target: Target, file: &Path, paths: &Paths, on: bool) -> Result<String> {
     match (target, on) {
         (Target::Portal, _) => {
             #[cfg(target_os = "linux")]
             {
-                let granted = portal::request(on)?;
+                let granted = portal::request(on).map_err(|e| match on {
+                    true => {
+                        let compositor = compositor(|name| std::env::var(name).ok());
+                        e.context(no_background_portal(compositor))
+                    }
+                    false => e,
+                })?;
                 if on && !granted {
                     bail!("the desktop did not allow Postvak to open at login");
                 }
                 if on {
-                    paths::write_atomic(&file, b"on\n")?;
+                    paths::write_atomic(file, b"on\n")?;
                 } else {
-                    remove(&file)?;
+                    remove(file)?;
                 }
                 Ok(if on {
                     "the desktop opens Postvak at login".to_string()
@@ -102,12 +265,12 @@ pub fn set(paths: &Paths, on: bool) -> Result<String> {
                 Target::Launchd => plist(&exe, home),
                 _ => desktop_entry(&exe, home),
             };
-            paths::write_atomic_keeping_dir_mode(&file, text.as_bytes())
+            paths::write_atomic_keeping_dir_mode(file, text.as_bytes())
                 .with_context(|| format!("writing {}", file.display()))?;
             Ok(format!("wrote {}", file.display()))
         }
         (_, false) => {
-            remove(&file)?;
+            remove(file)?;
             Ok(format!("deleted {}", file.display()))
         }
     }
@@ -167,7 +330,8 @@ fn plist(exe: &Path, postvak_home: Option<&Path>) -> String {
     )
 }
 
-fn desktop_entry(exe: &Path, postvak_home: Option<&Path>) -> String {
+/// The command a login start runs on Linux: this postvak in the background, keeping a `POSTVAK_HOME`.
+fn command(exe: &Path, postvak_home: Option<&Path>) -> Vec<String> {
     let mut command: Vec<String> = Vec::new();
     if let Some(home) = postvak_home {
         command.push("env".into());
@@ -175,7 +339,14 @@ fn desktop_entry(exe: &Path, postvak_home: Option<&Path>) -> String {
     }
     command.push(exe.to_string_lossy().into_owned());
     command.extend(GUI_ARGS.map(String::from));
-    let exec: Vec<String> = command.iter().map(|arg| exec_arg(arg)).collect();
+    command
+}
+
+fn desktop_entry(exe: &Path, postvak_home: Option<&Path>) -> String {
+    let exec: Vec<String> = command(exe, postvak_home)
+        .iter()
+        .map(|arg| exec_arg(arg))
+        .collect();
     format!(
         "[Desktop Entry]\nType=Application\nName=Postvak\nComment=Opens Postvak in the tray at login\nExec={}\nIcon={APP_ID}\nTerminal=false\nX-GNOME-Autostart-enabled=true\n",
         exec.join(" ")
@@ -278,6 +449,115 @@ mod tests {
         assert!(xdg_enabled(
             "[Desktop Entry]\nExec=postvak gui --background\n"
         ));
+    }
+
+    fn env<'a>(vars: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            vars.iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| value.to_string())
+        }
+    }
+
+    #[test]
+    fn compositors_that_skip_the_autostart_folder_are_known_by_name_or_socket() {
+        assert_eq!(
+            compositor(env(&[("XDG_CURRENT_DESKTOP", "Hyprland")])),
+            Some("Hyprland")
+        );
+        assert_eq!(
+            compositor(env(&[("XDG_CURRENT_DESKTOP", "sway:wlroots")])),
+            Some("sway")
+        );
+        assert_eq!(
+            compositor(env(&[("XDG_CURRENT_DESKTOP", "NIRI")])),
+            Some("niri")
+        );
+        assert_eq!(
+            compositor(env(&[("HYPRLAND_INSTANCE_SIGNATURE", "abc")])),
+            Some("Hyprland")
+        );
+        assert_eq!(
+            compositor(env(&[("SWAYSOCK", "/run/user/1000/sway.sock")])),
+            Some("sway")
+        );
+        // Desktops that start the folder's entries themselves.
+        for desktop in ["KDE", "GNOME", "ubuntu:GNOME", "XFCE", "X-Cinnamon"] {
+            assert_eq!(
+                compositor(env(&[("XDG_CURRENT_DESKTOP", desktop)])),
+                None,
+                "{desktop}"
+            );
+        }
+        assert_eq!(compositor(env(&[("SWAYSOCK", "")])), None);
+        assert_eq!(compositor(env(&[])), None);
+    }
+
+    #[test]
+    fn the_warning_says_where_hyprland_starts_postvak_instead() {
+        let command = command(Path::new("/usr/bin/postvak"), None);
+        let text = unread_entry(
+            "Hyprland",
+            Path::new("/home/me/.config/autostart"),
+            &command,
+        );
+        assert_eq!(
+            text,
+            "Hyprland does not start the entries in /home/me/.config/autostart unless a session manager such as uwsm \
+             does; to open Postvak at login there, add `exec-once = /usr/bin/postvak gui --background` to \
+             ~/.config/hypr/hyprland.conf"
+        );
+    }
+
+    #[test]
+    fn each_compositor_gets_the_startup_line_in_its_own_syntax() {
+        let command = command(
+            Path::new("/home/me/My Apps/Postvak.AppImage"),
+            Some(Path::new("/srv/mail")),
+        );
+        assert_eq!(
+            startup_hint(Some("sway"), &command),
+            "add `exec env POSTVAK_HOME=/srv/mail '/home/me/My Apps/Postvak.AppImage' gui --background` to \
+             ~/.config/sway/config"
+        );
+        assert_eq!(
+            startup_hint(Some("niri"), &command),
+            "add `spawn-at-startup \"env\" \"POSTVAK_HOME=/srv/mail\" \"/home/me/My Apps/Postvak.AppImage\" \"gui\" \
+             \"--background\"` to ~/.config/niri/config.kdl"
+        );
+        assert_eq!(
+            startup_hint(Some("river"), &command[2..]),
+            "add `riverctl spawn ''\\''/home/me/My Apps/Postvak.AppImage'\\'' gui --background'` to \
+             ~/.config/river/init"
+        );
+        assert_eq!(
+            startup_hint(None, &flatpak_command()),
+            "add `flatpak run io.github.postvak_app.postvak gui --background` to your desktop's startup commands"
+        );
+    }
+
+    #[test]
+    fn shell_and_kdl_arguments_are_quoted() {
+        assert_eq!(shell_arg("/usr/bin/postvak"), "/usr/bin/postvak");
+        assert_eq!(shell_arg("it's"), "'it'\\''s'");
+        assert_eq!(shell_arg(""), "''");
+        assert_eq!(kdl_string("a\"b\\c"), "\"a\\\"b\\\\c\"");
+    }
+
+    #[test]
+    fn a_flatpak_without_the_background_portal_is_told_what_to_add() {
+        let text = no_background_portal(Some("Hyprland"));
+        assert!(
+            text.starts_with("the desktop has no Background portal"),
+            "{text}"
+        );
+        assert!(
+            text.ends_with(
+                "add `exec-once = flatpak run io.github.postvak_app.postvak gui --background` to \
+                 ~/.config/hypr/hyprland.conf"
+            ),
+            "{text}"
+        );
     }
 
     #[test]
