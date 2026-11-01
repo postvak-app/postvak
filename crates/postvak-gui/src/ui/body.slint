@@ -105,8 +105,10 @@ export struct StripData {
 export enum Remote { none, not-loaded, loading }
 
 export struct PageInfo {
-    // Laid out: the page and its strips can show.
+    // Laid out and the strips in view painted: the page and its strips can show.
     ready: bool,
+    // Not ready for a while: the view says it is rendering.
+    rendering: bool,
     // Styled for the dark theme: drawn on the dark page rather than a white one.
     dark: bool,
     width: length,
@@ -178,11 +180,6 @@ component HtmlView inherits VerticalLayout {
         }
         Rectangle { horizontal-stretch: 1; }
     }
-    if !root.page.ready: Text {
-        text: "Rendering…";
-        color: Theme.pane.muted;
-    }
-
     flick := Flickable {
         vertical-stretch: 1;
         // A drag selects text; the wheel and the scroll bars move the page.
@@ -233,6 +230,13 @@ component HtmlView inherits VerticalLayout {
             width: root.page-width;
             height: 1px;
             background: Theme.pane.border;
+        }
+        // In the page's place rather than above it, so the page does not move when it appears.
+        if root.page.rendering: Text {
+            x: 0;
+            y: 0;
+            text: "Rendering…";
+            color: Theme.pane.muted;
         }
         for strip in root.strips: Image {
             x: 0;

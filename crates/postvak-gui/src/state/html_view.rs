@@ -165,6 +165,8 @@ impl App {
             None => {
                 let mut view = HtmlState::new(generation, scale, width);
                 view.dark = dark;
+                // The window reports the part in view only when it changes, which a new message need not do.
+                view.visible = self.html_shown;
                 body.html_view = Some(view);
             }
         }
@@ -251,6 +253,7 @@ impl App {
 
     /// Records the part of the page on screen, and asks for its strips.
     pub(super) fn html_visible(&mut self, top: f32, bottom: f32) {
+        self.html_shown = (top, bottom);
         if let Some(view) = self.body.as_mut().and_then(|b| b.html_view.as_mut()) {
             view.visible = (top, bottom);
         }
@@ -269,7 +272,11 @@ impl App {
         let (top, bottom) = view.visible;
         let Some(page) = view.page else { return };
         let scale = view.sent.0;
-        for strip in html::wanted_strips(top, bottom, page.1, scale) {
+        // The render thread paints in the order asked: what is in view first, so the page appears sooner.
+        let visible = html::visible_strips(top, bottom, page.1, scale);
+        let around =
+            html::wanted_strips(top, bottom, page.1, scale).filter(|s| !visible.contains(s));
+        for strip in visible.clone().chain(around) {
             if view.requested.insert(strip) {
                 renderer.send(html::Request::Paint {
                     generation: view.generation,
@@ -280,6 +287,29 @@ impl App {
         for strip in html::far_strips(view.strips.keys().copied(), top, bottom, scale) {
             view.strips.remove(&strip);
             view.requested.remove(&strip);
+        }
+    }
+
+    /// Shows the page once it is laid out and the strips in view are painted, and says it is rendering when that takes
+    /// longer than `html::SLOW`.
+    pub(super) fn html_progress(&mut self, now: f64) {
+        let Some(view) = self
+            .body
+            .as_mut()
+            .and_then(|b| b.html_view.as_mut())
+            .filter(|v| !v.shown)
+        else {
+            return;
+        };
+        if view.painted_in_view() {
+            view.shown = true;
+            return;
+        }
+        let due = *view.started.get_or_insert(now) + html::SLOW;
+        if now >= due {
+            view.slow = true;
+        } else {
+            self.request_tick(due);
         }
     }
 
