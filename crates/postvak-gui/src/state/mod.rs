@@ -662,7 +662,10 @@ pub(crate) enum OpenAtLogin {
     Unknown,
     Known(bool),
     /// Turning it on (true) or off; the answer is what changed, or why not.
-    Changing(bool, Receiver<anyhow::Result<String>>),
+    Changing(
+        bool,
+        Receiver<anyhow::Result<postvak_core::autostart::Changed>>,
+    ),
 }
 
 impl OpenAtLogin {
@@ -712,7 +715,8 @@ pub struct App {
     pub(crate) open_at_login: OpenAtLogin,
     /// Read and change opening at login (`autostart`); tests swap them so nothing outside the test changes.
     pub(crate) read_open_at_login: fn(&Paths) -> anyhow::Result<bool>,
-    pub(crate) set_open_at_login: fn(&Paths, bool) -> anyhow::Result<String>,
+    pub(crate) set_open_at_login:
+        fn(&Paths, bool) -> anyhow::Result<postvak_core::autostart::Changed>,
     /// Tests an account's login before the form saves it; tests swap it so no daemon starts.
     pub(crate) check_login: account::Check,
     /// Sends a one-click unsubscribe; tests swap it so nothing leaves the machine.
@@ -1197,7 +1201,14 @@ impl App {
                 }
             },
             OpenAtLogin::Changing(on, answer) => match worker::poll(answer) {
-                Some(Ok(Ok(_))) => OpenAtLogin::Known(*on),
+                Some(Ok(Ok(changed))) => {
+                    let on = *on;
+                    // On, but the session may never start it: the user should know, as the setting looks done.
+                    if let Some(warning) = changed.warning {
+                        self.note_error(None, warning);
+                    }
+                    OpenAtLogin::Known(on)
+                }
                 Some(Ok(Err(e))) => {
                     let (on, text) = (*on, format!("{e:#}"));
                     self.note_error(None, format!("could not change opening at login: {text}"));
@@ -2378,6 +2389,8 @@ impl App {
         self.list.rows = rows;
         self.list.cursor =
             kept.unwrap_or_else(|| self.list.cursor.min(self.list.rows.len().saturating_sub(1)));
+        // Rebuilt rows come without logos; drawn before the next tick, they would blink to the initials.
+        self.show_row_logos();
     }
 
     /// Asks the server of each account the search covers for the current query; the hits arrive as `ServerSearchDone`.

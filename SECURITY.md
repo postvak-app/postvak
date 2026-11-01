@@ -22,3 +22,7 @@ Only the latest release gets security fixes.
 - TLS verification problems when talking to the IMAP server
 - Crafted messages that crash Postvak or corrupt the local store
 - Running a `password_command` from a `config.toml` that another user can write; Postvak refuses unless the file and its folder belong to you or root and are not group- or world-writable ([Passwords](docs/src/accounts.md#passwords))
+
+## Out of scope
+
+- Reading the local mail store or the `.eml` backups with access to your disk, a backup, or your user account. They are not encrypted; Postvak relies on full-disk encryption such as FileVault or LUKS ([Mail on disk](docs/src/accounts.md#mail-on-disk))

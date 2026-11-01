@@ -1347,15 +1347,21 @@ fn cmd_daemon(command: DaemonCommand, paths: &Paths) -> Result<()> {
 }
 
 fn cmd_autostart(command: AutostartCommand, paths: &Paths) -> Result<()> {
-    let text = match command {
+    let changed = match command {
         AutostartCommand::On => postvak_core::autostart::set(paths, true)?,
         AutostartCommand::Off => postvak_core::autostart::set(paths, false)?,
-        AutostartCommand::Status => match postvak_core::autostart::is_on(paths)? {
-            true => "on".to_string(),
-            false => "off".to_string(),
+        AutostartCommand::Status => postvak_core::autostart::Changed {
+            done: match postvak_core::autostart::is_on(paths)? {
+                true => "on".to_string(),
+                false => "off".to_string(),
+            },
+            warning: postvak_core::autostart::warning(paths)?,
         },
     };
-    println!("{text}");
+    println!("{}", changed.done);
+    if let Some(warning) = changed.warning {
+        eprintln!("warning: {warning}");
+    }
     Ok(())
 }
 

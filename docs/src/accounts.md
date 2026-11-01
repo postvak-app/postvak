@@ -58,6 +58,10 @@ theme = "system"
 
 `sender_images` (off by default) shows the logo a sender's domain publishes through BIMI, the standard Apple Mail and Gmail use, in place of the sender's initials in the reader and the message list. A logo only shows on mail your server marked as passing DMARC for the From domain, in the topmost `Authentication-Results` header, so spoofed mail keeps the initials. The privacy cost: for each sender domain whose mail scrolls into view in the list, the mail window looks up a DNS record at that domain and fetches its logo over HTTPS, which tells the domain that you received their mail and roughly when you looked at it, even mail you never open. Answers are cached for a week in the cache directory, and nothing about the lookup is logged. The fetch goes only to public hosts and accepts at most 32 KiB. The logo's certificate (VMC) is not checked, so any domain that passes DMARC can show whatever logo it publishes.
 
+## Mail on disk
+
+Postvak keeps your mail on disk unencrypted; an option to encrypt it is not there yet ([#508](https://github.com/postvak-app/postvak/issues/508)). Each account's folder (see the table above) holds `mail.db`, with the headers of every synced message, the text of the bodies it indexed (`index_bodies`) or you opened, and the whole message when a rule needed it, and `trash/`, with an `.eml` backup of each message a rule or action deleted until `trash_retention_days` passes. Only you can open those folders (mode 0700), but anyone who has your disk, a backup of it, or a program running as you can read all of it. Keep your mail private with full-disk encryption: FileVault on macOS, LUKS or an encrypted home on Linux. A backup or cloud sync of your home folder copies the mail too, so leave the account folders out of it if the backup is not encrypted. Postvak syncs `mail.db` from the server again, but `trash/` holds the only copy of the mail it deleted.
+
 ## Passwords
 
 `{ keyring = true }` keeps the password in the macOS Keychain or the Secret Service, under service `postvak` and the account name. `account add` stores it there.
