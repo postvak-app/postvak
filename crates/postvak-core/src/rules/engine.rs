@@ -87,6 +87,15 @@ pub fn folder_needs_body(rules: &[CompiledRule], account: &str, folder: &str) ->
     folder_rules(rules, account, folder).any(CompiledRule::needs_body)
 }
 
+pub fn folder_needs_structure(rules: &[CompiledRule], account: &str, folder: &str) -> bool {
+    folder_rules(rules, account, folder).any(CompiledRule::needs_structure)
+}
+
+/// Whether a rule that could match `folder` reads the indexed columns, so its messages are read with them.
+pub fn folder_reads_index(rules: &[CompiledRule], account: &str, folder: &str) -> bool {
+    folder_rules(rules, account, folder).any(CompiledRule::reads_index)
+}
+
 pub fn evaluate(rules: &[CompiledRule], msg: &Message, ctx: &Context) -> Plan {
     if has_flag(&msg.flags, RESTORED_KEYWORD) {
         return Plan::default();
@@ -281,6 +290,7 @@ fn rule_matches(rule: &CompiledRule, msg: &Message, flags: &str, ctx: &Context) 
         && (ctx.mode != Mode::Normal || msg.internaldate >= rule.first_seen_at)
         // An unknown body is neither a match nor a mismatch, so `none` cannot turn a failed fetch into a hit.
         && (!rule.needs_body() || msg.body_text.is_some())
+        && (!rule.needs_structure() || msg.part_types.is_some())
         && matches(&rule.conditions, msg, flags, ctx)
 }
 
@@ -370,6 +380,26 @@ fn matches(c: &Conditions, msg: &Message, flags: &str, ctx: &Context) -> bool {
     }
     if let Some(m) = &c.body
         && !m.is_match(field(&msg.body_text))
+    {
+        return false;
+    }
+    // No attachment is stored as NULL, not as an empty list.
+    if c.has_attachment
+        .is_some_and(|wanted| wanted != msg.attachment_names.is_some())
+    {
+        return false;
+    }
+    if let Some(m) = &c.attachment
+        && !field(&msg.attachment_names)
+            .lines()
+            .any(|name| m.is_match(name))
+    {
+        return false;
+    }
+    if let Some(pattern) = &c.has_part
+        && !field(&msg.part_types)
+            .lines()
+            .any(|ty| ty == pattern || (pattern.ends_with('/') && ty.starts_with(pattern.as_str())))
     {
         return false;
     }
@@ -1269,6 +1299,90 @@ actions = { flagged = true }
         assert!(!fires(toml, &m));
         m.body_text = Some("junk".into());
         assert!(fires(toml, &m));
+    }
+
+    fn with_parts(names: Option<&str>, types: &str) -> Message {
+        Message {
+            attachment_names: names.map(str::to_string),
+            part_types: Some(types.into()),
+            ..msg("a@x", "p@x", "s", 100, false)
+        }
+    }
+
+    #[test]
+    fn attachment_conditions_read_the_names_and_part_types() {
+        let rule = |condition: &str| {
+            format!("[[rules]]\nname = \"a\"\nmatch.{condition}\nactions = {{ flagged = true }}\n")
+        };
+        let invoice = with_parts(
+            Some("logo.png\nInvoice 42.PDF"),
+            "text/plain\nimage/png\napplication/pdf",
+        );
+        let invite = with_parts(None, "text/plain\ntext/calendar");
+        for (condition, on_invoice, on_invite) in [
+            ("has_attachment = true", true, false),
+            ("has_attachment = false", false, true),
+            (r"attachment = { regex = '\.pdf$' }", true, false),
+            ("attachment = { equals = \"logo.png\" }", true, false),
+            ("attachment = { contains = \"zip\" }", false, false),
+            ("has_part = \"text/calendar\"", false, true),
+            ("has_part = \"Application/*\"", true, false),
+            ("has_part = \"image/jpeg\"", false, false),
+            ("has_part = \"text/*\"", true, true),
+        ] {
+            let toml = rule(condition);
+            assert_eq!(
+                fires(&toml, &invoice),
+                on_invoice,
+                "{condition} on the invoice"
+            );
+            assert_eq!(
+                fires(&toml, &invite),
+                on_invite,
+                "{condition} on the invite"
+            );
+        }
+        // `application/*` is the type, not a prefix of it.
+        let odd = with_parts(None, "applicationx/pdf");
+        assert!(!fires(&rule("has_part = \"application/*\""), &odd));
+    }
+
+    #[test]
+    fn a_rule_needing_an_unknown_structure_never_fires_even_negated() {
+        let toml = "[[rules]]\nname = \"x\"\nmatch.none = [{ has_attachment = true }]\nactions = { delete = true }\n";
+        let r = rules(toml, 0);
+        assert!(folder_needs_structure(&r, "work", "INBOX"));
+        assert!(!folder_needs_body(&r, "work", "INBOX"));
+        assert!(folder_reads_index(&r, "work", "INBOX"));
+        assert!(!fires(toml, &msg("a@x", "p@x", "s", 100, false)));
+        assert!(fires(toml, &with_parts(None, "text/plain")));
+        assert!(!fires(
+            toml,
+            &with_parts(Some("a.pdf"), "text/plain\napplication/pdf")
+        ));
+    }
+
+    #[test]
+    fn has_part_takes_a_mime_type_or_a_type_with_any_subtype() {
+        for bad in [
+            "text",
+            "*/*",
+            "*/plain",
+            "text/",
+            "/plain",
+            "text/pl*n",
+            "text/plain/x",
+            "te xt/plain",
+        ] {
+            let toml = format!(
+                "[[rules]]\nname = \"p\"\nmatch.has_part = \"{bad}\"\nactions = {{ flagged = true }}\n"
+            );
+            let err = compile(&parse(&toml).unwrap()).unwrap_err().to_string();
+            assert!(
+                err.contains("match.has_part: expected a MIME type"),
+                "{bad}: {err}"
+            );
+        }
     }
 
     #[test]

@@ -646,6 +646,74 @@ fn body_rule_fetches_bodies_for_new_messages() {
 }
 
 #[test]
+fn a_part_rule_fetches_only_the_structure_of_new_mail() {
+    let mut ops = RecordingOps::default().with_folder("INBOX", None);
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open_in_memory().unwrap();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let acc = account();
+    let identity = acc.identity().unwrap();
+    let toml = "[[rules]]\nname = \"invites\"\nmatch.has_part = \"text/calendar\"\nactions = { flagged = true }\n";
+    let rules = rules_from(toml, &store, 0);
+    sync_all(&mut ops, &store).unwrap();
+    for (uid, types) in [(2, "text/calendar"), (3, "application/pdf")] {
+        let raw = "From: a@x\r\n\r\nhi";
+        ops.add_mail(
+            "INBOX",
+            uid,
+            11 * H,
+            &headers("a@x", "s", &format!("m{uid}@x")),
+            Some(raw),
+        );
+        ops.structures.insert(
+            ("INBOX".into(), uid),
+            Structure {
+                part_types: vec!["text/plain".into(), types.into()],
+                ..Structure::default()
+            },
+        );
+    }
+    sync_all(&mut ops, &store).unwrap();
+    ops.calls.clear();
+    let run = run_rules(
+        &mut ops,
+        &store,
+        &trash,
+        &rules,
+        &acc,
+        &identity,
+        Mode::Normal,
+        12 * H,
+    )
+    .unwrap();
+    assert_eq!(run.actions, 1);
+    assert!(
+        store
+            .message("INBOX", 2)
+            .unwrap()
+            .unwrap()
+            .flags
+            .contains("\\Flagged")
+    );
+    let three = store.message("INBOX", 3).unwrap().unwrap();
+    assert!(!three.flags.contains("\\Flagged"));
+    assert_eq!(
+        three.part_types.as_deref(),
+        Some("text/plain\napplication/pdf")
+    );
+    assert_eq!(three.body_text, None, "the body stays unfetched");
+    let fetches: Vec<&String> = ops
+        .calls
+        .iter()
+        .filter(|c| c.starts_with("fetch"))
+        .collect();
+    assert_eq!(
+        fetches,
+        ["fetch_structures INBOX 2", "fetch_structures INBOX 3"]
+    );
+}
+
+#[test]
 fn body_rule_does_not_download_a_message_over_the_size_cap() {
     let mut ops = RecordingOps::default().with_folder("INBOX", None);
     let dir = tempfile::tempdir().unwrap();
@@ -3397,6 +3465,7 @@ fn message_of(pdf_size: usize) -> (RecordingOps, Store, tempfile::TempDir) {
                     ..part("2", "application/pdf", None)
                 },
             ],
+            ..Structure::default()
         },
     );
     for (section, bytes) in [
@@ -3605,7 +3674,7 @@ fn an_indexed_message_fetches_only_its_html_for_the_preview() {
     let (mut ops, store, dir) = large_message();
     let trash = Trash::new(dir.path().to_path_buf());
     store
-        .set_indexed("INBOX", 3, Some("indexed text"), &[], 0)
+        .set_indexed("INBOX", 3, Some("indexed text"), None, 0)
         .unwrap();
     let (_, events) = drain(&mut ops, &store, &trash, vec![fetch_with_preview(3)]);
     assert!(
@@ -4650,6 +4719,57 @@ fn body_of(store: &Store, folder: &str, uid: u32) -> Option<String> {
 }
 
 #[test]
+fn mail_indexed_before_part_types_gets_its_structure_alone_a_day_after() {
+    let (mut ops, store) = indexable();
+    let tx = std::sync::mpsc::channel().0;
+    let slice = |ops: &mut RecordingOps| {
+        index::slice(ops, &store, &account(), &tx, &mut None, &mut || {
+            Duration::ZERO
+        })
+        .unwrap()
+    };
+    let at = now();
+    let known = Structure {
+        part_types: vec!["text/plain".into()],
+        ..Structure::default()
+    };
+    for (folder, uid) in [("INBOX", 1), ("Archive", 2)] {
+        store
+            .set_indexed(folder, uid, Some("text"), Some(&known), at)
+            .unwrap();
+    }
+    // As a store indexed before part types were kept leaves them.
+    store
+        .set_indexed("INBOX", 2, Some("old text"), None, at)
+        .unwrap();
+    store
+        .set_indexed("Archive", 1, Some("old text"), None, at - 86_401)
+        .unwrap();
+    assert_eq!(
+        store.backlog_count(at).unwrap(),
+        (1, 4),
+        "INBOX 2 was tried today"
+    );
+    ops.calls.clear();
+    slice(&mut ops);
+    let fetches: Vec<&String> = ops
+        .calls
+        .iter()
+        .filter(|c| c.starts_with("fetch"))
+        .collect();
+    assert_eq!(
+        fetches,
+        ["fetch_structures Archive 1"],
+        "no text part is fetched again"
+    );
+    let archived = store.message("Archive", 1).unwrap().unwrap();
+    assert_eq!(archived.part_types.as_deref(), Some("text/plain"));
+    assert_eq!(archived.body_text.as_deref(), Some("old text"));
+    assert_eq!(store.message("INBOX", 2).unwrap().unwrap().part_types, None);
+    assert_eq!(store.backlog_count(now()).unwrap(), (0, 4));
+}
+
+#[test]
 fn a_slice_indexes_newest_first_and_stops_at_its_budget() {
     let (mut ops, store) = indexable();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -4738,6 +4858,7 @@ fn a_structure_without_text_indexes_headers_and_names_and_html_waits_for_plain()
             text_parts: Vec::new(),
             attachment_names: vec!["a.pdf".into()],
             attachments: Vec::new(),
+            part_types: vec!["application/pdf".into()],
         },
     );
     let part = |section: &str, html: bool| TextPart {
@@ -4750,8 +4871,7 @@ fn a_structure_without_text_indexes_headers_and_names_and_html_waits_for_plain()
         ("INBOX".into(), 2),
         Structure {
             text_parts: vec![part("1", true), part("2", false)],
-            attachment_names: Vec::new(),
-            attachments: Vec::new(),
+            ..Structure::default()
         },
     );
     ops.parts

@@ -57,6 +57,16 @@ pub(crate) fn match_labels(m: &Match) -> Vec<String> {
             .map(|v| format!("arrived between {v}")),
     );
     labels.extend(m.larger_than.as_ref().map(|v| format!("larger than {v}")));
+    labels.extend(m.has_attachment.map(|has| {
+        if has {
+            "has an attachment"
+        } else {
+            "no attachment"
+        }
+        .to_string()
+    }));
+    labels.extend(m.attachment.as_ref().map(|t| text_label("attachment", t)));
+    labels.extend(m.has_part.as_ref().map(|v| format!("has part {v}")));
     labels.extend(
         m.read
             .map(|read| if read { "read" } else { "unread" }.to_string()),
@@ -172,6 +182,9 @@ pub(crate) enum Field {
     ArrivedDays,
     ArrivedHours,
     LargerThan,
+    HasAttachment,
+    Attachment,
+    HasPart,
     Read,
     Flagged,
     ToMe,
@@ -181,7 +194,7 @@ pub(crate) enum Field {
 
 impl Field {
     /// In the order the rules docs list them.
-    pub const ALL: [Field; 20] = [
+    pub const ALL: [Field; 23] = [
         Field::From,
         Field::FromName,
         Field::To,
@@ -197,6 +210,9 @@ impl Field {
         Field::ArrivedDays,
         Field::ArrivedHours,
         Field::LargerThan,
+        Field::HasAttachment,
+        Field::Attachment,
+        Field::HasPart,
         Field::Read,
         Field::Flagged,
         Field::ToMe,
@@ -209,6 +225,7 @@ impl Field {
             Field::Alias => "alias",
             Field::ArrivedDays => "arrived on",
             Field::ArrivedHours => "arrived between",
+            Field::Attachment => "attachment name",
             Field::Authenticated => "authenticated",
             Field::Body => "body",
             Field::Cc => "cc",
@@ -216,6 +233,8 @@ impl Field {
             Field::From => "from",
             Field::FromDomain => "from domain",
             Field::FromName => "from name",
+            Field::HasAttachment => "has attachment",
+            Field::HasPart => "has part",
             Field::Header => "header",
             Field::LargerThan => "larger than",
             Field::OlderThan => "older than",
@@ -233,7 +252,8 @@ impl Field {
     pub fn is_text(self) -> bool {
         matches!(
             self,
-            Field::Body
+            Field::Attachment
+                | Field::Body
                 | Field::Cc
                 | Field::From
                 | Field::FromName
@@ -264,7 +284,11 @@ impl Field {
     pub fn is_flag(self) -> bool {
         matches!(
             self,
-            Field::Authenticated | Field::Flagged | Field::Read | Field::ToMe
+            Field::Authenticated
+                | Field::Flagged
+                | Field::HasAttachment
+                | Field::Read
+                | Field::ToMe
         )
     }
 }
@@ -423,6 +447,17 @@ pub(crate) fn conditions(m: &Match) -> (Vec<Condition>, Match) {
             .map(|v| plain(Field::ArrivedHours, v)),
     );
     rows.extend(m.larger_than.clone().map(|v| plain(Field::LargerThan, v)));
+    rows.extend(
+        m.has_attachment
+            .map(|v| plain(Field::HasAttachment, v.to_string())),
+    );
+    if let Some(t) = &m.attachment {
+        match row(Field::Attachment, "", t) {
+            Some(condition) => rows.push(condition),
+            None => kept.attachment = Some(t.clone()),
+        }
+    }
+    rows.extend(m.has_part.clone().map(|v| plain(Field::HasPart, v)));
     rows.extend(m.read.map(|v| plain(Field::Read, v.to_string())));
     rows.extend(m.flagged.map(|v| plain(Field::Flagged, v.to_string())));
     rows.extend(m.to_me.map(|v| plain(Field::ToMe, v.to_string())));
@@ -559,6 +594,9 @@ impl Draft {
                     .insert(c.header.clone(), text_match(c))
                     .is_some(),
                 Field::LargerThan => m.larger_than.replace(c.value.clone()).is_some(),
+                Field::HasAttachment => m.has_attachment.replace(flag(c)?).is_some(),
+                Field::Attachment => m.attachment.replace(text_match(c)).is_some(),
+                Field::HasPart => m.has_part.replace(c.value.clone()).is_some(),
                 Field::OlderThan => m.older_than.replace(c.value.clone()).is_some(),
                 Field::Read => m.read.replace(flag(c)?).is_some(),
                 Field::Subject => m.subject.replace(text_match(c)).is_some(),
@@ -673,6 +711,9 @@ match.younger_than = "1d"
 match.arrived_days = "mon-fri"
 match.arrived_hours = "09:00-18:00"
 match.larger_than = "5MB"
+match.has_attachment = true
+match.attachment = { regex = '\.pdf$' }
+match.has_part = "text/calendar"
 match.read = true
 match.flagged = false
 match.to_me = false
@@ -710,7 +751,7 @@ actions = { flagged = true }
             summary(&rule(ALL_FIELDS)),
             "from equals \"a@example.com\", from name contains \"PayPal\", to contains \"team\", cc matches regex \"(?i)boss\", \
              subject contains \"code\", body matches regex \"\\d{6}\", header List-Id contains \"github.com\", \
-             from domain example.com, to domain example.org, authenticated, older than 1h, younger than 1d, arrived on mon-fri, arrived between 09:00-18:00, larger than 5MB, read, not flagged, not to me, alias *@shop.example.com, tag $label1 \
+             from domain example.com, to domain example.org, authenticated, older than 1h, younger than 1d, arrived on mon-fri, arrived between 09:00-18:00, larger than 5MB, has an attachment, attachment matches regex \"\\.pdf$\", has part text/calendar, read, not flagged, not to me, alias *@shop.example.com, tag $label1 \
              → move to Codes, mark read, flag, tag $label2, silent, stop"
         );
     }

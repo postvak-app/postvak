@@ -489,6 +489,12 @@ impl Walk {
     }
 
     fn part(&mut self, body: &BodyStructure<'_>, out: &mut Structure) {
+        if let BodyStructure::Text { common, .. }
+        | BodyStructure::Basic { common, .. }
+        | BodyStructure::Message { common, .. } = body
+        {
+            out.part_types.push(content_type(common));
+        }
         match body {
             BodyStructure::Text { common, other, .. } => {
                 let subtype = common.ty.subtype.to_ascii_lowercase();
@@ -567,13 +573,18 @@ impl Walk {
             .map(str::to_string);
         out.attachments.push(PartRef {
             section: self.section(),
-            content_type: format!("{}/{}", common.ty.ty, common.ty.subtype).to_ascii_lowercase(),
+            content_type: content_type(common),
             name,
             content_id,
             transfer_encoding: encoding_name(&other.transfer_encoding),
             octets: other.octets,
         });
     }
+}
+
+/// "type/subtype", lowercase.
+fn content_type(common: &BodyContentCommon<'_>) -> String {
+    format!("{}/{}", common.ty.ty, common.ty.subtype).to_ascii_lowercase()
 }
 
 fn is_attachment(common: &BodyContentCommon<'_>) -> bool {
@@ -1445,6 +1456,30 @@ mod tests {
         ));
         assert_eq!(sections(&s), [("1", false, None)]);
         assert_eq!(s.attachment_names, ["notes.txt"]);
+    }
+
+    #[test]
+    fn part_types_are_every_part_but_a_multipart_also_inside_an_enclosed_message() {
+        let calendar = r#"("TEXT" "CALENDAR" ("CHARSET" "utf-8" "METHOD" "REQUEST") NIL NIL "7BIT" 50 3 NIL NIL NIL NIL)"#;
+        let s = structure(&format!(
+            r#"(({PLAIN}{calendar} "ALTERNATIVE" ("BOUNDARY" "b1") NIL NIL NIL){PDF} "MIXED" ("BOUNDARY" "b2") NIL NIL NIL)"#
+        ));
+        assert_eq!(
+            s.part_types,
+            ["text/plain", "text/calendar", "application/pdf"]
+        );
+        let s = structure(&format!(
+            r#"({PLAIN}("MESSAGE" "RFC822" NIL NIL NIL "7BIT" 400 ("Mon, 1 Jan 2024 00:00:00 +0000" "Fwd" NIL NIL NIL NIL NIL NIL NIL NIL) ({HTML}{PDF} "MIXED" ("BOUNDARY" "b3") NIL NIL NIL) 10) "MIXED" ("BOUNDARY" "b4") NIL NIL NIL)"#
+        ));
+        assert_eq!(
+            s.part_types,
+            [
+                "text/plain",
+                "message/rfc822",
+                "text/html",
+                "application/pdf"
+            ]
+        );
     }
 
     #[test]

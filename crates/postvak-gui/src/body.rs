@@ -1280,7 +1280,7 @@ mod tests {
         fx.add("work", not_downloaded(message("INBOX", 1, "Re: lunch")));
         // The preview stored its text, as the indexer would.
         fx.store("work")
-            .set_indexed("INBOX", 1, Some("see the scan"), &[], 0)
+            .set_indexed("INBOX", 1, Some("see the scan"), None, 0)
             .unwrap();
         let (open, wires) = fx.window();
         let preview = Preview {

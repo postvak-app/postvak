@@ -54,6 +54,8 @@ pub struct Structure {
     pub text_parts: Vec<TextPart>,
     /// Every named part that is not body text, also inside an enclosed message, for the search index.
     pub attachment_names: Vec<String>,
+    /// "type/subtype", lowercase, of every part but a multipart, also inside an enclosed message, for rules.
+    pub part_types: Vec<String>,
     /// The parts `message::attachments` lists, in its order: every part outside an enclosed message that is not body
     /// text, with an enclosed message as one.
     pub attachments: Vec<PartRef>,
@@ -673,6 +675,7 @@ mod recording {
                                 octets: body_after_headers(raw).len() as u32,
                                 ..TextPart::default()
                             }],
+                            part_types: vec!["text/plain".into()],
                             ..Structure::default()
                         },
                     );

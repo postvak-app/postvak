@@ -125,6 +125,17 @@ pub struct Match {
     /// header only the last copy counts, the one nearest the body
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub header: Option<BTreeMap<String, TextMatch>>,
+    /// Has an attachment (true) or none (false): a named part that is not body text, inline images and the parts of a
+    /// forwarded message included
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_attachment: Option<bool>,
+    /// An attachment's file name; any attachment may match
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<TextMatch>,
+    /// Has a part of this MIME type, such as text/calendar, or of any subtype with *, such as application/*;
+    /// case-insensitive
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_part: Option<String>,
     /// The From address's domain or any subdomain of it, never the display name; a list matches any of them
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_domain: Option<OneOrMany<Domain>>,
@@ -608,6 +619,10 @@ pub(crate) struct Conditions {
     pub(crate) subject: Option<Matcher>,
     pub(crate) body: Option<Matcher>,
     pub(crate) headers: Vec<(String, Matcher)>,
+    pub(crate) has_attachment: Option<bool>,
+    pub(crate) attachment: Option<Matcher>,
+    /// Lower-cased `type/subtype`, or `type/` for a `type/*` pattern.
+    pub(crate) has_part: Option<String>,
     /// Lower-cased domains, without a leading `@` or a trailing dot.
     pub(crate) from_domain: Option<Vec<String>>,
     pub(crate) to_domain: Option<Vec<String>>,
@@ -631,6 +646,14 @@ impl Conditions {
         self.body.is_some()
             || self.none.iter().any(Conditions::needs_body)
             || self.any.iter().any(Conditions::needs_body)
+    }
+
+    fn needs_structure(&self) -> bool {
+        self.has_attachment.is_some()
+            || self.attachment.is_some()
+            || self.has_part.is_some()
+            || self.none.iter().any(Conditions::needs_structure)
+            || self.any.iter().any(Conditions::needs_structure)
     }
 
     fn matches_header(&self) -> bool {
@@ -661,6 +684,17 @@ impl CompiledRule {
 
     pub fn needs_body(&self) -> bool {
         self.conditions.needs_body()
+    }
+
+    /// Whether a condition, at any depth, reads the message's attachments or parts.
+    pub fn needs_structure(&self) -> bool {
+        self.conditions.needs_structure()
+    }
+
+    /// Whether the rule reads what the indexer stores (body text, attachment names, part types), which a folder's
+    /// messages are read without unless a rule needs it.
+    pub fn reads_index(&self) -> bool {
+        self.needs_body() || self.needs_structure()
     }
 
     /// Whether a `header` condition, at any depth, decides the match; `from`, `to`, `cc` and `subject` are not counted.
@@ -816,6 +850,25 @@ fn compile_rule(
     })
 }
 
+/// `type/subtype` lower-cased, or `type/` for `type/*`; None for anything else.
+fn mime_pattern(text: &str) -> Option<String> {
+    let text = text.trim().to_ascii_lowercase();
+    let (ty, subtype) = text.split_once('/')?;
+    let token = |s: &str| {
+        !s.is_empty()
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"!#$&^_.+-".contains(&b))
+    };
+    if !token(ty) {
+        return None;
+    }
+    match subtype {
+        "*" => Some(format!("{ty}/")),
+        _ if token(subtype) => Some(text),
+        _ => None,
+    }
+}
+
 fn compile_match(
     rule: &str,
     m: &Match,
@@ -835,6 +888,9 @@ fn compile_match(
         || m.subject.is_some()
         || m.body.is_some()
         || m.header.as_ref().is_some_and(|headers| !headers.is_empty())
+        || m.has_attachment.is_some()
+        || m.attachment.is_some()
+        || m.has_part.is_some()
         || m.from_domain.is_some()
         || m.to_domain.is_some()
         || m.authenticated.is_some()
@@ -921,6 +977,18 @@ fn compile_match(
                 .map_err(|e| invalid(rule, format!("{path}.arrived_hours: {e}")))
         })
         .transpose()?;
+    let has_part = m
+        .has_part
+        .as_deref()
+        .map(|text| {
+            mime_pattern(text).ok_or_else(|| {
+                invalid(
+                    rule,
+                    format!("{path}.has_part: expected a MIME type such as text/calendar or application/*, got '{text}'"),
+                )
+            })
+        })
+        .transpose()?;
     let larger_than = m
         .larger_than
         .as_deref()
@@ -985,6 +1053,9 @@ fn compile_match(
         subject: text("subject", &m.subject)?,
         body: text("body", &m.body)?,
         headers,
+        has_attachment: m.has_attachment,
+        attachment: text("attachment", &m.attachment)?,
+        has_part,
         from_domain: domains("from_domain", &m.from_domain)?,
         to_domain: domains("to_domain", &m.to_domain)?,
         authenticated: m.authenticated,

@@ -56,6 +56,9 @@ All three ignore case. A text condition can also be `{ list = "name" }` alone, f
 | `arrived_days` | days: `mon-fri`, `sat,sun`, `fri-mon` | Mail that arrived on one of these days, in local time. Write a day by its first three letters or in full; a range such as `fri-mon` wraps past Sunday. |
 | `arrived_hours` | hours: `09:00-18:00`, `22:00-07:00` | Mail that arrived between these local times, the end not included; an end before the start wraps past midnight. With `arrived_days` too, each is checked on its own: `fri` with `22:00-07:00` matches Friday 03:00, not Saturday 03:00. |
 | `larger_than` | size: `500KB`, `5MB`, `1GB` | Mail larger than this. A bare number is bytes, and `1KB` is 1024 bytes. |
+| `has_attachment` | `true` or `false` | Mail with an attachment, or without one. An attachment is any named part that is not the body text, as search's `attachment:` counts it: inline images with a file name and the attachments of a forwarded message count too. |
+| `attachment` | text condition | An attachment's file name; any attachment may match: `attachment = { regex = '\.pdf$' }`. |
+| `has_part` | MIME type, `*` allowed as the subtype | Mail with a part of that type, at any depth, ignoring case: `text/calendar` for an invitation, `application/*` for any application part. |
 | `read` | `true` or `false` | Read or unread mail. |
 | `flagged` | `true` or `false` | Flagged or unflagged mail. |
 | `to_me` | `true` or `false` | Your address or an alias is among the recipients: To, Cc or Delivered-To. `false` catches list and bcc mail. |
@@ -65,6 +68,8 @@ All three ignore case. A text condition can also be `{ list = "name" }` alone, f
 | `none` | list of conditions | Holds when no entry holds. |
 
 Keys named after a header (`from`, `from_name`, `to`, `cc`, `from_domain`, `to_domain`) read that header alone; `to_me` and `alias` read every recipient.
+
+`has_attachment`, `attachment` and `has_part` read the message's structure, which the search index stores. For new mail in the rule's folder Postvak fetches only the structure (IMAP `BODYSTRUCTURE`), not the message. Until the structure is known, a rule that reads it does not match, also through `none`. Mail indexed by an older version gets its structure in the background, at most a day after the upgrade.
 
 Each entry of `any` and `none` is a set of conditions that must all hold, written like `match` itself, so `none = [{ from = …, subject = … }]` only excludes mail that matches both. To exclude either, give each its own entry. Entries can hold `any` and `none` again, up to eight levels deep. A rule whose conditions need the body never fires on a message whose body could not be downloaded, even through `none`.
 
@@ -88,7 +93,7 @@ match.any = [{ from_domain = [{ list = "kids" }, "doctor.example"] }, { subject 
 actions.flagged = true
 ```
 
-- A list of domains goes in `from_domain` and `to_domain`, mixed with domains written in place if you like. A table with one of `contains`, `equals` or `regex` is a text list, for `from`, `from_name`, `to`, `cc`, `subject`, `body` and a `header`; there it stands alone, with nothing else beside `list`.
+- A list of domains goes in `from_domain` and `to_domain`, mixed with domains written in place if you like. A table with one of `contains`, `equals` or `regex` is a text list, for `from`, `from_name`, `to`, `cc`, `subject`, `body`, `attachment` and a `header`; there it stands alone, with nothing else beside `list`.
 - A name `[lists]` does not have, or a list used where the other kind belongs, makes the file invalid, as does a malformed list that no rule uses yet. A list cannot refer to another list.
 - Changing a list changes every rule that uses it, and restarts each one's clock (see [When rules act](#when-rules-act)).
 - `rules list --json` and the MCP `rules_list` tool show the reference in `match` and, under `lists`, the values of each list the rule uses. `rules coverage` and `senders` name the lists beside the rules that match.
@@ -184,6 +189,7 @@ On macOS a notification shows the sender and the subject as Postvak's once Postv
 - [Tag shop mail except receipts](#tag-shop-mail-except-receipts): `none`, `tag`
 - [Flag certain people or topics](#flag-certain-people-or-topics): `any`, `flagged`
 - [Set large mail aside](#set-large-mail-aside): `larger_than`, `flagged`, `move`, `stop`
+- [File invoices that come as a PDF](#file-invoices-that-come-as-a-pdf): `attachment`, `has_part`, `authenticated`, `move`
 - [Archive read mail after 30 days](#archive-read-mail-after-30-days): `read`, `older_than`, `archive`
 - [Quiet work mail after hours](#quiet-work-mail-after-hours): `from_domain`, `any`, `arrived_days`, `arrived_hours`, `notify`
 - [Tag spam by its score](#tag-spam-by-its-score): `header` with a regex, `tag`, `junk`
@@ -307,6 +313,25 @@ match.larger_than = "10MB"
 match.flagged = false
 actions.move = "Large"
 actions.stop = true
+```
+
+### File invoices that come as a PDF
+
+Invoices with a PDF go to Finance, while "your invoice is ready, log in to view it" mail stays. Invitations stay in INBOX, and archives or programs from a sender your provider does not vouch for are flagged:
+
+```toml
+[[rules]]
+name = "pdf invoices"
+match.subject = { contains = "invoice" }
+match.attachment = { regex = '\.pdf$' }
+match.none = [{ has_part = "text/calendar" }]
+actions.move = "Finance"
+
+[[rules]]
+name = "unvouched archives"
+match.attachment = { regex = '\.(exe|zip|iso)$' }
+match.authenticated = false
+actions.flagged = true
 ```
 
 ### Archive read mail after 30 days

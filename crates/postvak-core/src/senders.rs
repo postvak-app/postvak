@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::message::bare_addresses;
 use crate::rules::CompiledRule;
-use crate::rules::engine::{Context, folder_needs_body, matching};
+use crate::rules::engine::{Context, folder_reads_index, matching};
 use crate::store::{Message, Store, StoreError};
 
 /// How many subjects a group shows, newest first.
@@ -140,8 +140,8 @@ pub fn in_folder(
     before: Option<i64>,
     by: GroupBy,
 ) -> Result<Vec<Sender>, StoreError> {
-    let with_body = folder_needs_body(rules, ctx.account, folder);
-    let messages = store.messages_between(folder, after, before, with_body)?;
+    let with_index = folder_reads_index(rules, ctx.account, folder);
+    let messages = store.messages_between(folder, after, before, with_index)?;
     Ok(senders(&messages, rules, ctx, by))
 }
 

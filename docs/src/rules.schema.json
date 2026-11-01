@@ -194,6 +194,17 @@
             "null"
           ]
         },
+        "attachment": {
+          "description": "An attachment's file name; any attachment may match",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextMatch"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "authenticated": {
           "description": "An Authentication-Results header from a server in the account's trusted_authserv_ids says DMARC passed for the From domain, or without a DMARC verdict, DKIM passed for a domain aligned with it; never true without that list",
           "type": [
@@ -261,6 +272,20 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "has_attachment": {
+          "description": "Has an attachment (true) or none (false): a named part that is not body text, inline images and the parts of a\nforwarded message included",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "has_part": {
+          "description": "Has a part of this MIME type, such as text/calendar, or of any subtype with *, such as application/*;\ncase-insensitive",
+          "type": [
+            "string",
+            "null"
           ]
         },
         "header": {
@@ -362,7 +387,7 @@
       "additionalProperties": false
     },
     "NamedList": {
-      "description": "Domains for from_domain and to_domain, or a text condition (one of contains, equals, regex) for from, from_name, to,\ncc, subject, body and header; a list cannot refer to another list",
+      "description": "Domains for from_domain and to_domain, or a text condition (one of contains, equals, regex) for from, from_name, to,\ncc, subject, body, attachment and header; a list cannot refer to another list",
       "anyOf": [
         {
           "type": "array",

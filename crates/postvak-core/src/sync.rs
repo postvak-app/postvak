@@ -17,8 +17,10 @@ use crate::mail_ops::imap::ImapOps;
 use crate::mail_ops::{Envelope, IdleOutcome, MailError, MailOps, RemoteFolder, StatusInfo};
 use crate::message::{clean, parse_headers, thread_id};
 use crate::paths::Paths;
-use crate::rules::apply::{ApplyError, apply, ensure_body_text, plan_for, special_folder};
-use crate::rules::engine::{Context, Mode, evaluate, folder_needs_body};
+use crate::rules::apply::{
+    ApplyError, apply, ensure_body_text, ensure_structure, plan_for, special_folder,
+};
+use crate::rules::engine::{Context, Mode, evaluate, folder_needs_body, folder_needs_structure};
 use crate::rules::{Action, CompiledRule, RulesError};
 use crate::store::{Folder, Message, Store, StoreError};
 use crate::time::{clock, now};
@@ -722,6 +724,7 @@ fn to_message(folder: &str, env: Envelope) -> Message {
         headers: env.headers,
         body_text: None,
         attachment_names: None,
+        part_types: None,
         indexed_at: None,
     }
 }
@@ -1044,9 +1047,10 @@ fn run_rules_in(
         let (rules_uid, notified_uid) = (store.rules_uid(&folder)?, store.notified_uid(&folder)?);
         let unseen = unseen_by_rules(store, &stored)?;
         let fresh = |uid: u32| mode == Mode::Normal && unseen(uid);
-        // Rules look at every message, so a folder of 100k is read on each pass; without a body condition the indexed
-        // bodies stay unread.
-        let messages = if needs_body {
+        let needs_structure = folder_needs_structure(rules, &account.name, &folder);
+        // Rules look at every message, so a folder of 100k is read on each pass; without a body or structure condition
+        // the indexed columns stay unread.
+        let messages = if needs_body || needs_structure {
             store.messages_in_folder(&folder)?
         } else {
             store.messages_without_body(&folder, 0)?
@@ -1099,6 +1103,17 @@ fn run_rules_in(
                     Err(e) => log::warn!("{}/{}: body fetch failed: {e}", msg.folder, msg.uid),
                 }
                 bodies_done += 1;
+            }
+            // Only the structure is fetched, or read from a message the body condition just downloaded.
+            if needs_structure && msg.part_types.is_none() && is_fresh {
+                if !select_for_rules(ops, &stored, &mut selected, account, &mut run.events)? {
+                    continue 'folders;
+                }
+                match ensure_structure(&mut msg, ops, store) {
+                    Ok(()) => {}
+                    Err(e) if e.is_lost_connection() => return Err(e.into()),
+                    Err(e) => log::warn!("{}/{}: structure fetch failed: {e}", msg.folder, msg.uid),
+                }
             }
             let plan = plan_for(rules, &msg, ctx, store)?;
             run.evaluated += 1;
