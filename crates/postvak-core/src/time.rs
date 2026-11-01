@@ -137,8 +137,12 @@ impl Hours {
         let expected = || format!("expected hours such as 09:00-18:00, got '{text}'");
         let minute = |clock: &str| {
             let (hours, minutes) = clock.trim().split_once(':').ok_or_else(expected)?;
+            let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+            if !digits(hours) || !digits(minutes) || minutes.len() != 2 {
+                return Err(expected());
+            }
             match (hours.parse::<u32>(), minutes.parse::<u32>()) {
-                (Ok(h), Ok(m)) if h < 24 && m < 60 && minutes.len() == 2 => Ok(h * 60 + m),
+                (Ok(h), Ok(m)) if h < 24 && m < 60 => Ok(h * 60 + m),
                 _ => Err(expected()),
             }
         };
@@ -341,6 +345,8 @@ mod tests {
             "24:00-01:00",
             "09:60-10:00",
             "x-y",
+            "+9:00-10:00",
+            "09:+5-10:00",
         ] {
             assert!(Hours::parse(text).is_err(), "{text}");
         }

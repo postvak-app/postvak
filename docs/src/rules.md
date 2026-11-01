@@ -301,7 +301,7 @@ match.any = [{ arrived_days = "sat-sun" }, { none = [{ arrived_hours = "08:00-18
 actions.notify = false
 ```
 
-Local time is the time zone of the machine the daemon runs on; in the Docker image, set `TZ`.
+Local time is the time zone of the machine the daemon runs on. The Docker image has no time zone data and runs on UTC: mount the host's with `-v /etc/localtime:/etc/localtime:ro`.
 
 ### Tag spam by its score
 
