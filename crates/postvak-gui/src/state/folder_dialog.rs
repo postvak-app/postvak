@@ -29,6 +29,20 @@ impl App {
         self.open_folder_dialog(account, FolderKind::Rename { from, rules }, level);
     }
 
+    pub(super) fn empty_trash(&mut self, account: usize, folder: String) {
+        let uids = match &self.accounts[account].store {
+            Ok(store) => store.uids(&folder),
+            Err(_) => return,
+        };
+        match uids {
+            Ok(uids) if uids.is_empty() => {}
+            Ok(uids) => {
+                self.open_folder_dialog(account, FolderKind::Empty { folder, uids }, String::new())
+            }
+            Err(e) => self.note_error(Some(account), e.to_string()),
+        }
+    }
+
     pub(super) fn open_folder_dialog(&mut self, account: usize, kind: FolderKind, name: String) {
         self.folder_dialog = Some(FolderDialog {
             account,
@@ -57,7 +71,7 @@ impl App {
                 from.rsplit_once(d.as_str())
                     .map(|(parent, _)| parent.to_string())
             }),
-            FolderKind::Delete { .. } => return None,
+            FolderKind::Delete { .. } | FolderKind::Empty { .. } => return None,
         };
         let prefix =
             parent.and_then(|p| Some(format!("{p}{}", self.delimiter(dialog.account, &p)?)));
@@ -77,7 +91,7 @@ impl App {
                 !dialog.name.is_empty() && self.folder_target(dialog).as_ref() != Some(from)
             }
             FolderKind::New { .. } => !dialog.name.is_empty(),
-            FolderKind::Delete { .. } => true,
+            FolderKind::Delete { .. } | FolderKind::Empty { .. } => true,
         }
     }
 
@@ -110,6 +124,12 @@ impl App {
         let Some(dialog) = &self.folder_dialog else {
             return;
         };
+        if let FolderKind::Empty { folder, uids } = &dialog.kind {
+            let target = (dialog.account, folder.clone(), uids.clone());
+            self.folder_dialog = None;
+            self.act_on(Action::Delete, vec![target]);
+            return;
+        }
         let (command, about) = match (&dialog.kind, checked) {
             (FolderKind::New { .. }, Some(Ok(name))) => {
                 (Command::CreateFolder { name: name.clone() }, name)

@@ -5,10 +5,15 @@ impl App {
     /// Sends `action` for the marked rows, or the cursor row, each to its own account, and shows its effect before the
     /// server confirms it.
     pub(super) fn act(&mut self, action: Action) {
+        let targets = self.targets();
+        self.act_on(action, targets);
+    }
+
+    /// Sends `action` for each (account, folder, uids), as one gesture that `z` undoes.
+    pub(super) fn act_on(&mut self, action: Action, targets: Vec<(usize, String, Vec<u32>)>) {
         let Some(optimistic) = Optimistic::of(&action) else {
             return;
         };
-        let targets = self.targets();
         if targets.is_empty() {
             return;
         }

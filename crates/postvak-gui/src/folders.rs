@@ -50,6 +50,8 @@ pub(crate) struct FolderEntry {
     /// Whether the folder may be renamed and deleted, as `FolderRow` says; false for a row that is no folder.
     pub can_rename: bool,
     pub can_delete: bool,
+    /// Whether this is the account's Trash, which the menu offers to empty.
+    pub trash: bool,
 }
 
 impl Entry {
@@ -88,6 +90,7 @@ impl FolderEntry {
             unread,
             can_rename: false,
             can_delete: false,
+            trash: false,
         }
     }
 
@@ -114,7 +117,7 @@ impl FolderEntry {
     }
 
     /// What the right-click menu offers, as (title, enabled, action): Open and Collapse or Expand, then, below a
-    /// separator, a new folder under it, renaming and deleting it, marking read and syncing.
+    /// separator, a new folder under it, renaming and deleting it, marking read, emptying Trash and syncing.
     pub(crate) fn menu(&self) -> [Vec<(String, bool, UiAction)>; 2] {
         let mut items = Vec::new();
         let folder = match &self.view {
@@ -151,8 +154,12 @@ impl FolderEntry {
                     UiAction::DeleteFolder(account, folder.clone()),
                 ),
             ]);
-            let mark = UiAction::MarkFolderRead(account, folder);
+            let mark = UiAction::MarkFolderRead(account, folder.clone());
             below.push(("Mark all as read".to_string(), self.unread > 0, mark));
+            if self.trash {
+                let empty = UiAction::EmptyTrash(account, folder);
+                below.push(("Empty Trash…".to_string(), true, empty));
+            }
         }
         below.push((status::sync_key().to_string(), true, UiAction::SyncNow));
         [items, below]
@@ -213,6 +220,7 @@ fn account_entries(app: &App, index: usize, account: &Account) -> Vec<Entry> {
             Entry::Folder(FolderEntry {
                 can_rename: folder.can_rename,
                 can_delete: folder.can_delete,
+                trash: folder.special_use.as_deref() == Some("Trash"),
                 ..FolderEntry::new(icon, label, folder.unread, open(&folder.name), app)
             })
         })
@@ -247,6 +255,7 @@ fn account_entries(app: &App, index: usize, account: &Account) -> Vec<Entry> {
             unread,
             can_rename: stored.is_some_and(|f| f.can_rename),
             can_delete: stored.is_some_and(|f| f.can_delete),
+            trash: false,
         }));
     }
     entries
@@ -426,8 +435,18 @@ pub(crate) fn question(app: &App) -> Option<Question> {
             };
             ("Delete folder", text, None, buttons)
         }
+        FolderKind::Empty { folder, uids } => {
+            let count = u64::try_from(uids.len()).unwrap_or(u64::MAX);
+            let messages = numbers::counted(count, "message", "messages");
+            let text = format!("Permanently delete {messages} in {}?", clean(folder, false));
+            let empty = ("Empty Trash".to_string(), ready, None);
+            ("Empty Trash", text, None, vec![empty])
+        }
     };
-    let deletes = matches!(dialog.kind, FolderKind::Delete { .. });
+    let deletes = matches!(
+        dialog.kind,
+        FolderKind::Delete { .. } | FolderKind::Empty { .. }
+    );
     let danger = buttons
         .iter()
         .map(|(_, _, mode)| deletes && *mode != Some(DeleteMode::Trash))
@@ -770,6 +789,32 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn only_the_trash_menu_offers_to_empty_it() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Trash", Some("Trash"));
+        fx.folder("work", "Receipts", None);
+        let (app, _wires) = fx.app();
+        let offers = |label: &str| {
+            entries(&app)
+                .into_iter()
+                .find_map(|e| match e {
+                    Entry::Folder(f) if f.label == label => Some(f),
+                    _ => None,
+                })
+                .unwrap()
+                .menu()[1]
+                .iter()
+                .find(|(title, ..)| title == "Empty Trash…")
+                .map(|(_, enabled, action)| (*enabled, action.clone()))
+        };
+        assert_eq!(
+            offers("Trash"),
+            Some((true, UiAction::EmptyTrash(0, "Trash".into())))
+        );
+        assert_eq!(offers("Receipts"), None);
     }
 
     #[test]
