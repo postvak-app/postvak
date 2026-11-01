@@ -52,7 +52,13 @@ Keep the file where you run it from: the daemon it starts, `service install` and
 
 ## Flatpak on Linux
 
-Postvak has its own Flatpak repository, so it installs as a desktop app and `flatpak update` (or your software centre) brings each new release. The Freedesktop runtime it needs comes from Flathub:
+Postvak has its own Flatpak repository, so it installs as a desktop app and `flatpak update` (or your software centre) brings each new release. The quickest way is its `.flatpakref`, which adds the repository, and Flathub for the Freedesktop runtime it needs, in one step; opening [the file](https://postvak.pataar.nl/flatpak/postvak.flatpakref) in a software centre such as Discover or GNOME Software does the same:
+
+```sh
+flatpak install --user https://postvak.pataar.nl/flatpak/postvak.flatpakref
+```
+
+Or add the remotes yourself:
 
 ```sh
 flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo

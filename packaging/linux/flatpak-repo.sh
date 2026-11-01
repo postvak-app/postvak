@@ -2,8 +2,8 @@
 # Add Postvak's Flatpak repository to the docs site, so `flatpak update` brings new releases.
 #
 # Usage: packaging/linux/flatpak-repo.sh SITE
-#   SITE is the built site (docs/site.sh); this writes SITE/flatpak/repo and SITE/flatpak/postvak.flatpakrepo. Every
-#   Pages deploy replaces the whole site, so the repository is mirrored from the live site first, then the latest
+#   SITE is the built site (docs/site.sh); this writes SITE/flatpak/repo, and postvak.flatpakrepo and
+#   postvak.flatpakref beside it. Every Pages deploy replaces the whole site, so the repository is mirrored from the live site first, then the latest
 #   release's bundles are imported into it. Needs flatpak, ostree, curl and gh (with GH_TOKEN and GITHUB_REPOSITORY);
 #   $SITE_URL is the site's address. Before the first release with bundles, it writes nothing. A failure to read the
 #   live repository or the release stops the script, so a deploy never drops the repository. With
@@ -91,6 +91,19 @@ Title=Postvak
 Comment=Postvak releases
 Url=$base_url/flatpak/repo/
 Homepage=$base_url/
+$gpg_key_line
+EOF
+# One-step install: adds the postvak remote, and Flathub for the runtime, then installs the app.
+cat >"$site/flatpak/postvak.flatpakref" <<EOF
+[Flatpak Ref]
+Name=$app_id
+Branch=stable
+Title=Postvak
+Url=$base_url/flatpak/repo/
+SuggestRemoteName=postvak
+Homepage=$base_url/
+RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo
+IsRuntime=false
 $gpg_key_line
 EOF
 echo "$app_id: $(ostree --repo="$repo" refs | tr '\n' ' ')"
