@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0](https://github.com/postvak-app/postvak/compare/v0.14.0...v0.15.0) - 2026-11-01
+
+### Added
+
+- *(rules)* conditions on attachments and MIME parts ([#520](https://github.com/postvak-app/postvak/pull/520))
+- *(rules)* move to a folder named by the +tag with {subaddress} ([#519](https://github.com/postvak-app/postvak/pull/519))
+- *(gui)* empty Trash from its folder menu ([#517](https://github.com/postvak-app/postvak/pull/517))
+
+### Fixed
+
+- *(gui)* download one body at a time per account while stepping through the list ([#523](https://github.com/postvak-app/postvak/pull/523))
+- *(autostart)* build the Flatpak login hint only where it is used ([#522](https://github.com/postvak-app/postvak/pull/522))
+- *(search)* a failed server search keeps the local results and says so on every surface ([#492](https://github.com/postvak-app/postvak/pull/492))
+
+### Other
+
+- *(gui)* give the Preferences dialog more breathing room ([#516](https://github.com/postvak-app/postvak/pull/516))
+
 ## [0.14.0](https://github.com/postvak-app/postvak/compare/v0.13.0...v0.14.0) - 2026-11-01
 
 ### Added
