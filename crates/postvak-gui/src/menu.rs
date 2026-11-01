@@ -272,6 +272,25 @@ mod tests {
     }
 
     #[test]
+    fn a_login_start_the_session_may_not_run_stays_on_and_says_why() {
+        let fx = Fixture::new(&["work"]);
+        let (mut driver, _wires) = fx.driver();
+        driver.app.set_open_at_login = |_, _| {
+            Ok(postvak_core::autostart::Changed {
+                done: "wrote it".into(),
+                warning: Some("Hyprland does not start the entries".into()),
+            })
+        };
+        driver.tick();
+        driver.apply(UiAction::SetOpenAtLogin(true));
+        driver.tick_until(|app| matches!(app.open_at_login, OpenAtLogin::Known(true)));
+        assert_eq!(
+            driver.app.error.as_deref(),
+            Some("Hyprland does not start the entries")
+        );
+    }
+
+    #[test]
     fn a_change_the_platform_refuses_goes_back_and_says_why() {
         let fx = Fixture::new(&["work"]);
         let (mut driver, _wires) = fx.driver();

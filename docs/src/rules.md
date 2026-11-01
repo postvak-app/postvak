@@ -45,6 +45,7 @@ All three ignore case. A text condition can also be `{ list = "name" }` alone, f
 | Key | Takes | Matches |
 |---|---|---|
 | `from`, `to`, `cc`, `subject` | text condition | That header. |
+| `from_name` | text condition | A display name in From, without its quotes, never the address: `"PayPal Service" <billing@random.example>` has the name `PayPal Service`. A From without a display name never matches; with several addresses, any name may match. |
 | `body` | text condition | The plain-text body; HTML mail is converted. Postvak downloads the body of new mail in the rule's folder for this. |
 | `header` | a table of header names, each with a text condition | Any header, such as `match.header.List-Id = { contains = "github" }`, unfolded and with encoded words (`=?UTF-8?…?=`) decoded. Of a repeated header only the last copy, nearest the body, counts. Every header named must match. |
 | `from_domain` | domain, or a list of them; `{ list = "name" }` stands for a domain list's domains | The From address is in that domain or a subdomain of it: `paypal.com` matches `service@paypal.com` and `x@mail.paypal.com`, not `x@notpaypal.com`. Only the address counts, never the display name, and case does not matter. A list matches when any domain does. |
@@ -63,7 +64,7 @@ All three ignore case. A text condition can also be `{ list = "name" }` alone, f
 | `any` | list of conditions | Holds when at least one entry holds. |
 | `none` | list of conditions | Holds when no entry holds. |
 
-Keys named after a header (`from`, `to`, `cc`, `from_domain`, `to_domain`) read that header alone; `to_me` and `alias` read every recipient.
+Keys named after a header (`from`, `from_name`, `to`, `cc`, `from_domain`, `to_domain`) read that header alone; `to_me` and `alias` read every recipient.
 
 Each entry of `any` and `none` is a set of conditions that must all hold, written like `match` itself, so `none = [{ from = …, subject = … }]` only excludes mail that matches both. To exclude either, give each its own entry. Entries can hold `any` and `none` again, up to eight levels deep. A rule whose conditions need the body never fires on a message whose body could not be downloaded, even through `none`.
 
@@ -87,7 +88,7 @@ match.any = [{ from_domain = [{ list = "kids" }, "doctor.example"] }, { subject 
 actions.flagged = true
 ```
 
-- A list of domains goes in `from_domain` and `to_domain`, mixed with domains written in place if you like. A table with one of `contains`, `equals` or `regex` is a text list, for `from`, `to`, `cc`, `subject`, `body` and a `header`; there it stands alone, with nothing else beside `list`.
+- A list of domains goes in `from_domain` and `to_domain`, mixed with domains written in place if you like. A table with one of `contains`, `equals` or `regex` is a text list, for `from`, `from_name`, `to`, `cc`, `subject`, `body` and a `header`; there it stands alone, with nothing else beside `list`.
 - A name `[lists]` does not have, or a list used where the other kind belongs, makes the file invalid, as does a malformed list that no rule uses yet. A list cannot refer to another list.
 - Changing a list changes every rule that uses it, and restarts each one's clock (see [When rules act](#when-rules-act)).
 - `rules list --json` and the MCP `rules_list` tool show the reference in `match` and, under `lists`, the values of each list the rule uses. `rules coverage` and `senders` name the lists beside the rules that match.
@@ -119,6 +120,21 @@ name = "paypal"
 match.from_domain = ["paypal.com", "paypal.nl"]
 match.authenticated = true
 actions.move = "Finance"
+```
+
+With `from_name` it catches display-name spoofing, mail whose name claims a sender its address does not back:
+
+```toml
+[lists]
+bank_names = { contains = ["paypal", "ing bank"] }
+banks = ["paypal.com", "ing.nl"]
+
+[[rules]]
+name = "display name says a bank, the address doesn't"
+match.from_name = { list = "bank_names" }
+match.none = [{ from_domain = { list = "banks" }, authenticated = true }]
+actions.tag = "$Suspicious"
+actions.flagged = true
 ```
 
 ## Actions

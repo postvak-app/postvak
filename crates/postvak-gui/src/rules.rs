@@ -2354,7 +2354,7 @@ mod editor_tests {
         editor(&open, |e| {
             e.invoke_name_edited("receipts".into());
             e.invoke_add_condition();
-            e.invoke_field_chosen(0, 3);
+            e.invoke_field_chosen(0, 4);
             e.invoke_value_edited(0, "receipt".into());
             e.invoke_action_chosen(6);
             e.invoke_action_value_edited(0, "Receipts".into());
@@ -2379,7 +2379,7 @@ mod editor_tests {
         editor(&open, |e| {
             e.invoke_name_edited("kids".into());
             e.invoke_add_condition();
-            e.invoke_field_chosen(0, 6);
+            e.invoke_field_chosen(0, 7);
             e.invoke_op_chosen(0, 1);
             e.invoke_list_chosen(0, 0);
             e.invoke_action_chosen(2);
@@ -2775,7 +2775,10 @@ mod editor_tests {
             let draft = live.app.rule_draft.clone().unwrap();
             draft.conditions.iter().map(|c| c.field).collect::<Vec<_>>()
         });
-        assert_eq!(fields, [crate::draft::Field::From, crate::draft::Field::To]);
+        assert_eq!(
+            fields,
+            [crate::draft::Field::From, crate::draft::Field::FromName]
+        );
         open.click("Remove condition 2");
         open.click("Remove archive");
         open.click("+ Add action");

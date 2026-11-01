@@ -787,6 +787,7 @@ fn match_leaf() -> BoxedStrategy<Match> {
         proptest::option::of(text_match()),
         proptest::option::of(text_match()),
         proptest::option::of(text_match()),
+        proptest::option::of(text_match()),
     )
         .boxed();
     let domains = (
@@ -816,12 +817,13 @@ fn match_leaf() -> BoxedStrategy<Match> {
     (texts, others, domains)
         .prop_map(
             |(
-                (from, to, cc, subject, body),
+                (from, from_name, to, cc, subject, body),
                 (header, older_than, read, to_me, alias, tag, larger_than, flagged),
                 (from_domain, to_domain, authenticated, younger_than, arrived_days, arrived_hours),
             )| {
                 Match {
                     from,
+                    from_name,
                     to,
                     cc,
                     subject,

@@ -252,6 +252,17 @@
             }
           ]
         },
+        "from_name": {
+          "description": "A From display name, unquoted, never the address; a From without one never matches",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextMatch"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "header": {
           "description": "Headers by name, such as List-Id, each with its own text condition; every header named must match. Of a repeated\nheader only the last copy counts, the one nearest the body",
           "type": [
@@ -351,7 +362,7 @@
       "additionalProperties": false
     },
     "NamedList": {
-      "description": "Domains for from_domain and to_domain, or a text condition (one of contains, equals, regex) for from, to, cc, subject,\nbody and header; a list cannot refer to another list",
+      "description": "Domains for from_domain and to_domain, or a text condition (one of contains, equals, regex) for from, from_name, to,\ncc, subject, body and header; a list cannot refer to another list",
       "anyOf": [
         {
           "type": "array",

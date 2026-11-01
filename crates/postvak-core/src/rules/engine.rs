@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use crate::config::Identity;
-use crate::message::{auth, bare_addresses, header_text};
+use crate::message::{auth, bare_addresses, display_names, header_text};
 use crate::rules::{Action, CompiledRule, Conditions, Match, Rule, Wait};
 use crate::store::{Message, has_flag, with_flag};
 
@@ -294,6 +294,13 @@ fn in_any_domain(addresses: &str, domains: &[String]) -> bool {
 fn matches(c: &Conditions, msg: &Message, flags: &str, ctx: &Context) -> bool {
     if let Some(m) = &c.from
         && !m.is_address_match(field(&msg.from_addr))
+    {
+        return false;
+    }
+    if let Some(m) = &c.from_name
+        && !display_names(field(&msg.from_addr))
+            .iter()
+            .any(|name| m.is_match(name))
     {
         return false;
     }
@@ -1364,6 +1371,48 @@ actions = { move = "Later" }
                 "{from}"
             );
         }
+    }
+
+    #[test]
+    fn from_name_matches_any_display_name_and_never_the_address() {
+        let toml = "[[rules]]\nname = \"pp\"\nmatch.from_name = { contains = \"paypal\" }\nmatch.none = [{ from_domain = \"paypal.com\" }]\nactions = { flagged = true }\n";
+        for (from, hit) in [
+            ("PayPal Service <billing@random.example>", true),
+            ("\"PayPal, Inc.\" <billing@random.example>", true),
+            ("\"Say \\\"PayPal\\\"\" <x@random.example>", true),
+            ("PayPal <service@paypal.com>", false),
+            ("paypal@random.example", false),
+            ("<paypal@random.example>", false),
+            ("Shop <paypal@random.example>", false),
+            ("a@x.example, PayPal <b@random.example>", true),
+        ] {
+            assert_eq!(
+                fires(toml, &msg(from, "p@x", "s", 100, false)),
+                hit,
+                "{from}"
+            );
+        }
+        let equals = "[[rules]]\nname = \"e\"\nmatch.from_name = { equals = \"Say \\\"PayPal\\\"\" }\nactions = { flagged = true }\n";
+        assert!(fires(
+            equals,
+            &msg(
+                "\"Say \\\"PayPal\\\"\" <x@y.example>",
+                "p@x",
+                "s",
+                100,
+                false
+            )
+        ));
+        assert!(!fires(
+            equals,
+            &msg(
+                "\"Say \\\"PayPal\\\" now\" <x@y.example>",
+                "p@x",
+                "s",
+                100,
+                false
+            )
+        ));
     }
 
     #[test]
