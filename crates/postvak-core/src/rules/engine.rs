@@ -23,7 +23,8 @@ pub struct Context<'a> {
     pub notify_default: bool,
     /// The message came back to a folder a rule moved it out of: no rule moves or archives it again.
     pub keep_in_folder: bool,
-    /// Previews only: `older_than`, `younger_than` and `after` read this as the message's arrival, not its internaldate.
+    /// Previews only: `older_than`, `younger_than`, `arrived_days`, `arrived_hours` and `after` read this as the
+    /// message's arrival, not its internaldate.
     pub arrived_at: Option<i64>,
 }
 
@@ -354,15 +355,12 @@ fn matches(c: &Conditions, msg: &Message, flags: &str, ctx: &Context) -> bool {
     {
         return false;
     }
-    if c.arrived_days.is_some() || c.arrived_hours.is_some() {
-        let Some((day, minute)) = crate::time::local_day_minute(arrival(msg, ctx)) else {
-            return false;
-        };
-        if c.arrived_days.is_some_and(|days| !days.contains(day))
-            || c.arrived_hours.is_some_and(|hours| !hours.contains(minute))
-        {
-            return false;
-        }
+    if c.arrived_days
+        .is_some_and(|days| !days.contains_at(arrival(msg, ctx)))
+        || c.arrived_hours
+            .is_some_and(|hours| !hours.contains_at(arrival(msg, ctx)))
+    {
+        return false;
     }
     if let Some(min_size) = c.larger_than
         && msg.size.is_none_or(|size| u64::from(size) <= min_size)

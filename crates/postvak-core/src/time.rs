@@ -102,15 +102,14 @@ impl Weekdays {
         };
         let mut days = 0u8;
         for part in text.split(',') {
-            let (first, last) = match part.split_once('-') {
-                Some((first, last)) => (day(first)?, day(last)?),
-                None => (day(part)?, day(part)?),
-            };
-            let mut at = first;
-            days |= 1 << at.num_days_from_monday();
-            while at != last {
-                at = at.succ();
+            let (first, last) = part.split_once('-').unwrap_or((part, part));
+            let (mut at, last) = (day(first)?, day(last)?);
+            loop {
                 days |= 1 << at.num_days_from_monday();
+                if at == last {
+                    break;
+                }
+                at = at.succ();
             }
         }
         Ok(Weekdays(days))
@@ -119,13 +118,18 @@ impl Weekdays {
     pub fn contains(self, day: chrono::Weekday) -> bool {
         self.0 & (1 << day.num_days_from_monday()) != 0
     }
+
+    /// Whether `ts` falls on one of the days in local time.
+    pub fn contains_at(self, ts: i64) -> bool {
+        (chrono::Local.timestamp_opt(ts, 0).single()).is_some_and(|at| self.contains(at.weekday()))
+    }
 }
 
 /// A daily window `HH:MM-HH:MM`, its start included and its end not; an end before the start wraps past midnight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Hours {
-    start: u16,
-    end: u16,
+    start: u32,
+    end: u32,
 }
 
 impl Hours {
@@ -133,7 +137,7 @@ impl Hours {
         let expected = || format!("expected hours such as 09:00-18:00, got '{text}'");
         let minute = |clock: &str| {
             let (hours, minutes) = clock.trim().split_once(':').ok_or_else(expected)?;
-            match (hours.parse::<u16>(), minutes.parse::<u16>()) {
+            match (hours.parse::<u32>(), minutes.parse::<u32>()) {
                 (Ok(h), Ok(m)) if h < 24 && m < 60 && minutes.len() == 2 => Ok(h * 60 + m),
                 _ => Err(expected()),
             }
@@ -150,20 +154,19 @@ impl Hours {
     }
 
     /// Whether `minute`, counted from midnight, falls in the window.
-    pub fn contains(self, minute: u16) -> bool {
+    pub fn contains(self, minute: u32) -> bool {
         if self.start < self.end {
             (self.start..self.end).contains(&minute)
         } else {
             minute >= self.start || minute < self.end
         }
     }
-}
 
-/// The local weekday of `ts` and its minute counted from midnight.
-pub fn local_day_minute(ts: i64) -> Option<(chrono::Weekday, u16)> {
-    let at = chrono::Local.timestamp_opt(ts, 0).single()?;
-    let minute = u16::try_from(at.hour() * 60 + at.minute()).ok()?;
-    Some((at.weekday(), minute))
+    /// Whether `ts` falls in the window in local time.
+    pub fn contains_at(self, ts: i64) -> bool {
+        (chrono::Local.timestamp_opt(ts, 0).single())
+            .is_some_and(|at| self.contains(at.hour() * 60 + at.minute()))
+    }
 }
 
 /// The moment a rules preview evaluates as of, `as_of` or now, and with `as_arrival` when every message arrived: now,
@@ -321,7 +324,7 @@ mod tests {
 
     #[test]
     fn hours_include_the_start_not_the_end_and_wrap_past_midnight() {
-        let at = |h: u16, m: u16| h * 60 + m;
+        let at = |h: u32, m: u32| h * 60 + m;
         let day = Hours::parse("09:00-18:00").unwrap();
         assert!(day.contains(at(9, 0)) && day.contains(at(17, 59)));
         assert!(!day.contains(at(8, 59)) && !day.contains(at(18, 0)));
