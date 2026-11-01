@@ -996,6 +996,23 @@ mod tests {
     }
 
     #[test]
+    fn stepping_past_missing_bodies_fetches_one_at_a_time_and_skips_the_ones_left_behind() {
+        let fx = Fixture::new(&["work"]);
+        for uid in 1..=5 {
+            fx.add("work", not_downloaded(message("INBOX", uid, "later")));
+        }
+        let (mut driver, wires) = fx.driver();
+        assert_eq!(wires.sent(), [fetch(5)], "the neighbour waits its turn");
+        driver.press("j j j");
+        assert!(wires.sent().is_empty(), "nothing more while 5 downloads");
+        driver.receive(&wires, [ready(5)]);
+        assert_eq!(wires.sent(), [fetch(2)], "the cursor's message, not 4 or 3");
+        driver.receive(&wires, [ready(2)]);
+        let next = wires.sent();
+        assert!(next == [fetch(1)] || next == [fetch(3)], "{next:?}");
+    }
+
+    #[test]
     fn a_fetched_body_keeps_the_read_timer_and_the_hand_marks() {
         let fx = Fixture::new(&["work"]);
         fx.add("work", not_downloaded(unread("INBOX", 1, "later")));
