@@ -1726,6 +1726,14 @@ impl Store {
             .query_row(&unread_count_sql(), params![folder], |r| r.get(0))?)
     }
 
+    pub fn uids(&self, folder: &str) -> Result<Vec<u32>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT uid FROM messages WHERE folder = ?1 ORDER BY uid")?;
+        let uids = stmt.query_map(params![folder], |r| r.get(0))?;
+        Ok(uids.collect::<Result<_, _>>()?)
+    }
+
     pub fn unread_uids(&self, folder: &str) -> Result<Vec<u32>, StoreError> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT uid FROM messages WHERE folder = ?1 AND {UNSEEN} ORDER BY uid"

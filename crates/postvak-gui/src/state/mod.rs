@@ -152,6 +152,8 @@ pub(crate) enum FolderKind {
         folder: String,
         not_empty: Option<(u32, bool)>,
     },
+    /// The messages the Trash folder held when asked; only these are deleted, not mail arriving meanwhile.
+    Empty { folder: String, uids: Vec<u32> },
 }
 
 /// The one-click unsubscribe in flight, for the message it came from.
@@ -453,6 +455,8 @@ pub(crate) enum UiAction {
     Collapse,
     /// Ask before deleting this folder of this account.
     DeleteFolder(usize, String),
+    /// Ask before deleting every message in this Trash folder of this account.
+    EmptyTrash(usize, String),
     /// Move the targeted rows into a folder dropped on.
     DropOn(View),
     /// Close the topmost open dialog; with none open, leave the search, else clear the selection.
@@ -1674,6 +1678,7 @@ impl App {
                 };
                 self.open_folder_dialog(account, kind, String::new());
             }
+            UiAction::EmptyTrash(account, folder) => self.empty_trash(account, folder),
             UiAction::FolderName(name) => {
                 if let Some(dialog) = self.folder_dialog.as_mut() {
                     dialog.name = name;
@@ -4351,6 +4356,41 @@ mod tests {
         assert_eq!(wires.sent(), [delete("Old", Some(DeleteMode::Trash), 3)]);
         driver.receive(&wires, [deleted("Old")]);
         assert!(driver.app.folder_dialog.is_none());
+    }
+
+    #[test]
+    fn empty_trash_asks_then_deletes_every_message_in_it() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Trash", Some("Trash"));
+        for uid in [4, 7] {
+            fx.add("work", crate::test_support::message("Trash", uid, "old"));
+        }
+        let (mut driver, wires) = fx.driver();
+        driver.apply(UiAction::EmptyTrash(0, "Trash".into()));
+        assert!(wires.sent().is_empty(), "asks first");
+        let question = folders::question(&driver.app).unwrap();
+        assert_eq!(question.text, "Permanently delete 2 messages in Trash?");
+        assert_eq!(buttons(&driver), [("Empty Trash".to_string(), true)]);
+        assert_eq!(question.danger, [true]);
+        driver.apply(UiAction::FolderConfirm(None));
+        let apply = Command::Apply {
+            folder: "Trash".into(),
+            uids: vec![4, 7],
+            action: Action::Delete,
+            by: "gui".into(),
+        };
+        assert_eq!(wires.sent(), [("work".to_string(), apply)]);
+        assert!(driver.app.folder_dialog.is_none());
+    }
+
+    #[test]
+    fn an_empty_trash_has_nothing_to_ask() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Trash", Some("Trash"));
+        let (mut driver, wires) = fx.driver();
+        driver.apply(UiAction::EmptyTrash(0, "Trash".into()));
+        assert!(driver.app.folder_dialog.is_none());
+        assert!(wires.sent().is_empty());
     }
 
     #[test]
