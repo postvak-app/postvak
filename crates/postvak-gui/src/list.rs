@@ -1147,6 +1147,9 @@ mod tests {
             .map(|row| (row.uid, row.logo.as_ref().map(|(key, _)| key.as_str())))
             .collect();
         assert_eq!(logos, [(2, None), (1, Some("default._bimi.github.com"))]);
+        // A row turning read rebuilds the rows between ticks; the logo must not blink back to the initials.
+        driver.app.rebuild_rows();
+        assert!(driver.app.list.rows[1].logo.is_some());
     }
 
     #[test]

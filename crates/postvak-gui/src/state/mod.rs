@@ -2378,6 +2378,8 @@ impl App {
         self.list.rows = rows;
         self.list.cursor =
             kept.unwrap_or_else(|| self.list.cursor.min(self.list.rows.len().saturating_sub(1)));
+        // Rebuilt rows come without logos; drawn before the next tick, they would blink to the initials.
+        self.show_row_logos();
     }
 
     /// Asks the server of each account the search covers for the current query; the hits arrive as `ServerSearchDone`.
