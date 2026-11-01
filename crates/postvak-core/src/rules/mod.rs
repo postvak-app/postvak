@@ -106,6 +106,9 @@ pub struct Match {
     /// The From header
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<TextMatch>,
+    /// A From display name, unquoted, never the address; a From without one never matches
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_name: Option<TextMatch>,
     /// The To header
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to: Option<TextMatch>,
@@ -590,6 +593,7 @@ impl Wait {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Conditions {
     pub(crate) from: Option<Matcher>,
+    pub(crate) from_name: Option<Matcher>,
     pub(crate) to: Option<Matcher>,
     pub(crate) cc: Option<Matcher>,
     pub(crate) subject: Option<Matcher>,
@@ -804,6 +808,7 @@ fn compile_match(
         ));
     }
     let has_condition = m.from.is_some()
+        || m.from_name.is_some()
         || m.to.is_some()
         || m.cc.is_some()
         || m.subject.is_some()
@@ -935,6 +940,7 @@ fn compile_match(
     let none = branches("none", &m.none)?;
     Ok(Conditions {
         from: text("from", &m.from)?,
+        from_name: text("from_name", &m.from_name)?,
         to: text("to", &m.to)?,
         cc: text("cc", &m.cc)?,
         subject: text("subject", &m.subject)?,

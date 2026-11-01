@@ -9,8 +9,8 @@ use super::{Match, Matcher, OneOrMany, RulesError, TextMatch, check_name, domain
 /// The lists of a rules file by name.
 pub type Lists = BTreeMap<String, NamedList>;
 
-/// Domains for from_domain and to_domain, or a text condition (one of contains, equals, regex) for from, to, cc, subject,
-/// body and header; a list cannot refer to another list
+/// Domains for from_domain and to_domain, or a text condition (one of contains, equals, regex) for from, from_name, to,
+/// cc, subject, body and header; a list cannot refer to another list
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(
     untagged,
@@ -209,7 +209,7 @@ pub(crate) fn resolve(
                         return Err(invalid(
                             rule,
                             format!(
-                                "{path}: list '{list}' is a text condition; use it in from, to, cc, subject, body or header"
+                                "{path}: list '{list}' is a text condition; use it in from, from_name, to, cc, subject, body or header"
                             ),
                         ));
                     }
@@ -242,6 +242,7 @@ pub(crate) fn resolve(
     };
     Ok(Match {
         from: optional("from", &m.from)?,
+        from_name: optional("from_name", &m.from_name)?,
         to: optional("to", &m.to)?,
         cc: optional("cc", &m.cc)?,
         subject: optional("subject", &m.subject)?,
@@ -276,7 +277,7 @@ pub fn used_by<'r>(rules: impl IntoIterator<Item = &'r super::Rule>) -> Vec<Stri
 }
 
 fn collect(m: &Match, names: &mut BTreeSet<String>) {
-    let texts = [&m.from, &m.to, &m.cc, &m.subject, &m.body]
+    let texts = [&m.from, &m.from_name, &m.to, &m.cc, &m.subject, &m.body]
         .into_iter()
         .flatten()
         .chain(m.header.iter().flat_map(BTreeMap::values));
@@ -436,6 +437,21 @@ security = { regex = "sign-?in alert|new device" }
         ))
         .unwrap();
         assert_eq!(super::used_by(&file.rules), ["kids", "security"]);
+    }
+
+    #[test]
+    fn from_name_takes_a_text_list() {
+        let file = parse(&format!(
+            "{LISTS}{}",
+            rule("match.from_name = { list = \"security\" }")
+        ))
+        .unwrap();
+        assert_eq!(super::used_by(&file.rules), ["security"]);
+        assert!(
+            compile(&file).unwrap()[0]
+                .definition
+                .contains(r#""from_name":{"regex":"sign-?in alert|new device"}"#)
+        );
     }
 
     #[test]
