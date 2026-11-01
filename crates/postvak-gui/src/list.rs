@@ -122,6 +122,8 @@ pub(crate) struct ListState {
     pub server_searching: usize,
     /// Whether the servers were asked for the current query.
     pub server_asked: bool,
+    /// The accounts whose server could not search for the current query; their local results stand.
+    pub server_failed: Vec<String>,
     /// Over the accounts the current search covers: messages whose body is not indexed yet, and messages in all.
     pub unindexed: u64,
     pub covered: u64,
@@ -257,6 +259,13 @@ pub(crate) fn search_hint(view: &View) -> &'static str {
 pub(crate) fn results(app: &App) -> String {
     let note = if app.list.server_searching > 0 {
         "searching the server…".to_string()
+    } else if let [account] = app.list.server_failed.as_slice() {
+        format!("the server search failed for {account}")
+    } else if !app.list.server_failed.is_empty() {
+        format!(
+            "the server search failed for {}",
+            super::numbers::counted(app.list.server_failed.len() as u64, "account", "accounts")
+        )
     } else if app.list.server_asked {
         "with what the server found".to_string()
     } else if app.list.unindexed > 0 {

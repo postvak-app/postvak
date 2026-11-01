@@ -1011,6 +1011,50 @@ fn a_panicking_session_fails_its_requests_and_goes_offline() {
     );
 }
 
+/// #275: a server search queued for an offline account was failed as a bare `CommandFailed`, which a window takes for
+/// a refused edit.
+#[test]
+fn an_offline_account_fails_a_queued_server_search_as_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (queue, commands) = std::sync::mpsc::channel();
+    let search = Command::SearchServer {
+        folder: None,
+        query: "code".into(),
+    };
+    queue
+        .send(Job {
+            request: 6,
+            command: search,
+        })
+        .unwrap();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let stop = shutdown.clone();
+    run_loop_with(
+        account(),
+        Paths::under(dir.path()),
+        tx,
+        shutdown,
+        commands,
+        Arc::new(AtomicBool::new(false)),
+        || -> Result<Box<dyn MailOps>, SyncError> { panic!("a bug") },
+        |_| stop.store(true, Ordering::Relaxed),
+    );
+    let events: Vec<Event> = rx.try_iter().collect();
+    assert!(
+        events.iter().any(
+            |e| matches!(e, Event::ServerSearchFailed { request: 6, query, .. } if query == "code")
+        ),
+        "{events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, Event::CommandFailed { request: 6, .. })),
+        "{events:?}"
+    );
+}
+
 #[test]
 fn a_command_that_panics_still_gets_its_answer() {
     let mut ops = ops_with_inbox();
@@ -4117,6 +4161,27 @@ fn search_server_reports_the_hits_of_every_synced_folder() {
     );
 }
 
+/// #275: a failed server search said only "command failed", so the window could not tell it from a failed edit.
+#[test]
+fn a_failed_server_search_names_its_query() {
+    let (mut ops, store, dir) = synced();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let search = Command::SearchServer {
+        folder: Some("Nowhere".into()),
+        query: "code".into(),
+    };
+    let (run, events) = drain(&mut ops, &store, &trash, vec![search]);
+    run.unwrap();
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            Event::ServerSearchFailed { account, request: 1, query, message }
+                if account == "work" && query == "code" && message.contains("Nowhere")
+        )),
+        "{events:?}"
+    );
+}
+
 #[test]
 fn events_and_commands_round_trip_as_json() {
     for event in [
@@ -4137,6 +4202,12 @@ fn events_and_commands_round_trip_as_json() {
             request: 3,
             query: "q".into(),
             hits: vec![("INBOX".into(), 1)],
+        },
+        Event::ServerSearchFailed {
+            account: "a".into(),
+            request: 5,
+            query: "q".into(),
+            message: "x".into(),
         },
         Event::ActionDone {
             account: "a".into(),

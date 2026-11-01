@@ -354,7 +354,8 @@ struct SearchArgs {
     /// At most 500
     #[serde(default = "fifty")]
     limit: u32,
-    /// Ask the mail server too, which searches bodies not downloaded yet; needs the read:bodies scope
+    /// Ask the mail server too, which searches bodies not downloaded yet; needs the read:bodies scope. An account
+    /// whose server cannot search keeps its local results and is named in `server_error`
     #[serde(default)]
     server: bool,
     /// Only what matches as typed: no close matches such as corrected typos
@@ -914,7 +915,7 @@ fn dispatch(
                 )?));
             }
             let fields = Fields::parse(&a.fields, RowKind::Hit)?;
-            page_of(backend.search(
+            let (rows, next, server_errors) = backend.search(
                 &a.query,
                 a.account.as_deref(),
                 a.folder.as_deref(),
@@ -924,7 +925,12 @@ fn dispatch(
                 a.exact,
                 a.cursor.as_deref(),
                 &fields,
-            )?)
+            )?;
+            let mut page = page_of((rows, next))?;
+            if !server_errors.is_empty() {
+                page["server_error"] = output::server_error(&server_errors)["server_error"].take();
+            }
+            Ok(page)
         }
         "senders" => {
             let a: SendersArgs = args(arguments)?;

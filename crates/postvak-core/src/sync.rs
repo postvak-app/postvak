@@ -159,6 +159,13 @@ pub enum Event {
         query: String,
         hits: Vec<(String, u32)>,
     },
+    /// The server could not search for `query`; a window shows its local results and says so.
+    ServerSearchFailed {
+        account: String,
+        request: RequestId,
+        query: String,
+        message: String,
+    },
     Restored {
         account: String,
         folder: String,
@@ -201,7 +208,8 @@ impl Event {
             | Event::Restored { request, .. }
             | Event::RuleApplied { request, .. }
             | Event::Undone { request, .. }
-            | Event::ServerSearchDone { request, .. } => vec![*request],
+            | Event::ServerSearchDone { request, .. }
+            | Event::ServerSearchFailed { request, .. } => vec![*request],
             Event::Synced { requests, .. } => requests.clone(),
             Event::Activity { .. }
             | Event::BodyPreview { .. }
@@ -1302,6 +1310,7 @@ fn run_command(
     let mut run = CommandsRun::default();
     // Prefixed to a failure's message, so it names the message it is about.
     let mut context = String::new();
+    let searched = searched_query(&command);
     let answer: Result<Event, SyncError> = match command {
         // run_commands holds SyncNow for the next full pass, so none arrives here; answer it rather than panic if one does.
         Command::SyncNow => Ok(failed(
@@ -1551,7 +1560,9 @@ fn run_command(
             Ok(run)
         }
         Err(e) => {
-            let _ = events.send(failed(request, format!("{context}{e}")));
+            let message = format!("{context}{e}");
+            log::warn!("{}: {message}", account.name);
+            let _ = events.send(failure(&account.name, request, searched, message));
             if e.is_lost_connection() {
                 Err(e)
             } else {
@@ -2172,14 +2183,45 @@ fn fail_requests(
         .running
         .take()
         .into_iter()
-        .chain(carried.sync_requests.drain(..));
-    let queued = std::iter::from_fn(|| commands.try_recv().ok().map(|job| job.request));
-    for request in held.chain(queued) {
-        let _ = events.send(Event::CommandFailed {
-            account: account.name.clone(),
+        .chain(carried.sync_requests.drain(..))
+        .map(|request| (request, None));
+    let queued = std::iter::from_fn(|| {
+        let job = commands.try_recv().ok()?;
+        Some((job.request, searched_query(&job.command)))
+    });
+    for (request, searched) in held.chain(queued) {
+        let _ = events.send(failure(
+            &account.name,
             request,
-            message: message.to_string(),
-        });
+            searched,
+            message.to_string(),
+        ));
+    }
+}
+
+/// The query of a server search, whose failure is answered by `ServerSearchFailed`.
+fn searched_query(command: &Command) -> Option<String> {
+    match command {
+        Command::SearchServer { query, .. } => Some(query.clone()),
+        _ => None,
+    }
+}
+
+/// The answer to a command that failed: a server search says so with its query, so a window can tell it from a failed
+/// edit; anything else is `CommandFailed`.
+fn failure(account: &str, request: RequestId, searched: Option<String>, message: String) -> Event {
+    match searched {
+        Some(query) => Event::ServerSearchFailed {
+            account: account.into(),
+            request,
+            query,
+            message,
+        },
+        None => Event::CommandFailed {
+            account: account.into(),
+            request,
+            message,
+        },
     }
 }
 

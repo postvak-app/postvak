@@ -162,6 +162,10 @@ postvak search QUERY [--account NAME] [--folder NAME] [--exact] [--server] [--li
 - `status` rows gain `indexed` and `total`.
 - `backend.rs` stays the only MCP code that touches the store; it calls `search::parse` and `Store::search(&query, scope, limit)`.
 
+### A server that cannot search (#275)
+
+One rule on every surface, in `page::with_server_search`: the account's local results stay, and the failure is named. The daemon answers a failed `SearchServer` with `Event::ServerSearchFailed { query, message }`, not `CommandFailed`, so a window can tell it from a failed edit. The CLI warns on stderr; `--json` adds a line and MCP `search` a field `"server_error": [{"account", "message"}]` (`output::server_error`); the window's line under the field says "the server search failed for <account>" and the Activity view has the message.
+
 ### GUI
 
 - The field accepts the same syntax. Rows are the exact tier first, then a divider row "Close matches" and the close tier, in `list.rs`; a close row's second line shows the snippet when there is one, else the subject as today.

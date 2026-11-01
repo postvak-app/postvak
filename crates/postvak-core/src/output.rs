@@ -181,6 +181,12 @@ pub fn count(count: u64) -> Value {
     json!({ "count": count })
 }
 
+/// The accounts whose mail server could not search, beside the local results; `search --json` prints it as a line
+/// and MCP `search` merges it into its page.
+pub fn server_error(errors: &[crate::page::ServerError]) -> Value {
+    json!({ "server_error": errors })
+}
+
 /// The last line of a `--json` page that has a next one: the cursor to pass back.
 pub fn next(cursor: &str) -> Value {
     json!({ "next": cursor })

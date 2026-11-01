@@ -835,26 +835,13 @@ pub fn run() -> Result<()> {
                 return Ok(());
             }
             let mut found = page::search(&sources, &request, limit, paging.cursor.as_deref())?;
+            let mut server_errors = Vec::new();
             if server {
                 let daemon = LazyClient::new(&paths);
-                for source in &sources {
-                    match daemon.search_server(&source.account, folder.as_deref(), &query) {
-                        Ok(hits) => {
-                            found = page::with_server_hits(
-                                found,
-                                &source.account,
-                                &source.store,
-                                &hits,
-                                limit,
-                            )?
-                        }
-                        Err(e) => eprintln!(
-                            "{}: {}; showing local results only",
-                            source.account,
-                            clean(&format!("{e:#}"), false)
-                        ),
-                    }
-                }
+                (found, server_errors) =
+                    page::with_server_search(found, &sources, limit, |account| {
+                        daemon.search_server(account, folder.as_deref(), &query)
+                    })?;
             }
             for row in &found.rows {
                 if json {
@@ -866,6 +853,16 @@ pub fn run() -> Result<()> {
                         postvak_core::store::Matched::Close => println!("~ {line}"),
                     }
                 }
+            }
+            if json && !server_errors.is_empty() {
+                print_json(postvak_core::output::server_error(&server_errors));
+            }
+            for error in &server_errors {
+                eprintln!(
+                    "{}: {}; showing local results only",
+                    error.account,
+                    clean(&error.message, false)
+                );
             }
             print_next(found.next.as_deref(), json);
             Ok(())
