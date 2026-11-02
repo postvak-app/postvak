@@ -32,7 +32,34 @@ pub(crate) fn lines(app: &App) -> Vec<Line> {
         text: text.clone(),
         ..Line::default()
     });
-    error.chain(notice).chain(accounts).collect()
+    let counts: Vec<_> = app.accounts.iter().map(|account| account.outbox).collect();
+    let outbox = outbox_text(&counts).map(|text| Line {
+        text,
+        failed: counts.iter().any(|c| c.failed > 0),
+        ..Line::default()
+    });
+    error.chain(outbox).chain(notice).chain(accounts).collect()
+}
+
+/// What the outboxes hold, over every account: `Sending 1 message`, `1 message failed`, or both; None when empty.
+pub(crate) fn outbox_text(counts: &[postvak_core::send::sender::OutboxCounts]) -> Option<String> {
+    let waiting: u32 = counts.iter().map(|c| c.waiting).sum();
+    let failed: u32 = counts.iter().map(|c| c.failed).sum();
+    let messages = |n: u32| {
+        if n == 1 {
+            "1 message".to_string()
+        } else {
+            format!("{n} messages")
+        }
+    };
+    let parts: Vec<String> = [
+        (waiting > 0).then(|| format!("Sending {}", messages(waiting))),
+        (failed > 0).then(|| format!("{} failed", messages(failed))),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 /// The one line the folder pane has room for: a failure first, then an account offline, then one syncing, else the
@@ -181,6 +208,29 @@ pub(crate) fn update_text(version: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_outbox_line_says_what_waits_and_what_failed() {
+        use postvak_core::send::sender::OutboxCounts;
+        let counts = |waiting, failed| OutboxCounts { waiting, failed };
+        assert_eq!(outbox_text(&[counts(0, 0), counts(0, 0)]), None);
+        assert_eq!(
+            outbox_text(&[counts(1, 0)]).as_deref(),
+            Some("Sending 1 message")
+        );
+        assert_eq!(
+            outbox_text(&[counts(1, 0), counts(2, 0)]).as_deref(),
+            Some("Sending 3 messages")
+        );
+        assert_eq!(
+            outbox_text(&[counts(0, 1)]).as_deref(),
+            Some("1 message failed")
+        );
+        assert_eq!(
+            outbox_text(&[counts(1, 0), counts(0, 2)]).as_deref(),
+            Some("Sending 1 message · 2 messages failed")
+        );
+    }
     use crate::state::Account;
 
     fn account() -> Account {
@@ -197,6 +247,7 @@ mod tests {
             uidplus: None,
             encrypted: None,
             identity: None,
+            outbox: Default::default(),
         }
     }
 
