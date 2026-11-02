@@ -193,6 +193,30 @@ fn mailbox(name: Option<&str>, address: &str) -> Result<Mailbox, BuildError> {
     Ok(Mailbox::new(name.map(str::to_string), address))
 }
 
+/// A recipient as written: `linus@x.org` or `Linus Example <linus@x.org>`.
+fn recipient(text: &str) -> Result<Mailbox, BuildError> {
+    text.trim()
+        .parse()
+        .map_err(|_| BuildError::Address(text.to_string()))
+}
+
+/// A recipient with its name, as [`Draft`] holds one: `Linus Example <linus@x.org>`, quoted where the name needs it.
+pub fn mailbox_text(name: Option<&str>, address: &str) -> String {
+    let name = name.map(str::trim).filter(|name| !name.is_empty());
+    match (name, address.trim().parse::<lettre::Address>()) {
+        (Some(name), Ok(parsed)) => Mailbox::new(Some(name.to_string()), parsed).to_string(),
+        _ => address.trim().to_string(),
+    }
+}
+
+/// The bare address of a recipient as [`Draft`] holds one.
+pub fn bare_address(text: &str) -> String {
+    match text.trim().parse::<Mailbox>() {
+        Ok(mailbox) => mailbox.email.to_string(),
+        Err(_) => text.trim().to_string(),
+    }
+}
+
 /// The message as it will be kept: Date at `now`, a new Message-ID, MIME-Version, and Bcc still in it.
 pub fn build(draft: &Draft, now: i64) -> Result<Vec<u8>, BuildError> {
     let mut builder = lettre::Message::builder()
@@ -202,13 +226,13 @@ pub fn build(draft: &Draft, now: i64) -> Result<Vec<u8>, BuildError> {
         .subject(draft.subject.clone())
         .keep_bcc();
     for to in &draft.to {
-        builder = builder.to(mailbox(None, to)?);
+        builder = builder.to(recipient(to)?);
     }
     for cc in &draft.cc {
-        builder = builder.cc(mailbox(None, cc)?);
+        builder = builder.cc(recipient(cc)?);
     }
     for bcc in &draft.bcc {
-        builder = builder.bcc(mailbox(None, bcc)?);
+        builder = builder.bcc(recipient(bcc)?);
     }
     if let Some(id) = &draft.in_reply_to {
         builder = builder.in_reply_to(id.clone());
@@ -372,7 +396,10 @@ mod tests {
             .to_ascii_lowercase()
             .replace(' ', "");
         assert_eq!(ct, "text/plain;charset=utf-8;format=flowed");
-        assert_eq!(msg.body_text(0).unwrap().trim_end(), "Hi Linus,\r\n\r\nsee you.");
+        assert_eq!(
+            msg.body_text(0).unwrap().trim_end(),
+            "Hi Linus,\r\n\r\nsee you."
+        );
         // No name: the bare address.
         let raw = build(&draft(), 0).unwrap();
         assert_eq!(header(&raw, "From"), "me@example.com");
@@ -508,6 +535,39 @@ mod tests {
         assert!(at.is_some(), "{}", String::from_utf8_lossy(&raw));
         let text = String::from_utf8_lossy(&raw);
         assert!(text.contains("Content-Type: message/rfc822"), "{text}");
+    }
+
+    #[test]
+    fn recipients_keep_their_names() {
+        let raw = build(
+            &Draft {
+                to: vec![mailbox_text(Some("Linus, Example"), "linus@x.org")],
+                ..draft()
+            },
+            0,
+        )
+        .unwrap();
+        let msg = MessageParser::default().parse(&raw).unwrap();
+        let to = msg.to().unwrap().first().unwrap();
+        assert_eq!(
+            (to.name(), to.address()),
+            (Some("Linus, Example"), Some("linus@x.org"))
+        );
+        assert_eq!(
+            bare_address("\"Linus, Example\" <linus@x.org>"),
+            "linus@x.org"
+        );
+        assert_eq!(bare_address("linus@x.org"), "linus@x.org");
+        assert!(
+            build(
+                &Draft {
+                    to: vec!["nope".into()],
+                    ..draft()
+                },
+                0
+            )
+            .is_err()
+        );
     }
 
     #[test]
