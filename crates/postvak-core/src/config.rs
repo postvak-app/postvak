@@ -30,8 +30,157 @@ const LOCK: &str = ".config.lock";
 pub struct Config {
     #[serde(default)]
     pub accounts: Vec<AccountConfig>,
+    #[serde(default, skip_serializing_if = "SendingConfig::is_default")]
+    pub sending: SendingConfig,
     #[serde(default, skip_serializing_if = "UiConfig::is_default")]
     pub ui: UiConfig,
+}
+
+/// `[sending]`: what holds for every account's outgoing mail.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SendingConfig {
+    /// How long a sent message waits in the outbox, where it can still be cancelled: one of [`UNDO_SECS`].
+    #[serde(default = "default_undo_secs")]
+    pub undo_secs: u64,
+}
+
+/// The undo delays offered, in seconds.
+pub const UNDO_SECS: [u64; 5] = [0, 5, 10, 20, 30];
+
+fn default_undo_secs() -> u64 {
+    10
+}
+
+impl Default for SendingConfig {
+    fn default() -> Self {
+        SendingConfig {
+            undo_secs: default_undo_secs(),
+        }
+    }
+}
+
+impl SendingConfig {
+    fn is_default(&self) -> bool {
+        *self == SendingConfig::default()
+    }
+}
+
+/// How the SMTP connection is encrypted. There is no plain-text choice: a password never goes over SMTP unencrypted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SmtpTls {
+    /// TLS from the first byte, as on port 465.
+    Implicit,
+    /// A plain greeting upgraded with STARTTLS, as on port 587; a server that does not offer it is refused.
+    Starttls,
+}
+
+impl SmtpTls {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SmtpTls::Implicit => "implicit",
+            SmtpTls::Starttls => "starttls",
+        }
+    }
+
+    /// The port this kind of connection uses unless one is given.
+    pub fn default_port(self) -> u16 {
+        match self {
+            SmtpTls::Implicit => 465,
+            SmtpTls::Starttls => 587,
+        }
+    }
+}
+
+/// `[accounts.smtp]`: the server an account sends through.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SmtpConfig {
+    pub host: String,
+    /// Unset follows `tls`: 465 for implicit TLS, 587 for STARTTLS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    #[serde(default = "default_smtp_tls")]
+    pub tls: SmtpTls,
+    /// Unset: the account's IMAP username.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    /// Unset: the account's IMAP password source. `{ keyring = true }` here reads a keyring entry of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<PasswordSource>,
+    /// Whether to save a copy in Sent; unset leaves it to the provider (off where it files sent mail itself).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub save_sent: Option<bool>,
+}
+
+fn default_smtp_tls() -> SmtpTls {
+    SmtpTls::Implicit
+}
+
+impl SmtpConfig {
+    /// A server on `host` with every other setting left to its default.
+    pub fn new(host: &str, tls: SmtpTls) -> SmtpConfig {
+        SmtpConfig {
+            host: host.into(),
+            port: None,
+            tls,
+            username: None,
+            password: None,
+            save_sent: None,
+        }
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port.unwrap_or(self.tls.default_port())
+    }
+}
+
+/// One entry of an account's `aliases`: a pattern as before, or a table that also names the sender.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AliasEntry {
+    Pattern(String),
+    Named {
+        address: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+}
+
+impl AliasEntry {
+    /// The address, with `*` for any part.
+    pub fn pattern(&self) -> &str {
+        match self {
+            AliasEntry::Pattern(pattern) => pattern,
+            AliasEntry::Named { address, .. } => address,
+        }
+    }
+
+    fn name(&self) -> Option<&str> {
+        match self {
+            AliasEntry::Pattern(_) => None,
+            AliasEntry::Named { name, .. } => name.as_deref(),
+        }
+    }
+}
+
+impl From<&str> for AliasEntry {
+    fn from(pattern: &str) -> Self {
+        AliasEntry::Pattern(pattern.into())
+    }
+}
+
+impl From<String> for AliasEntry {
+    fn from(pattern: String) -> Self {
+        AliasEntry::Pattern(pattern)
+    }
+}
+
+impl PartialEq<&str> for AliasEntry {
+    fn eq(&self, other: &&str) -> bool {
+        self.pattern() == *other
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -45,8 +194,11 @@ pub struct AccountConfig {
     pub password: PasswordSource,
     #[serde(default)]
     pub address: Option<String>,
+    /// The name sent on From, as in `Pieter Willekens <pieter@example.com>`; unset sends the bare address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     #[serde(default)]
-    pub aliases: Vec<String>,
+    pub aliases: Vec<AliasEntry>,
     #[serde(default = "default_sync_interval")]
     pub sync_interval_secs: u64,
     #[serde(default = "default_retention")]
@@ -67,6 +219,9 @@ pub struct AccountConfig {
     /// no such header leaves the topmost one to the sender, who can name any server in the provider's domain.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trusted_authserv_ids: Option<Vec<String>>,
+    /// The server mail is sent through; unset leaves it to a guess the daemon stores, or sending is not set up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smtp: Option<SmtpConfig>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -172,6 +327,12 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
+        if !UNDO_SECS.contains(&self.sending.undo_secs) {
+            return Err(ConfigError::Invalid(format!(
+                "[sending] undo_secs is {}; it must be one of 0, 5, 10, 20 or 30",
+                self.sending.undo_secs
+            )));
+        }
         let mut seen = std::collections::HashSet::new();
         for account in &self.accounts {
             let name = &account.name;
@@ -220,6 +381,18 @@ impl Config {
                     return Err(ConfigError::Invalid(format!(
                         "account '{name}': trusted_authserv_ids holds '{}'; each must be a server name such as mx.example.com",
                         id.escape_default()
+                    )));
+                }
+            }
+            if let Some(smtp) = &account.smtp {
+                if smtp.host.trim().is_empty() {
+                    return Err(ConfigError::Invalid(format!(
+                        "account '{name}': [smtp] host must not be empty"
+                    )));
+                }
+                if smtp.password == Some(PasswordSource::Keyring { keyring: false }) {
+                    return Err(ConfigError::Invalid(format!(
+                        "account '{name}': [smtp] `password = {{ keyring = false }}` has no meaning; leave it out to use the IMAP password"
                     )));
                 }
             }
@@ -416,6 +589,7 @@ impl AccountConfig {
             username: username.into(),
             password,
             address: None,
+            display_name: None,
             aliases: Vec::new(),
             sync_interval_secs: default_sync_interval(),
             trash_retention_days: default_retention(),
@@ -424,6 +598,7 @@ impl AccountConfig {
             ca_file: None,
             tls: None,
             trusted_authserv_ids: None,
+            smtp: None,
         }
     }
 
@@ -448,8 +623,10 @@ impl AccountConfig {
     }
 
     pub fn identity(&self) -> Result<Identity, ConfigError> {
-        let aliases = regex::RegexSet::new(self.aliases.iter().map(|pattern| alias_regex(pattern)))
-            .map_err(|e| ConfigError::Invalid(format!("account '{}': aliases: {e}", self.name)))?;
+        let aliases = regex::RegexSet::new(self.aliases.iter().map(|a| alias_regex(a.pattern())))
+            .map_err(|e| {
+            ConfigError::Invalid(format!("account '{}': aliases: {e}", self.name))
+        })?;
         let authserv = self
             .trusted_authserv_ids
             .iter()
@@ -459,8 +636,19 @@ impl AccountConfig {
         Ok(Identity {
             address: self.address().to_ascii_lowercase(),
             aliases,
-            patterns: self.aliases.clone(),
+            patterns: self
+                .aliases
+                .iter()
+                .map(|a| a.pattern().to_string())
+                .collect(),
             authserv,
+            display_name: self.display_name.clone(),
+            names: self
+                .aliases
+                .iter()
+                .filter(|a| !a.pattern().contains('*'))
+                .filter_map(|a| Some((a.pattern().to_ascii_lowercase(), a.name()?.to_string())))
+                .collect(),
         })
     }
 }
@@ -478,6 +666,9 @@ pub struct Identity {
     patterns: Vec<String>,
     /// The trusted authserv-ids, lower-cased and without a trailing dot.
     authserv: Vec<String>,
+    display_name: Option<String>,
+    /// The named aliases without a wildcard: the address lower-cased, and its name.
+    names: Vec<(String, String)>,
 }
 
 impl Identity {
@@ -494,6 +685,16 @@ impl Identity {
     /// The alias patterns as configured: whole addresses, with `*` for anything.
     pub fn alias_patterns(&self) -> &[String] {
         &self.patterns
+    }
+
+    /// The name to send on From with `address`: a named alias's own name, else the account's `display_name`.
+    pub fn display_name_for(&self, address: &str) -> Option<&str> {
+        let address = address.trim().to_ascii_lowercase();
+        self.names
+            .iter()
+            .find(|(alias, _)| *alias == address)
+            .map(|(_, name)| name.as_str())
+            .or(self.display_name.as_deref())
     }
 
     /// Whether the account believes an `Authentication-Results` header written by this authserv-id.
@@ -1091,5 +1292,110 @@ trusted_authserv_ids = ["mx.home.test"]
         assert!(!Config::parse(SAMPLE).unwrap().ui.sender_images);
         let on = format!("{SAMPLE}\n[ui]\nsender_images = true\n");
         assert!(Config::parse(&on).unwrap().ui.sender_images);
+    }
+
+    const SMTP: &str = r#"
+[[accounts]]
+name = "work"
+host = "imap.x.test"
+username = "me@x.test"
+password = { keyring = true }
+display_name = "Pieter Willekens"
+aliases = ["*@x.test", { address = "shop@x.test", name = "Shop" }, { address = "plain@x.test" }]
+
+[accounts.smtp]
+host = "smtp.x.test"
+"#;
+
+    #[test]
+    fn smtp_table_parses_with_defaults() {
+        let cfg = Config::parse(SMTP).unwrap();
+        let smtp = cfg.account("work").unwrap().smtp.clone().unwrap();
+        assert_eq!(smtp.tls, SmtpTls::Implicit);
+        assert_eq!(smtp.port(), 465);
+        assert_eq!(smtp.username, None);
+        assert_eq!(smtp.password, None);
+        let cfg = Config::parse(&format!("{SMTP}tls = \"starttls\"\n")).unwrap();
+        assert_eq!(
+            cfg.account("work").unwrap().smtp.as_ref().unwrap().port(),
+            587
+        );
+        let cfg = Config::parse(&format!("{SMTP}tls = \"starttls\"\nport = 2525\n")).unwrap();
+        assert_eq!(
+            cfg.account("work").unwrap().smtp.as_ref().unwrap().port(),
+            2525
+        );
+        assert!(Config::parse(SAMPLE).unwrap().accounts[0].smtp.is_none());
+    }
+
+    #[test]
+    fn smtp_tls_none_is_refused() {
+        assert!(Config::parse(&format!("{SMTP}tls = \"none\"\n")).is_err());
+        assert!(Config::parse(&format!("{SMTP}password = {{ keyring = false }}\n")).is_err());
+    }
+
+    #[test]
+    fn undo_secs_accepts_only_the_offered_values() {
+        assert_eq!(Config::parse(SAMPLE).unwrap().sending.undo_secs, 10);
+        for secs in UNDO_SECS {
+            let cfg = Config::parse(&format!("[sending]\nundo_secs = {secs}\n{SAMPLE}")).unwrap();
+            assert_eq!(cfg.sending.undo_secs, secs);
+        }
+        let error = Config::parse(&format!("[sending]\nundo_secs = 15\n{SAMPLE}"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("[sending] undo_secs"), "{error}");
+    }
+
+    #[test]
+    fn aliases_take_strings_and_tables() {
+        let cfg = Config::parse(SMTP).unwrap();
+        let account = cfg.account("work").unwrap();
+        assert_eq!(account.aliases.len(), 3);
+        assert_eq!(account.aliases[0], "*@x.test");
+        let id = account.identity().unwrap();
+        assert!(id.is_me("SHOP@x.test"));
+        assert_eq!(id.display_name_for("Shop@X.test"), Some("Shop"));
+        assert_eq!(id.display_name_for("a@x.test"), Some("Pieter Willekens"));
+        assert_eq!(
+            id.display_name_for("plain@x.test"),
+            Some("Pieter Willekens")
+        );
+        assert_eq!(id.display_name_for("me@x.test"), Some("Pieter Willekens"));
+        let bare = Config::parse(SAMPLE).unwrap().accounts[0]
+            .identity()
+            .unwrap();
+        assert_eq!(bare.display_name_for("pieter@example.com"), None);
+
+        let text = toml::to_string(&cfg).unwrap();
+        let again = Config::parse(&text).unwrap();
+        assert_eq!(again.accounts, cfg.accounts);
+    }
+
+    #[test]
+    fn save_account_writes_the_smtp_table_and_keeps_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, SAMPLE).unwrap();
+        let mut work = Config::load(&path).unwrap().accounts[0].clone();
+        work.display_name = Some("Pieter".into());
+        work.smtp = Some(SmtpConfig {
+            port: Some(2525),
+            username: Some("smtp-user".into()),
+            password: Some(PasswordSource::Keyring { keyring: true }),
+            save_sent: Some(false),
+            ..SmtpConfig::new("smtp.example.com", SmtpTls::Starttls)
+        });
+        save_account(&path, &work).unwrap();
+        let loaded = Config::load(&path).unwrap();
+        assert_eq!(loaded.account("work"), Some(&work));
+        assert_eq!(
+            loaded.account("home"),
+            Config::parse(SAMPLE).unwrap().account("home")
+        );
+        // Saving it again unchanged keeps the file as it is.
+        let before = std::fs::read_to_string(&path).unwrap();
+        save_account(&path, &work).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
     }
 }

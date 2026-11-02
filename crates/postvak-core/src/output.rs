@@ -24,7 +24,7 @@ pub fn folder(account: &str, folder: &Folder, total: u32, unread: u32) -> Value 
 
 /// An account's listing row; leaves out the password source, which may be a command holding a secret.
 pub fn account(account: &AccountConfig) -> Value {
-    json!({ "account": account.name, "address": account.address, "aliases": account.aliases, "host": account.host, "port": account.port, "username": account.username })
+    json!({ "account": account.name, "address": account.address, "aliases": account.aliases.iter().map(|a| a.pattern()).collect::<Vec<_>>(), "host": account.host, "port": account.port, "username": account.username })
 }
 
 /// Each message's indent in its thread, relative to the thread's shallowest message and capped at 4.

@@ -52,11 +52,42 @@ pub enum CredentialError {
 /// The account's password. A password command runs as it is given: callers check the file it came from first, with
 /// `check_command_trusted`.
 pub fn resolve(account: &AccountConfig) -> Result<Secret, CredentialError> {
-    match &account.password {
-        PasswordSource::Command { command } => run_command(&account.name, command),
+    resolve_source(&account.name, &account.password, &account.name)
+}
+
+/// The keyring entry of an account's SMTP password, when it has one of its own.
+fn smtp_entry(account_name: &str) -> String {
+    format!("{account_name}/smtp")
+}
+
+/// The account's SMTP password: its own `[smtp] password` source when set (the keyring entry `<account>/smtp`), else
+/// the IMAP password. Callers check a password command's file first, as for [`resolve`].
+pub fn resolve_smtp(account: &AccountConfig) -> Result<Secret, CredentialError> {
+    match account
+        .smtp
+        .as_ref()
+        .and_then(|smtp| smtp.password.as_ref())
+    {
+        Some(source) => resolve_source(&account.name, source, &smtp_entry(&account.name)),
+        None => resolve(account),
+    }
+}
+
+/// Stores the SMTP password of its own for `account_name`, read when `[smtp] password = { keyring = true }`.
+pub fn store_smtp(account_name: &str, secret: &Secret) -> Result<(), CredentialError> {
+    store(&smtp_entry(account_name), secret)
+}
+
+fn resolve_source(
+    account_name: &str,
+    source: &PasswordSource,
+    entry_name: &str,
+) -> Result<Secret, CredentialError> {
+    match source {
+        PasswordSource::Command { command } => run_command(account_name, command),
         PasswordSource::Keyring { .. } => {
-            let entry = keyring_entry(&account.name)?;
-            let name = account.name.clone();
+            let entry = keyring_entry(entry_name)?;
+            let name = account_name.to_string();
             // macOS asks again for Keychain access after each new unsigned binary, and the prompt may sit behind other windows.
             let password = hint_if_slow(
                 Duration::from_secs(2),
@@ -69,7 +100,7 @@ pub fn resolve(account: &AccountConfig) -> Result<Secret, CredentialError> {
             );
             match password {
                 Ok(password) => Ok(Secret::new(password)),
-                Err(e) => Err(map_keyring_error(e, &account.name)),
+                Err(e) => Err(map_keyring_error(e, entry_name)),
             }
         }
     }
@@ -85,7 +116,13 @@ pub fn check_command_trusted(
     account: &AccountConfig,
     config_file: &Path,
 ) -> Result<(), CredentialError> {
-    if !matches!(account.password, PasswordSource::Command { .. }) {
+    let command =
+        |source: Option<&PasswordSource>| matches!(source, Some(PasswordSource::Command { .. }));
+    let smtp = account
+        .smtp
+        .as_ref()
+        .and_then(|smtp| smtp.password.as_ref());
+    if !command(Some(&account.password)) && !command(smtp) {
         return Ok(());
     }
     // A file that cannot be resolved cannot be read either, so the config load reports it.
@@ -409,5 +446,48 @@ mod tests {
         );
         store("roundtrip", &Secret::new("hunter2".into())).unwrap();
         assert_eq!(resolve(&account).unwrap().expose(), "hunter2");
+    }
+
+    #[test]
+    fn smtp_secret_has_its_own_keyring_entry() {
+        let mut account = AccountConfig::new(
+            "smtp-own",
+            "h",
+            "u@example.com",
+            PasswordSource::Keyring { keyring: true },
+        );
+        store("smtp-own", &Secret::new("imap".into())).unwrap();
+        store_smtp("smtp-own", &Secret::new("smtp".into())).unwrap();
+        assert_eq!(resolve_smtp(&account).unwrap().expose(), "imap");
+        let mut smtp =
+            crate::config::SmtpConfig::new("smtp.example.com", crate::config::SmtpTls::Implicit);
+        smtp.password = Some(PasswordSource::Keyring { keyring: true });
+        account.smtp = Some(smtp.clone());
+        assert_eq!(resolve_smtp(&account).unwrap().expose(), "smtp");
+        assert_eq!(resolve(&account).unwrap().expose(), "imap");
+        smtp.password = Some(PasswordSource::Command {
+            command: "printf cmd".into(),
+        });
+        account.smtp = Some(smtp);
+        assert_eq!(resolve_smtp(&account).unwrap().expose(), "cmd");
+    }
+
+    #[test]
+    fn an_smtp_password_command_is_checked_like_the_imap_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let loose = config_in(dir.path(), 0o666, 0o700);
+        let mut account = AccountConfig::new(
+            "k",
+            "h",
+            "u@example.com",
+            PasswordSource::Keyring { keyring: true },
+        );
+        let mut smtp =
+            crate::config::SmtpConfig::new("smtp.example.com", crate::config::SmtpTls::Implicit);
+        smtp.password = Some(PasswordSource::Command {
+            command: "true".into(),
+        });
+        account.smtp = Some(smtp);
+        reason(check_command_trusted(&account, &loose));
     }
 }

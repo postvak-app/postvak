@@ -46,7 +46,7 @@ pub(crate) fn save(path: &Path, setting: &Setting) -> Result<Config, ConfigError
                 if !a
                     .aliases
                     .iter()
-                    .any(|known| known.eq_ignore_ascii_case(alias))
+                    .any(|known| known.pattern().eq_ignore_ascii_case(alias))
                 {
                     a.aliases.push(alias.into());
                 }

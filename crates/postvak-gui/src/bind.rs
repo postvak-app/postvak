@@ -742,7 +742,14 @@ fn present_preferences(app: &App, window: &MailWindow) {
             sync_choices: synced(old.sync_choices, labels(&sync_choices)),
             keep: place(&keep_choices, account.trash_retention_days),
             keep_choices: synced(old.keep_choices, labels(&keep_choices)),
-            aliases: synced(old.aliases, words(&account.aliases)),
+            aliases: synced(
+                old.aliases,
+                account
+                    .aliases
+                    .iter()
+                    .map(|a| clean(a.pattern(), false).into())
+                    .collect(),
+            ),
             authserv_ids: synced(
                 old.authserv_ids,
                 words(account.trusted_authserv_ids.as_deref().unwrap_or_default()),
