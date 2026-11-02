@@ -5,7 +5,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use rusqlite_migration::{M, Migrations};
 use serde::{Deserialize, Serialize};
 
-use crate::config::Identity;
+use crate::config::{Identity, SmtpTls};
 use crate::mail_ops::Structure;
 use crate::paths::Paths;
 use crate::search::{self, Candidate, Plan, Query, Scope, Vocab};
@@ -48,6 +48,7 @@ fn migration_list() -> Vec<M<'static>> {
         M::up(include_str!("../migrations/024-undo/up.sql")),
         M::up(include_str!("../migrations/025-apply-existing/up.sql")),
         M::up(include_str!("../migrations/026-part-types/up.sql")),
+        M::up(include_str!("../migrations/027-smtp/up.sql")),
     ]
 }
 
@@ -134,6 +135,24 @@ pub struct Folder {
     pub special_use: Option<String>,
     #[serde(default)]
     pub delimiter: Option<String>,
+}
+
+/// The account's guessed SMTP server and what the server said about itself (`smtp_state`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SmtpState {
+    /// The guessed server; None when the guess found none.
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub tls: Option<SmtpTls>,
+    /// The IMAP host and login the guess was made for; '' when no guess was made.
+    pub guessed_for_host: String,
+    pub guessed_for_user: String,
+    pub tried_at: i64,
+    /// The server's SIZE limit in bytes, from the last connection.
+    pub size: Option<u64>,
+    pub eight_bit_mime: bool,
+    /// Why the last sent message got no copy in Sent.
+    pub sent_copy_problem: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -744,6 +763,90 @@ impl Store {
              ON CONFLICT(name) DO UPDATE SET uidvalidity = excluded.uidvalidity, last_uid = excluded.last_uid,
              special_use = excluded.special_use, delimiter = COALESCE(excluded.delimiter, folders.delimiter)",
             params![folder.name, folder.uidvalidity, folder.last_uid, folder.special_use, folder.delimiter],
+        )?;
+        Ok(())
+    }
+
+    /// The SMTP guess and capabilities, None before either was stored.
+    pub fn smtp_state(&self) -> Result<Option<SmtpState>, StoreError> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT host, port, tls, guessed_for_host, guessed_for_user, tried_at, size, eight_bit_mime,
+                        sent_copy_problem
+                 FROM smtp_state WHERE id = 1",
+                [],
+                |row| {
+                    let tls: Option<String> = row.get(2)?;
+                    let size: Option<i64> = row.get(6)?;
+                    Ok(SmtpState {
+                        host: row.get(0)?,
+                        port: row.get(1)?,
+                        tls: tls.as_deref().and_then(|tls| match tls {
+                            "implicit" => Some(SmtpTls::Implicit),
+                            "starttls" => Some(SmtpTls::Starttls),
+                            _ => None,
+                        }),
+                        guessed_for_host: row.get(3)?,
+                        guessed_for_user: row.get(4)?,
+                        tried_at: row.get(5)?,
+                        size: size.and_then(|size| u64::try_from(size).ok()),
+                        eight_bit_mime: row.get(7)?,
+                        sent_copy_problem: row.get(8)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// Stores a guess (or a failed one), with the capabilities it saw.
+    pub fn save_smtp_state(&self, state: &SmtpState) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO smtp_state
+                 (id, host, port, tls, guessed_for_host, guessed_for_user, tried_at, size, eight_bit_mime,
+                  sent_copy_problem)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                state.host,
+                state.port,
+                state.tls.map(SmtpTls::as_str),
+                state.guessed_for_host,
+                state.guessed_for_user,
+                state.tried_at,
+                state.size.map(|size| i64::try_from(size).unwrap_or(i64::MAX)),
+                state.eight_bit_mime,
+                state.sent_copy_problem,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Stores what the SMTP server offered on its last connection, keeping the guess.
+    pub fn save_smtp_capabilities(
+        &self,
+        size: Option<u64>,
+        eight_bit_mime: bool,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO smtp_state (id, guessed_for_host, guessed_for_user, tried_at, size, eight_bit_mime)
+             VALUES (1, '', '', 0, ?1, ?2)
+             ON CONFLICT (id) DO UPDATE SET size = excluded.size, eight_bit_mime = excluded.eight_bit_mime",
+            params![
+                size.map(|size| i64::try_from(size).unwrap_or(i64::MAX)),
+                eight_bit_mime
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Records why the last sent message got no copy in Sent, or clears it.
+    pub fn set_sent_copy_problem(&self, problem: Option<&str>) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO smtp_state (id, guessed_for_host, guessed_for_user, tried_at, sent_copy_problem)
+             VALUES (1, '', '', 0, ?1)
+             ON CONFLICT (id) DO UPDATE SET sent_copy_problem = excluded.sent_copy_problem",
+            params![problem],
         )?;
         Ok(())
     }
@@ -1858,6 +1961,42 @@ impl Vocab for Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn smtp_state_round_trips_and_capabilities_update_alone() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.smtp_state().unwrap(), None);
+        let state = SmtpState {
+            host: Some("smtp.example.com".into()),
+            port: Some(465),
+            tls: Some(SmtpTls::Implicit),
+            guessed_for_host: "imap.example.com".into(),
+            guessed_for_user: "me".into(),
+            tried_at: 1_700_000_000,
+            size: None,
+            eight_bit_mime: false,
+            sent_copy_problem: None,
+        };
+        store.save_smtp_state(&state).unwrap();
+        assert_eq!(store.smtp_state().unwrap().as_ref(), Some(&state));
+        store.save_smtp_capabilities(Some(1000), true).unwrap();
+        store.set_sent_copy_problem(Some("no Sent folder")).unwrap();
+        let read = store.smtp_state().unwrap().unwrap();
+        assert_eq!(read.host.as_deref(), Some("smtp.example.com"));
+        assert_eq!(read.tried_at, 1_700_000_000);
+        assert_eq!(read.size, Some(1000));
+        assert!(read.eight_bit_mime);
+        assert_eq!(read.sent_copy_problem.as_deref(), Some("no Sent folder"));
+
+        // Capabilities alone, for a configured server that was never guessed.
+        let store = Store::open_in_memory().unwrap();
+        store.save_smtp_capabilities(Some(5), false).unwrap();
+        let read = store.smtp_state().unwrap().unwrap();
+        assert_eq!(
+            (read.host, read.guessed_for_host.as_str(), read.size),
+            (None, "", Some(5))
+        );
+    }
 
     #[test]
     fn a_folder_keeps_its_delimiter_through_an_upsert_without_one() {
