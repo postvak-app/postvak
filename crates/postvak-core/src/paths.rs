@@ -104,6 +104,11 @@ impl Paths {
         self.account_dir(name).join("mail.db")
     }
 
+    /// Where account `name`'s outgoing mail waits until it is sent: `<state>/outbox/<name>`.
+    pub fn outbox_dir(&self, name: &str) -> PathBuf {
+        self.state_dir.join("outbox").join(name)
+    }
+
     pub fn trash_dir(&self, name: &str) -> PathBuf {
         self.account_dir(name).join("trash")
     }
