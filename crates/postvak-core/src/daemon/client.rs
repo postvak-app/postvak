@@ -683,6 +683,7 @@ pub(super) fn reply_timeout(command: &Command) -> Option<Duration> {
         | Command::CreateFolder { .. }
         | Command::FetchAttachment { .. }
         | Command::FetchBody { .. }
+        | Command::FinishSent { .. }
         | Command::RenameFolder { .. }
         | Command::Restore { .. }
         | Command::Undo { .. } => Some(REPLY_TIMEOUT),

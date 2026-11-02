@@ -1797,6 +1797,15 @@ impl Store {
     }
 
     /// The messages in `folder` with this Message-ID and internaldate: a moved message found again under its new uid.
+    /// The newest stored message with `message_id` (without angle brackets), in any folder.
+    pub fn latest_by_message_id(&self, message_id: &str) -> Result<Option<Message>, StoreError> {
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT {MESSAGE_COLUMNS} FROM messages WHERE message_id = ?1 ORDER BY internaldate DESC, uid DESC LIMIT 1"
+        ))?;
+        let mut rows = serde_rusqlite::from_rows::<Message>(stmt.query(params![message_id])?);
+        Ok(rows.next().transpose()?)
+    }
+
     pub fn messages_by_id(
         &self,
         folder: &str,

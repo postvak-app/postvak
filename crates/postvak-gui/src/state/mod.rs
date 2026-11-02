@@ -1293,6 +1293,7 @@ impl App {
             | Event::NewMail { account, .. }
             | Event::Restored { account, .. }
             | Event::Undone { account, .. }
+            | Event::SentFinished { account, .. }
             | Event::RuleApplied { account, .. }
             | Event::ServerSearchDone { account, .. }
             | Event::ServerSearchFailed { account, .. }

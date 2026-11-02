@@ -6393,3 +6393,176 @@ fn a_rules_pass_numbers_one_action_per_rule_and_folder_and_undo_keeps_it_from_fi
         "the rule that filed it does not file it again"
     );
 }
+
+fn sent_message() -> Vec<u8> {
+    b"From: pieter@example.com\r\nTo: alice@x\r\nBcc: hidden@y\r\nSubject: Re: hello\r\nMessage-ID: <r1@example.com>\r\n\r\nthanks\r\n".to_vec()
+}
+
+fn finish_sent(flag: crate::send::reply::OriginalFlag) -> Command {
+    Command::FinishSent {
+        id: "abcd1234".into(),
+        raw: sent_message(),
+        save_sent: true,
+        copied: false,
+        original: Some(crate::send::outbox::Original {
+            message_id: "<m1@x>".into(),
+            flag,
+        }),
+        flagged: false,
+    }
+}
+
+fn finished(events: &[Event]) -> Option<(bool, bool)> {
+    events.iter().find_map(|e| match e {
+        Event::SentFinished {
+            copied, flagged, ..
+        } => Some((*copied, *flagged)),
+        _ => None,
+    })
+}
+
+#[test]
+fn finish_sent_appends_with_seen_and_flags_the_original() {
+    let (mut ops, store, dir) = synced();
+    ops = ops.with_folder("Sent Items", Some("Sent"));
+    sync_all(&mut ops, &store).unwrap();
+    ops.calls.clear();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let command = finish_sent(crate::send::reply::OriginalFlag::Answered);
+    let (run, events) = drain(&mut ops, &store, &trash, vec![command]);
+    run.unwrap();
+    assert_eq!(finished(&events), Some((true, true)), "{events:?}");
+    let sent = &ops.mail["Sent Items"];
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].flags, ["\\Seen"]);
+    // The copy keeps Bcc, as other clients' copies do.
+    assert_eq!(
+        ops.raw[&("Sent Items".to_string(), sent[0].uid)],
+        sent_message()
+    );
+    assert!(
+        ops.calls
+            .contains(&"add_flags INBOX 1 \\Answered".to_string()),
+        "{:?}",
+        ops.calls
+    );
+    assert_eq!(
+        store
+            .smtp_state()
+            .unwrap()
+            .and_then(|s| s.sent_copy_problem),
+        None
+    );
+}
+
+#[test]
+fn finish_sent_finds_a_moved_original_by_message_id() {
+    let (mut ops, store, dir) = synced();
+    ops = ops.with_folder("Sent", None).with_folder("Archive", None);
+    let moved = store
+        .messages_in_folder("INBOX")
+        .unwrap()
+        .into_iter()
+        .find(|m| m.uid == 1)
+        .unwrap();
+    ops.mail.get_mut("INBOX").unwrap().retain(|e| e.uid != 1);
+    ops.add_mail(
+        "Archive",
+        5,
+        20 * H,
+        &headers("alice@x", "hello", "m1@x"),
+        None,
+    );
+    sync_all(&mut ops, &store).unwrap();
+    assert!(
+        store
+            .messages_in_folder("INBOX")
+            .unwrap()
+            .iter()
+            .all(|m| m.uid != moved.uid || m.message_id != moved.message_id)
+    );
+    ops.calls.clear();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let (run, events) = drain(
+        &mut ops,
+        &store,
+        &trash,
+        vec![finish_sent(crate::send::reply::OriginalFlag::Forwarded)],
+    );
+    run.unwrap();
+    assert_eq!(finished(&events), Some((true, true)));
+    assert!(
+        ops.calls
+            .contains(&"add_flags Archive 5 $Forwarded".to_string()),
+        "{:?}",
+        ops.calls
+    );
+    assert_eq!(ops.mail["Sent"].len(), 1);
+}
+
+#[test]
+fn finish_sent_skips_a_refused_forwarded_flag() {
+    let (mut ops, store, dir) = synced();
+    ops = ops.with_folder("Sent", Some("Sent"));
+    sync_all(&mut ops, &store).unwrap();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let mut command = finish_sent(crate::send::reply::OriginalFlag::Forwarded);
+    if let Command::FinishSent { copied, .. } = &mut command {
+        *copied = true;
+    }
+    ops.fail_next = Some(MailError::Protocol("NO keywords are not allowed".into()));
+    let (run, events) = drain(&mut ops, &store, &trash, vec![command]);
+    run.unwrap();
+    assert_eq!(finished(&events), Some((true, true)));
+    assert!(ops.mail["Sent"].is_empty());
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, Event::CommandFailed { .. }))
+    );
+}
+
+#[test]
+fn finish_sent_without_a_sent_folder_records_the_problem() {
+    let (mut ops, store, dir) = synced();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let (run, events) = drain(
+        &mut ops,
+        &store,
+        &trash,
+        vec![finish_sent(crate::send::reply::OriginalFlag::Answered)],
+    );
+    run.unwrap();
+    assert_eq!(finished(&events), Some((true, true)));
+    assert!(!ops.calls.iter().any(|c| c.starts_with("append")));
+    assert_eq!(
+        store
+            .smtp_state()
+            .unwrap()
+            .and_then(|s| s.sent_copy_problem)
+            .as_deref(),
+        Some("no Sent folder")
+    );
+}
+
+#[test]
+fn finish_sent_after_a_lost_connection_is_tried_again() {
+    let (mut ops, store, dir) = synced();
+    ops = ops.with_folder("Sent", Some("Sent"));
+    sync_all(&mut ops, &store).unwrap();
+    let trash = Trash::new(dir.path().to_path_buf());
+    ops.fail_next = Some(MailError::Io("reset".into()));
+    let (run, events) = drain(
+        &mut ops,
+        &store,
+        &trash,
+        vec![finish_sent(crate::send::reply::OriginalFlag::Answered)],
+    );
+    assert!(run.is_err());
+    assert_eq!(finished(&events), None);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::CommandFailed { .. }))
+    );
+}

@@ -153,7 +153,8 @@ pub fn report(event: &Event) {
         | Event::RuleApplied { .. }
         | Event::ServerSearchDone { .. }
         | Event::ServerSearchFailed { .. }
-        | Event::Undone { .. } => {}
+        | Event::Undone { .. }
+        | Event::SentFinished { .. } => {}
     }
 }
 

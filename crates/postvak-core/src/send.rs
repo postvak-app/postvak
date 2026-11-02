@@ -15,6 +15,7 @@ pub mod quote_html;
 pub mod reply;
 pub mod sender;
 pub mod sendmail;
+pub mod sent;
 pub mod smtp;
 
 pub use smtp::{SmtpError, SmtpOps};
