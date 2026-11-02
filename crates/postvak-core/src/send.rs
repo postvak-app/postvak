@@ -9,6 +9,8 @@ use crate::store::SmtpState;
 
 pub mod build;
 pub mod check;
+pub mod compose;
+pub mod edit;
 pub mod guess;
 pub mod outbox;
 pub mod quote_html;

@@ -35,6 +35,11 @@ pub static DOC_PAGES: &[DocPage] = &[
         text: include_str!("docs/cli.md"),
     },
     DocPage {
+        name: "sending",
+        summary: "Sending mail: the SMTP server and its guess, postvak send, the outbox and Sent copies",
+        text: include_str!("docs/sending.md"),
+    },
+    DocPage {
         name: "mcp",
         summary: "The MCP server: each scope and the tools it unlocks, and what the tools return",
         text: include_str!("docs/mcp.md"),
@@ -72,6 +77,47 @@ Ground rules:
 Which tools you have depends on the scopes the human granted. You cannot add mail accounts; never ask the human for a password.
 
 Call docs for the rest. Without a page it lists them: agent-guide is the full guide, rules explains every rule key with examples, search the search syntax, mcp which scopes unlock which tools.";
+pub const ACCOUNT_SMTP: &str = "Set the SMTP server an account sends through, checked by logging in: give it with \
+--smtp-host, guess it again with --guess, or save the daemon's stored guess to config.toml with --save";
+pub const SEND: &str = "Send a new message, a reply or a forward; it waits in the outbox for the undo delay, so \
+`postvak outbox cancel` can take it back. The text comes from stdin, --body-file or the editor";
+pub const SEND_RAW: &str = "Read a whole RFC 5322 message from stdin and send it at once, as sendmail does for mutt, aerc \
+and git send-email; exits 0 when sent, 75 when it will be tried again, 69 when refused";
+pub const OUTBOX: &str = "List the messages waiting to be sent and those that failed";
+pub const OUTBOX_CANCEL: &str =
+    "Take back a message that is not being sent yet; prints it, so nothing is lost";
+pub const OUTBOX_RETRY: &str = "Send a failed message again";
+
+/// Why an account cannot send, and where to read how to fix it.
+pub fn sending_not_set_up(account: &str) -> String {
+    format!(
+        "sending is not set up for '{account}': no SMTP server is configured and none was found; set one with \
+`postvak account smtp {account} --smtp-host HOST` (see `postvak guide sending`)"
+    )
+}
+
+/// The status line for an account that cannot send.
+pub const SENDING_NOT_SET_UP: &str = "Sending not set up (see postvak guide sending)";
+
+/// What `postvak send` prints once the message is in the outbox.
+pub fn queued_line(queued: &crate::send::compose::Queued, now: i64) -> String {
+    let to = crate::message::clean(&queued.first_recipient, false);
+    let to = match queued.more {
+        0 => to,
+        1 => format!("{to} and 1 other"),
+        more => format!("{to} and {more} others"),
+    };
+    if queued.due <= now {
+        format!("Sending to {to} now")
+    } else {
+        format!(
+            "Sending to {to} in {} s (postvak outbox cancel {})",
+            queued.due - now,
+            queued.id
+        )
+    }
+}
+
 pub const ACCOUNT_ADD: &str = "Add an IMAP account; the daemon tests the login first and nothing is saved when it fails, then syncs it once";
 pub const ACCOUNT_LIST: &str =
     "Each configured account: name, username and server; never the password source";
@@ -86,7 +132,7 @@ pub const CURSOR: &str = "Continue after the page that ended with this `next`, w
 pub const DELETE: &str =
     "Move messages to Trash; inside Trash, or without one, delete them keeping a local .eml backup";
 /// The MCP `docs` tool's description.
-pub const DOCS: &str = "A page of Postvak's documentation, as Markdown: agent-guide (how to use these tools), rules (every rule key, with examples), search (the search syntax), cli (the command line) or mcp (the scopes and the tools each unlocks); without a page, the list of pages";
+pub const DOCS: &str = "A page of Postvak's documentation, as Markdown: agent-guide (how to use these tools), rules (every rule key, with examples), search (the search syntax), cli (the command line), sending (postvak send, the outbox and SMTP setup) or mcp (the scopes and the tools each unlocks); without a page, the list of pages";
 pub const JUNK: &str = "Report messages as junk: tag them $Junk, which trains server spam filters, and move them to the Junk folder; --not tags them $NotJunk and moves them to INBOX";
 pub const UNSUBSCRIBE: &str = "Leave a message's mailing list: by one-click POST when the sender offers it (RFC 8058), else print the page or address from its List-Unsubscribe header to open. Once the sender accepted it, delete can remove the message";
 /// Which keys each row of `list` and `search` keeps.
@@ -198,6 +244,38 @@ pub fn folder_rules_not_updated(from: &str, error: &str, rules: Result<&[String]
 
 #[cfg(test)]
 mod tests {
+    use crate::send::compose::Queued;
+
+    fn queued(due: i64, more: usize) -> Queued {
+        Queued {
+            account: "work".into(),
+            id: "3f2a".into(),
+            due,
+            first_recipient: "Linus Example".into(),
+            more,
+        }
+    }
+
+    #[test]
+    fn queued_line_names_the_first_recipient_and_the_cancel_command() {
+        assert_eq!(
+            queued_line(&queued(110, 0), 100),
+            "Sending to Linus Example in 10 s (postvak outbox cancel 3f2a)"
+        );
+        assert_eq!(
+            queued_line(&queued(110, 2), 100),
+            "Sending to Linus Example and 2 others in 10 s (postvak outbox cancel 3f2a)"
+        );
+    }
+
+    #[test]
+    fn queued_line_says_now_for_no_delay() {
+        assert_eq!(
+            queued_line(&queued(100, 1), 100),
+            "Sending to Linus Example and 1 other now"
+        );
+    }
+
     use super::*;
     use crate::sync::DeleteMode;
 

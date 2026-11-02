@@ -53,6 +53,23 @@ impl OutboxCounts {
     }
 }
 
+/// How many of `entries` wait and how many failed for good.
+pub fn counts_of<'a>(entries: impl IntoIterator<Item = &'a Entry>) -> OutboxCounts {
+    let mut count = OutboxCounts::default();
+    for entry in entries {
+        match entry.state {
+            State::Waiting | State::Sending | State::Failed { retrying: true, .. } => {
+                count.waiting += 1
+            }
+            State::Failed {
+                retrying: false, ..
+            } => count.failed += 1,
+            State::Sent => {}
+        }
+    }
+    count
+}
+
 /// What one account's threads share, kept across config reloads.
 struct Shared {
     outbox: Outbox,
@@ -283,26 +300,18 @@ impl Senders {
 
     /// How many messages wait and failed, per account.
     pub fn counts(&self) -> Vec<(String, OutboxCounts)> {
-        let mut counts: Vec<(String, OutboxCounts)> = self
-            .accounts
+        let entries = self.entries();
+        self.accounts
             .iter()
-            .map(|s| (s.config.name.clone(), OutboxCounts::default()))
-            .collect();
-        for (account, entry) in self.entries() {
-            let Some((_, count)) = counts.iter_mut().find(|(name, _)| *name == account) else {
-                continue;
-            };
-            match entry.state {
-                State::Waiting | State::Sending | State::Failed { retrying: true, .. } => {
-                    count.waiting += 1
-                }
-                State::Failed {
-                    retrying: false, ..
-                } => count.failed += 1,
-                State::Sent => {}
-            }
-        }
-        counts
+            .map(|s| {
+                let name = &s.config.name;
+                let mine = entries
+                    .iter()
+                    .filter(|(account, _)| account == name)
+                    .map(|(_, e)| e);
+                (name.clone(), counts_of(mine))
+            })
+            .collect()
     }
 
     /// Whether any account has a message to send, being sent or retried, or sent with IMAP work left: the daemon does
@@ -352,6 +361,15 @@ impl Senders {
             shared.wake();
         }
     }
+}
+
+/// What a send needs, once its entry is marked as being sent.
+struct Ready {
+    entry: Entry,
+    server: super::SmtpServer,
+    secret: credentials::Secret,
+    /// The message without Bcc.
+    transmit: Vec<u8>,
 }
 
 struct Worker {
@@ -428,9 +446,15 @@ impl Worker {
                 _ => return,
             }
         };
-        let (mut entry, server, secret, transmit) = match prepared {
+        let Ready {
+            mut entry,
+            server,
+            secret,
+            transmit,
+        } = match prepared {
             Ok(ready) => ready,
-            Err((entry, error)) => {
+            Err(failed) => {
+                let (entry, error) = *failed;
                 self.failed(entry, error, now);
                 return;
             }
@@ -472,32 +496,27 @@ impl Worker {
     }
 
     /// Marks `entry` as being sent and gathers what the send needs; a failure that needs no server says why.
-    #[allow(clippy::type_complexity)]
-    fn prepare(
-        &self,
-        mut entry: Entry,
-        now: i64,
-    ) -> Result<(Entry, super::SmtpServer, credentials::Secret, Vec<u8>), (Entry, SmtpError)> {
+    fn prepare(&self, mut entry: Entry, now: i64) -> Result<Ready, Box<(Entry, SmtpError)>> {
         let state = Store::open_account(&self.paths, &self.account.name)
             .and_then(|store| store.smtp_state())
             .ok()
             .flatten();
         let Some(server) = server_for(&self.account, state.as_ref()) else {
-            return Err((entry, SmtpError::Permanent(NOT_SET_UP.into())));
+            return Err(Box::new((entry, SmtpError::Permanent(NOT_SET_UP.into()))));
         };
         let secret = credentials::check_command_trusted(&self.account, &self.paths.config_file())
             .and_then(|()| credentials::resolve_smtp(&self.account));
         let secret = match secret {
             Ok(secret) => secret,
-            Err(e) => return Err((entry, SmtpError::Connect(e.to_string()))),
+            Err(e) => return Err(Box::new((entry, SmtpError::Connect(e.to_string())))),
         };
         let raw = match self.shared.outbox.raw(&entry.id) {
             Ok(raw) => raw,
             Err(e) => {
-                return Err((
+                return Err(Box::new((
                     entry,
                     SmtpError::Permanent(format!("the message file cannot be read: {e}")),
-                ));
+                )));
             }
         };
         let header_end = raw
@@ -511,12 +530,17 @@ impl Worker {
         // Synced before the server sees a byte: after a crash, this message is never sent again.
         if let Err(e) = self.shared.outbox.write(&entry) {
             entry.state = State::Waiting;
-            return Err((
+            return Err(Box::new((
                 entry,
                 SmtpError::Connect(format!("the outbox cannot be written: {e}")),
-            ));
+            )));
         }
-        Ok((entry, server, secret, transmit))
+        Ok(Ready {
+            entry,
+            server,
+            secret,
+            transmit,
+        })
     }
 
     /// Records a failed attempt: tried again later while temporary and within the hour, else failed for good.

@@ -27,6 +27,39 @@ pub fn account(account: &AccountConfig) -> Value {
     json!({ "account": account.name, "address": account.address, "aliases": account.aliases.iter().map(|a| a.pattern()).collect::<Vec<_>>(), "host": account.host, "port": account.port, "username": account.username })
 }
 
+/// An outbox listing row: the id, account, state and when it is due, how many recipients and the first of them;
+/// never the subject or the other addresses.
+pub fn outbox_row(account: &str, entry: &crate::send::outbox::Entry) -> Value {
+    use crate::send::outbox::State;
+    let (state, reason) = match &entry.state {
+        State::Waiting => ("waiting", None),
+        State::Sending => ("sending", None),
+        State::Sent => ("sent", None),
+        State::Failed {
+            reason,
+            retrying: true,
+        } => ("retrying", Some(reason.as_str())),
+        State::Failed {
+            reason,
+            retrying: false,
+        } => ("failed", Some(reason.as_str())),
+    };
+    json!({
+        "id": entry.id,
+        "account": account,
+        "state": state,
+        "reason": reason,
+        "due": entry.due,
+        "recipients": entry.envelope.to.len(),
+        "first_recipient": entry.envelope.to.first(),
+    })
+}
+
+/// What `postvak send` reports once the message is queued.
+pub fn queued(queued: &crate::send::compose::Queued) -> Value {
+    json!({ "id": queued.id, "account": queued.account, "due": queued.due, "first_recipient": queued.first_recipient, "recipients": queued.more + 1 })
+}
+
 /// Each message's indent in its thread, relative to the thread's shallowest message and capped at 4.
 pub fn depths(thread: &[Message]) -> Vec<usize> {
     let base = thread.iter().map(Message::thread_depth).min().unwrap_or(0);

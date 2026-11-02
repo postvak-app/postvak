@@ -56,8 +56,13 @@ This document contains the help content for the `postvak` command-line program.
 * [`postvak trash restore`↴](#postvak-trash-restore)
 * [`postvak trash purge`↴](#postvak-trash-purge)
 * [`postvak undo`↴](#postvak-undo)
+* [`postvak send`↴](#postvak-send)
+* [`postvak outbox`↴](#postvak-outbox)
+* [`postvak outbox cancel`↴](#postvak-outbox-cancel)
+* [`postvak outbox retry`↴](#postvak-outbox-retry)
 * [`postvak account`↴](#postvak-account)
 * [`postvak account add`↴](#postvak-account-add)
+* [`postvak account smtp`↴](#postvak-account-smtp)
 * [`postvak account list`↴](#postvak-account-list)
 * [`postvak account trust`↴](#postvak-account-trust)
 * [`postvak crashes`↴](#postvak-crashes)
@@ -98,6 +103,8 @@ Your inbox, organized by rules you write
 * `log` — Show what rules and direct actions did, newest first, with the number of the action each row is part of, which undo takes
 * `trash` — Deleted mail kept for the retention period
 * `undo` — Put back what one logged action did: move its mail back, reverse its read, flagged and tag changes, and restore what it deleted from the backups; mail changed since is left alone and said so. Without a number, the newest action of the CLI, the window or an agent that is not undone yet, never a rule's
+* `send` — Send a new message, a reply or a forward; it waits in the outbox for the undo delay, so `postvak outbox cancel` can take it back. The text comes from stdin, --body-file or the editor
+* `outbox` — List the messages waiting to be sent and those that failed
 * `account` — Manage accounts
 * `crashes` — List the local crash reports, newest first; they are never sent anywhere
 * `guide` — Print the agent guide, how an LLM should drive Postvak, or another page of the documentation
@@ -953,6 +960,98 @@ Put back what one logged action did: move its mail back, reverse its read, flagg
 
 
 
+## `postvak send`
+
+Send a new message, a reply or a forward; it waits in the outbox for the undo delay, so `postvak outbox cancel` can take it back. The text comes from stdin, --body-file or the editor
+
+**Usage:** `postvak send [OPTIONS] [SENDMAIL_ARGS]...`
+
+###### **Arguments:**
+
+* `<SENDMAIL_ARGS>` — For --raw: sendmail's arguments (-i, -oi, -t, -f <address>) and the recipients
+
+###### **Options:**
+
+* `--account <ACCOUNT>` — The account to send from; needed when several are configured, and for --raw when From is not enough
+* `--from <FROM>` — The address to send from: the account's, or one of its aliases (default: the account's, or for a reply the one the original was sent to)
+* `--to <TO>` — A recipient; repeat for more
+* `--cc <CC>`
+* `--bcc <BCC>` — A recipient the others do not see
+* `--subject <SUBJECT>`
+
+  Default value: ``
+* `--body-file <BODY_FILE>` — Read the text from this file instead of stdin or the editor
+* `--attach <ATTACH>` — Attach a file; repeat for more
+* `--reply <FOLDER/UID>` — Reply to the sender of <folder>/<uid>
+* `--reply-all <FOLDER/UID>` — Reply to the sender and everyone else <folder>/<uid> went to
+* `--reply-list <FOLDER/UID>` — Reply to the mailing list <folder>/<uid> came through
+* `--forward <FOLDER/UID>` — Forward <folder>/<uid> to --to, --cc and --bcc
+* `--as <AS>` — How a forward carries the original: its text and attachments, or the whole message attached
+
+  Default value: `inline`
+
+  Possible values: `inline`, `attachment`
+
+* `--edit` — Write the message in $VISUAL or $EDITOR; the default when stdin is a terminal
+* `--now` — Send at once, without the undo delay
+* `--save-sent` — Save a copy in Sent even where the provider files one, or for --raw
+* `--no-save-sent` — Save no copy in Sent
+* `--json`
+* `--raw` — Read a whole RFC 5322 message from stdin and send it at once, as sendmail does for mutt, aerc and git send-email; exits 0 when sent, 75 when it will be tried again, 69 when refused
+
+
+
+## `postvak outbox`
+
+List the messages waiting to be sent and those that failed
+
+**Usage:** `postvak outbox [OPTIONS]
+       outbox <COMMAND>`
+
+###### **Subcommands:**
+
+* `cancel` — Take back a message that is not being sent yet; prints it, so nothing is lost
+* `retry` — Send a failed message again
+
+###### **Options:**
+
+* `--json`
+
+
+
+## `postvak outbox cancel`
+
+Take back a message that is not being sent yet; prints it, so nothing is lost
+
+**Usage:** `postvak outbox cancel [OPTIONS] <ID>`
+
+###### **Arguments:**
+
+* `<ID>`
+
+###### **Options:**
+
+* `--account <ACCOUNT>`
+* `--json`
+
+
+
+## `postvak outbox retry`
+
+Send a failed message again
+
+**Usage:** `postvak outbox retry [OPTIONS] <ID>`
+
+###### **Arguments:**
+
+* `<ID>`
+
+###### **Options:**
+
+* `--account <ACCOUNT>`
+
+
+
 ## `postvak account`
 
 Manage accounts
@@ -962,6 +1061,7 @@ Manage accounts
 ###### **Subcommands:**
 
 * `add` — Add an IMAP account; the daemon tests the login first and nothing is saved when it fails, then syncs it once
+* `smtp` — Set the SMTP server an account sends through, checked by logging in: give it with --smtp-host, guess it again with --guess, or save the daemon's stored guess to config.toml with --save
 * `list` — Each configured account: name, username and server; never the password source
 * `trust` — Trust a server's Authentication-Results headers for the authenticated rule condition: add AUTHSERV_ID, the name at the start of the topmost one, to the account's trusted_authserv_ids
 
@@ -971,7 +1071,43 @@ Manage accounts
 
 Add an IMAP account; the daemon tests the login first and nothing is saved when it fails, then syncs it once
 
-**Usage:** `postvak account add`
+**Usage:** `postvak account add [OPTIONS]`
+
+###### **Options:**
+
+* `--smtp-host <SMTP_HOST>` — The SMTP server to send through, instead of guessing it
+* `--smtp-port <SMTP_PORT>` — Its port; by default 465 for implicit TLS, 587 for STARTTLS
+* `--smtp-tls <SMTP_TLS>` — How the SMTP connection is encrypted
+
+  Default value: `implicit`
+
+  Possible values: `implicit`, `starttls`
+
+
+
+
+## `postvak account smtp`
+
+Set the SMTP server an account sends through, checked by logging in: give it with --smtp-host, guess it again with --guess, or save the daemon's stored guess to config.toml with --save
+
+**Usage:** `postvak account smtp [OPTIONS] <ACCOUNT>`
+
+###### **Arguments:**
+
+* `<ACCOUNT>`
+
+###### **Options:**
+
+* `--smtp-host <SMTP_HOST>` — The SMTP server to send through, instead of guessing it
+* `--smtp-port <SMTP_PORT>` — Its port; by default 465 for implicit TLS, 587 for STARTTLS
+* `--smtp-tls <SMTP_TLS>` — How the SMTP connection is encrypted
+
+  Default value: `implicit`
+
+  Possible values: `implicit`, `starttls`
+
+* `--guess` — Guess the server again, as the daemon does for an account without one
+* `--save` — Write the server the daemon guessed to config.toml
 
 
 
@@ -1043,6 +1179,8 @@ Print the agent guide, how an LLM should drive Postvak, or another page of the d
     The search syntax: words, phrases, operators and close matches
   - `cli`:
     Every command and flag of the postvak command line
+  - `sending`:
+    Sending mail: the SMTP server and its guess, postvak send, the outbox and Sent copies
   - `mcp`:
     The MCP server: each scope and the tools it unlocks, and what the tools return
 
