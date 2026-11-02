@@ -262,6 +262,11 @@ impl Senders {
         shared.outbox.get(id)
     }
 
+    /// The message `id` of `account` as kept.
+    pub fn raw(&self, account: &str, id: &str) -> io::Result<Vec<u8>> {
+        self.shared(account)?.outbox.raw(id)
+    }
+
     /// Every entry of every account, by account.
     pub fn entries(&self) -> Vec<(String, Entry)> {
         let mut all = Vec::new();

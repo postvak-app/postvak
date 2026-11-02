@@ -43,6 +43,11 @@ pub fn recording_connector() -> Connector {
     })
 }
 
+/// An SMTP connector handing out `smtp`, so a test can script it and see what was sent.
+pub fn recording_smtp(smtp: crate::send::smtp::SharedSmtp) -> crate::send::sender::SmtpConnector {
+    Arc::new(move || Box::new(smtp.clone()))
+}
+
 /// Every connection attempt fails, so each account goes offline.
 pub fn offline_connector() -> Connector {
     Arc::new(|_| Err(SyncError::Io(std::io::Error::other("no route to host"))))
@@ -66,6 +71,7 @@ pub fn options(connect: Connector, idle_exit: Option<Duration>) -> Options {
         notify: false,
         signals: false,
         poll: super::POLL,
+        smtp: recording_smtp(crate::send::smtp::SharedSmtp::default()),
     }
 }
 
@@ -227,7 +233,14 @@ impl TestClient {
             | ClientMessage::Shutdown { id }
             | ClientMessage::Status { id }
             | ClientMessage::Subscribe { id }
-            | ClientMessage::TestLogin { id, .. } => *id,
+            | ClientMessage::TestLogin { id, .. }
+            | ClientMessage::Send { id, .. }
+            | ClientMessage::CancelSend { id, .. }
+            | ClientMessage::RetrySend { id, .. }
+            | ClientMessage::AwaitSend { id, .. }
+            | ClientMessage::Outbox { id }
+            | ClientMessage::GuessSmtp { id, .. }
+            | ClientMessage::TestSmtp { id, .. } => *id,
             ClientMessage::Hello { .. } => panic!("hello has no reply"),
         };
         self.send(&message);

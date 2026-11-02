@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::bail;
 
-use crate::config::{self, AccountConfig, Config, ConfigError, PasswordSource};
+use crate::config::{self, AccountConfig, Config, ConfigError, PasswordSource, SmtpConfig};
 use crate::credentials::{self, CredentialError, Secret};
 use crate::daemon::Client;
 use crate::paths::Paths;
@@ -102,6 +102,107 @@ pub fn test_login(
         }
     };
     client.test_login(account, secret)
+}
+
+/// A change to an account's SMTP server.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SmtpChange {
+    /// These settings, checked by logging in.
+    Given(SmtpConfig),
+    /// Whatever the guess finds now.
+    Guess,
+    /// The guess the daemon stored, written to config.toml.
+    SaveGuess,
+}
+
+/// The SMTP server for an account not saved yet: `given` checked by logging in, else a guess; None when the guess
+/// finds nothing, so the account is added without one. `secret` is the password just typed, None for a command.
+pub fn smtp_for_new(
+    client: &Client,
+    account: &AccountConfig,
+    given: Option<SmtpConfig>,
+    secret: Option<&Secret>,
+) -> anyhow::Result<Option<SmtpConfig>> {
+    match given {
+        Some(smtp) => {
+            let candidate = AccountConfig {
+                smtp: Some(smtp.clone()),
+                ..account.clone()
+            };
+            client.test_smtp(&candidate, secret)?;
+            Ok(Some(smtp))
+        }
+        None => Ok(client
+            .guess_smtp(account, secret)?
+            .map(|(server, _)| SmtpConfig::new(&server.host, server.tls))),
+    }
+}
+
+/// Sets account `name`'s SMTP server in config.toml after checking it by logging in; returns what was saved. The only
+/// path from a guess to config.toml.
+pub fn set_smtp(
+    config: &mut Config,
+    paths: &Paths,
+    client: &Client,
+    name: &str,
+    change: SmtpChange,
+) -> anyhow::Result<SmtpConfig> {
+    let account = config
+        .account(name)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("no account named '{name}'"))?;
+    let bare = AccountConfig {
+        smtp: None,
+        ..account.clone()
+    };
+    let smtp = match change {
+        SmtpChange::Given(smtp) => {
+            let candidate = AccountConfig {
+                smtp: Some(smtp.clone()),
+                ..account.clone()
+            };
+            check(config, &candidate)?;
+            credentials::check_command_trusted(&candidate, &paths.config_file())?;
+            client.test_smtp(&candidate, None)?;
+            smtp
+        }
+        SmtpChange::Guess => match client.guess_smtp(&bare, None)? {
+            Some((server, _)) => SmtpConfig::new(&server.host, server.tls),
+            None => bail!(
+                "no SMTP server answered for {}; set one with --smtp-host",
+                account.host
+            ),
+        },
+        SmtpChange::SaveGuess => {
+            let state = crate::store::Store::open_account(paths, name)?.smtp_state()?;
+            let Some(server) = crate::send::server_for(&bare, state.as_ref()) else {
+                bail!("no stored SMTP guess for '{name}'; try --guess or --smtp-host");
+            };
+            let smtp = SmtpConfig::new(&server.host, server.tls);
+            let candidate = AccountConfig {
+                smtp: Some(smtp.clone()),
+                ..account.clone()
+            };
+            client.test_smtp(&candidate, None)?;
+            smtp
+        }
+    };
+    // Keep what the table already said about the password and the Sent copy.
+    let kept = account.smtp.clone();
+    let smtp = SmtpConfig {
+        username: smtp
+            .username
+            .or_else(|| kept.as_ref().and_then(|k| k.username.clone())),
+        password: smtp
+            .password
+            .or_else(|| kept.as_ref().and_then(|k| k.password.clone())),
+        save_sent: smtp
+            .save_sent
+            .or_else(|| kept.as_ref().and_then(|k| k.save_sent)),
+        ..smtp
+    };
+    *config = config::update_account(&paths.config_file(), name, |a| a.smtp = Some(smtp.clone()))?;
+    Ok(smtp)
 }
 
 /// Adds `id` to the trusted_authserv_ids of account `name` as config.toml reads now, unless it is listed already;
@@ -422,5 +523,71 @@ mod tests {
         );
         let err = await_started(&client, "never", Duration::from_millis(300)).unwrap_err();
         assert!(err.to_string().contains("never"), "{err}");
+    }
+
+    fn smtp_daemon(smtp: &crate::send::smtp::SharedSmtp) -> TestDaemon {
+        TestDaemon::start_with(crate::daemon::Options {
+            smtp: crate::daemon::test_support::recording_smtp(smtp.clone()),
+            ..options(recording_connector(), None)
+        })
+    }
+
+    /// Waits until the daemon guessed for its own two accounts, so a test's script is not taken by them.
+    fn after_own_guesses(smtp: &crate::send::smtp::SharedSmtp) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while smtp.with(|s| s.logins.len()) < 2 {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn add_saves_the_guessed_smtp_server() {
+        let smtp = crate::send::smtp::SharedSmtp::default();
+        let daemon = smtp_daemon(&smtp);
+        after_own_guesses(&smtp);
+        smtp.with(|s| {
+            s.script
+                .push_back(Err(crate::send::SmtpError::Connect("refused".into())))
+        });
+        let client = Client::connect(&daemon.paths).unwrap();
+        let mut account = command_account("new");
+        let found = smtp_for_new(&client, &account, None, None).unwrap();
+        assert_eq!(
+            found,
+            Some(crate::config::SmtpConfig::new(
+                "smtp.example.com",
+                crate::config::SmtpTls::Starttls
+            ))
+        );
+        account.smtp = found;
+        let mut config = Config::load(&daemon.paths.config_file()).unwrap();
+        add(&mut config, &daemon.paths, account.clone(), None).unwrap();
+        let saved = Config::load(&daemon.paths.config_file()).unwrap();
+        assert_eq!(saved.account("new").unwrap().smtp, account.smtp);
+    }
+
+    #[test]
+    fn add_without_a_working_guess_saves_no_smtp() {
+        let smtp = crate::send::smtp::SharedSmtp::default();
+        let daemon = smtp_daemon(&smtp);
+        after_own_guesses(&smtp);
+        smtp.with(|s| {
+            s.script
+                .extend((0..4).map(|_| Err(crate::send::SmtpError::Auth("no".into()))))
+        });
+        let client = Client::connect(&daemon.paths).unwrap();
+        assert_eq!(
+            smtp_for_new(&client, &command_account("new"), None, None).unwrap(),
+            None
+        );
+        // Given settings that do not log in are refused.
+        smtp.with(|s| {
+            s.script
+                .push_back(Err(crate::send::SmtpError::Auth("no".into())))
+        });
+        let given =
+            crate::config::SmtpConfig::new("smtp.example.com", crate::config::SmtpTls::Implicit);
+        assert!(smtp_for_new(&client, &command_account("new"), Some(given), None).is_err());
     }
 }

@@ -1087,6 +1087,8 @@ fn wire_samples() -> Vec<String> {
                     }),
                     uidplus: Some(true),
                     encrypted: Some(true),
+                    outbox: Default::default(),
+                    sending: Default::default(),
                 }],
             })),
         },

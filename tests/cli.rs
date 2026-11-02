@@ -1384,7 +1384,14 @@ fn serve_fake_daemon(paths: &Paths, version: &'static str) -> std::thread::JoinH
                             errors: vec![FAILED_PASS.into()],
                         })),
                     },
-                    ClientMessage::TestLogin { id, .. } => DaemonMessage::Reply {
+                    ClientMessage::TestLogin { id, .. }
+                    | ClientMessage::Send { id, .. }
+                    | ClientMessage::CancelSend { id, .. }
+                    | ClientMessage::RetrySend { id, .. }
+                    | ClientMessage::AwaitSend { id, .. }
+                    | ClientMessage::Outbox { id }
+                    | ClientMessage::GuessSmtp { id, .. }
+                    | ClientMessage::TestSmtp { id, .. } => DaemonMessage::Reply {
                         id,
                         outcome: Outcome::Error("no logins here".into()),
                     },

@@ -21,9 +21,13 @@ use crate::mail_ops::MailError;
 use crate::mail_ops::imap::ImapOps;
 use crate::message::clean;
 use crate::paths::{self, FileWatch, Paths};
+use crate::send::sender::{Senders, SmtpConnector};
 use crate::store::Store;
 use crate::sync::{self, Activity, Command, Event, RequestId};
-use wire::{AccountStatus, ClientMessage, DaemonMessage, Outcome, Payload, Status};
+use wire::{
+    AccountStatus, ClientMessage, DaemonMessage, Outcome, Payload, SendOutcome, SendingStatus,
+    Status,
+};
 
 pub mod client;
 pub mod service;
@@ -62,6 +66,8 @@ pub struct Options {
     pub signals: bool,
     /// How often the accept loop checks while no client connects; `POLL` but in a test that times a connect against it.
     pub poll: Duration,
+    /// Opens an SMTP client, for sending and for the guess.
+    pub smtp: SmtpConnector,
 }
 
 impl Options {
@@ -73,6 +79,7 @@ impl Options {
             notify: true,
             signals: true,
             poll: POLL,
+            smtp: crate::send::sender::lettre_connector(),
         }
     }
 
@@ -301,6 +308,16 @@ struct Shared {
     signalled: Arc<AtomicBool>,
     watch: Mutex<Watch>,
     notifier: Option<crate::notify::Notifier>,
+    /// The outbox and its sender threads; None once `stop` took them.
+    senders: Mutex<Option<Senders>>,
+    smtp: SmtpConnector,
+    /// The config the accounts run with.
+    config: Mutex<Config>,
+    paths: Paths,
+    /// Accounts whose SMTP guess runs now.
+    guessing: Mutex<BTreeSet<String>>,
+    /// The `FinishSent` requests on their way, by request: the account and outbox id.
+    finishing: Mutex<HashMap<RequestId, (String, String)>>,
 }
 
 /// A panic elsewhere must not take the daemon down with a poisoned lock.
@@ -319,6 +336,8 @@ fn serve(
     migrate_stores(&config, paths);
     watch.warn(&config);
     let (engine, events) = Engine::start(&config, paths, options.connect.clone());
+    let (finish, finishes) = mpsc::channel();
+    let senders = Senders::start(&config, paths, options.smtp.clone(), finish);
     let shared = Arc::new(Shared {
         engine: Mutex::new(Some(engine)),
         hub: Mutex::new(Hub::new()),
@@ -326,7 +345,24 @@ fn serve(
         signalled,
         watch: Mutex::new(watch),
         notifier: options.notify.then(crate::notify::Notifier::new),
+        senders: Mutex::new(Some(senders)),
+        smtp: options.smtp.clone(),
+        config: Mutex::new(config),
+        paths: paths.clone(),
+        guessing: Mutex::new(BTreeSet::new()),
+        finishing: Mutex::new(HashMap::new()),
     });
+    std::thread::Builder::new()
+        .name("daemon-sent".into())
+        .spawn({
+            let shared = shared.clone();
+            move || {
+                for (account, id) in finishes {
+                    finish_sent(&shared, &account, &id);
+                }
+            }
+        })?;
+    guess_missing(&shared);
     let router = std::thread::Builder::new()
         .name("daemon-events".into())
         .spawn({
@@ -581,7 +617,7 @@ struct Connection {
 }
 
 /// Applies a changed config.toml or rules.toml and starts the accounts whose old thread ended.
-fn apply_file_changes(shared: &Shared, poll: bool) {
+fn apply_file_changes(shared: &Arc<Shared>, poll: bool) {
     // Held throughout, so a request never overtakes a change another thread is still applying.
     let mut watch = lock(&shared.watch);
     let (config, rules) = watch.changed(poll);
@@ -590,6 +626,13 @@ fn apply_file_changes(shared: &Shared, poll: bool) {
         && !proposed.is_empty()
     {
         notifier.proposals(&proposed);
+    }
+    if let Some(config) = &config {
+        if let Some(senders) = lock(&shared.senders).as_mut() {
+            senders.reload(config);
+        }
+        *lock(&shared.config) = config.clone();
+        guess_missing(shared);
     }
     if let Some(engine) = lock(&shared.engine).as_mut() {
         if let Some(config) = &config {
@@ -678,15 +721,24 @@ fn done(shared: &Shared, idle_exit: Option<Duration>) -> bool {
         log::info!("stopping on a signal");
         return true;
     }
-    let hub = lock(&shared.hub);
-    hub.shutdown
-        || idle_exit
+    let idle = {
+        let hub = lock(&shared.hub);
+        if hub.shutdown {
+            return true;
+        }
+        idle_exit
             .is_some_and(|idle| hub.clients.is_empty() && hub.last_client_left.elapsed() >= idle)
+    };
+    // A message waiting in the outbox, or one with work left on the IMAP side, keeps the daemon running.
+    idle && !lock(&shared.senders).as_ref().is_some_and(Senders::busy)
 }
 
 /// Stops the engine, delivers the replies its threads still send, then closes every connection.
 fn stop(shared: &Shared, router: JoinHandle<()>, connections: Vec<Connection>) {
     lock(&shared.hub).shutdown = true;
+    if let Some(senders) = lock(&shared.senders).take() {
+        senders.stop();
+    }
     let engine = lock(&shared.engine).take();
     drop(engine);
     let _ = router.join();
@@ -764,6 +816,21 @@ fn route_events(
             } => {
                 hub.uidplus.insert(account.clone(), *uidplus);
                 hub.encrypted.insert(account.clone(), *encrypted);
+            }
+            Event::SentFinished {
+                account,
+                id,
+                copied,
+                flagged,
+                request,
+            } => {
+                lock(&shared.finishing).remove(request);
+                if let Some(senders) = lock(&shared.senders).as_ref() {
+                    senders.finished(account, id, *copied, *flagged);
+                }
+            }
+            Event::CommandFailed { request, .. } => {
+                lock(&shared.finishing).remove(request);
             }
             _ => {}
         }
@@ -922,8 +989,337 @@ fn handle_line(shared: &Arc<Shared>, client: ClientId, line: &str) -> bool {
             account,
             password,
         } => test_login(shared, client, id, *account, password),
+        ClientMessage::Send {
+            id,
+            account,
+            raw,
+            entry,
+        } => {
+            let outcome = with_senders(shared, |senders| {
+                senders.queue(&account, &raw, &entry)?;
+                Ok(Payload::Queued {
+                    id: entry.id.clone(),
+                    due: entry.due,
+                })
+            });
+            lock(&shared.hub).reply(client, id, outcome);
+        }
+        ClientMessage::CancelSend {
+            id,
+            account,
+            outbox_id,
+        } => {
+            let outcome = with_senders(shared, |senders| {
+                let raw = senders.cancel(&account, &outbox_id)?;
+                Ok(Payload::Cancelled { raw })
+            });
+            lock(&shared.hub).reply(client, id, outcome);
+        }
+        ClientMessage::RetrySend {
+            id,
+            account,
+            outbox_id,
+        } => {
+            let outcome = with_senders(shared, |senders| {
+                senders.retry(&account, &outbox_id)?;
+                Ok(Payload::Done)
+            });
+            lock(&shared.hub).reply(client, id, outcome);
+        }
+        ClientMessage::Outbox { id } => {
+            let outcome = with_senders(shared, |senders| Ok(Payload::Outbox(senders.entries())));
+            lock(&shared.hub).reply(client, id, outcome);
+        }
+        ClientMessage::AwaitSend {
+            id,
+            account,
+            outbox_id,
+        } => await_send(shared, client, id, account, outbox_id),
+        ClientMessage::GuessSmtp {
+            id,
+            account,
+            password,
+        } => smtp_request(shared, client, id, *account, password, true),
+        ClientMessage::TestSmtp {
+            id,
+            account,
+            password,
+        } => smtp_request(shared, client, id, *account, password, false),
     }
     true
+}
+
+/// The outcome of `f` on the senders, or the error that they are gone.
+fn with_senders(shared: &Shared, f: impl FnOnce(&Senders) -> anyhow::Result<Payload>) -> Outcome {
+    match lock(&shared.senders).as_ref() {
+        Some(senders) => match f(senders) {
+            Ok(payload) => Outcome::Ok(payload),
+            Err(e) => Outcome::Error(e.to_string()),
+        },
+        None => Outcome::Error("the daemon is stopping".into()),
+    }
+}
+
+/// How long `AwaitSend` waits: past the longest send, on a thread of its own.
+const AWAIT_SEND: Duration = Duration::from_secs(330);
+
+/// Replies once the message went, failed, or failed for now.
+fn await_send(shared: &Arc<Shared>, client: ClientId, id: u64, account: String, outbox_id: String) {
+    let shared = shared.clone();
+    let spawned = std::thread::Builder::new()
+        .name("daemon-await-send".into())
+        .spawn({
+            let shared = shared.clone();
+            move || {
+                use crate::send::outbox::State;
+                let deadline = Instant::now() + AWAIT_SEND;
+                let outcome = loop {
+                    let entry = match lock(&shared.senders).as_ref() {
+                        Some(senders) => senders.entry(&account, &outbox_id),
+                        None => break Outcome::Error("the daemon is stopping".into()),
+                    };
+                    let state = match entry {
+                        Ok(entry) => entry.state,
+                        // Gone from the outbox: sent and finished.
+                        Err(e) if e.kind() == io::ErrorKind::NotFound => State::Sent,
+                        Err(e) => break Outcome::Error(e.to_string()),
+                    };
+                    match state {
+                        State::Sent => break Outcome::Ok(Payload::SendOutcome(SendOutcome::Sent)),
+                        State::Failed {
+                            reason,
+                            retrying: true,
+                        } => {
+                            break Outcome::Ok(Payload::SendOutcome(SendOutcome::Temporary(
+                                reason,
+                            )));
+                        }
+                        State::Failed {
+                            reason,
+                            retrying: false,
+                        } => {
+                            break Outcome::Ok(Payload::SendOutcome(SendOutcome::Permanent(
+                                reason,
+                            )));
+                        }
+                        State::Waiting | State::Sending if Instant::now() >= deadline => {
+                            break Outcome::Ok(Payload::SendOutcome(SendOutcome::Temporary(
+                                "no answer from the server yet; the message stays in the outbox"
+                                    .into(),
+                            )));
+                        }
+                        State::Waiting | State::Sending => {
+                            std::thread::sleep(Duration::from_millis(50))
+                        }
+                    }
+                };
+                lock(&shared.hub).reply(client, id, outcome);
+            }
+        });
+    if let Err(e) = spawned {
+        lock(&shared.hub).reply(
+            client,
+            id,
+            Outcome::Error(format!("could not wait for the send: {e}")),
+        );
+    }
+}
+
+/// Guesses or checks an account's SMTP server on a thread of its own, as a login can take a while.
+fn smtp_request(
+    shared: &Arc<Shared>,
+    client: ClientId,
+    id: u64,
+    account: AccountConfig,
+    password: Option<wire::Password>,
+    guess: bool,
+) {
+    let answering = shared.clone();
+    let spawned = std::thread::Builder::new()
+        .name("daemon-smtp".into())
+        .spawn(move || {
+            let shared = answering;
+            let secret = match password {
+                Some(password) => Ok(password.secret()),
+                None => {
+                    crate::credentials::check_command_trusted(&account, &shared.paths.config_file())
+                        .and_then(|()| crate::credentials::resolve_smtp(&account))
+                        .map_err(|e| e.to_string())
+                }
+            };
+            let outcome = match secret {
+                Err(e) => Outcome::Error(e),
+                Ok(secret) if guess => {
+                    let found = run_guess(&shared, &account, &secret);
+                    Outcome::Ok(Payload::SmtpGuessed(found))
+                }
+                Ok(secret) => match crate::send::server_for(&account, None) {
+                    None => {
+                        Outcome::Error(format!("account '{}' has no [smtp] server", account.name))
+                    }
+                    Some(server) => {
+                        match (shared.smtp)().check_login(
+                            &server,
+                            &secret,
+                            account.ca_file.as_deref(),
+                        ) {
+                            Ok(caps) => Outcome::Ok(Payload::SmtpChecked(caps)),
+                            Err(e) => {
+                                Outcome::Error(format!("{}:{}: {e}", server.host, server.port))
+                            }
+                        }
+                    }
+                },
+            };
+            lock(&shared.hub).reply(client, id, outcome);
+        });
+    if let Err(e) = spawned {
+        lock(&shared.hub).reply(
+            client,
+            id,
+            Outcome::Error(format!("could not start the SMTP check: {e}")),
+        );
+    }
+}
+
+/// Guesses `account`'s server and, when the daemon runs that account with the same IMAP host and login, stores what it
+/// found in its store; config.toml is never written here.
+fn run_guess(
+    shared: &Shared,
+    account: &AccountConfig,
+    secret: &Secret,
+) -> Option<(crate::send::SmtpServer, crate::send::Capabilities)> {
+    let found = crate::send::guess::guess(account, secret, &mut *(shared.smtp)());
+    let running = lock(&shared.config)
+        .account(&account.name)
+        .is_some_and(|running| {
+            running.host == account.host && running.username == account.username
+        });
+    if running {
+        let state = crate::send::guess::state_after(account, found.as_ref(), crate::time::now());
+        let stored = Store::open_account(&shared.paths, &account.name)
+            .and_then(|store| store.save_smtp_state(&state));
+        if let Err(e) = stored {
+            log::warn!("[{}] the SMTP guess could not be stored: {e}", account.name);
+        }
+    }
+    match &found {
+        Some((server, _)) => log::info!(
+            "[{}] sending through {}:{}",
+            account.name,
+            server.host,
+            server.port
+        ),
+        None => log::info!(
+            "[{}] no SMTP server found; sending is not set up",
+            account.name
+        ),
+    }
+    wake_sender(shared, &account.name);
+    found
+}
+
+fn wake_sender(shared: &Shared, account: &str) {
+    if let Some(senders) = lock(&shared.senders).as_ref() {
+        senders.wake(account);
+    }
+}
+
+/// Starts a guess for each account without `[smtp]` and without a guess for its current IMAP host and login.
+fn guess_missing(shared: &Arc<Shared>) {
+    let accounts = lock(&shared.config).accounts.clone();
+    for account in accounts {
+        let state = Store::open_account(&shared.paths, &account.name)
+            .and_then(|store| store.smtp_state())
+            .ok()
+            .flatten();
+        if !crate::send::guess::needs_guess(&account, state.as_ref()) {
+            continue;
+        }
+        if !lock(&shared.guessing).insert(account.name.clone()) {
+            continue;
+        }
+        let shared = shared.clone();
+        let spawned = std::thread::Builder::new()
+            .name(format!("smtp-guess-{}", account.name))
+            .spawn({
+                let shared = shared.clone();
+                let account = account.clone();
+                move || {
+                    let secret = crate::credentials::check_command_trusted(
+                        &account,
+                        &shared.paths.config_file(),
+                    )
+                    .and_then(|()| crate::credentials::resolve_smtp(&account));
+                    match secret {
+                        Ok(secret) => drop(run_guess(&shared, &account, &secret)),
+                        Err(e) => log::warn!("[{}] no SMTP guess: {e}", account.name),
+                    }
+                    lock(&shared.guessing).remove(&account.name);
+                }
+            });
+        if let Err(e) = spawned {
+            log::warn!("[{}] could not start the SMTP guess: {e}", account.name);
+            lock(&shared.guessing).remove(&account.name);
+        }
+    }
+}
+
+/// Hands a sent message's Sent copy and flag to its account's IMAP thread, unless that is already on its way.
+fn finish_sent(shared: &Shared, account: &str, id: &str) {
+    if lock(&shared.finishing)
+        .values()
+        .any(|(a, i)| a == account && i == id)
+    {
+        return;
+    }
+    let command = {
+        let senders = lock(&shared.senders);
+        let Some(senders) = senders.as_ref() else {
+            return;
+        };
+        let (Ok(entry), Ok(raw)) = (senders.entry(account, id), senders.raw(account, id)) else {
+            return;
+        };
+        Command::FinishSent {
+            id: id.to_string(),
+            raw,
+            save_sent: entry.save_sent,
+            copied: entry.copied,
+            original: entry.original,
+            flagged: entry.flagged,
+        }
+    };
+    let request = {
+        let mut hub = lock(&shared.hub);
+        hub.next_request += 1;
+        hub.next_request
+    };
+    lock(&shared.finishing).insert(request, (account.to_string(), id.to_string()));
+    let sent = lock(&shared.engine)
+        .as_ref()
+        .is_some_and(|engine| engine.send(account, request, command));
+    if !sent {
+        lock(&shared.finishing).remove(&request);
+    }
+}
+
+/// Whether `account` can send, for the status.
+fn sending_status(shared: &Shared, account: &str) -> SendingStatus {
+    let Some(config) = lock(&shared.config).account(account).cloned() else {
+        return SendingStatus::NotSetUp;
+    };
+    let state = Store::open_account(&shared.paths, account)
+        .and_then(|store| store.smtp_state())
+        .ok()
+        .flatten();
+    if crate::send::server_for(&config, state.as_ref()).is_none() {
+        return SendingStatus::NotSetUp;
+    }
+    match state.and_then(|state| state.sent_copy_problem) {
+        Some(problem) => SendingStatus::SentCopyProblem(problem),
+        None => SendingStatus::Ready,
+    }
 }
 
 /// Logs in on a thread of its own, as a login can take the connect timeout, and replies with the outcome.
@@ -963,6 +1359,14 @@ fn status(shared: &Shared) -> Status {
         .as_ref()
         .map(Engine::accounts)
         .unwrap_or_default();
+    let counts = lock(&shared.senders)
+        .as_ref()
+        .map(Senders::counts)
+        .unwrap_or_default();
+    let sending: HashMap<String, SendingStatus> = accounts
+        .iter()
+        .map(|name| (name.clone(), sending_status(shared, name)))
+        .collect();
     let hub = lock(&shared.hub);
     Status {
         pid: std::process::id(),
@@ -975,6 +1379,12 @@ fn status(shared: &Shared) -> Status {
                 activity: hub.activity.get(&name).cloned(),
                 uidplus: hub.uidplus.get(&name).copied(),
                 encrypted: hub.encrypted.get(&name).copied(),
+                outbox: counts
+                    .iter()
+                    .find(|(account, _)| *account == name)
+                    .map(|(_, counts)| *counts)
+                    .unwrap_or_default(),
+                sending: sending.get(&name).cloned().unwrap_or_default(),
                 name,
             })
             .collect(),

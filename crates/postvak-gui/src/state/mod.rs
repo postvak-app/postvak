@@ -899,6 +899,7 @@ impl App {
                      name,
                      uidplus,
                      encrypted,
+                     ..
                  }| {
                     let identity = config.account(&name).and_then(|a| a.identity().ok());
                     Account {
@@ -1551,6 +1552,8 @@ impl App {
                 self.push_history(line);
                 self.refresh(index);
             }
+            // A sent message's copy went to Sent, or its original got a flag.
+            Event::SentFinished { .. } => self.refresh(index),
         }
     }
 
@@ -3885,6 +3888,8 @@ mod tests {
             }),
             uidplus: None,
             encrypted: None,
+            outbox: Default::default(),
+            sending: Default::default(),
         }
     }
 
