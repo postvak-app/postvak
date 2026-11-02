@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::{AccountConfig, SmtpTls};
 use crate::store::SmtpState;
 
+pub mod build;
 pub mod check;
 pub mod guess;
 pub mod smtp;
