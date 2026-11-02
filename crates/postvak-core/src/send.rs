@@ -13,6 +13,7 @@ pub mod guess;
 pub mod outbox;
 pub mod quote_html;
 pub mod reply;
+pub mod sender;
 pub mod sendmail;
 pub mod smtp;
 
