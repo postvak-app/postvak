@@ -1072,14 +1072,21 @@ fn await_send(shared: &Arc<Shared>, client: ClientId, id: u64, account: String, 
                 let deadline = Instant::now() + AWAIT_SEND;
                 let outcome = loop {
                     let entry = match lock(&shared.senders).as_ref() {
-                        Some(senders) => senders.entry(&account, &outbox_id),
+                        Some(senders) => senders
+                            .entry(&account, &outbox_id)
+                            .map_err(|e| (e, senders.was_sent(&account, &outbox_id))),
                         None => break Outcome::Error("the daemon is stopping".into()),
                     };
                     let state = match entry {
                         Ok(entry) => entry.state,
-                        // Gone from the outbox: sent and finished.
-                        Err(e) if e.kind() == io::ErrorKind::NotFound => State::Sent,
-                        Err(e) => break Outcome::Error(e.to_string()),
+                        // Gone from the outbox: sent and finished, or taken back before it went.
+                        Err((e, true)) if e.kind() == io::ErrorKind::NotFound => State::Sent,
+                        Err((e, false)) if e.kind() == io::ErrorKind::NotFound => {
+                            break Outcome::Ok(Payload::SendOutcome(SendOutcome::Permanent(
+                                "the message was cancelled before it was sent".into(),
+                            )));
+                        }
+                        Err((e, _)) => break Outcome::Error(e.to_string()),
                     };
                     match state {
                         State::Sent => break Outcome::Ok(Payload::SendOutcome(SendOutcome::Sent)),

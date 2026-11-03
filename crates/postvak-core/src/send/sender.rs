@@ -3,7 +3,7 @@
 //! failures for an hour, and hands what needs IMAP afterwards (the Sent copy, the flag on the original) to the daemon
 //! on `finish`, again every few minutes until the IMAP side reports it done.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
@@ -78,9 +78,26 @@ struct Shared {
     wake: Condvar,
     woken: Mutex<bool>,
     recovered: AtomicBool,
+    /// The ids of the last messages that left the outbox because they were sent, newest last, so a caller waiting on
+    /// one can tell that from a cancel.
+    sent: Mutex<VecDeque<String>>,
 }
 
+/// How many sent ids [`Shared::sent`] remembers.
+const SENT_REMEMBERED: usize = 256;
+
 impl Shared {
+    /// Removes sent message `id` from the outbox and remembers that it went. Called with the outbox lock held.
+    fn remove_sent(&self, id: &str) -> io::Result<()> {
+        self.outbox.remove(id)?;
+        let mut sent = self.sent.lock().unwrap_or_else(|p| p.into_inner());
+        if sent.len() == SENT_REMEMBERED {
+            sent.pop_front();
+        }
+        sent.push_back(id.to_string());
+        Ok(())
+    }
+
     fn lock(&self) -> MutexGuard<'_, ()> {
         self.lock
             .lock()
@@ -189,6 +206,7 @@ impl Senders {
                     wake: Condvar::new(),
                     woken: Mutex::new(false),
                     recovered: AtomicBool::new(false),
+                    sent: Mutex::new(VecDeque::new()),
                 });
                 self.shared.insert(account.name.clone(), shared.clone());
                 shared
@@ -295,6 +313,19 @@ impl Senders {
         shared.outbox.get(id)
     }
 
+    /// Whether message `id` of `account` left the outbox because it was sent, rather than cancelled; remembered for the
+    /// last few hundred sent messages, the time a caller waits on one.
+    pub fn was_sent(&self, account: &str, id: &str) -> bool {
+        self.shared(account).is_ok_and(|shared| {
+            shared
+                .sent
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .iter()
+                .any(|sent| sent == id)
+        })
+    }
+
     /// The message `id` of `account` as kept.
     pub fn raw(&self, account: &str, id: &str) -> io::Result<Vec<u8>> {
         self.shared(account)?.outbox.raw(id)
@@ -337,7 +368,7 @@ impl Senders {
         entry.copied |= copied;
         entry.flagged |= flagged;
         let result = if entry.finished() {
-            shared.outbox.remove(id)
+            shared.remove_sent(id)
         } else {
             shared.outbox.write(&entry)
         };
@@ -528,7 +559,7 @@ impl Worker {
         let _lock = self.shared.lock();
         entry.state = State::Sent;
         let written = if entry.finished() {
-            self.shared.outbox.remove(id)
+            self.shared.remove_sent(id)
         } else {
             self.shared.outbox.write(&entry)
         };
@@ -772,6 +803,17 @@ mod tests {
         // Nothing left to do on the IMAP side: it is gone.
         until("the removal", || h.state(&entry.id).is_none());
         assert!(!h.senders().busy());
+    }
+
+    #[test]
+    fn a_sent_message_is_told_apart_from_a_cancelled_one() {
+        let h = Harness::new(true);
+        let sent = h.queue(h.now(), false);
+        until("the send", || h.state(&sent.id).is_none());
+        assert!(h.senders().was_sent("work", &sent.id));
+        let cancelled = h.queue(h.now() + 10, false);
+        h.senders().cancel("work", &cancelled.id).unwrap();
+        assert!(!h.senders().was_sent("work", &cancelled.id));
     }
 
     #[test]

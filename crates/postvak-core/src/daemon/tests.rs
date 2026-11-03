@@ -1589,6 +1589,35 @@ mod sending {
     }
 
     #[test]
+    fn await_send_reports_a_cancel_as_not_sent() {
+        // A regression: a message cancelled while `--raw` waited for it was reported as sent, so sendmail exited 0.
+        let smtp = SharedSmtp::default();
+        let daemon = daemon(&smtp, None);
+        let entry = entry(crate::time::now() + 600, false);
+        Client::connect(&daemon.paths)
+            .unwrap()
+            .queue_send("work", MESSAGE, &entry)
+            .unwrap();
+        let waiting = {
+            let paths = daemon.paths.clone();
+            let id = entry.id.clone();
+            std::thread::spawn(move || Client::connect(&paths).unwrap().await_send("work", &id))
+        };
+        std::thread::sleep(Duration::from_millis(200));
+        Client::connect(&daemon.paths)
+            .unwrap()
+            .cancel_send("work", &entry.id)
+            .unwrap();
+        match waiting.join().unwrap().unwrap() {
+            wire::SendOutcome::Permanent(reason) => {
+                assert!(reason.contains("cancelled"), "{reason}")
+            }
+            other => panic!("a cancelled message was reported as {other:?}"),
+        }
+        assert_eq!(smtp.with(|s| s.sent.len()), 0);
+    }
+
+    #[test]
     fn a_permanent_failure_is_what_await_send_answers() {
         let smtp = SharedSmtp::default();
         let daemon = daemon(&smtp, None);
