@@ -461,6 +461,16 @@ impl Action {
     }
 }
 
+impl Rule {
+    /// The rule's forward, when it has one.
+    pub fn forward(&self) -> Option<&Forward> {
+        self.actions.iter().find_map(|action| match action {
+            Action::Forward(forward) => Some(&**forward),
+            _ => None,
+        })
+    }
+}
+
 /// Whether `name` is who took a direct action rather than a rule: direct actions are logged under `cli`, `gui` or `mcp`,
 /// alone or followed by `:` and who asked.
 pub fn is_actor(name: &str) -> bool {

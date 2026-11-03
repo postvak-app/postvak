@@ -1289,6 +1289,7 @@ impl App {
             | Event::CommandFailed { account, .. }
             | Event::Connected { account, .. }
             | Event::Error { account, .. }
+            | Event::ForwardPaused { account, .. }
             | Event::FolderCreated { account, .. }
             | Event::FolderDeleted { account, .. }
             | Event::FolderNotEmpty { account, .. }
@@ -1401,6 +1402,10 @@ impl App {
                 self.refresh(index);
             }
             Event::Error { message, .. } => self.note_error(Some(index), message),
+            Event::ForwardPaused { rule, rate, .. } => {
+                let line = postvak_core::notify::forward_paused_text(&rule, rate);
+                self.push_history(format!("{}: {line}", self.accounts[index].name));
+            }
             Event::RuleApplied {
                 evaluated,
                 actions,

@@ -147,6 +147,14 @@ pub fn report(event: &Event) {
                 println!("[{account}] note: {}", crate::help::NO_UIDPLUS);
             }
         }
+        Event::ForwardPaused {
+            account,
+            rule,
+            rate,
+        } => println!(
+            "[{account}] {}",
+            crate::notify::forward_paused_text(rule, *rate)
+        ),
         Event::ActionDone { .. }
         | Event::AttachmentFetched { .. }
         | Event::BodyPreview { .. }
@@ -309,7 +317,7 @@ struct Shared {
     watch: Mutex<Watch>,
     notifier: Option<crate::notify::Notifier>,
     /// The outbox and its sender threads; None once `stop` took them.
-    senders: Mutex<Option<Senders>>,
+    senders: Arc<Mutex<Option<Senders>>>,
     smtp: SmtpConnector,
     /// The config the accounts run with.
     config: Mutex<Config>,
@@ -336,9 +344,15 @@ fn serve(
     let config = Config::load(&paths.config_file())?;
     migrate_stores(&config, paths);
     watch.warn(&config);
-    let (engine, events) = Engine::start(&config, paths, options.connect.clone());
     let (finish, finishes) = mpsc::channel();
-    let senders = Senders::start(&config, paths, options.smtp.clone(), finish);
+    let senders = Arc::new(Mutex::new(Some(Senders::start(
+        &config,
+        paths,
+        options.smtp.clone(),
+        finish,
+    ))));
+    let queue: crate::rules::apply::Queue = senders.clone();
+    let (engine, events) = Engine::start(&config, paths, options.connect.clone(), Some(queue));
     let shared = Arc::new(Shared {
         engine: Mutex::new(Some(engine)),
         hub: Mutex::new(Hub::new()),
@@ -346,7 +360,7 @@ fn serve(
         signalled,
         watch: Mutex::new(watch),
         notifier: options.notify.then(crate::notify::Notifier::new),
-        senders: Mutex::new(Some(senders)),
+        senders,
         smtp: options.smtp.clone(),
         config: Mutex::new(config),
         paths: paths.clone(),
@@ -774,6 +788,7 @@ fn reported(event: &Event, terminal: bool) -> bool {
                     ..
                 }
                 | Event::Error { .. }
+                | Event::ForwardPaused { .. }
         )
 }
 
@@ -791,6 +806,11 @@ fn route_events(
         // The sync sends NewMail only for mail that should notify, rules included.
         if let Some(batch) = batches.hear(&event) {
             notify(&batch);
+        }
+        if let Event::ForwardPaused { rule, rate, .. } = &event
+            && let Some(notifier) = &shared.notifier
+        {
+            notifier.notice(crate::notify::forward_paused_notice(rule, *rate));
         }
         if let Event::Synced { account, .. } = &event {
             // The folder warnings read what the account's store holds, which a sync changes. The store opens

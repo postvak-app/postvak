@@ -8,6 +8,7 @@ use crate::config::{AccountConfig, Config};
 use crate::credentials;
 use crate::mail_ops::MailOps;
 use crate::paths::Paths;
+use crate::rules::apply::Queue;
 use crate::sync::{self, Activity, Command, Event, Job, RequestId, SyncError};
 
 pub type Connector =
@@ -53,6 +54,7 @@ struct Spawner {
     paths: Paths,
     events: Sender<Event>,
     connect: Connector,
+    queue: Option<Queue>,
 }
 
 impl Spawner {
@@ -68,6 +70,7 @@ impl Spawner {
                     (config.clone(), self.paths.clone(), self.events.clone());
                 let (shutdown, wake) = (thread.shutdown.clone(), thread.wake.clone());
                 let connect = self.connect.clone();
+                let queue = self.queue.clone();
                 move || {
                     let target = account.clone();
                     let config_file = paths.config_file();
@@ -82,6 +85,7 @@ impl Spawner {
                             credentials::check_command_trusted(&target, &config_file)?;
                             connect(&target)
                         },
+                        queue,
                     )
                 }
             });
@@ -117,13 +121,19 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// Spawns a sync thread per account.
-    pub fn start(config: &Config, paths: &Paths, connect: Connector) -> (Engine, Receiver<Event>) {
+    /// Spawns a sync thread per account; their rules forward through `queue`, and without one no forward is queued.
+    pub fn start(
+        config: &Config,
+        paths: &Paths,
+        connect: Connector,
+        queue: Option<Queue>,
+    ) -> (Engine, Receiver<Event>) {
         let (events, received) = mpsc::channel();
         let spawner = Spawner {
             paths: paths.clone(),
             events,
             connect,
+            queue,
         };
         let threads = config
             .accounts
@@ -237,7 +247,8 @@ mod tests {
     fn every_configured_account_starts() {
         let dir = tempfile::tempdir().unwrap();
         let config = config_of(&["home", "work"]);
-        let (engine, _events) = Engine::start(&config, &Paths::under(dir.path()), imap_connector());
+        let (engine, _events) =
+            Engine::start(&config, &Paths::under(dir.path()), imap_connector(), None);
         assert_eq!(engine.accounts(), ["home", "work"]);
     }
 
@@ -248,7 +259,8 @@ mod tests {
             accounts: vec![offline_account("work")],
             ..Default::default()
         };
-        let (engine, events) = Engine::start(&config, &Paths::under(dir.path()), imap_connector());
+        let (engine, events) =
+            Engine::start(&config, &Paths::under(dir.path()), imap_connector(), None);
         assert_eq!(engine.accounts(), ["work"]);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
@@ -276,7 +288,7 @@ mod tests {
             accounts: vec![offline_account("work")],
             ..Default::default()
         };
-        let (engine, events) = Engine::start(&config, &paths, imap_connector());
+        let (engine, events) = Engine::start(&config, &paths, imap_connector(), None);
         let started = std::time::Instant::now();
         drop(engine);
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
@@ -299,7 +311,7 @@ mod tests {
             .unwrap();
         let config = config_of(&["work"]);
         let (connector, connected) = recording_connector();
-        let (_engine, events) = Engine::start(&config, &paths, connector);
+        let (_engine, events) = Engine::start(&config, &paths, connector, None);
         loop {
             if let Event::Activity {
                 activity: Activity::Offline { reason, .. },
@@ -323,7 +335,8 @@ mod tests {
             accounts: vec![offline_account("work")],
             ..Default::default()
         };
-        let (engine, events) = Engine::start(&config, &Paths::under(dir.path()), imap_connector());
+        let (engine, events) =
+            Engine::start(&config, &Paths::under(dir.path()), imap_connector(), None);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let mut failed = None;
         while failed.is_none() {
@@ -391,7 +404,8 @@ mod tests {
             Ok(Box::new(RecordingOps::default().with_folder("INBOX", None)) as Box<dyn MailOps>)
         });
         let mut config = config_of(&["a"]);
-        let (mut engine, _events) = Engine::start(&config, &Paths::under(dir.path()), connector);
+        let (mut engine, _events) =
+            Engine::start(&config, &Paths::under(dir.path()), connector, None);
         assert_eq!(log.recv_timeout(WAIT).unwrap(), "connecting 120");
         config.accounts[0].sync_interval_secs = 300;
         let started = std::time::Instant::now();
@@ -417,7 +431,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (connector, connected) = recording_connector();
         let mut config = config_of(&["a", "b"]);
-        let (mut engine, _events) = Engine::start(&config, &Paths::under(dir.path()), connector);
+        let (mut engine, _events) =
+            Engine::start(&config, &Paths::under(dir.path()), connector, None);
         let mut first_connections = [
             connected.recv_timeout(WAIT).unwrap(),
             connected.recv_timeout(WAIT).unwrap(),
@@ -450,8 +465,12 @@ mod tests {
     fn a_command_reaches_the_account_thread() {
         let dir = tempfile::tempdir().unwrap();
         let (connector, _connected) = recording_connector();
-        let (engine, events) =
-            Engine::start(&config_of(&["a"]), &Paths::under(dir.path()), connector);
+        let (engine, events) = Engine::start(
+            &config_of(&["a"]),
+            &Paths::under(dir.path()),
+            connector,
+            None,
+        );
         assert!(engine.send("a", 11, Command::SyncNow));
         let deadline = std::time::Instant::now() + WAIT;
         loop {

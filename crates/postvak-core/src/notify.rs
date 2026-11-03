@@ -150,6 +150,20 @@ pub fn proposals_notice(proposed: &[Proposed]) -> Option<Notice> {
     })
 }
 
+/// What says a forward rule went over its rate and waits for approval again.
+pub fn forward_paused_text(rule: &str, rate: u32) -> String {
+    format!("Forwarding paused for \"{rule}\": more than {rate} in an hour")
+}
+
+/// The notification that a forward rule was paused; a click opens the Rules view, where it is approved again.
+pub fn forward_paused_notice(rule: &str, rate: u32) -> Notice {
+    Notice {
+        title: forward_paused_text(rule, rate),
+        body: "Approve the rule again to resume it".into(),
+        show: Show::Rules,
+    }
+}
+
 /// `a`, `a and b`, `a, b and c`, or the first `NAMED` and how many others.
 fn named(items: &[String]) -> String {
     match items.len() {
@@ -230,6 +244,10 @@ impl Notifier {
     /// Notifies one account's new mail from one sync pass.
     pub fn new_mail(&self, batch: &[Mail]) {
         let _ = self.notices.send(notices(batch));
+    }
+
+    pub fn notice(&self, notice: Notice) {
+        let _ = self.notices.send(vec![notice]);
     }
 
     /// Notifies the rule proposals, by name, that started waiting for approval.

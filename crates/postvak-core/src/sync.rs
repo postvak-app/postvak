@@ -18,7 +18,8 @@ use crate::mail_ops::{Envelope, IdleOutcome, MailError, MailOps, RemoteFolder, S
 use crate::message::{clean, parse_headers, thread_id};
 use crate::paths::Paths;
 use crate::rules::apply::{
-    ApplyError, apply, ensure_body_text, ensure_structure, plan_for, special_folder,
+    ApplyError, ForwardQueue, Forwarding, Queue, apply, ensure_body_text, ensure_structure,
+    forward_first, forward_waits, plan_for, special_folder,
 };
 use crate::rules::engine::{Context, Mode, evaluate, folder_needs_body, folder_needs_structure};
 use crate::rules::{Action, CompiledRule, RulesError};
@@ -117,6 +118,12 @@ pub enum Event {
     Error {
         account: String,
         message: String,
+    },
+    /// A forward rule went over its rate, so its approval was withdrawn and it waits again.
+    ForwardPaused {
+        account: String,
+        rule: String,
+        rate: u32,
     },
     FolderCreated {
         account: String,
@@ -226,6 +233,7 @@ impl Event {
             | Event::BodyPreview { .. }
             | Event::Connected { .. }
             | Event::Error { .. }
+            | Event::ForwardPaused { .. }
             | Event::Indexed { .. }
             | Event::NewMail { .. } => Vec::new(),
         }
@@ -976,6 +984,7 @@ pub fn run_rules(
         mode,
         now,
         &mut |_, _| Ok(false),
+        None,
     )
 }
 
@@ -990,7 +999,25 @@ pub fn run_rules_with(
     mode: Mode,
     now: i64,
     checkpoint: &mut Checkpoint<'_>,
+    queue: Option<&dyn ForwardQueue>,
 ) -> Result<RulesRun, SyncError> {
+    let smtp = store.smtp_state()?;
+    let server = crate::send::server_for(account, smtp.as_ref());
+    // A forward rule waiting for approval, or for an SMTP server, runs none of its actions.
+    let mut runnable = Vec::with_capacity(rules.len());
+    for rule in rules {
+        if !forward_waits(rule, store, server.is_some())? {
+            runnable.push(rule.clone());
+        }
+    }
+    let rules = runnable.as_slice();
+    let forwarding = Forwarding {
+        queue,
+        account,
+        identity,
+        server: server.as_ref(),
+        caps: smtp.as_ref().map(crate::store::SmtpState::capabilities),
+    };
     let ctx = Context {
         account: &account.name,
         identity,
@@ -1016,7 +1043,15 @@ pub fn run_rules_with(
     let mut run = RulesRun::default();
     let logged_before = store.last_log_id()?;
     let result = run_rules_in(
-        ops, store, trash, rules, account, &ctx, &folders, checkpoint, &mut run,
+        ops,
+        store,
+        trash,
+        rules,
+        &forwarding,
+        &ctx,
+        &folders,
+        checkpoint,
+        &mut run,
     );
     stamp_actions(store, logged_before);
     if mode == Mode::ApplyExisting
@@ -1042,13 +1077,13 @@ fn run_rules_in(
     store: &Store,
     trash: &Trash,
     rules: &[CompiledRule],
-    account: &AccountConfig,
+    forwarding: &Forwarding,
     ctx: &Context,
     folders: &[String],
     checkpoint: &mut Checkpoint<'_>,
     run: &mut RulesRun,
 ) -> Result<(), SyncError> {
-    let (mode, now) = (ctx.mode, ctx.now);
+    let (mode, now, account) = (ctx.mode, ctx.now, forwarding.account);
     'folders: for folder in folders.iter().cloned() {
         // Before any select, so a command run here leaves nothing to select again.
         checkpoint(
@@ -1146,6 +1181,35 @@ fn run_rules_in(
                 continue 'folders;
             }
             if !plan.actions.is_empty() {
+                match forward_first(&plan, &msg, stored.uidvalidity, ops, store, forwarding, now) {
+                    Ok(forwarded) => {
+                        run.actions += forwarded.queued;
+                        for (rule, rate) in forwarded.paused {
+                            let paused = Event::ForwardPaused {
+                                account: account.name.clone(),
+                                rule,
+                                rate,
+                            };
+                            if !run.events.contains(&paused) {
+                                run.events.push(paused);
+                            }
+                        }
+                        if forwarded.hold {
+                            if notifies {
+                                run.events.push(new_mail(account, &msg));
+                            }
+                            continue;
+                        }
+                    }
+                    Err(e) if e.is_lost_connection() => return Err(e.into()),
+                    Err(e) => {
+                        run.events.push(account_error(
+                            account,
+                            format!("{}/{}: {e}", msg.folder, msg.uid),
+                        ));
+                        continue;
+                    }
+                }
                 match apply(&plan, &msg, ops, store, trash, now) {
                     Ok(executed) => run.actions += executed,
                     // The rest of the pass would fail the same way; end it so the engine reconnects.
@@ -1832,6 +1896,7 @@ impl LoadedRules {
     }
 
     /// Runs the last good rules. With none it only notifies, leaving the mail unseen so the rules catch up on it.
+    #[allow(clippy::too_many_arguments)]
     fn run(
         &self,
         ops: &mut dyn MailOps,
@@ -1840,6 +1905,7 @@ impl LoadedRules {
         account: &AccountConfig,
         identity: &Identity,
         checkpoint: &mut Checkpoint<'_>,
+        queue: Option<&dyn ForwardQueue>,
     ) -> Result<RulesRun, SyncError> {
         let Some(rules) = &self.last_good else {
             return Ok(RulesRun {
@@ -1857,6 +1923,7 @@ impl LoadedRules {
             Mode::Normal,
             now(),
             checkpoint,
+            queue,
         )
     }
 }
@@ -1906,11 +1973,18 @@ struct AccountSync<'a> {
     trash: Trash,
     identity: Identity,
     rules_path: PathBuf,
+    /// Where the rules' forwards go; None where nothing sends.
+    queue: Option<Queue>,
 }
 
 impl<'a> AccountSync<'a> {
-    fn open(account: &'a AccountConfig, paths: &Paths) -> Result<AccountSync<'a>, SyncError> {
+    fn open(
+        account: &'a AccountConfig,
+        paths: &Paths,
+        queue: Option<Queue>,
+    ) -> Result<AccountSync<'a>, SyncError> {
         Ok(AccountSync {
+            queue,
             store: Store::open_account(paths, &account.name)?,
             account,
             trash: Trash::new(paths.trash_dir(&account.name)),
@@ -2000,7 +2074,11 @@ impl<'a> AccountSync<'a> {
             for message in &errors {
                 let _ = events.send(account_error(account, message.clone()));
             }
-            let run = rules.run(ops, store, trash, account, identity, &mut checkpoint)?;
+            let queue = self
+                .queue
+                .as_deref()
+                .map(|queue| queue as &dyn ForwardQueue);
+            let run = rules.run(ops, store, trash, account, identity, &mut checkpoint, queue)?;
             Ok((new, errors, run))
         });
         if let Some(e) = lost {
@@ -2036,7 +2114,7 @@ pub fn run_once(
 ) -> Result<(), SyncError> {
     let mut ops = connect(account)?;
     let (_, no_commands) = std::sync::mpsc::channel();
-    AccountSync::open(account, paths)?.pass(
+    AccountSync::open(account, paths, None)?.pass(
         &mut ops,
         true,
         &mut Carried::default(),
@@ -2056,6 +2134,7 @@ pub fn run_loop(
     commands: Receiver<Job>,
     wake: Arc<AtomicBool>,
     connect: impl FnMut() -> Result<Box<dyn MailOps>, SyncError>,
+    queue: Option<Queue>,
 ) {
     let name = account.name.clone();
     let (stop, woken) = (shutdown.clone(), wake.clone());
@@ -2067,6 +2146,7 @@ pub fn run_loop(
         commands,
         wake,
         connect,
+        queue,
         HEALTHY_AFTER,
         |delay| jittered(delay, random_u64()),
         |delay| {
@@ -2123,6 +2203,7 @@ pub fn run_loop_with(
         commands,
         wake,
         connect,
+        None,
         HEALTHY_AFTER,
         |delay| delay,
         sleep,
@@ -2139,6 +2220,7 @@ fn run_loop_paced(
     commands: Receiver<Job>,
     wake: Arc<AtomicBool>,
     mut connect: impl FnMut() -> Result<Box<dyn MailOps>, SyncError>,
+    queue: Option<Queue>,
     healthy_after: Duration,
     mut jitter: impl FnMut(Duration) -> Duration,
     mut sleep: impl FnMut(Duration),
@@ -2159,6 +2241,7 @@ fn run_loop_paced(
                 &mut carried,
                 &mut connect,
                 &mut connected_at,
+                queue.clone(),
             )
         }))
         .unwrap_or_else(|panic| Err(SyncError::Crashed(panic_message(&*panic))));
@@ -2299,6 +2382,7 @@ fn run_session(
     carried: &mut Carried,
     connect: &mut impl FnMut() -> Result<Box<dyn MailOps>, SyncError>,
     connected_at: &mut Option<std::time::Instant>,
+    queue: Option<Queue>,
 ) -> Result<(), SyncError> {
     let _ = events.send(Event::Activity {
         account: account.name.clone(),
@@ -2311,7 +2395,7 @@ fn run_session(
         uidplus: ops.has_uidplus(),
         encrypted: ops.is_encrypted(),
     });
-    let mut state = AccountSync::open(account, paths)?;
+    let mut state = AccountSync::open(account, paths, queue)?;
     let interval = Duration::from_secs(account.sync_interval_secs.max(10));
     let mut last_purge = 0i64;
     let mut full = true;

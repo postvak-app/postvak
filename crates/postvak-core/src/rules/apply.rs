@@ -1,10 +1,15 @@
 use std::io;
+use std::sync::Arc;
+
+use crate::config::{AccountConfig, Identity};
+use crate::send::outbox::Entry;
+use crate::send::{Capabilities, Envelope, SmtpServer};
 
 use crate::folder_name;
 use crate::mail_ops::{MailError, MailOps, delete_message, delete_messages};
 use crate::message::{self, body_text};
 use crate::rules::engine::{Context, Plan, PlannedAction, evaluate, flag_change};
-use crate::rules::{Action, CompiledRule};
+use crate::rules::{Action, CompiledRule, Forward};
 use crate::store::{
     Folder, LogEntry, Message, Store, StoreError, has_flag, structure_columns, with_flag,
 };
@@ -684,6 +689,216 @@ fn move_to(
     }
     store.remove_message(&current.folder, current.uid)?;
     Ok(())
+}
+
+/// Where a rule forward is queued: the daemon's outbox, through its sender threads, or a test's recording.
+pub trait ForwardQueue {
+    fn queue(&self, account: &str, keep: Vec<u8>, entry: Entry) -> io::Result<()>;
+}
+
+pub type Queue = Arc<dyn ForwardQueue + Send + Sync>;
+
+/// What a sync thread forwards with: the queue (None where nothing sends, so a forward cannot be queued), the
+/// account and what its SMTP server said about itself.
+#[derive(Clone, Copy)]
+pub struct Forwarding<'a> {
+    pub queue: Option<&'a dyn ForwardQueue>,
+    pub account: &'a AccountConfig,
+    pub identity: &'a Identity,
+    pub server: Option<&'a SmtpServer>,
+    pub caps: Option<Capabilities>,
+}
+
+/// What the forwards of a plan did. With `hold` one could not be queued, so none of the plan's other actions may run.
+#[derive(Debug, Default, PartialEq)]
+pub struct Forwarded {
+    pub queued: usize,
+    pub hold: bool,
+    /// Rules that went over their rate, with it: their approval is withdrawn.
+    pub paused: Vec<(String, u32)>,
+}
+
+/// Whether `rule` must wait before any of its actions run: it forwards, and its definition is not approved in `store`
+/// or the account has no SMTP server.
+pub fn forward_waits(
+    rule: &CompiledRule,
+    store: &Store,
+    has_server: bool,
+) -> Result<bool, StoreError> {
+    if rule.rule.forward().is_none() {
+        return Ok(false);
+    }
+    Ok(!has_server || !store.forward_approved(&rule.rule.name, &rule.definition)?)
+}
+
+/// Queues the forwards of `plan` before anything else of it runs, each once per message, skipping loops and what goes
+/// over a rule's rate; `uidvalidity` is the folder's. A lost connection is an error; any other failure to queue is
+/// recorded on the rule and holds the plan, so the next pass tries again.
+pub fn forward_first(
+    plan: &Plan,
+    msg: &Message,
+    uidvalidity: u32,
+    ops: &mut dyn MailOps,
+    store: &Store,
+    forwarding: &Forwarding,
+    now: i64,
+) -> Result<Forwarded, ApplyError> {
+    let mut done = Forwarded::default();
+    let key = crate::rules::forward::once_key(msg, uidvalidity);
+    for planned in &plan.actions {
+        let Action::Forward(forward) = &planned.action else {
+            continue;
+        };
+        let rule = planned.rule.as_str();
+        if store.was_forwarded(rule, &key)? {
+            continue;
+        }
+        let raw = match ensure_raw(msg, ops, store) {
+            Ok(raw) => raw,
+            Err(e) if crate::sync::LostConnection::is_lost_connection(&e) => return Err(e),
+            Err(e) => {
+                hold(store, rule, &key, msg, &e.to_string(), now, &mut done)?;
+                continue;
+            }
+        };
+        if let Some(skip) = crate::rules::forward::loop_check(&raw, forwarding.identity) {
+            log::info!(
+                "{}/{}: rule '{rule}': {}",
+                msg.folder,
+                msg.uid,
+                skip.log_text()
+            );
+            continue;
+        }
+        let since = store.forwards_since(rule, now - 3600)?;
+        if crate::rules::forward::over_rate(since, forward.rate) {
+            store.withdraw_forward(rule)?;
+            if !done.paused.iter().any(|(name, _)| name == rule) {
+                done.paused.push((rule.to_string(), forward.rate));
+            }
+            log::warn!(
+                "rule '{rule}': more than {} forwards in an hour; forwarding paused",
+                forward.rate
+            );
+            continue;
+        }
+        match queue_forward(forward, &raw, forwarding, now) {
+            Ok(Some(skip)) => {
+                log::info!(
+                    "{}/{}: rule '{rule}': {}",
+                    msg.folder,
+                    msg.uid,
+                    skip.log_text()
+                );
+            }
+            Ok(None) => {
+                store.record_forwarded(rule, &key, now)?;
+                store.clear_forward_failure(rule, &key)?;
+                store.log_action(&log_entry(planned, msg, None, now))?;
+                done.queued += 1;
+            }
+            Err(reason) => hold(store, rule, &key, msg, &reason, now, &mut done)?,
+        }
+    }
+    Ok(done)
+}
+
+/// Records that `rule` could not queue the forward of `msg`, without the reason in the log: it may name a recipient.
+fn hold(
+    store: &Store,
+    rule: &str,
+    key: &str,
+    msg: &Message,
+    reason: &str,
+    now: i64,
+    done: &mut Forwarded,
+) -> Result<(), StoreError> {
+    log::warn!(
+        "{}/{}: rule '{rule}' could not queue its forward; nothing else of it runs until it can",
+        msg.folder,
+        msg.uid
+    );
+    store.record_forward_failure(rule, key, reason, now)?;
+    done.hold = true;
+    Ok(())
+}
+
+/// Builds, checks and queues the forward of `raw`; `Ok(Some)` when `max_size` skips it, `Err` with why it cannot go.
+fn queue_forward(
+    forward: &Forward,
+    raw: &[u8],
+    forwarding: &Forwarding,
+    now: i64,
+) -> Result<Option<crate::rules::forward::Skip>, String> {
+    let (Some(queue), Some(server)) = (forwarding.queue, forwarding.server) else {
+        return Err("sending is not running".into());
+    };
+    let limit = (forwarding.caps.and_then(|caps| caps.size))
+        .unwrap_or(crate::send::check::DEFAULT_SIZE_LIMIT as u64);
+    let identity = forwarding.identity;
+    let draft =
+        match crate::rules::forward::draft(forward, raw, identity, &forward.subject_prefix, limit)?
+        {
+            Ok(draft) => draft,
+            Err(skip) => return Ok(Some(skip)),
+        };
+    let built = crate::send::build::build(&draft, now).map_err(|e| e.to_string())?;
+    let message = crate::rules::forward::with_loop_header(&built, raw, &draft.from);
+    let args = crate::send::check::Recipients {
+        from_headers: true,
+        ..Default::default()
+    };
+    let checked = crate::send::check::check(&message, &args, identity, forwarding.caps.as_ref())
+        .map_err(|e| e.to_string())?;
+    let save_sent = crate::send::sent::saves_sent(
+        server,
+        forwarding
+            .account
+            .smtp
+            .as_ref()
+            .and_then(|smtp| smtp.save_sent),
+    );
+    let envelope = Envelope {
+        from: checked.from.clone(),
+        to: checked.recipients.clone(),
+    };
+    // No undo delay: nobody is there to take a rule's forward back.
+    let entry = Entry::new(envelope, now, save_sent, None);
+    queue
+        .queue(&forwarding.account.name, checked.keep, entry)
+        .map_err(|e| e.to_string())?;
+    Ok(None)
+}
+
+/// A queue that keeps what it is given, and refuses while `fail` is set.
+#[cfg(any(test, feature = "testing"))]
+#[derive(Default)]
+pub struct RecordingQueue {
+    pub queued: std::sync::Mutex<Vec<(String, Vec<u8>, Entry)>>,
+    pub fail: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl RecordingQueue {
+    pub fn taken(&self) -> Vec<(String, Vec<u8>, Entry)> {
+        self.queued
+            .lock()
+            .map(|queued| queued.clone())
+            .unwrap_or_default()
+    }
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl ForwardQueue for RecordingQueue {
+    fn queue(&self, account: &str, keep: Vec<u8>, entry: Entry) -> io::Result<()> {
+        if self.fail.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(io::Error::other("the outbox refused it"));
+        }
+        if let Ok(mut queued) = self.queued.lock() {
+            queued.push((account.to_string(), keep, entry));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

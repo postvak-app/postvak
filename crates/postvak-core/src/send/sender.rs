@@ -396,6 +396,19 @@ impl Senders {
     }
 }
 
+/// The daemon's senders, as the sync threads queue their rules' forwards: refused once they stopped.
+impl crate::rules::apply::ForwardQueue for Mutex<Option<Senders>> {
+    fn queue(&self, account: &str, keep: Vec<u8>, entry: Entry) -> io::Result<()> {
+        let senders = self
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match senders.as_ref() {
+            Some(senders) => senders.queue(account, &keep, &entry),
+            None => Err(io::Error::other("the sender threads have stopped")),
+        }
+    }
+}
+
 struct Worker {
     account: AccountConfig,
     paths: Paths,

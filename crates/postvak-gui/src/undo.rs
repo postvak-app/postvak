@@ -131,6 +131,16 @@ pub(crate) fn undone_text(reports: &[UndoReport]) -> String {
             noun(gone, parts.is_empty())
         ));
     }
+    let forwarded: Vec<&str> = rows()
+        .filter(|row| row.outcome == UndoOutcome::AlreadySent)
+        .filter_map(|row| row.action.strip_prefix("forward:"))
+        .collect();
+    if let Some(first) = forwarded.first() {
+        parts.push(match forwarded.len() {
+            1 => format!("The forward to {first} was already sent"),
+            n => format!("{n} forwards were already sent"),
+        });
+    }
     let failed = count(UndoOutcome::Failed);
     if failed > 0 {
         parts.push(format!(

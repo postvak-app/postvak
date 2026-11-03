@@ -128,7 +128,7 @@
   - `notify::forward_paused_notice(rule: &str, rate: u32) -> Notice`
   - `actions/undo.rs`: a `forward:` log row is not undone; the undo result names it (`The forward to a@x.org was already sent`) and undoes the rest
   - The daemon passes its `Senders` into each account thread (`Spawner` gains `queue: Arc<dyn ForwardQueue + Send + Sync>`)
-- [ ] **Step 1: Write the failing tests** in `sync/tests.rs` with `RecordingOps` and `RecordingQueue`:
+- [x] **Step 1: Write the failing tests** in `sync/tests.rs` with `RecordingOps` and `RecordingQueue`:
   - `a_forward_is_queued_before_the_delete_runs`: rule forward + delete; queue holds the raw; message expunged after.
   - `a_failed_fetch_runs_nothing_and_retries_next_pass` (Review Focus 1): `fetch_raw` errors once → not deleted, failure recorded; next pass → queued, deleted, failure cleared.
   - `an_unapproved_forward_rule_runs_nothing`; `a_rule_without_smtp_runs_nothing`.
@@ -139,10 +139,10 @@
   - `a_forward_waits_with_after`.
   - `the_forward_is_due_now_and_carries_the_loop_header`.
   - In `actions/undo.rs` tests: `undo_of_a_forward_and_archive_moves_back_and_says_the_forward_was_sent`.
-- [ ] **Step 2: Run** `cargo nextest run -p postvak-core sync::tests::forward` (name the tests with a `forward` prefix) — FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** — PASS; `cargo test -p postvak-core --features testing --test sync_model`.
-- [ ] **Step 5: Commit** `feat(rules): forward matching new mail through the outbox`
+- [x] **Step 2: Run** `cargo nextest run -p postvak-core sync::tests::forward` (name the tests with a `forward` prefix) — FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** — PASS; `cargo test -p postvak-core --features testing --test sync_model`.
+- [x] **Step 5: Commit** `feat(rules): forward matching new mail through the outbox`
 
 ### Task 5: Previews, tests and coverage
 
