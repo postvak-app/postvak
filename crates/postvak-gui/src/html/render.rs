@@ -1910,4 +1910,78 @@ mod tests {
         assert_eq!(physical(f32::NAN, 1.0), 0);
         assert_eq!(physical(f32::INFINITY, 1.0), u32::MAX);
     }
+
+    /// Renders `POSTVAK_RENDER_EML` as the reader would, with remote content loaded, to `POSTVAK_RENDER_PNG`, for
+    /// comparing with a browser: `POSTVAK_RENDER_EML=a.eml POSTVAK_RENDER_PNG=a.png cargo test -p postvak-gui
+    /// render_eml -- --ignored`. `POSTVAK_RENDER_WIDTH` sets the width (default 800).
+    #[test]
+    #[ignore = "a tool, not a test"]
+    fn render_eml() {
+        let path = std::env::var("POSTVAK_RENDER_EML").unwrap();
+        let mut raw = std::fs::read(&path).unwrap();
+        if path.ends_with(".html") {
+            raw = [
+                b"Content-Type: text/html; charset=utf-8\r\n\r\n".as_slice(),
+                &raw,
+            ]
+            .concat();
+        }
+        let out = std::env::var("POSTVAK_RENDER_PNG").unwrap();
+        let width: f32 =
+            std::env::var("POSTVAK_RENDER_WIDTH").map_or(800.0, |w| w.parse().unwrap());
+        let body = postvak_core::message::attachments_and_html(&raw).1.unwrap();
+        let request = |fetched: Fetched| {
+            Request::Load(Load {
+                dark: false,
+                fetched,
+                generation: 1,
+                html: body.html.clone(),
+                inline: body.inline.clone(),
+                scale: 1.0,
+                width,
+            })
+        };
+        // The fonts the app uses, not the one bundled font the other tests use.
+        FONTS.with_borrow_mut(|fonts| *fonts = Some(system_fonts()));
+        let mut current = None;
+        let Some(Reply::Laid { remote, .. }) = handle(&mut current, request(Fetched::default()))
+        else {
+            panic!("no layout");
+        };
+        let fetched: std::collections::BTreeMap<_, _> = remote
+            .into_iter()
+            .map(|url| (url.clone(), super::super::get(&url).unwrap_or_default()))
+            .collect();
+        let Some(Reply::Laid { height, width, .. }) =
+            handle(&mut current, request(Arc::new(fetched)))
+        else {
+            panic!("no layout");
+        };
+        eprintln!("laid out at {width} x {height}");
+        let mut rgba = Vec::new();
+        let (mut w, mut h) = (0, 0);
+        for strip in 0.. {
+            match handle(
+                &mut current,
+                Request::Paint {
+                    generation: 1,
+                    strip,
+                },
+            ) {
+                Some(Reply::Strip { image, .. }) => {
+                    (w, h) = (image.width(), h + image.height());
+                    rgba.extend_from_slice(image.rgba());
+                }
+                _ => break,
+            }
+        }
+        let file = std::io::BufWriter::new(std::fs::File::create(out).unwrap());
+        let mut encoder = png::Encoder::new(file, w, h);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&rgba)
+            .unwrap();
+    }
 }
