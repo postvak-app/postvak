@@ -1512,14 +1512,15 @@ mod sending {
     #[test]
     fn the_daemon_does_not_idle_out_with_a_waiting_message() {
         let smtp = SharedSmtp::default();
-        let mut daemon = daemon(&smtp, Some(Duration::from_millis(50)));
+        // The idle time also bounds how long the client may take to connect, so a loaded CI runner needs room.
+        let mut daemon = daemon(&smtp, Some(Duration::from_millis(400)));
         {
             let client = Client::connect(&daemon.paths).unwrap();
             client
-                .queue_send("work", MESSAGE, &entry(crate::time::now() + 1, false))
+                .queue_send("work", MESSAGE, &entry(crate::time::now() + 3, false))
                 .unwrap();
         }
-        std::thread::sleep(Duration::from_millis(300));
+        std::thread::sleep(Duration::from_millis(1000));
         assert!(
             daemon.paths.daemon_socket().exists(),
             "idled out with a message waiting"
