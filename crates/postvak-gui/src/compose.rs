@@ -41,6 +41,7 @@ struct Snapshot {
     bcc: String,
     cc: String,
     files: Vec<PathBuf>,
+    forward_as_attachment: bool,
     from: String,
     kept_parts: Vec<bool>,
     subject: String,
@@ -74,6 +75,10 @@ pub(crate) struct Composer {
 
 fn join_addresses(addresses: &[String]) -> String {
     addresses.join(", ")
+}
+
+fn megabytes(bytes: u64) -> String {
+    format!("{:.1} MB", bytes as f64 / 1_000_000.0)
 }
 
 fn choices_of(identity: &Identity) -> Vec<String> {
@@ -136,12 +141,23 @@ impl Composer {
     pub(crate) fn new_mail(
         id: u64,
         account: &str,
-        identity: &Identity,
+        accounts: &[(String, Identity)],
         mailto: Option<Mailto>,
     ) -> Self {
         let mut composer = Self::empty(id, account, ComposeKind::New);
-        composer.from = identity.address().to_string();
-        composer.from_choices = choices_of(identity);
+        composer.from = accounts
+            .iter()
+            .find(|(name, _)| name == account)
+            .map(|(_, identity)| identity.address().to_string())
+            .unwrap_or_default();
+        composer.from_choices = accounts
+            .iter()
+            .flat_map(|(name, identity)| {
+                choices_of(identity)
+                    .into_iter()
+                    .map(move |address| format!("{name}\t{address}"))
+            })
+            .collect();
         if let Some(mailto) = mailto {
             composer.show_cc_bcc = !mailto.cc.is_empty() || !mailto.bcc.is_empty();
             composer.to = join_addresses(&mailto.to);
@@ -181,11 +197,23 @@ impl Composer {
             bcc: self.bcc.clone(),
             cc: self.cc.clone(),
             files: self.files.clone(),
+            forward_as_attachment: self.forward_as_attachment,
             from: self.from.clone(),
             kept_parts: self.forward_parts.iter().map(|part| part.2).collect(),
             subject: self.subject.clone(),
             text: self.text.clone(),
             to: self.to.clone(),
+        }
+    }
+
+    /// Takes a choice from `from_choices`: `account\taddress` for new mail, else an address of the account.
+    pub(crate) fn choose_from(&mut self, choice: &str) {
+        match choice.split_once('\t') {
+            Some((account, address)) => {
+                self.account = account.to_string();
+                self.from = address.to_string();
+            }
+            None => self.from = choice.to_string(),
         }
     }
 
@@ -248,11 +276,19 @@ impl Composer {
             }
         }
         check_from(&self.from, identity).map_err(|e| (Field::From, e.to_string()))?;
+        if let Some(path) = self.files.iter().find(|path| !path.is_file()) {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            return Err((Field::Attachments, format!("{name} can't be read.")));
+        }
         let total = self.attachment_total();
         if total > limit {
             return Err((
                 Field::Attachments,
-                format!("The attachments are {total} bytes and the server takes at most {limit}."),
+                format!(
+                    "{} attached; the limit is {}.",
+                    megabytes(total),
+                    megabytes(limit)
+                ),
             ));
         }
         Ok(())
@@ -353,8 +389,12 @@ mod tests {
         }
     }
 
+    fn accounts() -> Vec<(String, Identity)> {
+        vec![("work".to_string(), identity())]
+    }
+
     fn new_mail() -> Composer {
-        Composer::new_mail(1, "work", &identity(), None)
+        Composer::new_mail(1, "work", &accounts(), None)
     }
 
     fn file_of(dir: &tempfile::TempDir, name: &str, size: u64) -> PathBuf {
@@ -427,7 +467,7 @@ mod tests {
             body: "Body".into(),
             ..Mailto::default()
         };
-        let composer = Composer::new_mail(1, "work", &identity(), Some(mailto));
+        let composer = Composer::new_mail(1, "work", &accounts(), Some(mailto));
         assert!(!composer.loading);
         assert_eq!(composer.from, "me@example.com");
         assert_eq!(composer.to, "x@example.org, y@example.org");
@@ -533,7 +573,7 @@ mod tests {
         let mut composer = new_mail();
         assert_eq!(
             composer.from_choices,
-            vec!["me@example.com", "alias@example.com"]
+            vec!["work\tme@example.com", "work\talias@example.com"],
         );
         composer.to = "a@example.org".into();
         composer.from = "orders@shop.example.com".into();
@@ -553,5 +593,64 @@ mod tests {
         assert_eq!(composer.field_error(Field::To), None);
         composer.cc = "ann@example.org".into();
         assert_eq!(composer.field_error(Field::Cc), None);
+    }
+
+    #[test]
+    fn new_mail_lists_every_accounts_addresses_and_follows_the_choice() {
+        let home = AccountConfig::new(
+            "home",
+            "imap.home.test",
+            "me@home.test",
+            PasswordSource::Keyring { keyring: true },
+        )
+        .identity()
+        .unwrap_or_else(|e| panic!("{e}"));
+        let accounts = vec![("work".to_string(), identity()), ("home".to_string(), home)];
+        let mut composer = Composer::new_mail(1, "work", &accounts, None);
+        assert_eq!(
+            composer.from_choices,
+            vec![
+                "work\tme@example.com",
+                "work\talias@example.com",
+                "home\tme@home.test"
+            ]
+        );
+        composer.choose_from("home\tme@home.test");
+        assert_eq!(
+            (composer.account.as_str(), composer.from.as_str()),
+            ("home", "me@home.test")
+        );
+    }
+
+    #[test]
+    fn toggling_forward_as_attachment_alone_is_a_change() {
+        let mut composer = new_mail();
+        composer.forward_as_attachment = true;
+        assert!(composer.changed());
+    }
+
+    #[test]
+    fn an_unreadable_attachment_fails_the_check() {
+        let mut composer = new_mail();
+        composer.to = "a@example.org".into();
+        composer.files = vec![PathBuf::from("/nonexistent/gone.txt")];
+        let (field, message) = composer.check(&identity(), LIMIT).unwrap_err();
+        assert_eq!(field, Field::Attachments);
+        assert!(message.contains("gone.txt"));
+    }
+
+    #[test]
+    fn the_size_error_is_in_megabytes() {
+        let mut composer = new_mail();
+        composer.to = "a@example.org".into();
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        composer.files = vec![file_of(&dir, "big", 30_000_000)];
+        assert_eq!(
+            composer.check(&identity(), LIMIT),
+            Err((
+                Field::Attachments,
+                "30.0 MB attached; the limit is 25.0 MB.".to_string()
+            ))
+        );
     }
 }
