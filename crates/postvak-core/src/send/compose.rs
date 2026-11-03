@@ -73,7 +73,7 @@ pub struct SendRequest {
     /// The raw message a reply or forward answers, when the caller has it; unset, it is looked up by folder and uid.
     pub original: Option<Vec<u8>>,
     pub headers: Option<HeaderEdits>,
-    /// An inline forward's attachments to take along, by index into [`reply::forward_attachments`]; unset, all.
+    /// Applies only to an inline forward: the attachments to take along, by index into [`reply::forward_attachments`]; unset, all.
     pub forward_parts: Option<Vec<usize>>,
 }
 
@@ -150,6 +150,15 @@ fn read_attachments(files: &[PathBuf]) -> anyhow::Result<Vec<FileAttachment>> {
         .collect()
 }
 
+/// The flag the original gets once the answer went; None for new mail.
+fn flag_for(kind: &SendKind) -> Option<OriginalFlag> {
+    match kind {
+        SendKind::New { .. } => None,
+        SendKind::Reply { .. } => Some(OriginalFlag::Answered),
+        SendKind::Forward { .. } => Some(OriginalFlag::Forwarded),
+    }
+}
+
 /// The stored original a reply or forward answers, and the flag it gets once the answer went; None for new mail.
 fn original_for(
     paths: &Paths,
@@ -157,17 +166,15 @@ fn original_for(
     account: &AccountConfig,
     kind: &SendKind,
 ) -> anyhow::Result<Option<(Vec<u8>, OriginalFlag)>> {
-    Ok(match kind {
-        SendKind::New { .. } => None,
-        SendKind::Reply { folder, uid, .. } => Some((
-            stored_original(paths, client, account, folder, *uid)?,
-            OriginalFlag::Answered,
-        )),
-        SendKind::Forward { folder, uid, .. } => Some((
-            stored_original(paths, client, account, folder, *uid)?,
-            OriginalFlag::Forwarded,
-        )),
-    })
+    let (Some(flag), SendKind::Reply { folder, uid, .. } | SendKind::Forward { folder, uid, .. }) =
+        (flag_for(kind), kind)
+    else {
+        return Ok(None);
+    };
+    Ok(Some((
+        stored_original(paths, client, account, folder, *uid)?,
+        flag,
+    )))
 }
 
 /// The draft for `kind` with `body`, answering `original` when it is a reply or forward.
@@ -218,14 +225,19 @@ fn draft_for(
     })
 }
 
+fn set_from(draft: &mut Draft, from: &str, identity: &Identity) -> anyhow::Result<()> {
+    check::check_from(from, identity)?;
+    draft.from_name = identity.display_name_for(from).map(str::to_string);
+    draft.from = from.trim().to_string();
+    Ok(())
+}
+
 fn apply_headers(
     draft: &mut Draft,
     edits: &HeaderEdits,
     identity: &Identity,
 ) -> anyhow::Result<()> {
-    check::check_from(&edits.from, identity)?;
-    draft.from_name = identity.display_name_for(&edits.from).map(str::to_string);
-    draft.from = edits.from.trim().to_string();
+    set_from(draft, &edits.from, identity)?;
     draft.to = edits.to.clone();
     draft.cc = edits.cc.clone();
     draft.bcc = edits.bcc.clone();
@@ -316,13 +328,7 @@ pub fn compose(
         Body::Edit => String::new(),
     };
     let original = match request.original.clone() {
-        Some(raw) => {
-            let flag = match request.kind {
-                SendKind::Forward { .. } => OriginalFlag::Forwarded,
-                _ => OriginalFlag::Answered,
-            };
-            (!matches!(request.kind, SendKind::New { .. })).then_some((raw, flag))
-        }
+        Some(raw) => flag_for(&request.kind).map(|flag| (raw, flag)),
         None => original_for(paths, client, account, &request.kind)?,
     };
     let forward_parts = request.forward_parts.as_deref();
@@ -358,9 +364,7 @@ pub fn compose(
         apply_headers(&mut draft, edits, &identity)?;
     }
     if let Some(from) = &request.from {
-        check::check_from(from, &identity)?;
-        draft.from_name = identity.display_name_for(from).map(str::to_string);
-        draft.from = from.trim().to_string();
+        set_from(&mut draft, from, &identity)?;
     }
     draft
         .attachments
@@ -556,40 +560,35 @@ mod tests {
 
     #[test]
     fn edited_headers_replace_the_builders() {
-        let identity = Config::load(&home().daemon.paths.config_file())
-            .unwrap()
-            .accounts[0]
-            .identity()
-            .unwrap();
-        let mut draft = draft_for(&identity, &reply_kind(7), ORIGINAL, "", None).unwrap();
-        let edits = HeaderEdits {
-            from: "me@example.com".into(),
-            to: vec!["c@x.org".into()],
-            cc: vec![],
-            bcc: vec![],
-            subject: "New".into(),
-        };
-        apply_headers(&mut draft, &edits, &identity).unwrap();
-        assert_eq!(draft.to, ["c@x.org"]);
-        assert_eq!(draft.subject, "New");
-        assert_eq!(draft.in_reply_to.as_deref(), Some("<m1@x.org>"));
-        assert!(draft.text.contains("> Shall we?"), "{:?}", draft.text);
-    }
-
-    #[test]
-    fn edited_headers_are_sent() {
         let h = home();
         let mut edited = request(reply_kind(7));
         edited.original = Some(ORIGINAL.to_vec());
         edited.headers = Some(HeaderEdits {
             from: "me@example.com".into(),
             to: vec!["c@x.org".into()],
-            cc: vec![],
-            bcc: vec![],
+            cc: vec!["d@x.org".into()],
+            bcc: vec!["e@x.org".into()],
             subject: "New".into(),
         });
         compose(&h.config, &h.daemon.paths, &h.client, edited, no_editor).unwrap();
-        assert_eq!(queued_message(&h).0, "c@x.org");
+        let (_, entry) = h.client.client().unwrap().outbox().unwrap().remove(0);
+        assert_eq!(entry.envelope.from, "me@example.com");
+        assert_eq!(entry.envelope.to, ["c@x.org", "d@x.org", "e@x.org"]);
+        let raw = std::fs::read(
+            h.daemon
+                .paths
+                .outbox_dir("work")
+                .join(format!("{}.eml", entry.id)),
+        )
+        .unwrap();
+        let header = |name| crate::message::header_text(&raw, name);
+        assert_eq!(header("Subject").as_deref(), Some("New"));
+        assert_eq!(header("To").as_deref(), Some("c@x.org"));
+        assert_eq!(header("Cc").as_deref(), Some("d@x.org"));
+        assert_eq!(header("Bcc").as_deref(), Some("e@x.org"));
+        assert!(header("From").unwrap().contains("me@example.com"));
+        assert_eq!(header("In-Reply-To").as_deref(), Some("<m1@x.org>"));
+        assert!(String::from_utf8_lossy(&raw).contains("> Shall we?"));
     }
 
     #[test]
