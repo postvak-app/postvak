@@ -38,8 +38,9 @@ const BASE: &str = "postvak://mail/";
 
 /// Mail is written for a 600 px column and assumes nothing about the window: keep images and long words inside it.
 /// The rest is the HTML spec's rendering section for the presentational attributes Blitz lacks (`border`, `valign`,
-/// `align` on a table or image, `size` on `<font>`); a user-agent sheet, so author CSS wins, as it does over real
-/// presentational hints. Relative sizes (`size="+1"`) and `align` on other elements are not mapped.
+/// `align` on a table or image, `size` on `<font>`, and `cellspacing` and `cellpadding` in `spacing_css`); a
+/// user-agent sheet, so author CSS wins, as it does over real presentational hints. Relative sizes (`size="+1"`) and
+/// `align` on other elements are not mapped.
 const MAIL_CSS: &str = concat!(
     "img { max-width: 100%; height: auto; } body { overflow-wrap: anywhere; } ",
     // A border on every cell of a table that asks for one, but not of a table nested in it.
@@ -61,9 +62,26 @@ const MAIL_CSS: &str = concat!(
     "tr[valign=\"baseline\" i] > :is(td, th):not([valign]) { vertical-align: baseline; }",
 );
 
-/// `MAIL_CSS` parsed once, as Blitz parses its default sheet.
+/// `cellspacing` and `cellpadding` up to this many pixels are mapped; a larger value keeps the default spacing.
+const MAX_SPACING: u32 = 30;
+
+/// `MAIL_CSS` and `spacing_css` parsed once, as Blitz parses its default sheet.
 static MAIL_SHEET: LazyLock<UserAgentStylesheet> =
-    LazyLock::new(|| UserAgentStylesheet::parse(MAIL_CSS));
+    LazyLock::new(|| UserAgentStylesheet::parse(&format!("{MAIL_CSS} {}", spacing_css())));
+
+/// A table's `cellspacing` as its `border-spacing`, and its `cellpadding` as the padding of its own cells, one rule per
+/// value, as a selector cannot read a number out of an attribute.
+fn spacing_css() -> String {
+    (0..=MAX_SPACING)
+        .map(|px| {
+            format!(
+                "table[cellspacing=\"{px}\"] {{ border-spacing: {px}px; }} \
+                 table[cellpadding=\"{px}\"] > :is(thead, tbody, tfoot) > tr > :is(td, th), \
+                 table[cellpadding=\"{px}\"] > tr > :is(td, th) {{ padding: {px}px; }} "
+            )
+        })
+        .collect()
+}
 
 /// The render thread and its two channels. Dropping it ends the thread once it finishes its current job.
 pub struct Renderer {
@@ -1213,6 +1231,42 @@ mod tests {
         let reds = at(&strip(img, 400.0), is_red);
         assert!(reds.iter().all(|p| p.1 < 30));
         assert!(!reds.is_empty());
+    }
+
+    #[test]
+    fn cellspacing_spaces_the_cells() {
+        // The columns between two red cells where neither paints.
+        let gap = |attrs: &str| {
+            let html = format!(
+                "<table {attrs}><tr><td width=50 height=20 style=\"background:#f00\"></td><td width=50 height=20 style=\"background:#f00\"></td></tr></table>"
+            );
+            let xs: BTreeSet<usize> = at(&strip(&html, 400.0), is_red)
+                .into_iter()
+                .map(|p| p.0)
+                .collect();
+            let (Some(&first), Some(&last)) = (xs.first(), xs.last()) else {
+                panic!("nothing painted for {attrs}");
+            };
+            (first..=last).filter(|x| !xs.contains(x)).count()
+        };
+        assert_eq!(gap("cellspacing=0"), 0);
+        assert_eq!(gap("cellspacing=10"), 10);
+        assert_eq!(gap(""), 2);
+        assert_eq!(gap("cellspacing=10 style=\"border-spacing:0\""), 0);
+    }
+
+    #[test]
+    fn cellpadding_pads_the_cells() {
+        let left = |attrs: &str| {
+            let html = format!(
+                "<table cellspacing=0 {attrs}><tr><td><div style=\"width:10px;height:10px;background:#f00\"></div></td></tr></table>"
+            );
+            let reds = at(&strip(&html, 400.0), is_red);
+            assert!(!reds.is_empty(), "nothing painted for {attrs}");
+            reds.iter().map(|p| p.0).min().unwrap_or(0)
+        };
+        assert_eq!(left("cellpadding=10") - left("cellpadding=0"), 10);
+        assert_eq!(left("") - left("cellpadding=0"), 1);
     }
 
     /// The stacking rule responsive mail ships for narrow screens, on two columns with a colour and a text each.
