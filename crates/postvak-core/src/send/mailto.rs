@@ -12,6 +12,7 @@ pub struct Mailto {
 }
 
 pub fn parse(url: &str) -> Option<Mailto> {
+    let url = url.split('#').next().unwrap_or_default();
     let (scheme, rest) = url.split_once(':')?;
     if !scheme.eq_ignore_ascii_case("mailto") {
         return None;
@@ -23,9 +24,9 @@ pub fn parse(url: &str) -> Option<Mailto> {
         let (name, value) = field.split_once('=').unwrap_or((field, ""));
         match name.to_ascii_lowercase().as_str() {
             "bcc" => push_addresses(&mut mailto.bcc, value),
-            "body" => mailto.body = decode(value).replace("\r\n", "\n"),
+            "body" => mailto.body = decode(value).replace("\r\n", "\n").replace('\r', "\n"),
             "cc" => push_addresses(&mut mailto.cc, value),
-            "subject" => mailto.subject = decode(value),
+            "subject" => mailto.subject = single_line(&decode(value)),
             "to" => push_addresses(&mut mailto.to, value),
             _ => {}
         }
@@ -37,8 +38,23 @@ fn decode(value: &str) -> String {
     percent_decode_str(value).decode_utf8_lossy().into_owned()
 }
 
+fn single_line(text: &str) -> String {
+    text.chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
 fn push_addresses(list: &mut Vec<String>, value: &str) {
-    let decoded = decode(value);
+    let decoded: String = decode(value)
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect();
     list.extend(
         decoded
             .split(',')
@@ -90,5 +106,41 @@ mod tests {
     fn not_a_mailto_url_is_none() {
         assert_eq!(parse("https://x.org"), None);
         assert_eq!(parse("a@x.org"), None);
+    }
+
+    #[test]
+    fn the_fragment_is_cut() {
+        assert_eq!(
+            parse("mailto:a@x.org?subject=Hi#frag")
+                .expect("mailto")
+                .subject,
+            "Hi"
+        );
+        assert_eq!(parse("mailto:a@x.org#x").expect("mailto").to, ["a@x.org"]);
+    }
+
+    #[test]
+    fn control_characters_cannot_add_headers() {
+        let mailto = parse("mailto:a%0D%0A@x.org?subject=x%0D%0ABcc:evil@x.org").expect("mailto");
+        assert_eq!(mailto.subject, "x  Bcc:evil@x.org");
+        assert!(mailto.bcc.is_empty());
+        assert_eq!(mailto.to, ["a@x.org"]);
+    }
+
+    #[test]
+    fn a_lone_carriage_return_in_the_body_is_a_line_break() {
+        assert_eq!(
+            parse("mailto:a@x.org?body=a%0Db%0D%0Ac")
+                .expect("mailto")
+                .body,
+            "a\nb\nc"
+        );
+    }
+
+    #[test]
+    fn malformed_escapes_stay_literal() {
+        let mailto = parse("mailto:a@x.org?subject=100%zz&body=ends%").expect("mailto");
+        assert_eq!(mailto.subject, "100%zz");
+        assert_eq!(mailto.body, "ends%");
     }
 }
