@@ -24,6 +24,7 @@ keyring-core.workspace = true
 lettre.workspace = true
 log.workspace = true
 mail-parser.workspace = true
+percent-encoding.workspace = true
 psl.workspace = true
 regex.workspace = true
 rusqlite.workspace = true
