@@ -1,0 +1,557 @@
+//! The composer without a toolkit: its fields, checks, questions and what it asks the daemon to send.
+
+use std::path::PathBuf;
+
+use postvak_core::config::Identity;
+use postvak_core::send::check::{check_from, valid_address};
+use postvak_core::send::compose::{Body, HeaderEdits, Prefilled, SendKind, SendRequest};
+use postvak_core::send::edit::split_recipients;
+use postvak_core::send::mailto::Mailto;
+use postvak_core::send::reply::{ForwardAs, ReplyTo};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ComposeKind {
+    New,
+    Reply(ReplyTo),
+    Forward,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Field {
+    Attachments,
+    Bcc,
+    Cc,
+    From,
+    Send,
+    Subject,
+    To,
+}
+
+/// The message a reply or forward answers; `raw` is empty until the prefill arrives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OriginalRef {
+    pub folder: String,
+    pub uid: u32,
+    pub raw: Vec<u8>,
+}
+
+/// The fields as the composer opened, to tell whether the user changed anything.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Snapshot {
+    bcc: String,
+    cc: String,
+    files: Vec<PathBuf>,
+    from: String,
+    kept_parts: Vec<bool>,
+    subject: String,
+    text: String,
+    to: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Composer {
+    pub id: u64,
+    pub account: String,
+    pub kind: ComposeKind,
+    pub original: Option<OriginalRef>,
+    pub from: String,
+    pub from_choices: Vec<String>,
+    pub to: String,
+    pub cc: String,
+    pub bcc: String,
+    pub show_cc_bcc: bool,
+    pub subject: String,
+    pub text: String,
+    pub files: Vec<PathBuf>,
+    /// The original's attachments as (name, size, whether an inline forward takes it along).
+    pub forward_parts: Vec<(String, u64, bool)>,
+    pub forward_as_attachment: bool,
+    pub loading: bool,
+    pub sending: bool,
+    pub error: Option<(Field, String)>,
+    opened_as: Snapshot,
+}
+
+fn join_addresses(addresses: &[String]) -> String {
+    addresses.join(", ")
+}
+
+fn choices_of(identity: &Identity) -> Vec<String> {
+    std::iter::once(identity.address().to_string())
+        .chain(
+            identity
+                .alias_patterns()
+                .iter()
+                .filter(|alias| !alias.contains('*'))
+                .cloned(),
+        )
+        .collect()
+}
+
+impl Composer {
+    fn empty(id: u64, account: &str, kind: ComposeKind) -> Self {
+        Composer {
+            id,
+            account: account.to_string(),
+            kind,
+            original: None,
+            from: String::new(),
+            from_choices: Vec::new(),
+            to: String::new(),
+            cc: String::new(),
+            bcc: String::new(),
+            show_cc_bcc: false,
+            subject: String::new(),
+            text: String::new(),
+            files: Vec::new(),
+            forward_parts: Vec::new(),
+            forward_as_attachment: false,
+            loading: false,
+            sending: false,
+            error: None,
+            opened_as: Snapshot::default(),
+        }
+    }
+
+    fn answering(id: u64, account: &str, kind: ComposeKind, folder: &str, uid: u32) -> Self {
+        Composer {
+            original: Some(OriginalRef {
+                folder: folder.to_string(),
+                uid,
+                raw: Vec::new(),
+            }),
+            loading: true,
+            ..Self::empty(id, account, kind)
+        }
+    }
+
+    pub(crate) fn reply(id: u64, account: &str, folder: &str, uid: u32, to: ReplyTo) -> Self {
+        Self::answering(id, account, ComposeKind::Reply(to), folder, uid)
+    }
+
+    pub(crate) fn forward(id: u64, account: &str, folder: &str, uid: u32) -> Self {
+        Self::answering(id, account, ComposeKind::Forward, folder, uid)
+    }
+
+    pub(crate) fn new_mail(
+        id: u64,
+        account: &str,
+        identity: &Identity,
+        mailto: Option<Mailto>,
+    ) -> Self {
+        let mut composer = Self::empty(id, account, ComposeKind::New);
+        composer.from = identity.address().to_string();
+        composer.from_choices = choices_of(identity);
+        if let Some(mailto) = mailto {
+            composer.show_cc_bcc = !mailto.cc.is_empty() || !mailto.bcc.is_empty();
+            composer.to = join_addresses(&mailto.to);
+            composer.cc = join_addresses(&mailto.cc);
+            composer.bcc = join_addresses(&mailto.bcc);
+            composer.subject = mailto.subject;
+            composer.text = mailto.body;
+        }
+        composer.opened_as = composer.snapshot();
+        composer
+    }
+
+    pub(crate) fn fill(&mut self, prefilled: Prefilled, identity: &Identity) {
+        let draft = prefilled.draft;
+        if let Some(original) = self.original.as_mut() {
+            original.raw = prefilled.original.unwrap_or_default();
+        }
+        self.from = draft.from;
+        self.from_choices = choices_of(identity);
+        self.show_cc_bcc = !draft.cc.is_empty() || !draft.bcc.is_empty();
+        self.to = join_addresses(&draft.to);
+        self.cc = join_addresses(&draft.cc);
+        self.bcc = join_addresses(&draft.bcc);
+        self.subject = draft.subject;
+        self.text = draft.text;
+        self.forward_parts = prefilled
+            .attachments
+            .into_iter()
+            .map(|(name, size)| (name, size, true))
+            .collect();
+        self.loading = false;
+        self.opened_as = self.snapshot();
+    }
+
+    fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            bcc: self.bcc.clone(),
+            cc: self.cc.clone(),
+            files: self.files.clone(),
+            from: self.from.clone(),
+            kept_parts: self.forward_parts.iter().map(|part| part.2).collect(),
+            subject: self.subject.clone(),
+            text: self.text.clone(),
+            to: self.to.clone(),
+        }
+    }
+
+    pub(crate) fn changed(&self) -> bool {
+        self.snapshot() != self.opened_as
+    }
+
+    pub(crate) fn leave_question(&self) -> Option<&'static str> {
+        self.changed().then_some("Discard this message?")
+    }
+
+    pub(crate) fn split_addresses(field: &str) -> Vec<String> {
+        split_recipients(field)
+    }
+
+    fn address_field(&self, field: Field) -> Option<&str> {
+        match field {
+            Field::Bcc => Some(&self.bcc),
+            Field::Cc => Some(&self.cc),
+            Field::To => Some(&self.to),
+            _ => None,
+        }
+    }
+
+    /// The first bad address of a To, Cc or Bcc field, in words; None for any other field.
+    pub(crate) fn field_error(&self, field: Field) -> Option<String> {
+        Self::split_addresses(self.address_field(field)?)
+            .iter()
+            .find_map(|address| valid_address(address).err().map(|e| e.to_string()))
+    }
+
+    /// What the attached files and the kept parts of the original add up to; an unreadable file counts as 0.
+    pub(crate) fn attachment_total(&self) -> u64 {
+        let files: u64 = self
+            .files
+            .iter()
+            .filter_map(|path| std::fs::metadata(path).ok())
+            .map(|meta| meta.len())
+            .sum();
+        let kept: u64 = self
+            .forward_parts
+            .iter()
+            .filter(|part| part.2)
+            .map(|part| part.1)
+            .sum();
+        files + kept
+    }
+
+    pub(crate) fn check(&self, identity: &Identity, limit: u64) -> Result<(), (Field, String)> {
+        let fields = [Field::To, Field::Cc, Field::Bcc];
+        if fields.iter().all(|field| {
+            self.address_field(*field)
+                .is_none_or(|v| Self::split_addresses(v).is_empty())
+        }) {
+            return Err((Field::To, "Add a recipient.".to_string()));
+        }
+        for field in fields {
+            if let Some(message) = self.field_error(field) {
+                return Err((field, message));
+            }
+        }
+        check_from(&self.from, identity).map_err(|e| (Field::From, e.to_string()))?;
+        let total = self.attachment_total();
+        if total > limit {
+            return Err((
+                Field::Attachments,
+                format!("The attachments are {total} bytes and the server takes at most {limit}."),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn request(&self) -> SendRequest {
+        let to = Self::split_addresses(&self.to);
+        let cc = Self::split_addresses(&self.cc);
+        let bcc = Self::split_addresses(&self.bcc);
+        let (folder, uid) = self
+            .original
+            .as_ref()
+            .map(|original| (original.folder.clone(), original.uid))
+            .unwrap_or_default();
+        let kind = match self.kind {
+            ComposeKind::New => SendKind::New {
+                to: to.clone(),
+                cc: cc.clone(),
+                bcc: bcc.clone(),
+                subject: self.subject.clone(),
+            },
+            ComposeKind::Reply(reply_to) => SendKind::Reply {
+                folder,
+                uid,
+                to: reply_to,
+            },
+            ComposeKind::Forward => SendKind::Forward {
+                folder,
+                uid,
+                as_: if self.forward_as_attachment {
+                    ForwardAs::Attachment
+                } else {
+                    ForwardAs::Inline
+                },
+                to: to.clone(),
+                cc: cc.clone(),
+                bcc: bcc.clone(),
+            },
+        };
+        let forward_parts = (self.kind == ComposeKind::Forward).then(|| {
+            self.forward_parts
+                .iter()
+                .enumerate()
+                .filter(|(_, part)| part.2)
+                .map(|(index, _)| index)
+                .collect()
+        });
+        SendRequest {
+            account: Some(self.account.clone()),
+            kind,
+            body: Body::Given(self.text.clone()),
+            from: Some(self.from.clone()),
+            attachments: self.files.clone(),
+            now: false,
+            save_sent: None,
+            original: self.original.as_ref().map(|original| original.raw.clone()),
+            headers: Some(HeaderEdits {
+                from: self.from.clone(),
+                to,
+                cc,
+                bcc,
+                subject: self.subject.clone(),
+            }),
+            forward_parts,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use postvak_core::config::{AccountConfig, AliasEntry, PasswordSource};
+    use postvak_core::send::build::Draft;
+    use postvak_core::send::mailto::Mailto;
+
+    const LIMIT: u64 = 25_000_000;
+
+    fn identity() -> Identity {
+        let mut account = AccountConfig::new(
+            "work",
+            "imap.example.com",
+            "me@example.com",
+            PasswordSource::Keyring { keyring: true },
+        );
+        account.aliases = vec![
+            AliasEntry::Pattern("alias@example.com".into()),
+            AliasEntry::Pattern("*@shop.example.com".into()),
+        ];
+        account.identity().unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    fn prefilled(draft: Draft, attachments: Vec<(String, u64)>) -> Prefilled {
+        Prefilled {
+            account: "work".into(),
+            draft,
+            original: Some(b"raw".to_vec()),
+            attachments,
+        }
+    }
+
+    fn new_mail() -> Composer {
+        Composer::new_mail(1, "work", &identity(), None)
+    }
+
+    fn file_of(dir: &tempfile::TempDir, name: &str, size: u64) -> PathBuf {
+        let path = dir.path().join(name);
+        let file = std::fs::File::create(&path).unwrap_or_else(|e| panic!("{e}"));
+        file.set_len(size).unwrap_or_else(|e| panic!("{e}"));
+        path
+    }
+
+    #[test]
+    fn a_reply_starts_loading_and_fills_from_the_prefill() {
+        let mut composer = Composer::reply(3, "work", "INBOX", 7, ReplyTo::Sender);
+        assert!(composer.loading);
+        let draft = Draft {
+            from: "alias@example.com".into(),
+            to: vec!["Ann <ann@example.org>".into()],
+            subject: "Re: Hi".into(),
+            text: "> quoted".into(),
+            ..Draft::default()
+        };
+        composer.fill(prefilled(draft, vec![]), &identity());
+        assert!(!composer.loading);
+        assert_eq!(composer.from, "alias@example.com");
+        assert_eq!(composer.to, "Ann <ann@example.org>");
+        assert_eq!(composer.subject, "Re: Hi");
+        assert_eq!(composer.text, "> quoted");
+        assert_eq!(
+            composer.original.as_ref().map(|o| (o.uid, o.raw.clone())),
+            Some((7, b"raw".to_vec()))
+        );
+        assert!(!composer.changed());
+    }
+
+    #[test]
+    fn reply_all_fills_cc() {
+        let mut composer = Composer::reply(3, "work", "INBOX", 7, ReplyTo::All);
+        let draft = Draft {
+            from: "me@example.com".into(),
+            to: vec!["a@example.org".into()],
+            cc: vec!["b@example.org".into(), "c@example.org".into()],
+            ..Draft::default()
+        };
+        composer.fill(prefilled(draft, vec![]), &identity());
+        assert_eq!(composer.cc, "b@example.org, c@example.org");
+        assert!(composer.show_cc_bcc);
+    }
+
+    #[test]
+    fn a_forward_lists_the_originals_attachments_all_kept() {
+        let mut composer = Composer::forward(3, "work", "INBOX", 7);
+        let draft = Draft {
+            from: "me@example.com".into(),
+            ..Draft::default()
+        };
+        let attachments = vec![("a.pdf".to_string(), 10), ("b.png".to_string(), 20)];
+        composer.fill(prefilled(draft, attachments), &identity());
+        assert_eq!(
+            composer.forward_parts,
+            vec![("a.pdf".into(), 10, true), ("b.png".into(), 20, true)]
+        );
+        assert_eq!(composer.attachment_total(), 30);
+    }
+
+    #[test]
+    fn new_mail_from_a_mailto_link() {
+        let mailto = Mailto {
+            to: vec!["x@example.org".into(), "y@example.org".into()],
+            bcc: vec!["z@example.org".into()],
+            subject: "Hello".into(),
+            body: "Body".into(),
+            ..Mailto::default()
+        };
+        let composer = Composer::new_mail(1, "work", &identity(), Some(mailto));
+        assert!(!composer.loading);
+        assert_eq!(composer.from, "me@example.com");
+        assert_eq!(composer.to, "x@example.org, y@example.org");
+        assert_eq!(composer.bcc, "z@example.org");
+        assert!(composer.show_cc_bcc);
+        assert_eq!(composer.subject, "Hello");
+        assert_eq!(composer.text, "Body");
+        assert!(!composer.changed());
+    }
+
+    #[test]
+    fn nothing_typed_leaves_without_asking() {
+        assert_eq!(new_mail().leave_question(), None);
+    }
+
+    #[test]
+    fn a_typed_word_asks_before_leaving() {
+        let mut composer = new_mail();
+        composer.text.push_str("hi");
+        assert_eq!(composer.leave_question(), Some("Discard this message?"));
+    }
+
+    #[test]
+    fn check_names_the_field() {
+        let mut composer = new_mail();
+        assert_eq!(
+            composer.check(&identity(), LIMIT).map_err(|e| e.0),
+            Err(Field::To)
+        );
+
+        composer.to = "a@example.org".into();
+        composer.cc = "not an address".into();
+        assert_eq!(
+            composer.check(&identity(), LIMIT).map_err(|e| e.0),
+            Err(Field::Cc)
+        );
+
+        composer.cc.clear();
+        assert_eq!(composer.check(&identity(), LIMIT), Ok(()));
+
+        composer.from = "other@example.net".into();
+        assert_eq!(
+            composer.check(&identity(), LIMIT).map_err(|e| e.0),
+            Err(Field::From)
+        );
+
+        composer.from = "me@example.com".into();
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        composer.files = vec![file_of(&dir, "big", 30_000_000)];
+        assert_eq!(
+            composer.check(&identity(), LIMIT).map_err(|e| e.0),
+            Err(Field::Attachments)
+        );
+    }
+
+    #[test]
+    fn the_request_is_what_the_fields_say() {
+        let mut composer = Composer::forward(3, "work", "INBOX", 7);
+        let draft = Draft {
+            from: "me@example.com".into(),
+            ..Draft::default()
+        };
+        let attachments = vec![("a.pdf".to_string(), 10), ("b.png".to_string(), 20)];
+        composer.fill(prefilled(draft, attachments), &identity());
+        composer.to = "Ann <ann@example.org>, bob@example.org".into();
+        composer.subject = "Fwd: Hi".into();
+        composer.text = "see below".into();
+        composer.forward_parts[0].2 = false;
+
+        let request = composer.request();
+        assert_eq!(request.account.as_deref(), Some("work"));
+        assert_eq!(request.body, Body::Given("see below".into()));
+        assert_eq!(request.original, Some(b"raw".to_vec()));
+        assert_eq!(request.forward_parts, Some(vec![1]));
+        assert_eq!(
+            request.kind,
+            SendKind::Forward {
+                folder: "INBOX".into(),
+                uid: 7,
+                as_: ForwardAs::Inline,
+                to: vec!["Ann <ann@example.org>".into(), "bob@example.org".into()],
+                cc: vec![],
+                bcc: vec![],
+            }
+        );
+        assert_eq!(
+            request.headers.map(|h| (h.from, h.to.len(), h.subject)),
+            Some(("me@example.com".into(), 2, "Fwd: Hi".into()))
+        );
+
+        composer.forward_as_attachment = true;
+        assert!(matches!(
+            composer.request().kind,
+            SendKind::Forward {
+                as_: ForwardAs::Attachment,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_wildcard_alias_is_not_a_choice_but_may_be_typed() {
+        let mut composer = new_mail();
+        assert_eq!(
+            composer.from_choices,
+            vec!["me@example.com", "alias@example.com"]
+        );
+        composer.to = "a@example.org".into();
+        composer.from = "orders@shop.example.com".into();
+        assert_eq!(composer.check(&identity(), LIMIT), Ok(()));
+        composer.from = "*@shop.example.com".into();
+        assert_eq!(
+            composer.check(&identity(), LIMIT).map_err(|e| e.0),
+            Err(Field::From)
+        );
+    }
+
+    #[test]
+    fn a_bad_address_is_marked_when_its_field_is_left() {
+        let mut composer = new_mail();
+        composer.cc = "ann@example.org, nope".into();
+        assert!(composer.field_error(Field::Cc).is_some());
+        assert_eq!(composer.field_error(Field::To), None);
+        composer.cc = "ann@example.org".into();
+        assert_eq!(composer.field_error(Field::Cc), None);
+    }
+}
