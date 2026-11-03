@@ -36,12 +36,14 @@ const THREAD: &str = "html-render";
 /// provider refuses.
 const BASE: &str = "postvak://mail/";
 
-/// Mail is written for a 600 px column and assumes nothing about the window: keep images and long words inside it.
+/// Mail is written for a 600 px column and assumes nothing about the window: keep long words, and images the sender
+/// gave no width, inside it. One with a width keeps it, as in a browser, where a narrower cell widens to hold it.
 /// The rest is the HTML spec's rendering section for the presentational attributes Blitz lacks (`border`, `valign`,
-/// `align` on a table or image, `size` on `<font>`); a user-agent sheet, so author CSS wins, as it does over real
-/// presentational hints. Relative sizes (`size="+1"`) and `align` on other elements are not mapped.
+/// `align` on a table or image, `size` on `<font>`, and `cellspacing` and `cellpadding` in `spacing_css`); a
+/// user-agent sheet, so author CSS wins, as it does over real presentational hints. Relative sizes (`size="+1"`) and
+/// `align` on other elements are not mapped.
 const MAIL_CSS: &str = concat!(
-    "img { max-width: 100%; height: auto; } body { overflow-wrap: anywhere; } ",
+    "img:not([width]) { max-width: 100%; height: auto; } body { overflow-wrap: anywhere; } ",
     // A border on every cell of a table that asks for one, but not of a table nested in it.
     "table[border]:not([border=\"0\"]) > :is(thead, tbody, tfoot) > tr > :is(td, th), ",
     "table[border]:not([border=\"0\"]) > tr > :is(td, th) { border: 1px solid gray; } ",
@@ -61,9 +63,26 @@ const MAIL_CSS: &str = concat!(
     "tr[valign=\"baseline\" i] > :is(td, th):not([valign]) { vertical-align: baseline; }",
 );
 
-/// `MAIL_CSS` parsed once, as Blitz parses its default sheet.
+/// `cellspacing` and `cellpadding` up to this many pixels are mapped; a larger value keeps the default spacing.
+const MAX_SPACING: u32 = 30;
+
+/// `MAIL_CSS` and `spacing_css` parsed once, as Blitz parses its default sheet.
 static MAIL_SHEET: LazyLock<UserAgentStylesheet> =
-    LazyLock::new(|| UserAgentStylesheet::parse(MAIL_CSS));
+    LazyLock::new(|| UserAgentStylesheet::parse(&format!("{MAIL_CSS} {}", spacing_css())));
+
+/// A table's `cellspacing` as its `border-spacing`, and its `cellpadding` as the padding of its own cells, one rule per
+/// value, as a selector cannot read a number out of an attribute.
+fn spacing_css() -> String {
+    (0..=MAX_SPACING)
+        .map(|px| {
+            format!(
+                "table[cellspacing=\"{px}\"] {{ border-spacing: {px}px; }} \
+                 table[cellpadding=\"{px}\"] > :is(thead, tbody, tfoot) > tr > :is(td, th), \
+                 table[cellpadding=\"{px}\"] > tr > :is(td, th) {{ padding: {px}px; }} "
+            )
+        })
+        .collect()
+}
 
 /// The render thread and its two channels. Dropping it ends the thread once it finishes its current job.
 pub struct Renderer {
@@ -1215,6 +1234,62 @@ mod tests {
         assert!(!reds.is_empty());
     }
 
+    #[test]
+    fn cellspacing_spaces_the_cells() {
+        // The columns between two red cells where neither paints.
+        let gap = |attrs: &str| {
+            let html = format!(
+                "<table {attrs}><tr><td width=50 height=20 style=\"background:#f00\"></td><td width=50 height=20 style=\"background:#f00\"></td></tr></table>"
+            );
+            let xs: BTreeSet<usize> = at(&strip(&html, 400.0), is_red)
+                .into_iter()
+                .map(|p| p.0)
+                .collect();
+            let (Some(&first), Some(&last)) = (xs.first(), xs.last()) else {
+                panic!("nothing painted for {attrs}");
+            };
+            (first..=last).filter(|x| !xs.contains(x)).count()
+        };
+        assert_eq!(gap("cellspacing=0"), 0);
+        assert_eq!(gap("cellspacing=10"), 10);
+        assert_eq!(gap(""), 2);
+        assert_eq!(gap("cellspacing=10 style=\"border-spacing:0\""), 0);
+    }
+
+    #[test]
+    fn cellpadding_pads_the_cells() {
+        let left = |attrs: &str| {
+            let html = format!(
+                "<table cellspacing=0 {attrs}><tr><td><div style=\"width:10px;height:10px;background:#f00\"></div></td></tr></table>"
+            );
+            let reds = at(&strip(&html, 400.0), is_red);
+            assert!(!reds.is_empty(), "nothing painted for {attrs}");
+            reds.iter().map(|p| p.0).min().unwrap_or(0)
+        };
+        assert_eq!(left("cellpadding=10") - left("cellpadding=0"), 10);
+        assert_eq!(left("") - left("cellpadding=0"), 1);
+    }
+
+    /// As in a browser, an image keeps the width its sender gave it, also in a narrower cell, which widens; one
+    /// without a width is kept inside the page.
+    #[test]
+    fn an_image_keeps_its_width_and_one_without_fits_the_page() {
+        let width = |html: &str| {
+            let mut current = laid_out(html, false, vec![part("red", solid(1000, [255, 0, 0]))]);
+            let xs: BTreeSet<usize> = at(&first_strip(&mut current), is_red)
+                .into_iter()
+                .map(|p| p.0)
+                .collect();
+            let (Some(&first), Some(&last)) = (xs.first(), xs.last()) else {
+                panic!("nothing painted for {html}");
+            };
+            last + 1 - first
+        };
+        let narrow_cell = "<table><tr><td width=15><img src=\"cid:red\" width=45 height=45 style=\"display:block\"></td></tr></table>";
+        assert_eq!(width(narrow_cell), 45);
+        assert!(width("<img src=\"cid:red\">") <= MIN_WIDTH as usize);
+    }
+
     /// The stacking rule responsive mail ships for narrow screens, on two columns with a colour and a text each.
     const STACKING: &str = "<style>@media (max-width: 600px) { td.col { display: block !important; width: 100% !important } }</style><table width=100% cellpadding=0 cellspacing=0><tr><td class=col style=\"background:#ff0000;color:#00ff00\">one</td><td class=col style=\"background:#0000ff;color:#ffff00\">two</td></tr></table>";
 
@@ -1834,5 +1909,79 @@ mod tests {
         assert_eq!(physical(-3.0, 1.0), 0);
         assert_eq!(physical(f32::NAN, 1.0), 0);
         assert_eq!(physical(f32::INFINITY, 1.0), u32::MAX);
+    }
+
+    /// Renders `POSTVAK_RENDER_EML` as the reader would, with remote content loaded, to `POSTVAK_RENDER_PNG`, for
+    /// comparing with a browser: `POSTVAK_RENDER_EML=a.eml POSTVAK_RENDER_PNG=a.png cargo test -p postvak-gui
+    /// render_eml -- --ignored`. `POSTVAK_RENDER_WIDTH` sets the width (default 800).
+    #[test]
+    #[ignore = "a tool, not a test"]
+    fn render_eml() {
+        let path = std::env::var("POSTVAK_RENDER_EML").unwrap();
+        let mut raw = std::fs::read(&path).unwrap();
+        if path.ends_with(".html") {
+            raw = [
+                b"Content-Type: text/html; charset=utf-8\r\n\r\n".as_slice(),
+                &raw,
+            ]
+            .concat();
+        }
+        let out = std::env::var("POSTVAK_RENDER_PNG").unwrap();
+        let width: f32 =
+            std::env::var("POSTVAK_RENDER_WIDTH").map_or(800.0, |w| w.parse().unwrap());
+        let body = postvak_core::message::attachments_and_html(&raw).1.unwrap();
+        let request = |fetched: Fetched| {
+            Request::Load(Load {
+                dark: false,
+                fetched,
+                generation: 1,
+                html: body.html.clone(),
+                inline: body.inline.clone(),
+                scale: 1.0,
+                width,
+            })
+        };
+        // The fonts the app uses, not the one bundled font the other tests use.
+        FONTS.with_borrow_mut(|fonts| *fonts = Some(system_fonts()));
+        let mut current = None;
+        let Some(Reply::Laid { remote, .. }) = handle(&mut current, request(Fetched::default()))
+        else {
+            panic!("no layout");
+        };
+        let fetched: std::collections::BTreeMap<_, _> = remote
+            .into_iter()
+            .map(|url| (url.clone(), super::super::get(&url).unwrap_or_default()))
+            .collect();
+        let Some(Reply::Laid { height, width, .. }) =
+            handle(&mut current, request(Arc::new(fetched)))
+        else {
+            panic!("no layout");
+        };
+        eprintln!("laid out at {width} x {height}");
+        let mut rgba = Vec::new();
+        let (mut w, mut h) = (0, 0);
+        for strip in 0.. {
+            match handle(
+                &mut current,
+                Request::Paint {
+                    generation: 1,
+                    strip,
+                },
+            ) {
+                Some(Reply::Strip { image, .. }) => {
+                    (w, h) = (image.width(), h + image.height());
+                    rgba.extend_from_slice(image.rgba());
+                }
+                _ => break,
+            }
+        }
+        let file = std::io::BufWriter::new(std::fs::File::create(out).unwrap());
+        let mut encoder = png::Encoder::new(file, w, h);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&rgba)
+            .unwrap();
     }
 }

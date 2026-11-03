@@ -11,7 +11,7 @@ use crate::worker::Worker;
 use postvak_core::net::{public, public_agent};
 
 /// A larger response counts as failed.
-const MAX_BYTES: u64 = 5 * 1024 * 1024;
+const MAX_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 5;
 const TIMEOUT: Duration = Duration::from_secs(15);
 const WORKERS: usize = 6;
