@@ -121,6 +121,10 @@ while a message waits. A message the daemon was handing to the server when it st
 failed with "may have been sent; check Sent before retrying". A server that says to try later is tried again for an
 hour; a refusal, such as an unknown recipient, fails the message at once, and no recipient gets it.
 
+### Rule forwards
+
+A [forward rule](rules.md#forwarding) puts its forward in the same outbox, due at once: no person is there to take it back during an undo delay. A forward the server refuses stays in `postvak outbox` with the reason, so nothing is lost when the rule's other actions already moved or deleted the original.
+
 ## Sent copies
 
 After the server took the message, the daemon saves a copy, read, in the folder marked as Sent, else in one called
@@ -152,5 +156,5 @@ Recipients are the addresses given, and with `-t` or none given, the message's T
 
 ## Agents
 
-There is no MCP tool to send, and there will not be one. An agent that you give a shell can still run `postvak send`
+There is no MCP tool to send, and there will not be one. An agent can propose a [forward rule](rules.md#forwarding), but it forwards nothing until you approve it in Postvak. An agent that you give a shell can still run `postvak send`
 like any other command; give it one only if you mean it to send mail as you.
