@@ -103,15 +103,15 @@
   - `forward::over_rate(sent_last_hour: u32, rate: u32) -> bool` (`sent_last_hour >= rate`)
   - `forward::log_action(forward: &Forward) -> String` — `forward:a@x.org`, `forward:a@x.org (+2)` counting `to`, `cc`, `bcc`
   - `forward::options(forward: &Forward) -> send::reply::ForwardOptions`
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - `a_header_with_our_address_is_a_loop`; `a_header_with_another_address_is_not` (Review Focus 3: then `with_loop_header` gives two headers, both present).
   - `three_headers_are_too_many_hops`; `auto_replied_is_skipped`; `auto_generated_newsletters_are_not_skipped` (`Auto-Submitted: auto-generated` → None).
   - `log_action_counts_the_others`.
   - `over_rate_at_the_limit`: `over_rate(20, 20)` true, `over_rate(19, 20)` false.
-- [ ] **Step 2: Run** `cargo nextest run -p postvak-core rules::forward` — FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** — PASS. Add `loop_check` to `tests/fuzz.rs`.
-- [ ] **Step 5: Commit** `feat(rules): loop, rate and log decisions for forwards`
+- [x] **Step 2: Run** `cargo nextest run -p postvak-core rules::forward` — FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** — PASS. Add `loop_check` to `tests/fuzz.rs`.
+- [x] **Step 5: Commit** `feat(rules): loop, rate and log decisions for forwards`
 
 ### Task 4: Forwarding in the rules pass
 
