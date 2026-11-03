@@ -45,13 +45,7 @@ pub(crate) fn lines(app: &App) -> Vec<Line> {
 pub(crate) fn outbox_text(counts: &[postvak_core::send::sender::OutboxCounts]) -> Option<String> {
     let waiting: u32 = counts.iter().map(|c| c.waiting).sum();
     let failed: u32 = counts.iter().map(|c| c.failed).sum();
-    let messages = |n: u32| {
-        if n == 1 {
-            "1 message".to_string()
-        } else {
-            format!("{n} messages")
-        }
-    };
+    let messages = |n: u32| super::numbers::counted(u64::from(n), "message", "messages");
     let parts: Vec<String> = [
         (waiting > 0).then(|| format!("Sending {}", messages(waiting))),
         (failed > 0).then(|| format!("{} failed", messages(failed))),

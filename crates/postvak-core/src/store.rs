@@ -782,11 +782,7 @@ impl Store {
                     Ok(SmtpState {
                         host: row.get(0)?,
                         port: row.get(1)?,
-                        tls: tls.as_deref().and_then(|tls| match tls {
-                            "implicit" => Some(SmtpTls::Implicit),
-                            "starttls" => Some(SmtpTls::Starttls),
-                            _ => None,
-                        }),
+                        tls: tls.as_deref().and_then(SmtpTls::parse),
                         guessed_for_host: row.get(3)?,
                         guessed_for_user: row.get(4)?,
                         tried_at: row.get(5)?,

@@ -1,7 +1,6 @@
 //! Building a message from what the user wrote: plain text as `format=flowed`, the HTML of a quote when there is one,
 //! attachments, and the headers a reply or forward needs.
 
-use std::hash::{BuildHasher, Hasher};
 use std::time::{Duration, SystemTime};
 
 use lettre::message::header::{ContentTransferEncoding, ContentType};
@@ -170,19 +169,8 @@ fn wrap(line: &str) -> Vec<String> {
 /// A new Message-ID on `from`'s domain.
 pub fn message_id(from: &str) -> String {
     let domain = from.rsplit_once('@').map_or("postvak.invalid", |(_, d)| d);
-    let random = |salt: u64| {
-        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
-        hasher.write_u64(salt);
-        hasher.write_u128(
-            SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos(),
-        );
-        hasher.write_u32(std::process::id());
-        hasher.finish()
-    };
-    format!("<{:016x}{:016x}@{domain}>", random(1), random(2))
+    let (a, b) = (crate::sync::random_u64(), crate::sync::random_u64());
+    format!("<{a:016x}{b:016x}@{domain}>")
 }
 
 fn mailbox(name: Option<&str>, address: &str) -> Result<Mailbox, BuildError> {

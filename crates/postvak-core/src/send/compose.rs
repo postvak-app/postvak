@@ -14,7 +14,7 @@ use crate::config::{self, AccountConfig, Config, Identity};
 use crate::daemon::client::LazyClient;
 use crate::daemon::wire::SendOutcome;
 use crate::paths::Paths;
-use crate::store::Store;
+use crate::store::{SmtpState, Store};
 
 /// Where the text of a message comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,18 +125,33 @@ fn read_attachments(files: &[PathBuf]) -> anyhow::Result<Vec<FileAttachment>> {
         .collect()
 }
 
-/// The original a reply or forward answers, and the flag it gets once the answer went.
-type Answered = Option<(Vec<u8>, OriginalFlag)>;
-
-/// The draft for `kind` with `body`, and the original it answers.
-fn draft_for(
+/// The stored original a reply or forward answers, and the flag it gets once the answer went; None for new mail.
+fn original_for(
     paths: &Paths,
     client: &LazyClient,
     account: &AccountConfig,
+    kind: &SendKind,
+) -> anyhow::Result<Option<(Vec<u8>, OriginalFlag)>> {
+    Ok(match kind {
+        SendKind::New { .. } => None,
+        SendKind::Reply { folder, uid, .. } => Some((
+            stored_original(paths, client, account, folder, *uid)?,
+            OriginalFlag::Answered,
+        )),
+        SendKind::Forward { folder, uid, .. } => Some((
+            stored_original(paths, client, account, folder, *uid)?,
+            OriginalFlag::Forwarded,
+        )),
+    })
+}
+
+/// The draft for `kind` with `body`, answering `original` when it is a reply or forward.
+fn draft_for(
     identity: &Identity,
     kind: &SendKind,
+    original: &[u8],
     body: &str,
-) -> anyhow::Result<(Draft, Answered)> {
+) -> anyhow::Result<Draft> {
     Ok(match kind {
         SendKind::New {
             to,
@@ -145,34 +160,21 @@ fn draft_for(
             subject,
         } => {
             let from = identity.address().to_string();
-            (
-                Draft {
-                    from_name: identity.display_name_for(&from).map(str::to_string),
-                    from,
-                    to: to.clone(),
-                    cc: cc.clone(),
-                    bcc: bcc.clone(),
-                    subject: subject.clone(),
-                    text: body.to_string(),
-                    ..Default::default()
-                },
-                None,
-            )
+            Draft {
+                from_name: identity.display_name_for(&from).map(str::to_string),
+                from,
+                to: to.clone(),
+                cc: cc.clone(),
+                bcc: bcc.clone(),
+                subject: subject.clone(),
+                text: body.to_string(),
+                ..Default::default()
+            }
         }
-        SendKind::Reply { folder, uid, to } => {
-            let raw = stored_original(paths, client, account, folder, *uid)?;
-            let draft = reply::reply(&raw, *to, identity, body)?;
-            (draft, Some((raw, OriginalFlag::Answered)))
-        }
+        SendKind::Reply { to, .. } => reply::reply(original, *to, identity, body)?,
         SendKind::Forward {
-            folder,
-            uid,
-            as_,
-            to,
-            cc,
-            bcc,
+            as_, to, cc, bcc, ..
         } => {
-            let raw = stored_original(paths, client, account, folder, *uid)?;
             let recipients = reply::Recipients {
                 to: to.clone(),
                 cc: cc.clone(),
@@ -182,9 +184,47 @@ fn draft_for(
                 as_: *as_,
                 ..Default::default()
             };
-            let draft = reply::forward(&raw, recipients, identity, body, &options)?;
-            (draft, Some((raw, OriginalFlag::Forwarded)))
+            reply::forward(original, recipients, identity, body, &options)?
         }
+    })
+}
+
+/// The account's stored SMTP state and the server it sends through; an error that says how to set one up when it has
+/// none.
+fn sending_server(
+    paths: &Paths,
+    account: &AccountConfig,
+) -> anyhow::Result<(Option<SmtpState>, super::SmtpServer)> {
+    let state = Store::open_account(paths, &account.name)?.smtp_state()?;
+    let server = server_for(account, state.as_ref())
+        .ok_or_else(|| anyhow!("{}", crate::help::sending_not_set_up(&account.name)))?;
+    Ok((state, server))
+}
+
+/// Puts a checked message in the daemon's outbox, due at `due`.
+fn queue(
+    client: &LazyClient,
+    account: &AccountConfig,
+    checked: &check::Checked,
+    due: i64,
+    save_sent: bool,
+    original: Option<Original>,
+    first_recipient: String,
+) -> anyhow::Result<Queued> {
+    let envelope = Envelope {
+        from: checked.from.clone(),
+        to: checked.recipients.clone(),
+    };
+    let entry = Entry::new(envelope, due, save_sent, original);
+    let (id, due) = client
+        .client()?
+        .queue_send(&account.name, &checked.keep, &entry)?;
+    Ok(Queued {
+        account: account.name.clone(),
+        id,
+        due,
+        first_recipient,
+        more: checked.recipients.len().saturating_sub(1),
     })
 }
 
@@ -198,15 +238,14 @@ pub fn compose(
 ) -> anyhow::Result<Queued> {
     let account = config::single(&config.accounts, request.account.as_deref())?;
     let identity = account.identity()?;
-    let state = Store::open_account(paths, &account.name)?.smtp_state()?;
-    let server = server_for(account, state.as_ref())
-        .ok_or_else(|| anyhow!("{}", crate::help::sending_not_set_up(&account.name)))?;
+    let (state, server) = sending_server(paths, account)?;
     let given = match &request.body {
         Body::Given(text) => text.clone(),
         Body::Edit => String::new(),
     };
-    let (mut draft, original) =
-        draft_for(paths, client, account, &identity, &request.kind, &given)?;
+    let original = original_for(paths, client, account, &request.kind)?;
+    let raw = original.as_ref().map_or(&[][..], |(raw, _)| raw.as_slice());
+    let mut draft = draft_for(&identity, &request.kind, raw, &given)?;
     if request.body == Body::Edit {
         let template = super::edit::template(&draft);
         let edited = edit(&template)?;
@@ -218,17 +257,7 @@ pub fn compose(
         if draft.html.is_some() {
             let quote = draft.text.trim_start_matches('\n').trim_end();
             written.html = match written.text.trim_end().strip_suffix(quote) {
-                Some(user) => {
-                    let (rebuilt, _) = draft_for(
-                        paths,
-                        client,
-                        account,
-                        &identity,
-                        &request.kind,
-                        user.trim_end(),
-                    )?;
-                    rebuilt.html
-                }
+                Some(user) => draft_for(&identity, &request.kind, raw, user.trim_end())?.html,
                 None => None,
             };
         }
@@ -244,14 +273,11 @@ pub fn compose(
         .extend(read_attachments(&request.attachments)?);
     let now = crate::time::now();
     let keep = build::build(&draft, now)?;
-    let caps = state.as_ref().map(|s| super::Capabilities {
-        size: s.size,
-        eight_bit_mime: s.eight_bit_mime,
-    });
     let args = CheckRecipients {
         from_headers: true,
         ..Default::default()
     };
+    let caps = state.as_ref().map(SmtpState::capabilities);
     let checked = check::check(&keep, &args, &identity, caps.as_ref())?;
     let delay = if request.now {
         0
@@ -265,68 +291,35 @@ pub fn compose(
             .or(account.smtp.as_ref().and_then(|s| s.save_sent)),
     );
     let original = original.and_then(|(raw, flag)| {
-        let id = crate::message::parse_headers(&raw).message_id?;
-        Some(Original {
-            message_id: id,
-            flag,
-        })
+        let message_id = crate::message::parse_headers(&raw).message_id?;
+        Some(Original { message_id, flag })
     });
-    let entry = Entry::new(
-        Envelope {
-            from: checked.from.clone(),
-            to: checked.recipients.clone(),
-        },
-        now + delay,
-        save_sent,
-        original,
-    );
-    let (id, due) = client
-        .client()?
-        .queue_send(&account.name, &checked.keep, &entry)?;
     let first = draft
         .to
         .iter()
         .chain(&draft.cc)
         .chain(&draft.bcc)
         .next()
-        .map(|r| shown_name(r))
+        .map(|r| crate::message::display_name(r))
         .unwrap_or_default();
-    Ok(Queued {
-        account: account.name.clone(),
-        id,
-        due,
-        first_recipient: first,
-        more: checked.recipients.len().saturating_sub(1),
-    })
+    queue(
+        client,
+        account,
+        &checked,
+        now + delay,
+        save_sent,
+        original,
+        first,
+    )
 }
 
-/// A recipient's name, or its address when it has none.
-fn shown_name(recipient: &str) -> String {
-    match recipient.parse::<lettre::message::Mailbox>() {
-        Ok(mailbox) => mailbox
-            .name
-            .filter(|n| !n.trim().is_empty())
-            .unwrap_or_else(|| mailbox.email.to_string()),
-        Err(_) => recipient.to_string(),
-    }
-}
-
-/// What became of a `--raw` message, and sendmail's exit code for it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RawOutcome {
-    Sent,
-    Temporary(String),
-    Permanent(String),
-}
-
-impl RawOutcome {
-    /// 0 sent, 75 (`EX_TEMPFAIL`) tried again later, 69 (`EX_UNAVAILABLE`) refused.
-    pub fn exit_code(&self) -> u8 {
-        match self {
-            RawOutcome::Sent => 0,
-            RawOutcome::Temporary(_) => 75,
-            RawOutcome::Permanent(_) => 69,
-        }
+/// sendmail's exit code for what became of a `--raw` message: 0 sent, 75 (`EX_TEMPFAIL`) tried again later, 69
+/// (`EX_UNAVAILABLE`) refused.
+pub fn exit_code(outcome: &SendOutcome) -> u8 {
+    match outcome {
+        SendOutcome::Sent => 0,
+        SendOutcome::Temporary(_) => 75,
+        SendOutcome::Permanent(_) => 69,
     }
 }
 
@@ -343,34 +336,19 @@ pub fn compose_raw(
     let recipients = sendmail::parse_args(args)?;
     let account = sendmail::account_for(raw, &config.accounts, account)?;
     let identity = account.identity()?;
-    let state = Store::open_account(paths, &account.name)?.smtp_state()?;
-    if server_for(account, state.as_ref()).is_none() {
-        bail!("{}", crate::help::sending_not_set_up(&account.name));
-    }
-    let caps = state.as_ref().map(|s| super::Capabilities {
-        size: s.size,
-        eight_bit_mime: s.eight_bit_mime,
-    });
+    let (state, _) = sending_server(paths, account)?;
+    let caps = state.as_ref().map(SmtpState::capabilities);
     let checked = check::check(raw, &recipients, &identity, caps.as_ref())?;
-    let entry = Entry::new(
-        Envelope {
-            from: checked.from.clone(),
-            to: checked.recipients.clone(),
-        },
+    let first = checked.recipients.first().cloned().unwrap_or_default();
+    queue(
+        client,
+        account,
+        &checked,
         crate::time::now(),
         save_sent,
         None,
-    );
-    let (id, due) = client
-        .client()?
-        .queue_send(&account.name, &checked.keep, &entry)?;
-    Ok(Queued {
-        account: account.name.clone(),
-        id,
-        due,
-        first_recipient: checked.recipients.first().cloned().unwrap_or_default(),
-        more: checked.recipients.len().saturating_sub(1),
-    })
+        first,
+    )
 }
 
 /// [`compose_raw`], then waits for the server's answer, as sendmail does.
@@ -382,15 +360,9 @@ pub fn compose_raw_and_wait(
     args: &[String],
     account: Option<&str>,
     save_sent: bool,
-) -> anyhow::Result<RawOutcome> {
+) -> anyhow::Result<SendOutcome> {
     let queued = compose_raw(config, paths, client, raw, args, account, save_sent)?;
-    Ok(
-        match client.client()?.await_send(&queued.account, &queued.id)? {
-            SendOutcome::Sent => RawOutcome::Sent,
-            SendOutcome::Temporary(reason) => RawOutcome::Temporary(reason),
-            SendOutcome::Permanent(reason) => RawOutcome::Permanent(reason),
-        },
-    )
+    client.client()?.await_send(&queued.account, &queued.id)
 }
 
 #[cfg(test)]
@@ -560,19 +532,19 @@ mod tests {
             compose_raw_and_wait(&h.config, &h.daemon.paths, &h.client, raw, &[], None, false)
                 .unwrap()
         };
-        assert_eq!(run().exit_code(), 0);
+        assert_eq!(exit_code(&run()), 0);
         h.smtp.with(|s| {
             s.script
                 .push_back(Err(crate::send::SmtpError::Temporary("451 later".into())))
         });
         let temporary = run();
-        assert_eq!(temporary.exit_code(), 75);
+        assert_eq!(exit_code(&temporary), 75);
         assert_eq!(h.client.client().unwrap().outbox().unwrap().len(), 1);
         h.smtp.with(|s| {
             s.script
                 .push_back(Err(crate::send::SmtpError::Permanent("550 no".into())))
         });
-        assert_eq!(run().exit_code(), 69);
+        assert_eq!(exit_code(&run()), 69);
     }
 
     #[test]

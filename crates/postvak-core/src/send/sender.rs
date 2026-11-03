@@ -217,12 +217,28 @@ impl Senders {
         })
     }
 
+    /// The outbox of `account` while it is configured; a removed account's outbox stays on disk, untouched.
     fn shared(&self, account: &str) -> io::Result<&Arc<Shared>> {
-        self.shared.get(account).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("no account named '{account}'"),
-            )
+        self.accounts
+            .iter()
+            .any(|sender| sender.config.name == account)
+            .then(|| self.shared.get(account))
+            .flatten()
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("no account named '{account}'"),
+                )
+            })
+    }
+
+    /// Each configured account's entries.
+    fn each_outbox(&self) -> impl Iterator<Item = (&str, Vec<Entry>)> {
+        self.accounts.iter().filter_map(|sender| {
+            let name = sender.config.name.as_str();
+            let shared = self.shared.get(name)?;
+            let _lock = shared.lock();
+            Some((name, shared.outbox.list().unwrap_or_default()))
         })
     }
 
@@ -286,41 +302,27 @@ impl Senders {
 
     /// Every entry of every account, by account.
     pub fn entries(&self) -> Vec<(String, Entry)> {
-        let mut all = Vec::new();
-        for sender in &self.accounts {
-            if let Ok(shared) = self.shared(&sender.config.name) {
-                let _lock = shared.lock();
-                for entry in shared.outbox.list().unwrap_or_default() {
-                    all.push((sender.config.name.clone(), entry));
-                }
-            }
-        }
-        all
+        self.each_outbox()
+            .flat_map(|(name, entries)| entries.into_iter().map(move |e| (name.to_string(), e)))
+            .collect()
     }
 
     /// How many messages wait and failed, per account.
     pub fn counts(&self) -> Vec<(String, OutboxCounts)> {
-        let entries = self.entries();
-        self.accounts
-            .iter()
-            .map(|s| {
-                let name = &s.config.name;
-                let mine = entries
-                    .iter()
-                    .filter(|(account, _)| account == name)
-                    .map(|(_, e)| e);
-                (name.clone(), counts_of(mine))
-            })
+        self.each_outbox()
+            .map(|(name, entries)| (name.to_string(), counts_of(&entries)))
             .collect()
     }
 
     /// Whether any account has a message to send, being sent or retried, or sent with IMAP work left: the daemon does
     /// not exit for idleness while it has.
     pub fn busy(&self) -> bool {
-        self.entries().iter().any(|(_, entry)| match entry.state {
-            State::Waiting | State::Sending | State::Sent => true,
-            State::Failed { retrying, .. } => retrying,
-        })
+        self.each_outbox()
+            .flat_map(|(_, entries)| entries)
+            .any(|entry| match entry.state {
+                State::Waiting | State::Sending | State::Sent => true,
+                State::Failed { retrying, .. } => retrying,
+            })
     }
 
     /// The IMAP side's report for a sent message: removes it once both its copy and its flag are done.
@@ -363,15 +365,6 @@ impl Senders {
     }
 }
 
-/// What a send needs, once its entry is marked as being sent.
-struct Ready {
-    entry: Entry,
-    server: super::SmtpServer,
-    secret: credentials::Secret,
-    /// The message without Bcc.
-    transmit: Vec<u8>,
-}
-
 struct Worker {
     account: AccountConfig,
     paths: Paths,
@@ -380,6 +373,30 @@ struct Worker {
     smtp: SmtpConnector,
     finish: Sender<(String, String)>,
     clock: Clock,
+}
+
+/// Why an attempt failed, as the outbox shows it, and whether trying again later may work.
+struct Failure {
+    reason: String,
+    temporary: bool,
+}
+
+impl From<SmtpError> for Failure {
+    fn from(error: SmtpError) -> Self {
+        Failure {
+            temporary: error.is_temporary(),
+            reason: error.to_string(),
+        }
+    }
+}
+
+/// What a send needs from outside the outbox.
+struct Ready {
+    store: Option<Store>,
+    server: super::SmtpServer,
+    secret: credentials::Secret,
+    /// The message without Bcc.
+    transmit: Vec<u8>,
 }
 
 impl Worker {
@@ -393,10 +410,7 @@ impl Worker {
         let mut last_finish = i64::MIN;
         while !self.stop.load(Ordering::Acquire) {
             let now = (self.clock)();
-            let entries = {
-                let _lock = self.shared.lock();
-                self.shared.outbox.list().unwrap_or_default()
-            };
+            let mut entries = self.list();
             if now.saturating_sub(last_finish) >= FINISH_EVERY_SECS {
                 last_finish = now;
                 for entry in entries.iter().filter(|e| e.state == State::Sent) {
@@ -405,27 +419,27 @@ impl Worker {
                         .send((self.account.name.clone(), entry.id.clone()));
                 }
             }
-            for entry in &entries {
+            let mut tried = false;
+            for entry in entries.iter().filter(|entry| due(entry, now)) {
                 if self.stop.load(Ordering::Acquire) {
                     return;
                 }
-                if due(entry, now) {
-                    self.send(&entry.id);
-                }
+                self.send(&entry.id);
+                tried = true;
             }
-            let next = {
-                let _lock = self.shared.lock();
-                self.shared.outbox.list().unwrap_or_default()
+            if tried {
+                entries = self.list();
             }
-            .iter()
-            .filter(|e| {
-                matches!(
-                    e.state,
-                    State::Waiting | State::Failed { retrying: true, .. }
-                )
-            })
-            .map(|e| e.due)
-            .min();
+            let next = entries
+                .iter()
+                .filter(|e| {
+                    matches!(
+                        e.state,
+                        State::Waiting | State::Failed { retrying: true, .. }
+                    )
+                })
+                .map(|e| e.due)
+                .min();
             let now = (self.clock)();
             match next {
                 Some(due) if due <= now => {}
@@ -435,122 +449,134 @@ impl Worker {
         }
     }
 
+    fn list(&self) -> Vec<Entry> {
+        let _lock = self.shared.lock();
+        self.shared.outbox.list().unwrap_or_default()
+    }
+
+    /// The entry `id` while it is still due, read under the lock.
+    fn due_entry(&self, id: &str, now: i64) -> Option<Entry> {
+        self.shared
+            .outbox
+            .get(id)
+            .ok()
+            .filter(|entry| due(entry, now))
+    }
+
     /// Sends message `id` if it is still due.
     fn send(&self, id: &str) {
         let name = &self.account.name;
         let now = (self.clock)();
-        let prepared = {
-            let _lock = self.shared.lock();
-            match self.shared.outbox.get(id) {
-                Ok(entry) if due(&entry, now) => self.prepare(entry, now),
-                _ => return,
-            }
-        };
-        let Ready {
-            mut entry,
-            server,
-            secret,
-            transmit,
-        } = match prepared {
+        // The slow part first, outside the lock, so a cancel or a status never waits on it: the store, the password
+        // (a keyring prompt or a command) and the message file.
+        let ready = match self.prepare(id) {
             Ok(ready) => ready,
-            Err(failed) => {
-                let (entry, error) = *failed;
-                self.failed(entry, error, now);
+            Err(failure) => {
+                let entry = {
+                    let _lock = self.shared.lock();
+                    self.due_entry(id, now)
+                };
+                if let Some(entry) = entry {
+                    self.failed(entry, failure, now);
+                }
                 return;
             }
         };
+        let marked = {
+            let _lock = self.shared.lock();
+            let Some(mut entry) = self.due_entry(id, now) else {
+                return;
+            };
+            entry.state = State::Sending;
+            entry.attempts += 1;
+            entry.first_try.get_or_insert(now);
+            // Synced before the server sees a byte: after a crash, this message is never sent again.
+            match self.shared.outbox.write(&entry) {
+                Ok(()) => Ok(entry),
+                Err(e) => Err((
+                    entry,
+                    Failure {
+                        reason: format!("the outbox cannot be written: {e}"),
+                        temporary: true,
+                    },
+                )),
+            }
+        };
+        let mut entry = match marked {
+            Ok(entry) => entry,
+            Err((entry, failure)) => return self.failed(entry, failure, now),
+        };
         log::info!("{name}: sending {id}");
-        let mut smtp = (self.smtp)();
-        let result = smtp.send(
-            &server,
-            &secret,
+        let result = (self.smtp)().send(
+            &ready.server,
+            &ready.secret,
             self.account.ca_file.as_deref(),
             &entry.envelope,
-            &transmit,
+            &ready.transmit,
         );
         let now = (self.clock)();
-        match result {
-            Ok(caps) => {
-                log::info!("{name}: sent {id}");
-                if let Ok(store) = Store::open_account(&self.paths, name)
-                    && let Err(e) = store.save_smtp_capabilities(caps.size, caps.eight_bit_mime)
-                {
-                    log::warn!("{name}: the SMTP capabilities were not stored: {e}");
-                }
-                let _lock = self.shared.lock();
-                entry.state = State::Sent;
-                let written = if entry.finished() {
-                    self.shared.outbox.remove(id)
-                } else {
-                    self.shared.outbox.write(&entry)
-                };
-                if let Err(e) = written {
-                    log::error!("{name}: outbox {id} was sent but could not be updated: {e}");
-                }
-                if !entry.finished() {
-                    let _ = self.finish.send((name.clone(), id.to_string()));
-                }
-            }
-            Err(error) => self.failed(entry, error, now),
+        let caps = match result {
+            Ok(caps) => caps,
+            Err(error) => return self.failed(entry, error.into(), now),
+        };
+        log::info!("{name}: sent {id}");
+        if let Some(store) = &ready.store
+            && let Err(e) = store.save_smtp_capabilities(caps.size, caps.eight_bit_mime)
+        {
+            log::warn!("{name}: the SMTP capabilities were not stored: {e}");
+        }
+        let _lock = self.shared.lock();
+        entry.state = State::Sent;
+        let written = if entry.finished() {
+            self.shared.outbox.remove(id)
+        } else {
+            self.shared.outbox.write(&entry)
+        };
+        if let Err(e) = written {
+            log::error!("{name}: outbox {id} was sent but could not be updated: {e}");
+        }
+        if !entry.finished() {
+            let _ = self.finish.send((name.clone(), id.to_string()));
         }
     }
 
-    /// Marks `entry` as being sent and gathers what the send needs; a failure that needs no server says why.
-    fn prepare(&self, mut entry: Entry, now: i64) -> Result<Ready, Box<(Entry, SmtpError)>> {
-        let state = Store::open_account(&self.paths, &self.account.name)
-            .and_then(|store| store.smtp_state())
-            .ok()
-            .flatten();
-        let Some(server) = server_for(&self.account, state.as_ref()) else {
-            return Err(Box::new((entry, SmtpError::Permanent(NOT_SET_UP.into()))));
-        };
+    /// What sending `id` needs from outside the outbox; a failure that needs no server says why.
+    fn prepare(&self, id: &str) -> Result<Ready, Failure> {
+        let store = Store::open_account(&self.paths, &self.account.name).ok();
+        let state = store
+            .as_ref()
+            .and_then(|store| store.smtp_state().ok().flatten());
+        let server = server_for(&self.account, state.as_ref()).ok_or_else(|| Failure {
+            reason: NOT_SET_UP.into(),
+            temporary: false,
+        })?;
+        // A locked keyring or a password command that failed may work later.
         let secret = credentials::check_command_trusted(&self.account, &self.paths.config_file())
-            .and_then(|()| credentials::resolve_smtp(&self.account));
-        let secret = match secret {
-            Ok(secret) => secret,
-            Err(e) => return Err(Box::new((entry, SmtpError::Connect(e.to_string())))),
-        };
-        let raw = match self.shared.outbox.raw(&entry.id) {
-            Ok(raw) => raw,
-            Err(e) => {
-                return Err(Box::new((
-                    entry,
-                    SmtpError::Permanent(format!("the message file cannot be read: {e}")),
-                )));
-            }
-        };
-        let header_end = raw
-            .windows(4)
-            .position(|w| w == b"\r\n\r\n")
-            .map_or(raw.len(), |at| at + 2);
-        let transmit = super::check::without_bcc(&raw, header_end);
-        entry.state = State::Sending;
-        entry.attempts += 1;
-        entry.first_try.get_or_insert(now);
-        // Synced before the server sees a byte: after a crash, this message is never sent again.
-        if let Err(e) = self.shared.outbox.write(&entry) {
-            entry.state = State::Waiting;
-            return Err(Box::new((
-                entry,
-                SmtpError::Connect(format!("the outbox cannot be written: {e}")),
-            )));
-        }
+            .and_then(|()| credentials::resolve_smtp(&self.account))
+            .map_err(|e| Failure {
+                reason: e.to_string(),
+                temporary: true,
+            })?;
+        let raw = self.shared.outbox.raw(id).map_err(|e| Failure {
+            reason: format!("the message file cannot be read: {e}"),
+            temporary: false,
+        })?;
         Ok(Ready {
-            entry,
+            store,
             server,
             secret,
-            transmit,
+            transmit: super::check::without_bcc(&raw),
         })
     }
 
     /// Records a failed attempt: tried again later while temporary and within the hour, else failed for good.
-    fn failed(&self, mut entry: Entry, error: SmtpError, now: i64) {
+    fn failed(&self, mut entry: Entry, failure: Failure, now: i64) {
         let name = &self.account.name;
         let first = *entry.first_try.get_or_insert(now);
-        let retry = error.is_temporary() && now.saturating_sub(first) < RETRY_FOR_SECS;
+        let retry = failure.temporary && now.saturating_sub(first) < RETRY_FOR_SECS;
         // The reason may hold the server's words; it goes to the outbox, never the log.
         entry.state = State::Failed {
-            reason: error.to_string(),
+            reason: failure.reason,
             retrying: retry,
         };
         if retry {
@@ -603,7 +629,6 @@ mod tests {
 
     struct Harness {
         _dir: tempfile::TempDir,
-        paths: Paths,
         smtp: SharedSmtp,
         clock: Arc<AtomicI64>,
         finish: mpsc::Receiver<(String, String)>,
@@ -657,7 +682,6 @@ mod tests {
             );
             Harness {
                 _dir: dir,
-                paths,
                 smtp: fake,
                 clock,
                 finish,
@@ -901,6 +925,5 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert_eq!(h.sent(), 0);
-        let _ = &h.paths;
     }
 }

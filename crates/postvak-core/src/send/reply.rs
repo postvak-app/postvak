@@ -2,7 +2,7 @@
 //! quoted below the user's text, as other mail clients place it.
 
 use chrono::Datelike;
-use mail_parser::{MessageParser, MessagePart, PartKind};
+use mail_parser::MessageParser;
 use serde::{Deserialize, Serialize};
 
 use super::build::{Draft, FileAttachment, InlineImage, mailbox_text};
@@ -166,7 +166,8 @@ struct Read {
     attachments: Vec<FileAttachment>,
 }
 
-fn read(raw: &[u8]) -> Result<Read, ReplyError> {
+/// What a reply or forward needs from `raw`; its attachments decoded only when `attachments` asks for them.
+fn read(raw: &[u8], attachments: bool) -> Result<Read, ReplyError> {
     let msg = MessageParser::default()
         .parse(raw)
         .ok_or(ReplyError::Unparsable)?;
@@ -193,7 +194,7 @@ fn read(raw: &[u8]) -> Result<Read, ReplyError> {
             })
     });
     let headers = crate::message::parse_headers(raw);
-    let (html, inline, attachments) = parts(&msg);
+    let (html, inline, attachments) = parts(&msg, attachments);
     let html = html.map(|html| Original { html, inline });
     Ok(Read {
         from: mailboxes(msg.from()),
@@ -219,42 +220,31 @@ fn read(raw: &[u8]) -> Result<Read, ReplyError> {
     })
 }
 
-/// The original's HTML part, the images it names by `cid:`, and its other attachments.
+/// The original's HTML part as the reader shows it, the images it names by `cid:`, and, when `attachments`, its
+/// other attachments, in the reader's order.
 fn parts(
     msg: &mail_parser::Message<'_>,
+    attachments: bool,
 ) -> (Option<String>, Vec<InlineImage>, Vec<FileAttachment>) {
-    let mut html = None;
-    let mut leaves: Vec<MessagePart<'_>> = Vec::new();
-    let mut pending = vec![msg.root_part()];
-    while let Some(part) = pending.pop() {
-        if matches!(part.kind(), PartKind::Multipart) {
-            pending.extend(part.children().rev());
-        } else {
-            leaves.push(part);
-        }
-    }
-    let attachment = |part: &MessagePart<'_>| {
-        part.content_disposition()
-            .is_some_and(|d| d.is_attachment())
-    };
-    for part in &leaves {
-        if html.is_none() && matches!(part.kind(), PartKind::Html) && !attachment(part) {
-            html = part.text().map(|text| text.into_owned());
-        }
-    }
-    let named = |cid: &str| {
-        html.as_deref().is_some_and(|html| {
-            html.to_ascii_lowercase()
-                .contains(&format!("cid:{}", cid.to_ascii_lowercase()))
-        })
-    };
+    let html = crate::message::html_text(msg).map(|html| html.into_owned());
+    let named = html
+        .as_deref()
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    let (_, leaves) = crate::message::sorted_parts(msg);
     let mut inline = Vec::new();
-    let mut attachments = Vec::new();
+    let mut files = Vec::new();
     for part in leaves {
-        let text_body = part.is_content_type("text", "plain")
-            || part.is_content_type("text", "html")
-            || part.content_type().is_none();
-        if text_body && !attachment(&part) {
+        let cid = part
+            .content_id()
+            .map(|cid| {
+                cid.trim()
+                    .trim_start_matches('<')
+                    .trim_end_matches('>')
+                    .to_ascii_lowercase()
+            })
+            .filter(|cid| !cid.is_empty() && named.contains(&format!("cid:{cid}")));
+        if cid.is_none() && !attachments {
             continue;
         }
         let content_type = part
@@ -264,33 +254,28 @@ fn parts(
                     .to_ascii_lowercase()
             })
             .unwrap_or_else(|| "application/octet-stream".into());
-        let cid = part
-            .content_id()
-            .map(|cid| {
-                cid.trim()
-                    .trim_start_matches('<')
-                    .trim_end_matches('>')
-                    .to_string()
-            })
-            .filter(|cid| !cid.is_empty());
         let bytes = part.decoded().into_owned();
         match cid {
-            Some(cid) if named(&cid) => inline.push(InlineImage {
-                cid,
+            Some(_) => inline.push(InlineImage {
+                // As the part names itself: the HTML may spell it in another case.
+                cid: part
+                    .content_id()
+                    .unwrap_or_default()
+                    .trim()
+                    .trim_start_matches('<')
+                    .trim_end_matches('>')
+                    .to_string(),
                 content_type,
                 bytes,
             }),
-            _ => attachments.push(FileAttachment {
-                name: crate::message::attachment_file_name(
-                    part.attachment_name(),
-                    attachments.len() + 1,
-                ),
+            None => files.push(FileAttachment {
+                name: crate::message::attachment_file_name(part.attachment_name(), files.len() + 1),
                 content_type,
                 bytes,
             }),
         }
     }
-    (html, inline, attachments)
+    (html, inline, files)
 }
 
 /// `On Mon, 2 Nov 2026 10:00, Linus Example wrote:`, in English whatever the locale: other clients do not parse it.
@@ -377,7 +362,7 @@ pub fn reply(
     identity: &Identity,
     body: &str,
 ) -> Result<Draft, ReplyError> {
-    let read = read(original)?;
+    let read = read(original, false)?;
     let from = our_address(original, identity);
     let from_ours =
         !read.from.is_empty() && read.from.iter().all(|(_, address)| identity.is_me(address));
@@ -447,7 +432,8 @@ pub fn forward(
     body: &str,
     options: &ForwardOptions,
 ) -> Result<Draft, ReplyError> {
-    let read = read(original)?;
+    let reattach = options.as_ == ForwardAs::Inline && options.attachments == AttachmentFilter::All;
+    let read = read(original, reattach)?;
     let from = our_address(original, identity);
     let body = match &options.note {
         Some(note) if body.trim().is_empty() => note.clone(),

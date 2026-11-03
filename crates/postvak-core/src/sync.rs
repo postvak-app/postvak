@@ -2093,7 +2093,7 @@ fn jittered(delay: Duration, r: u64) -> Duration {
     delay - Duration::from_millis(span) + Duration::from_millis(offset)
 }
 
-fn random_u64() -> u64 {
+pub(crate) fn random_u64() -> u64 {
     use std::hash::{BuildHasher, Hasher};
     std::collections::hash_map::RandomState::new()
         .build_hasher()

@@ -137,6 +137,7 @@ fn escape(text: &str) -> String {
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
+            '\u{a0}' => out.push_str("&nbsp;"),
             _ => out.push(c),
         }
     }
@@ -277,7 +278,7 @@ impl State {
         } else if self.raw {
             self.body.push_str(text);
         } else {
-            self.body.push_str(&escape_text(text));
+            self.body.push_str(&escape(text));
         }
     }
 }
@@ -296,13 +297,6 @@ fn raw_kind(name: &str, start: bool) -> TokenSinkResult<()> {
         "plaintext" => TokenSinkResult::Plaintext,
         _ => TokenSinkResult::Continue,
     }
-}
-
-fn escape_text(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('\u{a0}', "&nbsp;")
 }
 
 /// A start tag as written, without its `on…` attributes and `javascript:` URLs.

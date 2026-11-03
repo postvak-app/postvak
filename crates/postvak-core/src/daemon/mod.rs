@@ -317,7 +317,8 @@ struct Shared {
     /// Accounts whose SMTP guess runs now.
     guessing: Mutex<BTreeSet<String>>,
     /// The `FinishSent` requests on their way, by request: the account and outbox id.
-    finishing: Mutex<HashMap<RequestId, (String, String)>>,
+    /// When each was handed to the engine, so one an account restart dropped is sent again.
+    finishing: Mutex<HashMap<RequestId, (String, String, Instant)>>,
 }
 
 /// A panic elsewhere must not take the daemon down with a poisoned lock.
@@ -994,42 +995,32 @@ fn handle_line(shared: &Arc<Shared>, client: ClientId, line: &str) -> bool {
             account,
             raw,
             entry,
-        } => {
-            let outcome = with_senders(shared, |senders| {
-                senders.queue(&account, &raw, &entry)?;
-                Ok(Payload::Queued {
-                    id: entry.id.clone(),
-                    due: entry.due,
-                })
-            });
-            lock(&shared.hub).reply(client, id, outcome);
-        }
+        } => reply_with_senders(shared, client, id, |senders| {
+            senders.queue(&account, &raw, &entry)?;
+            Ok(Payload::Queued {
+                id: entry.id.clone(),
+                due: entry.due,
+            })
+        }),
         ClientMessage::CancelSend {
             id,
             account,
             outbox_id,
-        } => {
-            let outcome = with_senders(shared, |senders| {
-                let raw = senders.cancel(&account, &outbox_id)?;
-                Ok(Payload::Cancelled { raw })
-            });
-            lock(&shared.hub).reply(client, id, outcome);
-        }
+        } => reply_with_senders(shared, client, id, |senders| {
+            let raw = senders.cancel(&account, &outbox_id)?;
+            Ok(Payload::Cancelled { raw })
+        }),
         ClientMessage::RetrySend {
             id,
             account,
             outbox_id,
-        } => {
-            let outcome = with_senders(shared, |senders| {
-                senders.retry(&account, &outbox_id)?;
-                Ok(Payload::Done)
-            });
-            lock(&shared.hub).reply(client, id, outcome);
-        }
-        ClientMessage::Outbox { id } => {
-            let outcome = with_senders(shared, |senders| Ok(Payload::Outbox(senders.entries())));
-            lock(&shared.hub).reply(client, id, outcome);
-        }
+        } => reply_with_senders(shared, client, id, |senders| {
+            senders.retry(&account, &outbox_id)?;
+            Ok(Payload::Done)
+        }),
+        ClientMessage::Outbox { id } => reply_with_senders(shared, client, id, |senders| {
+            Ok(Payload::Outbox(senders.entries()))
+        }),
         ClientMessage::AwaitSend {
             id,
             account,
@@ -1049,15 +1040,21 @@ fn handle_line(shared: &Arc<Shared>, client: ClientId, line: &str) -> bool {
     true
 }
 
-/// The outcome of `f` on the senders, or the error that they are gone.
-fn with_senders(shared: &Shared, f: impl FnOnce(&Senders) -> anyhow::Result<Payload>) -> Outcome {
-    match lock(&shared.senders).as_ref() {
+/// Replies to request `id` with the outcome of `f` on the senders, or the error that they are gone.
+fn reply_with_senders(
+    shared: &Shared,
+    client: ClientId,
+    id: u64,
+    f: impl FnOnce(&Senders) -> anyhow::Result<Payload>,
+) {
+    let outcome = match lock(&shared.senders).as_ref() {
         Some(senders) => match f(senders) {
             Ok(payload) => Outcome::Ok(payload),
             Err(e) => Outcome::Error(e.to_string()),
         },
         None => Outcome::Error("the daemon is stopping".into()),
-    }
+    };
+    lock(&shared.hub).reply(client, id, outcome);
 }
 
 /// How long `AwaitSend` waits: past the longest send, on a thread of its own.
@@ -1265,11 +1262,14 @@ fn guess_missing(shared: &Arc<Shared>) {
     }
 }
 
+/// How long a `FinishSent` counts as on its way; past it, one an account restart dropped is sent again.
+const FINISH_IN_FLIGHT: Duration = Duration::from_secs(600);
+
 /// Hands a sent message's Sent copy and flag to its account's IMAP thread, unless that is already on its way.
 fn finish_sent(shared: &Shared, account: &str, id: &str) {
     if lock(&shared.finishing)
         .values()
-        .any(|(a, i)| a == account && i == id)
+        .any(|(a, i, at)| a == account && i == id && at.elapsed() < FINISH_IN_FLIGHT)
     {
         return;
     }
@@ -1278,8 +1278,17 @@ fn finish_sent(shared: &Shared, account: &str, id: &str) {
         let Some(senders) = senders.as_ref() else {
             return;
         };
-        let (Ok(entry), Ok(raw)) = (senders.entry(account, id), senders.raw(account, id)) else {
+        let Ok(entry) = senders.entry(account, id) else {
             return;
+        };
+        // The message itself only while its Sent copy is still owed.
+        let raw = if entry.save_sent && !entry.copied {
+            match senders.raw(account, id) {
+                Ok(raw) => raw,
+                Err(_) => return,
+            }
+        } else {
+            Vec::new()
         };
         Command::FinishSent {
             id: id.to_string(),
@@ -1295,7 +1304,10 @@ fn finish_sent(shared: &Shared, account: &str, id: &str) {
         hub.next_request += 1;
         hub.next_request
     };
-    lock(&shared.finishing).insert(request, (account.to_string(), id.to_string()));
+    lock(&shared.finishing).insert(
+        request,
+        (account.to_string(), id.to_string(), Instant::now()),
+    );
     let sent = lock(&shared.engine)
         .as_ref()
         .is_some_and(|engine| engine.send(account, request, command));

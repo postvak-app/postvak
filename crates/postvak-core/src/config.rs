@@ -84,6 +84,15 @@ impl SmtpTls {
         }
     }
 
+    /// The inverse of [`SmtpTls::as_str`].
+    pub fn parse(text: &str) -> Option<SmtpTls> {
+        match text {
+            "implicit" => Some(SmtpTls::Implicit),
+            "starttls" => Some(SmtpTls::Starttls),
+            _ => None,
+        }
+    }
+
     /// The port this kind of connection uses unless one is given.
     pub fn default_port(self) -> u16 {
         match self {

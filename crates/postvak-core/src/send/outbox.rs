@@ -4,7 +4,6 @@
 //! returns, so an accepted message survives a crash, and one that may have reached the server is never sent again.
 
 use std::fs;
-use std::hash::{BuildHasher, Hasher};
 use std::io;
 use std::path::PathBuf;
 
@@ -100,15 +99,7 @@ pub enum CancelError {
 
 /// A new outbox id: eight hex digits, short enough to type.
 pub fn new_id() -> String {
-    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
-    hasher.write_u128(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos(),
-    );
-    hasher.write_u32(std::process::id());
-    format!("{:08x}", hasher.finish() as u32)
+    format!("{:08x}", crate::sync::random_u64() as u32)
 }
 
 /// Whether `id` is one [`new_id`] could have made, so it is safe in a file name.
@@ -135,6 +126,12 @@ impl Outbox {
         let dir = paths.outbox_dir(account);
         crate::paths::create_private_dir(&dir)?;
         Ok(Outbox { dir })
+    }
+
+    /// The outbox of `account` when it is there, for a reader that must not create it.
+    pub fn existing(paths: &Paths, account: &str) -> Option<Outbox> {
+        let dir = paths.outbox_dir(account);
+        dir.is_dir().then_some(Outbox { dir })
     }
 
     fn eml(&self, id: &str) -> io::Result<PathBuf> {

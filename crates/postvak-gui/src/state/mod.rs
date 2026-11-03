@@ -2490,13 +2490,8 @@ impl App {
     fn read_outboxes(&mut self) {
         use postvak_core::send::outbox::Outbox;
         for account in &mut self.accounts {
-            let dir = self.paths.outbox_dir(&account.name);
-            if !dir.exists() {
-                account.outbox = Default::default();
-                continue;
-            }
-            let entries = Outbox::open(&self.paths, &account.name)
-                .and_then(|outbox| outbox.list())
+            let entries = Outbox::existing(&self.paths, &account.name)
+                .and_then(|outbox| outbox.list().ok())
                 .unwrap_or_default();
             account.outbox = postvak_core::send::sender::counts_of(&entries);
         }

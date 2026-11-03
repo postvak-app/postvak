@@ -1135,7 +1135,7 @@ pub fn run() -> Result<()> {
         }
         Command::Trash { command } => cmd_trash(command, &config, &paths),
         Command::Send(args) => cmd_send(&config, &paths, *args),
-        Command::Outbox { command, json } => cmd_outbox(&config, &paths, command, json),
+        Command::Outbox { command, json } => cmd_outbox(&paths, command, json),
         Command::Account { command } => match command {
             AccountCommand::Add { smtp } => cmd_account_add(config, &paths, smtp.given()),
             AccountCommand::Smtp {
@@ -2402,18 +2402,18 @@ fn cmd_send(config: &Config, paths: &Paths, args: SendArgs) -> Result<()> {
             args.save_sent,
         )?;
         match &outcome {
-            compose::RawOutcome::Sent => {}
-            compose::RawOutcome::Temporary(reason) => {
+            postvak_core::daemon::wire::SendOutcome::Sent => {}
+            postvak_core::daemon::wire::SendOutcome::Temporary(reason) => {
                 eprintln!(
                     "postvak: not sent yet, it stays in the outbox and is tried again: {}",
                     clean(reason, false)
                 );
             }
-            compose::RawOutcome::Permanent(reason) => {
+            postvak_core::daemon::wire::SendOutcome::Permanent(reason) => {
                 eprintln!("postvak: not sent: {}", clean(reason, false));
             }
         }
-        std::process::exit(i32::from(outcome.exit_code()));
+        std::process::exit(i32::from(compose::exit_code(&outcome)));
     }
     let answer = |text: &str| compose::parse_message_ref(text);
     let kind = if let Some(r) = &args.reply {
@@ -2490,12 +2490,7 @@ fn cmd_send(config: &Config, paths: &Paths, args: SendArgs) -> Result<()> {
     Ok(())
 }
 
-fn cmd_outbox(
-    config: &Config,
-    paths: &Paths,
-    command: Option<OutboxCommand>,
-    json: bool,
-) -> Result<()> {
+fn cmd_outbox(paths: &Paths, command: Option<OutboxCommand>, json: bool) -> Result<()> {
     let client = Client::connect_or_start(paths)?;
     // The account of a message id, from the outbox, when --account does not say it.
     let account_of = |id: &str, account: Option<String>| -> Result<String> {
@@ -2511,13 +2506,12 @@ fn cmd_outbox(
     };
     match command {
         None => {
-            let _ = config;
             for (account, entry) in client.outbox()? {
+                let row = postvak_core::output::outbox_row(&account, &entry);
                 if json {
-                    print_json(postvak_core::output::outbox_row(&account, &entry));
+                    print_json(row);
                     continue;
                 }
-                let row = postvak_core::output::outbox_row(&account, &entry);
                 let first = entry
                     .envelope
                     .to

@@ -39,6 +39,16 @@ pub struct Capabilities {
     pub eight_bit_mime: bool,
 }
 
+impl SmtpState {
+    /// What the server offered on its last connection.
+    pub fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            size: self.size,
+            eight_bit_mime: self.eight_bit_mime,
+        }
+    }
+}
+
 /// Who a message is sent from and to, as SMTP says it (`MAIL FROM`, `RCPT TO`); not the headers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Envelope {

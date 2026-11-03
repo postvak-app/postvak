@@ -375,7 +375,9 @@ fn html_of(msg: &mail_parser::Message<'_>) -> Option<HtmlBody> {
 
 /// The text of the first `text/html` part of the body, the one the reader shows; `None` when it holds no markup, so
 /// the reader shows the text instead.
-fn html_text<'m>(msg: &'m mail_parser::Message<'_>) -> Option<std::borrow::Cow<'m, str>> {
+pub(crate) fn html_text<'m>(
+    msg: &'m mail_parser::Message<'_>,
+) -> Option<std::borrow::Cow<'m, str>> {
     let (body, _) = sorted_parts(msg);
     body.into_iter()
         .find(|part| matches!(part.kind(), PartKind::Html))?
@@ -387,7 +389,7 @@ fn html_text<'m>(msg: &'m mail_parser::Message<'_>) -> Option<std::borrow::Cow<'
 /// whole shows the same HTML and numbers its attachments as one read in parts: body text is every `text/plain` and
 /// `text/html` part not marked as an attachment, and every other part is an attachment, an enclosed message counting
 /// as one. mail-parser's own `attachments()` follows RFC 8621 instead, which lists no photo sent next to plain text.
-fn sorted_parts<'m>(
+pub(crate) fn sorted_parts<'m>(
     msg: &'m mail_parser::Message<'_>,
 ) -> (Vec<MessagePart<'m>>, Vec<MessagePart<'m>>) {
     let mut body = Vec::new();
@@ -472,7 +474,7 @@ fn unescape(quoted: &str) -> String {
 }
 
 /// The mailboxes of an address field, trimmed; a comma inside a quoted name or inside `<…>` separates none.
-fn mailboxes(field: &str) -> Vec<&str> {
+pub(crate) fn mailboxes(field: &str) -> Vec<&str> {
     let mut parts = Vec::new();
     let (mut start, mut quoted, mut escaped, mut angle) = (0, false, false, false);
     for (i, c) in field.char_indices() {

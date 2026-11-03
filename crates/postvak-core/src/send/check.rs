@@ -30,8 +30,6 @@ pub struct Checked {
     pub from: String,
     /// Every recipient, once each.
     pub recipients: Vec<String>,
-    /// The message as it is transmitted: CRLF line ends, Bcc removed.
-    pub transmit: Vec<u8>,
     /// The message as given, with CRLF line ends and Bcc kept: for the outbox and the Sent copy.
     pub keep: Vec<u8>,
     /// Whether the body holds 8-bit bytes.
@@ -105,21 +103,22 @@ pub fn check(
         return Err(CheckError::NonAsciiHeader(name));
     }
     let (from, recipients, eight_bit) = inspect(&keep, header_end, args, identity, caps)?;
-    let transmit = without_bcc(&keep, header_end);
+    // What is transmitted is `keep` without its Bcc lines; the sender removes them when it sends.
+    let bcc: usize = header_lines(&keep, header_end)
+        .filter(|(_, bcc)| *bcc)
+        .map(|(line, _)| line.len())
+        .sum();
+    let size = keep.len() - bcc;
     let limit = caps
         .and_then(|caps| caps.size)
         .and_then(|size| usize::try_from(size).ok())
         .unwrap_or(DEFAULT_SIZE_LIMIT);
-    if transmit.len() > limit {
-        return Err(CheckError::TooLarge {
-            size: transmit.len(),
-            limit,
-        });
+    if size > limit {
+        return Err(CheckError::TooLarge { size, limit });
     }
     Ok(Checked {
         from,
         recipients,
-        transmit,
         keep,
         eight_bit,
     })
@@ -261,19 +260,26 @@ fn header_end(message: &[u8]) -> usize {
         .unwrap_or(message.len())
 }
 
-/// `message` without its Bcc header and that header's continuation lines; nothing else changes.
-pub fn without_bcc(message: &[u8], header_end: usize) -> Vec<u8> {
+/// The header lines of `message`, each with whether it belongs to the Bcc header (the field or a continuation of it).
+fn header_lines(message: &[u8], header_end: usize) -> impl Iterator<Item = (&[u8], bool)> {
+    let mut bcc = false;
+    message[..header_end]
+        .split_inclusive(|b| *b == b'\n')
+        .map(move |line| {
+            let continuation = line.first().is_some_and(|b| *b == b' ' || *b == b'\t');
+            if !continuation {
+                bcc = line.len() >= 4 && line[..4].eq_ignore_ascii_case(b"bcc:");
+            }
+            (line, bcc)
+        })
+}
+
+/// `message` (CRLF line ends) without its Bcc header and that header's continuation lines; nothing else changes.
+pub fn without_bcc(message: &[u8]) -> Vec<u8> {
+    let header_end = header_end(message);
     let mut out = Vec::with_capacity(message.len());
-    let mut dropping = false;
-    let headers = &message[..header_end];
-    for line in headers.split_inclusive(|b| *b == b'\n') {
-        let continuation = line.first().is_some_and(|b| *b == b' ' || *b == b'\t');
-        if !continuation {
-            dropping = line.len() >= 4 && line[..4].eq_ignore_ascii_case(b"bcc:");
-        }
-        if !dropping {
-            out.extend_from_slice(line);
-        }
+    for (line, _) in header_lines(message, header_end).filter(|(_, bcc)| !bcc) {
+        out.extend_from_slice(line);
     }
     out.extend_from_slice(&message[header_end..]);
     out
@@ -318,7 +324,7 @@ mod tests {
         assert_eq!(checked.from, "me@example.com");
         assert_eq!(checked.recipients, ["a@x.org"]);
         assert!(!checked.eight_bit);
-        assert_eq!(checked.transmit, checked.keep);
+        assert_eq!(without_bcc(&checked.keep), checked.keep);
     }
 
     #[test]
@@ -462,7 +468,7 @@ mod tests {
             checked.recipients,
             ["a@x.org", "hidden@y.org", "other@y.org"]
         );
-        let transmit = String::from_utf8(checked.transmit).unwrap();
+        let transmit = String::from_utf8(without_bcc(&checked.keep)).unwrap();
         assert!(!transmit.contains("hidden"), "{transmit}");
         assert!(!transmit.to_lowercase().contains("bcc"), "{transmit}");
         assert!(
@@ -473,7 +479,7 @@ mod tests {
         // A Bcc in the body is the body's.
         let body = run(&message("", "Bcc: stays\r\n")).unwrap();
         assert!(
-            String::from_utf8(body.transmit)
+            String::from_utf8(without_bcc(&body.keep))
                 .unwrap()
                 .ends_with("Bcc: stays\r\n")
         );
@@ -502,7 +508,7 @@ mod tests {
             .collect::<Vec<_>>();
         let checked = run(&raw).unwrap();
         assert_eq!(checked.keep, message("", "one\r\ntwo\r\n"));
-        assert_eq!(checked.transmit, checked.keep);
+        assert_eq!(without_bcc(&checked.keep), checked.keep);
     }
 
     #[test]

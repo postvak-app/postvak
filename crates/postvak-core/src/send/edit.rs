@@ -71,25 +71,10 @@ fn addresses(value: &str) -> Result<Vec<String>, EditError> {
         .collect()
 }
 
-/// A header line's recipients, split at commas outside quotes and angle brackets.
+/// A header line's recipients, split at commas outside quotes and angle brackets, as `message` splits address fields.
 pub fn split_recipients(value: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let (mut current, mut quoted, mut angle) = (String::new(), false, false);
-    for c in value.chars() {
-        match c {
-            '"' => quoted = !quoted,
-            '<' if !quoted => angle = true,
-            '>' if !quoted => angle = false,
-            ',' if !quoted && !angle => {
-                out.push(std::mem::take(&mut current));
-                continue;
-            }
-            _ => {}
-        }
-        current.push(c);
-    }
-    out.push(current);
-    out.into_iter()
+    crate::message::mailboxes(value)
+        .into_iter()
         .map(|r| r.trim().to_string())
         .filter(|r| !r.is_empty())
         .collect()
