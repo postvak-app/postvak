@@ -7,16 +7,11 @@ use postvak_core::rules::{
 use postvak_core::send::reply::ForwardAs;
 
 /// `subject contains "a" or "b"`: a text condition, whose list matches any of its values.
-fn text_label(field: &str, t: &TextMatch) -> String {
+pub(crate) fn text_label(field: &str, t: &TextMatch) -> String {
     match &t.list {
         Some(list) => format!("{field} in list {list}"),
         None => format!("{field} {}", NamedList::Text(t.clone()).words()),
     }
-}
-
-/// A forward's attachment name condition in words: `name matches regex "\.pdf$"`.
-pub(crate) fn name_label(t: &TextMatch) -> String {
-    text_label("name", t)
 }
 
 /// The editor's action choice that adds a forward, after `ACTIONS`.
@@ -105,11 +100,6 @@ pub(crate) fn match_labels(m: &Match) -> Vec<String> {
     labels
 }
 
-/// `books@example.org (+1)`: the first recipient of a forward and how many others.
-pub(crate) fn forward_targets(forward: &Forward) -> String {
-    forward.label().trim_start_matches("forward:").to_string()
-}
-
 pub(crate) fn action_label(action: &Action) -> String {
     match action {
         Action::Flag => "flag".into(),
@@ -120,7 +110,7 @@ pub(crate) fn action_label(action: &Action) -> String {
         Action::Move(folder) => format!("move to {folder}"),
         Action::Tag(keyword) => format!("tag {keyword}"),
         Action::After(when) => format!("after {when}"),
-        Action::Forward(forward) => format!("forward to {}", forward_targets(forward)),
+        Action::Forward(forward) => format!("forward to {}", forward.targets()),
         other => other.label(),
     }
 }
@@ -635,10 +625,7 @@ impl ForwardDraft {
         }
         if let Some(max) = &forward.max_size {
             draft.strip = max.over() == OverSize::Strip;
-            draft.max_size = match max {
-                MaxSize::Limit(limit) => limit.clone(),
-                MaxSize::Table(table) => table.limit.clone().unwrap_or_default(),
-            };
+            draft.max_size = max.limit_text().unwrap_or_default().to_string();
         }
         draft
     }
@@ -689,13 +676,7 @@ impl ForwardDraft {
 
     /// The forward the form says, refused as rules.toml would refuse it; `account` is the rule's.
     pub fn to_forward(&self, account: Option<&str>) -> Result<Forward, String> {
-        let addresses = |text: &str| -> Vec<String> {
-            text.split(',')
-                .map(str::trim)
-                .filter(|a| !a.is_empty())
-                .map(str::to_string)
-                .collect()
-        };
+        let addresses = postvak_core::send::edit::split_recipients;
         let optional = |text: &str| Some(text.trim().to_string()).filter(|t| !t.is_empty());
         let rate = self
             .rate

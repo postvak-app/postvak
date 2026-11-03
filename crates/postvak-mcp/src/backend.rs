@@ -565,10 +565,11 @@ impl Backend {
         for (position, rule) in file.rules.iter().enumerate() {
             if self.is_visible(rule.account.as_deref()) {
                 let found = hits.get(&rule.name).copied().unwrap_or_default();
-                let names: Vec<String> = (waiting.get(&rule.name).into_iter().flatten())
-                    .map(|(name, _)| name.clone())
-                    .collect();
-                rows.push(output::rule(rule, &file.lists, position, &found, &names)?);
+                let waits = waiting
+                    .get(&rule.name)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                rows.push(output::rule(rule, &file.lists, position, &found, waits)?);
             }
         }
         Ok(rows)

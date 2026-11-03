@@ -743,14 +743,24 @@ pub fn forward_wait(
     account: &AccountConfig,
     store: &Store,
 ) -> Result<Option<ForwardWait>, StoreError> {
+    Ok(forward_approval(rule, account, store)?.err())
+}
+
+/// When `rule` was approved in `account`, or why it waits; `Ok(None)` for a rule without forward, or for another
+/// account.
+pub fn forward_approval(
+    rule: &CompiledRule,
+    account: &AccountConfig,
+    store: &Store,
+) -> Result<Result<Option<i64>, ForwardWait>, StoreError> {
     if rule.rule.forward().is_none() || !rule.applies_to_account(&account.name) {
-        return Ok(None);
+        return Ok(Ok(None));
     }
     if crate::send::server_for(account, store.smtp_state()?.as_ref()).is_none() {
-        return Ok(Some(ForwardWait::Sending));
+        return Ok(Err(ForwardWait::Sending));
     }
-    let approved = store.forward_approved(&rule.rule.name, &rule.definition)?;
-    Ok((!approved).then_some(ForwardWait::Approval))
+    let approved = store.forward_approved_at(&rule.rule.name, &rule.definition)?;
+    Ok(approved.map(Some).ok_or(ForwardWait::Approval))
 }
 
 /// For each forward rule of `file` that waits in one of `accounts`, by name: those accounts and why, in their order.
@@ -786,7 +796,15 @@ pub fn forward_first(
     now: i64,
 ) -> Result<Forwarded, ApplyError> {
     let mut done = Forwarded::default();
+    if !plan
+        .actions
+        .iter()
+        .any(|planned| matches!(planned.action, Action::Forward(_)))
+    {
+        return Ok(done);
+    }
     let key = crate::rules::forward::once_key(msg, uidvalidity);
+    let mut fetched: Option<Vec<u8>> = None;
     for planned in &plan.actions {
         let Action::Forward(forward) = &planned.action else {
             continue;
@@ -795,15 +813,20 @@ pub fn forward_first(
         if store.was_forwarded(rule, &key)? {
             continue;
         }
-        let raw = match ensure_raw(msg, ops, store) {
-            Ok(raw) => raw,
-            Err(e) if crate::sync::LostConnection::is_lost_connection(&e) => return Err(e),
-            Err(e) => {
-                hold(store, rule, &key, msg, &e.to_string(), now, &mut done)?;
-                continue;
+        if fetched.is_none() {
+            match ensure_raw(msg, ops, store) {
+                Ok(raw) => fetched = Some(raw),
+                Err(e) if crate::sync::LostConnection::is_lost_connection(&e) => return Err(e),
+                Err(e) => {
+                    hold(store, rule, &key, msg, &e.to_string(), now, &mut done)?;
+                    continue;
+                }
             }
+        }
+        let Some(raw) = fetched.as_deref() else {
+            continue;
         };
-        if let Some(skip) = crate::rules::forward::loop_check(&raw, forwarding.identity) {
+        if let Some(skip) = crate::rules::forward::loop_check(raw, forwarding.identity) {
             log::info!(
                 "{}/{}: rule '{rule}': {}",
                 msg.folder,
@@ -813,18 +836,16 @@ pub fn forward_first(
             continue;
         }
         let since = store.forwards_since(rule, now - 3600)?;
-        if crate::rules::forward::over_rate(since, forward.rate) {
+        if since >= forward.rate {
             store.withdraw_forward(rule)?;
-            if !done.paused.iter().any(|(name, _)| name == rule) {
-                done.paused.push((rule.to_string(), forward.rate));
-            }
+            done.paused.push((rule.to_string(), forward.rate));
             log::warn!(
                 "rule '{rule}': more than {} forwards in an hour; forwarding paused",
                 forward.rate
             );
             continue;
         }
-        match queue_forward(forward, &raw, forwarding, now) {
+        match queue_forward(forward, raw, forwarding, now) {
             Ok(Some(skip)) => {
                 log::info!(
                     "{}/{}: rule '{rule}': {}",
@@ -878,12 +899,10 @@ fn queue_forward(
     let limit = (forwarding.caps.and_then(|caps| caps.size))
         .unwrap_or(crate::send::check::DEFAULT_SIZE_LIMIT as u64);
     let identity = forwarding.identity;
-    let draft =
-        match crate::rules::forward::draft(forward, raw, identity, &forward.subject_prefix, limit)?
-        {
-            Ok(draft) => draft,
-            Err(skip) => return Ok(Some(skip)),
-        };
+    let draft = match crate::rules::forward::draft(forward, raw, identity, limit)? {
+        Ok(draft) => draft,
+        Err(skip) => return Ok(Some(skip)),
+    };
     let built = crate::send::build::build(&draft, now).map_err(|e| e.to_string())?;
     let message = crate::rules::forward::with_loop_header(&built, raw, &draft.from);
     let args = crate::send::check::Recipients {

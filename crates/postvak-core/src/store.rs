@@ -1675,12 +1675,7 @@ impl Store {
     /// instead of acting on history, and a re-added forward waits for a new approval.
     pub fn forget_rules_except(&self, names: &[&str]) -> Result<(), StoreError> {
         let names = serde_json::to_string(names)?;
-        for table in ["rules_seen", "forward_approvals"] {
-            let column = if table == "rules_seen" {
-                "name"
-            } else {
-                "rule"
-            };
+        for (table, column) in [("forward_approvals", "rule"), ("rules_seen", "name")] {
             self.conn.execute(
                 &format!(
                     "DELETE FROM {table} WHERE {column} NOT IN (SELECT value FROM json_each(?1))"
@@ -1769,8 +1764,8 @@ impl Store {
         now: i64,
     ) -> Result<(), StoreError> {
         self.conn.execute(
-            "INSERT INTO forward_failures (rule, key, reason, first_at, last_at) VALUES (?1, ?2, ?3, ?4, ?4)
-             ON CONFLICT (rule, key) DO UPDATE SET reason = excluded.reason, last_at = excluded.last_at",
+            "INSERT INTO forward_failures (rule, key, reason, first_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (rule, key) DO UPDATE SET reason = excluded.reason",
             params![rule, key, reason, now],
         )?;
         Ok(())
@@ -3646,15 +3641,6 @@ mod tests {
                 ("id:<b@x>".to_string(), "fetch failed".to_string(), 150)
             ]
         );
-        let last: i64 = s
-            .conn
-            .query_row(
-                "SELECT last_at FROM forward_failures WHERE key = 'id:<a@x>'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(last, 200);
         s.clear_forward_failure("inv", "id:<a@x>").unwrap();
         assert_eq!(s.forward_failures("inv").unwrap().len(), 1);
     }

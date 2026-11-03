@@ -133,16 +133,11 @@ impl App {
                 self.rules.check(
                     &self.paths.rules_file(),
                     &self.accounts,
-                    &self.config_file(),
+                    &self.paths.config_file(),
                 );
             }
             Err(e) => self.note_error(None, format!("could not trust {id}: {e}")),
         }
-    }
-
-    /// config.toml as it reads now; empty when it cannot be read, which another view reports.
-    pub(super) fn config_file(&self) -> Config {
-        Config::load(&self.paths.config_file()).unwrap_or_default()
     }
 
     /// Reloads the rules view; the daemon notices the change itself and syncs every account.
@@ -152,7 +147,7 @@ impl App {
             &self.paths.rules_file(),
             std::mem::take(&mut self.rules.file),
             &self.accounts,
-            &self.config_file(),
+            &self.paths.config_file(),
         );
         self.rules.set_hits(&self.rule_hits);
         self.dry_runs_stale = true;

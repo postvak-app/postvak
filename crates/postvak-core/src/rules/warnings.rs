@@ -174,10 +174,7 @@ pub fn forward_from_warnings(rules: &[Rule], accounts: &[&AccountConfig]) -> Vec
     rules
         .iter()
         .filter_map(|rule| {
-            let from = rule.actions.iter().find_map(|action| match action {
-                Action::Forward(forward) => forward.from.as_deref(),
-                _ => None,
-            })?;
+            let from = rule.forward()?.from.as_deref()?;
             let account = accounts.iter().find(|a| Some(a.name.as_str()) == rule.account.as_deref())?;
             let identity = account.identity().ok()?;
             crate::send::check::check_from(from.trim(), &identity).is_err().then(|| {

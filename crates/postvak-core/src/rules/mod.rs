@@ -907,6 +907,12 @@ fn mime_pattern(text: &str) -> Option<String> {
     }
 }
 
+/// Whether `content_type`, in lowercase, is what `pattern` from [`mime_pattern`] names: that type, or with a trailing
+/// `/` any subtype of it.
+pub(crate) fn mime_matches(pattern: &str, content_type: &str) -> bool {
+    content_type == pattern || (pattern.ends_with('/') && content_type.starts_with(pattern))
+}
+
 fn compile_match(
     rule: &str,
     m: &Match,

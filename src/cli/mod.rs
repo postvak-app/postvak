@@ -1866,13 +1866,12 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                 let found = hits.get(&r.name).copied().unwrap_or_default();
                 let waits = waiting.get(&r.name).map(Vec::as_slice).unwrap_or_default();
                 if json {
-                    let names: Vec<String> = waits.iter().map(|(name, _)| name.clone()).collect();
                     print_json(postvak_core::output::rule(
                         r,
                         &file.lists,
                         position,
                         &found,
-                        &names,
+                        waits,
                     )?);
                 } else {
                     let edits = r

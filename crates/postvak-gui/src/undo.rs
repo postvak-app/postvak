@@ -133,7 +133,10 @@ pub(crate) fn undone_text(reports: &[UndoReport]) -> String {
     }
     let forwarded: Vec<&str> = rows()
         .filter(|row| row.outcome == UndoOutcome::AlreadySent)
-        .filter_map(|row| row.action.strip_prefix("forward:"))
+        .filter_map(|row| {
+            row.action
+                .strip_prefix(postvak_core::rules::forward::LABEL_PREFIX)
+        })
         .collect();
     if let Some(first) = forwarded.first() {
         parts.push(match forwarded.len() {

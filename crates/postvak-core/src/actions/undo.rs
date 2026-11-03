@@ -181,7 +181,7 @@ fn moved_copy(store: &Store, row: &LogEntry) -> Result<Found, StoreError> {
 /// cleared where the message is now.
 fn step(store: &Store, row: &LogEntry, moved: &Moved) -> Result<Step, StoreError> {
     let label = row.action.as_str();
-    if label.starts_with("forward:") {
+    if label.starts_with(crate::rules::forward::LABEL_PREFIX) {
         return Ok(Step::Skip(UndoOutcome::AlreadySent));
     }
     if label == "delete" {

@@ -150,6 +150,14 @@ pub fn proposals_notice(proposed: &[Proposed]) -> Option<Notice> {
     })
 }
 
+/// What says the forward rules `rules` of an account wait for a human's approval.
+pub fn forward_waiting_text(rules: &[String]) -> String {
+    format!(
+        "waiting for your approval before forwarding: {}",
+        rules.join(", ")
+    )
+}
+
 /// What says a forward rule went over its rate and waits for approval again.
 pub fn forward_paused_text(rule: &str, rate: u32) -> String {
     format!("Forwarding paused for \"{rule}\": more than {rate} in an hour")

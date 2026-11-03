@@ -148,8 +148,8 @@ pub fn report(event: &Event) {
             }
         }
         Event::ForwardWaiting { account, rules } => println!(
-            "[{account}] waiting for your approval before forwarding: {}",
-            clean(&rules.join(", "), false)
+            "[{account}] {}",
+            clean(&crate::notify::forward_waiting_text(rules), false)
         ),
         Event::ForwardPaused {
             account,

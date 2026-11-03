@@ -129,7 +129,7 @@ fn used_images(body: &str, inline: &[InlineImage]) -> Vec<InlineImage> {
         .collect()
 }
 
-fn escape(text: &str) -> String {
+pub(crate) fn escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
         match c {

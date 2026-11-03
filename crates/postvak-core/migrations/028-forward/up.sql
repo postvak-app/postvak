@@ -21,6 +21,5 @@ CREATE TABLE forward_failures (
     key TEXT NOT NULL,
     reason TEXT NOT NULL,
     first_at INTEGER NOT NULL,
-    last_at INTEGER NOT NULL,
     PRIMARY KEY (rule, key)
 );

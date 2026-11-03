@@ -648,7 +648,7 @@ fn forward_data(
         kept_name: forward
             .kept_name
             .as_ref()
-            .map(|name| text(&draft::name_label(name)))
+            .map(|name| text(&draft::text_label("name", name)))
             .unwrap_or_default(),
     }
 }

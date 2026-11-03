@@ -19,7 +19,7 @@ use crate::message::{clean, parse_headers, thread_id};
 use crate::paths::Paths;
 use crate::rules::apply::{
     ApplyError, ForwardQueue, ForwardWait, Forwarding, Queue, apply, ensure_body_text,
-    ensure_structure, forward_first, forward_wait, plan_for, special_folder,
+    ensure_structure, forward_approval, forward_first, forward_wait, plan_for, special_folder,
 };
 use crate::rules::engine::{Context, Mode, evaluate, folder_needs_body, folder_needs_structure};
 use crate::rules::{Action, CompiledRule, RulesError};
@@ -1012,14 +1012,12 @@ pub fn run_rules_with(
     // A forward rule waiting for approval, or for an SMTP server, runs none of its actions.
     let mut runnable = Vec::with_capacity(rules.len());
     for rule in rules {
-        if forward_wait(rule, account, store)?.is_some() {
+        let Ok(approved_at) = forward_approval(rule, account, store)? else {
             continue;
-        }
+        };
         let mut rule = rule.clone();
         // Approving restarts the clock, but rules loaded before it keep theirs: mail from the wait is never forwarded.
-        if rule.rule.forward().is_some()
-            && let Some(at) = store.forward_approved_at(&rule.rule.name, &rule.definition)?
-        {
+        if let Some(at) = approved_at {
             rule.first_seen_at = rule.first_seen_at.max(at);
         }
         runnable.push(rule);
@@ -1931,8 +1929,11 @@ impl LoadedRules {
                 );
                 None
             });
-            let key = (rule.rule.name.clone(), rule.definition.clone());
-            if wait == Some(ForwardWait::Approval) && self.announced.insert(key) {
+            if wait == Some(ForwardWait::Approval)
+                && self
+                    .announced
+                    .insert((rule.rule.name.clone(), rule.definition.clone()))
+            {
                 waiting.push(rule.rule.name.clone());
             }
         }

@@ -250,7 +250,7 @@ pub fn rule(
     lists: &crate::rules::Lists,
     position: usize,
     hits: &crate::rules::hits::Hits,
-    forward_waiting: &[String],
+    forward_waiting: &[(String, crate::rules::apply::ForwardWait)],
 ) -> serde_json::Result<Value> {
     let mut row = serde_json::to_value(rule)?;
     if let Value::Object(map) = &mut row {
@@ -262,7 +262,11 @@ pub fn rule(
             .filter_map(|name| Some((name.clone(), serde_json::to_value(lists.get(&name)?).ok()?)))
             .collect();
         map.insert("lists".into(), used.into());
-        map.insert("forward_waiting".into(), json!(forward_waiting));
+        let waiting: Vec<&str> = forward_waiting
+            .iter()
+            .map(|(account, _)| account.as_str())
+            .collect();
+        map.insert("forward_waiting".into(), json!(waiting));
         for (key, value) in [
             ("account", &rule.account),
             ("folder", &rule.folder),
@@ -457,8 +461,14 @@ mod tests {
             ]
         );
         assert!(!found.contains_key("plain"));
-        let names: Vec<String> = found["inv"].iter().map(|(name, _)| name.clone()).collect();
-        let row = super::rule(&file.rules[0], &file.lists, 0, &Default::default(), &names).unwrap();
+        let row = super::rule(
+            &file.rules[0],
+            &file.lists,
+            0,
+            &Default::default(),
+            &found["inv"],
+        )
+        .unwrap();
         assert_eq!(
             row["forward_waiting"],
             serde_json::json!(["waiting", "unsent"])

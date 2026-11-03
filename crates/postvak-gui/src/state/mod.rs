@@ -916,7 +916,12 @@ impl App {
         super::phases::mark("stores_opened");
         let rules_path = paths.rules_file();
         let rules_dir = paths.config_dir.clone();
-        let rules = RulesState::load(&rules_path, RuleFile::default(), &accounts, config);
+        let rules = RulesState::load(
+            &rules_path,
+            RuleFile::default(),
+            &accounts,
+            &paths.config_file(),
+        );
         let mut app = App {
             accounts,
             activity_log: Vec::new(),
@@ -1404,12 +1409,8 @@ impl App {
             }
             Event::Error { message, .. } => self.note_error(Some(index), message),
             Event::ForwardWaiting { rules, .. } => {
-                let line = format!(
-                    "{}: waiting for your approval before forwarding: {}",
-                    self.accounts[index].name,
-                    rules.join(", ")
-                );
-                self.push_history(line);
+                let line = postvak_core::notify::forward_waiting_text(&rules);
+                self.push_history(format!("{}: {line}", self.accounts[index].name));
             }
             Event::ForwardPaused { rule, rate, .. } => {
                 let line = postvak_core::notify::forward_paused_text(&rule, rate);
@@ -1442,7 +1443,7 @@ impl App {
                 self.rules.check(
                     &self.paths.rules_file(),
                     &self.accounts,
-                    &self.config_file(),
+                    &self.paths.config_file(),
                 );
                 if self.view == View::Rules {
                     self.count_hits();
@@ -2497,7 +2498,7 @@ impl App {
             self.rules.check(
                 &self.paths.rules_file(),
                 &self.accounts,
-                &self.config_file(),
+                &self.paths.config_file(),
             );
         }
         let saving = self
@@ -2756,7 +2757,7 @@ impl App {
         self.rules.check(
             &self.paths.rules_file(),
             &self.accounts,
-            &self.config_file(),
+            &self.paths.config_file(),
         );
     }
 

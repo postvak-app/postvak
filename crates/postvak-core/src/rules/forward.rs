@@ -4,13 +4,15 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{Matcher, TextMatch, mime_pattern, parse_size};
+use super::{Matcher, TextMatch, mime_matches, mime_pattern, parse_size};
 use crate::config::Identity;
 use crate::send::build::{Draft, FileAttachment};
 use crate::send::reply::{AttachmentFilter, ForwardAs, ForwardOptions, Recipients};
 
 pub const DEFAULT_PREFIX: &str = "Fwd: ";
 pub const DEFAULT_RATE: u32 = 20;
+/// What a forward's action label, and so its action log row, starts with.
+pub const LABEL_PREFIX: &str = "forward:";
 
 /// Added to every rule forward with our address, kept from the original's; it is how a loop is seen.
 pub const LOOP_HEADER: &str = "X-Postvak-Forwarded";
@@ -128,12 +130,17 @@ pub enum OverSize {
 }
 
 impl MaxSize {
+    /// The limit as written, `None` for the default.
+    pub fn limit_text(&self) -> Option<&str> {
+        match self {
+            MaxSize::Limit(text) => Some(text),
+            MaxSize::Table(table) => table.limit.as_deref(),
+        }
+    }
+
     /// The limit in bytes, `None` for the default; checked when the rule compiled.
     pub fn limit(&self) -> Option<u64> {
-        match self {
-            MaxSize::Limit(text) => parse_size(text),
-            MaxSize::Table(table) => table.limit.as_deref().and_then(parse_size),
-        }
+        self.limit_text().and_then(parse_size)
     }
 
     pub fn over(&self) -> OverSize {
@@ -149,14 +156,19 @@ impl Forward {
         self.to.iter().chain(&self.cc).chain(&self.bcc)
     }
 
-    /// `forward:<first recipient>`, with ` (+N)` for the others: the action's label and its action log row.
-    pub fn label(&self) -> String {
+    /// `<first recipient>`, with ` (+N)` for the others.
+    pub fn targets(&self) -> String {
         let mut all = self.recipients();
         let first = all.next().map(String::as_str).unwrap_or_default();
         match all.count() {
-            0 => format!("forward:{first}"),
-            others => format!("forward:{first} (+{others})"),
+            0 => first.to_string(),
+            others => format!("{first} (+{others})"),
         }
+    }
+
+    /// `forward:` and the targets: the action's label and its action log row.
+    pub fn label(&self) -> String {
+        format!("{LABEL_PREFIX}{}", self.targets())
     }
 
     /// Refused when the table cannot be sent as written; `account` is the rule's, which `from` needs.
@@ -201,18 +213,12 @@ impl Forward {
             }
             filter.check()?;
         }
-        if let Some(max) = &self.max_size {
-            let text = match max {
-                MaxSize::Limit(text) => Some(text),
-                MaxSize::Table(table) => table.limit.as_ref(),
-            };
-            if let Some(text) = text
-                && parse_size(text).is_none()
-            {
-                return Err(format!(
-                    "actions.forward.max_size: expected a size such as 500KB or 5MB, got '{text}'"
-                ));
-            }
+        if let Some(text) = self.max_size.as_ref().and_then(MaxSize::limit_text)
+            && parse_size(text).is_none()
+        {
+            return Err(format!(
+                "actions.forward.max_size: expected a size such as 500KB or 5MB, got '{text}'"
+            ));
         }
         Ok(())
     }
@@ -335,18 +341,12 @@ pub fn with_loop_header(built: &[u8], original_headers: &[u8], our_address: &str
     out
 }
 
-/// Whether one more forward would go over `rate`, with `sent_last_hour` queued in the last hour.
-pub fn over_rate(sent_last_hour: u32, rate: u32) -> bool {
-    sent_last_hour >= rate
-}
-
-/// The draft that forwards `original` as `forward` says, with `prefix` its subject prefix, placeholders filled; or why
-/// it is skipped. `default_limit` is the size limit when the rule names none.
+/// The draft that forwards `original` as `forward` says, placeholders filled; or why it is skipped. `default_limit` is
+/// the size limit when the rule names none.
 pub fn draft(
     forward: &Forward,
     original: &[u8],
     identity: &Identity,
-    prefix: &str,
     default_limit: u64,
 ) -> Result<Result<Draft, Skip>, String> {
     let limit = forward
@@ -366,7 +366,7 @@ pub fn draft(
         } else {
             forward.as_
         },
-        subject_prefix: prefix.to_string(),
+        subject_prefix: forward.subject_prefix.clone(),
         note: forward.note.clone(),
         attachments: AttachmentFilter::All,
     };
@@ -406,11 +406,7 @@ impl Attachments {
                         .as_deref()
                         .and_then(mime_pattern)
                         .is_none_or(|pattern| {
-                            let actual = attachment.content_type.to_ascii_lowercase();
-                            match pattern.strip_suffix('/') {
-                                Some(ty) => actual.split('/').next() == Some(ty),
-                                None => actual == pattern,
-                            }
+                            mime_matches(&pattern, &attachment.content_type.to_ascii_lowercase())
                         });
                 let size_ok = filter
                     .max_size
@@ -445,19 +441,13 @@ fn not_forwarded(draft: &mut Draft, left: &[FileAttachment]) {
         let close = "</body></html>";
         let paragraph: String = lines
             .iter()
-            .map(|line| format!("<p>{}</p>", html_escape(line)))
+            .map(|line| format!("<p>{}</p>", crate::send::quote_html::escape(line)))
             .collect();
         match html.html.strip_suffix(close) {
             Some(open) => html.html = format!("{open}{paragraph}{close}"),
             None => html.html.push_str(&paragraph),
         }
     }
-}
-
-fn html_escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 /// `40 MB`, `512 KB` or `300 B`, in powers of 1024 as rules.toml counts them, rounded down.
@@ -629,12 +619,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn over_rate_at_the_limit() {
-        assert!(over_rate(20, 20));
-        assert!(!over_rate(19, 20));
-    }
-
     fn with_attachments() -> Vec<u8> {
         let part = |name: &str, ty: &str, bytes: usize| {
             format!(
@@ -665,9 +649,7 @@ mod tests {
         let forward = table(
             "{ to = \"books@example.org\", note = \"For the records\", attachments = { type = \"application/*\", max_size = \"1KB\" } }",
         );
-        let draft = draft(&forward, &raw, &id, "Fwd: ", u64::MAX)
-            .unwrap()
-            .unwrap();
+        let draft = draft(&forward, &raw, &id, u64::MAX).unwrap().unwrap();
         assert_eq!(names(&draft), ["invoice.pdf"]);
         assert!(draft.text.starts_with("For the records"), "{}", draft.text);
         assert!(
@@ -709,9 +691,7 @@ mod tests {
     }
 
     fn draft_of(forward: &Forward, raw: &[u8]) -> Draft {
-        draft(forward, raw, &identity(), &forward.subject_prefix, u64::MAX)
-            .unwrap()
-            .unwrap()
+        draft(forward, raw, &identity(), u64::MAX).unwrap().unwrap()
     }
 
     #[test]
@@ -720,21 +700,19 @@ mod tests {
         let raw = with_attachments();
         let skip = table("{ to = \"b@x.org\", max_size = \"1KB\" }");
         assert_eq!(
-            draft(&skip, &raw, &id, "Fwd: ", u64::MAX).unwrap(),
+            draft(&skip, &raw, &id, u64::MAX).unwrap(),
             Err(Skip::OverSize)
         );
         let default = table("{ to = \"b@x.org\" }");
         assert_eq!(
-            draft(&default, &raw, &id, "Fwd: ", 1024).unwrap(),
+            draft(&default, &raw, &id, 1024).unwrap(),
             Err(Skip::OverSize),
             "the default limit holds too"
         );
         let strip = table(
             "{ to = \"b@x.org\", as = \"attachment\", max_size = { limit = \"1KB\", over = \"strip\" } }",
         );
-        let draft = draft(&strip, &raw, &id, "Fwd: ", u64::MAX)
-            .unwrap()
-            .unwrap();
+        let draft = draft(&strip, &raw, &id, u64::MAX).unwrap().unwrap();
         assert!(draft.attachments.is_empty() && draft.enclosed.is_none());
         assert!(
             draft.text.contains("Not forwarded: invoice.pdf (100 B)"),

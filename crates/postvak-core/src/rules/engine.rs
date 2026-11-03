@@ -415,7 +415,7 @@ fn matches(c: &Conditions, msg: &Message, flags: &str, ctx: &Context) -> bool {
     if let Some(pattern) = &c.has_part
         && !field(&msg.part_types)
             .lines()
-            .any(|ty| ty == pattern || (pattern.ends_with('/') && ty.starts_with(pattern.as_str())))
+            .any(|ty| crate::rules::mime_matches(pattern, ty))
     {
         return false;
     }
