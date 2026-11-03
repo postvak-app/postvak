@@ -95,6 +95,13 @@ impl Fixture {
             answer
         };
         app.check_login = |_, _, _, _| Ok(());
+        app.prefill = |_, _, _, _| Err("no daemon in tests".into());
+        app.queue_send = |_, _, _| Err("no daemon in tests".into());
+        app.cancel_send = |_, _, _| {
+            Err(super::state::CancelError::Failed(
+                "no daemon in tests".into(),
+            ))
+        };
         app.logos.net = std::sync::Arc::new(Offline);
         // Reloads after events apply in the tick that started them, so tests see their rows at once; the tests of
         // reloads that outlast a frame set a budget of their own.

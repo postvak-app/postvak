@@ -23,6 +23,7 @@ use super::ui::{
 };
 use super::{account, body, icons, list, menu, rules, status, theme, toolbar};
 use postvak_core::message::clean;
+use postvak_core::send::reply::ReplyTo;
 
 /// What a callback asks the app: the actions it means, in order.
 pub(crate) type Ask = Box<dyn FnOnce(&App) -> Vec<UiAction>>;
@@ -58,7 +59,6 @@ pub(crate) fn init(window: &MailWindow) {
     window.set_check_icon(icons::CHECK.into());
     window.set_more_icon(icons::MORE.into());
     window.set_reply_icon(icons::REPLY.into());
-    window.set_external_icon(icons::EXTERNAL.into());
     window.set_file_icon(icons::FILE.into());
     window.set_sync_icon(icons::SYNC.into());
     window.set_save_icon(icons::SAVE.into());
@@ -452,6 +452,7 @@ fn present_body(app: &App, window: &MailWindow) {
         unsubscribe: pane.unsubscribe,
         unsubscribed: pane.unsubscribed,
         reply: pane.reply,
+        reply_list: pane.reply_list,
         provenance,
         links: strings(shown.links.clone(), pane.links),
     };
@@ -1561,10 +1562,16 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
         }));
     });
     window.on_reply(move || {
-        on(one(|app| {
-            let message = app.body.as_ref()?.message.as_ref()?;
-            Some(UiAction::OpenUrl(body::reply_url(message)?))
-        }));
+        act(UiAction::Reply(ReplyTo::Sender));
+    });
+    window.on_reply_all(move || {
+        act(UiAction::Reply(ReplyTo::All));
+    });
+    window.on_reply_list(move || {
+        act(UiAction::Reply(ReplyTo::List));
+    });
+    window.on_forward(move || {
+        act(UiAction::Forward);
     });
     window.on_edit_shown_rule(move || {
         on(Box::new(|app: &App| {

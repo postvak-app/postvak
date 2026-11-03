@@ -3,7 +3,8 @@
 use std::path::PathBuf;
 
 use postvak_core::config::Identity;
-use postvak_core::send::check::{check_from, valid_address};
+use postvak_core::send::build::bare_address;
+use postvak_core::send::check::{CheckError, check_from, valid_address};
 use postvak_core::send::compose::{Body, HeaderEdits, Prefilled, SendKind, SendRequest};
 use postvak_core::send::edit::split_recipients;
 use postvak_core::send::mailto::Mailto;
@@ -11,6 +12,7 @@ use postvak_core::send::reply::{ForwardAs, ReplyTo};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ComposeKind {
+    #[allow(dead_code, reason = "new mail has no window of its own yet")]
     New,
     Reply(ReplyTo),
     Forward,
@@ -49,7 +51,22 @@ struct Snapshot {
     to: String,
 }
 
-#[derive(Debug, Clone)]
+/// What the window edits as text: the address fields, From, Subject and the text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(
+    dead_code,
+    reason = "sent by the composer's view, which is not drawn yet"
+)]
+pub(crate) enum ComposeField {
+    Bcc,
+    Cc,
+    From,
+    Subject,
+    Text,
+    To,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Composer {
     pub id: u64,
     pub account: String,
@@ -138,6 +155,7 @@ impl Composer {
         Self::answering(id, account, ComposeKind::Forward, folder, uid)
     }
 
+    #[allow(dead_code, reason = "new mail has no window of its own yet")]
     pub(crate) fn new_mail(
         id: u64,
         account: &str,
@@ -217,6 +235,29 @@ impl Composer {
         }
     }
 
+    /// Takes what the user typed into `field`, and drops an error that was about it.
+    pub(crate) fn set(&mut self, field: ComposeField, value: String) {
+        let about = match field {
+            ComposeField::Bcc => Some(Field::Bcc),
+            ComposeField::Cc => Some(Field::Cc),
+            ComposeField::From => Some(Field::From),
+            ComposeField::Subject => Some(Field::Subject),
+            ComposeField::Text => None,
+            ComposeField::To => Some(Field::To),
+        };
+        match field {
+            ComposeField::Bcc => self.bcc = value,
+            ComposeField::Cc => self.cc = value,
+            ComposeField::From => self.choose_from(&value),
+            ComposeField::Subject => self.subject = value,
+            ComposeField::Text => self.text = value,
+            ComposeField::To => self.to = value,
+        }
+        if about.is_some() && self.error.as_ref().map(|e| e.0) == about {
+            self.error = None;
+        }
+    }
+
     pub(crate) fn changed(&self) -> bool {
         self.snapshot() != self.opened_as
     }
@@ -242,7 +283,11 @@ impl Composer {
     pub(crate) fn field_error(&self, field: Field) -> Option<String> {
         Self::split_addresses(self.address_field(field)?)
             .iter()
-            .find_map(|address| valid_address(address).err().map(|e| e.to_string()))
+            .find_map(|recipient| {
+                valid_address(&bare_address(recipient))
+                    .err()
+                    .map(|_| CheckError::BadAddress(recipient.clone()).to_string())
+            })
     }
 
     /// What the attached files and the kept parts of the original add up to; an unreadable file counts as 0.
@@ -583,6 +628,16 @@ mod tests {
             composer.check(&identity(), LIMIT).map_err(|e| e.0),
             Err(Field::From)
         );
+    }
+
+    #[test]
+    fn a_named_address_passes_the_check() {
+        let mut composer = new_mail();
+        composer.to = "Ann Example <ann@example.org>, \"Doe, Jo\" <jo@example.org>".into();
+        assert_eq!(composer.field_error(Field::To), None);
+        assert_eq!(composer.check(&identity(), LIMIT), Ok(()));
+        composer.to = "Ann <not an address>".into();
+        assert!(composer.field_error(Field::To).is_some());
     }
 
     #[test]

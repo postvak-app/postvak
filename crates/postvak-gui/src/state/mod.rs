@@ -25,8 +25,10 @@ use postvak_core::sync::{Activity, Command, DeleteMode, Event};
 use postvak_core::trash::Trash;
 use postvak_core::unsubscribe::{self, Method};
 
+pub(crate) use self::composing::{CancelError, CancelFn, ComposeTarget, PrefillFn, QueueFn};
 use super::account::{self, AccountForm};
 use super::body;
+use super::compose::{ComposeField, Composer};
 use super::draft::{self, Draft};
 use super::folders;
 use super::html::{self, Fetcher, HtmlState, Renderer, Reply, Wake};
@@ -41,6 +43,7 @@ use super::undo::{self, Taken, Toast, UndoState};
 use super::worker::{self, Stopped};
 
 mod acting;
+mod composing;
 mod folder_dialog;
 mod html_view;
 mod opened;
@@ -580,6 +583,63 @@ pub(crate) enum UiAction {
     SyncNow,
     /// Put back the newest gesture of this window not undone yet.
     Undo,
+    /// Answer the shown message: to the sender, everyone, or its list, in the reader pane.
+    Reply(postvak_core::send::reply::ReplyTo),
+    /// Forward the shown message, in the reader pane.
+    Forward,
+    #[allow(
+        dead_code,
+        reason = "sent by the composer's view, which is not drawn yet"
+    )]
+    ComposeEdit(ComposeTarget, ComposeField, String),
+    #[allow(
+        dead_code,
+        reason = "sent by the composer's view, which is not drawn yet"
+    )]
+    ComposeShowCcBcc(ComposeTarget),
+    #[allow(
+        dead_code,
+        reason = "sent by the composer's view, which is not drawn yet"
+    )]
+    ComposeAttach(ComposeTarget),
+    #[allow(
+        dead_code,
+        reason = "sent by the composer's view, which is not drawn yet"
+    )]
+    ComposeRemoveFile(ComposeTarget, usize),
+    /// Keep or leave out the original's attachment `index` of an inline forward.
+    #[allow(
+        dead_code,
+        reason = "sent by the composer's view, which is not drawn yet"
+    )]
+    ComposeToggleForwardPart(ComposeTarget, usize),
+    #[allow(
+        dead_code,
+        reason = "sent by the composer's view, which is not drawn yet"
+    )]
+    ComposeForwardAsAttachment(ComposeTarget, bool),
+    #[allow(
+        dead_code,
+        reason = "sent by the composer's view, which is not drawn yet"
+    )]
+    ComposeSend(ComposeTarget),
+    #[allow(
+        dead_code,
+        reason = "sent by the composer's view, which is not drawn yet"
+    )]
+    ComposeClose(ComposeTarget),
+    #[allow(
+        dead_code,
+        reason = "sent by the composer's view, which is not drawn yet"
+    )]
+    ComposeDiscard(ComposeTarget),
+    /// Put the composer of sent gesture `id`, taken back from the outbox, in the reader pane again.
+    ReopenCompose(u64),
+    /// The answers to "Discard this message?"
+    #[allow(dead_code, reason = "answers of a dialog that is not drawn yet")]
+    LeaveComposeCancel,
+    #[allow(dead_code, reason = "answers of a dialog that is not drawn yet")]
+    LeaveComposeDiscard,
     /// Put back logged action `id` of an account, as the Activity view offers it.
     UndoAction(usize, i64),
     /// The pointer is over the toast, which keeps it.
@@ -620,6 +680,7 @@ impl UiAction {
 pub(crate) enum Dialog {
     Help,
     Unsaved,
+    LeaveCompose,
     ApplyConfirm,
     Rule,
     Folder,
@@ -632,9 +693,10 @@ pub(crate) enum Dialog {
 }
 
 impl Dialog {
-    const TOP_FIRST: [Dialog; 11] = [
+    const TOP_FIRST: [Dialog; 12] = [
         Dialog::Help,
         Dialog::Unsaved,
+        Dialog::LeaveCompose,
         Dialog::ApplyConfirm,
         Dialog::Rule,
         Dialog::Folder,
@@ -832,6 +894,23 @@ pub struct App {
     pub(crate) rule_draft_stale: bool,
     /// Opening another rule while the open one has unsaved changes: held until the prompt is answered.
     pub(crate) leave_draft: Option<Box<UiAction>>,
+    /// The reply or forward in the reader pane.
+    pub(crate) composer: Option<Composer>,
+    pub(crate) next_compose: u64,
+    /// Leaving the pane's changed composer: what asked to, held until "Discard this message?" is answered.
+    pub(crate) leave_compose: Option<Box<UiAction>>,
+    /// The prefill of the pane's composer, by its id, until it answers.
+    pub(crate) compose_prefill: Option<(
+        u64,
+        Receiver<Result<postvak_core::send::compose::Prefilled, String>>,
+    )>,
+    pub(crate) compose_sending: Vec<composing::Sending>,
+    /// Undos of sent messages asked of the daemon, by gesture id.
+    pub(crate) compose_cancelling: Vec<(u64, Receiver<Result<(), CancelError>>)>,
+    /// Fill, queue and take back a message through the daemon; tests swap them so no daemon starts.
+    pub(crate) prefill: PrefillFn,
+    pub(crate) queue_send: QueueFn,
+    pub(crate) cancel_send: CancelFn,
     pub(crate) search: Option<String>,
     /// Which rows a folder's list keeps; search results ignore it.
     pub(crate) filter: Filter,
@@ -999,6 +1078,15 @@ impl App {
             rule_draft_opened: None,
             rule_draft_stale: false,
             leave_draft: None,
+            composer: None,
+            next_compose: 0,
+            leave_compose: None,
+            compose_prefill: None,
+            compose_sending: Vec::new(),
+            compose_cancelling: Vec::new(),
+            prefill: composing::prefill,
+            queue_send: composing::queue_send,
+            cancel_send: composing::cancel_send,
             search: None,
             filter: Filter::default(),
             search_focused: false,
@@ -1051,6 +1139,7 @@ impl App {
         self.run_dry_runs();
         self.receive_expunge_check();
         self.receive_save_as();
+        self.receive_compose(now);
         self.receive_list();
         if std::mem::take(&mut self.view_dirty) {
             self.refresh_view();
@@ -1634,6 +1723,9 @@ impl App {
     }
 
     fn apply_action(&mut self, action: UiAction) {
+        if self.holds_for_compose(&action) {
+            return;
+        }
         match action {
             leave @ (UiAction::Close(Dialog::Rule)
             | UiAction::EditRule(_)
@@ -1988,6 +2080,25 @@ impl App {
             }
             UiAction::SyncNow => self.sync_all(),
             UiAction::Undo => self.undo_newest(),
+            UiAction::Reply(to) => self.answer(Some(to)),
+            UiAction::Forward => self.answer(None),
+            UiAction::LeaveComposeCancel => self.close(Dialog::LeaveCompose),
+            UiAction::LeaveComposeDiscard => {
+                if let Some(leave) = self.leave_compose.take() {
+                    self.composer = None;
+                    self.apply_action(*leave);
+                }
+            }
+            UiAction::ReopenCompose(id) => self.reopen_compose(id),
+            compose @ (UiAction::ComposeEdit(..)
+            | UiAction::ComposeShowCcBcc(_)
+            | UiAction::ComposeAttach(_)
+            | UiAction::ComposeRemoveFile(..)
+            | UiAction::ComposeToggleForwardPart(..)
+            | UiAction::ComposeForwardAsAttachment(..)
+            | UiAction::ComposeSend(_)
+            | UiAction::ComposeClose(_)
+            | UiAction::ComposeDiscard(_)) => self.compose(compose),
             UiAction::UndoAction(account, action) => {
                 let id = self.take(String::new(), 0);
                 if let Some(taken) = self.taken.iter_mut().find(|taken| taken.id == id) {
@@ -1998,7 +2109,10 @@ impl App {
             UiAction::ToastHover(hovered) => {
                 if let Some(toast) = &mut self.toast {
                     toast.hovered = hovered;
-                    toast.until = None;
+                    // A countdown goes when the message does, pointer or not.
+                    if toast.count_down.is_none() {
+                        toast.until = None;
+                    }
                 }
             }
             UiAction::TargetRow(row) => {
@@ -2513,13 +2627,20 @@ impl App {
 
     /// The outbox counts of every account, from the files the daemon keeps; reading them asks nothing of a server.
     fn read_outboxes(&mut self) {
-        use postvak_core::send::outbox::Outbox;
-        for account in &mut self.accounts {
+        use postvak_core::send::outbox::{Outbox, State};
+        let mut waiting = Vec::new();
+        for (index, account) in self.accounts.iter_mut().enumerate() {
             let entries = Outbox::existing(&self.paths, &account.name)
                 .and_then(|outbox| outbox.list().ok())
                 .unwrap_or_default();
             account.outbox = postvak_core::send::sender::counts_of(&entries);
+            waiting.extend(
+                (entries.into_iter())
+                    .filter(|entry| entry.state == State::Waiting)
+                    .map(|entry| (index, entry.id)),
+            );
         }
+        self.drop_sent_composers(&waiting);
     }
 
     /// Starts the save; a form that cannot make an account says why at once.
@@ -2645,6 +2766,7 @@ impl App {
         match dialog {
             Dialog::Help => self.help_open,
             Dialog::Unsaved => self.leave_draft.is_some(),
+            Dialog::LeaveCompose => self.leave_compose.is_some(),
             Dialog::ApplyConfirm => self.apply_confirm.is_some(),
             Dialog::Rule => self.rule_draft.is_some() && self.view == View::Rules,
             Dialog::Folder => self.folder_dialog.is_some(),
@@ -2666,6 +2788,7 @@ impl App {
         match dialog {
             Dialog::Help => self.help_open = false,
             Dialog::Unsaved => self.leave_draft = None,
+            Dialog::LeaveCompose => self.leave_compose = None,
             Dialog::ApplyConfirm => self.apply_confirm = None,
             Dialog::Rule => self.open_draft(None),
             Dialog::Folder => self.folder_dialog = None,

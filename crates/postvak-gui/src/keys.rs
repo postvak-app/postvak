@@ -1,6 +1,7 @@
 //! The keymap: which key does what in which pane, and the `?` window's rows. Printable keys match on the typed text, so
 //! they follow the keyboard layout; the window turns its key events into a `Press`.
 use postvak_core::rules::Action;
+use postvak_core::send::reply::ReplyTo;
 
 use super::state::{Focus, UiAction};
 
@@ -128,6 +129,10 @@ pub(crate) fn action(press: &Press, focus: Focus, typing: bool) -> Option<UiActi
                 Key::Text(t) if t == "s" => UiAction::ToggleFlag,
                 Key::Text(t) if t == "u" => UiAction::ToggleRead,
                 Key::Text(t) if t == "v" => UiAction::ToggleHtml,
+                Key::Text(t) if t == "r" => UiAction::Reply(ReplyTo::Sender),
+                Key::Text(t) if t == "R" => UiAction::Reply(ReplyTo::All),
+                Key::Text(t) if t == "l" => UiAction::Reply(ReplyTo::List),
+                Key::Text(t) if t == "f" => UiAction::Forward,
                 _ => return None,
             };
             (!press.command && !press.alt).then_some(action)
@@ -136,7 +141,7 @@ pub(crate) fn action(press: &Press, focus: Focus, typing: bool) -> Option<UiActi
 }
 
 /// The `?` window. Keys are spelled out, so every glyph is in the bundled fonts.
-pub(crate) const HELP: [(&str, &str); 17] = [
+pub(crate) const HELP: [(&str, &str); 20] = [
     ("j / k, Down / Up", "next or previous row"),
     ("Right / Left", "expand or collapse a thread"),
     ("x", "add the row to the selection, or take it out"),
@@ -154,6 +159,9 @@ pub(crate) const HELP: [(&str, &str); 17] = [
     ("u", "mark read or unread"),
     ("s", "flag or unflag"),
     ("v", "show HTML mail as text, or as HTML again"),
+    ("r / Shift+R", "reply, or reply to everyone"),
+    ("l", "reply to the mailing list"),
+    ("f", "forward"),
     (
         "z, Ctrl+Z (Cmd+Z on macOS)",
         "undo the last action taken in this window",
@@ -203,6 +211,10 @@ mod tests {
             ("?", UiAction::ToggleHelp),
             ("/", UiAction::StartSearch),
             ("z", UiAction::Undo),
+            ("r", UiAction::Reply(ReplyTo::Sender)),
+            ("R", UiAction::Reply(ReplyTo::All)),
+            ("l", UiAction::Reply(ReplyTo::List)),
+            ("f", UiAction::Forward),
         ];
         for (text, want) in cases {
             assert_eq!(on_list(Press::text(text)), Some(want), "{text}");
@@ -239,7 +251,11 @@ mod tests {
         );
         assert_eq!(on_list(command("e")), None);
         assert_eq!(on_list(command("j")), None);
-        assert_eq!(on_list(Press::text("r")), None);
+        assert_eq!(
+            action(&Press::text("r"), Focus::Folders, false),
+            None,
+            "reply answers mail, not folders"
+        );
     }
 
     #[test]

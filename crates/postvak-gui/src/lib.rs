@@ -5,10 +5,6 @@ mod avatar;
 mod bench;
 mod bind;
 mod body;
-#[allow(
-    dead_code,
-    reason = "the window state uses the composer from the next task on"
-)]
 mod compose;
 mod draft;
 #[cfg(test)]

@@ -84,10 +84,9 @@ export component MailWindow inherits Window {
     in property <string> rule-icon;
     // Approve rule's tick.
     in property <string> check-icon;
-    // The reader's More menu, Reply and the arrow that says it opens the mail app, and an attachment.
+    // The reader's More menu, Reply, and an attachment.
     in property <string> more-icon;
     in property <string> reply-icon;
-    in property <string> external-icon;
     in property <string> file-icon;
 
     // The message actions that move the message, then the marks: flag and read state.
@@ -248,6 +247,9 @@ export component MailWindow inherits Window {
     callback new-rule();
     callback rule-from();
     callback reply();
+    callback reply-all();
+    callback reply-list();
+    callback forward();
     callback review-proposals();
     callback edit-shown-rule();
     callback move-back();
@@ -630,11 +632,13 @@ export component MailWindow inherits Window {
                         rule-icon: root.rule-icon;
                         more-icon: root.more-icon;
                         reply-icon: root.reply-icon;
-                        external-icon: root.external-icon;
                         file-icon: root.file-icon;
                         empty-icon: root.envelope-icon;
                         rule-from => { root.rule-from(); }
                         reply => { root.reply(); }
+                        reply-all => { root.reply-all(); }
+                        reply-list => { root.reply-list(); }
+                        forward => { root.forward(); }
                         edit-shown-rule => { root.edit-shown-rule(); }
                         move-back => { root.move-back(); }
                         toggle-provenance => { root.toggle-provenance(); }
