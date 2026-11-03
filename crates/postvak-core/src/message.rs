@@ -446,7 +446,7 @@ pub fn display_names(field: &str) -> Vec<String> {
 }
 
 /// A mailbox's address: inside `<…>`, or the whole mailbox without one.
-fn mailbox_address(part: &str) -> &str {
+pub(crate) fn mailbox_address(part: &str) -> &str {
     match (part.rfind('<'), part.rfind('>')) {
         (Some(start), Some(end)) if end > start => part[start + 1..end].trim(),
         _ => part,
@@ -454,7 +454,7 @@ fn mailbox_address(part: &str) -> &str {
 }
 
 /// A mailbox's display name, unquoted; none without `<…>` or with an empty name.
-fn mailbox_name(part: &str) -> Option<String> {
+pub(crate) fn mailbox_name(part: &str) -> Option<String> {
     let name = part[..part.strip_suffix('>')?.rfind('<')?].trim();
     let name = match name.strip_prefix('"').and_then(|n| n.strip_suffix('"')) {
         Some(quoted) => unescape(quoted.trim()),
