@@ -321,6 +321,15 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    #[command(about = postvak_core::help::SEND)]
+    Send(Box<SendArgs>),
+    #[command(about = postvak_core::help::OUTBOX, args_conflicts_with_subcommands = true)]
+    Outbox {
+        #[command(subcommand)]
+        command: Option<OutboxCommand>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Manage accounts
     Account {
         #[command(subcommand)]
@@ -633,7 +642,22 @@ enum TrashCommand {
 #[derive(Subcommand)]
 enum AccountCommand {
     #[command(about = postvak_core::help::ACCOUNT_ADD)]
-    Add,
+    Add {
+        #[command(flatten)]
+        smtp: SmtpFlags,
+    },
+    #[command(about = postvak_core::help::ACCOUNT_SMTP)]
+    Smtp {
+        account: String,
+        #[command(flatten)]
+        smtp: SmtpFlags,
+        /// Guess the server again, as the daemon does for an account without one
+        #[arg(long, conflicts_with_all = ["smtp_host", "save"])]
+        guess: bool,
+        /// Write the server the daemon guessed to config.toml
+        #[arg(long, conflicts_with = "smtp_host")]
+        save: bool,
+    },
     #[command(about = postvak_core::help::ACCOUNT_LIST)]
     List {
         #[arg(long)]
@@ -643,6 +667,129 @@ enum AccountCommand {
     Trust {
         account: String,
         authserv_id: String,
+    },
+}
+
+#[derive(clap::Args)]
+struct SmtpFlags {
+    /// The SMTP server to send through, instead of guessing it
+    #[arg(long)]
+    smtp_host: Option<String>,
+    /// Its port; by default 465 for implicit TLS, 587 for STARTTLS
+    #[arg(long, requires = "smtp_host")]
+    smtp_port: Option<u16>,
+    /// How the SMTP connection is encrypted
+    #[arg(long, value_enum, requires = "smtp_host", default_value = "implicit")]
+    smtp_tls: SmtpTlsArg,
+}
+
+impl SmtpFlags {
+    fn given(&self) -> Option<config::SmtpConfig> {
+        let host = self.smtp_host.as_deref()?.trim();
+        let tls = match self.smtp_tls {
+            SmtpTlsArg::Implicit => config::SmtpTls::Implicit,
+            SmtpTlsArg::Starttls => config::SmtpTls::Starttls,
+        };
+        Some(config::SmtpConfig {
+            port: self.smtp_port,
+            ..config::SmtpConfig::new(host, tls)
+        })
+    }
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum SmtpTlsArg {
+    Implicit,
+    Starttls,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum ForwardAsArg {
+    Inline,
+    Attachment,
+}
+
+#[derive(clap::Args)]
+struct SendArgs {
+    /// The account to send from; needed when several are configured, and for --raw when From is not enough
+    #[arg(long)]
+    account: Option<String>,
+    /// The address to send from: the account's, or one of its aliases (default: the account's, or for a reply the one
+    /// the original was sent to)
+    #[arg(long)]
+    from: Option<String>,
+    /// A recipient; repeat for more
+    #[arg(long)]
+    to: Vec<String>,
+    #[arg(long)]
+    cc: Vec<String>,
+    /// A recipient the others do not see
+    #[arg(long)]
+    bcc: Vec<String>,
+    #[arg(long, default_value = "")]
+    subject: String,
+    /// Read the text from this file instead of stdin or the editor
+    #[arg(long)]
+    body_file: Option<PathBuf>,
+    /// Attach a file; repeat for more
+    #[arg(long)]
+    attach: Vec<PathBuf>,
+    /// Reply to the sender of <folder>/<uid>
+    #[arg(long, value_name = "FOLDER/UID", group = "answer")]
+    reply: Option<String>,
+    /// Reply to the sender and everyone else <folder>/<uid> went to
+    #[arg(long, value_name = "FOLDER/UID", group = "answer")]
+    reply_all: Option<String>,
+    /// Reply to the mailing list <folder>/<uid> came through
+    #[arg(long, value_name = "FOLDER/UID", group = "answer")]
+    reply_list: Option<String>,
+    /// Forward <folder>/<uid> to --to, --cc and --bcc
+    #[arg(long, value_name = "FOLDER/UID", group = "answer")]
+    forward: Option<String>,
+    /// How a forward carries the original: its text and attachments, or the whole message attached
+    #[arg(
+        long = "as",
+        value_enum,
+        default_value = "inline",
+        requires = "forward"
+    )]
+    as_: ForwardAsArg,
+    /// Write the message in $VISUAL or $EDITOR; the default when stdin is a terminal
+    #[arg(long, conflicts_with = "body_file")]
+    edit: bool,
+    /// Send at once, without the undo delay
+    #[arg(long)]
+    now: bool,
+    /// Save a copy in Sent even where the provider files one, or for --raw
+    #[arg(long, conflicts_with = "no_save_sent")]
+    save_sent: bool,
+    /// Save no copy in Sent
+    #[arg(long)]
+    no_save_sent: bool,
+    #[arg(long)]
+    json: bool,
+    #[arg(long, help = postvak_core::help::SEND_RAW, conflicts_with_all = ["to", "cc", "bcc", "subject", "body_file", "attach", "answer", "edit", "from"])]
+    raw: bool,
+    /// For --raw: sendmail's arguments (-i, -oi, -t, -f <address>) and the recipients
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true, requires = "raw")]
+    sendmail_args: Vec<String>,
+}
+
+#[derive(Subcommand)]
+enum OutboxCommand {
+    #[command(about = postvak_core::help::OUTBOX_CANCEL)]
+    Cancel {
+        id: String,
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = postvak_core::help::OUTBOX_RETRY)]
+    Retry {
+        id: String,
+        #[arg(long)]
+        account: Option<String>,
     },
 }
 
@@ -987,8 +1134,35 @@ pub fn run() -> Result<()> {
             Ok(())
         }
         Command::Trash { command } => cmd_trash(command, &config, &paths),
+        Command::Send(args) => cmd_send(&config, &paths, *args),
+        Command::Outbox { command, json } => cmd_outbox(&paths, command, json),
         Command::Account { command } => match command {
-            AccountCommand::Add => cmd_account_add(config, &paths),
+            AccountCommand::Add { smtp } => cmd_account_add(config, &paths, smtp.given()),
+            AccountCommand::Smtp {
+                account,
+                smtp,
+                guess,
+                save,
+            } => {
+                let change = match (smtp.given(), guess, save) {
+                    (Some(given), _, _) => account::SmtpChange::Given(given),
+                    (None, true, _) => account::SmtpChange::Guess,
+                    (None, _, true) => account::SmtpChange::SaveGuess,
+                    (None, false, false) => bail!("give --smtp-host, --guess or --save"),
+                };
+                let mut config = config;
+                let client = Client::connect_or_start(&paths)?;
+                let saved = account::set_smtp(&mut config, &paths, &client, &account, change)?;
+                println!(
+                    "'{}' sends through {}:{} ({}); saved to {}",
+                    clean(&account, false),
+                    clean(&saved.host, false),
+                    saved.port(),
+                    saved.tls.as_str(),
+                    paths.config_file().display()
+                );
+                Ok(())
+            }
             AccountCommand::List { json } => {
                 for acc in &config.accounts {
                     if json {
@@ -1321,6 +1495,21 @@ fn print_status(status: &Status) {
         }
         if account.uidplus == Some(false) {
             println!("  note: {}", postvak_core::help::NO_UIDPLUS);
+        }
+        match &account.sending {
+            postvak_core::daemon::wire::SendingStatus::Ready => {}
+            postvak_core::daemon::wire::SendingStatus::NotSetUp => {
+                println!("  {}", postvak_core::help::SENDING_NOT_SET_UP);
+            }
+            postvak_core::daemon::wire::SendingStatus::SentCopyProblem(problem) => {
+                println!("  no copy in Sent: {}", clean(problem, false));
+            }
+        }
+        if account.outbox.waiting > 0 || account.outbox.failed > 0 {
+            println!(
+                "  outbox: {} waiting, {} failed (postvak outbox)",
+                account.outbox.waiting, account.outbox.failed
+            );
         }
     }
 }
@@ -2195,7 +2384,186 @@ fn cmd_trash(command: TrashCommand, config: &Config, paths: &Paths) -> Result<()
     }
 }
 
-fn cmd_account_add(mut config: Config, paths: &Paths) -> Result<()> {
+fn cmd_send(config: &Config, paths: &Paths, args: SendArgs) -> Result<()> {
+    use postvak_core::send::compose::{self, Body, SendKind, SendRequest};
+    use postvak_core::send::reply::{ForwardAs, ReplyTo};
+    use std::io::{IsTerminal as _, Read as _};
+    let client = LazyClient::new(paths);
+    if args.raw {
+        let mut raw = Vec::new();
+        io::stdin().read_to_end(&mut raw)?;
+        let outcome = compose::compose_raw_and_wait(
+            config,
+            paths,
+            &client,
+            &raw,
+            &args.sendmail_args,
+            args.account.as_deref(),
+            args.save_sent,
+        )?;
+        match &outcome {
+            postvak_core::daemon::wire::SendOutcome::Sent => {}
+            postvak_core::daemon::wire::SendOutcome::Temporary(reason) => {
+                eprintln!(
+                    "postvak: not sent yet, it stays in the outbox and is tried again: {}",
+                    clean(reason, false)
+                );
+            }
+            postvak_core::daemon::wire::SendOutcome::Permanent(reason) => {
+                eprintln!("postvak: not sent: {}", clean(reason, false));
+            }
+        }
+        std::process::exit(i32::from(compose::exit_code(&outcome)));
+    }
+    let answer = |text: &str| compose::parse_message_ref(text);
+    let kind = if let Some(r) = &args.reply {
+        let (folder, uid) = answer(r)?;
+        SendKind::Reply {
+            folder,
+            uid,
+            to: ReplyTo::Sender,
+        }
+    } else if let Some(r) = &args.reply_all {
+        let (folder, uid) = answer(r)?;
+        SendKind::Reply {
+            folder,
+            uid,
+            to: ReplyTo::All,
+        }
+    } else if let Some(r) = &args.reply_list {
+        let (folder, uid) = answer(r)?;
+        SendKind::Reply {
+            folder,
+            uid,
+            to: ReplyTo::List,
+        }
+    } else if let Some(r) = &args.forward {
+        let (folder, uid) = answer(r)?;
+        SendKind::Forward {
+            folder,
+            uid,
+            as_: match args.as_ {
+                ForwardAsArg::Inline => ForwardAs::Inline,
+                ForwardAsArg::Attachment => ForwardAs::Attachment,
+            },
+            to: args.to.clone(),
+            cc: args.cc.clone(),
+            bcc: args.bcc.clone(),
+        }
+    } else {
+        SendKind::New {
+            to: args.to.clone(),
+            cc: args.cc.clone(),
+            bcc: args.bcc.clone(),
+            subject: args.subject.clone(),
+        }
+    };
+    let body = match &args.body_file {
+        Some(file) => Body::Given(
+            std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?,
+        ),
+        None if args.edit || io::stdin().is_terminal() => Body::Edit,
+        None => {
+            let mut text = String::new();
+            io::stdin().read_to_string(&mut text)?;
+            Body::Given(text)
+        }
+    };
+    let request = SendRequest {
+        account: args.account.clone(),
+        kind,
+        body,
+        from: args.from.clone(),
+        attachments: args.attach.clone(),
+        now: args.now,
+        save_sent: (args.save_sent || args.no_save_sent).then_some(args.save_sent),
+    };
+    let dir = paths.cache_dir.clone();
+    let queued = compose::compose(config, paths, &client, request, |text| {
+        Ok(postvak_core::send::edit::edit_in(&dir, text)?)
+    })?;
+    if args.json {
+        print_json(postvak_core::output::queued(&queued));
+    } else {
+        println!("{}", postvak_core::help::queued_line(&queued, time::now()));
+    }
+    Ok(())
+}
+
+fn cmd_outbox(paths: &Paths, command: Option<OutboxCommand>, json: bool) -> Result<()> {
+    let client = Client::connect_or_start(paths)?;
+    // The account of a message id, from the outbox, when --account does not say it.
+    let account_of = |id: &str, account: Option<String>| -> Result<String> {
+        if let Some(account) = account {
+            return Ok(account);
+        }
+        client
+            .outbox()?
+            .into_iter()
+            .find(|(_, entry)| entry.id == id)
+            .map(|(account, _)| account)
+            .ok_or_else(|| anyhow::anyhow!("no message {id} in the outbox"))
+    };
+    match command {
+        None => {
+            for (account, entry) in client.outbox()? {
+                let row = postvak_core::output::outbox_row(&account, &entry);
+                if json {
+                    print_json(row);
+                    continue;
+                }
+                let first = entry
+                    .envelope
+                    .to
+                    .first()
+                    .map(|t| clean(t, false))
+                    .unwrap_or_default();
+                let more = match entry.envelope.to.len() {
+                    0 | 1 => String::new(),
+                    n => format!(" and {} more", n - 1),
+                };
+                println!(
+                    "{}  {}  {:<8} {}  to {first}{more}{}",
+                    entry.id,
+                    account,
+                    row["state"].as_str().unwrap_or_default(),
+                    time::date_time(entry.due),
+                    row["reason"]
+                        .as_str()
+                        .map(|r| format!("  ({})", clean(r, false)))
+                        .unwrap_or_default()
+                );
+            }
+            Ok(())
+        }
+        Some(OutboxCommand::Cancel { id, account, json }) => {
+            let account = account_of(&id, account)?;
+            let raw = client.cancel_send(&account, &id)?;
+            if json {
+                print_json(serde_json::json!({
+                    "id": id,
+                    "account": account,
+                    "message": String::from_utf8_lossy(&raw),
+                }));
+            } else {
+                io::stdout().write_all(&raw)?;
+            }
+            Ok(())
+        }
+        Some(OutboxCommand::Retry { id, account }) => {
+            let account = account_of(&id, account)?;
+            client.retry_send(&account, &id)?;
+            println!("sending {id} again");
+            Ok(())
+        }
+    }
+}
+
+fn cmd_account_add(
+    mut config: Config,
+    paths: &Paths,
+    smtp: Option<config::SmtpConfig>,
+) -> Result<()> {
     let name = prompt("Account name (letters, digits, - _)")?;
     let host = prompt("IMAP host")?;
     let port: u16 = prompt("Port [993]")?.parse().unwrap_or(993);
@@ -2249,6 +2617,18 @@ fn cmd_account_add(mut config: Config, paths: &Paths) -> Result<()> {
     println!("testing the login to {host}…");
     account::test_login(&client, paths, &config, &account, secret.as_ref())
         .context("the login failed, so nothing was saved")?;
+    let mut account = account;
+    println!("finding the SMTP server…");
+    account.smtp = account::smtp_for_new(&client, &account, smtp, secret.as_ref())
+        .context("the SMTP login failed, so nothing was saved")?;
+    match &account.smtp {
+        Some(smtp) => println!(
+            "sending through {}:{}",
+            clean(&smtp.host, false),
+            smtp.port()
+        ),
+        None => println!("note: {}", postvak_core::help::SENDING_NOT_SET_UP),
+    }
     account::add(&mut config, paths, account, secret)?;
     println!("saved to {}", paths.config_file().display());
     account::await_started(&client, &name, account::START_TIMEOUT)?;

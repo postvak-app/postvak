@@ -1384,7 +1384,14 @@ fn serve_fake_daemon(paths: &Paths, version: &'static str) -> std::thread::JoinH
                             errors: vec![FAILED_PASS.into()],
                         })),
                     },
-                    ClientMessage::TestLogin { id, .. } => DaemonMessage::Reply {
+                    ClientMessage::TestLogin { id, .. }
+                    | ClientMessage::Send { id, .. }
+                    | ClientMessage::CancelSend { id, .. }
+                    | ClientMessage::RetrySend { id, .. }
+                    | ClientMessage::AwaitSend { id, .. }
+                    | ClientMessage::Outbox { id }
+                    | ClientMessage::GuessSmtp { id, .. }
+                    | ClientMessage::TestSmtp { id, .. } => DaemonMessage::Reply {
                         id,
                         outcome: Outcome::Error("no logins here".into()),
                     },
@@ -1632,4 +1639,35 @@ fn rules_test_as_of_evaluates_older_than_at_that_time() {
         !bad.status.success() && stderr.contains("expected a span"),
         "{stderr}"
     );
+}
+
+#[test]
+fn send_raw_rejects_an_unknown_sendmail_flag() {
+    let home = tempfile::tempdir().unwrap();
+    let out = postvak(home.path(), &["send", "--raw", "-bs"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("-bs"), "{stderr}");
+}
+
+#[test]
+fn send_raw_takes_git_send_email_arguments() {
+    let home = tempfile::tempdir().unwrap();
+    // An empty message has no From: the arguments themselves were read, where an unknown one is refused first.
+    let out = postvak(
+        home.path(),
+        &[
+            "send",
+            "--raw",
+            "-i",
+            "-f",
+            "me@example.com",
+            "--",
+            "a@x.org",
+            "bcc@y.org",
+        ],
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("no From address"), "{stderr}");
 }

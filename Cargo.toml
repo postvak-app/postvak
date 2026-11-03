@@ -48,6 +48,7 @@ i-slint-backend-testing = { version = "=1.18.1", features = ["renderer-software"
 i-slint-common = "=1.18.1"                           # Slint's own fontique loads fontconfig at runtime on Linux; one linked and one loaded copy do not build together
 keyring-core = "1"                                   # OS keyring API
 log = "0.4"                                          # logging facade
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls", "ring", "webpki-roots"] }  # sending mail: SMTP client and MIME message builder in one maintained crate, on the same rustls and ring as IMAP
 mail-parser = "1.0"                                 # RFC 5322 header and body parsing
 mac-notification-sys = "0.6"                         # desktop notifications on macOS, posted as Postvak once the app is installed, and their clicks; Linux speaks D-Bus through zbus
 image = { version = "0.25", default-features = false }  # HTML mail: read an image's size from its header to refuse decompression bombs; the decoders Blitz enables; already in the tree through Blitz

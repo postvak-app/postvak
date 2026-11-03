@@ -6,6 +6,9 @@ use zeroize::Zeroize;
 
 use crate::config::AccountConfig;
 use crate::credentials::Secret;
+use crate::send::outbox::Entry;
+use crate::send::sender::OutboxCounts;
+use crate::send::{Capabilities, SmtpServer};
 use crate::sync::{Activity, Command, Event};
 
 pub const PROTOCOL: u32 = 1;
@@ -38,6 +41,49 @@ pub enum ClientMessage {
         id: u64,
         account: Box<AccountConfig>,
         password: Password,
+    },
+    /// Puts a message in `account`'s outbox, on disk before the reply.
+    Send {
+        id: u64,
+        account: String,
+        #[serde(with = "crate::message::base64_bytes")]
+        raw: Vec<u8>,
+        entry: Box<Entry>,
+    },
+    /// Takes back outbox message `outbox_id`, returning it, while it is not yet being sent.
+    CancelSend {
+        id: u64,
+        account: String,
+        outbox_id: String,
+    },
+    /// Sends a failed outbox message again.
+    RetrySend {
+        id: u64,
+        account: String,
+        outbox_id: String,
+    },
+    /// Answered once outbox message `outbox_id` went, failed, or failed for now and waits to be tried again.
+    AwaitSend {
+        id: u64,
+        account: String,
+        outbox_id: String,
+    },
+    /// Every account's outbox.
+    Outbox {
+        id: u64,
+    },
+    /// Guesses the SMTP server of `account`, logging in with `password`, or its own password source when None. The
+    /// guess is stored for an account the daemon runs with the same IMAP host and login; config.toml is never written.
+    GuessSmtp {
+        id: u64,
+        account: Box<AccountConfig>,
+        password: Option<Password>,
+    },
+    /// Logs in to `account`'s `[smtp]` server, sending nothing.
+    TestSmtp {
+        id: u64,
+        account: Box<AccountConfig>,
+        password: Option<Password>,
     },
 }
 
@@ -96,6 +142,42 @@ pub enum Payload {
     Done,
     Event(Event),
     Status(Status),
+    /// The outbox id a message got and when it is due.
+    Queued {
+        id: String,
+        due: i64,
+    },
+    /// A message taken back from the outbox.
+    Cancelled {
+        #[serde(with = "crate::message::base64_bytes")]
+        raw: Vec<u8>,
+    },
+    Outbox(Vec<(String, Entry)>),
+    SmtpGuessed(Option<(SmtpServer, Capabilities)>),
+    SmtpChecked(Capabilities),
+    SendOutcome(SendOutcome),
+}
+
+/// What became of a message `AwaitSend` waited for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SendOutcome {
+    Sent,
+    /// Failed for now; it stays in the outbox and is tried again.
+    Temporary(String),
+    Permanent(String),
+}
+
+/// Whether an account can send, as the status shows it.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SendingStatus {
+    #[default]
+    Ready,
+    /// No `[smtp]` table and no working guess.
+    NotSetUp,
+    /// Sending works, but the last sent message got no copy in Sent, for this reason.
+    SentCopyProblem(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -115,6 +197,11 @@ pub struct AccountStatus {
     pub uidplus: Option<bool>,
     /// Whether the account's last login ran over TLS; false only under `tls = "none"`, None before its first.
     pub encrypted: Option<bool>,
+    /// How many of the account's messages wait in the outbox and how many failed.
+    #[serde(default)]
+    pub outbox: OutboxCounts,
+    #[serde(default)]
+    pub sending: SendingStatus,
 }
 
 impl Status {

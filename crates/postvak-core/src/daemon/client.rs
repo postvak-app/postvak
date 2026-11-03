@@ -579,6 +579,106 @@ impl Client {
         Ok(())
     }
 
+    /// Puts a message in `account`'s outbox; the daemon has it on disk when this returns. Returns its id and when it is
+    /// due.
+    pub fn queue_send(
+        &self,
+        account: &str,
+        keep: &[u8],
+        entry: &crate::send::outbox::Entry,
+    ) -> anyhow::Result<(String, i64)> {
+        let message = |id| ClientMessage::Send {
+            id,
+            account: account.into(),
+            raw: keep.to_vec(),
+            entry: Box::new(entry.clone()),
+        };
+        match self.call(message, Some(REPLY_TIMEOUT))? {
+            Payload::Queued { id, due } => Ok((id, due)),
+            other => bail!("unexpected reply from the daemon: {other:?}"),
+        }
+    }
+
+    /// Takes back an outbox message not yet being sent; returns it.
+    pub fn cancel_send(&self, account: &str, outbox_id: &str) -> anyhow::Result<Vec<u8>> {
+        let message = |id| ClientMessage::CancelSend {
+            id,
+            account: account.into(),
+            outbox_id: outbox_id.into(),
+        };
+        match self.call(message, Some(REPLY_TIMEOUT))? {
+            Payload::Cancelled { raw } => Ok(raw),
+            other => bail!("unexpected reply from the daemon: {other:?}"),
+        }
+    }
+
+    /// Sends a failed outbox message again.
+    pub fn retry_send(&self, account: &str, outbox_id: &str) -> anyhow::Result<()> {
+        let message = |id| ClientMessage::RetrySend {
+            id,
+            account: account.into(),
+            outbox_id: outbox_id.into(),
+        };
+        self.call(message, Some(REPLY_TIMEOUT))?;
+        Ok(())
+    }
+
+    /// Waits until an outbox message went, failed, or failed for now.
+    pub fn await_send(&self, account: &str, outbox_id: &str) -> anyhow::Result<wire::SendOutcome> {
+        let message = |id| ClientMessage::AwaitSend {
+            id,
+            account: account.into(),
+            outbox_id: outbox_id.into(),
+        };
+        match self.call(message, None)? {
+            Payload::SendOutcome(outcome) => Ok(outcome),
+            other => bail!("unexpected reply from the daemon: {other:?}"),
+        }
+    }
+
+    /// Every account's outbox: each message with its account.
+    pub fn outbox(&self) -> anyhow::Result<Vec<(String, crate::send::outbox::Entry)>> {
+        match self.call(|id| ClientMessage::Outbox { id }, Some(REPLY_TIMEOUT))? {
+            Payload::Outbox(entries) => Ok(entries),
+            other => bail!("unexpected reply from the daemon: {other:?}"),
+        }
+    }
+
+    /// Guesses `account`'s SMTP server, logging in with `secret` or its own password source; the daemon stores the
+    /// guess for an account it runs, and never writes config.toml.
+    pub fn guess_smtp(
+        &self,
+        account: &AccountConfig,
+        secret: Option<&Secret>,
+    ) -> anyhow::Result<Option<(crate::send::SmtpServer, crate::send::Capabilities)>> {
+        let message = |id| ClientMessage::GuessSmtp {
+            id,
+            account: Box::new(account.clone()),
+            password: secret.map(wire::Password::new),
+        };
+        match self.call(message, None)? {
+            Payload::SmtpGuessed(found) => Ok(found),
+            other => bail!("unexpected reply from the daemon: {other:?}"),
+        }
+    }
+
+    /// Logs in to `account`'s `[smtp]` server with `secret` or its own password source, sending nothing.
+    pub fn test_smtp(
+        &self,
+        account: &AccountConfig,
+        secret: Option<&Secret>,
+    ) -> anyhow::Result<crate::send::Capabilities> {
+        let message = |id| ClientMessage::TestSmtp {
+            id,
+            account: Box::new(account.clone()),
+            password: secret.map(wire::Password::new),
+        };
+        match self.call(message, Some(REPLY_TIMEOUT))? {
+            Payload::SmtpChecked(caps) => Ok(caps),
+            other => bail!("unexpected reply from the daemon: {other:?}"),
+        }
+    }
+
     pub fn shutdown(&self) -> anyhow::Result<()> {
         self.call(|id| ClientMessage::Shutdown { id }, Some(REPLY_TIMEOUT))?;
         Ok(())
@@ -683,6 +783,7 @@ pub(super) fn reply_timeout(command: &Command) -> Option<Duration> {
         | Command::CreateFolder { .. }
         | Command::FetchAttachment { .. }
         | Command::FetchBody { .. }
+        | Command::FinishSent { .. }
         | Command::RenameFolder { .. }
         | Command::Restore { .. }
         | Command::Undo { .. } => Some(REPLY_TIMEOUT),
@@ -708,6 +809,8 @@ fn memory_status(accounts: &[String]) -> Status {
                 activity: None,
                 uidplus: None,
                 encrypted: None,
+                outbox: Default::default(),
+                sending: Default::default(),
             })
             .collect(),
     }

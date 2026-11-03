@@ -178,6 +178,14 @@ pub enum Event {
         report: actions::UndoReport,
         request: RequestId,
     },
+    /// What `FinishSent` did for outbox message `id`.
+    SentFinished {
+        account: String,
+        id: String,
+        copied: bool,
+        flagged: bool,
+        request: RequestId,
+    },
     RuleApplied {
         account: String,
         request: RequestId,
@@ -210,6 +218,7 @@ impl Event {
             | Event::Restored { request, .. }
             | Event::RuleApplied { request, .. }
             | Event::Undone { request, .. }
+            | Event::SentFinished { request, .. }
             | Event::ServerSearchDone { request, .. }
             | Event::ServerSearchFailed { request, .. } => vec![*request],
             Event::Synced { requests, .. } => requests.clone(),
@@ -404,6 +413,17 @@ pub enum Command {
     SearchServer {
         folder: Option<String>,
         query: String,
+    },
+    /// After the server took outbox message `id`: its copy in Sent and the flag on the message it answers, each
+    /// unless already done. The daemon sends it again until `SentFinished` says both are.
+    FinishSent {
+        id: String,
+        #[serde(with = "crate::message::base64_bytes")]
+        raw: Vec<u8>,
+        save_sent: bool,
+        copied: bool,
+        original: Option<crate::send::outbox::Original>,
+        flagged: bool,
     },
     SyncNow,
 }
@@ -1553,6 +1573,32 @@ fn run_command(
                 })
                 .map_err(SyncError::from)
         }
+        Command::FinishSent {
+            id,
+            raw,
+            save_sent,
+            copied,
+            original,
+            flagged,
+        } => {
+            run.used_connection = true;
+            let job = crate::send::sent::Finish {
+                raw,
+                save_sent,
+                copied,
+                original,
+                flagged,
+            };
+            crate::send::sent::finish(ops, store, &account.name, &id, &job)
+                .map(|(copied, flagged)| Event::SentFinished {
+                    account: name(),
+                    id,
+                    copied,
+                    flagged,
+                    request,
+                })
+                .map_err(SyncError::from)
+        }
         Command::Restore { file } => {
             run.used_connection = true;
             trash
@@ -2047,7 +2093,7 @@ fn jittered(delay: Duration, r: u64) -> Duration {
     delay - Duration::from_millis(span) + Duration::from_millis(offset)
 }
 
-fn random_u64() -> u64 {
+pub(crate) fn random_u64() -> u64 {
     use std::hash::{BuildHasher, Hasher};
     std::collections::hash_map::RandomState::new()
         .build_hasher()

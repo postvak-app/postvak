@@ -292,6 +292,8 @@ pub(crate) struct Account {
     pub encrypted: Option<bool>,
     /// Who the account is, for `from:me` in a search; None when its config could not say.
     pub identity: Option<Identity>,
+    /// What waits in the account's outbox and what failed, read from its files on each file poll.
+    pub outbox: postvak_core::send::sender::OutboxCounts,
 }
 
 impl Account {
@@ -873,6 +875,7 @@ fn account_state(
         uidplus: None,
         encrypted: None,
         identity,
+        outbox: Default::default(),
     };
     account.reload_folders();
     account
@@ -899,6 +902,7 @@ impl App {
                      name,
                      uidplus,
                      encrypted,
+                     ..
                  }| {
                     let identity = config.account(&name).and_then(|a| a.identity().ok());
                     Account {
@@ -1293,6 +1297,7 @@ impl App {
             | Event::NewMail { account, .. }
             | Event::Restored { account, .. }
             | Event::Undone { account, .. }
+            | Event::SentFinished { account, .. }
             | Event::RuleApplied { account, .. }
             | Event::ServerSearchDone { account, .. }
             | Event::ServerSearchFailed { account, .. }
@@ -1550,6 +1555,8 @@ impl App {
                 self.push_history(line);
                 self.refresh(index);
             }
+            // A sent message's copy went to Sent, or its original got a flag.
+            Event::SentFinished { .. } => self.refresh(index),
         }
     }
 
@@ -2476,6 +2483,18 @@ impl App {
         if !saving && self.config_watch.changed() {
             self.config_changed = true;
         }
+        self.read_outboxes();
+    }
+
+    /// The outbox counts of every account, from the files the daemon keeps; reading them asks nothing of a server.
+    fn read_outboxes(&mut self) {
+        use postvak_core::send::outbox::Outbox;
+        for account in &mut self.accounts {
+            let entries = Outbox::existing(&self.paths, &account.name)
+                .and_then(|outbox| outbox.list().ok())
+                .unwrap_or_default();
+            account.outbox = postvak_core::send::sender::counts_of(&entries);
+        }
     }
 
     /// Starts the save; a form that cannot make an account says why at once.
@@ -2514,7 +2533,7 @@ impl App {
                 step.unwrap_or_else(|Stopped| account::Step::Refused(account::STOPPED.into()));
             match step {
                 account::Step::Tested => form.testing = false,
-                account::Step::Saved(account) => return self.account_added(account),
+                account::Step::Saved(account) => return self.account_added(*account),
                 account::Step::Refused(why) => {
                     form.saving = None;
                     form.testing = false;
@@ -3884,6 +3903,8 @@ mod tests {
             }),
             uidplus: None,
             encrypted: None,
+            outbox: Default::default(),
+            sending: Default::default(),
         }
     }
 

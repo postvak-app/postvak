@@ -31,3 +31,30 @@ services:
       - ./certs:/etc/postvak-test:ro
       - ./postvak.conf:/etc/dovecot/conf.d/zz-postvak.conf:ro
       - ./plain.conf:/etc/dovecot/conf.d/zz-plain.conf:ro
+  # SMTP for the live sending tests (tests/smtp_live.rs): Mailpit takes any login, refuses recipients outside
+  # example.com and example.org, and shows what arrived on its API. One requires STARTTLS, one implicit TLS.
+  mailpit-starttls:
+    image: axllent/mailpit:v1.27
+    environment:
+      MP_SMTP_TLS_CERT: /etc/postvak-test/tls.crt
+      MP_SMTP_TLS_KEY: /etc/postvak-test/tls.key
+      MP_SMTP_REQUIRE_STARTTLS: "true"
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_ALLOWED_RECIPIENTS: '@example\.(com|org)$'
+    ports:
+      - "127.0.0.1:10587:1025"
+      - "127.0.0.1:18025:8025"
+    volumes:
+      - ./certs:/etc/postvak-test:ro
+  mailpit-implicit:
+    image: axllent/mailpit:v1.27
+    environment:
+      MP_SMTP_TLS_CERT: /etc/postvak-test/tls.crt
+      MP_SMTP_TLS_KEY: /etc/postvak-test/tls.key
+      MP_SMTP_REQUIRE_TLS: "true"
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+    ports:
+      - "127.0.0.1:10465:1025"
+      - "127.0.0.1:18026:8025"
+    volumes:
+      - ./certs:/etc/postvak-test:ro

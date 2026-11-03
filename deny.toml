@@ -13,6 +13,7 @@ wildcards = "deny"
 
 [licenses]
 allow = [
+    "0BSD",  # quoted_printable, through lettre: BSD without even the notice requirement
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",

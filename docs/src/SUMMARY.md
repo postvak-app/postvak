@@ -7,6 +7,7 @@
 - [Accounts](accounts.md)
 - [Mail window](gui.md)
 - [Search](search.md)
+- [Sending mail](sending.md)
 - [Background sync](daemon.md)
 - [Rules](rules.md)
 - [Agent guide](agent-guide.md)

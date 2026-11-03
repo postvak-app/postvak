@@ -94,7 +94,7 @@ impl Fields {
 pub(crate) enum Step {
     Refused(String),
     Tested,
-    Saved(AccountConfig),
+    Saved(Box<AccountConfig>),
 }
 
 /// The steps of a save in flight.
@@ -159,7 +159,7 @@ pub(crate) fn save(
             })
             .map_err(|e| clean(&e, false));
         let _ = done.send(match saved {
-            Ok(()) => Step::Saved(account),
+            Ok(()) => Step::Saved(Box::new(account)),
             Err(why) => Step::Refused(why),
         });
         wake();
@@ -491,7 +491,7 @@ mod tests {
         };
         assert_eq!(saved.name, "work");
         let config = Config::load(&paths.config_file()).unwrap();
-        assert_eq!(config.accounts, [saved]);
+        assert_eq!(config.accounts, [*saved]);
     }
 
     #[test]

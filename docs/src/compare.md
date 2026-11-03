@@ -68,5 +68,5 @@ Postvak sorts with rules instead: predictable, reviewable, safe from instruction
 ## Where Postvak falls short
 
 - It logs in with a password only. Gmail needs an [app password](https://support.google.com/accounts/answer/185833); Outlook.com and Microsoft 365, which accept only OAuth for IMAP, do not work yet ([#370](https://github.com/postvak-app/postvak/issues/370)).
-- It reads and sorts mail; it does not send it yet ([#372](https://github.com/postvak-app/postvak/issues/372)).
+- It sends mail from the command line only: the window has no composer yet, and it does not write HTML mail ([#372](https://github.com/postvak-app/postvak/issues/372)).
 - It runs on macOS and Linux. On Windows, the command line and background service may work under WSL2, but are untested ([#371](https://github.com/postvak-app/postvak/issues/371)).

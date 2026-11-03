@@ -501,6 +501,8 @@ fn wire_messages_round_trip() {
                     activity: Some(Activity::Idle { since: 7 }),
                     uidplus: Some(false),
                     encrypted: Some(true),
+                    outbox: Default::default(),
+                    sending: Default::default(),
                 }],
             })),
         },
@@ -938,6 +940,12 @@ fn idle_shared() -> super::Shared {
         signalled: Default::default(),
         watch: std::sync::Mutex::new(super::Watch::new(&Paths::under(Path::new("/nonexistent")))),
         notifier: None,
+        senders: std::sync::Mutex::new(None),
+        smtp: super::test_support::recording_smtp(Default::default()),
+        config: Default::default(),
+        paths: Paths::under(Path::new("/nonexistent")),
+        guessing: Default::default(),
+        finishing: Default::default(),
     }
 }
 
@@ -1308,6 +1316,12 @@ fn a_command_for_an_account_between_threads_says_it_is_restarting() {
         signalled: Default::default(),
         watch: std::sync::Mutex::new(super::Watch::new(&paths)),
         notifier: None,
+        senders: std::sync::Mutex::new(None),
+        smtp: super::test_support::recording_smtp(Default::default()),
+        config: Default::default(),
+        paths: paths.clone(),
+        guessing: Default::default(),
+        finishing: Default::default(),
     };
     // Bound after the engine, so the gate opens before the engine's drop waits for its threads.
     let gate = gate;
@@ -1399,4 +1413,227 @@ fn only_proposals_that_start_waiting_after_the_first_load_notify() {
         super::new_proposals(&mut waiting, &list),
         [Proposed::List("old".into())]
     );
+}
+
+mod sending {
+    use super::*;
+    use crate::daemon::Client;
+    use crate::daemon::test_support::recording_smtp;
+    use crate::send::Envelope;
+    use crate::send::outbox::Entry;
+    use crate::send::smtp::SharedSmtp;
+
+    const MESSAGE: &[u8] = b"From: me@example.com\r\nTo: a@x.org\r\nSubject: s\r\nDate: Mon, 2 Nov 2026 10:00:00 +0000\r\nMessage-ID: <1@example.com>\r\n\r\nhi\r\n";
+
+    fn entry(due: i64, save_sent: bool) -> Entry {
+        Entry::new(
+            Envelope {
+                from: "me@example.com".into(),
+                to: vec!["a@x.org".into()],
+            },
+            due,
+            save_sent,
+            None,
+        )
+    }
+
+    fn daemon(smtp: &SharedSmtp, idle_exit: Option<Duration>) -> TestDaemon {
+        TestDaemon::start_with(Options {
+            smtp: recording_smtp(smtp.clone()),
+            ..options(recording_connector(), idle_exit)
+        })
+    }
+
+    fn until(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = Instant::now() + WAIT;
+        while !done() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn outbox_files(paths: &Paths) -> usize {
+        fs::read_dir(paths.outbox_dir("work")).map_or(0, |dir| dir.count())
+    }
+
+    #[test]
+    fn a_queued_send_is_on_disk_before_the_reply() {
+        let smtp = SharedSmtp::default();
+        let daemon = daemon(&smtp, None);
+        let client = Client::connect(&daemon.paths).unwrap();
+        let entry = entry(crate::time::now() + 600, true);
+        let (id, due) = client.queue_send("work", MESSAGE, &entry).unwrap();
+        assert_eq!((id.as_str(), due), (entry.id.as_str(), entry.due));
+        assert_eq!(outbox_files(&daemon.paths), 2);
+        let listed = client.outbox().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].0, "work");
+        assert!(client.queue_send("nobody", MESSAGE, &entry).is_err());
+    }
+
+    #[test]
+    fn cancel_send_returns_the_message() {
+        let smtp = SharedSmtp::default();
+        let daemon = daemon(&smtp, None);
+        let client = Client::connect(&daemon.paths).unwrap();
+        let entry = entry(crate::time::now() + 600, true);
+        client.queue_send("work", MESSAGE, &entry).unwrap();
+        assert_eq!(client.cancel_send("work", &entry.id).unwrap(), MESSAGE);
+        assert_eq!(outbox_files(&daemon.paths), 0);
+        let error = client
+            .cancel_send("work", &entry.id)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no message"), "{error}");
+        assert_eq!(smtp.with(|s| s.sent.len()), 0);
+    }
+
+    #[test]
+    fn status_counts_the_outbox_per_account() {
+        let smtp = SharedSmtp::default();
+        let daemon = daemon(&smtp, None);
+        let client = Client::connect(&daemon.paths).unwrap();
+        client
+            .queue_send("work", MESSAGE, &entry(crate::time::now() + 600, false))
+            .unwrap();
+        let status = client.status().unwrap();
+        let counts = |name: &str| {
+            status
+                .accounts
+                .iter()
+                .find(|a| a.name == name)
+                .unwrap()
+                .outbox
+        };
+        assert_eq!(counts("work").waiting, 1);
+        assert!(counts("play").is_empty());
+    }
+
+    #[test]
+    fn the_daemon_does_not_idle_out_with_a_waiting_message() {
+        let smtp = SharedSmtp::default();
+        let mut daemon = daemon(&smtp, Some(Duration::from_millis(50)));
+        {
+            let client = Client::connect(&daemon.paths).unwrap();
+            client
+                .queue_send("work", MESSAGE, &entry(crate::time::now() + 1, false))
+                .unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            daemon.paths.daemon_socket().exists(),
+            "idled out with a message waiting"
+        );
+        daemon.finished().unwrap();
+        assert_eq!(smtp.with(|s| s.sent.len()), 1);
+    }
+
+    #[test]
+    fn an_existing_account_is_guessed_once_and_config_toml_is_untouched() {
+        let smtp = SharedSmtp::default();
+        let daemon = daemon(&smtp, None);
+        let before = fs::read(daemon.paths.config_file()).unwrap();
+        let guessed = |name: &str| {
+            crate::store::Store::open_account(&daemon.paths, name)
+                .unwrap()
+                .smtp_state()
+                .unwrap()
+                .and_then(|state| state.host)
+        };
+        until("the guesses", || {
+            guessed("work").is_some() && guessed("play").is_some()
+        });
+        assert_eq!(guessed("work").as_deref(), Some("127.0.0.1"));
+        // A status, which applies config changes and guesses what is missing, does not guess again.
+        let client = Client::connect(&daemon.paths).unwrap();
+        client.status().unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(smtp.with(|s| s.logins.len()), 2);
+        assert_eq!(fs::read(daemon.paths.config_file()).unwrap(), before);
+        let status = client.status().unwrap();
+        assert!(
+            status
+                .accounts
+                .iter()
+                .all(|a| a.sending == wire::SendingStatus::Ready)
+        );
+    }
+
+    #[test]
+    fn a_sent_message_gets_its_sent_copy_through_the_imap_thread() {
+        let smtp = SharedSmtp::default();
+        let daemon = daemon(&smtp, None);
+        let client = Client::connect(&daemon.paths).unwrap();
+        until("the guess", || {
+            crate::store::Store::open_account(&daemon.paths, "work")
+                .unwrap()
+                .smtp_state()
+                .unwrap()
+                .is_some_and(|s| s.host.is_some())
+        });
+        let entry = entry(crate::time::now(), true);
+        client.queue_send("work", MESSAGE, &entry).unwrap();
+        assert_eq!(
+            client.await_send("work", &entry.id).unwrap(),
+            wire::SendOutcome::Sent
+        );
+        // The fake IMAP server has no Sent folder: the IMAP thread says so, and the message leaves the outbox.
+        until("the IMAP side", || outbox_files(&daemon.paths) == 0);
+        let status = client.status().unwrap();
+        let work = status.accounts.iter().find(|a| a.name == "work").unwrap();
+        assert_eq!(
+            work.sending,
+            wire::SendingStatus::SentCopyProblem("no Sent folder".into())
+        );
+        assert_eq!(smtp.with(|s| s.sent.len()), 1);
+    }
+
+    #[test]
+    fn await_send_reports_a_cancel_as_not_sent() {
+        // A regression: a message cancelled while `--raw` waited for it was reported as sent, so sendmail exited 0.
+        let smtp = SharedSmtp::default();
+        let daemon = daemon(&smtp, None);
+        let entry = entry(crate::time::now() + 600, false);
+        Client::connect(&daemon.paths)
+            .unwrap()
+            .queue_send("work", MESSAGE, &entry)
+            .unwrap();
+        let waiting = {
+            let paths = daemon.paths.clone();
+            let id = entry.id.clone();
+            std::thread::spawn(move || Client::connect(&paths).unwrap().await_send("work", &id))
+        };
+        std::thread::sleep(Duration::from_millis(200));
+        Client::connect(&daemon.paths)
+            .unwrap()
+            .cancel_send("work", &entry.id)
+            .unwrap();
+        match waiting.join().unwrap().unwrap() {
+            wire::SendOutcome::Permanent(reason) => {
+                assert!(reason.contains("cancelled"), "{reason}")
+            }
+            other => panic!("a cancelled message was reported as {other:?}"),
+        }
+        assert_eq!(smtp.with(|s| s.sent.len()), 0);
+    }
+
+    #[test]
+    fn a_permanent_failure_is_what_await_send_answers() {
+        let smtp = SharedSmtp::default();
+        let daemon = daemon(&smtp, None);
+        let client = Client::connect(&daemon.paths).unwrap();
+        until("the guesses", || smtp.with(|s| s.logins.len()) == 2);
+        smtp.with(|s| {
+            s.script
+                .push_back(Err(crate::send::SmtpError::Permanent("550 no".into())))
+        });
+        let entry = entry(crate::time::now(), false);
+        client.queue_send("work", MESSAGE, &entry).unwrap();
+        match client.await_send("work", &entry.id).unwrap() {
+            wire::SendOutcome::Permanent(reason) => assert!(reason.contains("550 no"), "{reason}"),
+            other => panic!("{other:?}"),
+        }
+        client.retry_send("work", &entry.id).unwrap();
+        until("the retried send", || smtp.with(|s| s.sent.len()) == 1);
+    }
 }

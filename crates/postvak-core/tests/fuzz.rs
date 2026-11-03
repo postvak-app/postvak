@@ -1087,6 +1087,8 @@ fn wire_samples() -> Vec<String> {
                     }),
                     uidplus: Some(true),
                     encrypted: Some(true),
+                    outbox: Default::default(),
+                    sending: Default::default(),
                 }],
             })),
         },
@@ -1206,6 +1208,70 @@ proptest! {
         let line = wire::write_line(&mut Vec::new(), &DaemonMessage::Event(Event::Activity { account, activity: activity.clone() }));
         line.unwrap();
         let _ = activity.to_string();
+    }
+}
+
+fn exercise_send(raw: &[u8]) {
+    use postvak_core::config::{AccountConfig, PasswordSource};
+    use postvak_core::send::{check, reply};
+    let mut account = AccountConfig::new(
+        "work",
+        "imap.example.com",
+        "me@example.com",
+        PasswordSource::Keyring { keyring: true },
+    );
+    account.aliases = vec!["*@shop.example.com".into()];
+    let identity = account.identity().unwrap();
+    tolerating_known_upstream_panics(|| {
+        let args = check::Recipients {
+            from_headers: true,
+            ..Default::default()
+        };
+        let _ = check::check(raw, &args, &identity, None);
+        for to in [
+            reply::ReplyTo::Sender,
+            reply::ReplyTo::All,
+            reply::ReplyTo::List,
+        ] {
+            let _ = reply::reply(raw, to, &identity, "hi");
+        }
+        let _ = reply::forward(
+            raw,
+            reply::Recipients::default(),
+            &identity,
+            "hi",
+            &reply::ForwardOptions::default(),
+        );
+    });
+}
+
+proptest! {
+    #![proptest_config(config())]
+
+    #[test]
+    fn send_clean_body_arbitrary(html in ".{0,512}") {
+        let _ = postvak_core::send::quote_html::clean_body(&html);
+    }
+
+    #[test]
+    fn send_clean_body_html_shaped(html in "(<[a-z/!]{0,8}( [a-z]{1,6}(=\"[^\"]{0,8}\")?){0,3}>|[a-z <>&;\"'=]{0,8}){0,64}") {
+        let _ = postvak_core::send::quote_html::clean_body(&html);
+    }
+
+    #[test]
+    fn send_sendmail_args(args in proptest::collection::vec("-?[a-z@.-]{0,8}", 0..8)) {
+        let _ = postvak_core::send::sendmail::parse_args(&args);
+    }
+
+    #[test]
+    fn send_arbitrary_message(raw in proptest::collection::vec(any::<u8>(), 0..2048)) {
+        exercise_send(&raw);
+    }
+
+    #[test]
+    fn send_mutated_message(seed in 0..MESSAGES.len(), donor in 0..MESSAGES.len(), ms in mutations()) {
+        let raw = mutate(MESSAGES[seed].to_vec(), MESSAGES[donor], &ms);
+        exercise_send(&raw);
     }
 }
 
