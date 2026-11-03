@@ -71,9 +71,12 @@ pub(crate) fn cancel_send(paths: &Paths, account: &str, id: &str) -> Result<(), 
         .map_err(|e| cancel_error(&format!("{e:#}")))
 }
 
-/// The daemon's refusal reaches the client as text only: the outbox's `CancelError::TooLate` says "too late".
+/// The daemon's refusal reaches the client as text only: the outbox's `TooLate` and `NotFound` both mean it went.
 fn cancel_error(text: &str) -> CancelError {
-    if text.contains("too late to cancel") {
+    // Gone from the outbox means it went too: a sent entry is removed after a while.
+    if text.contains("too late to cancel")
+        || (text.starts_with("no message ") && text.ends_with(" in the outbox"))
+    {
         CancelError::TooLate
     } else {
         CancelError::Failed(clean(text, false))
@@ -214,6 +217,8 @@ impl App {
             composer: sent,
             answer,
         });
+        // A "Discard this message?" asked before Send no longer holds: the message is on its way.
+        self.leave_compose = None;
     }
 
     /// Whether `action` waits for "Discard this message?" about the pane's changed composer; an unchanged one closes.
@@ -224,6 +229,10 @@ impl App {
         if !self.leaves_pane(action, composer) {
             return false;
         }
+        // Until the queue answers, the composer is what comes back on a refusal.
+        if composer.sending {
+            return true;
+        }
         if composer.leave_question().is_some() {
             self.leave_compose = Some(Box::new(action.clone()));
             return true;
@@ -232,21 +241,45 @@ impl App {
         false
     }
 
-    /// Whether `action` takes the reader pane from `composer`: another message, folder or view, or another composer.
+    /// Whether `action` takes the reader pane from `composer`: it changes the message shown below away from the
+    /// original (the cursor, the list's rows, or the original itself), or opens another composer in its place.
     fn leaves_pane(&self, action: &UiAction, composer: &Composer) -> bool {
+        let is_original = |account: usize, folder: &str, uid: u32| {
+            self.accounts[account].name == composer.account
+                && composer
+                    .original
+                    .as_ref()
+                    .is_some_and(|o| o.folder == folder && o.uid == uid)
+        };
+        let row_is_original = |index: usize| {
+            (self.list.rows.get(index))
+                .is_some_and(|row| is_original(row.account, &row.folder, row.uid))
+        };
+        let hides_original = |action: &Action| {
+            Optimistic::of(action) == Some(Optimistic::Hidden)
+                && (self.targets().iter()).any(|(account, folder, uids)| {
+                    uids.iter().any(|&uid| is_original(*account, folder, uid))
+                })
+        };
         match action {
-            UiAction::SelectRow(index) => self.list.rows.get(*index).is_none_or(|row| {
-                let original = composer.original.as_ref();
-                self.accounts[row.account].name != composer.account
-                    || original.is_none_or(|o| o.folder != row.folder || o.uid != row.uid)
-            }),
+            UiAction::SelectRow(index)
+            | UiAction::ExtendSelection(index)
+            | UiAction::TargetRow(index) => !row_is_original(*index),
             UiAction::SelectView(view) => *view != self.view,
+            UiAction::SetFilter(filter) => *filter != self.filter,
+            UiAction::Escape => self.top_dialog().is_none() && self.search.is_some(),
+            UiAction::Act(action) => hides_original(action),
+            UiAction::MoveTo(folder) => hides_original(&Action::Move(folder.clone())),
+            UiAction::DropOn(_) => hides_original(&Action::Move(String::new())),
             UiAction::ComposeClose(target) | UiAction::ComposeDiscard(target) => {
                 *target == ComposeTarget::Pane
             }
             UiAction::MoveCursor(_)
             | UiAction::StepFolder(_)
             | UiAction::OpenMessage(_)
+            | UiAction::SearchFor(_)
+            | UiAction::SearchAccepted
+            | UiAction::StartSearch
             | UiAction::Reply(_)
             | UiAction::Forward
             | UiAction::ReopenCompose(_) => true,
@@ -347,16 +380,10 @@ impl App {
         let (queued, undo_secs) = match result {
             Ok(answer) => answer,
             Err(why) => {
-                let pane_empty = target == ComposeTarget::Pane && self.composer.is_none();
                 match self.composer_mut(target).filter(|_| still_open) {
                     Some(open) => {
                         open.sending = false;
                         open.error = Some((Field::Send, why));
-                    }
-                    // Left meanwhile: what was typed comes back rather than going with the refusal.
-                    None if pane_empty => {
-                        composer.error = Some((Field::Send, why));
-                        self.composer = Some(composer);
                     }
                     None => self.note_error(None, format!("not sent: {why}")),
                 }
@@ -371,10 +398,14 @@ impl App {
             return;
         }
         let words = undo::sending_text(&queued.first_recipient, queued.more);
-        let account = self.accounts.iter().position(|a| a.name == queued.account);
+        // Without the account in the window there is nothing to take it back from, so nothing to undo.
+        let Some(account) = self.accounts.iter().position(|a| a.name == queued.account) else {
+            self.toast = Some(Toast::new(words, false));
+            return;
+        };
         let id = self.take(words.clone(), 0);
         if let Some(taken) = self.taken.iter_mut().find(|taken| taken.id == id) {
-            taken.outbox = account.map(|account| (account, queued.id));
+            taken.outbox = Some((account, queued.id));
             taken.composer = Some(Box::new(composer));
         }
         self.toast = Some(Toast::sending(words, undo_secs, now));
@@ -409,14 +440,17 @@ impl App {
         }
     }
 
-    /// Lets go of each sent composer whose message left `waiting` in its account's outbox, read on the file poll.
-    pub(super) fn drop_sent_composers(&mut self, waiting: &[(usize, String)]) {
+    /// Closes each sent gesture whose message is being sent, was sent or is gone from its account's outbox, read on
+    /// the file poll; `kept` are the entries still waiting or failed, which Undo can take back.
+    pub(super) fn drop_sent_composers(&mut self, kept: &[(usize, String)]) {
         for taken in &mut self.taken {
             if taken.state == UndoState::Open
                 && let Some(outbox) = &taken.outbox
-                && !waiting.contains(outbox)
+                && !kept.contains(outbox)
             {
+                taken.outbox = None;
                 taken.composer = None;
+                taken.state = UndoState::Undone;
             }
         }
     }
@@ -467,7 +501,7 @@ mod tests {
 
     struct Replying {
         driver: Driver,
-        _wires: Wires,
+        wires: Wires,
         fx: Fixture,
     }
 
@@ -481,11 +515,7 @@ mod tests {
         driver.app.prefill = filled;
         driver.app.queue_send = queued;
         driver.app.cancel_send = |_, _, _| Ok(());
-        Replying {
-            driver,
-            _wires: wires,
-            fx,
-        }
+        Replying { driver, wires, fx }
     }
 
     fn filled_in(app: &App) -> bool {
@@ -520,8 +550,13 @@ mod tests {
 
     #[test]
     fn the_daemons_too_late_refusal_is_told_apart() {
-        let too_late = postvak_core::send::outbox::CancelError::TooLate("0000abcd".into());
-        assert_eq!(cancel_error(&too_late.to_string()), CancelError::TooLate);
+        use postvak_core::send::outbox::CancelError as Outbox;
+        for gone in [
+            Outbox::TooLate("0000abcd".into()),
+            Outbox::NotFound("0000abcd".into()),
+        ] {
+            assert_eq!(cancel_error(&gone.to_string()), CancelError::TooLate);
+        }
         assert_eq!(
             cancel_error("the daemon is stopping"),
             CancelError::Failed("the daemon is stopping".into())
@@ -759,22 +794,37 @@ mod tests {
         }
     }
 
+    /// Queues as the daemon does: the entry is in the account's outbox, waiting.
+    fn queued_in_outbox(paths: &Paths, _: &Config, request: SendRequest) -> Result<Queued, String> {
+        let envelope = Envelope {
+            from: "work@example.com".into(),
+            to: vec!["sender1@example.com".into()],
+        };
+        let entry = Entry::new(envelope, 0, false, None);
+        let outbox = Outbox::open(paths, "work").map_err(|e| e.to_string())?;
+        outbox.add(b"raw", &entry).map_err(|e| e.to_string())?;
+        Ok(Queued {
+            id: entry.id,
+            ..queued(paths, &Config::default(), request)?
+        })
+    }
+
+    /// Sets the state of the newest sent message in work's outbox, and lets the file poll read it.
+    fn outbox_state(driver: &mut Driver, fx: &Fixture, state: Option<State>) {
+        let (_, id) = driver.app.taken.last().unwrap().outbox.clone().unwrap();
+        let outbox = Outbox::open(&fx.paths, "work").unwrap();
+        match state {
+            Some(state) => outbox.set_state(&id, state).unwrap(),
+            None => outbox.remove(&id).unwrap(),
+        }
+        let at = driver.now + POLL;
+        driver.at(at);
+    }
+
     #[test]
     fn the_composer_is_dropped_once_its_message_left_waiting() {
         let Replying { mut driver, fx, .. } = replying(&[1]);
-        driver.app.queue_send = |paths, _, request| {
-            let envelope = Envelope {
-                from: "work@example.com".into(),
-                to: vec!["sender1@example.com".into()],
-            };
-            let entry = Entry::new(envelope, 0, false, None);
-            let outbox = Outbox::open(paths, "work").map_err(|e| e.to_string())?;
-            outbox.add(b"raw", &entry).map_err(|e| e.to_string())?;
-            Ok(Queued {
-                id: entry.id,
-                ..queued(paths, &Config::default(), request)?
-            })
-        };
+        driver.app.queue_send = queued_in_outbox;
         open(&mut driver, "r");
         send(&mut driver, "Thanks");
         driver.at(POLL);
@@ -782,11 +832,138 @@ mod tests {
             driver.app.taken.last().unwrap().composer.is_some(),
             "still waiting"
         );
-
-        let (_, id) = driver.app.taken.last().unwrap().outbox.clone().unwrap();
-        let outbox = Outbox::open(&fx.paths, "work").unwrap();
-        outbox.set_state(&id, State::Sending).unwrap();
-        driver.at(2.0 * POLL);
+        outbox_state(&mut driver, &fx, Some(State::Sending));
         assert!(driver.app.taken.last().unwrap().composer.is_none());
+    }
+
+    #[test]
+    fn undo_after_a_failure_reopens_the_composer() {
+        let Replying { mut driver, fx, .. } = replying(&[1]);
+        driver.app.queue_send = queued_in_outbox;
+        open(&mut driver, "r");
+        send(&mut driver, "Thanks");
+        let failed = State::Failed {
+            reason: "550 no such user".into(),
+            retrying: false,
+        };
+        outbox_state(&mut driver, &fx, Some(failed));
+        assert!(driver.app.taken.last().unwrap().composer.is_some());
+        driver.press("z");
+        driver.tick_until(|app| app.composer.is_some());
+        assert_eq!(driver.app.composer.as_ref().unwrap().text, "Thanks");
+    }
+
+    #[test]
+    fn undo_after_the_message_went_moves_on_to_the_previous_gesture() {
+        static CANCELS: AtomicUsize = AtomicUsize::new(0);
+        for gone in [Some(State::Sending), Some(State::Sent), None] {
+            let Replying { mut driver, fx, .. } = replying(&[1]);
+            driver.app.queue_send = queued_in_outbox;
+            driver.app.cancel_send = |_, _, _| {
+                CANCELS.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            };
+            driver.press("u");
+            let marked = driver.app.taken.last().unwrap().id;
+            open(&mut driver, "r");
+            send(&mut driver, "Thanks");
+            outbox_state(&mut driver, &fx, gone.clone());
+            driver.press("z");
+            let previous = driver.app.taken.iter().find(|t| t.id == marked).unwrap();
+            assert_ne!(previous.state, UndoState::Open, "z reached it: {gone:?}");
+            assert!(driver.app.compose_cancelling.is_empty(), "{gone:?}");
+        }
+        assert_eq!(CANCELS.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn searching_with_a_changed_composer_asks() {
+        let Replying { mut driver, .. } = replying(&[1]);
+        open(&mut driver, "r");
+        driver.apply(UiAction::ComposeEdit(
+            PANE,
+            ComposeField::Text,
+            "Thanks".into(),
+        ));
+        for leave in [
+            UiAction::StartSearch,
+            UiAction::SearchFor("lunch".into()),
+            UiAction::SearchAccepted,
+            UiAction::SetFilter(Filter {
+                unread: true,
+                ..Filter::default()
+            }),
+        ] {
+            driver.apply(leave.clone());
+            assert_eq!(
+                driver.app.top_dialog(),
+                Some(Dialog::LeaveCompose),
+                "{leave:?}"
+            );
+            assert_eq!(driver.app.search, None, "{leave:?}");
+            driver.apply(UiAction::LeaveComposeCancel);
+        }
+        assert!(driver.app.composer.is_some());
+    }
+
+    #[test]
+    fn archiving_the_original_with_a_changed_composer_asks() {
+        let Replying {
+            mut driver, wires, ..
+        } = replying(&[1]);
+        open(&mut driver, "r");
+        driver.apply(UiAction::ComposeEdit(
+            PANE,
+            ComposeField::Text,
+            "Thanks".into(),
+        ));
+        driver.press("u");
+        assert_eq!(
+            driver.app.top_dialog(),
+            None,
+            "marking it unread keeps it shown"
+        );
+        wires.sent();
+        driver.press("e");
+        assert_eq!(driver.app.top_dialog(), Some(Dialog::LeaveCompose));
+        assert!(wires.sent().is_empty(), "nothing archived until answered");
+        driver.apply(UiAction::LeaveComposeDiscard);
+        assert!(driver.app.composer.is_none());
+        assert_eq!(wires.sent().len(), 1, "then archived");
+    }
+
+    #[test]
+    fn a_composer_being_sent_cannot_be_left() {
+        let Replying { mut driver, .. } = replying(&[1, 2]);
+        open(&mut driver, "r");
+        driver.apply(UiAction::ComposeEdit(
+            PANE,
+            ComposeField::Text,
+            "Thanks".into(),
+        ));
+        let cursor = driver.app.list.cursor;
+        driver.app.apply(UiAction::ComposeSend(PANE));
+        driver.app.apply(UiAction::MoveCursor(1));
+        driver.app.apply(UiAction::ComposeDiscard(PANE));
+        assert_eq!(driver.app.list.cursor, cursor);
+        assert_eq!(driver.app.top_dialog(), None);
+        assert!(driver.app.composer.as_ref().unwrap().sending);
+        driver.tick_until(|app| app.composer.is_none() && app.compose_sending.is_empty());
+        assert!(driver.app.taken.last().unwrap().composer.is_some());
+    }
+
+    #[test]
+    fn a_send_for_an_account_not_in_the_window_keeps_nothing_to_undo() {
+        let Replying { mut driver, .. } = replying(&[1]);
+        driver.app.queue_send = |paths, config, request| {
+            Ok(Queued {
+                account: "elsewhere".into(),
+                ..queued(paths, config, request)?
+            })
+        };
+        open(&mut driver, "r");
+        send(&mut driver, "Thanks");
+        assert_eq!(toast(&driver), Some(("Sending to Sender 1", false)));
+        assert!(driver.app.taken.is_empty());
     }
 }

@@ -2628,19 +2628,19 @@ impl App {
     /// The outbox counts of every account, from the files the daemon keeps; reading them asks nothing of a server.
     fn read_outboxes(&mut self) {
         use postvak_core::send::outbox::{Outbox, State};
-        let mut waiting = Vec::new();
+        let mut kept = Vec::new();
         for (index, account) in self.accounts.iter_mut().enumerate() {
             let entries = Outbox::existing(&self.paths, &account.name)
                 .and_then(|outbox| outbox.list().ok())
                 .unwrap_or_default();
             account.outbox = postvak_core::send::sender::counts_of(&entries);
-            waiting.extend(
+            kept.extend(
                 (entries.into_iter())
-                    .filter(|entry| entry.state == State::Waiting)
+                    .filter(|entry| matches!(entry.state, State::Waiting | State::Failed { .. }))
                     .map(|entry| (index, entry.id)),
             );
         }
-        self.drop_sent_composers(&waiting);
+        self.drop_sent_composers(&kept);
     }
 
     /// Starts the save; a form that cannot make an account says why at once.
