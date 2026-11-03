@@ -1,0 +1,319 @@
+// The composer: a reply or forward above the original in the reader pane. `compose.rs` holds and words what it shows.
+import { CheckBox, ScrollView, TextEdit } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Hairline, IconButton, Note, Switch, TextButton } from "common.slint";
+import { AttachmentData } from "body.slint";
+import { Choice, Field } from "rule_editor.slint";
+import { Dialog } from "dialogs.slint";
+
+// The field an error is about, under which it shows; the same names as `compose::Field`.
+export enum ComposeSpot { none, attachments, bcc, cc, from, send, subject, to }
+
+// What the user edits as text; the same names as `compose::ComposeField`.
+export enum ComposeField { bcc, cc, from, subject, text, to }
+
+// One of a forwarded message's attachments, and whether an inline forward takes it along.
+export struct ComposePart {
+    name: string,
+    size: string,
+    kept: bool,
+}
+
+export struct ComposeData {
+    open: bool,
+    // Filled from the original yet, and not on its way: Send is off meanwhile.
+    loading: bool,
+    sending: bool,
+    from: string,
+    // Which of the From choices `from` is; -1 when it was typed, so it shows as a field.
+    from-index: int,
+    to: string,
+    cc: string,
+    bcc: string,
+    show-cc-bcc: bool,
+    subject: string,
+    text: string,
+    forward: bool,
+    as-attachment: bool,
+    error-at: ComposeSpot,
+    error: string,
+}
+
+component Error inherits Text {
+    color: Theme.pane.error;
+    font-size: Theme.small-size;
+    wrap: word-wrap;
+}
+
+// A field's label, then the field; its error, when it names this field, under it.
+component Row inherits VerticalLayout {
+    in property <string> label;
+    in property <bool> failed;
+    in property <string> error;
+    spacing: Theme.pad / 2;
+    HorizontalLayout {
+        spacing: Theme.pad;
+        Text {
+            accessible-role: none;
+            width: 8 * Theme.pad;
+            text: root.label;
+            color: Theme.pane.muted;
+            vertical-alignment: center;
+        }
+        @children
+    }
+    if root.failed: Error {
+        accessible-label: root.label + ": " + root.error;
+        text: root.error;
+    }
+}
+
+export component Composer inherits Rectangle {
+    in property <ComposeData> data;
+    // From's choices as they read, and the files and the original's parts as they are listed.
+    in property <[string]> from-choices;
+    in property <[AttachmentData]> files;
+    in property <[ComposePart]> parts;
+    in property <string> remove-icon;
+    in property <string> send-hint;
+    callback edited(ComposeField, string);
+    callback from-chosen(int);
+    callback show-cc-bcc();
+    callback attach();
+    callback remove-file(int);
+    callback toggle-part(int);
+    callback as-attachment(bool);
+    callback send();
+    callback close();
+    callback discard();
+
+    property <bool> can-send: !root.data.loading && !root.data.sending;
+    // Like `Field`, the text is put right by hand when it changes from outside, such as a composer opened again.
+    property <string> text: root.data.text;
+    changed text => {
+        if (body.text != root.text) {
+            body.text = root.text;
+        }
+    }
+    accessible-role: groupbox;
+    accessible-label: "Message";
+
+    FocusScope {
+        KeyBinding {
+            keys: @keys(Control + Return);
+            enabled: root.can-send;
+            activated => { root.send(); }
+        }
+
+        VerticalLayout {
+            padding: Theme.inset;
+            padding-bottom: Theme.pad;
+            spacing: Theme.pad;
+
+            HorizontalLayout {
+                spacing: Theme.pad;
+                TextButton {
+                    text: "Send";
+                    primary: true;
+                    palette: Theme.pane;
+                    enabled: root.can-send;
+                    hint: root.send-hint;
+                    disabled-hint: root.data.sending ? "Sending…" : "Loading the message…";
+                    clicked => { root.send(); }
+                }
+                TextButton {
+                    text: "Close";
+                    framed: true;
+                    palette: Theme.pane;
+                    enabled: !root.data.sending;
+                    clicked => { root.close(); }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    TextButton {
+                        text: "Discard";
+                        palette: Theme.pane;
+                        enabled: !root.data.sending;
+                        clicked => { root.discard(); }
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                if root.data.loading: Note {
+                    text: "Loading the message…";
+                    vertical-alignment: center;
+                }
+            }
+            if root.data.error-at == ComposeSpot.send: Error { text: root.data.error; }
+
+            Row {
+                label: "From";
+                failed: root.data.error-at == ComposeSpot.from;
+                error: root.data.error;
+                if root.data.from-index >= 0: Choice {
+                    horizontal-stretch: 1;
+                    accessible-label: "From";
+                    model: root.from-choices;
+                    index: root.data.from-index;
+                    index-chosen(i) => { root.from-chosen(i); }
+                }
+                if root.data.from-index < 0: Field {
+                    horizontal-stretch: 1;
+                    accessible-label: "From";
+                    value: root.data.from;
+                    value-edited(text) => { root.edited(ComposeField.from, text); }
+                }
+            }
+            Row {
+                label: "To";
+                failed: root.data.error-at == ComposeSpot.to;
+                error: root.data.error;
+                Field {
+                    horizontal-stretch: 1;
+                    accessible-label: "To";
+                    value: root.data.to;
+                    value-edited(text) => { root.edited(ComposeField.to, text); }
+                }
+                if !root.data.show-cc-bcc: TextButton {
+                    text: "Cc Bcc";
+                    palette: Theme.pane;
+                    hint: "Add Cc and Bcc";
+                    clicked => { root.show-cc-bcc(); }
+                }
+            }
+            if root.data.show-cc-bcc: Row {
+                label: "Cc";
+                failed: root.data.error-at == ComposeSpot.cc;
+                error: root.data.error;
+                Field {
+                    horizontal-stretch: 1;
+                    accessible-label: "Cc";
+                    value: root.data.cc;
+                    value-edited(text) => { root.edited(ComposeField.cc, text); }
+                }
+            }
+            if root.data.show-cc-bcc: Row {
+                label: "Bcc";
+                failed: root.data.error-at == ComposeSpot.bcc;
+                error: root.data.error;
+                Field {
+                    horizontal-stretch: 1;
+                    accessible-label: "Bcc";
+                    value: root.data.bcc;
+                    value-edited(text) => { root.edited(ComposeField.bcc, text); }
+                }
+            }
+            Row {
+                label: "Subject";
+                failed: root.data.error-at == ComposeSpot.subject;
+                error: root.data.error;
+                Field {
+                    horizontal-stretch: 1;
+                    accessible-label: "Subject";
+                    value: root.data.subject;
+                    value-edited(text) => { root.edited(ComposeField.subject, text); }
+                }
+            }
+
+            body := TextEdit {
+                vertical-stretch: 1;
+                min-height: 3 * Theme.row;
+                wrap: word-wrap;
+                accessible-label: "Your text";
+                text: root.text;
+                edited(text) => { root.edited(ComposeField.text, text); }
+            }
+
+            HorizontalLayout {
+                spacing: Theme.pad;
+                TextButton {
+                    text: "Attach…";
+                    framed: true;
+                    palette: Theme.pane;
+                    enabled: !root.data.sending;
+                    clicked => { root.attach(); }
+                }
+                for file[i] in root.files: HorizontalLayout {
+                    spacing: Theme.pad / 2;
+                    Text {
+                        text: file.name + " (" + file.size + ")";
+                        color: Theme.pane.text;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    IconButton {
+                        icon: root.remove-icon;
+                        name: "Remove " + file.name;
+                        hint: "Remove this file";
+                        palette: Theme.pane;
+                        clicked => { root.remove-file(i); }
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+            if root.data.error-at == ComposeSpot.attachments: Error { text: root.data.error; }
+
+            if root.data.forward: HorizontalLayout {
+                spacing: Theme.inset;
+                for part[i] in root.parts: CheckBox {
+                    text: part.name + " (" + part.size + ")";
+                    checked: part.kept;
+                    enabled: !root.data.as-attachment;
+                    toggled => { root.toggle-part(i); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                VerticalLayout {
+                    alignment: center;
+                    Switch {
+                        name: "Send as attachment";
+                        checked: root.data.as-attachment;
+                        toggled(on) => { root.as-attachment(on); }
+                    }
+                }
+                Text {
+                    accessible-role: none;
+                    text: "Send as attachment";
+                    color: Theme.pane.text;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+    Hairline {
+        y: root.height - self.height;
+    }
+}
+
+// "Discard this message?" before something takes the reader pane from a changed composer.
+export component LeaveComposeDialog {
+    in property <string> question;
+    in property <string> close-icon;
+    callback discard();
+    callback cancel();
+    width: Theme.dialog-small;
+    Dialog {
+        title: "Unsent message";
+        close-icon: root.close-icon;
+        close => { root.cancel(); }
+        Text {
+            text: root.question;
+            color: Theme.pane.text;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            spacing: Theme.pad;
+            Rectangle { horizontal-stretch: 1; }
+            TextButton {
+                text: "Cancel";
+                palette: Theme.pane;
+                framed: true;
+                clicked => { root.cancel(); }
+            }
+            TextButton {
+                text: "Discard";
+                palette: Theme.pane;
+                danger: true;
+                clicked => { root.discard(); }
+            }
+        }
+    }
+}

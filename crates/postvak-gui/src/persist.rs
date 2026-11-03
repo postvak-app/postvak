@@ -1,4 +1,4 @@
-//! The window's size, position and pane widths, kept in `window.json` in the state directory between runs. A missing
+//! The window's size, position, pane widths and composer split, kept in `window.json` in the state directory between runs. A missing
 //! or unreadable file starts from the defaults; the startup error window keeps nothing.
 use std::path::{Path, PathBuf};
 
@@ -15,6 +15,9 @@ pub(crate) struct Layout {
     pub position: Option<(i32, i32)>,
     pub folders_width: f32,
     pub list_width: f32,
+    /// The reader pane's composer, as its part of the pane's height.
+    #[serde(default)]
+    pub compose_height: Option<f32>,
 }
 
 pub(crate) fn path(paths: &Paths) -> PathBuf {
@@ -53,9 +56,19 @@ mod tests {
             position: Some((40, 60)),
             folders_width: 260.0,
             list_width: 420.0,
+            compose_height: Some(0.4),
         };
         save(&path, &layout).unwrap();
         assert_eq!(load(&path), Some(layout));
+    }
+
+    #[test]
+    fn a_file_from_before_the_composer_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("window.json");
+        let old = r#"{"width":900.0,"height":600.0,"position":null,"folders_width":200.0,"list_width":400.0}"#;
+        std::fs::write(&path, old).unwrap();
+        assert_eq!(load(&path).map(|layout| layout.compose_height), Some(None));
     }
 
     #[test]

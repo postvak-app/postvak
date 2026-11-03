@@ -163,8 +163,7 @@ fn a_sender_logo() {
 }
 
 /// A message with attachments in a reader wide enough to label its actions.
-#[test]
-fn reader_attachments() {
+fn reader_with_attachments() -> (Fixture, Open, Wires) {
     let fx = Fixture::mailbox("light");
     let raw = "From: Northwind Rail <tickets@northwind-rail.example>\r\nSubject: Your e-ticket: Utrecht to Koeln\r\n\
         MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\n\
@@ -190,12 +189,18 @@ fn reader_attachments() {
             "Your ticket for Thursday is attached.",
         )
         .unwrap();
-    let (open, _wires) = open(&fx);
+    let (open, wires) = open(&fx);
     resize(&open, (1600.0, 800.0));
     open.with(|live| live.app.select_view(work_inbox()));
     open.tick_until(|open| {
         slint::Model::row_count(&open.window().get_body_info().attachments) == 2
     });
+    (fx, open, wires)
+}
+
+#[test]
+fn reader_attachments() {
+    let (_fx, open, _wires) = reader_with_attachments();
     snapshot(&open, "gui_reader_attachments");
 }
 
@@ -948,6 +953,101 @@ fn a_very_tall_page_draws() {
 fn html_narrow() {
     let (_fx, open, _wires) = newsletter("light", 1060.0);
     snapshot(&open, "gui_html_narrow");
+}
+
+/// What the daemon's prefill would answer for a message in the snapshot mailbox: a reply to the newsletter, or a
+/// forward of the e-ticket with its two attachments.
+fn prefilled(
+    _: &postvak_core::paths::Paths,
+    _: &postvak_core::config::Config,
+    account: &str,
+    kind: &postvak_core::send::compose::SendKind,
+) -> Result<postvak_core::send::compose::Prefilled, String> {
+    use postvak_core::send::compose::SendKind;
+    let forward = matches!(kind, SendKind::Forward { .. });
+    let draft = postvak_core::send::build::Draft {
+        from: format!("{account}@example.com"),
+        to: if forward {
+            Vec::new()
+        } else {
+            vec!["Postvak Weekly <news@example.org>".into()]
+        },
+        subject: if forward {
+            "Fwd: Your e-ticket: Utrecht to Koeln".into()
+        } else {
+            "Re: Your October roundup".into()
+        },
+        ..Default::default()
+    };
+    let attachments = if forward {
+        vec![
+            ("e-ticket-UTR-CGN.pdf".into(), 184_320),
+            ("conditions.pdf".into(), 52_224),
+        ]
+    } else {
+        Vec::new()
+    };
+    Ok(postvak_core::send::compose::Prefilled {
+        account: account.into(),
+        draft,
+        original: Some(Vec::new()),
+        attachments,
+    })
+}
+
+/// Opens `action`'s composer over the shown message and waits until it is filled.
+fn composing(open: &Open, action: UiAction) {
+    open.with(|live| {
+        live.app.prefill = prefilled;
+        live.app.apply(action);
+    });
+    open.tick_until(|open| {
+        open.with(|live| live.app.composer.as_ref().is_some_and(|c| !c.loading))
+    });
+}
+
+fn compose_reply_html(theme: &str) -> (Fixture, Open, Wires) {
+    let (fx, open, wires) = newsletter(theme, 1280.0);
+    composing(
+        &open,
+        UiAction::Reply(postvak_core::send::reply::ReplyTo::Sender),
+    );
+    open.with(|live| {
+        live.app.apply(UiAction::ComposeEdit(
+            crate::state::ComposeTarget::Pane,
+            crate::compose::ComposeField::Text,
+            "Thanks, the roundup was a good read.".into(),
+        ))
+    });
+    wait_painted(&open);
+    (fx, open, wires)
+}
+
+/// A reply above the newsletter it answers, which shows below as the reader draws it.
+#[test]
+fn compose_reply_html_light() {
+    let (_fx, open, _wires) = compose_reply_html("light");
+    snapshot(&open, "gui_compose_reply_html_light");
+}
+
+#[test]
+fn compose_reply_html_dark() {
+    let (_fx, open, _wires) = compose_reply_html("dark");
+    snapshot(&open, "gui_compose_reply_html_dark");
+}
+
+/// A forward of the e-ticket, its attachments listed with check boxes, one left out.
+#[test]
+fn compose_forward_attachments() {
+    let (_fx, open, _wires) = reader_with_attachments();
+    composing(&open, UiAction::Forward);
+    open.with(|live| {
+        live.app.apply(UiAction::ComposeToggleForwardPart(
+            crate::state::ComposeTarget::Pane,
+            1,
+        ))
+    });
+    snapshot(&open, "gui_compose_forward_attachments");
 }
 
 /// The window's grid: (glyph, inset, pad, row).

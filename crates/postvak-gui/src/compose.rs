@@ -10,6 +10,15 @@ use postvak_core::send::edit::split_recipients;
 use postvak_core::send::mailto::Mailto;
 use postvak_core::send::reply::{ForwardAs, ReplyTo};
 
+/// Send's hover hint, with its key.
+pub(crate) fn send_hint() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Send · Cmd+Enter"
+    } else {
+        "Send · Ctrl+Enter"
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ComposeKind {
     #[allow(dead_code, reason = "new mail has no window of its own yet")]
@@ -53,10 +62,6 @@ struct Snapshot {
 
 /// What the window edits as text: the address fields, From, Subject and the text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(
-    dead_code,
-    reason = "sent by the composer's view, which is not drawn yet"
-)]
 pub(crate) enum ComposeField {
     Bcc,
     Cc,
@@ -256,6 +261,48 @@ impl Composer {
         if about.is_some() && self.error.as_ref().map(|e| e.0) == about {
             self.error = None;
         }
+    }
+
+    /// The From choices as the drop-down shows them: the address alone, new mail's `account\taddress` too.
+    pub(crate) fn choice_labels(&self) -> Vec<&str> {
+        self.from_choices
+            .iter()
+            .map(|choice| {
+                choice
+                    .split_once('\t')
+                    .map_or(choice.as_str(), |(_, address)| address)
+            })
+            .collect()
+    }
+
+    /// Which of `from_choices` From is; None when it was typed, as a wildcard alias is.
+    pub(crate) fn choice_index(&self) -> Option<usize> {
+        self.from_choices
+            .iter()
+            .position(|choice| match choice.split_once('\t') {
+                Some((account, address)) => account == self.account && address == self.from,
+                None => *choice == self.from,
+            })
+    }
+
+    /// The attached files as their names and sizes in words; one that can't be read shows as 0 B.
+    pub(crate) fn file_rows(&self) -> Vec<(String, String)> {
+        self.files
+            .iter()
+            .map(|path| {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                let size = std::fs::metadata(path).map_or(0, |meta| meta.len());
+                (name.into_owned(), size_in_words(size))
+            })
+            .collect()
+    }
+
+    /// The original's attachments as their names, sizes in words and whether they go along.
+    pub(crate) fn part_rows(&self) -> Vec<(&str, String, bool)> {
+        self.forward_parts
+            .iter()
+            .map(|(name, size, kept)| (name.as_str(), size_in_words(*size), *kept))
+            .collect()
     }
 
     pub(crate) fn changed(&self) -> bool {
@@ -675,6 +722,32 @@ mod tests {
             (composer.account.as_str(), composer.from.as_str()),
             ("home", "me@home.test")
         );
+    }
+
+    #[test]
+    fn from_shows_as_a_choice_unless_it_was_typed() {
+        let mut composer = Composer::reply(3, "work", "INBOX", 7, ReplyTo::Sender);
+        let draft = |from: &str| Draft {
+            from: from.into(),
+            ..Draft::default()
+        };
+        composer.fill(prefilled(draft("alias@example.com"), vec![]), &identity());
+        assert_eq!(
+            composer.choice_labels(),
+            ["me@example.com", "alias@example.com"]
+        );
+        assert_eq!(composer.choice_index(), Some(1));
+        composer.fill(
+            prefilled(draft("deals@shop.example.com"), vec![]),
+            &identity(),
+        );
+        assert_eq!(composer.choice_index(), None);
+
+        let mut new = new_mail();
+        assert_eq!(new.choice_labels(), ["me@example.com", "alias@example.com"]);
+        assert_eq!(new.choice_index(), Some(0));
+        new.account = "home".into();
+        assert_eq!(new.choice_index(), None, "the address of another account");
     }
 
     #[test]

@@ -510,6 +510,9 @@ fn restore(window: &ui::MailWindow, layout: Option<persist::Layout>) {
     }
     window.set_folders_width(layout.folders_width.max(theme::CONTROL));
     window.set_list_width(layout.list_width.max(list::MIN_WIDTH));
+    if let Some(share) = layout.compose_height {
+        window.set_compose_share(share);
+    }
 }
 
 /// The window's layout, to be restored next time.
@@ -525,6 +528,7 @@ fn remember(window: &ui::MailWindow) -> persist::Layout {
         position: (position.x != 0 || position.y != 0).then_some((position.x, position.y)),
         folders_width: window.get_folders_width(),
         list_width: window.get_list_width(),
+        compose_height: Some(window.get_compose_share()),
     }
 }
 
@@ -966,6 +970,19 @@ mod tests {
         assert_eq!(window.get_focused_pane(), Pane::List);
         open.with(|live| live.app.apply(UiAction::SelectView(View::Rules)));
         assert!(!window.get_mail_view());
+    }
+
+    #[test]
+    fn the_split_is_saved_with_the_window() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        open.window().set_compose_share(0.3);
+        let layout = super::remember(&open.window());
+        assert_eq!(layout.compose_height, Some(0.3));
+        drop(open);
+        let (open, _wires) = fx.window();
+        super::restore(&open.window(), Some(layout));
+        assert_eq!(open.window().get_compose_share(), 0.3);
     }
 
     #[test]

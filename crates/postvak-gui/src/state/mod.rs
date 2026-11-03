@@ -587,58 +587,20 @@ pub(crate) enum UiAction {
     Reply(postvak_core::send::reply::ReplyTo),
     /// Forward the shown message, in the reader pane.
     Forward,
-    #[allow(
-        dead_code,
-        reason = "sent by the composer's view, which is not drawn yet"
-    )]
     ComposeEdit(ComposeTarget, ComposeField, String),
-    #[allow(
-        dead_code,
-        reason = "sent by the composer's view, which is not drawn yet"
-    )]
     ComposeShowCcBcc(ComposeTarget),
-    #[allow(
-        dead_code,
-        reason = "sent by the composer's view, which is not drawn yet"
-    )]
     ComposeAttach(ComposeTarget),
-    #[allow(
-        dead_code,
-        reason = "sent by the composer's view, which is not drawn yet"
-    )]
     ComposeRemoveFile(ComposeTarget, usize),
     /// Keep or leave out the original's attachment `index` of an inline forward.
-    #[allow(
-        dead_code,
-        reason = "sent by the composer's view, which is not drawn yet"
-    )]
     ComposeToggleForwardPart(ComposeTarget, usize),
-    #[allow(
-        dead_code,
-        reason = "sent by the composer's view, which is not drawn yet"
-    )]
     ComposeForwardAsAttachment(ComposeTarget, bool),
-    #[allow(
-        dead_code,
-        reason = "sent by the composer's view, which is not drawn yet"
-    )]
     ComposeSend(ComposeTarget),
-    #[allow(
-        dead_code,
-        reason = "sent by the composer's view, which is not drawn yet"
-    )]
     ComposeClose(ComposeTarget),
-    #[allow(
-        dead_code,
-        reason = "sent by the composer's view, which is not drawn yet"
-    )]
     ComposeDiscard(ComposeTarget),
     /// Put the composer of sent gesture `id`, taken back from the outbox, in the reader pane again.
     ReopenCompose(u64),
     /// The answers to "Discard this message?"
-    #[allow(dead_code, reason = "answers of a dialog that is not drawn yet")]
     LeaveComposeCancel,
-    #[allow(dead_code, reason = "answers of a dialog that is not drawn yet")]
     LeaveComposeDiscard,
     /// Put back logged action `id` of an account, as the Activity view offers it.
     UndoAction(usize, i64),

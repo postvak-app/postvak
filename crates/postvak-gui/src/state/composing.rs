@@ -549,6 +549,83 @@ mod tests {
     }
 
     #[test]
+    fn the_reply_composer_sits_above_the_original() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "subject 1"));
+        let (open, _wires) = fx.window();
+        open.with(|live| live.app.prefill = filled);
+        open.press("r");
+        open.tick_until(|open| open.with(|live| filled_in(&live.app)));
+        let subject = open.get("Subject").accessible_value().unwrap_or_default();
+        assert!(subject.starts_with("Re: "), "{subject}");
+        assert_eq!(open.window().get_body_text(), "Body of 1");
+        let (_, composer) = open.span("Your text");
+        let (original, _) = open.span("Message text");
+        assert!(composer < original, "{composer} vs {original}");
+    }
+
+    /// The window over message 1 with its reply open and filled.
+    fn replying_in_the_window() -> (Fixture, crate::test_support::Open) {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "subject 1"));
+        fx.add("work", message("INBOX", 2, "subject 2"));
+        let (open, _wires) = fx.window();
+        open.with(|live| {
+            live.app.prefill = filled;
+            live.app.queue_send = queued;
+        });
+        open.press("r");
+        open.tick_until(|open| open.with(|live| filled_in(&live.app)));
+        (fx, open)
+    }
+
+    #[test]
+    fn leaving_a_changed_composer_asks_in_the_window() {
+        let (_fx, open) = replying_in_the_window();
+        open.window()
+            .invoke_compose_edited(crate::ui::ComposeField::Text, "Hi".into());
+        assert_eq!(
+            open.with(|live| live.app.composer.as_ref().map(|c| c.text.clone())),
+            Some("Hi".into())
+        );
+        open.press("j");
+        assert_eq!(open.find("Discard this message?").len(), 1);
+        open.click("Cancel");
+        assert!(open.find("Discard this message?").is_empty());
+        assert!(open.with(|live| live.app.composer.is_some()));
+        open.press("j");
+        let discard = open.find("Discard");
+        assert_eq!(discard.len(), 2, "the composer's and the question's");
+        discard[1].invoke_accessible_default_action();
+        open.tick();
+        assert!(open.with(|live| live.app.composer.is_none()));
+        assert!(open.find("Your text").is_empty());
+    }
+
+    #[test]
+    fn ctrl_enter_sends_from_the_composer() {
+        use slint::ComponentHandle;
+        use slint::platform::{Key, WindowEvent};
+        let (_fx, open) = replying_in_the_window();
+        open.tap("Your text");
+        open.get("Your text").set_accessible_value("Hi");
+        let window = open.window();
+        let key = |text: slint::SharedString, pressed: bool| {
+            let event = if pressed {
+                WindowEvent::KeyPressed { text }
+            } else {
+                WindowEvent::KeyReleased { text }
+            };
+            window.window().dispatch_event(event);
+        };
+        key(Key::Control.into(), true);
+        key(Key::Return.into(), true);
+        key(Key::Return.into(), false);
+        key(Key::Control.into(), false);
+        open.tick_until(|open| open.with(|live| live.app.composer.is_none()));
+    }
+
+    #[test]
     fn the_daemons_too_late_refusal_is_told_apart() {
         use postvak_core::send::outbox::CancelError as Outbox;
         for gone in [

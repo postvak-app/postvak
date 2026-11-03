@@ -5,12 +5,13 @@ import { FolderItem, FolderPane, MenuChoice } from "folders.slint";
 import { StatusBar, StatusLine } from "status.slint";
 import { AccountDialog, ApplyConfirmDialog, FolderDialog, HistoryDialog, KeyHelp, KeysDialog, MoveDialog, Scrim, SourceDialog } from "dialogs.slint";
 import { AccountFields } from "account.slint";
-import { BodyInfo, BodyPane, PageInfo, SelectedData, StripData, ToolButton } from "body.slint";
+import { AttachmentData, BodyInfo, BodyPane, PageInfo, SelectedData, StripData, ToolButton } from "body.slint";
 import { ForwardLineData, ProposalData, RuleData, RulesPane, Sheet } from "rules.slint";
 import { RuleDialog, RuleEditor, UnsavedDialog } from "rule_editor.slint";
 import { AboutDialog } from "about.slint";
 import { Preferences, PreferencesDialog } from "preferences.slint";
 import { ListPane, RowData } from "list.slint";
+import { ComposeData, ComposeField, ComposePart, Composer, LeaveComposeDialog } from "compose.slint";
 
 export enum Pane { body, folders, list }
 
@@ -51,6 +52,19 @@ component Splitter inherits TouchArea {
 
 // A paper pane in the frame, with a soft accent outline while it has the keyboard; the outline is drawn inside, so
 // nothing moves. The clip has no radius: FemtoVG draws a rounded clip through a layer that blurs text (slint#10499).
+// The edge between the composer and the original below it; dragging it sets `share`, the composer's part of `room`.
+component RowSplitter inherits TouchArea {
+    in-out property <float> share;
+    in property <length> room;
+    height: Theme.pad;
+    mouse-cursor: row-resize;
+    moved => {
+        if (self.pressed) {
+            root.share = clamp(root.share + (self.mouse-y - self.pressed-y) / root.room, 0.2, 0.8);
+        }
+    }
+}
+
 component PaneFrame inherits Rectangle {
     in property <bool> focused;
     background: Theme.pane.background;
@@ -72,6 +86,27 @@ export component MailWindow inherits Window {
     in property <Pane> focused-pane: Pane.list;
     // A folder or All inboxes: a list and the body; else Rules, Activity or Backups, one pane.
     in property <bool> mail-view: true;
+    // The reader pane's composer, above the original; and its part of the pane's height, which the splitter drags.
+    in property <ComposeData> compose;
+    in property <[string]> compose-from-choices;
+    in property <[AttachmentData]> compose-files;
+    in property <[ComposePart]> compose-parts;
+    in property <string> compose-send-hint;
+    in-out property <float> compose-share: 0.5;
+    callback compose-edited(ComposeField, string);
+    callback compose-from-chosen(int);
+    callback compose-show-cc-bcc();
+    callback compose-attach();
+    callback compose-remove-file(int);
+    callback compose-toggle-part(int);
+    callback compose-as-attachment(bool);
+    callback compose-send();
+    callback compose-close();
+    callback compose-discard();
+    // "Discard this message?" while it asks.
+    in property <string> leave-compose;
+    callback leave-compose-discard();
+    callback leave-compose-cancel();
     in property <bool> config-changed;
     // Phosphor glyphs from `icons.rs`.
     in property <string> close-icon;
@@ -604,11 +639,39 @@ export component MailWindow inherits Window {
                     }
                 }
 
-                if root.mail-view: PaneFrame {
+                if root.mail-view: reader := PaneFrame {
                     // So the window, which cannot get narrower than its panes, leaves room for the subject and actions.
                     min-width: root.list-min-width;
                     focused: root.focused-pane == Pane.body;
+                    property <length> compose-height: root.compose.open ? (self.height - Theme.pad) * clamp(root.compose-share, 0.2, 0.8) : 0;
+                    if root.compose.open: Composer {
+                        y: 0;
+                        height: reader.compose-height;
+                        data: root.compose;
+                        from-choices: root.compose-from-choices;
+                        files: root.compose-files;
+                        parts: root.compose-parts;
+                        remove-icon: root.close-icon;
+                        send-hint: root.compose-send-hint;
+                        edited(field, text) => { root.compose-edited(field, text); }
+                        from-chosen(i) => { root.compose-from-chosen(i); }
+                        show-cc-bcc => { root.compose-show-cc-bcc(); }
+                        attach => { root.compose-attach(); }
+                        remove-file(i) => { root.compose-remove-file(i); }
+                        toggle-part(i) => { root.compose-toggle-part(i); }
+                        as-attachment(on) => { root.compose-as-attachment(on); }
+                        send => { root.compose-send(); }
+                        close => { root.compose-close(); }
+                        discard => { root.compose-discard(); }
+                    }
+                    if root.compose.open: RowSplitter {
+                        y: reader.compose-height;
+                        share <=> root.compose-share;
+                        room: reader.height - Theme.pad;
+                    }
                     BodyPane {
+                        y: root.compose.open ? reader.compose-height + Theme.pad : 0;
+                        height: reader.height - self.y;
                         info: root.body-info;
                         text: root.body-text;
                         save-icon: root.save-icon;
@@ -845,6 +908,18 @@ export component MailWindow inherits Window {
         x: (root.width - self.width) / 2;
         y: Theme.top-bar + Theme.inset;
         close-icon: root.close-icon;
+    }
+
+    if root.leave-compose != "": Scrim {
+        close => { root.leave-compose-cancel(); }
+    }
+    if root.leave-compose != "": LeaveComposeDialog {
+        x: (root.width - self.width) / 2;
+        y: Theme.top-bar + Theme.inset;
+        question: root.leave-compose;
+        close-icon: root.close-icon;
+        discard => { root.leave-compose-discard(); }
+        cancel => { root.leave-compose-cancel(); }
     }
 
     if root.help-open: Scrim {
