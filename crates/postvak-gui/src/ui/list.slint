@@ -504,7 +504,14 @@ export component ListPane inherits Rectangle {
                 vertical-stretch: 1;
                 content-y <=> root.list-y;
                 init => { root.scrolled(); }
-                changed content-y => { root.scrolled(); }
+                /* A model reset keeps the ListView's old row estimate, which can place the first row below the top; Slint
+                   clamps that only when content-y has no binding, and this one is bound to list-y. */
+                changed content-y => {
+                    if self.content-y > 0 {
+                        self.content-y = 0;
+                    }
+                    root.scrolled();
+                }
                 changed visible-height => { root.scrolled(); }
                 // The menu sits above the row: a TouchArea takes every button's press before its parent sees it.
                 for row[i] in root.rows: Rectangle {
