@@ -1290,6 +1290,7 @@ impl App {
             | Event::Connected { account, .. }
             | Event::Error { account, .. }
             | Event::ForwardPaused { account, .. }
+            | Event::ForwardWaiting { account, .. }
             | Event::FolderCreated { account, .. }
             | Event::FolderDeleted { account, .. }
             | Event::FolderNotEmpty { account, .. }
@@ -1402,6 +1403,14 @@ impl App {
                 self.refresh(index);
             }
             Event::Error { message, .. } => self.note_error(Some(index), message),
+            Event::ForwardWaiting { rules, .. } => {
+                let line = format!(
+                    "{}: waiting for your approval before forwarding: {}",
+                    self.accounts[index].name,
+                    rules.join(", ")
+                );
+                self.push_history(line);
+            }
             Event::ForwardPaused { rule, rate, .. } => {
                 let line = postvak_core::notify::forward_paused_text(&rule, rate);
                 self.push_history(format!("{}: {line}", self.accounts[index].name));

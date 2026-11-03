@@ -18,8 +18,8 @@ use crate::mail_ops::{Envelope, IdleOutcome, MailError, MailOps, RemoteFolder, S
 use crate::message::{clean, parse_headers, thread_id};
 use crate::paths::Paths;
 use crate::rules::apply::{
-    ApplyError, ForwardQueue, Forwarding, Queue, apply, ensure_body_text, ensure_structure,
-    forward_first, forward_wait, plan_for, special_folder,
+    ApplyError, ForwardQueue, ForwardWait, Forwarding, Queue, apply, ensure_body_text,
+    ensure_structure, forward_first, forward_wait, plan_for, special_folder,
 };
 use crate::rules::engine::{Context, Mode, evaluate, folder_needs_body, folder_needs_structure};
 use crate::rules::{Action, CompiledRule, RulesError};
@@ -118,6 +118,11 @@ pub enum Event {
     Error {
         account: String,
         message: String,
+    },
+    /// Forward rules that started waiting for a human to approve them in this account, by name.
+    ForwardWaiting {
+        account: String,
+        rules: Vec<String>,
     },
     /// A forward rule went over its rate, so its approval was withdrawn and it waits again.
     ForwardPaused {
@@ -234,6 +239,7 @@ impl Event {
             | Event::Connected { .. }
             | Event::Error { .. }
             | Event::ForwardPaused { .. }
+            | Event::ForwardWaiting { .. }
             | Event::Indexed { .. }
             | Event::NewMail { .. } => Vec::new(),
         }
@@ -1006,9 +1012,17 @@ pub fn run_rules_with(
     // A forward rule waiting for approval, or for an SMTP server, runs none of its actions.
     let mut runnable = Vec::with_capacity(rules.len());
     for rule in rules {
-        if forward_wait(rule, account, store)?.is_none() {
-            runnable.push(rule.clone());
+        if forward_wait(rule, account, store)?.is_some() {
+            continue;
         }
+        let mut rule = rule.clone();
+        // Approving restarts the clock, but rules loaded before it keep theirs: mail from the wait is never forwarded.
+        if rule.rule.forward().is_some()
+            && let Some(at) = store.forward_approved_at(&rule.rule.name, &rule.definition)?
+        {
+            rule.first_seen_at = rule.first_seen_at.max(at);
+        }
+        runnable.push(rule);
     }
     let rules = runnable.as_slice();
     let forwarding = Forwarding {
@@ -1863,6 +1877,8 @@ struct LoadedRules {
     last_good: Option<Vec<CompiledRule>>,
     /// The error of the last load, so each bad edit is reported once rather than every pass.
     error: Option<String>,
+    /// The forward rules, by name and definition, already announced as waiting for approval.
+    announced: std::collections::BTreeSet<(String, String)>,
 }
 
 impl LoadedRules {
@@ -1876,6 +1892,7 @@ impl LoadedRules {
     ) {
         match load_rules_for(store, path, now()) {
             Ok(rules) => {
+                self.announce_waiting(&rules, store, account, events);
                 self.last_good = Some(rules);
                 self.error = None;
             }
@@ -1892,6 +1909,38 @@ impl LoadedRules {
                 }
                 self.error = Some(error);
             }
+        }
+    }
+
+    /// Sends `ForwardWaiting` for the enabled forward rules of `rules` that wait for approval in `account` and were not
+    /// announced with that definition yet.
+    fn announce_waiting(
+        &mut self,
+        rules: &[CompiledRule],
+        store: &Store,
+        account: &AccountConfig,
+        events: &Sender<Event>,
+    ) {
+        let mut waiting = Vec::new();
+        for rule in rules.iter().filter(|rule| rule.rule.enabled) {
+            let wait = forward_wait(rule, account, store).unwrap_or_else(|e| {
+                log::warn!(
+                    "{}: could not read the approval of rule '{}': {e}",
+                    account.name,
+                    rule.rule.name
+                );
+                None
+            });
+            let key = (rule.rule.name.clone(), rule.definition.clone());
+            if wait == Some(ForwardWait::Approval) && self.announced.insert(key) {
+                waiting.push(rule.rule.name.clone());
+            }
+        }
+        if !waiting.is_empty() {
+            let _ = events.send(Event::ForwardWaiting {
+                account: account.name.clone(),
+                rules: waiting,
+            });
         }
     }
 

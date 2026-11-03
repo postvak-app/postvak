@@ -1707,11 +1707,23 @@ impl Store {
 
     /// Whether `rule` is approved exactly as `definition` says it.
     pub fn forward_approved(&self, rule: &str, definition: &str) -> Result<bool, StoreError> {
-        Ok(self.conn.query_row(
-            "SELECT EXISTS (SELECT 1 FROM forward_approvals WHERE rule = ?1 AND definition = ?2)",
-            params![rule, definition],
-            |r| r.get(0),
-        )?)
+        Ok(self.forward_approved_at(rule, definition)?.is_some())
+    }
+
+    /// When `rule` was approved exactly as `definition` says it; None when it is not.
+    pub fn forward_approved_at(
+        &self,
+        rule: &str,
+        definition: &str,
+    ) -> Result<Option<i64>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT approved_at FROM forward_approvals WHERE rule = ?1 AND definition = ?2",
+                params![rule, definition],
+                |r| r.get(0),
+            )
+            .optional()?)
     }
 
     pub fn withdraw_forward(&self, rule: &str) -> Result<(), StoreError> {

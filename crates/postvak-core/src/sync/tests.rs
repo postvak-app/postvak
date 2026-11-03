@@ -7017,3 +7017,81 @@ fn undo_of_a_forward_and_archive_moves_back_and_says_the_forward_was_sent() {
     );
     assert_eq!(f.queue.taken().len(), 1);
 }
+
+#[test]
+fn a_new_waiting_forward_rule_notifies_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rules.toml");
+    std::fs::write(&path, FORWARD_ARCHIVE).unwrap();
+    let store = Store::open_in_memory().unwrap();
+    let mut acc = account();
+    acc.smtp = Some(crate::config::SmtpConfig::new(
+        "smtp.example.com",
+        crate::config::SmtpTls::Starttls,
+    ));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut loaded = LoadedRules::default();
+    let waiting = |rx: &std::sync::mpsc::Receiver<Event>| -> Vec<Vec<String>> {
+        rx.try_iter()
+            .filter_map(|event| match event {
+                Event::ForwardWaiting { rules, .. } => Some(rules),
+                _ => None,
+            })
+            .collect()
+    };
+    loaded.reload(&store, &path, &acc, &tx);
+    loaded.reload(&store, &path, &acc, &tx);
+    assert_eq!(waiting(&rx), [vec!["inv".to_string()]]);
+    std::fs::write(
+        &path,
+        FORWARD_ARCHIVE.replace(
+            "to = \"books@example.org\"",
+            "to = \"books@example.org\", rate = 5",
+        ),
+    )
+    .unwrap();
+    loaded.reload(&store, &path, &acc, &tx);
+    assert_eq!(
+        waiting(&rx),
+        [vec!["inv".to_string()]],
+        "a changed definition waits again"
+    );
+    let rule = &loaded.last_good.as_ref().unwrap()[0];
+    store.approve_forward("inv", &rule.definition, 0).unwrap();
+    loaded.reload(&store, &path, &acc, &tx);
+    assert!(waiting(&rx).is_empty());
+    acc.smtp = None;
+    let mut fresh = LoadedRules::default();
+    store.withdraw_forward("inv").unwrap();
+    fresh.reload(&store, &path, &acc, &tx);
+    assert!(
+        waiting(&rx).is_empty(),
+        "waiting for an SMTP server is no approval to ask for"
+    );
+}
+
+#[test]
+fn a_forward_acts_only_on_mail_from_its_approval_on() {
+    let mut f = Forwarding::new(invoices(), FORWARD_ARCHIVE);
+    let rule = &f.rules[0];
+    f.store
+        .approve_forward(&rule.rule.name, &rule.definition, 11 * H)
+        .unwrap();
+    f.run(Mode::Normal, 12 * H);
+    assert!(
+        f.queue.taken().is_empty(),
+        "the mail arrived while the rule waited"
+    );
+    assert_eq!(f.inbox(), [1], "and none of the rule's actions run on it");
+    let head = "From: billing@shop.example\r\nTo: pieter@example.com\r\nSubject: Invoice 2\r\nMessage-ID: <i2@shop>\r\n";
+    f.ops.add_mail(
+        "INBOX",
+        2,
+        12 * H,
+        &format!("{head}\r\n"),
+        Some(&format!("{head}\r\nnew\r\n")),
+    );
+    sync_all(&mut f.ops, &f.store).unwrap();
+    f.run(Mode::Normal, 13 * H);
+    assert_eq!(f.queue.taken().len(), 1);
+}

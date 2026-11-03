@@ -147,6 +147,10 @@ pub fn report(event: &Event) {
                 println!("[{account}] note: {}", crate::help::NO_UIDPLUS);
             }
         }
+        Event::ForwardWaiting { account, rules } => println!(
+            "[{account}] waiting for your approval before forwarding: {}",
+            clean(&rules.join(", "), false)
+        ),
         Event::ForwardPaused {
             account,
             rule,
@@ -789,6 +793,7 @@ fn reported(event: &Event, terminal: bool) -> bool {
                 }
                 | Event::Error { .. }
                 | Event::ForwardPaused { .. }
+                | Event::ForwardWaiting { .. }
         )
 }
 
@@ -807,10 +812,18 @@ fn route_events(
         if let Some(batch) = batches.hear(&event) {
             notify(&batch);
         }
-        if let Event::ForwardPaused { rule, rate, .. } = &event
-            && let Some(notifier) = &shared.notifier
-        {
-            notifier.notice(crate::notify::forward_paused_notice(rule, *rate));
+        if let Some(notifier) = &shared.notifier {
+            match &event {
+                Event::ForwardPaused { rule, rate, .. } => {
+                    notifier.notice(crate::notify::forward_paused_notice(rule, *rate));
+                }
+                Event::ForwardWaiting { rules, .. } => {
+                    let proposed: Vec<Proposed> =
+                        rules.iter().cloned().map(Proposed::Rule).collect();
+                    notifier.proposals(&proposed);
+                }
+                _ => {}
+            }
         }
         if let Event::Synced { account, .. } = &event {
             // The folder warnings read what the account's store holds, which a sync changes. The store opens

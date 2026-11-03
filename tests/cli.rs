@@ -1671,3 +1671,60 @@ fn send_raw_takes_git_send_email_arguments() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("no From address"), "{stderr}");
 }
+
+#[test]
+fn cli_rules_approve_approves_an_enabled_forward_rule() {
+    let (home, store) = seeded_home(&[message(42, "billing@shop.example", "Invoice")]);
+    let paths = Paths::under(home.path());
+    let config = std::fs::read_to_string(paths.config_file()).unwrap();
+    std::fs::write(
+        paths.config_file(),
+        format!(
+            "{}\nsmtp = {{ host = \"smtp.example.com\", tls = \"starttls\" }}\n",
+            config.trim_end()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        paths.rules_file(),
+        "[[rules]]\nname = \"inv\"\nmatch.from = { contains = \"billing@\" }\nactions.archive = true\nactions.forward = { to = [\"books@example.org\", \"b@x.org\"] }\n",
+    )
+    .unwrap();
+    let list =
+        || String::from_utf8_lossy(&postvak(home.path(), &["rules", "list"]).stdout).to_string();
+    assert!(
+        list().contains("\twaiting for approval in work"),
+        "{}",
+        list()
+    );
+    let check = postvak(home.path(), &["rules", "check"]);
+    let warned = String::from_utf8_lossy(&check.stderr);
+    assert!(
+        warned.contains("rule 'inv' forwards mail and waits for your approval in account 'work'"),
+        "{warned}"
+    );
+
+    let out = postvak(home.path(), &["rules", "approve", "inv"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        said.contains("approved 'inv' forwarding to books@example.org, b@x.org"),
+        "{said}"
+    );
+    assert!(!list().contains("waiting"), "{}", list());
+    let definition =
+        postvak_core::rules::compile(&postvak_core::rules::load(&paths.rules_file()).unwrap())
+            .unwrap()[0]
+            .definition
+            .clone();
+    assert!(store.forward_approved("inv", &definition).unwrap());
+    assert!(
+        !std::fs::read_to_string(paths.rules_file())
+            .unwrap()
+            .contains("approv")
+    );
+}

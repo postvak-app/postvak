@@ -869,7 +869,16 @@ impl Backend {
         self.ensure_rule_visible(name, true)?;
         refuse_named_unseen(&self.paths, name, sight)?;
         let approved = rules::edit::approve_from_now(&self.paths, name, time::now())?;
-        Ok(json!({ "rule": approved, "enabled": true }))
+        let mut result = json!({ "rule": approved, "enabled": true });
+        let forwards = rules::load(&self.paths.rules_file())?
+            .rules
+            .iter()
+            .any(|rule| rule.name == approved && rule.forward().is_some());
+        // Approving a forward sends mail, which an agent never decides: the rule waits for a human.
+        if forwards {
+            result["forward"] = postvak_core::help::forward_held(&approved).into();
+        }
+        Ok(result)
     }
 
     /// Removes the caller's own pending change of list `name`.

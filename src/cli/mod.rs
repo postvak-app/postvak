@@ -2163,8 +2163,10 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             Ok(())
         }
         RulesCommand::Approve { name, .. } => {
-            let approved = postvak_core::rules::edit::approve_from_now(paths, &name, time::now())?;
-            if approved == name {
+            let approved = postvak_core::rules::edit::approve_as_human(paths, &name, time::now())?;
+            let rule = &approved.rule;
+            if !approved.proposal {
+            } else if *rule == name {
                 println!(
                     "enabled '{}'; it acts on mail that arrives from now on",
                     clean(&name, false)
@@ -2172,8 +2174,15 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             } else {
                 println!(
                     "changed '{}' as '{}' proposed; it acts as changed on mail that arrives from now on",
-                    clean(&approved, false),
+                    clean(rule, false),
                     clean(&name, false)
+                );
+            }
+            if let Some(to) = &approved.forward_to {
+                println!(
+                    "approved '{}' forwarding to {}; it forwards mail that arrives from now on",
+                    clean(rule, false),
+                    clean(&to.join(", "), false)
                 );
             }
             Ok(())

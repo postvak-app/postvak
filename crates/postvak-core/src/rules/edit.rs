@@ -776,6 +776,80 @@ pub fn approve_from_now(paths: &Paths, name: &str, now: i64) -> Result<String, R
     Ok(approved)
 }
 
+/// Approves the forward of `name` as rules.toml holds it now in the store of every account in config.toml it runs on,
+/// and restarts its clock there, so it forwards only mail that arrives from now on. The approval is the rule's whole
+/// definition, so any later change to the rule waits again; it goes into the stores, never into rules.toml. Refuses a
+/// rule without forward.
+pub fn approve_forward(paths: &Paths, name: &str, now: i64) -> Result<(), RulesError> {
+    let config = Config::load(&paths.config_file())?;
+    let rule = compile(&crate::rules::load(&paths.rules_file())?)?
+        .into_iter()
+        .find(|r| r.rule.name == name)
+        .ok_or_else(|| RulesError::NotFound(name.to_string()))?;
+    if rule.rule.forward().is_none() {
+        return Err(invalid(
+            name,
+            "forwards nothing, so there is no forward to approve",
+        ));
+    }
+    for account in config
+        .accounts
+        .iter()
+        .filter(|a| rule.applies_to_account(&a.name))
+    {
+        let store = Store::open_account(paths, &account.name)?;
+        store.approve_forward(name, &rule.definition, now)?;
+        store.restart_rule_clock(name, now)?;
+    }
+    Ok(())
+}
+
+/// What a human's approval of a rule did: the rule's name once approved, whether it was a pending proposal now
+/// enabled or written over its rule, and the addresses of a forward now approved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Approved {
+    pub rule: String,
+    pub proposal: bool,
+    pub forward_to: Option<Vec<String>>,
+}
+
+/// A human's approval of `name`, from the CLI or the window: a pending proposal is approved as `approve_from_now`
+/// does, and a forward, the rule's own or the one the proposal brings, as `approve_forward` does. An enabled rule
+/// without a forward has nothing to approve.
+pub fn approve_as_human(paths: &Paths, name: &str, now: i64) -> Result<Approved, RulesError> {
+    let file = crate::rules::load(&paths.rules_file())?;
+    let rule = (file.rules.iter())
+        .find(|r| r.name == name)
+        .ok_or_else(|| RulesError::NotFound(name.to_string()))?;
+    let proposal = !rule.enabled;
+    if !proposal && rule.forward().is_none() {
+        return Err(invalid(name, "is already enabled"));
+    }
+    let approved = match proposal {
+        true => approve_from_now(paths, name, now)?,
+        false => name.to_string(),
+    };
+    let file = crate::rules::load(&paths.rules_file())?;
+    let forward_to = match file
+        .rules
+        .iter()
+        .find(|r| r.name == approved)
+        .and_then(Rule::forward)
+    {
+        Some(forward) => {
+            let addresses = forward.recipients().cloned().collect();
+            approve_forward(paths, &approved, now)?;
+            Some(addresses)
+        }
+        None => None,
+    };
+    Ok(Approved {
+        rule: approved,
+        proposal,
+        forward_to,
+    })
+}
+
 fn write_enabled(table: &mut toml_edit::Table, enabled: bool) {
     let mut value = Value::from(enabled);
     if let Some(old) = table.get("enabled").and_then(|item| item.as_value()) {
@@ -1366,6 +1440,129 @@ mod tests {
             .unwrap()
             .rule_first_seen(name, "definition", at)
             .unwrap()
+    }
+
+    const FORWARD: &str = "[[rules]]\nname = \"inv\"\nmatch.from = { contains = \"billing@\" }\nactions.archive = true\nactions.forward = { to = [\"books@example.org\", \"b@x.org\"] }\n";
+
+    fn forward_paths(config: &str, rules: &str) -> (tempfile::TempDir, Paths) {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        std::fs::create_dir_all(&paths.config_dir).unwrap();
+        std::fs::write(paths.config_file(), config).unwrap();
+        std::fs::write(paths.rules_file(), rules).unwrap();
+        (dir, paths)
+    }
+
+    fn definition(paths: &Paths, name: &str) -> String {
+        let file = crate::rules::load(&paths.rules_file()).unwrap();
+        compile(&file)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.rule.name == name)
+            .unwrap()
+            .definition
+    }
+
+    fn approved(paths: &Paths, account: &str, name: &str) -> bool {
+        let store = Store::open_account(paths, account).unwrap();
+        store
+            .forward_approved(name, &definition(paths, name))
+            .unwrap()
+    }
+
+    #[test]
+    fn approve_forward_approves_every_account_and_restarts_the_clock() {
+        let (_dir, paths) = forward_paths(TWO_ACCOUNTS, FORWARD);
+        for account in ["work", "home"] {
+            assert_eq!(first_seen(&paths, account, "inv", 1), 1);
+            assert!(!approved(&paths, account, "inv"));
+        }
+        let before = std::fs::read_to_string(paths.rules_file()).unwrap();
+        approve_forward(&paths, "inv", 500).unwrap();
+        for account in ["work", "home"] {
+            assert!(approved(&paths, account, "inv"), "{account}");
+            assert_eq!(first_seen(&paths, account, "inv", 900), 500, "{account}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(paths.rules_file()).unwrap(),
+            before,
+            "approvals never go into rules.toml"
+        );
+        let scoped = FORWARD.replace("name = \"inv\"\n", "name = \"inv\"\naccount = \"work\"\n");
+        let (_dir, paths) = forward_paths(TWO_ACCOUNTS, &scoped);
+        approve_forward(&paths, "inv", 500).unwrap();
+        assert!(approved(&paths, "work", "inv"));
+        assert!(
+            !approved(&paths, "home", "inv"),
+            "a rule for one account is approved there only"
+        );
+    }
+
+    #[test]
+    fn approve_forward_refuses_a_rule_without_forward_or_an_unknown_one() {
+        let (_dir, paths) = forward_paths(TWO_ACCOUNTS, HUMAN);
+        assert!(
+            approve_forward(&paths, "keep", 500)
+                .unwrap_err()
+                .to_string()
+                .contains("forwards nothing")
+        );
+        assert!(matches!(
+            approve_forward(&paths, "nope", 500),
+            Err(RulesError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn an_account_added_later_waits() {
+        let one = TWO_ACCOUNTS.split("\n\n").next().unwrap().to_string() + "\n";
+        let (_dir, paths) = forward_paths(&one, FORWARD);
+        approve_forward(&paths, "inv", 500).unwrap();
+        std::fs::write(paths.config_file(), TWO_ACCOUNTS).unwrap();
+        assert!(approved(&paths, "work", "inv"));
+        assert!(
+            !approved(&paths, "home", "inv"),
+            "approval was given per store, before home existed"
+        );
+    }
+
+    #[test]
+    fn approving_as_a_human_approves_an_enabled_forward_rule_and_a_proposed_one() {
+        let (_dir, paths) = forward_paths(TWO_ACCOUNTS, FORWARD);
+        let done = approve_as_human(&paths, "inv", 500).unwrap();
+        assert_eq!(
+            done,
+            Approved {
+                rule: "inv".into(),
+                proposal: false,
+                forward_to: Some(vec!["books@example.org".into(), "b@x.org".into()])
+            }
+        );
+        assert!(approved(&paths, "home", "inv"));
+        assert!(approve_as_human(&paths, "missing", 500).is_err());
+        let (_dir, paths) = forward_paths(TWO_ACCOUNTS, HUMAN);
+        assert!(
+            approve_as_human(&paths, "keep", 500)
+                .unwrap_err()
+                .to_string()
+                .contains("already enabled")
+        );
+        let rule: Rule = parse(FORWARD).unwrap().rules.remove(0);
+        propose(&paths.rules_file(), rule, "claude").unwrap();
+        let done = approve_as_human(&paths, "inv", 600).unwrap();
+        assert!(done.proposal && done.forward_to.is_some());
+        assert!(crate::rules::load(&paths.rules_file()).unwrap().rules[1].enabled);
+        assert!(approved(&paths, "work", "inv"));
+    }
+
+    #[test]
+    fn approve_from_now_leaves_a_forward_waiting() {
+        let (_dir, paths) = forward_paths(TWO_ACCOUNTS, HUMAN);
+        let rule: Rule = parse(FORWARD).unwrap().rules.remove(0);
+        propose(&paths.rules_file(), rule, "claude").unwrap();
+        approve_from_now(&paths, "inv", 500).unwrap();
+        assert!(crate::rules::load(&paths.rules_file()).unwrap().rules[1].enabled);
+        assert!(!approved(&paths, "work", "inv"));
     }
 
     #[test]

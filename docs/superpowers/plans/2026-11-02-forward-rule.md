@@ -172,15 +172,15 @@
   - `approve_from_now` keeps its behaviour and does not approve forwards; the CLI's `rules approve <name>` calls `approve_from_now` when the rule is a pending proposal and `approve_forward` when it has a forward (both when both); it no longer refuses an enabled rule that has an unapproved forward
   - MCP `approve`: unchanged path, result gains `"forward": "waits for approval in Postvak (postvak rules approve <name> or the Rules view)"` when the rule has a forward
   - On each rules load in the sync thread: a forward rule whose definition is not approved in this account and was not waiting before raises `notify::proposals_notice` with `Proposed::Rule(name)` (once per definition)
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - `approve_forward_approves_every_account_and_restarts_the_clock`.
   - In `postvak-mcp/src/tests.rs`: `mcp_approve_leaves_a_forward_waiting`; `an_edit_proposal_approved_over_mcp_makes_the_forward_wait_again` (Review Focus 2: approve by human, propose edit widening `match`, MCP approve → `forward_waiting` lists the account, `run_rules` queues nothing).
   - `cli_rules_approve_approves_an_enabled_forward_rule` (CLI integration test file).
   - `a_new_waiting_forward_rule_notifies_once`; `an_account_added_later_waits`.
-- [ ] **Step 2: Run** `cargo nextest run -p postvak-core edit && cargo nextest run -p postvak-mcp approve` — FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** — PASS; `POSTVAK_BLESS=1 cargo test`.
-- [ ] **Step 5: Commit** `feat(rules): approve forward rules from the CLI; MCP cannot`
+- [x] **Step 2: Run** `cargo nextest run -p postvak-core edit && cargo nextest run -p postvak-mcp approve` — FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** — PASS; `POSTVAK_BLESS=1 cargo test`.
+- [x] **Step 5: Commit** `feat(rules): approve forward rules from the CLI; MCP cannot`
 
 ### Task 7: The GUI
 
