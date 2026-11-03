@@ -49,6 +49,16 @@ pub enum SendKind {
     },
 }
 
+/// The headers the composer edited; they replace what the builder chose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeaderEdits {
+    pub from: String,
+    pub to: Vec<String>,
+    pub cc: Vec<String>,
+    pub bcc: Vec<String>,
+    pub subject: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SendRequest {
     pub account: Option<String>,
@@ -60,6 +70,21 @@ pub struct SendRequest {
     /// Skip the undo delay.
     pub now: bool,
     pub save_sent: Option<bool>,
+    /// The raw message a reply or forward answers, when the caller has it; unset, it is looked up by folder and uid.
+    pub original: Option<Vec<u8>>,
+    pub headers: Option<HeaderEdits>,
+    /// An inline forward's attachments to take along, by index into [`reply::forward_attachments`]; unset, all.
+    pub forward_parts: Option<Vec<usize>>,
+}
+
+/// What a composer opens with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Prefilled {
+    pub account: String,
+    pub draft: Draft,
+    pub original: Option<Vec<u8>>,
+    /// The original's attachments as (file name, size), in the order [`reply::AttachmentFilter::Only`] indexes.
+    pub attachments: Vec<(String, u64)>,
 }
 
 /// A message in the outbox, for the line the CLI prints.
@@ -151,6 +176,7 @@ fn draft_for(
     kind: &SendKind,
     original: &[u8],
     body: &str,
+    forward_parts: Option<&[usize]>,
 ) -> anyhow::Result<Draft> {
     Ok(match kind {
         SendKind::New {
@@ -182,10 +208,56 @@ fn draft_for(
             };
             let options = ForwardOptions {
                 as_: *as_,
+                attachments: forward_parts.map_or(reply::AttachmentFilter::All, |parts| {
+                    reply::AttachmentFilter::Only(parts.to_vec())
+                }),
                 ..Default::default()
             };
             reply::forward(original, recipients, identity, body, &options)?
         }
+    })
+}
+
+fn apply_headers(
+    draft: &mut Draft,
+    edits: &HeaderEdits,
+    identity: &Identity,
+) -> anyhow::Result<()> {
+    check::check_from(&edits.from, identity)?;
+    draft.from_name = identity.display_name_for(&edits.from).map(str::to_string);
+    draft.from = edits.from.trim().to_string();
+    draft.to = edits.to.clone();
+    draft.cc = edits.cc.clone();
+    draft.bcc = edits.bcc.clone();
+    draft.subject = edits.subject.clone();
+    Ok(())
+}
+
+/// What a composer opens with for `kind`: the draft with an empty body and the original it answers.
+pub fn prefill(
+    config: &Config,
+    paths: &Paths,
+    client: &LazyClient,
+    account: Option<&str>,
+    kind: &SendKind,
+) -> anyhow::Result<Prefilled> {
+    let account = config::single(&config.accounts, account)?;
+    let identity = account.identity()?;
+    let original = original_for(paths, client, account, kind)?.map(|(raw, _)| raw);
+    let raw = original.as_deref().unwrap_or_default();
+    let draft = draft_for(&identity, kind, raw, "", None)?;
+    let attachments = match kind {
+        SendKind::Forward {
+            as_: ForwardAs::Inline,
+            ..
+        } => reply::forward_attachments(raw),
+        _ => Vec::new(),
+    };
+    Ok(Prefilled {
+        account: account.name.clone(),
+        draft,
+        original,
+        attachments,
     })
 }
 
@@ -243,9 +315,19 @@ pub fn compose(
         Body::Given(text) => text.clone(),
         Body::Edit => String::new(),
     };
-    let original = original_for(paths, client, account, &request.kind)?;
+    let original = match request.original.clone() {
+        Some(raw) => {
+            let flag = match request.kind {
+                SendKind::Forward { .. } => OriginalFlag::Forwarded,
+                _ => OriginalFlag::Answered,
+            };
+            (!matches!(request.kind, SendKind::New { .. })).then_some((raw, flag))
+        }
+        None => original_for(paths, client, account, &request.kind)?,
+    };
+    let forward_parts = request.forward_parts.as_deref();
     let raw = original.as_ref().map_or(&[][..], |(raw, _)| raw.as_slice());
-    let mut draft = draft_for(&identity, &request.kind, raw, &given)?;
+    let mut draft = draft_for(&identity, &request.kind, raw, &given, forward_parts)?;
     if request.body == Body::Edit {
         let template = super::edit::template(&draft);
         let edited = edit(&template)?;
@@ -257,11 +339,23 @@ pub fn compose(
         if draft.html.is_some() {
             let quote = draft.text.trim_start_matches('\n').trim_end();
             written.html = match written.text.trim_end().strip_suffix(quote) {
-                Some(user) => draft_for(&identity, &request.kind, raw, user.trim_end())?.html,
+                Some(user) => {
+                    draft_for(
+                        &identity,
+                        &request.kind,
+                        raw,
+                        user.trim_end(),
+                        forward_parts,
+                    )?
+                    .html
+                }
                 None => None,
             };
         }
         draft = written;
+    }
+    if let Some(edits) = &request.headers {
+        apply_headers(&mut draft, edits, &identity)?;
     }
     if let Some(from) = &request.from {
         check::check_from(from, &identity)?;
@@ -440,7 +534,128 @@ mod tests {
             attachments: Vec::new(),
             now: false,
             save_sent: None,
+            original: None,
+            headers: None,
+            forward_parts: None,
         }
+    }
+
+    fn reply_kind(uid: u32) -> SendKind {
+        SendKind::Reply {
+            folder: "INBOX".into(),
+            uid,
+            to: ReplyTo::Sender,
+        }
+    }
+
+    fn queued_message(h: &Home) -> (String, Option<String>) {
+        let entry = h.client.client().unwrap().outbox().unwrap().remove(0).1;
+        let message_id = entry.original.map(|o| o.message_id);
+        (entry.envelope.to.join(","), message_id)
+    }
+
+    #[test]
+    fn edited_headers_replace_the_builders() {
+        let identity = Config::load(&home().daemon.paths.config_file())
+            .unwrap()
+            .accounts[0]
+            .identity()
+            .unwrap();
+        let mut draft = draft_for(&identity, &reply_kind(7), ORIGINAL, "", None).unwrap();
+        let edits = HeaderEdits {
+            from: "me@example.com".into(),
+            to: vec!["c@x.org".into()],
+            cc: vec![],
+            bcc: vec![],
+            subject: "New".into(),
+        };
+        apply_headers(&mut draft, &edits, &identity).unwrap();
+        assert_eq!(draft.to, ["c@x.org"]);
+        assert_eq!(draft.subject, "New");
+        assert_eq!(draft.in_reply_to.as_deref(), Some("<m1@x.org>"));
+        assert!(draft.text.contains("> Shall we?"), "{:?}", draft.text);
+    }
+
+    #[test]
+    fn edited_headers_are_sent() {
+        let h = home();
+        let mut edited = request(reply_kind(7));
+        edited.original = Some(ORIGINAL.to_vec());
+        edited.headers = Some(HeaderEdits {
+            from: "me@example.com".into(),
+            to: vec!["c@x.org".into()],
+            cc: vec![],
+            bcc: vec![],
+            subject: "New".into(),
+        });
+        compose(&h.config, &h.daemon.paths, &h.client, edited, no_editor).unwrap();
+        assert_eq!(queued_message(&h).0, "c@x.org");
+    }
+
+    #[test]
+    fn a_preloaded_original_is_used_without_the_store() {
+        let h = home();
+        let mut preloaded = request(reply_kind(999));
+        preloaded.original = Some(ORIGINAL.to_vec());
+        compose(&h.config, &h.daemon.paths, &h.client, preloaded, no_editor).unwrap();
+        assert_eq!(
+            queued_message(&h),
+            ("linus@x.org".into(), Some("m1@x.org".into()))
+        );
+        assert!(
+            compose(
+                &h.config,
+                &h.daemon.paths,
+                &h.client,
+                request(reply_kind(999)),
+                no_editor
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn without_edits_the_request_is_the_clis() {
+        let h = home();
+        let mut preloaded = request(reply_kind(7));
+        preloaded.original = Some(ORIGINAL.to_vec());
+        compose(&h.config, &h.daemon.paths, &h.client, preloaded, no_editor).unwrap();
+        compose(
+            &h.config,
+            &h.daemon.paths,
+            &h.client,
+            request(reply_kind(7)),
+            no_editor,
+        )
+        .unwrap();
+        let outbox = h.client.client().unwrap().outbox().unwrap();
+        assert_eq!(outbox.len(), 2);
+        assert_eq!(outbox[0].1.envelope, outbox[1].1.envelope);
+        assert_eq!(outbox[0].1.original, outbox[1].1.original);
+    }
+
+    #[test]
+    fn prefill_has_the_recipients_and_an_empty_text_above_the_quote() {
+        let h = home();
+        let prefilled = prefill(
+            &h.config,
+            &h.daemon.paths,
+            &h.client,
+            Some("work"),
+            &reply_kind(7),
+        )
+        .unwrap();
+        assert_eq!(prefilled.account, "work");
+        assert_eq!(prefilled.draft.to, ["Linus Example <linus@x.org>"]);
+        assert_eq!(prefilled.draft.subject, "Re: Plans");
+        assert!(
+            prefilled.draft.text.starts_with("\n\nOn "),
+            "{:?}",
+            prefilled.draft.text
+        );
+        assert!(prefilled.draft.text.contains("> Shall we?"));
+        assert_eq!(prefilled.original.as_deref(), Some(ORIGINAL));
+        assert!(prefilled.attachments.is_empty());
     }
 
     fn no_editor(_: &str) -> anyhow::Result<String> {

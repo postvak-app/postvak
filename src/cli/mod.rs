@@ -2494,6 +2494,9 @@ fn cmd_send(config: &Config, paths: &Paths, args: SendArgs) -> Result<()> {
         attachments: args.attach.clone(),
         now: args.now,
         save_sent: (args.save_sent || args.no_save_sent).then_some(args.save_sent),
+        original: None,
+        headers: None,
+        forward_parts: None,
     };
     let dir = paths.cache_dir.clone();
     let queued = compose::compose(config, paths, &client, request, |text| {

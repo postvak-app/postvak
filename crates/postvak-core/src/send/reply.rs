@@ -31,11 +31,13 @@ pub enum ForwardAs {
 }
 
 /// Which of the original's attachments an inline forward takes along.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum AttachmentFilter {
     #[default]
     All,
     None,
+    /// Indices into [`forward_attachments`]' list.
+    Only(Vec<usize>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -424,6 +426,18 @@ pub fn reply(
     })
 }
 
+/// The attachments an inline forward of `original` can take along, as (file name, size) in the order `Only` indexes.
+pub fn forward_attachments(original: &[u8]) -> Vec<(String, u64)> {
+    read(original, true)
+        .map(|read| {
+            read.attachments
+                .into_iter()
+                .map(|file| (file.name, file.bytes.len() as u64))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// A forward of `original` to `recipients`, with `body` above it.
 pub fn forward(
     original: &[u8],
@@ -432,7 +446,8 @@ pub fn forward(
     body: &str,
     options: &ForwardOptions,
 ) -> Result<Draft, ReplyError> {
-    let reattach = options.as_ == ForwardAs::Inline && options.attachments == AttachmentFilter::All;
+    let reattach =
+        options.as_ == ForwardAs::Inline && options.attachments != AttachmentFilter::None;
     let read = read(original, reattach)?;
     let from = our_address(original, identity);
     let body = match &options.note {
@@ -474,8 +489,18 @@ pub fn forward(
                 .html
                 .as_ref()
                 .and_then(|original| quote_html::forward_html(&body, &block, original));
-            if options.attachments == AttachmentFilter::All {
-                draft.attachments = read.attachments.clone();
+            match &options.attachments {
+                AttachmentFilter::All => draft.attachments = read.attachments.clone(),
+                AttachmentFilter::None => {}
+                AttachmentFilter::Only(wanted) => {
+                    draft.attachments = read
+                        .attachments
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| wanted.contains(index))
+                        .map(|(_, file)| file.clone())
+                        .collect();
+                }
             }
             draft.references = read.references.clone();
             draft.references.extend(read.message_id.clone());
@@ -716,6 +741,29 @@ mod tests {
                 .unwrap()
                 .attachments
                 .is_empty()
+        );
+    }
+
+    const TWO: &str = "--b\r\nContent-Type: text/plain\r\n\r\nthe text\r\n--b\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=a.pdf\r\nContent-Transfer-Encoding: base64\r\n\r\nJVBERg==\r\n--b\r\nContent-Type: text/csv\r\nContent-Disposition: attachment; filename=b.csv\r\n\r\n1,2,3\r\n--b--\r\n";
+
+    #[test]
+    fn only_the_listed_attachments_go_along() {
+        let raw = original(MIXED, TWO);
+        let only = ForwardOptions {
+            attachments: AttachmentFilter::Only(vec![1]),
+            ..Default::default()
+        };
+        let draft = forward(&raw, Recipients::default(), &identity(), "", &only).unwrap();
+        let names: Vec<_> = draft.attachments.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["b.csv"]);
+    }
+
+    #[test]
+    fn forward_attachments_lists_names_and_sizes_in_order() {
+        let raw = original(MIXED, TWO);
+        assert_eq!(
+            forward_attachments(&raw),
+            [("a.pdf".to_string(), 4), ("b.csv".to_string(), 5)]
         );
     }
 
