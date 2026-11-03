@@ -159,8 +159,8 @@ impl Forward {
         }
     }
 
-    /// Refused when the table cannot be sent as written; `account` is the rule's.
-    pub(super) fn check(&self, account: Option<&str>) -> Result<(), String> {
+    /// Refused when the table cannot be sent as written; `account` is the rule's, which `from` needs.
+    pub fn check(&self, account: Option<&str>) -> Result<(), String> {
         if self.to.is_empty() {
             return Err("actions.forward.to needs an address".into());
         }
