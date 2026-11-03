@@ -196,14 +196,14 @@
   - Saving a rule with a forward calls `approve_forward` after the rules.toml write succeeds
   - The Rules view shows `Waiting for approval · to books@example.org (+1)` on a waiting forward rule, with Approve (calls `approve_forward`) beside it; a rule waiting for SMTP shows `Waiting: sending not set up` without Approve; a lasting failure shows `Forward failing: <reason>`
   - `draft::summary` reads `forward to books@example.org`
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - In `draft.rs`: `forward_draft_round_trips`; `forward_draft_refuses_like_the_rules_file`; `summary_names_the_first_recipient`.
   - In `rules.rs`: `a_waiting_forward_rule_offers_approve_with_its_addresses`; `a_rule_waiting_for_smtp_offers_no_approve`.
   - In the window tests (`Fixture::window()`): `saving_a_forward_rule_approves_it`.
-- [ ] **Step 2: Run** `cargo nextest run -p postvak-gui draft rules` — FAIL.
-- [ ] **Step 3: Implement**, using `Theme` sizes.
-- [ ] **Step 4: Run** — PASS; `TZ=UTC UPDATE_SNAPSHOTS=1 cargo test -p postvak-gui snapshots`, look at the changed PNGs.
-- [ ] **Step 5: Commit** `feat(gui): edit and approve forward rules`
+- [x] **Step 2: Run** `cargo nextest run -p postvak-gui draft rules` — FAIL.
+- [x] **Step 3: Implement**, using `Theme` sizes.
+- [x] **Step 4: Run** — PASS; `TZ=UTC UPDATE_SNAPSHOTS=1 cargo test -p postvak-gui snapshots`, look at the changed PNGs.
+- [x] **Step 5: Commit** `feat(gui): edit and approve forward rules`
 
 ### Task 8: Live test and docs
 

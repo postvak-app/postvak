@@ -14,6 +14,14 @@ fn text_label(field: &str, t: &TextMatch) -> String {
     }
 }
 
+/// A forward's attachment name condition in words: `name matches regex "\.pdf$"`.
+pub(crate) fn name_label(t: &TextMatch) -> String {
+    text_label("name", t)
+}
+
+/// The editor's action choice that adds a forward, after `ACTIONS`.
+pub(crate) const FORWARD_CHOICE: &str = "Forward";
+
 /// Each condition of `m` in words, in the order of the rules docs; `any` and `none` list their entries, each entry's
 /// conditions joined by "and".
 pub(crate) fn match_labels(m: &Match) -> Vec<String> {
@@ -635,6 +643,50 @@ impl ForwardDraft {
         draft
     }
 
+    /// Puts `text` into the field at `field` of the editor's `ForwardData` texts: to, cc, bcc, subject prefix, note,
+    /// attachment type, name and size, the size limit and the rate.
+    pub fn set_text(&mut self, field: i32, text: &str) {
+        let text = text.to_string();
+        match field {
+            0 => self.to = text,
+            1 => self.cc = text,
+            2 => self.bcc = text,
+            3 => self.subject_prefix = text,
+            4 => self.note = text,
+            5 => self.attachment_type = text,
+            6 => {
+                self.attachment_name = text;
+                self.kept_name = None;
+            }
+            7 => self.attachment_max = text,
+            8 => self.max_size = text,
+            9 => self.rate = text,
+            _ => {}
+        }
+    }
+
+    /// Takes choice `index` of the editor's choice at `field`: from (`froms` the addresses after the first, "the address
+    /// it was sent to"), as, attachments, and over the size limit.
+    pub fn choose(&mut self, field: i32, index: i32, froms: &[String]) {
+        match field {
+            0 => {
+                self.from = usize::try_from(index - 1)
+                    .ok()
+                    .and_then(|i| froms.get(i).cloned());
+            }
+            1 => self.as_attachment = index == 1,
+            2 => {
+                self.attachments = match index {
+                    1 => TakeAttachments::None,
+                    2 => TakeAttachments::Matching,
+                    _ => TakeAttachments::All,
+                }
+            }
+            3 => self.strip = index == 1,
+            _ => {}
+        }
+    }
+
     /// The forward the form says, refused as rules.toml would refuse it; `account` is the rule's.
     pub fn to_forward(&self, account: Option<&str>) -> Result<Forward, String> {
         let addresses = |text: &str| -> Vec<String> {
@@ -979,6 +1031,53 @@ actions = { flagged = true }
         forward.as_attachment = false;
         forward.rate = "lots".into();
         assert!(refused(&draft).contains("whole number"));
+    }
+
+    #[test]
+    fn the_form_edits_each_forward_field() {
+        let mut forward = ForwardDraft::default();
+        for (field, text) in (0..10).zip([
+            "a@x.org", "c@x.org", "b@x.org", "", "Note", "image/*", ".png", "1MB", "10MB", "3",
+        ]) {
+            forward.set_text(field, text);
+        }
+        let froms = ["me@example.com".to_string(), "shop@example.com".to_string()];
+        forward.choose(0, 2, &froms);
+        forward.choose(2, 2, &froms);
+        forward.choose(3, 1, &froms);
+        let made = forward.to_forward(Some("work")).unwrap();
+        assert_eq!(
+            (made.to, made.cc, made.bcc),
+            (
+                vec!["a@x.org".to_string()],
+                vec!["c@x.org".to_string()],
+                vec!["b@x.org".to_string()]
+            )
+        );
+        assert_eq!(made.from.as_deref(), Some("shop@example.com"));
+        assert_eq!(
+            (
+                made.subject_prefix.as_str(),
+                made.note.as_deref(),
+                made.rate
+            ),
+            ("", Some("Note"), 3)
+        );
+        assert_eq!(
+            made.max_size,
+            Some(MaxSize::Table(SizeTable {
+                limit: Some("10MB".into()),
+                over: OverSize::Strip
+            }))
+        );
+        assert!(
+            matches!(made.attachments, Attachments::Matching(ref m) if m.type_.as_deref() == Some("image/*"))
+        );
+        forward.choose(0, 0, &froms);
+        assert_eq!(
+            forward.from, None,
+            "the first choice is the address it was sent to"
+        );
     }
 
     #[test]

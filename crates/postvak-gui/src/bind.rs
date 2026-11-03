@@ -16,10 +16,10 @@ use super::rules::SheetSort;
 use super::state::{self, App, Focus, OpenAtLogin, UiAction, View};
 use super::ui::{
     AccountFields, AccountPreferences, ActionData, AttachmentData, BodyInfo, CodeLine,
-    ConditionData, Dialog, Dot, FolderItem, FolderKind, KeyHelp, MailWindow, MenuAction,
-    MenuChoice, MenuState, PageInfo, Pane, Preferences, ProposalData, ProvenanceData, Remote,
-    RuleData, RuleEditor, RunData, SampleData, SelectedData, Sheet, StatusLine, Theme,
-    ThemePreference, ToolButton, WhyLine,
+    ConditionData, Dialog, Dot, FolderItem, FolderKind, ForwardData, ForwardLineData, KeyHelp,
+    MailWindow, MenuAction, MenuChoice, MenuState, PageInfo, Pane, Preferences, ProposalData,
+    ProvenanceData, Remote, RuleData, RuleEditor, RunData, SampleData, SelectedData, Sheet,
+    StatusLine, Theme, ThemePreference, ToolButton, WhyLine,
 };
 use super::{account, body, icons, list, menu, rules, status, theme, toolbar};
 use postvak_core::message::clean;
@@ -579,6 +579,80 @@ fn lists_for(app: &App, field: Field) -> Vec<&str> {
         .collect()
 }
 
+/// The addresses a forward may send from: the rule's account's own, then its aliases without a wildcard, then the
+/// draft's own when neither lists it. Empty for a rule for every account.
+fn from_choices(app: &App, draft: &draft::Draft) -> Vec<String> {
+    let Some(account) = draft.account.as_deref() else {
+        return Vec::new();
+    };
+    let mut choices: Vec<String> = (app.accounts.iter())
+        .find(|a| a.name == account)
+        .and_then(|a| a.identity.as_ref())
+        .map(|id| {
+            std::iter::once(id.address().to_string())
+                .chain(
+                    id.alias_patterns()
+                        .iter()
+                        .filter(|p| !p.contains('*'))
+                        .cloned(),
+                )
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(own) = draft.forward.as_ref().and_then(|f| f.from.clone())
+        && !choices.iter().any(|c| c.eq_ignore_ascii_case(&own))
+    {
+        choices.push(own);
+    }
+    choices
+}
+
+fn forward_data(
+    app: &App,
+    draft: &draft::Draft,
+    forward: &draft::ForwardDraft,
+    old: &ForwardData,
+) -> ForwardData {
+    let choices = from_choices(app, draft);
+    let from = (forward.from.as_ref())
+        .and_then(|own| choices.iter().position(|c| c.eq_ignore_ascii_case(own)))
+        .map_or(0, |i| i + 1);
+    let mut words = vec![SharedString::from(if draft.account.is_some() {
+        "the address of yours it was sent to"
+    } else {
+        "each account's own address"
+    })];
+    words.extend(choices.iter().map(|c| SharedString::from(clean(c, false))));
+    let text = |value: &str| SharedString::from(clean(value, false));
+    ForwardData {
+        to: text(&forward.to),
+        cc: text(&forward.cc),
+        bcc: text(&forward.bcc),
+        prefix: text(&forward.subject_prefix),
+        note: text(&forward.note),
+        attachment_type: text(&forward.attachment_type),
+        attachment_name: text(&forward.attachment_name),
+        attachment_max: text(&forward.attachment_max),
+        max_size: text(&forward.max_size),
+        rate: text(&forward.rate),
+        from: i32::try_from(from).unwrap_or(0),
+        from_choices: synced(old.from_choices.clone(), words),
+        from_fixed: draft.account.is_none(),
+        as_attachment: forward.as_attachment,
+        attachments: match forward.attachments {
+            draft::TakeAttachments::All => 0,
+            draft::TakeAttachments::None => 1,
+            draft::TakeAttachments::Matching => 2,
+        },
+        strip: forward.strip,
+        kept_name: forward
+            .kept_name
+            .as_ref()
+            .map(|name| text(&draft::name_label(name)))
+            .unwrap_or_default(),
+    }
+}
+
 /// The editor's fixed choices, which never change while the window is open.
 fn init_editor(window: &MailWindow) {
     let editor = window.global::<RuleEditor>();
@@ -589,7 +663,9 @@ fn init_editor(window: &MailWindow) {
     editor.set_domain_ops(labels(
         domain.ops().iter().map(|op| op.label_on(domain)).collect(),
     ));
-    editor.set_action_choices(labels(ACTIONS.iter().map(draft::action_name).collect()));
+    let mut choices: Vec<&str> = ACTIONS.iter().map(draft::action_name).collect();
+    choices.push(draft::FORWARD_CHOICE);
+    editor.set_action_choices(labels(choices));
 }
 
 fn present_editor(app: &App, window: &MailWindow) {
@@ -685,6 +761,10 @@ fn present_editor(app: &App, window: &MailWindow) {
         editor.set_conditions(m)
     });
     sync(editor.get_actions(), actions, |m| editor.set_actions(m));
+    editor.set_forwards(draft.forward.is_some());
+    if let Some(forward) = &draft.forward {
+        editor.set_forward(forward_data(app, draft, forward, &editor.get_forward()));
+    }
     editor.set_renaming(draft.renames());
     editor.set_error(draft.error.as_deref().unwrap_or_default().into());
     editor.set_tested(draft.tested.as_deref().unwrap_or_default().into());
@@ -953,9 +1033,28 @@ fn connect_editor(window: &MailWindow, on: fn(Ask) -> bool) {
         on(edit_draft(move |_, d| remove_nth(&mut d.conditions, row)));
     });
     editor.on_action_chosen(move |i| {
-        on(edit_draft(move |_, d| {
-            d.actions.extend(nth(ACTIONS, i));
+        on(edit_draft(move |_, d| match nth(ACTIONS, i) {
+            Some(action) => d.actions.push(action),
+            None => _ = d.forward.get_or_insert_default(),
         }));
+    });
+    editor.on_forward_text(move |field, text| {
+        on(edit_draft(move |_, d| {
+            if let Some(forward) = &mut d.forward {
+                forward.set_text(field, text.as_str());
+            }
+        }));
+    });
+    editor.on_forward_choice(move |field, index| {
+        on(edit_draft(move |app, d| {
+            let choices = from_choices(app, d);
+            if let Some(forward) = &mut d.forward {
+                forward.choose(field, index, &choices);
+            }
+        }));
+    });
+    editor.on_remove_forward(move || {
+        on(edit_draft(|_, d| d.forward = None));
     });
     editor.on_action_value_edited(move |i, text| {
         on(edit_draft(move |_, d| {
@@ -1015,6 +1114,15 @@ fn present_sheet(app: &App, window: &MailWindow) {
                 .collect();
             sync(window.get_rules_offers(), offers, |m| {
                 window.set_rules_offers(m)
+            });
+            let forwards: Vec<ForwardLineData> = (app.rules.forwards.iter())
+                .map(|line| ForwardLineData {
+                    text: line.text.as_str().into(),
+                    approve: line.approve,
+                })
+                .collect();
+            sync(window.get_rules_forwards(), forwards, |m| {
+                window.set_rules_forwards(m)
             });
             let filter = app.rules_filter.as_str();
             let proposals: Vec<ProposalData> = rules::shown_proposals(&app.rules.proposals, filter)
@@ -1427,6 +1535,13 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
             } else {
                 UiAction::ApproveRule(p.name.clone())
             })
+        }));
+    });
+    window.on_approve_forward(move |i| {
+        on(one(move |app| {
+            let line = nth(&app.rules.forwards, i)?;
+            line.approve
+                .then(|| UiAction::ApproveRule(line.name.clone()))
         }));
     });
     window.on_trust_authserv(move |i| {
