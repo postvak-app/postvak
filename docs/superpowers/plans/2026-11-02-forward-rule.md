@@ -210,8 +210,8 @@
 **Files:**
 - Modify: `tests/smtp_live.rs` (from part 1), `docs/src/rules.md`, `docs/src/mcp.md`, `docs/src/sending.md`, `AGENTS.md` (module map: `rules/forward.rs`)
 
-- [ ] **Step 1: Write** `a_forward_rule_reaches_the_sink_with_the_loop_header`: approve via `approve_forward`, deliver a matching message to Dovecot, run a sync pass, assert Mailpit received it with `X-Postvak-Forwarded` and `Fwd: ` subject.
-- [ ] **Step 2: Run** `docker compose -f tests/dovecot/compose.yml up -d && POSTVAK_TEST_IMAP_HOST=localhost cargo test --features testing --test smtp_live forward` — PASS.
-- [ ] **Step 3: Write the docs:** `rules.md` (the action and every option, approval and what resets it, new mail only, rate, loops, waiting states), `mcp.md` (what `rules:write` risks: writing and approving rules, and that forward rules stay held until approved in Postvak), `sending.md` (rule forwards in the outbox, no undo delay), AGENTS module map line for `rules` gains `forward.rs` (loop, rate, approval key decisions).
-- [ ] **Step 4: Run** `cargo test` (README/index check) and `mdbook build docs` — PASS.
-- [ ] **Step 5: Commit** `docs: forward rules`
+- [x] **Step 1: Write** `a_forward_rule_reaches_the_sink_with_the_loop_header`: approve via `approve_forward`, deliver a matching message to Dovecot, run a sync pass, assert Mailpit received it with `X-Postvak-Forwarded` and `Fwd: ` subject.
+- [x] **Step 2: Run** `docker compose -f tests/dovecot/compose.yml up -d && POSTVAK_TEST_IMAP_HOST=localhost cargo test --features testing --test smtp_live forward` — PASS.
+- [x] **Step 3: Write the docs:** `rules.md` (the action and every option, approval and what resets it, new mail only, rate, loops, waiting states), `mcp.md` (what `rules:write` risks: writing and approving rules, and that forward rules stay held until approved in Postvak), `sending.md` (rule forwards in the outbox, no undo delay), AGENTS module map line for `rules` gains `forward.rs` (loop, rate, approval key decisions).
+- [x] **Step 4: Run** `cargo test` (README/index check) and `mdbook build docs` — PASS.
+- [x] **Step 5: Commit** `docs: forward rules`
