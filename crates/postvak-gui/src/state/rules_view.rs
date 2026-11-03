@@ -130,7 +130,11 @@ impl App {
                 if let Some(account) = self.accounts.iter_mut().find(|a| a.name == name) {
                     account.identity = config.account(name).and_then(|a| a.identity().ok());
                 }
-                self.rules.check(&self.paths.rules_file(), &self.accounts);
+                self.rules.check(
+                    &self.paths.rules_file(),
+                    &self.accounts,
+                    &self.paths.config_file(),
+                );
             }
             Err(e) => self.note_error(None, format!("could not trust {id}: {e}")),
         }
@@ -143,6 +147,7 @@ impl App {
             &self.paths.rules_file(),
             std::mem::take(&mut self.rules.file),
             &self.accounts,
+            &self.paths.config_file(),
         );
         self.rules.set_hits(&self.rule_hits);
         self.dry_runs_stale = true;
@@ -214,13 +219,23 @@ impl App {
         }
         let saved = draft.to_rule().and_then(|rule| {
             rule_file::edit::save_rule(&path, draft.original.as_deref(), &rule)
-                .map(|()| rule.name)
+                .map(|()| rule)
                 .map_err(|e| e.to_string())
         });
         match saved {
-            Ok(name) => {
-                draft.original = Some(name);
-                draft.error = None;
+            Ok(rule) => {
+                draft.original = Some(rule.name.clone());
+                // The user just wrote these addresses, so saving approves them.
+                draft.error = match rule.forward() {
+                    Some(_) => rule_file::edit::approve_forward(
+                        &self.paths,
+                        &rule.name,
+                        postvak_core::time::now(),
+                    )
+                    .err()
+                    .map(|e| format!("Saved, but the forward is not approved: {e}")),
+                    None => None,
+                };
                 self.rule_draft_opened = Some(draft.clone());
                 self.rules_changed();
                 true

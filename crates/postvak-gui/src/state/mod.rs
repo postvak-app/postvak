@@ -916,7 +916,12 @@ impl App {
         super::phases::mark("stores_opened");
         let rules_path = paths.rules_file();
         let rules_dir = paths.config_dir.clone();
-        let rules = RulesState::load(&rules_path, RuleFile::default(), &accounts);
+        let rules = RulesState::load(
+            &rules_path,
+            RuleFile::default(),
+            &accounts,
+            &paths.config_file(),
+        );
         let mut app = App {
             accounts,
             activity_log: Vec::new(),
@@ -1289,6 +1294,8 @@ impl App {
             | Event::CommandFailed { account, .. }
             | Event::Connected { account, .. }
             | Event::Error { account, .. }
+            | Event::ForwardPaused { account, .. }
+            | Event::ForwardWaiting { account, .. }
             | Event::FolderCreated { account, .. }
             | Event::FolderDeleted { account, .. }
             | Event::FolderNotEmpty { account, .. }
@@ -1401,6 +1408,14 @@ impl App {
                 self.refresh(index);
             }
             Event::Error { message, .. } => self.note_error(Some(index), message),
+            Event::ForwardWaiting { rules, .. } => {
+                let line = postvak_core::notify::forward_waiting_text(&rules);
+                self.push_history(format!("{}: {line}", self.accounts[index].name));
+            }
+            Event::ForwardPaused { rule, rate, .. } => {
+                let line = postvak_core::notify::forward_paused_text(&rule, rate);
+                self.push_history(format!("{}: {line}", self.accounts[index].name));
+            }
             Event::RuleApplied {
                 evaluated,
                 actions,
@@ -1425,7 +1440,11 @@ impl App {
                 self.notice = None;
                 self.refresh(index);
                 // The folder warnings read what the stores hold, which a sync changes.
-                self.rules.check(&self.paths.rules_file(), &self.accounts);
+                self.rules.check(
+                    &self.paths.rules_file(),
+                    &self.accounts,
+                    &self.paths.config_file(),
+                );
                 if self.view == View::Rules {
                     self.count_hits();
                 }
@@ -1627,8 +1646,10 @@ impl App {
             UiAction::Act(action) => self.act(action),
             UiAction::ApproveRule(name) => {
                 let paths = self.paths.clone();
+                // A human's approval: it approves the addresses of a forward too, which the proposal's card or the
+                // forward's line shows.
                 self.edit_rules(|_| {
-                    rule_file::edit::approve_from_now(&paths, &name, postvak_core::time::now())
+                    rule_file::edit::approve_as_human(&paths, &name, postvak_core::time::now())
                         .map(drop)
                 });
             }
@@ -2474,7 +2495,11 @@ impl App {
             self.rules_changed();
         } else if self.config_dir_watch.changed() {
             // A sync tool's conflicting copy appears beside rules.toml without changing it.
-            self.rules.check(&self.paths.rules_file(), &self.accounts);
+            self.rules.check(
+                &self.paths.rules_file(),
+                &self.accounts,
+                &self.paths.config_file(),
+            );
         }
         let saving = self
             .account_form
@@ -2729,7 +2754,11 @@ impl App {
                 account.identity = account_config.identity().ok();
             }
         }
-        self.rules.check(&self.paths.rules_file(), &self.accounts);
+        self.rules.check(
+            &self.paths.rules_file(),
+            &self.accounts,
+            &self.paths.config_file(),
+        );
     }
 
     pub(crate) fn sync_all(&mut self) {

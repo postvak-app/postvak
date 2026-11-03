@@ -1860,14 +1860,18 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                 .collect::<Result<Vec<_>, _>>()?;
             let hits =
                 postvak_core::rules::hits::total(&stores.iter().collect::<Vec<_>>(), time::now())?;
+            let accounts: Vec<_> = config.accounts.iter().zip(&stores).collect();
+            let waiting = postvak_core::rules::apply::forward_waiting(&file, &accounts)?;
             for (position, r) in file.rules.iter().enumerate() {
                 let found = hits.get(&r.name).copied().unwrap_or_default();
+                let waits = waiting.get(&r.name).map(Vec::as_slice).unwrap_or_default();
                 if json {
                     print_json(postvak_core::output::rule(
                         r,
                         &file.lists,
                         position,
                         &found,
+                        waits,
                     )?);
                 } else {
                     let edits = r
@@ -1875,8 +1879,12 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                         .as_deref()
                         .map(|target| format!(" edits {}", clean(target, false)))
                         .unwrap_or_default();
+                    let waits: String = waits
+                        .iter()
+                        .map(|(name, wait)| format!("\t{} in {}", wait.text(), clean(name, false)))
+                        .collect();
                     println!(
-                        "{}\t{}\t{}{edits}\t{} in 30 days",
+                        "{}\t{}\t{}{edits}\t{} in 30 days{waits}",
                         if r.enabled { "on " } else { "off" },
                         clean(&r.name, false),
                         clean(r.proposed_by.as_deref().unwrap_or(""), false),
@@ -2154,8 +2162,10 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             Ok(())
         }
         RulesCommand::Approve { name, .. } => {
-            let approved = postvak_core::rules::edit::approve_from_now(paths, &name, time::now())?;
-            if approved == name {
+            let approved = postvak_core::rules::edit::approve_as_human(paths, &name, time::now())?;
+            let rule = &approved.rule;
+            if !approved.proposal {
+            } else if *rule == name {
                 println!(
                     "enabled '{}'; it acts on mail that arrives from now on",
                     clean(&name, false)
@@ -2163,8 +2173,15 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             } else {
                 println!(
                     "changed '{}' as '{}' proposed; it acts as changed on mail that arrives from now on",
-                    clean(&approved, false),
+                    clean(rule, false),
                     clean(&name, false)
+                );
+            }
+            if let Some(to) = &approved.forward_to {
+                println!(
+                    "approved '{}' forwarding to {}; it forwards mail that arrives from now on",
+                    clean(rule, false),
+                    clean(&to.join(", "), false)
                 );
             }
             Ok(())
@@ -2337,7 +2354,7 @@ fn print_planned_actions(
             clean(&p.rule, false),
             clean(&p.message.folder, false),
             p.message.uid,
-            clean(&p.action.label(), false),
+            clean(&p.action.preview_label(), false),
             clean(p.message.subject.as_deref().unwrap_or(""), false)
         );
     }

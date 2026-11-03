@@ -362,3 +362,48 @@ fn bcc_is_not_in_what_arrives_but_is_in_sent() {
         Some("hidden@example.org")
     );
 }
+
+#[test]
+fn a_forward_rule_reaches_the_sink_with_the_loop_header() {
+    let Some(host) = host() else { return };
+    let home = Home::new(&host, "forward");
+    let paths = postvak_core::paths::Paths::under(home.dir.path());
+    let marker = unique("invoice");
+    std::fs::write(
+        paths.rules_file(),
+        format!(
+            "[[rules]]\nname = \"invoices\"\nmatch.subject = {{ contains = \"{marker}\" }}\nactions.forward = {{ to = \"books@example.org\", note = \"For the records\" }}\n"
+        ),
+    )
+    .unwrap();
+    let out = home.postvak(&["rules", "approve", "invoices"], "");
+    assert!(
+        String::from_utf8_lossy(&out.stdout)
+            .contains("approved 'invoices' forwarding to books@example.org"),
+        "{out:?}"
+    );
+    let original = message(
+        "Shop <billing@example.org>",
+        &home.account.username,
+        &marker,
+        "",
+    );
+    home.imap().append("INBOX", &original, &[]).unwrap();
+    home.postvak(&["sync"], "");
+
+    let ids = wait_for("the forward in Mailpit", || {
+        Some(arrived(&host, &format!("Fwd: {marker}"))).filter(|ids| !ids.is_empty())
+    });
+    assert_eq!(ids.len(), 1);
+    let raw = api(&host, &format!("/api/v1/message/{}/raw", ids[0]));
+    assert_eq!(
+        header_of(raw.as_bytes(), "X-Postvak-Forwarded").as_deref(),
+        Some(home.account.username.as_str())
+    );
+    assert!(raw.contains("For the records"), "{raw}");
+
+    // A second sync forwards nothing more: the message was forwarded once.
+    home.postvak(&["sync"], "");
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(arrived(&host, &format!("Fwd: {marker}")).len(), 1);
+}

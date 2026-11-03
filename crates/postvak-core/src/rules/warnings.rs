@@ -104,10 +104,88 @@ pub fn check_warnings(
     [
         warnings(&paths.rules_file(), rules, accounts),
         authenticated_warnings(rules, &untrusting, &synced),
+        forward_from_warnings(rules, shown),
+        forward_warnings(paths, rules, shown),
         watched_folder_warnings(&watched, &synced),
         folder_lines,
     ]
     .concat()
+}
+
+/// One line per forward rule and account of `accounts` where it waits, saying why, and one where forwards keep failing.
+/// A store that does not exist yet stands in empty, so the check creates no files.
+pub fn forward_warnings(paths: &Paths, rules: &[Rule], accounts: &[&AccountConfig]) -> Vec<String> {
+    if rules.iter().all(|rule| rule.forward().is_none()) {
+        return Vec::new();
+    }
+    let Ok(compiled) = crate::rules::compile_for(&paths.rules_file(), rules) else {
+        return Vec::new();
+    };
+    let mut lines = Vec::new();
+    for account in accounts {
+        let db = paths.mail_db(&account.name);
+        let store = match db.exists() {
+            true => Store::open(&db),
+            false => Store::open_in_memory(),
+        };
+        let Ok(store) =
+            store.inspect_err(|e| log::debug!("{}: could not open the store: {e}", account.name))
+        else {
+            continue;
+        };
+        for rule in &compiled {
+            lines.extend(forward_lines(rule, account, &store));
+        }
+    }
+    lines
+}
+
+fn forward_lines(rule: &CompiledRule, account: &AccountConfig, store: &Store) -> Vec<String> {
+    let (name, account_name) = (&rule.rule.name, &account.name);
+    let mut lines = Vec::new();
+    match crate::rules::apply::forward_wait(rule, account, store) {
+        Ok(Some(crate::rules::apply::ForwardWait::Approval)) => lines.push(format!(
+            "rule '{name}' forwards mail and waits for your approval in account '{account_name}', so none of its \
+             actions run there: `postvak rules approve {name}` or the Rules view approves it"
+        )),
+        Ok(Some(crate::rules::apply::ForwardWait::Sending)) => lines.push(format!(
+            "rule '{name}' forwards mail, so none of its actions run in account '{account_name}': {}",
+            crate::help::sending_not_set_up(account_name)
+        )),
+        Ok(None) | Err(_) => {}
+    }
+    if rule.rule.forward().is_some()
+        && let Ok(failures) = store.forward_failures(name)
+        && let Some((_, reason, since)) = failures.first()
+    {
+        let count = failures.len();
+        let messages = if count == 1 { "message" } else { "messages" };
+        lines.push(format!(
+            "rule '{name}' could not forward {count} {messages} in account '{account_name}' since {}: {reason}; none \
+             of its actions run on them until it can",
+            crate::time::date_time(*since)
+        ));
+    }
+    lines
+}
+
+/// One line per forward rule whose `from` is no address of its account in `accounts`: such a forward is never queued.
+pub fn forward_from_warnings(rules: &[Rule], accounts: &[&AccountConfig]) -> Vec<String> {
+    rules
+        .iter()
+        .filter_map(|rule| {
+            let from = rule.forward()?.from.as_deref()?;
+            let account = accounts.iter().find(|a| Some(a.name.as_str()) == rule.account.as_deref())?;
+            let identity = account.identity().ok()?;
+            crate::send::check::check_from(from.trim(), &identity).is_err().then(|| {
+                format!(
+                    "rule '{}' forwards from '{from}', which is not an address of account '{}', so it forwards \
+                     nothing and its other actions wait too: write the account's address or one its aliases match",
+                    rule.name, account.name
+                )
+            })
+        })
+        .collect()
 }
 
 /// One line per rule using `authenticated` and account of `untrusting` it runs on, in file order: those accounts trust
@@ -615,6 +693,86 @@ mod tests {
         assert!(
             authserv_offers(&rules[1..2], &["home"], &[home]).is_empty(),
             "only a rule that runs on the account asks for one"
+        );
+    }
+
+    #[test]
+    fn forward_warnings_say_why_a_rule_waits_and_what_keeps_failing() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let rules = parse(
+            "[[rules]]\nname = \"inv\"\nmatch.from = { contains = \"a\" }\nactions.forward = { to = \"b@x.org\" }\n",
+        )
+        .unwrap()
+        .rules;
+        let mut work = AccountConfig::new(
+            "work",
+            "imap.example.com",
+            "me@example.com",
+            crate::config::PasswordSource::Keyring { keyring: true },
+        );
+        let mut home = work.clone();
+        home.name = "home".into();
+        work.smtp = Some(crate::config::SmtpConfig::new(
+            "smtp.example.com",
+            crate::config::SmtpTls::Starttls,
+        ));
+        let lines = forward_warnings(&paths, &rules, &[&work, &home]);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines[0].starts_with(
+                "rule 'inv' forwards mail and waits for your approval in account 'work'"
+            )
+        );
+        assert!(
+            lines[1].contains("in account 'home': sending is not set up for 'home'"),
+            "{}",
+            lines[1]
+        );
+        assert!(
+            !paths.mail_db("work").exists(),
+            "the check creates no store"
+        );
+        let store = Store::open_account(&paths, "work").unwrap();
+        let definition = crate::rules::compile_for(&paths.rules_file(), &rules).unwrap()[0]
+            .definition
+            .clone();
+        store.approve_forward("inv", &definition, 0).unwrap();
+        store
+            .record_forward_failure("inv", "id:<a@x>", "the outbox refused it", 100)
+            .unwrap();
+        let lines = forward_warnings(&paths, &rules, &[&work]);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].starts_with("rule 'inv' could not forward 1 message in account 'work' since ")
+        );
+        assert!(lines[0].contains(": the outbox refused it;"));
+    }
+
+    #[test]
+    fn a_from_the_account_does_not_own_is_a_warning() {
+        let rules = parse(
+            "[[rules]]\nname = \"mine\"\naccount = \"work\"\nmatch.from = { contains = \"a\" }\nactions.forward = { to = \"b@x.org\", from = \"Shop@Example.com\" }\n\
+             [[rules]]\nname = \"theirs\"\naccount = \"work\"\nmatch.from = { contains = \"a\" }\nactions.forward = { to = \"b@x.org\", from = \"boss@example.com\" }\n\
+             [[rules]]\nname = \"elsewhere\"\naccount = \"home\"\nmatch.from = { contains = \"a\" }\nactions.forward = { to = \"b@x.org\", from = \"boss@example.com\" }\n",
+        )
+        .unwrap()
+        .rules;
+        let mut account = AccountConfig::new(
+            "work",
+            "imap.example.com",
+            "me@example.com",
+            crate::config::PasswordSource::Keyring { keyring: true },
+        );
+        account.aliases = vec![crate::config::AliasEntry::Pattern(
+            "shop@example.com".into(),
+        )];
+        let warned = forward_from_warnings(&rules, &[&account]);
+        assert_eq!(warned.len(), 1, "{warned:?}");
+        assert!(
+            warned[0].starts_with("rule 'theirs' forwards from 'boss@example.com', which is not an address of account 'work'"),
+            "{}",
+            warned[0]
         );
     }
 

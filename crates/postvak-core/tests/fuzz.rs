@@ -449,6 +449,16 @@ fn exercise_message_inner(raw: &[u8], folder: &str, uid: u32) {
     let _ = auth::all(raw);
     let from = parsed.from.as_deref().unwrap_or_default();
     let _ = auth::authenticated(raw, from, |_| true);
+    let identity = postvak_core::config::AccountConfig::new(
+        "fuzz",
+        "imap.example.com",
+        "me@example.com",
+        postvak_core::config::PasswordSource::Keyring { keyring: true },
+    )
+    .identity()
+    .unwrap();
+    let _ = postvak_core::rules::forward::loop_check(raw, &identity);
+    let _ = postvak_core::rules::forward::with_loop_header(b"\r\nbody", raw, "me@example.com");
 }
 
 fn exercise_save(raw: &[u8]) {

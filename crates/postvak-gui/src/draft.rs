@@ -1,14 +1,21 @@
 //! Rules in plain language, and rules as the editor's rows of conditions.
 use postvak_core::message::{bare_addresses, clean};
-use postvak_core::rules::{Action, Domain, ListRef, Match, NamedList, OneOrMany, Rule, TextMatch};
+use postvak_core::rules::forward::{AttachmentMatch, Attachments, MaxSize, OverSize, SizeTable};
+use postvak_core::rules::{
+    Action, Domain, Forward, ListRef, Match, NamedList, OneOrMany, Rule, TextMatch,
+};
+use postvak_core::send::reply::ForwardAs;
 
 /// `subject contains "a" or "b"`: a text condition, whose list matches any of its values.
-fn text_label(field: &str, t: &TextMatch) -> String {
+pub(crate) fn text_label(field: &str, t: &TextMatch) -> String {
     match &t.list {
         Some(list) => format!("{field} in list {list}"),
         None => format!("{field} {}", NamedList::Text(t.clone()).words()),
     }
 }
+
+/// The editor's action choice that adds a forward, after `ACTIONS`.
+pub(crate) const FORWARD_CHOICE: &str = "Forward";
 
 /// Each condition of `m` in words, in the order of the rules docs; `any` and `none` list their entries, each entry's
 /// conditions joined by "and".
@@ -103,6 +110,7 @@ pub(crate) fn action_label(action: &Action) -> String {
         Action::Move(folder) => format!("move to {folder}"),
         Action::Tag(keyword) => format!("tag {keyword}"),
         Action::After(when) => format!("after {when}"),
+        Action::Forward(forward) => format!("forward to {}", forward.targets()),
         other => other.label(),
     }
 }
@@ -523,6 +531,200 @@ pub(crate) struct Draft {
     pub replaces: Option<String>,
     /// The last Test result; cleared by any edit.
     pub tested: Option<String>,
+    /// The rule's forward, which the form edits apart from the other actions; it runs first.
+    pub forward: Option<ForwardDraft>,
+}
+
+/// Which attachments an inline forward takes, as the form's choice says it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum TakeAttachments {
+    #[default]
+    All,
+    None,
+    Matching,
+}
+
+/// A forward as the form edits it: the addresses comma-separated, sizes and the rate as typed.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ForwardDraft {
+    pub to: String,
+    pub cc: String,
+    pub bcc: String,
+    /// None sends from the address of ours the message was sent to.
+    pub from: Option<String>,
+    pub subject_prefix: String,
+    pub note: String,
+    pub as_attachment: bool,
+    pub attachments: TakeAttachments,
+    pub attachment_type: String,
+    /// The file name contains this.
+    pub attachment_name: String,
+    /// A file name condition the form cannot show, such as a regex, saved as it was unless `attachment_name` is typed.
+    pub kept_name: Option<TextMatch>,
+    pub attachment_max: String,
+    /// Empty for the default limit.
+    pub max_size: String,
+    pub strip: bool,
+    pub rate: String,
+}
+
+impl Default for ForwardDraft {
+    fn default() -> ForwardDraft {
+        ForwardDraft {
+            to: String::new(),
+            cc: String::new(),
+            bcc: String::new(),
+            from: None,
+            subject_prefix: postvak_core::rules::forward::DEFAULT_PREFIX.into(),
+            note: String::new(),
+            as_attachment: false,
+            attachments: TakeAttachments::All,
+            attachment_type: String::new(),
+            attachment_name: String::new(),
+            kept_name: None,
+            attachment_max: String::new(),
+            max_size: String::new(),
+            strip: false,
+            rate: postvak_core::rules::forward::DEFAULT_RATE.to_string(),
+        }
+    }
+}
+
+impl ForwardDraft {
+    pub fn from_forward(forward: &Forward) -> ForwardDraft {
+        let mut draft = ForwardDraft {
+            to: forward.to.join(", "),
+            cc: forward.cc.join(", "),
+            bcc: forward.bcc.join(", "),
+            from: forward.from.clone(),
+            subject_prefix: forward.subject_prefix.clone(),
+            note: forward.note.clone().unwrap_or_default(),
+            as_attachment: forward.as_ == ForwardAs::Attachment,
+            rate: forward.rate.to_string(),
+            ..ForwardDraft::default()
+        };
+        match &forward.attachments {
+            Attachments::Every(true) => {}
+            Attachments::Every(false) => draft.attachments = TakeAttachments::None,
+            Attachments::Matching(filter) => {
+                draft.attachments = TakeAttachments::Matching;
+                draft.attachment_type = filter.type_.clone().unwrap_or_default();
+                draft.attachment_max = filter.max_size.clone().unwrap_or_default();
+                match &filter.name {
+                    Some(TextMatch {
+                        contains: Some(OneOrMany::One(text)),
+                        equals: None,
+                        regex: None,
+                        list: None,
+                    }) => {
+                        draft.attachment_name = text.clone();
+                    }
+                    other => draft.kept_name = other.clone(),
+                }
+            }
+        }
+        if let Some(max) = &forward.max_size {
+            draft.strip = max.over() == OverSize::Strip;
+            draft.max_size = max.limit_text().unwrap_or_default().to_string();
+        }
+        draft
+    }
+
+    /// Puts `text` into the field at `field` of the editor's `ForwardData` texts: to, cc, bcc, subject prefix, note,
+    /// attachment type, name and size, the size limit and the rate.
+    pub fn set_text(&mut self, field: i32, text: &str) {
+        let text = text.to_string();
+        match field {
+            0 => self.to = text,
+            1 => self.cc = text,
+            2 => self.bcc = text,
+            3 => self.subject_prefix = text,
+            4 => self.note = text,
+            5 => self.attachment_type = text,
+            6 => {
+                self.attachment_name = text;
+                self.kept_name = None;
+            }
+            7 => self.attachment_max = text,
+            8 => self.max_size = text,
+            9 => self.rate = text,
+            _ => {}
+        }
+    }
+
+    /// Takes choice `index` of the editor's choice at `field`: from (`froms` the addresses after the first, "the address
+    /// it was sent to"), as, attachments, and over the size limit.
+    pub fn choose(&mut self, field: i32, index: i32, froms: &[String]) {
+        match field {
+            0 => {
+                self.from = usize::try_from(index - 1)
+                    .ok()
+                    .and_then(|i| froms.get(i).cloned());
+            }
+            1 => self.as_attachment = index == 1,
+            2 => {
+                self.attachments = match index {
+                    1 => TakeAttachments::None,
+                    2 => TakeAttachments::Matching,
+                    _ => TakeAttachments::All,
+                }
+            }
+            3 => self.strip = index == 1,
+            _ => {}
+        }
+    }
+
+    /// The forward the form says, refused as rules.toml would refuse it; `account` is the rule's.
+    pub fn to_forward(&self, account: Option<&str>) -> Result<Forward, String> {
+        let addresses = postvak_core::send::edit::split_recipients;
+        let optional = |text: &str| Some(text.trim().to_string()).filter(|t| !t.is_empty());
+        let rate = self
+            .rate
+            .trim()
+            .parse()
+            .map_err(|_| "forward rate must be a whole number".to_string())?;
+        let attachments = match self.attachments {
+            TakeAttachments::All => Attachments::Every(true),
+            TakeAttachments::None => Attachments::Every(false),
+            TakeAttachments::Matching => Attachments::Matching(AttachmentMatch {
+                type_: optional(&self.attachment_type),
+                name: match optional(&self.attachment_name) {
+                    Some(text) => Some(TextMatch {
+                        contains: Some(OneOrMany::One(text)),
+                        ..TextMatch::default()
+                    }),
+                    None => self.kept_name.clone(),
+                },
+                max_size: optional(&self.attachment_max),
+            }),
+        };
+        let max_size = match (optional(&self.max_size), self.strip) {
+            (None, false) => None,
+            (Some(limit), false) => Some(MaxSize::Limit(limit)),
+            (limit, true) => Some(MaxSize::Table(SizeTable {
+                limit,
+                over: OverSize::Strip,
+            })),
+        };
+        let forward = Forward {
+            to: addresses(&self.to),
+            cc: addresses(&self.cc),
+            bcc: addresses(&self.bcc),
+            from: self.from.clone(),
+            subject_prefix: self.subject_prefix.clone(),
+            note: optional(&self.note),
+            as_: if self.as_attachment {
+                ForwardAs::Attachment
+            } else {
+                ForwardAs::Inline
+            },
+            attachments,
+            max_size,
+            rate,
+        };
+        forward.check(account)?;
+        Ok(forward)
+    }
 }
 
 impl Draft {
@@ -537,7 +739,11 @@ impl Draft {
         let (conditions, kept) = conditions(&rule.matches);
         Draft {
             account: rule.account.clone(),
-            actions: rule.actions.clone(),
+            actions: (rule.actions.iter())
+                .filter(|action| !matches!(action, Action::Forward(_)))
+                .cloned()
+                .collect(),
+            forward: rule.forward().map(ForwardDraft::from_forward),
             conditions,
             enabled: rule.enabled,
             folder: rule.folder.clone(),
@@ -620,7 +826,15 @@ impl Draft {
             proposed_by: self.proposed_by.clone(),
             replaces: self.replaces.clone(),
             matches: m,
-            actions: self.actions.clone(),
+            actions: match &self.forward {
+                Some(forward) => {
+                    let forward = forward.to_forward(self.account.as_deref())?;
+                    std::iter::once(Action::Forward(Box::new(forward)))
+                        .chain(self.actions.iter().cloned())
+                        .collect()
+                }
+                None => self.actions.clone(),
+            },
         })
     }
 
@@ -737,6 +951,122 @@ actions = { flagged = true }
 
     fn rule(text: &str) -> Rule {
         parse(text).unwrap().rules.remove(0)
+    }
+
+    const FORWARDS: &str = "[[rules]]\nname = \"inv\"\naccount = \"work\"\nmatch.from = { contains = \"billing@\" }\nactions.archive = true\nactions.forward = { to = [\"books@example.org\", \"b@x.org\"], cc = \"c@x.org\", from = \"me@example.com\", subject_prefix = \"\", note = \"For the records\", attachments = { type = \"application/pdf\", name = { regex = \"\\\\.pdf$\" }, max_size = \"5MB\" }, max_size = { over = \"strip\" }, rate = 5 }\n";
+
+    #[test]
+    fn forward_draft_round_trips() {
+        let parsed = rule(FORWARDS);
+        let draft = Draft::from_rule(&parsed);
+        assert_eq!(
+            draft.actions,
+            [Action::Archive],
+            "the forward is edited apart"
+        );
+        let forward = draft.forward.as_ref().unwrap();
+        assert_eq!(forward.to, "books@example.org, b@x.org");
+        assert_eq!(forward.attachments, TakeAttachments::Matching);
+        assert!(
+            forward.kept_name.is_some() && forward.attachment_name.is_empty(),
+            "a regex is kept as it was"
+        );
+        assert!(forward.strip && forward.max_size.is_empty());
+        assert_eq!(draft.to_rule().unwrap().actions, parsed.actions);
+        for text in [
+            "[[rules]]\nname = \"a\"\nmatch.from = { contains = \"x\" }\nactions.forward = { to = \"a@x.org\" }\n",
+            "[[rules]]\nname = \"a\"\nmatch.from = { contains = \"x\" }\nactions.forward = { to = \"a@x.org\", as = \"attachment\", attachments = false, max_size = \"1MB\" }\n",
+            "[[rules]]\nname = \"a\"\nmatch.from = { contains = \"x\" }\nactions.forward = { to = \"a@x.org\", attachments = { name = { contains = \".pdf\" } }, max_size = { limit = \"2MB\", over = \"strip\" } }\n",
+        ] {
+            let parsed = rule(text);
+            assert_eq!(
+                Draft::from_rule(&parsed).to_rule().unwrap().actions,
+                parsed.actions,
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn forward_draft_refuses_like_the_rules_file() {
+        let mut draft = Draft::from_rule(&rule(FORWARDS));
+        let refused = |draft: &Draft| draft.to_rule().unwrap_err();
+        draft.account = None;
+        assert!(
+            refused(&draft).contains("needs the rule's account"),
+            "{}",
+            refused(&draft)
+        );
+        draft.account = Some("work".into());
+        let forward = draft.forward.as_mut().unwrap();
+        forward.to = " , ".into();
+        assert!(refused(&draft).contains("needs an address"));
+        let forward = draft.forward.as_mut().unwrap();
+        forward.to = "nope".into();
+        assert!(refused(&draft).contains("'nope' is not an address"));
+        let forward = draft.forward.as_mut().unwrap();
+        forward.to = "a@x.org".into();
+        forward.as_attachment = true;
+        assert!(refused(&draft).contains("cannot pick attachments"));
+        let forward = draft.forward.as_mut().unwrap();
+        forward.as_attachment = false;
+        forward.rate = "lots".into();
+        assert!(refused(&draft).contains("whole number"));
+    }
+
+    #[test]
+    fn the_form_edits_each_forward_field() {
+        let mut forward = ForwardDraft::default();
+        for (field, text) in (0..10).zip([
+            "a@x.org", "c@x.org", "b@x.org", "", "Note", "image/*", ".png", "1MB", "10MB", "3",
+        ]) {
+            forward.set_text(field, text);
+        }
+        let froms = ["me@example.com".to_string(), "shop@example.com".to_string()];
+        forward.choose(0, 2, &froms);
+        forward.choose(2, 2, &froms);
+        forward.choose(3, 1, &froms);
+        let made = forward.to_forward(Some("work")).unwrap();
+        assert_eq!(
+            (made.to, made.cc, made.bcc),
+            (
+                vec!["a@x.org".to_string()],
+                vec!["c@x.org".to_string()],
+                vec!["b@x.org".to_string()]
+            )
+        );
+        assert_eq!(made.from.as_deref(), Some("shop@example.com"));
+        assert_eq!(
+            (
+                made.subject_prefix.as_str(),
+                made.note.as_deref(),
+                made.rate
+            ),
+            ("", Some("Note"), 3)
+        );
+        assert_eq!(
+            made.max_size,
+            Some(MaxSize::Table(SizeTable {
+                limit: Some("10MB".into()),
+                over: OverSize::Strip
+            }))
+        );
+        assert!(
+            matches!(made.attachments, Attachments::Matching(ref m) if m.type_.as_deref() == Some("image/*"))
+        );
+        forward.choose(0, 0, &froms);
+        assert_eq!(
+            forward.from, None,
+            "the first choice is the address it was sent to"
+        );
+    }
+
+    #[test]
+    fn summary_names_the_first_recipient() {
+        assert_eq!(
+            summary(&rule(FORWARDS)),
+            "from contains \"billing@\" → forward to books@example.org (+2), archive"
+        );
     }
 
     #[test]

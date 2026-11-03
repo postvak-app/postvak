@@ -63,6 +63,7 @@ pub(crate) fn done_text(action: &Action, count: usize) -> String {
         Action::Archive => format!("Archived {messages}"),
         Action::Delete | Action::Trash => format!("Deleted {messages}"),
         Action::Flag => format!("Flagged {messages}"),
+        Action::Forward(_) => format!("Forwarded {messages}"),
         Action::Junk => format!("Marked {messages} as junk"),
         Action::MarkRead => format!("Marked {messages} read"),
         Action::MarkUnread => format!("Marked {messages} unread"),
@@ -129,6 +130,19 @@ pub(crate) fn undone_text(reports: &[UndoReport]) -> String {
             "{} had no backup left",
             noun(gone, parts.is_empty())
         ));
+    }
+    let forwarded: Vec<&str> = rows()
+        .filter(|row| row.outcome == UndoOutcome::AlreadySent)
+        .filter_map(|row| {
+            row.action
+                .strip_prefix(postvak_core::rules::forward::LABEL_PREFIX)
+        })
+        .collect();
+    if let Some(first) = forwarded.first() {
+        parts.push(match forwarded.len() {
+            1 => format!("The forward to {first} was already sent"),
+            n => format!("{n} forwards were already sent"),
+        });
     }
     let failed = count(UndoOutcome::Failed);
     if failed > 0 {

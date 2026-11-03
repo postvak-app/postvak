@@ -52,16 +52,16 @@
   - `Action::Forward(Box<Forward>)`; `Actions.forward: Option<ForwardTable>` (placed before `after` in the struct, after the comment that keeps `after` last); `Action::waits_with_after` true for it
   - `Rule::forward(&self) -> Option<&Forward>`
   - Validation in `rules::parse` / `check`: `to` non-empty; every address an addr-spec; `attachments` filter refused with `as = "attachment"`; `from` refused without `account`; `from` must satisfy that account's `Identity::is_me` (in `warnings`, which has the config)
-- [ ] **Step 1: Write the failing tests** in `rules/mod.rs`:
+- [x] **Step 1: Write the failing tests** in `rules/mod.rs`:
   - `forward_parses_with_defaults`: `actions.forward = { to = "a@x.org" }` → `to == ["a@x.org"]`, `subject_prefix == "Fwd: "`, `as_ == Inline`, `attachments == All`, `rate == 20`.
   - `forward_takes_lists_filters_and_size`: the spec's invoice example parses; `max_size = { limit = "5MB", over = "strip" }` → `limit == 5_000_000`.
   - `forward_refusals`: empty `to`; `to = "not an address"`; `attachments = { type = "application/pdf" }` with `as = "attachment"`; `from` without `account` (Review Focus 5: message contains `account`).
   - `forward_round_trips_through_from_list` (`Actions::from_list` ↔ `into_list`).
   - In `warnings.rs`: `a_from_the_account_does_not_own_is_a_warning`.
-- [ ] **Step 2: Run** `cargo nextest run -p postvak-core rules::` — FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** — PASS; `POSTVAK_BLESS=1 cargo test` and check the schema diff.
-- [ ] **Step 5: Commit** `feat(rules): a forward action in rules.toml`
+- [x] **Step 2: Run** `cargo nextest run -p postvak-core rules::` — FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** — PASS; `POSTVAK_BLESS=1 cargo test` and check the schema diff.
+- [x] **Step 5: Commit** `feat(rules): a forward action in rules.toml`
 
 ### Task 2: Approval, once-only and rate records in the store
 
@@ -79,15 +79,15 @@
   - `Store::forwards_since(&self, rule: &str, since: i64) -> Result<u32>`
   - `Store::record_forward_failure(&self, rule: &str, key: &str, reason: &str, now: i64) -> Result<()>`, `Store::clear_forward_failure(&self, rule: &str, key: &str) -> Result<()>`, `Store::forward_failures(&self, rule: &str) -> Result<Vec<(String, String, i64)>>`
   - `rules::forward::once_key(msg: &Message, uidvalidity: u32) -> String` — `id:<Message-ID>` or `uid:<folder>/<uidvalidity>/<uid>` (in `crates/postvak-core/src/rules/forward.rs`, created here)
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - `forward_approval_matches_the_exact_definition`: approve `("inv", "d1")` → `forward_approved("inv", "d1")` true, `("inv", "d2")` false; `withdraw_forward` → false.
   - `forwarded_is_recorded_once_and_counted_in_the_window`.
   - `once_key_uses_message_id_else_folder_uidvalidity_uid`.
   - `forward_failures_keep_first_and_last_time`.
-- [ ] **Step 2: Run** `cargo nextest run -p postvak-core store::tests::forward rules::forward` — FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** — PASS.
-- [ ] **Step 5: Commit** `feat(store): forward approvals, once-only records and failures`
+- [x] **Step 2: Run** `cargo nextest run -p postvak-core store::tests::forward rules::forward` — FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** — PASS.
+- [x] **Step 5: Commit** `feat(store): forward approvals, once-only records and failures`
 
 ### Task 3: The pure forward decisions
 
@@ -103,15 +103,15 @@
   - `forward::over_rate(sent_last_hour: u32, rate: u32) -> bool` (`sent_last_hour >= rate`)
   - `forward::log_action(forward: &Forward) -> String` — `forward:a@x.org`, `forward:a@x.org (+2)` counting `to`, `cc`, `bcc`
   - `forward::options(forward: &Forward) -> send::reply::ForwardOptions`
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - `a_header_with_our_address_is_a_loop`; `a_header_with_another_address_is_not` (Review Focus 3: then `with_loop_header` gives two headers, both present).
   - `three_headers_are_too_many_hops`; `auto_replied_is_skipped`; `auto_generated_newsletters_are_not_skipped` (`Auto-Submitted: auto-generated` → None).
   - `log_action_counts_the_others`.
   - `over_rate_at_the_limit`: `over_rate(20, 20)` true, `over_rate(19, 20)` false.
-- [ ] **Step 2: Run** `cargo nextest run -p postvak-core rules::forward` — FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** — PASS. Add `loop_check` to `tests/fuzz.rs`.
-- [ ] **Step 5: Commit** `feat(rules): loop, rate and log decisions for forwards`
+- [x] **Step 2: Run** `cargo nextest run -p postvak-core rules::forward` — FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** — PASS. Add `loop_check` to `tests/fuzz.rs`.
+- [x] **Step 5: Commit** `feat(rules): loop, rate and log decisions for forwards`
 
 ### Task 4: Forwarding in the rules pass
 
@@ -128,7 +128,7 @@
   - `notify::forward_paused_notice(rule: &str, rate: u32) -> Notice`
   - `actions/undo.rs`: a `forward:` log row is not undone; the undo result names it (`The forward to a@x.org was already sent`) and undoes the rest
   - The daemon passes its `Senders` into each account thread (`Spawner` gains `queue: Arc<dyn ForwardQueue + Send + Sync>`)
-- [ ] **Step 1: Write the failing tests** in `sync/tests.rs` with `RecordingOps` and `RecordingQueue`:
+- [x] **Step 1: Write the failing tests** in `sync/tests.rs` with `RecordingOps` and `RecordingQueue`:
   - `a_forward_is_queued_before_the_delete_runs`: rule forward + delete; queue holds the raw; message expunged after.
   - `a_failed_fetch_runs_nothing_and_retries_next_pass` (Review Focus 1): `fetch_raw` errors once → not deleted, failure recorded; next pass → queued, deleted, failure cleared.
   - `an_unapproved_forward_rule_runs_nothing`; `a_rule_without_smtp_runs_nothing`.
@@ -139,10 +139,10 @@
   - `a_forward_waits_with_after`.
   - `the_forward_is_due_now_and_carries_the_loop_header`.
   - In `actions/undo.rs` tests: `undo_of_a_forward_and_archive_moves_back_and_says_the_forward_was_sent`.
-- [ ] **Step 2: Run** `cargo nextest run -p postvak-core sync::tests::forward` (name the tests with a `forward` prefix) — FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** — PASS; `cargo test -p postvak-core --features testing --test sync_model`.
-- [ ] **Step 5: Commit** `feat(rules): forward matching new mail through the outbox`
+- [x] **Step 2: Run** `cargo nextest run -p postvak-core sync::tests::forward` (name the tests with a `forward` prefix) — FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** — PASS; `cargo test -p postvak-core --features testing --test sync_model`.
+- [x] **Step 5: Commit** `feat(rules): forward matching new mail through the outbox`
 
 ### Task 5: Previews, tests and coverage
 
@@ -154,11 +154,11 @@
   - `Act.action` for a forward: `forward to a@x.org (+1) (new mail only)` in coverage and previews; `rules test` on a message shows `forward to a@x.org (+1)`
   - `postvak rules` (text) marks a waiting rule `waiting for approval` or `waiting: sending not set up`, and `rules check` reports a lasting forward failure
   - `output::rule` rows gain `forward_waiting: Vec<String>` (accounts where the rule's current definition is not approved, or that have no SMTP server); empty for a rule without forward
-- [ ] **Step 1: Write the failing tests:** `coverage_shows_forward_as_new_mail_only`; `rule_rows_list_the_accounts_where_a_forward_waits`.
-- [ ] **Step 2: Run** `cargo nextest run -p postvak-core coverage output` — FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** — PASS.
-- [ ] **Step 5: Commit** `feat(rules): show forwards in previews, coverage and rule rows`
+- [x] **Step 1: Write the failing tests:** `coverage_shows_forward_as_new_mail_only`; `rule_rows_list_the_accounts_where_a_forward_waits`.
+- [x] **Step 2: Run** `cargo nextest run -p postvak-core coverage output` — FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** — PASS.
+- [x] **Step 5: Commit** `feat(rules): show forwards in previews, coverage and rule rows`
 
 ### Task 6: Approving
 
@@ -172,15 +172,15 @@
   - `approve_from_now` keeps its behaviour and does not approve forwards; the CLI's `rules approve <name>` calls `approve_from_now` when the rule is a pending proposal and `approve_forward` when it has a forward (both when both); it no longer refuses an enabled rule that has an unapproved forward
   - MCP `approve`: unchanged path, result gains `"forward": "waits for approval in Postvak (postvak rules approve <name> or the Rules view)"` when the rule has a forward
   - On each rules load in the sync thread: a forward rule whose definition is not approved in this account and was not waiting before raises `notify::proposals_notice` with `Proposed::Rule(name)` (once per definition)
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - `approve_forward_approves_every_account_and_restarts_the_clock`.
   - In `postvak-mcp/src/tests.rs`: `mcp_approve_leaves_a_forward_waiting`; `an_edit_proposal_approved_over_mcp_makes_the_forward_wait_again` (Review Focus 2: approve by human, propose edit widening `match`, MCP approve → `forward_waiting` lists the account, `run_rules` queues nothing).
   - `cli_rules_approve_approves_an_enabled_forward_rule` (CLI integration test file).
   - `a_new_waiting_forward_rule_notifies_once`; `an_account_added_later_waits`.
-- [ ] **Step 2: Run** `cargo nextest run -p postvak-core edit && cargo nextest run -p postvak-mcp approve` — FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** — PASS; `POSTVAK_BLESS=1 cargo test`.
-- [ ] **Step 5: Commit** `feat(rules): approve forward rules from the CLI; MCP cannot`
+- [x] **Step 2: Run** `cargo nextest run -p postvak-core edit && cargo nextest run -p postvak-mcp approve` — FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** — PASS; `POSTVAK_BLESS=1 cargo test`.
+- [x] **Step 5: Commit** `feat(rules): approve forward rules from the CLI; MCP cannot`
 
 ### Task 7: The GUI
 
@@ -196,22 +196,22 @@
   - Saving a rule with a forward calls `approve_forward` after the rules.toml write succeeds
   - The Rules view shows `Waiting for approval · to books@example.org (+1)` on a waiting forward rule, with Approve (calls `approve_forward`) beside it; a rule waiting for SMTP shows `Waiting: sending not set up` without Approve; a lasting failure shows `Forward failing: <reason>`
   - `draft::summary` reads `forward to books@example.org`
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - In `draft.rs`: `forward_draft_round_trips`; `forward_draft_refuses_like_the_rules_file`; `summary_names_the_first_recipient`.
   - In `rules.rs`: `a_waiting_forward_rule_offers_approve_with_its_addresses`; `a_rule_waiting_for_smtp_offers_no_approve`.
   - In the window tests (`Fixture::window()`): `saving_a_forward_rule_approves_it`.
-- [ ] **Step 2: Run** `cargo nextest run -p postvak-gui draft rules` — FAIL.
-- [ ] **Step 3: Implement**, using `Theme` sizes.
-- [ ] **Step 4: Run** — PASS; `TZ=UTC UPDATE_SNAPSHOTS=1 cargo test -p postvak-gui snapshots`, look at the changed PNGs.
-- [ ] **Step 5: Commit** `feat(gui): edit and approve forward rules`
+- [x] **Step 2: Run** `cargo nextest run -p postvak-gui draft rules` — FAIL.
+- [x] **Step 3: Implement**, using `Theme` sizes.
+- [x] **Step 4: Run** — PASS; `TZ=UTC UPDATE_SNAPSHOTS=1 cargo test -p postvak-gui snapshots`, look at the changed PNGs.
+- [x] **Step 5: Commit** `feat(gui): edit and approve forward rules`
 
 ### Task 8: Live test and docs
 
 **Files:**
 - Modify: `tests/smtp_live.rs` (from part 1), `docs/src/rules.md`, `docs/src/mcp.md`, `docs/src/sending.md`, `AGENTS.md` (module map: `rules/forward.rs`)
 
-- [ ] **Step 1: Write** `a_forward_rule_reaches_the_sink_with_the_loop_header`: approve via `approve_forward`, deliver a matching message to Dovecot, run a sync pass, assert Mailpit received it with `X-Postvak-Forwarded` and `Fwd: ` subject.
-- [ ] **Step 2: Run** `docker compose -f tests/dovecot/compose.yml up -d && POSTVAK_TEST_IMAP_HOST=localhost cargo test --features testing --test smtp_live forward` — PASS.
-- [ ] **Step 3: Write the docs:** `rules.md` (the action and every option, approval and what resets it, new mail only, rate, loops, waiting states), `mcp.md` (what `rules:write` risks: writing and approving rules, and that forward rules stay held until approved in Postvak), `sending.md` (rule forwards in the outbox, no undo delay), AGENTS module map line for `rules` gains `forward.rs` (loop, rate, approval key decisions).
-- [ ] **Step 4: Run** `cargo test` (README/index check) and `mdbook build docs` — PASS.
-- [ ] **Step 5: Commit** `docs: forward rules`
+- [x] **Step 1: Write** `a_forward_rule_reaches_the_sink_with_the_loop_header`: approve via `approve_forward`, deliver a matching message to Dovecot, run a sync pass, assert Mailpit received it with `X-Postvak-Forwarded` and `Fwd: ` subject.
+- [x] **Step 2: Run** `docker compose -f tests/dovecot/compose.yml up -d && POSTVAK_TEST_IMAP_HOST=localhost cargo test --features testing --test smtp_live forward` — PASS.
+- [x] **Step 3: Write the docs:** `rules.md` (the action and every option, approval and what resets it, new mail only, rate, loops, waiting states), `mcp.md` (what `rules:write` risks: writing and approving rules, and that forward rules stay held until approved in Postvak), `sending.md` (rule forwards in the outbox, no undo delay), AGENTS module map line for `rules` gains `forward.rs` (loop, rate, approval key decisions).
+- [x] **Step 4: Run** `cargo test` (README/index check) and `mdbook build docs` — PASS.
+- [x] **Step 5: Commit** `docs: forward rules`

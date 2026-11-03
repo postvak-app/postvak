@@ -39,6 +39,33 @@ export struct ActionData {
     note: string,
 }
 
+// The rule's forward as the form edits it; `forward-text` and `forward-choice` name each field by its place here.
+export struct ForwardData {
+    // Texts 0 to 9: to, cc, bcc, subject prefix, note, attachment type, attachment name, attachment size, message size
+    // limit, rate.
+    to: string,
+    cc: string,
+    bcc: string,
+    prefix: string,
+    note: string,
+    attachment-type: string,
+    attachment-name: string,
+    attachment-max: string,
+    max-size: string,
+    rate: string,
+    // Choices 0 to 3: from (0 is the address it was sent to), as (0 inline), attachments (all, none, matching), and
+    // over the size limit (0 skip, 1 strip).
+    from: int,
+    from-choices: [string],
+    // A rule for every account sends as each account's own address.
+    from-fixed: bool,
+    as-attachment: bool,
+    attachments: int,
+    strip: bool,
+    // A file name condition the form cannot show, in words.
+    kept-name: string,
+}
+
 export global RuleEditor {
     in property <bool> open;
     in property <string> name;
@@ -58,6 +85,8 @@ export global RuleEditor {
     in property <[string]> text-lists;
     in property <[string]> domain-lists;
     in property <[string]> action-choices;
+    in property <bool> forwards;
+    in property <ForwardData> forward;
     // Save would rename a saved rule.
     in property <bool> renaming;
     in property <string> error;
@@ -83,6 +112,9 @@ export global RuleEditor {
     callback action-chosen(int);
     callback action-value-edited(int, string);
     callback remove-action(int);
+    callback forward-text(int, string);
+    callback forward-choice(int, int);
+    callback remove-forward();
     callback save();
     callback test();
     callback apply();
@@ -124,6 +156,139 @@ export component Choice inherits ComboBox {
     current-index: root.index;
     changed index => { self.current-index = self.index; }
     selected => { root.index-chosen(self.current-index); }
+}
+
+// One labelled field of the forward, its label in a fixed column.
+component ForwardField {
+    in property <string> label;
+    in property <string> value;
+    in property <string> placeholder;
+    // Its place among `ForwardData`'s texts.
+    in property <int> index;
+    HorizontalLayout {
+        spacing: Theme.pad;
+        Text {
+            width: 96px;
+            text: root.label;
+            color: Theme.pane.muted;
+            vertical-alignment: center;
+        }
+        Field {
+            horizontal-stretch: 1;
+            placeholder-text: root.placeholder;
+            accessible-label: "Forward " + root.label;
+            value: root.value;
+            value-edited(text) => { RuleEditor.forward-text(root.index, text); }
+        }
+    }
+}
+
+// The forward, which runs before the rule's other actions and only once a human approved it.
+component ForwardForm {
+    in property <string> close-icon;
+    property <ForwardData> forward: RuleEditor.forward;
+    VerticalLayout {
+        spacing: Theme.pad;
+        HorizontalLayout {
+            spacing: Theme.pad;
+            Rectangle {
+                width: chip.preferred-width + Theme.inset;
+                height: Theme.control;
+                border-radius: Theme.pad / 2;
+                background: Theme.pane.panel;
+                chip := Text {
+                    text: "Forward";
+                    font-weight: 600;
+                    color: Theme.pane.strong;
+                    vertical-alignment: center;
+                }
+            }
+            Text {
+                text: "new mail only, once approved; saving approves it";
+                font-size: Theme.small-size;
+                color: Theme.pane.muted;
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            IconButton {
+                icon: root.close-icon;
+                name: "Remove forward";
+                hint: "Remove this action";
+                palette: Theme.pane;
+                clicked => { RuleEditor.remove-forward(); }
+            }
+        }
+        ForwardField { label: "To"; index: 0; value: forward.to; placeholder: "books@example.org, …"; }
+        ForwardField { label: "Cc"; index: 1; value: forward.cc; }
+        ForwardField { label: "Bcc"; index: 2; value: forward.bcc; }
+        HorizontalLayout {
+            spacing: Theme.pad;
+            Text { width: 96px; text: "From"; color: Theme.pane.muted; vertical-alignment: center; }
+            Choice {
+                horizontal-stretch: 1;
+                enabled: !forward.from-fixed;
+                model: forward.from-choices;
+                index: forward.from;
+                accessible-label: "Forward from";
+                index-chosen(i) => { RuleEditor.forward-choice(0, i); }
+            }
+        }
+        ForwardField { label: "Subject prefix"; index: 3; value: forward.prefix; placeholder: "none"; }
+        ForwardField { label: "Note"; index: 4; value: forward.note; placeholder: "Text above the message"; }
+        HorizontalLayout {
+            spacing: Theme.pad;
+            Text { width: 96px; text: "Send"; color: Theme.pane.muted; vertical-alignment: center; }
+            Choice {
+                horizontal-stretch: 1;
+                model: ["inline", "the original attached, untouched"];
+                index: forward.as-attachment ? 1 : 0;
+                accessible-label: "Forward as";
+                index-chosen(i) => { RuleEditor.forward-choice(1, i); }
+            }
+        }
+        if !forward.as-attachment: HorizontalLayout {
+            spacing: Theme.pad;
+            Text { width: 96px; text: "Attachments"; color: Theme.pane.muted; vertical-alignment: center; }
+            Choice {
+                horizontal-stretch: 1;
+                model: ["all", "none", "only those matching"];
+                index: forward.attachments;
+                accessible-label: "Forward attachments";
+                index-chosen(i) => { RuleEditor.forward-choice(2, i); }
+            }
+        }
+        if !forward.as-attachment && forward.attachments == 2: ForwardField {
+            label: "Of type"; index: 5; value: forward.attachment-type; placeholder: "application/pdf";
+        }
+        if !forward.as-attachment && forward.attachments == 2 && forward.kept-name == "": ForwardField {
+            label: "Name contains"; index: 6; value: forward.attachment-name; placeholder: ".pdf";
+        }
+        if !forward.as-attachment && forward.attachments == 2 && forward.kept-name != "": Note {
+            text: "Name: " + forward.kept-name + ", kept as rules.toml has it";
+        }
+        if !forward.as-attachment && forward.attachments == 2: ForwardField {
+            label: "At most"; index: 7; value: forward.attachment-max; placeholder: "5MB";
+        }
+        HorizontalLayout {
+            spacing: Theme.pad;
+            Text { width: 96px; text: "Larger than"; color: Theme.pane.muted; vertical-alignment: center; }
+            Field {
+                width: 96px;
+                placeholder-text: "25MB";
+                accessible-label: "Forward size limit";
+                value: forward.max-size;
+                value-edited(text) => { RuleEditor.forward-text(8, text); }
+            }
+            Choice {
+                horizontal-stretch: 1;
+                model: ["is not forwarded", "goes without attachments"];
+                index: forward.strip ? 1 : 0;
+                accessible-label: "Forward over the size limit";
+                index-chosen(i) => { RuleEditor.forward-choice(3, i); }
+            }
+        }
+        ForwardField { label: "Per hour, at most"; index: 9; value: forward.rate; placeholder: "20"; }
+    }
 }
 
 component ConditionRow {
@@ -287,6 +452,7 @@ component RuleEditorPane inherits ScrollView {
         }
 
         Label { text: "Then"; }
+        if RuleEditor.forwards: ForwardForm { close-icon: root.close-icon; }
         for action[i] in RuleEditor.actions: HorizontalLayout {
             spacing: Theme.pad;
             Rectangle {

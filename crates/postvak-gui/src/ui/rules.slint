@@ -24,6 +24,12 @@ export struct SampleData {
     date: string,
 }
 
+// A forward rule that waits or keeps failing: the line, and whether Approve is what it needs.
+export struct ForwardLineData {
+    text: string,
+    approve: bool,
+}
+
 export struct ProposalData {
     label: string,
     // "Agent proposal · claude-desktop".
@@ -469,6 +475,8 @@ export component RulesPane inherits Rectangle {
     in property <string> banner;
     // "Trust mx.google.com for work", one button each.
     in property <[string]> offers;
+    // Forward rules that wait for approval or sending, or keep failing.
+    in property <[ForwardLineData]> forwards;
     // "1 rule · 2 proposals".
     in property <string> counts;
     in property <[ProposalData]> proposals;
@@ -493,6 +501,7 @@ export component RulesPane inherits Rectangle {
     callback edit-rule(int);
     callback approve(int);
     callback trust(int);
+    callback approve-forward(int);
     callback reject(int);
     callback edit-proposal(int);
     callback set-enabled(int, bool);
@@ -534,6 +543,26 @@ export component RulesPane inherits Rectangle {
                     palette: Theme.pane;
                     hint: "Adds the server to the account's trusted_authserv_ids in config.toml";
                     clicked => { root.trust(i); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+        }
+        if root.sheet == Sheet.rules && root.forwards.length > 0: VerticalLayout {
+            spacing: Theme.pad;
+            for line[i] in root.forwards: HorizontalLayout {
+                spacing: Theme.pad;
+                Text {
+                    text: line.text;
+                    color: line.approve ? Theme.pane.warning : Theme.pane.error;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                if line.approve: TextButton {
+                    text: "Approve";
+                    framed: true;
+                    palette: Theme.pane;
+                    hint: "Lets this rule forward mail that arrives from now on, to the addresses it names";
+                    clicked => { root.approve-forward(i); }
                 }
                 Rectangle { horizontal-stretch: 1; }
             }

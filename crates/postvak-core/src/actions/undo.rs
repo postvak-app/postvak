@@ -29,6 +29,8 @@ pub enum UndoOutcome {
     BackupGone,
     /// The row changed no mail, such as `notify` or `stop`.
     NothingToUndo,
+    /// A rule's forward: what was sent cannot be called back.
+    AlreadySent,
     /// The server or the store refused; `error` says why.
     Failed,
 }
@@ -43,6 +45,7 @@ impl UndoOutcome {
             UndoOutcome::Ambiguous => "cannot be told apart from another message, left alone",
             UndoOutcome::BackupGone => "its backup was purged",
             UndoOutcome::NothingToUndo => "nothing to undo",
+            UndoOutcome::AlreadySent => "the forward was already sent; it cannot be called back",
             UndoOutcome::Failed => "failed",
         }
     }
@@ -178,6 +181,9 @@ fn moved_copy(store: &Store, row: &LogEntry) -> Result<Found, StoreError> {
 /// cleared where the message is now.
 fn step(store: &Store, row: &LogEntry, moved: &Moved) -> Result<Step, StoreError> {
     let label = row.action.as_str();
+    if label.starts_with(crate::rules::forward::LABEL_PREFIX) {
+        return Ok(Step::Skip(UndoOutcome::AlreadySent));
+    }
     if label == "delete" {
         let backup = row.trash_file.as_deref().map(PathBuf::from);
         return Ok(match backup.filter(|file| file.is_file()) {

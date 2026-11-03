@@ -6,7 +6,7 @@ import { StatusBar, StatusLine } from "status.slint";
 import { AccountDialog, ApplyConfirmDialog, FolderDialog, HistoryDialog, KeyHelp, KeysDialog, MoveDialog, Scrim, SourceDialog } from "dialogs.slint";
 import { AccountFields } from "account.slint";
 import { BodyInfo, BodyPane, PageInfo, SelectedData, StripData, ToolButton } from "body.slint";
-import { ProposalData, RuleData, RulesPane, Sheet } from "rules.slint";
+import { ForwardLineData, ProposalData, RuleData, RulesPane, Sheet } from "rules.slint";
 import { RuleDialog, RuleEditor, UnsavedDialog } from "rule_editor.slint";
 import { AboutDialog } from "about.slint";
 import { Preferences, PreferencesDialog } from "preferences.slint";
@@ -159,6 +159,7 @@ export component MailWindow inherits Window {
     in property <Sheet> sheet;
     in property <string> rules-banner;
     in property <[string]> rules-offers;
+    in property <[ForwardLineData]> rules-forwards;
     in property <string> rules-counts;
     in property <[ProposalData]> proposals;
     in property <[RuleData]> rules;
@@ -241,6 +242,7 @@ export component MailWindow inherits Window {
     callback open-rules-file();
     callback approve-rule(int);
     callback trust-authserv(int);
+    callback approve-forward(int);
     callback reject-rule(int);
     callback edit-proposal(int);
     callback new-rule();
@@ -658,6 +660,7 @@ export component MailWindow inherits Window {
                         sheet: root.sheet;
                         banner: root.rules-banner;
                         offers: root.rules-offers;
+                        forwards: root.rules-forwards;
                         counts: root.rules-counts;
                         new-rule => { root.new-rule(); }
                         edit-rule(i) => { root.edit-rule(i); }
@@ -680,6 +683,7 @@ export component MailWindow inherits Window {
                         open-rules-file => { root.open-rules-file(); }
                         approve(i) => { root.approve-rule(i); }
                         trust(i) => { root.trust-authserv(i); }
+                        approve-forward(i) => { root.approve-forward(i); }
                         reject(i) => { root.reject-rule(i); }
                         edit-proposal(i) => { root.edit-proposal(i); }
                         set-enabled(i, enabled) => { root.set-enabled(i, enabled); }

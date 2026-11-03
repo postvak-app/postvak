@@ -1165,7 +1165,7 @@ fn mail_that_arrives_while_the_rules_file_is_invalid_notifies_once_across_restar
     let dir = tempfile::tempdir().unwrap();
     let paths = Paths::under(dir.path());
     let acct = account();
-    let mut state = AccountSync::open(&acct, &paths).unwrap();
+    let mut state = AccountSync::open(&acct, &paths, None).unwrap();
     let mut ops = ops_with_inbox();
     sync_all(&mut ops, &state.store).unwrap();
     // The rule ran before the bad edit, so its clock already started.
@@ -2107,6 +2107,7 @@ fn rules_report_running_and_body_progress() {
             seen.push(a);
             Ok(false)
         },
+        None,
     )
     .unwrap();
     assert!(seen.contains(&Activity::RunningRules {
@@ -2146,6 +2147,7 @@ fn a_dropped_connection_ends_the_rules_pass_at_once() {
         Mode::Normal,
         13 * H,
         &mut |_, _| Ok(false),
+        None,
     );
     let Err(e) = result else {
         panic!("the pass should end with the lost connection");
@@ -2211,6 +2213,7 @@ fn rules_let_commands_run_between_body_fetches_and_skip_mail_they_moved() {
             ops.select("Trash")?;
             Ok(true)
         },
+        None,
     )
     .unwrap();
     assert_eq!(commands_ran, 1);
@@ -2540,6 +2543,7 @@ fn flaky_sleeps(healthy_after: Duration, jitter: impl FnMut(Duration) -> Duratio
         std::sync::mpsc::channel::<Job>().1,
         Arc::new(AtomicBool::new(false)),
         || flaky_connect(&mut connects),
+        None,
         healthy_after,
         jitter,
         |delay| {
@@ -2869,9 +2873,16 @@ fn stop_interrupts_the_reconnect_wait() {
         let commands = std::sync::mpsc::channel::<Job>().1;
         std::thread::spawn(move || {
             let account = offline.clone();
-            run_loop(offline, paths, tx, shutdown, commands, wake, move || {
-                Ok(Box::new(connect(&account)?) as Box<dyn MailOps>)
-            })
+            run_loop(
+                offline,
+                paths,
+                tx,
+                shutdown,
+                commands,
+                wake,
+                move || Ok(Box::new(connect(&account)?) as Box<dyn MailOps>),
+                None,
+            )
         })
     };
     wait_for(&rx, &mut Vec::new(), |e| {
@@ -3031,7 +3042,7 @@ fn a_lost_connection_at_a_chunk_checkpoint_ends_the_pass_and_keeps_later_command
     let dir = tempfile::tempdir().unwrap();
     let paths = Paths::under(dir.path());
     let acct = account();
-    let mut state = AccountSync::open(&acct, &paths).unwrap();
+    let mut state = AccountSync::open(&acct, &paths, None).unwrap();
     let mut inner = ops_with_inbox();
     sync_all(&mut inner, &state.store).unwrap();
     inner.add_mail("INBOX", 3, 12 * H, &headers("bob@x", "new", "m3@x"), None);
@@ -3089,7 +3100,7 @@ fn clean_pass_after_an_aborted_one(rules: &str) -> (Vec<Event>, Store, tempfile:
         std::fs::write(paths.rules_file(), rules).unwrap();
     }
     let acct = account();
-    let mut state = AccountSync::open(&acct, &paths).unwrap();
+    let mut state = AccountSync::open(&acct, &paths, None).unwrap();
     let mut inner = ops_with_inbox().with_folder("Later", None);
     sync_all(&mut inner, &state.store).unwrap();
     inner.add_mail(
@@ -3157,7 +3168,7 @@ fn mail_committed_before_a_failed_chunk_notifies_exactly_once() {
     let dir = tempfile::tempdir().unwrap();
     let paths = Paths::under(dir.path());
     let acct = account();
-    let mut state = AccountSync::open(&acct, &paths).unwrap();
+    let mut state = AccountSync::open(&acct, &paths, None).unwrap();
     let mut ops = RecordingOps::default().with_folder("INBOX", None);
     let commands = std::sync::mpsc::channel::<Job>().1;
     let stop = AtomicBool::new(false);
@@ -3207,7 +3218,7 @@ fn processed_mail_does_not_notify_again_on_later_passes() {
     let dir = tempfile::tempdir().unwrap();
     let paths = Paths::under(dir.path());
     let acct = account();
-    let mut state = AccountSync::open(&acct, &paths).unwrap();
+    let mut state = AccountSync::open(&acct, &paths, None).unwrap();
     let mut ops = ops_with_inbox();
     let commands = std::sync::mpsc::channel::<Job>().1;
     let stop = AtomicBool::new(false);
@@ -3229,7 +3240,7 @@ fn an_inbox_only_pass_runs_queued_commands_before_syncing() {
     let dir = tempfile::tempdir().unwrap();
     let paths = Paths::under(dir.path());
     let acct = account();
-    let mut state = AccountSync::open(&acct, &paths).unwrap();
+    let mut state = AccountSync::open(&acct, &paths, None).unwrap();
     let mut ops = ops_with_inbox();
     sync_all(&mut ops, &state.store).unwrap();
     ops.add_mail("INBOX", 3, 12 * H, &headers("bob@x", "new", "m3@x"), None);
@@ -4513,7 +4524,7 @@ fn a_full_pass_stores_the_delimiter_and_an_inbox_only_pass_keeps_it() {
     let dir = tempfile::tempdir().unwrap();
     let paths = Paths::under(dir.path());
     let acct = account();
-    let mut state = AccountSync::open(&acct, &paths).unwrap();
+    let mut state = AccountSync::open(&acct, &paths, None).unwrap();
     let mut ops = ops_with_inbox();
     for folder in &mut ops.folders {
         folder.delimiter = Some("/".into());
@@ -6076,7 +6087,7 @@ fn a_rename_during_a_full_pass_keeps_the_renamed_folder_and_ends_the_pass() {
     let dir = tempfile::tempdir().unwrap();
     let paths = Paths::under(dir.path());
     let acct = account();
-    let mut state = AccountSync::open(&acct, &paths).unwrap();
+    let mut state = AccountSync::open(&acct, &paths, None).unwrap();
     let mut inner = ops_with_inbox()
         .with_folder("Work", None)
         .with_folder("Work/Sub", None);
@@ -6565,4 +6576,522 @@ fn finish_sent_after_a_lost_connection_is_tried_again() {
             .iter()
             .any(|e| matches!(e, Event::CommandFailed { .. }))
     );
+}
+
+/// One account that sends through `smtp.example.com`, its store synced from `ops`, and its rules approved unless the
+/// rule's name starts with `unapproved`.
+struct Forwarding {
+    ops: RecordingOps,
+    store: Store,
+    trash: Trash,
+    _dir: tempfile::TempDir,
+    acc: AccountConfig,
+    identity: Identity,
+    rules: Vec<CompiledRule>,
+    queue: crate::rules::apply::RecordingQueue,
+}
+
+impl Forwarding {
+    fn new(ops: RecordingOps, toml: &str) -> Forwarding {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let mut acc = account();
+        acc.smtp = Some(crate::config::SmtpConfig::new(
+            "smtp.example.com",
+            crate::config::SmtpTls::Starttls,
+        ));
+        let identity = acc.identity().unwrap();
+        let rules = rules_from(toml, &store, 0);
+        for rule in rules
+            .iter()
+            .filter(|r| !r.rule.name.starts_with("unapproved"))
+        {
+            store
+                .approve_forward(&rule.rule.name, &rule.definition, 0)
+                .unwrap();
+        }
+        let mut setup = Forwarding {
+            ops,
+            store,
+            trash: Trash::new(dir.path().to_path_buf()),
+            _dir: dir,
+            acc,
+            identity,
+            rules,
+            queue: Default::default(),
+        };
+        sync_all(&mut setup.ops, &setup.store).unwrap();
+        setup
+    }
+
+    fn run(&mut self, mode: Mode, now: i64) -> RulesRun {
+        run_rules_with(
+            &mut self.ops,
+            &self.store,
+            &self.trash,
+            &self.rules,
+            &self.acc,
+            &self.identity,
+            mode,
+            now,
+            &mut |_, _| Ok(false),
+            Some(&self.queue),
+        )
+        .unwrap()
+    }
+
+    fn inbox(&self) -> Vec<u32> {
+        self.store
+            .messages_without_body("INBOX", 0)
+            .unwrap()
+            .iter()
+            .map(|m| m.uid)
+            .collect()
+    }
+
+    fn sent(&self) -> Vec<String> {
+        (self.queue.taken().into_iter())
+            .map(|(_, keep, _)| String::from_utf8_lossy(&keep).into_owned())
+            .collect()
+    }
+}
+
+fn forward_mail(ops: &mut RecordingOps, folder: &str, uid: u32, id: &str, extra: &str) {
+    let head = format!(
+        "From: billing@shop.example\r\nTo: pieter@example.com\r\nSubject: Invoice {uid}\r\nMessage-ID: <{id}>\r\n{extra}"
+    );
+    let raw = format!("{head}\r\nYour invoice.\r\n");
+    ops.add_mail(folder, uid, 10 * H, &format!("{head}\r\n"), Some(&raw));
+}
+
+fn invoices() -> RecordingOps {
+    let mut ops = RecordingOps::default()
+        .with_folder("INBOX", None)
+        .with_folder("Archive", Some("Archive"));
+    forward_mail(&mut ops, "INBOX", 1, "i1@shop", "");
+    ops
+}
+
+const FORWARD_DELETE: &str = "[[rules]]\nname = \"inv\"\nmatch.from = { contains = \"billing@\" }\nactions.delete = true\nactions.forward = { to = [\"books@example.org\", \"b@x.org\"] }\n";
+const FORWARD_ARCHIVE: &str = "[[rules]]\nname = \"inv\"\nmatch.from = { contains = \"billing@\" }\nactions.archive = true\nactions.forward = { to = \"books@example.org\" }\n";
+
+#[test]
+fn a_forward_is_queued_before_the_delete_runs() {
+    let mut f = Forwarding::new(invoices(), FORWARD_DELETE);
+    let run = f.run(Mode::Normal, 12 * H);
+    let queued = f.queue.taken();
+    assert_eq!(queued.len(), 1);
+    let (account, keep, entry) = &queued[0];
+    assert_eq!(account, "work");
+    let keep = String::from_utf8_lossy(keep);
+    assert!(keep.contains("Subject: Fwd: Invoice 1"), "{keep}");
+    assert!(keep.contains("Your invoice."), "{keep}");
+    assert_eq!(entry.envelope.to, ["books@example.org", "b@x.org"]);
+    assert!(
+        f.inbox().is_empty(),
+        "the delete ran after the forward was queued"
+    );
+    let fetch = f
+        .ops
+        .calls
+        .iter()
+        .position(|c| c.starts_with("fetch_raw"))
+        .unwrap();
+    let expunge = f
+        .ops
+        .calls
+        .iter()
+        .position(|c| c.starts_with("expunge"))
+        .unwrap();
+    assert!(fetch < expunge, "{:?}", f.ops.calls);
+    assert_eq!(run.actions, 2);
+    let log = f.store.log(10).unwrap();
+    assert!(
+        log.iter()
+            .any(|row| row.action == "forward:books@example.org (+1)"),
+        "{log:?}"
+    );
+}
+
+#[test]
+fn the_forward_is_due_now_and_carries_the_loop_header() {
+    let mut f = Forwarding::new(invoices(), FORWARD_ARCHIVE);
+    f.run(Mode::Normal, 12 * H);
+    let (_, keep, entry) = &f.queue.taken()[0];
+    assert_eq!(entry.due, 12 * H, "no undo delay for a rule's forward");
+    assert!(
+        String::from_utf8_lossy(keep).starts_with("X-Postvak-Forwarded: pieter@example.com\r\n")
+    );
+}
+
+#[test]
+fn a_forward_with_a_failed_fetch_runs_nothing_and_retries_next_pass() {
+    let mut f = Forwarding::new(invoices(), FORWARD_DELETE);
+    f.ops.fail_next = Some(MailError::Protocol("NO try later".into()));
+    let run = f.run(Mode::Normal, 12 * H);
+    assert!(f.queue.taken().is_empty());
+    assert_eq!(
+        f.inbox(),
+        [1],
+        "nothing of the rule ran: the message is not deleted"
+    );
+    assert_eq!(run.actions, 0);
+    let failures = f.store.forward_failures("inv").unwrap();
+    assert_eq!(failures.len(), 1);
+    assert!(failures[0].1.contains("try later"), "{failures:?}");
+    f.run(Mode::Normal, 13 * H);
+    assert_eq!(f.queue.taken().len(), 1);
+    assert!(f.inbox().is_empty());
+    assert!(f.store.forward_failures("inv").unwrap().is_empty());
+}
+
+#[test]
+fn a_forward_the_outbox_refuses_runs_nothing() {
+    let mut f = Forwarding::new(invoices(), FORWARD_DELETE);
+    f.queue.fail.store(true, Ordering::Release);
+    f.run(Mode::Normal, 12 * H);
+    assert_eq!(f.inbox(), [1]);
+    assert_eq!(
+        f.store.forward_failures("inv").unwrap()[0].1,
+        "the outbox refused it"
+    );
+    assert!(!f.store.was_forwarded("inv", "id:<i1@shop>").unwrap());
+}
+
+#[test]
+fn a_forward_from_an_address_not_ours_runs_nothing() {
+    let toml = FORWARD_DELETE
+        .replace("name = \"inv\"\n", "name = \"inv\"\naccount = \"work\"\n")
+        .replace(
+            "\"b@x.org\"] }",
+            "\"b@x.org\"], from = \"boss@example.com\" }",
+        );
+    let mut f = Forwarding::new(invoices(), &toml);
+    f.run(Mode::Normal, 12 * H);
+    assert_eq!(f.inbox(), [1]);
+    assert!(
+        f.store.forward_failures("inv").unwrap()[0]
+            .1
+            .contains("boss@example.com")
+    );
+}
+
+#[test]
+fn an_unapproved_forward_rule_runs_nothing() {
+    let toml = FORWARD_DELETE.replace("name = \"inv\"", "name = \"unapproved\"");
+    let mut f = Forwarding::new(invoices(), &toml);
+    f.run(Mode::Normal, 12 * H);
+    assert!(f.queue.taken().is_empty());
+    assert_eq!(f.inbox(), [1]);
+    f.store
+        .approve_forward("unapproved", "an older definition", 0)
+        .unwrap();
+    f.run(Mode::Normal, 12 * H);
+    assert_eq!(
+        f.inbox(),
+        [1],
+        "an approval of another definition does not count"
+    );
+}
+
+#[test]
+fn a_forward_rule_without_smtp_runs_nothing() {
+    let mut f = Forwarding::new(invoices(), FORWARD_DELETE);
+    f.acc.smtp = None;
+    f.run(Mode::Normal, 12 * H);
+    assert!(f.queue.taken().is_empty());
+    assert_eq!(f.inbox(), [1]);
+}
+
+#[test]
+fn a_forward_without_a_queue_runs_nothing() {
+    let mut f = Forwarding::new(invoices(), FORWARD_DELETE);
+    run_rules(
+        &mut f.ops,
+        &f.store,
+        &f.trash,
+        &f.rules,
+        &f.acc,
+        &f.identity,
+        Mode::Normal,
+        12 * H,
+    )
+    .unwrap();
+    assert_eq!(f.inbox(), [1]);
+    assert_eq!(
+        f.store.forward_failures("inv").unwrap()[0].1,
+        "sending is not running"
+    );
+}
+
+#[test]
+fn apply_existing_runs_the_other_actions_but_never_forwards() {
+    let mut f = Forwarding::new(invoices(), FORWARD_ARCHIVE);
+    f.run(Mode::ApplyExisting, 12 * H);
+    assert!(f.queue.taken().is_empty());
+    assert!(f.inbox().is_empty(), "archived");
+    assert!(
+        f.ops.calls.iter().any(|c| c.starts_with("move")),
+        "{:?}",
+        f.ops.calls
+    );
+}
+
+#[test]
+fn a_message_is_forwarded_once_even_after_moving_back() {
+    let mut f = Forwarding::new(invoices(), FORWARD_ARCHIVE);
+    f.run(Mode::Normal, 12 * H);
+    assert_eq!(f.queue.taken().len(), 1);
+    forward_mail(&mut f.ops, "INBOX", 2, "i1@shop", "");
+    sync_all(&mut f.ops, &f.store).unwrap();
+    f.run(Mode::Normal, 13 * H);
+    assert_eq!(
+        f.queue.taken().len(),
+        1,
+        "the same Message-ID is not forwarded again"
+    );
+}
+
+#[test]
+fn the_rate_limit_skips_the_forward_withdraws_and_notifies_once() {
+    let mut ops = RecordingOps::default()
+        .with_folder("INBOX", None)
+        .with_folder("Archive", Some("Archive"));
+    for uid in 1..=25 {
+        forward_mail(&mut ops, "INBOX", uid, &format!("i{uid}@shop"), "");
+    }
+    let mut f = Forwarding::new(ops, FORWARD_ARCHIVE);
+    let run = f.run(Mode::Normal, 12 * H);
+    assert_eq!(f.queue.taken().len(), 20);
+    assert!(f.inbox().is_empty(), "all 25 archived");
+    let rule = &f.rules[0];
+    assert!(
+        !f.store
+            .forward_approved(&rule.rule.name, &rule.definition)
+            .unwrap()
+    );
+    let paused: Vec<&Event> = run
+        .events
+        .iter()
+        .filter(|e| matches!(e, Event::ForwardPaused { .. }))
+        .collect();
+    assert_eq!(
+        paused,
+        [&Event::ForwardPaused {
+            account: "work".into(),
+            rule: "inv".into(),
+            rate: 20
+        }]
+    );
+}
+
+#[test]
+fn a_rate_counts_the_last_hour_only() {
+    let toml = FORWARD_ARCHIVE.replace(
+        "to = \"books@example.org\"",
+        "to = \"books@example.org\", rate = 1",
+    );
+    let mut ops = invoices();
+    forward_mail(&mut ops, "INBOX", 2, "i2@shop", "");
+    let mut f = Forwarding::new(ops, &toml);
+    f.store
+        .record_forwarded("inv", "id:<old@shop>", 12 * H - 3601)
+        .unwrap();
+    f.run(Mode::Normal, 12 * H);
+    assert_eq!(
+        f.queue.taken().len(),
+        1,
+        "the old forward is out of the window, the second is over the rate"
+    );
+}
+
+#[test]
+fn a_forward_skips_a_loop_and_still_archives() {
+    let mut ops = RecordingOps::default()
+        .with_folder("INBOX", None)
+        .with_folder("Archive", Some("Archive"));
+    forward_mail(
+        &mut ops,
+        "INBOX",
+        1,
+        "i1@shop",
+        "X-Postvak-Forwarded: pieter@example.com\r\n",
+    );
+    forward_mail(
+        &mut ops,
+        "INBOX",
+        2,
+        "i2@shop",
+        "X-Postvak-Forwarded: team@example.net\r\n",
+    );
+    let mut f = Forwarding::new(ops, FORWARD_ARCHIVE);
+    f.run(Mode::Normal, 12 * H);
+    let sent = f.sent();
+    assert_eq!(sent.len(), 1);
+    assert!(sent[0].starts_with(
+        "X-Postvak-Forwarded: team@example.net\r\nX-Postvak-Forwarded: pieter@example.com\r\n"
+    ));
+    assert!(f.inbox().is_empty());
+}
+
+#[test]
+fn max_size_skip_runs_the_other_actions() {
+    let toml = FORWARD_ARCHIVE.replace(
+        "to = \"books@example.org\"",
+        "to = \"books@example.org\", max_size = \"10\"",
+    );
+    let mut f = Forwarding::new(invoices(), &toml);
+    f.run(Mode::Normal, 12 * H);
+    assert!(f.queue.taken().is_empty());
+    assert!(f.inbox().is_empty(), "archived anyway");
+    assert!(
+        f.store.forward_failures("inv").unwrap().is_empty(),
+        "skipping is no failure"
+    );
+}
+
+#[test]
+fn max_size_strip_forwards_without_attachments() {
+    let toml = FORWARD_ARCHIVE.replace(
+        "to = \"books@example.org\"",
+        "to = \"books@example.org\", max_size = { limit = \"1KB\", over = \"strip\" }",
+    );
+    let mut ops = RecordingOps::default()
+        .with_folder("INBOX", None)
+        .with_folder("Archive", Some("Archive"));
+    let head = "From: billing@shop.example\r\nTo: pieter@example.com\r\nSubject: Invoice\r\nMessage-ID: <big@shop>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n";
+    let raw = format!(
+        "{head}\r\n--b\r\nContent-Type: text/plain\r\n\r\nSee attached.\r\n--b\r\nContent-Type: application/zip; name=\"big.zip\"\r\nContent-Disposition: attachment; filename=\"big.zip\"\r\n\r\n{}\r\n--b--\r\n",
+        "z".repeat(2000)
+    );
+    ops.add_mail("INBOX", 1, 10 * H, &format!("{head}\r\n"), Some(&raw));
+    let mut f = Forwarding::new(ops, &toml);
+    f.run(Mode::Normal, 12 * H);
+    let sent = f.sent();
+    assert_eq!(sent.len(), 1);
+    assert!(
+        sent[0].contains("Not forwarded: big.zip (1 KB)"),
+        "{}",
+        sent[0]
+    );
+    assert!(!sent[0].contains("zzzz"), "the attachment stayed behind");
+}
+
+#[test]
+fn a_forward_waits_with_after() {
+    let toml = FORWARD_ARCHIVE.replace(
+        "actions.archive = true\n",
+        "actions.archive = true\nactions.after = \"2h\"\n",
+    );
+    let mut f = Forwarding::new(invoices(), &toml);
+    f.run(Mode::Normal, 11 * H);
+    assert!(f.queue.taken().is_empty());
+    assert_eq!(f.inbox(), [1]);
+    f.run(Mode::Normal, 12 * H);
+    assert_eq!(f.queue.taken().len(), 1);
+    assert!(f.inbox().is_empty());
+}
+
+#[test]
+fn undo_of_a_forward_and_archive_moves_back_and_says_the_forward_was_sent() {
+    let mut f = Forwarding::new(invoices(), FORWARD_ARCHIVE);
+    f.run(Mode::Normal, 12 * H);
+    sync_all(&mut f.ops, &f.store).unwrap();
+    let action = f.store.first_action_after(0).unwrap().unwrap();
+    let report =
+        crate::actions::undo(&mut f.ops, &f.store, &f.trash, action, "cli", 13 * H).unwrap();
+    let rows: Vec<(&str, actions::UndoOutcome)> = report
+        .rows
+        .iter()
+        .map(|row| (row.action.as_str(), row.outcome))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (
+                "forward:books@example.org",
+                actions::UndoOutcome::AlreadySent
+            ),
+            ("archive", actions::UndoOutcome::PutBack)
+        ]
+    );
+    assert_eq!(f.queue.taken().len(), 1);
+}
+
+#[test]
+fn a_new_waiting_forward_rule_notifies_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rules.toml");
+    std::fs::write(&path, FORWARD_ARCHIVE).unwrap();
+    let store = Store::open_in_memory().unwrap();
+    let mut acc = account();
+    acc.smtp = Some(crate::config::SmtpConfig::new(
+        "smtp.example.com",
+        crate::config::SmtpTls::Starttls,
+    ));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut loaded = LoadedRules::default();
+    let waiting = |rx: &std::sync::mpsc::Receiver<Event>| -> Vec<Vec<String>> {
+        rx.try_iter()
+            .filter_map(|event| match event {
+                Event::ForwardWaiting { rules, .. } => Some(rules),
+                _ => None,
+            })
+            .collect()
+    };
+    loaded.reload(&store, &path, &acc, &tx);
+    loaded.reload(&store, &path, &acc, &tx);
+    assert_eq!(waiting(&rx), [vec!["inv".to_string()]]);
+    std::fs::write(
+        &path,
+        FORWARD_ARCHIVE.replace(
+            "to = \"books@example.org\"",
+            "to = \"books@example.org\", rate = 5",
+        ),
+    )
+    .unwrap();
+    loaded.reload(&store, &path, &acc, &tx);
+    assert_eq!(
+        waiting(&rx),
+        [vec!["inv".to_string()]],
+        "a changed definition waits again"
+    );
+    let rule = &loaded.last_good.as_ref().unwrap()[0];
+    store.approve_forward("inv", &rule.definition, 0).unwrap();
+    loaded.reload(&store, &path, &acc, &tx);
+    assert!(waiting(&rx).is_empty());
+    acc.smtp = None;
+    let mut fresh = LoadedRules::default();
+    store.withdraw_forward("inv").unwrap();
+    fresh.reload(&store, &path, &acc, &tx);
+    assert!(
+        waiting(&rx).is_empty(),
+        "waiting for an SMTP server is no approval to ask for"
+    );
+}
+
+#[test]
+fn a_forward_acts_only_on_mail_from_its_approval_on() {
+    let mut f = Forwarding::new(invoices(), FORWARD_ARCHIVE);
+    let rule = &f.rules[0];
+    f.store
+        .approve_forward(&rule.rule.name, &rule.definition, 11 * H)
+        .unwrap();
+    f.run(Mode::Normal, 12 * H);
+    assert!(
+        f.queue.taken().is_empty(),
+        "the mail arrived while the rule waited"
+    );
+    assert_eq!(f.inbox(), [1], "and none of the rule's actions run on it");
+    let head = "From: billing@shop.example\r\nTo: pieter@example.com\r\nSubject: Invoice 2\r\nMessage-ID: <i2@shop>\r\n";
+    f.ops.add_mail(
+        "INBOX",
+        2,
+        12 * H,
+        &format!("{head}\r\n"),
+        Some(&format!("{head}\r\nnew\r\n")),
+    );
+    sync_all(&mut f.ops, &f.store).unwrap();
+    f.run(Mode::Normal, 13 * H);
+    assert_eq!(f.queue.taken().len(), 1);
 }
