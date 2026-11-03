@@ -558,11 +558,17 @@ impl Backend {
             &stores.iter().collect::<Vec<_>>(),
             postvak_core::time::now(),
         )?;
+        let visible = self.visible();
+        let accounts: Vec<_> = visible.iter().zip(&stores).collect();
+        let waiting = rules::apply::forward_waiting(&file, &accounts)?;
         let mut rows = Vec::new();
         for (position, rule) in file.rules.iter().enumerate() {
             if self.is_visible(rule.account.as_deref()) {
                 let found = hits.get(&rule.name).copied().unwrap_or_default();
-                rows.push(output::rule(rule, &file.lists, position, &found)?);
+                let names: Vec<String> = (waiting.get(&rule.name).into_iter().flatten())
+                    .map(|(name, _)| name.clone())
+                    .collect();
+                rows.push(output::rule(rule, &file.lists, position, &found, &names)?);
             }
         }
         Ok(rows)

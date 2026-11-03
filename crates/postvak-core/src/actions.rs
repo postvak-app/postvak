@@ -449,7 +449,11 @@ pub fn planned(
                 .waiting
                 .into_iter()
                 .map(|(planned, due)| (planned, Some(due)));
-            for (PlannedAction { rule, action }, waits) in now.chain(waiting) {
+            let new_mail_only = plan
+                .new_mail_only
+                .into_iter()
+                .map(|planned| (planned, None));
+            for (PlannedAction { rule, action }, waits) in now.chain(waiting).chain(new_mail_only) {
                 planned.push(Planned {
                     rule,
                     message: message.clone(),

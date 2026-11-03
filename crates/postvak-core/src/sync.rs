@@ -19,7 +19,7 @@ use crate::message::{clean, parse_headers, thread_id};
 use crate::paths::Paths;
 use crate::rules::apply::{
     ApplyError, ForwardQueue, Forwarding, Queue, apply, ensure_body_text, ensure_structure,
-    forward_first, forward_waits, plan_for, special_folder,
+    forward_first, forward_wait, plan_for, special_folder,
 };
 use crate::rules::engine::{Context, Mode, evaluate, folder_needs_body, folder_needs_structure};
 use crate::rules::{Action, CompiledRule, RulesError};
@@ -1006,7 +1006,7 @@ pub fn run_rules_with(
     // A forward rule waiting for approval, or for an SMTP server, runs none of its actions.
     let mut runnable = Vec::with_capacity(rules.len());
     for rule in rules {
-        if !forward_waits(rule, store, server.is_some())? {
+        if forward_wait(rule, account, store)?.is_none() {
             runnable.push(rule.clone());
         }
     }

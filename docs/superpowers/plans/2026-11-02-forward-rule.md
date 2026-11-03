@@ -154,11 +154,11 @@
   - `Act.action` for a forward: `forward to a@x.org (+1) (new mail only)` in coverage and previews; `rules test` on a message shows `forward to a@x.org (+1)`
   - `postvak rules` (text) marks a waiting rule `waiting for approval` or `waiting: sending not set up`, and `rules check` reports a lasting forward failure
   - `output::rule` rows gain `forward_waiting: Vec<String>` (accounts where the rule's current definition is not approved, or that have no SMTP server); empty for a rule without forward
-- [ ] **Step 1: Write the failing tests:** `coverage_shows_forward_as_new_mail_only`; `rule_rows_list_the_accounts_where_a_forward_waits`.
-- [ ] **Step 2: Run** `cargo nextest run -p postvak-core coverage output` — FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** — PASS.
-- [ ] **Step 5: Commit** `feat(rules): show forwards in previews, coverage and rule rows`
+- [x] **Step 1: Write the failing tests:** `coverage_shows_forward_as_new_mail_only`; `rule_rows_list_the_accounts_where_a_forward_waits`.
+- [x] **Step 2: Run** `cargo nextest run -p postvak-core coverage output` — FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** — PASS.
+- [x] **Step 5: Commit** `feat(rules): show forwards in previews, coverage and rule rows`
 
 ### Task 6: Approving
 

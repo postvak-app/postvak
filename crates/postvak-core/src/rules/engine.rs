@@ -45,6 +45,8 @@ pub struct Plan {
     pub notify: bool,
     /// Actions of matching rules whose `after` has not come yet, with when it comes; nothing runs them this pass.
     pub waiting: Vec<(PlannedAction, Due)>,
+    /// Forwards left out because they act on new mail only, for previews to show; nothing runs them.
+    pub new_mail_only: Vec<PlannedAction>,
 }
 
 /// When a waiting rule's actions run: at `at`, the first of its spans to end, or once the message is read.
@@ -112,7 +114,12 @@ pub fn evaluate(rules: &[CompiledRule], msg: &Message, ctx: &Context) -> Plan {
                 Action::After(_) => {}
                 Action::Move(_) | Action::Archive | Action::Junk if ctx.keep_in_folder => {}
                 // Only new mail is forwarded: applying a rule to what a folder holds leaves its forward out.
-                Action::Forward(_) if ctx.mode == Mode::ApplyExisting => {}
+                Action::Forward(_) if ctx.mode == Mode::ApplyExisting => {
+                    plan.new_mail_only.push(PlannedAction {
+                        rule: rule.rule.name.clone(),
+                        action: action.clone(),
+                    });
+                }
                 _ => {
                     if let Some(action) = resolved(action, rule, msg, ctx) {
                         let planned = PlannedAction {

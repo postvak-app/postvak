@@ -718,17 +718,59 @@ pub struct Forwarded {
     pub paused: Vec<(String, u32)>,
 }
 
-/// Whether `rule` must wait before any of its actions run: it forwards, and its definition is not approved in `store`
-/// or the account has no SMTP server.
-pub fn forward_waits(
-    rule: &CompiledRule,
-    store: &Store,
-    has_server: bool,
-) -> Result<bool, StoreError> {
-    if rule.rule.forward().is_none() {
-        return Ok(false);
+/// Why a forward rule runs none of its actions in an account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForwardWait {
+    /// Its definition, as it reads now, is not approved there.
+    Approval,
+    /// The account has no SMTP server.
+    Sending,
+}
+
+impl ForwardWait {
+    pub fn text(self) -> &'static str {
+        match self {
+            ForwardWait::Approval => "waiting for approval",
+            ForwardWait::Sending => "waiting: sending not set up",
+        }
     }
-    Ok(!has_server || !store.forward_approved(&rule.rule.name, &rule.definition)?)
+}
+
+/// Whether `rule` waits in `account`, whose store is `store`, and why; None for a rule without forward, or for another
+/// account.
+pub fn forward_wait(
+    rule: &CompiledRule,
+    account: &AccountConfig,
+    store: &Store,
+) -> Result<Option<ForwardWait>, StoreError> {
+    if rule.rule.forward().is_none() || !rule.applies_to_account(&account.name) {
+        return Ok(None);
+    }
+    if crate::send::server_for(account, store.smtp_state()?.as_ref()).is_none() {
+        return Ok(Some(ForwardWait::Sending));
+    }
+    let approved = store.forward_approved(&rule.rule.name, &rule.definition)?;
+    Ok((!approved).then_some(ForwardWait::Approval))
+}
+
+/// For each forward rule of `file` that waits in one of `accounts`, by name: those accounts and why, in their order.
+/// A file that does not compile runs no rule, so nothing is said to wait.
+pub fn forward_waiting(
+    file: &crate::rules::RuleFile,
+    accounts: &[(&AccountConfig, &Store)],
+) -> Result<std::collections::HashMap<String, Vec<(String, ForwardWait)>>, StoreError> {
+    let mut waiting = std::collections::HashMap::new();
+    for rule in crate::rules::compile(file).unwrap_or_default() {
+        for (account, store) in accounts {
+            if let Some(wait) = forward_wait(&rule, account, store)? {
+                waiting
+                    .entry(rule.rule.name.clone())
+                    .or_insert_with(Vec::new)
+                    .push((account.name.clone(), wait));
+            }
+        }
+    }
+    Ok(waiting)
 }
 
 /// Queues the forwards of `plan` before anything else of it runs, each once per message, skipping loops and what goes

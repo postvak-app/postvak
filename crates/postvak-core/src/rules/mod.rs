@@ -429,6 +429,14 @@ impl Action {
         )
     }
 
+    /// The label as a preview shows it: a forward, which acts on new mail only, says so.
+    pub fn preview_label(&self) -> String {
+        match self {
+            Action::Forward(forward) => format!("{} (new mail only)", forward.label()),
+            _ => self.label(),
+        }
+    }
+
     /// The label of the command a user gave for this action: `delete` sends `Trash` outside the Trash folder.
     pub fn command_label(&self) -> String {
         match self {
