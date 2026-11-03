@@ -558,11 +558,18 @@ impl Backend {
             &stores.iter().collect::<Vec<_>>(),
             postvak_core::time::now(),
         )?;
+        let visible = self.visible();
+        let accounts: Vec<_> = visible.iter().zip(&stores).collect();
+        let waiting = rules::apply::forward_waiting(&file, &accounts)?;
         let mut rows = Vec::new();
         for (position, rule) in file.rules.iter().enumerate() {
             if self.is_visible(rule.account.as_deref()) {
                 let found = hits.get(&rule.name).copied().unwrap_or_default();
-                rows.push(output::rule(rule, &file.lists, position, &found)?);
+                let waits = waiting
+                    .get(&rule.name)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                rows.push(output::rule(rule, &file.lists, position, &found, waits)?);
             }
         }
         Ok(rows)
@@ -863,7 +870,16 @@ impl Backend {
         self.ensure_rule_visible(name, true)?;
         refuse_named_unseen(&self.paths, name, sight)?;
         let approved = rules::edit::approve_from_now(&self.paths, name, time::now())?;
-        Ok(json!({ "rule": approved, "enabled": true }))
+        let mut result = json!({ "rule": approved, "enabled": true });
+        let forwards = rules::load(&self.paths.rules_file())?
+            .rules
+            .iter()
+            .any(|rule| rule.name == approved && rule.forward().is_some());
+        // Approving a forward sends mail, which an agent never decides: the rule waits for a human.
+        if forwards {
+            result["forward"] = postvak_core::help::forward_held(&approved).into();
+        }
+        Ok(result)
     }
 
     /// Removes the caller's own pending change of list `name`.

@@ -45,6 +45,8 @@ pub struct Plan {
     pub notify: bool,
     /// Actions of matching rules whose `after` has not come yet, with when it comes; nothing runs them this pass.
     pub waiting: Vec<(PlannedAction, Due)>,
+    /// Forwards left out because they act on new mail only, for previews to show; nothing runs them.
+    pub new_mail_only: Vec<PlannedAction>,
 }
 
 /// When a waiting rule's actions run: at `at`, the first of its spans to end, or once the message is read.
@@ -111,6 +113,13 @@ pub fn evaluate(rules: &[CompiledRule], msg: &Message, ctx: &Context) -> Plan {
                 Action::Stop => stop = true,
                 Action::After(_) => {}
                 Action::Move(_) | Action::Archive | Action::Junk if ctx.keep_in_folder => {}
+                // Only new mail is forwarded: applying a rule to what a folder holds leaves its forward out.
+                Action::Forward(_) if ctx.mode == Mode::ApplyExisting => {
+                    plan.new_mail_only.push(PlannedAction {
+                        rule: rule.rule.name.clone(),
+                        action: action.clone(),
+                    });
+                }
                 _ => {
                     if let Some(action) = resolved(action, rule, msg, ctx) {
                         let planned = PlannedAction {
@@ -153,12 +162,19 @@ pub fn evaluate(rules: &[CompiledRule], msg: &Message, ctx: &Context) -> Plan {
 /// In a `move` folder, the `+tag` of the recipient address, filled in per message.
 pub(crate) const SUBADDRESS: &str = "{subaddress}";
 
-/// `action` with `{subaddress}` in a move filled in from `msg`, or None when `msg` has no usable tag.
+/// `action` with `{subaddress}` in a move or a forward's subject prefix filled in from `msg`; a move is None when `msg`
+/// has no usable tag, a prefix loses the placeholder.
 fn resolved(action: &Action, rule: &CompiledRule, msg: &Message, ctx: &Context) -> Option<Action> {
     match action {
         Action::Move(target) if target.contains(SUBADDRESS) => {
             let tag = subaddress(rule, msg, ctx)?;
             Some(Action::Move(target.replace(SUBADDRESS, &tag)))
+        }
+        Action::Forward(forward) if forward.subject_prefix.contains(SUBADDRESS) => {
+            let tag = subaddress(rule, msg, ctx).unwrap_or_default();
+            let mut forward = forward.clone();
+            forward.subject_prefix = forward.subject_prefix.replace(SUBADDRESS, &tag);
+            Some(Action::Forward(forward))
         }
         _ => Some(action.clone()),
     }
@@ -399,7 +415,7 @@ fn matches(c: &Conditions, msg: &Message, flags: &str, ctx: &Context) -> bool {
     if let Some(pattern) = &c.has_part
         && !field(&msg.part_types)
             .lines()
-            .any(|ty| ty == pattern || (pattern.ends_with('/') && ty.starts_with(pattern.as_str())))
+            .any(|ty| crate::rules::mime_matches(pattern, ty))
     {
         return false;
     }

@@ -33,6 +33,72 @@ pub(crate) struct RulesState {
     /// The rules as the view words them, worded once per load rather than on every frame.
     pub proposals: Vec<Proposal>,
     pub lines: Vec<RuleLine>,
+    /// Forward rules that wait or keep failing, above the table.
+    pub forwards: Vec<ForwardLine>,
+}
+
+/// A forward rule that waits or keeps failing, as the Rules view shows it above the rules.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ForwardLine {
+    pub name: String,
+    /// "invoices · Waiting for approval · to books@example.org (+1)".
+    pub text: String,
+    /// What is missing is a human's approval, which the line's Approve gives.
+    pub approve: bool,
+}
+
+/// The lines for the enabled forward rules of `file` that wait in one of `accounts`, or whose forwards keep failing
+/// there, in file order.
+pub(crate) fn forward_lines(
+    file: &RuleFile,
+    accounts: &[(&postvak_core::config::AccountConfig, &Store)],
+) -> Vec<ForwardLine> {
+    use postvak_core::rules::apply::{ForwardWait, forward_wait};
+    let mut lines = Vec::new();
+    for rule in rules::compile(file).unwrap_or_default() {
+        let Some(forward) = rule.rule.forward().filter(|_| rule.rule.enabled) else {
+            continue;
+        };
+        let label = clean(&rule.rule.name, false);
+        let mut waits = Vec::new();
+        let mut failing = None;
+        for (account, store) in accounts {
+            if let Ok(Some(wait)) = forward_wait(&rule, account, store) {
+                waits.push((clean(&account.name, false), wait));
+            }
+            if rule.applies_to_account(&account.name)
+                && let Ok(failures) = store.forward_failures(&rule.rule.name)
+                && let Some((_, reason, _)) = failures.first()
+            {
+                failing.get_or_insert_with(|| clean(reason, false));
+            }
+        }
+        let line = |text: String, approve| ForwardLine {
+            name: rule.rule.name.clone(),
+            text,
+            approve,
+        };
+        if waits.iter().any(|(_, wait)| *wait == ForwardWait::Approval) {
+            let to = clean(&forward.targets(), false);
+            lines.push(line(
+                format!("{label} · Waiting for approval · to {to}"),
+                true,
+            ));
+        } else if !waits.is_empty() {
+            let names: Vec<&str> = waits.iter().map(|(name, _)| name.as_str()).collect();
+            lines.push(line(
+                format!(
+                    "{label} · Waiting: sending not set up in {}",
+                    names.join(", ")
+                ),
+                false,
+            ));
+        }
+        if let Some(reason) = failing {
+            lines.push(line(format!("{label} · Forward failing: {reason}"), false));
+        }
+    }
+    lines
 }
 
 impl RulesState {
@@ -45,7 +111,12 @@ impl RulesState {
 
     /// The file's rules, or the previous ones when it does not parse. A rule that does not compile is reported but
     /// still listed, so it can be switched off.
-    pub fn load(path: &Path, previous: RuleFile, accounts: &[Account]) -> RulesState {
+    pub fn load(
+        path: &Path,
+        previous: RuleFile,
+        accounts: &[Account],
+        config_path: &Path,
+    ) -> RulesState {
         let (error, file) = match rules::load(path) {
             Ok(file) => (rules::compile(&file).err().map(|e| e.to_string()), file),
             Err(e) => (Some(e.to_string()), previous),
@@ -58,14 +129,16 @@ impl RulesState {
             list_runs: BTreeMap::new(),
             proposals: proposals(&file),
             lines: rule_lines(&file.rules),
+            forwards: Vec::new(),
             file,
         };
-        state.check(path, accounts);
+        state.check(path, accounts, config_path);
         state
     }
 
-    /// Reads the warnings and offers again, which the stores and the files beside rules.toml change.
-    pub fn check(&mut self, path: &Path, accounts: &[Account]) {
+    /// Reads the warnings and offers again, which the stores and the files beside rules.toml change; config.toml at
+    /// `config_path` is read only when a rule forwards.
+    pub fn check(&mut self, path: &Path, accounts: &[Account], config_path: &Path) {
         let synced: Vec<rules::AccountFolders> = accounts
             .iter()
             .map(|a| rules::AccountFolders::read(&a.name, a.store.as_ref().ok()))
@@ -78,6 +151,14 @@ impl RulesState {
             .collect();
         self.warnings = warnings(path, &self.file.rules, accounts, &untrusting, &synced);
         self.offers = rules::authserv_offers(&self.file.rules, &untrusting, &synced);
+        self.forwards = Vec::new();
+        if self.file.rules.iter().any(|rule| rule.forward().is_some()) {
+            let config = postvak_core::config::Config::load(config_path).unwrap_or_default();
+            let open: Vec<_> = (accounts.iter())
+                .filter_map(|a| Some((config.account(&a.name)?, a.store.as_ref().ok()?)))
+                .collect();
+            self.forwards = forward_lines(&self.file, &open);
+        }
     }
 }
 
@@ -306,7 +387,12 @@ pub(crate) fn would_be(rule: &Rule, count: usize) -> String {
             Action::Flag => Some("flagged".into()),
             Action::Unflag => Some("unflagged".into()),
             Action::Tag(keyword) => Some(format!("tagged {}", clean(keyword, false))),
-            Action::After(_) | Action::Notify | Action::Silent | Action::Stop => None,
+            // A dry run never forwards: it counts what the rule's other actions would do.
+            Action::After(_)
+            | Action::Forward(_)
+            | Action::Notify
+            | Action::Silent
+            | Action::Stop => None,
         })
         .unwrap_or_else(|| "matched".into());
     let noun = super::numbers::noun(count as u64, "message", "messages");
@@ -478,6 +564,11 @@ fn action_runs(action: &rules::Action) -> Vec<Run> {
         Action::Archive => vec![strong("archive"), plain(" it")],
         Action::Delete => vec![strong("delete"), plain(" it")],
         Action::Flag => vec![strong("flag"), plain(" it")],
+        Action::Forward(forward) => vec![
+            strong("forward"),
+            plain(" it to "),
+            token(clean(&forward.targets(), false)),
+        ],
         Action::Junk => vec![strong("mark it junk")],
         Action::MarkRead => vec![strong("mark it read")],
         Action::MarkUnread => vec![strong("mark it unread")],
@@ -2847,5 +2938,131 @@ mod editor_tests {
         open.click("receipts");
         assert!(open.find("This rule has unsaved changes.").is_empty());
         assert_eq!(draft_name(&open).as_deref(), Some("receipts"));
+    }
+
+    const FORWARD: &str = "[[rules]]\nname = \"inv\"\naccount = \"work\"\nmatch.from = { contains = \"billing@\" }\nactions.archive = true\nactions.forward = { to = [\"books@example.org\", \"b@x.org\"] }\n";
+
+    fn approved(fx: &Fixture, name: &str) -> bool {
+        let file = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
+        let rule = postvak_core::rules::compile(&file)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.rule.name == name)
+            .unwrap();
+        let store = postvak_core::store::Store::open_account(&fx.paths, "work").unwrap();
+        store.forward_approved(name, &rule.definition).unwrap()
+    }
+
+    fn forward_lines(open: &Open) -> Vec<String> {
+        open.with(|live| {
+            live.app
+                .rules
+                .forwards
+                .iter()
+                .map(|line| line.text.clone())
+                .collect()
+        })
+    }
+
+    #[test]
+    fn saving_a_forward_rule_approves_it() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = rules_view(&fx, FORWARD);
+        assert_eq!(
+            forward_lines(&open),
+            ["inv · Waiting: sending not set up in work"]
+        );
+        assert!(
+            open.find("Approve").is_empty(),
+            "approving does not set up sending"
+        );
+        open.click("inv");
+        open.tick();
+        assert!(open.with(|live| live.app.rule_draft.as_ref().unwrap().forward.is_some()));
+        editor(&open, |e| {
+            e.invoke_forward_text(4, "For the records".into())
+        });
+        // The forward form makes the editor scroll, which leaves Save below the fold.
+        editor(&open, |e| e.invoke_save());
+        assert!(
+            file(&fx).contains("note = \"For the records\""),
+            "{}",
+            file(&fx)
+        );
+        assert!(
+            approved(&fx, "inv"),
+            "the user just wrote it, so saving approves it"
+        );
+        assert!(
+            !file(&fx).contains("approv"),
+            "approvals never go into rules.toml"
+        );
+    }
+
+    #[test]
+    fn a_forward_added_in_the_editor_is_saved_first_and_approved() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = rules_view(
+            &fx,
+            &RULES.replace("[[rules]]\n", "[[rules]]\naccount = \"work\"\n"),
+        );
+        open.click("newsletters");
+        open.tick();
+        let choices = open.window().global::<RuleEditor>().get_action_choices();
+        let forward = (0..choices.row_count())
+            .find(|&i| choices.row_data(i).unwrap() == "Forward")
+            .unwrap();
+        editor(&open, |e| e.invoke_action_chosen(forward as i32));
+        editor(&open, |e| {
+            e.invoke_forward_text(0, "books@example.org".into())
+        });
+        // The forward form makes the editor scroll, which leaves Save below the fold.
+        editor(&open, |e| e.invoke_save());
+        let saved = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
+        assert!(
+            matches!(saved.rules[0].actions[0], Action::Forward(_)),
+            "{}",
+            file(&fx)
+        );
+        assert!(approved(&fx, "newsletters"));
+    }
+
+    #[test]
+    fn a_waiting_forward_rule_offers_approve_with_its_addresses() {
+        let fx = Fixture::new(&["work"]);
+        let config = std::fs::read_to_string(fx.paths.config_file()).unwrap();
+        std::fs::write(
+            fx.paths.config_file(),
+            format!(
+                "{}\nsmtp = {{ host = \"smtp.example.com\", tls = \"starttls\" }}\n",
+                config.trim_end()
+            ),
+        )
+        .unwrap();
+        let (open, _wires) = rules_view(&fx, FORWARD);
+        assert_eq!(
+            forward_lines(&open),
+            ["inv · Waiting for approval · to books@example.org (+1)"]
+        );
+        open.click("Approve");
+        open.tick();
+        assert!(approved(&fx, "inv"));
+        assert!(forward_lines(&open).is_empty());
+        let store = postvak_core::store::Store::open_account(&fx.paths, "work").unwrap();
+        store
+            .record_forward_failure("inv", "id:<a@x>", "the outbox refused it", 100)
+            .unwrap();
+        open.with(|live| {
+            let app = &mut live.app;
+            app.rules.check(
+                &fx.paths.rules_file(),
+                &app.accounts,
+                &fx.paths.config_file(),
+            )
+        });
+        assert_eq!(
+            forward_lines(&open),
+            ["inv · Forward failing: the outbox refused it"]
+        );
     }
 }

@@ -600,6 +600,21 @@ fn rule_editor() {
     snapshot(&open, "gui_rule_editor");
 }
 
+/// A rule that forwards, with its sub-form open in the editor.
+#[test]
+fn rule_editor_forward() {
+    let fx = Fixture::mailbox("light");
+    let rules = "[[rules]]\nname = \"invoices\"\naccount = \"work\"\nmatch.from = { contains = \"billing@\" }\nactions.archive = true\nactions.forward = { to = [\"books@example.org\", \"accounts@example.org\"], note = \"For the records\", attachments = { type = \"application/pdf\" } }\n";
+    std::fs::write(fx.paths.rules_file(), rules).unwrap();
+    let (open, _wires) = open(&fx);
+    open.with(|live| live.app.select_view(View::Rules));
+    open.tick();
+    open.click("invoices");
+    open.tick();
+    assert_eq!(open.find("Remove forward").len(), 1);
+    snapshot(&open, "gui_rule_editor_forward");
+}
+
 /// A rule whose conditions name lists: a text list on the subject and a domain list on the sender, each with its values
 /// under the row.
 #[test]

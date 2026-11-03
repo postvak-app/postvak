@@ -857,7 +857,8 @@ fn a_command_wakes_idle_and_runs_within_two_seconds() {
         accounts: vec![account.clone()],
         ..Default::default()
     };
-    let (engine, events) = Engine::start(&config, &Paths::under(home.path()), imap_connector());
+    let (engine, events) =
+        Engine::start(&config, &Paths::under(home.path()), imap_connector(), None);
     let wait = |wanted: &dyn Fn(&Event) -> bool| {
         loop {
             let event = events
@@ -1197,7 +1198,8 @@ fn starttls_refuses_a_server_without_it_and_tls_none_logs_in_unencrypted() {
         accounts: vec![account],
         ..Default::default()
     };
-    let (_engine, events) = Engine::start(&config, &Paths::under(home.path()), imap_connector());
+    let (_engine, events) =
+        Engine::start(&config, &Paths::under(home.path()), imap_connector(), None);
     loop {
         match events
             .recv_timeout(Duration::from_secs(30))

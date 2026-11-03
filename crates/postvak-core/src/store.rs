@@ -49,6 +49,7 @@ fn migration_list() -> Vec<M<'static>> {
         M::up(include_str!("../migrations/025-apply-existing/up.sql")),
         M::up(include_str!("../migrations/026-part-types/up.sql")),
         M::up(include_str!("../migrations/027-smtp/up.sql")),
+        M::up(include_str!("../migrations/028-forward/up.sql")),
     ]
 }
 
@@ -1670,14 +1671,123 @@ impl Store {
         Ok(())
     }
 
-    /// Drops first-seen times of rules no longer in the file, so a re-added rule starts fresh instead of acting on history.
+    /// Drops first-seen times and forward approvals of rules no longer in the file, so a re-added rule starts fresh
+    /// instead of acting on history, and a re-added forward waits for a new approval.
     pub fn forget_rules_except(&self, names: &[&str]) -> Result<(), StoreError> {
         let names = serde_json::to_string(names)?;
+        for (table, column) in [("forward_approvals", "rule"), ("rules_seen", "name")] {
+            self.conn.execute(
+                &format!(
+                    "DELETE FROM {table} WHERE {column} NOT IN (SELECT value FROM json_each(?1))"
+                ),
+                params![names],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Approves the forward rule `rule` as `definition` says it, replacing an approval of any other definition.
+    pub fn approve_forward(
+        &self,
+        rule: &str,
+        definition: &str,
+        now: i64,
+    ) -> Result<(), StoreError> {
         self.conn.execute(
-            "DELETE FROM rules_seen WHERE name NOT IN (SELECT value FROM json_each(?1))",
-            params![names],
+            "INSERT OR REPLACE INTO forward_approvals (rule, definition, approved_at) VALUES (?1, ?2, ?3)",
+            params![rule, definition, now],
         )?;
         Ok(())
+    }
+
+    /// Whether `rule` is approved exactly as `definition` says it.
+    pub fn forward_approved(&self, rule: &str, definition: &str) -> Result<bool, StoreError> {
+        Ok(self.forward_approved_at(rule, definition)?.is_some())
+    }
+
+    /// When `rule` was approved exactly as `definition` says it; None when it is not.
+    pub fn forward_approved_at(
+        &self,
+        rule: &str,
+        definition: &str,
+    ) -> Result<Option<i64>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT approved_at FROM forward_approvals WHERE rule = ?1 AND definition = ?2",
+                params![rule, definition],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn withdraw_forward(&self, rule: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "DELETE FROM forward_approvals WHERE rule = ?1",
+            params![rule],
+        )?;
+        Ok(())
+    }
+
+    /// Whether `rule` queued a forward of the message `key` names (`rules::forward::once_key`).
+    pub fn was_forwarded(&self, rule: &str, key: &str) -> Result<bool, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM forwarded WHERE rule = ?1 AND key = ?2)",
+            params![rule, key],
+            |r| r.get(0),
+        )?)
+    }
+
+    pub fn record_forwarded(&self, rule: &str, key: &str, now: i64) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO forwarded (rule, key, at) VALUES (?1, ?2, ?3)",
+            params![rule, key, now],
+        )?;
+        Ok(())
+    }
+
+    /// How many forwards `rule` queued at `since` or later.
+    pub fn forwards_since(&self, rule: &str, since: i64) -> Result<u32, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM forwarded WHERE rule = ?1 AND at >= ?2",
+            params![rule, since],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Remembers why `rule` could not queue the forward of `key`, keeping when that first happened.
+    pub fn record_forward_failure(
+        &self,
+        rule: &str,
+        key: &str,
+        reason: &str,
+        now: i64,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO forward_failures (rule, key, reason, first_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (rule, key) DO UPDATE SET reason = excluded.reason",
+            params![rule, key, reason, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_forward_failure(&self, rule: &str, key: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "DELETE FROM forward_failures WHERE rule = ?1 AND key = ?2",
+            params![rule, key],
+        )?;
+        Ok(())
+    }
+
+    /// The forwards `rule` cannot queue: the message's key, why, and since when; the oldest first.
+    pub fn forward_failures(&self, rule: &str) -> Result<Vec<(String, String, i64)>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT key, reason, first_at FROM forward_failures WHERE rule = ?1 ORDER BY first_at, key",
+        )?;
+        let rows = statement
+            .query_map(params![rule], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
     }
 
     pub fn log_action(&self, entry: &LogEntry) -> Result<(), StoreError> {
@@ -3471,6 +3581,68 @@ mod tests {
         })
         .unwrap();
         assert_eq!(s.rules_uid("INBOX").unwrap(), 77);
+    }
+
+    #[test]
+    fn forward_approval_matches_the_exact_definition() {
+        let s = Store::open_in_memory().unwrap();
+        assert!(!s.forward_approved("inv", "d1").unwrap());
+        s.approve_forward("inv", "d1", 100).unwrap();
+        assert!(s.forward_approved("inv", "d1").unwrap());
+        assert!(!s.forward_approved("inv", "d2").unwrap());
+        assert!(!s.forward_approved("other", "d1").unwrap());
+        s.approve_forward("inv", "d2", 200).unwrap();
+        assert!(
+            !s.forward_approved("inv", "d1").unwrap(),
+            "one approval per rule"
+        );
+        s.withdraw_forward("inv").unwrap();
+        assert!(!s.forward_approved("inv", "d2").unwrap());
+        s.approve_forward("inv", "d2", 300).unwrap();
+        s.forget_rules_except(&["kept"]).unwrap();
+        assert!(
+            !s.forward_approved("inv", "d2").unwrap(),
+            "a removed rule's approval goes with it"
+        );
+    }
+
+    #[test]
+    fn forwarded_is_recorded_once_and_counted_in_the_window() {
+        let s = Store::open_in_memory().unwrap();
+        assert!(!s.was_forwarded("inv", "id:<a@x>").unwrap());
+        s.record_forwarded("inv", "id:<a@x>", 100).unwrap();
+        s.record_forwarded("inv", "id:<a@x>", 150).unwrap();
+        s.record_forwarded("inv", "id:<b@x>", 200).unwrap();
+        s.record_forwarded("other", "id:<c@x>", 200).unwrap();
+        assert!(s.was_forwarded("inv", "id:<a@x>").unwrap());
+        assert!(!s.was_forwarded("other", "id:<a@x>").unwrap());
+        assert_eq!(s.forwards_since("inv", 0).unwrap(), 2);
+        assert_eq!(
+            s.forwards_since("inv", 101).unwrap(),
+            1,
+            "the repeat kept its first time"
+        );
+        assert_eq!(s.forwards_since("inv", 201).unwrap(), 0);
+    }
+
+    #[test]
+    fn forward_failures_keep_first_and_last_time() {
+        let s = Store::open_in_memory().unwrap();
+        s.record_forward_failure("inv", "id:<a@x>", "fetch failed", 100)
+            .unwrap();
+        s.record_forward_failure("inv", "id:<a@x>", "outbox full", 200)
+            .unwrap();
+        s.record_forward_failure("inv", "id:<b@x>", "fetch failed", 150)
+            .unwrap();
+        assert_eq!(
+            s.forward_failures("inv").unwrap(),
+            [
+                ("id:<a@x>".to_string(), "outbox full".to_string(), 100),
+                ("id:<b@x>".to_string(), "fetch failed".to_string(), 150)
+            ]
+        );
+        s.clear_forward_failure("inv", "id:<a@x>").unwrap();
+        assert_eq!(s.forward_failures("inv").unwrap().len(), 1);
     }
 
     #[test]

@@ -2898,3 +2898,95 @@ async fn a_narrowed_server_cannot_change_a_list_a_hidden_accounts_rule_uses() {
     .await;
     assert_ne!(fresh.is_error, Some(true), "{fresh:?}");
 }
+
+/// One account that sends through smtp.example.com, so a forward rule waits for approval alone.
+fn sending_fixture() -> Fixture {
+    let (dir, paths) = prepare_with(
+        &["work"],
+        "smtp = { host = \"smtp.example.com\", tls = \"starttls\" }",
+    );
+    Fixture {
+        paths,
+        has_daemon: false,
+        _owner: Box::new(dir),
+    }
+}
+
+fn forward_rule(name: &str, subject: &str) -> Value {
+    json!({
+        "name": name,
+        "match": { "subject": { "contains": subject } },
+        "actions": { "archive": true, "forward": { "to": "books@example.org" } }
+    })
+}
+
+/// Why the rule `name` waits in the fixture's account, as the sync's own filter decides it.
+fn forward_wait(fx: &Fixture, name: &str) -> Option<postvak_core::rules::apply::ForwardWait> {
+    let file = postvak_core::rules::load(&fx.paths.rules_file()).unwrap();
+    let rule = postvak_core::rules::compile(&file)
+        .unwrap()
+        .into_iter()
+        .find(|r| r.rule.name == name)
+        .unwrap();
+    let config = postvak_core::config::Config::load(&fx.paths.config_file()).unwrap();
+    postvak_core::rules::apply::forward_wait(&rule, &config.accounts[0], &fx.store("work")).unwrap()
+}
+
+#[tokio::test]
+async fn mcp_approve_leaves_a_forward_waiting() {
+    let fx = sending_fixture();
+    let client = connect(&fx, "read,rules:propose,rules:write", &[]).await;
+    let proposed = call(&client, "rules_propose", forward_rule("inv", "Invoice")).await;
+    assert_ne!(proposed.is_error, Some(true), "{proposed:?}");
+    let approved = call(&client, "rules_approve", json!({ "name": "inv" })).await;
+    let result = approved.structured_content.unwrap();
+    assert_eq!(result["enabled"], true);
+    assert!(
+        result["forward"]
+            .as_str()
+            .unwrap()
+            .starts_with("waits for approval in Postvak"),
+        "{result}"
+    );
+    assert!(
+        postvak_core::rules::load(&fx.paths.rules_file())
+            .unwrap()
+            .rules[0]
+            .enabled
+    );
+    assert_eq!(
+        forward_wait(&fx, "inv"),
+        Some(postvak_core::rules::apply::ForwardWait::Approval)
+    );
+    let listed = rows(&call(&client, "rules_list", json!({})).await);
+    assert_eq!(listed[0]["forward_waiting"], json!(["work"]));
+}
+
+#[tokio::test]
+async fn an_edit_proposal_approved_over_mcp_makes_the_forward_wait_again() {
+    let fx = sending_fixture();
+    std::fs::write(
+        fx.paths.rules_file(),
+        "[[rules]]\nname = \"inv\"\nmatch.subject = { contains = \"Invoice\" }\nactions.archive = true\nactions.forward = { to = \"books@example.org\" }\n",
+    )
+    .unwrap();
+    postvak_core::rules::edit::approve_forward(&fx.paths, "inv", 100).unwrap();
+    assert_eq!(forward_wait(&fx, "inv"), None, "approved by a human");
+    let client = connect(&fx, "read,rules:propose,rules:write", &[]).await;
+    let mut widened = forward_rule("inv", "e");
+    widened["edit"] = json!(true);
+    let proposed = call(&client, "rules_propose", widened).await;
+    assert_ne!(proposed.is_error, Some(true), "{proposed:?}");
+    let approved = call(&client, "rules_approve", json!({ "name": "inv (edit)" })).await;
+    let result = approved.structured_content.unwrap();
+    assert_eq!(result["rule"], "inv");
+    assert!(result["forward"].is_string(), "{result}");
+    assert_eq!(rule_names(&fx), ["inv"]);
+    assert_eq!(
+        forward_wait(&fx, "inv"),
+        Some(postvak_core::rules::apply::ForwardWait::Approval),
+        "the widened rule runs nothing until a human approves it"
+    );
+    let listed = rows(&call(&client, "rules_list", json!({})).await);
+    assert_eq!(listed[0]["forward_waiting"], json!(["work"]));
+}

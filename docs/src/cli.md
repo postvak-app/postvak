@@ -328,7 +328,7 @@ Inspect and test rules.toml
 * `schema` — JSON Schema for rules.toml; a proposal is one entry of `rules`
 * `propose` — Read one rule, a JSON array of rules or {"rules": [...]} on stdin and add them disabled, in order, for a human to approve; all or none are stored. {"lists": {...}} proposes new values for named lists, alone or beside "rules"
 * `withdraw` — Remove your own pending proposal: a disabled rule whose proposed_by is yours, or with `list` your pending change of that list; anything else is left for a human
-* `approve` — Enable a disabled rule, such as a proposal, or write an edit proposal over the rule it edits; with `list`, write that list's pending change into [lists] and restart the clock of every rule that uses it
+* `approve` — Enable a disabled rule, such as a proposal, or write an edit proposal over the rule it edits; with `list`, write that list's pending change into [lists] and restart the clock of every rule that uses it. A rule that forwards also waits for a human to approve its exact definition: `postvak rules approve` and the Rules view do, also for a rule already enabled, and MCP rules_approve never does
 * `reject` — Remove a pending proposal; with `list`, that list's pending change, whoever proposed it
 * `move` — Move a rule right before or after another, which changes the order the rules run in: earlier rules run first
 * `list` — Every rule in file order, the order they run in: its position, its whole definition, whether it is enabled, who proposed it and the values of the lists it uses
@@ -411,7 +411,7 @@ Remove your own pending proposal: a disabled rule whose proposed_by is yours, or
 
 ## `postvak rules approve`
 
-Enable a disabled rule, such as a proposal, or write an edit proposal over the rule it edits; with `list`, write that list's pending change into [lists] and restart the clock of every rule that uses it
+Enable a disabled rule, such as a proposal, or write an edit proposal over the rule it edits; with `list`, write that list's pending change into [lists] and restart the clock of every rule that uses it. A rule that forwards also waits for a human to approve its exact definition: `postvak rules approve` and the Rules view do, also for a rule already enabled, and MCP rules_approve never does
 
 **Usage:** `postvak rules approve [OPTIONS] <NAME>`
 

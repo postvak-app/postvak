@@ -148,7 +148,7 @@ fn acts(
 ) -> Result<(Vec<Act>, Option<String>), StoreError> {
     let act = |planned: &PlannedAction, waits: Option<&Due>| Act {
         rule: planned.rule.clone(),
-        action: planned.action.label(),
+        action: planned.action.preview_label(),
         waits: waits.map(Due::describe),
     };
     match would_run(plan, msg, store) {
@@ -161,6 +161,7 @@ fn acts(
                         .iter()
                         .map(|(planned, due)| act(planned, Some(due))),
                 )
+                .chain(plan.new_mail_only.iter().map(|planned| act(planned, None)))
                 .collect(),
             None,
         )),
@@ -531,6 +532,22 @@ actions = { archive = true }
             .iter()
             .map(|a| (a.rule.as_str(), a.action.as_str()))
             .collect()
+    }
+
+    #[test]
+    fn coverage_shows_forward_as_new_mail_only() {
+        let store = store(&[(1, "billing@shop.example", "Invoice")]);
+        let toml = "[[rules]]\nname = \"inv\"\nmatch.from = { contains = \"billing@\" }\nactions.forward = { to = \"books@example.org\", cc = \"b@x.org\" }\nactions.flagged = true\n\
+                    [[rules]]\nname = \"read\"\nmatch.subject = { regex = \".\" }\nactions = { read = true }\n";
+        let contest = contest(&store, "INBOX", toml);
+        assert_eq!(
+            acted(&contest),
+            [
+                ("inv", "flagged"),
+                ("read", "read"),
+                ("inv", "forward:books@example.org (+1) (new mail only)")
+            ]
+        );
     }
 
     const ARCHIVE_AND_READ: &str = r#"

@@ -155,6 +155,7 @@ actions.flagged = true
 | `tag = "$label1"` | Adds that IMAP keyword, or each keyword of a list (`tag = ["$label1", "$work"]`), which Thunderbird and other clients show as tags. The server must accept custom keywords. |
 | `notify = true` | Notifies even when the message was moved; `false` never notifies. |
 | `stop = true` | Later rules don't run for that message. |
+| `forward = { to = "books@example.org" }` | Sends the message on to other addresses through the account's SMTP server, before the rule's other actions run. Only new mail, and only once you approved the rule in Postvak: see [Forwarding](#forwarding). |
 | `after = "15min"` | The rule's other actions wait: for a span after the message arrived (`30min`, `1h`, `2d`, as for `older_than`), until it is read (`"read"`), or for the first of a list (`after = ["read", "2d"]`). Meanwhile the rule's `stop` and `notify` already hold, so `stop` keeps the rules below from acting on the message while it waits; without `stop` they run as if this rule had not matched yet. A waiting move does not count as a move, so the message still notifies. A rule needs an action to wait with, such as `move` or `delete`. `rules apply-existing` acts on older mail whose wait is over; older mail still waiting is left alone, then and later, since the rule only acts on mail that arrives after it was enabled. |
 
 The order of the keys does not matter: flags and tags are set before a move. When several rules match a message, the first one in the file decides each thing only one rule can decide: a delete in any matching rule wins over everything else, then a `junk`, then the first `move` or `archive` runs, and the first `notify` says whether it notifies. After a rule with `stop`, later rules in the file don't run for that message; earlier ones already did.
@@ -169,6 +170,38 @@ A rule sees what the matching rules above it changed: `read`, `flagged` and `tag
 - Renaming a rule, editing its account, folder, match or actions, changing a list it uses, or disabling and enabling it again, restarts that clock.
 - Rules move a message out of a folder once. When it comes back, because you moved it back or a rule on another machine did, no rule moves, archives or junks it again; the other actions still run. So two rules that move mail between two folders stop after one round. Postvak tells messages apart by Message-ID and arrival time, which servers keep when mail moves.
 - Mail restored with `postvak trash restore` carries the `$PostvakRestored` keyword. Rules never act on it again. This needs a server that accepts custom keywords; without one, the same rule can delete restored mail again.
+
+## Forwarding
+
+`forward` passes matching mail on, such as invoices to your bookkeeper or what reaches a shared address to your own:
+
+```toml
+[[rules]]
+name = "invoices"
+match.from = { contains = "billing@" }
+match.has_part = "application/pdf"
+actions.archive = true
+actions.forward = { to = ["books@example.org"], note = "Invoice for the records", attachments = { type = "application/pdf" } }
+```
+
+| Key | Effect |
+|---|---|
+| `to` | One address or a list; required. `cc` and `bcc` take the same. |
+| `from` | Your address to send as: the account's, or one an alias matches. It needs the rule's `account`, so `rules check` refuses it on a rule for every account. Without it the forward goes from the address of yours the message was sent to, else the account's. |
+| `subject_prefix` | Put before the subject, `Fwd: ` unless set; may be empty, and `{subaddress}` works as in `move`. Not added when the subject already starts with a forward prefix. |
+| `note` | Text above the forwarded message. |
+| `as` | `inline` (the default): the original's text below a header block, its attachments attached again. `attachment`: the original whole, untouched, as an attached message. |
+| `attachments` | Which attachments an inline forward takes: `true` (the default) all, `false` none, or a table naming them with `type` (`application/pdf`, `image/*`), `name` (a text condition on the file name) and `max_size` (`5MB`). Those left out are named under the forwarded message: `Not forwarded: big.zip (40 MB)`. Refused with `as = "attachment"`. |
+| `max_size` | For a message larger than this, `max_size = "10MB"` does not forward it, and `max_size = { limit = "10MB", over = "strip" }` forwards it without its attachments. The default limit is the server's own, else 25MB. Its other actions run either way. |
+| `rate` | Forwards per hour, at most; 20 unless set. |
+
+A forward rule acts on new mail only. It never sends mail the rule matched before you approved it, and `rules apply-existing`, the window's Apply to existing mail, `rules test` and coverage leave its forward out and show it as `forward:books@example.org (new mail only)`; the rule's other actions run there as usual.
+
+**Approval.** No forward rule sends anything until you approved it in Postvak: with `postvak rules approve NAME`, the Approve button in the Rules view, which shows its addresses, or by saving it in the window's rule editor, where you just wrote them. The approval is the rule's whole definition, kept in each account's own store and never in `rules.toml`, so any change to the rule, its match, folder, recipients, note or rate, needs a new approval; approving starts the rule's clock again, so it forwards only mail that arrives from then on. A rule written in `rules.toml` by hand, or by an agent, waits. While it waits, none of its actions run, so it never archives mail it did not forward. The daemon raises the notification proposals use ("A rule waits for your approval"), `postvak rules list` shows it `waiting for approval in work`, `rules check` says how to approve it, and the Rules view shows it above the rules with Approve. An account added later starts unapproved, so the rule waits there until you approve it again. A forward rule also waits, without notifying, in an account where [sending](sending.md) is not set up: `waiting: sending not set up`.
+
+**Limits.** Each message is forwarded by a rule once, even when it is moved back or synced again. Every forward carries `X-Postvak-Forwarded: <your address>` and keeps the ones the message had; a message is not forwarded when one of those names an address of the account, when it carries three already, or when it is an automatic reply (`Auto-Submitted: auto-replied`), so a chain such as shared address → own account → bookkeeper works and a loop stops at the first repeat. Its other actions still run. A rule that would forward more than its `rate` in an hour stops forwarding, gets its other actions done, and waits for your approval again; a notification says `Forwarding paused for "invoices": more than 20 in an hour`.
+
+**Failures.** A forward goes through the [outbox](sending.md#the-outbox-and-the-undo-delay) at once, without the undo delay. When it cannot be queued, because the message cannot be downloaded or `from` is not yours, none of the rule's actions run on that message, and the next sync tries again; `rules check` and the Rules view show a failure that lasts. A forward the server refuses stays in `postvak outbox` with the reason. Each forward is a row in `postvak log`, `forward:books@example.org (+1)`; undo cannot call it back, says so, and undoes the rule's other actions.
 
 ## Notifications
 
@@ -401,10 +434,10 @@ To change a rule that is already there, an agent runs `rules propose --edit` wit
 
 To review a proposal:
 
-- `postvak rules list` shows every rule in file order, the order they run in, with its state and proposer; a pending proposal is `off` with a proposer, and an edit adds which rule it edits, then how many messages the rule acted on in the last 30 days. `--json` adds each rule's whole definition, the values of the `lists` it uses, its 0-based `position` in the file, `hits_30d` (those messages, each counted once, over every account) and `last_fired` (when it last acted, as Unix seconds, or `null` if never). Actions you took yourself and runs of `rules apply-existing` are not counted.
+- `postvak rules list` shows every rule in file order, the order they run in, with its state and proposer; a pending proposal is `off` with a proposer, and an edit adds which rule it edits, then how many messages the rule acted on in the last 30 days. A forward rule that waits adds why and where: `waiting for approval in work`. `--json` adds each rule's whole definition, the values of the `lists` it uses, its 0-based `position` in the file, `hits_30d` (those messages, each counted once, over every account), `last_fired` (when it last acted, as Unix seconds, or `null` if never) and `forward_waiting` (the accounts where a forward rule waits, empty when it waits nowhere). Actions you took yourself and runs of `rules apply-existing` are not counted.
 - `postvak rules test NAME` previews what a proposal would do.
 - `postvak rules coverage --include-pending` shows what the proposals change for a folder as a whole; see [Coverage](#coverage).
-- `postvak rules approve NAME` enables it, or for an edit writes it over the rule it edits.
+- `postvak rules approve NAME` enables it, or for an edit writes it over the rule it edits; for a rule that forwards, it approves the forward too, and on a forward rule already enabled it approves the forward alone.
 - `postvak rules reject NAME` removes it.
 
 While the [daemon](daemon.md) runs, a new proposal brings a desktop notification ("A rule waits for your approval", naming it; several within two seconds come as one), on Linux and macOS alike. Clicking it opens the window on Rules, as `postvak gui --rules` does. Proposals already waiting when the daemon starts do not notify again, and neither does a proposal changed with `--replace`, which keeps its name.

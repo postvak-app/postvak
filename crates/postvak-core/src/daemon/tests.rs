@@ -940,7 +940,7 @@ fn idle_shared() -> super::Shared {
         signalled: Default::default(),
         watch: std::sync::Mutex::new(super::Watch::new(&Paths::under(Path::new("/nonexistent")))),
         notifier: None,
-        senders: std::sync::Mutex::new(None),
+        senders: Default::default(),
         smtp: super::test_support::recording_smtp(Default::default()),
         config: Default::default(),
         paths: Paths::under(Path::new("/nonexistent")),
@@ -1304,7 +1304,7 @@ fn a_command_for_an_account_between_threads_says_it_is_restarting() {
     write_config(&paths);
     let (connector, connecting, gate) = gated_connector();
     let config = crate::config::Config::parse(super::test_support::CONFIG).unwrap();
-    let (mut engine, _events) = crate::engine::Engine::start(&config, &paths, connector);
+    let (mut engine, _events) = crate::engine::Engine::start(&config, &paths, connector, None);
     while connecting.recv_timeout(WAIT).unwrap() != "work" {}
     let mut changed = crate::config::Config::parse(super::test_support::CONFIG).unwrap();
     changed.accounts[0].sync_interval_secs = 300;
@@ -1316,7 +1316,7 @@ fn a_command_for_an_account_between_threads_says_it_is_restarting() {
         signalled: Default::default(),
         watch: std::sync::Mutex::new(super::Watch::new(&paths)),
         notifier: None,
-        senders: std::sync::Mutex::new(None),
+        senders: Default::default(),
         smtp: super::test_support::recording_smtp(Default::default()),
         config: Default::default(),
         paths: paths.clone(),
@@ -1512,14 +1512,15 @@ mod sending {
     #[test]
     fn the_daemon_does_not_idle_out_with_a_waiting_message() {
         let smtp = SharedSmtp::default();
-        let mut daemon = daemon(&smtp, Some(Duration::from_millis(50)));
+        // The idle time also bounds how long the client may take to connect, so a loaded CI runner needs room.
+        let mut daemon = daemon(&smtp, Some(Duration::from_millis(400)));
         {
             let client = Client::connect(&daemon.paths).unwrap();
             client
-                .queue_send("work", MESSAGE, &entry(crate::time::now() + 1, false))
+                .queue_send("work", MESSAGE, &entry(crate::time::now() + 3, false))
                 .unwrap();
         }
-        std::thread::sleep(Duration::from_millis(300));
+        std::thread::sleep(Duration::from_millis(1000));
         assert!(
             daemon.paths.daemon_socket().exists(),
             "idled out with a message waiting"

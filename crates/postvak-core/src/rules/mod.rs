@@ -4,10 +4,12 @@ pub mod edit;
 
 pub use edit::{list_toml, rule_toml};
 pub mod engine;
+pub mod forward;
 pub mod hits;
 pub mod lists;
 mod warnings;
 
+pub use forward::Forward;
 pub use lists::{Domain, ListProposal, ListRef, Lists, NamedList};
 
 pub use warnings::{
@@ -255,6 +257,10 @@ pub struct Actions {
     /// Adds this IMAP keyword, or each of a list; Thunderbird shows them as tags (e.g. $label1)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tag: Option<OneOrMany<String>>,
+    /// Sends the message on to other addresses, new mail only and once you approved the rule in Postvak; runs before
+    /// the other actions
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    forward: Option<Box<Forward>>,
     // Last, out of order: serde reads a list into a struct by position, so the old `actions = ["delete"]` stays refused.
     /// Waits before the other actions run: a span such as 15min or 3d after the message arrived, "read" until it is
     /// read, or a list of them, whichever comes first. Until then notify and stop already apply
@@ -268,6 +274,7 @@ impl Actions {
         let either =
             |set: Option<bool>, yes: Action, no: Action| set.map(|set| if set { yes } else { no });
         [
+            self.forward.map(Action::Forward),
             when(self.delete, Action::Delete),
             when(self.archive, Action::Archive),
             when(self.junk, Action::Junk),
@@ -319,6 +326,12 @@ impl Actions {
                 }
                 Action::Tag(keyword) => {
                     tags.push(keyword.clone());
+                    continue;
+                }
+                Action::Forward(forward) => {
+                    if table.forward.replace(forward.clone()).is_some() {
+                        return Err("actions.forward is given twice".into());
+                    }
                     continue;
                 }
                 Action::After(when) => {
@@ -403,6 +416,8 @@ pub enum Action {
     /// The rule's other actions wait until this span after arrival, such as 15min, or until the message is read
     /// (`read`); of several, the first that comes
     After(String),
+    /// Send the message on through the account's SMTP server; new mail only, once the rule is approved
+    Forward(Box<Forward>),
 }
 
 impl Action {
@@ -412,6 +427,14 @@ impl Action {
             self,
             Action::After(_) | Action::Notify | Action::Silent | Action::Stop
         )
+    }
+
+    /// The label as a preview shows it: a forward, which acts on new mail only, says so.
+    pub fn preview_label(&self) -> String {
+        match self {
+            Action::Forward(forward) => format!("{} (new mail only)", forward.label()),
+            _ => self.label(),
+        }
     }
 
     /// The label of the command a user gave for this action: `delete` sends `Trash` outside the Trash folder.
@@ -441,7 +464,18 @@ impl Action {
             Action::Move(folder) => format!("move:{folder}"),
             Action::Tag(keyword) => format!("tag:{keyword}"),
             Action::After(when) => format!("after:{when}"),
+            Action::Forward(forward) => forward.label(),
         }
+    }
+}
+
+impl Rule {
+    /// The rule's forward, when it has one.
+    pub fn forward(&self) -> Option<&Forward> {
+        self.actions.iter().find_map(|action| match action {
+            Action::Forward(forward) => Some(&**forward),
+            _ => None,
+        })
     }
 }
 
@@ -817,9 +851,13 @@ fn compile_rule(
         ));
     }
     for action in &rule.actions {
-        if let Action::Tag(keyword) = action {
-            check_keyword(keyword)
-                .map_err(|reason| invalid(&rule.name, format!("tag {reason}")))?;
+        match action {
+            Action::Tag(keyword) => check_keyword(keyword)
+                .map_err(|reason| invalid(&rule.name, format!("tag {reason}")))?,
+            Action::Forward(forward) => forward
+                .check(rule.account.as_deref())
+                .map_err(|reason| invalid(&rule.name, reason))?,
+            _ => {}
         }
     }
     let after = rule
@@ -867,6 +905,12 @@ fn mime_pattern(text: &str) -> Option<String> {
         _ if token(subtype) => Some(text),
         _ => None,
     }
+}
+
+/// Whether `content_type`, in lowercase, is what `pattern` from [`mime_pattern`] names: that type, or with a trailing
+/// `/` any subtype of it.
+pub(crate) fn mime_matches(pattern: &str, content_type: &str) -> bool {
+    content_type == pattern || (pattern.ends_with('/') && content_type.starts_with(pattern))
 }
 
 fn compile_match(
@@ -1196,8 +1240,8 @@ mod tests {
         assert_eq!(
             keys,
             [
-                "after", "archive", "delete", "flagged", "junk", "move", "notify", "read", "stop",
-                "tag"
+                "after", "archive", "delete", "flagged", "forward", "junk", "move", "notify",
+                "read", "stop", "tag"
             ],
             "actions only users take stay out of the schema"
         );

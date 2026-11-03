@@ -89,6 +89,15 @@ pub const OUTBOX_CANCEL: &str =
 pub const OUTBOX_RETRY: &str = "Send a failed message again";
 
 /// Why an account cannot send, and where to read how to fix it.
+/// What an agent is told when it approves a forward rule: the rule is enabled, but forwards nothing until a human
+/// approves it.
+pub fn forward_held(rule: &str) -> String {
+    format!(
+        "waits for approval in Postvak (`postvak rules approve {rule}` or the Rules view); until then none of the \
+         rule's actions run"
+    )
+}
+
 pub fn sending_not_set_up(account: &str) -> String {
     format!(
         "sending is not set up for '{account}': no SMTP server is configured and none was found; set one with \
@@ -157,7 +166,7 @@ pub const NO_UIDPLUS: &str = "the server lacks UIDPLUS: a delete also removes an
 pub const MOVE: &str = "Move messages to another folder, creating it if needed";
 pub const RULES_APPLY_EXISTING: &str =
     "Run one enabled rule against mail that predates it; dry run lists what it would do";
-pub const RULES_APPROVE: &str = "Enable a disabled rule, such as a proposal, or write an edit proposal over the rule it edits; with `list`, write that list's pending change into [lists] and restart the clock of every rule that uses it";
+pub const RULES_APPROVE: &str = "Enable a disabled rule, such as a proposal, or write an edit proposal over the rule it edits; with `list`, write that list's pending change into [lists] and restart the clock of every rule that uses it. A rule that forwards also waits for a human to approve its exact definition: `postvak rules approve` and the Rules view do, also for a rule already enabled, and MCP rules_approve never does";
 pub const RULES_CHECK: &str = "Validate rules.toml, and warn about what keeps it from doing what it says, such as a conflicting copy a file sync left beside it or a rule for an account not set up here";
 /// The `--as-of` option of `rules test` and `rules coverage`, and the `as_of` argument of their MCP tools.
 pub const AS_OF: &str = "Evaluate as if it were this time, to see what older_than and younger_than will do: a span ahead of now (15min, 1d), a local date (2026-11-01), a local time (2026-11-01T14:00) or an RFC 3339 timestamp; the mail and its read, flagged and tags stay as they are now, and nothing is applied";
