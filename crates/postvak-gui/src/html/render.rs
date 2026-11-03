@@ -36,13 +36,14 @@ const THREAD: &str = "html-render";
 /// provider refuses.
 const BASE: &str = "postvak://mail/";
 
-/// Mail is written for a 600 px column and assumes nothing about the window: keep images and long words inside it.
+/// Mail is written for a 600 px column and assumes nothing about the window: keep long words, and images the sender
+/// gave no width, inside it. One with a width keeps it, as in a browser, where a narrower cell widens to hold it.
 /// The rest is the HTML spec's rendering section for the presentational attributes Blitz lacks (`border`, `valign`,
 /// `align` on a table or image, `size` on `<font>`, and `cellspacing` and `cellpadding` in `spacing_css`); a
 /// user-agent sheet, so author CSS wins, as it does over real presentational hints. Relative sizes (`size="+1"`) and
 /// `align` on other elements are not mapped.
 const MAIL_CSS: &str = concat!(
-    "img { max-width: 100%; height: auto; } body { overflow-wrap: anywhere; } ",
+    "img:not([width]) { max-width: 100%; height: auto; } body { overflow-wrap: anywhere; } ",
     // A border on every cell of a table that asks for one, but not of a table nested in it.
     "table[border]:not([border=\"0\"]) > :is(thead, tbody, tfoot) > tr > :is(td, th), ",
     "table[border]:not([border=\"0\"]) > tr > :is(td, th) { border: 1px solid gray; } ",
@@ -1267,6 +1268,26 @@ mod tests {
         };
         assert_eq!(left("cellpadding=10") - left("cellpadding=0"), 10);
         assert_eq!(left("") - left("cellpadding=0"), 1);
+    }
+
+    /// As in a browser, an image keeps the width its sender gave it, also in a narrower cell, which widens; one
+    /// without a width is kept inside the page.
+    #[test]
+    fn an_image_keeps_its_width_and_one_without_fits_the_page() {
+        let width = |html: &str| {
+            let mut current = laid_out(html, false, vec![part("red", solid(1000, [255, 0, 0]))]);
+            let xs: BTreeSet<usize> = at(&first_strip(&mut current), is_red)
+                .into_iter()
+                .map(|p| p.0)
+                .collect();
+            let (Some(&first), Some(&last)) = (xs.first(), xs.last()) else {
+                panic!("nothing painted for {html}");
+            };
+            last + 1 - first
+        };
+        let narrow_cell = "<table><tr><td width=15><img src=\"cid:red\" width=45 height=45 style=\"display:block\"></td></tr></table>";
+        assert_eq!(width(narrow_cell), 45);
+        assert!(width("<img src=\"cid:red\">") <= MIN_WIDTH as usize);
     }
 
     /// The stacking rule responsive mail ships for narrow screens, on two columns with a colour and a text each.
