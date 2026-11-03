@@ -306,7 +306,12 @@ pub(crate) fn would_be(rule: &Rule, count: usize) -> String {
             Action::Flag => Some("flagged".into()),
             Action::Unflag => Some("unflagged".into()),
             Action::Tag(keyword) => Some(format!("tagged {}", clean(keyword, false))),
-            Action::After(_) | Action::Notify | Action::Silent | Action::Stop => None,
+            // A dry run never forwards: it counts what the rule's other actions would do.
+            Action::After(_)
+            | Action::Forward(_)
+            | Action::Notify
+            | Action::Silent
+            | Action::Stop => None,
         })
         .unwrap_or_else(|| "matched".into());
     let noun = super::numbers::noun(count as u64, "message", "messages");
@@ -478,6 +483,11 @@ fn action_runs(action: &rules::Action) -> Vec<Run> {
         Action::Archive => vec![strong("archive"), plain(" it")],
         Action::Delete => vec![strong("delete"), plain(" it")],
         Action::Flag => vec![strong("flag"), plain(" it")],
+        Action::Forward(forward) => vec![
+            strong("forward"),
+            plain(" it to "),
+            token(clean(forward.label().trim_start_matches("forward:"), false)),
+        ],
         Action::Junk => vec![strong("mark it junk")],
         Action::MarkRead => vec![strong("mark it read")],
         Action::MarkUnread => vec![strong("mark it unread")],

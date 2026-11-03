@@ -104,10 +104,33 @@ pub fn check_warnings(
     [
         warnings(&paths.rules_file(), rules, accounts),
         authenticated_warnings(rules, &untrusting, &synced),
+        forward_from_warnings(rules, shown),
         watched_folder_warnings(&watched, &synced),
         folder_lines,
     ]
     .concat()
+}
+
+/// One line per forward rule whose `from` is no address of its account in `accounts`: such a forward is never queued.
+pub fn forward_from_warnings(rules: &[Rule], accounts: &[&AccountConfig]) -> Vec<String> {
+    rules
+        .iter()
+        .filter_map(|rule| {
+            let from = rule.actions.iter().find_map(|action| match action {
+                Action::Forward(forward) => forward.from.as_deref(),
+                _ => None,
+            })?;
+            let account = accounts.iter().find(|a| Some(a.name.as_str()) == rule.account.as_deref())?;
+            let identity = account.identity().ok()?;
+            crate::send::check::check_from(from.trim(), &identity).is_err().then(|| {
+                format!(
+                    "rule '{}' forwards from '{from}', which is not an address of account '{}', so it forwards \
+                     nothing and its other actions wait too: write the account's address or one its aliases match",
+                    rule.name, account.name
+                )
+            })
+        })
+        .collect()
 }
 
 /// One line per rule using `authenticated` and account of `untrusting` it runs on, in file order: those accounts trust
@@ -615,6 +638,33 @@ mod tests {
         assert!(
             authserv_offers(&rules[1..2], &["home"], &[home]).is_empty(),
             "only a rule that runs on the account asks for one"
+        );
+    }
+
+    #[test]
+    fn a_from_the_account_does_not_own_is_a_warning() {
+        let rules = parse(
+            "[[rules]]\nname = \"mine\"\naccount = \"work\"\nmatch.from = { contains = \"a\" }\nactions.forward = { to = \"b@x.org\", from = \"Shop@Example.com\" }\n\
+             [[rules]]\nname = \"theirs\"\naccount = \"work\"\nmatch.from = { contains = \"a\" }\nactions.forward = { to = \"b@x.org\", from = \"boss@example.com\" }\n\
+             [[rules]]\nname = \"elsewhere\"\naccount = \"home\"\nmatch.from = { contains = \"a\" }\nactions.forward = { to = \"b@x.org\", from = \"boss@example.com\" }\n",
+        )
+        .unwrap()
+        .rules;
+        let mut account = AccountConfig::new(
+            "work",
+            "imap.example.com",
+            "me@example.com",
+            crate::config::PasswordSource::Keyring { keyring: true },
+        );
+        account.aliases = vec![crate::config::AliasEntry::Pattern(
+            "shop@example.com".into(),
+        )];
+        let warned = forward_from_warnings(&rules, &[&account]);
+        assert_eq!(warned.len(), 1, "{warned:?}");
+        assert!(
+            warned[0].starts_with("rule 'theirs' forwards from 'boss@example.com', which is not an address of account 'work'"),
+            "{}",
+            warned[0]
         );
     }
 

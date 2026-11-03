@@ -63,6 +63,17 @@
             "null"
           ]
         },
+        "forward": {
+          "description": "Sends the message on to other addresses, new mail only and once you approved the rule in Postvak; runs before\nthe other actions",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Forward"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "junk": {
           "description": "true tags the message $Junk, which trains server spam filters, and moves it to the server's Junk folder; other\nactions but delete don't run",
           "type": [
@@ -112,6 +123,49 @@
       },
       "additionalProperties": false
     },
+    "AttachmentMatch": {
+      "description": "Attachments that match every condition given; at least one",
+      "type": "object",
+      "properties": {
+        "max_size": {
+          "description": "At most this size, e.g. 500KB, 5MB",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "The file name",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextMatch"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "description": "A MIME type such as application/pdf, or application/* for any subtype",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Attachments": {
+      "description": "true forwards every attachment, false none, a table those that match all its conditions",
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "$ref": "#/$defs/AttachmentMatch"
+        }
+      ]
+    },
     "Domain": {
       "description": "A domain such as example.com, or { list = \"name\" } for every domain of that list",
       "anyOf": [
@@ -121,6 +175,92 @@
         {
           "$ref": "#/$defs/ListRef"
         }
+      ]
+    },
+    "Forward": {
+      "description": "Sends the message on through the account's SMTP server. Only new mail, and only once you approved the rule in\nPostvak: any change to the rule needs a new approval",
+      "type": "object",
+      "properties": {
+        "as": {
+          "description": "inline (default): the text below a header block, attachments attached again; attachment: the original whole",
+          "$ref": "#/$defs/ForwardAsSchema"
+        },
+        "attachments": {
+          "description": "Which attachments go along with an inline forward: true (default) all, false none, or a table naming them",
+          "$ref": "#/$defs/Attachments"
+        },
+        "bcc": {
+          "description": "One address or a list",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OneOrMany"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cc": {
+          "description": "One address or a list",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OneOrMany"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "from": {
+          "description": "Your address to send as: the account's or one an alias matches; needs the rule's account. Default the address of\nyours the message was sent to, else the account's",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max_size": {
+          "description": "When the message is larger: a size such as 10MB, or { limit = \"10MB\", over = \"strip\" }. skip (default) does not\nforward it, strip forwards it without attachments. Default limit 25MB or the server's own",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MaxSize"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "note": {
+          "description": "Text above the forwarded message",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rate": {
+          "description": "Forwards per hour, at most; more pauses the rule until you approve it again. Default 20",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "subject_prefix": {
+          "description": "Put before the subject unless it already starts with a forward prefix; may be empty; {subaddress} as in move.\nDefault \"Fwd: \"",
+          "type": "string"
+        },
+        "to": {
+          "description": "One address or a list",
+          "$ref": "#/$defs/OneOrMany"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "to"
+      ]
+    },
+    "ForwardAsSchema": {
+      "type": "string",
+      "enum": [
+        "inline",
+        "attachment"
       ]
     },
     "ListProposal": {
@@ -386,6 +526,17 @@
       },
       "additionalProperties": false
     },
+    "MaxSize": {
+      "description": "A size such as 10MB, or a table with limit and over",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/SizeTable"
+        }
+      ]
+    },
     "NamedList": {
       "description": "Domains for from_domain and to_domain, or a text condition (one of contains, equals, regex) for from, from_name, to,\ncc, subject, body, attachment and header; a list cannot refer to another list",
       "anyOf": [
@@ -426,6 +577,13 @@
             "$ref": "#/$defs/Domain"
           }
         }
+      ]
+    },
+    "OverSize": {
+      "type": "string",
+      "enum": [
+        "skip",
+        "strip"
       ]
     },
     "Rule": {
@@ -483,6 +641,24 @@
         "match",
         "actions"
       ]
+    },
+    "SizeTable": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "description": "A size such as 10MB; default 25MB or the server's own",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "over": {
+          "description": "skip: not forwarded; strip: forwarded without its attachments",
+          "$ref": "#/$defs/OverSize",
+          "default": "skip"
+        }
+      },
+      "additionalProperties": false
     },
     "TextMatch": {
       "description": "Exactly one of contains, equals, regex, list",

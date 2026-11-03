@@ -52,16 +52,16 @@
   - `Action::Forward(Box<Forward>)`; `Actions.forward: Option<ForwardTable>` (placed before `after` in the struct, after the comment that keeps `after` last); `Action::waits_with_after` true for it
   - `Rule::forward(&self) -> Option<&Forward>`
   - Validation in `rules::parse` / `check`: `to` non-empty; every address an addr-spec; `attachments` filter refused with `as = "attachment"`; `from` refused without `account`; `from` must satisfy that account's `Identity::is_me` (in `warnings`, which has the config)
-- [ ] **Step 1: Write the failing tests** in `rules/mod.rs`:
+- [x] **Step 1: Write the failing tests** in `rules/mod.rs`:
   - `forward_parses_with_defaults`: `actions.forward = { to = "a@x.org" }` → `to == ["a@x.org"]`, `subject_prefix == "Fwd: "`, `as_ == Inline`, `attachments == All`, `rate == 20`.
   - `forward_takes_lists_filters_and_size`: the spec's invoice example parses; `max_size = { limit = "5MB", over = "strip" }` → `limit == 5_000_000`.
   - `forward_refusals`: empty `to`; `to = "not an address"`; `attachments = { type = "application/pdf" }` with `as = "attachment"`; `from` without `account` (Review Focus 5: message contains `account`).
   - `forward_round_trips_through_from_list` (`Actions::from_list` ↔ `into_list`).
   - In `warnings.rs`: `a_from_the_account_does_not_own_is_a_warning`.
-- [ ] **Step 2: Run** `cargo nextest run -p postvak-core rules::` — FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** — PASS; `POSTVAK_BLESS=1 cargo test` and check the schema diff.
-- [ ] **Step 5: Commit** `feat(rules): a forward action in rules.toml`
+- [x] **Step 2: Run** `cargo nextest run -p postvak-core rules::` — FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** — PASS; `POSTVAK_BLESS=1 cargo test` and check the schema diff.
+- [x] **Step 5: Commit** `feat(rules): a forward action in rules.toml`
 
 ### Task 2: Approval, once-only and rate records in the store
 

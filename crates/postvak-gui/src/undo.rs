@@ -63,6 +63,7 @@ pub(crate) fn done_text(action: &Action, count: usize) -> String {
         Action::Archive => format!("Archived {messages}"),
         Action::Delete | Action::Trash => format!("Deleted {messages}"),
         Action::Flag => format!("Flagged {messages}"),
+        Action::Forward(_) => format!("Forwarded {messages}"),
         Action::Junk => format!("Marked {messages} as junk"),
         Action::MarkRead => format!("Marked {messages} read"),
         Action::MarkUnread => format!("Marked {messages} unread"),
