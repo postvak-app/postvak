@@ -77,8 +77,8 @@ fn join_addresses(addresses: &[String]) -> String {
     addresses.join(", ")
 }
 
-fn megabytes(bytes: u64) -> String {
-    format!("{:.1} MB", bytes as f64 / 1_000_000.0)
+fn size_in_words(bytes: u64) -> String {
+    crate::body::size(usize::try_from(bytes).unwrap_or(usize::MAX))
 }
 
 fn choices_of(identity: &Identity) -> Vec<String> {
@@ -286,8 +286,8 @@ impl Composer {
                 Field::Attachments,
                 format!(
                     "{} attached; the limit is {}.",
-                    megabytes(total),
-                    megabytes(limit)
+                    size_in_words(total),
+                    size_in_words(limit)
                 ),
             ));
         }
@@ -649,8 +649,18 @@ mod tests {
             composer.check(&identity(), LIMIT),
             Err((
                 Field::Attachments,
-                "30.0 MB attached; the limit is 25.0 MB.".to_string()
+                "28.6 MB attached; the limit is 23.8 MB.".to_string()
             ))
+        );
+    }
+
+    #[test]
+    fn a_reply_keeps_its_own_accounts_choices() {
+        let mut composer = Composer::reply(3, "work", "INBOX", 7, ReplyTo::Sender);
+        composer.fill(prefilled(Draft::default(), vec![]), &identity());
+        assert_eq!(
+            composer.from_choices,
+            vec!["me@example.com", "alias@example.com"]
         );
     }
 }
