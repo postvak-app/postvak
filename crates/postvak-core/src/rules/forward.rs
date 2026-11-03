@@ -250,6 +250,20 @@ impl AttachmentMatch {
     }
 }
 
+/// What a forward rule keeps of a message it forwarded: `id:<Message-ID>`, or `uid:<folder>/<uidvalidity>/<uid>` for
+/// one without, so the message is not forwarded again once it moved back or synced again.
+pub fn once_key(msg: &crate::store::Message, uidvalidity: u32) -> String {
+    match msg
+        .message_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        Some(id) => format!("id:{id}"),
+        None => format!("uid:{}/{uidvalidity}/{}", msg.folder, msg.uid),
+    }
+}
+
 fn default_prefix() -> String {
     DEFAULT_PREFIX.into()
 }
@@ -315,6 +329,21 @@ mod tests {
             Ok(file) => compile(&file).unwrap_err().to_string(),
             Err(e) => e.to_string(),
         }
+    }
+
+    #[test]
+    fn once_key_uses_message_id_else_folder_uidvalidity_uid() {
+        let mut msg = crate::store::Message {
+            folder: "INBOX".into(),
+            uid: 7,
+            message_id: Some("<a@x.org>".into()),
+            ..Default::default()
+        };
+        assert_eq!(once_key(&msg, 42), "id:<a@x.org>");
+        msg.message_id = Some("  ".into());
+        assert_eq!(once_key(&msg, 42), "uid:INBOX/42/7");
+        msg.message_id = None;
+        assert_eq!(once_key(&msg, 42), "uid:INBOX/42/7");
     }
 
     #[test]

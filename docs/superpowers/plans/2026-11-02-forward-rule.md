@@ -79,15 +79,15 @@
   - `Store::forwards_since(&self, rule: &str, since: i64) -> Result<u32>`
   - `Store::record_forward_failure(&self, rule: &str, key: &str, reason: &str, now: i64) -> Result<()>`, `Store::clear_forward_failure(&self, rule: &str, key: &str) -> Result<()>`, `Store::forward_failures(&self, rule: &str) -> Result<Vec<(String, String, i64)>>`
   - `rules::forward::once_key(msg: &Message, uidvalidity: u32) -> String` — `id:<Message-ID>` or `uid:<folder>/<uidvalidity>/<uid>` (in `crates/postvak-core/src/rules/forward.rs`, created here)
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - `forward_approval_matches_the_exact_definition`: approve `("inv", "d1")` → `forward_approved("inv", "d1")` true, `("inv", "d2")` false; `withdraw_forward` → false.
   - `forwarded_is_recorded_once_and_counted_in_the_window`.
   - `once_key_uses_message_id_else_folder_uidvalidity_uid`.
   - `forward_failures_keep_first_and_last_time`.
-- [ ] **Step 2: Run** `cargo nextest run -p postvak-core store::tests::forward rules::forward` — FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** — PASS.
-- [ ] **Step 5: Commit** `feat(store): forward approvals, once-only records and failures`
+- [x] **Step 2: Run** `cargo nextest run -p postvak-core store::tests::forward rules::forward` — FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** — PASS.
+- [x] **Step 5: Commit** `feat(store): forward approvals, once-only records and failures`
 
 ### Task 3: The pure forward decisions
 
