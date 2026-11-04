@@ -93,10 +93,11 @@ pub(crate) fn outbox_rows(app: &App) -> Vec<OutboxRow> {
             State::Failed {
                 reason,
                 retrying: false,
-            } => (
-                format!("Failed: {reason}"),
-                Some((*account, entry.id.clone())),
-            ),
+            } => {
+                let key = (*account, entry.id.clone());
+                let retry = (!app.retried.contains(&key)).then_some(key);
+                (format!("Failed: {reason}"), retry)
+            }
         };
         Some(OutboxRow {
             title,
@@ -125,7 +126,9 @@ pub(crate) fn summary(app: &App) -> Line {
 
 /// The sync card's first line, over `line`: what every account is doing, in a word or two; empty while they start.
 pub(crate) fn headline(line: &Line, accounts: &[Account]) -> &'static str {
-    if line.failed {
+    if line.failed && line.outbox {
+        "Not sent"
+    } else if line.failed {
         "Sync failed"
     } else if line.dot == Some(Dot::Offline) {
         "Offline"
@@ -254,6 +257,22 @@ pub(crate) fn update_text(version: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_send_is_not_a_failed_sync() {
+        let outbox = Line {
+            text: "1 message failed".into(),
+            failed: true,
+            outbox: true,
+            ..Line::default()
+        };
+        assert_eq!(headline(&outbox, &[]), "Not sent");
+        let sync = Line {
+            outbox: false,
+            ..outbox
+        };
+        assert_eq!(headline(&sync, &[]), "Sync failed");
+    }
 
     #[test]
     fn the_outbox_line_says_what_waits_and_what_failed() {

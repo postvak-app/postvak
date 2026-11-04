@@ -333,15 +333,15 @@ impl App {
         // Only these change what is attached or the account whose limit counts.
         let resized =
             !matches!(action, UiAction::ComposeEdit(_, field, _) if field != ComposeField::From);
+        let edited = match &action {
+            UiAction::ComposeEdit(_, field, _) => Some(*field),
+            _ => None,
+        };
         let Some(composer) = self.composer_mut(target) else {
             return;
         };
         match action {
-            UiAction::ComposeEdit(_, field, value) => {
-                composer.set(field, value);
-                self.ask_completion(target, field);
-                return;
-            }
+            UiAction::ComposeEdit(_, field, value) => composer.set(field, value),
             UiAction::ComposeShowCcBcc(_) => composer.show_cc_bcc = true,
             UiAction::ComposeRemoveFile(_, index) if index < composer.files.len() => {
                 composer.files.remove(index);
@@ -356,6 +356,9 @@ impl App {
         }
         if resized {
             self.check_size(target);
+        }
+        if let Some(field) = edited {
+            self.ask_completion(target, field);
         }
     }
 
@@ -452,6 +455,7 @@ impl App {
         let Some(name) = self.accounts.get(account).map(|a| a.name.clone()) else {
             return;
         };
+        self.retried.push((account, id.clone()));
         let (paths, retry) = (self.paths.clone(), self.retry_send);
         let answer = worker::oneshot("compose-retry", self.wake.clone(), move || {
             retry(&paths, &name, &id)
@@ -1740,6 +1744,35 @@ mod tests {
     }
 
     #[test]
+    fn changing_from_takes_the_new_accounts_size_limit() {
+        let fx = Fixture::new(&["home", "work"]);
+        let limits = [("home", 20_000_000), ("work", 10_000_000)];
+        for (account, limit) in limits {
+            let store = fx.store(account);
+            store.save_smtp_capabilities(Some(limit), false).unwrap();
+        }
+        let (mut driver, _wires) = fx.driver();
+        driver.apply(UiAction::NewMail(None));
+        let window = ComposeTarget::Window(driver.app.new_mail[0].id);
+        assert_eq!(driver.app.new_mail[0].size_limit, 20_000_000);
+        let dir = tempfile::tempdir().unwrap();
+        driver.app.new_mail[0]
+            .files
+            .push((dir.path().join("big.iso"), 15_000_000));
+        let work = "work\twork@example.com".to_string();
+        driver.apply(UiAction::ComposeEdit(window, ComposeField::From, work));
+        let composer = &driver.app.new_mail[0];
+        assert_eq!(composer.account, "work");
+        assert_eq!(composer.size_limit, 10_000_000);
+        assert_eq!(
+            composer.error.as_ref().map(|e| e.0),
+            Some(Field::Attachments),
+            "{:?}",
+            composer.error
+        );
+    }
+
+    #[test]
     fn completion_lists_people_written_to_first_across_accounts() {
         let fx = people();
         let (mut driver, _wires) = fx.driver();
@@ -1908,6 +1941,37 @@ mod tests {
     }
 
     #[test]
+    fn the_mark_matches_the_message_id_as_sync_and_send_read_it() {
+        use postvak_core::message::parse_headers;
+        use postvak_core::send::outbox::Original;
+        use postvak_core::send::reply::OriginalFlag;
+        let headers = b"Message-ID: <Q1.x@Example.org>\r\nSubject: question\r\n\r\n".to_vec();
+        let fx = Fixture::new(&["work"]);
+        let mut stored = message("INBOX", 1, "question");
+        // What sync stores, and what `send::compose` puts in the outbox for a reply to it.
+        stored.message_id = parse_headers(&headers).message_id;
+        stored.headers = headers.clone();
+        fx.add("work", stored);
+        fx.add("work", message("INBOX", 2, "other"));
+        let original = Original {
+            message_id: parse_headers(&headers).message_id.unwrap(),
+            flag: OriginalFlag::Answered,
+        };
+        let envelope = Envelope {
+            from: "work@example.com".into(),
+            to: vec!["sender1@example.com".into()],
+        };
+        let entry = Entry::new(envelope, 0, false, Some(original));
+        Outbox::open(&fx.paths, "work")
+            .unwrap()
+            .add(b"raw", &entry)
+            .unwrap();
+        let (mut driver, _wires) = fx.driver();
+        driver.at(POLL);
+        assert_eq!(pending(&driver), [(2, false), (1, true)]);
+    }
+
+    #[test]
     fn the_mark_goes_once_sent() {
         let Replying { mut driver, fx, .. } = replying(&[1, 2]);
         driver.app.queue_send = reply_waiting;
@@ -2013,7 +2077,16 @@ mod tests {
         };
         driver.apply(UiAction::OpenOutbox);
         driver.apply(UiAction::RetrySend(0, failed.clone()));
+        let offered = |app: &App| {
+            let rows = crate::status::outbox_rows(app);
+            rows.iter().any(|row| row.retry.is_some())
+        };
+        assert!(!offered(&driver.app), "Retry goes once clicked");
         driver.tick_until(|app| app.retrying.is_empty());
+        assert!(
+            offered(&driver.app),
+            "the outbox, read again, still has it failed"
+        );
         assert_eq!(
             RETRIED.lock().unwrap().clone(),
             [("work".to_string(), failed)]

@@ -904,6 +904,8 @@ pub struct App {
     pub(crate) retry_send: RetryFn,
     /// Retries of failed outbox messages asked of the daemon, until each answers.
     pub(crate) retrying: Vec<Receiver<Result<(), String>>>,
+    /// The outbox messages Retry was clicked for, by account and id, until the outbox is read again.
+    pub(crate) retried: Vec<(usize, String)>,
     /// The address completions shown under the field being typed in.
     pub(crate) completion: Option<composing::Completion>,
     /// The completions asked for last: the query's number, and the field they are for.
@@ -1097,6 +1099,7 @@ impl App {
             cancel_send: composing::cancel_send,
             retry_send: composing::retry_send,
             retrying: Vec::new(),
+            retried: Vec::new(),
             completion: None,
             completing: None,
             next_completion: 0,
@@ -2656,6 +2659,7 @@ impl App {
         let mut kept = Vec::new();
         let mut marks_changed = false;
         self.outbox.clear();
+        self.retried.clear();
         for (index, account) in self.accounts.iter_mut().enumerate() {
             let entries = Outbox::existing(&self.paths, &account.name)
                 .and_then(|outbox| outbox.list().ok())
