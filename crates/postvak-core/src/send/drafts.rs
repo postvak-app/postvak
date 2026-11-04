@@ -12,6 +12,7 @@ use crate::daemon::client::LazyClient;
 use crate::mail_ops::{self, MailError, MailOps};
 use crate::paths::Paths;
 use crate::store::{Folder, Store};
+use crate::sync::LostConnection;
 
 /// The header naming a Postvak draft's kind: `<kind>; original="<message-id>"; parts="0,2"`.
 pub const HEADER: &str = "X-Postvak-Draft";
@@ -425,36 +426,68 @@ pub enum SaveDraftError {
     Mail(#[from] MailError),
 }
 
-/// APPENDs `raw` to Drafts, then deletes the copy whose Message-ID is `replaces`; without `raw`, only deletes. The old
-/// copy goes only once the new one is on the server, and one already gone is not an error. Returns the new copy's
-/// Message-ID.
+/// What a save did: the new copy's Message-ID, and the replaced copies it could not delete, by Message-ID.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SavedDraft {
+    pub message_id: Option<String>,
+    pub left: Vec<String>,
+}
+
+/// APPENDs `raw` to Drafts, then deletes every copy whose Message-ID is in `replaces`; without `raw`, only deletes.
+/// The old copies go only once the new one is on the server, and one already gone is not an error. Once the APPEND
+/// succeeded the save stands, whatever the deletes do: a copy left behind is in `left`, for the next save to replace.
 pub fn save(
     ops: &mut dyn MailOps,
     store: &Store,
     account: &str,
     raw: Option<&[u8]>,
-    replaces: Option<&str>,
-) -> Result<Option<String>, SaveDraftError> {
+    replaces: &[String],
+) -> Result<SavedDraft, SaveDraftError> {
     let folders = store.folders().unwrap_or_default();
     let folder = drafts_folder(&folders).ok_or(SaveDraftError::NoDraftsFolder)?;
-    let mut saved = None;
-    if let Some(raw) = raw {
-        ops.append(&folder, raw, &["\\Draft", "\\Seen"])?;
-        saved = crate::message::parse_headers(raw).message_id;
-        log::info!(
-            "{account}: saved draft {} in {folder}",
-            saved.as_deref().unwrap_or("without a Message-ID")
-        );
-    }
-    if let Some(replaces) = replaces {
-        ops.select(&folder)?;
-        let uids = ops.search_header("Message-ID", replaces)?;
-        if !uids.is_empty() {
-            mail_ops::delete_messages(ops, &uids)?;
-            log::info!("{account}: deleted draft {replaces} from {folder}");
+    let Some(raw) = raw else {
+        delete_drafts(ops, account, &folder, replaces)?;
+        return Ok(SavedDraft::default());
+    };
+    ops.append(&folder, raw, &["\\Draft", "\\Seen"])?;
+    let message_id = crate::message::parse_headers(raw).message_id;
+    log::info!(
+        "{account}: saved draft {} in {folder}",
+        message_id.as_deref().unwrap_or("without a Message-ID")
+    );
+    let mut left = Vec::new();
+    for (index, replaced) in replaces.iter().enumerate() {
+        if let Err(e) = delete_drafts(ops, account, &folder, std::slice::from_ref(replaced)) {
+            log::warn!("{account}: draft {replaced} was not deleted from {folder}: {e}");
+            left.push(replaced.clone());
+            if e.is_lost_connection() {
+                left.extend(replaces[index + 1..].iter().cloned());
+                break;
+            }
         }
     }
-    Ok(saved)
+    Ok(SavedDraft { message_id, left })
+}
+
+/// Expunges every message in `folder` whose Message-ID is in `ids`.
+fn delete_drafts(
+    ops: &mut dyn MailOps,
+    account: &str,
+    folder: &str,
+    ids: &[String],
+) -> Result<(), MailError> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    ops.select(folder)?;
+    for id in ids {
+        let uids = ops.search_header("Message-ID", id)?;
+        if !uids.is_empty() {
+            mail_ops::delete_messages(ops, &uids)?;
+            log::info!("{account}: deleted draft {id} from {folder}");
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1068,8 +1101,9 @@ mod tests {
         #[test]
         fn saving_appends_with_the_draft_flags() {
             let (mut ops, store) = with_drafts();
-            let saved = save(&mut ops, &store, "work", Some(&draft("d2@x")), None).unwrap();
-            assert_eq!(saved.as_deref(), Some("d2@x"));
+            let saved = save(&mut ops, &store, "work", Some(&draft("d2@x")), &[]).unwrap();
+            assert_eq!(saved.message_id.as_deref(), Some("d2@x"));
+            assert!(saved.left.is_empty());
             let appended = ops.mail["Drafts"].last().unwrap();
             assert_eq!(appended.flags, ["\\Draft", "\\Seen"]);
             assert_eq!(ops.mail["Drafts"].len(), 2);
@@ -1083,7 +1117,7 @@ mod tests {
                 &store,
                 "work",
                 Some(&draft("d2@x")),
-                Some("<d1@x>"),
+                &["<d1@x>".into()],
             )
             .unwrap();
             assert_eq!(ids(&ops), [Some("d2@x".to_string())]);
@@ -1101,7 +1135,7 @@ mod tests {
                 &store,
                 "work",
                 Some(&draft("d2@x")),
-                Some("<d1@x>"),
+                &["<d1@x>".into()],
             )
             .unwrap_err();
             assert!(error.to_string().contains("over quota"), "{error}");
@@ -1113,7 +1147,7 @@ mod tests {
         fn no_drafts_folder_is_refused_with_the_words() {
             let store = Store::open_in_memory().unwrap();
             let mut ops = RecordingOps::default();
-            let error = save(&mut ops, &store, "work", Some(&draft("d2@x")), None).unwrap_err();
+            let error = save(&mut ops, &store, "work", Some(&draft("d2@x")), &[]).unwrap_err();
             assert_eq!(error.to_string(), "This account has no Drafts folder");
             assert!(ops.calls.is_empty(), "{:?}", ops.calls);
         }
@@ -1121,8 +1155,8 @@ mod tests {
         #[test]
         fn deleting_only_removes_the_copy() {
             let (mut ops, store) = with_drafts();
-            let saved = save(&mut ops, &store, "work", None, Some("<d1@x>")).unwrap();
-            assert_eq!(saved, None);
+            let saved = save(&mut ops, &store, "work", None, &["<d1@x>".into()]).unwrap();
+            assert_eq!(saved, SavedDraft::default());
             assert!(ops.mail["Drafts"].is_empty());
             assert!(!ops.calls.iter().any(|c| c.starts_with("append")));
         }
@@ -1130,10 +1164,49 @@ mod tests {
         #[test]
         fn deleting_a_draft_that_is_gone_is_fine() {
             let (mut ops, store) = with_drafts();
-            let saved = save(&mut ops, &store, "work", None, Some("<gone@x>")).unwrap();
-            assert_eq!(saved, None);
+            let saved = save(&mut ops, &store, "work", None, &["<gone@x>".into()]).unwrap();
+            assert_eq!(saved, SavedDraft::default());
             assert_eq!(ids(&ops), [Some("d1@x".to_string())]);
             assert!(!ops.calls.iter().any(|c| c.starts_with("add_flags")));
+        }
+
+        #[test]
+        fn a_save_deletes_every_copy_it_replaces() {
+            let (mut ops, store) = with_drafts();
+            let older = "Message-ID: <d0@x>\r\n\r\n";
+            ops.add_mail("Drafts", 2, 0, older, Some(older));
+            let replaces = ["<d1@x>".to_string(), "<d0@x>".to_string()];
+            let saved = save(&mut ops, &store, "work", Some(&draft("d2@x")), &replaces).unwrap();
+            assert!(saved.left.is_empty(), "{saved:?}");
+            assert_eq!(ids(&ops), [Some("d2@x".to_string())]);
+        }
+
+        #[test]
+        fn a_failed_delete_after_the_append_reports_what_is_left() {
+            for failure in [
+                MailError::Protocol("NO expunge refused".into()),
+                MailError::Io("reset".into()),
+            ] {
+                let (mut ops, store) = with_drafts();
+                ops.fail_next_expunge = Some(failure);
+                let saved = save(
+                    &mut ops,
+                    &store,
+                    "work",
+                    Some(&draft("d2@x")),
+                    &["<d1@x>".into()],
+                )
+                .unwrap();
+                assert_eq!(saved.message_id.as_deref(), Some("d2@x"));
+                assert_eq!(saved.left, ["<d1@x>"]);
+            }
+        }
+
+        #[test]
+        fn a_failed_delete_only_is_an_error() {
+            let (mut ops, store) = with_drafts();
+            ops.fail_next_expunge = Some(MailError::Protocol("NO expunge refused".into()));
+            assert!(save(&mut ops, &store, "work", None, &["<d1@x>".into()]).is_err());
         }
     }
 }

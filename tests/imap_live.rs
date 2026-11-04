@@ -319,10 +319,13 @@ fn save_draft_replaces_its_copy() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("mail.db")).unwrap();
         sync::sync_all(&mut ops, &store).unwrap();
-        let save = |ops: &mut ImapOps, raw: Option<&[u8]>, replaces: Option<&str>| {
-            postvak_core::send::drafts::save(ops, &store, "live", raw, replaces).unwrap()
+        let save = |ops: &mut ImapOps, raw: Option<&[u8]>, replaces: &[String]| {
+            let saved =
+                postvak_core::send::drafts::save(ops, &store, "live", raw, replaces).unwrap();
+            assert!(saved.left.is_empty(), "{saved:?}");
+            saved.message_id
         };
-        let first = save(&mut ops, Some(&mail("draft one")), None);
+        let first = save(&mut ops, Some(&mail("draft one")), &[]);
         assert_eq!(
             first.as_deref(),
             Some("draft.one@example.com"),
@@ -331,7 +334,7 @@ fn save_draft_replaces_its_copy() {
         save(
             &mut ops,
             Some(&mail("draft two")),
-            Some("<draft.one@example.com>"),
+            &["<draft.one@example.com>".into()],
         );
         ops.select("Drafts").unwrap();
         let drafts = all_envelopes(&mut ops);
@@ -347,7 +350,10 @@ fn save_draft_replaces_its_copy() {
                 drafts[0].flags
             );
         }
-        assert_eq!(save(&mut ops, None, Some("<draft.two@example.com>")), None);
+        assert_eq!(
+            save(&mut ops, None, &["<draft.two@example.com>".into()]),
+            None
+        );
         assert!(all_envelopes(&mut ops).is_empty(), "port {port}");
     }
 }

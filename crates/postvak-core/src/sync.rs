@@ -198,10 +198,12 @@ pub enum Event {
         flagged: bool,
         request: RequestId,
     },
-    /// What `SaveDraft` did: `message_id` is the new copy's, None when it only deleted.
+    /// What `SaveDraft` did: `message_id` is the new copy's, None when it only deleted; `left` the replaced copies it
+    /// could not delete, by Message-ID, for the next save to replace.
     DraftSaved {
         account: String,
         message_id: Option<String>,
+        left: Vec<String>,
         request: RequestId,
     },
     RuleApplied {
@@ -446,11 +448,11 @@ pub enum Command {
         original: Option<crate::send::outbox::Original>,
         flagged: bool,
     },
-    /// APPENDs `raw` to Drafts, then deletes the copy whose Message-ID is `replaces`; without `raw`, only deletes.
+    /// APPENDs `raw` to Drafts, then deletes every copy whose Message-ID is in `replaces`; without `raw`, only deletes.
     SaveDraft {
         #[serde(with = "crate::message::base64_bytes_opt")]
         raw: Option<Vec<u8>>,
-        replaces: Option<String>,
+        replaces: Vec<String>,
     },
     SyncNow,
 }
@@ -1691,21 +1693,16 @@ fn run_command(
         }
         Command::SaveDraft { raw, replaces } => {
             run.used_connection = true;
-            match crate::send::drafts::save(
-                ops,
-                store,
-                &account.name,
-                raw.as_deref(),
-                replaces.as_deref(),
-            ) {
-                Ok(message_id) => {
+            match crate::send::drafts::save(ops, store, &account.name, raw.as_deref(), &replaces) {
+                Ok(saved) => {
                     let folders = store.folders().unwrap_or_default();
                     if let Some(drafts) = crate::send::drafts::drafts_folder(&folders) {
                         sync_now(ops, store, &drafts);
                     }
                     Ok(Event::DraftSaved {
                         account: name(),
-                        message_id,
+                        message_id: saved.message_id,
+                        left: saved.left,
                         request,
                     })
                 }
