@@ -49,6 +49,20 @@ pub enum SendKind {
     },
 }
 
+/// The headers the composer edited; they replace what the builder chose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeaderEdits {
+    pub from: String,
+    pub to: Vec<String>,
+    pub cc: Vec<String>,
+    pub bcc: Vec<String>,
+    pub subject: String,
+    /// The Message-ID answered, with its angle brackets; kept when a reply goes on as new mail without its original.
+    pub in_reply_to: Option<String>,
+    /// The thread's Message-IDs, oldest first, with their angle brackets.
+    pub references: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SendRequest {
     pub account: Option<String>,
@@ -60,6 +74,21 @@ pub struct SendRequest {
     /// Skip the undo delay.
     pub now: bool,
     pub save_sent: Option<bool>,
+    /// The raw message a reply or forward answers, when the caller has it; unset, it is looked up by folder and uid.
+    pub original: Option<Vec<u8>>,
+    pub headers: Option<HeaderEdits>,
+    /// Applies only to an inline forward: the attachments to take along, by index into [`reply::forward_attachments`]; unset, all.
+    pub forward_parts: Option<Vec<usize>>,
+}
+
+/// What a composer opens with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Prefilled {
+    pub account: String,
+    pub draft: Draft,
+    pub original: Option<Vec<u8>>,
+    /// The original's attachments as (file name, size), in the order [`reply::AttachmentFilter::Only`] indexes.
+    pub attachments: Vec<(String, u64)>,
 }
 
 /// A message in the outbox, for the line the CLI prints.
@@ -88,6 +117,27 @@ pub fn parse_message_ref(text: &str) -> anyhow::Result<(String, u32)> {
     Ok((folder.to_string(), uid))
 }
 
+/// A reply or forward whose original the account's store no longer holds, as when a rule moved it meanwhile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OriginalGone {
+    pub folder: String,
+    pub uid: u32,
+    pub account: String,
+}
+
+impl std::fmt::Display for OriginalGone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let OriginalGone {
+            folder,
+            uid,
+            account,
+        } = self;
+        write!(f, "no message {folder}/{uid} in account '{account}'")
+    }
+}
+
+impl std::error::Error for OriginalGone {}
+
 fn stored_original(
     paths: &Paths,
     client: &LazyClient,
@@ -99,9 +149,11 @@ fn stored_original(
     let folder = crate::folder_name::known(&store, folder)?
         .map(|f| f.name)
         .unwrap_or_else(|| folder.to_string());
-    let message = store
-        .message(&folder, uid)?
-        .ok_or_else(|| anyhow!("no message {folder}/{uid} in account '{}'", account.name))?;
+    let message = store.message(&folder, uid)?.ok_or_else(|| OriginalGone {
+        folder: folder.clone(),
+        uid,
+        account: account.name.clone(),
+    })?;
     client.raw_message(&account.name, &store, &message)
 }
 
@@ -125,6 +177,15 @@ fn read_attachments(files: &[PathBuf]) -> anyhow::Result<Vec<FileAttachment>> {
         .collect()
 }
 
+/// The flag the original gets once the answer went; None for new mail.
+fn flag_for(kind: &SendKind) -> Option<OriginalFlag> {
+    match kind {
+        SendKind::New { .. } => None,
+        SendKind::Reply { .. } => Some(OriginalFlag::Answered),
+        SendKind::Forward { .. } => Some(OriginalFlag::Forwarded),
+    }
+}
+
 /// The stored original a reply or forward answers, and the flag it gets once the answer went; None for new mail.
 fn original_for(
     paths: &Paths,
@@ -132,17 +193,15 @@ fn original_for(
     account: &AccountConfig,
     kind: &SendKind,
 ) -> anyhow::Result<Option<(Vec<u8>, OriginalFlag)>> {
-    Ok(match kind {
-        SendKind::New { .. } => None,
-        SendKind::Reply { folder, uid, .. } => Some((
-            stored_original(paths, client, account, folder, *uid)?,
-            OriginalFlag::Answered,
-        )),
-        SendKind::Forward { folder, uid, .. } => Some((
-            stored_original(paths, client, account, folder, *uid)?,
-            OriginalFlag::Forwarded,
-        )),
-    })
+    let (Some(flag), SendKind::Reply { folder, uid, .. } | SendKind::Forward { folder, uid, .. }) =
+        (flag_for(kind), kind)
+    else {
+        return Ok(None);
+    };
+    Ok(Some((
+        stored_original(paths, client, account, folder, *uid)?,
+        flag,
+    )))
 }
 
 /// The draft for `kind` with `body`, answering `original` when it is a reply or forward.
@@ -151,6 +210,7 @@ fn draft_for(
     kind: &SendKind,
     original: &[u8],
     body: &str,
+    forward_parts: Option<&[usize]>,
 ) -> anyhow::Result<Draft> {
     Ok(match kind {
         SendKind::New {
@@ -182,10 +242,63 @@ fn draft_for(
             };
             let options = ForwardOptions {
                 as_: *as_,
+                attachments: forward_parts.map_or(reply::AttachmentFilter::All, |parts| {
+                    reply::AttachmentFilter::Only(parts.to_vec())
+                }),
                 ..Default::default()
             };
             reply::forward(original, recipients, identity, body, &options)?
         }
+    })
+}
+
+fn set_from(draft: &mut Draft, from: &str, identity: &Identity) -> anyhow::Result<()> {
+    check::check_from(from, identity)?;
+    draft.from_name = identity.display_name_for(from).map(str::to_string);
+    draft.from = from.trim().to_string();
+    Ok(())
+}
+
+fn apply_headers(
+    draft: &mut Draft,
+    edits: &HeaderEdits,
+    identity: &Identity,
+) -> anyhow::Result<()> {
+    set_from(draft, &edits.from, identity)?;
+    draft.to = edits.to.clone();
+    draft.cc = edits.cc.clone();
+    draft.bcc = edits.bcc.clone();
+    draft.subject = edits.subject.clone();
+    draft.in_reply_to = edits.in_reply_to.clone();
+    draft.references = edits.references.clone();
+    Ok(())
+}
+
+/// What a composer opens with for `kind`: the draft with an empty body and the original it answers.
+pub fn prefill(
+    config: &Config,
+    paths: &Paths,
+    client: &LazyClient,
+    account: Option<&str>,
+    kind: &SendKind,
+) -> anyhow::Result<Prefilled> {
+    let account = config::single(&config.accounts, account)?;
+    let identity = account.identity()?;
+    let original = original_for(paths, client, account, kind)?.map(|(raw, _)| raw);
+    let raw = original.as_deref().unwrap_or_default();
+    let draft = draft_for(&identity, kind, raw, "", None)?;
+    let attachments = match kind {
+        SendKind::Forward {
+            as_: ForwardAs::Inline,
+            ..
+        } => reply::forward_attachments(raw),
+        _ => Vec::new(),
+    };
+    Ok(Prefilled {
+        account: account.name.clone(),
+        draft,
+        original,
+        attachments,
     })
 }
 
@@ -243,9 +356,13 @@ pub fn compose(
         Body::Given(text) => text.clone(),
         Body::Edit => String::new(),
     };
-    let original = original_for(paths, client, account, &request.kind)?;
+    let original = match request.original.clone() {
+        Some(raw) => flag_for(&request.kind).map(|flag| (raw, flag)),
+        None => original_for(paths, client, account, &request.kind)?,
+    };
+    let forward_parts = request.forward_parts.as_deref();
     let raw = original.as_ref().map_or(&[][..], |(raw, _)| raw.as_slice());
-    let mut draft = draft_for(&identity, &request.kind, raw, &given)?;
+    let mut draft = draft_for(&identity, &request.kind, raw, &given, forward_parts)?;
     if request.body == Body::Edit {
         let template = super::edit::template(&draft);
         let edited = edit(&template)?;
@@ -257,16 +374,26 @@ pub fn compose(
         if draft.html.is_some() {
             let quote = draft.text.trim_start_matches('\n').trim_end();
             written.html = match written.text.trim_end().strip_suffix(quote) {
-                Some(user) => draft_for(&identity, &request.kind, raw, user.trim_end())?.html,
+                Some(user) => {
+                    draft_for(
+                        &identity,
+                        &request.kind,
+                        raw,
+                        user.trim_end(),
+                        forward_parts,
+                    )?
+                    .html
+                }
                 None => None,
             };
         }
         draft = written;
     }
+    if let Some(edits) = &request.headers {
+        apply_headers(&mut draft, edits, &identity)?;
+    }
     if let Some(from) = &request.from {
-        check::check_from(from, &identity)?;
-        draft.from_name = identity.display_name_for(from).map(str::to_string);
-        draft.from = from.trim().to_string();
+        set_from(&mut draft, from, &identity)?;
     }
     draft
         .attachments
@@ -440,7 +567,125 @@ mod tests {
             attachments: Vec::new(),
             now: false,
             save_sent: None,
+            original: None,
+            headers: None,
+            forward_parts: None,
         }
+    }
+
+    fn reply_kind(uid: u32) -> SendKind {
+        SendKind::Reply {
+            folder: "INBOX".into(),
+            uid,
+            to: ReplyTo::Sender,
+        }
+    }
+
+    fn queued_message(h: &Home) -> (String, Option<String>) {
+        let entry = h.client.client().unwrap().outbox().unwrap().remove(0).1;
+        let message_id = entry.original.map(|o| o.message_id);
+        (entry.envelope.to.join(","), message_id)
+    }
+
+    #[test]
+    fn edited_headers_replace_the_builders() {
+        let h = home();
+        let mut edited = request(reply_kind(7));
+        edited.original = Some(ORIGINAL.to_vec());
+        edited.headers = Some(HeaderEdits {
+            from: "me@example.com".into(),
+            to: vec!["c@x.org".into()],
+            cc: vec!["d@x.org".into()],
+            bcc: vec!["e@x.org".into()],
+            subject: "New".into(),
+            in_reply_to: Some("<m1@x.org>".into()),
+            references: vec!["<m1@x.org>".into()],
+        });
+        compose(&h.config, &h.daemon.paths, &h.client, edited, no_editor).unwrap();
+        let (_, entry) = h.client.client().unwrap().outbox().unwrap().remove(0);
+        assert_eq!(entry.envelope.from, "me@example.com");
+        assert_eq!(entry.envelope.to, ["c@x.org", "d@x.org", "e@x.org"]);
+        let raw = std::fs::read(
+            h.daemon
+                .paths
+                .outbox_dir("work")
+                .join(format!("{}.eml", entry.id)),
+        )
+        .unwrap();
+        let header = |name| crate::message::header_text(&raw, name);
+        assert_eq!(header("Subject").as_deref(), Some("New"));
+        assert_eq!(header("To").as_deref(), Some("c@x.org"));
+        assert_eq!(header("Cc").as_deref(), Some("d@x.org"));
+        assert_eq!(header("Bcc").as_deref(), Some("e@x.org"));
+        assert!(header("From").unwrap().contains("me@example.com"));
+        assert_eq!(header("In-Reply-To").as_deref(), Some("<m1@x.org>"));
+        assert!(String::from_utf8_lossy(&raw).contains("> Shall we?"));
+    }
+
+    #[test]
+    fn a_preloaded_original_is_used_without_the_store() {
+        let h = home();
+        let mut preloaded = request(reply_kind(999));
+        preloaded.original = Some(ORIGINAL.to_vec());
+        compose(&h.config, &h.daemon.paths, &h.client, preloaded, no_editor).unwrap();
+        assert_eq!(
+            queued_message(&h),
+            ("linus@x.org".into(), Some("m1@x.org".into()))
+        );
+        assert!(
+            compose(
+                &h.config,
+                &h.daemon.paths,
+                &h.client,
+                request(reply_kind(999)),
+                no_editor
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn without_edits_the_request_is_the_clis() {
+        let h = home();
+        let mut preloaded = request(reply_kind(7));
+        preloaded.original = Some(ORIGINAL.to_vec());
+        compose(&h.config, &h.daemon.paths, &h.client, preloaded, no_editor).unwrap();
+        compose(
+            &h.config,
+            &h.daemon.paths,
+            &h.client,
+            request(reply_kind(7)),
+            no_editor,
+        )
+        .unwrap();
+        let outbox = h.client.client().unwrap().outbox().unwrap();
+        assert_eq!(outbox.len(), 2);
+        assert_eq!(outbox[0].1.envelope, outbox[1].1.envelope);
+        assert_eq!(outbox[0].1.original, outbox[1].1.original);
+    }
+
+    #[test]
+    fn prefill_has_the_recipients_and_an_empty_text_above_the_quote() {
+        let h = home();
+        let prefilled = prefill(
+            &h.config,
+            &h.daemon.paths,
+            &h.client,
+            Some("work"),
+            &reply_kind(7),
+        )
+        .unwrap();
+        assert_eq!(prefilled.account, "work");
+        assert_eq!(prefilled.draft.to, ["Linus Example <linus@x.org>"]);
+        assert_eq!(prefilled.draft.subject, "Re: Plans");
+        assert!(
+            prefilled.draft.text.starts_with("\n\nOn "),
+            "{:?}",
+            prefilled.draft.text
+        );
+        assert!(prefilled.draft.text.contains("> Shall we?"));
+        assert_eq!(prefilled.original.as_deref(), Some(ORIGINAL));
+        assert!(prefilled.attachments.is_empty());
     }
 
     fn no_editor(_: &str) -> anyhow::Result<String> {
@@ -476,6 +721,57 @@ mod tests {
         );
         assert!(entry.save_sent);
         assert_eq!(h.smtp.with(|s| s.sent.len()), 0);
+    }
+
+    #[test]
+    fn new_mail_keeps_the_threading_headers_it_was_given() {
+        let h = home();
+        let mut threaded = request(SendKind::New {
+            to: vec!["a@x.org".into()],
+            cc: vec![],
+            bcc: vec![],
+            subject: "Re: gone".into(),
+        });
+        threaded.headers = Some(HeaderEdits {
+            from: "me@example.com".into(),
+            to: vec!["a@x.org".into()],
+            cc: vec![],
+            bcc: vec![],
+            subject: "Re: gone".into(),
+            in_reply_to: Some("<gone@x.org>".into()),
+            references: vec!["<first@x.org>".into(), "<gone@x.org>".into()],
+        });
+        compose(&h.config, &h.daemon.paths, &h.client, threaded, no_editor).unwrap();
+        let (_, entry) = h.client.client().unwrap().outbox().unwrap().remove(0);
+        let raw = std::fs::read(
+            h.daemon
+                .paths
+                .outbox_dir("work")
+                .join(format!("{}.eml", entry.id)),
+        )
+        .unwrap();
+        let header = |name| crate::message::header_text(&raw, name);
+        assert_eq!(header("In-Reply-To").as_deref(), Some("<gone@x.org>"));
+        assert_eq!(
+            header("References").as_deref(),
+            Some("<first@x.org> <gone@x.org>")
+        );
+    }
+
+    #[test]
+    fn a_reply_to_a_message_not_stored_fails_as_original_gone() {
+        let h = home();
+        let error = compose(
+            &h.config,
+            &h.daemon.paths,
+            &h.client,
+            request(reply_kind(999)),
+            no_editor,
+        )
+        .unwrap_err();
+        let gone = error.downcast_ref::<OriginalGone>();
+        assert_eq!(gone.map(|g| g.uid), Some(999), "{error:#}");
+        assert!(h.client.client().unwrap().outbox().unwrap().is_empty());
     }
 
     #[test]

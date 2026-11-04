@@ -1,0 +1,553 @@
+// The composer: a reply or forward above the original in the reader pane, or new mail in `ComposeWindow`. `compose.rs`
+// holds and words what it shows.
+import { CheckBox, Palette as StdPalette, ScrollView, TextEdit } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Hairline, IconButton, Note, Switch, TextButton } from "common.slint";
+import { AttachmentData } from "body.slint";
+import { Choice, Field } from "rule_editor.slint";
+import { Dialog, Scrim } from "dialogs.slint";
+
+// The field an error is about, under which it shows; the same names as `compose::Field`.
+export enum ComposeSpot { none, attachments, bcc, cc, from, note, send, subject, to }
+
+// What the user edits as text; the same names as `compose::ComposeField`.
+export enum ComposeField { bcc, cc, from, subject, text, to }
+
+// One of a forwarded message's attachments, and whether an inline forward takes it along.
+export struct ComposePart {
+    name: string,
+    size: string,
+    kept: bool,
+}
+
+export struct ComposeData {
+    open: bool,
+    // Filled from the original yet, and not on its way: Send is off meanwhile.
+    loading: bool,
+    sending: bool,
+    from: string,
+    // Which of the From choices `from` is; -1 when it was typed, so it shows as a field.
+    from-index: int,
+    to: string,
+    cc: string,
+    bcc: string,
+    show-cc-bcc: bool,
+    subject: string,
+    text: string,
+    forward: bool,
+    as-attachment: bool,
+    // What is attached out of what the server takes, as "3 KB of 25.0 MB"; empty while nothing is.
+    size: string,
+    error-at: ComposeSpot,
+    error: string,
+    // The address field whose completions show, or none; and the highlighted one.
+    completing: ComposeSpot,
+    completion-index: int,
+}
+
+component Error inherits Text {
+    color: Theme.pane.error;
+    font-size: Theme.small-size;
+    wrap: word-wrap;
+}
+
+// A field's label, then the field; its error, when it names this field, under it.
+component Row inherits VerticalLayout {
+    in property <string> label;
+    in property <bool> failed;
+    in property <string> error;
+    spacing: Theme.pad / 2;
+    HorizontalLayout {
+        spacing: Theme.pad;
+        Text {
+            accessible-role: none;
+            width: 8 * Theme.pad;
+            text: root.label;
+            color: Theme.pane.muted;
+            vertical-alignment: center;
+        }
+        @children
+    }
+    if root.failed: Error {
+        accessible-label: root.label + ": " + root.error;
+        text: root.error;
+    }
+}
+
+// An address field. While its completions show, Up and Down move through them, Enter or Tab takes one and Esc closes
+// them; leaving the field closes them too. It says where it is, so the completions show under it.
+component AddressField inherits Field {
+    in property <bool> completing;
+    in property <int> chosen;
+    callback step(int);
+    callback pick(int);
+    callback dismiss();
+    callback placed(/* x */ length, /* bottom */ length, /* width */ length);
+    key-pressed(event) => {
+        if (!root.completing || event.modifiers.control || event.modifiers.meta || event.modifiers.alt) {
+            return reject;
+        }
+        if (event.text == Key.UpArrow) {
+            root.step(-1);
+        } else if (event.text == Key.DownArrow) {
+            root.step(1);
+        } else if (event.text == Key.Return || event.text == Key.Tab) {
+            root.pick(root.chosen);
+        } else if (event.text == Key.Escape) {
+            root.dismiss();
+        } else {
+            return reject;
+        }
+        accept
+    }
+    changed has-focus => {
+        if (!self.has-focus) {
+            root.dismiss();
+        }
+    }
+    changed completing => {
+        if (self.completing) {
+            root.placed(self.absolute-position.x, self.absolute-position.y + self.height, self.width);
+        }
+    }
+}
+
+export component Composer inherits Rectangle {
+    in property <ComposeData> data;
+    // From's choices as they read, and the files and the original's parts as they are listed.
+    in property <[string]> from-choices;
+    in property <[AttachmentData]> files;
+    in property <[ComposePart]> parts;
+    // The addresses offered under the field being typed in, as `Name <address>`.
+    in property <[string]> completions;
+    in property <string> remove-icon;
+    in property <string> send-hint;
+    callback edited(ComposeField, string);
+    callback completion-step(int);
+    callback completion-pick(int);
+    callback completion-close();
+    callback from-chosen(int);
+    callback show-cc-bcc();
+    callback attach();
+    callback remove-file(int);
+    callback toggle-part(int);
+    callback as-attachment(bool);
+    callback send();
+    callback close();
+    callback discard();
+
+    property <bool> can-send: !root.data.loading && !root.data.sending;
+    // Typing waits for the original's fields, and stops once the message is on its way.
+    property <bool> fixed: !root.can-send;
+    // Under the field being completed, relative to the composer.
+    property <length> completion-x;
+    property <length> completion-y;
+    property <length> completion-width;
+    // Like `Field`, the text is put right by hand when it changes from outside, such as a composer opened again.
+    property <string> text: root.data.text;
+    changed text => {
+        if (body.text != root.text) {
+            body.text = root.text;
+        }
+    }
+    accessible-role: groupbox;
+    accessible-label: "Message";
+
+    FocusScope {
+        KeyBinding {
+            keys: @keys(Control + Return);
+            enabled: root.can-send;
+            activated => { root.send(); }
+        }
+
+        VerticalLayout {
+            padding: Theme.inset;
+            padding-bottom: Theme.pad;
+            spacing: Theme.pad;
+
+            HorizontalLayout {
+                spacing: Theme.pad;
+                TextButton {
+                    text: "Send";
+                    primary: true;
+                    palette: Theme.pane;
+                    enabled: root.can-send;
+                    hint: root.send-hint;
+                    disabled-hint: root.data.sending ? "Sending…" : "Loading the message…";
+                    clicked => { root.send(); }
+                }
+                TextButton {
+                    text: "Close";
+                    framed: true;
+                    palette: Theme.pane;
+                    enabled: !root.data.sending;
+                    clicked => { root.close(); }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    TextButton {
+                        text: "Discard";
+                        palette: Theme.pane;
+                        enabled: !root.data.sending;
+                        clicked => { root.discard(); }
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                if root.data.loading: Note {
+                    text: "Loading the message…";
+                    vertical-alignment: center;
+                }
+            }
+            if root.data.error-at == ComposeSpot.send: Error { text: root.data.error; }
+            if root.data.error-at == ComposeSpot.note: Note { text: root.data.error; }
+
+            Row {
+                label: "From";
+                failed: root.data.error-at == ComposeSpot.from;
+                error: root.data.error;
+                if root.data.from-index >= 0: Choice {
+                    horizontal-stretch: 1;
+                    accessible-label: "From";
+                    model: root.from-choices;
+                    index: root.data.from-index;
+                    enabled: !root.fixed;
+                    index-chosen(i) => { root.from-chosen(i); }
+                }
+                if root.data.from-index < 0: Field {
+                    horizontal-stretch: 1;
+                    accessible-label: "From";
+                    read-only: root.fixed;
+                    value: root.data.from;
+                    value-edited(text) => { root.edited(ComposeField.from, text); }
+                }
+            }
+            Row {
+                label: "To";
+                failed: root.data.error-at == ComposeSpot.to;
+                error: root.data.error;
+                AddressField {
+                    horizontal-stretch: 1;
+                    accessible-label: "To";
+                    read-only: root.fixed;
+                    value: root.data.to;
+                    value-edited(text) => { root.edited(ComposeField.to, text); }
+                    completing: root.data.completing == ComposeSpot.to && root.completions.length > 0;
+                    chosen: root.data.completion-index;
+                    step(by) => { root.completion-step(by); }
+                    pick(i) => { root.completion-pick(i); }
+                    dismiss => { root.completion-close(); }
+                    placed(x, bottom, width) => {
+                        root.completion-x = x - root.absolute-position.x;
+                        root.completion-y = bottom - root.absolute-position.y;
+                        root.completion-width = width;
+                    }
+                }
+                if !root.data.show-cc-bcc: TextButton {
+                    text: "Cc Bcc";
+                    palette: Theme.pane;
+                    hint: "Add Cc and Bcc";
+                    clicked => { root.show-cc-bcc(); }
+                }
+            }
+            if root.data.show-cc-bcc: Row {
+                label: "Cc";
+                failed: root.data.error-at == ComposeSpot.cc;
+                error: root.data.error;
+                AddressField {
+                    horizontal-stretch: 1;
+                    accessible-label: "Cc";
+                    read-only: root.fixed;
+                    value: root.data.cc;
+                    value-edited(text) => { root.edited(ComposeField.cc, text); }
+                    completing: root.data.completing == ComposeSpot.cc && root.completions.length > 0;
+                    chosen: root.data.completion-index;
+                    step(by) => { root.completion-step(by); }
+                    pick(i) => { root.completion-pick(i); }
+                    dismiss => { root.completion-close(); }
+                    placed(x, bottom, width) => {
+                        root.completion-x = x - root.absolute-position.x;
+                        root.completion-y = bottom - root.absolute-position.y;
+                        root.completion-width = width;
+                    }
+                }
+            }
+            if root.data.show-cc-bcc: Row {
+                label: "Bcc";
+                failed: root.data.error-at == ComposeSpot.bcc;
+                error: root.data.error;
+                AddressField {
+                    horizontal-stretch: 1;
+                    accessible-label: "Bcc";
+                    read-only: root.fixed;
+                    value: root.data.bcc;
+                    value-edited(text) => { root.edited(ComposeField.bcc, text); }
+                    completing: root.data.completing == ComposeSpot.bcc && root.completions.length > 0;
+                    chosen: root.data.completion-index;
+                    step(by) => { root.completion-step(by); }
+                    pick(i) => { root.completion-pick(i); }
+                    dismiss => { root.completion-close(); }
+                    placed(x, bottom, width) => {
+                        root.completion-x = x - root.absolute-position.x;
+                        root.completion-y = bottom - root.absolute-position.y;
+                        root.completion-width = width;
+                    }
+                }
+            }
+            Row {
+                label: "Subject";
+                failed: root.data.error-at == ComposeSpot.subject;
+                error: root.data.error;
+                Field {
+                    horizontal-stretch: 1;
+                    accessible-label: "Subject";
+                    read-only: root.fixed;
+                    value: root.data.subject;
+                    value-edited(text) => { root.edited(ComposeField.subject, text); }
+                }
+            }
+
+            body := TextEdit {
+                vertical-stretch: 1;
+                min-height: 3 * Theme.row;
+                wrap: word-wrap;
+                accessible-label: "Your text";
+                read-only: root.fixed;
+                text: root.text;
+                edited(text) => { root.edited(ComposeField.text, text); }
+            }
+
+            HorizontalLayout {
+                spacing: Theme.pad;
+                TextButton {
+                    text: "Attach…";
+                    framed: true;
+                    palette: Theme.pane;
+                    enabled: !root.data.sending;
+                    clicked => { root.attach(); }
+                }
+                for file[i] in root.files: HorizontalLayout {
+                    spacing: Theme.pad / 2;
+                    Text {
+                        text: file.name + " (" + file.size + ")";
+                        color: Theme.pane.text;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    IconButton {
+                        icon: root.remove-icon;
+                        name: "Remove " + file.name;
+                        hint: "Remove this file";
+                        palette: Theme.pane;
+                        clicked => { root.remove-file(i); }
+                    }
+                }
+                if root.data.size != "": Text {
+                    text: root.data.size;
+                    color: Theme.pane.muted;
+                    vertical-alignment: center;
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+            if root.data.error-at == ComposeSpot.attachments: Error { text: root.data.error; }
+
+            if root.data.forward: HorizontalLayout {
+                spacing: Theme.inset;
+                for part[i] in root.parts: CheckBox {
+                    text: part.name + " (" + part.size + ")";
+                    checked: part.kept;
+                    enabled: !root.data.as-attachment;
+                    toggled => { root.toggle-part(i); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                VerticalLayout {
+                    alignment: center;
+                    Switch {
+                        name: "Send as attachment";
+                        checked: root.data.as-attachment;
+                        toggled(on) => { root.as-attachment(on); }
+                    }
+                }
+                Text {
+                    accessible-role: none;
+                    text: "Send as attachment";
+                    color: Theme.pane.text;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+    Hairline {
+        y: root.height - self.height;
+    }
+
+    // Over the fields below, so it comes last.
+    if root.data.completing != ComposeSpot.none && root.completions.length > 0: Rectangle {
+        x: root.completion-x;
+        y: root.completion-y + Theme.pad / 4;
+        width: root.completion-width;
+        height: choices.preferred-height;
+        background: Theme.pane.background;
+        border-color: Theme.pane.border;
+        border-width: 1px;
+        border-radius: Theme.pad;
+        drop-shadow-blur: 2 * Theme.pad;
+        drop-shadow-offset-y: Theme.pad / 4;
+        drop-shadow-color: Theme.shadow;
+        accessible-role: list;
+        accessible-label: "Addresses";
+        // Clicks stay in the list.
+        TouchArea { }
+        choices := VerticalLayout {
+            padding: Theme.pad / 2;
+            for choice[i] in root.completions: Rectangle {
+                height: Theme.row;
+                border-radius: Theme.pad / 2;
+                background: i == root.data.completion-index ? Theme.pane.selected : touch.has-hover ? Theme.pane.hover : transparent;
+                accessible-role: list-item;
+                accessible-label: choice;
+                accessible-item-selected: i == root.data.completion-index;
+                touch := TouchArea {
+                    clicked => { root.completion-pick(i); }
+                }
+                Text {
+                    accessible-role: none;
+                    x: Theme.pad;
+                    width: parent.width - 2 * Theme.pad;
+                    text: choice;
+                    color: i == root.data.completion-index ? Theme.pane.on-accent : Theme.pane.text;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+}
+
+// "Discard this message?" before something takes the reader pane from a changed composer.
+export component LeaveComposeDialog {
+    in property <string> question;
+    in property <string> close-icon;
+    callback discard();
+    callback cancel();
+    width: Theme.dialog-small;
+    Dialog {
+        title: "Unsent message";
+        close-icon: root.close-icon;
+        close => { root.cancel(); }
+        Text {
+            text: root.question;
+            color: Theme.pane.text;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            spacing: Theme.pad;
+            Rectangle { horizontal-stretch: 1; }
+            TextButton {
+                text: "Cancel";
+                palette: Theme.pane;
+                framed: true;
+                clicked => { root.cancel(); }
+            }
+            TextButton {
+                text: "Discard";
+                palette: Theme.pane;
+                danger: true;
+                clicked => { root.discard(); }
+            }
+        }
+    }
+}
+
+// New mail in a window of its own, with the names `MailWindow` gives its reader pane's composer. Esc closes it, or
+// answers its question with Cancel; Ctrl+N (Cmd+N) opens another.
+export component ComposeWindow inherits Window {
+    in property <ComposeData> compose;
+    in property <[string]> compose-from-choices;
+    in property <[AttachmentData]> compose-files;
+    in property <[ComposePart]> compose-parts;
+    in property <[string]> compose-completions;
+    in property <string> compose-send-hint;
+    in property <string> close-icon;
+    callback compose-edited(ComposeField, string);
+    callback compose-completion-step(int);
+    callback compose-completion-pick(int);
+    callback compose-completion-close();
+    callback compose-from-chosen(int);
+    callback compose-show-cc-bcc();
+    callback compose-attach();
+    callback compose-remove-file(int);
+    callback compose-toggle-part(int);
+    callback compose-as-attachment(bool);
+    callback compose-send();
+    callback compose-close();
+    callback compose-discard();
+    // "Discard this message?" while it asks.
+    in property <string> leave-compose;
+    callback leave-compose-discard();
+    callback leave-compose-cancel();
+    callback new-mail();
+
+    property <bool> dark: Theme.dark;
+    init => { StdPalette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light; }
+    changed dark => { StdPalette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light; }
+
+    title: "New message";
+    preferred-width: 720px;
+    preferred-height: 640px;
+    background: Theme.pane.background;
+    default-font-family: Theme.text-font;
+    default-font-size: Theme.text-size;
+    forward-focus: keys;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.modifiers.control && !event.modifiers.alt && event.text.to-lowercase() == "n") {
+                root.new-mail();
+                return accept;
+            }
+            if (event.text != Key.Escape) {
+                return reject;
+            }
+            if (root.leave-compose != "") {
+                root.leave-compose-cancel();
+            } else {
+                root.compose-close();
+            }
+            return accept;
+        }
+        Composer {
+            data: root.compose;
+            from-choices: root.compose-from-choices;
+            files: root.compose-files;
+            parts: root.compose-parts;
+            completions: root.compose-completions;
+            remove-icon: root.close-icon;
+            send-hint: root.compose-send-hint;
+            edited(field, text) => { root.compose-edited(field, text); }
+            completion-step(by) => { root.compose-completion-step(by); }
+            completion-pick(i) => { root.compose-completion-pick(i); }
+            completion-close => { root.compose-completion-close(); }
+            from-chosen(i) => { root.compose-from-chosen(i); }
+            show-cc-bcc => { root.compose-show-cc-bcc(); }
+            attach => { root.compose-attach(); }
+            remove-file(i) => { root.compose-remove-file(i); }
+            toggle-part(i) => { root.compose-toggle-part(i); }
+            as-attachment(on) => { root.compose-as-attachment(on); }
+            send => { root.compose-send(); }
+            close => { root.compose-close(); }
+            discard => { root.compose-discard(); }
+        }
+    }
+
+    if root.leave-compose != "": Scrim {
+        close => { root.leave-compose-cancel(); }
+    }
+    if root.leave-compose != "": LeaveComposeDialog {
+        x: (root.width - self.width) / 2;
+        y: Theme.inset;
+        question: root.leave-compose;
+        close-icon: root.close-icon;
+        discard => { root.leave-compose-discard(); }
+        cancel => { root.leave-compose-cancel(); }
+    }
+}

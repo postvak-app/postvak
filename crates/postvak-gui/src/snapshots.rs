@@ -30,7 +30,11 @@ fn snapshot(open: &Open, name: &str) {
     open.tick();
     // Past every fade, such as a dialog's as it opens: one period of the syncing pulse, so the pulse shows as before.
     i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_secs(2));
-    let png = open.png();
+    compare(&open.png(), name);
+}
+
+/// Compares `png` with `tests/snapshots/{name}.png`.
+fn compare(png: &[u8], name: &str) {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/snapshots")
         .join(format!("{name}.png"));
@@ -39,7 +43,7 @@ fn snapshot(open: &Open, name: &str) {
             utc(),
             "snapshots show local times; rewrite them with TZ=UTC"
         );
-        std::fs::write(&path, &png).unwrap();
+        std::fs::write(&path, png).unwrap();
         return;
     }
     if !utc() {
@@ -47,9 +51,9 @@ fn snapshot(open: &Open, name: &str) {
         return;
     }
     let reference = std::fs::read(&path).unwrap_or_default();
-    if pixels(&reference) != pixels(&png) {
+    if pixels(&reference) != pixels(png) {
         let new = path.with_extension("new.png");
-        std::fs::write(&new, &png).unwrap();
+        std::fs::write(&new, png).unwrap();
         panic!(
             "{name} differs from {}; see {}",
             path.display(),
@@ -163,8 +167,7 @@ fn a_sender_logo() {
 }
 
 /// A message with attachments in a reader wide enough to label its actions.
-#[test]
-fn reader_attachments() {
+fn reader_with_attachments() -> (Fixture, Open, Wires) {
     let fx = Fixture::mailbox("light");
     let raw = "From: Northwind Rail <tickets@northwind-rail.example>\r\nSubject: Your e-ticket: Utrecht to Koeln\r\n\
         MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\n\
@@ -190,12 +193,18 @@ fn reader_attachments() {
             "Your ticket for Thursday is attached.",
         )
         .unwrap();
-    let (open, _wires) = open(&fx);
+    let (open, wires) = open(&fx);
     resize(&open, (1600.0, 800.0));
     open.with(|live| live.app.select_view(work_inbox()));
     open.tick_until(|open| {
         slint::Model::row_count(&open.window().get_body_info().attachments) == 2
     });
+    (fx, open, wires)
+}
+
+#[test]
+fn reader_attachments() {
+    let (_fx, open, _wires) = reader_with_attachments();
     snapshot(&open, "gui_reader_attachments");
 }
 
@@ -948,6 +957,184 @@ fn a_very_tall_page_draws() {
 fn html_narrow() {
     let (_fx, open, _wires) = newsletter("light", 1060.0);
     snapshot(&open, "gui_html_narrow");
+}
+
+/// What the daemon's prefill would answer for a message in the snapshot mailbox: a reply to the newsletter, or a
+/// forward of the e-ticket with its two attachments.
+fn prefilled(
+    _: &postvak_core::paths::Paths,
+    _: &postvak_core::config::Config,
+    account: &str,
+    kind: &postvak_core::send::compose::SendKind,
+) -> Result<postvak_core::send::compose::Prefilled, String> {
+    use postvak_core::send::compose::SendKind;
+    let forward = matches!(kind, SendKind::Forward { .. });
+    let draft = postvak_core::send::build::Draft {
+        from: format!("{account}@example.com"),
+        to: if forward {
+            Vec::new()
+        } else {
+            vec!["Postvak Weekly <news@example.org>".into()]
+        },
+        subject: if forward {
+            "Fwd: Your e-ticket: Utrecht to Koeln".into()
+        } else {
+            "Re: Your October roundup".into()
+        },
+        ..Default::default()
+    };
+    let attachments = if forward {
+        vec![
+            ("e-ticket-UTR-CGN.pdf".into(), 184_320),
+            ("conditions.pdf".into(), 52_224),
+        ]
+    } else {
+        Vec::new()
+    };
+    Ok(postvak_core::send::compose::Prefilled {
+        account: account.into(),
+        draft,
+        original: Some(Vec::new()),
+        attachments,
+    })
+}
+
+/// Opens `action`'s composer over the shown message and waits until it is filled.
+fn composing(open: &Open, action: UiAction) {
+    open.with(|live| {
+        live.app.prefill = prefilled;
+        live.app.apply(action);
+    });
+    open.tick_until(|open| {
+        open.with(|live| live.app.composer.as_ref().is_some_and(|c| !c.loading))
+    });
+}
+
+fn compose_reply_html(theme: &str) -> (Fixture, Open, Wires) {
+    let (fx, open, wires) = newsletter(theme, 1280.0);
+    composing(
+        &open,
+        UiAction::Reply(postvak_core::send::reply::ReplyTo::Sender),
+    );
+    open.with(|live| {
+        live.app.apply(UiAction::ComposeEdit(
+            crate::state::ComposeTarget::Pane,
+            crate::compose::ComposeField::Text,
+            "Thanks, the roundup was a good read.".into(),
+        ))
+    });
+    wait_painted(&open);
+    (fx, open, wires)
+}
+
+/// A reply above the newsletter it answers, which shows below as the reader draws it.
+#[test]
+fn compose_reply_html_light() {
+    let (_fx, open, _wires) = compose_reply_html("light");
+    snapshot(&open, "gui_compose_reply_html_light");
+}
+
+#[test]
+fn compose_reply_html_dark() {
+    let (_fx, open, _wires) = compose_reply_html("dark");
+    snapshot(&open, "gui_compose_reply_html_dark");
+}
+
+/// A forward of the e-ticket, its attachments listed with check boxes, one left out.
+#[test]
+fn compose_forward_attachments() {
+    let (_fx, open, _wires) = reader_with_attachments();
+    composing(&open, UiAction::Forward);
+    open.with(|live| {
+        live.app.apply(UiAction::ComposeToggleForwardPart(
+            crate::state::ComposeTarget::Pane,
+            1,
+        ))
+    });
+    snapshot(&open, "gui_compose_forward_attachments");
+}
+
+/// New mail from a `mailto:` link, in a window of its own.
+#[test]
+fn compose_new_mail() {
+    let fx = Fixture::mailbox("light");
+    let (open, _wires) = open(&fx);
+    open.with(|live| {
+        live.app.apply(UiAction::OpenUrl(
+            "mailto:linus@example.org?cc=ann@example.org&subject=Lunch%20on%20Friday&body=Noon%20at%20the%20usual%20place%3F".into(),
+        ))
+    });
+    use slint::ComponentHandle;
+    let window = open.compose_windows().remove(0);
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(720.0, 640.0));
+    open.tick();
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_secs(2));
+    compare(
+        &super::test_support::png(window.window()),
+        "gui_compose_new_mail",
+    );
+}
+
+/// New mail with "a" typed in To: the senders it matches, under the field.
+#[test]
+fn compose_completion() {
+    let fx = Fixture::mailbox("light");
+    let (open, _wires) = open(&fx);
+    open.with(|live| live.app.apply(UiAction::NewMail(None)));
+    use slint::ComponentHandle;
+    let window = open.compose_windows().remove(0);
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(720.0, 640.0));
+    open.tick();
+    window.invoke_compose_edited(super::ui::ComposeField::To, "a".into());
+    open.tick_until(|open| open.with(|live| live.app.completion.is_some()));
+    open.tick();
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_secs(2));
+    compare(
+        &super::test_support::png(window.window()),
+        "gui_compose_completion",
+    );
+}
+
+/// The outbox over the inbox: one message waiting and one that failed, with Retry.
+#[test]
+fn outbox_dialog() {
+    use postvak_core::send::Envelope;
+    use postvak_core::send::outbox::{Entry, Outbox, State};
+    let fx = Fixture::mailbox("light");
+    let outbox = Outbox::open(&fx.paths, "work").unwrap();
+    let envelope = |to: &[&str]| Envelope {
+        from: "work@example.com".into(),
+        to: to.iter().map(|to| to.to_string()).collect(),
+    };
+    let waiting = Entry::new(envelope(&["linus@example.com"]), AT + 600, false, None);
+    outbox.add(b"raw", &waiting).unwrap();
+    let to = envelope(&["grace@example.com", "alan@example.com"]);
+    let mut failed = Entry::new(to, AT, false, None);
+    failed.state = State::Failed {
+        reason: "550 5.1.1 mailbox unavailable".into(),
+        retrying: false,
+    };
+    outbox.add(b"raw", &failed).unwrap();
+    let (open, _wires) = open(&fx);
+    open.with(|live| live.app.select_view(work_inbox()));
+    open.advance(crate::state::POLL);
+    open.with(|live| live.app.apply(UiAction::OpenOutbox));
+    snapshot(&open, "gui_outbox_dialog");
+}
+
+/// The inbox with a reply to Linus's lunch question waiting to go: the clock beside its subject.
+#[test]
+fn inbox_answer_waiting() {
+    let (_fx, open, _wires) = inbox("light");
+    open.with(|live| {
+        live.app.accounts[1].answering = ["<95@example.com>".to_string()].into();
+        live.app.rebuild_rows();
+    });
+    snapshot(&open, "gui_inbox_answer_waiting");
 }
 
 /// The window's grid: (glyph, inset, pad, row).

@@ -3,22 +3,23 @@ import { Palette as StdPalette } from "std-widgets.slint";
 import { Theme, ThemePreference } from "theme.slint";
 import { FolderItem, FolderPane, MenuChoice } from "folders.slint";
 import { StatusBar, StatusLine } from "status.slint";
-import { AccountDialog, ApplyConfirmDialog, FolderDialog, HistoryDialog, KeyHelp, KeysDialog, MoveDialog, Scrim, SourceDialog } from "dialogs.slint";
+import { AccountDialog, ApplyConfirmDialog, FolderDialog, HistoryDialog, KeyHelp, KeysDialog, MoveDialog, OutboxDialog, OutboxEntry, Scrim, SourceDialog } from "dialogs.slint";
 import { AccountFields } from "account.slint";
-import { BodyInfo, BodyPane, PageInfo, SelectedData, StripData, ToolButton } from "body.slint";
+import { AttachmentData, BodyInfo, BodyPane, PageInfo, SelectedData, StripData, ToolButton } from "body.slint";
 import { ForwardLineData, ProposalData, RuleData, RulesPane, Sheet } from "rules.slint";
 import { RuleDialog, RuleEditor, UnsavedDialog } from "rule_editor.slint";
 import { AboutDialog } from "about.slint";
 import { Preferences, PreferencesDialog } from "preferences.slint";
 import { ListPane, RowData } from "list.slint";
+import { ComposeData, ComposeField, ComposePart, Composer, LeaveComposeDialog } from "compose.slint";
 
 export enum Pane { body, folders, list }
 
 // The menu items that act on the app; `menu.rs` says what each does.
-export enum MenuAction { about, add-account, add-to-selection, archive, delete, documentation, flag, history, junk, keys, mark-folder-read, move, new-folder, open-at-login, original-colours, preferences, read-or-unread, save-eml, save-eml-as, search, select-all, sync-now, text-or-html, theme-dark, theme-light, theme-system, view-source }
+export enum MenuAction { about, add-account, add-to-selection, archive, delete, documentation, flag, history, junk, keys, mark-folder-read, move, new-folder, new-message, open-at-login, original-colours, preferences, read-or-unread, save-eml, save-eml-as, search, select-all, sync-now, text-or-html, theme-dark, theme-light, theme-system, view-source }
 
 // A dialog that closes; the same names as `state::Dialog`.
-export enum Dialog { help, unsaved, apply-confirm, rule, folder, account, about, preferences, source, move, history }
+export enum Dialog { help, unsaved, apply-confirm, rule, folder, account, about, preferences, source, move, outbox, history }
 
 // Which menu items would do something now; the others are disabled.
 export struct MenuState {
@@ -51,6 +52,19 @@ component Splitter inherits TouchArea {
 
 // A paper pane in the frame, with a soft accent outline while it has the keyboard; the outline is drawn inside, so
 // nothing moves. The clip has no radius: FemtoVG draws a rounded clip through a layer that blurs text (slint#10499).
+// The edge between the composer and the original below it; dragging it sets `share`, the composer's part of `room`.
+component RowSplitter inherits TouchArea {
+    in-out property <float> share;
+    in property <length> room;
+    height: Theme.pad;
+    mouse-cursor: row-resize;
+    moved => {
+        if (self.pressed) {
+            root.share = clamp(root.share + (self.mouse-y - self.pressed-y) / root.room, 0.2, 0.8);
+        }
+    }
+}
+
 component PaneFrame inherits Rectangle {
     in property <bool> focused;
     background: Theme.pane.background;
@@ -72,11 +86,38 @@ export component MailWindow inherits Window {
     in property <Pane> focused-pane: Pane.list;
     // A folder or All inboxes: a list and the body; else Rules, Activity or Backups, one pane.
     in property <bool> mail-view: true;
+    // The reader pane's composer, above the original; and its part of the pane's height, which the splitter drags.
+    in property <ComposeData> compose;
+    in property <[string]> compose-from-choices;
+    in property <[AttachmentData]> compose-files;
+    in property <[ComposePart]> compose-parts;
+    in property <[string]> compose-completions;
+    in property <string> compose-send-hint;
+    in-out property <float> compose-share: 0.5;
+    callback compose-edited(ComposeField, string);
+    callback compose-completion-step(int);
+    callback compose-completion-pick(int);
+    callback compose-completion-close();
+    callback compose-from-chosen(int);
+    callback compose-show-cc-bcc();
+    callback compose-attach();
+    callback compose-remove-file(int);
+    callback compose-toggle-part(int);
+    callback compose-as-attachment(bool);
+    callback compose-send();
+    callback compose-close();
+    callback compose-discard();
+    // "Discard this message?" while it asks.
+    in property <string> leave-compose;
+    callback leave-compose-discard();
+    callback leave-compose-cancel();
     in property <bool> config-changed;
     // Phosphor glyphs from `icons.rs`.
     in property <string> close-icon;
     in property <string> search-icon;
     in property <string> sync-icon;
+    in property <string> new-mail-icon;
+    in property <string> new-mail-hint;
     in property <string> filter-icon;
     // The glyphs of the empty list and the empty reader.
     in property <string> inbox-icon;
@@ -84,10 +125,9 @@ export component MailWindow inherits Window {
     in property <string> rule-icon;
     // Approve rule's tick.
     in property <string> check-icon;
-    // The reader's More menu, Reply and the arrow that says it opens the mail app, and an attachment.
+    // The reader's More menu, Reply, and an attachment.
     in property <string> more-icon;
     in property <string> reply-icon;
-    in property <string> external-icon;
     in property <string> file-icon;
 
     // The message actions that move the message, then the marks: flag and read state.
@@ -110,6 +150,10 @@ export component MailWindow inherits Window {
     in property <[KeyHelp]> keys;
     in property <bool> history-open;
     in property <[string]> history;
+    in property <bool> outbox-open;
+    in property <[OutboxEntry]> outbox;
+    callback open-outbox();
+    callback retry-send(int);
 
     // Over an inbox's rows while rule proposals wait.
     in property <string> list-banner;
@@ -237,6 +281,7 @@ export component MailWindow inherits Window {
     callback forget-remote(string);
     callback page-open-link();
     callback menu-item(MenuAction);
+    callback new-mail();
     callback close-window();
     callback quit();
     callback open-rules-file();
@@ -248,6 +293,9 @@ export component MailWindow inherits Window {
     callback new-rule();
     callback rule-from();
     callback reply();
+    callback reply-all();
+    callback reply-list();
+    callback forward();
     callback review-proposals();
     callback edit-shown-rule();
     callback move-back();
@@ -330,6 +378,11 @@ export component MailWindow inherits Window {
     MenuBar {
         Menu {
             title: "File";
+            MenuItem {
+                title: "New message";
+                activated => { root.menu-item(MenuAction.new-message); }
+            }
+            MenuSeparator { }
             MenuItem {
                 title: "Save .eml";
                 enabled: root.menu.save-eml;
@@ -542,6 +595,7 @@ export component MailWindow inherits Window {
                 update: root.update;
                 sync => { root.sync(); }
                 toggle-history => { root.toggle-history(); }
+                open-outbox => { root.open-outbox(); }
                 open-update => { root.open-update(); }
             }
         }
@@ -575,6 +629,9 @@ export component MailWindow inherits Window {
                         filter: root.list-filter;
                         filter-label: root.filter-label;
                         filter-icon: root.filter-icon;
+                        new-mail-icon: root.new-mail-icon;
+                        new-mail-hint: root.new-mail-hint;
+                        new-mail => { root.new-mail(); }
                         empty-icon: root.inbox-icon;
                         search-icon: root.search-icon;
                         search-key: root.search-hint;
@@ -602,11 +659,43 @@ export component MailWindow inherits Window {
                     }
                 }
 
-                if root.mail-view: PaneFrame {
+                if root.mail-view: reader := PaneFrame {
                     // So the window, which cannot get narrower than its panes, leaves room for the subject and actions.
                     min-width: root.list-min-width;
                     focused: root.focused-pane == Pane.body;
+                    property <length> compose-height: root.compose.open ? (self.height - Theme.pad) * clamp(root.compose-share, 0.2, 0.8) : 0;
+                    if root.compose.open: Composer {
+                        y: 0;
+                        height: reader.compose-height;
+                        data: root.compose;
+                        from-choices: root.compose-from-choices;
+                        files: root.compose-files;
+                        parts: root.compose-parts;
+                        completions: root.compose-completions;
+                        remove-icon: root.close-icon;
+                        send-hint: root.compose-send-hint;
+                        edited(field, text) => { root.compose-edited(field, text); }
+                        completion-step(by) => { root.compose-completion-step(by); }
+                        completion-pick(i) => { root.compose-completion-pick(i); }
+                        completion-close => { root.compose-completion-close(); }
+                        from-chosen(i) => { root.compose-from-chosen(i); }
+                        show-cc-bcc => { root.compose-show-cc-bcc(); }
+                        attach => { root.compose-attach(); }
+                        remove-file(i) => { root.compose-remove-file(i); }
+                        toggle-part(i) => { root.compose-toggle-part(i); }
+                        as-attachment(on) => { root.compose-as-attachment(on); }
+                        send => { root.compose-send(); }
+                        close => { root.compose-close(); }
+                        discard => { root.compose-discard(); }
+                    }
+                    if root.compose.open: RowSplitter {
+                        y: reader.compose-height;
+                        share <=> root.compose-share;
+                        room: reader.height - Theme.pad;
+                    }
                     BodyPane {
+                        y: root.compose.open ? reader.compose-height + Theme.pad : 0;
+                        height: reader.height - self.y;
                         info: root.body-info;
                         text: root.body-text;
                         save-icon: root.save-icon;
@@ -630,11 +719,13 @@ export component MailWindow inherits Window {
                         rule-icon: root.rule-icon;
                         more-icon: root.more-icon;
                         reply-icon: root.reply-icon;
-                        external-icon: root.external-icon;
                         file-icon: root.file-icon;
                         empty-icon: root.envelope-icon;
                         rule-from => { root.rule-from(); }
                         reply => { root.reply(); }
+                        reply-all => { root.reply-all(); }
+                        reply-list => { root.reply-list(); }
+                        forward => { root.forward(); }
                         edit-shown-rule => { root.edit-shown-rule(); }
                         move-back => { root.move-back(); }
                         toggle-provenance => { root.toggle-provenance(); }
@@ -723,6 +814,15 @@ export component MailWindow inherits Window {
         lines: root.history;
         close-icon: root.close-icon;
         close => { root.close-dialog(Dialog.history); }
+    }
+
+    if root.outbox-open: OutboxDialog {
+        x: Theme.inset;
+        y: root.height - self.height - Theme.top-bar - Theme.inset;
+        entries: root.outbox;
+        close-icon: root.close-icon;
+        retry(i) => { root.retry-send(i); }
+        close => { root.close-dialog(Dialog.outbox); }
     }
 
     if root.move-open: MoveDialog {
@@ -841,6 +941,18 @@ export component MailWindow inherits Window {
         x: (root.width - self.width) / 2;
         y: Theme.top-bar + Theme.inset;
         close-icon: root.close-icon;
+    }
+
+    if root.leave-compose != "": Scrim {
+        close => { root.leave-compose-cancel(); }
+    }
+    if root.leave-compose != "": LeaveComposeDialog {
+        x: (root.width - self.width) / 2;
+        y: Theme.top-bar + Theme.inset;
+        question: root.leave-compose;
+        close-icon: root.close-icon;
+        discard => { root.leave-compose-discard(); }
+        cancel => { root.leave-compose-cancel(); }
     }
 
     if root.help-open: Scrim {

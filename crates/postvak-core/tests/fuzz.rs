@@ -1358,3 +1358,22 @@ fn known_upstream_panics_are_tolerated() {
 fn other_panics_still_fail() {
     tolerating_known_upstream_panics(|| panic!("not a known upstream panic"));
 }
+
+#[test]
+fn a_control_character_in_a_name_does_not_panic_the_reply() {
+    let ms = vec![
+        Mutation::Truncate {
+            at: 1074892974913781999,
+        },
+        Mutation::Insert {
+            at: 27737107269477593,
+            token: 15,
+        },
+        Mutation::InsertBytes {
+            at: 2999594069124694520,
+            bytes: vec![61, 13],
+        },
+    ];
+    let raw = mutate(MESSAGES[1].to_vec(), MESSAGES[0], &ms);
+    exercise_send(&raw);
+}

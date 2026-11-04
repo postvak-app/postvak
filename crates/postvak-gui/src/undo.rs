@@ -2,6 +2,7 @@
 use postvak_core::actions::{UndoOutcome, UndoReport};
 use postvak_core::rules::Action;
 
+use super::compose::Composer;
 use super::numbers::counted;
 
 /// How long a toast stays when nothing holds it, in seconds.
@@ -18,6 +19,10 @@ pub(crate) struct Taken {
     /// `Apply`s whose `ActionDone` has not come yet.
     pub waiting: usize,
     pub state: UndoState,
+    /// A message sent from a composer: its account and outbox id, which Undo takes back.
+    pub outbox: Option<(usize, String)>,
+    /// The composer as it was sent, to reopen on Undo; kept until the message leaves `waiting`.
+    pub composer: Option<Box<Composer>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -43,6 +48,8 @@ pub(crate) struct Toast {
     pub hovered: bool,
     /// When it goes, on the window's clock; set by the first tick that shows it, and again when the pointer leaves it.
     pub until: Option<f64>,
+    /// A message waiting to go: the words before " in <n> s", which count down to `until`.
+    pub count_down: Option<String>,
 }
 
 impl Toast {
@@ -52,7 +59,26 @@ impl Toast {
             undo,
             hovered: false,
             until: None,
+            count_down: None,
         }
+    }
+
+    /// "Sending to … in <secs> s" with Undo, counting down to `now + secs` on the window's clock.
+    pub fn sending(words: String, secs: u64, now: f64) -> Toast {
+        Toast {
+            text: format!("{words} in {secs} s"),
+            until: Some(now + secs as f64),
+            count_down: Some(words),
+            ..Toast::new(String::new(), true)
+        }
+    }
+}
+
+/// Who a sent message goes to, for the toast: "Sending to Ann", with " and 2 more" for the other recipients.
+pub(crate) fn sending_text(first_recipient: &str, more: usize) -> String {
+    match more {
+        0 => format!("Sending to {first_recipient}"),
+        more => format!("Sending to {first_recipient} and {more} more"),
     }
 }
 
@@ -195,6 +221,16 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    #[test]
+    fn the_send_toast_names_the_first_recipient_and_counts_the_rest() {
+        assert_eq!(sending_text("Ann", 0), "Sending to Ann");
+        assert_eq!(sending_text("Ann", 2), "Sending to Ann and 2 more");
+        assert_eq!(
+            Toast::sending(sending_text("Ann", 0), 10, 5.0).text,
+            "Sending to Ann in 10 s"
+        );
     }
 
     #[test]

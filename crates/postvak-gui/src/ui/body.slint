@@ -90,6 +90,8 @@ export struct BodyInfo {
     unsubscribed: bool,
     // There is an address to reply to: Reply shows.
     reply: bool,
+    // The message came through a mailing list that takes posts: Reply to list shows.
+    reply-list: bool,
     provenance: ProvenanceData,
     links: [string],
 }
@@ -470,8 +472,10 @@ component ReplyAndMore inherits HorizontalLayout {
     in property <BodyInfo> info;
     in property <string> more-icon;
     in property <string> reply-icon;
-    in property <string> external-icon;
     callback reply();
+    callback reply-all();
+    callback reply-list();
+    callback forward();
     callback toggle-html();
     callback toggle-original-colours();
     callback unsubscribe();
@@ -483,8 +487,7 @@ component ReplyAndMore inherits HorizontalLayout {
         TextButton {
             text: "Reply";
             icon: root.reply-icon;
-            end-icon: root.external-icon;
-            hint: "Reply in your mail app";
+            hint: "Reply · r";
             framed: true;
             compact: true;
             palette: Theme.pane;
@@ -507,6 +510,20 @@ component ReplyAndMore inherits HorizontalLayout {
             width: Theme.control + Theme.pad / 2;
             height: self.width;
             Menu {
+                MenuItem {
+                    title: "Reply all";
+                    enabled: root.info.reply;
+                    activated => { root.reply-all(); }
+                }
+                if root.info.reply-list: MenuItem {
+                    title: "Reply to list";
+                    activated => { root.reply-list(); }
+                }
+                MenuItem {
+                    title: "Forward";
+                    activated => { root.forward(); }
+                }
+                MenuSeparator { }
                 if root.info.has-html: MenuItem {
                     title: root.info.shows-html ? "Show as text" : "Show as HTML";
                     enabled: root.info.shows-html || root.info.text-note == "";
@@ -553,7 +570,6 @@ export component BodyPane inherits Rectangle {
     in property <string> rule-icon;
     in property <string> more-icon;
     in property <string> reply-icon;
-    in property <string> external-icon;
     in property <string> file-icon;
     // The glyph above `info.empty`.
     in property <string> empty-icon;
@@ -567,8 +583,11 @@ export component BodyPane inherits Rectangle {
     // The index of a message action, `marks` counted after `actions`.
     callback action(int);
     callback clear-selection();
-    // Write a reply in the user's mail app.
+    // Answer the shown message in the reader pane.
     callback reply();
+    callback reply-all();
+    callback reply-list();
+    callback forward();
     // The provenance strip: open the rule that acted, move the message back, list every action, show Why?.
     callback edit-shown-rule();
     callback move-back();
@@ -693,8 +712,10 @@ export component BodyPane inherits Rectangle {
                     info: root.info;
                     more-icon: root.more-icon;
                     reply-icon: root.reply-icon;
-                    external-icon: root.external-icon;
                     reply => { root.reply(); }
+                    reply-all => { root.reply-all(); }
+                    reply-list => { root.reply-list(); }
+                    forward => { root.forward(); }
                     toggle-html => { root.toggle-html(); }
                     toggle-original-colours => { root.toggle-original-colours(); }
                     unsubscribe => { root.unsubscribe(); }
@@ -709,8 +730,10 @@ export component BodyPane inherits Rectangle {
                 info: root.info;
                 more-icon: root.more-icon;
                 reply-icon: root.reply-icon;
-                external-icon: root.external-icon;
                 reply => { root.reply(); }
+                reply-all => { root.reply-all(); }
+                reply-list => { root.reply-list(); }
+                forward => { root.forward(); }
                 toggle-html => { root.toggle-html(); }
                 toggle-original-colours => { root.toggle-original-colours(); }
                 unsubscribe => { root.unsubscribe(); }

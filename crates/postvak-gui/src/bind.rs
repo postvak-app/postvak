@@ -6,6 +6,7 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString};
 
 use postvak_core::config;
 
+use super::compose::{self, ComposeField, Composer};
 use super::draft::{self, ACTIONS, Condition, Draft, Field, Op};
 use super::folders::{self, Entry, FolderEntry};
 use super::html::{self, HtmlState};
@@ -13,16 +14,18 @@ use super::keys::{self, Key, Named, Press};
 use super::preferences::{self, Section, Setting};
 use super::rows::{ListModel, PageModel, model, sync, synced};
 use super::rules::SheetSort;
-use super::state::{self, App, Focus, OpenAtLogin, UiAction, View};
+use super::state::{self, App, ComposeTarget, Focus, OpenAtLogin, UiAction, View};
 use super::ui::{
-    AccountFields, AccountPreferences, ActionData, AttachmentData, BodyInfo, CodeLine,
-    ConditionData, Dialog, Dot, FolderItem, FolderKind, ForwardData, ForwardLineData, KeyHelp,
-    MailWindow, MenuAction, MenuChoice, MenuState, PageInfo, Pane, Preferences, ProposalData,
-    ProvenanceData, Remote, RuleData, RuleEditor, RunData, SampleData, SelectedData, Sheet,
-    StatusLine, Theme, ThemePreference, ToolButton, WhyLine,
+    AccountFields, AccountPreferences, ActionData, AttachmentData, BodyInfo, CodeLine, ComposeData,
+    ComposePart, ComposeSpot, ComposeWindow, ConditionData, Dialog, Dot, FolderItem, FolderKind,
+    ForwardData, ForwardLineData, KeyHelp, MailWindow, MenuAction, MenuChoice, MenuState,
+    OutboxEntry, PageInfo, Pane, Preferences, ProposalData, ProvenanceData, Remote, RuleData,
+    RuleEditor, RunData, SampleData, SelectedData, Sheet, StatusLine, Theme, ThemePreference,
+    ToolButton, WhyLine,
 };
 use super::{account, body, icons, list, menu, rules, status, theme, toolbar};
 use postvak_core::message::clean;
+use postvak_core::send::reply::ReplyTo;
 
 /// What a callback asks the app: the actions it means, in order.
 pub(crate) type Ask = Box<dyn FnOnce(&App) -> Vec<UiAction>>;
@@ -58,12 +61,14 @@ pub(crate) fn init(window: &MailWindow) {
     window.set_check_icon(icons::CHECK.into());
     window.set_more_icon(icons::MORE.into());
     window.set_reply_icon(icons::REPLY.into());
-    window.set_external_icon(icons::EXTERNAL.into());
     window.set_file_icon(icons::FILE.into());
     window.set_sync_icon(icons::SYNC.into());
     window.set_save_icon(icons::SAVE.into());
     window.set_source_icon(icons::SOURCE.into());
     window.set_search_hint(toolbar::SEARCH_HINT.into());
+    window.set_compose_send_hint(compose::send_hint().into());
+    window.set_new_mail_icon(icons::NEW_MAIL.into());
+    window.set_new_mail_hint(toolbar::new_mail_hint().into());
     window.set_sync_hint(status::sync_key().into());
     window.set_version(format!("v{}", status::VERSION).into());
     window.set_description(env!("CARGO_PKG_DESCRIPTION").into());
@@ -128,6 +133,7 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
 
     present_list(app, window);
     present_body(app, window);
+    present_composer(app, window);
     present_sheet(app, window);
     present_editor(app, window);
     present_preferences(app, window);
@@ -167,6 +173,17 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
         .map(SharedString::from)
         .collect();
     sync(window.get_history(), history, |m| window.set_history(m));
+    window.set_outbox_open(app.outbox_open);
+    let outbox = status::outbox_rows(app)
+        .into_iter()
+        .map(|row| OutboxEntry {
+            title: row.title.into(),
+            state: row.state.into(),
+            failed: row.failed,
+            retry: row.retry.is_some(),
+        })
+        .collect();
+    sync(window.get_outbox(), outbox, |m| window.set_outbox(m));
 }
 
 fn present_folder_dialog(app: &App, window: &MailWindow) {
@@ -452,6 +469,7 @@ fn present_body(app: &App, window: &MailWindow) {
         unsubscribe: pane.unsubscribe,
         unsubscribed: pane.unsubscribed,
         reply: pane.reply,
+        reply_list: pane.reply_list,
         provenance,
         links: strings(shown.links.clone(), pane.links),
     };
@@ -501,6 +519,248 @@ fn present_body(app: &App, window: &MailWindow) {
         )]
         window.set_source_widest(widest.unwrap_or(0) as f32 * 8.5);
     }
+}
+
+fn compose_data(composer: &Composer) -> ComposeData {
+    let (error_at, error) = match &composer.error {
+        Some((field, error)) => (compose_spot(*field), error.as_str()),
+        None => (ComposeSpot::None, ""),
+    };
+    ComposeData {
+        open: true,
+        loading: composer.loading,
+        sending: composer.sending,
+        from: composer.from.as_str().into(),
+        from_index: composer
+            .choice_index()
+            .and_then(|index| i32::try_from(index).ok())
+            .unwrap_or(-1),
+        to: composer.to.as_str().into(),
+        cc: composer.cc.as_str().into(),
+        bcc: composer.bcc.as_str().into(),
+        show_cc_bcc: composer.show_cc_bcc,
+        subject: composer.subject.as_str().into(),
+        text: composer.text.as_str().into(),
+        forward: composer.kind == compose::ComposeKind::Forward,
+        as_attachment: composer.forward_as_attachment,
+        size: composer.size_line().into(),
+        error_at,
+        error: error.into(),
+        completing: ComposeSpot::None,
+        completion_index: 0,
+    }
+}
+
+/// Where completions for `field` show; only the address fields have them.
+fn completing_spot(field: ComposeField) -> ComposeSpot {
+    match field {
+        ComposeField::Bcc => ComposeSpot::Bcc,
+        ComposeField::Cc => ComposeSpot::Cc,
+        ComposeField::To => ComposeSpot::To,
+        ComposeField::From | ComposeField::Subject | ComposeField::Text => ComposeSpot::None,
+    }
+}
+
+fn compose_spot(field: compose::Field) -> ComposeSpot {
+    match field {
+        compose::Field::Attachments => ComposeSpot::Attachments,
+        compose::Field::Bcc => ComposeSpot::Bcc,
+        compose::Field::Cc => ComposeSpot::Cc,
+        compose::Field::From => ComposeSpot::From,
+        compose::Field::Note => ComposeSpot::Note,
+        compose::Field::Send => ComposeSpot::Send,
+        compose::Field::Subject => ComposeSpot::Subject,
+        compose::Field::To => ComposeSpot::To,
+    }
+}
+
+/// Shows `$composer` and `$question` in `$window`: the mail window, whose reader pane draws the composer, or a new-mail
+/// window. A macro, as the two are Slint types of their own with the same property names.
+macro_rules! show_composer {
+    ($window:expr, $composer:expr, $question:expr, $completion:expr) => {{
+        let (window, composer): (_, Option<&Composer>) = ($window, $composer);
+        let completion: Option<&state::Completion> =
+            ($completion).filter(|c| composer.is_some_and(|composer| composer.id == c.to.id));
+        let mut data = composer.map(compose_data).unwrap_or_default();
+        if let Some(completion) = completion {
+            data.completing = completing_spot(completion.to.field);
+            data.completion_index = i32::try_from(completion.chosen).unwrap_or_default();
+        }
+        if window.get_compose() != data {
+            window.set_compose(data);
+        }
+        let choices = composer
+            .map(|c| {
+                c.choice_labels()
+                    .into_iter()
+                    .map(SharedString::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+        sync(window.get_compose_from_choices(), choices, |m| {
+            window.set_compose_from_choices(m)
+        });
+        let files = composer.map(Composer::file_rows).unwrap_or_default();
+        let files = files
+            .into_iter()
+            .map(|(name, size)| AttachmentData {
+                name: name.into(),
+                size: size.into(),
+            })
+            .collect();
+        sync(window.get_compose_files(), files, |m| {
+            window.set_compose_files(m)
+        });
+        let parts = composer.map(Composer::part_rows).unwrap_or_default();
+        let parts = parts
+            .into_iter()
+            .map(|(name, size, kept)| ComposePart {
+                name: name.into(),
+                size: size.into(),
+                kept,
+            })
+            .collect();
+        sync(window.get_compose_parts(), parts, |m| {
+            window.set_compose_parts(m)
+        });
+        let completions = completion
+            .map(|c| c.choices.iter().map(SharedString::from).collect())
+            .unwrap_or_default();
+        sync(window.get_compose_completions(), completions, |m| {
+            window.set_compose_completions(m)
+        });
+        let question: Option<&str> = $question;
+        window.set_leave_compose(question.unwrap_or_default().into());
+    }};
+}
+
+/// Turns the composer's callbacks in `$window` into actions on the composer at `$target`; see `show_composer`.
+macro_rules! connect_composer {
+    ($window:expr, $target:expr, $on:expr) => {{
+        let (window, target, on): (_, ComposeTarget, fn(Ask) -> bool) = ($window, $target, $on);
+        let act = move |action: UiAction| on(Box::new(move |_| vec![action]));
+        window.on_compose_edited(move |field, text| {
+            act(UiAction::ComposeEdit(
+                target,
+                compose_field(field),
+                text.into(),
+            ));
+        });
+        window.on_compose_from_chosen(move |i| {
+            on(one(move |app| {
+                let choice = nth(&app.composer_ref(target)?.from_choices, i)?;
+                Some(UiAction::ComposeEdit(
+                    target,
+                    ComposeField::From,
+                    choice.clone(),
+                ))
+            }));
+        });
+        window.on_compose_completion_step(move |by| {
+            act(UiAction::ComposeCompletionStep(target, by as isize));
+        });
+        window.on_compose_completion_pick(move |i| {
+            if let Ok(i) = usize::try_from(i) {
+                act(UiAction::ComposeCompletionPick(target, i));
+            }
+        });
+        window.on_compose_completion_close(move || {
+            act(UiAction::ComposeCompletionClose(target));
+        });
+        window.on_compose_show_cc_bcc(move || {
+            act(UiAction::ComposeShowCcBcc(target));
+        });
+        window.on_compose_attach(move || {
+            act(UiAction::ComposeAttach(target));
+        });
+        window.on_compose_remove_file(move |i| {
+            if let Ok(i) = usize::try_from(i) {
+                act(UiAction::ComposeRemoveFile(target, i));
+            }
+        });
+        window.on_compose_toggle_part(move |i| {
+            if let Ok(i) = usize::try_from(i) {
+                act(UiAction::ComposeToggleForwardPart(target, i));
+            }
+        });
+        window.on_compose_as_attachment(move |on| {
+            act(UiAction::ComposeForwardAsAttachment(target, on));
+        });
+        window.on_compose_send(move || {
+            act(UiAction::ComposeSend(target));
+        });
+        window.on_compose_close(move || {
+            act(UiAction::ComposeClose(target));
+        });
+        window.on_compose_discard(move || {
+            act(UiAction::ComposeDiscard(target));
+        });
+        window.on_leave_compose_discard(move || {
+            act(UiAction::LeaveComposeDiscard(target));
+        });
+        window.on_leave_compose_cancel(move || {
+            act(UiAction::LeaveComposeCancel(target));
+        });
+    }};
+}
+
+/// The reader pane's composer, and "Discard this message?" while it asks.
+fn present_composer(app: &App, window: &MailWindow) {
+    let composer = app.composer.as_ref();
+    let question = app.leave_compose.as_ref().and(composer);
+    show_composer!(
+        window,
+        composer,
+        question.and_then(Composer::leave_question),
+        app.completion
+            .as_ref()
+            .filter(|c| c.to.target == ComposeTarget::Pane)
+    );
+}
+
+/// New-mail window `id`'s composer, and its "Discard this message?" while it asks.
+pub(crate) fn present_new_mail(app: &App, id: u64, window: &ComposeWindow) {
+    let composer = app.composer_ref(ComposeTarget::Window(id));
+    let asking = app.leave_new_mail.contains(&id);
+    let question = composer
+        .filter(|_| asking)
+        .and_then(Composer::leave_question);
+    let completion = (app.completion.as_ref()).filter(|c| c.to.target == ComposeTarget::Window(id));
+    show_composer!(window, composer, question, completion);
+}
+
+/// Wires new-mail window `id`; its close button closes the composer, asking first when it was changed, and Ctrl+N
+/// (Cmd+N) opens another.
+pub(crate) fn connect_new_mail(window: &ComposeWindow, id: u64, on: fn(Ask) -> bool) {
+    window.set_close_icon(icons::CLOSE.into());
+    window.set_compose_send_hint(compose::send_hint().into());
+    connect_composer!(window, ComposeTarget::Window(id), on);
+    window.on_new_mail(move || {
+        on(Box::new(|_| vec![UiAction::NewMail(None)]));
+    });
+    window.window().on_close_requested(move || {
+        on(Box::new(move |_| {
+            vec![UiAction::ComposeClose(ComposeTarget::Window(id))]
+        }));
+        slint::CloseRequestResponse::KeepWindowShown
+    });
+}
+
+fn compose_field(field: super::ui::ComposeField) -> ComposeField {
+    use super::ui::ComposeField as Shown;
+    match field {
+        Shown::Bcc => ComposeField::Bcc,
+        Shown::Cc => ComposeField::Cc,
+        Shown::From => ComposeField::From,
+        Shown::Subject => ComposeField::Subject,
+        Shown::Text => ComposeField::Text,
+        Shown::To => ComposeField::To,
+    }
+}
+
+/// The reader pane composer's callbacks.
+fn connect_composer(window: &MailWindow, on: fn(Ask) -> bool) {
+    connect_composer!(window, ComposeTarget::Pane, on);
 }
 
 fn present_page(app: &App, window: &MailWindow) {
@@ -1308,11 +1568,24 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
             Some(UiAction::SelectView(pinned.view?))
         }));
     });
+    window.on_new_mail(move || {
+        act(UiAction::NewMail(None));
+    });
     window.on_sync(move || {
         act(UiAction::SyncNow);
     });
     window.on_toggle_history(move || {
         act(UiAction::ToggleHistory);
+    });
+    window.on_open_outbox(move || {
+        act(UiAction::OpenOutbox);
+    });
+    window.on_retry_send(move |i| {
+        on(one(move |app| {
+            let rows = status::outbox_rows(app);
+            let (account, id) = nth(&rows, i)?.retry.clone()?;
+            Some(UiAction::RetrySend(account, id))
+        }));
     });
     window.on_row_clicked(move |i, extend, toggle| {
         let row = usize::try_from(i).unwrap_or_default();
@@ -1561,10 +1834,16 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
         }));
     });
     window.on_reply(move || {
-        on(one(|app| {
-            let message = app.body.as_ref()?.message.as_ref()?;
-            Some(UiAction::OpenUrl(body::reply_url(message)?))
-        }));
+        act(UiAction::Reply(ReplyTo::Sender));
+    });
+    window.on_reply_all(move || {
+        act(UiAction::Reply(ReplyTo::All));
+    });
+    window.on_reply_list(move || {
+        act(UiAction::Reply(ReplyTo::List));
+    });
+    window.on_forward(move || {
+        act(UiAction::Forward);
     });
     window.on_edit_shown_rule(move || {
         on(Box::new(|app: &App| {
@@ -1606,6 +1885,7 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     });
     connect_editor(window, on);
     connect_preferences(window, on);
+    connect_composer(window, on);
     window.on_edit_proposal(move |i| {
         on(one(move |app| {
             let p = proposal(app, i)?;
@@ -1810,6 +2090,7 @@ fn status_line(line: status::Line, accounts: &[state::Account]) -> StatusLine {
         },
         failed: line.failed,
         progress: line.progress.unwrap_or(-1.0),
+        outbox: line.outbox,
     }
 }
 
@@ -1859,6 +2140,7 @@ fn dialog_of(dialog: Dialog) -> state::Dialog {
         Dialog::Preferences => state::Dialog::Preferences,
         Dialog::Source => state::Dialog::Source,
         Dialog::Move => state::Dialog::Move,
+        Dialog::Outbox => state::Dialog::Outbox,
         Dialog::History => state::Dialog::History,
     }
 }

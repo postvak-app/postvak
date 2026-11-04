@@ -5,6 +5,7 @@ mod avatar;
 mod bench;
 mod bind;
 mod body;
+mod compose;
 mod draft;
 #[cfg(test)]
 mod fixture;
@@ -20,6 +21,7 @@ mod logos;
 mod menu;
 mod motion;
 mod numbers;
+mod open_files;
 mod opener;
 mod persist;
 mod phases;
@@ -246,6 +248,8 @@ impl Start<'_> {
         }
         let ran = slint::run_event_loop();
         if let Some(mut live) = LIVE.with_borrow_mut(Option::take) {
+            // Quitting asks nothing: the next start reopens what was being written.
+            live.app.save_recoveries();
             // Without the window there is nobody to keep the count current.
             if let Some(badge) = &mut live.badge {
                 badge.show(0);
@@ -273,6 +277,17 @@ pub(crate) struct Live {
     /// The unread count on the task bar entry; None in tests.
     badge: Option<postvak_core::badge::Badge>,
     pub window: ui::MailWindow,
+    /// A window per composer in `app.new_mail`, by the composer's id.
+    pub compose_windows: Vec<(u64, ui::ComposeWindow)>,
+    /// Makes, wires and shows new-mail window `id`; tests make it fail.
+    pub open_compose: fn(u64) -> Result<ui::ComposeWindow, slint::PlatformError>,
+}
+
+fn open_compose_window(id: u64) -> Result<ui::ComposeWindow, slint::PlatformError> {
+    let window = ui::ComposeWindow::new()?;
+    bind::connect_new_mail(&window, id, on);
+    window.show()?;
+    Ok(window)
 }
 
 thread_local! {
@@ -320,6 +335,8 @@ impl Live {
             tray,
             badge,
             window,
+            compose_windows: Vec::new(),
+            open_compose: open_compose_window,
         };
         if let Some(tray) = &live.tray {
             let weak = live.window.as_weak();
@@ -340,9 +357,12 @@ impl Live {
         live.window.on_quit(|| {
             let _ = slint::quit_event_loop();
         });
-        let weak = live.window.as_weak();
+        let (weak, tray) = (live.window.as_weak(), live.tray.is_some());
+        // Without a tray closing quits, though new-mail windows would keep the event loop running.
         live.window.on_close_window(move || {
-            if let Some(window) = weak.upgrade() {
+            if !tray {
+                let _ = slint::quit_event_loop();
+            } else if let Some(window) = weak.upgrade() {
                 let _ = window.hide();
             }
         });
@@ -402,11 +422,50 @@ impl Live {
 
     fn present(&mut self) {
         bind::present(&self.app, &self.window);
+        self.present_new_mail();
         if let Some(tray) = &self.tray {
             tray.set_hint(status::tray_hint(&self.app).into());
         }
         if let Some(badge) = &mut self.badge {
             badge.show(folders::inbox_unread(&self.app.accounts));
+        }
+    }
+
+    /// Opens a window for each new composer and closes the windows whose composer went; each shows the mail window's
+    /// theme, as a window has its own `Theme`. A window that cannot open leaves its composer in its recovery file on the
+    /// next turn of `tick`.
+    fn present_new_mail(&mut self) {
+        let open: Vec<u64> = self.app.new_mail.iter().map(|c| c.id).collect();
+        self.compose_windows.retain(|(id, window)| {
+            open.contains(id) || {
+                let _ = window.hide();
+                false
+            }
+        });
+        for id in open {
+            if self.compose_windows.iter().any(|(shown, _)| *shown == id) {
+                continue;
+            }
+            match (self.open_compose)(id) {
+                Ok(window) => self.compose_windows.push((id, window)),
+                Err(e) => {
+                    log::warn!("could not open a new-mail window: {e}");
+                    let why = e.to_string();
+                    ASKS.with_borrow_mut(|asks| {
+                        asks.push(Box::new(move |_| {
+                            vec![state::UiAction::NewMailFailed(id, why)]
+                        }));
+                    });
+                }
+            }
+        }
+        let theme = self.window.global::<ui::Theme>();
+        for (id, window) in &self.compose_windows {
+            let shown = window.global::<ui::Theme>();
+            shown.set_preference(theme.get_preference());
+            shown.set_desktop_dark(theme.get_desktop_dark());
+            shown.set_reduce_motion(theme.get_reduce_motion());
+            bind::present_new_mail(&self.app, *id, window);
         }
     }
 
@@ -509,6 +568,10 @@ fn restore(window: &ui::MailWindow, layout: Option<persist::Layout>) {
     }
     window.set_folders_width(layout.folders_width.max(theme::CONTROL));
     window.set_list_width(layout.list_width.max(list::MIN_WIDTH));
+    if let Some(share) = layout.compose_height {
+        // The same bounds as dragging the divider, in case window.json was edited by hand.
+        window.set_compose_share(share.clamp(0.2, 0.8));
+    }
 }
 
 /// The window's layout, to be restored next time.
@@ -524,6 +587,7 @@ fn remember(window: &ui::MailWindow) -> persist::Layout {
         position: (position.x != 0 || position.y != 0).then_some((position.x, position.y)),
         folders_width: window.get_folders_width(),
         list_width: window.get_list_width(),
+        compose_height: Some(window.get_compose_share()),
     }
 }
 
@@ -965,6 +1029,31 @@ mod tests {
         assert_eq!(window.get_focused_pane(), Pane::List);
         open.with(|live| live.app.apply(UiAction::SelectView(View::Rules)));
         assert!(!window.get_mail_view());
+    }
+
+    #[test]
+    fn the_split_is_saved_with_the_window() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        open.window().set_compose_share(0.3);
+        let layout = super::remember(&open.window());
+        assert_eq!(layout.compose_height, Some(0.3));
+        drop(open);
+        let (open, _wires) = fx.window();
+        super::restore(&open.window(), Some(layout.clone()));
+        assert_eq!(open.window().get_compose_share(), 0.3);
+        let edited = |share| super::persist::Layout {
+            compose_height: Some(share),
+            ..layout.clone()
+        };
+        super::restore(&open.window(), Some(edited(5.0)));
+        assert_eq!(
+            open.window().get_compose_share(),
+            0.8,
+            "as far as a drag goes"
+        );
+        super::restore(&open.window(), Some(edited(-1.0)));
+        assert_eq!(open.window().get_compose_share(), 0.2);
     }
 
     #[test]

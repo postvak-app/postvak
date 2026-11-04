@@ -50,6 +50,9 @@ pub struct Row {
     pub preview: String,
     /// The sender's logo record and its SVG, drawn instead of the initials; set while the row is in view.
     pub logo: Option<(String, Arc<str>)>,
+    pub message_id: Option<String>,
+    /// A reply to or forward of it waits in the account's outbox.
+    pub pending: bool,
 }
 
 impl Row {
@@ -81,6 +84,8 @@ impl Row {
             attachment: false,
             preview: String::new(),
             logo: None,
+            message_id: message.message_id.clone(),
+            pending: false,
         }
     }
 
@@ -103,6 +108,8 @@ impl Row {
             attachment: message.attachment,
             preview: message.preview.clone(),
             logo: None,
+            message_id: message.message_id.clone(),
+            pending: false,
         }
     }
 }
@@ -230,6 +237,15 @@ pub fn apply_pending(rows: &mut Vec<Row>, pending: &[&HashMap<RowKey, Vec<Optimi
                 Optimistic::Hidden => {}
             }
         }
+    }
+}
+
+/// Marks each row whose reply or forward waits to go: `answering[i]` holds account i's originals by Message-ID.
+pub fn mark_answering(rows: &mut [Row], answering: &[&HashSet<String>]) {
+    for row in rows {
+        row.pending = (row.message_id.as_ref())
+            .zip(answering.get(row.account))
+            .is_some_and(|(id, answering)| answering.contains(id));
     }
 }
 
@@ -577,6 +593,9 @@ pub fn row_text(row: &Row, columns: &Columns) -> String {
     if row.close {
         text.push_str(" · close match");
     }
+    if row.pending {
+        text.push_str(" · answer waiting to go");
+    }
     text
 }
 
@@ -800,6 +819,7 @@ mod tests {
             flags: flags.into(),
             attachment: false,
             preview: String::new(),
+            message_id: None,
         }
     }
 
@@ -1037,6 +1057,8 @@ mod tests {
             attachment: false,
             preview: String::new(),
             logo: None,
+            message_id: None,
+            pending: false,
         };
         let now = Utc.with_ymd_and_hms(2026, 10, 6, 12, 0, 0).unwrap();
         let text = row_text(&row, &columns(&row, None, false, false, &now));
@@ -1385,6 +1407,26 @@ mod tests {
         assert_eq!(open.find("Inbox zero").len(), 0, "no query yet");
         open.press("zzz");
         assert_eq!(open.find("No mail matches.").len(), 1);
+    }
+
+    #[test]
+    fn a_row_whose_answer_waits_shows_the_clock() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "question"));
+        fx.add("work", message("INBOX", 2, "other"));
+        let (open, _wires) = fx.window();
+        open.with(|live| {
+            live.app.accounts[0].answering = ["<1@example.com>".to_string()].into();
+            live.app.rebuild_rows();
+        });
+        open.tick();
+        let rows = open.window().get_rows();
+        let marks: Vec<_> = (0..2)
+            .map(|i| slint::Model::row_data(&rows, i).unwrap().pending)
+            .collect();
+        assert_eq!(marks, ["", crate::icons::PENDING]);
+        let name = slint::Model::row_data(&rows, 1).unwrap().name;
+        assert!(name.ends_with(" · answer waiting to go"), "{name}");
     }
 
     #[test]

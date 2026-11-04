@@ -137,6 +137,8 @@ impl App {
             actions: Vec::new(),
             waiting,
             state: UndoState::Open,
+            outbox: None,
+            composer: None,
         });
         // Only the newest are within reach of `z`.
         if self.taken.len() > MAX_TAKEN {
@@ -156,7 +158,18 @@ impl App {
             self.toast = Some(Toast::new("Nothing to undo".into(), false));
             return;
         };
-        if taken.waiting > 0 {
+        if let Some((account, outbox_id)) = taken.outbox.clone() {
+            taken.state = UndoState::Undoing {
+                left: 1,
+                reports: Vec::new(),
+            };
+            let id = taken.id;
+            self.cancel_outbox(id, account, outbox_id);
+            self.toast = Some(Toast::new("Undoing…".into(), false));
+        } else if taken.composer.is_some() {
+            let id = taken.id;
+            self.apply_action(UiAction::ReopenCompose(id));
+        } else if taken.waiting > 0 {
             taken.state = UndoState::Asked;
             self.toast = Some(Toast::new("Undoing…".into(), false));
         } else {
@@ -233,6 +246,17 @@ impl App {
     /// Ends the toast once its time is up and the pointer is not on it.
     pub(super) fn expire_toast(&mut self, now: f64) {
         let Some(toast) = &mut self.toast else { return };
+        if let Some(words) = &toast.count_down {
+            let until = toast.until.unwrap_or(now);
+            if now >= until {
+                self.toast = None;
+                return;
+            }
+            let left = (until - now).ceil();
+            toast.text = format!("{words} in {left} s");
+            self.request_tick(until - left + 1.0);
+            return;
+        }
         if toast.hovered {
             return;
         }

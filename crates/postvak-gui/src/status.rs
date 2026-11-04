@@ -13,6 +13,8 @@ pub(crate) struct Line {
     /// Drawn in the error colour.
     pub failed: bool,
     pub progress: Option<f32>,
+    /// The outbox's line, whose click opens the outbox.
+    pub outbox: bool,
 }
 
 /// The window's error first, then the last result, then a line per account.
@@ -27,6 +29,7 @@ pub(crate) fn lines(app: &App) -> Vec<Line> {
         dot: dot(account),
         failed: failed(account),
         progress: account.activity.as_ref().and_then(progress),
+        outbox: false,
     });
     let notice = app.notice.iter().map(|text| Line {
         text: text.clone(),
@@ -36,6 +39,7 @@ pub(crate) fn lines(app: &App) -> Vec<Line> {
     let outbox = outbox_text(&counts).map(|text| Line {
         text,
         failed: counts.iter().any(|c| c.failed > 0),
+        outbox: true,
         ..Line::default()
     });
     error.chain(outbox).chain(notice).chain(accounts).collect()
@@ -56,6 +60,55 @@ pub(crate) fn outbox_text(counts: &[postvak_core::send::sender::OutboxCounts]) -
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
+/// One message of the outbox dialog: its account and recipient count, then when it goes or why it failed, and the
+/// account and outbox id Retry sends again.
+#[derive(Debug, PartialEq)]
+pub(crate) struct OutboxRow {
+    pub title: String,
+    pub state: String,
+    pub failed: bool,
+    pub retry: Option<(usize, String)>,
+}
+
+/// What every account's outbox holds that is not sent yet, as the outbox dialog lists it.
+pub(crate) fn outbox_rows(app: &App) -> Vec<OutboxRow> {
+    use postvak_core::send::outbox::State;
+    let rows = app.outbox.iter().filter_map(|(account, entry)| {
+        let recipients = entry.envelope.to.len() as u64;
+        let title = format!(
+            "{} · {}",
+            app.accounts.get(*account)?.name,
+            super::numbers::counted(recipients, "recipient", "recipients")
+        );
+        let (state, retry) = match &entry.state {
+            State::Waiting => (
+                format!("Goes at {}", postvak_core::time::clock(entry.due)),
+                None,
+            ),
+            State::Sending | State::Sent => ("Sending…".to_string(), None),
+            State::Failed {
+                reason,
+                retrying: true,
+            } => (format!("Trying again: {reason}"), None),
+            State::Failed {
+                reason,
+                retrying: false,
+            } => {
+                let key = (*account, entry.id.clone());
+                let retry = (!app.retried.contains(&key)).then_some(key);
+                (format!("Failed: {reason}"), retry)
+            }
+        };
+        Some(OutboxRow {
+            title,
+            failed: matches!(entry.state, State::Failed { .. }),
+            state,
+            retry,
+        })
+    });
+    rows.collect()
+}
+
 /// The one line the folder pane has room for: a failure first, then an account offline, then one syncing, else the
 /// first account's.
 pub(crate) fn summary(app: &App) -> Line {
@@ -73,7 +126,9 @@ pub(crate) fn summary(app: &App) -> Line {
 
 /// The sync card's first line, over `line`: what every account is doing, in a word or two; empty while they start.
 pub(crate) fn headline(line: &Line, accounts: &[Account]) -> &'static str {
-    if line.failed {
+    if line.failed && line.outbox {
+        "Not sent"
+    } else if line.failed {
         "Sync failed"
     } else if line.dot == Some(Dot::Offline) {
         "Offline"
@@ -204,6 +259,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_failed_send_is_not_a_failed_sync() {
+        let outbox = Line {
+            text: "1 message failed".into(),
+            failed: true,
+            outbox: true,
+            ..Line::default()
+        };
+        assert_eq!(headline(&outbox, &[]), "Not sent");
+        let sync = Line {
+            outbox: false,
+            ..outbox
+        };
+        assert_eq!(headline(&sync, &[]), "Sync failed");
+    }
+
+    #[test]
     fn the_outbox_line_says_what_waits_and_what_failed() {
         use postvak_core::send::sender::OutboxCounts;
         let counts = |waiting, failed| OutboxCounts { waiting, failed };
@@ -242,6 +313,7 @@ mod tests {
             encrypted: None,
             identity: None,
             outbox: Default::default(),
+            answering: Default::default(),
         }
     }
 
@@ -267,6 +339,7 @@ mod tests {
             dot: dot(account),
             failed: failed(account),
             progress: None,
+            outbox: false,
         };
         let mut account = account();
         assert_eq!(headline(&line(&account), &[]), "");

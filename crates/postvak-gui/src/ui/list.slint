@@ -20,6 +20,8 @@ export struct RowData {
     preview: string,
     // The paperclip glyph when the message carries an attachment, or empty.
     clip: string,
+    // The clock glyph while a reply to or forward of it waits to go, or empty.
+    pending: string,
     // The avatar's letters and which of `Theme.avatars` they sit on, or the sender's logo when `has-logo`.
     initials: string,
     tint: int,
@@ -218,14 +220,26 @@ component ListRow inherits Rectangle {
                     vertical-alignment: center;
                 }
             }
-            Text {
-                accessible-role: none;
+            HorizontalLayout {
                 height: root.line;
-                text: data.subject;
-                font-weight: data.unread ? 600 : 500;
-                color: data.selected ? root.ink : Theme.pane.text;
-                overflow: elide;
-                vertical-alignment: center;
+                spacing: Theme.pad / 2;
+                Text {
+                    accessible-role: none;
+                    horizontal-stretch: 1;
+                    text: data.subject;
+                    font-weight: data.unread ? 600 : 500;
+                    color: data.selected ? root.ink : Theme.pane.text;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+                if data.pending != "": Text {
+                    accessible-role: none;
+                    text: data.pending;
+                    font-family: Theme.icon-font;
+                    font-size: Theme.icon * 7 / 8;
+                    color: data.selected ? Theme.pane.secondary : Theme.pane.muted;
+                    vertical-alignment: center;
+                }
             }
             HorizontalLayout {
                 height: root.line;
@@ -260,6 +274,9 @@ export component ListPane inherits Rectangle {
     // The filter's name beside the title, or empty for All.
     in property <string> filter-label;
     in property <string> filter-icon;
+    in property <string> new-mail-icon;
+    in property <string> new-mail-hint;
+    callback new-mail();
     in property <string> search-icon;
     // The search field's hover hint, with its key.
     in property <string> search-key;
@@ -409,6 +426,15 @@ export component ListPane inherits Rectangle {
                     }
                 }
                 Rectangle { horizontal-stretch: 1; }
+                IconButton {
+                    icon: root.new-mail-icon;
+                    name: "New message";
+                    hint: root.new-mail-hint;
+                    palette: Theme.pane;
+                    size: Theme.action;
+                    glyph-size: Theme.large-icon;
+                    clicked => { root.new-mail(); }
+                }
                 filter-menu := ContextMenuArea {
                     width: Theme.action;
                     height: Theme.action;

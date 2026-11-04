@@ -226,6 +226,7 @@ impl Model for ListModel {
             date: columns.date.into(),
             preview: columns.preview.into(),
             clip: if row.attachment { icons::PAPERCLIP } else { "" }.into(),
+            pending: if row.pending { icons::PENDING } else { "" }.into(),
             initials: columns.initials.into(),
             tint: i32::try_from(columns.tint).unwrap_or_default(),
             has_logo: logo.is_some(),

@@ -94,7 +94,18 @@ impl Fixture {
             let (_, answer) = std::sync::mpsc::channel();
             answer
         };
+        app.ask_open_paths = |_| {
+            let (_, answer) = std::sync::mpsc::channel();
+            answer
+        };
         app.check_login = |_, _, _, _| Ok(());
+        app.prefill = |_, _, _, _| Err("no daemon in tests".into());
+        app.queue_send = |_, _, _| Err("no daemon in tests".into());
+        app.cancel_send = |_, _, _| {
+            Err(super::state::CancelError::Failed(
+                "no daemon in tests".into(),
+            ))
+        };
         app.logos.net = std::sync::Arc::new(Offline);
         // Reloads after events apply in the tick that started them, so tests see their rows at once; the tests of
         // reloads that outlast a frame set a budget of their own.
@@ -284,6 +295,16 @@ impl Open {
         with_live(|live| live.window.clone_strong()).unwrap()
     }
 
+    /// The new-mail windows, in the order they opened.
+    pub fn compose_windows(&self) -> Vec<ui::ComposeWindow> {
+        with_live(|live| {
+            (live.compose_windows.iter())
+                .map(|(_, window)| window.clone_strong())
+                .collect()
+        })
+        .unwrap()
+    }
+
     /// Moves the window's clock and Slint's timers on by `seconds`.
     pub fn advance(&self, seconds: f64) {
         self.clock.set(self.clock.get() + seconds);
@@ -292,14 +313,7 @@ impl Open {
 
     /// The window drawn by the software renderer, as a PNG.
     pub fn png(&self) -> Vec<u8> {
-        let shot = self.window().window().take_snapshot().unwrap();
-        let mut png = Vec::new();
-        let mut encoder = png::Encoder::new(&mut png, shot.width(), shot.height());
-        encoder.set_color(png::ColorType::Rgba);
-        let mut writer = encoder.write_header().unwrap();
-        writer.write_image_data(shot.as_bytes()).unwrap();
-        writer.finish().unwrap();
-        png
+        png(self.window().window())
     }
 
     /// The elements whose accessible label is `label`.
@@ -479,6 +493,18 @@ impl Open {
                 .dispatch_event(WindowEvent::KeyReleased { text });
         }
     }
+}
+
+/// `window` drawn by the software renderer, as a PNG.
+pub(crate) fn png(window: &slint::Window) -> Vec<u8> {
+    let shot = window.take_snapshot().unwrap();
+    let mut png = Vec::new();
+    let mut encoder = png::Encoder::new(&mut png, shot.width(), shot.height());
+    encoder.set_color(png::ColorType::Rgba);
+    let mut writer = encoder.write_header().unwrap();
+    writer.write_image_data(shot.as_bytes()).unwrap();
+    writer.finish().unwrap();
+    png
 }
 
 /// Each element once: the query visits the rows of a `ListView` several times over. Two elements with the same label

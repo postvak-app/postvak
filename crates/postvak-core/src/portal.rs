@@ -93,12 +93,42 @@ pub fn save_file(
     let Some(results) = answer else {
         return Ok(None);
     };
-    let uri = results
-        .get("uris")
-        .and_then(|uris| <Vec<String>>::try_from(uris.try_clone().ok()?).ok())
-        .and_then(|uris| uris.into_iter().next())
+    let uri = chosen_uris(&results)
+        .into_iter()
+        .next()
         .context("the save dialog chose no file")?;
     file_path(&uri).map(Some)
+}
+
+/// The desktop's open dialog (`FileChooser.OpenFile`), where the user picks one or more files; none when cancelled.
+/// In a Flatpak the paths are the document portal's, which only the chosen files are visible through.
+pub fn open_files(title: &str) -> Result<Vec<PathBuf>> {
+    let answer = request("FileChooser", "OpenFile", |token| {
+        ("", title.to_string(), open_file_options(token))
+    })?;
+    let Some(results) = answer else {
+        return Ok(Vec::new());
+    };
+    chosen_uris(&results)
+        .iter()
+        .map(|uri| file_path(uri))
+        .collect()
+}
+
+fn open_file_options<'a>(handle_token: &str) -> HashMap<&'a str, Value<'static>> {
+    HashMap::from([
+        ("handle_token", Value::from(handle_token.to_string())),
+        ("modal", Value::from(true)),
+        ("multiple", Value::from(true)),
+    ])
+}
+
+/// The `uris` a file dialog answered with; none when it gave none.
+fn chosen_uris(results: &HashMap<String, OwnedValue>) -> Vec<String> {
+    results
+        .get("uris")
+        .and_then(|uris| <Vec<String>>::try_from(uris.try_clone().ok()?).ok())
+        .unwrap_or_default()
 }
 
 /// Opens `uri` with the desktop's default app (`OpenURI.OpenURI`), which comes to the front with `activation_token`.
@@ -223,7 +253,7 @@ fn file_path(uri: &str) -> Result<PathBuf> {
         .ok()
         .filter(|url| url.scheme() == "file")
         .and_then(|url| url.to_file_path().ok())
-        .with_context(|| format!("the save dialog chose {uri}, which is not a local file"))
+        .with_context(|| format!("the file dialog chose {uri}, which is not a local file"))
 }
 
 #[cfg(test)]
@@ -260,6 +290,17 @@ mod tests {
         assert_eq!(with.get("activation_token"), Some(&Value::from("tok")));
         assert_eq!(with.get("handle_token"), Some(&Value::from("postvak7_0")));
         assert!(!open_uri_options("postvak7_0", None).contains_key("activation_token"));
+    }
+
+    #[test]
+    fn the_open_dialog_asks_for_several_files() {
+        let options = open_file_options("postvak7_0");
+        assert_eq!(options.get("multiple"), Some(&Value::from(true)));
+        assert_eq!(options.get("modal"), Some(&Value::from(true)));
+        assert_eq!(
+            options.get("handle_token"),
+            Some(&Value::from("postvak7_0"))
+        );
     }
 
     #[test]

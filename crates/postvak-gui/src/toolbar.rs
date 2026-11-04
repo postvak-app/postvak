@@ -18,6 +18,15 @@ pub(crate) struct Button {
 /// The hover hint of the search field.
 pub(crate) const SEARCH_HINT: &str = "Search · /";
 
+/// The hover hint of the New message button, with its key.
+pub(crate) fn new_mail_hint() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "New message · Cmd+N"
+    } else {
+        "New message · Ctrl+N"
+    }
+}
+
 /// How many of `buttons` move the message; the rest, its flag and read state, are drawn as a group of their own.
 pub(crate) const MOVING: usize = 4;
 

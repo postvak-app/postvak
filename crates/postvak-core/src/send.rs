@@ -12,6 +12,7 @@ pub mod check;
 pub mod compose;
 pub mod edit;
 pub mod guess;
+pub mod mailto;
 pub mod outbox;
 pub mod quote_html;
 pub mod reply;

@@ -135,7 +135,7 @@ export component Label inherits Text {
 /* A text field that shows `value` and reports edits.
 
 A field forgets its binding once typed in, so `changed value` puts a new value in by hand: one opened from another rule. */
-component Field inherits LineEdit {
+export component Field inherits LineEdit {
     in property <string> value;
     callback value-edited(string);
     height: Theme.control;

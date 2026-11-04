@@ -1,6 +1,7 @@
 //! The keymap: which key does what in which pane, and the `?` window's rows. Printable keys match on the typed text, so
 //! they follow the keyboard layout; the window turns its key events into a `Press`.
 use postvak_core::rules::Action;
+use postvak_core::send::reply::ReplyTo;
 
 use super::state::{Focus, UiAction};
 
@@ -61,8 +62,8 @@ impl Press {
     }
 }
 
-/// What `press` does with `focus` on the focused pane. While a text field has the keyboard (`typing`) only Esc and
-/// Ctrl/Cmd+R count, so letters stay text.
+/// What `press` does with `focus` on the focused pane. While a text field has the keyboard (`typing`) only Esc,
+/// Ctrl/Cmd+R and Ctrl/Cmd+N count, so letters stay text.
 pub(crate) fn action(press: &Press, focus: Focus, typing: bool) -> Option<UiAction> {
     if press.is_named(Named::Escape) {
         return Some(UiAction::Escape);
@@ -70,6 +71,10 @@ pub(crate) fn action(press: &Press, focus: Focus, typing: bool) -> Option<UiActi
     let lower_r = matches!(&press.key, Key::Text(t) if t.eq_ignore_ascii_case("r"));
     if press.command && !press.alt && lower_r {
         return Some(UiAction::SyncNow);
+    }
+    let lower_n = matches!(&press.key, Key::Text(t) if t.eq_ignore_ascii_case("n"));
+    if press.command && !press.alt && lower_n {
+        return Some(UiAction::NewMail(None));
     }
     if typing {
         return None;
@@ -128,6 +133,10 @@ pub(crate) fn action(press: &Press, focus: Focus, typing: bool) -> Option<UiActi
                 Key::Text(t) if t == "s" => UiAction::ToggleFlag,
                 Key::Text(t) if t == "u" => UiAction::ToggleRead,
                 Key::Text(t) if t == "v" => UiAction::ToggleHtml,
+                Key::Text(t) if t == "r" => UiAction::Reply(ReplyTo::Sender),
+                Key::Text(t) if t == "R" => UiAction::Reply(ReplyTo::All),
+                Key::Text(t) if t == "l" => UiAction::Reply(ReplyTo::List),
+                Key::Text(t) if t == "f" => UiAction::Forward,
                 _ => return None,
             };
             (!press.command && !press.alt).then_some(action)
@@ -136,7 +145,7 @@ pub(crate) fn action(press: &Press, focus: Focus, typing: bool) -> Option<UiActi
 }
 
 /// The `?` window. Keys are spelled out, so every glyph is in the bundled fonts.
-pub(crate) const HELP: [(&str, &str); 17] = [
+pub(crate) const HELP: [(&str, &str); 22] = [
     ("j / k, Down / Up", "next or previous row"),
     ("Right / Left", "expand or collapse a thread"),
     ("x", "add the row to the selection, or take it out"),
@@ -154,12 +163,23 @@ pub(crate) const HELP: [(&str, &str); 17] = [
     ("u", "mark read or unread"),
     ("s", "flag or unflag"),
     ("v", "show HTML mail as text, or as HTML again"),
+    ("r / Shift+R", "reply, or reply to everyone"),
+    ("l", "reply to the mailing list"),
+    ("f", "forward"),
+    (
+        "Ctrl+N (Cmd+N on macOS)",
+        "write new mail, in a window of its own",
+    ),
+    ("Ctrl+Enter (Cmd+Enter on macOS)", "send the message"),
     (
         "z, Ctrl+Z (Cmd+Z on macOS)",
         "undo the last action taken in this window",
     ),
     ("/", "search this account; in All inboxes, every account"),
-    ("Esc", "close a popup, leave search, clear the selection"),
+    (
+        "Esc",
+        "close a popup or the message being written, leave search, clear the selection",
+    ),
     ("Tab", "next pane: folders, list, body"),
     ("Ctrl+R (Cmd+R on macOS)", "sync every account now"),
     ("?", "show these keys"),
@@ -203,6 +223,10 @@ mod tests {
             ("?", UiAction::ToggleHelp),
             ("/", UiAction::StartSearch),
             ("z", UiAction::Undo),
+            ("r", UiAction::Reply(ReplyTo::Sender)),
+            ("R", UiAction::Reply(ReplyTo::All)),
+            ("l", UiAction::Reply(ReplyTo::List)),
+            ("f", UiAction::Forward),
         ];
         for (text, want) in cases {
             assert_eq!(on_list(Press::text(text)), Some(want), "{text}");
@@ -213,7 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn while_typing_only_escape_and_command_r_count() {
+    fn while_typing_only_escape_and_the_command_keys_count() {
         let typing = |press| action(&press, Focus::List, true);
         assert_eq!(typing(Press::text("e")), None);
         assert_eq!(typing(Press::named(Named::Down)), None);
@@ -223,6 +247,11 @@ mod tests {
             ..Press::text("r")
         };
         assert_eq!(typing(sync), Some(UiAction::SyncNow));
+        let new_mail = Press {
+            command: true,
+            ..Press::text("n")
+        };
+        assert_eq!(typing(new_mail), Some(UiAction::NewMail(None)));
     }
 
     #[test]
@@ -239,7 +268,11 @@ mod tests {
         );
         assert_eq!(on_list(command("e")), None);
         assert_eq!(on_list(command("j")), None);
-        assert_eq!(on_list(Press::text("r")), None);
+        assert_eq!(
+            action(&Press::text("r"), Focus::Folders, false),
+            None,
+            "reply answers mail, not folders"
+        );
     }
 
     #[test]

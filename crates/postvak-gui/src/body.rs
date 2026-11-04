@@ -3,10 +3,9 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use postvak_core::message::{clean, display_name, header_value};
 use postvak_core::rules::Rule;
-use postvak_core::store::{LogEntry, Message};
+use postvak_core::store::LogEntry;
 use postvak_core::sync::Activity;
 use postvak_core::time::local_time;
 
@@ -57,6 +56,8 @@ pub(crate) struct Pane {
     pub unsubscribed: bool,
     /// There is an address to reply to: Reply shows.
     pub reply: bool,
+    /// The message came through a mailing list that takes posts: the More menu offers Reply to list.
+    pub reply_list: bool,
     /// What rules did to the message, when they did anything; whether the strip lists every action; and Why?'s
     /// conditions with whether the message meets each, while open.
     pub provenance: Option<Provenance>,
@@ -148,7 +149,14 @@ pub(crate) fn pane(app: &App) -> Pane {
         saved: body.saved.as_deref().map(|s| clean(s, false)),
         unsubscribe: postvak_core::unsubscribe::method(&message.headers).is_some(),
         unsubscribed: body.unsubscribed,
-        reply: reply_url(message).is_some(),
+        reply: [
+            header_value(&message.headers, "Reply-To"),
+            message.from_addr.clone(),
+        ]
+        .iter()
+        .flatten()
+        .any(|value| self::address(value).is_some()),
+        reply_list: header_value(&message.headers, "List-Post").is_some(),
         provenance: provenance(
             &body.provenance,
             &app.rules.file.rules,
@@ -364,40 +372,6 @@ fn action_words(action: &str) -> (&'static str, String) {
     }
 }
 
-/// What a `mailto:` URL may leave as it is; the rest is escaped, since the subject is a stranger's text.
-const MAILTO: &AsciiSet = &NON_ALPHANUMERIC
-    .remove(b'-')
-    .remove(b'.')
-    .remove(b'_')
-    .remove(b'~')
-    .remove(b'@');
-
-/// The `mailto:` URL that starts a reply in the user's mail app: to the Reply-To address, else the sender's, with
-/// "Re:" before the subject and the message it answers; None without an address to write to.
-pub(crate) fn reply_url(message: &Message) -> Option<String> {
-    let reply_to = header_value(&message.headers, "Reply-To");
-    let to = [reply_to.as_deref(), message.from_addr.as_deref()]
-        .into_iter()
-        .flatten()
-        .find_map(address)?;
-    let subject = message.subject.as_deref().unwrap_or_default();
-    let answered = subject
-        .get(..3)
-        .is_some_and(|re| re.eq_ignore_ascii_case("re:"));
-    let subject = if answered {
-        subject.to_string()
-    } else {
-        format!("Re: {subject}")
-    };
-    let encode = |text: &str| utf8_percent_encode(text, MAILTO).to_string();
-    let mut url = format!("mailto:{}?subject={}", encode(to), encode(&subject));
-    if let Some(id) = &message.message_id {
-        let id = id.trim().trim_start_matches('<').trim_end_matches('>');
-        url.push_str(&format!("&In-Reply-To={}", encode(&format!("<{id}>"))));
-    }
-    Some(url)
-}
-
 /// The one address in a From or Reply-To value, in angle brackets or bare.
 fn address(value: &str) -> Option<&str> {
     let address = match value.split_once('<') {
@@ -486,6 +460,7 @@ mod tests {
     use crate::state::{UiAction, View};
     use crate::test_support::{Driver, Fixture, Wires, launched, message, synced, unread, work};
     use postvak_core::rules::Action;
+    use postvak_core::store::Message;
     use postvak_core::sync::{Command, Event};
 
     fn log(rule: &str, folder: &str, action: &str, at: i64) -> postvak_core::store::LogEntry {
@@ -695,37 +670,18 @@ mod tests {
     }
 
     #[test]
-    fn reply_opens_a_reply_to_the_sender_in_the_mail_app() {
+    fn the_reply_button_opens_the_composer_on_the_shown_message() {
         let fx = Fixture::new(&["work"]);
         fx.add("work", message("INBOX", 1, "lunch"));
         let (open, _wires) = fx.window();
         open.click("Reply");
-        assert_eq!(
-            launched(),
-            ["mailto:sender1@example.com?subject=Re%3A%20lunch&In-Reply-To=%3C1@example.com%3E"]
-        );
-    }
-
-    #[test]
-    fn reply_writes_to_the_reply_to_address_else_the_sender_with_the_subject_and_the_id_it_answers()
-    {
-        let mut original = message("INBOX", 1, "Tickets & seats?");
-        assert_eq!(
-            reply_url(&original).as_deref(),
-            Some(
-                "mailto:sender1@example.com?subject=Re%3A%20Tickets%20%26%20seats%3F&In-Reply-To=%3C1@example.com%3E"
-            )
-        );
-        original.headers = b"Reply-To: Desk <desk@example.com>\r\n\r\n".to_vec();
-        original.subject = Some("RE: hello".into());
-        original.message_id = None;
-        assert_eq!(
-            reply_url(&original).as_deref(),
-            Some("mailto:desk@example.com?subject=RE%3A%20hello")
-        );
-        original.headers = Vec::new();
-        original.from_addr = Some("not an address".into());
-        assert_eq!(reply_url(&original), None);
+        let original = open.with(|live| {
+            let composer = live.app.composer.as_ref()?;
+            let original = composer.original.as_ref()?;
+            Some((original.folder.clone(), original.uid))
+        });
+        assert_eq!(original, Some(("INBOX".to_string(), 1)));
+        assert!(launched().is_empty(), "no mail app opens");
     }
 
     const WITH_ATTACHMENT: &str = "From: a@example.com\r\nSubject: report\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nSee attached\r\n--b\r\nContent-Type: text/plain\r\nContent-Disposition: attachment; filename=\"report.txt\"\r\n\r\nquarterly numbers\r\n--b--\r\n";

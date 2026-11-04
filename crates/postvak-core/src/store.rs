@@ -50,6 +50,9 @@ fn migration_list() -> Vec<M<'static>> {
         M::up(include_str!("../migrations/026-part-types/up.sql")),
         M::up(include_str!("../migrations/027-smtp/up.sql")),
         M::up(include_str!("../migrations/028-forward/up.sql")),
+        M::up(include_str!(
+            "../migrations/029-message-id-in-thread-index/up.sql"
+        )),
     ]
 }
 
@@ -136,6 +139,24 @@ pub struct Folder {
     pub special_use: Option<String>,
     #[serde(default)]
     pub delimiter: Option<String>,
+}
+
+/// A person from the user's own mail, for address completion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnownAddress {
+    pub name: Option<String>,
+    pub address: String,
+    pub latest: i64,
+    /// The user has written to this address (it is on a message in the Sent folder).
+    pub written_to: bool,
+}
+
+fn matches_prefix(name: Option<&str>, address: &str, prefix: &str) -> bool {
+    address.to_lowercase().starts_with(prefix)
+        || name.is_some_and(|name| {
+            name.split_whitespace()
+                .any(|word| word.to_lowercase().starts_with(prefix))
+        })
 }
 
 /// The account's guessed SMTP server and what the server said about itself (`smtp_state`).
@@ -263,6 +284,7 @@ pub struct MessageSummary {
     pub attachment: bool,
     /// The start of the body text, untouched; empty until the body is indexed.
     pub preview: String,
+    pub message_id: Option<String>,
 }
 
 impl MessageSummary {
@@ -295,6 +317,7 @@ fn summary_from_row(row: &rusqlite::Row, offset: usize) -> rusqlite::Result<Mess
         flags: row.get(offset + 5)?,
         attachment: row.get(offset + 6)?,
         preview: row.get(offset + 7)?,
+        message_id: row.get(offset + 8)?,
     })
 }
 
@@ -362,7 +385,7 @@ pub enum Resume<'a> {
     },
 }
 
-const SUMMARY_COLUMNS: &str = "uid, COALESCE(from_addr, ''), COALESCE(to_addr, ''), COALESCE(subject, ''), internaldate, flags, has_attachment, COALESCE(preview, '')";
+const SUMMARY_COLUMNS: &str = "uid, COALESCE(from_addr, ''), COALESCE(to_addr, ''), COALESCE(subject, ''), internaldate, flags, has_attachment, COALESCE(preview, ''), message_id";
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct LogEntry {
@@ -690,6 +713,67 @@ impl Store {
         )?;
         let rows = serde_rusqlite::from_rows::<Folder>(stmt.query([])?);
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Addresses from stored mail whose address or a word of whose name starts with `prefix`: those the user
+    /// wrote to first, then senders, each newest first. A query reads at most `limit * 4` rows per group.
+    pub fn addresses(&self, prefix: &str, limit: usize) -> Result<Vec<KnownAddress>, StoreError> {
+        let prefix = prefix.trim().to_lowercase();
+        let pattern = format!(
+            "%{}%",
+            prefix
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        );
+        let candidates = i64::try_from(limit.saturating_mul(4)).unwrap_or(i64::MAX);
+        let sent = crate::send::sent::sent_folder(&self.folders()?);
+        let mut found: Vec<KnownAddress> = Vec::new();
+        let mut collect = |headers: &[Option<String>], latest: i64, written_to: bool| {
+            for mailbox in headers
+                .iter()
+                .flatten()
+                .flat_map(|header| crate::message::mailboxes(header))
+            {
+                let address = crate::message::mailbox_address(mailbox);
+                let name = crate::message::mailbox_name(mailbox);
+                let known = |other: &KnownAddress| other.address.eq_ignore_ascii_case(address);
+                if address.is_empty()
+                    || found.iter().any(known)
+                    || !matches_prefix(name.as_deref(), address, &prefix)
+                {
+                    continue;
+                }
+                found.push(KnownAddress {
+                    name,
+                    address: address.to_string(),
+                    latest,
+                    written_to,
+                });
+            }
+        };
+        if let Some(sent) = &sent {
+            let mut stmt = self.conn.prepare(
+                "SELECT to_addr, cc_addr, COALESCE(date, internaldate) AS at FROM messages
+                 WHERE folder = ?1 AND (to_addr LIKE ?2 ESCAPE '\\' OR cc_addr LIKE ?2 ESCAPE '\\')
+                 ORDER BY at DESC LIMIT ?3",
+            )?;
+            let mut rows = stmt.query(params![sent, pattern, candidates])?;
+            while let Some(row) = rows.next()? {
+                collect(&[row.get(0)?, row.get(1)?], row.get(2)?, true);
+            }
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT from_addr, COALESCE(date, internaldate) AS at FROM messages
+             WHERE from_addr LIKE ?1 ESCAPE '\\' AND (?2 IS NULL OR folder != ?2)
+             ORDER BY at DESC LIMIT ?3",
+        )?;
+        let mut rows = stmt.query(params![pattern, sent, candidates])?;
+        while let Some(row) = rows.next()? {
+            collect(&[row.get(0)?], row.get(1)?, false);
+        }
+        found.truncate(limit);
+        Ok(found)
     }
 
     pub fn folder(&self, name: &str) -> Result<Option<Folder>, StoreError> {
@@ -1184,9 +1268,9 @@ impl Store {
             Ok(ThreadSummary {
                 thread_id: r.get(0)?,
                 latest: summary_from_row(r, 1)?,
-                count: r.get(10)?,
-                unread: r.get::<_, i64>(11)? > 0,
-                flagged: r.get::<_, i64>(12)? > 0,
+                count: r.get(11)?,
+                unread: r.get::<_, i64>(12)? > 0,
+                flagged: r.get::<_, i64>(13)? > 0,
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -2110,6 +2194,103 @@ mod tests {
         assert_eq!(
             (read.host, read.guessed_for_host.as_str(), read.size),
             (None, "", Some(5))
+        );
+    }
+
+    fn store_with_mail(mail: &[(&str, &str, Option<&str>, &str, i64)]) -> Store {
+        let store = Store::open_in_memory().unwrap();
+        for (folder, special_use) in [("INBOX", None), ("Sent", Some("Sent"))] {
+            store
+                .upsert_folder(&Folder {
+                    name: folder.into(),
+                    uidvalidity: 1,
+                    last_uid: 0,
+                    special_use: special_use.map(String::from),
+                    delimiter: None,
+                })
+                .unwrap();
+        }
+        for (uid, (folder, from, to, cc, date)) in (1..).zip(mail) {
+            let mut message = msg(folder, uid, *date);
+            message.from_addr = Some((*from).into());
+            message.to_addr = to.map(String::from);
+            message.cc_addr = Some((*cc).into());
+            store.insert_message(&message).unwrap();
+        }
+        store
+    }
+
+    fn addresses_of(found: &[KnownAddress]) -> Vec<&str> {
+        found.iter().map(|known| known.address.as_str()).collect()
+    }
+
+    #[test]
+    fn addresses_put_people_written_to_first() {
+        let store = store_with_mail(&[
+            ("INBOX", "Sam Newer <sam@new.example>", None, "", 300),
+            (
+                "Sent",
+                "me@x",
+                Some("Sam Older <sam@old.example>"),
+                "sally@cc.example",
+                100,
+            ),
+        ]);
+        let found = store.addresses("sa", 10).unwrap();
+        assert_eq!(
+            addresses_of(&found),
+            ["sam@old.example", "sally@cc.example", "sam@new.example"]
+        );
+        assert_eq!(
+            found
+                .iter()
+                .map(|known| known.written_to)
+                .collect::<Vec<_>>(),
+            [true, true, false]
+        );
+        assert_eq!(found[0].name.as_deref(), Some("Sam Older"));
+    }
+
+    #[test]
+    fn addresses_match_a_word_of_the_name_and_ignore_case() {
+        let store = store_with_mail(&[
+            ("INBOX", "\"Van Dijk, Jan\" <jan@x.example>", None, "", 100),
+            ("INBOX", "Zed <other@x.example>", None, "", 200),
+        ]);
+        assert_eq!(
+            addresses_of(&store.addresses("DIJ", 10).unwrap()),
+            ["jan@x.example"]
+        );
+        assert_eq!(
+            addresses_of(&store.addresses("OTH", 10).unwrap()),
+            ["other@x.example"]
+        );
+        assert!(store.addresses("ijk", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn addresses_show_once_with_their_latest_date() {
+        let store = store_with_mail(&[
+            ("INBOX", "Al <al@x.example>", None, "", 100),
+            ("INBOX", "AL@x.example", None, "", 500),
+            ("INBOX", "Al <al@x.example>", None, "", 300),
+        ]);
+        let found = store.addresses("al", 10).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].latest, 500);
+        assert_eq!(found[0].address, "AL@x.example");
+    }
+
+    #[test]
+    fn addresses_respect_the_limit() {
+        let store = store_with_mail(&[
+            ("INBOX", "a1@x.example", None, "", 100),
+            ("INBOX", "a2@x.example", None, "", 200),
+            ("INBOX", "a3@x.example", None, "", 300),
+        ]);
+        assert_eq!(
+            addresses_of(&store.addresses("a", 2).unwrap()),
+            ["a3@x.example", "a2@x.example"]
         );
     }
 
@@ -3843,6 +4024,7 @@ mod tests {
                         flags: "\\Flagged".into(),
                         attachment: false,
                         preview: String::new(),
+                        message_id: Some("m2@x".into()),
                     },
                     count: 2,
                     unread: true,
@@ -3859,6 +4041,7 @@ mod tests {
                         flags: "\\Seen".into(),
                         attachment: false,
                         preview: String::new(),
+                        message_id: Some("m3@x".into()),
                     },
                     count: 1,
                     unread: false,
