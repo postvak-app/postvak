@@ -205,7 +205,7 @@ fn original_for(
 }
 
 /// The draft for `kind` with `body`, answering `original` when it is a reply or forward.
-fn draft_for(
+pub(super) fn draft_for(
     identity: &Identity,
     kind: &SendKind,
     original: &[u8],
@@ -341,17 +341,19 @@ fn queue(
     })
 }
 
-/// Builds, checks and queues the message `request` describes; `edit` opens the editor on a text and returns it edited.
-pub fn compose(
-    config: &Config,
+/// The raw original a reply or forward answers, and the flag it gets once the answer went.
+type Answered = (Vec<u8>, OriginalFlag);
+
+/// What `request` describes, before it is built: the draft, and the original it answers with the flag that gets; what a
+/// sent message and a saved draft share. `edit` opens the editor on a text and returns it edited.
+pub(super) fn message_draft(
     paths: &Paths,
     client: &LazyClient,
-    request: SendRequest,
+    account: &AccountConfig,
+    identity: &Identity,
+    request: &SendRequest,
     edit: impl FnOnce(&str) -> anyhow::Result<String>,
-) -> anyhow::Result<Queued> {
-    let account = config::single(&config.accounts, request.account.as_deref())?;
-    let identity = account.identity()?;
-    let (state, server) = sending_server(paths, account)?;
+) -> anyhow::Result<(Draft, Option<Answered>)> {
     let given = match &request.body {
         Body::Given(text) => text.clone(),
         Body::Edit => String::new(),
@@ -362,7 +364,7 @@ pub fn compose(
     };
     let forward_parts = request.forward_parts.as_deref();
     let raw = original.as_ref().map_or(&[][..], |(raw, _)| raw.as_slice());
-    let mut draft = draft_for(&identity, &request.kind, raw, &given, forward_parts)?;
+    let mut draft = draft_for(identity, &request.kind, raw, &given, forward_parts)?;
     if request.body == Body::Edit {
         let template = super::edit::template(&draft);
         let edited = edit(&template)?;
@@ -375,14 +377,7 @@ pub fn compose(
             let quote = draft.text.trim_start_matches('\n').trim_end();
             written.html = match written.text.trim_end().strip_suffix(quote) {
                 Some(user) => {
-                    draft_for(
-                        &identity,
-                        &request.kind,
-                        raw,
-                        user.trim_end(),
-                        forward_parts,
-                    )?
-                    .html
+                    draft_for(identity, &request.kind, raw, user.trim_end(), forward_parts)?.html
                 }
                 None => None,
             };
@@ -390,14 +385,29 @@ pub fn compose(
         draft = written;
     }
     if let Some(edits) = &request.headers {
-        apply_headers(&mut draft, edits, &identity)?;
+        apply_headers(&mut draft, edits, identity)?;
     }
     if let Some(from) = &request.from {
-        set_from(&mut draft, from, &identity)?;
+        set_from(&mut draft, from, identity)?;
     }
     draft
         .attachments
         .extend(read_attachments(&request.attachments)?);
+    Ok((draft, original))
+}
+
+/// Builds, checks and queues the message `request` describes; `edit` opens the editor on a text and returns it edited.
+pub fn compose(
+    config: &Config,
+    paths: &Paths,
+    client: &LazyClient,
+    request: SendRequest,
+    edit: impl FnOnce(&str) -> anyhow::Result<String>,
+) -> anyhow::Result<Queued> {
+    let account = config::single(&config.accounts, request.account.as_deref())?;
+    let identity = account.identity()?;
+    let (state, server) = sending_server(paths, account)?;
+    let (draft, original) = message_draft(paths, client, account, &identity, &request, edit)?;
     let now = crate::time::now();
     let keep = build::build(&draft, now)?;
     let args = CheckRecipients {
@@ -493,7 +503,7 @@ pub fn compose_raw_and_wait(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::daemon::Client;
     use crate::daemon::test_support::{TestDaemon, options, recording_connector, recording_smtp};
@@ -501,16 +511,16 @@ mod tests {
     use crate::store::Message;
     use std::time::{Duration, Instant};
 
-    struct Home {
-        daemon: TestDaemon,
+    pub(crate) struct Home {
+        pub(crate) daemon: TestDaemon,
         smtp: SharedSmtp,
-        config: Config,
-        client: LazyClient,
+        pub(crate) config: Config,
+        pub(crate) client: LazyClient,
     }
 
-    const ORIGINAL: &[u8] = b"From: Linus Example <linus@x.org>\r\nTo: me@example.com\r\nSubject: Plans\r\nDate: Mon, 2 Nov 2026 10:00:00 +0000\r\nMessage-ID: <m1@x.org>\r\n\r\nShall we?\r\n";
+    pub(crate) const ORIGINAL: &[u8] = b"From: Linus Example <linus@x.org>\r\nTo: me@example.com\r\nSubject: Plans\r\nDate: Mon, 2 Nov 2026 10:00:00 +0000\r\nMessage-ID: <m1@x.org>\r\n\r\nShall we?\r\n";
 
-    fn home() -> Home {
+    pub(crate) fn home() -> Home {
         let smtp = SharedSmtp::default();
         let daemon = TestDaemon::start_with(crate::daemon::Options {
             smtp: recording_smtp(smtp.clone()),
@@ -559,7 +569,7 @@ mod tests {
         }
     }
 
-    fn request(kind: SendKind) -> SendRequest {
+    pub(crate) fn request(kind: SendKind) -> SendRequest {
         SendRequest {
             account: Some("work".into()),
             kind,
