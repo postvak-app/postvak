@@ -642,15 +642,17 @@ mod recording {
             let folder = self.selected.clone();
             let unbracketed = |text: &str| text.replace(['<', '>'], "").to_lowercase();
             let wanted = unbracketed(value);
-            let prefix = format!("{}:", header.to_lowercase());
+            let name_wanted = header.to_lowercase();
             let has_header = |e: &Envelope| {
                 let raw = self.raw.get(&(folder.clone(), e.uid)).unwrap_or(&e.headers);
                 String::from_utf8_lossy(raw)
                     .lines()
                     .take_while(|line| !line.is_empty())
                     .any(|line| {
-                        line.to_lowercase().starts_with(&prefix)
-                            && unbracketed(&line[prefix.len()..]).contains(&wanted)
+                        line.split_once(':').is_some_and(|(name, field)| {
+                            name.to_lowercase() == name_wanted
+                                && unbracketed(field).contains(&wanted)
+                        })
                     })
             };
             let mut uids: Vec<u32> = self
