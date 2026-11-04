@@ -153,8 +153,21 @@ const STOPPED: &str = "the window's worker stopped before it answered";
 
 /// The line a composer reopened from its recovery file shows.
 pub(crate) const RESTORED: &str = "Restored after Postvak closed";
+/// The line of a composer restored from a file written while it was being sent.
+pub(crate) const MAY_HAVE_GONE: &str =
+    "This may have gone before Postvak closed: check the outbox or Sent";
+/// What the first Send of such a composer asks; the next sends it.
+pub(crate) const SEND_AGAIN: &str = "Send it again? Send once more to send it.";
+/// The line of a reply whose original went while it was written, now new mail in a window of its own.
+pub(crate) const GONE_AS_NEW: &str =
+    "The message you answered is gone, so this goes as new mail, still answering it.";
 /// Seconds between writes of the changed composers' recovery files.
 const RECOVERY_EVERY: f64 = 5.0;
+
+/// Whether a send failed because the store no longer holds the original, as core's lookup words it.
+fn original_gone(why: &str) -> bool {
+    why.contains("no message ") && why.contains(" in account '")
+}
 
 fn load_config(paths: &Paths) -> Result<Config, String> {
     Config::load(&paths.config_file()).map_err(|e| format!("could not read config.toml: {e}"))
@@ -204,17 +217,23 @@ impl App {
     /// Reopens each composer a crash or quit left, saying so: a reply or forward in the reader pane over its original,
     /// new mail in a window; one whose original is gone from the store goes on as new mail.
     pub(super) fn restore_composers(&mut self) {
+        let mut kept: u64 = 0;
         for mut composer in load_recoveries(&recovery_dir(&self.paths)) {
             self.next_compose = self.next_compose.max(composer.id + 1);
             if composer.kind != ComposeKind::New && !self.original_stored(&composer) {
                 composer.without_original();
             }
             if composer.kind != ComposeKind::New && self.composer.is_some() {
-                // shortcut: a second reply or forward waits on disk for a later start, as the pane holds one; open
-                // it as new mail if that turns out to happen.
+                // shortcut: a second reply or forward waits on disk for a later start, as the pane holds one, and the
+                // notice says so; open it once the pane is free if that turns out to happen.
+                kept += 1;
                 continue;
             }
-            composer.error = Some((Field::Send, RESTORED.into()));
+            composer.may_have_gone |= std::mem::take(&mut composer.sending);
+            composer.error = Some(match composer.may_have_gone {
+                true => (Field::Send, MAY_HAVE_GONE.into()),
+                false => (Field::Note, RESTORED.into()),
+            });
             self.recovery_written.push(composer.clone());
             let target = if composer.kind == ComposeKind::New {
                 let target = ComposeTarget::Window(composer.id);
@@ -233,6 +252,24 @@ impl App {
             };
             self.check_size(target);
         }
+        if kept > 0 {
+            let messages =
+                crate::numbers::counted(kept, "more unsent message", "more unsent messages");
+            self.notice(format!("{messages} kept for a later start"));
+        }
+    }
+
+    /// Moves the pane's reply, whose original is gone, to a window as new mail that still answers it.
+    fn answer_as_new_mail(&mut self) {
+        let Some(mut composer) = self.composer.take() else {
+            return;
+        };
+        composer.without_original();
+        composer.sending = false;
+        composer.error = Some((Field::Note, GONE_AS_NEW.into()));
+        let target = ComposeTarget::Window(composer.id);
+        self.new_mail.push(composer);
+        self.check_size(target);
     }
 
     fn original_stored(&self, composer: &Composer) -> bool {
@@ -659,6 +696,10 @@ impl App {
             composer.error = Some(error);
             return;
         }
+        if std::mem::take(&mut composer.may_have_gone) {
+            composer.error = Some((Field::Send, SEND_AGAIN.into()));
+            return;
+        }
         composer.error = None;
         composer.sending = true;
         let sent = composer.clone();
@@ -847,6 +888,10 @@ impl App {
             .is_some_and(|open| open.id == composer.id);
         let (queued, undo_secs) = match result {
             Ok(answer) => answer,
+            Err(why) if still_open && target == ComposeTarget::Pane && original_gone(&why) => {
+                self.answer_as_new_mail();
+                return;
+            }
             Err(why) => {
                 match self.composer_mut(target).filter(|_| still_open) {
                     Some(open) => {
@@ -2421,7 +2466,7 @@ mod tests {
             let pane = restarted.app.composer.clone().unwrap();
             assert_eq!(pane.text, "Half a reply");
             assert_eq!(pane.kind, ComposeKind::Reply(ReplyTo::Sender));
-            assert_eq!(pane.error, Some((Field::Send, RESTORED.into())));
+            assert_eq!(pane.error, Some((Field::Note, RESTORED.into())));
             assert_eq!(
                 pane.original.as_ref().map(|o| (o.folder.clone(), o.uid)),
                 original
@@ -2436,7 +2481,7 @@ mod tests {
                 panic!("{:?}", restarted.app.new_mail);
             };
             assert_eq!(window.subject, "Plans");
-            assert_eq!(window.error, Some((Field::Send, RESTORED.into())));
+            assert_eq!(window.error, Some((Field::Note, RESTORED.into())));
             assert!(restarted.app.next_compose > pane.id.max(window.id));
         }
 
@@ -2460,6 +2505,69 @@ mod tests {
             assert_eq!(window.text, "Half a reply");
             assert_eq!(window.to, "Sender 1 <sender1@example.com>");
             assert_eq!(window.in_reply_to.as_deref(), Some("<1@example.com>"));
+        }
+
+        #[test]
+        fn a_composer_saved_while_sending_restores_with_the_warning() {
+            let Replying { mut driver, fx, .. } = replying(&[1]);
+            open(&mut driver, "r");
+            write(&mut driver, PANE, ComposeField::Text, "Thanks");
+            driver.app.composer.as_mut().unwrap().sending = true;
+            driver.app.save_recoveries();
+            drop(driver);
+
+            let (mut restarted, _wires) = fx.driver();
+            restarted.app.queue_send = queued;
+            let pane = restarted.app.composer.clone().unwrap();
+            assert!(!pane.sending);
+            assert_eq!(pane.error, Some((Field::Send, MAY_HAVE_GONE.into())));
+            restarted.apply(UiAction::ComposeSend(PANE));
+            let pane = restarted.app.composer.as_ref().unwrap();
+            assert_eq!(pane.error, Some((Field::Send, SEND_AGAIN.into())));
+            assert!(restarted.app.compose_sending.is_empty(), "asked first");
+            restarted.apply(UiAction::ComposeSend(PANE));
+            restarted.tick_until(|app| app.composer.is_none() && app.compose_sending.is_empty());
+            assert!(left(&fx).is_empty(), "sent once asked");
+        }
+
+        #[test]
+        fn a_second_left_reply_waits_with_a_notice() {
+            let Replying { mut driver, fx, .. } = replying(&[1]);
+            open(&mut driver, "r");
+            write(&mut driver, PANE, ComposeField::Text, "First");
+            let mut second = driver.app.composer.clone().unwrap();
+            second.id += 100;
+            crate::compose::save_recovery(&recovery_dir(&fx.paths), &second).unwrap();
+            driver.app.save_recoveries();
+            drop(driver);
+
+            let (restarted, _wires) = fx.driver();
+            assert!(restarted.app.composer.is_some());
+            assert_eq!(
+                restarted.app.notice.as_deref(),
+                Some("1 more unsent message kept for a later start")
+            );
+            assert_eq!(left(&fx).len(), 2, "the second stays on disk");
+        }
+
+        #[test]
+        fn a_reply_whose_original_went_meanwhile_goes_as_new_mail() {
+            let Replying { mut driver, .. } = replying(&[1]);
+            driver.app.queue_send = |_, _, _| Err("no message INBOX/1 in account 'work'".into());
+            open(&mut driver, "r");
+            write(&mut driver, PANE, ComposeField::Text, "Thanks");
+            driver.app.composer.as_mut().unwrap().in_reply_to = Some("<1@example.com>".into());
+            driver.apply(UiAction::ComposeSend(PANE));
+            driver.tick_until(|app| app.compose_sending.is_empty());
+            assert!(driver.app.composer.is_none());
+            let [window] = driver.app.new_mail.as_slice() else {
+                panic!("{:?}", driver.app.new_mail);
+            };
+            assert_eq!(window.kind, ComposeKind::New);
+            assert_eq!(window.text, "Thanks");
+            assert_eq!(window.in_reply_to.as_deref(), Some("<1@example.com>"));
+            assert_eq!(window.error, Some((Field::Note, GONE_AS_NEW.into())));
+            assert!(!window.sending);
         }
 
         #[test]

@@ -567,6 +567,7 @@ fn compose_spot(field: compose::Field) -> ComposeSpot {
         compose::Field::Bcc => ComposeSpot::Bcc,
         compose::Field::Cc => ComposeSpot::Cc,
         compose::Field::From => ComposeSpot::From,
+        compose::Field::Note => ComposeSpot::Note,
         compose::Field::Send => ComposeSpot::Send,
         compose::Field::Subject => ComposeSpot::Subject,
         compose::Field::To => ComposeSpot::To,

@@ -8,7 +8,7 @@ import { Choice, Field } from "rule_editor.slint";
 import { Dialog, Scrim } from "dialogs.slint";
 
 // The field an error is about, under which it shows; the same names as `compose::Field`.
-export enum ComposeSpot { none, attachments, bcc, cc, from, send, subject, to }
+export enum ComposeSpot { none, attachments, bcc, cc, from, note, send, subject, to }
 
 // What the user edits as text; the same names as `compose::ComposeField`.
 export enum ComposeField { bcc, cc, from, subject, text, to }
@@ -197,6 +197,7 @@ export component Composer inherits Rectangle {
                 }
             }
             if root.data.error-at == ComposeSpot.send: Error { text: root.data.error; }
+            if root.data.error-at == ComposeSpot.note: Note { text: root.data.error; }
 
             Row {
                 label: "From";

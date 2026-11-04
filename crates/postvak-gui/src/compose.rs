@@ -36,6 +36,8 @@ pub(crate) enum Field {
     Bcc,
     Cc,
     From,
+    /// A line above the fields that is no error, such as the one a restored composer shows.
+    Note,
     Send,
     Subject,
     To,
@@ -75,7 +77,7 @@ pub(crate) enum ComposeField {
     To,
 }
 
-/// A composer's recovery file holds all of it but `loading`, `sending`, `error` and the original's raw bytes.
+/// A composer's recovery file holds all of it but `loading`, `error` and the original's raw bytes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Composer {
     pub id: u64,
@@ -100,8 +102,11 @@ pub(crate) struct Composer {
     pub references: Vec<String>,
     #[serde(skip)]
     pub loading: bool,
-    #[serde(skip)]
+    #[serde(default)]
     pub sending: bool,
+    /// Restored from a file written while it was being sent, so its first Send asks before sending it again.
+    #[serde(default)]
+    pub may_have_gone: bool,
     #[serde(skip)]
     pub error: Option<(Field, String)>,
     /// The largest message the account's server takes, in bytes.
@@ -154,6 +159,7 @@ impl Composer {
             references: Vec::new(),
             loading: false,
             sending: false,
+            may_have_gone: false,
             error: None,
             size_limit: DEFAULT_SIZE_LIMIT as u64,
             opened_as: Snapshot::default(),
@@ -421,7 +427,7 @@ impl Composer {
             *field == Field::Attachments && error.contains(OVER_LIMIT)
         });
         match self.too_much(self.size_limit) {
-            Some(error) if own || self.error.is_none() => {
+            Some(error) if own || matches!(self.error, None | Some((Field::Note, _))) => {
                 self.error = Some((Field::Attachments, error));
             }
             None if own => self.error = None,
@@ -744,7 +750,6 @@ mod tests {
 
         let restored = load_recoveries(dir.path());
         composer.error = None;
-        composer.sending = false;
         if let Some(original) = composer.original.as_mut() {
             original.raw.clear();
         }
