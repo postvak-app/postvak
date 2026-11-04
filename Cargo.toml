@@ -56,7 +56,7 @@ objc2 = { version = "0.6", default-features = false, features = ["std"] }  # Mai
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSAccessibility", "NSApplication", "NSDockTile", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSWindow", "NSWorkspace"] }  # the unread count on the Dock icon, the Save as… and Attach… panels and the Reduce motion setting; already in the tree through muda
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFDate", "CFRunLoop", "CFString"] }  # the daemon runs its main run loop on macOS, where notification clicks arrive; already in the tree
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSEnumerator", "NSString", "NSURL"] }  # the Dock badge's label and the Save as… and Attach… panels' paths; already in the tree through muda
-percent-encoding = "2"                               # HTML mail: decode cid: URLs; already in the tree through url
+percent-encoding = "2"                               # decode cid: URLs in HTML mail and the fields of mailto: links; already in the tree through url
 png = "0.18"                                         # decodes the icons and reads and writes the GUI snapshots
 psl = "2"                                            # the registrable domain of a sender (mail.example.co.uk → example.co.uk) for sender statistics; the public suffix list compiled in, re-released as the list changes
 proptest = { version = "1", default-features = false, features = ["std"] }  # postvak-core's tests/fuzz.rs (hostile input never panics the parsers) and tests/sync_model.rs (random sync event sequences, shrunk)
