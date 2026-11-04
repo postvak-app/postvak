@@ -811,6 +811,24 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn compose_without_recipients_fails_the_check() {
+        let h = home();
+        let nobody = request(SendKind::New {
+            to: vec![],
+            cc: vec![],
+            bcc: vec![],
+            subject: "s".into(),
+        });
+        let error = compose(&h.config, &h.daemon.paths, &h.client, nobody, no_editor).unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<check::CheckError>(),
+            Some(&check::CheckError::NoRecipients),
+            "{error:#}"
+        );
+        assert!(h.client.client().unwrap().outbox().unwrap().is_empty());
+    }
+
+    #[test]
     fn an_edit_left_unchanged_queues_nothing() {
         let h = home();
         let mut edited = request(SendKind::Reply {

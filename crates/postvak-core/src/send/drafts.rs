@@ -278,15 +278,33 @@ fn own_parts(
     };
     let own = match marker.kind {
         DraftKind::Forward(ForwardAs::Inline) => {
-            let total = reply::forward_attachments(original).len();
-            let forwarded = match &marker.parts {
-                Some(parts) => (0..total).filter(|index| parts.contains(index)).count(),
-                None => total,
-            };
-            files.get(forwarded..)?
+            let forwarded: Vec<_> = reply::attached_files(original)
+                .into_iter()
+                .enumerate()
+                .filter(|(index, _)| {
+                    marker
+                        .parts
+                        .as_ref()
+                        .is_none_or(|parts| parts.contains(index))
+                })
+                .map(|(_, file)| file)
+                .collect();
+            let (head, rest) = files.split_at_checked(forwarded.len())?;
+            let unchanged = head
+                .iter()
+                .zip(&forwarded)
+                .all(|((name, _, bytes), file)| *name == file.name && *bytes == file.bytes);
+            if !unchanged {
+                return None;
+            }
+            rest
         }
         DraftKind::Forward(ForwardAs::Attachment) => match files.split_last()? {
-            ((_, content_type, _), rest) if content_type == "message/rfc822" => rest,
+            ((_, content_type, bytes), rest)
+                if content_type == "message/rfc822" && bytes.as_slice() == original =>
+            {
+                rest
+            }
             _ => return None,
         },
         DraftKind::New | DraftKind::Reply(_) => files,
@@ -358,7 +376,13 @@ pub fn read(
                 own_parts(&marker, &original, &opened.from, &text, flowed, &files)
         {
             opened.kind = marker.kind;
-            opened.original = (marker.kind != DraftKind::New).then_some(original);
+            match marker.kind {
+                // New mail Postvak wrote may still answer a message, as a foreign reply saved again does.
+                DraftKind::New => {
+                    opened.shown_original = headers.in_reply_to.as_deref().and_then(&find_original)
+                }
+                _ => opened.original = Some(original),
+            }
             opened.text = text;
             opened.files = files;
             opened.forward_parts = marker.parts;
@@ -773,6 +797,76 @@ mod tests {
             crate::message::header_text(&rebuilt, "In-Reply-To").as_deref(),
             Some("<m1@x.org>")
         );
+    }
+
+    #[test]
+    fn a_saved_foreign_reply_still_shows_its_original() {
+        let f = fixture();
+        let raw = original("", "Shall we?\r\n");
+        let foreign = b"From: me@example.com\r\nTo: linus@x.org\r\nSubject: Re: Plans\r\nMessage-ID: <d1@example.com>\r\nIn-Reply-To: <m1@x.org>\r\nReferences: <m1@x.org>\r\n\r\nSure.\r\n\r\n> Shall we?\r\n";
+        let opened = read(foreign, finds(&raw)).unwrap();
+        let saved = built(
+            &f,
+            &SendRequest {
+                headers: Some(compose::HeaderEdits {
+                    from: opened.from.clone(),
+                    to: opened.to.clone(),
+                    cc: vec![],
+                    bcc: vec![],
+                    subject: opened.subject.clone(),
+                    in_reply_to: opened.in_reply_to.clone(),
+                    references: opened.references.clone(),
+                }),
+                ..request(
+                    SendKind::New {
+                        to: opened.to.clone(),
+                        cc: vec![],
+                        bcc: vec![],
+                        subject: opened.subject.clone(),
+                    },
+                    &opened.text,
+                    None,
+                )
+            },
+        );
+        assert_eq!(
+            crate::message::header_text(&saved, HEADER).as_deref(),
+            Some("new")
+        );
+        let reopened = read(&saved, finds(&raw)).unwrap();
+        assert_eq!(reopened.kind, DraftKind::New);
+        assert_eq!(reopened.original, None);
+        assert_eq!(reopened.shown_original.as_deref(), Some(raw.as_slice()));
+        assert_eq!(reopened.in_reply_to.as_deref(), Some("<m1@x.org>"));
+    }
+
+    #[test]
+    fn a_forward_draft_whose_forwarded_files_changed_opens_whole() {
+        let f = fixture();
+        let raw = original(MIXED, TWO);
+        let inline = built(
+            &f,
+            &request(forward_kind(ForwardAs::Inline), "FYI\n", Some(&raw)),
+        );
+        let inline = String::from_utf8(inline).unwrap();
+        assert_eq!(inline.matches("1,2,3").count(), 1, "{inline}");
+        let changed = inline.replace("1,2,3", "1,2,4");
+        let opened = read(changed.as_bytes(), finds(&raw)).unwrap();
+        assert_eq!(opened.kind, DraftKind::New);
+        let names: Vec<_> = opened.files.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["a.pdf", "b.csv"]);
+        assert_eq!(opened.files[1].1, b"1,2,4");
+
+        let enclosed = built(
+            &f,
+            &request(forward_kind(ForwardAs::Attachment), "", Some(&raw)),
+        );
+        let enclosed = String::from_utf8(enclosed).unwrap();
+        assert!(enclosed.contains("1,2,3"), "{enclosed}");
+        let changed = enclosed.replace("1,2,3", "1,2,4");
+        let opened = read(changed.as_bytes(), finds(&raw)).unwrap();
+        assert_eq!(opened.kind, DraftKind::New);
+        assert_eq!(opened.files.len(), 1);
     }
 
     #[test]
