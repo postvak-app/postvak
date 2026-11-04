@@ -1688,16 +1688,27 @@ fn run_command(
                 draft,
                 draft_deleted,
             };
-            crate::send::sent::finish(ops, store, &account.name, &id, &job)
-                .map(|(copied, flagged, draft_deleted)| Event::SentFinished {
-                    account: name(),
-                    id,
-                    copied,
-                    flagged,
-                    draft_deleted,
-                    request,
-                })
-                .map_err(SyncError::from)
+            let (done, lost) = match crate::send::sent::finish(ops, store, &account.name, &id, &job)
+            {
+                Ok(done) => (done, None),
+                Err((done, e)) => (done, Some(e)),
+            };
+            let finished = Event::SentFinished {
+                account: name(),
+                id,
+                copied: done.copied,
+                flagged: done.flagged,
+                draft_deleted: done.draft_deleted,
+                request,
+            };
+            match lost {
+                None => Ok(finished),
+                // What was done before the connection went is kept, so the retry does not copy to Sent twice.
+                Some(e) => {
+                    let _ = events.send(finished);
+                    Err(SyncError::from(e))
+                }
+            }
         }
         Command::SaveDraft { raw, replaces } => {
             run.used_connection = true;

@@ -6563,12 +6563,80 @@ fn a_lost_connection_while_deleting_the_draft_tries_again() {
     ops.fail_next_expunge = Some(MailError::Io("reset".into()));
     let (run, events) = drain(&mut ops, &store, &trash, vec![command.clone()]);
     assert!(run.is_err());
-    assert_eq!(finished_all(&events), None);
+    assert_eq!(finished_all(&events), Some((true, true, false)));
     assert_eq!(ops.mail["Drafts"].len(), 1);
     let (run, events) = drain(&mut ops, &store, &trash, vec![command]);
     run.unwrap();
     assert_eq!(finished_all(&events), Some((true, true, true)));
     assert!(ops.mail["Drafts"].is_empty());
+}
+
+/// The command the daemon sends next, after `events` reported what the first one did.
+fn finish_sent_again(mut command: Command, events: &[Event]) -> Command {
+    let (done_copied, done_flagged, done_draft) = finished_all(events).unwrap();
+    if let Command::FinishSent {
+        copied,
+        flagged,
+        draft_deleted,
+        ..
+    } = &mut command
+    {
+        *copied |= done_copied;
+        *flagged |= done_flagged;
+        *draft_deleted |= done_draft;
+    }
+    command
+}
+
+#[test]
+fn a_lost_connection_while_deleting_the_draft_does_not_copy_to_sent_again() {
+    let (mut ops, store, trash, _dir, mut command) = finishing_a_draft();
+    if let Command::FinishSent { copied, .. } = &mut command {
+        *copied = false;
+    }
+    ops.fail_next_expunge = Some(MailError::Io("reset".into()));
+    let (run, events) = drain(&mut ops, &store, &trash, vec![command.clone()]);
+    assert!(run.is_err());
+    assert_eq!(finished_all(&events), Some((true, true, false)));
+    let (run, events) = drain(
+        &mut ops,
+        &store,
+        &trash,
+        vec![finish_sent_again(command, &events)],
+    );
+    run.unwrap();
+    assert_eq!(finished_all(&events), Some((true, true, true)));
+    assert_eq!(ops.mail["Sent"].len(), 1);
+    assert!(ops.mail["Drafts"].is_empty());
+}
+
+#[test]
+fn a_lost_connection_while_flagging_does_not_copy_to_sent_again() {
+    let (mut ops, store, dir) = synced();
+    ops = ops.with_folder("Sent", Some("Sent"));
+    sync_all(&mut ops, &store).unwrap();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let command = finish_sent(crate::send::reply::OriginalFlag::Answered);
+    ops.fail_add_flags_after = Some(0);
+    let (run, events) = drain(&mut ops, &store, &trash, vec![command.clone()]);
+    assert!(run.is_err());
+    assert_eq!(finished(&events), Some((true, false)));
+    ops.fail_add_flags_after = None;
+    let (run, events) = drain(
+        &mut ops,
+        &store,
+        &trash,
+        vec![finish_sent_again(command, &events)],
+    );
+    run.unwrap();
+    assert_eq!(finished(&events), Some((true, true)));
+    assert_eq!(ops.mail["Sent"].len(), 1);
+    assert!(
+        ops.calls
+            .contains(&"add_flags INBOX 1 \\Answered".to_string()),
+        "{:?}",
+        ops.calls
+    );
 }
 
 #[test]
@@ -6718,7 +6786,7 @@ fn finish_sent_after_a_lost_connection_is_tried_again() {
         vec![finish_sent(crate::send::reply::OriginalFlag::Answered)],
     );
     assert!(run.is_err());
-    assert_eq!(finished(&events), None);
+    assert_eq!(finished(&events), Some((false, false)));
     assert!(
         events
             .iter()
