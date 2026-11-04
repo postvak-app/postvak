@@ -1,6 +1,7 @@
 //! The composers: a reply or forward in the reader pane, new mail in windows of its own, sending through the outbox,
 //! and taking a send back.
 use postvak_core::daemon::client::LazyClient;
+use postvak_core::message::header_value;
 use postvak_core::send::check::DEFAULT_SIZE_LIMIT;
 use postvak_core::send::compose::{Prefilled, Queued, SendKind, SendRequest};
 use postvak_core::send::mailto::Mailto;
@@ -450,6 +451,11 @@ impl App {
     /// Opens a reply (`Some`) or a forward of the shown message in the reader pane, loading while it is filled.
     pub(super) fn answer(&mut self, reply_to: Option<ReplyTo>) {
         let Some(body) = &self.body else { return };
+        let headers = body.message.as_ref().map(|m| m.headers.as_slice());
+        let has_list = headers.is_some_and(|h| header_value(h, "List-Post").is_some());
+        if reply_to == Some(ReplyTo::List) && !has_list {
+            return;
+        }
         let account = self.accounts[body.account].name.clone();
         let (folder, uid) = body.key.clone();
         let id = self.next_compose;
@@ -1515,7 +1521,13 @@ mod tests {
 
     #[test]
     fn the_keys_open_each_kind() {
-        let Replying { mut driver, .. } = replying(&[1]);
+        let fx = Fixture::new(&["work"]);
+        let mut list = message("INBOX", 1, "subject 1");
+        list.headers =
+            b"Subject: subject 1\r\nList-Post: <mailto:list@example.org>\r\n\r\n".to_vec();
+        fx.add("work", list);
+        let (mut driver, _wires) = fx.driver();
+        driver.app.prefill = filled;
         for (key, kind) in [
             ("r", ComposeKind::Reply(ReplyTo::Sender)),
             ("R", ComposeKind::Reply(ReplyTo::All)),
@@ -1529,6 +1541,15 @@ mod tests {
                 "{key}"
             );
         }
+    }
+
+    #[test]
+    fn l_opens_nothing_without_a_list_to_reply_to() {
+        let Replying { mut driver, .. } = replying(&[1]);
+        driver.tick_until(|app| app.body.is_some());
+        driver.press("l");
+        assert!(driver.app.composer.is_none());
+        assert!(driver.app.compose_prefill.is_none());
     }
 
     /// Queues as the daemon does: the entry is in the account's outbox, waiting.
