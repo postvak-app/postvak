@@ -284,39 +284,54 @@ impl App {
 
     /// Opens the desktop's open dialog for the composer at `target`; one at a time, and not while it is sent.
     fn compose_attach(&mut self, target: ComposeTarget) {
-        if self.compose_attaching.is_some() || self.composer_ref(target).is_none_or(|c| c.sending) {
+        if self.compose_attaching.is_some() {
             return;
         }
+        let Some(id) = self
+            .composer_ref(target)
+            .filter(|c| !c.sending)
+            .map(|c| c.id)
+        else {
+            return;
+        };
         let answer = (self.ask_open_paths)(self.wake.clone());
-        self.compose_attaching = Some((target, answer));
+        self.compose_attaching = Some((target, id, answer));
     }
 
-    /// Adds the files the dialog chose, each with its size read now, once; a cancelled dialog adds none.
+    /// Adds the files the dialog chose to the composer that asked, if it is still open; a cancelled dialog adds none,
+    /// and a file that could not be read is left out and named.
     fn receive_attach(&mut self) {
-        let Some((target, answer)) = &self.compose_attaching else {
+        let Some((target, id, answer)) = &self.compose_attaching else {
             return;
         };
         let Some(result) = worker::poll(answer) else {
             return;
         };
-        let target = *target;
+        let (target, id) = (*target, *id);
         self.compose_attaching = None;
-        let Some(composer) = self.composer_mut(target) else {
+        let Some(composer) = self.composer_mut(target).filter(|c| c.id == id) else {
             return;
         };
-        match result.unwrap_or_else(|Stopped| Err(anyhow::anyhow!(STOPPED))) {
-            Ok(paths) => composer.files.extend(paths.into_iter().map(|path| {
-                // An unreadable file counts as 0 bytes here; Send refuses it by name.
-                let size = std::fs::metadata(&path).map_or(0, |m| m.len());
-                (path, size)
-            })),
+        let chosen = match result.unwrap_or_else(|Stopped| Err(anyhow::anyhow!(STOPPED))) {
+            Ok(chosen) => chosen,
             Err(e) => {
                 let why = format!("Could not open the file dialog: {}", error_text(&e));
                 composer.error = Some((Field::Attachments, why));
                 return;
             }
+        };
+        let mut unreadable = None;
+        for (path, size) in chosen {
+            match size {
+                Some(size) => composer.files.push((path, size)),
+                None => unreadable = unreadable.or(Some(path)),
+            }
         }
         self.check_size(target);
+        if let (Some(path), Some(composer)) = (unreadable, self.composer_mut(target)) {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            composer.error = Some((Field::Attachments, format!("{name} can't be read.")));
+        }
     }
 
     /// Checks the composer and queues its message on a worker; ignored while it loads or a send is in flight.
@@ -1500,11 +1515,21 @@ mod tests {
         thread_local! {
             /// What the faked file dialog answers on this test's thread, where the window runs.
             static CHOSEN: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+            /// The faked dialog still open, whose answer the test sends when it wants.
+            static OPEN: RefCell<Option<std::sync::mpsc::Sender<crate::open_files::Chosen>>> =
+                const { RefCell::new(None) };
         }
 
         fn chosen(_: crate::html::Wake) -> Receiver<crate::open_files::Chosen> {
             let (done, answer) = std::sync::mpsc::channel();
-            let _ = done.send(Ok(CHOSEN.with(|c| c.borrow().clone())));
+            let paths = CHOSEN.with(|c| c.borrow().clone());
+            let _ = done.send(Ok(crate::open_files::sized(paths)));
+            answer
+        }
+
+        fn left_open(_: crate::html::Wake) -> Receiver<crate::open_files::Chosen> {
+            let (done, answer) = std::sync::mpsc::channel();
+            OPEN.with(|open| *open.borrow_mut() = Some(done));
             answer
         }
 
@@ -1559,6 +1584,38 @@ mod tests {
             let composer = driver.app.composer.as_ref().unwrap();
             assert_eq!(composer.error, None, "removing it takes the error away");
             assert_eq!(composer.size_line(), "");
+        }
+
+        #[test]
+        fn a_file_that_cannot_be_read_is_left_out_and_named() {
+            let dir = tempfile::tempdir().unwrap();
+            let a = file(&dir, "a.pdf", 1000);
+            let Replying { mut driver, .. } = replying(&[1]);
+            attach(&mut driver, vec![a.clone(), dir.path().join("gone.txt")]);
+            let composer = driver.app.composer.as_ref().unwrap();
+            assert_eq!(composer.files, [(a, 1000)]);
+            assert_eq!(
+                composer.error,
+                Some((Field::Attachments, "gone.txt can't be read.".into()))
+            );
+        }
+
+        #[test]
+        fn files_chosen_for_a_closed_composer_attach_nowhere() {
+            let dir = tempfile::tempdir().unwrap();
+            let a = file(&dir, "a.pdf", 1000);
+            let Replying { mut driver, .. } = replying(&[1]);
+            open(&mut driver, "r");
+            driver.app.ask_open_paths = left_open;
+            driver.apply(UiAction::ComposeAttach(PANE));
+            driver.apply(UiAction::ComposeClose(PANE));
+            open(&mut driver, "r");
+            let sender = OPEN.with(|open| open.borrow_mut().take()).unwrap();
+            sender.send(Ok(crate::open_files::sized(vec![a]))).unwrap();
+            driver.tick_until(|app| app.compose_attaching.is_none());
+            let composer = driver.app.composer.as_ref().unwrap();
+            assert!(composer.files.is_empty(), "the new reply got nothing");
+            assert_eq!(composer.error, None);
         }
 
         #[test]

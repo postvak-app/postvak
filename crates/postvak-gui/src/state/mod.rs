@@ -877,8 +877,8 @@ pub struct App {
         Receiver<Result<postvak_core::send::compose::Prefilled, String>>,
     )>,
     pub(crate) compose_sending: Vec<composing::Sending>,
-    /// The open dialog of Attach…, one at a time, for the composer it attaches to.
-    pub(crate) compose_attaching: Option<(ComposeTarget, Receiver<open_files::Chosen>)>,
+    /// The open dialog of Attach…, one at a time, for the composer it attaches to: its place and id.
+    pub(crate) compose_attaching: Option<(ComposeTarget, u64, Receiver<open_files::Chosen>)>,
     /// Undos of sent messages asked of the daemon, by gesture id.
     pub(crate) compose_cancelling: Vec<(u64, Receiver<Result<(), CancelError>>)>,
     /// Fill, queue and take back a message through the daemon; tests swap them so no daemon starts.

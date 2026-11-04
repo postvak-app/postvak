@@ -101,6 +101,9 @@ fn join_addresses(addresses: &[String]) -> String {
     addresses.join(", ")
 }
 
+/// What tells the size error apart from the attachments' other errors.
+const OVER_LIMIT: &str = " attached; the limit is ";
+
 fn size_in_words(bytes: u64) -> String {
     crate::body::size(usize::try_from(bytes).unwrap_or(usize::MAX))
 }
@@ -379,7 +382,7 @@ impl Composer {
         let total = self.attachment_total();
         (total > limit).then(|| {
             format!(
-                "{} attached; the limit is {}.",
+                "{}{OVER_LIMIT}{}.",
                 size_in_words(total),
                 size_in_words(limit)
             )
@@ -387,17 +390,17 @@ impl Composer {
     }
 
     /// Shows the size error on the attachments as soon as they are too much, and takes it away once they fit.
+    /// Another field's error, or another one about the attachments, stays.
     pub(crate) fn check_size(&mut self) {
+        let own = self.error.as_ref().is_some_and(|(field, error)| {
+            *field == Field::Attachments && error.contains(OVER_LIMIT)
+        });
         match self.too_much(self.size_limit) {
-            Some(error) => self.error = Some((Field::Attachments, error)),
-            None if self
-                .error
-                .as_ref()
-                .is_some_and(|e| e.0 == Field::Attachments) =>
-            {
-                self.error = None;
+            Some(error) if own || self.error.is_none() => {
+                self.error = Some((Field::Attachments, error));
             }
-            None => {}
+            None if own => self.error = None,
+            _ => {}
         }
     }
 
@@ -806,6 +809,33 @@ mod tests {
             composer.file_rows(),
             [("notes.txt".to_string(), "2 KB".to_string())]
         );
+    }
+
+    #[test]
+    fn the_size_check_leaves_other_errors_alone() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let mut composer = new_mail();
+        composer.size_limit = LIMIT;
+        composer.files = vec![file_of(&dir, "big", 30_000_000)];
+        composer.error = Some((Field::To, "Add a recipient.".into()));
+        composer.check_size();
+        assert_eq!(composer.error.as_ref().map(|e| e.0), Some(Field::To));
+        composer.error = None;
+        composer.check_size();
+        assert_eq!(
+            composer.error.as_ref().map(|e| e.0),
+            Some(Field::Attachments)
+        );
+        composer.files.clear();
+        composer.check_size();
+        assert_eq!(
+            composer.error, None,
+            "its own error goes once the files fit"
+        );
+        let unreadable = Some((Field::Attachments, "gone.txt can't be read.".to_string()));
+        composer.error = unreadable.clone();
+        composer.check_size();
+        assert_eq!(composer.error, unreadable);
     }
 
     #[test]
