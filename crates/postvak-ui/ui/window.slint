@@ -926,9 +926,11 @@ export component MailWindow inherits Window {
         x: (root.width - self.width) / 2;
         y: Theme.top-bar + Theme.inset;
         question: ComposeState.leave-question;
+        can-save: ComposeState.leave-can-save;
         close-icon: root.close-icon;
         discard => { ComposeState.leave-discard(); }
         cancel => { ComposeState.leave-cancel(); }
+        save => { ComposeState.leave-save(); }
     }
 
     if root.help-open: Scrim {

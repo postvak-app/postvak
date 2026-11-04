@@ -1101,6 +1101,18 @@ fn compose_reply_html_dark() {
     snapshot(&open, "gui_compose_reply_html_dark");
 }
 
+/// Close on a changed reply: the question offers Save draft beside Discard and Cancel.
+#[test]
+fn compose_leave_question_with_save_draft() {
+    let (_fx, open, _wires) = compose_reply_html("light");
+    open.with(|live| {
+        live.app
+            .apply(UiAction::ComposeClose(crate::state::ComposeTarget::Pane))
+    });
+    wait_painted(&open);
+    snapshot(&open, "gui_compose_leave_question_with_save_draft");
+}
+
 /// A forward of the e-ticket, its attachments listed with check boxes, one left out.
 #[test]
 fn compose_forward_attachments() {

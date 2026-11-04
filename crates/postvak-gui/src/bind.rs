@@ -538,6 +538,7 @@ fn compose_data(composer: &Composer) -> ComposeData {
         open: true,
         loading: composer.loading,
         sending: composer.sending,
+        saving: composer.saving,
         from: composer.from.as_str().into(),
         from_index: composer
             .choice_index()
@@ -582,12 +583,12 @@ fn compose_spot(field: compose::Field) -> ComposeSpot {
     }
 }
 
-/// Shows `composer` and `question` in a window's `ComposeState`: the mail window, whose reader pane draws the composer,
+/// Shows `composer` and `question`, with whether Save draft answers it, in a window's `ComposeState`: the mail window, whose reader pane draws the composer,
 /// or a new-mail window.
 fn show_composer(
     state: &ComposeState,
     composer: Option<&Composer>,
-    question: Option<&str>,
+    question: Option<(&str, bool)>,
     completion: Option<&state::Completion>,
 ) {
     let completion = completion.filter(|c| composer.is_some_and(|composer| composer.id == c.to.id));
@@ -635,13 +636,16 @@ fn show_composer(
     sync(state.get_completions(), completions, |m| {
         state.set_completions(m)
     });
-    state.set_leave_question(question.unwrap_or_default().into());
+    let (question, can_save) = question.unwrap_or_default();
+    state.set_leave_question(question.into());
+    state.set_leave_can_save(can_save);
 }
 
 /// Turns the callbacks in a window's `ComposeState` into actions on the composer at `target`; see `show_composer`.
 fn connect_composer(state: &ComposeState, target: ComposeTarget, on: fn(Ask) -> bool) {
     let act = move |action: UiAction| on(Box::new(move |_| vec![action]));
     state.set_send_hint(compose::send_hint().into());
+    state.set_save_hint(compose::save_hint().into());
     state.on_edited(move |field, text| {
         act(UiAction::ComposeEdit(
             target,
@@ -692,6 +696,9 @@ fn connect_composer(state: &ComposeState, target: ComposeTarget, on: fn(Ask) -> 
     state.on_send(move || {
         act(UiAction::ComposeSend(target));
     });
+    state.on_save_draft(move || {
+        act(UiAction::ComposeSaveDraft(target));
+    });
     state.on_close(move || {
         act(UiAction::ComposeClose(target));
     });
@@ -704,16 +711,17 @@ fn connect_composer(state: &ComposeState, target: ComposeTarget, on: fn(Ask) -> 
     state.on_leave_cancel(move || {
         act(UiAction::LeaveComposeCancel(target));
     });
+    state.on_leave_save(move || {
+        act(UiAction::LeaveComposeSave(target));
+    });
 }
 
 /// The reader pane's composer, and "Discard this message?" while it asks.
 fn present_composer(app: &App, window: &MailWindow) {
-    let composer = app.composer.as_ref();
-    let question = app.leave_compose.as_ref().and(composer);
     show_composer(
         &window.global::<ComposeState>(),
-        composer,
-        question.and_then(Composer::leave_question),
+        app.composer.as_ref(),
+        app.leave_question(ComposeTarget::Pane),
         app.completion
             .as_ref()
             .filter(|c| c.to.target == ComposeTarget::Pane),
@@ -723,10 +731,7 @@ fn present_composer(app: &App, window: &MailWindow) {
 /// New-mail window `id`'s composer, and its "Discard this message?" while it asks.
 pub(crate) fn present_new_mail(app: &App, id: u64, window: &ComposeWindow) {
     let composer = app.composer_ref(ComposeTarget::Window(id));
-    let asking = app.leave_new_mail.contains(&id);
-    let question = composer
-        .filter(|_| asking)
-        .and_then(Composer::leave_question);
+    let question = app.leave_question(ComposeTarget::Window(id));
     let completion = (app.completion.as_ref()).filter(|c| c.to.target == ComposeTarget::Window(id));
     show_composer(
         &window.global::<ComposeState>(),

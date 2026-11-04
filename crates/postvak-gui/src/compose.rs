@@ -23,6 +23,15 @@ pub(crate) fn send_hint() -> &'static str {
     }
 }
 
+/// Save draft's hover hint, with its key.
+pub(crate) fn save_hint() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Save draft · Cmd+S"
+    } else {
+        "Save draft · Ctrl+S"
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ComposeKind {
     New,
@@ -50,6 +59,22 @@ pub(crate) struct OriginalRef {
     pub uid: u32,
     #[serde(skip)]
     pub raw: Vec<u8>,
+}
+
+/// The composer's copy in the account's Drafts: its Message-ID, and earlier copies a save could not delete, each `<id>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ComposeDraft {
+    pub message_id: String,
+    pub left: Vec<String>,
+}
+
+impl ComposeDraft {
+    /// Every copy in Drafts, which the next save, a send or a discard deletes.
+    pub(crate) fn ids(&self) -> Vec<String> {
+        std::iter::once(self.message_id.clone())
+            .chain(self.left.iter().cloned())
+            .collect()
+    }
 }
 
 /// The fields as the composer opened, to tell whether the user changed anything.
@@ -109,6 +134,10 @@ pub(crate) struct Composer {
     pub may_have_gone: bool,
     #[serde(skip)]
     pub error: Option<(Field, String)>,
+    #[serde(default)]
+    pub draft: Option<ComposeDraft>,
+    #[serde(skip)]
+    pub saving: bool,
     /// The largest message the account's server takes, in bytes.
     pub size_limit: u64,
     opened_as: Snapshot,
@@ -168,6 +197,8 @@ impl Composer {
             sending: false,
             may_have_gone: false,
             error: None,
+            draft: None,
+            saving: false,
             size_limit: DEFAULT_SIZE_LIMIT as u64,
             opened_as: Snapshot::default(),
         }
@@ -360,8 +391,20 @@ impl Composer {
         self.snapshot() != self.opened_as
     }
 
-    pub(crate) fn leave_question(&self) -> Option<&'static str> {
+    /// What leaving asks, or Discard when `discarding`: Discard of a saved draft always asks, as it deletes the draft.
+    pub(crate) fn leave_question(&self, discarding: bool) -> Option<&'static str> {
+        if discarding && self.draft.is_some() {
+            return Some("Delete this draft?");
+        }
         self.changed().then_some("Discard this message?")
+    }
+
+    /// `saved`, this composer as it was when saved, is in Drafts now as `draft`; what was typed since still counts as
+    /// a change.
+    pub(crate) fn saved_as(&mut self, saved: &Composer, draft: ComposeDraft) {
+        self.draft = Some(draft);
+        self.saving = false;
+        self.opened_as = saved.snapshot();
     }
 
     pub(crate) fn split_addresses(field: &str) -> Vec<String> {
@@ -523,7 +566,11 @@ impl Composer {
                 references: self.references.clone(),
             }),
             forward_parts,
-            draft: Vec::new(),
+            draft: self
+                .draft
+                .as_ref()
+                .map(ComposeDraft::ids)
+                .unwrap_or_default(),
         }
     }
 }
@@ -778,10 +825,16 @@ mod tests {
         composer.forward_parts[0].2 = false;
         composer.error = Some((Field::Send, "not sent".into()));
         composer.sending = true;
+        composer.saving = true;
+        composer.draft = Some(ComposeDraft {
+            message_id: "<d1@x>".into(),
+            left: vec!["<d0@x>".into()],
+        });
         save_recovery(dir.path(), &composer).unwrap_or_else(|e| panic!("{e}"));
 
         let restored = load_recoveries(dir.path());
         composer.error = None;
+        composer.saving = false;
         if let Some(original) = composer.original.as_mut() {
             original.raw.clear();
         }
@@ -867,14 +920,17 @@ mod tests {
 
     #[test]
     fn nothing_typed_leaves_without_asking() {
-        assert_eq!(new_mail().leave_question(), None);
+        assert_eq!(new_mail().leave_question(false), None);
     }
 
     #[test]
     fn a_typed_word_asks_before_leaving() {
         let mut composer = new_mail();
         composer.text.push_str("hi");
-        assert_eq!(composer.leave_question(), Some("Discard this message?"));
+        assert_eq!(
+            composer.leave_question(false),
+            Some("Discard this message?")
+        );
     }
 
     #[test]

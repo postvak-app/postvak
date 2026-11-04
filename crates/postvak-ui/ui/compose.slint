@@ -25,6 +25,8 @@ export struct ComposeData {
     // Filled from the original yet, and not on its way: Send is off meanwhile.
     loading: bool,
     sending: bool,
+    // On its way to Drafts: Send waits for it.
+    saving: bool,
     from: string,
     // Which of the From choices `from` is; -1 when it was typed, so it shows as a field.
     from-index: int,
@@ -122,11 +124,14 @@ export global ComposeState {
     // The addresses offered under the field being typed in, as `Name <address>`.
     in property <[string]> completions;
     in property <string> send-hint;
-    // "Discard this message?" while it asks.
+    in property <string> save-hint;
+    // "Discard this message?" while it asks, and whether Save draft is one of its answers.
     in property <string> leave-question;
-    out property <bool> can-send: !root.data.loading && !root.data.sending;
+    in property <bool> leave-can-save;
     // Typing waits for the original's fields, and stops once the message is on its way.
-    out property <bool> fixed: !root.can-send;
+    out property <bool> fixed: root.data.loading || root.data.sending;
+    out property <bool> can-save: !root.fixed;
+    out property <bool> can-send: !root.fixed && !root.data.saving;
     callback edited(ComposeField, string);
     callback completion-step(int);
     callback completion-pick(int);
@@ -138,10 +143,12 @@ export global ComposeState {
     callback toggle-part(int);
     callback as-attachment(bool);
     callback send();
+    callback save-draft();
     callback close();
     callback discard();
     callback leave-discard();
     callback leave-cancel();
+    callback leave-save();
 }
 
 export component Composer inherits Rectangle {
@@ -175,6 +182,11 @@ export component Composer inherits Rectangle {
             enabled: ComposeState.can-send;
             activated => { ComposeState.send(); }
         }
+        KeyBinding {
+            keys: @keys(Control + S);
+            enabled: ComposeState.can-save;
+            activated => { ComposeState.save-draft(); }
+        }
 
         VerticalLayout {
             padding: Theme.inset;
@@ -189,8 +201,16 @@ export component Composer inherits Rectangle {
                     palette: Theme.pane;
                     enabled: ComposeState.can-send;
                     hint: ComposeState.send-hint;
-                    disabled-hint: ComposeState.data.sending ? "Sending…" : "Loading the message…";
+                    disabled-hint: ComposeState.data.sending ? "Sending…" : ComposeState.data.saving ? "Saving the draft…" : "Loading the message…";
                     clicked => { ComposeState.send(); }
+                }
+                TextButton {
+                    text: "Save draft";
+                    framed: true;
+                    palette: Theme.pane;
+                    enabled: ComposeState.can-save;
+                    hint: ComposeState.save-hint;
+                    clicked => { ComposeState.save-draft(); }
                 }
                 TextButton {
                     text: "Close";
@@ -439,12 +459,15 @@ export component Composer inherits Rectangle {
     }
 }
 
-// "Discard this message?" before something takes the reader pane from a changed composer.
+// "Discard this message?" before something takes the reader pane from a changed composer, with Save draft when
+// leaving rather than discarding.
 export component LeaveComposeDialog {
     in property <string> question;
+    in property <bool> can-save;
     in property <string> close-icon;
     callback discard();
     callback cancel();
+    callback save();
     width: Theme.dialog-small;
     Dialog {
         title: "Unsent message";
@@ -469,6 +492,12 @@ export component LeaveComposeDialog {
                 palette: Theme.pane;
                 danger: true;
                 clicked => { root.discard(); }
+            }
+            if root.can-save: TextButton {
+                text: "Save draft";
+                palette: Theme.pane;
+                primary: true;
+                clicked => { root.save(); }
             }
         }
     }
@@ -520,8 +549,10 @@ export component ComposeWindow inherits Window {
         x: (root.width - self.width) / 2;
         y: Theme.inset;
         question: ComposeState.leave-question;
+        can-save: ComposeState.leave-can-save;
         close-icon: root.close-icon;
         discard => { ComposeState.leave-discard(); }
         cancel => { ComposeState.leave-cancel(); }
+        save => { ComposeState.leave-save(); }
     }
 }

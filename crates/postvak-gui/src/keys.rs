@@ -145,7 +145,7 @@ pub(crate) fn action(press: &Press, focus: Focus, typing: bool) -> Option<UiActi
 }
 
 /// The `?` window. Keys are spelled out, so every glyph is in the bundled fonts.
-pub(crate) const HELP: [(&str, &str); 22] = [
+pub(crate) const HELP: [(&str, &str); 23] = [
     ("j / k, Down / Up", "next or previous row"),
     ("Right / Left", "expand or collapse a thread"),
     ("x", "add the row to the selection, or take it out"),
@@ -171,6 +171,7 @@ pub(crate) const HELP: [(&str, &str); 22] = [
         "write new mail, in a window of its own",
     ),
     ("Ctrl+Enter (Cmd+Enter on macOS)", "send the message"),
+    ("Ctrl+S (Cmd+S on macOS)", "save the message as a draft"),
     (
         "z, Ctrl+Z (Cmd+Z on macOS)",
         "undo the last action taken in this window",
