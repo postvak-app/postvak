@@ -551,6 +551,7 @@ mod tests {
             original: raw.map(<[u8]>::to_vec),
             headers: None,
             forward_parts: None,
+            draft: Vec::new(),
         }
     }
 

@@ -79,6 +79,8 @@ pub struct SendRequest {
     pub headers: Option<HeaderEdits>,
     /// Applies only to an inline forward: the attachments to take along, by index into [`reply::forward_attachments`]; unset, all.
     pub forward_parts: Option<Vec<usize>>,
+    /// The copies in Drafts to delete once it is sent, by Message-ID; normally the one draft it was opened from.
+    pub draft: Vec<String>,
 }
 
 /// What a composer opens with.
@@ -315,6 +317,7 @@ fn sending_server(
 }
 
 /// Puts a checked message in the daemon's outbox, due at `due`.
+#[allow(clippy::too_many_arguments)]
 fn queue(
     client: &LazyClient,
     account: &AccountConfig,
@@ -322,13 +325,17 @@ fn queue(
     due: i64,
     save_sent: bool,
     original: Option<Original>,
+    draft: Vec<String>,
     first_recipient: String,
 ) -> anyhow::Result<Queued> {
     let envelope = Envelope {
         from: checked.from.clone(),
         to: checked.recipients.clone(),
     };
-    let entry = Entry::new(envelope, due, save_sent, original);
+    let entry = Entry {
+        draft,
+        ..Entry::new(envelope, due, save_sent, original)
+    };
     let (id, due) = client
         .client()?
         .queue_send(&account.name, &checked.keep, &entry)?;
@@ -446,6 +453,7 @@ pub fn compose(
         now + delay,
         save_sent,
         original,
+        request.draft,
         first,
     )
 }
@@ -484,6 +492,7 @@ pub fn compose_raw(
         crate::time::now(),
         save_sent,
         None,
+        Vec::new(),
         first,
     )
 }
@@ -581,6 +590,7 @@ pub(crate) mod tests {
             original: None,
             headers: None,
             forward_parts: None,
+            draft: Vec::new(),
         }
     }
 
@@ -631,6 +641,17 @@ pub(crate) mod tests {
         assert!(header("From").unwrap().contains("me@example.com"));
         assert_eq!(header("In-Reply-To").as_deref(), Some("<m1@x.org>"));
         assert!(String::from_utf8_lossy(&raw).contains("> Shall we?"));
+    }
+
+    #[test]
+    fn a_sent_draft_is_named_in_its_outbox_entry() {
+        let h = home();
+        let mut drafted = request(reply_kind(7));
+        drafted.draft = vec!["<d1@x>".into()];
+        compose(&h.config, &h.daemon.paths, &h.client, drafted, no_editor).unwrap();
+        let entry = h.client.client().unwrap().outbox().unwrap().remove(0).1;
+        assert_eq!(entry.draft, ["<d1@x>"]);
+        assert!(!entry.draft_deleted);
     }
 
     #[test]

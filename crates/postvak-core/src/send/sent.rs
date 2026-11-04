@@ -1,6 +1,7 @@
 //! After the server took a message: the copy in Sent and the flag on the original, done by the account's IMAP thread.
 
 use super::SmtpServer;
+use super::drafts::SaveDraftError;
 use super::outbox::Original;
 use crate::mail_ops::{MailError, MailOps};
 use crate::store::{Folder, Store};
@@ -43,18 +44,21 @@ pub struct Finish {
     pub copied: bool,
     pub original: Option<Original>,
     pub flagged: bool,
+    /// The copies in Drafts to delete, each `<message-id>`.
+    pub draft: Vec<String>,
+    pub draft_deleted: bool,
 }
 
-/// Saves the Sent copy and flags the original, each unless done; returns (copied, flagged). A copy or flag the server
-/// refuses is given up, logged and, for the copy, recorded for the status; only a lost connection is an error, to try
-/// again after reconnecting.
+/// Saves the Sent copy, flags the original and deletes the draft, each unless done; returns (copied, flagged,
+/// draft_deleted). A step the server refuses is given up, logged and, for the copy, recorded for the status; only a
+/// lost connection is an error, to try again after reconnecting.
 pub fn finish(
     ops: &mut dyn MailOps,
     store: &Store,
     account: &str,
     id: &str,
     job: &Finish,
-) -> Result<(bool, bool), MailError> {
+) -> Result<(bool, bool, bool), MailError> {
     let mut copied = job.copied || !job.save_sent;
     if !copied {
         let folders = store.folders().unwrap_or_default();
@@ -107,7 +111,17 @@ pub fn finish(
         }
         flagged = true;
     }
-    Ok((copied, flagged))
+    if !job.draft_deleted && !job.draft.is_empty() {
+        match super::drafts::save(ops, store, account, None, &job.draft) {
+            Ok(_) => {}
+            Err(SaveDraftError::Mail(e)) if e.is_lost_connection() => return Err(e),
+            Err(e) => log::warn!(
+                "{account}: draft {} of {id} was not deleted: {e}",
+                job.draft.join(", ")
+            ),
+        }
+    }
+    Ok((copied, flagged, true))
 }
 
 #[cfg(test)]

@@ -196,6 +196,7 @@ pub enum Event {
         id: String,
         copied: bool,
         flagged: bool,
+        draft_deleted: bool,
         request: RequestId,
     },
     /// What `SaveDraft` did: `message_id` is the new copy's, None when it only deleted; `left` the replaced copies it
@@ -437,8 +438,8 @@ pub enum Command {
         folder: Option<String>,
         query: String,
     },
-    /// After the server took outbox message `id`: its copy in Sent and the flag on the message it answers, each
-    /// unless already done. The daemon sends it again until `SentFinished` says both are.
+    /// After the server took outbox message `id`: its copy in Sent, the flag on the message it answers and the delete
+    /// of its draft, each unless already done. The daemon sends it again until `SentFinished` says all are.
     FinishSent {
         id: String,
         #[serde(with = "crate::message::base64_bytes")]
@@ -447,6 +448,8 @@ pub enum Command {
         copied: bool,
         original: Option<crate::send::outbox::Original>,
         flagged: bool,
+        draft: Vec<String>,
+        draft_deleted: bool,
     },
     /// APPENDs `raw` to Drafts, then deletes every copy whose Message-ID is in `replaces`; without `raw`, only deletes.
     SaveDraft {
@@ -1672,6 +1675,8 @@ fn run_command(
             copied,
             original,
             flagged,
+            draft,
+            draft_deleted,
         } => {
             run.used_connection = true;
             let job = crate::send::sent::Finish {
@@ -1680,13 +1685,16 @@ fn run_command(
                 copied,
                 original,
                 flagged,
+                draft,
+                draft_deleted,
             };
             crate::send::sent::finish(ops, store, &account.name, &id, &job)
-                .map(|(copied, flagged)| Event::SentFinished {
+                .map(|(copied, flagged, draft_deleted)| Event::SentFinished {
                     account: name(),
                     id,
                     copied,
                     flagged,
+                    draft_deleted,
                     request,
                 })
                 .map_err(SyncError::from)

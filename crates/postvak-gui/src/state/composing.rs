@@ -2934,6 +2934,7 @@ mod tests {
                 original: None,
                 headers: None,
                 forward_parts: None,
+                draft: Vec::new(),
             }
         }
 

@@ -523,6 +523,7 @@ impl Composer {
                 references: self.references.clone(),
             }),
             forward_parts,
+            draft: Vec::new(),
         }
     }
 }
