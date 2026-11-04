@@ -178,7 +178,16 @@ fn mailbox(name: Option<&str>, address: &str) -> Result<Mailbox, BuildError> {
         .trim()
         .parse()
         .map_err(|_| BuildError::Address(address.to_string()))?;
-    Ok(Mailbox::new(name.map(str::to_string), address))
+    Ok(Mailbox::new(name.and_then(header_name), address))
+}
+
+/// A display name fit for a header: control characters, which lettre cannot write, become spaces.
+fn header_name(name: &str) -> Option<String> {
+    let name: String = name
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    Some(name.trim().to_string()).filter(|name| !name.is_empty())
 }
 
 /// A recipient as written: `linus@x.org` or `Linus Example <linus@x.org>`.
@@ -190,9 +199,11 @@ fn recipient(text: &str) -> Result<Mailbox, BuildError> {
 
 /// A recipient with its name, as [`Draft`] holds one: `Linus Example <linus@x.org>`, quoted where the name needs it.
 pub fn mailbox_text(name: Option<&str>, address: &str) -> String {
-    let name = name.map(str::trim).filter(|name| !name.is_empty());
-    match (name, address.trim().parse::<lettre::Address>()) {
-        (Some(name), Ok(parsed)) => Mailbox::new(Some(name.to_string()), parsed).to_string(),
+    match (
+        name.and_then(header_name),
+        address.trim().parse::<lettre::Address>(),
+    ) {
+        (Some(name), Ok(parsed)) => Mailbox::new(Some(name), parsed).to_string(),
         _ => address.trim().to_string(),
     }
 }
@@ -329,6 +340,15 @@ fn enclosed_part(raw: &[u8]) -> Result<SinglePart, BuildError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_control_character_in_a_name_becomes_a_space() {
+        assert_eq!(
+            mailbox_text(Some("Linus\r Example"), "linus@x.org"),
+            "Linus  Example <linus@x.org>"
+        );
+        assert_eq!(mailbox_text(Some("\r\n"), "linus@x.org"), "linus@x.org");
+    }
     use mail_parser::MessageParser;
 
     fn draft() -> Draft {
