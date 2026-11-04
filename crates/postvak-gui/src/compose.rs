@@ -218,6 +218,7 @@ impl Composer {
         composer
     }
 
+    /// Takes the prefill's fields but not its text: that holds the quote, which `compose` adds under the user's text.
     pub(crate) fn fill(&mut self, prefilled: Prefilled, identity: &Identity) {
         let draft = prefilled.draft;
         if let Some(original) = self.original.as_mut() {
@@ -230,7 +231,6 @@ impl Composer {
         self.cc = join_addresses(&draft.cc);
         self.bcc = join_addresses(&draft.bcc);
         self.subject = draft.subject;
-        self.text = draft.text;
         self.in_reply_to = draft.in_reply_to;
         self.references = draft.references;
         self.forward_parts = prefilled
@@ -708,7 +708,7 @@ mod tests {
         assert_eq!(composer.from, "alias@example.com");
         assert_eq!(composer.to, "Ann <ann@example.org>");
         assert_eq!(composer.subject, "Re: Hi");
-        assert_eq!(composer.text, "> quoted");
+        assert_eq!(composer.text, "", "the quote goes under the text on Send");
         assert_eq!(
             composer.original.as_ref().map(|o| (o.uid, o.raw.clone())),
             Some((7, b"raw".to_vec()))

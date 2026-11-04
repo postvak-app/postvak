@@ -2657,4 +2657,189 @@ mod tests {
             assert_eq!(left(&fx)[0].subject, "Plans");
         }
     }
+
+    /// The same message through the composer and through `postvak send`, against an in-process daemon.
+    mod equal_to_the_cli {
+        use super::*;
+        use postvak_core::daemon::test_support::{TestDaemon, options, recording_connector};
+        use postvak_core::store::{Message, Store};
+        use std::time::{Duration, Instant};
+
+        const ORIGINAL: &[u8] = b"From: Linus Example <linus@x.org>\r\nTo: me@example.com\r\nCc: Ann <ann@x.org>\r\nList-Post: <mailto:list@x.org>\r\nSubject: Plans\r\nDate: Mon, 2 Nov 2026 10:00:00 +0000\r\nMessage-ID: <m1@x.org>\r\n\r\nShall we?\r\n";
+        const TEXT: &str = "Yes!\n";
+
+        /// A daemon whose work account can send, holding ORIGINAL as INBOX/7.
+        fn daemon() -> (TestDaemon, Config) {
+            let daemon = TestDaemon::start_with(options(recording_connector(), None));
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Store::open_account(&daemon.paths, "work")
+                .unwrap()
+                .smtp_state()
+                .unwrap()
+                .is_none()
+            {
+                assert!(Instant::now() < deadline, "the SMTP guess was never stored");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let store = Store::open_account(&daemon.paths, "work").unwrap();
+            let parsed = postvak_core::message::parse_headers(ORIGINAL);
+            store
+                .insert_message(&Message {
+                    folder: "INBOX".into(),
+                    uid: 7,
+                    message_id: parsed.message_id.clone(),
+                    from_addr: parsed.from.clone(),
+                    subject: parsed.subject.clone(),
+                    thread_id: "m1@x.org".into(),
+                    internaldate: 1,
+                    headers: ORIGINAL.to_vec(),
+                    ..Default::default()
+                })
+                .unwrap();
+            store.set_raw("INBOX", 7, ORIGINAL, "Shall we?").unwrap();
+            let config = Config::load(&daemon.paths.config_file()).unwrap();
+            (daemon, config)
+        }
+
+        /// The queued message without its Date and Message-ID, and with its MIME boundaries named alike.
+        fn queued_bytes(paths: &Paths, queued: &Queued) -> String {
+            let path = paths.outbox_dir("work").join(format!("{}.eml", queued.id));
+            let raw = String::from_utf8(std::fs::read(path).unwrap()).unwrap();
+            let mut boundaries: Vec<String> = raw
+                .split("boundary=\"")
+                .skip(1)
+                .filter_map(|rest| rest.split('"').next().map(str::to_string))
+                .collect();
+            boundaries.sort_by_key(|b| std::cmp::Reverse(b.len()));
+            let kept = raw
+                .split("\r\n")
+                .filter(|line| !line.starts_with("Date: ") && !line.starts_with("Message-ID: "))
+                .collect::<Vec<_>>()
+                .join("\r\n");
+            boundaries.iter().enumerate().fold(kept, |text, (i, b)| {
+                text.replace(b, &format!("BOUNDARY{i}"))
+            })
+        }
+
+        fn cli(kind: SendKind) -> SendRequest {
+            SendRequest {
+                account: Some("work".into()),
+                kind,
+                body: Body::Given(TEXT.into()),
+                from: None,
+                attachments: Vec::new(),
+                now: false,
+                save_sent: None,
+                original: None,
+                headers: None,
+                forward_parts: None,
+            }
+        }
+
+        /// The composer opened on `composer`'s kind, the user's text typed at the top and `to` into To, then sent.
+        fn through_the_composer(
+            paths: &Paths,
+            config: &Config,
+            mut composer: Composer,
+            kind: &SendKind,
+            to: Option<&str>,
+        ) -> Queued {
+            let identity = config.accounts[0].identity().unwrap();
+            composer.fill(prefill(paths, config, "work", kind).unwrap(), &identity);
+            let typed = format!("{TEXT}{}", composer.text);
+            composer.set(ComposeField::Text, typed);
+            if let Some(to) = to {
+                composer.set(ComposeField::To, to.into());
+            }
+            composer.forward_as_attachment = matches!(
+                kind,
+                SendKind::Forward {
+                    as_: ForwardAs::Attachment,
+                    ..
+                }
+            );
+            queue_send(paths, config, composer.request()).unwrap()
+        }
+
+        fn assert_equal(kind: SendKind, composer: Composer, to: Option<&str>) {
+            let (daemon, config) = daemon();
+            let paths = &daemon.paths;
+            let by_cli = queue_send(paths, &config, cli(kind.clone())).unwrap();
+            let by_gui = through_the_composer(paths, &config, composer, &kind, to);
+            assert_eq!(
+                queued_bytes(paths, &by_gui),
+                queued_bytes(paths, &by_cli),
+                "{kind:?}"
+            );
+        }
+
+        fn reply(to: ReplyTo) {
+            let kind = SendKind::Reply {
+                folder: "INBOX".into(),
+                uid: 7,
+                to,
+            };
+            assert_equal(kind, Composer::reply(1, "work", "INBOX", 7, to), None);
+        }
+
+        fn forward(as_: ForwardAs) {
+            let kind = SendKind::Forward {
+                folder: "INBOX".into(),
+                uid: 7,
+                as_,
+                to: vec!["bob@x.org".into()],
+                cc: vec![],
+                bcc: vec![],
+            };
+            let composer = Composer::forward(1, "work", "INBOX", 7);
+            assert_equal(kind, composer, Some("bob@x.org"));
+        }
+
+        #[test]
+        fn new_mail() {
+            let (daemon, config) = daemon();
+            let paths = &daemon.paths;
+            let kind = SendKind::New {
+                to: vec!["bob@x.org".into()],
+                cc: vec![],
+                bcc: vec![],
+                subject: "Lunch".into(),
+            };
+            let by_cli = queue_send(paths, &config, cli(kind)).unwrap();
+            let accounts: Vec<_> = (config.accounts.iter())
+                .map(|account| (account.name.clone(), account.identity().unwrap()))
+                .collect();
+            let mut composer = Composer::new_mail(1, "work", &accounts, None);
+            composer.set(ComposeField::To, "bob@x.org".into());
+            composer.set(ComposeField::Subject, "Lunch".into());
+            composer.set(ComposeField::Text, TEXT.into());
+            let by_gui = queue_send(paths, &config, composer.request()).unwrap();
+            assert_eq!(queued_bytes(paths, &by_gui), queued_bytes(paths, &by_cli));
+        }
+
+        #[test]
+        fn a_reply() {
+            reply(ReplyTo::Sender);
+        }
+
+        #[test]
+        fn a_reply_to_all() {
+            reply(ReplyTo::All);
+        }
+
+        #[test]
+        fn a_reply_to_the_list() {
+            reply(ReplyTo::List);
+        }
+
+        #[test]
+        fn an_inline_forward() {
+            forward(ForwardAs::Inline);
+        }
+
+        #[test]
+        fn a_forward_as_attachment() {
+            forward(ForwardAs::Attachment);
+        }
+    }
 }
