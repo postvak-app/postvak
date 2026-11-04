@@ -75,11 +75,30 @@ pub(crate) struct Worker<J, R> {
 
 impl<J: Send + 'static, R: Send + 'static> Worker<J, R> {
     /// Starts the thread called `name`, which runs `work` on each job.
-    pub fn start(name: &str, wake: Wake, mut work: impl FnMut(J) -> R + Send + 'static) -> Self {
+    pub fn start(name: &str, wake: Wake, work: impl FnMut(J) -> R + Send + 'static) -> Self {
+        Self::run(name, wake, work, false)
+    }
+
+    /// Like [`Worker::start`], but each job runs only when no later one is queued behind it.
+    pub fn start_newest(name: &str, wake: Wake, work: impl FnMut(J) -> R + Send + 'static) -> Self {
+        Self::run(name, wake, work, true)
+    }
+
+    fn run(
+        name: &str,
+        wake: Wake,
+        mut work: impl FnMut(J) -> R + Send + 'static,
+        newest_only: bool,
+    ) -> Self {
         let (jobs, todo) = mpsc::channel::<J>();
         let (send, done) = mpsc::channel();
         spawn(name, move || {
-            for job in todo {
+            while let Ok(mut job) = todo.recv() {
+                if newest_only {
+                    while let Ok(later) = todo.try_recv() {
+                        job = later;
+                    }
+                }
                 if send.send(work(job)).is_err() {
                     return;
                 }
@@ -184,6 +203,34 @@ mod tests {
         assert_eq!(poll(&answer), Some(Ok(7)));
         drop(send);
         assert_eq!(poll::<i32>(&answer), Some(Err(Stopped)));
+    }
+
+    #[test]
+    fn a_newest_worker_skips_the_jobs_a_later_one_overtook() {
+        let (wake, _) = counting();
+        let gate = Arc::new(Mutex::new(()));
+        let held = gate.lock().unwrap();
+        let (started, first_started) = mpsc::channel();
+        let worker = Worker::start_newest("test-newest", wake, {
+            let gate = gate.clone();
+            move |n: u32| {
+                let _ = started.send(());
+                drop(gate.lock());
+                n
+            }
+        });
+        worker.send(1);
+        first_started.recv_timeout(Duration::from_secs(5)).unwrap();
+        for n in 2..=4 {
+            worker.send(n);
+        }
+        drop(held);
+        let mut got = Vec::new();
+        wait_until(|| {
+            got.extend(worker.done());
+            got.last() == Some(&4)
+        });
+        assert_eq!(got, [1, 4]);
     }
 
     #[test]

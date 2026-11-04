@@ -65,10 +65,11 @@ pub(crate) struct Completion {
 type CompleteJob = (u64, Vec<String>, String);
 pub(crate) type Completer = worker::Worker<CompleteJob, (u64, Vec<String>)>;
 
-/// The thread that reads the stores for completions, keeping each store open between keystrokes.
+/// The thread that reads the stores for completions, keeping each store open between keystrokes; it skips a query a
+/// later keystroke overtook.
 fn completer(paths: Paths, wake: Wake) -> Completer {
     let mut stores: HashMap<String, Store> = HashMap::new();
-    worker::Worker::start("compose-complete", wake, move |job: CompleteJob| {
+    worker::Worker::start_newest("compose-complete", wake, move |job: CompleteJob| {
         let (number, accounts, prefix) = job;
         let mut found = Vec::new();
         for name in accounts {
