@@ -21,6 +21,7 @@ pub(crate) const MORE: &str = "\u{E1FE}"; // dots-three
 pub(crate) const NEW_MAIL: &str = "\u{E34C}"; // note-pencil
 pub(crate) const MOVE: &str = "\u{EC2A}"; // folder-simple-dashed
 pub(crate) const PAPERCLIP: &str = "\u{E39A}"; // paperclip
+pub(crate) const PENDING: &str = "\u{E19A}"; // clock
 pub(crate) const REPLY: &str = "\u{E024}"; // arrow-bend-up-left
 pub(crate) const RULES: &str = "\u{E266}"; // funnel
 pub(crate) const SAVE: &str = "\u{E20C}"; // download-simple

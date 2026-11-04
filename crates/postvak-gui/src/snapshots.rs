@@ -1077,6 +1077,66 @@ fn compose_new_mail() {
     );
 }
 
+/// New mail with "a" typed in To: the senders it matches, under the field.
+#[test]
+fn compose_completion() {
+    let fx = Fixture::mailbox("light");
+    let (open, _wires) = open(&fx);
+    open.with(|live| live.app.apply(UiAction::NewMail(None)));
+    use slint::ComponentHandle;
+    let window = open.compose_windows().remove(0);
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(720.0, 640.0));
+    open.tick();
+    window.invoke_compose_edited(super::ui::ComposeField::To, "a".into());
+    open.tick_until(|open| open.with(|live| live.app.completion.is_some()));
+    open.tick();
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_secs(2));
+    compare(
+        &super::test_support::png(window.window()),
+        "gui_compose_completion",
+    );
+}
+
+/// The outbox over the inbox: one message waiting and one that failed, with Retry.
+#[test]
+fn outbox_dialog() {
+    use postvak_core::send::Envelope;
+    use postvak_core::send::outbox::{Entry, Outbox, State};
+    let fx = Fixture::mailbox("light");
+    let outbox = Outbox::open(&fx.paths, "work").unwrap();
+    let envelope = |to: &[&str]| Envelope {
+        from: "work@example.com".into(),
+        to: to.iter().map(|to| to.to_string()).collect(),
+    };
+    let waiting = Entry::new(envelope(&["linus@example.com"]), AT + 600, false, None);
+    outbox.add(b"raw", &waiting).unwrap();
+    let to = envelope(&["grace@example.com", "alan@example.com"]);
+    let mut failed = Entry::new(to, AT, false, None);
+    failed.state = State::Failed {
+        reason: "550 5.1.1 mailbox unavailable".into(),
+        retrying: false,
+    };
+    outbox.add(b"raw", &failed).unwrap();
+    let (open, _wires) = open(&fx);
+    open.with(|live| live.app.select_view(work_inbox()));
+    open.advance(crate::state::POLL);
+    open.with(|live| live.app.apply(UiAction::OpenOutbox));
+    snapshot(&open, "gui_outbox_dialog");
+}
+
+/// The inbox with a reply to Linus's lunch question waiting to go: the clock beside its subject.
+#[test]
+fn inbox_answer_waiting() {
+    let (_fx, open, _wires) = inbox("light");
+    open.with(|live| {
+        live.app.accounts[1].answering = ["<95@example.com>".to_string()].into();
+        live.app.rebuild_rows();
+    });
+    snapshot(&open, "gui_inbox_answer_waiting");
+}
+
 /// The window's grid: (glyph, inset, pad, row).
 fn grid(open: &Open) -> (f32, f32, f32, f32) {
     let window = open.window();

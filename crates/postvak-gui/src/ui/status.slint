@@ -15,6 +15,8 @@ export struct StatusLine {
     failed: bool,
     // 0 to 1 while headers or bodies are fetched, else below 0.
     progress: float,
+    // The outbox's line: a click opens the outbox rather than the history.
+    outbox: bool,
 }
 
 // A hairline under the status text while headers or bodies come in: vermilion on the chrome's border colour, gliding
@@ -75,6 +77,7 @@ export component StatusBar inherits VerticalLayout {
     in property <string> update;
     callback sync();
     callback toggle-history();
+    callback open-outbox();
     callback open-update();
 
     padding-left: Theme.pad;
@@ -94,11 +97,11 @@ export component StatusBar inherits VerticalLayout {
             spacing: Theme.pad / 2;
             TouchArea {
                 horizontal-stretch: 1;
-                clicked => { root.toggle-history(); }
+                clicked => { root.line.outbox ? root.open-outbox() : root.toggle-history(); }
                 accessible-role: button;
                 accessible-label: root.line.text;
                 accessible-description: root.detail;
-                accessible-action-default => { root.toggle-history(); }
+                accessible-action-default => { root.line.outbox ? root.open-outbox() : root.toggle-history(); }
                 Tooltip { text: @markdown("\{root.detail}"); }
                 // Under the text, in the card's padding, so the lines do not move when a fetch starts.
                 Meter {

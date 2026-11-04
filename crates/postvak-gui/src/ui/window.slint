@@ -3,7 +3,7 @@ import { Palette as StdPalette } from "std-widgets.slint";
 import { Theme, ThemePreference } from "theme.slint";
 import { FolderItem, FolderPane, MenuChoice } from "folders.slint";
 import { StatusBar, StatusLine } from "status.slint";
-import { AccountDialog, ApplyConfirmDialog, FolderDialog, HistoryDialog, KeyHelp, KeysDialog, MoveDialog, Scrim, SourceDialog } from "dialogs.slint";
+import { AccountDialog, ApplyConfirmDialog, FolderDialog, HistoryDialog, KeyHelp, KeysDialog, MoveDialog, OutboxDialog, OutboxEntry, Scrim, SourceDialog } from "dialogs.slint";
 import { AccountFields } from "account.slint";
 import { AttachmentData, BodyInfo, BodyPane, PageInfo, SelectedData, StripData, ToolButton } from "body.slint";
 import { ForwardLineData, ProposalData, RuleData, RulesPane, Sheet } from "rules.slint";
@@ -19,7 +19,7 @@ export enum Pane { body, folders, list }
 export enum MenuAction { about, add-account, add-to-selection, archive, delete, documentation, flag, history, junk, keys, mark-folder-read, move, new-folder, new-message, open-at-login, original-colours, preferences, read-or-unread, save-eml, save-eml-as, search, select-all, sync-now, text-or-html, theme-dark, theme-light, theme-system, view-source }
 
 // A dialog that closes; the same names as `state::Dialog`.
-export enum Dialog { help, unsaved, apply-confirm, rule, folder, account, about, preferences, source, move, history }
+export enum Dialog { help, unsaved, apply-confirm, rule, folder, account, about, preferences, source, move, outbox, history }
 
 // Which menu items would do something now; the others are disabled.
 export struct MenuState {
@@ -91,9 +91,13 @@ export component MailWindow inherits Window {
     in property <[string]> compose-from-choices;
     in property <[AttachmentData]> compose-files;
     in property <[ComposePart]> compose-parts;
+    in property <[string]> compose-completions;
     in property <string> compose-send-hint;
     in-out property <float> compose-share: 0.5;
     callback compose-edited(ComposeField, string);
+    callback compose-completion-step(int);
+    callback compose-completion-pick(int);
+    callback compose-completion-close();
     callback compose-from-chosen(int);
     callback compose-show-cc-bcc();
     callback compose-attach();
@@ -146,6 +150,10 @@ export component MailWindow inherits Window {
     in property <[KeyHelp]> keys;
     in property <bool> history-open;
     in property <[string]> history;
+    in property <bool> outbox-open;
+    in property <[OutboxEntry]> outbox;
+    callback open-outbox();
+    callback retry-send(int);
 
     // Over an inbox's rows while rule proposals wait.
     in property <string> list-banner;
@@ -587,6 +595,7 @@ export component MailWindow inherits Window {
                 update: root.update;
                 sync => { root.sync(); }
                 toggle-history => { root.toggle-history(); }
+                open-outbox => { root.open-outbox(); }
                 open-update => { root.open-update(); }
             }
         }
@@ -662,9 +671,13 @@ export component MailWindow inherits Window {
                         from-choices: root.compose-from-choices;
                         files: root.compose-files;
                         parts: root.compose-parts;
+                        completions: root.compose-completions;
                         remove-icon: root.close-icon;
                         send-hint: root.compose-send-hint;
                         edited(field, text) => { root.compose-edited(field, text); }
+                        completion-step(by) => { root.compose-completion-step(by); }
+                        completion-pick(i) => { root.compose-completion-pick(i); }
+                        completion-close => { root.compose-completion-close(); }
                         from-chosen(i) => { root.compose-from-chosen(i); }
                         show-cc-bcc => { root.compose-show-cc-bcc(); }
                         attach => { root.compose-attach(); }
@@ -801,6 +814,15 @@ export component MailWindow inherits Window {
         lines: root.history;
         close-icon: root.close-icon;
         close => { root.close-dialog(Dialog.history); }
+    }
+
+    if root.outbox-open: OutboxDialog {
+        x: Theme.inset;
+        y: root.height - self.height - Theme.top-bar - Theme.inset;
+        entries: root.outbox;
+        close-icon: root.close-icon;
+        retry(i) => { root.retry-send(i); }
+        close => { root.close-dialog(Dialog.outbox); }
     }
 
     if root.move-open: MoveDialog {

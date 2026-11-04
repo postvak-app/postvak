@@ -40,6 +40,9 @@ export struct ComposeData {
     size: string,
     error-at: ComposeSpot,
     error: string,
+    // The address field whose completions show, or none; and the highlighted one.
+    completing: ComposeSpot,
+    completion-index: int,
 }
 
 component Error inherits Text {
@@ -71,15 +74,58 @@ component Row inherits VerticalLayout {
     }
 }
 
+// An address field. While its completions show, Up and Down move through them, Enter or Tab takes one and Esc closes
+// them; leaving the field closes them too. It says where it is, so the completions show under it.
+component AddressField inherits Field {
+    in property <bool> completing;
+    in property <int> chosen;
+    callback step(int);
+    callback pick(int);
+    callback dismiss();
+    callback placed(/* x */ length, /* bottom */ length, /* width */ length);
+    key-pressed(event) => {
+        if (!root.completing || event.modifiers.control || event.modifiers.meta || event.modifiers.alt) {
+            return reject;
+        }
+        if (event.text == Key.UpArrow) {
+            root.step(-1);
+        } else if (event.text == Key.DownArrow) {
+            root.step(1);
+        } else if (event.text == Key.Return || event.text == Key.Tab) {
+            root.pick(root.chosen);
+        } else if (event.text == Key.Escape) {
+            root.dismiss();
+        } else {
+            return reject;
+        }
+        accept
+    }
+    changed has-focus => {
+        if (!self.has-focus) {
+            root.dismiss();
+        }
+    }
+    changed completing => {
+        if (self.completing) {
+            root.placed(self.absolute-position.x, self.absolute-position.y + self.height, self.width);
+        }
+    }
+}
+
 export component Composer inherits Rectangle {
     in property <ComposeData> data;
     // From's choices as they read, and the files and the original's parts as they are listed.
     in property <[string]> from-choices;
     in property <[AttachmentData]> files;
     in property <[ComposePart]> parts;
+    // The addresses offered under the field being typed in, as `Name <address>`.
+    in property <[string]> completions;
     in property <string> remove-icon;
     in property <string> send-hint;
     callback edited(ComposeField, string);
+    callback completion-step(int);
+    callback completion-pick(int);
+    callback completion-close();
     callback from-chosen(int);
     callback show-cc-bcc();
     callback attach();
@@ -91,6 +137,10 @@ export component Composer inherits Rectangle {
     callback discard();
 
     property <bool> can-send: !root.data.loading && !root.data.sending;
+    // Under the field being completed, relative to the composer.
+    property <length> completion-x;
+    property <length> completion-y;
+    property <length> completion-width;
     // Like `Field`, the text is put right by hand when it changes from outside, such as a composer opened again.
     property <string> text: root.data.text;
     changed text => {
@@ -170,11 +220,21 @@ export component Composer inherits Rectangle {
                 label: "To";
                 failed: root.data.error-at == ComposeSpot.to;
                 error: root.data.error;
-                Field {
+                AddressField {
                     horizontal-stretch: 1;
                     accessible-label: "To";
                     value: root.data.to;
                     value-edited(text) => { root.edited(ComposeField.to, text); }
+                    completing: root.data.completing == ComposeSpot.to && root.completions.length > 0;
+                    chosen: root.data.completion-index;
+                    step(by) => { root.completion-step(by); }
+                    pick(i) => { root.completion-pick(i); }
+                    dismiss => { root.completion-close(); }
+                    placed(x, bottom, width) => {
+                        root.completion-x = x - root.absolute-position.x;
+                        root.completion-y = bottom - root.absolute-position.y;
+                        root.completion-width = width;
+                    }
                 }
                 if !root.data.show-cc-bcc: TextButton {
                     text: "Cc Bcc";
@@ -187,22 +247,42 @@ export component Composer inherits Rectangle {
                 label: "Cc";
                 failed: root.data.error-at == ComposeSpot.cc;
                 error: root.data.error;
-                Field {
+                AddressField {
                     horizontal-stretch: 1;
                     accessible-label: "Cc";
                     value: root.data.cc;
                     value-edited(text) => { root.edited(ComposeField.cc, text); }
+                    completing: root.data.completing == ComposeSpot.cc && root.completions.length > 0;
+                    chosen: root.data.completion-index;
+                    step(by) => { root.completion-step(by); }
+                    pick(i) => { root.completion-pick(i); }
+                    dismiss => { root.completion-close(); }
+                    placed(x, bottom, width) => {
+                        root.completion-x = x - root.absolute-position.x;
+                        root.completion-y = bottom - root.absolute-position.y;
+                        root.completion-width = width;
+                    }
                 }
             }
             if root.data.show-cc-bcc: Row {
                 label: "Bcc";
                 failed: root.data.error-at == ComposeSpot.bcc;
                 error: root.data.error;
-                Field {
+                AddressField {
                     horizontal-stretch: 1;
                     accessible-label: "Bcc";
                     value: root.data.bcc;
                     value-edited(text) => { root.edited(ComposeField.bcc, text); }
+                    completing: root.data.completing == ComposeSpot.bcc && root.completions.length > 0;
+                    chosen: root.data.completion-index;
+                    step(by) => { root.completion-step(by); }
+                    pick(i) => { root.completion-pick(i); }
+                    dismiss => { root.completion-close(); }
+                    placed(x, bottom, width) => {
+                        root.completion-x = x - root.absolute-position.x;
+                        root.completion-y = bottom - root.absolute-position.y;
+                        root.completion-width = width;
+                    }
                 }
             }
             Row {
@@ -289,6 +369,48 @@ export component Composer inherits Rectangle {
     Hairline {
         y: root.height - self.height;
     }
+
+    // Over the fields below, so it comes last.
+    if root.data.completing != ComposeSpot.none && root.completions.length > 0: Rectangle {
+        x: root.completion-x;
+        y: root.completion-y + Theme.pad / 4;
+        width: root.completion-width;
+        height: choices.preferred-height;
+        background: Theme.pane.background;
+        border-color: Theme.pane.border;
+        border-width: 1px;
+        border-radius: Theme.pad;
+        drop-shadow-blur: 2 * Theme.pad;
+        drop-shadow-offset-y: Theme.pad / 4;
+        drop-shadow-color: Theme.shadow;
+        accessible-role: list;
+        accessible-label: "Addresses";
+        // Clicks stay in the list.
+        TouchArea { }
+        choices := VerticalLayout {
+            padding: Theme.pad / 2;
+            for choice[i] in root.completions: Rectangle {
+                height: Theme.row;
+                border-radius: Theme.pad / 2;
+                background: i == root.data.completion-index ? Theme.pane.selected : touch.has-hover ? Theme.pane.hover : transparent;
+                accessible-role: list-item;
+                accessible-label: choice;
+                accessible-item-selected: i == root.data.completion-index;
+                touch := TouchArea {
+                    clicked => { root.completion-pick(i); }
+                }
+                Text {
+                    accessible-role: none;
+                    x: Theme.pad;
+                    width: parent.width - 2 * Theme.pad;
+                    text: choice;
+                    color: i == root.data.completion-index ? Theme.pane.on-accent : Theme.pane.text;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+    }
 }
 
 // "Discard this message?" before something takes the reader pane from a changed composer.
@@ -333,9 +455,13 @@ export component ComposeWindow inherits Window {
     in property <[string]> compose-from-choices;
     in property <[AttachmentData]> compose-files;
     in property <[ComposePart]> compose-parts;
+    in property <[string]> compose-completions;
     in property <string> compose-send-hint;
     in property <string> close-icon;
     callback compose-edited(ComposeField, string);
+    callback compose-completion-step(int);
+    callback compose-completion-pick(int);
+    callback compose-completion-close();
     callback compose-from-chosen(int);
     callback compose-show-cc-bcc();
     callback compose-attach();
@@ -384,9 +510,13 @@ export component ComposeWindow inherits Window {
             from-choices: root.compose-from-choices;
             files: root.compose-files;
             parts: root.compose-parts;
+            completions: root.compose-completions;
             remove-icon: root.close-icon;
             send-hint: root.compose-send-hint;
             edited(field, text) => { root.compose-edited(field, text); }
+            completion-step(by) => { root.compose-completion-step(by); }
+            completion-pick(i) => { root.compose-completion-pick(i); }
+            completion-close => { root.compose-completion-close(); }
             from-chosen(i) => { root.compose-from-chosen(i); }
             show-cc-bcc => { root.compose-show-cc-bcc(); }
             attach => { root.compose-attach(); }

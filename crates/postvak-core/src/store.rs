@@ -50,6 +50,9 @@ fn migration_list() -> Vec<M<'static>> {
         M::up(include_str!("../migrations/026-part-types/up.sql")),
         M::up(include_str!("../migrations/027-smtp/up.sql")),
         M::up(include_str!("../migrations/028-forward/up.sql")),
+        M::up(include_str!(
+            "../migrations/029-message-id-in-thread-index/up.sql"
+        )),
     ]
 }
 
@@ -281,6 +284,7 @@ pub struct MessageSummary {
     pub attachment: bool,
     /// The start of the body text, untouched; empty until the body is indexed.
     pub preview: String,
+    pub message_id: Option<String>,
 }
 
 impl MessageSummary {
@@ -313,6 +317,7 @@ fn summary_from_row(row: &rusqlite::Row, offset: usize) -> rusqlite::Result<Mess
         flags: row.get(offset + 5)?,
         attachment: row.get(offset + 6)?,
         preview: row.get(offset + 7)?,
+        message_id: row.get(offset + 8)?,
     })
 }
 
@@ -380,7 +385,7 @@ pub enum Resume<'a> {
     },
 }
 
-const SUMMARY_COLUMNS: &str = "uid, COALESCE(from_addr, ''), COALESCE(to_addr, ''), COALESCE(subject, ''), internaldate, flags, has_attachment, COALESCE(preview, '')";
+const SUMMARY_COLUMNS: &str = "uid, COALESCE(from_addr, ''), COALESCE(to_addr, ''), COALESCE(subject, ''), internaldate, flags, has_attachment, COALESCE(preview, ''), message_id";
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct LogEntry {
@@ -1263,9 +1268,9 @@ impl Store {
             Ok(ThreadSummary {
                 thread_id: r.get(0)?,
                 latest: summary_from_row(r, 1)?,
-                count: r.get(10)?,
-                unread: r.get::<_, i64>(11)? > 0,
-                flagged: r.get::<_, i64>(12)? > 0,
+                count: r.get(11)?,
+                unread: r.get::<_, i64>(12)? > 0,
+                flagged: r.get::<_, i64>(13)? > 0,
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -4019,6 +4024,7 @@ mod tests {
                         flags: "\\Flagged".into(),
                         attachment: false,
                         preview: String::new(),
+                        message_id: Some("m2@x".into()),
                     },
                     count: 2,
                     unread: true,
@@ -4035,6 +4041,7 @@ mod tests {
                         flags: "\\Seen".into(),
                         attachment: false,
                         preview: String::new(),
+                        message_id: Some("m3@x".into()),
                     },
                     count: 1,
                     unread: false,

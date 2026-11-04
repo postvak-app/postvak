@@ -3,12 +3,13 @@
 use std::path::PathBuf;
 
 use postvak_core::config::Identity;
-use postvak_core::send::build::bare_address;
+use postvak_core::send::build::{bare_address, mailbox_text};
 use postvak_core::send::check::{CheckError, DEFAULT_SIZE_LIMIT, check_from, valid_address};
 use postvak_core::send::compose::{Body, HeaderEdits, Prefilled, SendKind, SendRequest};
 use postvak_core::send::edit::split_recipients;
 use postvak_core::send::mailto::Mailto;
 use postvak_core::send::reply::{ForwardAs, ReplyTo};
+use postvak_core::store::KnownAddress;
 
 /// Send's hover hint, with its key.
 pub(crate) fn send_hint() -> &'static str {
@@ -479,12 +480,94 @@ impl Composer {
     }
 }
 
+/// How many addresses completion offers.
+pub(crate) const COMPLETIONS: usize = 8;
+
+/// An address field split at its last comma outside a quoted name or `<…>`: what stays, and the address being typed.
+pub(crate) fn typed_part(field: &str) -> (&str, &str) {
+    let (mut quoted, mut escaped, mut angle, mut cut) = (false, false, false, None);
+    for (i, c) in field.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            '<' if !quoted => angle = true,
+            '>' if !quoted => angle = false,
+            ',' if !quoted && !angle => cut = Some(i),
+            _ => {}
+        }
+    }
+    match cut {
+        Some(i) => (&field[..i], field[i + 1..].trim_start()),
+        None => ("", field.trim_start()),
+    }
+}
+
+/// `field` with the address being typed replaced by `choice`, and a comma after it for the next.
+pub(crate) fn complete(field: &str, choice: &str) -> String {
+    match typed_part(field).0.trim_end() {
+        "" => format!("{choice}, "),
+        kept => format!("{kept}, {choice}, "),
+    }
+}
+
+/// Every account's matches as one list: an address once, people written to first, then each newest first.
+pub(crate) fn merge_known(found: Vec<KnownAddress>) -> Vec<String> {
+    let mut merged: Vec<KnownAddress> = Vec::new();
+    for known in found {
+        match (merged.iter_mut()).find(|other| other.address.eq_ignore_ascii_case(&known.address)) {
+            Some(other) => {
+                other.written_to |= known.written_to;
+                if known.latest > other.latest {
+                    other.latest = known.latest;
+                    other.name = known.name.or(other.name.take());
+                }
+            }
+            None => merged.push(known),
+        }
+    }
+    merged.sort_by_key(|known| (!known.written_to, std::cmp::Reverse(known.latest)));
+    merged.truncate(COMPLETIONS);
+    merged
+        .iter()
+        .map(|known| mailbox_text(known.name.as_deref(), &known.address))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use postvak_core::config::{AccountConfig, AliasEntry, PasswordSource};
     use postvak_core::send::build::Draft;
     use postvak_core::send::mailto::Mailto;
+
+    #[test]
+    fn the_typed_part_starts_after_the_last_comma_outside_a_name() {
+        assert_eq!(typed_part("an"), ("", "an"));
+        assert_eq!(typed_part("a@x.org,  an"), ("a@x.org", "an"));
+        assert_eq!(
+            typed_part("\"Doe, J\" <j@x.org>, an"),
+            ("\"Doe, J\" <j@x.org>", "an")
+        );
+        assert_eq!(typed_part("\"Doe, J"), ("", "\"Doe, J"));
+        assert_eq!(complete("an", "Ann <ann@x.org>"), "Ann <ann@x.org>, ");
+    }
+
+    #[test]
+    fn merged_matches_name_an_address_once() {
+        let known = |address: &str, latest, written_to| KnownAddress {
+            name: None,
+            address: address.into(),
+            latest,
+            written_to,
+        };
+        let merged = merge_known(vec![
+            known("ann@x.org", 5, false),
+            known("bob@x.org", 1, true),
+            known("ANN@x.org", 2, true),
+        ]);
+        assert_eq!(merged, ["ann@x.org", "bob@x.org"]);
+    }
 
     const LIMIT: u64 = 25_000_000;
 

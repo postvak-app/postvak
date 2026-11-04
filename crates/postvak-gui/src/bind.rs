@@ -18,9 +18,10 @@ use super::state::{self, App, ComposeTarget, Focus, OpenAtLogin, UiAction, View}
 use super::ui::{
     AccountFields, AccountPreferences, ActionData, AttachmentData, BodyInfo, CodeLine, ComposeData,
     ComposePart, ComposeSpot, ComposeWindow, ConditionData, Dialog, Dot, FolderItem, FolderKind,
-    ForwardData, ForwardLineData, KeyHelp, MailWindow, MenuAction, MenuChoice, MenuState, PageInfo,
-    Pane, Preferences, ProposalData, ProvenanceData, Remote, RuleData, RuleEditor, RunData,
-    SampleData, SelectedData, Sheet, StatusLine, Theme, ThemePreference, ToolButton, WhyLine,
+    ForwardData, ForwardLineData, KeyHelp, MailWindow, MenuAction, MenuChoice, MenuState,
+    OutboxEntry, PageInfo, Pane, Preferences, ProposalData, ProvenanceData, Remote, RuleData,
+    RuleEditor, RunData, SampleData, SelectedData, Sheet, StatusLine, Theme, ThemePreference,
+    ToolButton, WhyLine,
 };
 use super::{account, body, icons, list, menu, rules, status, theme, toolbar};
 use postvak_core::message::clean;
@@ -172,6 +173,17 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
         .map(SharedString::from)
         .collect();
     sync(window.get_history(), history, |m| window.set_history(m));
+    window.set_outbox_open(app.outbox_open);
+    let outbox = status::outbox_rows(app)
+        .into_iter()
+        .map(|row| OutboxEntry {
+            title: row.title.into(),
+            state: row.state.into(),
+            failed: row.failed,
+            retry: row.retry.is_some(),
+        })
+        .collect();
+    sync(window.get_outbox(), outbox, |m| window.set_outbox(m));
 }
 
 fn present_folder_dialog(app: &App, window: &MailWindow) {
@@ -534,6 +546,18 @@ fn compose_data(composer: &Composer) -> ComposeData {
         size: composer.size_line().into(),
         error_at,
         error: error.into(),
+        completing: ComposeSpot::None,
+        completion_index: 0,
+    }
+}
+
+/// Where completions for `field` show; only the address fields have them.
+fn completing_spot(field: ComposeField) -> ComposeSpot {
+    match field {
+        ComposeField::Bcc => ComposeSpot::Bcc,
+        ComposeField::Cc => ComposeSpot::Cc,
+        ComposeField::To => ComposeSpot::To,
+        ComposeField::From | ComposeField::Subject | ComposeField::Text => ComposeSpot::None,
     }
 }
 
@@ -552,9 +576,15 @@ fn compose_spot(field: compose::Field) -> ComposeSpot {
 /// Shows `$composer` and `$question` in `$window`: the mail window, whose reader pane draws the composer, or a new-mail
 /// window. A macro, as the two are Slint types of their own with the same property names.
 macro_rules! show_composer {
-    ($window:expr, $composer:expr, $question:expr) => {{
+    ($window:expr, $composer:expr, $question:expr, $completion:expr) => {{
         let (window, composer): (_, Option<&Composer>) = ($window, $composer);
-        let data = composer.map(compose_data).unwrap_or_default();
+        let completion: Option<&state::Completion> =
+            ($completion).filter(|c| composer.is_some_and(|composer| composer.id == c.to.id));
+        let mut data = composer.map(compose_data).unwrap_or_default();
+        if let Some(completion) = completion {
+            data.completing = completing_spot(completion.to.field);
+            data.completion_index = i32::try_from(completion.chosen).unwrap_or_default();
+        }
         if window.get_compose() != data {
             window.set_compose(data);
         }
@@ -592,6 +622,12 @@ macro_rules! show_composer {
         sync(window.get_compose_parts(), parts, |m| {
             window.set_compose_parts(m)
         });
+        let completions = completion
+            .map(|c| c.choices.iter().map(SharedString::from).collect())
+            .unwrap_or_default();
+        sync(window.get_compose_completions(), completions, |m| {
+            window.set_compose_completions(m)
+        });
         let question: Option<&str> = $question;
         window.set_leave_compose(question.unwrap_or_default().into());
     }};
@@ -618,6 +654,17 @@ macro_rules! connect_composer {
                     choice.clone(),
                 ))
             }));
+        });
+        window.on_compose_completion_step(move |by| {
+            act(UiAction::ComposeCompletionStep(target, by as isize));
+        });
+        window.on_compose_completion_pick(move |i| {
+            if let Ok(i) = usize::try_from(i) {
+                act(UiAction::ComposeCompletionPick(target, i));
+            }
+        });
+        window.on_compose_completion_close(move || {
+            act(UiAction::ComposeCompletionClose(target));
         });
         window.on_compose_show_cc_bcc(move || {
             act(UiAction::ComposeShowCcBcc(target));
@@ -663,7 +710,10 @@ fn present_composer(app: &App, window: &MailWindow) {
     show_composer!(
         window,
         composer,
-        question.and_then(Composer::leave_question)
+        question.and_then(Composer::leave_question),
+        app.completion
+            .as_ref()
+            .filter(|c| c.to.target == ComposeTarget::Pane)
     );
 }
 
@@ -674,7 +724,8 @@ pub(crate) fn present_new_mail(app: &App, id: u64, window: &ComposeWindow) {
     let question = composer
         .filter(|_| asking)
         .and_then(Composer::leave_question);
-    show_composer!(window, composer, question);
+    let completion = (app.completion.as_ref()).filter(|c| c.to.target == ComposeTarget::Window(id));
+    show_composer!(window, composer, question, completion);
 }
 
 /// Wires new-mail window `id`; its close button closes the composer, asking first when it was changed, and Ctrl+N
@@ -1525,6 +1576,16 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     window.on_toggle_history(move || {
         act(UiAction::ToggleHistory);
     });
+    window.on_open_outbox(move || {
+        act(UiAction::OpenOutbox);
+    });
+    window.on_retry_send(move |i| {
+        on(one(move |app| {
+            let rows = status::outbox_rows(app);
+            let (account, id) = nth(&rows, i)?.retry.clone()?;
+            Some(UiAction::RetrySend(account, id))
+        }));
+    });
     window.on_row_clicked(move |i, extend, toggle| {
         let row = usize::try_from(i).unwrap_or_default();
         act(match (extend, toggle) {
@@ -2028,6 +2089,7 @@ fn status_line(line: status::Line, accounts: &[state::Account]) -> StatusLine {
         },
         failed: line.failed,
         progress: line.progress.unwrap_or(-1.0),
+        outbox: line.outbox,
     }
 }
 
@@ -2077,6 +2139,7 @@ fn dialog_of(dialog: Dialog) -> state::Dialog {
         Dialog::Preferences => state::Dialog::Preferences,
         Dialog::Source => state::Dialog::Source,
         Dialog::Move => state::Dialog::Move,
+        Dialog::Outbox => state::Dialog::Outbox,
         Dialog::History => state::Dialog::History,
     }
 }

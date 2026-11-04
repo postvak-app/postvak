@@ -1,4 +1,4 @@
-// The small windows over the panes: Keys and History. Esc closes them through the app, the X here.
+// The small windows over the panes: Keys, History and the outbox. Esc closes them through the app, the X here.
 import { LineEdit, ListView, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Heading, HoverFill, IconButton, TextButton } from "common.slint";
@@ -135,6 +135,67 @@ export component HistoryDialog {
                     text: line;
                     color: Theme.pane.text;
                     wrap: word-wrap;
+                }
+            }
+        }
+    }
+}
+
+// One message in the outbox: its account and recipient count, then when it goes or why it failed.
+export struct OutboxEntry {
+    title: string,
+    state: string,
+    failed: bool,
+    // Failed for good, so Retry sends it again.
+    retry: bool,
+}
+
+// What every account's outbox holds that is not sent yet; `status.rs` words the rows.
+export component OutboxDialog {
+    in property <[OutboxEntry]> entries;
+    in property <string> close-icon;
+    callback retry(int);
+    callback close();
+    width: Theme.dialog;
+    Dialog {
+        title: "Outbox";
+        close-icon: root.close-icon;
+        close => { root.close(); }
+        if root.entries.length == 0: Text {
+            text: "Nothing waits to go.";
+            color: Theme.pane.muted;
+        }
+        if root.entries.length > 0: ScrollView {
+            height: min(360px, rows.preferred-height);
+            rows := VerticalLayout {
+                spacing: Theme.pad;
+                for entry[i] in root.entries: HorizontalLayout {
+                    spacing: Theme.pad;
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        alignment: center;
+                        Text {
+                            text: entry.title;
+                            color: Theme.pane.strong;
+                            font-weight: 600;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: entry.state;
+                            font-size: Theme.small-size;
+                            color: entry.failed ? Theme.pane.error : Theme.pane.muted;
+                            wrap: word-wrap;
+                        }
+                    }
+                    if entry.retry: VerticalLayout {
+                        alignment: center;
+                        TextButton {
+                            text: "Retry";
+                            framed: true;
+                            palette: Theme.pane;
+                            clicked => { root.retry(i); }
+                        }
+                    }
                 }
             }
         }

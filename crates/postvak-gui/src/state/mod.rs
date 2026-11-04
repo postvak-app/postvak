@@ -25,7 +25,9 @@ use postvak_core::sync::{Activity, Command, DeleteMode, Event};
 use postvak_core::trash::Trash;
 use postvak_core::unsubscribe::{self, Method};
 
-pub(crate) use self::composing::{CancelError, CancelFn, ComposeTarget, PrefillFn, QueueFn};
+pub(crate) use self::composing::{
+    CancelError, CancelFn, Completion, ComposeTarget, PrefillFn, QueueFn, RetryFn,
+};
 use super::account::{self, AccountForm};
 use super::body;
 use super::compose::{ComposeField, Composer};
@@ -297,6 +299,8 @@ pub(crate) struct Account {
     pub identity: Option<Identity>,
     /// What waits in the account's outbox and what failed, read from its files on each file poll.
     pub outbox: postvak_core::send::sender::OutboxCounts,
+    /// The Message-IDs of the originals whose reply or forward waits in the outbox or is being sent.
+    pub answering: HashSet<String>,
 }
 
 impl Account {
@@ -592,6 +596,12 @@ pub(crate) enum UiAction {
     /// New-mail window `id` could not open, for this reason: its composer goes, and the window says why.
     NewMailFailed(u64, String),
     ComposeEdit(ComposeTarget, ComposeField, String),
+    /// Move the highlight through the address completions by this many rows.
+    ComposeCompletionStep(ComposeTarget, isize),
+    /// Put completion `index` in place of the address being typed.
+    ComposeCompletionPick(ComposeTarget, usize),
+    /// The address field lost the keyboard, or Esc: the completions go.
+    ComposeCompletionClose(ComposeTarget),
     ComposeShowCcBcc(ComposeTarget),
     ComposeAttach(ComposeTarget),
     ComposeRemoveFile(ComposeTarget, usize),
@@ -603,6 +613,10 @@ pub(crate) enum UiAction {
     ComposeDiscard(ComposeTarget),
     /// Put the composer of sent gesture `id`, taken back from the outbox, in the reader pane again.
     ReopenCompose(u64),
+    /// List what waits in every account's outbox and what failed.
+    OpenOutbox,
+    /// Send failed outbox message `id` of account `index` again.
+    RetrySend(usize, String),
     /// The answers to "Discard this message?" about the pane's composer or a new-mail window's.
     LeaveComposeCancel(ComposeTarget),
     LeaveComposeDiscard(ComposeTarget),
@@ -655,11 +669,12 @@ pub(crate) enum Dialog {
     Preferences,
     Source,
     Move,
+    Outbox,
     History,
 }
 
 impl Dialog {
-    const TOP_FIRST: [Dialog; 12] = [
+    const TOP_FIRST: [Dialog; 13] = [
         Dialog::Help,
         Dialog::Unsaved,
         Dialog::LeaveCompose,
@@ -671,6 +686,7 @@ impl Dialog {
         Dialog::Preferences,
         Dialog::Source,
         Dialog::Move,
+        Dialog::Outbox,
         Dialog::History,
     ];
 }
@@ -885,6 +901,19 @@ pub struct App {
     pub(crate) prefill: PrefillFn,
     pub(crate) queue_send: QueueFn,
     pub(crate) cancel_send: CancelFn,
+    pub(crate) retry_send: RetryFn,
+    /// Retries of failed outbox messages asked of the daemon, until each answers.
+    pub(crate) retrying: Vec<Receiver<Result<(), String>>>,
+    /// The address completions shown under the field being typed in.
+    pub(crate) completion: Option<composing::Completion>,
+    /// The completions asked for last: the query's number, and the field they are for.
+    pub(crate) completing: Option<(u64, composing::CompletionFor)>,
+    pub(crate) next_completion: u64,
+    /// Reads every account's store for completions, started for the first.
+    pub(crate) completer: Option<composing::Completer>,
+    pub(crate) outbox_open: bool,
+    /// Each account's outbox entries that are not sent yet, by account index, read on each file poll.
+    pub(crate) outbox: Vec<(usize, postvak_core::send::outbox::Entry)>,
     pub(crate) search: Option<String>,
     /// Which rows a folder's list keeps; search results ignore it.
     pub(crate) filter: Filter,
@@ -929,6 +958,7 @@ fn account_state(
         encrypted: None,
         identity,
         outbox: Default::default(),
+        answering: HashSet::new(),
     };
     account.reload_folders();
     account
@@ -1065,6 +1095,14 @@ impl App {
             prefill: composing::prefill,
             queue_send: composing::queue_send,
             cancel_send: composing::cancel_send,
+            retry_send: composing::retry_send,
+            retrying: Vec::new(),
+            completion: None,
+            completing: None,
+            next_completion: 0,
+            completer: None,
+            outbox_open: false,
+            outbox: Vec::new(),
             search: None,
             filter: Filter::default(),
             search_focused: false,
@@ -2070,7 +2108,12 @@ impl App {
             UiAction::LeaveComposeCancel(target) => self.leave_cancel(target),
             UiAction::LeaveComposeDiscard(target) => self.leave_discard(target),
             UiAction::ReopenCompose(id) => self.reopen_compose(id),
+            UiAction::OpenOutbox => self.outbox_open = true,
+            UiAction::RetrySend(account, id) => self.retry_outbox(account, id),
             compose @ (UiAction::ComposeEdit(..)
+            | UiAction::ComposeCompletionStep(..)
+            | UiAction::ComposeCompletionPick(..)
+            | UiAction::ComposeCompletionClose(_)
             | UiAction::ComposeShowCcBcc(_)
             | UiAction::ComposeAttach(_)
             | UiAction::ComposeRemoveFile(..)
@@ -2542,6 +2585,8 @@ impl App {
         let edits: Vec<_> = self.accounts.iter().map(Account::shown_edits).collect();
         let pending: Vec<_> = edits.iter().map(|edits| edits.as_ref()).collect();
         list::apply_pending(&mut rows, &pending);
+        let answering: Vec<_> = self.accounts.iter().map(|a| &a.answering).collect();
+        list::mark_answering(&mut rows, &answering);
         let kept = current.and_then(|cursor| rows.iter().position(|row| same_row(row, &cursor)));
         self.list.rows = rows;
         self.list.cursor =
@@ -2609,18 +2654,34 @@ impl App {
     fn read_outboxes(&mut self) {
         use postvak_core::send::outbox::{Outbox, State};
         let mut kept = Vec::new();
+        let mut marks_changed = false;
+        self.outbox.clear();
         for (index, account) in self.accounts.iter_mut().enumerate() {
             let entries = Outbox::existing(&self.paths, &account.name)
                 .and_then(|outbox| outbox.list().ok())
                 .unwrap_or_default();
             account.outbox = postvak_core::send::sender::counts_of(&entries);
+            let answering: HashSet<String> = (entries.iter())
+                .filter(|entry| matches!(entry.state, State::Waiting | State::Sending))
+                .filter_map(|entry| Some(entry.original.as_ref()?.message_id.clone()))
+                .collect();
+            marks_changed |= answering != account.answering;
+            account.answering = answering;
             kept.extend(
-                (entries.into_iter())
+                (entries.iter())
                     .filter(|entry| matches!(entry.state, State::Waiting | State::Failed { .. }))
-                    .map(|entry| (index, entry.id)),
+                    .map(|entry| (index, entry.id.clone())),
+            );
+            (self.outbox).extend(
+                (entries.into_iter())
+                    .filter(|entry| entry.state != State::Sent)
+                    .map(|entry| (index, entry)),
             );
         }
         self.drop_sent_composers(&kept);
+        if marks_changed {
+            self.rebuild_rows();
+        }
     }
 
     /// Starts the save; a form that cannot make an account says why at once.
@@ -2755,6 +2816,7 @@ impl App {
             Dialog::Preferences => self.preferences.is_some(),
             Dialog::Source => self.body.as_ref().is_some_and(|b| b.source.is_some()),
             Dialog::Move => self.move_picker.is_some(),
+            Dialog::Outbox => self.outbox_open,
             Dialog::History => self.history_open,
         }
     }
@@ -2791,6 +2853,7 @@ impl App {
                 }
             }
             Dialog::Move => self.move_picker = None,
+            Dialog::Outbox => self.outbox_open = false,
             Dialog::History => {
                 if self.history_open {
                     self.history_open = false;

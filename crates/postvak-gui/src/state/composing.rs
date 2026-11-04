@@ -7,11 +7,71 @@ use postvak_core::send::mailto::Mailto;
 use postvak_core::send::reply::{ForwardAs, ReplyTo};
 
 use super::*;
-use crate::compose::{ComposeKind, Field};
+use crate::compose::{COMPLETIONS, ComposeKind, Field, complete, merge_known, typed_part};
 
 pub(crate) type PrefillFn = fn(&Paths, &Config, &str, &SendKind) -> Result<Prefilled, String>;
 pub(crate) type QueueFn = fn(&Paths, &Config, SendRequest) -> Result<Queued, String>;
 pub(crate) type CancelFn = fn(&Paths, &str, &str) -> Result<(), CancelError>;
+pub(crate) type RetryFn = fn(&Paths, &str, &str) -> Result<(), String>;
+
+/// The address field completions are for: the composer's place and id, and which of To, Cc and Bcc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CompletionFor {
+    pub target: ComposeTarget,
+    pub id: u64,
+    pub field: ComposeField,
+}
+
+/// The addresses offered under a field, as `Name <address>`, and the highlighted one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Completion {
+    pub to: CompletionFor,
+    pub choices: Vec<String>,
+    pub chosen: usize,
+}
+
+/// A completion query: its number, the accounts whose stores it reads, and the address typed so far.
+type CompleteJob = (u64, Vec<String>, String);
+pub(crate) type Completer = worker::Worker<CompleteJob, (u64, Vec<String>)>;
+
+/// The thread that reads the stores for completions, keeping each store open between keystrokes.
+fn completer(paths: Paths, wake: Wake) -> Completer {
+    let mut stores: HashMap<String, Store> = HashMap::new();
+    worker::Worker::start("compose-complete", wake, move |job: CompleteJob| {
+        let (number, accounts, prefix) = job;
+        let mut found = Vec::new();
+        for name in accounts {
+            let store = match stores.entry(name) {
+                std::collections::hash_map::Entry::Occupied(open) => open.into_mut(),
+                std::collections::hash_map::Entry::Vacant(closed) => {
+                    match Store::open_account(&paths, closed.key()) {
+                        Ok(store) => closed.insert(store),
+                        Err(e) => {
+                            log::warn!(
+                                "[{}] could not open the store to complete: {e}",
+                                closed.key()
+                            );
+                            continue;
+                        }
+                    }
+                }
+            };
+            match store.addresses(&prefix, COMPLETIONS) {
+                Ok(known) => found.extend(known),
+                Err(e) => log::warn!("address completion failed: {e}"),
+            }
+        }
+        (number, merge_known(found))
+    })
+}
+
+/// Sends failed outbox message `id` of `account` again.
+pub(crate) fn retry_send(paths: &Paths, account: &str, id: &str) -> Result<(), String> {
+    LazyClient::new(paths)
+        .client()
+        .and_then(|client| client.retry_send(account, id))
+        .map_err(|e| error_text(&e))
+}
 
 /// Why a sent message could not be taken back.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -237,7 +297,20 @@ impl App {
     /// The composer's own actions: its fields, Send, Close and Discard.
     pub(super) fn compose(&mut self, action: UiAction) {
         match action {
-            UiAction::ComposeSend(target) => return self.compose_send(target),
+            UiAction::ComposeCompletionStep(target, by) => return self.step_completion(target, by),
+            UiAction::ComposeCompletionPick(target, index) => {
+                return self.pick_completion(target, index);
+            }
+            UiAction::ComposeCompletionClose(target) => {
+                if self.completion_target() == Some(target) {
+                    self.end_completion();
+                }
+                return;
+            }
+            UiAction::ComposeSend(target) => {
+                self.end_completion();
+                return self.compose_send(target);
+            }
             UiAction::ComposeAttach(target) => return self.compose_attach(target),
             // The pane's composer was asked about before this, in `holds_for_compose`.
             UiAction::ComposeClose(target) | UiAction::ComposeDiscard(target) => {
@@ -264,7 +337,11 @@ impl App {
             return;
         };
         match action {
-            UiAction::ComposeEdit(_, field, value) => composer.set(field, value),
+            UiAction::ComposeEdit(_, field, value) => {
+                composer.set(field, value);
+                self.ask_completion(target, field);
+                return;
+            }
             UiAction::ComposeShowCcBcc(_) => composer.show_cc_bcc = true,
             UiAction::ComposeRemoveFile(_, index) if index < composer.files.len() => {
                 composer.files.remove(index);
@@ -279,6 +356,123 @@ impl App {
         }
         if resized {
             self.check_size(target);
+        }
+    }
+
+    /// Asks every account's store for the address being typed in `field`; any field but an address ends completion.
+    fn ask_completion(&mut self, target: ComposeTarget, field: ComposeField) {
+        let Some(composer) = self.composer_ref(target) else {
+            return;
+        };
+        let text = match field {
+            ComposeField::To => &composer.to,
+            ComposeField::Cc => &composer.cc,
+            ComposeField::Bcc => &composer.bcc,
+            _ => return self.end_completion(),
+        };
+        let prefix = typed_part(text).1.to_string();
+        let to = CompletionFor {
+            target,
+            id: composer.id,
+            field,
+        };
+        if prefix.is_empty() {
+            return self.end_completion();
+        }
+        self.next_completion += 1;
+        let number = self.next_completion;
+        let accounts = self.accounts.iter().map(|a| a.name.clone()).collect();
+        let completer = (self.completer)
+            .get_or_insert_with(|| completer(self.paths.clone(), self.wake.clone()));
+        completer.send((number, accounts, prefix));
+        self.completing = Some((number, to));
+    }
+
+    fn completion_target(&self) -> Option<ComposeTarget> {
+        let shown = self.completion.as_ref().map(|c| c.to.target);
+        shown.or(self.completing.map(|(_, to)| to.target))
+    }
+
+    /// The completions go, and an answer still on its way is dropped.
+    fn end_completion(&mut self) {
+        self.completion = None;
+        self.completing = None;
+    }
+
+    /// Takes the answer to the newest query only; one that a later keystroke overtook is dropped.
+    fn receive_completion(&mut self) {
+        let Some(completer) = &self.completer else {
+            return;
+        };
+        for (number, choices) in completer.done() {
+            let Some((_, to)) = self.completing.filter(|(asked, _)| *asked == number) else {
+                continue;
+            };
+            self.completing = None;
+            let open = (self.composer_ref(to.target)).is_some_and(|composer| composer.id == to.id);
+            self.completion = (open && !choices.is_empty()).then_some(Completion {
+                to,
+                choices,
+                chosen: 0,
+            });
+        }
+    }
+
+    fn step_completion(&mut self, target: ComposeTarget, by: isize) {
+        if let Some(completion) = self.completion.as_mut().filter(|c| c.to.target == target) {
+            let last = completion.choices.len().saturating_sub(1);
+            completion.chosen = completion.chosen.saturating_add_signed(by).min(last);
+        }
+    }
+
+    /// Puts completion `index` in place of the address being typed, with a comma after it for the next.
+    fn pick_completion(&mut self, target: ComposeTarget, index: usize) {
+        let Some(completion) = self.completion.take_if(|c| c.to.target == target) else {
+            return;
+        };
+        self.completing = None;
+        let Some(choice) = completion.choices.get(index) else {
+            return;
+        };
+        let to = completion.to;
+        let Some(composer) = self.composer_mut(target).filter(|c| c.id == to.id) else {
+            return;
+        };
+        let text = match to.field {
+            ComposeField::Cc => &composer.cc,
+            ComposeField::Bcc => &composer.bcc,
+            _ => &composer.to,
+        };
+        let completed = complete(text, choice);
+        composer.set(to.field, completed);
+    }
+
+    /// Asks the daemon on a worker to send failed outbox message `id` of `account` again.
+    pub(super) fn retry_outbox(&mut self, account: usize, id: String) {
+        let Some(name) = self.accounts.get(account).map(|a| a.name.clone()) else {
+            return;
+        };
+        let (paths, retry) = (self.paths.clone(), self.retry_send);
+        let answer = worker::oneshot("compose-retry", self.wake.clone(), move || {
+            retry(&paths, &name, &id)
+        });
+        self.retrying.push(answer);
+    }
+
+    /// A retry the daemon took shows at once in the outbox; one it refused says why.
+    fn receive_retries(&mut self) {
+        let mut index = 0;
+        while index < self.retrying.len() {
+            match worker::poll(&self.retrying[index]) {
+                Some(result) => {
+                    self.retrying.remove(index);
+                    match result.unwrap_or_else(|Stopped| Err(STOPPED.into())) {
+                        Ok(()) => self.read_outboxes(),
+                        Err(why) => self.note_error(None, format!("could not retry: {why}")),
+                    }
+                }
+                None => index += 1,
+            }
         }
     }
 
@@ -468,6 +662,8 @@ impl App {
     pub(super) fn receive_compose(&mut self, now: f64) {
         self.receive_prefill();
         self.receive_attach();
+        self.receive_completion();
+        self.receive_retries();
         let mut index = 0;
         while index < self.compose_sending.len() {
             match worker::poll(&self.compose_sending[index].answer) {
@@ -1504,6 +1700,333 @@ mod tests {
         let asks =
             ElementHandle::find_by_accessible_label(&window, "Discard this message?").count();
         assert_eq!(asks, 1, "Esc reached the window, which asks");
+    }
+
+    /// A message of `folder` to `to`, from `from`, at `at`.
+    fn mail(folder: &str, uid: u32, from: &str, to: &str, at: i64) -> postvak_core::store::Message {
+        let mut mail = message(folder, uid, "hello");
+        mail.from_addr = Some(from.into());
+        mail.to_addr = Some(to.into());
+        mail.date = Some(at);
+        mail.internaldate = at;
+        mail
+    }
+
+    /// Two accounts: work wrote to Ann long ago and to Andy lately, home heard from Anna in between.
+    fn people() -> Fixture {
+        let fx = Fixture::new(&["home", "work"]);
+        fx.folder("work", "Sent", Some("Sent"));
+        let me = "Me <work@example.com>";
+        fx.add(
+            "work",
+            mail("Sent", 1, me, "Ann Old <ann@example.org>", 1_000),
+        );
+        fx.add(
+            "work",
+            mail("Sent", 2, me, "Andy <andy@example.com>", 3_000),
+        );
+        let anna = "Anna New <anna@example.net>";
+        fx.add("home", mail("INBOX", 1, anna, "home@example.com", 2_000));
+        fx
+    }
+
+    fn completing(app: &App) -> bool {
+        app.completion.is_some()
+    }
+
+    fn choices(app: &App) -> Vec<&str> {
+        let completion = app.completion.as_ref().unwrap();
+        completion.choices.iter().map(String::as_str).collect()
+    }
+
+    #[test]
+    fn completion_lists_people_written_to_first_across_accounts() {
+        let fx = people();
+        let (mut driver, _wires) = fx.driver();
+        driver.apply(UiAction::NewMail(None));
+        let window = ComposeTarget::Window(driver.app.new_mail[0].id);
+        driver.apply(UiAction::ComposeEdit(window, ComposeField::To, "an".into()));
+        driver.tick_until(completing);
+        assert_eq!(
+            choices(&driver.app),
+            [
+                "Andy <andy@example.com>",
+                "Ann Old <ann@example.org>",
+                "Anna New <anna@example.net>"
+            ]
+        );
+        driver.apply(UiAction::ComposeEdit(
+            window,
+            ComposeField::To,
+            "ann".into(),
+        ));
+        driver.tick_until(|app| {
+            app.completion
+                .as_ref()
+                .is_some_and(|c| c.choices.len() == 2)
+        });
+        driver.apply(UiAction::ComposeEdit(
+            window,
+            ComposeField::To,
+            "zed".into(),
+        ));
+        driver.tick_until(|app| !completing(app) && app.completing.is_none());
+    }
+
+    #[test]
+    fn picking_a_completion_replaces_the_typed_part() {
+        let fx = people();
+        let (mut driver, _wires) = fx.driver();
+        driver.apply(UiAction::NewMail(None));
+        let window = ComposeTarget::Window(driver.app.new_mail[0].id);
+        let typed = "bob@example.org, an";
+        driver.apply(UiAction::ComposeEdit(
+            window,
+            ComposeField::To,
+            typed.into(),
+        ));
+        driver.tick_until(completing);
+        driver.apply(UiAction::ComposeCompletionStep(window, 1));
+        driver.apply(UiAction::ComposeCompletionStep(window, 5));
+        assert_eq!(driver.app.completion.as_ref().map(|c| c.chosen), Some(2));
+        driver.apply(UiAction::ComposeCompletionStep(window, -1));
+        let chosen = driver.app.completion.as_ref().unwrap().chosen;
+        driver.apply(UiAction::ComposeCompletionPick(window, chosen));
+        assert_eq!(
+            driver.app.new_mail[0].to,
+            "bob@example.org, Ann Old <ann@example.org>, "
+        );
+        assert!(!completing(&driver.app));
+        driver.tick();
+        assert!(!completing(&driver.app), "nothing typed after the comma");
+    }
+
+    #[test]
+    fn a_completion_closes_when_its_field_is_left() {
+        let fx = people();
+        let (mut driver, _wires) = fx.driver();
+        driver.apply(UiAction::NewMail(None));
+        let window = ComposeTarget::Window(driver.app.new_mail[0].id);
+        driver.apply(UiAction::ComposeEdit(window, ComposeField::To, "an".into()));
+        driver.tick_until(completing);
+        driver.apply(UiAction::ComposeCompletionClose(window));
+        assert!(!completing(&driver.app));
+        driver.apply(UiAction::ComposeEdit(
+            window,
+            ComposeField::To,
+            "and".into(),
+        ));
+        driver.apply(UiAction::ComposeCompletionClose(window));
+        // Long enough for the worker's answer, which the close made stale.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        driver.tick();
+        assert!(
+            !completing(&driver.app),
+            "an answer after it closed is dropped"
+        );
+    }
+
+    #[test]
+    fn completion_shows_in_the_composer_under_its_field() {
+        let fx = people();
+        let (open, _wires) = fx.window();
+        open.with(|live| live.app.apply(UiAction::NewMail(None)));
+        let window = open.compose_windows()[0].clone_strong();
+        let type_an = || {
+            click_in(&window, "To");
+            window.invoke_compose_edited(crate::ui::ComposeField::To, "an".into());
+            open.tick_until(|open| open.with(|live| completing(&live.app)));
+            open.tick();
+        };
+        type_an();
+        let shown =
+            ElementHandle::find_by_accessible_label(&window, "Andy <andy@example.com>").count();
+        assert_eq!(shown, 1);
+        press_in(&window, slint::platform::Key::Escape.into(), false);
+        open.tick();
+        assert!(
+            open.with(|live| !completing(&live.app)),
+            "Esc closes the list"
+        );
+        assert_eq!(open.compose_windows().len(), 1, "and not the window");
+
+        type_an();
+        press_in(&window, slint::platform::Key::DownArrow.into(), false);
+        open.tick();
+        press_in(&window, slint::platform::Key::Return.into(), false);
+        open.tick();
+        assert_eq!(
+            open.with(|live| live.app.new_mail[0].to.clone()),
+            "Ann Old <ann@example.org>, "
+        );
+        let field = ElementHandle::find_by_accessible_label(&window, "To").next();
+        assert_eq!(
+            field.and_then(|f| f.accessible_value()).as_deref(),
+            Some("Ann Old <ann@example.org>, "),
+            "the field shows it"
+        );
+    }
+
+    /// Queues a reply to message 1 of work's INBOX as the daemon does: waiting, with its original's Message-ID.
+    fn reply_waiting(paths: &Paths, _: &Config, request: SendRequest) -> Result<Queued, String> {
+        use postvak_core::send::outbox::Original;
+        use postvak_core::send::reply::OriginalFlag;
+        let envelope = Envelope {
+            from: "work@example.com".into(),
+            to: vec!["sender1@example.com".into()],
+        };
+        let original = Original {
+            message_id: "<1@example.com>".into(),
+            flag: OriginalFlag::Answered,
+        };
+        let entry = Entry::new(envelope, 0, false, Some(original));
+        let outbox = Outbox::open(paths, "work").map_err(|e| e.to_string())?;
+        outbox.add(b"raw", &entry).map_err(|e| e.to_string())?;
+        Ok(Queued {
+            id: entry.id,
+            ..queued(paths, &Config::default(), request)?
+        })
+    }
+
+    fn pending(driver: &Driver) -> Vec<(u32, bool)> {
+        let rows = driver.app.list.rows.iter();
+        rows.map(|row| (row.uid, row.pending)).collect()
+    }
+
+    #[test]
+    fn a_reply_waiting_marks_its_original() {
+        let Replying { mut driver, .. } = replying(&[1, 2]);
+        driver.app.queue_send = reply_waiting;
+        driver.press("j");
+        assert_eq!(driver.app.list.rows[driver.app.list.cursor].uid, 1);
+        open(&mut driver, "r");
+        send(&mut driver, "Thanks");
+        assert_eq!(pending(&driver), [(2, false), (1, false)]);
+        let at = driver.now + POLL;
+        driver.at(at);
+        assert_eq!(pending(&driver), [(2, false), (1, true)]);
+    }
+
+    #[test]
+    fn the_mark_goes_once_sent() {
+        let Replying { mut driver, fx, .. } = replying(&[1, 2]);
+        driver.app.queue_send = reply_waiting;
+        driver.press("j");
+        open(&mut driver, "r");
+        send(&mut driver, "Thanks");
+        let (_, id) = driver.app.taken.last().unwrap().outbox.clone().unwrap();
+        outbox_state(&mut driver, &fx, Some(State::Sending));
+        assert_eq!(
+            pending(&driver),
+            [(2, false), (1, true)],
+            "still on its way"
+        );
+        let outbox = Outbox::open(&fx.paths, "work").unwrap();
+        outbox.set_state(&id, State::Sent).unwrap();
+        let at = driver.now + POLL;
+        driver.at(at);
+        assert_eq!(pending(&driver), [(2, false), (1, false)]);
+    }
+
+    /// Work's outbox with one message waiting and one that failed, read by the file poll.
+    fn two_in_the_outbox() -> (Fixture, Driver, Wires, String) {
+        let fx = Fixture::new(&["work"]);
+        let outbox = Outbox::open(&fx.paths, "work").unwrap();
+        let envelope = |to: &[&str]| Envelope {
+            from: "work@example.com".into(),
+            to: to.iter().map(|to| to.to_string()).collect(),
+        };
+        let waiting = Entry::new(envelope(&["a@example.org"]), 1_790_000_000, false, None);
+        outbox.add(b"raw", &waiting).unwrap();
+        let to = envelope(&["b@example.org", "c@example.org"]);
+        let mut failed = Entry::new(to, 0, false, None);
+        failed.state = State::Failed {
+            reason: "550 no such user".into(),
+            retrying: false,
+        };
+        outbox.add(b"raw", &failed).unwrap();
+        let (mut driver, wires) = fx.driver();
+        driver.at(POLL);
+        (fx, driver, wires, failed.id)
+    }
+
+    #[test]
+    fn the_outbox_dialog_lists_waiting_and_failed() {
+        let (_fx, mut driver, _wires, failed) = two_in_the_outbox();
+        assert!(!driver.app.dialog_open(Dialog::Outbox));
+        driver.apply(UiAction::OpenOutbox);
+        assert_eq!(driver.app.top_dialog(), Some(Dialog::Outbox));
+        let mut rows = crate::status::outbox_rows(&driver.app);
+        rows.sort_by_key(|row| row.retry.is_some());
+        let at = postvak_core::time::clock(1_790_000_000);
+        assert_eq!(
+            rows,
+            [
+                crate::status::OutboxRow {
+                    title: "work · 1 recipient".into(),
+                    state: format!("Goes at {at}"),
+                    failed: false,
+                    retry: None,
+                },
+                crate::status::OutboxRow {
+                    title: "work · 2 recipients".into(),
+                    state: "Failed: 550 no such user".into(),
+                    failed: true,
+                    retry: Some((0, failed)),
+                },
+            ]
+        );
+        driver.press("escape");
+        assert!(!driver.app.dialog_open(Dialog::Outbox));
+    }
+
+    #[test]
+    fn the_status_bars_outbox_line_opens_the_outbox() {
+        let fx = Fixture::new(&["work"]);
+        let outbox = Outbox::open(&fx.paths, "work").unwrap();
+        let envelope = Envelope {
+            from: "work@example.com".into(),
+            to: vec!["a@example.org".into()],
+        };
+        let mut failed = Entry::new(envelope, 0, false, None);
+        failed.state = State::Failed {
+            reason: "550 no such user".into(),
+            retrying: false,
+        };
+        outbox.add(b"raw", &failed).unwrap();
+        let (open, _wires) = fx.window();
+        open.advance(POLL);
+        open.tick();
+        open.click("1 message failed");
+        assert!(open.with(|live| live.app.dialog_open(Dialog::Outbox)));
+        assert!(open.with(|live| !live.app.history_open));
+        assert_eq!(open.find("Retry").len(), 1);
+    }
+
+    #[test]
+    fn retry_sends_a_failed_one_again() {
+        static RETRIED: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+        let (_fx, mut driver, _wires, failed) = two_in_the_outbox();
+        driver.app.retry_send = |_, account, id| {
+            RETRIED.lock().unwrap().push((account.into(), id.into()));
+            Ok(())
+        };
+        driver.apply(UiAction::OpenOutbox);
+        driver.apply(UiAction::RetrySend(0, failed.clone()));
+        driver.tick_until(|app| app.retrying.is_empty());
+        assert_eq!(
+            RETRIED.lock().unwrap().clone(),
+            [("work".to_string(), failed)]
+        );
+        assert_eq!(driver.app.error, None);
+
+        driver.app.retry_send = |_, _, _| Err("the daemon is stopping".into());
+        driver.apply(UiAction::RetrySend(0, "0000abcd".into()));
+        driver.tick_until(|app| app.retrying.is_empty());
+        assert_eq!(
+            driver.app.error.as_deref(),
+            Some("could not retry: the daemon is stopping")
+        );
     }
 
     mod attach {
