@@ -137,6 +137,8 @@ export component Composer inherits Rectangle {
     callback discard();
 
     property <bool> can-send: !root.data.loading && !root.data.sending;
+    // Typing waits for the original's fields, and stops once the message is on its way.
+    property <bool> fixed: !root.can-send;
     // Under the field being completed, relative to the composer.
     property <length> completion-x;
     property <length> completion-y;
@@ -208,11 +210,13 @@ export component Composer inherits Rectangle {
                     accessible-label: "From";
                     model: root.from-choices;
                     index: root.data.from-index;
+                    enabled: !root.fixed;
                     index-chosen(i) => { root.from-chosen(i); }
                 }
                 if root.data.from-index < 0: Field {
                     horizontal-stretch: 1;
                     accessible-label: "From";
+                    read-only: root.fixed;
                     value: root.data.from;
                     value-edited(text) => { root.edited(ComposeField.from, text); }
                 }
@@ -224,6 +228,7 @@ export component Composer inherits Rectangle {
                 AddressField {
                     horizontal-stretch: 1;
                     accessible-label: "To";
+                    read-only: root.fixed;
                     value: root.data.to;
                     value-edited(text) => { root.edited(ComposeField.to, text); }
                     completing: root.data.completing == ComposeSpot.to && root.completions.length > 0;
@@ -251,6 +256,7 @@ export component Composer inherits Rectangle {
                 AddressField {
                     horizontal-stretch: 1;
                     accessible-label: "Cc";
+                    read-only: root.fixed;
                     value: root.data.cc;
                     value-edited(text) => { root.edited(ComposeField.cc, text); }
                     completing: root.data.completing == ComposeSpot.cc && root.completions.length > 0;
@@ -272,6 +278,7 @@ export component Composer inherits Rectangle {
                 AddressField {
                     horizontal-stretch: 1;
                     accessible-label: "Bcc";
+                    read-only: root.fixed;
                     value: root.data.bcc;
                     value-edited(text) => { root.edited(ComposeField.bcc, text); }
                     completing: root.data.completing == ComposeSpot.bcc && root.completions.length > 0;
@@ -293,6 +300,7 @@ export component Composer inherits Rectangle {
                 Field {
                     horizontal-stretch: 1;
                     accessible-label: "Subject";
+                    read-only: root.fixed;
                     value: root.data.subject;
                     value-edited(text) => { root.edited(ComposeField.subject, text); }
                 }
@@ -303,6 +311,7 @@ export component Composer inherits Rectangle {
                 min-height: 3 * Theme.row;
                 wrap: word-wrap;
                 accessible-label: "Your text";
+                read-only: root.fixed;
                 text: root.text;
                 edited(text) => { root.edited(ComposeField.text, text); }
             }

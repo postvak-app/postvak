@@ -1149,6 +1149,30 @@ mod tests {
     }
 
     #[test]
+    fn the_fields_wait_while_loading_and_sending() {
+        let (_fx, open) = replying_in_the_window();
+        let read_only = |open: &crate::test_support::Open| {
+            ["Subject", "To", "Your text"].map(|label| open.get(label).accessible_read_only())
+        };
+        assert_eq!(read_only(&open), [Some(false); 3]);
+        for set in [
+            |c: &mut Composer| c.loading = true,
+            |c: &mut Composer| c.sending = true,
+        ] {
+            open.with(|live| live.app.composer.as_mut().map(set));
+            open.tick();
+            assert_eq!(read_only(&open), [Some(true); 3]);
+            open.with(|live| {
+                live.app
+                    .composer
+                    .as_mut()
+                    .map(|c| (c.loading, c.sending) = (false, false))
+            });
+            open.tick();
+        }
+    }
+
+    #[test]
     fn ctrl_enter_sends_from_the_composer() {
         use slint::platform::{Key, WindowEvent};
         let (_fx, open) = replying_in_the_window();

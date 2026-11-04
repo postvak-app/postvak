@@ -121,6 +121,13 @@ fn join_addresses(addresses: &[String]) -> String {
 /// What tells the size error apart from the attachments' other errors.
 const OVER_LIMIT: &str = " attached; the limit is ";
 
+/// Puts back what the user typed into a field while the composer was loading, when it differs from `opened`.
+fn keep_typed(field: &mut String, opened: &str, typed: String) {
+    if typed != opened {
+        *field = typed;
+    }
+}
+
 fn size_in_words(bytes: u64) -> String {
     crate::body::size(usize::try_from(bytes).unwrap_or(usize::MAX))
 }
@@ -224,13 +231,15 @@ impl Composer {
         if let Some(original) = self.original.as_mut() {
             original.raw = prefilled.original.unwrap_or_default();
         }
+        let typed = self.snapshot();
         self.from = draft.from;
         self.from_choices = choices_of(identity);
-        self.show_cc_bcc = !draft.cc.is_empty() || !draft.bcc.is_empty();
+        self.show_cc_bcc |= !draft.cc.is_empty() || !draft.bcc.is_empty();
         self.to = join_addresses(&draft.to);
         self.cc = join_addresses(&draft.cc);
         self.bcc = join_addresses(&draft.bcc);
         self.subject = draft.subject;
+        self.text = self.opened_as.text.clone();
         self.in_reply_to = draft.in_reply_to;
         self.references = draft.references;
         self.forward_parts = prefilled
@@ -239,7 +248,14 @@ impl Composer {
             .map(|(name, size)| (name, size, true))
             .collect();
         self.loading = false;
-        self.opened_as = self.snapshot();
+        let filled = self.snapshot();
+        let opened = std::mem::replace(&mut self.opened_as, filled);
+        keep_typed(&mut self.from, &opened.from, typed.from);
+        keep_typed(&mut self.to, &opened.to, typed.to);
+        keep_typed(&mut self.cc, &opened.cc, typed.cc);
+        keep_typed(&mut self.bcc, &opened.bcc, typed.bcc);
+        keep_typed(&mut self.subject, &opened.subject, typed.subject);
+        keep_typed(&mut self.text, &opened.text, typed.text);
     }
 
     fn snapshot(&self) -> Snapshot {
@@ -714,6 +730,25 @@ mod tests {
             Some((7, b"raw".to_vec()))
         );
         assert!(!composer.changed());
+    }
+
+    #[test]
+    fn what_was_typed_while_loading_stays() {
+        let mut composer = Composer::reply(3, "work", "INBOX", 7, ReplyTo::Sender);
+        composer.set(ComposeField::Text, "Early words".into());
+        composer.set(ComposeField::Subject, "My own subject".into());
+        let draft = Draft {
+            from: "me@example.com".into(),
+            to: vec!["ann@example.org".into()],
+            subject: "Re: Hi".into(),
+            text: "> quoted".into(),
+            ..Draft::default()
+        };
+        composer.fill(prefilled(draft, vec![]), &identity());
+        assert_eq!(composer.text, "Early words");
+        assert_eq!(composer.subject, "My own subject");
+        assert_eq!(composer.to, "ann@example.org");
+        assert!(composer.changed());
     }
 
     #[test]
