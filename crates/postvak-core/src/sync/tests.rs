@@ -2940,6 +2940,13 @@ impl MailOps for QueuesCommandsOnSelect {
     fn search_uids(&mut self, from_uid: u32) -> crate::mail_ops::MailResult<Vec<u32>> {
         self.inner.search_uids(from_uid)
     }
+    fn search_header(
+        &mut self,
+        header: &str,
+        value: &str,
+    ) -> crate::mail_ops::MailResult<Vec<u32>> {
+        self.inner.search_header(header, value)
+    }
     fn fetch_envelopes(
         &mut self,
         first: u32,
@@ -5245,6 +5252,13 @@ impl MailOps for Returning {
     }
     fn search_uids(&mut self, from_uid: u32) -> crate::mail_ops::MailResult<Vec<u32>> {
         self.ops.search_uids(from_uid)
+    }
+    fn search_header(
+        &mut self,
+        header: &str,
+        value: &str,
+    ) -> crate::mail_ops::MailResult<Vec<u32>> {
+        self.ops.search_header(header, value)
     }
     fn search_text(&mut self, words: &[String]) -> crate::mail_ops::MailResult<Vec<u32>> {
         self.ops.search_text(words)

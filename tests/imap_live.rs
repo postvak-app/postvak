@@ -292,6 +292,26 @@ fn search_text_needs_every_word_in_headers_or_body() {
 }
 
 #[test]
+fn search_header_finds_an_appended_message() {
+    let Some(host) = host() else { return };
+    for port in [PORT, PORT_WITHOUT_MOVE] {
+        let mut ops = connect(&account(&host, port, "search-header"));
+        ops.append("INBOX", &mail("first one"), &[]).unwrap();
+        ops.append("INBOX", &mail("second one"), &[]).unwrap();
+        ops.select("INBOX").unwrap();
+        let uids: Vec<u32> = all_envelopes(&mut ops).iter().map(|e| e.uid).collect();
+        let found = ops
+            .search_header("Message-ID", "<second.one@example.com>")
+            .unwrap();
+        assert_eq!(found, [uids[1]], "port {port}");
+        let none = ops
+            .search_header("Message-ID", "<nobody@example.com>")
+            .unwrap();
+        assert!(none.is_empty(), "port {port}");
+    }
+}
+
+#[test]
 fn condstore_fetches_only_flags_changed_since_a_modseq() {
     let Some(host) = host() else { return };
     let mut ops = connect(&account(&host, PORT, "condstore"));

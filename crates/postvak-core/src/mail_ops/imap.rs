@@ -878,6 +878,10 @@ impl MailOps for ImapOps {
         self.uid_search_sorted(text_query(words))
     }
 
+    fn search_header(&mut self, header: &str, value: &str) -> MailResult<Vec<u32>> {
+        self.uid_search_sorted(header_query(header, value))
+    }
+
     fn fetch_envelopes(&mut self, first: u32, last: u32) -> MailResult<Vec<Envelope>> {
         self.run(self.bulk_timeout(), async |session| {
             let fetches: Vec<Fetch> = session
@@ -1304,9 +1308,22 @@ fn text_query(words: &[String]) -> String {
     format!("CHARSET UTF-8 {}", criteria.join(" "))
 }
 
+fn header_query(header: &str, value: &str) -> String {
+    let quote = |text: &str| format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""));
+    format!("CHARSET UTF-8 HEADER {} {}", quote(header), quote(value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn header_query_quotes_both_arguments() {
+        assert_eq!(
+            header_query("Message-ID", r#"<a"b@x>"#),
+            r#"CHARSET UTF-8 HEADER "Message-ID" "<a\"b@x>""#
+        );
+    }
 
     fn learned(wire: &[&str]) -> (FolderNames, Vec<String>) {
         let mut names = FolderNames::default();
