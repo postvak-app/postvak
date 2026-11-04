@@ -676,11 +676,15 @@ pub(crate) fn present_new_mail(app: &App, id: u64, window: &ComposeWindow) {
     show_composer!(window, composer, question);
 }
 
-/// Wires new-mail window `id`; its close button closes the composer, asking first when it was changed.
+/// Wires new-mail window `id`; its close button closes the composer, asking first when it was changed, and Ctrl+N
+/// (Cmd+N) opens another.
 pub(crate) fn connect_new_mail(window: &ComposeWindow, id: u64, on: fn(Ask) -> bool) {
     window.set_close_icon(icons::CLOSE.into());
     window.set_compose_send_hint(compose::send_hint().into());
     connect_composer!(window, ComposeTarget::Window(id), on);
+    window.on_new_mail(move || {
+        on(Box::new(|_| vec![UiAction::NewMail(None)]));
+    });
     window.window().on_close_requested(move || {
         on(Box::new(move |_| {
             vec![UiAction::ComposeClose(ComposeTarget::Window(id))]

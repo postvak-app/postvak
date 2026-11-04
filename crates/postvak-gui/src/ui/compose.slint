@@ -320,7 +320,7 @@ export component LeaveComposeDialog {
 }
 
 // New mail in a window of its own, with the names `MailWindow` gives its reader pane's composer. Esc closes it, or
-// answers its question with Cancel.
+// answers its question with Cancel; Ctrl+N (Cmd+N) opens another.
 export component ComposeWindow inherits Window {
     in property <ComposeData> compose;
     in property <[string]> compose-from-choices;
@@ -342,6 +342,7 @@ export component ComposeWindow inherits Window {
     in property <string> leave-compose;
     callback leave-compose-discard();
     callback leave-compose-cancel();
+    callback new-mail();
 
     property <bool> dark: Theme.dark;
     init => { StdPalette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light; }
@@ -357,6 +358,10 @@ export component ComposeWindow inherits Window {
 
     keys := FocusScope {
         key-pressed(event) => {
+            if (event.modifiers.control && !event.modifiers.alt && event.text.to-lowercase() == "n") {
+                root.new-mail();
+                return accept;
+            }
             if (event.text != Key.Escape) {
                 return reject;
             }

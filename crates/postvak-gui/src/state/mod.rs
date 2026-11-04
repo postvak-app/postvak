@@ -589,6 +589,8 @@ pub(crate) enum UiAction {
     Forward,
     /// Write new mail in a window of its own, filled from a `mailto:` link when there is one.
     NewMail(Option<postvak_core::send::mailto::Mailto>),
+    /// New-mail window `id` could not open, for this reason: its composer goes, and the window says why.
+    NewMailFailed(u64, String),
     ComposeEdit(ComposeTarget, ComposeField, String),
     ComposeShowCcBcc(ComposeTarget),
     ComposeAttach(ComposeTarget),
@@ -2058,6 +2060,7 @@ impl App {
             UiAction::Reply(to) => self.answer(Some(to)),
             UiAction::Forward => self.answer(None),
             UiAction::NewMail(mailto) => self.new_mail(mailto),
+            UiAction::NewMailFailed(id, why) => self.new_mail_failed(id, &why),
             UiAction::LeaveComposeCancel(target) => self.leave_cancel(target),
             UiAction::LeaveComposeDiscard(target) => self.leave_discard(target),
             UiAction::ReopenCompose(id) => self.reopen_compose(id),

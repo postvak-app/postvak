@@ -138,6 +138,11 @@ impl App {
             .push(Composer::new_mail(id, &account, &identities, mailto));
     }
 
+    pub(super) fn new_mail_failed(&mut self, id: u64, why: &str) {
+        self.drop_composer(ComposeTarget::Window(id));
+        self.note_error(None, format!("could not open a new-mail window: {why}"));
+    }
+
     /// Closes new-mail window `id`, asking first when it was changed; one being sent stays.
     fn close_new_mail(&mut self, id: u64) {
         let target = ComposeTarget::Window(id);
@@ -1321,5 +1326,100 @@ mod tests {
             driver.app.composer.as_ref().map(|c| c.text.as_str()),
             Some("Draft reply")
         );
+    }
+
+    #[test]
+    fn a_new_mail_window_that_cannot_open_says_why_once() {
+        static TRIED: AtomicUsize = AtomicUsize::new(0);
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        open.with(|live| {
+            live.open_compose = |_| {
+                TRIED.fetch_add(1, Ordering::SeqCst);
+                Err(slint::PlatformError::Other("no display".into()))
+            };
+            live.app.apply(UiAction::NewMail(None));
+        });
+        open.tick();
+        open.tick();
+        assert_eq!(TRIED.load(Ordering::SeqCst), 1);
+        assert!(open.compose_windows().is_empty());
+        assert!(open.with(|live| live.app.new_mail.is_empty()));
+        assert_eq!(
+            open.with(|live| live.app.error.clone()).as_deref(),
+            Some("could not open a new-mail window: no display")
+        );
+    }
+
+    /// Presses `key` in `window`, with Ctrl (Cmd on macOS) when `command`.
+    fn press_in(window: &crate::ui::ComposeWindow, key: slint::SharedString, command: bool) {
+        use slint::platform::{Key, WindowEvent};
+        let control: slint::SharedString = Key::Control.into();
+        let window = window.window();
+        if command {
+            window.dispatch_event(WindowEvent::KeyPressed {
+                text: control.clone(),
+            });
+        }
+        window.dispatch_event(WindowEvent::KeyPressed { text: key.clone() });
+        window.dispatch_event(WindowEvent::KeyReleased { text: key });
+        if command {
+            window.dispatch_event(WindowEvent::KeyReleased { text: control });
+        }
+    }
+
+    /// Clicks the middle of the element labelled `label` in `window`.
+    fn click_in(window: &crate::ui::ComposeWindow, label: &str) {
+        use slint::platform::{PointerEventButton, WindowEvent};
+        let element = ElementHandle::find_by_accessible_label(window, label)
+            .next()
+            .unwrap();
+        let (at, size) = (element.absolute_position(), element.size());
+        let position =
+            slint::LogicalPosition::new(at.x + size.width / 2.0, at.y + size.height / 2.0);
+        let button = PointerEventButton::Left;
+        let window = window.window();
+        window.dispatch_event(WindowEvent::PointerMoved { position });
+        window.dispatch_event(WindowEvent::PointerPressed { position, button });
+        window.dispatch_event(WindowEvent::PointerReleased { position, button });
+    }
+
+    #[test]
+    fn ctrl_n_in_a_new_mail_window_opens_another() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        open.with(|live| live.app.apply(UiAction::NewMail(None)));
+        let window = open.compose_windows()[0].clone_strong();
+        click_in(&window, "Your text");
+        press_in(&window, "n".into(), true);
+        open.tick();
+        assert_eq!(open.compose_windows().len(), 2);
+        assert_eq!(new_mail_subjects(&open).len(), 2);
+        assert_eq!(
+            open.with(|live| live.app.new_mail[0].text.clone()),
+            "",
+            "Ctrl+N typed nothing"
+        );
+    }
+
+    #[test]
+    fn escape_in_the_text_of_a_new_mail_window_closes_it() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        open.with(|live| live.app.apply(UiAction::NewMail(None)));
+        let window = open.compose_windows()[0].clone_strong();
+        click_in(&window, "Your text");
+        press_in(&window, "H".into(), false);
+        open.tick();
+        assert_eq!(
+            open.with(|live| live.app.new_mail[0].text.clone()),
+            "H",
+            "the text has the keyboard"
+        );
+        press_in(&window, slint::platform::Key::Escape.into(), false);
+        open.tick();
+        let asks =
+            ElementHandle::find_by_accessible_label(&window, "Discard this message?").count();
+        assert_eq!(asks, 1, "Esc reached the window, which asks");
     }
 }

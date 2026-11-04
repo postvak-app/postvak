@@ -276,6 +276,15 @@ pub(crate) struct Live {
     pub window: ui::MailWindow,
     /// A window per composer in `app.new_mail`, by the composer's id.
     pub compose_windows: Vec<(u64, ui::ComposeWindow)>,
+    /// Makes, wires and shows new-mail window `id`; tests make it fail.
+    pub open_compose: fn(u64) -> Result<ui::ComposeWindow, slint::PlatformError>,
+}
+
+fn open_compose_window(id: u64) -> Result<ui::ComposeWindow, slint::PlatformError> {
+    let window = ui::ComposeWindow::new()?;
+    bind::connect_new_mail(&window, id, on);
+    window.show()?;
+    Ok(window)
 }
 
 thread_local! {
@@ -324,6 +333,7 @@ impl Live {
             badge,
             window,
             compose_windows: Vec::new(),
+            open_compose: open_compose_window,
         };
         if let Some(tray) = &live.tray {
             let weak = live.window.as_weak();
@@ -416,7 +426,7 @@ impl Live {
     }
 
     /// Opens a window for each new composer and closes the windows whose composer went; each shows the mail window's
-    /// theme, as a window has its own `Theme`.
+    /// theme, as a window has its own `Theme`. A window that cannot open drops its composer on the next turn of `tick`.
     fn present_new_mail(&mut self) {
         let open: Vec<u64> = self.app.new_mail.iter().map(|c| c.id).collect();
         self.compose_windows.retain(|(id, window)| {
@@ -429,15 +439,17 @@ impl Live {
             if self.compose_windows.iter().any(|(shown, _)| *shown == id) {
                 continue;
             }
-            match ui::ComposeWindow::new() {
-                Ok(window) => {
-                    bind::connect_new_mail(&window, id, on);
-                    if let Err(e) = window.show() {
-                        log::warn!("could not show a new-mail window: {e}");
-                    }
-                    self.compose_windows.push((id, window));
+            match (self.open_compose)(id) {
+                Ok(window) => self.compose_windows.push((id, window)),
+                Err(e) => {
+                    log::warn!("could not open a new-mail window: {e}");
+                    let why = e.to_string();
+                    ASKS.with_borrow_mut(|asks| {
+                        asks.push(Box::new(move |_| {
+                            vec![state::UiAction::NewMailFailed(id, why)]
+                        }));
+                    });
                 }
-                Err(e) => log::warn!("could not open a new-mail window: {e}"),
             }
         }
         let theme = self.window.global::<ui::Theme>();
