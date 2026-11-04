@@ -1412,6 +1412,7 @@ impl App {
             | Event::BodyReady { account, .. }
             | Event::CommandFailed { account, .. }
             | Event::Connected { account, .. }
+            | Event::DraftSaved { account, .. }
             | Event::Error { account, .. }
             | Event::ForwardPaused { account, .. }
             | Event::ForwardWaiting { account, .. }
@@ -1695,6 +1696,7 @@ impl App {
             }
             // A sent message's copy went to Sent, or its original got a flag.
             Event::SentFinished { .. } => self.refresh(index),
+            Event::DraftSaved { .. } => self.refresh(index),
         }
     }
 

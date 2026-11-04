@@ -198,6 +198,12 @@ pub enum Event {
         flagged: bool,
         request: RequestId,
     },
+    /// What `SaveDraft` did: `message_id` is the new copy's, None when it only deleted.
+    DraftSaved {
+        account: String,
+        message_id: Option<String>,
+        request: RequestId,
+    },
     RuleApplied {
         account: String,
         request: RequestId,
@@ -223,6 +229,7 @@ impl Event {
             | Event::AttachmentFetched { request, .. }
             | Event::BodyReady { request, .. }
             | Event::CommandFailed { request, .. }
+            | Event::DraftSaved { request, .. }
             | Event::FolderCreated { request, .. }
             | Event::FolderDeleted { request, .. }
             | Event::FolderNotEmpty { request, .. }
@@ -438,6 +445,12 @@ pub enum Command {
         copied: bool,
         original: Option<crate::send::outbox::Original>,
         flagged: bool,
+    },
+    /// APPENDs `raw` to Drafts, then deletes the copy whose Message-ID is `replaces`; without `raw`, only deletes.
+    SaveDraft {
+        #[serde(with = "crate::message::base64_bytes_opt")]
+        raw: Option<Vec<u8>>,
+        replaces: Option<String>,
     },
     SyncNow,
 }
@@ -1675,6 +1688,30 @@ fn run_command(
                     request,
                 })
                 .map_err(SyncError::from)
+        }
+        Command::SaveDraft { raw, replaces } => {
+            run.used_connection = true;
+            match crate::send::drafts::save(
+                ops,
+                store,
+                &account.name,
+                raw.as_deref(),
+                replaces.as_deref(),
+            ) {
+                Ok(message_id) => {
+                    let folders = store.folders().unwrap_or_default();
+                    if let Some(drafts) = crate::send::drafts::drafts_folder(&folders) {
+                        sync_now(ops, store, &drafts);
+                    }
+                    Ok(Event::DraftSaved {
+                        account: name(),
+                        message_id,
+                        request,
+                    })
+                }
+                Err(crate::send::drafts::SaveDraftError::Mail(e)) => Err(SyncError::from(e)),
+                Err(e) => Ok(failed(request, e.to_string())),
+            }
         }
         Command::Restore { file } => {
             run.used_connection = true;

@@ -9,8 +9,9 @@ use super::compose::{self, SendKind, SendRequest};
 use super::reply::{self, ForwardAs, ReplyTo};
 use crate::config::{self, AccountConfig, Config, PasswordSource};
 use crate::daemon::client::LazyClient;
+use crate::mail_ops::{self, MailError, MailOps};
 use crate::paths::Paths;
-use crate::store::Folder;
+use crate::store::{Folder, Store};
 
 /// The header naming a Postvak draft's kind: `<kind>; original="<message-id>"; parts="0,2"`.
 pub const HEADER: &str = "X-Postvak-Draft";
@@ -413,6 +414,47 @@ pub fn drafts_folder(folders: &[Folder]) -> Option<String> {
                 .find(|folder| crate::folder_name::same(&folder.name, "Drafts"))
         })
         .map(|folder| folder.name.clone())
+}
+
+/// Why a draft was not saved or deleted.
+#[derive(Debug, thiserror::Error)]
+pub enum SaveDraftError {
+    #[error("This account has no Drafts folder")]
+    NoDraftsFolder,
+    #[error(transparent)]
+    Mail(#[from] MailError),
+}
+
+/// APPENDs `raw` to Drafts, then deletes the copy whose Message-ID is `replaces`; without `raw`, only deletes. The old
+/// copy goes only once the new one is on the server, and one already gone is not an error. Returns the new copy's
+/// Message-ID.
+pub fn save(
+    ops: &mut dyn MailOps,
+    store: &Store,
+    account: &str,
+    raw: Option<&[u8]>,
+    replaces: Option<&str>,
+) -> Result<Option<String>, SaveDraftError> {
+    let folders = store.folders().unwrap_or_default();
+    let folder = drafts_folder(&folders).ok_or(SaveDraftError::NoDraftsFolder)?;
+    let mut saved = None;
+    if let Some(raw) = raw {
+        ops.append(&folder, raw, &["\\Draft", "\\Seen"])?;
+        saved = crate::message::parse_headers(raw).message_id;
+        log::info!(
+            "{account}: saved draft {} in {folder}",
+            saved.as_deref().unwrap_or("without a Message-ID")
+        );
+    }
+    if let Some(replaces) = replaces {
+        ops.select(&folder)?;
+        let uids = ops.search_header("Message-ID", replaces)?;
+        if !uids.is_empty() {
+            mail_ops::delete_messages(ops, &uids)?;
+            log::info!("{account}: deleted draft {replaces} from {folder}");
+        }
+    }
+    Ok(saved)
 }
 
 #[cfg(test)]
@@ -986,5 +1028,112 @@ mod tests {
         assert_eq!(drafts_folder(&folders[..1]).as_deref(), Some("Drafts"));
         assert_eq!(drafts_folder(&[folder("drafts", None)]), None);
         assert_eq!(drafts_folder(&[]), None);
+    }
+
+    mod saving {
+        use super::super::*;
+        use crate::mail_ops::{MailError, RecordingOps};
+        use crate::store::Store;
+
+        const OLD: &str = "Message-ID: <d1@x>\r\nX-Postvak-Draft: new\r\n\r\n";
+
+        fn draft(id: &str) -> Vec<u8> {
+            format!("Message-ID: <{id}>\r\nX-Postvak-Draft: new\r\nSubject: s\r\n\r\nbody\r\n")
+                .into_bytes()
+        }
+
+        fn with_drafts() -> (RecordingOps, Store) {
+            let store = Store::open_in_memory().unwrap();
+            store
+                .upsert_folder(&Folder {
+                    name: "Drafts".into(),
+                    uidvalidity: 1,
+                    last_uid: 0,
+                    special_use: Some("Drafts".into()),
+                    delimiter: None,
+                })
+                .unwrap();
+            let mut ops = RecordingOps::default().with_folder("Drafts", Some("Drafts"));
+            ops.add_mail("Drafts", 1, 0, OLD, Some(OLD));
+            (ops, store)
+        }
+
+        fn ids(ops: &RecordingOps) -> Vec<Option<String>> {
+            ops.mail["Drafts"]
+                .iter()
+                .map(|e| crate::message::parse_headers(&e.headers).message_id)
+                .collect()
+        }
+
+        #[test]
+        fn saving_appends_with_the_draft_flags() {
+            let (mut ops, store) = with_drafts();
+            let saved = save(&mut ops, &store, "work", Some(&draft("d2@x")), None).unwrap();
+            assert_eq!(saved.as_deref(), Some("d2@x"));
+            let appended = ops.mail["Drafts"].last().unwrap();
+            assert_eq!(appended.flags, ["\\Draft", "\\Seen"]);
+            assert_eq!(ops.mail["Drafts"].len(), 2);
+        }
+
+        #[test]
+        fn saving_again_deletes_the_copy_it_replaces_after_the_append() {
+            let (mut ops, store) = with_drafts();
+            save(
+                &mut ops,
+                &store,
+                "work",
+                Some(&draft("d2@x")),
+                Some("<d1@x>"),
+            )
+            .unwrap();
+            assert_eq!(ids(&ops), [Some("d2@x".to_string())]);
+            let append = ops.calls.iter().position(|c| c.starts_with("append"));
+            let delete = ops.calls.iter().position(|c| c.starts_with("add_flags"));
+            assert!(append < delete && delete.is_some(), "{:?}", ops.calls);
+        }
+
+        #[test]
+        fn a_failed_append_keeps_the_old_copy() {
+            let (mut ops, store) = with_drafts();
+            ops.fail_next = Some(MailError::Protocol("NO over quota".into()));
+            let error = save(
+                &mut ops,
+                &store,
+                "work",
+                Some(&draft("d2@x")),
+                Some("<d1@x>"),
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("over quota"), "{error}");
+            assert_eq!(ids(&ops), [Some("d1@x".to_string())]);
+            assert!(!ops.calls.iter().any(|c| c.starts_with("search_header")));
+        }
+
+        #[test]
+        fn no_drafts_folder_is_refused_with_the_words() {
+            let store = Store::open_in_memory().unwrap();
+            let mut ops = RecordingOps::default();
+            let error = save(&mut ops, &store, "work", Some(&draft("d2@x")), None).unwrap_err();
+            assert_eq!(error.to_string(), "This account has no Drafts folder");
+            assert!(ops.calls.is_empty(), "{:?}", ops.calls);
+        }
+
+        #[test]
+        fn deleting_only_removes_the_copy() {
+            let (mut ops, store) = with_drafts();
+            let saved = save(&mut ops, &store, "work", None, Some("<d1@x>")).unwrap();
+            assert_eq!(saved, None);
+            assert!(ops.mail["Drafts"].is_empty());
+            assert!(!ops.calls.iter().any(|c| c.starts_with("append")));
+        }
+
+        #[test]
+        fn deleting_a_draft_that_is_gone_is_fine() {
+            let (mut ops, store) = with_drafts();
+            let saved = save(&mut ops, &store, "work", None, Some("<gone@x>")).unwrap();
+            assert_eq!(saved, None);
+            assert_eq!(ids(&ops), [Some("d1@x".to_string())]);
+            assert!(!ops.calls.iter().any(|c| c.starts_with("add_flags")));
+        }
     }
 }

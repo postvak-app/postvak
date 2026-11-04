@@ -7167,3 +7167,62 @@ fn a_forward_acts_only_on_mail_from_its_approval_on() {
     f.run(Mode::Normal, 13 * H);
     assert_eq!(f.queue.taken().len(), 1);
 }
+
+fn draft_saved(events: &[Event]) -> Option<Option<String>> {
+    events.iter().find_map(|e| match e {
+        Event::DraftSaved { message_id, .. } => Some(message_id.clone()),
+        _ => None,
+    })
+}
+
+#[test]
+fn draft_save_answers_with_the_new_message_id_and_syncs_drafts() {
+    let (mut ops, store, dir) = synced();
+    ops = ops.with_folder("Drafts", Some("Drafts"));
+    sync_all(&mut ops, &store).unwrap();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let command = Command::SaveDraft {
+        raw: Some(b"Message-ID: <d1@x>\r\nSubject: s\r\n\r\nbody\r\n".to_vec()),
+        replaces: None,
+    };
+    let (run, events) = drain(&mut ops, &store, &trash, vec![command]);
+    run.unwrap();
+    assert_eq!(
+        draft_saved(&events),
+        Some(Some("d1@x".into())),
+        "{events:?}"
+    );
+    assert_eq!(ops.mail["Drafts"][0].flags, ["\\Draft", "\\Seen"]);
+    assert!(store.latest_by_message_id("d1@x").unwrap().is_some());
+}
+
+#[test]
+fn draft_save_without_a_drafts_folder_fails_the_command() {
+    let (mut ops, store, dir) = synced();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let command = Command::SaveDraft {
+        raw: None,
+        replaces: Some("<d1@x>".into()),
+    };
+    let (run, events) = drain(&mut ops, &store, &trash, vec![command]);
+    run.unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::CommandFailed { message, .. }
+            if message == "This account has no Drafts folder")),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn draft_save_round_trips_on_the_wire() {
+    for raw in [Some(b"Message-ID: <d1@x>\r\n\r\n".to_vec()), None] {
+        let command = Command::SaveDraft {
+            raw,
+            replaces: Some("<d0@x>".into()),
+        };
+        let json = serde_json::to_string(&command).unwrap();
+        assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), command);
+    }
+}

@@ -163,6 +163,7 @@ pub fn report(event: &Event) {
         | Event::AttachmentFetched { .. }
         | Event::BodyPreview { .. }
         | Event::BodyReady { .. }
+        | Event::DraftSaved { .. }
         | Event::FolderCreated { .. }
         | Event::FolderDeleted { .. }
         | Event::FolderNotEmpty { .. }

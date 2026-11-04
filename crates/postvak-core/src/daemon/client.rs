@@ -788,6 +788,7 @@ pub(super) fn reply_timeout(command: &Command) -> Option<Duration> {
         | Command::FinishSent { .. }
         | Command::RenameFolder { .. }
         | Command::Restore { .. }
+        | Command::SaveDraft { .. }
         | Command::Undo { .. } => Some(REPLY_TIMEOUT),
     }
 }
