@@ -21,7 +21,6 @@ pub(crate) fn send_hint() -> &'static str {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ComposeKind {
-    #[allow(dead_code, reason = "new mail has no window of its own yet")]
     New,
     Reply(ReplyTo),
     Forward,
@@ -161,7 +160,6 @@ impl Composer {
         Self::answering(id, account, ComposeKind::Forward, folder, uid)
     }
 
-    #[allow(dead_code, reason = "new mail has no window of its own yet")]
     pub(crate) fn new_mail(
         id: u64,
         account: &str,

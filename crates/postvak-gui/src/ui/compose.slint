@@ -1,10 +1,11 @@
-// The composer: a reply or forward above the original in the reader pane. `compose.rs` holds and words what it shows.
-import { CheckBox, ScrollView, TextEdit } from "std-widgets.slint";
+// The composer: a reply or forward above the original in the reader pane, or new mail in `ComposeWindow`. `compose.rs`
+// holds and words what it shows.
+import { CheckBox, Palette as StdPalette, ScrollView, TextEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Hairline, IconButton, Note, Switch, TextButton } from "common.slint";
 import { AttachmentData } from "body.slint";
 import { Choice, Field } from "rule_editor.slint";
-import { Dialog } from "dialogs.slint";
+import { Dialog, Scrim } from "dialogs.slint";
 
 // The field an error is about, under which it shows; the same names as `compose::Field`.
 export enum ComposeSpot { none, attachments, bcc, cc, from, send, subject, to }
@@ -315,5 +316,86 @@ export component LeaveComposeDialog {
                 clicked => { root.discard(); }
             }
         }
+    }
+}
+
+// New mail in a window of its own, with the names `MailWindow` gives its reader pane's composer. Esc closes it, or
+// answers its question with Cancel.
+export component ComposeWindow inherits Window {
+    in property <ComposeData> compose;
+    in property <[string]> compose-from-choices;
+    in property <[AttachmentData]> compose-files;
+    in property <[ComposePart]> compose-parts;
+    in property <string> compose-send-hint;
+    in property <string> close-icon;
+    callback compose-edited(ComposeField, string);
+    callback compose-from-chosen(int);
+    callback compose-show-cc-bcc();
+    callback compose-attach();
+    callback compose-remove-file(int);
+    callback compose-toggle-part(int);
+    callback compose-as-attachment(bool);
+    callback compose-send();
+    callback compose-close();
+    callback compose-discard();
+    // "Discard this message?" while it asks.
+    in property <string> leave-compose;
+    callback leave-compose-discard();
+    callback leave-compose-cancel();
+
+    property <bool> dark: Theme.dark;
+    init => { StdPalette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light; }
+    changed dark => { StdPalette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light; }
+
+    title: "New message";
+    preferred-width: 720px;
+    preferred-height: 640px;
+    background: Theme.pane.background;
+    default-font-family: Theme.text-font;
+    default-font-size: Theme.text-size;
+    forward-focus: keys;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text != Key.Escape) {
+                return reject;
+            }
+            if (root.leave-compose != "") {
+                root.leave-compose-cancel();
+            } else {
+                root.compose-close();
+            }
+            return accept;
+        }
+        Composer {
+            data: root.compose;
+            from-choices: root.compose-from-choices;
+            files: root.compose-files;
+            parts: root.compose-parts;
+            remove-icon: root.close-icon;
+            send-hint: root.compose-send-hint;
+            edited(field, text) => { root.compose-edited(field, text); }
+            from-chosen(i) => { root.compose-from-chosen(i); }
+            show-cc-bcc => { root.compose-show-cc-bcc(); }
+            attach => { root.compose-attach(); }
+            remove-file(i) => { root.compose-remove-file(i); }
+            toggle-part(i) => { root.compose-toggle-part(i); }
+            as-attachment(on) => { root.compose-as-attachment(on); }
+            send => { root.compose-send(); }
+            close => { root.compose-close(); }
+            discard => { root.compose-discard(); }
+        }
+    }
+
+    if root.leave-compose != "": Scrim {
+        close => { root.leave-compose-cancel(); }
+    }
+    if root.leave-compose != "": LeaveComposeDialog {
+        x: (root.width - self.width) / 2;
+        y: Theme.inset;
+        question: root.leave-compose;
+        close-icon: root.close-icon;
+        discard => { root.leave-compose-discard(); }
+        cancel => { root.leave-compose-cancel(); }
     }
 }

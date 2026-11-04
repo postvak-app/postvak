@@ -16,7 +16,7 @@ import { ComposeData, ComposeField, ComposePart, Composer, LeaveComposeDialog } 
 export enum Pane { body, folders, list }
 
 // The menu items that act on the app; `menu.rs` says what each does.
-export enum MenuAction { about, add-account, add-to-selection, archive, delete, documentation, flag, history, junk, keys, mark-folder-read, move, new-folder, open-at-login, original-colours, preferences, read-or-unread, save-eml, save-eml-as, search, select-all, sync-now, text-or-html, theme-dark, theme-light, theme-system, view-source }
+export enum MenuAction { about, add-account, add-to-selection, archive, delete, documentation, flag, history, junk, keys, mark-folder-read, move, new-folder, new-message, open-at-login, original-colours, preferences, read-or-unread, save-eml, save-eml-as, search, select-all, sync-now, text-or-html, theme-dark, theme-light, theme-system, view-source }
 
 // A dialog that closes; the same names as `state::Dialog`.
 export enum Dialog { help, unsaved, apply-confirm, rule, folder, account, about, preferences, source, move, history }
@@ -112,6 +112,8 @@ export component MailWindow inherits Window {
     in property <string> close-icon;
     in property <string> search-icon;
     in property <string> sync-icon;
+    in property <string> new-mail-icon;
+    in property <string> new-mail-hint;
     in property <string> filter-icon;
     // The glyphs of the empty list and the empty reader.
     in property <string> inbox-icon;
@@ -271,6 +273,7 @@ export component MailWindow inherits Window {
     callback forget-remote(string);
     callback page-open-link();
     callback menu-item(MenuAction);
+    callback new-mail();
     callback close-window();
     callback quit();
     callback open-rules-file();
@@ -367,6 +370,11 @@ export component MailWindow inherits Window {
     MenuBar {
         Menu {
             title: "File";
+            MenuItem {
+                title: "New message";
+                activated => { root.menu-item(MenuAction.new-message); }
+            }
+            MenuSeparator { }
             MenuItem {
                 title: "Save .eml";
                 enabled: root.menu.save-eml;
@@ -612,6 +620,9 @@ export component MailWindow inherits Window {
                         filter: root.list-filter;
                         filter-label: root.filter-label;
                         filter-icon: root.filter-icon;
+                        new-mail-icon: root.new-mail-icon;
+                        new-mail-hint: root.new-mail-hint;
+                        new-mail => { root.new-mail(); }
                         empty-icon: root.inbox-icon;
                         search-icon: root.search-icon;
                         search-key: root.search-hint;

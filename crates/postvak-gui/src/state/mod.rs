@@ -587,6 +587,8 @@ pub(crate) enum UiAction {
     Reply(postvak_core::send::reply::ReplyTo),
     /// Forward the shown message, in the reader pane.
     Forward,
+    /// Write new mail in a window of its own, filled from a `mailto:` link when there is one.
+    NewMail(Option<postvak_core::send::mailto::Mailto>),
     ComposeEdit(ComposeTarget, ComposeField, String),
     ComposeShowCcBcc(ComposeTarget),
     ComposeAttach(ComposeTarget),
@@ -599,9 +601,9 @@ pub(crate) enum UiAction {
     ComposeDiscard(ComposeTarget),
     /// Put the composer of sent gesture `id`, taken back from the outbox, in the reader pane again.
     ReopenCompose(u64),
-    /// The answers to "Discard this message?"
-    LeaveComposeCancel,
-    LeaveComposeDiscard,
+    /// The answers to "Discard this message?" about the pane's composer or a new-mail window's.
+    LeaveComposeCancel(ComposeTarget),
+    LeaveComposeDiscard(ComposeTarget),
     /// Put back logged action `id` of an account, as the Activity view offers it.
     UndoAction(usize, i64),
     /// The pointer is over the toast, which keeps it.
@@ -861,6 +863,10 @@ pub struct App {
     pub(crate) next_compose: u64,
     /// Leaving the pane's changed composer: what asked to, held until "Discard this message?" is answered.
     pub(crate) leave_compose: Option<Box<UiAction>>,
+    /// New mail, one composer per open window.
+    pub(crate) new_mail: Vec<Composer>,
+    /// The new-mail windows asking "Discard this message?", by their composer's id.
+    pub(crate) leave_new_mail: Vec<u64>,
     /// The prefill of the pane's composer, by its id, until it answers.
     pub(crate) compose_prefill: Option<(
         u64,
@@ -1043,6 +1049,8 @@ impl App {
             composer: None,
             next_compose: 0,
             leave_compose: None,
+            new_mail: Vec::new(),
+            leave_new_mail: Vec::new(),
             compose_prefill: None,
             compose_sending: Vec::new(),
             compose_cancelling: Vec::new(),
@@ -1833,6 +1841,9 @@ impl App {
             }
             UiAction::OpenSource => self.open_source(),
             UiAction::OpenUrl(url) => {
+                if let Some(mailto) = postvak_core::send::mailto::parse(&url) {
+                    return self.apply_action(UiAction::NewMail(Some(mailto)));
+                }
                 if let Err(e) = (self.launch)(url.as_ref(), false) {
                     self.note_error(None, format!("could not open the link: {e}"));
                 }
@@ -2046,13 +2057,9 @@ impl App {
             UiAction::Undo => self.undo_newest(),
             UiAction::Reply(to) => self.answer(Some(to)),
             UiAction::Forward => self.answer(None),
-            UiAction::LeaveComposeCancel => self.close(Dialog::LeaveCompose),
-            UiAction::LeaveComposeDiscard => {
-                if let Some(leave) = self.leave_compose.take() {
-                    self.composer = None;
-                    self.apply_action(*leave);
-                }
-            }
+            UiAction::NewMail(mailto) => self.new_mail(mailto),
+            UiAction::LeaveComposeCancel(target) => self.leave_cancel(target),
+            UiAction::LeaveComposeDiscard(target) => self.leave_discard(target),
             UiAction::ReopenCompose(id) => self.reopen_compose(id),
             compose @ (UiAction::ComposeEdit(..)
             | UiAction::ComposeShowCcBcc(_)

@@ -18,6 +18,7 @@ pub(crate) const INBOX: &str = "\u{E4AA}"; // tray
 pub(crate) const JUNK: &str = "\u{E4E4}"; // warning-octagon
 pub(crate) const MARK_UNREAD: &str = "\u{E218}"; // envelope-simple
 pub(crate) const MORE: &str = "\u{E1FE}"; // dots-three
+pub(crate) const NEW_MAIL: &str = "\u{E34C}"; // note-pencil
 pub(crate) const MOVE: &str = "\u{EC2A}"; // folder-simple-dashed
 pub(crate) const PAPERCLIP: &str = "\u{E39A}"; // paperclip
 pub(crate) const REPLY: &str = "\u{E024}"; // arrow-bend-up-left

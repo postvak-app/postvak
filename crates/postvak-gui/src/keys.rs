@@ -62,8 +62,8 @@ impl Press {
     }
 }
 
-/// What `press` does with `focus` on the focused pane. While a text field has the keyboard (`typing`) only Esc and
-/// Ctrl/Cmd+R count, so letters stay text.
+/// What `press` does with `focus` on the focused pane. While a text field has the keyboard (`typing`) only Esc,
+/// Ctrl/Cmd+R and Ctrl/Cmd+N count, so letters stay text.
 pub(crate) fn action(press: &Press, focus: Focus, typing: bool) -> Option<UiAction> {
     if press.is_named(Named::Escape) {
         return Some(UiAction::Escape);
@@ -71,6 +71,10 @@ pub(crate) fn action(press: &Press, focus: Focus, typing: bool) -> Option<UiActi
     let lower_r = matches!(&press.key, Key::Text(t) if t.eq_ignore_ascii_case("r"));
     if press.command && !press.alt && lower_r {
         return Some(UiAction::SyncNow);
+    }
+    let lower_n = matches!(&press.key, Key::Text(t) if t.eq_ignore_ascii_case("n"));
+    if press.command && !press.alt && lower_n {
+        return Some(UiAction::NewMail(None));
     }
     if typing {
         return None;
@@ -141,7 +145,7 @@ pub(crate) fn action(press: &Press, focus: Focus, typing: bool) -> Option<UiActi
 }
 
 /// The `?` window. Keys are spelled out, so every glyph is in the bundled fonts.
-pub(crate) const HELP: [(&str, &str); 21] = [
+pub(crate) const HELP: [(&str, &str); 22] = [
     ("j / k, Down / Up", "next or previous row"),
     ("Right / Left", "expand or collapse a thread"),
     ("x", "add the row to the selection, or take it out"),
@@ -162,6 +166,10 @@ pub(crate) const HELP: [(&str, &str); 21] = [
     ("r / Shift+R", "reply, or reply to everyone"),
     ("l", "reply to the mailing list"),
     ("f", "forward"),
+    (
+        "Ctrl+N (Cmd+N on macOS)",
+        "write new mail, in a window of its own",
+    ),
     ("Ctrl+Enter (Cmd+Enter on macOS)", "send the message"),
     (
         "z, Ctrl+Z (Cmd+Z on macOS)",
@@ -229,7 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn while_typing_only_escape_and_command_r_count() {
+    fn while_typing_only_escape_and_the_command_keys_count() {
         let typing = |press| action(&press, Focus::List, true);
         assert_eq!(typing(Press::text("e")), None);
         assert_eq!(typing(Press::named(Named::Down)), None);
@@ -239,6 +247,11 @@ mod tests {
             ..Press::text("r")
         };
         assert_eq!(typing(sync), Some(UiAction::SyncNow));
+        let new_mail = Press {
+            command: true,
+            ..Press::text("n")
+        };
+        assert_eq!(typing(new_mail), Some(UiAction::NewMail(None)));
     }
 
     #[test]

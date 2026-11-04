@@ -30,7 +30,11 @@ fn snapshot(open: &Open, name: &str) {
     open.tick();
     // Past every fade, such as a dialog's as it opens: one period of the syncing pulse, so the pulse shows as before.
     i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_secs(2));
-    let png = open.png();
+    compare(&open.png(), name);
+}
+
+/// Compares `png` with `tests/snapshots/{name}.png`.
+fn compare(png: &[u8], name: &str) {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/snapshots")
         .join(format!("{name}.png"));
@@ -39,7 +43,7 @@ fn snapshot(open: &Open, name: &str) {
             utc(),
             "snapshots show local times; rewrite them with TZ=UTC"
         );
-        std::fs::write(&path, &png).unwrap();
+        std::fs::write(&path, png).unwrap();
         return;
     }
     if !utc() {
@@ -47,9 +51,9 @@ fn snapshot(open: &Open, name: &str) {
         return;
     }
     let reference = std::fs::read(&path).unwrap_or_default();
-    if pixels(&reference) != pixels(&png) {
+    if pixels(&reference) != pixels(png) {
         let new = path.with_extension("new.png");
-        std::fs::write(&new, &png).unwrap();
+        std::fs::write(&new, png).unwrap();
         panic!(
             "{name} differs from {}; see {}",
             path.display(),
@@ -1048,6 +1052,29 @@ fn compose_forward_attachments() {
         ))
     });
     snapshot(&open, "gui_compose_forward_attachments");
+}
+
+/// New mail from a `mailto:` link, in a window of its own.
+#[test]
+fn compose_new_mail() {
+    let fx = Fixture::mailbox("light");
+    let (open, _wires) = open(&fx);
+    open.with(|live| {
+        live.app.apply(UiAction::OpenUrl(
+            "mailto:linus@example.org?cc=ann@example.org&subject=Lunch%20on%20Friday&body=Noon%20at%20the%20usual%20place%3F".into(),
+        ))
+    });
+    use slint::ComponentHandle;
+    let window = open.compose_windows().remove(0);
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(720.0, 640.0));
+    open.tick();
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_secs(2));
+    compare(
+        &super::test_support::png(window.window()),
+        "gui_compose_new_mail",
+    );
 }
 
 /// The window's grid: (glyph, inset, pad, row).

@@ -274,6 +274,8 @@ pub(crate) struct Live {
     /// The unread count on the task bar entry; None in tests.
     badge: Option<postvak_core::badge::Badge>,
     pub window: ui::MailWindow,
+    /// A window per composer in `app.new_mail`, by the composer's id.
+    pub compose_windows: Vec<(u64, ui::ComposeWindow)>,
 }
 
 thread_local! {
@@ -321,6 +323,7 @@ impl Live {
             tray,
             badge,
             window,
+            compose_windows: Vec::new(),
         };
         if let Some(tray) = &live.tray {
             let weak = live.window.as_weak();
@@ -403,11 +406,47 @@ impl Live {
 
     fn present(&mut self) {
         bind::present(&self.app, &self.window);
+        self.present_new_mail();
         if let Some(tray) = &self.tray {
             tray.set_hint(status::tray_hint(&self.app).into());
         }
         if let Some(badge) = &mut self.badge {
             badge.show(folders::inbox_unread(&self.app.accounts));
+        }
+    }
+
+    /// Opens a window for each new composer and closes the windows whose composer went; each shows the mail window's
+    /// theme, as a window has its own `Theme`.
+    fn present_new_mail(&mut self) {
+        let open: Vec<u64> = self.app.new_mail.iter().map(|c| c.id).collect();
+        self.compose_windows.retain(|(id, window)| {
+            open.contains(id) || {
+                let _ = window.hide();
+                false
+            }
+        });
+        for id in open {
+            if self.compose_windows.iter().any(|(shown, _)| *shown == id) {
+                continue;
+            }
+            match ui::ComposeWindow::new() {
+                Ok(window) => {
+                    bind::connect_new_mail(&window, id, on);
+                    if let Err(e) = window.show() {
+                        log::warn!("could not show a new-mail window: {e}");
+                    }
+                    self.compose_windows.push((id, window));
+                }
+                Err(e) => log::warn!("could not open a new-mail window: {e}"),
+            }
+        }
+        let theme = self.window.global::<ui::Theme>();
+        for (id, window) in &self.compose_windows {
+            let shown = window.global::<ui::Theme>();
+            shown.set_preference(theme.get_preference());
+            shown.set_desktop_dark(theme.get_desktop_dark());
+            shown.set_reduce_motion(theme.get_reduce_motion());
+            bind::present_new_mail(&self.app, *id, window);
         }
     }
 

@@ -1,11 +1,13 @@
-//! The composer in the reader pane: answering the shown message, sending through the outbox, and taking a send back.
+//! The composers: a reply or forward in the reader pane, new mail in windows of its own, sending through the outbox,
+//! and taking a send back.
 use postvak_core::daemon::client::LazyClient;
 use postvak_core::send::check::DEFAULT_SIZE_LIMIT;
 use postvak_core::send::compose::{Prefilled, Queued, SendKind, SendRequest};
+use postvak_core::send::mailto::Mailto;
 use postvak_core::send::reply::{ForwardAs, ReplyTo};
 
 use super::*;
-use crate::compose::Field;
+use crate::compose::{ComposeKind, Field};
 
 pub(crate) type PrefillFn = fn(&Paths, &Config, &str, &SendKind) -> Result<Prefilled, String>;
 pub(crate) type QueueFn = fn(&Paths, &Config, SendRequest) -> Result<Queued, String>;
@@ -23,7 +25,6 @@ pub(crate) enum CancelError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ComposeTarget {
     Pane,
-    #[allow(dead_code, reason = "new mail has no window of its own yet")]
     Window(u64),
 }
 
@@ -97,17 +98,80 @@ impl App {
         account.identity.clone()
     }
 
-    fn composer_ref(&self, target: ComposeTarget) -> Option<&Composer> {
+    pub(crate) fn composer_ref(&self, target: ComposeTarget) -> Option<&Composer> {
         match target {
             ComposeTarget::Pane => self.composer.as_ref(),
-            ComposeTarget::Window(_) => None,
+            ComposeTarget::Window(id) => self.new_mail.iter().find(|c| c.id == id),
         }
     }
 
     fn composer_mut(&mut self, target: ComposeTarget) -> Option<&mut Composer> {
         match target {
             ComposeTarget::Pane => self.composer.as_mut(),
-            ComposeTarget::Window(_) => None,
+            ComposeTarget::Window(id) => self.new_mail.iter_mut().find(|c| c.id == id),
+        }
+    }
+
+    /// Drops the composer at `target`; a window's question goes with it.
+    fn drop_composer(&mut self, target: ComposeTarget) {
+        match target {
+            ComposeTarget::Pane => self.composer = None,
+            ComposeTarget::Window(id) => {
+                self.new_mail.retain(|c| c.id != id);
+                self.leave_new_mail.retain(|&asking| asking != id);
+            }
+        }
+    }
+
+    /// Opens new mail in a window of its own, on the account of the folder in view, else the first.
+    pub(super) fn new_mail(&mut self, mailto: Option<Mailto>) {
+        let Some(account) = self.accounts.get(self.view_account().unwrap_or(0)) else {
+            return;
+        };
+        let account = account.name.clone();
+        let identities: Vec<(String, Identity)> = (self.accounts.iter())
+            .filter_map(|a| Some((a.name.clone(), a.identity.clone()?)))
+            .collect();
+        let id = self.next_compose;
+        self.next_compose += 1;
+        self.new_mail
+            .push(Composer::new_mail(id, &account, &identities, mailto));
+    }
+
+    /// Closes new-mail window `id`, asking first when it was changed; one being sent stays.
+    fn close_new_mail(&mut self, id: u64) {
+        let target = ComposeTarget::Window(id);
+        let Some(composer) = self.composer_ref(target).filter(|c| !c.sending) else {
+            return;
+        };
+        if composer.leave_question().is_none() {
+            self.drop_composer(target);
+        } else if !self.leave_new_mail.contains(&id) {
+            self.leave_new_mail.push(id);
+        }
+    }
+
+    /// Cancel on "Discard this message?": the composer stays.
+    pub(super) fn leave_cancel(&mut self, target: ComposeTarget) {
+        match target {
+            ComposeTarget::Pane => self.leave_compose = None,
+            ComposeTarget::Window(id) => self.leave_new_mail.retain(|&asking| asking != id),
+        }
+    }
+
+    /// Discard on "Discard this message?": the composer goes, and what asked to leave the pane goes on.
+    pub(super) fn leave_discard(&mut self, target: ComposeTarget) {
+        match target {
+            ComposeTarget::Pane => {
+                if let Some(leave) = self.leave_compose.take() {
+                    self.composer = None;
+                    self.apply_action(*leave);
+                }
+            }
+            ComposeTarget::Window(id) if self.leave_new_mail.contains(&id) => {
+                self.drop_composer(target);
+            }
+            ComposeTarget::Window(_) => {}
         }
     }
 
@@ -147,9 +211,11 @@ impl App {
     pub(super) fn compose(&mut self, action: UiAction) {
         match action {
             UiAction::ComposeSend(target) => return self.compose_send(target),
+            // The pane's composer was asked about before this, in `holds_for_compose`.
             UiAction::ComposeClose(target) | UiAction::ComposeDiscard(target) => {
-                if target == ComposeTarget::Pane {
-                    self.composer = None;
+                match target {
+                    ComposeTarget::Pane => self.composer = None,
+                    ComposeTarget::Window(id) => self.close_new_mail(id),
                 }
                 return;
             }
@@ -218,7 +284,7 @@ impl App {
             answer,
         });
         // A "Discard this message?" asked before Send no longer holds: the message is on its way.
-        self.leave_compose = None;
+        self.leave_cancel(target);
     }
 
     /// Whether `action` waits for "Discard this message?" about the pane's changed composer; an unchanged one closes.
@@ -280,13 +346,16 @@ impl App {
             | UiAction::SearchAccepted
             | UiAction::StartSearch
             | UiAction::Reply(_)
-            | UiAction::Forward
-            | UiAction::ReopenCompose(_) => true,
+            | UiAction::Forward => true,
+            UiAction::ReopenCompose(id) => (self.taken.iter().find(|taken| taken.id == *id))
+                .and_then(|taken| taken.composer.as_ref())
+                .is_some_and(|reopened| reopened.kind != ComposeKind::New),
             _ => false,
         }
     }
 
-    /// Puts the composer of sent gesture `id`, taken back from the outbox, in the reader pane.
+    /// Puts the composer of sent gesture `id`, taken back from the outbox, where it was: a reply or forward in the
+    /// reader pane, new mail in a new window.
     pub(super) fn reopen_compose(&mut self, id: u64) {
         let Some(taken) = self.taken.iter_mut().find(|taken| taken.id == id) else {
             return;
@@ -294,7 +363,11 @@ impl App {
         if let Some(mut composer) = taken.composer.take() {
             taken.state = UndoState::Undone;
             composer.sending = false;
-            self.composer = Some(*composer);
+            if composer.kind == ComposeKind::New {
+                self.new_mail.push(*composer);
+            } else {
+                self.composer = Some(*composer);
+            }
         }
     }
 
@@ -389,8 +462,8 @@ impl App {
                 return;
             }
         };
-        if still_open && target == ComposeTarget::Pane {
-            self.composer = None;
+        if still_open {
+            self.drop_composer(target);
         }
         if undo_secs == 0 {
             self.toast = Some(Toast::new("Sent".into(), false));
@@ -463,10 +536,12 @@ mod tests {
     use super::*;
     use crate::compose::ComposeKind;
     use crate::test_support::{Driver, Fixture, Wires, message};
+    use i_slint_backend_testing::ElementHandle;
     use postvak_core::send::Envelope;
     use postvak_core::send::build::Draft;
     use postvak_core::send::compose::Body;
     use postvak_core::send::outbox::{Entry, Outbox, State};
+    use slint::ComponentHandle;
 
     const PANE: ComposeTarget = ComposeTarget::Pane;
 
@@ -603,7 +678,6 @@ mod tests {
 
     #[test]
     fn ctrl_enter_sends_from_the_composer() {
-        use slint::ComponentHandle;
         use slint::platform::{Key, WindowEvent};
         let (_fx, open) = replying_in_the_window();
         open.tap("Your text");
@@ -648,7 +722,7 @@ mod tests {
         );
         assert!(driver.app.composer.is_some());
         driver.press("escape");
-        driver.apply(UiAction::LeaveComposeDiscard);
+        driver.apply(UiAction::LeaveComposeDiscard(PANE));
         assert!(driver.app.composer.is_none());
         assert!(!driver.app.list.marked.is_empty(), "the selection stays");
     }
@@ -859,12 +933,12 @@ mod tests {
         assert_eq!(driver.app.top_dialog(), Some(Dialog::LeaveCompose));
         assert_eq!(driver.app.list.cursor, cursor, "held until answered");
 
-        driver.apply(UiAction::LeaveComposeCancel);
+        driver.apply(UiAction::LeaveComposeCancel(PANE));
         assert!(driver.app.composer.is_some());
         assert_eq!(driver.app.top_dialog(), None);
 
         driver.press("j");
-        driver.apply(UiAction::LeaveComposeDiscard);
+        driver.apply(UiAction::LeaveComposeDiscard(PANE));
         assert!(driver.app.composer.is_none());
         assert_eq!(driver.app.list.cursor, cursor + 1);
         assert_eq!(driver.app.top_dialog(), None);
@@ -1006,7 +1080,7 @@ mod tests {
                 "{leave:?}"
             );
             assert_eq!(driver.app.search, None, "{leave:?}");
-            driver.apply(UiAction::LeaveComposeCancel);
+            driver.apply(UiAction::LeaveComposeCancel(PANE));
         }
         assert!(driver.app.composer.is_some());
     }
@@ -1032,7 +1106,7 @@ mod tests {
         driver.press("e");
         assert_eq!(driver.app.top_dialog(), Some(Dialog::LeaveCompose));
         assert!(wires.sent().is_empty(), "nothing archived until answered");
-        driver.apply(UiAction::LeaveComposeDiscard);
+        driver.apply(UiAction::LeaveComposeDiscard(PANE));
         assert!(driver.app.composer.is_none());
         assert_eq!(wires.sent().len(), 1, "then archived");
     }
@@ -1070,5 +1144,182 @@ mod tests {
         send(&mut driver, "Thanks");
         assert_eq!(toast(&driver), Some(("Sending to Sender 1", false)));
         assert!(driver.app.taken.is_empty());
+    }
+
+    fn new_mail_subjects(open: &crate::test_support::Open) -> Vec<String> {
+        open.with(|live| {
+            live.app
+                .new_mail
+                .iter()
+                .map(|c| c.subject.clone())
+                .collect()
+        })
+    }
+
+    #[test]
+    fn ctrl_n_opens_a_new_mail_window_on_the_viewed_account() {
+        let fx = Fixture::new(&["home", "work"]);
+        fx.add("work", message("INBOX", 1, "subject 1"));
+        let (open, _wires) = fx.window();
+        open.with(|live| {
+            live.app.select_view(View::Folder {
+                account: 1,
+                folder: "INBOX".into(),
+            })
+        });
+        assert!(open.window().invoke_key("n".into(), true, false));
+        open.tick();
+        let windows = open.compose_windows();
+        assert_eq!(windows.len(), 1);
+        let from = ElementHandle::find_by_accessible_label(&windows[0], "From")
+            .next()
+            .and_then(|e| e.accessible_value());
+        assert_eq!(from.as_deref(), Some("work@example.com"));
+        assert_eq!(
+            open.with(|live| live.app.new_mail[0].kind),
+            ComposeKind::New
+        );
+
+        open.with(|live| live.app.select_view(View::Rules));
+        open.window().invoke_key("n".into(), true, false);
+        open.tick();
+        assert_eq!(
+            open.with(|live| live
+                .app
+                .new_mail
+                .iter()
+                .map(|c| c.account.clone())
+                .collect::<Vec<_>>()),
+            ["work", "home"],
+            "outside a folder, the first account"
+        );
+        assert_eq!(open.compose_windows().len(), 2);
+    }
+
+    #[test]
+    fn two_new_mail_windows_keep_their_own_fields() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        open.with(|live| {
+            live.app.apply(UiAction::NewMail(None));
+            live.app.apply(UiAction::NewMail(None));
+        });
+        let windows = open.compose_windows();
+        assert_eq!(windows.len(), 2);
+        windows[0].invoke_compose_edited(crate::ui::ComposeField::Subject, "First".into());
+        windows[1].invoke_compose_edited(crate::ui::ComposeField::Subject, "Second".into());
+        open.tick();
+        assert_eq!(new_mail_subjects(&open), ["First", "Second"]);
+        assert_eq!(windows[0].get_compose().subject, "First");
+        assert_eq!(windows[1].get_compose().subject, "Second");
+        assert!(open.with(|live| live.app.composer.is_none()));
+    }
+
+    #[test]
+    fn closing_a_changed_new_mail_window_asks() {
+        use slint::platform::{Key, WindowEvent};
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        open.with(|live| live.app.apply(UiAction::NewMail(None)));
+        open.compose_windows()[0].invoke_compose_close();
+        open.tick();
+        assert!(open.compose_windows().is_empty(), "an unchanged one closes");
+
+        open.with(|live| live.app.apply(UiAction::NewMail(None)));
+        let window = open.compose_windows()[0].clone_strong();
+        window.invoke_compose_edited(crate::ui::ComposeField::Text, "Hi".into());
+        window.window().dispatch_event(WindowEvent::CloseRequested);
+        open.tick();
+        let asks = |window: &crate::ui::ComposeWindow| {
+            ElementHandle::find_by_accessible_label(window, "Discard this message?").count()
+        };
+        assert_eq!(asks(&window), 1, "asked in that window");
+        assert!(
+            open.find("Discard this message?").is_empty(),
+            "not in the mail window"
+        );
+        assert_eq!(open.compose_windows().len(), 1);
+
+        let escape = |window: &crate::ui::ComposeWindow| {
+            let text: slint::SharedString = Key::Escape.into();
+            window
+                .window()
+                .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+            window
+                .window()
+                .dispatch_event(WindowEvent::KeyReleased { text });
+            open.tick();
+        };
+        escape(&window);
+        assert_eq!(asks(&window), 0, "Esc answers Cancel");
+        assert_eq!(new_mail_subjects(&open).len(), 1);
+        escape(&window);
+        assert_eq!(asks(&window), 1, "Esc closes, which asks");
+        window.invoke_leave_compose_discard();
+        open.tick();
+        assert!(open.compose_windows().is_empty());
+        assert!(new_mail_subjects(&open).is_empty());
+    }
+
+    #[test]
+    fn a_mailto_link_opens_new_mail_with_its_fields() {
+        let Replying { mut driver, .. } = replying(&[1]);
+        driver.apply(UiAction::OpenUrl(
+            "mailto:ann@example.org?cc=bob@example.org&subject=Lunch&body=Noon%3F".into(),
+        ));
+        assert!(crate::test_support::launched().is_empty(), "no other app");
+        assert!(driver.app.composer.is_none());
+        let composer = &driver.app.new_mail[0];
+        assert_eq!(composer.kind, ComposeKind::New);
+        assert_eq!(composer.account, "work");
+        assert_eq!(
+            (composer.to.as_str(), composer.cc.as_str()),
+            ("ann@example.org", "bob@example.org")
+        );
+        assert_eq!(
+            (composer.subject.as_str(), composer.text.as_str()),
+            ("Lunch", "Noon?")
+        );
+        assert!(composer.show_cc_bcc);
+    }
+
+    #[test]
+    fn undo_of_new_mail_reopens_it_in_a_window() {
+        let Replying { mut driver, .. } = replying(&[1]);
+        open(&mut driver, "r");
+        driver.apply(UiAction::ComposeEdit(
+            PANE,
+            ComposeField::Text,
+            "Draft reply".into(),
+        ));
+        driver.apply(UiAction::NewMail(None));
+        let window = ComposeTarget::Window(driver.app.new_mail[0].id);
+        driver.apply(UiAction::ComposeEdit(
+            window,
+            ComposeField::To,
+            "ann@example.org".into(),
+        ));
+        driver.apply(UiAction::ComposeEdit(
+            window,
+            ComposeField::Text,
+            "Hello".into(),
+        ));
+        let before = driver.app.new_mail[0].clone();
+        driver.apply(UiAction::ComposeSend(window));
+        driver.tick_until(|app| app.new_mail.is_empty() && app.compose_sending.is_empty());
+        assert_eq!(toast(&driver), Some(("Sending to Sender 1 in 10 s", true)));
+
+        driver.press("z");
+        driver.tick_until(|app| !app.new_mail.is_empty());
+        assert_eq!(driver.app.new_mail, [before]);
+        assert_eq!(
+            driver.app.top_dialog(),
+            None,
+            "the reply in the pane is not asked about"
+        );
+        assert_eq!(
+            driver.app.composer.as_ref().map(|c| c.text.as_str()),
+            Some("Draft reply")
+        );
     }
 }

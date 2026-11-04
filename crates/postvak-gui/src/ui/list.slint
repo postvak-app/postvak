@@ -260,6 +260,9 @@ export component ListPane inherits Rectangle {
     // The filter's name beside the title, or empty for All.
     in property <string> filter-label;
     in property <string> filter-icon;
+    in property <string> new-mail-icon;
+    in property <string> new-mail-hint;
+    callback new-mail();
     in property <string> search-icon;
     // The search field's hover hint, with its key.
     in property <string> search-key;
@@ -409,6 +412,15 @@ export component ListPane inherits Rectangle {
                     }
                 }
                 Rectangle { horizontal-stretch: 1; }
+                IconButton {
+                    icon: root.new-mail-icon;
+                    name: "New message";
+                    hint: root.new-mail-hint;
+                    palette: Theme.pane;
+                    size: Theme.action;
+                    glyph-size: Theme.large-icon;
+                    clicked => { root.new-mail(); }
+                }
                 filter-menu := ContextMenuArea {
                     width: Theme.action;
                     height: Theme.action;

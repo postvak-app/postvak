@@ -17,10 +17,10 @@ use super::rules::SheetSort;
 use super::state::{self, App, ComposeTarget, Focus, OpenAtLogin, UiAction, View};
 use super::ui::{
     AccountFields, AccountPreferences, ActionData, AttachmentData, BodyInfo, CodeLine, ComposeData,
-    ComposePart, ComposeSpot, ConditionData, Dialog, Dot, FolderItem, FolderKind, ForwardData,
-    ForwardLineData, KeyHelp, MailWindow, MenuAction, MenuChoice, MenuState, PageInfo, Pane,
-    Preferences, ProposalData, ProvenanceData, Remote, RuleData, RuleEditor, RunData, SampleData,
-    SelectedData, Sheet, StatusLine, Theme, ThemePreference, ToolButton, WhyLine,
+    ComposePart, ComposeSpot, ComposeWindow, ConditionData, Dialog, Dot, FolderItem, FolderKind,
+    ForwardData, ForwardLineData, KeyHelp, MailWindow, MenuAction, MenuChoice, MenuState, PageInfo,
+    Pane, Preferences, ProposalData, ProvenanceData, Remote, RuleData, RuleEditor, RunData,
+    SampleData, SelectedData, Sheet, StatusLine, Theme, ThemePreference, ToolButton, WhyLine,
 };
 use super::{account, body, icons, list, menu, rules, status, theme, toolbar};
 use postvak_core::message::clean;
@@ -66,6 +66,8 @@ pub(crate) fn init(window: &MailWindow) {
     window.set_source_icon(icons::SOURCE.into());
     window.set_search_hint(toolbar::SEARCH_HINT.into());
     window.set_compose_send_hint(compose::send_hint().into());
+    window.set_new_mail_icon(icons::NEW_MAIL.into());
+    window.set_new_mail_hint(toolbar::new_mail_hint().into());
     window.set_sync_hint(status::sync_key().into());
     window.set_version(format!("v{}", status::VERSION).into());
     window.set_description(env!("CARGO_PKG_DESCRIPTION").into());
@@ -546,50 +548,145 @@ fn compose_spot(field: compose::Field) -> ComposeSpot {
     }
 }
 
+/// Shows `$composer` and `$question` in `$window`: the mail window, whose reader pane draws the composer, or a new-mail
+/// window. A macro, as the two are Slint types of their own with the same property names.
+macro_rules! show_composer {
+    ($window:expr, $composer:expr, $question:expr) => {{
+        let (window, composer): (_, Option<&Composer>) = ($window, $composer);
+        let data = composer.map(compose_data).unwrap_or_default();
+        if window.get_compose() != data {
+            window.set_compose(data);
+        }
+        let choices = composer
+            .map(|c| {
+                c.choice_labels()
+                    .into_iter()
+                    .map(SharedString::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+        sync(window.get_compose_from_choices(), choices, |m| {
+            window.set_compose_from_choices(m)
+        });
+        let files = composer.map(Composer::file_rows).unwrap_or_default();
+        let files = files
+            .into_iter()
+            .map(|(name, size)| AttachmentData {
+                name: name.into(),
+                size: size.into(),
+            })
+            .collect();
+        sync(window.get_compose_files(), files, |m| {
+            window.set_compose_files(m)
+        });
+        let parts = composer.map(Composer::part_rows).unwrap_or_default();
+        let parts = parts
+            .into_iter()
+            .map(|(name, size, kept)| ComposePart {
+                name: name.into(),
+                size: size.into(),
+                kept,
+            })
+            .collect();
+        sync(window.get_compose_parts(), parts, |m| {
+            window.set_compose_parts(m)
+        });
+        let question: Option<&str> = $question;
+        window.set_leave_compose(question.unwrap_or_default().into());
+    }};
+}
+
+/// Turns the composer's callbacks in `$window` into actions on the composer at `$target`; see `show_composer`.
+macro_rules! connect_composer {
+    ($window:expr, $target:expr, $on:expr) => {{
+        let (window, target, on): (_, ComposeTarget, fn(Ask) -> bool) = ($window, $target, $on);
+        let act = move |action: UiAction| on(Box::new(move |_| vec![action]));
+        window.on_compose_edited(move |field, text| {
+            act(UiAction::ComposeEdit(
+                target,
+                compose_field(field),
+                text.into(),
+            ));
+        });
+        window.on_compose_from_chosen(move |i| {
+            on(one(move |app| {
+                let choice = nth(&app.composer_ref(target)?.from_choices, i)?;
+                Some(UiAction::ComposeEdit(
+                    target,
+                    ComposeField::From,
+                    choice.clone(),
+                ))
+            }));
+        });
+        window.on_compose_show_cc_bcc(move || {
+            act(UiAction::ComposeShowCcBcc(target));
+        });
+        window.on_compose_attach(move || {
+            act(UiAction::ComposeAttach(target));
+        });
+        window.on_compose_remove_file(move |i| {
+            if let Ok(i) = usize::try_from(i) {
+                act(UiAction::ComposeRemoveFile(target, i));
+            }
+        });
+        window.on_compose_toggle_part(move |i| {
+            if let Ok(i) = usize::try_from(i) {
+                act(UiAction::ComposeToggleForwardPart(target, i));
+            }
+        });
+        window.on_compose_as_attachment(move |on| {
+            act(UiAction::ComposeForwardAsAttachment(target, on));
+        });
+        window.on_compose_send(move || {
+            act(UiAction::ComposeSend(target));
+        });
+        window.on_compose_close(move || {
+            act(UiAction::ComposeClose(target));
+        });
+        window.on_compose_discard(move || {
+            act(UiAction::ComposeDiscard(target));
+        });
+        window.on_leave_compose_discard(move || {
+            act(UiAction::LeaveComposeDiscard(target));
+        });
+        window.on_leave_compose_cancel(move || {
+            act(UiAction::LeaveComposeCancel(target));
+        });
+    }};
+}
+
 /// The reader pane's composer, and "Discard this message?" while it asks.
 fn present_composer(app: &App, window: &MailWindow) {
     let composer = app.composer.as_ref();
-    let data = composer.map(compose_data).unwrap_or_default();
-    if window.get_compose() != data {
-        window.set_compose(data);
-    }
-    let choices = composer
-        .map(|c| {
-            c.choice_labels()
-                .into_iter()
-                .map(SharedString::from)
-                .collect()
-        })
-        .unwrap_or_default();
-    sync(window.get_compose_from_choices(), choices, |m| {
-        window.set_compose_from_choices(m)
-    });
-    let files = composer.map(Composer::file_rows).unwrap_or_default();
-    let files = files
-        .into_iter()
-        .map(|(name, size)| AttachmentData {
-            name: name.into(),
-            size: size.into(),
-        })
-        .collect();
-    sync(window.get_compose_files(), files, |m| {
-        window.set_compose_files(m)
-    });
-    let parts = composer.map(Composer::part_rows).unwrap_or_default();
-    let parts = parts
-        .into_iter()
-        .map(|(name, size, kept)| ComposePart {
-            name: name.into(),
-            size: size.into(),
-            kept,
-        })
-        .collect();
-    sync(window.get_compose_parts(), parts, |m| {
-        window.set_compose_parts(m)
-    });
     let question = app.leave_compose.as_ref().and(composer);
-    let question = question.and_then(Composer::leave_question);
-    window.set_leave_compose(question.unwrap_or_default().into());
+    show_composer!(
+        window,
+        composer,
+        question.and_then(Composer::leave_question)
+    );
+}
+
+/// New-mail window `id`'s composer, and its "Discard this message?" while it asks.
+pub(crate) fn present_new_mail(app: &App, id: u64, window: &ComposeWindow) {
+    let composer = app.composer_ref(ComposeTarget::Window(id));
+    let asking = app.leave_new_mail.contains(&id);
+    let question = composer
+        .filter(|_| asking)
+        .and_then(Composer::leave_question);
+    show_composer!(window, composer, question);
+}
+
+/// Wires new-mail window `id`; its close button closes the composer, asking first when it was changed.
+pub(crate) fn connect_new_mail(window: &ComposeWindow, id: u64, on: fn(Ask) -> bool) {
+    window.set_close_icon(icons::CLOSE.into());
+    window.set_compose_send_hint(compose::send_hint().into());
+    connect_composer!(window, ComposeTarget::Window(id), on);
+    window.window().on_close_requested(move || {
+        on(Box::new(move |_| {
+            vec![UiAction::ComposeClose(ComposeTarget::Window(id))]
+        }));
+        slint::CloseRequestResponse::KeepWindowShown
+    });
 }
 
 fn compose_field(field: super::ui::ComposeField) -> ComposeField {
@@ -606,59 +703,7 @@ fn compose_field(field: super::ui::ComposeField) -> ComposeField {
 
 /// The reader pane composer's callbacks.
 fn connect_composer(window: &MailWindow, on: fn(Ask) -> bool) {
-    const PANE: ComposeTarget = ComposeTarget::Pane;
-    let act = move |action: UiAction| on(Box::new(move |_| vec![action]));
-    window.on_compose_edited(move |field, text| {
-        act(UiAction::ComposeEdit(
-            PANE,
-            compose_field(field),
-            text.into(),
-        ));
-    });
-    window.on_compose_from_chosen(move |i| {
-        on(one(move |app| {
-            let choice = nth(&app.composer.as_ref()?.from_choices, i)?;
-            Some(UiAction::ComposeEdit(
-                PANE,
-                ComposeField::From,
-                choice.clone(),
-            ))
-        }));
-    });
-    window.on_compose_show_cc_bcc(move || {
-        act(UiAction::ComposeShowCcBcc(PANE));
-    });
-    window.on_compose_attach(move || {
-        act(UiAction::ComposeAttach(PANE));
-    });
-    window.on_compose_remove_file(move |i| {
-        if let Ok(i) = usize::try_from(i) {
-            act(UiAction::ComposeRemoveFile(PANE, i));
-        }
-    });
-    window.on_compose_toggle_part(move |i| {
-        if let Ok(i) = usize::try_from(i) {
-            act(UiAction::ComposeToggleForwardPart(PANE, i));
-        }
-    });
-    window.on_compose_as_attachment(move |on| {
-        act(UiAction::ComposeForwardAsAttachment(PANE, on));
-    });
-    window.on_compose_send(move || {
-        act(UiAction::ComposeSend(PANE));
-    });
-    window.on_compose_close(move || {
-        act(UiAction::ComposeClose(PANE));
-    });
-    window.on_compose_discard(move || {
-        act(UiAction::ComposeDiscard(PANE));
-    });
-    window.on_leave_compose_discard(move || {
-        act(UiAction::LeaveComposeDiscard);
-    });
-    window.on_leave_compose_cancel(move || {
-        act(UiAction::LeaveComposeCancel);
-    });
+    connect_composer!(window, ComposeTarget::Pane, on);
 }
 
 fn present_page(app: &App, window: &MailWindow) {
@@ -1465,6 +1510,9 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
             let pinned = nth(folders::pinned(app), i)?;
             Some(UiAction::SelectView(pinned.view?))
         }));
+    });
+    window.on_new_mail(move || {
+        act(UiAction::NewMail(None));
     });
     window.on_sync(move || {
         act(UiAction::SyncNow);

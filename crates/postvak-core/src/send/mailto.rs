@@ -2,7 +2,7 @@
 
 use percent_encoding::percent_decode_str;
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Mailto {
     pub bcc: Vec<String>,
     pub body: String,

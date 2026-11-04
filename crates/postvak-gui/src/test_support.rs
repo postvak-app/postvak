@@ -291,6 +291,16 @@ impl Open {
         with_live(|live| live.window.clone_strong()).unwrap()
     }
 
+    /// The new-mail windows, in the order they opened.
+    pub fn compose_windows(&self) -> Vec<ui::ComposeWindow> {
+        with_live(|live| {
+            (live.compose_windows.iter())
+                .map(|(_, window)| window.clone_strong())
+                .collect()
+        })
+        .unwrap()
+    }
+
     /// Moves the window's clock and Slint's timers on by `seconds`.
     pub fn advance(&self, seconds: f64) {
         self.clock.set(self.clock.get() + seconds);
@@ -299,14 +309,7 @@ impl Open {
 
     /// The window drawn by the software renderer, as a PNG.
     pub fn png(&self) -> Vec<u8> {
-        let shot = self.window().window().take_snapshot().unwrap();
-        let mut png = Vec::new();
-        let mut encoder = png::Encoder::new(&mut png, shot.width(), shot.height());
-        encoder.set_color(png::ColorType::Rgba);
-        let mut writer = encoder.write_header().unwrap();
-        writer.write_image_data(shot.as_bytes()).unwrap();
-        writer.finish().unwrap();
-        png
+        png(self.window().window())
     }
 
     /// The elements whose accessible label is `label`.
@@ -486,6 +489,18 @@ impl Open {
                 .dispatch_event(WindowEvent::KeyReleased { text });
         }
     }
+}
+
+/// `window` drawn by the software renderer, as a PNG.
+pub(crate) fn png(window: &slint::Window) -> Vec<u8> {
+    let shot = window.take_snapshot().unwrap();
+    let mut png = Vec::new();
+    let mut encoder = png::Encoder::new(&mut png, shot.width(), shot.height());
+    encoder.set_color(png::ColorType::Rgba);
+    let mut writer = encoder.write_header().unwrap();
+    writer.write_image_data(shot.as_bytes()).unwrap();
+    writer.finish().unwrap();
+    png
 }
 
 /// Each element once: the query visits the rows of a `ListView` several times over. Two elements with the same label
