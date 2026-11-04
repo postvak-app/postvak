@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0](https://github.com/postvak-app/postvak/compare/v0.14.0...v0.15.0) - 2026-11-04
+
+### Added
+
+- *(gui)* reply, forward and write mail from the window (sending part 3, PR 1) ([#532](https://github.com/postvak-app/postvak/pull/532))
+- *(rules)* a forward rule action, held until a human approves it (sending part 2) ([#527](https://github.com/postvak-app/postvak/pull/527))
+- *(send)* send mail from the CLI over SMTP, through an outbox with an undo delay (part 1) ([#526](https://github.com/postvak-app/postvak/pull/526))
+- *(rules)* conditions on attachments and MIME parts ([#520](https://github.com/postvak-app/postvak/pull/520))
+- *(rules)* move to a folder named by the +tag with {subaddress} ([#519](https://github.com/postvak-app/postvak/pull/519))
+- *(gui)* empty Trash from its folder menu ([#517](https://github.com/postvak-app/postvak/pull/517))
+
+### Fixed
+
+- *(gui)* no gap above the first row after switching to a shorter folder ([#531](https://github.com/postvak-app/postvak/pull/531))
+- *(gui)* render HTML mail tables and images closer to a browser ([#529](https://github.com/postvak-app/postvak/pull/529))
+- *(gui)* download one body at a time per account while stepping through the list ([#523](https://github.com/postvak-app/postvak/pull/523))
+- *(autostart)* build the Flatpak login hint only where it is used ([#522](https://github.com/postvak-app/postvak/pull/522))
+- *(search)* a failed server search keeps the local results and says so on every surface ([#492](https://github.com/postvak-app/postvak/pull/492))
+
+### Other
+
+- spec and plan for the GUI composer ([#372](https://github.com/postvak-app/postvak/pull/372)) ([#530](https://github.com/postvak-app/postvak/pull/530))
+- spec and plan for the forward rule action ([#372](https://github.com/postvak-app/postvak/pull/372)) ([#525](https://github.com/postvak-app/postvak/pull/525))
+- spec and plan for sending mail, part 1 ([#372](https://github.com/postvak-app/postvak/pull/372)) ([#524](https://github.com/postvak-app/postvak/pull/524))
+- *(gui)* give the Preferences dialog more breathing room ([#516](https://github.com/postvak-app/postvak/pull/516))
+
 ## [0.14.0](https://github.com/postvak-app/postvak/compare/v0.13.0...v0.14.0) - 2026-11-01
 
 ### Added
