@@ -117,6 +117,27 @@ pub fn parse_message_ref(text: &str) -> anyhow::Result<(String, u32)> {
     Ok((folder.to_string(), uid))
 }
 
+/// A reply or forward whose original the account's store no longer holds, as when a rule moved it meanwhile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OriginalGone {
+    pub folder: String,
+    pub uid: u32,
+    pub account: String,
+}
+
+impl std::fmt::Display for OriginalGone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let OriginalGone {
+            folder,
+            uid,
+            account,
+        } = self;
+        write!(f, "no message {folder}/{uid} in account '{account}'")
+    }
+}
+
+impl std::error::Error for OriginalGone {}
+
 fn stored_original(
     paths: &Paths,
     client: &LazyClient,
@@ -128,9 +149,11 @@ fn stored_original(
     let folder = crate::folder_name::known(&store, folder)?
         .map(|f| f.name)
         .unwrap_or_else(|| folder.to_string());
-    let message = store
-        .message(&folder, uid)?
-        .ok_or_else(|| anyhow!("no message {folder}/{uid} in account '{}'", account.name))?;
+    let message = store.message(&folder, uid)?.ok_or_else(|| OriginalGone {
+        folder: folder.clone(),
+        uid,
+        account: account.name.clone(),
+    })?;
     client.raw_message(&account.name, &store, &message)
 }
 
@@ -733,6 +756,22 @@ mod tests {
             header("References").as_deref(),
             Some("<first@x.org> <gone@x.org>")
         );
+    }
+
+    #[test]
+    fn a_reply_to_a_message_not_stored_fails_as_original_gone() {
+        let h = home();
+        let error = compose(
+            &h.config,
+            &h.daemon.paths,
+            &h.client,
+            request(reply_kind(999)),
+            no_editor,
+        )
+        .unwrap_err();
+        let gone = error.downcast_ref::<OriginalGone>();
+        assert_eq!(gone.map(|g| g.uid), Some(999), "{error:#}");
+        assert!(h.client.client().unwrap().outbox().unwrap().is_empty());
     }
 
     #[test]

@@ -13,7 +13,35 @@ use crate::compose::{
 };
 
 pub(crate) type PrefillFn = fn(&Paths, &Config, &str, &SendKind) -> Result<Prefilled, String>;
-pub(crate) type QueueFn = fn(&Paths, &Config, SendRequest) -> Result<Queued, String>;
+pub(crate) type QueueFn = fn(&Paths, &Config, SendRequest) -> Result<Queued, QueueError>;
+
+/// Why a message was not queued: its original is gone from the store (core's `OriginalGone`), or anything else, in
+/// words.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum QueueError {
+    OriginalGone(String),
+    Failed(String),
+}
+
+impl QueueError {
+    fn into_text(self) -> String {
+        match self {
+            QueueError::OriginalGone(text) | QueueError::Failed(text) => text,
+        }
+    }
+}
+
+impl From<String> for QueueError {
+    fn from(text: String) -> Self {
+        QueueError::Failed(text)
+    }
+}
+
+impl From<&str> for QueueError {
+    fn from(text: &str) -> Self {
+        QueueError::Failed(text.to_string())
+    }
+}
 pub(crate) type CancelFn = fn(&Paths, &str, &str) -> Result<(), CancelError>;
 pub(crate) type RetryFn = fn(&Paths, &str, &str) -> Result<(), String>;
 
@@ -95,7 +123,7 @@ pub(crate) enum ComposeTarget {
 pub(crate) struct Sending {
     target: ComposeTarget,
     composer: Composer,
-    answer: Receiver<Result<(Queued, u64), String>>,
+    answer: Receiver<Result<(Queued, u64), QueueError>>,
 }
 
 fn error_text(e: &anyhow::Error) -> String {
@@ -119,11 +147,18 @@ pub(crate) fn queue_send(
     paths: &Paths,
     config: &Config,
     request: SendRequest,
-) -> Result<Queued, String> {
+) -> Result<Queued, QueueError> {
     let client = LazyClient::new(paths);
     let no_editor = |_: &str| Err(anyhow::anyhow!("the window has no editor"));
     postvak_core::send::compose::compose(config, paths, &client, request, no_editor)
-        .map_err(|e| error_text(&e))
+        .map_err(|e| queue_error(&e))
+}
+
+fn queue_error(e: &anyhow::Error) -> QueueError {
+    match e.downcast_ref::<postvak_core::send::compose::OriginalGone>() {
+        Some(_) => QueueError::OriginalGone(error_text(e)),
+        None => QueueError::Failed(error_text(e)),
+    }
 }
 
 /// Takes outbox message `id` of `account` back before it goes.
@@ -163,11 +198,6 @@ pub(crate) const GONE_AS_NEW: &str =
     "The message you answered is gone, so this goes as new mail, still answering it.";
 /// Seconds between writes of the changed composers' recovery files.
 const RECOVERY_EVERY: f64 = 5.0;
-
-/// Whether a send failed because the store no longer holds the original, as core's lookup words it.
-fn original_gone(why: &str) -> bool {
-    why.contains("no message ") && why.contains(" in account '")
-}
 
 fn load_config(paths: &Paths) -> Result<Config, String> {
     Config::load(&paths.config_file()).map_err(|e| format!("could not read config.toml: {e}"))
@@ -876,7 +906,7 @@ impl App {
 
     /// The daemon's answer to a send: a queued message closes its composer and shows the toast, which Undo takes
     /// back; a refused one stays open with why.
-    fn sent(&mut self, sending: Sending, result: Result<(Queued, u64), String>, now: f64) {
+    fn sent(&mut self, sending: Sending, result: Result<(Queued, u64), QueueError>, now: f64) {
         let Sending {
             target,
             mut composer,
@@ -888,11 +918,12 @@ impl App {
             .is_some_and(|open| open.id == composer.id);
         let (queued, undo_secs) = match result {
             Ok(answer) => answer,
-            Err(why) if still_open && target == ComposeTarget::Pane && original_gone(&why) => {
+            Err(QueueError::OriginalGone(_)) if still_open && target == ComposeTarget::Pane => {
                 self.answer_as_new_mail();
                 return;
             }
             Err(why) => {
+                let why = why.into_text();
                 match self.composer_mut(target).filter(|_| still_open) {
                     Some(open) => {
                         open.sending = false;
@@ -1004,7 +1035,7 @@ mod tests {
         })
     }
 
-    fn queued(_: &Paths, _: &Config, request: SendRequest) -> Result<Queued, String> {
+    fn queued(_: &Paths, _: &Config, request: SendRequest) -> Result<Queued, QueueError> {
         Ok(Queued {
             account: request.account.unwrap_or_default(),
             id: "0000abcd".into(),
@@ -1166,6 +1197,22 @@ mod tests {
         driver.apply(UiAction::LeaveComposeDiscard(PANE));
         assert!(driver.app.composer.is_none());
         assert!(!driver.app.list.marked.is_empty(), "the selection stays");
+    }
+
+    #[test]
+    fn a_gone_original_is_told_apart_through_context() {
+        let gone = postvak_core::send::compose::OriginalGone {
+            folder: "INBOX".into(),
+            uid: 1,
+            account: "work".into(),
+        };
+        let error = anyhow::Error::new(gone).context("sending");
+        assert!(matches!(queue_error(&error), QueueError::OriginalGone(_)));
+        let other = anyhow::anyhow!("no message INBOX/1 in account 'work'");
+        assert!(
+            matches!(queue_error(&other), QueueError::Failed(_)),
+            "the words alone do not count"
+        );
     }
 
     #[test]
@@ -1415,7 +1462,11 @@ mod tests {
     }
 
     /// Queues as the daemon does: the entry is in the account's outbox, waiting.
-    fn queued_in_outbox(paths: &Paths, _: &Config, request: SendRequest) -> Result<Queued, String> {
+    fn queued_in_outbox(
+        paths: &Paths,
+        _: &Config,
+        request: SendRequest,
+    ) -> Result<Queued, QueueError> {
         let envelope = Envelope {
             from: "work@example.com".into(),
             to: vec!["sender1@example.com".into()],
@@ -2054,7 +2105,11 @@ mod tests {
     }
 
     /// Queues a reply to message 1 of work's INBOX as the daemon does: waiting, with its original's Message-ID.
-    fn reply_waiting(paths: &Paths, _: &Config, request: SendRequest) -> Result<Queued, String> {
+    fn reply_waiting(
+        paths: &Paths,
+        _: &Config,
+        request: SendRequest,
+    ) -> Result<Queued, QueueError> {
         use postvak_core::send::outbox::Original;
         use postvak_core::send::reply::OriginalFlag;
         let envelope = Envelope {
@@ -2553,7 +2608,14 @@ mod tests {
         #[test]
         fn a_reply_whose_original_went_meanwhile_goes_as_new_mail() {
             let Replying { mut driver, .. } = replying(&[1]);
-            driver.app.queue_send = |_, _, _| Err("no message INBOX/1 in account 'work'".into());
+            driver.app.queue_send = |_, _, _| {
+                let gone = postvak_core::send::compose::OriginalGone {
+                    folder: "INBOX".into(),
+                    uid: 1,
+                    account: "work".into(),
+                };
+                Err(QueueError::OriginalGone(gone.to_string()))
+            };
             open(&mut driver, "r");
             write(&mut driver, PANE, ComposeField::Text, "Thanks");
             driver.app.composer.as_mut().unwrap().in_reply_to = Some("<1@example.com>".into());
