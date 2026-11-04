@@ -414,10 +414,6 @@ impl Composer {
             }
         }
         check_from(&self.from, identity).map_err(|e| (Field::From, e.to_string()))?;
-        if let Some((path, _)) = self.files.iter().find(|(path, _)| !path.is_file()) {
-            let name = path.file_name().unwrap_or_default().to_string_lossy();
-            return Err((Field::Attachments, format!("{name} can't be read.")));
-        }
         match self.too_much(limit) {
             Some(error) => Err((Field::Attachments, error)),
             None => Ok(()),
@@ -1056,13 +1052,11 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_attachment_fails_the_check() {
+    fn the_check_reads_no_files_as_the_worker_does_on_send() {
         let mut composer = new_mail();
         composer.to = "a@example.org".into();
         composer.files = vec![(PathBuf::from("/nonexistent/gone.txt"), 0)];
-        let (field, message) = composer.check(&identity(), LIMIT).unwrap_err();
-        assert_eq!(field, Field::Attachments);
-        assert!(message.contains("gone.txt"));
+        assert_eq!(composer.check(&identity(), LIMIT), Ok(()));
     }
 
     #[test]
