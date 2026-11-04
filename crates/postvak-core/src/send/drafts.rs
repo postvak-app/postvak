@@ -90,8 +90,11 @@ impl DraftKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenedDraft {
     pub kind: DraftKind,
-    /// The raw message a reply or forward answers.
+    /// The raw message a Postvak reply or forward answers, its quote rebuilt when it is sent; None for a draft sent as
+    /// written.
     pub original: Option<Vec<u8>>,
+    /// The message a draft sent as written answers, by its In-Reply-To, when the store has it: only drawn below it.
+    pub shown_original: Option<Vec<u8>>,
     /// The bare address.
     pub from: String,
     pub to: Vec<String>,
@@ -297,7 +300,7 @@ fn own_parts(
 
 /// The fields of the draft `raw`; `find_original` looks a Message-ID (without angle brackets) up in the account's store.
 /// A draft Postvak wrote opens as its kind, with the user's text apart from the original; any other, or one whose
-/// original is gone or whose quote was edited, opens whole, as a reply when the message it answers is found.
+/// original is gone or whose quote was edited, opens whole as new mail keeping its threading, to be sent as written.
 pub fn read(
     raw: &[u8],
     find_original: impl Fn(&str) -> Option<Vec<u8>>,
@@ -330,6 +333,7 @@ pub fn read(
     let mut opened = OpenedDraft {
         kind: DraftKind::New,
         original: None,
+        shown_original: None,
         to: mailboxes(msg.to()),
         cc: mailboxes(msg.cc()),
         bcc: mailboxes(msg.bcc()),
@@ -361,10 +365,7 @@ pub fn read(
             return Ok(opened);
         }
     }
-    opened.original = headers.in_reply_to.as_deref().and_then(&find_original);
-    if opened.original.is_some() {
-        opened.kind = DraftKind::Reply(ReplyTo::Sender);
-    }
+    opened.shown_original = headers.in_reply_to.as_deref().and_then(&find_original);
     opened.text = match flowed {
         Some(delsp) => unflowed(&text, delsp),
         None => text,
@@ -610,7 +611,9 @@ mod tests {
             .unwrap()
             .replace("> Shall we?", "> Shall we? Or not.");
         let opened = read(edited.as_bytes(), finds(&raw)).unwrap();
-        assert_eq!(opened.kind, DraftKind::Reply(ReplyTo::Sender));
+        assert_eq!(opened.kind, DraftKind::New);
+        assert_eq!(opened.in_reply_to.as_deref(), Some("<m1@x.org>"));
+        assert_eq!(opened.references, ["<m1@x.org>"]);
         assert!(
             opened.text.starts_with("Sure.\n\nOn Mon, 2 Nov 2026"),
             "{:?}",
@@ -621,7 +624,8 @@ mod tests {
             "{:?}",
             opened.text
         );
-        assert_eq!(opened.original.as_deref(), Some(raw.as_slice()));
+        assert_eq!(opened.original, None);
+        assert_eq!(opened.shown_original.as_deref(), Some(raw.as_slice()));
         assert_eq!(opened.forward_parts, None);
     }
 
@@ -635,7 +639,7 @@ mod tests {
         );
         let opened = read(&draft, finds_nothing).unwrap();
         assert_eq!(opened.kind, DraftKind::New);
-        assert_eq!(opened.original, None);
+        assert_eq!((opened.original, opened.shown_original), (None, None));
         assert!(opened.text.starts_with("Sure.\n\nOn "), "{:?}", opened.text);
         assert!(opened.text.contains("> Shall we?"), "{:?}", opened.text);
         assert_eq!(opened.in_reply_to.as_deref(), Some("<m1@x.org>"));
@@ -648,8 +652,11 @@ mod tests {
         let raw = original("", "Shall we?\r\n");
         let foreign = b"From: Pieter <me@example.com>\r\nTo: Linus <linus@x.org>, b@x.org\r\nBcc: hidden@x.org\r\nSubject: Re: Plans\r\nMessage-ID: <d1@example.com>\r\nIn-Reply-To: <m1@x.org>\r\nReferences: <m1@x.org>\r\nX-Postvak-Draft: reply; original=\"<m1@x.org\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nHello\r\nthere \r\n--b\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=a.pdf\r\nContent-Transfer-Encoding: base64\r\n\r\nJVBERg==\r\n--b--\r\n";
         let opened = read(foreign, finds(&raw)).unwrap();
-        assert_eq!(opened.kind, DraftKind::Reply(ReplyTo::Sender));
-        assert_eq!(opened.original.as_deref(), Some(raw.as_slice()));
+        assert_eq!(opened.kind, DraftKind::New);
+        assert_eq!(opened.original, None);
+        assert_eq!(opened.shown_original.as_deref(), Some(raw.as_slice()));
+        assert_eq!(opened.in_reply_to.as_deref(), Some("<m1@x.org>"));
+        assert_eq!(opened.references, ["<m1@x.org>"]);
         assert_eq!(opened.text.trim_end(), "Hello\nthere");
         assert_eq!(opened.files, [("a.pdf".to_string(), b"%PDF".to_vec())]);
         assert_eq!(opened.to, ["Linus <linus@x.org>", "b@x.org"]);
@@ -659,6 +666,7 @@ mod tests {
         assert_eq!(opened.note, None);
         let unthreaded = read(foreign, finds_nothing).unwrap();
         assert_eq!(unthreaded.kind, DraftKind::New);
+        assert_eq!(unthreaded.shown_original, None);
         assert_eq!(unthreaded.in_reply_to.as_deref(), Some("<m1@x.org>"));
     }
 
@@ -722,6 +730,52 @@ mod tests {
     }
 
     #[test]
+    fn a_foreign_reply_draft_sent_again_quotes_nothing_twice() {
+        let f = fixture();
+        let raw = original("", "Shall we?\r\n");
+        let draft = built(
+            &f,
+            &request(reply_kind(ReplyTo::Sender), "Sure.\n", Some(&raw)),
+        );
+        let edited = String::from_utf8(draft)
+            .unwrap()
+            .replace("> Shall we?", "> Shall we? Or not.");
+        let opened = read(edited.as_bytes(), finds(&raw)).unwrap();
+        assert_eq!(opened.kind, DraftKind::New);
+        let again = SendRequest {
+            headers: Some(compose::HeaderEdits {
+                from: opened.from.clone(),
+                to: opened.to.clone(),
+                cc: opened.cc.clone(),
+                bcc: opened.bcc.clone(),
+                subject: opened.subject.clone(),
+                in_reply_to: opened.in_reply_to.clone(),
+                references: opened.references.clone(),
+            }),
+            ..request(
+                SendKind::New {
+                    to: opened.to.clone(),
+                    cc: opened.cc.clone(),
+                    bcc: opened.bcc.clone(),
+                    subject: opened.subject.clone(),
+                },
+                &opened.text,
+                opened.original.as_deref(),
+            )
+        };
+        let rebuilt = built(&f, &again);
+        let text = crate::message::body_text(&rebuilt);
+        assert_eq!(text.matches("> Shall we? Or not.").count(), 1, "{text}");
+        assert_eq!(text.matches("> Shall we?").count(), 1, "{text}");
+        assert_eq!(text.matches(" wrote:").count(), 1, "{text}");
+        assert!(text.starts_with("Sure."), "{text}");
+        assert_eq!(
+            crate::message::header_text(&rebuilt, "In-Reply-To").as_deref(),
+            Some("<m1@x.org>")
+        );
+    }
+
+    #[test]
     fn a_malformed_marker_reads_as_foreign() {
         let raw = original("", "Shall we?\r\n");
         for marker in [
@@ -734,7 +788,8 @@ mod tests {
                 "From: me@example.com\r\nSubject: Re: Plans\r\nIn-Reply-To: <m1@x.org>\r\nX-Postvak-Draft: {marker}\r\n\r\nSure.\r\n"
             );
             let opened = read(draft.as_bytes(), finds(&raw)).unwrap();
-            assert_eq!(opened.kind, DraftKind::Reply(ReplyTo::Sender), "{marker}");
+            assert_eq!(opened.kind, DraftKind::New, "{marker}");
+            assert!(opened.shown_original.is_some(), "{marker}");
             assert_eq!(opened.text.trim_end(), "Sure.", "{marker}");
         }
     }
