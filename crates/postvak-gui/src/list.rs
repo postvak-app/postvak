@@ -1501,6 +1501,30 @@ mod tests {
     }
 
     #[test]
+    fn a_short_folder_after_a_scrolled_one_shows_its_first_row_at_the_top() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Github", None);
+        for uid in 1..=40 {
+            fx.add("work", message("INBOX", uid, "hi"));
+        }
+        for uid in 1..=3 {
+            fx.add("work", message("Github", uid, "hi"));
+        }
+        let (open, _wires) = fx.window();
+        open.tick();
+        open.window().set_list_y(-300.0);
+        open.tick();
+        open.with(|live| {
+            live.app.select_view(View::Folder {
+                account: 0,
+                folder: "Github".into(),
+            })
+        });
+        open.tick();
+        assert_eq!(open.window().get_list_y(), 0.0);
+    }
+
+    #[test]
     fn a_scroll_by_hand_is_taken_without_showing_the_whole_window_again() {
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = fx.window();
