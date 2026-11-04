@@ -94,6 +94,10 @@ impl Fixture {
             let (_, answer) = std::sync::mpsc::channel();
             answer
         };
+        app.ask_open_paths = |_| {
+            let (_, answer) = std::sync::mpsc::channel();
+            answer
+        };
         app.check_login = |_, _, _, _| Ok(());
         app.prefill = |_, _, _, _| Err("no daemon in tests".into());
         app.queue_send = |_, _, _| Err("no daemon in tests".into());

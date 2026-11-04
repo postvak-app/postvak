@@ -36,6 +36,8 @@ export struct ComposeData {
     text: string,
     forward: bool,
     as-attachment: bool,
+    // What is attached out of what the server takes, as "3 KB of 25.0 MB"; empty while nothing is.
+    size: string,
     error-at: ComposeSpot,
     error: string,
 }
@@ -248,6 +250,11 @@ export component Composer inherits Rectangle {
                         palette: Theme.pane;
                         clicked => { root.remove-file(i); }
                     }
+                }
+                if root.data.size != "": Text {
+                    text: root.data.size;
+                    color: Theme.pane.muted;
+                    vertical-alignment: center;
                 }
                 Rectangle { horizontal-stretch: 1; }
             }

@@ -21,6 +21,7 @@ mod logos;
 mod menu;
 mod motion;
 mod numbers;
+mod open_files;
 mod opener;
 mod persist;
 mod phases;

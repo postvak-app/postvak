@@ -98,6 +98,26 @@ impl App {
         account.identity.clone()
     }
 
+    /// The largest message `account`'s server takes, as its last connection said, else the usual limit.
+    fn size_limit(&self, account: &str) -> u64 {
+        let account = self.accounts.iter().find(|a| a.name == account);
+        account
+            .and_then(|a| a.store.as_ref().ok()?.smtp_state().ok()??.size)
+            .unwrap_or(DEFAULT_SIZE_LIMIT as u64)
+    }
+
+    /// Reads the limit of the composer's account, which From can change, and checks the size against it.
+    fn check_size(&mut self, target: ComposeTarget) {
+        let Some(account) = self.composer_ref(target).map(|c| c.account.clone()) else {
+            return;
+        };
+        let limit = self.size_limit(&account);
+        if let Some(composer) = self.composer_mut(target) {
+            composer.size_limit = limit;
+            composer.check_size();
+        }
+    }
+
     pub(crate) fn composer_ref(&self, target: ComposeTarget) -> Option<&Composer> {
         match target {
             ComposeTarget::Pane => self.composer.as_ref(),
@@ -136,6 +156,7 @@ impl App {
         self.next_compose += 1;
         self.new_mail
             .push(Composer::new_mail(id, &account, &identities, mailto));
+        self.check_size(ComposeTarget::Window(id));
     }
 
     pub(super) fn new_mail_failed(&mut self, id: u64, why: &str) {
@@ -210,12 +231,14 @@ impl App {
         });
         self.compose_prefill = Some((id, answer));
         self.composer = Some(composer);
+        self.check_size(ComposeTarget::Pane);
     }
 
     /// The composer's own actions: its fields, Send, Close and Discard.
     pub(super) fn compose(&mut self, action: UiAction) {
         match action {
             UiAction::ComposeSend(target) => return self.compose_send(target),
+            UiAction::ComposeAttach(target) => return self.compose_attach(target),
             // The pane's composer was asked about before this, in `holds_for_compose`.
             UiAction::ComposeClose(target) | UiAction::ComposeDiscard(target) => {
                 match target {
@@ -228,13 +251,15 @@ impl App {
         }
         let (UiAction::ComposeEdit(target, ..)
         | UiAction::ComposeShowCcBcc(target)
-        | UiAction::ComposeAttach(target)
         | UiAction::ComposeRemoveFile(target, _)
         | UiAction::ComposeToggleForwardPart(target, _)
         | UiAction::ComposeForwardAsAttachment(target, _)) = action
         else {
             return;
         };
+        // Only these change what is attached or the account whose limit counts.
+        let resized =
+            !matches!(action, UiAction::ComposeEdit(_, field, _) if field != ComposeField::From);
         let Some(composer) = self.composer_mut(target) else {
             return;
         };
@@ -250,9 +275,48 @@ impl App {
                 }
             }
             UiAction::ComposeForwardAsAttachment(_, on) => composer.forward_as_attachment = on,
-            // shortcut: no file dialog yet, so Attach does nothing until the desktop's open dialog is wired in.
             _ => {}
         }
+        if resized {
+            self.check_size(target);
+        }
+    }
+
+    /// Opens the desktop's open dialog for the composer at `target`; one at a time, and not while it is sent.
+    fn compose_attach(&mut self, target: ComposeTarget) {
+        if self.compose_attaching.is_some() || self.composer_ref(target).is_none_or(|c| c.sending) {
+            return;
+        }
+        let answer = (self.ask_open_paths)(self.wake.clone());
+        self.compose_attaching = Some((target, answer));
+    }
+
+    /// Adds the files the dialog chose, each with its size read now, once; a cancelled dialog adds none.
+    fn receive_attach(&mut self) {
+        let Some((target, answer)) = &self.compose_attaching else {
+            return;
+        };
+        let Some(result) = worker::poll(answer) else {
+            return;
+        };
+        let target = *target;
+        self.compose_attaching = None;
+        let Some(composer) = self.composer_mut(target) else {
+            return;
+        };
+        match result.unwrap_or_else(|Stopped| Err(anyhow::anyhow!(STOPPED))) {
+            Ok(paths) => composer.files.extend(paths.into_iter().map(|path| {
+                // An unreadable file counts as 0 bytes here; Send refuses it by name.
+                let size = std::fs::metadata(&path).map_or(0, |m| m.len());
+                (path, size)
+            })),
+            Err(e) => {
+                let why = format!("Could not open the file dialog: {}", error_text(&e));
+                composer.error = Some((Field::Attachments, why));
+                return;
+            }
+        }
+        self.check_size(target);
     }
 
     /// Checks the composer and queues its message on a worker; ignored while it loads or a send is in flight.
@@ -270,7 +334,7 @@ impl App {
             composer.error = Some((Field::From, NO_IDENTITY.into()));
             return;
         };
-        if let Err(error) = composer.check(&identity, DEFAULT_SIZE_LIMIT as u64) {
+        if let Err(error) = composer.check(&identity, composer.size_limit) {
             composer.error = Some(error);
             return;
         }
@@ -388,6 +452,7 @@ impl App {
 
     pub(super) fn receive_compose(&mut self, now: f64) {
         self.receive_prefill();
+        self.receive_attach();
         let mut index = 0;
         while index < self.compose_sending.len() {
             match worker::poll(&self.compose_sending[index].answer) {
@@ -436,7 +501,10 @@ impl App {
             result.unwrap_or_else(|Stopped| Err(STOPPED.into())),
             identity,
         ) {
-            (Ok(prefilled), Some(identity)) => composer.fill(prefilled, &identity),
+            (Ok(prefilled), Some(identity)) => {
+                composer.fill(prefilled, &identity);
+                composer.check_size();
+            }
             (Ok(_), None) => composer.error = Some((Field::Send, NO_IDENTITY.into())),
             (Err(why), _) => composer.error = Some((Field::Send, why)),
         }
@@ -1421,5 +1489,106 @@ mod tests {
         let asks =
             ElementHandle::find_by_accessible_label(&window, "Discard this message?").count();
         assert_eq!(asks, 1, "Esc reached the window, which asks");
+    }
+
+    mod attach {
+        use std::cell::RefCell;
+        use std::path::PathBuf;
+
+        use super::*;
+
+        thread_local! {
+            /// What the faked file dialog answers on this test's thread, where the window runs.
+            static CHOSEN: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+        }
+
+        fn chosen(_: crate::html::Wake) -> Receiver<crate::open_files::Chosen> {
+            let (done, answer) = std::sync::mpsc::channel();
+            let _ = done.send(Ok(CHOSEN.with(|c| c.borrow().clone())));
+            answer
+        }
+
+        /// A file of `size` bytes in `dir`.
+        fn file(dir: &tempfile::TempDir, name: &str, size: u64) -> PathBuf {
+            let path = dir.path().join(name);
+            let file = std::fs::File::create(&path).unwrap();
+            file.set_len(size).unwrap();
+            path
+        }
+
+        /// Opens a reply, answers its file dialog with `files` and waits for the answer to be taken in.
+        fn attach(driver: &mut Driver, files: Vec<PathBuf>) {
+            open(driver, "r");
+            CHOSEN.with(|c| *c.borrow_mut() = files);
+            driver.app.ask_open_paths = chosen;
+            driver.apply(UiAction::ComposeAttach(PANE));
+            driver.tick_until(|app| app.compose_attaching.is_none());
+        }
+
+        #[test]
+        fn chosen_files_are_attached_and_counted() {
+            let dir = tempfile::tempdir().unwrap();
+            let (a, b) = (file(&dir, "a.pdf", 1000), file(&dir, "b.txt", 3000));
+            let Replying { mut driver, .. } = replying(&[1]);
+            attach(&mut driver, vec![a.clone(), b.clone()]);
+            let composer = driver.app.composer.as_ref().unwrap();
+            assert_eq!(composer.files, [(a, 1000), (b, 3000)]);
+            assert_eq!(composer.size_line(), "3 KB of 25.0 MB");
+            assert_eq!(composer.error, None);
+        }
+
+        #[test]
+        fn too_much_shows_at_once() {
+            let dir = tempfile::tempdir().unwrap();
+            let big = file(&dir, "big.iso", 30_000_000);
+            let Replying { mut driver, fx, .. } = replying(&[1]);
+            fx.store("work")
+                .save_smtp_capabilities(Some(20_000_000), false)
+                .unwrap();
+            attach(&mut driver, vec![big]);
+            let composer = driver.app.composer.as_ref().unwrap();
+            assert_eq!(composer.size_line(), "28.6 MB of 19.1 MB");
+            assert_eq!(
+                composer.error,
+                Some((
+                    Field::Attachments,
+                    "28.6 MB attached; the limit is 19.1 MB.".into()
+                ))
+            );
+            driver.apply(UiAction::ComposeRemoveFile(PANE, 0));
+            let composer = driver.app.composer.as_ref().unwrap();
+            assert_eq!(composer.error, None, "removing it takes the error away");
+            assert_eq!(composer.size_line(), "");
+        }
+
+        #[test]
+        fn a_cancelled_dialog_attaches_nothing() {
+            let Replying { mut driver, .. } = replying(&[1]);
+            attach(&mut driver, Vec::new());
+            let composer = driver.app.composer.as_ref().unwrap();
+            assert!(composer.files.is_empty());
+            assert_eq!(composer.error, None);
+        }
+
+        #[test]
+        fn a_dialog_that_cannot_open_says_why() {
+            let mut replying = replying(&[1]);
+            open(&mut replying.driver, "r");
+            replying.driver.app.ask_open_paths = |_| {
+                let (done, answer) = std::sync::mpsc::channel();
+                let _ = done.send(Err(anyhow::anyhow!("no portal")));
+                answer
+            };
+            replying.driver.apply(UiAction::ComposeAttach(PANE));
+            let driver = &mut replying.driver;
+            driver.tick_until(|app| app.compose_attaching.is_none());
+            assert_eq!(
+                driver.app.composer.as_ref().unwrap().error,
+                Some((
+                    Field::Attachments,
+                    "Could not open the file dialog: no portal".into()
+                ))
+            );
+        }
     }
 }

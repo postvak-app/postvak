@@ -38,9 +38,9 @@ use super::logos::Logos;
 use super::preferences::{self, Section, Setting};
 use super::reader::{self, Read, ReadFn, Reader};
 use super::rules::{self, RulesState, SheetSort, TrashRow};
-use super::save_as;
 use super::undo::{self, Taken, Toast, UndoState};
 use super::worker::{self, Stopped};
+use super::{open_files, save_as};
 
 mod acting;
 mod composing;
@@ -767,6 +767,8 @@ pub struct App {
     pub(crate) fetching: Vec<Fetching>,
     /// Opens the save dialog; tests swap it so no dialog opens.
     pub(crate) ask_save_path: fn(&str, &Path, Wake) -> Receiver<save_as::Chosen>,
+    /// Opens the open dialog for Attach…; tests swap it so no dialog opens.
+    pub(crate) ask_open_paths: fn(Wake) -> Receiver<open_files::Chosen>,
     /// Downloads remote content for HTML mail, started the first time the user asks.
     pub(crate) fetcher: Option<Fetcher>,
     pub(crate) focus: Focus,
@@ -875,6 +877,8 @@ pub struct App {
         Receiver<Result<postvak_core::send::compose::Prefilled, String>>,
     )>,
     pub(crate) compose_sending: Vec<composing::Sending>,
+    /// The open dialog of Attach…, one at a time, for the composer it attaches to.
+    pub(crate) compose_attaching: Option<(ComposeTarget, Receiver<open_files::Chosen>)>,
     /// Undos of sent messages asked of the daemon, by gesture id.
     pub(crate) compose_cancelling: Vec<(u64, Receiver<Result<(), CancelError>>)>,
     /// Fill, queue and take back a message through the daemon; tests swap them so no daemon starts.
@@ -997,6 +1001,7 @@ impl App {
             saving_as: None,
             fetching: Vec::new(),
             ask_save_path: save_as::ask,
+            ask_open_paths: open_files::ask,
             fetcher: None,
             focus: Focus::List,
             about_open: false,
@@ -1055,6 +1060,7 @@ impl App {
             leave_new_mail: Vec::new(),
             compose_prefill: None,
             compose_sending: Vec::new(),
+            compose_attaching: None,
             compose_cancelling: Vec::new(),
             prefill: composing::prefill,
             queue_send: composing::queue_send,

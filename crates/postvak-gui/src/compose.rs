@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use postvak_core::config::Identity;
 use postvak_core::send::build::bare_address;
-use postvak_core::send::check::{CheckError, check_from, valid_address};
+use postvak_core::send::check::{CheckError, DEFAULT_SIZE_LIMIT, check_from, valid_address};
 use postvak_core::send::compose::{Body, HeaderEdits, Prefilled, SendKind, SendRequest};
 use postvak_core::send::edit::split_recipients;
 use postvak_core::send::mailto::Mailto;
@@ -92,6 +92,8 @@ pub(crate) struct Composer {
     pub loading: bool,
     pub sending: bool,
     pub error: Option<(Field, String)>,
+    /// The largest message the account's server takes, in bytes.
+    pub size_limit: u64,
     opened_as: Snapshot,
 }
 
@@ -136,6 +138,7 @@ impl Composer {
             loading: false,
             sending: false,
             error: None,
+            size_limit: DEFAULT_SIZE_LIMIT as u64,
             opened_as: Snapshot::default(),
         }
     }
@@ -365,18 +368,49 @@ impl Composer {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
             return Err((Field::Attachments, format!("{name} can't be read.")));
         }
-        let total = self.attachment_total();
-        if total > limit {
-            return Err((
-                Field::Attachments,
-                format!(
-                    "{} attached; the limit is {}.",
-                    size_in_words(total),
-                    size_in_words(limit)
-                ),
-            ));
+        match self.too_much(limit) {
+            Some(error) => Err((Field::Attachments, error)),
+            None => Ok(()),
         }
-        Ok(())
+    }
+
+    /// Why the attachments are more than `limit` takes; None when they fit.
+    fn too_much(&self, limit: u64) -> Option<String> {
+        let total = self.attachment_total();
+        (total > limit).then(|| {
+            format!(
+                "{} attached; the limit is {}.",
+                size_in_words(total),
+                size_in_words(limit)
+            )
+        })
+    }
+
+    /// Shows the size error on the attachments as soon as they are too much, and takes it away once they fit.
+    pub(crate) fn check_size(&mut self) {
+        match self.too_much(self.size_limit) {
+            Some(error) => self.error = Some((Field::Attachments, error)),
+            None if self
+                .error
+                .as_ref()
+                .is_some_and(|e| e.0 == Field::Attachments) =>
+            {
+                self.error = None;
+            }
+            None => {}
+        }
+    }
+
+    /// What is attached out of what the server takes, as "3 KB of 25.0 MB"; empty while nothing is.
+    pub(crate) fn size_line(&self) -> String {
+        match self.attachment_total() {
+            0 => String::new(),
+            total => format!(
+                "{} of {}",
+                size_in_words(total),
+                size_in_words(self.size_limit)
+            ),
+        }
     }
 
     pub(crate) fn request(&self) -> SendRequest {

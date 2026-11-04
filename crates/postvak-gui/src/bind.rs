@@ -531,6 +531,7 @@ fn compose_data(composer: &Composer) -> ComposeData {
         text: composer.text.as_str().into(),
         forward: composer.kind == compose::ComposeKind::Forward,
         as_attachment: composer.forward_as_attachment,
+        size: composer.size_line().into(),
         error_at,
         error: error.into(),
     }
