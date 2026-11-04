@@ -1739,6 +1739,8 @@ impl App {
             UiAction::Escape => {
                 if let Some(dialog) = self.top_dialog() {
                     self.apply_action(UiAction::Close(dialog));
+                } else if self.composer.is_some() {
+                    self.apply_action(UiAction::ComposeClose(ComposeTarget::Pane));
                 } else if self.search.is_some() {
                     self.reset_list(None, false);
                     self.reload_view();

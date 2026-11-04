@@ -51,7 +51,7 @@ pub(crate) struct OriginalRef {
 struct Snapshot {
     bcc: String,
     cc: String,
-    files: Vec<PathBuf>,
+    files: Vec<(PathBuf, u64)>,
     forward_as_attachment: bool,
     from: String,
     kept_parts: Vec<bool>,
@@ -85,7 +85,8 @@ pub(crate) struct Composer {
     pub show_cc_bcc: bool,
     pub subject: String,
     pub text: String,
-    pub files: Vec<PathBuf>,
+    /// Each attached file with its size, read once as it was added.
+    pub files: Vec<(PathBuf, u64)>,
     /// The original's attachments as (name, size, whether an inline forward takes it along).
     pub forward_parts: Vec<(String, u64, bool)>,
     pub forward_as_attachment: bool,
@@ -285,14 +286,13 @@ impl Composer {
             })
     }
 
-    /// The attached files as their names and sizes in words; one that can't be read shows as 0 B.
+    /// The attached files as their names and sizes in words.
     pub(crate) fn file_rows(&self) -> Vec<(String, String)> {
         self.files
             .iter()
-            .map(|path| {
+            .map(|(path, size)| {
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
-                let size = std::fs::metadata(path).map_or(0, |meta| meta.len());
-                (name.into_owned(), size_in_words(size))
+                (name.into_owned(), size_in_words(*size))
             })
             .collect()
     }
@@ -337,14 +337,9 @@ impl Composer {
             })
     }
 
-    /// What the attached files and the kept parts of the original add up to; an unreadable file counts as 0.
+    /// What the attached files, at the sizes they had when added, and the kept parts of the original add up to.
     pub(crate) fn attachment_total(&self) -> u64 {
-        let files: u64 = self
-            .files
-            .iter()
-            .filter_map(|path| std::fs::metadata(path).ok())
-            .map(|meta| meta.len())
-            .sum();
+        let files: u64 = self.files.iter().map(|(_, size)| size).sum();
         let kept: u64 = self
             .forward_parts
             .iter()
@@ -368,7 +363,7 @@ impl Composer {
             }
         }
         check_from(&self.from, identity).map_err(|e| (Field::From, e.to_string()))?;
-        if let Some(path) = self.files.iter().find(|path| !path.is_file()) {
+        if let Some((path, _)) = self.files.iter().find(|(path, _)| !path.is_file()) {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
             return Err((Field::Attachments, format!("{name} can't be read.")));
         }
@@ -433,7 +428,7 @@ impl Composer {
             kind,
             body: Body::Given(self.text.clone()),
             from: Some(self.from.clone()),
-            attachments: self.files.clone(),
+            attachments: self.files.iter().map(|(path, _)| path.clone()).collect(),
             now: false,
             save_sent: None,
             original: self.original.as_ref().map(|original| original.raw.clone()),
@@ -489,11 +484,12 @@ mod tests {
         Composer::new_mail(1, "work", &accounts(), None)
     }
 
-    fn file_of(dir: &tempfile::TempDir, name: &str, size: u64) -> PathBuf {
+    /// A file of `size` bytes, as the composer holds it once added.
+    fn file_of(dir: &tempfile::TempDir, name: &str, size: u64) -> (PathBuf, u64) {
         let path = dir.path().join(name);
         let file = std::fs::File::create(&path).unwrap_or_else(|e| panic!("{e}"));
         file.set_len(size).unwrap_or_else(|e| panic!("{e}"));
-        path
+        (path, size)
     }
 
     #[test]
@@ -761,10 +757,23 @@ mod tests {
     fn an_unreadable_attachment_fails_the_check() {
         let mut composer = new_mail();
         composer.to = "a@example.org".into();
-        composer.files = vec![PathBuf::from("/nonexistent/gone.txt")];
+        composer.files = vec![(PathBuf::from("/nonexistent/gone.txt"), 0)];
         let (field, message) = composer.check(&identity(), LIMIT).unwrap_err();
         assert_eq!(field, Field::Attachments);
         assert!(message.contains("gone.txt"));
+    }
+
+    #[test]
+    fn files_count_and_show_at_the_size_read_when_added() {
+        let mut composer = new_mail();
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (path, _) = file_of(&dir, "notes.txt", 0);
+        composer.files = vec![(path, 2048)];
+        assert_eq!(composer.attachment_total(), 2048);
+        assert_eq!(
+            composer.file_rows(),
+            [("notes.txt".to_string(), "2 KB".to_string())]
+        );
     }
 
     #[test]

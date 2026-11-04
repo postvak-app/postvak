@@ -267,7 +267,6 @@ impl App {
             | UiAction::TargetRow(index) => !row_is_original(*index),
             UiAction::SelectView(view) => *view != self.view,
             UiAction::SetFilter(filter) => *filter != self.filter,
-            UiAction::Escape => self.top_dialog().is_none() && self.search.is_some(),
             UiAction::Act(action) => hides_original(action),
             UiAction::MoveTo(folder) => hides_original(&Action::Move(folder.clone())),
             UiAction::DropOn(_) => hides_original(&Action::Move(String::new())),
@@ -623,6 +622,35 @@ mod tests {
         key(Key::Return.into(), false);
         key(Key::Control.into(), false);
         open.tick_until(|open| open.with(|live| live.app.composer.is_none()));
+    }
+
+    #[test]
+    fn escape_closes_the_composer_and_asks_when_changed() {
+        let Replying { mut driver, .. } = replying(&[1, 2]);
+        driver.press("x");
+        open(&mut driver, "r");
+        driver.press("escape");
+        assert!(
+            driver.app.composer.is_none(),
+            "an unchanged composer closes"
+        );
+        assert!(!driver.app.list.marked.is_empty(), "the selection stays");
+
+        open(&mut driver, "r");
+        driver.apply(UiAction::ComposeEdit(PANE, ComposeField::Text, "Hi".into()));
+        driver.press("escape");
+        assert_eq!(driver.app.top_dialog(), Some(Dialog::LeaveCompose));
+        driver.press("escape");
+        assert_eq!(
+            driver.app.top_dialog(),
+            None,
+            "Esc answers the question with Cancel"
+        );
+        assert!(driver.app.composer.is_some());
+        driver.press("escape");
+        driver.apply(UiAction::LeaveComposeDiscard);
+        assert!(driver.app.composer.is_none());
+        assert!(!driver.app.list.marked.is_empty(), "the selection stays");
     }
 
     #[test]
