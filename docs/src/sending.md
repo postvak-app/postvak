@@ -1,9 +1,9 @@
 # Sending mail
 
-Postvak sends new mail, replies and forwards from the command line with `postvak send`. Every message goes through the
-daemon's outbox: it waits there for a few seconds, so you can still take it back, then goes out over SMTP, and a copy is
-saved in your Sent folder. The window shows what the outbox holds in its status bar; writing mail in the window is not
-there yet. Agents over MCP get no tool to send.
+Postvak sends new mail, replies and forwards from the command line with `postvak send`, and from the window (see
+[Writing mail](gui.md#writing-mail)). Every message goes through the daemon's outbox: it waits there for a few seconds,
+so you can still take it back, then goes out over SMTP, and a copy is saved in your Sent folder. Agents over MCP get no
+tool to send.
 
 ## The SMTP server
 
