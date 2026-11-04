@@ -248,6 +248,8 @@ impl Start<'_> {
         }
         let ran = slint::run_event_loop();
         if let Some(mut live) = LIVE.with_borrow_mut(Option::take) {
+            // Quitting asks nothing: the next start reopens what was being written.
+            live.app.save_recoveries();
             // Without the window there is nobody to keep the count current.
             if let Some(badge) = &mut live.badge {
                 badge.show(0);
@@ -355,9 +357,12 @@ impl Live {
         live.window.on_quit(|| {
             let _ = slint::quit_event_loop();
         });
-        let weak = live.window.as_weak();
+        let (weak, tray) = (live.window.as_weak(), live.tray.is_some());
+        // Without a tray closing quits, though new-mail windows would keep the event loop running.
         live.window.on_close_window(move || {
-            if let Some(window) = weak.upgrade() {
+            if !tray {
+                let _ = slint::quit_event_loop();
+            } else if let Some(window) = weak.upgrade() {
                 let _ = window.hide();
             }
         });
@@ -427,7 +432,8 @@ impl Live {
     }
 
     /// Opens a window for each new composer and closes the windows whose composer went; each shows the mail window's
-    /// theme, as a window has its own `Theme`. A window that cannot open drops its composer on the next turn of `tick`.
+    /// theme, as a window has its own `Theme`. A window that cannot open leaves its composer in its recovery file on the
+    /// next turn of `tick`.
     fn present_new_mail(&mut self) {
         let open: Vec<u64> = self.app.new_mail.iter().map(|c| c.id).collect();
         self.compose_windows.retain(|(id, window)| {

@@ -7,7 +7,10 @@ use postvak_core::send::mailto::Mailto;
 use postvak_core::send::reply::{ForwardAs, ReplyTo};
 
 use super::*;
-use crate::compose::{COMPLETIONS, ComposeKind, Field, complete, merge_known, typed_part};
+use crate::compose::{
+    COMPLETIONS, ComposeKind, Field, complete, load_recoveries, merge_known, recovery_dir,
+    remove_recovery, save_recovery, typed_part,
+};
 
 pub(crate) type PrefillFn = fn(&Paths, &Config, &str, &SendKind) -> Result<Prefilled, String>;
 pub(crate) type QueueFn = fn(&Paths, &Config, SendRequest) -> Result<Queued, String>;
@@ -148,11 +151,101 @@ fn cancel_error(text: &str) -> CancelError {
 const NO_IDENTITY: &str = "this account's addresses could not be read from config.toml";
 const STOPPED: &str = "the window's worker stopped before it answered";
 
+/// The line a composer reopened from its recovery file shows.
+pub(crate) const RESTORED: &str = "Restored after Postvak closed";
+/// Seconds between writes of the changed composers' recovery files.
+const RECOVERY_EVERY: f64 = 5.0;
+
 fn load_config(paths: &Paths) -> Result<Config, String> {
     Config::load(&paths.config_file()).map_err(|e| format!("could not read config.toml: {e}"))
 }
 
 impl App {
+    /// Writes the recovery file of each changed composer that changed since its last one, and takes away the file of
+    /// one changed back; quitting calls it once more, without asking anything.
+    pub(crate) fn save_recoveries(&mut self) {
+        let dir = recovery_dir(&self.paths);
+        let open: Vec<Composer> = self
+            .composer
+            .iter()
+            .chain(&self.new_mail)
+            .cloned()
+            .collect();
+        for composer in open {
+            let written = (self.recovery_written.iter()).position(|w| w.id == composer.id);
+            match written {
+                Some(index) if !composer.changed() => {
+                    remove_recovery(&dir, composer.id);
+                    self.recovery_written.remove(index);
+                }
+                Some(index) if self.recovery_written[index] == composer => {}
+                _ if !composer.changed() => {}
+                _ => match save_recovery(&dir, &composer) {
+                    Ok(()) => {
+                        self.recovery_written.retain(|w| w.id != composer.id);
+                        self.recovery_written.push(composer);
+                    }
+                    Err(e) => log::warn!(
+                        "could not keep the unsent message {}.json: {e}",
+                        composer.id
+                    ),
+                },
+            }
+        }
+    }
+
+    pub(super) fn keep_recoveries(&mut self, now: f64) {
+        if now >= self.recovery_due {
+            self.recovery_due = now + RECOVERY_EVERY;
+            self.save_recoveries();
+        }
+    }
+
+    /// Reopens each composer a crash or quit left, saying so: a reply or forward in the reader pane over its original,
+    /// new mail in a window; one whose original is gone from the store goes on as new mail.
+    pub(super) fn restore_composers(&mut self) {
+        for mut composer in load_recoveries(&recovery_dir(&self.paths)) {
+            self.next_compose = self.next_compose.max(composer.id + 1);
+            if composer.kind != ComposeKind::New && !self.original_stored(&composer) {
+                composer.without_original();
+            }
+            if composer.kind != ComposeKind::New && self.composer.is_some() {
+                // shortcut: a second reply or forward waits on disk for a later start, as the pane holds one; open
+                // it as new mail if that turns out to happen.
+                continue;
+            }
+            composer.error = Some((Field::Send, RESTORED.into()));
+            self.recovery_written.push(composer.clone());
+            let target = if composer.kind == ComposeKind::New {
+                let target = ComposeTarget::Window(composer.id);
+                self.new_mail.push(composer);
+                target
+            } else {
+                if let Some(original) = &composer.original {
+                    self.open_message(postvak_core::notify::Open {
+                        account: Some(composer.account.clone()),
+                        folder: original.folder.clone(),
+                        uid: original.uid,
+                    });
+                }
+                self.composer = Some(composer);
+                ComposeTarget::Pane
+            };
+            self.check_size(target);
+        }
+    }
+
+    fn original_stored(&self, composer: &Composer) -> bool {
+        let Some(original) = &composer.original else {
+            return false;
+        };
+        let account = self.accounts.iter().find(|a| a.name == composer.account);
+        let store = account.and_then(|a| a.store.as_ref().ok());
+        store.is_some_and(|store| {
+            matches!(store.message(&original.folder, original.uid), Ok(Some(_)))
+        })
+    }
+
     fn identity_of(&self, account: &str) -> Option<Identity> {
         let account = self.accounts.iter().find(|a| a.name == account)?;
         account.identity.clone()
@@ -192,8 +285,16 @@ impl App {
         }
     }
 
-    /// Drops the composer at `target`; a window's question goes with it.
+    /// Drops the composer at `target` and its recovery file; a window's question goes with it.
     fn drop_composer(&mut self, target: ComposeTarget) {
+        if let Some(id) = self.composer_ref(target).map(|c| c.id) {
+            remove_recovery(&recovery_dir(&self.paths), id);
+            self.recovery_written.retain(|w| w.id != id);
+        }
+        self.forget_composer(target);
+    }
+
+    fn forget_composer(&mut self, target: ComposeTarget) {
         match target {
             ComposeTarget::Pane => self.composer = None,
             ComposeTarget::Window(id) => {
@@ -219,8 +320,15 @@ impl App {
         self.check_size(ComposeTarget::Window(id));
     }
 
+    /// Keeps the composer of a window that could not open in its recovery file, for the next start.
     pub(super) fn new_mail_failed(&mut self, id: u64, why: &str) {
-        self.drop_composer(ComposeTarget::Window(id));
+        let target = ComposeTarget::Window(id);
+        if let Some(composer) = self.composer_ref(target)
+            && let Err(e) = save_recovery(&recovery_dir(&self.paths), composer)
+        {
+            log::warn!("could not keep the unsent message {id}.json: {e}");
+        }
+        self.forget_composer(target);
         self.note_error(None, format!("could not open a new-mail window: {why}"));
     }
 
@@ -250,7 +358,7 @@ impl App {
         match target {
             ComposeTarget::Pane => {
                 if let Some(leave) = self.leave_compose.take() {
-                    self.composer = None;
+                    self.drop_composer(ComposeTarget::Pane);
                     self.apply_action(*leave);
                 }
             }
@@ -315,7 +423,7 @@ impl App {
             // The pane's composer was asked about before this, in `holds_for_compose`.
             UiAction::ComposeClose(target) | UiAction::ComposeDiscard(target) => {
                 match target {
-                    ComposeTarget::Pane => self.composer = None,
+                    ComposeTarget::Pane => self.drop_composer(target),
                     ComposeTarget::Window(id) => self.close_new_mail(id),
                 }
                 return;
@@ -585,7 +693,7 @@ impl App {
             self.leave_compose = Some(Box::new(action.clone()));
             return true;
         }
-        self.composer = None;
+        self.drop_composer(ComposeTarget::Pane);
         false
     }
 
@@ -2242,6 +2350,141 @@ mod tests {
                     "Could not open the file dialog: no portal".into()
                 ))
             );
+        }
+    }
+
+    mod recovery {
+        use super::*;
+        use crate::compose::{load_recoveries, recovery_dir};
+
+        fn left(fx: &Fixture) -> Vec<Composer> {
+            load_recoveries(&recovery_dir(&fx.paths))
+        }
+
+        fn write(driver: &mut Driver, target: ComposeTarget, field: ComposeField, text: &str) {
+            driver.apply(UiAction::ComposeEdit(target, field, text.into()));
+        }
+
+        /// New mail typed into, in a window, by its target.
+        fn new_mail_typed(driver: &mut Driver, subject: &str) -> ComposeTarget {
+            driver.apply(UiAction::NewMail(None));
+            let target = ComposeTarget::Window(driver.app.new_mail.last().unwrap().id);
+            write(driver, target, ComposeField::Subject, subject);
+            target
+        }
+
+        #[test]
+        fn a_changed_composer_is_written_every_few_seconds() {
+            let Replying { mut driver, fx, .. } = replying(&[1]);
+            new_mail_typed(&mut driver, "Plans");
+            driver.at(1.0);
+            assert!(left(&fx).is_empty(), "not before 5 s");
+            driver.at(6.0);
+            assert_eq!(left(&fx)[0].subject, "Plans");
+            driver.apply(UiAction::NewMail(None));
+            driver.at(12.0);
+            assert_eq!(left(&fx).len(), 1, "an unchanged one has nothing to keep");
+        }
+
+        #[test]
+        fn a_queued_or_discarded_composer_leaves_no_file() {
+            let Replying { mut driver, fx, .. } = replying(&[1]);
+            let window = new_mail_typed(&mut driver, "Plans");
+            driver.at(6.0);
+            assert_eq!(left(&fx).len(), 1);
+            driver.apply(UiAction::ComposeClose(window));
+            driver.apply(UiAction::LeaveComposeDiscard(window));
+            assert!(driver.app.new_mail.is_empty());
+            assert!(left(&fx).is_empty(), "discarded");
+
+            open(&mut driver, "r");
+            write(&mut driver, PANE, ComposeField::Text, "Thanks");
+            driver.at(12.0);
+            assert_eq!(left(&fx).len(), 1);
+            driver.apply(UiAction::ComposeSend(PANE));
+            driver.tick_until(|app| app.composer.is_none());
+            assert!(left(&fx).is_empty(), "queued");
+        }
+
+        #[test]
+        fn start_reopens_left_composers_with_the_line() {
+            let Replying { mut driver, fx, .. } = replying(&[1, 2]);
+            driver.press("down");
+            open(&mut driver, "r");
+            let original = driver.app.body.as_ref().map(|body| body.key.clone());
+            write(&mut driver, PANE, ComposeField::Text, "Half a reply");
+            new_mail_typed(&mut driver, "Plans");
+            driver.at(6.0);
+            drop(driver);
+
+            let (mut restarted, _wires) = fx.driver();
+            let pane = restarted.app.composer.clone().unwrap();
+            assert_eq!(pane.text, "Half a reply");
+            assert_eq!(pane.kind, ComposeKind::Reply(ReplyTo::Sender));
+            assert_eq!(pane.error, Some((Field::Send, RESTORED.into())));
+            assert_eq!(
+                pane.original.as_ref().map(|o| (o.folder.clone(), o.uid)),
+                original
+            );
+            restarted.tick_until(|app| app.body.is_some());
+            assert_eq!(
+                restarted.app.body.as_ref().map(|body| body.key.clone()),
+                original,
+                "the original shows below it"
+            );
+            let [window] = restarted.app.new_mail.as_slice() else {
+                panic!("{:?}", restarted.app.new_mail);
+            };
+            assert_eq!(window.subject, "Plans");
+            assert_eq!(window.error, Some((Field::Send, RESTORED.into())));
+            assert!(restarted.app.next_compose > pane.id.max(window.id));
+        }
+
+        #[test]
+        fn a_reply_whose_original_is_gone_reopens_as_new_mail() {
+            let Replying { mut driver, fx, .. } = replying(&[1]);
+            open(&mut driver, "r");
+            write(&mut driver, PANE, ComposeField::Text, "Half a reply");
+            driver.app.composer.as_mut().unwrap().in_reply_to = Some("<1@example.com>".into());
+            driver.at(6.0);
+            drop(driver);
+            let store = postvak_core::store::Store::open_account(&fx.paths, "work").unwrap();
+            store.remove_message("INBOX", 1).unwrap();
+
+            let (restarted, _wires) = fx.driver();
+            assert!(restarted.app.composer.is_none());
+            let [window] = restarted.app.new_mail.as_slice() else {
+                panic!("{:?}", restarted.app.new_mail);
+            };
+            assert_eq!(window.kind, ComposeKind::New);
+            assert_eq!(window.text, "Half a reply");
+            assert_eq!(window.to, "Sender 1 <sender1@example.com>");
+            assert_eq!(window.in_reply_to.as_deref(), Some("<1@example.com>"));
+        }
+
+        #[test]
+        fn quitting_writes_the_files_without_asking() {
+            let Replying { mut driver, fx, .. } = replying(&[1]);
+            open(&mut driver, "r");
+            write(&mut driver, PANE, ComposeField::Text, "Half a reply");
+            new_mail_typed(&mut driver, "Plans");
+            assert!(left(&fx).is_empty());
+            driver.app.save_recoveries();
+            let texts: Vec<_> = left(&fx).into_iter().map(|c| (c.text, c.subject)).collect();
+            assert_eq!(texts.len(), 2, "{texts:?}");
+            assert_eq!(driver.app.top_dialog(), None);
+            assert!(driver.app.leave_compose.is_none() && driver.app.leave_new_mail.is_empty());
+        }
+
+        #[test]
+        fn a_new_mail_window_that_fails_to_open_keeps_its_file() {
+            let Replying { mut driver, fx, .. } = replying(&[1]);
+            let ComposeTarget::Window(id) = new_mail_typed(&mut driver, "Plans") else {
+                panic!("not a window");
+            };
+            driver.apply(UiAction::NewMailFailed(id, "no display".into()));
+            assert!(driver.app.new_mail.is_empty());
+            assert_eq!(left(&fx)[0].subject, "Plans");
         }
     }
 }

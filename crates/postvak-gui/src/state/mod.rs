@@ -887,6 +887,10 @@ pub struct App {
     pub(crate) new_mail: Vec<Composer>,
     /// The new-mail windows asking "Discard this message?", by their composer's id.
     pub(crate) leave_new_mail: Vec<u64>,
+    /// Each composer as its recovery file last held it, by id.
+    pub(crate) recovery_written: Vec<Composer>,
+    /// When the changed composers' recovery files are written next, on the window's clock.
+    pub(crate) recovery_due: f64,
     /// The prefill of the pane's composer, by its id, until it answers.
     pub(crate) compose_prefill: Option<(
         u64,
@@ -1090,6 +1094,8 @@ impl App {
             leave_compose: None,
             new_mail: Vec::new(),
             leave_new_mail: Vec::new(),
+            recovery_written: Vec::new(),
+            recovery_due: 0.0,
             compose_prefill: None,
             compose_sending: Vec::new(),
             compose_attaching: None,
@@ -1136,6 +1142,7 @@ impl App {
         };
         app.reload_view();
         super::phases::mark("first_list");
+        app.restore_composers();
         app
     }
 
@@ -1159,6 +1166,7 @@ impl App {
         self.receive_expunge_check();
         self.receive_save_as();
         self.receive_compose(now);
+        self.keep_recoveries(now);
         self.receive_list();
         if std::mem::take(&mut self.view_dirty) {
             self.refresh_view();

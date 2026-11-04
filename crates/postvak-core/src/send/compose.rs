@@ -57,6 +57,10 @@ pub struct HeaderEdits {
     pub cc: Vec<String>,
     pub bcc: Vec<String>,
     pub subject: String,
+    /// The Message-ID answered, with its angle brackets; kept when a reply goes on as new mail without its original.
+    pub in_reply_to: Option<String>,
+    /// The thread's Message-IDs, oldest first, with their angle brackets.
+    pub references: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -242,6 +246,8 @@ fn apply_headers(
     draft.cc = edits.cc.clone();
     draft.bcc = edits.bcc.clone();
     draft.subject = edits.subject.clone();
+    draft.in_reply_to = edits.in_reply_to.clone();
+    draft.references = edits.references.clone();
     Ok(())
 }
 
@@ -569,6 +575,8 @@ mod tests {
             cc: vec!["d@x.org".into()],
             bcc: vec!["e@x.org".into()],
             subject: "New".into(),
+            in_reply_to: Some("<m1@x.org>".into()),
+            references: vec!["<m1@x.org>".into()],
         });
         compose(&h.config, &h.daemon.paths, &h.client, edited, no_editor).unwrap();
         let (_, entry) = h.client.client().unwrap().outbox().unwrap().remove(0);
@@ -690,6 +698,41 @@ mod tests {
         );
         assert!(entry.save_sent);
         assert_eq!(h.smtp.with(|s| s.sent.len()), 0);
+    }
+
+    #[test]
+    fn new_mail_keeps_the_threading_headers_it_was_given() {
+        let h = home();
+        let mut threaded = request(SendKind::New {
+            to: vec!["a@x.org".into()],
+            cc: vec![],
+            bcc: vec![],
+            subject: "Re: gone".into(),
+        });
+        threaded.headers = Some(HeaderEdits {
+            from: "me@example.com".into(),
+            to: vec!["a@x.org".into()],
+            cc: vec![],
+            bcc: vec![],
+            subject: "Re: gone".into(),
+            in_reply_to: Some("<gone@x.org>".into()),
+            references: vec!["<first@x.org>".into(), "<gone@x.org>".into()],
+        });
+        compose(&h.config, &h.daemon.paths, &h.client, threaded, no_editor).unwrap();
+        let (_, entry) = h.client.client().unwrap().outbox().unwrap().remove(0);
+        let raw = std::fs::read(
+            h.daemon
+                .paths
+                .outbox_dir("work")
+                .join(format!("{}.eml", entry.id)),
+        )
+        .unwrap();
+        let header = |name| crate::message::header_text(&raw, name);
+        assert_eq!(header("In-Reply-To").as_deref(), Some("<gone@x.org>"));
+        assert_eq!(
+            header("References").as_deref(),
+            Some("<first@x.org> <gone@x.org>")
+        );
     }
 
     #[test]

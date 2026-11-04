@@ -10,7 +10,8 @@ use super::quote_html::{self, Original};
 use crate::config::Identity;
 
 /// Who a reply goes to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ReplyTo {
     /// The sender (Reply-To, else From).
     Sender,

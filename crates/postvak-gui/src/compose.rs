@@ -1,8 +1,10 @@
 //! The composer without a toolkit: its fields, checks, questions and what it asks the daemon to send.
 
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
 
 use postvak_core::config::Identity;
+use postvak_core::paths::{Paths, write_atomic};
 use postvak_core::send::build::{bare_address, mailbox_text};
 use postvak_core::send::check::{CheckError, DEFAULT_SIZE_LIMIT, check_from, valid_address};
 use postvak_core::send::compose::{Body, HeaderEdits, Prefilled, SendKind, SendRequest};
@@ -10,6 +12,7 @@ use postvak_core::send::edit::split_recipients;
 use postvak_core::send::mailto::Mailto;
 use postvak_core::send::reply::{ForwardAs, ReplyTo};
 use postvak_core::store::KnownAddress;
+use serde::{Deserialize, Serialize};
 
 /// Send's hover hint, with its key.
 pub(crate) fn send_hint() -> &'static str {
@@ -20,7 +23,7 @@ pub(crate) fn send_hint() -> &'static str {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ComposeKind {
     New,
     Reply(ReplyTo),
@@ -38,16 +41,17 @@ pub(crate) enum Field {
     To,
 }
 
-/// The message a reply or forward answers; `raw` is empty until the prefill arrives.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The message a reply or forward answers; `raw` is empty until the prefill arrives, and in a recovery file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct OriginalRef {
     pub folder: String,
     pub uid: u32,
+    #[serde(skip)]
     pub raw: Vec<u8>,
 }
 
 /// The fields as the composer opened, to tell whether the user changed anything.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Snapshot {
     bcc: String,
     cc: String,
@@ -71,7 +75,8 @@ pub(crate) enum ComposeField {
     To,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// A composer's recovery file holds all of it but `loading`, `sending`, `error` and the original's raw bytes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Composer {
     pub id: u64,
     pub account: String,
@@ -90,8 +95,14 @@ pub(crate) struct Composer {
     /// The original's attachments as (name, size, whether an inline forward takes it along).
     pub forward_parts: Vec<(String, u64, bool)>,
     pub forward_as_attachment: bool,
+    /// The threading headers the prefill gave, kept for a reply that goes on as new mail when its original is gone.
+    pub in_reply_to: Option<String>,
+    pub references: Vec<String>,
+    #[serde(skip)]
     pub loading: bool,
+    #[serde(skip)]
     pub sending: bool,
+    #[serde(skip)]
     pub error: Option<(Field, String)>,
     /// The largest message the account's server takes, in bytes.
     pub size_limit: u64,
@@ -139,6 +150,8 @@ impl Composer {
             files: Vec::new(),
             forward_parts: Vec::new(),
             forward_as_attachment: false,
+            in_reply_to: None,
+            references: Vec::new(),
             loading: false,
             sending: false,
             error: None,
@@ -212,6 +225,8 @@ impl Composer {
         self.bcc = join_addresses(&draft.bcc);
         self.subject = draft.subject;
         self.text = draft.text;
+        self.in_reply_to = draft.in_reply_to;
+        self.references = draft.references;
         self.forward_parts = prefilled
             .attachments
             .into_iter()
@@ -308,6 +323,15 @@ impl Composer {
             .iter()
             .map(|(name, size, kept)| (name.as_str(), size_in_words(*size), *kept))
             .collect()
+    }
+
+    /// What a reply or forward becomes when its original is gone from the store: new mail with the same fields,
+    /// still threaded.
+    pub(crate) fn without_original(&mut self) {
+        self.kind = ComposeKind::New;
+        self.original = None;
+        self.forward_parts.clear();
+        self.forward_as_attachment = false;
     }
 
     pub(crate) fn changed(&self) -> bool {
@@ -467,16 +491,68 @@ impl Composer {
             attachments: self.files.iter().map(|(path, _)| path.clone()).collect(),
             now: false,
             save_sent: None,
-            original: self.original.as_ref().map(|original| original.raw.clone()),
+            // Without its raw bytes, as after a restart, the original is fetched again by folder and uid.
+            original: (self.original.as_ref())
+                .map(|original| original.raw.clone())
+                .filter(|raw| !raw.is_empty()),
             headers: Some(HeaderEdits {
                 from: self.from.clone(),
                 to,
                 cc,
                 bcc,
                 subject: self.subject.clone(),
+                in_reply_to: self.in_reply_to.clone(),
+                references: self.references.clone(),
             }),
             forward_parts,
         }
+    }
+}
+
+/// Where each open composer is kept, so a crash or quit loses nothing: `<state>/compose/<id>.json`.
+pub(crate) fn recovery_dir(paths: &Paths) -> PathBuf {
+    paths.state_dir.join("compose")
+}
+
+fn recovery_file(dir: &Path, id: u64) -> PathBuf {
+    dir.join(format!("{id}.json"))
+}
+
+pub(crate) fn save_recovery(dir: &Path, composer: &Composer) -> io::Result<()> {
+    let json = serde_json::to_vec(composer).map_err(io::Error::other)?;
+    write_atomic(&recovery_file(dir, composer.id), &json)
+}
+
+/// The composers left in `dir`, oldest first; a file that cannot be read stays there and is skipped.
+pub(crate) fn load_recoveries(dir: &Path) -> Vec<Composer> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut composers: Vec<Composer> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|e| e == "json"))
+        .filter_map(|path| {
+            let read = std::fs::read(&path).ok();
+            let composer = read.and_then(|bytes| serde_json::from_slice(&bytes).ok());
+            if composer.is_none() {
+                // Only the name: a parse error can quote what the file holds.
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                log::warn!("could not read the unsent message in {name}; it was left there");
+            }
+            composer
+        })
+        .collect();
+    composers.sort_by_key(|composer| composer.id);
+    composers
+}
+
+pub(crate) fn remove_recovery(dir: &Path, id: u64) {
+    match std::fs::remove_file(recovery_file(dir, id)) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => {
+            log::warn!("could not remove the unsent message {id}.json: {e}");
+        }
+        _ => {}
     }
 }
 
@@ -646,6 +722,74 @@ mod tests {
         composer.fill(prefilled(draft, vec![]), &identity());
         assert_eq!(composer.cc, "b@example.org, c@example.org");
         assert!(composer.show_cc_bcc);
+    }
+
+    #[test]
+    fn a_composer_round_trips_through_its_file() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let mut composer = Composer::forward(3, "work", "INBOX", 7);
+        let draft = Draft {
+            from: "me@example.com".into(),
+            references: vec!["<1@x.org>".into()],
+            ..Draft::default()
+        };
+        composer.fill(prefilled(draft, vec![("a.pdf".into(), 10)]), &identity());
+        composer.set(ComposeField::To, "ann@example.org".into());
+        composer.set(ComposeField::Text, "See below".into());
+        composer.files.push(file_of(&dir, "notes.txt", 4));
+        composer.forward_parts[0].2 = false;
+        composer.error = Some((Field::Send, "not sent".into()));
+        composer.sending = true;
+        save_recovery(dir.path(), &composer).unwrap_or_else(|e| panic!("{e}"));
+
+        let restored = load_recoveries(dir.path());
+        composer.error = None;
+        composer.sending = false;
+        if let Some(original) = composer.original.as_mut() {
+            original.raw.clear();
+        }
+        assert_eq!(restored, [composer]);
+        assert!(restored[0].changed(), "it still asks before it goes");
+    }
+
+    #[test]
+    fn an_unreadable_file_is_skipped() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let mut composer = new_mail();
+        composer.set(ComposeField::Text, "Hi".into());
+        save_recovery(dir.path(), &composer).unwrap_or_else(|e| panic!("{e}"));
+        std::fs::write(dir.path().join("2.json"), "{ not json").unwrap_or_else(|e| panic!("{e}"));
+        let restored = load_recoveries(dir.path());
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].text, "Hi");
+        assert!(dir.path().join("2.json").exists(), "left for the user");
+        remove_recovery(dir.path(), composer.id);
+        assert!(load_recoveries(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn a_reply_without_its_original_goes_on_as_threaded_new_mail() {
+        let mut composer = Composer::reply(3, "work", "INBOX", 7, ReplyTo::Sender);
+        let draft = Draft {
+            from: "me@example.com".into(),
+            to: vec!["ann@example.org".into()],
+            subject: "Re: lunch".into(),
+            in_reply_to: Some("<7@x.org>".into()),
+            references: vec!["<7@x.org>".into()],
+            ..Draft::default()
+        };
+        composer.fill(prefilled(draft, Vec::new()), &identity());
+        composer.without_original();
+        let request = composer.request();
+        assert!(
+            matches!(request.kind, SendKind::New { .. }),
+            "{:?}",
+            request.kind
+        );
+        assert_eq!(request.original, None);
+        let headers = request.headers.unwrap_or_else(|| panic!("no headers"));
+        assert_eq!(headers.in_reply_to.as_deref(), Some("<7@x.org>"));
+        assert_eq!(headers.references, ["<7@x.org>"]);
     }
 
     #[test]
