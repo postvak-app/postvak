@@ -569,7 +569,8 @@ fn restore(window: &ui::MailWindow, layout: Option<persist::Layout>) {
     window.set_folders_width(layout.folders_width.max(theme::CONTROL));
     window.set_list_width(layout.list_width.max(list::MIN_WIDTH));
     if let Some(share) = layout.compose_height {
-        window.set_compose_share(share);
+        // The same bounds as dragging the divider, in case window.json was edited by hand.
+        window.set_compose_share(share.clamp(0.2, 0.8));
     }
 }
 
@@ -1039,8 +1040,20 @@ mod tests {
         assert_eq!(layout.compose_height, Some(0.3));
         drop(open);
         let (open, _wires) = fx.window();
-        super::restore(&open.window(), Some(layout));
+        super::restore(&open.window(), Some(layout.clone()));
         assert_eq!(open.window().get_compose_share(), 0.3);
+        let edited = |share| super::persist::Layout {
+            compose_height: Some(share),
+            ..layout.clone()
+        };
+        super::restore(&open.window(), Some(edited(5.0)));
+        assert_eq!(
+            open.window().get_compose_share(),
+            0.8,
+            "as far as a drag goes"
+        );
+        super::restore(&open.window(), Some(edited(-1.0)));
+        assert_eq!(open.window().get_compose_share(), 0.2);
     }
 
     #[test]
