@@ -6555,6 +6555,17 @@ fn a_sent_draft_is_deleted_from_drafts() {
     );
     assert!(ops.mail["Drafts"].is_empty());
     assert!(ops.mail["Sent"].is_empty(), "the copy was done before");
+    assert_eq!(store.latest_by_message_id("d1@x").unwrap(), None);
+}
+
+#[test]
+fn a_store_error_while_deleting_the_draft_waits_for_the_next_try() {
+    let (mut ops, store, trash, _dir, command) = finishing_a_draft();
+    store.execute_for_tests("DROP TABLE folders");
+    let (run, events) = drain(&mut ops, &store, &trash, vec![command]);
+    run.unwrap();
+    assert_eq!(finished_all(&events), Some((true, true, false)));
+    assert_eq!(ops.mail["Drafts"].len(), 1);
 }
 
 #[test]

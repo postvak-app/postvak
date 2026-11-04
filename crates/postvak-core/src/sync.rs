@@ -1693,6 +1693,12 @@ fn run_command(
                 Ok(done) => (done, None),
                 Err((done, e)) => (done, Some(e)),
             };
+            if done.draft_deleted && !job.draft_deleted && !job.draft.is_empty() {
+                let folders = store.folders().unwrap_or_default();
+                if let Some(drafts) = crate::send::drafts::drafts_folder(&folders) {
+                    sync_now(ops, store, &drafts);
+                }
+            }
             let finished = Event::SentFinished {
                 account: name(),
                 id,
