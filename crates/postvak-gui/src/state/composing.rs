@@ -265,28 +265,38 @@ impl App {
                 false => (Field::Note, RESTORED.into()),
             });
             self.recovery_written.push(composer.clone());
-            let target = if composer.kind == ComposeKind::New {
-                let target = ComposeTarget::Window(composer.id);
-                self.new_mail.push(composer);
-                target
-            } else {
-                if let Some(original) = &composer.original {
-                    self.open_message(postvak_core::notify::Open {
-                        account: Some(composer.account.clone()),
-                        folder: original.folder.clone(),
-                        uid: original.uid,
-                    });
-                }
-                self.composer = Some(composer);
-                ComposeTarget::Pane
-            };
-            self.check_size(target);
+            self.place_composer(composer);
         }
         if kept > 0 {
             let messages =
                 crate::numbers::counted(kept, "more unsent message", "more unsent messages");
             self.notice(format!("{messages} kept for a later start"));
         }
+    }
+
+    /// Puts `composer` back: a reply or forward in the reader pane over its original, which the reader opens; new mail,
+    /// or one whose original is gone from the store, in a window as new mail.
+    fn place_composer(&mut self, mut composer: Composer) {
+        if composer.kind != ComposeKind::New && !self.original_stored(&composer) {
+            composer.without_original();
+        }
+        let target = match &composer.original {
+            Some(original) if composer.kind != ComposeKind::New => {
+                self.open_message(postvak_core::notify::Open {
+                    account: Some(composer.account.clone()),
+                    folder: original.folder.clone(),
+                    uid: original.uid,
+                });
+                self.composer = Some(composer);
+                ComposeTarget::Pane
+            }
+            _ => {
+                let target = ComposeTarget::Window(composer.id);
+                self.new_mail.push(composer);
+                target
+            }
+        };
+        self.check_size(target);
     }
 
     /// Moves the pane's reply, whose original is gone, to a window as new mail that still answers it.
@@ -824,11 +834,7 @@ impl App {
         if let Some(mut composer) = taken.composer.take() {
             taken.state = UndoState::Undone;
             composer.sending = false;
-            if composer.kind == ComposeKind::New {
-                self.new_mail.push(*composer);
-            } else {
-                self.composer = Some(*composer);
-            }
+            self.place_composer(*composer);
         }
     }
 
@@ -969,6 +975,15 @@ impl App {
                 } else {
                     UndoState::Undone
                 };
+                // Kept on disk too, as it may wait in `taken` behind another composer.
+                if let Some(composer) = &taken.composer
+                    && let Err(e) = save_recovery(&recovery_dir(&self.paths), composer)
+                {
+                    log::warn!(
+                        "could not keep the unsent message {}.json: {e}",
+                        composer.id
+                    );
+                }
                 self.toast = Some(Toast::new("Not sent".into(), false));
                 self.apply_action(UiAction::ReopenCompose(id));
             }
@@ -1347,6 +1362,36 @@ mod tests {
         assert!(!reopened.sending);
         reopened.text = before.text.clone();
         assert_eq!(reopened, before);
+    }
+
+    #[test]
+    fn undo_reopens_a_reply_over_its_original() {
+        let Replying { mut driver, .. } = replying(&[1, 2]);
+        driver.press("down");
+        open(&mut driver, "r");
+        let original = driver.app.body.as_ref().map(|body| body.key.clone());
+        send(&mut driver, "Thanks");
+        driver.press("up");
+        driver.tick_until(|app| app.body.as_ref().map(|b| &b.key) != original.as_ref());
+
+        driver.apply(UiAction::Undo);
+        driver.tick_until(|app| app.composer.is_some());
+        driver.tick_until(|app| app.body.as_ref().map(|b| &b.key) == original.as_ref());
+    }
+
+    #[test]
+    fn undo_of_a_reply_whose_original_went_reopens_it_as_new_mail() {
+        let Replying { mut driver, fx, .. } = replying(&[1]);
+        open(&mut driver, "r");
+        send(&mut driver, "Thanks");
+        let store = postvak_core::store::Store::open_account(&fx.paths, "work").unwrap();
+        store.remove_message("INBOX", 1).unwrap();
+
+        driver.apply(UiAction::Undo);
+        driver.tick_until(|app| !app.new_mail.is_empty());
+        assert!(driver.app.composer.is_none());
+        assert_eq!(driver.app.new_mail[0].kind, ComposeKind::New);
+        assert_eq!(driver.app.new_mail[0].text, "Thanks");
     }
 
     #[test]
@@ -2654,6 +2699,23 @@ mod tests {
             assert_eq!(window.in_reply_to.as_deref(), Some("<1@example.com>"));
             assert_eq!(window.error, Some((Field::Note, GONE_AS_NEW.into())));
             assert!(!window.sending);
+        }
+
+        #[test]
+        fn a_taken_back_reply_held_by_another_composer_keeps_its_file() {
+            let Replying { mut driver, fx, .. } = replying(&[1, 2]);
+            open(&mut driver, "r");
+            send(&mut driver, "Thanks");
+            assert!(left(&fx).is_empty());
+            driver.press("down");
+            open(&mut driver, "r");
+            write(&mut driver, PANE, ComposeField::Text, "Another");
+
+            driver.apply(UiAction::Undo);
+            driver.tick_until(|app| app.leave_compose.is_some());
+            driver.apply(UiAction::LeaveComposeCancel(PANE));
+            let texts: Vec<_> = left(&fx).into_iter().map(|c| c.text).collect();
+            assert_eq!(texts, ["Thanks"], "kept on disk while it waits");
         }
 
         #[test]
