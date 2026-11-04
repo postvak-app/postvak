@@ -7168,14 +7168,11 @@ fn a_forward_acts_only_on_mail_from_its_approval_on() {
     assert_eq!(f.queue.taken().len(), 1);
 }
 
-fn draft_saved(events: &[Event]) -> Option<Option<String>> {
+fn draft_saved(events: &[Event]) -> Option<(Option<String>, Vec<String>)> {
     events.iter().find_map(|e| match e {
         Event::DraftSaved {
             message_id, left, ..
-        } => {
-            assert!(left.is_empty(), "{left:?}");
-            Some(message_id.clone())
-        }
+        } => Some((message_id.clone(), left.clone())),
         _ => None,
     })
 }
@@ -7194,7 +7191,7 @@ fn draft_save_answers_with_the_new_message_id_and_syncs_drafts() {
     run.unwrap();
     assert_eq!(
         draft_saved(&events),
-        Some(Some("d1@x".into())),
+        Some((Some("<d1@x>".into()), Vec::new())),
         "{events:?}"
     );
     assert_eq!(ops.mail["Drafts"][0].flags, ["\\Draft", "\\Seen"]);

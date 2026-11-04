@@ -640,8 +640,8 @@ mod recording {
             self.calls
                 .push(format!("search_header {} {header} {value}", self.selected));
             let folder = self.selected.clone();
-            let unbracketed = |text: &str| text.replace(['<', '>'], "").to_lowercase();
-            let wanted = unbracketed(value);
+            // As IMAP SEARCH HEADER: a case-insensitive substring of the field.
+            let wanted = value.to_lowercase();
             let name_wanted = header.to_lowercase();
             let has_header = |e: &Envelope| {
                 let raw = self.raw.get(&(folder.clone(), e.uid)).unwrap_or(&e.headers);
@@ -651,7 +651,7 @@ mod recording {
                     .any(|line| {
                         line.split_once(':').is_some_and(|(name, field)| {
                             name.to_lowercase() == name_wanted
-                                && unbracketed(field).contains(&wanted)
+                                && field.to_lowercase().contains(&wanted)
                         })
                     })
             };

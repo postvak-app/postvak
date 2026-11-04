@@ -424,9 +424,12 @@ pub enum SaveDraftError {
     NoDraftsFolder,
     #[error(transparent)]
     Mail(#[from] MailError),
+    #[error(transparent)]
+    Store(#[from] crate::store::StoreError),
 }
 
-/// What a save did: the new copy's Message-ID, and the replaced copies it could not delete, by Message-ID.
+/// What a save did: the new copy's Message-ID, and the replaced copies it could not delete, by Message-ID; each
+/// `<id>`, as `replaces` takes them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SavedDraft {
     pub message_id: Option<String>,
@@ -443,14 +446,16 @@ pub fn save(
     raw: Option<&[u8]>,
     replaces: &[String],
 ) -> Result<SavedDraft, SaveDraftError> {
-    let folders = store.folders().unwrap_or_default();
-    let folder = drafts_folder(&folders).ok_or(SaveDraftError::NoDraftsFolder)?;
+    let folder = drafts_folder(&store.folders()?).ok_or(SaveDraftError::NoDraftsFolder)?;
+    let replaces: Vec<String> = replaces.iter().filter_map(|id| bracketed(id)).collect();
     let Some(raw) = raw else {
-        delete_drafts(ops, account, &folder, replaces)?;
+        delete_drafts(ops, account, &folder, &replaces)?;
         return Ok(SavedDraft::default());
     };
     ops.append(&folder, raw, &["\\Draft", "\\Seen"])?;
-    let message_id = crate::message::parse_headers(raw).message_id;
+    let message_id = crate::message::parse_headers(raw)
+        .message_id
+        .and_then(|id| bracketed(&id));
     log::info!(
         "{account}: saved draft {} in {folder}",
         message_id.as_deref().unwrap_or("without a Message-ID")
@@ -469,7 +474,14 @@ pub fn save(
     Ok(SavedDraft { message_id, left })
 }
 
-/// Expunges every message in `folder` whose Message-ID is in `ids`.
+/// `<id>`, or None for a blank one. `SEARCH HEADER` matches a substring, so only the brackets keep `<d1@x>` from
+/// also matching `<xd1@x>`.
+fn bracketed(id: &str) -> Option<String> {
+    let id = id.trim().trim_start_matches('<').trim_end_matches('>');
+    (!id.is_empty()).then(|| format!("<{id}>"))
+}
+
+/// Expunges every message in `folder` whose Message-ID is in `ids`, each `<id>`.
 fn delete_drafts(
     ops: &mut dyn MailOps,
     account: &str,
@@ -1102,7 +1114,7 @@ mod tests {
         fn saving_appends_with_the_draft_flags() {
             let (mut ops, store) = with_drafts();
             let saved = save(&mut ops, &store, "work", Some(&draft("d2@x")), &[]).unwrap();
-            assert_eq!(saved.message_id.as_deref(), Some("d2@x"));
+            assert_eq!(saved.message_id.as_deref(), Some("<d2@x>"));
             assert!(saved.left.is_empty());
             let appended = ops.mail["Drafts"].last().unwrap();
             assert_eq!(appended.flags, ["\\Draft", "\\Seen"]);
@@ -1197,8 +1209,20 @@ mod tests {
                     &["<d1@x>".into()],
                 )
                 .unwrap();
-                assert_eq!(saved.message_id.as_deref(), Some("d2@x"));
+                assert_eq!(saved.message_id.as_deref(), Some("<d2@x>"));
                 assert_eq!(saved.left, ["<d1@x>"]);
+            }
+        }
+
+        #[test]
+        fn a_replaced_id_never_deletes_a_draft_whose_id_merely_contains_it() {
+            for replaced in ["d1@x", "<d1@x>"] {
+                let (mut ops, store) = with_drafts();
+                let longer = "Message-ID: <xd1@x>\r\n\r\n";
+                ops.add_mail("Drafts", 2, 0, longer, Some(longer));
+                let saved = save(&mut ops, &store, "work", None, &[replaced.into()]).unwrap();
+                assert_eq!(saved, SavedDraft::default());
+                assert_eq!(ids(&ops), [Some("xd1@x".to_string())], "{replaced}");
             }
         }
 

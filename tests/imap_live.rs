@@ -325,17 +325,9 @@ fn save_draft_replaces_its_copy() {
             assert!(saved.left.is_empty(), "{saved:?}");
             saved.message_id
         };
-        let first = save(&mut ops, Some(&mail("draft one")), &[]);
-        assert_eq!(
-            first.as_deref(),
-            Some("draft.one@example.com"),
-            "port {port}"
-        );
-        save(
-            &mut ops,
-            Some(&mail("draft two")),
-            &["<draft.one@example.com>".into()],
-        );
+        let first = save(&mut ops, Some(&mail("draft one")), &[]).unwrap();
+        assert_eq!(first, "<draft.one@example.com>", "port {port}");
+        let second = save(&mut ops, Some(&mail("draft two")), &[first]).unwrap();
         ops.select("Drafts").unwrap();
         let drafts = all_envelopes(&mut ops);
         assert_eq!(drafts.len(), 1, "port {port}");
@@ -350,10 +342,7 @@ fn save_draft_replaces_its_copy() {
                 drafts[0].flags
             );
         }
-        assert_eq!(
-            save(&mut ops, None, &["<draft.two@example.com>".into()]),
-            None
-        );
+        assert_eq!(save(&mut ops, None, &[second]), None);
         assert!(all_envelopes(&mut ops).is_empty(), "port {port}");
     }
 }
