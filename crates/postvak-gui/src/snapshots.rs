@@ -1150,7 +1150,9 @@ fn compose_completion() {
         .window()
         .set_size(slint::LogicalSize::new(720.0, 640.0));
     open.tick();
-    window.invoke_compose_edited(super::ui::ComposeField::To, "a".into());
+    window
+        .global::<crate::ui::ComposeState>()
+        .invoke_edited(super::ui::ComposeField::To, "a".into());
     open.tick_until(|open| open.with(|live| live.app.completion.is_some()));
     open.tick();
     i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_secs(2));

@@ -11,7 +11,7 @@ import { RuleDialog, RuleEditor, UnsavedDialog } from "rule_editor.slint";
 import { AboutDialog } from "about.slint";
 import { Preferences, PreferencesDialog } from "preferences.slint";
 import { ListPane, RowData } from "list.slint";
-import { ComposeData, ComposeField, ComposePart, Composer, LeaveComposeDialog } from "compose.slint";
+import { ComposeState, Composer, LeaveComposeDialog } from "compose.slint";
 
 export enum Pane { body, folders, list }
 
@@ -86,31 +86,8 @@ export component MailWindow inherits Window {
     in property <Pane> focused-pane: Pane.list;
     // A folder or All inboxes: a list and the body; else Rules, Activity or Backups, one pane.
     in property <bool> mail-view: true;
-    // The reader pane's composer, above the original; and its part of the pane's height, which the splitter drags.
-    in property <ComposeData> compose;
-    in property <[string]> compose-from-choices;
-    in property <[AttachmentData]> compose-files;
-    in property <[ComposePart]> compose-parts;
-    in property <[string]> compose-completions;
-    in property <string> compose-send-hint;
+    // The reader pane composer's part of the pane's height, which the splitter drags; `ComposeState` holds the rest.
     in-out property <float> compose-share: 0.5;
-    callback compose-edited(ComposeField, string);
-    callback compose-completion-step(int);
-    callback compose-completion-pick(int);
-    callback compose-completion-close();
-    callback compose-from-chosen(int);
-    callback compose-show-cc-bcc();
-    callback compose-attach();
-    callback compose-remove-file(int);
-    callback compose-toggle-part(int);
-    callback compose-as-attachment(bool);
-    callback compose-send();
-    callback compose-close();
-    callback compose-discard();
-    // "Discard this message?" while it asks.
-    in property <string> leave-compose;
-    callback leave-compose-discard();
-    callback leave-compose-cancel();
     in property <bool> config-changed;
     // Phosphor glyphs from `icons.rs`.
     in property <string> close-icon;
@@ -361,7 +338,7 @@ export component MailWindow inherits Window {
             keys.focus();
         }
     }
-    property <bool> composing: root.compose.open;
+    property <bool> composing: ComposeState.data.open;
     changed composing => {
         if (!root.composing) {
             keys.focus();
@@ -679,38 +656,19 @@ export component MailWindow inherits Window {
                     // So the window, which cannot get narrower than its panes, leaves room for the subject and actions.
                     min-width: root.list-min-width;
                     focused: root.focused-pane == Pane.body;
-                    property <length> compose-height: root.compose.open ? (self.height - Theme.pad) * clamp(root.compose-share, 0.2, 0.8) : 0;
-                    if root.compose.open: Composer {
+                    property <length> compose-height: ComposeState.data.open ? (self.height - Theme.pad) * clamp(root.compose-share, 0.2, 0.8) : 0;
+                    if ComposeState.data.open: Composer {
                         y: 0;
                         height: reader.compose-height;
-                        data: root.compose;
-                        from-choices: root.compose-from-choices;
-                        files: root.compose-files;
-                        parts: root.compose-parts;
-                        completions: root.compose-completions;
                         remove-icon: root.close-icon;
-                        send-hint: root.compose-send-hint;
-                        edited(field, text) => { root.compose-edited(field, text); }
-                        completion-step(by) => { root.compose-completion-step(by); }
-                        completion-pick(i) => { root.compose-completion-pick(i); }
-                        completion-close => { root.compose-completion-close(); }
-                        from-chosen(i) => { root.compose-from-chosen(i); }
-                        show-cc-bcc => { root.compose-show-cc-bcc(); }
-                        attach => { root.compose-attach(); }
-                        remove-file(i) => { root.compose-remove-file(i); }
-                        toggle-part(i) => { root.compose-toggle-part(i); }
-                        as-attachment(on) => { root.compose-as-attachment(on); }
-                        send => { root.compose-send(); }
-                        close => { root.compose-close(); }
-                        discard => { root.compose-discard(); }
                     }
-                    if root.compose.open: RowSplitter {
+                    if ComposeState.data.open: RowSplitter {
                         y: reader.compose-height;
                         share <=> root.compose-share;
                         room: reader.height - Theme.pad;
                     }
                     BodyPane {
-                        y: root.compose.open ? reader.compose-height + Theme.pad : 0;
+                        y: ComposeState.data.open ? reader.compose-height + Theme.pad : 0;
                         height: reader.height - self.y;
                         info: root.body-info;
                         text: root.body-text;
@@ -961,16 +919,16 @@ export component MailWindow inherits Window {
         close-icon: root.close-icon;
     }
 
-    if root.leave-compose != "": Scrim {
-        close => { root.leave-compose-cancel(); }
+    if ComposeState.leave-question != "": Scrim {
+        close => { ComposeState.leave-cancel(); }
     }
-    if root.leave-compose != "": LeaveComposeDialog {
+    if ComposeState.leave-question != "": LeaveComposeDialog {
         x: (root.width - self.width) / 2;
         y: Theme.top-bar + Theme.inset;
-        question: root.leave-compose;
+        question: ComposeState.leave-question;
         close-icon: root.close-icon;
-        discard => { root.leave-compose-discard(); }
-        cancel => { root.leave-compose-cancel(); }
+        discard => { ComposeState.leave-discard(); }
+        cancel => { ComposeState.leave-cancel(); }
     }
 
     if root.help-open: Scrim {

@@ -1179,7 +1179,8 @@ mod tests {
     fn leaving_a_changed_composer_asks_in_the_window() {
         let (_fx, open) = replying_in_the_window();
         open.window()
-            .invoke_compose_edited(crate::ui::ComposeField::Text, "Hi".into());
+            .global::<crate::ui::ComposeState>()
+            .invoke_edited(crate::ui::ComposeField::Text, "Hi".into());
         assert_eq!(
             open.with(|live| live.app.composer.as_ref().map(|c| c.text.clone())),
             Some("Hi".into())
@@ -1851,12 +1852,28 @@ mod tests {
         });
         let windows = open.compose_windows();
         assert_eq!(windows.len(), 2);
-        windows[0].invoke_compose_edited(crate::ui::ComposeField::Subject, "First".into());
-        windows[1].invoke_compose_edited(crate::ui::ComposeField::Subject, "Second".into());
+        windows[0]
+            .global::<crate::ui::ComposeState>()
+            .invoke_edited(crate::ui::ComposeField::Subject, "First".into());
+        windows[1]
+            .global::<crate::ui::ComposeState>()
+            .invoke_edited(crate::ui::ComposeField::Subject, "Second".into());
         open.tick();
         assert_eq!(new_mail_subjects(&open), ["First", "Second"]);
-        assert_eq!(windows[0].get_compose().subject, "First");
-        assert_eq!(windows[1].get_compose().subject, "Second");
+        assert_eq!(
+            windows[0]
+                .global::<crate::ui::ComposeState>()
+                .get_data()
+                .subject,
+            "First"
+        );
+        assert_eq!(
+            windows[1]
+                .global::<crate::ui::ComposeState>()
+                .get_data()
+                .subject,
+            "Second"
+        );
         assert!(open.with(|live| live.app.composer.is_none()));
     }
 
@@ -1866,13 +1883,17 @@ mod tests {
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = fx.window();
         open.with(|live| live.app.apply(UiAction::NewMail(None)));
-        open.compose_windows()[0].invoke_compose_close();
+        open.compose_windows()[0]
+            .global::<crate::ui::ComposeState>()
+            .invoke_close();
         open.tick();
         assert!(open.compose_windows().is_empty(), "an unchanged one closes");
 
         open.with(|live| live.app.apply(UiAction::NewMail(None)));
         let window = open.compose_windows()[0].clone_strong();
-        window.invoke_compose_edited(crate::ui::ComposeField::Text, "Hi".into());
+        window
+            .global::<crate::ui::ComposeState>()
+            .invoke_edited(crate::ui::ComposeField::Text, "Hi".into());
         window.window().dispatch_event(WindowEvent::CloseRequested);
         open.tick();
         let asks = |window: &crate::ui::ComposeWindow| {
@@ -1900,7 +1921,9 @@ mod tests {
         assert_eq!(new_mail_subjects(&open).len(), 1);
         escape(&window);
         assert_eq!(asks(&window), 1, "Esc closes, which asks");
-        window.invoke_leave_compose_discard();
+        window
+            .global::<crate::ui::ComposeState>()
+            .invoke_leave_discard();
         open.tick();
         assert!(open.compose_windows().is_empty());
         assert!(new_mail_subjects(&open).is_empty());
@@ -2224,7 +2247,9 @@ mod tests {
         let window = open.compose_windows()[0].clone_strong();
         let type_an = || {
             click_in(&window, "To");
-            window.invoke_compose_edited(crate::ui::ComposeField::To, "an".into());
+            window
+                .global::<crate::ui::ComposeState>()
+                .invoke_edited(crate::ui::ComposeField::To, "an".into());
             open.tick_until(|open| open.with(|live| completing(&live.app)));
             open.tick();
         };
