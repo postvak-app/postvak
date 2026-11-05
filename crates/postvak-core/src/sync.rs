@@ -2491,7 +2491,7 @@ fn run_session(
             continue;
         }
         if account.index_bodies
-            && indexer.slice(ops.as_mut(), &state.store, account, events)?
+            && indexer.slice(ops.as_mut(), &state.store, account, events, wake)?
                 == IndexOutcome::Progressed
         {
             // Mail that arrived while the backlog folder was selected, then a short wait so pushes and commands get

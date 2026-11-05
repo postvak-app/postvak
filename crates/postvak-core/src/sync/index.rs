@@ -1,8 +1,10 @@
 //! Indexing message bodies for search in the account's idle time. A slice takes the newest messages the store has
 //! not indexed, fetches each one's structure and only its text parts, and stores the text and the attachment names,
 //! never the raw message. It fetches the structures of a run of messages of one folder in one command, and keeps the
-//! folder selected for the next slice. It stops after `SLICE_BUDGET`, so pushes and commands wait at most that long.
+//! folder selected for the next slice. It stops after `SLICE_BUDGET`, so pushes wait at most that long, or once a
+//! command is queued, so a command waits for one message.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
@@ -53,13 +55,15 @@ impl Session {
         self.selected = None;
     }
 
-    /// Runs one slice when the store has a backlog, after checking the search index once.
+    /// Runs one slice when the store has a backlog, after checking the search index once. It ends early once `woken`
+    /// is set, so a queued command or a stop waits for one message rather than the whole budget.
     pub(crate) fn slice(
         &mut self,
         ops: &mut dyn MailOps,
         store: &Store,
         account: &AccountConfig,
         events: &Sender<Event>,
+        woken: &AtomicBool,
     ) -> Result<IndexOutcome, SyncError> {
         if self.broken {
             return Ok(IndexOutcome::Done);
@@ -83,7 +87,11 @@ impl Session {
         }
         let started = Instant::now();
         slice(ops, store, account, events, &mut self.selected, &mut || {
-            started.elapsed()
+            if woken.load(Ordering::Acquire) {
+                SLICE_BUDGET
+            } else {
+                started.elapsed()
+            }
         })
     }
 }
