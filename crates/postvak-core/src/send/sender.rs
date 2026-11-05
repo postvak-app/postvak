@@ -285,20 +285,27 @@ impl Senders {
         Ok(raw)
     }
 
-    /// Sends a failed message again, now.
+    /// Sends a waiting or failed message now; a failed one starts its attempts over.
     pub fn retry(&self, account: &str, id: &str) -> io::Result<()> {
         let shared = self.shared(account)?;
         {
             let _lock = shared.lock();
             let mut entry = shared.outbox.get(id)?;
-            if !matches!(entry.state, State::Failed { .. }) {
-                return Err(io::Error::other(format!("message {id} has not failed")));
+            match entry.state {
+                State::Waiting => {}
+                State::Failed { .. } => {
+                    entry.state = State::Waiting;
+                    entry.attempts = 0;
+                    entry.first_try = None;
+                }
+                State::Sending | State::Sent => {
+                    return Err(io::Error::other(format!(
+                        "message {id} is already on its way"
+                    )));
+                }
             }
             shared.outbox.raw(id)?;
-            entry.state = State::Waiting;
             entry.due = (self.clock)();
-            entry.attempts = 0;
-            entry.first_try = None;
             shared.outbox.write(&entry)?;
         }
         log::info!("{account}: retrying {id}");
@@ -838,6 +845,14 @@ mod tests {
         std::thread::sleep(Duration::from_millis(200));
         assert_eq!(h.sent(), 0);
         assert!(h.senders().entries().is_empty());
+    }
+
+    #[test]
+    fn retry_sends_a_waiting_message_before_its_due_time() {
+        let h = Harness::new(true);
+        let entry = h.queue(h.now() + 10, false);
+        h.senders().retry("work", &entry.id).unwrap();
+        until("the send", || h.sent() == 1);
     }
 
     #[test]

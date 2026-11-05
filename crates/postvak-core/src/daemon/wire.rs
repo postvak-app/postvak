@@ -56,7 +56,7 @@ pub enum ClientMessage {
         account: String,
         outbox_id: String,
     },
-    /// Sends a failed outbox message again.
+    /// Sends a waiting or failed outbox message now.
     RetrySend {
         id: u64,
         account: String,

@@ -1011,7 +1011,7 @@ List the messages waiting to be sent and those that failed
 ###### **Subcommands:**
 
 * `cancel` — Take back a message that is not being sent yet; prints it, so nothing is lost
-* `retry` — Send a failed message again
+* `retry` — Send a waiting or failed message now
 
 ###### **Options:**
 
@@ -1038,7 +1038,7 @@ Take back a message that is not being sent yet; prints it, so nothing is lost
 
 ## `postvak outbox retry`
 
-Send a failed message again
+Send a waiting or failed message now
 
 **Usage:** `postvak outbox retry [OPTIONS] <ID>`
 

@@ -266,7 +266,10 @@ The window ends it after a while; the pointer on it keeps it. Its parent places 
 export component Toast inherits Rectangle {
     in property <string> text;
     in property <bool> undo;
+    // A message waiting out its undo delay: Send now sends it at once.
+    in property <bool> send-now;
     callback undo-clicked();
+    callback send-now-clicked();
     callback hover(bool);
     property <bool> shown;
     init => { root.shown = true; }
@@ -300,6 +303,17 @@ export component Toast inherits Rectangle {
             color: Theme.frame.text;
             vertical-alignment: center;
             overflow: elide;
+        }
+        if root.send-now: VerticalLayout {
+            alignment: center;
+            TextButton {
+                text: "Send now";
+                small: true;
+                palette: Theme.frame;
+                text-color: Theme.frame.accent;
+                hint: "Send it without waiting";
+                clicked => { root.send-now-clicked(); }
+            }
         }
         if root.undo: VerticalLayout {
             alignment: center;

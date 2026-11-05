@@ -2573,7 +2573,7 @@ fn cmd_outbox(paths: &Paths, command: Option<OutboxCommand>, json: bool) -> Resu
         Some(OutboxCommand::Retry { id, account }) => {
             let account = account_of(&id, account)?;
             client.retry_send(&account, &id)?;
-            println!("sending {id} again");
+            println!("sending {id} now");
             Ok(())
         }
     }
