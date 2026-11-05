@@ -529,6 +529,14 @@ fn toast_after_a_partial_undo() {
 }
 
 #[test]
+fn toast_while_sending() {
+    let (_fx, open, _wires) = inbox("light");
+    let toast = super::undo::Toast::sending("Sending to Linus Example".into(), 10, 0.0);
+    open.with(|live| live.app.toast = Some(toast));
+    snapshot(&open, "gui_toast_sending");
+}
+
+#[test]
 fn keys_help() {
     let (_fx, open, _wires) = inbox("light");
     open.press("?");

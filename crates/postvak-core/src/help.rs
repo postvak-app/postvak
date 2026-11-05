@@ -86,7 +86,7 @@ and git send-email; exits 0 when sent, 75 when it will be tried again, 69 when r
 pub const OUTBOX: &str = "List the messages waiting to be sent and those that failed";
 pub const OUTBOX_CANCEL: &str =
     "Take back a message that is not being sent yet; prints it, so nothing is lost";
-pub const OUTBOX_RETRY: &str = "Send a failed message again";
+pub const OUTBOX_RETRY: &str = "Send a waiting or failed message now";
 
 /// Why an account cannot send, and where to read how to fix it.
 /// What an agent is told when it approves a forward rule: the rule is enabled, but forwards nothing until a human

@@ -160,11 +160,14 @@ export component MailWindow inherits Window {
     // At the foot of the list or the Activity view after an action or an undo; `toast-undo` offers Undo.
     in property <string> toast;
     in property <bool> toast-undo;
+    // A sent message waiting out its undo delay: the toast offers Send now.
+    in property <bool> toast-send-now;
     // Activity: whether each shown row's action can still be undone.
     in property <[bool]> sheet-undoable;
     callback undo();
     callback undo-row(int);
     callback toast-hover(bool);
+    callback send-now();
     in property <string> list-title;
     in property <int> list-filter;
     in property <string> filter-label;
@@ -624,7 +627,9 @@ export component MailWindow inherits Window {
                         review => { root.review-proposals(); }
                         toast: root.toast;
                         toast-undo: root.toast-undo;
+                        toast-send-now: root.toast-send-now;
                         undo => { root.undo(); }
+                        send-now => { root.send-now(); }
                         toast-hover(hovered) => { root.toast-hover(hovered); }
                         filter: root.list-filter;
                         filter-label: root.filter-label;

@@ -655,6 +655,22 @@ impl App {
         self.retrying.push(answer);
     }
 
+    /// Sends the message the toast counts down for at once, rather than when its undo delay ends.
+    pub(super) fn send_now(&mut self) {
+        let Some(words) = self
+            .toast
+            .as_ref()
+            .and_then(|toast| toast.count_down.clone())
+        else {
+            return;
+        };
+        let Some((account, id)) = self.taken.last().and_then(|taken| taken.outbox.clone()) else {
+            return;
+        };
+        self.retry_outbox(account, id);
+        self.toast = Some(Toast::new(words, false));
+    }
+
     /// A retry the daemon took shows at once in the outbox; one it refused says why.
     fn receive_retries(&mut self) {
         let mut index = 0;
@@ -1338,6 +1354,32 @@ mod tests {
         assert_eq!(toast(&driver), Some(("Sending to Sender 1 in 7 s", true)));
         driver.at(10.0);
         assert_eq!(toast(&driver), None, "the toast goes when the message does");
+    }
+
+    #[test]
+    fn send_now_sends_the_waiting_message_at_once() {
+        static SENT_NOW: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+        let Replying { mut driver, .. } = replying(&[1]);
+        driver.app.retry_send = |_, account, id| {
+            SENT_NOW.lock().unwrap().push((account.into(), id.into()));
+            Ok(())
+        };
+        open(&mut driver, "r");
+        send(&mut driver, "Thanks");
+        driver.apply(UiAction::SendNow);
+        assert_eq!(toast(&driver), Some(("Sending to Sender 1", false)));
+        driver.tick_until(|app| app.retrying.is_empty());
+        assert_eq!(
+            SENT_NOW.lock().unwrap().clone(),
+            [("work".to_string(), "0000abcd".to_string())]
+        );
+        driver.apply(UiAction::SendNow);
+        driver.tick_until(|app| app.retrying.is_empty());
+        assert_eq!(
+            SENT_NOW.lock().unwrap().len(),
+            1,
+            "only while the toast counts down"
+        );
     }
 
     #[test]

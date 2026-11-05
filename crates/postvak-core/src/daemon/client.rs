@@ -612,7 +612,7 @@ impl Client {
         }
     }
 
-    /// Sends a failed outbox message again.
+    /// Sends a waiting or failed outbox message now.
     pub fn retry_send(&self, account: &str, outbox_id: &str) -> anyhow::Result<()> {
         let message = |id| ClientMessage::RetrySend {
             id,

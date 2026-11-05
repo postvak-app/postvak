@@ -106,8 +106,10 @@ The message waits in the outbox for the undo delay, then goes. Until then:
 ```sh
 postvak outbox                    # what waits, and what failed
 postvak outbox cancel 3f2a9c1b    # take it back; prints the message
-postvak outbox retry 3f2a9c1b     # send a failed one again
+postvak outbox retry 3f2a9c1b     # send a waiting or failed one now
 ```
+
+In the window, the toast after Send counts down with Undo (`z`) and Send now.
 
 Set the delay in `config.toml` to 0, 5, 10 (the default), 20 or 30 seconds, or skip it for one message with `--now`:
 

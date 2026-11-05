@@ -617,6 +617,8 @@ pub(crate) enum UiAction {
     OpenOutbox,
     /// Send failed outbox message `id` of account `index` again.
     RetrySend(usize, String),
+    /// Send the message the toast counts down for at once.
+    SendNow,
     /// The answers to "Discard this message?" about the pane's composer or a new-mail window's.
     LeaveComposeCancel(ComposeTarget),
     LeaveComposeDiscard(ComposeTarget),
@@ -2121,6 +2123,7 @@ impl App {
             UiAction::ReopenCompose(id) => self.reopen_compose(id),
             UiAction::OpenOutbox => self.outbox_open = true,
             UiAction::RetrySend(account, id) => self.retry_outbox(account, id),
+            UiAction::SendNow => self.send_now(),
             compose @ (UiAction::ComposeEdit(..)
             | UiAction::ComposeCompletionStep(..)
             | UiAction::ComposeCompletionPick(..)

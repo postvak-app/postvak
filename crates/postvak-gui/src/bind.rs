@@ -208,11 +208,15 @@ fn present_folder_dialog(app: &App, window: &MailWindow) {
 fn present_list(app: &App, window: &MailWindow) {
     window.set_list_title(list::title(&app.view).unwrap_or_default().into());
     window.set_list_banner(list::banner(app).unwrap_or_default().into());
-    let (toast, toast_undo) = app.toast.as_ref().map_or((String::new(), false), |toast| {
-        (toast.text.clone(), toast.undo)
-    });
-    window.set_toast(toast.into());
-    window.set_toast_undo(toast_undo);
+    let toast = app.toast.as_ref();
+    window.set_toast(
+        toast
+            .map(|toast| toast.text.clone())
+            .unwrap_or_default()
+            .into(),
+    );
+    window.set_toast_undo(toast.is_some_and(|toast| toast.undo));
+    window.set_toast_send_now(toast.is_some_and(|toast| toast.count_down.is_some()));
     window.set_filter_label(list::filter_label(app.filter).unwrap_or_default().into());
     let filter = list::FILTERS.iter().position(|(_, f)| *f == app.filter);
     window.set_list_filter(
@@ -1928,6 +1932,9 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
             let account = app.accounts.iter().position(|a| a.name == *account)?;
             Some(UiAction::UndoAction(account, entry.action_id?))
         }));
+    });
+    window.on_send_now(move || {
+        act(UiAction::SendNow);
     });
     window.on_toast_hover(move |hovered| {
         act(UiAction::ToastHover(hovered));
