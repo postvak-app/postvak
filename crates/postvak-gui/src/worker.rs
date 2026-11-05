@@ -2,6 +2,7 @@
 //! jobs in turn. Every thread is named, and one the OS cannot start is logged rather than panicking: its channel then
 //! reads as stopped.
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::html::Wake;
 
@@ -74,30 +75,18 @@ pub(crate) struct Worker<J, R> {
 }
 
 impl<J: Send + 'static, R: Send + 'static> Worker<J, R> {
-    /// Starts the thread called `name`, which runs `work` on each job.
-    pub fn start(name: &str, wake: Wake, work: impl FnMut(J) -> R + Send + 'static) -> Self {
-        Self::run(name, wake, work, false)
-    }
-
-    /// Like [`Worker::start`], but each job runs only when no later one is queued behind it.
-    pub fn start_newest(name: &str, wake: Wake, work: impl FnMut(J) -> R + Send + 'static) -> Self {
-        Self::run(name, wake, work, true)
-    }
-
-    fn run(
+    /// Starts the thread called `name`, which runs `work` on a job only when no later one is queued behind it.
+    pub fn start_newest(
         name: &str,
         wake: Wake,
         mut work: impl FnMut(J) -> R + Send + 'static,
-        newest_only: bool,
     ) -> Self {
         let (jobs, todo) = mpsc::channel::<J>();
         let (send, done) = mpsc::channel();
         spawn(name, move || {
             while let Ok(mut job) = todo.recv() {
-                if newest_only {
-                    while let Ok(later) = todo.try_recv() {
-                        job = later;
-                    }
+                while let Ok(later) = todo.try_recv() {
+                    job = later;
                 }
                 if send.send(work(job)).is_err() {
                     return;
@@ -105,6 +94,34 @@ impl<J: Send + 'static, R: Send + 'static> Worker<J, R> {
                 wake();
             }
         });
+        Worker { jobs, done }
+    }
+
+    /// Starts `threads` threads called `name`, which run `work` on each job, so a slow job holds back none behind it.
+    pub fn start_many(
+        name: &str,
+        threads: usize,
+        wake: Wake,
+        work: impl Fn(J) -> R + Send + Sync + 'static,
+    ) -> Self {
+        let (jobs, todo) = mpsc::channel::<J>();
+        let (send, done) = mpsc::channel();
+        let todo = Arc::new(Mutex::new(todo));
+        let work = Arc::new(work);
+        for _ in 0..threads {
+            let (todo, send, wake, work) = (todo.clone(), send.clone(), wake.clone(), work.clone());
+            spawn(name, move || {
+                loop {
+                    // Held only to take a job, so the threads work side by side.
+                    let next = todo.lock().unwrap_or_else(PoisonError::into_inner).recv();
+                    let Ok(job) = next else { return };
+                    if send.send(work(job)).is_err() {
+                        return;
+                    }
+                    wake();
+                }
+            });
+        }
         Worker { jobs, done }
     }
 
@@ -224,9 +241,9 @@ mod tests {
     }
 
     #[test]
-    fn a_worker_answers_its_jobs_in_order() {
+    fn a_worker_with_one_thread_answers_its_jobs_in_order() {
         let (wake, _) = counting();
-        let worker = Worker::start("test-worker", wake, |n: u32| n * 2);
+        let worker = Worker::start_many("test-worker", 1, wake, |n: u32| n * 2);
         for n in 1..=3 {
             worker.send(n);
         }

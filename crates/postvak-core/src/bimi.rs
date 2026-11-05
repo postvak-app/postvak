@@ -137,13 +137,10 @@ pub fn logo(
     now: i64,
     net: &dyn Net,
 ) -> anyhow::Result<Option<String>> {
-    let path = cache_file(cache_dir, brand);
-    if let Some(cached) = load(&path)
-        && now >= cached.checked_at
-        && now - cached.checked_at < WEEK
-    {
-        return Ok(cached.svg);
+    if let Some(svg) = cached(cache_dir, brand, now) {
+        return Ok(svg);
     }
+    let path = cache_file(cache_dir, brand);
     let svg = match location(&net.txt(&brand.record_name())?) {
         Some(url) => String::from_utf8(net.get(&url)?)
             .ok()
@@ -157,6 +154,13 @@ pub fn logo(
     // A cache that cannot be written only means asking again next time.
     let _ = save(&path, &fresh);
     Ok(fresh.svg)
+}
+
+/// The cached answer for `brand` while it is under a week old, without asking the network: `Some(None)` for a brand
+/// known to have no logo, `None` when it must be looked up.
+pub fn cached(cache_dir: &Path, brand: &Brand, now: i64) -> Option<Option<String>> {
+    let cached = load(&cache_file(cache_dir, brand))?;
+    (now >= cached.checked_at && now - cached.checked_at < WEEK).then_some(cached.svg)
 }
 
 /// Writes `svg` as the answer for `brand` checked at `now`, as a lookup would; for test fixtures.
