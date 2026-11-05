@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use postvak_core::message::{clean, display_name, header_value};
 use postvak_core::rules::Rule;
+use postvak_core::send::reply::{ReplyTo, reply};
 use postvak_core::store::LogEntry;
 use postvak_core::sync::Activity;
 use postvak_core::time::local_time;
@@ -60,6 +61,8 @@ pub(crate) struct Pane {
     pub unsubscribed: bool,
     /// There is an address to reply to: Reply shows.
     pub reply: bool,
+    /// Reply all reaches more than one person: it takes the Reply button and Reply moves to the More menu.
+    pub reply_all: bool,
     /// The message came through a mailing list that takes posts: the More menu offers Reply to list.
     pub reply_list: bool,
     /// What rules did to the message, when they did anything; whether the strip lists every action; and Why?'s
@@ -162,6 +165,11 @@ pub(crate) fn pane(app: &App) -> Pane {
         .iter()
         .flatten()
         .any(|value| self::address(value).is_some()),
+        reply_all: app.accounts[body.account]
+            .identity
+            .as_ref()
+            .and_then(|identity| reply(&message.headers, ReplyTo::All, identity, "").ok())
+            .is_some_and(|draft| draft.to.len() + draft.cc.len() > 1),
         reply_list: header_value(&message.headers, "List-Post").is_some(),
         provenance: provenance(
             &body.provenance,
@@ -712,6 +720,37 @@ mod tests {
         });
         assert_eq!(original, Some(("INBOX".to_string(), 1)));
         assert!(launched().is_empty(), "no mail app opens");
+    }
+
+    #[test]
+    fn reply_all_leads_only_when_it_reaches_more_than_the_sender() {
+        let reply_all = |headers: &str| {
+            let fx = Fixture::new(&["work"]);
+            let mut original = message("INBOX", 1, "lunch");
+            original.headers = headers.as_bytes().to_vec();
+            fx.add("work", original);
+            let (driver, _wires) = fx.driver();
+            pane(&driver.app).reply_all
+        };
+        assert!(!reply_all(
+            "From: a@example.com\r\nTo: work@example.com\r\n\r\n"
+        ));
+        assert!(reply_all(
+            "From: a@example.com\r\nTo: work@example.com\r\nCc: b@example.com\r\n\r\n"
+        ));
+    }
+
+    #[test]
+    fn the_reply_all_button_opens_a_reply_to_all() {
+        let fx = Fixture::new(&["work"]);
+        let mut original = message("INBOX", 1, "lunch");
+        original.headers =
+            b"From: a@example.com\r\nTo: work@example.com, b@example.com\r\n\r\n".to_vec();
+        fx.add("work", original);
+        let (open, _wires) = fx.window();
+        open.click("Reply all");
+        let kind = open.with(|live| Some(live.app.composer.as_ref()?.kind));
+        assert_eq!(kind, Some(crate::compose::ComposeKind::Reply(ReplyTo::All)));
     }
 
     const WITH_ATTACHMENT: &str = "From: a@example.com\r\nSubject: report\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nSee attached\r\n--b\r\nContent-Type: text/plain\r\nContent-Disposition: attachment; filename=\"report.txt\"\r\n\r\nquarterly numbers\r\n--b--\r\n";
