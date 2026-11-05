@@ -29,5 +29,6 @@ pub(crate) const SEARCH: &str = "\u{E30C}"; // magnifying-glass
 pub(crate) const SENT: &str = "\u{E398}"; // paper-plane-tilt
 pub(crate) const SOURCE: &str = "\u{E1BC}"; // code
 pub(crate) const SYNC: &str = "\u{E094}"; // arrows-clockwise
+pub(crate) const UNVERIFIED: &str = "\u{E60C}"; // seal-warning
 pub(crate) const VERIFIED: &str = "\u{E606}"; // seal-check
 pub(crate) const TRASH: &str = "\u{E4A6}"; // trash

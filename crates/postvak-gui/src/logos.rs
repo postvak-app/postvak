@@ -7,6 +7,7 @@ use std::sync::Arc;
 use hickory_resolver::Resolver;
 use hickory_resolver::proto::rr::RData;
 use postvak_core::bimi::{self, Brand, MAX_SVG, Net};
+use postvak_core::config::Identity;
 
 use super::html::{self, Wake};
 use crate::worker::Worker;
@@ -38,9 +39,11 @@ impl Logos {
         }
     }
 
-    /// The brand a message's headers allow, while sender images are on.
-    pub fn brand(&self, headers: &[u8]) -> Option<Brand> {
-        self.enabled.then(|| bimi::brand(headers)).flatten()
+    /// The brand a message's headers allow, while sender images are on, as the account's trusted servers say: none for
+    /// an account that trusts no server.
+    pub fn brand(&self, headers: &[u8], identity: Option<&Identity>) -> Option<Brand> {
+        let identity = identity.filter(|_| self.enabled)?;
+        bimi::brand(headers, |id| identity.trusts_authserv_id(id))
     }
 
     /// Asks the worker for `brand`'s logo the first time it comes up; the window wakes when it is in.
@@ -142,23 +145,39 @@ mod tests {
 
     use super::*;
     use crate::fixture::message;
-    use crate::test_support::{Fixture, branded, cache_github_logo, wait_until};
+    use crate::test_support::{Fixture, branded, cache_github_logo, trusting, wait_until};
 
     #[test]
     fn a_brand_is_only_read_while_sender_images_are_on() {
         let headers = branded("INBOX", 1, "Hi").headers;
+        let identity = trusting("mx.example.com");
         let dir = tempfile::tempdir().unwrap();
         assert!(
             Logos::new(false, dir.path().into())
-                .brand(&headers)
+                .brand(&headers, Some(&identity))
                 .is_none()
         );
         let on = Logos::new(true, dir.path().into());
         assert_eq!(
-            on.brand(&headers).unwrap().record_name(),
+            on.brand(&headers, Some(&identity)).unwrap().record_name(),
             "default._bimi.github.com"
         );
-        assert!(on.brand(&message("INBOX", 1, "Hi").headers).is_none());
+        assert!(
+            on.brand(&message("INBOX", 1, "Hi").headers, Some(&identity))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_brand_needs_a_server_the_account_trusts() {
+        let headers = branded("INBOX", 1, "Hi").headers;
+        let dir = tempfile::tempdir().unwrap();
+        let on = Logos::new(true, dir.path().into());
+        assert!(on.brand(&headers, None).is_none());
+        assert!(
+            on.brand(&headers, Some(&trusting("mx.example.org")))
+                .is_none()
+        );
     }
 
     #[test]
@@ -167,7 +186,12 @@ mod tests {
         cache_github_logo(&fx.paths);
         let mut logos = Logos::new(true, fx.paths.cache_dir.clone());
         logos.net = Arc::new(crate::test_support::Offline);
-        let brand = logos.brand(&branded("INBOX", 1, "Hi").headers).unwrap();
+        let brand = logos
+            .brand(
+                &branded("INBOX", 1, "Hi").headers,
+                Some(&trusting("mx.example.com")),
+            )
+            .unwrap();
         let wake: Wake = Arc::new(|| {});
         logos.want(&brand, &wake);
         logos.want(&brand, &wake);
@@ -183,7 +207,12 @@ mod tests {
         let fx = Fixture::new(&["work"]);
         let mut logos = Logos::new(true, fx.paths.cache_dir.clone());
         logos.net = Arc::new(crate::test_support::Offline);
-        let brand = logos.brand(&branded("INBOX", 1, "Hi").headers).unwrap();
+        let brand = logos
+            .brand(
+                &branded("INBOX", 1, "Hi").headers,
+                Some(&trusting("mx.example.com")),
+            )
+            .unwrap();
         let wake: Wake = Arc::new(|| {});
         logos.want(&brand, &wake);
         let Some(worker) = &logos.worker else {

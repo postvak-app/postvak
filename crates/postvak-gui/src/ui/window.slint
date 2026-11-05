@@ -126,6 +126,7 @@ export component MailWindow inherits Window {
     // Approve rule's tick.
     in property <string> check-icon;
     in property <string> verified-icon;
+    in property <string> unverified-icon;
     // The reader's More menu, Reply, and an attachment.
     in property <string> more-icon;
     in property <string> reply-icon;
@@ -719,6 +720,7 @@ export component MailWindow inherits Window {
                         open-link(url) => { root.open-link(url); }
                         rule-icon: root.rule-icon;
                         verified-icon: root.verified-icon;
+                        unverified-icon: root.unverified-icon;
                         more-icon: root.more-icon;
                         reply-icon: root.reply-icon;
                         file-icon: root.file-icon;

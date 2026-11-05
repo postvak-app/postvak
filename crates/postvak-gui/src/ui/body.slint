@@ -71,6 +71,8 @@ export struct BodyInfo {
     address: string,
     // The seal beside the sender, when a trusted server confirmed the mail comes from the From domain: its tooltip.
     verified: string,
+    // The warning beside the sender, when a trusted server found DMARC failed for the From domain: its tooltip.
+    unverified: string,
     short-date: string,
     full-date: string,
     to: string,
@@ -571,6 +573,7 @@ export component BodyPane inherits Rectangle {
     in property <string> source-icon;
     in property <string> rule-icon;
     in property <string> verified-icon;
+    in property <string> unverified-icon;
     in property <string> more-icon;
     in property <string> reply-icon;
     in property <string> file-icon;
@@ -885,6 +888,20 @@ export component BodyPane inherits Rectangle {
                                 font-family: Theme.icon-font;
                                 font-size: Theme.icon;
                                 color: Theme.pane.success;
+                                vertical-alignment: center;
+                            }
+                        }
+                        if root.info.unverified != "": TouchArea {
+                            width: warning.preferred-width;
+                            accessible-role: AccessibleRole.image;
+                            accessible-label: root.info.unverified;
+                            Tooltip { text: @markdown("\{root.info.unverified}"); }
+                            warning := Text {
+                                accessible-role: none;
+                                text: root.unverified-icon;
+                                font-family: Theme.icon-font;
+                                font-size: Theme.icon;
+                                color: Theme.pane.warning;
                                 vertical-alignment: center;
                             }
                         }

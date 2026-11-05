@@ -151,12 +151,7 @@ fn syncing_dark() {
 fn a_sender_logo() {
     let fx = Fixture::mailbox("light");
     fx.append_config("sender_images = true\n");
-    let config = fx.paths.config_file();
-    let trusting = std::fs::read_to_string(&config).unwrap().replace(
-        "[ui]\n",
-        "trusted_authserv_ids = [\"mx.example.com\"]\n\n[ui]\n",
-    );
-    std::fs::write(&config, trusting).unwrap();
+    trust_example_com(&fx);
     let mut github = mail(
         96,
         "GitHub <noreply@github.com>",
@@ -174,6 +169,39 @@ fn a_sender_logo() {
         info.has_logo && !info.verified.is_empty()
     });
     snapshot(&open, "gui_sender_logo");
+}
+
+/// Has the work account trust mx.example.com's `Authentication-Results`, above the `[ui]` table the mailbox ends with.
+fn trust_example_com(fx: &Fixture) {
+    let config = fx.paths.config_file();
+    let trusting = std::fs::read_to_string(&config).unwrap().replace(
+        "[ui]\n",
+        "trusted_authserv_ids = [\"mx.example.com\"]\n\n[ui]\n",
+    );
+    std::fs::write(&config, trusting).unwrap();
+}
+
+/// Mail claiming a domain whose DMARC check failed at a server the account trusts: the warning follows the address.
+#[test]
+fn an_unverified_sender() {
+    let fx = Fixture::mailbox("light");
+    trust_example_com(&fx);
+    let mut forged = mail(
+        96,
+        "PayPal <service@paypal.com>",
+        "Your account is limited",
+        "",
+        "Confirm your details within 24 hours.",
+    );
+    forged.headers =
+        b"Authentication-Results: mx.example.com; dmarc=fail (p=REJECT) header.from=paypal.com\r\n\
+        From: PayPal <service@paypal.com>\r\n\r\n"
+            .to_vec();
+    fx.add("work", forged);
+    let (open, _wires) = open(&fx);
+    open.with(|live| live.app.select_view(work_inbox()));
+    open.tick_until(|open| !open.window().get_body_info().unverified.is_empty());
+    snapshot(&open, "gui_unverified_sender");
 }
 
 /// A message with attachments in a reader wide enough to label its actions.

@@ -126,7 +126,10 @@ impl App {
             body.shown_at = now;
         }
         if body.brand.is_none() {
-            body.brand = message.as_ref().and_then(|m| self.logos.brand(&m.headers));
+            let identity = self.accounts[body.account].identity.as_ref();
+            body.brand = message
+                .as_ref()
+                .and_then(|m| self.logos.brand(&m.headers, identity));
             if let Some(brand) = &body.brand {
                 self.logos.want(brand, &self.wake);
             }

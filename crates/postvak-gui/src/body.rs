@@ -28,8 +28,10 @@ pub(crate) struct Pane {
     pub logo: Option<(String, Arc<str>)>,
     pub name: String,
     pub address: Option<String>,
-    /// A server the account trusts confirmed the mail comes from the From domain: the badge's tooltip, naming both.
+    /// A server the account trusts confirmed the mail comes from the From domain: the seal's tooltip, naming both.
     pub verified: Option<String>,
+    /// A server the account trusts found DMARC failed for the From domain: the warning's tooltip, naming both.
+    pub unverified: Option<String>,
     pub short_date: String,
     pub full_date: String,
     pub to: Option<String>,
@@ -135,7 +137,8 @@ pub(crate) fn pane(app: &App) -> Pane {
         }),
         name: clean(&name, false),
         address: address.map(|a| clean(&a, false)),
-        verified: verified(&app.accounts[body.account], &message.headers, from),
+        verified: verdict(&app.accounts[body.account], &message.headers, from, true),
+        unverified: verdict(&app.accounts[body.account], &message.headers, from, false),
         short_date: local_time(at, SHORT_DATE),
         full_date: local_time(at, HEADER_DATE),
         to: header(&message.to_addr),
@@ -175,15 +178,28 @@ pub(crate) fn pane(app: &App) -> Pane {
     }
 }
 
-/// What the badge beside the sender says, when a server `account` trusts confirmed the mail comes from the From
-/// domain. It names the domain, since a look-alike domain can pass too.
-fn verified(account: &Account, headers: &[u8], from: &str) -> Option<String> {
-    let vouched = account.identity.as_ref()?.vouched(headers, from)?;
-    Some(format!(
-        "Verified by {}: this comes from {}. Check that is the sender you expect.",
-        clean(&vouched.authserv_id, false),
-        clean(&vouched.domain, false)
-    ))
+/// What the seal (`passed`) or the warning beside the sender says, when a server `account` trusts found the mail does
+/// or does not come from the From domain. It names the domain, since a look-alike domain can pass too.
+fn verdict(account: &Account, headers: &[u8], from: &str, passed: bool) -> Option<String> {
+    let verdict = account
+        .identity
+        .as_ref()?
+        .verdict(headers, from)
+        .filter(|v| v.passed == passed)?;
+    let (server, domain) = (
+        clean(&verdict.authserv_id, false),
+        clean(&verdict.domain, false),
+    );
+    Some(if passed {
+        format!(
+            "Verified by {server}: this comes from {domain}. Check that is the sender you expect."
+        )
+    } else {
+        format!(
+            "Not verified: {server} found this does not come from {domain}, though it says so. It may be forged, or \
+             passed on by a mailing list."
+        )
+    })
 }
 
 /// A selected message as the selection lists it.
@@ -1156,6 +1172,7 @@ mod tests {
 
         for results in [
             "mx.example.org; dmarc=fail header.from=example.org",
+            "mx.example.org; dmarc=none header.from=example.org",
             "mx.example.org; dmarc=pass header.from=other.example",
             "mx.example.net; dmarc=pass header.from=example.org",
         ] {
@@ -1165,6 +1182,49 @@ mod tests {
             let (driver, _wires) = fx.driver();
             assert_eq!(pane(&driver.app).verified, None, "{results}");
         }
+    }
+
+    const UNVERIFIED: &str = "Not verified: mx.example.org found this does not come from example.org, though it says so. It may be forged, or passed on by a mailing list.";
+
+    #[test]
+    fn a_dmarc_failure_a_trusted_server_found_gets_the_warning() {
+        let fx = Fixture::new(&["work"]);
+        crate::test_support::trust_example_org(&fx);
+        from_example_org(&fx, "mx.example.org; dmarc=fail header.from=example.org");
+        let (driver, _wires) = fx.driver();
+        let shown = pane(&driver.app);
+        assert_eq!(shown.unverified.as_deref(), Some(UNVERIFIED));
+        assert_eq!(shown.verified, None);
+
+        for results in [
+            "mx.example.org; dmarc=pass header.from=example.org",
+            "mx.example.org; dmarc=none header.from=example.org",
+            "mx.example.org; dkim=fail header.d=example.org",
+            "mx.example.net; dmarc=fail header.from=example.org",
+        ] {
+            let fx = Fixture::new(&["work"]);
+            crate::test_support::trust_example_org(&fx);
+            from_example_org(&fx, results);
+            let (driver, _wires) = fx.driver();
+            assert_eq!(pane(&driver.app).unverified, None, "{results}");
+        }
+        let untrusted = Fixture::new(&["work"]);
+        from_example_org(
+            &untrusted,
+            "mx.example.org; dmarc=fail header.from=example.org",
+        );
+        let (driver, _wires) = untrusted.driver();
+        assert_eq!(pane(&driver.app).unverified, None, "trusts no server");
+    }
+
+    #[test]
+    fn the_window_shows_the_warning_beside_the_sender() {
+        let fx = Fixture::new(&["work"]);
+        crate::test_support::trust_example_org(&fx);
+        from_example_org(&fx, "mx.example.org; dmarc=fail header.from=example.org");
+        let (open, _wires) = fx.window();
+        open.tick_until(|open| !open.find(UNVERIFIED).is_empty());
+        assert!(open.find(VERIFIED).is_empty());
     }
 
     #[test]
@@ -1185,7 +1245,7 @@ mod tests {
     #[test]
     fn a_dmarc_passing_sender_shows_its_logo_instead_of_the_initials() {
         let fx = Fixture::new(&["work"]);
-        fx.append_config("[ui]\nsender_images = true\n");
+        crate::test_support::sender_images(&fx);
         fx.add("work", crate::test_support::branded("INBOX", 1, "merged"));
         crate::test_support::cache_github_logo(&fx.paths);
         let (mut driver, _wires) = fx.driver();
@@ -1197,7 +1257,7 @@ mod tests {
     #[test]
     fn without_a_dmarc_pass_or_with_sender_images_off_the_initials_stay() {
         let fx = Fixture::new(&["work"]);
-        fx.append_config("[ui]\nsender_images = true\n");
+        crate::test_support::sender_images(&fx);
         let mut spoofed = crate::test_support::branded("INBOX", 1, "merged");
         spoofed.headers = b"From: GitHub <noreply@github.com>\r\n\r\n".to_vec();
         fx.add("work", spoofed);
@@ -1212,12 +1272,21 @@ mod tests {
         let (driver, _wires) = fx.driver();
         assert_eq!(pane(&driver.app).logo, None);
         assert!(!driver.app.logos.started(), "off by default");
+
+        // A header from a server the account does not trust earns no logo: the sender may have written it.
+        let fx = Fixture::new(&["work"]);
+        fx.append_config("[ui]\nsender_images = true\n");
+        fx.add("work", crate::test_support::branded("INBOX", 1, "merged"));
+        crate::test_support::cache_github_logo(&fx.paths);
+        let (driver, _wires) = fx.driver();
+        assert_eq!(pane(&driver.app).logo, None);
+        assert!(!driver.app.logos.started(), "trusts no server");
     }
 
     #[test]
     fn the_window_draws_the_logo_once() {
         let fx = Fixture::new(&["work"]);
-        fx.append_config("[ui]\nsender_images = true\n");
+        crate::test_support::sender_images(&fx);
         fx.add("work", crate::test_support::branded("INBOX", 1, "merged"));
         crate::test_support::cache_github_logo(&fx.paths);
         let (open, _wires) = fx.window();
