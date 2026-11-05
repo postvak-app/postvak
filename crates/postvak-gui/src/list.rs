@@ -143,6 +143,8 @@ pub(crate) struct ListState {
     pub brands: HashMap<(usize, RowKey), Option<Brand>>,
     /// Set when a scroll brought a logo into view, so the window draws the rows again.
     pub logos_changed: bool,
+    /// Whether rows of this list have come in, so an empty list says it is empty only once it is.
+    pub loaded: bool,
 }
 
 impl ListState {
