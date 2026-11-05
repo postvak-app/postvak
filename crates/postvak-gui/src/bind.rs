@@ -477,6 +477,7 @@ fn present_body(app: &App, window: &MailWindow) {
         unsubscribe: pane.unsubscribe,
         unsubscribed: pane.unsubscribed,
         reply: pane.reply,
+        reply_all: pane.reply_all,
         reply_list: pane.reply_list,
         provenance,
         links: strings(shown.links.clone(), pane.links),

@@ -29,7 +29,7 @@ impl App {
         self.open_folder_dialog(account, FolderKind::Rename { from, rules }, level);
     }
 
-    pub(super) fn empty_trash(&mut self, account: usize, folder: String) {
+    pub(super) fn empty_folder(&mut self, account: usize, folder: String) {
         let uids = match &self.accounts[account].store {
             Ok(store) => store.uids(&folder),
             Err(_) => return,

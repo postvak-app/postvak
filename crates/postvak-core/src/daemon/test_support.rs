@@ -130,6 +130,27 @@ impl TestDaemon {
         }
     }
 
+    /// Waits until `account` finished its first sync, so its folders exist in the store and nothing rewrites them.
+    pub fn wait_idle(&self, account: &str) {
+        let deadline = Instant::now() + WAIT;
+        let mut client = self.client();
+        loop {
+            let Outcome::Ok(wire::Payload::Status(status)) =
+                client.request(ClientMessage::Status { id: 0 })
+            else {
+                panic!("the daemon gave no status");
+            };
+            let idle = status.accounts.iter().any(|a| {
+                a.name == account && matches!(a.activity, Some(crate::sync::Activity::Idle { .. }))
+            });
+            if idle {
+                return;
+            }
+            assert!(Instant::now() < deadline, "{account} never went idle");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     /// A client that has exchanged `hello`.
     pub fn client(&self) -> TestClient {
         TestClient::hello(&self.paths.daemon_socket())

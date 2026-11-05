@@ -94,6 +94,8 @@ export struct BodyInfo {
     unsubscribed: bool,
     // There is an address to reply to: Reply shows.
     reply: bool,
+    // Reply all reaches more than one person: it takes the Reply button and Reply moves to More.
+    reply-all: bool,
     // The message came through a mailing list that takes posts: Reply to list shows.
     reply-list: bool,
     provenance: ProvenanceData,
@@ -489,13 +491,19 @@ component ReplyAndMore inherits HorizontalLayout {
     if root.info.reply: VerticalLayout {
         alignment: center;
         TextButton {
-            text: "Reply";
+            text: root.info.reply-all ? "Reply all" : "Reply";
             icon: root.reply-icon;
-            hint: "Reply · r";
+            hint: root.info.reply-all ? "Reply all · R" : "Reply · r";
             framed: true;
             compact: true;
             palette: Theme.pane;
-            clicked => { root.reply(); }
+            clicked => {
+                if root.info.reply-all {
+                    root.reply-all();
+                } else {
+                    root.reply();
+                }
+            }
         }
     }
     if root.info.unsubscribe: VerticalLayout {
@@ -515,9 +523,15 @@ component ReplyAndMore inherits HorizontalLayout {
             height: self.width;
             Menu {
                 MenuItem {
-                    title: "Reply all";
+                    title: root.info.reply-all ? "Reply" : "Reply all";
                     enabled: root.info.reply;
-                    activated => { root.reply-all(); }
+                    activated => {
+                        if root.info.reply-all {
+                            root.reply();
+                        } else {
+                            root.reply-all();
+                        }
+                    }
                 }
                 if root.info.reply-list: MenuItem {
                     title: "Reply to list";
