@@ -229,7 +229,7 @@ fn present_list(app: &App, window: &MailWindow) {
     window.set_searching(app.search.is_some());
     window.set_search_hint_text(list::search_hint(&app.view).into());
     window.set_results(list::results(app).into());
-    let empty = if app.list.rows.is_empty() {
+    let empty = if app.list.rows.is_empty() && app.list.loaded {
         list::empty(&app.view, app.search.as_deref(), app.filter)
     } else {
         String::new()

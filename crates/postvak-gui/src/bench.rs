@@ -337,6 +337,28 @@ fn run(scale: u32, runs: usize) {
     report("sync_event", scale, frames.collect());
     driver.app.list_budget = std::time::Duration::from_secs(60);
 
+    // Choosing All inboxes from one account's INBOX with the window's own budget: how long the frame waits for the list.
+    driver.app.list_budget = LIST_BUDGET;
+    let frames = (0..runs).map(|_| {
+        driver.apply(UiAction::SelectView(View::Folder {
+            account: 0,
+            folder: "INBOX".into(),
+        }));
+        while driver.app.list_loading.is_some() {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            driver.tick();
+        }
+        let ms = timed(|| driver.apply(UiAction::SelectView(View::AllInboxes)));
+        while driver.app.list_loading.is_some() {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            driver.tick();
+        }
+        ms
+    });
+    report("view_change", scale, frames.collect());
+    driver.app.list_budget = std::time::Duration::from_secs(60);
+    assert_eq!(driver.app.view, View::AllInboxes);
+
     // What every sync event of an account also does on the window thread: its folders with their unread counts.
     report(
         "folder_counts",

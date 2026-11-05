@@ -17,6 +17,7 @@ How Postvak behaves as a mailbox grows, measured on generated mail. User stores 
 | `folder_list` | Reloading one account's INBOX list: the query plus the rows |
 | `all_inboxes` | Reloading All inboxes: every account's INBOX, merged |
 | `sync_event` | The frame that takes a sync event in All inboxes: how long it waits for the reload |
+| `view_change` | The frame that chooses All inboxes from an INBOX: how long it waits for the list |
 | `folder_counts` | One account's folders with their unread counts, read again on each of its sync events |
 | `search` | One word searched in All inboxes |
 | `search_keystroke` | The frame that takes a keystroke in the search field: how long it waits for the hits |
@@ -58,7 +59,7 @@ Release build of `main` at 783a0f2. Apple M1 Pro, 32 GB, macOS 27.0.1, Rust 1.99
 What this shows:
 
 - No phase grows faster than the mailbox; all of them scale about linearly.
-- A list reload runs `thread_summaries`, which groups every message in the folder, however few rows fit on screen. At 100k messages (about 17k per INBOX) All inboxes takes 33 ms, two frames at 60 Hz. A view change still waits for it; a reload after a sync event no longer does (below).
+- A list reload runs `thread_summaries`, which groups every message in the folder, however few rows fit on screen. At 100k messages (about 17k per INBOX) All inboxes takes 33 ms, two frames at 60 Hz. Neither a view change nor a reload after a sync event waits for it any more (below).
 - `open_window` grows with the mail too, so the window opens more slowly on big mailboxes. It includes the first list load and per-folder counts.
 - `sync_pass` includes the fake server's own work: `RecordingOps` scans each folder on every select. A real server's time is not in these numbers, and the fake's is.
 
@@ -99,7 +100,7 @@ Release build, the same machine as the search table, 100k messages over three ac
 
 ## Reloads after a sync event
 
-The window reloads the shown list whenever sync reports changes. That reload runs on a thread of its own with its own store connections; the frame waits for it at most 2 ms (`LIST_BUDGET` in `state/mod.rs`, a quarter of a 120 Hz frame), so a small mailbox's rows still show in the same frame, and a large one's show when the thread wakes the window. While a reload runs, the next waits for it and then starts once; the rows already loaded are rebuilt meanwhile only when edits changed, since rebuilding a large list costs milliseconds. A view change reads on the window thread, as before, and drops a reload still running; a keystroke in the search field does not (below).
+The window reloads the shown list whenever sync reports changes. That reload runs on a thread of its own with its own store connections; the frame waits for it at most 2 ms (`LIST_BUDGET` in `state/mod.rs`, a quarter of a 120 Hz frame), so a small mailbox's rows still show in the same frame, and a large one's show when the thread wakes the window. While a reload runs, the next waits for it and then starts once; the rows already loaded are rebuilt meanwhile only when edits changed, since rebuilding a large list costs milliseconds. A view change starts the same reload and drops one still running, since that one reads the view it leaves; a keystroke in the search field does not drop it (below). Until a view's first rows are in, its list shows no empty text, so a large folder never says "Inbox zero" while it loads.
 
 An archive, move or delete hides its rows at once and its `ActionDone` arrives after the daemon changed the store. A reload that started before then still holds the old rows, so the edit stays on the rows until a reload that started after it is applied.
 
@@ -119,6 +120,13 @@ The thread list reads the covering index `messages_folder_thread` (migration 009
 | `folder_counts` | 0.06 (0.06–0.22) | 0.17 (0.15–0.39) |
 
 The frame now waits the budget at most for the list, however large the mailbox, and the counts no longer grow with the read mail. `open_window`, which reads the counts too, went from 48 to 28 ms at 100k.
+
+A view change read the list on the window thread before, so choosing All inboxes waited what `all_inboxes` takes; `view_change` is what it waits now. Release build, 100k messages, the same run of each: Linux (CachyOS), median in ms with the range of five runs.
+
+| Phase | 100k |
+| --- | --- |
+| `all_inboxes` | 43 (43–48) |
+| `view_change` | 2.9 (2.8–3.0) |
 
 ## Typing a search
 

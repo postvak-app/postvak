@@ -2302,12 +2302,11 @@ impl App {
             account,
             folder: open.folder.clone(),
         };
-        if self.view == view && self.search.is_none() {
-            // The rows may not have the new message yet.
-            self.reload_view();
-        } else {
-            self.select_view(view);
+        // On this thread, since the message's row is looked for below; the rows may not have the new message yet.
+        if self.view != view || self.search.is_some() {
+            self.enter_view(view);
         }
+        self.reload_view();
         let find = |rows: &[Row]| {
             rows.iter().position(|row| {
                 row.account == account && row.folder == open.folder && row.uid == open.uid
@@ -2322,7 +2321,17 @@ impl App {
         }
     }
 
+    /// Shows `view`. Its rows load on a thread of their own, as after a sync event, so a large mailbox does not stall the
+    /// frame; they show in this frame when they come within `list_budget`. A reload of the view it leaves is dropped.
     pub(crate) fn select_view(&mut self, view: View) {
+        self.enter_view(view);
+        self.list_loading = None;
+        self.list_again = false;
+        self.refresh_view();
+    }
+
+    /// Switches to `view` with an empty list, without loading it.
+    fn enter_view(&mut self, view: View) {
         if view == View::Rules {
             self.count_hits();
         }
@@ -2330,7 +2339,6 @@ impl App {
         self.sheet_sort = None;
         self.rules_filter.clear();
         self.reset_list(None, false);
-        self.reload_view();
     }
 
     /// Starts the list over for `search` (None leaves search), with the search field focused or not: the one place
@@ -2406,8 +2414,8 @@ impl App {
             .any(|f| f.name == folder && f.special_use.as_deref() == Some(role))
     }
 
-    /// Loads the shown view's rows from the store, on this thread: for view changes, where the user waits for the new
-    /// rows anyway. A reload still running is dropped, since this one reads everything it would.
+    /// Loads the shown view's rows from the store, on this thread, for what reads them right after. A reload still
+    /// running is dropped, since this one reads everything it would.
     pub(crate) fn reload_view(&mut self) {
         self.list_generation += 1;
         let generation = self.list_generation;
@@ -2534,6 +2542,7 @@ impl App {
             return;
         }
         self.list_applied = generation;
+        self.list.loaded = true;
         if self.search_reset.is_some_and(|first| generation >= first) {
             self.search_reset = None;
             self.list.rows.clear();
@@ -3680,6 +3689,59 @@ mod tests {
         driver.at(0.0);
         driver.tick_until(|app| app.list_loading.is_none());
         assert_eq!(driver.uids(), [4, 3, 2, 1]);
+    }
+
+    #[test]
+    fn a_view_change_that_outlasts_the_budget_does_not_wait_for_the_rows() {
+        held_loads!(GATES, held);
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1]);
+        fx.folder("work", "Archive", Some("Archive"));
+        fx.add("work", message("Archive", 5, "archived"));
+        let (mut driver, _wires) = fx.driver();
+        driver.app.list_budget = Duration::ZERO;
+        driver.app.load_list = held;
+        let release = hold(&GATES);
+        driver.app.select_view(View::Folder {
+            account: 0,
+            folder: "Archive".into(),
+        });
+        assert!(driver.app.list_loading.is_some(), "the frame does not wait");
+        assert!(driver.uids().is_empty());
+        assert!(
+            !driver.app.list.loaded,
+            "no empty text before the rows come"
+        );
+        release.release();
+        driver.at(0.0);
+        driver.tick_until(|app| app.list_loading.is_none());
+        assert_eq!(driver.uids(), [5]);
+        assert!(driver.app.list.loaded);
+    }
+
+    #[test]
+    fn a_view_change_drops_the_reload_of_the_view_it_leaves() {
+        held_loads!(GATES, held);
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2]);
+        fx.folder("work", "Archive", Some("Archive"));
+        fx.add("work", message("Archive", 5, "archived"));
+        let (mut driver, wires) = fx.driver();
+        driver.app.list_budget = Duration::ZERO;
+        driver.app.load_list = held;
+        let old = hold(&GATES);
+        let new = hold(&GATES);
+        driver.receive(&wires, [synced("work", 0)]);
+        old.wait_read();
+        driver.app.select_view(View::Folder {
+            account: 0,
+            folder: "Archive".into(),
+        });
+        old.release();
+        new.release();
+        driver.at(0.0);
+        driver.tick_until(|app| app.list_loading.is_none());
+        assert_eq!(driver.uids(), [5], "the inbox's rows never show in Archive");
     }
 
     #[test]
