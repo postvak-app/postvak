@@ -142,7 +142,13 @@ impl App {
         });
         // Only the newest are within reach of `z`.
         if self.taken.len() > MAX_TAKEN {
-            self.taken.remove(0);
+            let gone = self.taken.remove(0);
+            if let Some(composer) = gone.composer {
+                crate::compose::remove_files(
+                    &crate::compose::recovery_dir(&self.paths),
+                    composer.id,
+                );
+            }
         }
         id
     }

@@ -903,7 +903,7 @@ pub struct App {
         u64,
         Receiver<Result<postvak_core::send::compose::Prefilled, String>>,
     )>,
-    /// The draft being read on a worker for a composer: its Message-ID, its account, and the answer.
+    /// The draft being read on a worker into a composer, by its Message-ID.
     pub(crate) compose_opening: Option<composing::OpeningDraft>,
     /// The new-mail window to bring to the front, by its composer's id, until the window does.
     pub(crate) raise_compose: Option<u64>,

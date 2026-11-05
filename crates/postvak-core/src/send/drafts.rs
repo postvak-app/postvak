@@ -476,9 +476,14 @@ pub fn save(
 
 /// `<id>`, or None for a blank one. `SEARCH HEADER` matches a substring, so only the brackets keep `<d1@x>` from
 /// also matching `<xd1@x>`.
-fn bracketed(id: &str) -> Option<String> {
-    let id = id.trim().trim_start_matches('<').trim_end_matches('>');
+pub fn bracketed(id: &str) -> Option<String> {
+    let id = unbracketed(id);
     (!id.is_empty()).then(|| format!("<{id}>"))
+}
+
+/// `id` without its angle brackets, as the store keeps Message-IDs.
+pub fn unbracketed(id: &str) -> &str {
+    id.trim().trim_start_matches('<').trim_end_matches('>')
 }
 
 /// Expunges every message in `folder` whose Message-ID is in `ids`, each `<id>`.

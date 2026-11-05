@@ -8,7 +8,7 @@ use postvak_core::paths::{Paths, write_atomic};
 use postvak_core::send::build::{bare_address, mailbox_text};
 use postvak_core::send::check::{CheckError, DEFAULT_SIZE_LIMIT, check_from, valid_address};
 use postvak_core::send::compose::{Body, HeaderEdits, Prefilled, SendKind, SendRequest};
-use postvak_core::send::drafts::{DraftKind, OpenedDraft};
+use postvak_core::send::drafts::{DraftKind, OpenedDraft, bracketed};
 use postvak_core::send::edit::split_recipients;
 use postvak_core::send::mailto::Mailto;
 use postvak_core::send::reply::{self, ForwardAs, ReplyTo};
@@ -306,26 +306,21 @@ impl Composer {
         composer.text = opened.text;
         composer.in_reply_to = opened.in_reply_to;
         composer.references = opened.references;
-        composer.error = opened.note.map(|note| (Field::Note, note.to_string()));
-        let message_id = opened
-            .message_id
-            .trim()
-            .trim_start_matches('<')
-            .trim_end_matches('>');
-        composer.draft = (!message_id.is_empty()).then(|| ComposeDraft {
-            message_id: format!("<{message_id}>"),
+        composer.draft = bracketed(&opened.message_id).map(|message_id| ComposeDraft {
+            message_id,
             left: Vec::new(),
         });
-        if !opened.files.is_empty() {
-            std::fs::create_dir_all(files_dir)?;
-        }
-        let mut names = Vec::new();
-        for (name, bytes) in opened.files {
-            let name = unique_name(&safe_name(&name), &names);
-            let path = files_dir.join(&name);
+        let notes: Vec<&str> = (opened.note.iter().copied())
+            .chain(composer.draft.is_none().then_some(NO_MESSAGE_ID))
+            .collect();
+        composer.error = (!notes.is_empty()).then(|| (Field::Note, notes.join(" ")));
+        // A folder per file, so two files of one name both keep it.
+        for (index, (name, bytes)) in opened.files.into_iter().enumerate() {
+            let dir = files_dir.join(index.to_string());
+            std::fs::create_dir_all(&dir)?;
+            let path = dir.join(safe_name(&name));
             std::fs::write(&path, &bytes)?;
             composer.files.push((path, bytes.len() as u64));
-            names.push(name);
         }
         composer.opened_as = composer.snapshot();
         Ok(composer)
@@ -669,6 +664,10 @@ pub(crate) fn files_dir(dir: &Path, id: u64) -> PathBuf {
     dir.join(id.to_string()).join("files")
 }
 
+/// The line of an opened draft without a Message-ID, which no save or send can find to replace.
+pub(crate) const NO_MESSAGE_ID: &str =
+    "This draft has no Message-ID, so saving or sending it leaves the old copy in Drafts.";
+
 /// The longest file name a draft's attachment is written under, in bytes.
 const NAME_MAX: usize = 100;
 
@@ -701,17 +700,19 @@ fn split_extension(name: &str) -> (&str, &str) {
     }
 }
 
-/// `name`, or `name (2)` and on, so it is none of `taken`; compared without case, as macOS file systems do.
-fn unique_name(name: &str, taken: &[String]) -> String {
-    let free = |candidate: &str| !taken.iter().any(|t| t.eq_ignore_ascii_case(candidate));
-    if free(name) {
-        return name.to_string();
+/// Removes the draft files of composers without a recovery file, as one sent before a quit leaves them.
+pub(crate) fn sweep_files(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let ids = entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<u64>().ok());
+    for id in ids.collect::<Vec<_>>() {
+        if !recovery_file(dir, id).exists() {
+            remove_files(dir, id);
+        }
     }
-    let (stem, extension) = split_extension(name);
-    (2..)
-        .map(|n| format!("{stem} ({n}){extension}"))
-        .find(|candidate| free(candidate))
-        .unwrap_or_else(|| name.to_string())
 }
 
 /// The composers left in `dir`, oldest first; a file that cannot be read stays there and is skipped.
@@ -740,12 +741,22 @@ pub(crate) fn load_recoveries(dir: &Path) -> Vec<Composer> {
 
 /// Removes composer `id`'s recovery file and the draft files it held.
 pub(crate) fn remove_recovery(dir: &Path, id: u64) {
+    remove_recovery_file(dir, id);
+    remove_files(dir, id);
+}
+
+/// Removes composer `id`'s recovery file only, keeping its draft files for an undo that reopens it.
+pub(crate) fn remove_recovery_file(dir: &Path, id: u64) {
     match std::fs::remove_file(recovery_file(dir, id)) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => {
             log::warn!("could not remove the unsent message {id}.json: {e}");
         }
         _ => {}
     }
+}
+
+/// Removes the draft files composer `id` held.
+pub(crate) fn remove_files(dir: &Path, id: u64) {
     match std::fs::remove_dir_all(dir.join(id.to_string())) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => {
             log::warn!("could not remove the files of the unsent message {id}: {e}");
@@ -1390,18 +1401,15 @@ mod drafts_opened {
             .into_iter()
             .map(|(name, _)| name)
             .collect();
-        assert_eq!(
-            names[..4],
-            ["passwd", "hidden", "notes.txt", "notes (2).txt"]
-        );
+        assert_eq!(names[..4], ["passwd", "hidden", "notes.txt", "notes.txt"]);
         assert!(
             names[4].ends_with(".pdf") && names[4].len() <= 100,
             "{}",
             names[4]
         );
         assert_eq!(names[5], "attachment");
-        for (path, size) in &composer.files {
-            assert_eq!(path.parent(), Some(files.as_path()));
+        for (index, (path, size)) in composer.files.iter().enumerate() {
+            assert_eq!(path.parent(), Some(files.join(index.to_string()).as_path()));
             assert_eq!(std::fs::metadata(path).unwrap().len(), *size);
         }
         assert_eq!(std::fs::read(&composer.files[3].0).unwrap(), b"two!");
@@ -1445,6 +1453,55 @@ mod drafts_opened {
             .collect();
         assert_eq!(kept, [("a.txt", false), ("b.txt", true)]);
         assert_eq!(composer.error, None);
+    }
+
+    #[test]
+    fn a_draft_without_a_message_id_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let opened = OpenedDraft {
+            message_id: String::new(),
+            note: None,
+            ..foreign()
+        };
+        let composer = Composer::from_draft(
+            4,
+            "work",
+            &identities(),
+            opened,
+            None,
+            &files_dir(dir.path(), 4),
+        )
+        .unwrap();
+        assert_eq!(composer.draft, None);
+        assert_eq!(composer.error, Some((Field::Note, NO_MESSAGE_ID.into())));
+    }
+
+    #[test]
+    fn files_without_a_recovery_file_are_swept() {
+        let dir = tempfile::tempdir().unwrap();
+        let kept = Composer::from_draft(
+            4,
+            "work",
+            &identities(),
+            foreign(),
+            None,
+            &files_dir(dir.path(), 4),
+        )
+        .unwrap();
+        save_recovery(dir.path(), &kept).unwrap();
+        let left = Composer::from_draft(
+            5,
+            "work",
+            &identities(),
+            foreign(),
+            None,
+            &files_dir(dir.path(), 5),
+        )
+        .unwrap();
+        sweep_files(dir.path());
+        assert!(kept.files[0].0.exists());
+        assert!(!left.files[0].0.exists());
+        assert!(!dir.path().join("5").exists());
     }
 
     #[test]
