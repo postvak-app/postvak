@@ -34,6 +34,8 @@ const DAEMON_ARGS: [&str; 3] = ["run", "--idle-exit", "60"];
 const LOG_TAIL_LINES: usize = 20;
 const REPLY_TIMEOUT: Duration = Duration::from_secs(120);
 const RETRY: Duration = Duration::from_millis(100);
+/// A daemon we started listens within milliseconds; a connect that finds no socket yet costs microseconds.
+const START_RETRY: Duration = Duration::from_millis(5);
 const START_WAIT: Duration = Duration::from_secs(5);
 const STOP_WAIT: Duration = Duration::from_secs(5);
 
@@ -925,7 +927,7 @@ fn start_daemon(paths: &Paths, exe: &Path, version: &str) -> anyhow::Result<Clie
     let deadline = Instant::now() + START_WAIT;
     let mut child = spawn_daemon(paths, exe)?;
     let connected = loop {
-        std::thread::sleep(RETRY);
+        std::thread::sleep(START_RETRY);
         // We started our own binary; whatever now serves is the daemon to use, so only the protocol must match.
         match connect_as(paths, version, true) {
             Ok(client) => break Ok(client),
