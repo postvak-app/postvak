@@ -131,6 +131,26 @@ fn append_fetch_and_flags_round_trip() {
     assert_eq!(ops.fetch_raw(uid).unwrap().unwrap(), mail("hello"));
 }
 
+#[test]
+fn fetch_parts_answers_one_section_of_every_message_in_one_command() {
+    let Some(host) = host() else { return };
+    let mut ops = connect(&account(&host, PORT, "parts"));
+    for text in ["one", "two"] {
+        ops.append("INBOX", &mail(text), &[]).unwrap();
+    }
+    ops.select("INBOX").unwrap();
+    let uids: Vec<u32> = all_envelopes(&mut ops).iter().map(|e| e.uid).collect();
+    let found = ops.fetch_parts(&uids, "").unwrap();
+    assert_eq!(found.len(), 2);
+    for (uid, text) in uids.iter().zip(["one", "two"]) {
+        assert_eq!(
+            found[uid],
+            ops.fetch_part(*uid, "").unwrap().unwrap(),
+            "{text}"
+        );
+    }
+}
+
 /// Appends a fixture under `tests/fixtures/structure/`, then fetches its structure and the text of its parts.
 fn structure_round_trip(port: u16, name: &str) -> (postvak_core::mail_ops::Structure, String) {
     let Some(host) = host() else {
