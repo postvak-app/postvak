@@ -531,6 +531,7 @@ mod tests {
             assert!(Instant::now() < deadline, "the guess was never stored");
             std::thread::sleep(Duration::from_millis(20));
         }
+        daemon.wait_idle("work");
         let config = Config::load(&daemon.paths.config_file()).unwrap();
         let client =
             LazyClient::with_client(&daemon.paths, Client::connect(&daemon.paths).unwrap());
