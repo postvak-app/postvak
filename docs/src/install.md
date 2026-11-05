@@ -2,8 +2,8 @@
 
 | Channel | Command |
 |---|---|
-| Homebrew | `brew install postvak-app/tap/postvak` |
 | macOS app (Homebrew cask) | `brew install --cask postvak-app/tap/postvak`, see [below](#macos-app) |
+| Homebrew formula (Linux, headless Macs) | `brew install postvak-app/tap/postvak` |
 | crates.io | `cargo install postvak` |
 | mise | `mise use github:postvak-app/postvak` |
 | AppImage (Linux) | download `postvak-<arch>.AppImage` from the [latest release](https://github.com/postvak-app/postvak/releases/latest), see [below](#appimage-on-linux) |
@@ -25,7 +25,7 @@ On Linux the password keyring is the Secret Service (KDE Wallet or GNOME Keyring
 
 ## macOS app
 
-Postvak also ships as `Postvak.app` on a DMG, attached to each [GitHub release](https://github.com/postvak-app/postvak/releases). Homebrew installs it as a cask:
+On macOS, install Postvak as `Postvak.app`. It ships on a DMG, attached to each [GitHub release](https://github.com/postvak-app/postvak/releases). Homebrew installs it as a cask:
 
 ```sh
 brew install --cask postvak-app/tap/postvak
@@ -35,7 +35,7 @@ The cask puts `Postvak.app` in `/Applications` and links the app's own binary as
 
 The app is not notarized by Apple yet; it is signed ad hoc. The cask clears the quarantine flag on install, so it opens normally. A DMG downloaded by hand is blocked by Gatekeeper the first time: clear the flag once with `xattr -dr com.apple.quarantine /Applications/Postvak.app`, or allow it under System Settings → Privacy & Security. Each upgrade has a new signature, so the Keychain asks again for access to the password.
 
-Install either the cask or the formula (`brew install postvak-app/tap/postvak`), not both: the window, the CLI and the MCP server share one daemon over one socket, and an older client refuses a newer daemon, so two installs at different versions would get in each other's way. Both put `postvak` in Homebrew's `bin`, so Homebrew will not link the second one. The formula stays for Linux and headless Macs.
+Install either the cask or the formula (`brew install postvak-app/tap/postvak`), not both: the window, the CLI and the MCP server share one daemon over one socket, and an older client refuses a newer daemon, so two installs at different versions would get in each other's way. Both put `postvak` in Homebrew's `bin`, so Homebrew will not link the second one. On a Mac, take the cask unless the machine has no one logged in to see the window; the formula is for Linux and headless Macs.
 
 ## AppImage on Linux
 
