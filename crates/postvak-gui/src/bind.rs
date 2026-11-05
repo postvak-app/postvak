@@ -772,7 +772,7 @@ fn present_page(app: &App, window: &MailWindow) {
     // Nothing of the page, not even its notes, until it can show whole.
     let view = waiting.filter(|v| v.shown);
     let remote = match view {
-        Some(v) if v.fetching.is_some() => Remote::Loading,
+        Some(v) if !v.fetching.is_empty() => Remote::Loading,
         Some(v) if !v.remote.is_empty() => Remote::NotLoaded,
         _ => Remote::None,
     };

@@ -92,10 +92,12 @@ pub(crate) struct FetchJob {
     pub urls: Vec<String>,
 }
 
-/// Every URL of a `FetchJob`, with its bytes, or none when the download failed or the host was refused.
+/// Some URLs of a `FetchJob`, with their bytes, or none when the download failed or the host was refused; every URL
+/// is in one batch, and the job's last batch says so.
 pub(crate) struct FetchDone {
     pub tag: u64,
     pub fetched: BTreeMap<String, Vec<u8>>,
+    pub last: bool,
 }
 
 pub(crate) struct Load {
@@ -199,8 +201,10 @@ pub(crate) struct HtmlState {
     pub hovered_at: Option<[f32; 2]>,
     /// Remote content downloaded for this message, which every later layout uses.
     pub fetched: Fetched,
-    /// The tag of the download in flight.
-    pub fetching: Option<u64>,
+    /// The tags of the downloads in flight.
+    pub fetching: BTreeSet<u64>,
+    /// Remote URLs sent to download, done or in flight, so none is asked for twice.
+    pub asked: BTreeSet<String>,
     /// Set once the current generation is laid out: the page width and height in points.
     pub page: Option<(f32, f32)>,
     /// The page has appeared: it was laid out and the strips in view painted. Until then the view shows no page, so
@@ -234,7 +238,8 @@ impl HtmlState {
             hover: None,
             hovered_at: None,
             fetched: Fetched::default(),
-            fetching: None,
+            fetching: BTreeSet::new(),
+            asked: BTreeSet::new(),
             page: None,
             remote: BTreeSet::new(),
             requested: BTreeSet::new(),
@@ -260,6 +265,24 @@ impl HtmlState {
         let (top, bottom) = self.visible;
         visible_strips(top, bottom, height, self.sent.0)
             .all(|strip| self.strips.contains_key(&strip))
+    }
+
+    /// The download, under `tag`, of what the page asked for and was not yet sent; None when nothing is new or
+    /// `MAX_REMOTE` is reached.
+    pub fn fetch_job(&mut self, tag: u64) -> Option<FetchJob> {
+        let room = MAX_REMOTE.saturating_sub(self.asked.len());
+        let urls: Vec<String> = self
+            .remote
+            .difference(&self.asked)
+            .take(room)
+            .cloned()
+            .collect();
+        if urls.is_empty() {
+            return None;
+        }
+        self.asked.extend(urls.iter().cloned());
+        self.fetching.insert(tag);
+        Some(FetchJob { tag, urls })
     }
 }
 
@@ -847,6 +870,7 @@ mod view_tests {
             .send(FetchDone {
                 tag: job.tag,
                 fetched: bytes,
+                last: true,
             })
             .unwrap();
         faked.open.tick();
@@ -873,6 +897,7 @@ mod view_tests {
             .send(FetchDone {
                 tag: job.tag,
                 fetched: bytes,
+                last: true,
             })
             .unwrap();
         faked.open.tick();
@@ -880,6 +905,54 @@ mod view_tests {
         let background = "https://cdn.example.com/background.png";
         reply(&faked, laid(load.generation, 300.0, &[background]));
         assert_eq!(fetch_jobs.try_recv().unwrap().urls, [background]);
+    }
+
+    #[test]
+    fn a_batch_shows_before_the_slow_rest_and_its_follow_up_starts_at_once() {
+        let fx = Fixture::new(&["work"]);
+        add_html(&fx, 1, "<p>x</p>", "text");
+        let faked = faked(&fx);
+        let (fetcher, fetch_jobs, fetched) = Fetcher::fake();
+        faked.open.with(|live| live.app.fetcher = Some(fetcher));
+        let css = "https://cdn.example.com/style.css";
+        let pixel = "https://tracker.example.com/pixel.gif";
+        appear(&faked, faked.generation, &[css, pixel]);
+        faked.open.click("Load remote content");
+        let first = fetch_jobs.try_recv().unwrap();
+        let bytes = BTreeMap::from([(css.to_string(), b"body{}".to_vec())]);
+        fetched
+            .send(FetchDone {
+                tag: first.tag,
+                fetched: bytes,
+                last: false,
+            })
+            .unwrap();
+        faked.open.tick();
+        let load = loads(&faked.jobs)
+            .pop()
+            .expect("laid out with the first batch");
+        assert_eq!(load.fetched.keys().collect::<Vec<_>>(), [css]);
+        let background = "https://cdn.example.com/background.png";
+        reply(&faked, laid(load.generation, 300.0, &[pixel, background]));
+        assert_eq!(
+            fetch_jobs.try_recv().unwrap().urls,
+            [background],
+            "starts while the pixel is still in flight, and asks for it once"
+        );
+        assert_eq!(faked.open.find("Loading remote content…").len(), 1);
+        fetched
+            .send(FetchDone {
+                tag: first.tag,
+                fetched: BTreeMap::from([(pixel.to_string(), Vec::new())]),
+                last: true,
+            })
+            .unwrap();
+        faked.open.tick();
+        assert!(
+            view(&faked.open, |v| v.fetching.len() == 1
+                && !v.remote.contains(pixel))
+            .unwrap()
+        );
     }
 
     /// Asks for remote content on the shown page, as the next layout to come in, and returns the download it starts.
@@ -969,6 +1042,7 @@ mod view_tests {
             .send(FetchDone {
                 tag: job.tag,
                 fetched: BTreeMap::new(),
+                last: true,
             })
             .unwrap();
         faked.open.tick();

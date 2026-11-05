@@ -69,12 +69,17 @@ impl App {
                     view.page = Some((width, height));
                     /* Once the user loaded remote content, what it asks for in turn (images in a stylesheet) follows; from a
                     remembered sender it loads unasked. */
-                    let follow = (remembered || !view.fetched.is_empty())
-                        && view.fetched.len() < html::MAX_REMOTE;
+                    let follow = remembered || !view.asked.is_empty();
+                    let idle = view.fetching.is_empty();
                     view.remote = remote;
-                    if follow && !view.remote.is_empty() && view.fetching.is_none() {
-                        self.load_remote();
-                        continue;
+                    if follow && let Some(job) = view.fetch_job(self.html_generation + 1) {
+                        self.html_generation += 1;
+                        self.fetcher
+                            .get_or_insert_with(|| Fetcher::start(self.wake.clone()))
+                            .send(job);
+                        if idle {
+                            continue;
+                        }
                     }
                     view.strips.clear();
                     view.requested.clear();
@@ -216,23 +221,16 @@ impl App {
         let Some(view) = self.body.as_mut().and_then(|b| b.html_view.as_mut()) else {
             return;
         };
-        if view.remote.is_empty() || view.fetching.is_some() {
+        let Some(job) = view.fetch_job(self.html_generation + 1) else {
             return;
-        }
+        };
         self.html_generation += 1;
-        let tag = self.html_generation;
-        view.fetching = Some(tag);
-        let room = html::MAX_REMOTE.saturating_sub(view.fetched.len());
-        let urls = std::mem::take(&mut view.remote)
-            .into_iter()
-            .take(room)
-            .collect();
         self.fetcher
             .get_or_insert_with(|| Fetcher::start(self.wake.clone()))
-            .send(html::FetchJob { tag, urls });
+            .send(job);
     }
 
-    /// Takes finished downloads for the shown message and lays it out again with them.
+    /// Takes downloads for the shown message as they come in and lays it out again with them.
     pub(super) fn receive_remote(&mut self) {
         let Some(fetcher) = &self.fetcher else {
             return;
@@ -241,10 +239,16 @@ impl App {
             let Some(view) = self.body.as_mut().and_then(|b| b.html_view.as_mut()) else {
                 continue;
             };
-            if view.fetching != Some(done.tag) {
+            if !view.fetching.contains(&done.tag) {
                 continue;
             }
-            view.fetching = None;
+            if done.last {
+                view.fetching.remove(&done.tag);
+            }
+            if done.fetched.is_empty() {
+                continue;
+            }
+            view.remote.retain(|url| !done.fetched.contains_key(url));
             std::sync::Arc::make_mut(&mut view.fetched).extend(done.fetched);
             let (scale, width) = view.sent;
             self.lay_out(scale, width);
