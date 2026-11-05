@@ -11,8 +11,8 @@ use postvak_core::send::reply::{ForwardAs, ReplyTo};
 use super::*;
 use crate::compose::{
     COMPLETIONS, ComposeDraft, ComposeKind, Field, complete, files_dir, load_recoveries,
-    merge_known, recovery_dir, remove_files, remove_recovery, remove_recovery_file, save_recovery,
-    sweep_files, typed_part,
+    merge_known, recovery_dir, remove_files, remove_recovery, remove_recovery_file,
+    remove_unkept_files, save_recovery, sweep_files, typed_part,
 };
 
 pub(crate) type PrefillFn = fn(&Paths, &Config, &str, &SendKind) -> Result<Prefilled, String>;
@@ -326,7 +326,8 @@ impl App {
         let written = (self.recovery_written.iter()).position(|w| w.id == composer.id);
         match written {
             Some(index) if !composer.changed() => {
-                remove_recovery(&dir, composer.id);
+                // The open composer still lists its draft files.
+                remove_recovery_file(&dir, composer.id);
                 self.recovery_written.remove(index);
             }
             Some(index) if self.recovery_written[index] == composer => {}
@@ -1392,7 +1393,7 @@ impl App {
             Err(CancelError::TooLate) => {
                 taken.state = UndoState::Undone;
                 if let Some(composer) = taken.composer.take() {
-                    remove_files(&recovery_dir(&self.paths), composer.id);
+                    remove_unkept_files(&recovery_dir(&self.paths), composer.id);
                 }
                 self.toast = Some(Toast::new("Already on its way".into(), false));
             }
@@ -1413,7 +1414,7 @@ impl App {
             {
                 taken.outbox = None;
                 if let Some(composer) = taken.composer.take() {
-                    remove_files(&recovery_dir(&self.paths), composer.id);
+                    remove_unkept_files(&recovery_dir(&self.paths), composer.id);
                 }
                 taken.state = UndoState::Undone;
             }
@@ -3675,7 +3676,7 @@ mod tests {
     /// Opening a draft from Drafts in a composer, through the real store and `drafts::read`.
     mod opening_drafts {
         use super::*;
-        use crate::compose::{files_dir, recovery_dir};
+        use crate::compose::{files_dir, load_recoveries, recovery_dir};
         use postvak_core::send::drafts;
 
         const ORIGINAL: &[u8] = b"From: Linus Example <linus@x.org>\r\nTo: work@example.com\r\nSubject: Plans\r\nDate: Mon, 2 Nov 2026 10:00:00 +0000\r\nMessage-ID: <m1@x.org>\r\n\r\nShall we?\r\n";
@@ -3865,6 +3866,53 @@ mod tests {
             );
             driver.app.drop_sent_composers(&[]);
             assert!(!file.exists(), "gone once the gesture lets it go");
+        }
+
+        #[test]
+        fn an_opened_draft_changed_back_keeps_its_files() {
+            let (mut driver, fx) = in_drafts(foreign_with_a_file);
+            edit(&mut driver);
+            let target = ComposeTarget::Window(driver.app.new_mail[0].id);
+            let file = driver.app.new_mail[0].files[0].0.clone();
+            driver.apply(UiAction::ComposeEdit(
+                target,
+                ComposeField::Text,
+                "Here, and more".into(),
+            ));
+            driver.at(6.0);
+            assert_eq!(load_recoveries(&recovery_dir(&fx.paths)).len(), 1);
+            driver.apply(UiAction::ComposeEdit(
+                target,
+                ComposeField::Text,
+                "Here".into(),
+            ));
+            driver.at(12.0);
+            assert!(
+                load_recoveries(&recovery_dir(&fx.paths)).is_empty(),
+                "unchanged again"
+            );
+            assert!(file.exists(), "the open composer still lists it");
+        }
+
+        #[test]
+        fn an_evicted_gesture_leaves_files_a_recovery_file_names() {
+            let (mut driver, fx) = in_drafts(foreign_with_a_file);
+            edit(&mut driver);
+            let composer = driver.app.new_mail.remove(0);
+            let file = composer.files[0].0.clone();
+            save_recovery(&recovery_dir(&fx.paths), &composer).unwrap();
+            let id = driver.app.take("Sending".into(), 0);
+            if let Some(taken) = driver.app.taken.iter_mut().find(|t| t.id == id) {
+                taken.composer = Some(Box::new(composer));
+            }
+            for _ in 0..=MAX_TAKEN {
+                driver.app.take("Archived".into(), 0);
+            }
+            assert!(driver.app.taken.iter().all(|t| t.id != id), "evicted");
+            assert!(
+                file.exists(),
+                "kept for the next start, as its recovery file names it"
+            );
         }
 
         #[test]

@@ -709,9 +709,14 @@ pub(crate) fn sweep_files(dir: &Path) {
         .flatten()
         .filter_map(|entry| entry.file_name().to_str()?.parse::<u64>().ok());
     for id in ids.collect::<Vec<_>>() {
-        if !recovery_file(dir, id).exists() {
-            remove_files(dir, id);
-        }
+        remove_unkept_files(dir, id);
+    }
+}
+
+/// Removes composer `id`'s draft files unless its recovery file still names them; those wait for the next start.
+pub(crate) fn remove_unkept_files(dir: &Path, id: u64) {
+    if !recovery_file(dir, id).exists() {
+        remove_files(dir, id);
     }
 }
 

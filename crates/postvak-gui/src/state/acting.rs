@@ -144,7 +144,7 @@ impl App {
         if self.taken.len() > MAX_TAKEN {
             let gone = self.taken.remove(0);
             if let Some(composer) = gone.composer {
-                crate::compose::remove_files(
+                crate::compose::remove_unkept_files(
                     &crate::compose::recovery_dir(&self.paths),
                     composer.id,
                 );
