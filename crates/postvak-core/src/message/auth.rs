@@ -206,6 +206,17 @@ fn aligned(signer: &str, from: &str) -> bool {
 }
 
 impl AuthResults {
+    /// Whether this header has a DMARC `result` (lower-cased) for `domain` (lower-cased): one whose `header.from`
+    /// names it, or that names no domain.
+    pub fn dmarc(&self, domain: &str, result: &str) -> bool {
+        self.results.iter().any(|r| {
+            r.method == "dmarc"
+                && r.result == result
+                && r.property("header.from")
+                    .is_none_or(|from| from.trim_end_matches('.').eq_ignore_ascii_case(domain))
+        })
+    }
+
     /// Whether this header says mail from `from_domain` (lower-cased) is authenticated. A DMARC pass or fail for that
     /// domain decides, since it applies the domain's own alignment policy, which may be stricter than ours; without
     /// one, DKIM passing with a signing domain aligned with it does.
@@ -235,23 +246,53 @@ impl AuthResults {
     }
 }
 
-/// Whether the message with these headers and this From field is authenticated, as the topmost
-/// `Authentication-Results` header whose authserv-id `trusted` accepts says. That is safe when the trusted ids are
-/// servers of the provider that write the header on every incoming message: theirs sits above any the sender wrote,
-/// and RFC 8601 has them remove copies that claim their id. A From with no address, or more than one, is not
-/// authenticated; neither is mail without such a header.
-pub fn authenticated(raw_headers: &[u8], from: &str, trusted: impl Fn(&str) -> bool) -> bool {
+/// What the topmost `Authentication-Results` header that `trusted` accepts says about the message with these headers
+/// and this From field: that it comes from the From domain, that DMARC failed for that domain, or nothing either way
+/// (None). That is safe when the trusted ids are servers of the provider that write the header on every incoming
+/// message: theirs sits above any the sender wrote, and RFC 8601 has them remove copies that claim their id. A From
+/// with no address, or more than one, gets no verdict; neither does mail without such a header.
+pub fn verdict(raw_headers: &[u8], from: &str, trusted: impl Fn(&str) -> bool) -> Option<Verdict> {
     let addresses = crate::message::bare_addresses(from);
     let [address] = addresses.as_slice() else {
-        return false;
+        return None;
     };
-    let Some(domain) = address_domain(address) else {
-        return false;
+    let domain = address_domain(address)?;
+    let header = topmost_trusted(raw_headers, trusted)?;
+    let passed = if header.authenticates(&domain) {
+        true
+    } else if header.dmarc(&domain, "fail") {
+        false
+    } else {
+        return None;
     };
+    Some(Verdict {
+        domain,
+        authserv_id: header.authserv_id.trim_end_matches('.').to_string(),
+        passed,
+    })
+}
+
+/// The topmost `Authentication-Results` header in the block whose authserv-id `trusted` accepts.
+pub fn topmost_trusted(raw_headers: &[u8], trusted: impl Fn(&str) -> bool) -> Option<AuthResults> {
     all(raw_headers)
         .into_iter()
         .find(|header| trusted(&header.authserv_id))
-        .is_some_and(|header| header.authenticates(&domain))
+}
+
+/// What a trusted server said about a From domain: see [`verdict`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Verdict {
+    /// The From domain, lower-cased.
+    pub domain: String,
+    /// The server that checked it, lower-cased, without a trailing dot.
+    pub authserv_id: String,
+    /// The mail comes from the domain; false when DMARC failed for it.
+    pub passed: bool,
+}
+
+/// Whether the message with these headers and this From field is authenticated: see [`verdict`].
+pub fn authenticated(raw_headers: &[u8], from: &str, trusted: impl Fn(&str) -> bool) -> bool {
+    verdict(raw_headers, from, trusted).is_some_and(|v| v.passed)
 }
 
 /// How few messages [`common_authserv_id`] needs before it offers an authserv-id.
@@ -419,6 +460,54 @@ mod tests {
         let raw = b"Authentication-Results: mx.soverin.net; dmarc=pass header.from=paypal.com\r\n\
             Authentication-Results: relay.example; dmarc=fail\r\n\r\n";
         assert!(authenticated(raw, "service@paypal.com", trusted));
+    }
+
+    #[test]
+    fn the_verdict_names_the_domain_and_the_server_that_checked_it() {
+        let raw = b"Authentication-Results: relay.example; dmarc=pass header.from=paypal.com\r\n\
+            Authentication-Results: MX.Soverin.net.; dmarc=pass header.from=paypal.com\r\n\r\n";
+        let trusted = |id: &str| trusted(id.trim_end_matches('.'));
+        assert_eq!(
+            verdict(raw, "PayPal <service@PayPal.com>", trusted),
+            Some(Verdict {
+                domain: "paypal.com".into(),
+                authserv_id: "mx.soverin.net".into(),
+                passed: true,
+            })
+        );
+        assert_eq!(verdict(raw, "service@paypa1.com", trusted), None);
+    }
+
+    #[test]
+    fn only_a_dmarc_fail_for_the_from_domain_is_a_failed_verdict() {
+        let check = |results: &str| {
+            let raw = format!("Authentication-Results: mx.soverin.net; {results}\r\n\r\n");
+            verdict(raw.as_bytes(), "service@paypal.com", trusted).map(|v| v.passed)
+        };
+        assert_eq!(check("dmarc=fail header.from=paypal.com"), Some(false));
+        assert_eq!(
+            check("dmarc=fail (p=none) header.from=PayPal.com."),
+            Some(false)
+        );
+        assert_eq!(
+            check("dkim=pass header.d=paypal.com; dmarc=fail header.from=paypal.com"),
+            Some(false)
+        );
+        // Nothing either way: no DMARC verdict, one for another domain, a DKIM failure alone.
+        assert_eq!(check("dmarc=none header.from=paypal.com"), None);
+        assert_eq!(check("dmarc=fail header.from=other.example"), None);
+        assert_eq!(check("dkim=fail header.d=paypal.com"), None);
+        assert_eq!(check("spf=fail smtp.mailfrom=paypal.com"), None);
+        // A sender's own header below the trusted one does not count, nor one from an untrusted server.
+        let raw = b"Authentication-Results: mx.soverin.net; dmarc=pass header.from=paypal.com\r\n\
+            Authentication-Results: mx.soverin.net; dmarc=fail header.from=paypal.com\r\n\r\n";
+        assert_eq!(
+            verdict(raw, "service@paypal.com", trusted).map(|v| v.passed),
+            Some(true)
+        );
+        let raw =
+            b"Authentication-Results: mx.evil.example; dmarc=fail header.from=paypal.com\r\n\r\n";
+        assert_eq!(verdict(raw, "service@paypal.com", trusted), None);
     }
 
     #[test]

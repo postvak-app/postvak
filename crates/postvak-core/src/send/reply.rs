@@ -399,6 +399,18 @@ pub fn reply(
             }
         }
     }
+    // A note to self names only our addresses: the reply goes back to us rather than nowhere.
+    if to_list.is_empty() && cc_list.is_empty() && from_ours && to != ReplyTo::List {
+        let back = if read.to.is_empty() {
+            &read.from
+        } else {
+            &read.to
+        };
+        to_list = back
+            .iter()
+            .map(|(name, address)| mailbox_text(name.as_deref(), address))
+            .collect();
+    }
     if to_list.is_empty() {
         if cc_list.is_empty() {
             return Err(ReplyError::NoRecipients);
@@ -558,6 +570,18 @@ mod tests {
         let draft = reply(sent.as_bytes(), ReplyTo::Sender, &identity(), "again").unwrap();
         assert_eq!(addresses(&draft.to), ["linus@x.org", "other@x.org"]);
         assert_eq!(draft.from, "me@example.com");
+    }
+
+    #[test]
+    fn reply_to_a_note_to_self_goes_back_to_us() {
+        let note = "From: Me <me@example.com>\r\nTo: alias@example.org\r\nSubject: s\r\nMessage-ID: <n@example.com>\r\n\r\nbody\r\n";
+        for to in [ReplyTo::Sender, ReplyTo::All] {
+            let draft = reply(note.as_bytes(), to, &identity(), "").unwrap();
+            assert_eq!(addresses(&draft.to), ["alias@example.org"]);
+        }
+        let no_to = "From: Me <me@example.com>\r\nSubject: s\r\n\r\nbody\r\n";
+        let draft = reply(no_to.as_bytes(), ReplyTo::Sender, &identity(), "").unwrap();
+        assert_eq!(addresses(&draft.to), ["me@example.com"]);
     }
 
     #[test]

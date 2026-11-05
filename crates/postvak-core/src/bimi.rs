@@ -1,6 +1,6 @@
 //! Sender brand logos (BIMI): which DNS record a message may show the logo of, the logo's URL in that record, and a
-//! week-long cache per record. Only mail that passed DMARC for its From domain, by the receiving server's own
-//! `Authentication-Results`, gets a logo; anyone can put a brand's selector on spoofed mail. Nothing here logs: a
+//! week-long cache per record. Only mail that passed DMARC for its From domain, by the `Authentication-Results` of a
+//! server the account trusts, gets a logo; anyone can put a brand's selector, or such a header, on spoofed mail. Nothing here logs: a
 //! lookup tells whoever reads the log who mails you.
 use std::io;
 use std::path::{Path, PathBuf};
@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use mail_parser::MessageParser;
 use serde::{Deserialize, Serialize};
 
+use crate::message::auth;
 use crate::paths::write_atomic;
 
 /// How long a lookup's answer, a logo or none, is kept.
@@ -29,8 +30,9 @@ impl Brand {
 }
 
 /// The brand record a message may show, when its one From address's domain passed DMARC by the topmost
-/// `Authentication-Results`, the one the receiving server added last. A `BIMI-Selector` header picks the selector.
-pub fn brand(raw_headers: &[u8]) -> Option<Brand> {
+/// `Authentication-Results` whose authserv-id `trusted` accepts (see `message::auth::verdict` for why only that one).
+/// A `BIMI-Selector` header picks the selector.
+pub fn brand(raw_headers: &[u8], trusted: impl Fn(&str) -> bool) -> Option<Brand> {
     let msg = MessageParser::default().parse_headers(raw_headers)?;
     let from: Vec<_> = msg.from()?.mailboxes().collect();
     let [from] = from.as_slice() else {
@@ -38,56 +40,15 @@ pub fn brand(raw_headers: &[u8]) -> Option<Brand> {
     };
     let (_, domain) = from.address()?.rsplit_once('@')?;
     let domain = domain_name(domain)?;
-    // `Headers::get` gives the last of a repeated header; the topmost is the first.
-    let first = |name: &str| {
-        let header = msg.headers().all(name).next()?;
-        std::str::from_utf8(header.raw_value()).ok()
-    };
-    if !dmarc_passed(first("Authentication-Results")?, &domain) {
+    if !auth::topmost_trusted(raw_headers, trusted)?.dmarc(&domain, "pass") {
         return None;
     }
-    let selector = match first("BIMI-Selector") {
-        Some(header) => selector(header)?,
+    // `Headers::get` gives the last of a repeated header; the topmost is the first.
+    let selector = match msg.headers().all("BIMI-Selector").next() {
+        Some(header) => selector(std::str::from_utf8(header.raw_value()).ok()?)?,
         None => "default".into(),
     };
     Some(Brand { domain, selector })
-}
-
-/// Whether an `Authentication-Results` value says DMARC passed for `domain`. A `header.from` that names another
-/// domain is a pass for that one, not this.
-fn dmarc_passed(results: &str, domain: &str) -> bool {
-    let results = without_comments(results);
-    results.split(';').skip(1).any(|method| {
-        let mut words = method.split_whitespace();
-        let Some((name, result)) = words.next().and_then(|word| word.split_once('=')) else {
-            return false;
-        };
-        if !name.eq_ignore_ascii_case("dmarc") || !result.eq_ignore_ascii_case("pass") {
-            return false;
-        }
-        words
-            .filter_map(|word| word.split_once('='))
-            .filter(|(property, _)| property.eq_ignore_ascii_case("header.from"))
-            .all(|(_, from)| from.trim_end_matches('.').eq_ignore_ascii_case(domain))
-    })
-}
-
-/// The text with its `(comments)` removed, nested ones too.
-fn without_comments(text: &str) -> String {
-    let mut depth = 0usize;
-    text.chars()
-        .filter(|c| match c {
-            '(' => {
-                depth += 1;
-                false
-            }
-            ')' => {
-                depth = depth.saturating_sub(1);
-                false
-            }
-            _ => depth == 0,
-        })
-        .collect()
 }
 
 /// The `s=` of a `BIMI-Selector: v=BIMI1; s=name;` header, when it is a plain DNS label.
@@ -232,6 +193,10 @@ mod tests {
         text.into_bytes()
     }
 
+    fn trusted(id: &str) -> bool {
+        id == "mx.example.net"
+    }
+
     fn github(results: &str) -> Vec<u8> {
         headers(&[
             &format!("Authentication-Results: {results}"),
@@ -250,7 +215,7 @@ mod tests {
     #[test]
     fn a_dmarc_pass_for_the_from_domain_gives_its_default_record() {
         let pass = "mx.example.net; dkim=pass header.d=github.com; spf=pass smtp.mailfrom=github.com; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=github.com";
-        let brand = brand(&github(pass)).unwrap();
+        let brand = brand(&github(pass), trusted).unwrap();
         assert_eq!(brand, brand_of("github.com", "default"));
         assert_eq!(brand.record_name(), "default._bimi.github.com");
     }
@@ -266,10 +231,10 @@ mod tests {
             "dmarc=pass header.from=github.com",
             "mx.example.net; none",
         ] {
-            assert_eq!(brand(&github(results)), None, "{results}");
+            assert_eq!(brand(&github(results), trusted), None, "{results}");
         }
         assert_eq!(
-            brand(&headers(&["From: GitHub <noreply@github.com>"])),
+            brand(&headers(&["From: GitHub <noreply@github.com>"]), trusted),
             None
         );
     }
@@ -281,16 +246,43 @@ mod tests {
             "Authentication-Results: mx.example.net; dmarc=pass header.from=github.com",
             "From: noreply@github.com",
         ]);
-        assert_eq!(brand(&forged_below), None);
+        assert_eq!(brand(&forged_below, trusted), None);
     }
 
     #[test]
     fn a_pass_without_header_from_is_still_a_pass() {
-        assert!(dmarc_passed("mx.example.net; DMARC=Pass", "github.com"));
-        assert!(dmarc_passed(
+        for results in [
+            "mx.example.net; DMARC=Pass",
             "mx.example.net; dmarc=pass header.from=GitHub.com.",
-            "github.com"
-        ));
+        ] {
+            assert!(brand(&github(results), trusted).is_some(), "{results}");
+        }
+    }
+
+    #[test]
+    fn only_a_server_the_account_trusts_counts() {
+        let pass = "mx.example.net; dmarc=pass header.from=github.com";
+        assert_eq!(brand(&github(pass), |_| false), None, "trusts no server");
+        // The sender's own header on top, where the provider wrote none.
+        assert_eq!(
+            brand(
+                &github("mx.evil.example; dmarc=pass header.from=github.com"),
+                trusted
+            ),
+            None
+        );
+        let forged_above = headers(&[
+            "Authentication-Results: mx.evil.example; dmarc=pass header.from=github.com",
+            "Authentication-Results: mx.example.net; dmarc=fail header.from=github.com",
+            "From: noreply@github.com",
+        ]);
+        assert_eq!(brand(&forged_above, trusted), None);
+        let relayed = headers(&[
+            "Authentication-Results: relay.example; dmarc=fail",
+            "Authentication-Results: mx.example.net; dmarc=pass header.from=github.com",
+            "From: noreply@github.com",
+        ]);
+        assert!(brand(&relayed, trusted).is_some());
     }
 
     #[test]
@@ -303,7 +295,7 @@ mod tests {
             "From: someone@exa_mple.com",
             "From: no address",
         ] {
-            assert_eq!(brand(&headers(&[pass, from])), None, "{from}");
+            assert_eq!(brand(&headers(&[pass, from]), trusted), None, "{from}");
         }
     }
 
@@ -311,7 +303,7 @@ mod tests {
     fn a_bimi_selector_header_picks_the_record() {
         let pass = "Authentication-Results: mx.example.net; dmarc=pass header.from=example.com";
         let from = "From: Shop <news@Example.COM>";
-        let with = |selector: &str| brand(&headers(&[pass, from, selector]));
+        let with = |selector: &str| brand(&headers(&[pass, from, selector]), trusted);
         assert_eq!(
             with("BIMI-Selector: v=BIMI1; s=Spring;"),
             Some(brand_of("example.com", "spring"))

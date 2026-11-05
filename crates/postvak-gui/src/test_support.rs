@@ -158,6 +158,24 @@ pub(crate) fn branded(folder: &str, uid: u32, subject: &str) -> Message {
     }
 }
 
+/// Turns sender logos on, with the last account in config.toml, work in a fixture of one, trusting mx.example.com,
+/// the server that checked `branded` mail.
+pub(crate) fn sender_images(fx: &Fixture) {
+    fx.append_config("trusted_authserv_ids = [\"mx.example.com\"]\n\n[ui]\nsender_images = true\n");
+}
+
+/// An account's identity that trusts the `Authentication-Results` of `authserv_id` alone.
+pub(crate) fn trusting(authserv_id: &str) -> postvak_core::config::Identity {
+    let mut account = postvak_core::config::AccountConfig::new(
+        "work",
+        "imap.example.com",
+        "me@example.com",
+        postvak_core::config::PasswordSource::Keyring { keyring: true },
+    );
+    account.trusted_authserv_ids = Some(vec![authserv_id.into()]);
+    account.identity().unwrap()
+}
+
 /// A red square in the logo cache for github.com, as if fetched just now.
 pub(crate) fn cache_github_logo(paths: &postvak_core::paths::Paths) {
     let brand = postvak_core::bimi::Brand {
