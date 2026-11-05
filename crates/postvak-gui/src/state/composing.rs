@@ -4,6 +4,7 @@ use postvak_core::daemon::client::LazyClient;
 use postvak_core::message::header_value;
 use postvak_core::send::check::DEFAULT_SIZE_LIMIT;
 use postvak_core::send::compose::{Prefilled, Queued, SendKind, SendRequest};
+use postvak_core::send::drafts::SavedDraft;
 use postvak_core::send::mailto::Mailto;
 use postvak_core::send::reply::{ForwardAs, ReplyTo};
 
@@ -43,7 +44,9 @@ impl From<&str> for QueueError {
         QueueError::Failed(text.to_string())
     }
 }
-pub(crate) type BuildDraftFn = fn(&Paths, &Config, SendRequest) -> Result<Vec<u8>, String>;
+/// Saves `request` built as a draft in `account`'s Drafts, or with None only deletes, in place of the copies `replaces`.
+pub(crate) type SaveDraftFn =
+    fn(&Paths, &Config, &str, Option<SendRequest>, Vec<String>) -> Result<SavedDraft, String>;
 pub(crate) type CancelFn = fn(&Paths, &str, &str) -> Result<(), CancelError>;
 pub(crate) type RetryFn = fn(&Paths, &str, &str) -> Result<(), String>;
 
@@ -129,20 +132,14 @@ pub(crate) struct Sending {
     answer: Receiver<Result<(Queued, u64), QueueError>>,
 }
 
-/// A composer on its way to Drafts: the composer as saved, its draft being built and then the Message-ID it was sent as,
-/// and what waits for the answer: another save asked meanwhile, and what Save draft on the leave question goes on with.
+/// A composer on its way to Drafts: the composer as saved, the worker's answer, and what waits for it: another save
+/// asked meanwhile, and what Save draft on the leave question goes on with.
 pub(crate) struct ComposeSave {
     target: ComposeTarget,
     composer: Composer,
-    stage: SaveStage,
+    answer: Receiver<Result<SavedDraft, String>>,
     again: bool,
     then: Option<UiAction>,
-}
-
-enum SaveStage {
-    Building(Receiver<Result<Vec<u8>, String>>),
-    /// Sent to the daemon as this Message-ID, `<id>`, which its `DraftSaved` names.
-    Asked(String),
 }
 
 fn error_text(e: &anyhow::Error) -> String {
@@ -161,14 +158,32 @@ pub(crate) fn prefill(
         .map_err(|e| error_text(&e))
 }
 
-/// Builds `request` as a draft, as `queue_send` would build the message.
-pub(crate) fn build_draft(
+/// Builds `request` as a draft, as `queue_send` would build the message, and has the daemon save it; waits for the
+/// answer to this request alone, so no other command's refusal is taken for it.
+pub(crate) fn save_draft(
     paths: &Paths,
     config: &Config,
-    request: SendRequest,
-) -> Result<Vec<u8>, String> {
+    account: &str,
+    request: Option<SendRequest>,
+    replaces: Vec<String>,
+) -> Result<SavedDraft, String> {
     let client = LazyClient::new(paths);
-    postvak_core::send::drafts::build(config, paths, &client, &request).map_err(|e| error_text(&e))
+    let raw = request
+        .map(|request| postvak_core::send::drafts::build(config, paths, &client, &request))
+        .transpose()
+        .map_err(|e| error_text(&e))?;
+    let command = Command::SaveDraft { raw, replaces };
+    match client
+        .client()
+        .and_then(|client| client.request(account, command))
+    {
+        Ok(Event::DraftSaved {
+            message_id, left, ..
+        }) => Ok(SavedDraft { message_id, left }),
+        Ok(Event::CommandFailed { message, .. }) => Err(clean(&message, false)),
+        Ok(other) => Err(format!("unexpected answer from the daemon: {other:?}")),
+        Err(e) => Err(error_text(&e)),
+    }
 }
 
 /// Builds, checks and queues `request` as `postvak send` does; the window never opens an editor.
@@ -214,7 +229,6 @@ fn cancel_error(text: &str) -> CancelError {
 /// Why a composer cannot go on: its account's addresses could not be read from config.toml.
 const NO_IDENTITY: &str = "this account's addresses could not be read from config.toml";
 const STOPPED: &str = "the window's worker stopped before it answered";
-const RESTARTED: &str = "background sync restarted before the draft was saved; save it again";
 
 /// The line a composer reopened from its recovery file shows.
 pub(crate) const RESTORED: &str = "Restored after Postvak closed";
@@ -237,7 +251,6 @@ impl App {
     /// Writes the recovery file of each changed composer that changed since its last one, and takes away the file of
     /// one changed back; quitting calls it once more, without asking anything.
     pub(crate) fn save_recoveries(&mut self) {
-        let dir = recovery_dir(&self.paths);
         let open: Vec<Composer> = self
             .composer
             .iter()
@@ -245,25 +258,31 @@ impl App {
             .cloned()
             .collect();
         for composer in open {
-            let written = (self.recovery_written.iter()).position(|w| w.id == composer.id);
-            match written {
-                Some(index) if !composer.changed() => {
-                    remove_recovery(&dir, composer.id);
-                    self.recovery_written.remove(index);
-                }
-                Some(index) if self.recovery_written[index] == composer => {}
-                _ if !composer.changed() => {}
-                _ => match save_recovery(&dir, &composer) {
-                    Ok(()) => {
-                        self.recovery_written.retain(|w| w.id != composer.id);
-                        self.recovery_written.push(composer);
-                    }
-                    Err(e) => log::warn!(
-                        "could not keep the unsent message {}.json: {e}",
-                        composer.id
-                    ),
-                },
+            self.keep_recovery(composer);
+        }
+    }
+
+    /// Writes `composer`'s recovery file when it changed since the last one, or takes it away once it is unchanged.
+    fn keep_recovery(&mut self, composer: Composer) {
+        let dir = recovery_dir(&self.paths);
+        let written = (self.recovery_written.iter()).position(|w| w.id == composer.id);
+        match written {
+            Some(index) if !composer.changed() => {
+                remove_recovery(&dir, composer.id);
+                self.recovery_written.remove(index);
             }
+            Some(index) if self.recovery_written[index] == composer => {}
+            _ if !composer.changed() => {}
+            _ => match save_recovery(&dir, &composer) {
+                Ok(()) => {
+                    self.recovery_written.retain(|w| w.id != composer.id);
+                    self.recovery_written.push(composer);
+                }
+                Err(e) => log::warn!(
+                    "could not keep the unsent message {}.json: {e}",
+                    composer.id
+                ),
+            },
         }
     }
 
@@ -523,7 +542,7 @@ impl App {
         }
     }
 
-    /// Deletes every copy in Drafts of the composer at `target`.
+    /// Deletes every copy in Drafts of the composer at `target`, on a worker; a failure is noted.
     fn delete_draft(&mut self, target: ComposeTarget) {
         let Some(composer) = self.composer_ref(target) else {
             return;
@@ -532,24 +551,16 @@ impl App {
             return;
         };
         let replaces = draft.ids();
-        let Some(account) = self
-            .accounts
-            .iter()
-            .position(|a| a.name == composer.account)
-        else {
-            return;
-        };
-        let command = Command::SaveDraft {
-            raw: None,
-            replaces,
-        };
-        if !self.send(account, command) {
-            self.note_error(Some(account), DAEMON_LOST.into());
-        }
+        let account = composer.account.clone();
+        let (paths, save) = (self.paths.clone(), self.save_draft);
+        let answer = worker::oneshot("compose-draft-delete", self.wake.clone(), move || {
+            save(&paths, &load_config(&paths)?, &account, None, replaces).map(drop)
+        });
+        self.compose_deleting.push(answer);
     }
 
-    /// Builds the composer's draft on a worker, then asks the daemon to save it in place of the copy saved before; a
-    /// save asked for while one is on its way runs once that one is answered. `then` is applied once it is saved.
+    /// Builds and saves the composer's draft on a worker, in place of the copy saved before; a save asked for while one
+    /// is on its way runs once that one is answered. `then` is applied once it is saved.
     fn compose_save_draft(&mut self, target: ComposeTarget, then: Option<UiAction>) {
         let Some(composer) = self
             .composer_mut(target)
@@ -570,138 +581,98 @@ impl App {
         composer.saving = true;
         let saved = composer.clone();
         let request = composer.request();
-        let (paths, build) = (self.paths.clone(), self.build_draft);
-        let built = worker::oneshot("compose-draft", self.wake.clone(), move || {
-            build(&paths, &load_config(&paths)?, request)
+        let replaces = (composer.draft.as_ref())
+            .map(ComposeDraft::ids)
+            .unwrap_or_default();
+        let account = composer.account.clone();
+        let (paths, save) = (self.paths.clone(), self.save_draft);
+        let answer = worker::oneshot("compose-draft", self.wake.clone(), move || {
+            save(
+                &paths,
+                &load_config(&paths)?,
+                &account,
+                Some(request),
+                replaces,
+            )
         });
         self.compose_saves.push(ComposeSave {
             target,
             composer: saved,
-            stage: SaveStage::Building(built),
+            answer,
             again: false,
             then,
         });
     }
 
-    /// Sends each built draft to the daemon; one that could not be built or sent fails.
+    /// Takes each answered save, and notes each delete that failed.
     fn receive_saves(&mut self) {
         let mut index = 0;
         while index < self.compose_saves.len() {
-            let SaveStage::Building(built) = &self.compose_saves[index].stage else {
-                index += 1;
-                continue;
-            };
-            let Some(result) = worker::poll(built) else {
-                index += 1;
-                continue;
-            };
-            let asked = result
-                .unwrap_or_else(|Stopped| Err(STOPPED.into()))
-                .and_then(|raw| self.ask_save(&self.compose_saves[index].composer, raw));
-            match asked {
-                Ok(message_id) => {
-                    self.compose_saves[index].stage = SaveStage::Asked(message_id);
-                    index += 1;
-                }
-                Err(why) => {
+            match worker::poll(&self.compose_saves[index].answer) {
+                Some(result) => {
                     let save = self.compose_saves.remove(index);
-                    self.save_failed(&save, why);
+                    match result.unwrap_or_else(|Stopped| Err(STOPPED.into())) {
+                        Ok(saved) => self.draft_saved(save, saved),
+                        Err(why) => self.save_failed(save.target, save.composer.id, why),
+                    }
                 }
+                None => index += 1,
+            }
+        }
+        let mut index = 0;
+        while index < self.compose_deleting.len() {
+            match worker::poll(&self.compose_deleting[index]) {
+                Some(result) => {
+                    self.compose_deleting.remove(index);
+                    if let Err(why) = result.unwrap_or_else(|Stopped| Err(STOPPED.into())) {
+                        self.note_error(None, format!("could not delete the draft: {why}"));
+                    }
+                }
+                None => index += 1,
             }
         }
     }
 
-    /// Sends `raw`, `saved`'s draft, to the daemon; the Message-ID its answer names.
-    fn ask_save(&self, saved: &Composer, raw: Vec<u8>) -> Result<String, String> {
-        let message_id = postvak_core::message::parse_headers(&raw)
-            .message_id
-            .map(|id| format!("<{id}>"))
-            .ok_or("the draft was built without a Message-ID")?;
-        let account = (self.accounts.iter())
-            .position(|a| a.name == saved.account)
-            .ok_or("this account is not in the window")?;
-        let replaces = saved
-            .draft
-            .as_ref()
-            .map(ComposeDraft::ids)
-            .unwrap_or_default();
-        let command = Command::SaveDraft {
-            raw: Some(raw),
-            replaces,
-        };
-        match self.send(account, command) {
-            true => Ok(message_id),
-            false => Err(DAEMON_LOST.into()),
-        }
-    }
-
-    fn save_failed(&mut self, save: &ComposeSave, why: String) {
-        let composer = self.composer_mut(save.target);
-        if let Some(composer) = composer.filter(|c| c.id == save.composer.id) {
+    fn save_failed(&mut self, target: ComposeTarget, id: u64, why: String) {
+        if let Some(composer) = self.composer_mut(target).filter(|c| c.id == id) {
             composer.saving = false;
             composer.error = Some((Field::Send, clean(&why, false)));
         }
     }
 
-    /// The daemon saved draft `message_id` of `account`: the composer that asked has it in Drafts now. A draft this
-    /// window did not ask for, or a delete, is another's.
-    pub(super) fn draft_saved(
-        &mut self,
-        account: usize,
-        message_id: Option<String>,
-        left: Vec<String>,
-    ) {
-        let name = &self.accounts[account].name;
-        let Some(index) = self.compose_saves.iter().position(|save| {
-            save.composer.account == *name
-                && matches!(&save.stage, SaveStage::Asked(id) if Some(id) == message_id.as_ref())
-        }) else {
-            return;
-        };
+    /// The composer that asked has its draft in Drafts now, and its recovery file says so; the next save, or what Save
+    /// draft on the leave question goes on with, follows.
+    fn draft_saved(&mut self, save: ComposeSave, saved: SavedDraft) {
         let ComposeSave {
             target,
-            composer: saved,
-            stage,
+            composer: asked,
             again,
             then,
-        } = self.compose_saves.remove(index);
-        let SaveStage::Asked(message_id) = stage else {
+            ..
+        } = save;
+        let Some(message_id) = saved.message_id else {
+            let why = "the draft was saved without a Message-ID".to_string();
+            return self.save_failed(target, asked.id, why);
+        };
+        let Some(composer) = self.composer_mut(target).filter(|c| c.id == asked.id) else {
             return;
         };
-        let Some(composer) = self.composer_mut(target).filter(|c| c.id == saved.id) else {
-            return;
+        let draft = ComposeDraft {
+            message_id,
+            left: saved.left,
         };
-        composer.saved_as(&saved, ComposeDraft { message_id, left });
+        composer.saved_as(&asked, draft);
+        // A restored composer's warning stays until it is sent, as its first Send still asks.
+        if !composer.may_have_gone && composer.error.as_ref().is_some_and(|e| e.0 == Field::Send) {
+            composer.error = None;
+        }
+        let composer = composer.clone();
+        self.keep_recovery(composer);
         self.toast = Some(Toast::new("Draft saved".into(), false));
         if again {
             self.compose_save_draft(target, then);
         } else if let Some(then) = then {
             self.apply_action(then);
-        }
-    }
-
-    /// Whether this window's refusal of a command of `account` answers its oldest save there, which then failed. The
-    /// refusal does not say which command it answers, so it is taken as the save's, as the folder dialog does.
-    pub(super) fn save_refused(&mut self, account: usize, message: &str) -> bool {
-        let name = &self.accounts[account].name;
-        let Some(index) = (self.compose_saves.iter()).position(|save| {
-            save.composer.account == *name && matches!(save.stage, SaveStage::Asked(_))
-        }) else {
-            return false;
-        };
-        let save = self.compose_saves.remove(index);
-        self.save_failed(&save, message.to_string());
-        true
-    }
-
-    /// Saves sent to a daemon that went away are never answered; their composers may save again.
-    pub(super) fn drop_unanswered_saves(&mut self) {
-        let (asked, building) = std::mem::take(&mut self.compose_saves)
-            .into_iter()
-            .partition(|save| matches!(save.stage, SaveStage::Asked(_)));
-        self.compose_saves = building;
-        for save in asked {
-            self.save_failed(&save, RESTARTED.into());
         }
     }
 
@@ -2758,121 +2729,139 @@ mod tests {
     }
 
     mod drafts {
+        use std::path::PathBuf;
+        use std::sync::mpsc::{Sender, channel};
+
         use super::*;
         use crate::compose::{ComposeDraft, load_recoveries, recovery_dir};
         use crate::test_support::wait_until;
 
-        /// The draft as the window would build it: its text under a new Message-ID.
-        fn built(_: &Paths, _: &Config, request: SendRequest) -> Result<Vec<u8>, String> {
-            static NEXT: AtomicUsize = AtomicUsize::new(1);
-            let Body::Given(text) = request.body else {
-                return Err("no text".into());
-            };
-            let n = NEXT.fetch_add(1, Ordering::Relaxed);
-            Ok(format!("Message-ID: <d{n}@draft>\r\n\r\n{text}").into_bytes())
+        /// One save asked of the faked daemon: by whose home, what it saves (None: only deletes), and the answer it waits for.
+        struct Call {
+            home: PathBuf,
+            account: String,
+            text: Option<String>,
+            replaces: Vec<String>,
+            answer: Sender<Result<SavedDraft, String>>,
+        }
+
+        static CALLS: Mutex<Vec<Call>> = Mutex::new(Vec::new());
+
+        /// Waits on its worker until the test answers.
+        fn held(
+            paths: &Paths,
+            _: &Config,
+            account: &str,
+            request: Option<SendRequest>,
+            replaces: Vec<String>,
+        ) -> Result<SavedDraft, String> {
+            let (answer, answered) = channel();
+            let text = request.map(|request| match request.body {
+                Body::Given(text) => text,
+                _ => String::new(),
+            });
+            CALLS.lock().unwrap().push(Call {
+                home: paths.state_dir.clone(),
+                account: account.into(),
+                text,
+                replaces,
+                answer,
+            });
+            answered.recv().unwrap_or(Err("the test ended".into()))
+        }
+
+        fn take_call(fx: &Fixture) -> Option<Call> {
+            let mut calls = CALLS.lock().unwrap();
+            let index = calls.iter().position(|c| c.home == fx.paths.state_dir)?;
+            Some(calls.remove(index))
+        }
+
+        /// Waits for the window's next save.
+        fn asked(driver: &mut Driver, fx: &Fixture) -> Call {
+            let mut call = None;
+            wait_until(|| {
+                driver.tick();
+                call = take_call(fx);
+                call.is_some()
+            });
+            let call = call.unwrap();
+            assert_eq!(call.account, "work");
+            call
+        }
+
+        fn saved(id: &str, left: &[&str]) -> Result<SavedDraft, String> {
+            Ok(SavedDraft {
+                message_id: Some(id.into()),
+                left: left.iter().map(|id| id.to_string()).collect(),
+            })
+        }
+
+        /// Answers `call` and waits until the window took the answer.
+        fn answer(driver: &mut Driver, call: Call, result: Result<SavedDraft, String>) {
+            call.answer.send(result).unwrap();
+            driver
+                .tick_until(|app| app.compose_saves.is_empty() && app.compose_deleting.is_empty());
         }
 
         fn drafting(uids: &[u32]) -> Replying {
             let mut replying = replying(uids);
-            replying.driver.app.build_draft = built;
+            replying.driver.app.save_draft = held;
             replying
         }
 
-        fn write(driver: &mut Driver, text: &str) {
-            driver.apply(UiAction::ComposeEdit(PANE, ComposeField::Text, text.into()));
-        }
-
-        fn saves(wires: &Wires) -> Vec<(String, Command)> {
-            (wires.sent().into_iter())
-                .filter(|(_, command)| matches!(command, Command::SaveDraft { .. }))
-                .collect()
-        }
-
-        /// Waits for the one `SaveDraft` the window sends, as (its text, its Message-ID, what it replaces).
-        fn asked(driver: &mut Driver, wires: &Wires) -> (String, Option<String>, Vec<String>) {
-            let mut sent = Vec::new();
-            wait_until(|| {
-                driver.tick();
-                sent.extend(saves(wires));
-                !sent.is_empty()
-            });
-            let [(account, Command::SaveDraft { raw, replaces })] = sent.as_slice() else {
-                panic!("{sent:?}");
-            };
-            assert_eq!(account, "work");
-            let raw = raw.clone().unwrap_or_default();
-            let id = postvak_core::message::parse_headers(&raw).message_id;
-            let text = String::from_utf8_lossy(&raw)
-                .rsplit("\r\n\r\n")
-                .next()
-                .map(str::to_string);
-            (
-                text.unwrap_or_default(),
-                id.map(|id| format!("<{id}>")),
-                replaces.clone(),
-            )
-        }
-
-        fn saved(id: &str, left: &[&str]) -> Event {
-            Event::DraftSaved {
-                account: "work".into(),
-                message_id: Some(id.into()),
-                left: left.iter().map(|id| id.to_string()).collect(),
-                request: 9,
-            }
-        }
-
-        fn refused(message: &str, request: u64) -> Event {
-            Event::CommandFailed {
-                account: "work".into(),
-                request,
-                message: message.into(),
-            }
+        fn write(driver: &mut Driver, target: ComposeTarget, text: &str) {
+            driver.apply(UiAction::ComposeEdit(
+                target,
+                ComposeField::Text,
+                text.into(),
+            ));
         }
 
         fn composer(driver: &Driver) -> &Composer {
             driver.app.composer.as_ref().unwrap()
         }
 
-        /// Types `text` into the pane's reply, saves it and answers the save; the draft's Message-ID.
-        fn save(driver: &mut Driver, wires: &Wires, text: &str, left: &[&str]) -> String {
-            write(driver, text);
-            driver.apply(UiAction::ComposeSaveDraft(PANE));
-            let (_, id, _) = asked(driver, wires);
-            let id = id.unwrap();
-            driver.receive(wires, [saved(&id, left)]);
-            id
+        /// Types `text` into the composer at `target`, saves it as `id` and waits for the answer.
+        fn save(
+            driver: &mut Driver,
+            fx: &Fixture,
+            target: ComposeTarget,
+            text: &str,
+            id: &str,
+            left: &[&str],
+        ) {
+            write(driver, target, text);
+            driver.apply(UiAction::ComposeSaveDraft(target));
+            let call = asked(driver, fx);
+            answer(driver, call, saved(id, left));
+        }
+
+        fn new_mail(driver: &mut Driver) -> ComposeTarget {
+            driver.apply(UiAction::NewMail(None));
+            let target = ComposeTarget::Window(driver.app.new_mail.last().unwrap().id);
+            driver.apply(UiAction::ComposeEdit(
+                target,
+                ComposeField::Subject,
+                "Plans".into(),
+            ));
+            target
         }
 
         #[test]
         fn save_draft_sends_the_built_draft_and_marks_it_saved() {
-            let Replying {
-                mut driver,
-                wires,
-                fx: _fx,
-            } = drafting(&[1]);
+            let Replying { mut driver, fx, .. } = drafting(&[1]);
             open(&mut driver, "r");
-            write(&mut driver, "Hi");
+            write(&mut driver, PANE, "Hi");
             driver.apply(UiAction::ComposeSaveDraft(PANE));
-            let (text, id, replaces) = asked(&mut driver, &wires);
-            assert_eq!(text, "Hi");
-            assert!(replaces.is_empty());
-            let id = id.unwrap();
+            let call = asked(&mut driver, &fx);
+            assert_eq!(call.text.as_deref(), Some("Hi"));
+            assert!(call.replaces.is_empty());
             assert!(composer(&driver).saving);
 
-            let deleted = Event::DraftSaved {
-                account: "work".into(),
-                message_id: None,
-                left: Vec::new(),
-                request: 3,
-            };
-            driver.receive(&wires, [saved("<other@x>", &[]), deleted]);
-            assert!(composer(&driver).saving, "another save's answer");
-
-            driver.receive(&wires, [saved(&id, &[])]);
+            answer(&mut driver, call, saved("<d1@draft>", &[]));
             let composer = composer(&driver);
             let draft = ComposeDraft {
-                message_id: id,
+                message_id: "<d1@draft>".into(),
                 left: Vec::new(),
             };
             assert_eq!(composer.draft, Some(draft));
@@ -2883,59 +2872,58 @@ mod tests {
 
         #[test]
         fn a_second_save_replaces_the_first_copy() {
-            let Replying {
-                mut driver,
-                wires,
-                fx: _fx,
-            } = drafting(&[1]);
+            let Replying { mut driver, fx, .. } = drafting(&[1]);
             open(&mut driver, "r");
-            let first = save(&mut driver, &wires, "Hi", &["<old@draft>"]);
-            write(&mut driver, "Hi again");
+            save(&mut driver, &fx, PANE, "Hi", "<d1@draft>", &["<old@draft>"]);
+            write(&mut driver, PANE, "Hi again");
             driver.apply(UiAction::ComposeSaveDraft(PANE));
-            let (text, _, replaces) = asked(&mut driver, &wires);
-            assert_eq!(text, "Hi again");
-            assert_eq!(replaces, [first, "<old@draft>".to_string()]);
+            let call = asked(&mut driver, &fx);
+            assert_eq!(call.text.as_deref(), Some("Hi again"));
+            assert_eq!(call.replaces, ["<d1@draft>", "<old@draft>"]);
+            answer(&mut driver, call, saved("<d2@draft>", &[]));
         }
 
         #[test]
         fn a_save_while_one_is_in_flight_waits_for_it() {
-            let Replying {
-                mut driver,
-                wires,
-                fx: _fx,
-            } = drafting(&[1]);
+            let Replying { mut driver, fx, .. } = drafting(&[1]);
             open(&mut driver, "r");
-            write(&mut driver, "Hi");
+            write(&mut driver, PANE, "Hi");
             driver.apply(UiAction::ComposeSaveDraft(PANE));
-            let (_, first, _) = asked(&mut driver, &wires);
-            let first = first.unwrap();
-            write(&mut driver, "Hi there");
+            let first = asked(&mut driver, &fx);
+            write(&mut driver, PANE, "Hi there");
             driver.apply(UiAction::ComposeSaveDraft(PANE));
             driver.tick();
-            assert!(saves(&wires).is_empty(), "one save at a time");
+            assert!(take_call(&fx).is_none(), "one save at a time");
 
-            driver.receive(&wires, [saved(&first, &[])]);
-            assert!(composer(&driver).changed(), "typed while it was saved");
-            let (text, _, replaces) = asked(&mut driver, &wires);
-            assert_eq!(text, "Hi there");
-            assert_eq!(replaces, [first]);
+            first.answer.send(saved("<d1@draft>", &[])).unwrap();
+            let second = asked(&mut driver, &fx);
+            assert_eq!(second.text.as_deref(), Some("Hi there"));
+            assert_eq!(second.replaces, ["<d1@draft>"]);
+            let kept = load_recoveries(&recovery_dir(&fx.paths));
+            let draft = kept
+                .first()
+                .and_then(|c| c.draft.clone())
+                .map(|d| d.message_id);
+            assert_eq!(
+                draft.as_deref(),
+                Some("<d1@draft>"),
+                "typed during the save, its file names the saved draft at once"
+            );
+            answer(&mut driver, second, saved("<d2@draft>", &[]));
         }
 
         #[test]
-        fn a_refused_save_keeps_the_composer_and_the_text() {
-            let Replying {
-                mut driver,
-                wires,
-                fx,
-            } = drafting(&[1]);
+        fn a_refused_save_frees_the_composer() {
+            let Replying { mut driver, fx, .. } = drafting(&[1]);
             open(&mut driver, "r");
-            write(&mut driver, "Hi");
+            write(&mut driver, PANE, "Hi");
             driver.apply(UiAction::ComposeSaveDraft(PANE));
-            asked(&mut driver, &wires);
-            driver.receive(&wires, [refused("another client's", 5)]);
-            assert!(composer(&driver).saving, "not this window's refusal");
-
-            driver.receive(&wires, [refused("This account has no Drafts folder", 0)]);
+            let call = asked(&mut driver, &fx);
+            answer(
+                &mut driver,
+                call,
+                Err("This account has no Drafts folder".into()),
+            );
             let composer = composer(&driver);
             assert_eq!(composer.text, "Hi");
             assert_eq!(composer.draft, None);
@@ -2944,19 +2932,73 @@ mod tests {
             let error = Some((Field::Send, "This account has no Drafts folder".to_string()));
             assert_eq!(composer.error, error);
             driver.at(6.0);
-            let left = load_recoveries(&recovery_dir(&fx.paths));
-            assert_eq!(left.len(), 1, "its recovery file stays");
+            assert_eq!(
+                load_recoveries(&recovery_dir(&fx.paths)).len(),
+                1,
+                "its file stays"
+            );
+
+            driver.apply(UiAction::ComposeClose(PANE));
+            assert_eq!(
+                driver.app.top_dialog(),
+                Some(Dialog::LeaveCompose),
+                "Close asks again"
+            );
+            driver.apply(UiAction::LeaveComposeCancel(PANE));
+            driver.apply(UiAction::ComposeSend(PANE));
+            driver.tick_until(|app| app.composer.is_none());
+        }
+
+        #[test]
+        fn an_unrelated_refusal_during_a_save_is_not_the_saves() {
+            let Replying {
+                mut driver,
+                wires,
+                fx,
+            } = drafting(&[1]);
+            open(&mut driver, "r");
+            write(&mut driver, PANE, "Hi");
+            driver.apply(UiAction::ComposeSaveDraft(PANE));
+            let call = asked(&mut driver, &fx);
+            let refused = Event::CommandFailed {
+                account: "work".into(),
+                request: 0,
+                message: "work is offline".into(),
+            };
+            driver.receive(&wires, [refused]);
+            assert!(composer(&driver).saving);
+            assert_eq!(composer(&driver).error, None);
+
+            answer(&mut driver, call, saved("<d1@draft>", &[]));
+            assert!(composer(&driver).draft.is_some());
+        }
+
+        #[test]
+        fn a_save_clears_its_earlier_error_but_not_the_may_have_gone_note() {
+            let Replying { mut driver, fx, .. } = drafting(&[1]);
+            open(&mut driver, "r");
+            write(&mut driver, PANE, "Hi");
+            driver.apply(UiAction::ComposeSaveDraft(PANE));
+            let call = asked(&mut driver, &fx);
+            answer(&mut driver, call, Err("work is offline".into()));
+            save(&mut driver, &fx, PANE, "Hi", "<d1@draft>", &[]);
+            assert_eq!(composer(&driver).error, None);
+
+            let note = (Field::Send, MAY_HAVE_GONE.to_string());
+            if let Some(composer) = driver.app.composer.as_mut() {
+                composer.may_have_gone = true;
+                composer.error = Some(note.clone());
+            }
+            save(&mut driver, &fx, PANE, "Hi again", "<d2@draft>", &[]);
+            assert_eq!(composer(&driver).error, Some(note));
+            assert!(composer(&driver).may_have_gone);
         }
 
         #[test]
         fn the_leave_question_offers_save_draft_and_goes_on_after_it() {
-            let Replying {
-                mut driver,
-                wires,
-                fx: _fx,
-            } = drafting(&[1, 2]);
+            let Replying { mut driver, fx, .. } = drafting(&[1, 2]);
             open(&mut driver, "r");
-            write(&mut driver, "Hi");
+            write(&mut driver, PANE, "Hi");
             let cursor = driver.app.list.cursor;
             driver.press("j");
             assert_eq!(
@@ -2966,43 +3008,60 @@ mod tests {
             driver.apply(UiAction::LeaveComposeSave(PANE));
             assert_eq!(driver.app.top_dialog(), None);
             assert_eq!(driver.app.list.cursor, cursor, "held until it is saved");
-            let (_, id, _) = asked(&mut driver, &wires);
-            driver.receive(&wires, [saved(&id.unwrap(), &[])]);
+            let call = asked(&mut driver, &fx);
+            answer(&mut driver, call, saved("<d1@draft>", &[]));
             assert!(driver.app.composer.is_none());
             assert_eq!(driver.app.list.cursor, cursor + 1);
 
             open(&mut driver, "r");
-            write(&mut driver, "Hi");
+            write(&mut driver, PANE, "Hi");
             driver.press("k");
             driver.apply(UiAction::LeaveComposeSave(PANE));
-            asked(&mut driver, &wires);
-            driver.receive(&wires, [refused("This account has no Drafts folder", 0)]);
+            let call = asked(&mut driver, &fx);
+            answer(
+                &mut driver,
+                call,
+                Err("This account has no Drafts folder".into()),
+            );
             assert!(driver.app.composer.is_some(), "a failed save stays open");
             assert_eq!(driver.app.list.cursor, cursor + 1);
         }
 
         #[test]
+        fn a_new_mail_windows_leave_question_saves_then_closes_it() {
+            let Replying { mut driver, fx, .. } = drafting(&[1]);
+            let window = new_mail(&mut driver);
+            driver.apply(UiAction::ComposeClose(window));
+            assert_eq!(
+                driver.app.leave_question(window),
+                Some(("Discard this message?", true))
+            );
+            driver.apply(UiAction::LeaveComposeSave(window));
+            assert_eq!(driver.app.leave_question(window), None);
+            assert_eq!(driver.app.new_mail.len(), 1, "open until it is saved");
+            let call = asked(&mut driver, &fx);
+            answer(&mut driver, call, saved("<d1@draft>", &[]));
+            assert!(driver.app.new_mail.is_empty());
+        }
+
+        #[test]
         fn sending_a_saved_draft_names_it_and_undo_keeps_it() {
             static SENT: Mutex<Vec<SendRequest>> = Mutex::new(Vec::new());
-            let Replying {
-                mut driver,
-                wires,
-                fx: _fx,
-            } = drafting(&[1]);
+            let Replying { mut driver, fx, .. } = drafting(&[1]);
             driver.app.queue_send = |paths, config, request| {
                 SENT.lock().unwrap().push(request.clone());
                 queued(paths, config, request)
             };
             open(&mut driver, "r");
-            let id = save(&mut driver, &wires, "Hi", &["<old@draft>"]);
+            save(&mut driver, &fx, PANE, "Hi", "<d1@draft>", &["<old@draft>"]);
             send(&mut driver, "Hi there");
             let sent = SENT.lock().unwrap().clone();
-            assert_eq!(sent[0].draft, [id.clone(), "<old@draft>".to_string()]);
+            assert_eq!(sent[0].draft, ["<d1@draft>", "<old@draft>"]);
 
             driver.apply(UiAction::Undo);
             driver.tick_until(|app| app.composer.is_some());
             let draft = ComposeDraft {
-                message_id: id,
+                message_id: "<d1@draft>".into(),
                 left: vec!["<old@draft>".into()],
             };
             assert_eq!(composer(&driver).draft, Some(draft));
@@ -3010,13 +3069,9 @@ mod tests {
 
         #[test]
         fn discarding_a_saved_draft_asks_and_deletes_it() {
-            let Replying {
-                mut driver,
-                wires,
-                fx: _fx,
-            } = drafting(&[1]);
+            let Replying { mut driver, fx, .. } = drafting(&[1]);
             open(&mut driver, "r");
-            let id = save(&mut driver, &wires, "Hi", &[]);
+            save(&mut driver, &fx, PANE, "Hi", "<d1@draft>", &[]);
             driver.apply(UiAction::ComposeDiscard(PANE));
             assert_eq!(
                 driver.app.leave_question(PANE),
@@ -3024,62 +3079,83 @@ mod tests {
             );
             driver.apply(UiAction::LeaveComposeDiscard(PANE));
             assert!(driver.app.composer.is_none());
-            assert_eq!(asked(&mut driver, &wires), (String::new(), None, vec![id]));
+            let call = asked(&mut driver, &fx);
+            assert_eq!(
+                (call.text.as_deref(), call.replaces.as_slice()),
+                (None, &["<d1@draft>".to_string()][..])
+            );
+            answer(&mut driver, call, Err("work is offline".into()));
+            assert_eq!(
+                driver.app.error.as_deref(),
+                Some("could not delete the draft: work is offline")
+            );
+
+            let window = new_mail(&mut driver);
+            save(&mut driver, &fx, window, "Hi", "<d2@draft>", &[]);
+            driver.apply(UiAction::ComposeDiscard(window));
+            assert_eq!(
+                driver.app.leave_question(window),
+                Some(("Delete this draft?", false))
+            );
+            driver.apply(UiAction::LeaveComposeDiscard(window));
+            assert!(driver.app.new_mail.is_empty());
+            let call = asked(&mut driver, &fx);
+            assert_eq!(
+                (call.text.as_deref(), call.replaces.as_slice()),
+                (None, &["<d2@draft>".to_string()][..])
+            );
+            answer(&mut driver, call, Ok(SavedDraft::default()));
         }
 
         #[test]
         fn close_leaves_a_saved_draft() {
-            let Replying {
-                mut driver,
-                wires,
-                fx: _fx,
-            } = drafting(&[1]);
+            let Replying { mut driver, fx, .. } = drafting(&[1]);
             open(&mut driver, "r");
-            save(&mut driver, &wires, "Hi", &[]);
+            save(&mut driver, &fx, PANE, "Hi", "<d1@draft>", &[]);
             driver.apply(UiAction::ComposeClose(PANE));
             assert!(driver.app.composer.is_none());
             assert_eq!(driver.app.top_dialog(), None);
-            assert!(saves(&wires).is_empty());
+            driver.tick();
+            assert!(take_call(&fx).is_none());
         }
 
         #[test]
         fn ctrl_s_saves() {
+            use slint::platform::{Key, WindowEvent};
             let fx = Fixture::new(&["work"]);
             fx.add("work", message("INBOX", 1, "subject 1"));
-            let (open, wires) = fx.window();
+            let (open, _wires) = fx.window();
             open.with(|live| {
                 live.app.prefill = filled;
-                live.app.build_draft = built;
+                live.app.save_draft = held;
             });
             open.press("r");
             open.tick_until(|open| open.with(|live| filled_in(&live.app)));
             assert_eq!(open.find("Save draft").len(), 1);
             open.tap("Your text");
             open.get("Your text").set_accessible_value("Hi");
-            press_in_mail(&open, "s");
-            let mut sent = Vec::new();
-            wait_until(|| {
-                open.tick();
-                sent.extend(saves(&wires));
-                !sent.is_empty()
-            });
-        }
-
-        fn press_in_mail(open: &crate::test_support::Open, key: &str) {
-            use slint::platform::{Key, WindowEvent};
             let window = open.window();
             let control: slint::SharedString = Key::Control.into();
-            let key: slint::SharedString = key.into();
             for event in [
                 WindowEvent::KeyPressed {
                     text: control.clone(),
                 },
-                WindowEvent::KeyPressed { text: key.clone() },
-                WindowEvent::KeyReleased { text: key },
+                WindowEvent::KeyPressed { text: "s".into() },
+                WindowEvent::KeyReleased { text: "s".into() },
                 WindowEvent::KeyReleased { text: control },
             ] {
                 window.window().dispatch_event(event);
             }
+            let mut call = None;
+            wait_until(|| {
+                open.tick();
+                call = take_call(&fx);
+                call.is_some()
+            });
+            let call = call.unwrap();
+            assert_eq!(call.text.as_deref(), Some("Hi"));
+            call.answer.send(saved("<d1@draft>", &[])).unwrap();
+            open.tick_until(|open| open.with(|live| live.app.compose_saves.is_empty()));
         }
     }
 

@@ -26,7 +26,7 @@ use postvak_core::trash::Trash;
 use postvak_core::unsubscribe::{self, Method};
 
 pub(crate) use self::composing::{
-    BuildDraftFn, CancelError, CancelFn, Completion, ComposeTarget, PrefillFn, QueueFn, RetryFn,
+    CancelError, CancelFn, Completion, ComposeTarget, PrefillFn, QueueFn, RetryFn, SaveDraftFn,
 };
 use super::account::{self, AccountForm};
 use super::body;
@@ -904,6 +904,8 @@ pub struct App {
     pub(crate) compose_sending: Vec<composing::Sending>,
     /// Composers being saved to Drafts, oldest first; one at a time per composer.
     pub(crate) compose_saves: Vec<composing::ComposeSave>,
+    /// Deletes of discarded composers' drafts, until each answers.
+    pub(crate) compose_deleting: Vec<Receiver<Result<(), String>>>,
     /// The open dialog of Attach…, one at a time, for the composer it attaches to: its place and id.
     pub(crate) compose_attaching: Option<(ComposeTarget, u64, Receiver<open_files::Chosen>)>,
     /// Undos of sent messages asked of the daemon, by gesture id.
@@ -911,7 +913,7 @@ pub struct App {
     /// Fill, queue and take back a message through the daemon; tests swap them so no daemon starts.
     pub(crate) prefill: PrefillFn,
     pub(crate) queue_send: QueueFn,
-    pub(crate) build_draft: BuildDraftFn,
+    pub(crate) save_draft: SaveDraftFn,
     pub(crate) cancel_send: CancelFn,
     pub(crate) retry_send: RetryFn,
     /// Retries of failed outbox messages asked of the daemon, until each answers.
@@ -1107,11 +1109,12 @@ impl App {
             compose_prefill: None,
             compose_sending: Vec::new(),
             compose_saves: Vec::new(),
+            compose_deleting: Vec::new(),
             compose_attaching: None,
             compose_cancelling: Vec::new(),
             prefill: composing::prefill,
             queue_send: composing::queue_send,
-            build_draft: composing::build_draft,
+            save_draft: composing::save_draft,
             cancel_send: composing::cancel_send,
             retry_send: composing::retry_send,
             retrying: Vec::new(),
@@ -1393,7 +1396,6 @@ impl App {
         self.requested.clear();
         self.fetching_body.clear();
         self.waiting_bodies.clear();
-        self.drop_unanswered_saves();
         for account in &mut self.accounts {
             if let Some(status) = states.iter().find(|status| status.name == account.name) {
                 account.activity = status.activity.clone();
@@ -1532,11 +1534,7 @@ impl App {
                         dialog.error = Some(clean(&message, false));
                         dialog.waiting = None;
                     }
-                    None => {
-                        if !self.save_refused(index, &message) {
-                            self.note_error(Some(index), message);
-                        }
-                    }
+                    None => self.note_error(Some(index), message),
                 }
                 self.refresh(index);
             }
@@ -1709,12 +1707,7 @@ impl App {
             }
             // A sent message's copy went to Sent, or its original got a flag.
             Event::SentFinished { .. } => self.refresh(index),
-            Event::DraftSaved {
-                message_id, left, ..
-            } => {
-                self.draft_saved(index, message_id, left);
-                self.refresh(index);
-            }
+            Event::DraftSaved { .. } => self.refresh(index),
         }
     }
 
