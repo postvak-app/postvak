@@ -1,9 +1,10 @@
 //! Creating, renaming and deleting a folder on the server and in the store: checks first, then the server, then the
 //! store, so a refusal anywhere leaves the store as the server has it.
+use std::collections::HashMap;
 use std::io;
 
 use crate::folder_name;
-use crate::mail_ops::{MailError, MailOps, RemoteFolder};
+use crate::mail_ops::{MailError, MailOps, RemoteFolder, raw_batches};
 use crate::rules::apply::special_folder;
 use crate::store::{Folder, Store, StoreError};
 use crate::sync::DeleteMode;
@@ -123,7 +124,7 @@ pub fn delete(
     let trash_folder = special_folder(store, "Trash")?;
     let kept = match mode {
         _ if held == 0 => Vec::new(),
-        Some(mode) => empty(ops, trash, &name, mode, count, trash_folder, now)?,
+        Some(mode) => empty(ops, store, trash, &name, mode, count, trash_folder, now)?,
         None => {
             let not_empty = Deleted::NotEmpty {
                 count: held,
@@ -186,8 +187,10 @@ fn leave_if_unchanged(ops: &mut dyn MailOps, name: &str, kept: &[u32]) -> Result
 
 /// Moves every message of `name` to Trash, or backs every one up before DELETE takes them; refuses when the folder
 /// does not hold exactly the `count` messages the user confirmed. Returns the messages left in the folder.
+#[allow(clippy::too_many_arguments)]
 fn empty(
     ops: &mut dyn MailOps,
+    store: &Store,
     trash: &Trash,
     name: &str,
     mode: DeleteMode,
@@ -216,15 +219,27 @@ fn empty(
             Ok(Vec::new())
         }
         DeleteMode::Permanent => {
-            for &uid in &uids {
-                let raw = ops.fetch_raw(uid)?.ok_or_else(|| {
-                    FolderError::Backup(io::Error::other(format!(
-                        "{name}/{uid}: the server sent no message"
-                    )))
-                })?;
-                trash
-                    .save(name, uid, &raw, now)
-                    .map_err(FolderError::Backup)?;
+            // Only to group the downloads; a message the store does not know is fetched alone.
+            let sizes: HashMap<u32, Option<u32>> = store
+                .messages_without_body(name, 0)?
+                .into_iter()
+                .map(|msg| (msg.uid, msg.size))
+                .collect();
+            for batch in raw_batches(
+                uids.iter()
+                    .map(|&uid| (uid, sizes.get(&uid).copied().flatten())),
+            ) {
+                let mut found = ops.fetch_raws(&batch)?;
+                for uid in batch {
+                    let raw = found.remove(&uid).ok_or_else(|| {
+                        FolderError::Backup(io::Error::other(format!(
+                            "{name}/{uid}: the server sent no message"
+                        )))
+                    })?;
+                    trash
+                        .save(name, uid, &raw, now)
+                        .map_err(FolderError::Backup)?;
+                }
             }
             Ok(uids)
         }

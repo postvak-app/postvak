@@ -38,6 +38,32 @@ pub struct StatusInfo {
     pub highest_modseq: Option<u64>,
 }
 
+/// The most `raw_batches` puts in one group, by the sizes the store knows.
+const RAW_BATCH_BYTES: u64 = 16 * 1024 * 1024;
+const RAW_BATCH: usize = 100;
+
+/// `(uid, size)` in groups for `fetch_raws`: each under `RAW_BATCH_BYTES` and `RAW_BATCH` messages, a message of
+/// unknown or larger size alone, so one answer never holds more than that or one message.
+pub fn raw_batches(sizes: impl IntoIterator<Item = (u32, Option<u32>)>) -> Vec<Vec<u32>> {
+    let mut batches: Vec<Vec<u32>> = Vec::new();
+    let mut bytes = 0;
+    for (uid, size) in sizes {
+        // Unknown counts as too large to share a batch.
+        let size = size.map_or(RAW_BATCH_BYTES + 1, u64::from);
+        match batches.last_mut() {
+            Some(batch) if batch.len() < RAW_BATCH && bytes + size <= RAW_BATCH_BYTES => {
+                batch.push(uid);
+                bytes += size;
+            }
+            _ => {
+                batches.push(vec![uid]);
+                bytes = size;
+            }
+        }
+    }
+    batches
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Envelope {
     pub uid: u32,
@@ -169,6 +195,17 @@ pub trait MailOps {
         changed_since: Option<u64>,
     ) -> MailResult<Vec<FlagUpdate>>;
     fn fetch_raw(&mut self, uid: u32) -> MailResult<Option<Vec<u8>>>;
+    /// The whole messages of `uids` in the selected folder; a uid the server sends nothing for is left out. One
+    /// command where the client can; group the uids with `raw_batches` so the answer stays a bounded size.
+    fn fetch_raws(&mut self, uids: &[u32]) -> MailResult<HashMap<u32, Vec<u8>>> {
+        let mut found = HashMap::new();
+        for &uid in uids {
+            if let Some(raw) = self.fetch_raw(uid)? {
+                found.insert(uid, raw);
+            }
+        }
+        Ok(found)
+    }
     /// The structures from `BODYSTRUCTURE` of `uids` in the selected folder, in one command. A uid the folder does not
     /// have, or whose structure the server does not give, is left out.
     fn fetch_structures(&mut self, uids: &[u32]) -> MailResult<HashMap<u32, Structure>>;
@@ -651,6 +688,19 @@ mod recording {
             Ok(self.raw.get(&(self.selected.clone(), uid)).cloned())
         }
 
+        fn fetch_raws(&mut self, uids: &[u32]) -> MailResult<HashMap<u32, Vec<u8>>> {
+            let list: Vec<String> = uids.iter().map(u32::to_string).collect();
+            self.calls
+                .push(format!("fetch_raws {} {}", self.selected, list.join(",")));
+            self.fail_next.take().map_or(Ok(()), Err)?;
+            Ok(uids
+                .iter()
+                .filter_map(|&uid| {
+                    Some((uid, self.raw.get(&(self.selected.clone(), uid))?.clone()))
+                })
+                .collect())
+        }
+
         fn fetch_structures(&mut self, uids: &[u32]) -> MailResult<HashMap<u32, Structure>> {
             let list: Vec<String> = uids.iter().map(u32::to_string).collect();
             self.calls.push(format!(
@@ -978,6 +1028,29 @@ mod recording {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_batches_stay_under_their_size_and_put_unknown_sizes_alone() {
+        let mb = 1024 * 1024;
+        let sizes = [
+            (1, Some(10 * mb)),
+            (2, Some(5 * mb)),
+            (3, Some(2 * mb)),
+            (4, None),
+            (5, Some(1)),
+            (6, Some(20 * mb)),
+            (7, Some(1)),
+        ];
+        assert_eq!(
+            raw_batches(sizes),
+            [vec![1, 2], vec![3], vec![4], vec![5], vec![6], vec![7]]
+        );
+        let small = (1..=250).map(|uid| (uid, Some(1)));
+        assert_eq!(
+            raw_batches(small).iter().map(Vec::len).collect::<Vec<_>>(),
+            [100, 100, 50]
+        );
+    }
 
     #[test]
     fn fake_renames_children_and_refuses_to_delete_a_parent() {

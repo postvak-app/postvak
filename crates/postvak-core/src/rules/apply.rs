@@ -6,7 +6,7 @@ use crate::send::outbox::Entry;
 use crate::send::{Capabilities, Envelope, SmtpServer};
 
 use crate::folder_name;
-use crate::mail_ops::{MailError, MailOps, delete_message, delete_messages};
+use crate::mail_ops::{MailError, MailOps, delete_message, delete_messages, raw_batches};
 use crate::message::{self, body_text};
 use crate::rules::engine::{Context, Plan, PlannedAction, evaluate, flag_change};
 use crate::rules::{Action, CompiledRule, Forward};
@@ -420,6 +420,7 @@ fn delete_many(
     now: i64,
 ) -> Vec<Applied> {
     let mut results = Vec::new();
+    download_many(msgs, ops, store);
     let mut saved = Vec::new();
     for msg in msgs {
         match back_up(planned, msg, ops, store, trash, now) {
@@ -440,6 +441,35 @@ fn delete_many(
         results.push((msg.uid, removed.map(|()| 1).map_err(ApplyError::from)));
     }
     results
+}
+
+/// Downloads and stores the messages of `msgs` the store has no copy of, a batch per command. Best effort: what fails
+/// here is fetched again one by one by `ensure_raw`, which says why.
+fn download_many(msgs: &[Message], ops: &mut dyn MailOps, store: &Store) {
+    let missing = msgs
+        .iter()
+        .filter(|msg| !store.has_raw(&msg.folder, msg.uid).unwrap_or(true))
+        .map(|msg| (msg.uid, msg.size));
+    let Some(folder) = msgs.first().map(|msg| msg.folder.as_str()) else {
+        return;
+    };
+    for batch in raw_batches(missing) {
+        if batch.len() < 2 {
+            continue;
+        }
+        let found = match ops.fetch_raws(&batch) {
+            Ok(found) => found,
+            Err(e) => {
+                log::debug!("{folder}: fetching {} messages failed: {e}", batch.len());
+                continue;
+            }
+        };
+        for (uid, raw) in found {
+            if let Err(e) = store.set_raw(folder, uid, &raw, &body_text(&raw)) {
+                log::debug!("{folder}/{uid}: could not store the message: {e}");
+            }
+        }
+    }
 }
 
 /// The first move or archive in the plan with its resolved target. Resolved before anything runs so a failure leaves no
@@ -1090,6 +1120,76 @@ mod tests {
                 .unwrap()
                 .ends_with("-INBOX-5.eml")
         );
+    }
+
+    #[test]
+    fn a_delete_of_many_fetches_their_backups_in_one_command() {
+        let (mut ops, store, trash, _dir, mut first) = setup();
+        first.size = Some(100);
+        let mut msgs = vec![first];
+        for uid in [6, 7] {
+            ops.add_mail(
+                "INBOX",
+                uid,
+                100,
+                "Subject: hi\r\n\r\n",
+                Some("Subject: hi\r\n\r\nmore"),
+            );
+            let msg = Message {
+                uid,
+                ..msgs[0].clone()
+            };
+            store.insert_message(&msg).unwrap();
+            msgs.push(msg);
+        }
+        ops.select("INBOX").unwrap();
+        let delete = plan(vec![Action::Delete]);
+        let applied = apply_many(&delete.actions[0], &msgs, &mut ops, &store, &trash, 500);
+        assert!(
+            applied.iter().all(|(_, ran)| matches!(ran, Ok(1))),
+            "{applied:?}"
+        );
+        let fetches: Vec<&String> = ops
+            .calls
+            .iter()
+            .filter(|c| c.starts_with("fetch_raw"))
+            .collect();
+        assert_eq!(fetches, ["fetch_raws INBOX 5,6,7"]);
+        assert_eq!(trash.list().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn a_failed_batch_fetch_falls_back_to_one_message_at_a_time() {
+        let (mut ops, store, trash, _dir, mut first) = setup();
+        first.size = Some(100);
+        ops.add_mail(
+            "INBOX",
+            6,
+            100,
+            "Subject: hi\r\n\r\n",
+            Some("Subject: hi\r\n\r\nmore"),
+        );
+        let second = Message {
+            uid: 6,
+            ..first.clone()
+        };
+        store.insert_message(&second).unwrap();
+        ops.select("INBOX").unwrap();
+        ops.fail_next = Some(MailError::Protocol("too much".into()));
+        let delete = plan(vec![Action::Delete]);
+        let applied = apply_many(
+            &delete.actions[0],
+            &[first, second],
+            &mut ops,
+            &store,
+            &trash,
+            500,
+        );
+        assert!(
+            applied.iter().all(|(_, ran)| matches!(ran, Ok(1))),
+            "{applied:?}"
+        );
+        assert_eq!(trash.list().unwrap().len(), 2);
     }
 
     #[test]
