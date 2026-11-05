@@ -59,6 +59,7 @@ pub(crate) fn init(window: &MailWindow) {
     window.set_envelope_icon(icons::MARK_UNREAD.into());
     window.set_rule_icon(icons::RULES.into());
     window.set_check_icon(icons::CHECK.into());
+    window.set_verified_icon(icons::VERIFIED.into());
     window.set_more_icon(icons::MORE.into());
     window.set_reply_icon(icons::REPLY.into());
     window.set_file_icon(icons::FILE.into());
@@ -443,6 +444,7 @@ fn present_body(app: &App, window: &MailWindow) {
         logo_key: logo_key.into(),
         name: pane.name.into(),
         address: text(pane.address),
+        verified: text(pane.verified),
         short_date: pane.short_date.into(),
         full_date: pane.full_date.into(),
         to: text(pane.to),

@@ -235,23 +235,36 @@ impl AuthResults {
     }
 }
 
-/// Whether the message with these headers and this From field is authenticated, as the topmost
-/// `Authentication-Results` header whose authserv-id `trusted` accepts says. That is safe when the trusted ids are
-/// servers of the provider that write the header on every incoming message: theirs sits above any the sender wrote,
-/// and RFC 8601 has them remove copies that claim their id. A From with no address, or more than one, is not
-/// authenticated; neither is mail without such a header.
-pub fn authenticated(raw_headers: &[u8], from: &str, trusted: impl Fn(&str) -> bool) -> bool {
+/// Who vouches for the message with these headers and this From field: the From domain, lower-cased, and the
+/// authserv-id of the topmost `Authentication-Results` header that `trusted` accepts, when that header says the
+/// message comes from the domain. That is safe when the trusted ids are servers of the provider that write the header
+/// on every incoming message: theirs sits above any the sender wrote, and RFC 8601 has them remove copies that claim
+/// their id. A From with no address, or more than one, has no voucher; neither does mail without such a header.
+pub fn vouched(raw_headers: &[u8], from: &str, trusted: impl Fn(&str) -> bool) -> Option<Vouched> {
     let addresses = crate::message::bare_addresses(from);
     let [address] = addresses.as_slice() else {
-        return false;
+        return None;
     };
-    let Some(domain) = address_domain(address) else {
-        return false;
-    };
-    all(raw_headers)
+    let domain = address_domain(address)?;
+    let header = all(raw_headers)
         .into_iter()
-        .find(|header| trusted(&header.authserv_id))
-        .is_some_and(|header| header.authenticates(&domain))
+        .find(|header| trusted(&header.authserv_id))?;
+    header.authenticates(&domain).then(|| Vouched {
+        domain,
+        authserv_id: header.authserv_id.trim_end_matches('.').to_string(),
+    })
+}
+
+/// A From domain and the trusted server that confirmed mail comes from it: see [`vouched`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Vouched {
+    pub domain: String,
+    pub authserv_id: String,
+}
+
+/// Whether the message with these headers and this From field is authenticated: see [`vouched`].
+pub fn authenticated(raw_headers: &[u8], from: &str, trusted: impl Fn(&str) -> bool) -> bool {
+    vouched(raw_headers, from, trusted).is_some()
 }
 
 /// How few messages [`common_authserv_id`] needs before it offers an authserv-id.
@@ -419,6 +432,22 @@ mod tests {
         let raw = b"Authentication-Results: mx.soverin.net; dmarc=pass header.from=paypal.com\r\n\
             Authentication-Results: relay.example; dmarc=fail\r\n\r\n";
         assert!(authenticated(raw, "service@paypal.com", trusted));
+    }
+
+    #[test]
+    fn vouched_names_the_domain_and_the_server_that_checked_it() {
+        let raw = b"Authentication-Results: relay.example; dmarc=pass header.from=paypal.com\r\n\
+            Authentication-Results: MX.Soverin.net.; dmarc=pass header.from=paypal.com\r\n\r\n";
+        assert_eq!(
+            vouched(raw, "PayPal <service@PayPal.com>", |id| {
+                trusted(id.trim_end_matches('.'))
+            }),
+            Some(Vouched {
+                domain: "paypal.com".into(),
+                authserv_id: "mx.soverin.net".into(),
+            })
+        );
+        assert_eq!(vouched(raw, "service@paypa1.com", trusted), None);
     }
 
     #[test]

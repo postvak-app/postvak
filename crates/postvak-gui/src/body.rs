@@ -28,6 +28,8 @@ pub(crate) struct Pane {
     pub logo: Option<(String, Arc<str>)>,
     pub name: String,
     pub address: Option<String>,
+    /// A server the account trusts confirmed the mail comes from the From domain: the badge's tooltip, naming both.
+    pub verified: Option<String>,
     pub short_date: String,
     pub full_date: String,
     pub to: Option<String>,
@@ -133,6 +135,7 @@ pub(crate) fn pane(app: &App) -> Pane {
         }),
         name: clean(&name, false),
         address: address.map(|a| clean(&a, false)),
+        verified: verified(&app.accounts[body.account], &message.headers, from),
         short_date: local_time(at, SHORT_DATE),
         full_date: local_time(at, HEADER_DATE),
         to: header(&message.to_addr),
@@ -170,6 +173,17 @@ pub(crate) fn pane(app: &App) -> Pane {
         why: body.why.clone(),
         links: body.links.clone(),
     }
+}
+
+/// What the badge beside the sender says, when a server `account` trusts confirmed the mail comes from the From
+/// domain. It names the domain, since a look-alike domain can pass too.
+fn verified(account: &Account, headers: &[u8], from: &str) -> Option<String> {
+    let vouched = account.identity.as_ref()?.vouched(headers, from)?;
+    Some(format!(
+        "Verified by {}: this comes from {}. Check that is the sender you expect.",
+        clean(&vouched.authserv_id, false),
+        clean(&vouched.domain, false)
+    ))
 }
 
 /// A selected message as the selection lists it.
@@ -1107,6 +1121,59 @@ mod tests {
         let (driver, _wires) = fx.driver();
         let pane = pane(&driver.app);
         assert_eq!(pane.tint, crate::avatar::tint("linus@example.com"));
+    }
+
+    /// A message in work's INBOX from news@example.org, with this `Authentication-Results` header.
+    fn from_example_org(fx: &Fixture, results: &str) {
+        let mut m = message("INBOX", 1, "news");
+        m.from_addr = Some("News <news@example.org>".into());
+        m.headers =
+            format!("Authentication-Results: {results}\r\nFrom: News <news@example.org>\r\n\r\n")
+                .into_bytes();
+        fx.add("work", m);
+    }
+
+    const VERIFIED: &str = "Verified by mx.example.org: this comes from example.org. Check that is the sender you expect.";
+
+    #[test]
+    fn a_sender_a_trusted_server_vouches_for_gets_the_seal() {
+        let fx = Fixture::new(&["work"]);
+        crate::test_support::trust_example_org(&fx);
+        from_example_org(&fx, "mx.example.org; dmarc=pass header.from=example.org");
+        let (driver, _wires) = fx.driver();
+        assert_eq!(pane(&driver.app).verified.as_deref(), Some(VERIFIED));
+    }
+
+    #[test]
+    fn no_seal_without_a_trusted_server_or_its_pass() {
+        let untrusted = Fixture::new(&["work"]);
+        from_example_org(
+            &untrusted,
+            "mx.example.org; dmarc=pass header.from=example.org",
+        );
+        let (driver, _wires) = untrusted.driver();
+        assert_eq!(pane(&driver.app).verified, None, "trusts no server");
+
+        for results in [
+            "mx.example.org; dmarc=fail header.from=example.org",
+            "mx.example.org; dmarc=pass header.from=other.example",
+            "mx.example.net; dmarc=pass header.from=example.org",
+        ] {
+            let fx = Fixture::new(&["work"]);
+            crate::test_support::trust_example_org(&fx);
+            from_example_org(&fx, results);
+            let (driver, _wires) = fx.driver();
+            assert_eq!(pane(&driver.app).verified, None, "{results}");
+        }
+    }
+
+    #[test]
+    fn the_window_shows_the_seal_beside_the_sender() {
+        let fx = Fixture::new(&["work"]);
+        crate::test_support::trust_example_org(&fx);
+        from_example_org(&fx, "mx.example.org; dmarc=pass header.from=example.org");
+        let (open, _wires) = fx.window();
+        open.tick_until(|open| !open.find(VERIFIED).is_empty());
     }
 
     /// Ticks until the shown message's logo is in.

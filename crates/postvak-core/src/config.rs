@@ -722,6 +722,12 @@ impl Identity {
     pub fn authenticated(&self, raw_headers: &[u8], from: &str) -> bool {
         crate::message::auth::authenticated(raw_headers, from, |id| self.trusts_authserv_id(id))
     }
+
+    /// The From domain and the trusted server that confirmed the mail comes from it, when one did: see
+    /// [`auth::vouched`](crate::message::auth::vouched).
+    pub fn vouched(&self, raw_headers: &[u8], from: &str) -> Option<crate::message::auth::Vouched> {
+        crate::message::auth::vouched(raw_headers, from, |id| self.trusts_authserv_id(id))
+    }
 }
 
 /// Why `--account` (or MCP's `account`) picked no account.

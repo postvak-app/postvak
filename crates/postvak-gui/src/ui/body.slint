@@ -69,6 +69,8 @@ export struct BodyInfo {
     logo-key: string,
     name: string,
     address: string,
+    // The seal beside the sender, when a trusted server confirmed the mail comes from the From domain: its tooltip.
+    verified: string,
     short-date: string,
     full-date: string,
     to: string,
@@ -568,6 +570,7 @@ export component BodyPane inherits Rectangle {
     in property <string> save-icon;
     in property <string> source-icon;
     in property <string> rule-icon;
+    in property <string> verified-icon;
     in property <string> more-icon;
     in property <string> reply-icon;
     in property <string> file-icon;
@@ -870,6 +873,20 @@ export component BodyPane inherits Rectangle {
                             text: root.info.address;
                             color: Theme.pane.muted;
                             vertical-alignment: center;
+                        }
+                        if root.info.verified != "": TouchArea {
+                            width: seal.preferred-width;
+                            accessible-role: AccessibleRole.image;
+                            accessible-label: root.info.verified;
+                            Tooltip { text: @markdown("\{root.info.verified}"); }
+                            seal := Text {
+                                accessible-role: none;
+                                text: root.verified-icon;
+                                font-family: Theme.icon-font;
+                                font-size: Theme.icon;
+                                color: Theme.pane.success;
+                                vertical-alignment: center;
+                            }
                         }
                         Rectangle { horizontal-stretch: 1; }
                     }

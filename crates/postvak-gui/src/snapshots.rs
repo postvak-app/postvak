@@ -145,11 +145,18 @@ fn syncing_dark() {
     snapshot(&open, "gui_syncing_dark");
 }
 
-/// With sender images on, GitHub's DMARC-passing mail shows its logo in the reader instead of the initials.
+/// With sender images on, GitHub's DMARC-passing mail shows its logo in the reader instead of the initials; as the
+/// account trusts the server that checked it, the seal follows the address.
 #[test]
 fn a_sender_logo() {
     let fx = Fixture::mailbox("light");
     fx.append_config("sender_images = true\n");
+    let config = fx.paths.config_file();
+    let trusting = std::fs::read_to_string(&config).unwrap().replace(
+        "[ui]\n",
+        "trusted_authserv_ids = [\"mx.example.com\"]\n\n[ui]\n",
+    );
+    std::fs::write(&config, trusting).unwrap();
     let mut github = mail(
         96,
         "GitHub <noreply@github.com>",
@@ -162,7 +169,10 @@ fn a_sender_logo() {
     super::test_support::cache_github_logo(&fx.paths);
     let (open, _wires) = open(&fx);
     open.with(|live| live.app.select_view(work_inbox()));
-    open.tick_until(|open| open.window().get_body_info().has_logo);
+    open.tick_until(|open| {
+        let info = open.window().get_body_info();
+        info.has_logo && !info.verified.is_empty()
+    });
     snapshot(&open, "gui_sender_logo");
 }
 
