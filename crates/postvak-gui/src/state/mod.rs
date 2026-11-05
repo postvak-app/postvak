@@ -27,6 +27,7 @@ use postvak_core::unsubscribe::{self, Method};
 
 pub(crate) use self::composing::{
     CancelError, CancelFn, Completion, ComposeTarget, PrefillFn, QueueFn, RetryFn, SaveDraftFn,
+    SaveRawFn,
 };
 use super::account::{self, AccountForm};
 use super::body;
@@ -623,6 +624,8 @@ pub(crate) enum UiAction {
     RetrySend(usize, String),
     /// Send the message the toast counts down for at once.
     SendNow,
+    /// Save failed outbox message `id` of account `index` as a draft, take it out of the outbox and open it.
+    EditOutbox(usize, String),
     /// The answers to "Discard this message?" about the pane's composer or a new-mail window's.
     LeaveComposeCancel(ComposeTarget),
     LeaveComposeDiscard(ComposeTarget),
@@ -920,12 +923,17 @@ pub struct App {
     pub(crate) prefill: PrefillFn,
     pub(crate) queue_send: QueueFn,
     pub(crate) save_draft: SaveDraftFn,
+    pub(crate) save_raw_draft: SaveRawFn,
     pub(crate) cancel_send: CancelFn,
     pub(crate) retry_send: RetryFn,
     /// Retries of failed outbox messages asked of the daemon, until each answers.
     pub(crate) retrying: Vec<Receiver<Result<(), String>>>,
     /// The outbox messages Retry was clicked for, by account and id, until the outbox is read again.
     pub(crate) retried: Vec<(usize, String)>,
+    /// Failed outbox messages being turned into drafts, by account and id, until each answers.
+    pub(crate) outbox_editing: Vec<composing::EditingOutbox>,
+    /// Why each failed outbox message Edit was clicked for was not saved as a draft, by account and id.
+    pub(crate) outbox_refused: HashMap<(usize, String), String>,
     /// The address completions shown under the field being typed in.
     pub(crate) completion: Option<composing::Completion>,
     /// The completions asked for last: the query's number, and the field they are for.
@@ -1123,10 +1131,13 @@ impl App {
             prefill: composing::prefill,
             queue_send: composing::queue_send,
             save_draft: composing::save_draft,
+            save_raw_draft: composing::save_raw_draft,
             cancel_send: composing::cancel_send,
             retry_send: composing::retry_send,
             retrying: Vec::new(),
             retried: Vec::new(),
+            outbox_editing: Vec::new(),
+            outbox_refused: HashMap::new(),
             completion: None,
             completing: None,
             next_completion: 0,
@@ -2151,6 +2162,7 @@ impl App {
             UiAction::OpenOutbox => self.outbox_open = true,
             UiAction::RetrySend(account, id) => self.retry_outbox(account, id),
             UiAction::SendNow => self.send_now(),
+            UiAction::EditOutbox(account, id) => self.edit_outbox(account, id),
             compose @ (UiAction::ComposeEdit(..)
             | UiAction::ComposeCompletionStep(..)
             | UiAction::ComposeCompletionPick(..)

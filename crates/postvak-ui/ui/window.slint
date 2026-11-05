@@ -133,6 +133,7 @@ export component MailWindow inherits Window {
     in property <[OutboxEntry]> outbox;
     callback open-outbox();
     callback retry-send(int);
+    callback edit-outbox(int);
 
     // Over an inbox's rows while rule proposals wait.
     in property <string> list-banner;
@@ -800,6 +801,7 @@ export component MailWindow inherits Window {
         entries: root.outbox;
         close-icon: root.close-icon;
         retry(i) => { root.retry-send(i); }
+        edit(i) => { root.edit-outbox(i); }
         close => { root.close-dialog(Dialog.outbox); }
     }
 

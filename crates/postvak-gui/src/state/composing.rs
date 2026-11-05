@@ -48,6 +48,8 @@ impl From<&str> for QueueError {
 /// Saves `request` built as a draft in `account`'s Drafts, or with None only deletes, in place of the copies `replaces`.
 pub(crate) type SaveDraftFn =
     fn(&Paths, &Config, &str, Option<SendRequest>, Vec<String>) -> Result<SavedDraft, String>;
+/// Saves the message `raw` as it is in `account`'s Drafts, in place of the copies `replaces`.
+pub(crate) type SaveRawFn = fn(&Paths, &str, Vec<u8>, Vec<String>) -> Result<SavedDraft, String>;
 pub(crate) type CancelFn = fn(&Paths, &str, &str) -> Result<(), CancelError>;
 pub(crate) type RetryFn = fn(&Paths, &str, &str) -> Result<(), String>;
 
@@ -173,6 +175,25 @@ pub(crate) fn save_draft(
         .map(|request| postvak_core::send::drafts::build(config, paths, &client, &request))
         .transpose()
         .map_err(|e| error_text(&e))?;
+    ask_save(&client, account, raw, replaces)
+}
+
+/// Has the daemon save `raw` as it is, as `save_draft` does a built one.
+pub(crate) fn save_raw_draft(
+    paths: &Paths,
+    account: &str,
+    raw: Vec<u8>,
+    replaces: Vec<String>,
+) -> Result<SavedDraft, String> {
+    ask_save(&LazyClient::new(paths), account, Some(raw), replaces)
+}
+
+fn ask_save(
+    client: &LazyClient,
+    account: &str,
+    raw: Option<Vec<u8>>,
+    replaces: Vec<String>,
+) -> Result<SavedDraft, String> {
     let command = Command::SaveDraft { raw, replaces };
     match client
         .client()
@@ -212,16 +233,28 @@ pub(crate) fn open_draft(paths: &Paths, draft: DraftToOpen) -> Result<Composer, 
     let store = Store::open_account(paths, &account).map_err(|e| e.to_string())?;
     let raw = (store.raw(&folder, uid).map_err(|e| e.to_string())?)
         .ok_or("the draft is not downloaded yet")?;
+    compose_from_raw(paths, &store, &account, &raw, id, &identities)
+}
+
+/// Reads draft `raw` of `account` into composer `id`, as `open_draft` does a stored one.
+fn compose_from_raw(
+    paths: &Paths,
+    store: &Store,
+    account: &str,
+    raw: &[u8],
+    id: u64,
+    identities: &[(String, Identity)],
+) -> Result<Composer, String> {
     let client = LazyClient::new(paths);
     let lookup = |id: &str| store.latest_by_message_id(id).ok().flatten();
-    let find = |id: &str| match client.raw_message(&account, &store, &lookup(id)?) {
+    let find = |id: &str| match client.raw_message(account, store, &lookup(id)?) {
         Ok(raw) => Some(raw),
         Err(e) => {
             log::warn!("[{account}] could not read the message a draft answers: {e:#}");
             None
         }
     };
-    let opened = postvak_core::send::drafts::read(&raw, find).map_err(|e| error_text(&e))?;
+    let opened = postvak_core::send::drafts::read(raw, find).map_err(|e| error_text(&e))?;
     let answered = (opened.original.as_ref())
         .or(opened.shown_original.as_ref())
         .and_then(|raw| postvak_core::message::parse_headers(raw).message_id)
@@ -230,8 +263,8 @@ pub(crate) fn open_draft(paths: &Paths, draft: DraftToOpen) -> Result<Composer, 
     let dir = recovery_dir(paths);
     Composer::from_draft(
         id,
-        &account,
-        &identities,
+        account,
+        identities,
         opened,
         answered,
         &files_dir(&dir, id),
@@ -240,6 +273,64 @@ pub(crate) fn open_draft(paths: &Paths, draft: DraftToOpen) -> Result<Composer, 
         remove_recovery(&dir, id);
         format!("could not keep the draft's files: {e}")
     })
+}
+
+/// Failed outbox message `outbox_id` of `account` to edit as composer `id`, with every account's addresses for From.
+pub(crate) struct OutboxToEdit {
+    pub account: String,
+    pub outbox_id: String,
+    pub id: u64,
+    pub identities: Vec<(String, Identity)>,
+}
+
+/// What Edit did once the message was saved as a draft: the composer it opens in, and whether it left the outbox.
+pub(crate) struct EditedOutbox {
+    opened: Result<Composer, String>,
+    cancelled: Result<(), CancelError>,
+}
+
+/// A failed outbox message being turned into a draft on a worker, by account index and outbox id.
+pub(crate) type EditingOutbox = ((usize, String), Receiver<Result<EditedOutbox, String>>);
+
+/// Saves failed outbox message `edit.outbox_id` as a draft in place of its drafts, and only then takes it out of the
+/// outbox, so it is always in one of them; the draft opens from the bytes saved.
+pub(crate) fn edit_outbox(
+    paths: &Paths,
+    edit: OutboxToEdit,
+    save: SaveRawFn,
+    cancel: CancelFn,
+) -> Result<EditedOutbox, String> {
+    use postvak_core::send::outbox::{Outbox, State};
+    let OutboxToEdit {
+        account,
+        outbox_id,
+        id,
+        identities,
+    } = edit;
+    let outbox = Outbox::open(paths, &account).map_err(|e| e.to_string())?;
+    let entry = outbox.get(&outbox_id).map_err(|e| e.to_string())?;
+    if !matches!(
+        entry.state,
+        State::Failed {
+            retrying: false,
+            ..
+        }
+    ) {
+        return Err("it is not failed any more".into());
+    }
+    let raw = outbox.raw(&outbox_id).map_err(|e| e.to_string())?;
+    let saved = save(paths, &account, raw.clone(), entry.draft)?;
+    let cancelled = cancel(paths, &account, &outbox_id);
+    let opened = Store::open_account(paths, &account)
+        .map_err(|e| e.to_string())
+        .and_then(|store| compose_from_raw(paths, &store, &account, &raw, id, &identities))
+        .map(|mut composer| {
+            if let Some(draft) = &mut composer.draft {
+                draft.left = saved.left;
+            }
+            composer
+        });
+    Ok(EditedOutbox { opened, cancelled })
 }
 
 /// Builds, checks and queues `request` as `postvak send` does; the window never opens an editor.
@@ -798,7 +889,12 @@ impl App {
             return;
         };
         self.compose_opening = None;
-        let mut composer = match result.unwrap_or_else(|Stopped| Err(STOPPED.into())) {
+        self.place_opened_draft(result.unwrap_or_else(|Stopped| Err(STOPPED.into())));
+    }
+
+    /// Places a draft read on a worker: over the message it answers in the reader pane, else in a window.
+    fn place_opened_draft(&mut self, opened: Result<Composer, String>) {
+        let mut composer = match opened {
             Ok(composer) => composer,
             Err(why) => return self.note_error(None, format!("could not open the draft: {why}")),
         };
@@ -1041,6 +1137,66 @@ impl App {
         self.toast = Some(Toast::new(words, false));
     }
 
+    /// Turns failed outbox message `id` of `account` into a draft on a worker, and opens it once saved.
+    pub(super) fn edit_outbox(&mut self, account: usize, id: String) {
+        let Some(name) = self.accounts.get(account).map(|a| a.name.clone()) else {
+            return;
+        };
+        let key = (account, id.clone());
+        if self
+            .outbox_editing
+            .iter()
+            .any(|(editing, _)| *editing == key)
+        {
+            return;
+        }
+        self.outbox_refused.remove(&key);
+        let edit = OutboxToEdit {
+            account: name,
+            outbox_id: id,
+            id: self.next_compose,
+            identities: (self.accounts.iter())
+                .filter_map(|a| Some((a.name.clone(), a.identity.clone()?)))
+                .collect(),
+        };
+        self.next_compose += 1;
+        let (paths, save, cancel) = (self.paths.clone(), self.save_raw_draft, self.cancel_send);
+        let answer = worker::oneshot("compose-outbox-edit", self.wake.clone(), move || {
+            edit_outbox(&paths, edit, save, cancel)
+        });
+        self.outbox_editing.push((key, answer));
+    }
+
+    /// An edited outbox message opens as its draft; one not saved stays failed with why in the outbox dialog.
+    fn receive_outbox_edits(&mut self) {
+        let mut index = 0;
+        while index < self.outbox_editing.len() {
+            let Some(result) = worker::poll(&self.outbox_editing[index].1) else {
+                index += 1;
+                continue;
+            };
+            let (key, _) = self.outbox_editing.remove(index);
+            let edited = match result.unwrap_or_else(|Stopped| Err(STOPPED.into())) {
+                Ok(edited) => edited,
+                Err(why) => {
+                    self.outbox_refused.insert(key, clean(&why, false));
+                    continue;
+                }
+            };
+            if let Err(refused) = edited.cancelled {
+                let why = match refused {
+                    CancelError::TooLate => "it is on its way".to_string(),
+                    CancelError::Failed(why) => why,
+                };
+                let text =
+                    format!("saved as a draft, but could not take it out of the outbox: {why}");
+                self.note_error(None, text);
+            }
+            self.read_outboxes();
+            self.place_opened_draft(edited.opened);
+        }
+    }
+
     /// A retry the daemon took shows at once in the outbox; one it refused says why.
     fn receive_retries(&mut self) {
         let mut index = 0;
@@ -1249,6 +1405,7 @@ impl App {
         self.receive_attach();
         self.receive_completion();
         self.receive_retries();
+        self.receive_outbox_edits();
         self.receive_saves();
         let mut index = 0;
         while index < self.compose_sending.len() {
@@ -2875,6 +3032,145 @@ mod tests {
             driver.app.error.as_deref(),
             Some("could not retry: the daemon is stopping")
         );
+    }
+
+    mod outbox_edit {
+        use std::path::PathBuf;
+
+        use super::*;
+
+        const FAILED: &[u8] = b"From: work@example.com\r\nTo: ann@x.org\r\nBcc: boss@x.org\r\nSubject: Lunch\r\nMessage-ID: <o1@example.com>\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nNoon?\r\n";
+
+        /// What the fakes were asked, in order, by whose home: `save <replaces>` or `cancel <id>`.
+        static ASKED: Mutex<Vec<(PathBuf, String)>> = Mutex::new(Vec::new());
+
+        fn asked(fx: &Fixture) -> Vec<String> {
+            let asked = ASKED.lock().unwrap();
+            let home = fx.paths.config_file();
+            (asked.iter())
+                .filter(|(of, _)| *of == home)
+                .map(|(_, what)| what.clone())
+                .collect()
+        }
+
+        /// Work with a Drafts folder and FAILED failed in its outbox, a copy `<d0@example.com>` in Drafts.
+        fn failed_in_the_outbox() -> (Fixture, Driver, Wires, String) {
+            let fx = Fixture::new(&["work"]);
+            fx.folder("work", "Drafts", Some("Drafts"));
+            let envelope = Envelope {
+                from: "work@example.com".into(),
+                to: vec!["ann@x.org".into(), "boss@x.org".into()],
+            };
+            let mut failed = Entry::new(envelope, 0, false, None);
+            failed.state = State::Failed {
+                reason: "550 no such user".into(),
+                retrying: false,
+            };
+            failed.draft = vec!["<d0@example.com>".into()];
+            Outbox::open(&fx.paths, "work")
+                .unwrap()
+                .add(FAILED, &failed)
+                .unwrap();
+            let (mut driver, wires) = fx.driver();
+            driver.at(POLL);
+            driver.app.save_raw_draft = |paths, account, raw, replaces| {
+                assert_eq!((account, raw.as_slice()), ("work", FAILED));
+                let what = format!("save {}", replaces.join(","));
+                ASKED.lock().unwrap().push((paths.config_file(), what));
+                Ok(SavedDraft {
+                    message_id: Some("<o1@example.com>".into()),
+                    left: vec!["<d0@example.com>".into()],
+                })
+            };
+            driver.app.cancel_send = |paths, account, id| {
+                ASKED
+                    .lock()
+                    .unwrap()
+                    .push((paths.config_file(), format!("cancel {id}")));
+                Outbox::open(paths, account).unwrap().cancel(id).unwrap();
+                Ok(())
+            };
+            driver.apply(UiAction::OpenOutbox);
+            (fx, driver, wires, failed.id)
+        }
+
+        fn edit(driver: &mut Driver, id: &str) {
+            driver.apply(UiAction::EditOutbox(0, id.into()));
+            assert!(
+                crate::status::outbox_rows(&driver.app)[0].retry.is_none(),
+                "Retry and Edit go while it is saved"
+            );
+            driver.tick_until(|app| app.outbox_editing.is_empty());
+        }
+
+        #[test]
+        fn edit_turns_a_failed_message_into_a_draft_and_opens_it() {
+            let (fx, mut driver, _wires, id) = failed_in_the_outbox();
+            edit(&mut driver, &id);
+            assert_eq!(
+                asked(&fx),
+                ["save <d0@example.com>".to_string(), format!("cancel {id}")]
+            );
+            let window = &driver.app.new_mail[0];
+            assert_eq!(
+                (window.to.as_str(), window.subject.as_str()),
+                ("ann@x.org", "Lunch")
+            );
+            assert_eq!(window.bcc, "boss@x.org");
+            assert!(window.text.contains("Noon?"));
+            let draft = window.draft.as_ref().unwrap();
+            assert_eq!(draft.message_id, "<o1@example.com>");
+            assert_eq!(draft.left, ["<d0@example.com>"]);
+            assert!(
+                Outbox::open(&fx.paths, "work")
+                    .unwrap()
+                    .list()
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(crate::status::outbox_rows(&driver.app).is_empty());
+            assert_eq!(driver.app.error, None);
+        }
+
+        #[test]
+        fn a_refused_draft_save_leaves_the_failed_message_in_the_outbox() {
+            let (fx, mut driver, _wires, id) = failed_in_the_outbox();
+            driver.app.save_raw_draft =
+                |_, _, _, _| Err("this account has no Drafts folder".into());
+            edit(&mut driver, &id);
+            assert!(asked(&fx).is_empty(), "nothing is cancelled");
+            assert!(driver.app.new_mail.is_empty() && driver.app.composer.is_none());
+            assert_eq!(
+                Outbox::open(&fx.paths, "work")
+                    .unwrap()
+                    .list()
+                    .unwrap()
+                    .len(),
+                1
+            );
+            let rows = crate::status::outbox_rows(&driver.app);
+            assert_eq!(
+                rows[0].state,
+                "Failed: 550 no such user · Not saved as a draft: this account has no Drafts folder"
+            );
+            assert_eq!(rows[0].retry, Some((0, id)));
+        }
+
+        #[test]
+        fn a_refused_cancel_still_opens_the_draft_and_keeps_the_entry() {
+            let (_fx, mut driver, _wires, id) = failed_in_the_outbox();
+            driver.app.cancel_send =
+                |_, _, _| Err(CancelError::Failed("the daemon is stopping".into()));
+            edit(&mut driver, &id);
+            assert_eq!(driver.app.new_mail.len(), 1);
+            assert_eq!(crate::status::outbox_rows(&driver.app).len(), 1);
+            assert_eq!(
+                driver.app.error.as_deref(),
+                Some(
+                    "saved as a draft, but could not take it out of the outbox: the daemon is stopping"
+                )
+            );
+        }
     }
 
     mod drafts {

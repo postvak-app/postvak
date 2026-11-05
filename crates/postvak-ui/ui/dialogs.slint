@@ -146,7 +146,7 @@ export struct OutboxEntry {
     title: string,
     state: string,
     failed: bool,
-    // Failed for good, so Retry sends it again.
+    // Failed for good, so Retry sends it again and Edit turns it into a draft.
     retry: bool,
 }
 
@@ -155,6 +155,7 @@ export component OutboxDialog {
     in property <[OutboxEntry]> entries;
     in property <string> close-icon;
     callback retry(int);
+    callback edit(int);
     callback close();
     width: Theme.dialog;
     Dialog {
@@ -187,8 +188,15 @@ export component OutboxDialog {
                             wrap: word-wrap;
                         }
                     }
-                    if entry.retry: VerticalLayout {
+                    if entry.retry: HorizontalLayout {
                         alignment: center;
+                        spacing: Theme.pad;
+                        TextButton {
+                            text: "Edit";
+                            framed: true;
+                            palette: Theme.pane;
+                            clicked => { root.edit(i); }
+                        }
                         TextButton {
                             text: "Retry";
                             framed: true;

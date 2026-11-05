@@ -1593,9 +1593,12 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     });
     window.on_retry_send(move |i| {
         on(one(move |app| {
-            let rows = status::outbox_rows(app);
-            let (account, id) = nth(&rows, i)?.retry.clone()?;
-            Some(UiAction::RetrySend(account, id))
+            outbox_failed(app, i).map(|(account, id)| UiAction::RetrySend(account, id))
+        }));
+    });
+    window.on_edit_outbox(move |i| {
+        on(one(move |app| {
+            outbox_failed(app, i).map(|(account, id)| UiAction::EditOutbox(account, id))
         }));
     });
     window.on_row_clicked(move |i, extend, toggle| {
@@ -1975,6 +1978,11 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
 /// The `index`th of `items`, as the window's callbacks number them.
 fn nth<T>(items: impl IntoIterator<Item = T>, index: i32) -> Option<T> {
     items.into_iter().nth(usize::try_from(index).ok()?)
+}
+
+/// The account and outbox id of the failed message the outbox dialog shows at `index`, for Retry and Edit.
+fn outbox_failed(app: &App, index: i32) -> Option<(usize, String)> {
+    nth(status::outbox_rows(app), index)?.retry
 }
 
 /// The rule the Rules table shows at `index`, in its filtered and sorted order.
