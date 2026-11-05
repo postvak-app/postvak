@@ -1219,12 +1219,13 @@ impl App {
             let brand = match self.list.brands.get(&row.id()) {
                 Some(brand) => brand.clone(),
                 None => {
-                    let brand = self.accounts[row.account]
+                    let account = &self.accounts[row.account];
+                    let brand = account
                         .store
                         .as_ref()
                         .ok()
                         .and_then(|store| store.headers(&row.folder, row.uid).ok().flatten())
-                        .and_then(|headers| self.logos.brand(&headers));
+                        .and_then(|headers| self.logos.brand(&headers, account.identity.as_ref()));
                     self.list.brands.insert(row.id(), brand.clone());
                     brand
                 }

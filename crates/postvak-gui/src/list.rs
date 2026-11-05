@@ -1158,7 +1158,7 @@ mod tests {
     #[test]
     fn a_row_in_view_shows_its_senders_logo() {
         let fx = Fixture::new(&["work"]);
-        fx.append_config("[ui]\nsender_images = true\n");
+        crate::test_support::sender_images(&fx);
         fx.add("work", crate::test_support::branded("INBOX", 1, "merged"));
         fx.add("work", message("INBOX", 2, "plain"));
         crate::test_support::cache_github_logo(&fx.paths);
@@ -1190,7 +1190,7 @@ mod tests {
     fn the_window_draws_a_rows_logo() {
         use slint::Model;
         let fx = Fixture::new(&["work"]);
-        fx.append_config("[ui]\nsender_images = true\n");
+        crate::test_support::sender_images(&fx);
         fx.add("work", crate::test_support::branded("INBOX", 1, "merged"));
         crate::test_support::cache_github_logo(&fx.paths);
         let (open, _wires) = fx.window();

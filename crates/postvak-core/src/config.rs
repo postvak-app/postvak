@@ -722,6 +722,12 @@ impl Identity {
     pub fn authenticated(&self, raw_headers: &[u8], from: &str) -> bool {
         crate::message::auth::authenticated(raw_headers, from, |id| self.trusts_authserv_id(id))
     }
+
+    /// What a server the account trusts said about the From domain, when it said either way: see
+    /// [`auth::verdict`](crate::message::auth::verdict).
+    pub fn verdict(&self, raw_headers: &[u8], from: &str) -> Option<crate::message::auth::Verdict> {
+        crate::message::auth::verdict(raw_headers, from, |id| self.trusts_authserv_id(id))
+    }
 }
 
 /// Why `--account` (or MCP's `account`) picked no account.

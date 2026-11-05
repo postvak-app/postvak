@@ -163,7 +163,7 @@ component General inherits VerticalLayout {
     }
     SwitchSetting {
         label: "Show sender logos";
-        note: "Fetches the logo a sender's domain publishes (BIMI).";
+        note: "BIMI logos, for senders a trusted server verified.";
         checked: Preferences.sender-images;
         toggled(on) => { Preferences.sender-images-toggled(on); }
     }
