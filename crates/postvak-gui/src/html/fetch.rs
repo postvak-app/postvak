@@ -2,39 +2,66 @@
 use std::collections::BTreeMap;
 use std::io::Read;
 #[cfg(test)]
-use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Mutex, PoisonError};
-use std::time::Duration;
+use std::sync::mpsc::Sender;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::{LazyLock, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use super::{FetchDone, FetchJob, MAX_REMOTE, Wake};
-use crate::worker::Worker;
+use crate::worker::spawn;
 use postvak_core::net::{public, public_agent};
 
 /// A larger response counts as failed.
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 5;
 const TIMEOUT: Duration = Duration::from_secs(15);
+/// A host that does not answer the connect in this long counts as failed, so a dead tracker gives up early.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Downloads that finish within this long of the last batch wait for the next one, so the page is not laid out
+/// again for every image.
+const BATCH: Duration = Duration::from_millis(500);
 const WORKERS: usize = 6;
 
-/// The download thread, as `Renderer` has its own.
-pub(crate) struct Fetcher(Worker<FetchJob, FetchDone>);
+/// Downloads each job on a thread of its own, so a later round (the images a stylesheet names) need not wait for a
+/// slow earlier one. Each job answers in batches, the last one marked.
+pub(crate) struct Fetcher {
+    start: Box<dyn Fn(FetchJob) + Send>,
+    done: Receiver<FetchDone>,
+}
 
 impl Fetcher {
     pub fn start(wake: Wake) -> Fetcher {
-        Fetcher(Worker::start("html-fetch", wake, |job: FetchJob| {
-            FetchDone {
-                tag: job.tag,
-                fetched: fetch_all(job.urls, get),
+        let (send, done) = mpsc::channel();
+        let start = move |job: FetchJob| {
+            let tag = job.tag;
+            let (thread_send, thread_wake) = (send.clone(), wake.clone());
+            let started = spawn("html-fetch", move || {
+                fetch_all(job.urls, get, |fetched, last| {
+                    let _ = thread_send.send(FetchDone { tag, fetched, last });
+                    thread_wake();
+                });
+            });
+            if !started {
+                let _ = send.send(FetchDone {
+                    tag,
+                    fetched: BTreeMap::new(),
+                    last: true,
+                });
+                wake();
             }
-        }))
+        };
+        Fetcher {
+            start: Box::new(start),
+            done,
+        }
     }
 
     pub fn send(&self, job: FetchJob) {
-        self.0.send(job);
+        (self.start)(job);
     }
 
     pub fn done(&self) -> Vec<FetchDone> {
-        self.0.done()
+        self.done.try_iter().collect()
     }
 }
 
@@ -42,43 +69,80 @@ impl Fetcher {
 impl Fetcher {
     /// A fetcher with no thread: the test reads the jobs and answers in its place.
     pub fn fake() -> (Fetcher, Receiver<FetchJob>, Sender<FetchDone>) {
-        let (worker, todo, send) = Worker::fake();
-        (Fetcher(worker), todo, send)
+        let (jobs, todo) = mpsc::channel();
+        let (send, done) = mpsc::channel();
+        let start = move |job| {
+            let _ = jobs.send(job);
+        };
+        let fetcher = Fetcher {
+            start: Box::new(start),
+            done,
+        };
+        (fetcher, todo, send)
     }
 }
 
-/// Fetches `urls` on a few workers; each one ends up in the map, empty when `get` failed or the host is refused.
+/// Fetches `urls` on a few workers and hands `deliver` what finished, at most once per `BATCH`, then the rest with
+/// `last` set. Each URL ends up in one batch, empty when `get` failed or the host is refused.
 fn fetch_all(
     urls: Vec<String>,
     get: impl Fn(&str) -> Option<Vec<u8>> + Sync,
-) -> BTreeMap<String, Vec<u8>> {
+    mut deliver: impl FnMut(BTreeMap<String, Vec<u8>>, bool),
+) {
     let queue = Mutex::new(urls.into_iter().take(MAX_REMOTE).collect::<Vec<_>>());
-    let fetched = Mutex::new(BTreeMap::new());
+    let (send, results) = mpsc::channel();
     std::thread::scope(|scope| {
         for _ in 0..WORKERS {
-            scope.spawn(|| {
-                while let Some(url) = queue.lock().unwrap_or_else(PoisonError::into_inner).pop() {
+            let (send, queue, get) = (send.clone(), &queue, &get);
+            scope.spawn(move || {
+                loop {
+                    // A `while let` would hold the lock for the whole download, one at a time.
+                    let next = queue.lock().unwrap_or_else(PoisonError::into_inner).pop();
+                    let Some(url) = next else { return };
                     let bytes = public(&url).then(|| get(&url)).flatten();
-                    fetched
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .insert(url, bytes.unwrap_or_default());
+                    if send.send((url, bytes.unwrap_or_default())).is_err() {
+                        return;
+                    }
                 }
             });
         }
+        drop(send);
+        let mut batch = BTreeMap::new();
+        let mut flushed = Instant::now();
+        loop {
+            let next = if batch.is_empty() {
+                results.recv().map_err(|_| RecvTimeoutError::Disconnected)
+            } else {
+                results.recv_timeout(BATCH.saturating_sub(flushed.elapsed()))
+            };
+            match next {
+                Ok((url, bytes)) => {
+                    batch.insert(url, bytes);
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+            if !batch.is_empty() && flushed.elapsed() >= BATCH {
+                deliver(std::mem::take(&mut batch), false);
+                flushed = Instant::now();
+            }
+        }
+        deliver(batch, true);
     });
-    fetched.into_inner().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// The body of a GET, when it answers 2xx within the limits and every hop is a public host. Nothing about the URL is
 /// logged: it can identify the reader.
 pub(crate) fn get(url: &str) -> Option<Vec<u8>> {
-    get_from(url, public, &public_agent(config()))
+    // One agent for the whole process, so its pool keeps connections and TLS sessions alive between images.
+    static AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| public_agent(config()));
+    get_from(url, public, &AGENT)
 }
 
 fn config() -> ureq::config::ConfigBuilder<ureq::typestate::AgentScope> {
     ureq::Agent::config_builder()
         .max_redirects(0)
+        .timeout_connect(Some(CONNECT_TIMEOUT))
         .timeout_global(Some(TIMEOUT))
 }
 
@@ -123,6 +187,23 @@ mod tests {
 
     use super::*;
 
+    /// Every batch `fetch_all` delivers, with whether it was marked last.
+    fn batches(
+        urls: Vec<String>,
+        get: impl Fn(&str) -> Option<Vec<u8>> + Sync,
+    ) -> Vec<(BTreeMap<String, Vec<u8>>, bool)> {
+        let mut delivered = Vec::new();
+        fetch_all(urls, get, |fetched, last| delivered.push((fetched, last)));
+        delivered
+    }
+
+    fn merged(delivered: Vec<(BTreeMap<String, Vec<u8>>, bool)>) -> BTreeMap<String, Vec<u8>> {
+        delivered
+            .into_iter()
+            .flat_map(|(fetched, _)| fetched)
+            .collect()
+    }
+
     #[test]
     fn every_url_gets_an_answer_and_refused_hosts_are_never_asked() {
         let asked = AtomicUsize::new(0);
@@ -132,11 +213,13 @@ mod tests {
             "http://192.168.1.1/reboot".to_string(),
             "http://localhost:8080/x".to_string(),
         ];
-        let fetched = fetch_all(urls, |url| {
+        let delivered = batches(urls, |url| {
             asked.fetch_add(1, Ordering::Relaxed);
             url.ends_with("a.png").then(|| b"PNG".to_vec())
         });
         assert_eq!(asked.load(Ordering::Relaxed), 2);
+        assert!(delivered.last().unwrap().1, "the last batch is marked");
+        let fetched = merged(delivered);
         assert_eq!(fetched.len(), 4);
         assert_eq!(fetched["https://cdn.example.com/a.png"], b"PNG");
         assert!(fetched["https://cdn.example.com/missing.png"].is_empty());
@@ -148,7 +231,58 @@ mod tests {
         let urls = (0..MAX_REMOTE + 5)
             .map(|i| format!("https://example.com/{i}.png"))
             .collect();
-        assert_eq!(fetch_all(urls, |_| Some(Vec::new())).len(), MAX_REMOTE);
+        assert_eq!(
+            merged(batches(urls, |_| Some(Vec::new()))).len(),
+            MAX_REMOTE
+        );
+    }
+
+    #[test]
+    fn downloads_run_side_by_side() {
+        let (running, most) = (AtomicUsize::new(0), AtomicUsize::new(0));
+        let urls = (0..WORKERS)
+            .map(|i| format!("https://example.com/{i}.png"))
+            .collect();
+        batches(urls, |_| {
+            let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+            most.fetch_max(now, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(50));
+            running.fetch_sub(1, Ordering::SeqCst);
+            Some(Vec::new())
+        });
+        assert!(most.load(Ordering::SeqCst) > 1, "one download at a time");
+    }
+
+    #[test]
+    fn a_slow_url_does_not_hold_back_the_ones_already_in() {
+        let released = std::sync::atomic::AtomicBool::new(false);
+        let slow = "https://tracker.example.com/pixel.gif";
+        let fast = "https://cdn.example.com/a.png";
+        let mut delivered = Vec::new();
+        fetch_all(
+            vec![slow.to_string(), fast.to_string()],
+            |url| {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while url == slow && !released.load(Ordering::Relaxed) && Instant::now() < deadline
+                {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Some(url.as_bytes().to_vec())
+            },
+            |fetched, last| {
+                if fetched.contains_key(fast) {
+                    released.store(true, Ordering::Relaxed);
+                }
+                delivered.push((fetched.into_keys().collect::<Vec<_>>(), last));
+            },
+        );
+        assert_eq!(
+            delivered,
+            [
+                (vec![fast.to_string()], false),
+                (vec![slow.to_string()], true)
+            ]
+        );
     }
 
     /// A server on a free local port that answers one request with `response`.

@@ -120,16 +120,6 @@ impl<J: Send + 'static, R: Send + 'static> Worker<J, R> {
 }
 
 #[cfg(test)]
-impl<J, R> Worker<J, R> {
-    /// A worker with no thread: the test reads the jobs and answers in its place.
-    pub fn fake() -> (Worker<J, R>, Receiver<J>, Sender<R>) {
-        let (jobs, todo) = mpsc::channel();
-        let (send, done) = mpsc::channel();
-        (Worker { jobs, done }, todo, send)
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
