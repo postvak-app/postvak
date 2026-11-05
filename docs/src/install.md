@@ -35,7 +35,7 @@ The cask puts `Postvak.app` in `/Applications` and links the app's own binary as
 
 The app is not notarized by Apple yet; it is signed ad hoc. The cask clears the quarantine flag on install, so it opens normally. A DMG downloaded by hand is blocked by Gatekeeper the first time: clear the flag once with `xattr -dr com.apple.quarantine /Applications/Postvak.app`, or allow it under System Settings → Privacy & Security. Each upgrade has a new signature, so the Keychain asks again for access to the password.
 
-Install either the cask or the formula (`brew install postvak-app/tap/postvak`), not both: the window, the CLI and the MCP server share one daemon over one socket, and an older client refuses a newer daemon, so two installs at different versions would get in each other's way. Homebrew refuses the second one. The formula stays for Linux and headless Macs.
+Install either the cask or the formula (`brew install postvak-app/tap/postvak`), not both: the window, the CLI and the MCP server share one daemon over one socket, and an older client refuses a newer daemon, so two installs at different versions would get in each other's way. Both put `postvak` in Homebrew's `bin`, so Homebrew will not link the second one. The formula stays for Linux and headless Macs.
 
 ## AppImage on Linux
 
