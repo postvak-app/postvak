@@ -609,6 +609,21 @@ fn rule_editor() {
     snapshot(&open, "gui_rule_editor");
 }
 
+/// "+ Add action" open: its choices wrap inside the dialog rather than scrolling it sideways.
+#[test]
+fn rule_editor_adding_action() {
+    let fx = Fixture::mailbox("light");
+    std::fs::write(fx.paths.rules_file(), RULES).unwrap();
+    let (open, _wires) = open(&fx);
+    open.with(|live| live.app.select_view(View::Rules));
+    open.tick();
+    open.click("receipts");
+    open.tick();
+    open.click("+ Add action");
+    open.tick();
+    snapshot(&open, "gui_rule_editor_adding_action");
+}
+
 /// A rule that forwards, with its sub-form open in the editor.
 #[test]
 fn rule_editor_forward() {
