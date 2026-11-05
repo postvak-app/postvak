@@ -230,8 +230,8 @@ pub type Applied = (u32, Result<usize, ApplyError>);
 
 /// What `apply` does with a plan of one action, for many messages of one folder at once: a flag change or a move goes to
 /// the server as one command per batch of uids rather than one per message. A delete, which saves each message before
-/// expunging it, fetches each one but expunges them together. Junk and not-junk, which also swap keywords, and any
-/// action whose target cannot be resolved, run per message through `apply`, which says why.
+/// expunging it, fetches each one but expunges them together. Junk and not-junk swap their keywords in one command
+/// each before the move. Any action whose target cannot be resolved runs per message through `apply`, which says why.
 pub fn apply_many(
     planned: &PlannedAction,
     msgs: &[Message],
@@ -278,6 +278,10 @@ pub fn apply_many(
             Err(_) => per_message(ops),
         },
         Action::Delete => delete_many(planned, msgs, ops, store, trash, now),
+        Action::Junk | Action::NotJunk => match junk_keywords(store, &planned.action) {
+            Ok(junk) => junk_many(planned, msgs, junk, ops, store, now),
+            Err(_) => per_message(ops),
+        },
         _ => per_message(ops),
     }
 }
@@ -366,6 +370,19 @@ fn move_many(
 ) -> Vec<Applied> {
     let mut results = Vec::new();
     let moving = log_each(planned, msgs, Some(target), store, now, &mut results);
+    results.extend(move_logged(planned, moving, target, ops, store));
+    results
+}
+
+/// Moves `moving`, whose log rows are written, to `target` in one command.
+fn move_logged(
+    planned: &PlannedAction,
+    moving: Vec<&Message>,
+    target: &str,
+    ops: &mut dyn MailOps,
+    store: &Store,
+) -> Vec<Applied> {
+    let mut results = Vec::new();
     if moving.is_empty() {
         return results;
     }
@@ -402,12 +419,67 @@ fn move_many(
         // After the move: a failed one must not keep the rule from trying again. A trash is no rule move.
         if done.is_ok()
             && !crate::rules::is_actor(&planned.rule)
-            && matches!(planned.action, Action::Move(_) | Action::Archive)
+            && matches!(
+                planned.action,
+                Action::Move(_) | Action::Archive | Action::Junk
+            )
         {
             done = store.record_rule_move(msg);
         }
         results.push((msg.uid, done.map(|()| 1).map_err(ApplyError::from)));
     }
+    results
+}
+
+/// `junk` for many messages of one folder: each keyword change is one command, then the move is one.
+fn junk_many(
+    planned: &PlannedAction,
+    msgs: &[Message],
+    (target, keyword, opposite): (String, &str, &str),
+    ops: &mut dyn MailOps,
+    store: &Store,
+    now: i64,
+) -> Vec<Applied> {
+    let mut results = Vec::new();
+    let logged = log_each(planned, msgs, Some(&target), store, now, &mut results);
+    let mut flags: Vec<String> = logged.iter().map(|msg| msg.flags.clone()).collect();
+    for (flag, wanted) in [(opposite, false), (keyword, true)] {
+        let changing: Vec<usize> = (0..logged.len())
+            .filter(|&i| has_flag(&flags[i], flag) != wanted)
+            .collect();
+        if changing.is_empty() {
+            continue;
+        }
+        let uids: Vec<u32> = changing.iter().map(|&i| logged[i].uid).collect();
+        let sent = if wanted {
+            ops.add_flags_to(&uids, &[flag])
+        } else {
+            ops.remove_flags_from(&uids, &[flag])
+        };
+        // A server that refuses keywords only loses the filter training, so the move still runs.
+        if let Err(e) = sent {
+            log::warn!(
+                "{}: could not set {flag} on {} messages: {e}",
+                logged[0].folder,
+                uids.len()
+            );
+            continue;
+        }
+        for i in changing {
+            flags[i] = with_flag(&flags[i], flag, wanted);
+            if let Err(e) = store.update_flags(&logged[i].folder, logged[i].uid, &flags[i]) {
+                log::warn!(
+                    "{}/{}: could not store {flag}: {e}",
+                    logged[i].folder,
+                    logged[i].uid
+                );
+            }
+        }
+    }
+    let (staying, moving): (Vec<&Message>, Vec<&Message>) =
+        logged.into_iter().partition(|msg| msg.folder == target);
+    results.extend(staying.iter().map(|msg| (msg.uid, Ok(1))));
+    results.extend(move_logged(planned, moving, &target, ops, store));
     results
 }
 
@@ -472,10 +544,7 @@ fn junk(
     store: &Store,
     now: i64,
 ) -> Result<(), ApplyError> {
-    let (target, keyword, opposite) = match planned.action {
-        Action::Junk => (junk_folder(store)?, "$Junk", "$NotJunk"),
-        _ => ("INBOX".to_string(), "$NotJunk", "$Junk"),
-    };
+    let (target, keyword, opposite) = junk_keywords(store, &planned.action)?;
     store.log_action(&log_entry(planned, msg, Some(&target), now))?;
     let mut current = msg.clone();
     for (flag, wanted) in [(opposite, false), (keyword, true)] {
@@ -492,6 +561,17 @@ fn junk(
         }
     }
     Ok(())
+}
+
+/// Where junk or not-junk moves mail, the keyword it sets and the one it clears.
+fn junk_keywords(
+    store: &Store,
+    action: &Action,
+) -> Result<(String, &'static str, &'static str), ApplyError> {
+    Ok(match action {
+        Action::Junk => (junk_folder(store)?, "$Junk", "$NotJunk"),
+        _ => ("INBOX".to_string(), "$NotJunk", "$Junk"),
+    })
 }
 
 /// `target` is the folder a move takes the message to.
@@ -1808,6 +1888,63 @@ mod tests {
         )
         .unwrap();
         assert!(ops.calls.iter().any(|c| c == "move INBOX 5 -> Spam"));
+    }
+
+    #[test]
+    fn junk_of_many_swaps_keywords_and_moves_in_one_command_each() {
+        let (ops, store, trash, _dir, first) = setup();
+        let mut ops = with_junk(ops, &store);
+        let mut msgs = vec![first];
+        for (uid, flags) in [(6, "$NotJunk"), (7, "")] {
+            ops.add_mail("INBOX", uid, 100, "Subject: hi\r\n\r\n", None);
+            let msg = Message {
+                uid,
+                flags: flags.into(),
+                ..msgs[0].clone()
+            };
+            store.insert_message(&msg).unwrap();
+            msgs.push(msg);
+        }
+        ops.select("INBOX").unwrap();
+        let mut junk = plan(vec![Action::Junk]);
+        junk.actions[0].rule = "r".into();
+        let applied = apply_many(&junk.actions[0], &msgs, &mut ops, &store, &trash, 500);
+        assert!(
+            applied.iter().all(|(_, ran)| matches!(ran, Ok(1))),
+            "{applied:?}"
+        );
+        let calls: Vec<&str> = ops
+            .calls
+            .iter()
+            .map(String::as_str)
+            .filter(|c| !c.starts_with("select"))
+            .collect();
+        assert_eq!(
+            calls,
+            [
+                "remove_flags INBOX 6 $NotJunk",
+                "add_flags INBOX 5,6,7 $Junk",
+                "move INBOX 5,6,7 -> Spam"
+            ]
+        );
+        for msg in &msgs {
+            assert!(store.message("INBOX", msg.uid).unwrap().is_none());
+            assert!(store.rule_moved_out(msg).unwrap(), "{}", msg.uid);
+        }
+        assert_eq!(store.log(10).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn junk_of_many_still_moves_when_the_server_refuses_keywords() {
+        let (ops, store, trash, _dir, msg) = setup();
+        let mut ops = with_junk(ops, &store);
+        ops.select("INBOX").unwrap();
+        ops.fail_next = Some(MailError::Protocol("no keywords".into()));
+        let junk = plan(vec![Action::Junk]);
+        let applied = apply_many(&junk.actions[0], &[msg], &mut ops, &store, &trash, 500);
+        assert!(matches!(&applied[..], [(5, Ok(1))]), "{applied:?}");
+        assert!(ops.calls.iter().any(|c| c == "move INBOX 5 -> Spam"));
+        assert!(store.message("INBOX", 5).unwrap().is_none());
     }
 
     #[test]
