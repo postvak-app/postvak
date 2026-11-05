@@ -253,11 +253,12 @@ fn layout(load: Load) -> Option<(Current, Reply)> {
     let scale = load.scale.max(0.5);
     // Never narrower than `MIN_WIDTH`: see there. A narrower pane scrolls sideways.
     let wide = load.width.max(MIN_WIDTH);
-    let (mut doc, mut remote) = styled(&load, scale, wide, &[])?;
+    let (mut doc, mut remote) = styled(&load, scale, wide, &[], &[])?;
     let cells = block_cells(&doc);
+    let badges = badges(&doc);
     // Blitz does not rebuild a table's grid when a restyle changes a cell's display: style a fresh document.
-    if !cells.is_empty() {
-        (doc, remote) = styled(&load, scale, wide, &cells)?;
+    if !cells.is_empty() || !badges.is_empty() {
+        (doc, remote) = styled(&load, scale, wide, &cells, &badges)?;
     }
     let originals = if load.dark {
         dark::adapt(&mut doc)
@@ -282,12 +283,14 @@ fn layout(load: Load) -> Option<(Current, Reply)> {
 }
 
 /// `load` parsed and styled at `wide` points, with the `td` and `th` at the positions `cells` turned back into cells
-/// (`block_cells`), and what its provider noted of remote content; None for markup nested too deep.
+/// (`block_cells`) and the elements at the positions `badges` made inline blocks (`badges`), and what its provider
+/// noted of remote content; None for markup nested too deep.
 fn styled(
     load: &Load,
     scale: f32,
     wide: f32,
     cells: &[usize],
+    badges: &[usize],
 ) -> Option<(BaseDocument, Arc<Mutex<BTreeSet<String>>>)> {
     let (provider, remote) = net::Inline::new(load.inline.clone(), load.fetched.clone());
     let config = DocumentConfig {
@@ -310,12 +313,122 @@ fn styled(
     }
     font_colours(&mut doc);
     table_cells(&mut doc, cells);
+    inline_blocks(&mut doc, badges);
     // The provider answered every request synchronously; take its answers before the layout, and the background
     // images the styles asked for after it, so they paint and `dark::adapt` sees which of them loaded.
     doc.handle_messages();
     doc.resolve(0.0);
     doc.handle_messages();
     Some((doc, remote))
+}
+
+/// Blitz neither lays out nor paints the padding, borders and rounded corners of an inline element, only a rectangle
+/// behind its text, so a badge such as a receipt's discount label loses its shape: the short inline elements of text
+/// alone that have them, as positions among the body's elements, for `inline_blocks`. Longer text stays inline, where
+/// it can still wrap from line to line.
+fn badges(doc: &BaseDocument) -> Vec<usize> {
+    let Ok(elements) = doc.query_selector_all(BODY_ELEMENTS) else {
+        return Vec::new();
+    };
+    elements
+        .into_iter()
+        .enumerate()
+        .filter(|&(_, id)| {
+            let Some(node) = doc.get_node(id) else {
+                return false;
+            };
+            let text_only = !node.children.is_empty()
+                && node
+                    .children
+                    .iter()
+                    .all(|&child| doc.get_node(child).is_some_and(|c| c.is_text_node()));
+            text_only
+                && node.text_content().trim().chars().count() <= BADGE_TEXT
+                && node
+                    .primary_styles()
+                    .is_some_and(|style| boxed_inline(&style))
+        })
+        .map(|(position, _)| position)
+        .collect()
+}
+
+/// The elements `badges` and `inline_blocks` count positions among.
+const BODY_ELEMENTS: &str = "body *";
+
+/// The longest text `badges` makes a box of: a label or a button, not a sentence that should wrap.
+const BADGE_TEXT: usize = 40;
+
+/// Whether `style` is an inline box with a background or border that its padding, border or corners shape.
+fn boxed_inline(style: &style::properties::ComputedValues) -> bool {
+    if style.clone_display() != Display::Inline {
+        return false;
+    }
+    let border = style.get_border();
+    // Stylo keeps a side's specified width when its style is `none`, which draws nothing.
+    let bordered = [
+        (&border.border_top_width, border.border_top_style),
+        (&border.border_right_width, border.border_right_style),
+        (&border.border_bottom_width, border.border_bottom_style),
+        (&border.border_left_width, border.border_left_style),
+    ]
+    .iter()
+    .any(|(width, style)| width.0.0 > 0 && !style.none_or_hidden());
+    let current = style.clone_color();
+    let filled = style
+        .get_background()
+        .background_color
+        .resolve_to_absolute(&current)
+        .alpha
+        > 0.0;
+    let padding = style.get_padding();
+    let padded = [
+        &padding.padding_top,
+        &padding.padding_right,
+        &padding.padding_bottom,
+        &padding.padding_left,
+    ]
+    .iter()
+    .any(|side| non_zero(&side.0));
+    let rounded = [
+        &border.border_top_left_radius,
+        &border.border_top_right_radius,
+        &border.border_bottom_right_radius,
+        &border.border_bottom_left_radius,
+    ]
+    .iter()
+    .any(|corner| non_zero(&corner.0.width.0));
+    (filled || bordered) && (padded || bordered || rounded)
+}
+
+/// A percentage counts as non-zero: it resolves against a width not known while styling.
+fn non_zero(length: &style::values::computed::LengthPercentage) -> bool {
+    length.to_length().is_none_or(|length| length.px() != 0.0)
+}
+
+/// Makes the body's elements at `positions` inline blocks, which Blitz lays out and paints with their padding, border
+/// and corners.
+fn inline_blocks(doc: &mut BaseDocument, positions: &[usize]) {
+    if positions.is_empty() {
+        return;
+    }
+    let Ok(elements) = doc.query_selector_all(BODY_ELEMENTS) else {
+        return;
+    };
+    let styles: Vec<_> = positions
+        .iter()
+        .filter_map(|&position| {
+            let id = *elements.get(position)?;
+            let style = doc
+                .get_node(id)?
+                .attr(local_name!("style"))
+                .unwrap_or_default();
+            Some((id, format!("{style}; display: inline-block !important")))
+        })
+        .collect();
+    let mut mutator = doc.mutate();
+    for (id, style) in styles {
+        mutator.set_attribute(id, QualName::new(None, ns!(), local_name!("style")), &style);
+    }
 }
 
 fn scheme(dark: bool) -> ColorScheme {
@@ -1734,6 +1847,65 @@ mod tests {
                 "no text on {name}"
             );
         }
+    }
+
+    /// A badge: inline text with a background, padding and rounded corners, as receipts mark a discount. The padding
+    /// pushes the text in and is painted, and the corners are not.
+    #[test]
+    fn a_padded_inline_background_surrounds_its_text_with_rounded_corners() {
+        let html = "<p style=\"margin:20px\"><font style=\"background-color:#ff0000;color:#ffffff;\
+            padding:10px 20px;border-radius:10px\">MMMM</font></p>";
+        let image = strip(html, 400.0);
+        let red = at(&image, is_red);
+        let white = at(&image, |p| p.r() > 200 && p.g() > 200 && p.b() > 200);
+        let (Some(left), Some(top)) = (
+            red.iter().map(|&(x, _)| x).min(),
+            red.iter().map(|&(_, y)| y).min(),
+        ) else {
+            panic!("no background");
+        };
+        let (Some(text_left), Some(text_top)) = (
+            white.iter().map(|&(x, _)| x).min(),
+            white.iter().map(|&(_, y)| y).min(),
+        ) else {
+            panic!("no text");
+        };
+        assert!(
+            text_left >= left + 18,
+            "text at {text_left}, background at {left}"
+        );
+        assert!(
+            text_top >= top + 8,
+            "text at {text_top}, background at {top}"
+        );
+        assert!(!red.contains(&(left, top)), "a square corner");
+    }
+
+    /// How many elements of `html` `badges` makes inline blocks.
+    fn badge_count(html: &str) -> usize {
+        let Request::Load(load) = load(1, html, 600.0) else {
+            panic!("not a load");
+        };
+        let Some((doc, _)) = styled(&load, 1.0, MIN_WIDTH, &[], &[]) else {
+            panic!("not styled");
+        };
+        badges(&doc).len()
+    }
+
+    #[test]
+    fn only_inline_text_with_a_shaped_background_or_border_becomes_a_box() {
+        let plain = "<p><b>bold</b> <i>it</i> <a href=\"https://example.com\">link</a> \
+            <span style=\"background:#ff0\">highlight</span></p>";
+        assert_eq!(badge_count(plain), 0);
+        let boxed = "<p><span style=\"background:#ff0;padding:4px\">padded</span> \
+            <span style=\"border:1px solid\">bordered</span> \
+            <span style=\"background:#ff0;border-radius:4px\">rounded</span></p>";
+        assert_eq!(badge_count(boxed), 3);
+        let long = format!(
+            "<p><span style=\"background:#ff0;padding:4px\">{}</span></p>",
+            "word ".repeat(10)
+        );
+        assert_eq!(badge_count(&long), 0);
     }
 
     /// Lays out and paints `html`, reporting whether an upstream crate panicked.
