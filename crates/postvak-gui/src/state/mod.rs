@@ -932,8 +932,9 @@ pub struct App {
     pub(crate) retried: Vec<(usize, String)>,
     /// Failed outbox messages being turned into drafts, by account and id, until each answers.
     pub(crate) outbox_editing: Vec<composing::EditingOutbox>,
-    /// Why each failed outbox message Edit was clicked for was not saved as a draft, by account and id.
-    pub(crate) outbox_refused: HashMap<(usize, String), String>,
+    /// Why each outbox message Edit was clicked for stayed in the outbox, by account and id, with its state then.
+    pub(crate) outbox_refused:
+        HashMap<(usize, String), (postvak_core::send::outbox::State, String)>,
     /// The address completions shown under the field being typed in.
     pub(crate) completion: Option<composing::Completion>,
     /// The completions asked for last: the query's number, and the field they are for.
@@ -2758,6 +2759,10 @@ impl App {
                     .map(|entry| (index, entry)),
             );
         }
+        let outbox = &self.outbox;
+        self.outbox_refused.retain(|(account, id), (state, _)| {
+            (outbox.iter()).any(|(a, e)| a == account && &e.id == id && &e.state == state)
+        });
         self.drop_sent_composers(&kept);
         if marks_changed {
             self.rebuild_rows();

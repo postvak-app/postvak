@@ -80,6 +80,7 @@ pub(crate) fn outbox_rows(app: &App) -> Vec<OutboxRow> {
             app.accounts.get(*account)?.name,
             super::numbers::counted(recipients, "recipient", "recipients")
         );
+        let key = (*account, entry.id.clone());
         let (state, retry) = match &entry.state {
             State::Waiting => (
                 format!("Goes at {}", postvak_core::time::clock(entry.due)),
@@ -94,18 +95,17 @@ pub(crate) fn outbox_rows(app: &App) -> Vec<OutboxRow> {
                 reason,
                 retrying: false,
             } => {
-                let key = (*account, entry.id.clone());
                 let editing = app
                     .outbox_editing
                     .iter()
                     .any(|(editing, _)| *editing == key);
-                let state = match app.outbox_refused.get(&key) {
-                    Some(why) => format!("Failed: {reason} · Not saved as a draft: {why}"),
-                    None => format!("Failed: {reason}"),
-                };
-                let retry = (!editing && !app.retried.contains(&key)).then_some(key);
-                (state, retry)
+                let retry = (!editing && !app.retried.contains(&key)).then(|| key.clone());
+                (format!("Failed: {reason}"), retry)
             }
+        };
+        let state = match app.outbox_refused.get(&key) {
+            Some((_, why)) => format!("{state} · {why}"),
+            None => state,
         };
         Some(OutboxRow {
             title,
