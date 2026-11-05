@@ -495,10 +495,11 @@ component RuleEditorPane inherits ScrollView {
                 text: "+ Add action";
                 flush: true;
                 palette: Theme.pane;
-                selected: root.adding-action;
                 clicked => { root.adding-action = !root.adding-action; }
             }
-            if root.adding-action: HorizontalLayout {
+            if root.adding-action: FlexboxLayout {
+                horizontal-stretch: 1;
+                cross-axis-line-alignment: start;
                 spacing: Theme.pad / 2;
                 for choice[i] in RuleEditor.action-choices: TextButton {
                     text: choice;
