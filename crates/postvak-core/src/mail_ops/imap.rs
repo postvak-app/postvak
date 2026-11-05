@@ -314,6 +314,9 @@ async fn open_session(
         .await
         .map_err(|e| MailError::Connect(e.to_string()))?;
     enable_keepalive(&tcp).map_err(|e| MailError::Connect(e.to_string()))?;
+    // A command goes out in more than one write; with Nagle on, the next waits for the server's delayed ACK, 40 ms.
+    tcp.set_nodelay(true)
+        .map_err(|e| MailError::Connect(e.to_string()))?;
     let tcp: Box<dyn Transport> = Box::new(tcp);
     let (client, encrypted) = match account.tls() {
         Tls::Implicit => (Client::new(tls_handshake(account, tcp).await?), true),
