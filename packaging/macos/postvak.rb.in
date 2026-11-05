@@ -14,9 +14,6 @@ cask "postvak" do
     strategy :github_latest
   end
 
-  # The app, the CLI and the MCP server share one daemon over one socket, and an older client refuses a newer
-  # daemon, so the cask's binary and the formula's must not both be installed.
-  conflicts_with formula: "postvak"
   depends_on macos: ">= :big_sur"
 
   app "Postvak.app"

@@ -1,7 +1,7 @@
 # Quickstart
 
 ```sh
-brew install postvak-app/tap/postvak    # or cargo, mise, the macOS app, an AppImage or a Flatpak: see Install
+brew install --cask postvak-app/tap/postvak    # macOS; on Linux the formula, an AppImage or a Flatpak: see Install
 postvak account add                # asks for host, user and password, then syncs once
 postvak sync                       # first sync of every folder
 postvak list                       # newest mail in INBOX
