@@ -2831,6 +2831,7 @@ mod tests {
                 assert!(Instant::now() < deadline, "the SMTP guess was never stored");
                 std::thread::sleep(Duration::from_millis(20));
             }
+            daemon.wait_idle("work");
             let store = Store::open_account(&daemon.paths, "work").unwrap();
             let parsed = postvak_core::message::parse_headers(ORIGINAL);
             store
