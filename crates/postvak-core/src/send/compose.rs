@@ -531,10 +531,15 @@ mod tests {
             assert!(Instant::now() < deadline, "the guess was never stored");
             std::thread::sleep(Duration::from_millis(20));
         }
+        let store = Store::open_account(&daemon.paths, "work").unwrap();
+        // The message below needs its folder's row, which the daemon's first sync writes.
+        while store.folder("INBOX").unwrap().is_none() {
+            assert!(Instant::now() < deadline, "INBOX was never synced");
+            std::thread::sleep(Duration::from_millis(20));
+        }
         let config = Config::load(&daemon.paths.config_file()).unwrap();
         let client =
             LazyClient::with_client(&daemon.paths, Client::connect(&daemon.paths).unwrap());
-        let store = Store::open_account(&daemon.paths, "work").unwrap();
         let parsed = crate::message::parse_headers(ORIGINAL);
         store
             .insert_message(&Message {
