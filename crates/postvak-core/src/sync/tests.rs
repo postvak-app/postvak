@@ -4816,6 +4816,27 @@ fn a_slice_fetches_the_text_of_a_folders_messages_in_one_command() {
 }
 
 #[test]
+fn a_queued_command_ends_the_slice_after_one_message() {
+    let (mut ops, store) = indexable();
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let woken = AtomicBool::new(true);
+    let outcome = index::Session::default()
+        .slice(&mut ops, &store, &account(), &tx, &woken)
+        .unwrap();
+    assert_eq!(outcome, IndexOutcome::Progressed);
+    assert_eq!(body_of(&store, "Archive", 1).as_deref(), Some("body three"));
+    assert_eq!(
+        body_of(&store, "INBOX", 2),
+        None,
+        "the command waits no longer"
+    );
+    assert!(
+        woken.load(Ordering::Acquire),
+        "the loop still sees the wake"
+    );
+}
+
+#[test]
 fn a_slice_indexes_newest_first_and_stops_at_its_budget() {
     let (mut ops, store) = indexable();
     let (tx, rx) = std::sync::mpsc::channel();
