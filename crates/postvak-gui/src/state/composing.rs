@@ -2411,8 +2411,12 @@ mod tests {
     #[test]
     fn retry_sends_a_failed_one_again() {
         static RETRIED: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+        // Held until the first check, so the stub's answer cannot re-read the outbox before it.
+        static UNANSWERED: Mutex<()> = Mutex::new(());
+        let unanswered = UNANSWERED.lock().unwrap();
         let (_fx, mut driver, _wires, failed) = two_in_the_outbox();
         driver.app.retry_send = |_, account, id| {
+            let _answered = UNANSWERED.lock().unwrap();
             RETRIED.lock().unwrap().push((account.into(), id.into()));
             Ok(())
         };
@@ -2423,6 +2427,7 @@ mod tests {
             rows.iter().any(|row| row.retry.is_some())
         };
         assert!(!offered(&driver.app), "Retry goes once clicked");
+        drop(unanswered);
         driver.tick_until(|app| app.retrying.is_empty());
         assert!(
             offered(&driver.app),
