@@ -478,6 +478,7 @@ fn present_body(app: &App, window: &MailWindow) {
         reply: pane.reply,
         reply_all: pane.reply_all,
         reply_list: pane.reply_list,
+        edit_draft: pane.edit_draft,
         provenance,
         links: strings(shown.links.clone(), pane.links),
     };
@@ -1855,6 +1856,9 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     window.on_forward(move || {
         act(UiAction::Forward);
     });
+    window.on_edit_draft(move || {
+        act(UiAction::EditComposeDraft);
+    });
     window.on_edit_shown_rule(move || {
         on(Box::new(|app: &App| {
             let name = app.body.as_ref().and_then(|b| b.provenance.first());
@@ -2118,6 +2122,7 @@ fn press(text: &str, command: bool, alt: bool) -> Option<Press> {
         (Slint::Backspace, Named::Backspace),
         (Slint::Delete, Named::Delete),
         (Slint::DownArrow, Named::Down),
+        (Slint::Return, Named::Enter),
         (Slint::Escape, Named::Escape),
         (Slint::LeftArrow, Named::Left),
         (Slint::RightArrow, Named::Right),

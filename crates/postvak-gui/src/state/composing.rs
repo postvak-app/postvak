@@ -4,13 +4,13 @@ use postvak_core::daemon::client::LazyClient;
 use postvak_core::message::header_value;
 use postvak_core::send::check::DEFAULT_SIZE_LIMIT;
 use postvak_core::send::compose::{Prefilled, Queued, SendKind, SendRequest};
-use postvak_core::send::drafts::SavedDraft;
+use postvak_core::send::drafts::{OpenedDraft, SavedDraft};
 use postvak_core::send::mailto::Mailto;
 use postvak_core::send::reply::{ForwardAs, ReplyTo};
 
 use super::*;
 use crate::compose::{
-    COMPLETIONS, ComposeDraft, ComposeKind, Field, complete, load_recoveries, merge_known,
+    COMPLETIONS, ComposeDraft, Field, complete, files_dir, load_recoveries, merge_known,
     recovery_dir, remove_recovery, save_recovery, typed_part,
 };
 
@@ -186,6 +186,33 @@ pub(crate) fn save_draft(
     }
 }
 
+/// A draft read for a composer, and where the message it answers is stored, when it is.
+pub(crate) type ReadDraft = (OpenedDraft, Option<(String, u32)>);
+/// A draft being read on a worker: its Message-ID without brackets, its account, and the answer.
+pub(crate) type OpeningDraft = (String, String, Receiver<Result<ReadDraft, String>>);
+
+/// Reads draft `raw` of `account`, finding the message it answers by Message-ID in the account's store, its raw bytes
+/// from there or fetched through the daemon.
+pub(crate) fn read_draft(paths: &Paths, account: &str, raw: &[u8]) -> Result<ReadDraft, String> {
+    let store = Store::open_account(paths, account).map_err(|e| e.to_string())?;
+    let client = LazyClient::new(paths);
+    let lookup = |id: &str| store.latest_by_message_id(id).ok().flatten();
+    let find = |id: &str| match client.raw_message(account, &store, &lookup(id)?) {
+        Ok(raw) => Some(raw),
+        Err(e) => {
+            log::warn!("[{account}] could not read the message a draft answers: {e:#}");
+            None
+        }
+    };
+    let opened = postvak_core::send::drafts::read(raw, find).map_err(|e| error_text(&e))?;
+    let answered = (opened.original.as_ref())
+        .or(opened.shown_original.as_ref())
+        .and_then(|raw| postvak_core::message::parse_headers(raw).message_id)
+        .and_then(|id| lookup(&id))
+        .map(|message| (message.folder, message.uid));
+    Ok((opened, answered))
+}
+
 /// Builds, checks and queues `request` as `postvak send` does; the window never opens an editor.
 pub(crate) fn queue_send(
     paths: &Paths,
@@ -299,10 +326,10 @@ impl App {
         let mut kept: u64 = 0;
         for mut composer in load_recoveries(&recovery_dir(&self.paths)) {
             self.next_compose = self.next_compose.max(composer.id + 1);
-            if composer.kind != ComposeKind::New && !self.original_stored(&composer) {
+            if composer.original.is_some() && !self.original_stored(&composer) {
                 composer.without_original();
             }
-            if composer.kind != ComposeKind::New && self.composer.is_some() {
+            if composer.original.is_some() && self.composer.is_some() {
                 // shortcut: a second reply or forward waits on disk for a later start, as the pane holds one, and the
                 // notice says so; open it once the pane is free if that turns out to happen.
                 kept += 1;
@@ -323,14 +350,15 @@ impl App {
         }
     }
 
-    /// Puts `composer` back: a reply or forward in the reader pane over its original, which the reader opens; new mail,
-    /// or one whose original is gone from the store, in a window as new mail.
+    /// Puts `composer` back: one over a message, a reply or forward or a draft answering it, in the reader pane over
+    /// that message, which the reader opens; new mail, or one whose original is gone from the store, in a window as
+    /// new mail.
     fn place_composer(&mut self, mut composer: Composer) {
-        if composer.kind != ComposeKind::New && !self.original_stored(&composer) {
+        if composer.original.is_some() && !self.original_stored(&composer) {
             composer.without_original();
         }
         let target = match &composer.original {
-            Some(original) if composer.kind != ComposeKind::New => {
+            Some(original) => {
                 self.open_message(postvak_core::notify::Open {
                     account: Some(composer.account.clone()),
                     folder: original.folder.clone(),
@@ -673,6 +701,96 @@ impl App {
             self.compose_save_draft(target, then);
         } else if let Some(then) = then {
             self.apply_action(then);
+        }
+    }
+
+    /// Opens the shown draft in a composer, read on a worker; one open already comes to the front. A draft not
+    /// downloaded yet opens once it is.
+    pub(super) fn edit_compose_draft(&mut self) {
+        let Some(body) = &self.body else { return };
+        if !self.is_drafts(body.account, &body.key.0) {
+            return;
+        }
+        let unbracketed = |id: &str| {
+            id.trim()
+                .trim_start_matches('<')
+                .trim_end_matches('>')
+                .to_string()
+        };
+        let message_id = (body.message.as_ref())
+            .and_then(|m| m.message_id.as_deref())
+            .map(unbracketed)
+            .unwrap_or_default();
+        let open = (self.composer.iter().map(|c| (ComposeTarget::Pane, c)))
+            .chain(
+                self.new_mail
+                    .iter()
+                    .map(|c| (ComposeTarget::Window(c.id), c)),
+            )
+            .find(|(_, c)| {
+                !message_id.is_empty()
+                    && c.draft
+                        .as_ref()
+                        .is_some_and(|d| unbracketed(&d.message_id) == message_id)
+            });
+        if let Some((target, _)) = open {
+            if let ComposeTarget::Window(id) = target {
+                self.raise_compose = Some(id);
+            }
+            return;
+        }
+        if (self.compose_opening.as_ref()).is_some_and(|(opening, ..)| *opening == message_id) {
+            return;
+        }
+        let Some(raw) = self.shown_raw() else {
+            if self.shown_on_demand() {
+                self.download_whole(UiAction::EditComposeDraft);
+            } else if let Some(body) = &mut self.body {
+                body.after_download = Some(UiAction::EditComposeDraft);
+            }
+            return;
+        };
+        let account = self.accounts[body.account].name.clone();
+        let (paths, name) = (self.paths.clone(), account.clone());
+        let answer = worker::oneshot("compose-draft-open", self.wake.clone(), move || {
+            read_draft(&paths, &name, &raw)
+        });
+        self.compose_opening = Some((message_id, account, answer));
+    }
+
+    /// Opens the draft read on the worker: over the message it answers in the reader pane, else in a window.
+    fn receive_opened_draft(&mut self) {
+        let Some((_, _, answer)) = &self.compose_opening else {
+            return;
+        };
+        let Some(result) = worker::poll(answer) else {
+            return;
+        };
+        let Some((_, account, _)) = self.compose_opening.take() else {
+            return;
+        };
+        let (opened, answered) = match result.unwrap_or_else(|Stopped| Err(STOPPED.into())) {
+            Ok(read) => read,
+            Err(why) => return self.note_error(None, format!("could not open the draft: {why}")),
+        };
+        let identities: Vec<(String, Identity)> = (self.accounts.iter())
+            .filter_map(|a| Some((a.name.clone(), a.identity.clone()?)))
+            .collect();
+        let id = self.next_compose;
+        self.next_compose += 1;
+        let files = files_dir(&recovery_dir(&self.paths), id);
+        match Composer::from_draft(id, &account, &identities, opened, answered, &files) {
+            Ok(mut composer) => {
+                // The pane holds one composer; one started while the draft was read keeps it.
+                if self.composer.is_some() {
+                    composer.without_original();
+                }
+                self.place_composer(composer);
+            }
+            Err(e) => {
+                remove_recovery(&recovery_dir(&self.paths), id);
+                self.note_error(None, format!("could not open the draft: {e}"));
+            }
         }
     }
 
@@ -1074,10 +1192,11 @@ impl App {
             | UiAction::SearchAccepted
             | UiAction::StartSearch
             | UiAction::Reply(_)
-            | UiAction::Forward => true,
+            | UiAction::Forward
+            | UiAction::EditComposeDraft => true,
             UiAction::ReopenCompose(id) => (self.taken.iter().find(|taken| taken.id == *id))
                 .and_then(|taken| taken.composer.as_ref())
-                .is_some_and(|reopened| reopened.kind != ComposeKind::New),
+                .is_some_and(|reopened| reopened.original.is_some()),
             _ => false,
         }
     }
@@ -1107,6 +1226,7 @@ impl App {
 
     pub(super) fn receive_compose(&mut self, now: f64) {
         self.receive_prefill();
+        self.receive_opened_draft();
         self.receive_attach();
         self.receive_completion();
         self.receive_retries();
@@ -1199,6 +1319,8 @@ impl App {
             }
         };
         if still_open {
+            // shortcut: an opened draft's files go here, so Undo reopens it without them while its draft keeps them in
+            // Drafts; keep the files until the gesture closes if that loss turns out to bite.
             self.drop_composer(target);
         }
         if undo_secs == 0 {
@@ -3521,6 +3643,218 @@ mod tests {
             driver.apply(UiAction::NewMailFailed(id, "no display".into()));
             assert!(driver.app.new_mail.is_empty());
             assert_eq!(left(&fx)[0].subject, "Plans");
+        }
+    }
+
+    /// Opening a draft from Drafts in a composer, through the real store and `drafts::read`.
+    mod opening_drafts {
+        use super::*;
+        use crate::compose::{files_dir, recovery_dir};
+        use postvak_core::send::drafts;
+
+        const ORIGINAL: &[u8] = b"From: Linus Example <linus@x.org>\r\nTo: work@example.com\r\nSubject: Plans\r\nDate: Mon, 2 Nov 2026 10:00:00 +0000\r\nMessage-ID: <m1@x.org>\r\n\r\nShall we?\r\n";
+
+        /// Stores `raw` as `folder`/`uid` of work, downloaded.
+        fn stored(fx: &Fixture, folder: &str, uid: u32, raw: &[u8]) {
+            listed(fx, folder, uid, raw);
+            fx.store("work").set_raw(folder, uid, raw, "text").unwrap();
+        }
+
+        /// Stores the headers of `raw` as `folder`/`uid` of work, its body not downloaded.
+        fn listed(fx: &Fixture, folder: &str, uid: u32, raw: &[u8]) {
+            let parsed = postvak_core::message::parse_headers(raw);
+            let mut m = message(folder, uid, parsed.subject.as_deref().unwrap_or_default());
+            m.message_id = parsed.message_id;
+            m.from_addr = parsed.from;
+            m.headers = raw.to_vec();
+            m.body_text = None;
+            fx.add("work", m);
+        }
+
+        fn request(kind: SendKind, text: &str, original: Option<&[u8]>) -> SendRequest {
+            SendRequest {
+                account: Some("work".into()),
+                kind,
+                body: Body::Given(text.into()),
+                from: None,
+                attachments: Vec::new(),
+                now: false,
+                save_sent: None,
+                original: original.map(<[u8]>::to_vec),
+                headers: None,
+                forward_parts: None,
+                draft: Vec::new(),
+            }
+        }
+
+        /// A draft Postvak saved for `request`, as it is on the server.
+        fn built(fx: &Fixture, request: &SendRequest) -> Vec<u8> {
+            let config = Config::load(&fx.paths.config_file()).unwrap();
+            drafts::build(&config, &fx.paths, &LazyClient::new(&fx.paths), request).unwrap()
+        }
+
+        fn new_mail_draft(fx: &Fixture) -> Vec<u8> {
+            let kind = SendKind::New {
+                to: vec!["ann@x.org".into()],
+                cc: Vec::new(),
+                bcc: Vec::new(),
+                subject: "Lunch".into(),
+            };
+            built(fx, &request(kind, "Noon?", None))
+        }
+
+        /// work with ORIGINAL in INBOX and a Drafts folder holding `draft` as uid 5; the window shows Drafts.
+        fn in_drafts(draft: impl FnOnce(&Fixture) -> Vec<u8>) -> (Driver, Fixture) {
+            in_drafts_as(draft, true)
+        }
+
+        /// As `in_drafts`, with the draft's raw bytes not downloaded yet unless `downloaded`.
+        fn in_drafts_as(
+            draft: impl FnOnce(&Fixture) -> Vec<u8>,
+            downloaded: bool,
+        ) -> (Driver, Fixture) {
+            let fx = Fixture::new(&["work"]);
+            fx.folder("work", "Drafts", Some("Drafts"));
+            stored(&fx, "INBOX", 1, ORIGINAL);
+            let raw = draft(&fx);
+            listed(&fx, "Drafts", 5, &raw);
+            if downloaded {
+                fx.store("work").set_raw("Drafts", 5, &raw, "text").unwrap();
+            }
+            let (mut driver, _wires) = fx.driver();
+            driver.apply(UiAction::SelectView(View::Folder {
+                account: 0,
+                folder: "Drafts".into(),
+            }));
+            assert!(driver.app.body_follows_cursor());
+            (driver, fx)
+        }
+
+        fn opened(app: &App) -> bool {
+            app.compose_opening.is_none() && (app.composer.is_some() || !app.new_mail.is_empty())
+        }
+
+        fn edit(driver: &mut Driver) {
+            driver.apply(UiAction::EditComposeDraft);
+            driver.tick_until(opened);
+        }
+
+        #[test]
+        fn editing_a_reply_draft_opens_it_over_its_original() {
+            let reply = SendKind::Reply {
+                folder: "INBOX".into(),
+                uid: 1,
+                to: ReplyTo::Sender,
+            };
+            let (mut driver, _fx) =
+                in_drafts(|fx| built(fx, &request(reply, "Sure.", Some(ORIGINAL))));
+            edit(&mut driver);
+            let composer = driver.app.composer.as_ref().unwrap();
+            assert_eq!(composer.kind, ComposeKind::Reply(ReplyTo::Sender));
+            assert_eq!(composer.text, "Sure.");
+            assert_eq!(composer.subject, "Re: Plans");
+            let original = composer.original.as_ref().unwrap();
+            assert_eq!((original.folder.as_str(), original.uid), ("INBOX", 1));
+            assert_eq!(original.raw, ORIGINAL);
+            assert!(composer.draft.as_ref().unwrap().message_id.starts_with('<'));
+            assert!(driver.app.new_mail.is_empty());
+            assert_eq!(
+                driver.app.body.as_ref().map(|b| b.key.clone()),
+                Some(("INBOX".into(), 1))
+            );
+            assert!(!composer.changed());
+        }
+
+        #[test]
+        fn editing_a_new_mail_draft_opens_a_window() {
+            let (mut driver, _fx) = in_drafts(new_mail_draft);
+            edit(&mut driver);
+            assert!(driver.app.composer.is_none());
+            let window = &driver.app.new_mail[0];
+            assert_eq!(window.kind, ComposeKind::New);
+            assert_eq!(
+                (window.to.as_str(), window.subject.as_str()),
+                ("ann@x.org", "Lunch")
+            );
+            assert_eq!(window.text, "Noon?");
+            assert!(window.draft.is_some());
+        }
+
+        #[test]
+        fn a_foreign_reply_draft_opens_as_new_mail_over_the_message_it_answers() {
+            let (mut driver, fx) = in_drafts(|_| {
+                b"From: work@example.com\r\nTo: linus@x.org\r\nSubject: Re: Plans\r\nMessage-ID: <f1@other>\r\nIn-Reply-To: <m1@x.org>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nYes\r\n> Shall we?\r\n--b\r\nContent-Type: text/plain\r\nContent-Disposition: attachment; filename=\"../map.txt\"\r\n\r\nnorth\r\n--b--\r\n".to_vec()
+            });
+            edit(&mut driver);
+            let composer = driver.app.composer.as_ref().unwrap();
+            assert_eq!(composer.kind, ComposeKind::New);
+            assert_eq!(composer.text, "Yes\n> Shall we?");
+            assert_eq!(composer.in_reply_to.as_deref(), Some("<m1@x.org>"));
+            let original = composer.original.as_ref().unwrap();
+            assert_eq!((original.folder.as_str(), original.uid), ("INBOX", 1));
+            assert!(original.raw.is_empty(), "shown, never quoted");
+            let dir = files_dir(&recovery_dir(&fx.paths), composer.id);
+            assert_eq!(composer.files, [(dir.join("map.txt"), 5)]);
+            assert_eq!(composer.request().original, None);
+        }
+
+        #[test]
+        fn enter_on_a_draft_row_edits_it() {
+            let (mut driver, _fx) = in_drafts(new_mail_draft);
+            driver.app.focus = Focus::List;
+            driver.press("enter");
+            driver.tick_until(opened);
+            assert_eq!(driver.app.new_mail.len(), 1);
+        }
+
+        #[test]
+        fn enter_outside_drafts_opens_nothing() {
+            let (mut driver, _fx) = in_drafts(new_mail_draft);
+            driver.apply(UiAction::SelectView(View::Folder {
+                account: 0,
+                folder: "INBOX".into(),
+            }));
+            driver.press("enter");
+            driver.tick();
+            assert!(driver.app.compose_opening.is_none());
+            assert!(driver.app.new_mail.is_empty() && driver.app.composer.is_none());
+        }
+
+        #[test]
+        fn opening_a_draft_twice_shows_the_open_composer() {
+            let (mut driver, _fx) = in_drafts(new_mail_draft);
+            edit(&mut driver);
+            let id = driver.app.new_mail[0].id;
+            driver.apply(UiAction::EditComposeDraft);
+            driver.tick();
+            assert!(driver.app.compose_opening.is_none());
+            assert_eq!(driver.app.new_mail.len(), 1);
+            assert_eq!(driver.app.raise_compose, Some(id));
+        }
+
+        #[test]
+        fn a_draft_not_downloaded_opens_once_it_is() {
+            let mut raw = Vec::new();
+            let (mut driver, fx) = in_drafts_as(
+                |fx| {
+                    raw = new_mail_draft(fx);
+                    raw.clone()
+                },
+                false,
+            );
+            assert!(
+                driver
+                    .app
+                    .body
+                    .as_ref()
+                    .is_some_and(|b| b.message.is_some())
+            );
+            driver.apply(UiAction::EditComposeDraft);
+            assert!(driver.app.compose_opening.is_none() && driver.app.new_mail.is_empty());
+            fx.store("work").set_raw("Drafts", 5, &raw, "text").unwrap();
+            driver.app.reload_body(0, ("Drafts".into(), 5), 0.0);
+            driver.tick_until(opened);
+            assert_eq!(driver.app.new_mail.len(), 1);
         }
     }
 

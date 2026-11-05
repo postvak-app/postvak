@@ -615,6 +615,8 @@ pub(crate) enum UiAction {
     ComposeDiscard(ComposeTarget),
     /// Put the composer of sent gesture `id`, taken back from the outbox, in the reader pane again.
     ReopenCompose(u64),
+    /// Open the shown message, a draft in its account's Drafts, in a composer.
+    EditComposeDraft,
     /// List what waits in every account's outbox and what failed.
     OpenOutbox,
     /// Send failed outbox message `id` of account `index` again.
@@ -901,6 +903,10 @@ pub struct App {
         u64,
         Receiver<Result<postvak_core::send::compose::Prefilled, String>>,
     )>,
+    /// The draft being read on a worker for a composer: its Message-ID, its account, and the answer.
+    pub(crate) compose_opening: Option<composing::OpeningDraft>,
+    /// The new-mail window to bring to the front, by its composer's id, until the window does.
+    pub(crate) raise_compose: Option<u64>,
     pub(crate) compose_sending: Vec<composing::Sending>,
     /// Composers being saved to Drafts, oldest first; one at a time per composer.
     pub(crate) compose_saves: Vec<composing::ComposeSave>,
@@ -1107,6 +1113,8 @@ impl App {
             recovery_written: Vec::new(),
             recovery_due: 0.0,
             compose_prefill: None,
+            compose_opening: None,
+            raise_compose: None,
             compose_sending: Vec::new(),
             compose_saves: Vec::new(),
             compose_deleting: Vec::new(),
@@ -2136,6 +2144,10 @@ impl App {
             UiAction::LeaveComposeDiscard(target) => self.leave_discard(target),
             UiAction::LeaveComposeSave(target) => self.leave_save(target),
             UiAction::ReopenCompose(id) => self.reopen_compose(id),
+            action @ UiAction::EditComposeDraft if !self.body_follows_cursor() => {
+                self.after_body = Some(action);
+            }
+            UiAction::EditComposeDraft => self.edit_compose_draft(),
             UiAction::OpenOutbox => self.outbox_open = true,
             UiAction::RetrySend(account, id) => self.retry_outbox(account, id),
             UiAction::SendNow => self.send_now(),
@@ -2420,6 +2432,22 @@ impl App {
     /// Whether the shown folder is a Junk folder, where the junk action means not junk.
     pub(crate) fn shows_junk(&self) -> bool {
         matches!(&self.view, View::Folder { account, folder } if self.is_junk(*account, folder))
+    }
+
+    /// Whether `folder` is the account's Drafts: the one marked `\Drafts`, else one named `Drafts`, as core's
+    /// `drafts_folder` picks it.
+    pub(crate) fn is_drafts(&self, account: usize, folder: &str) -> bool {
+        let folders = &self.accounts[account].folders;
+        match folders
+            .iter()
+            .find(|f| f.special_use.as_deref() == Some("Drafts"))
+        {
+            Some(marked) => marked.name == folder,
+            None => {
+                postvak_core::folder_name::same(folder, "Drafts")
+                    && folders.iter().any(|f| f.name == folder)
+            }
+        }
     }
 
     fn has_role(&self, account: usize, folder: &str, role: &str) -> bool {

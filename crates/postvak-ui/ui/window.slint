@@ -278,6 +278,7 @@ export component MailWindow inherits Window {
     callback reply-all();
     callback reply-list();
     callback forward();
+    callback edit-draft();
     callback review-proposals();
     callback edit-shown-rule();
     callback move-back();
@@ -702,6 +703,7 @@ export component MailWindow inherits Window {
                         reply-all => { root.reply-all(); }
                         reply-list => { root.reply-list(); }
                         forward => { root.forward(); }
+                        edit-draft => { root.edit-draft(); }
                         edit-shown-rule => { root.edit-shown-rule(); }
                         move-back => { root.move-back(); }
                         toggle-provenance => { root.toggle-provenance(); }

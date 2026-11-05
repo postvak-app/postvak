@@ -98,6 +98,8 @@ export struct BodyInfo {
     reply-all: bool,
     // The message came through a mailing list that takes posts: Reply to list shows.
     reply-list: bool,
+    // The message is in its account's Drafts: Edit draft shows.
+    edit-draft: bool,
     provenance: ProvenanceData,
     links: [string],
 }
@@ -482,12 +484,24 @@ component ReplyAndMore inherits HorizontalLayout {
     callback reply-all();
     callback reply-list();
     callback forward();
+    callback edit-draft();
     callback toggle-html();
     callback toggle-original-colours();
     callback unsubscribe();
     callback save-eml();
     callback open-source();
     spacing: Theme.pad;
+    if root.info.edit-draft: VerticalLayout {
+        alignment: center;
+        TextButton {
+            text: "Edit draft";
+            hint: "Edit draft · Enter";
+            framed: true;
+            compact: true;
+            palette: Theme.pane;
+            clicked => { root.edit-draft(); }
+        }
+    }
     if root.info.reply: VerticalLayout {
         alignment: center;
         TextButton {
@@ -608,6 +622,7 @@ export component BodyPane inherits Rectangle {
     callback reply-all();
     callback reply-list();
     callback forward();
+    callback edit-draft();
     // The provenance strip: open the rule that acted, move the message back, list every action, show Why?.
     callback edit-shown-rule();
     callback move-back();
@@ -684,7 +699,7 @@ export component BodyPane inherits Rectangle {
     // glyphs, padding and the rest added.
     property <bool> roomy: root.width - 2 * root.margin >= labels.preferred-width + 4 * (Theme.icon + Theme.pad * 15 / 4) + 2 * (Theme.icon + 3 * Theme.pad) + 21 * Theme.pad + root.unsubscribe-room;
     // The Unsubscribe button's width, while it shows.
-    property <length> unsubscribe-room: root.info.unsubscribe ? 14 * Theme.pad : 0px;
+    property <length> unsubscribe-room: (root.info.unsubscribe ? 14 * Theme.pad : 0px) + (root.info.edit-draft ? 13 * Theme.pad : 0px);
     // Room for Reply and More beside the unlabelled actions.
     property <bool> fits: root.width - 2 * root.margin >= 6 * (Theme.icon + 3 * Theme.pad) + 21 * Theme.pad + root.unsubscribe-room;
     labels := Text {
@@ -736,6 +751,7 @@ export component BodyPane inherits Rectangle {
                     reply-all => { root.reply-all(); }
                     reply-list => { root.reply-list(); }
                     forward => { root.forward(); }
+                    edit-draft => { root.edit-draft(); }
                     toggle-html => { root.toggle-html(); }
                     toggle-original-colours => { root.toggle-original-colours(); }
                     unsubscribe => { root.unsubscribe(); }
@@ -754,6 +770,7 @@ export component BodyPane inherits Rectangle {
                 reply-all => { root.reply-all(); }
                 reply-list => { root.reply-list(); }
                 forward => { root.forward(); }
+                edit-draft => { root.edit-draft(); }
                 toggle-html => { root.toggle-html(); }
                 toggle-original-colours => { root.toggle-original-colours(); }
                 unsubscribe => { root.unsubscribe(); }

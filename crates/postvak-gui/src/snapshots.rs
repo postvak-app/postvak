@@ -246,6 +246,32 @@ fn reader_attachments() {
     snapshot(&open, "gui_reader_attachments");
 }
 
+/// A draft open in work's Drafts, where the reader offers Edit draft.
+#[test]
+fn reader_draft_edit_button() {
+    let fx = Fixture::mailbox("light");
+    fx.folder("work", "Drafts", Some("Drafts"));
+    let mut draft = mail(
+        98,
+        "Robin Example <robin@example.com>",
+        "Lunch on Friday?",
+        "\\Seen \\Draft",
+        "Noon at the usual place?",
+    );
+    draft.folder = "Drafts".into();
+    draft.to_addr = Some("Ann <ann@example.org>".into());
+    fx.add("work", draft);
+    let (open, _wires) = open(&fx);
+    open.with(|live| {
+        live.app.select_view(View::Folder {
+            account: 1,
+            folder: "Drafts".into(),
+        })
+    });
+    open.tick_until(|open| open.window().get_body_info().edit_draft);
+    snapshot(&open, "gui_reader_draft_edit_button");
+}
+
 /// A message the rule `travel` moved from INBOX to Travel, open in Travel, with the rule in rules.toml.
 fn filed(theme: &str) -> (Fixture, Open, Wires) {
     let fx = Fixture::mailbox(theme);
