@@ -4781,6 +4781,41 @@ fn mail_indexed_before_part_types_gets_its_structure_alone_a_day_after() {
 }
 
 #[test]
+fn a_slice_fetches_the_text_of_a_folders_messages_in_one_command() {
+    let mut ops = RecordingOps::default().with_folder("INBOX", None);
+    for uid in 1..=3 {
+        let id = format!("m{uid}@x");
+        let raw = format!("From: alice@x\r\n\r\nbody {uid}");
+        ops.add_mail(
+            "INBOX",
+            uid,
+            i64::from(uid) * H,
+            &headers("alice@x", "s", &id),
+            Some(&raw),
+        );
+    }
+    let store = Store::open_in_memory().unwrap();
+    sync_all(&mut ops, &store).unwrap();
+    let (tx, _rx) = std::sync::mpsc::channel();
+    index::slice(&mut ops, &store, &account(), &tx, &mut None, &mut || {
+        Duration::ZERO
+    })
+    .unwrap();
+    let fetches: Vec<&String> = ops
+        .calls
+        .iter()
+        .filter(|c| c.starts_with("fetch_structures") || c.starts_with("fetch_part"))
+        .collect();
+    assert_eq!(
+        fetches,
+        ["fetch_structures INBOX 3,2,1", "fetch_parts INBOX 3,2,1 "]
+    );
+    for uid in 1..=3 {
+        assert_eq!(body_of(&store, "INBOX", uid), Some(format!("body {uid}")));
+    }
+}
+
+#[test]
 fn a_queued_command_ends_the_slice_after_one_message() {
     let (mut ops, store) = indexable();
     let (tx, _rx) = std::sync::mpsc::channel();
