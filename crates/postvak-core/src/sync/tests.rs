@@ -5829,11 +5829,13 @@ fn delete_permanent_backs_up_every_message_first() {
     let backups = trash.list().unwrap();
     assert_eq!(backups.len(), 2);
     assert!(backups.iter().all(|b| b.folder == "Old"));
-    let last_fetch = ops
+    let fetches: Vec<&String> = ops
         .calls
         .iter()
-        .rposition(|c| c.starts_with("fetch_raw Old"));
-    assert!(last_fetch.unwrap() < called(&ops, "delete_folder Old").unwrap());
+        .filter(|c| c.starts_with("fetch_raw"))
+        .collect();
+    assert_eq!(fetches, ["fetch_raws Old 1,2"], "one command for both");
+    assert!(called(&ops, "fetch_raws Old").unwrap() < called(&ops, "delete_folder Old").unwrap());
     assert!(!ops.mail.contains_key("Old"));
     assert!(store.folder("Old").unwrap().is_none());
 }

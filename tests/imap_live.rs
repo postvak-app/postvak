@@ -151,6 +151,22 @@ fn append_fetch_and_flags_round_trip() {
 }
 
 #[test]
+fn fetch_raws_answers_every_message_in_one_command() {
+    let Some(host) = host() else { return };
+    let mut ops = connect(&account(&host, PORT, "raws"));
+    for text in ["one", "two", "three"] {
+        ops.append("INBOX", &mail(text), &[]).unwrap();
+    }
+    ops.select("INBOX").unwrap();
+    let uids: Vec<u32> = all_envelopes(&mut ops).iter().map(|e| e.uid).collect();
+    let mut asked = uids.clone();
+    asked.push(uids[2] + 100);
+    let found = ops.fetch_raws(&asked).unwrap();
+    assert_eq!(found.len(), 3, "a uid the folder lacks is left out");
+    assert_eq!(found[&uids[1]], mail("two"));
+}
+
+#[test]
 fn fetch_parts_answers_one_section_of_every_message_in_one_command() {
     let Some(host) = host() else { return };
     let mut ops = connect(&account(&host, PORT, "parts"));
