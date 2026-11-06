@@ -998,6 +998,26 @@ impl MailOps for ImapOps {
         })
     }
 
+    fn fetch_parts(&mut self, uids: &[u32], section: &str) -> MailResult<HashMap<u32, Vec<u8>>> {
+        if uids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let (item, path) = section_fetch(section)?;
+        self.run(self.batch_timeout(uids), async |session| {
+            let fetches: Vec<Fetch> = session
+                .uid_fetch(uid_set(uids), format!("(UID {item})"))
+                .await
+                .map_err(proto)?
+                .try_collect()
+                .await
+                .map_err(proto)?;
+            Ok(fetches
+                .iter()
+                .filter_map(|f| Some((f.uid?, f.section(&path)?.to_vec())))
+                .collect())
+        })
+    }
+
     fn add_flags(&mut self, uid: u32, flags: &[&str]) -> MailResult<()> {
         self.add_flags_to(&[uid], flags)
     }

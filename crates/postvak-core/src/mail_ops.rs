@@ -211,6 +211,17 @@ pub trait MailOps {
     fn fetch_structures(&mut self, uids: &[u32]) -> MailResult<HashMap<u32, Structure>>;
     /// The bytes of one section as sent, transfer encoding included; `None` when the server returns nothing for it.
     fn fetch_part(&mut self, uid: u32, section: &str) -> MailResult<Option<Vec<u8>>>;
+    /// `fetch_part` of the same section of several messages, in one command where the client can; a uid the server
+    /// sends nothing for is left out.
+    fn fetch_parts(&mut self, uids: &[u32], section: &str) -> MailResult<HashMap<u32, Vec<u8>>> {
+        let mut found = HashMap::new();
+        for &uid in uids {
+            if let Some(bytes) = self.fetch_part(uid, section)? {
+                found.insert(uid, bytes);
+            }
+        }
+        Ok(found)
+    }
     fn add_flags(&mut self, uid: u32, flags: &[&str]) -> MailResult<()>;
     fn remove_flags(&mut self, uid: u32, flags: &[&str]) -> MailResult<()>;
     fn expunge(&mut self, uid: u32) -> MailResult<()>;
@@ -732,6 +743,31 @@ mod recording {
                 }
             }
             Ok(found)
+        }
+
+        fn fetch_parts(
+            &mut self,
+            uids: &[u32],
+            section: &str,
+        ) -> MailResult<HashMap<u32, Vec<u8>>> {
+            let list: Vec<String> = uids.iter().map(u32::to_string).collect();
+            let record = format!("fetch_parts {} {} {section}", self.selected, list.join(","));
+            let before = self.calls.len();
+            let mut found = HashMap::new();
+            let mut failed = None;
+            for &uid in uids {
+                match self.fetch_part(uid, section) {
+                    Ok(Some(bytes)) => {
+                        found.insert(uid, bytes);
+                    }
+                    Ok(None) => {}
+                    // A server fails the whole command when it cannot produce one message's part.
+                    Err(e) => failed = Some(e),
+                }
+            }
+            self.calls.truncate(before);
+            self.calls.push(record);
+            failed.map_or(Ok(found), Err)
         }
 
         fn fetch_part(&mut self, uid: u32, section: &str) -> MailResult<Option<Vec<u8>>> {

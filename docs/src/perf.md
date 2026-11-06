@@ -17,6 +17,7 @@ How Postvak behaves as a mailbox grows, measured on generated mail. User stores 
 | `folder_list` | Reloading one account's INBOX list: the query plus the rows |
 | `all_inboxes` | Reloading All inboxes: every account's INBOX, merged |
 | `sync_event` | The frame that takes a sync event in All inboxes: how long it waits for the reload |
+| `view_change` | The frame that chooses All inboxes from an INBOX: how long it waits for the list |
 | `folder_counts` | One account's folders with their unread counts, read again on each of its sync events |
 | `search` | One word searched in All inboxes |
 | `search_keystroke` | The frame that takes a keystroke in the search field: how long it waits for the hits |
@@ -58,7 +59,7 @@ Release build of `main` at 783a0f2. Apple M1 Pro, 32 GB, macOS 27.0.1, Rust 1.99
 What this shows:
 
 - No phase grows faster than the mailbox; all of them scale about linearly.
-- A list reload runs `thread_summaries`, which groups every message in the folder, however few rows fit on screen. At 100k messages (about 17k per INBOX) All inboxes takes 33 ms, two frames at 60 Hz. A view change still waits for it; a reload after a sync event no longer does (below).
+- A list reload runs `thread_summaries`, which groups every message in the folder, however few rows fit on screen. At 100k messages (about 17k per INBOX) All inboxes takes 33 ms, two frames at 60 Hz. Neither a view change nor a reload after a sync event waits for it any more (below).
 - `open_window` grows with the mail too, so the window opens more slowly on big mailboxes. It includes the first list load and per-folder counts.
 - `sync_pass` includes the fake server's own work: `RecordingOps` scans each folder on every select. A real server's time is not in these numbers, and the fake's is.
 
@@ -73,7 +74,7 @@ Migration 011 rebuilds the FTS index once per store, the first time the store op
 | `search_close` | 12 (12–14) | |
 | `index_all` | 977 (918–1,117) | |
 
-`index_all` covers the first account's third of the mail, so about 3,400 messages a second go through the structure fetch, the text decode and the store; against a real server each message costs a round trip or two on top, which is what the five-second slices and the newest-first order are for. Rebuilding three stores that hold 100k header-only messages takes a quarter of a second, far under the five seconds the search design allows; stored bodies add to it in proportion to their text. `search` runs its last word as a prefix now (`invoice*`), which costs more than the exact word did, and this machine is not the baseline's M1, so the two `search` rows are not comparable. `search_close` searches `invioce`: the exact tier finds nothing, the vocabulary lookup and the close tier run, and the whole query still costs what an exact one does (the `search` row of the same run was 12 ms).
+`index_all` covers the first account's third of the mail, so about 3,400 messages a second go through the structure fetch, the text decode and the store; against a real server each run of up to 50 messages of one folder costs a round trip for their structures and one per text section they share, up to 4 MB each, which is what the five-second slices and the newest-first order are for. Fetching each message's text in a command of its own made that a round trip per message: indexing 200 messages from the local Dovecot took 8.4 s that way and 0.38 s now. Rebuilding three stores that hold 100k header-only messages takes a quarter of a second, far under the five seconds the search design allows; stored bodies add to it in proportion to their text. `search` runs its last word as a prefix now (`invoice*`), which costs more than the exact word did, and this machine is not the baseline's M1, so the two `search` rows are not comparable. `search_close` searches `invioce`: the exact tier finds nothing, the vocabulary lookup and the close tier run, and the whole query still costs what an exact one does (the `search` row of the same run was 12 ms).
 
 ## The rules pass
 
@@ -92,13 +93,14 @@ Release build, the same machine as the search table, 100k messages over three ac
 
 - **Connecting.** The accept loop slept 200 ms whenever no client was waiting, so every CLI command, MCP tool call and window start waited up to 200 ms before the daemon read its hello. A thread of its own now blocks in `accept` and hands each connection over at once; the loop still wakes every 200 ms for its stop, idle and file checks.
 - **Starting the daemon.** A front end that started the daemon slept 100 ms before each try to connect, though the daemon listens within a few milliseconds; a CLI command that had to start it took 104 ms, almost all of it that sleep. It now tries every 5 ms, and the same command takes 9 ms (Linux, release build without the GUI, median of 40 runs).
-- **Actions on many messages.** Archiving, moving, flagging or deleting chosen messages sent one IMAP command per message: 200 archived messages were 200 round trips. They now go as one `UID MOVE`, `UID STORE` or `UID EXPUNGE` per batch of up to 500 uids, written as ranges where they run (`1:3,7`). A delete downloads the messages it has no copy of, for their `.eml` backups, a batch of up to 100 messages or 16 MB per `UID FETCH`, before expunging them together; so does deleting a folder with its mail. Backing up 200 messages of 20 kB from the local Dovecot took 8.2 s one by one and 0.14 s in batches. Junk and not-junk, which also swap keywords, still run per message.
+- **Actions on many messages.** Archiving, moving, flagging or deleting chosen messages sent one IMAP command per message: 200 archived messages were 200 round trips. They now go as one `UID MOVE`, `UID STORE` or `UID EXPUNGE` per batch of up to 500 uids, written as ranges where they run (`1:3,7`). A delete downloads the messages it has no copy of, for their `.eml` backups, a batch of up to 100 messages or 16 MB per `UID FETCH`, before expunging them together; so does deleting a folder with its mail. Backing up 200 messages of 20 kB from the local Dovecot took 8.2 s one by one and 0.14 s in batches. Junk and not-junk swap their keywords the same way, one `UID STORE` for each keyword, then move together: junking 200 messages, half of them marked not-junk before, went from 500 commands to 3.
 - **The index backlog.** The indexer counts what is left before each slice, and kept doing so on every idle turn once all was indexed; the count read every row, behind each stored raw message. It now reads two partial indexes, `messages_unindexed` and `messages_retry` (migration 013), which are empty once indexing is done.
 - **Reading the backlog.** Each slice then read its candidates with one condition over both halves of the backlog, which no index serves: every row, sorted, for the newest 200, once per five-second slice for as long as a large store is being indexed. The two halves are now read apart, each from its partial index, which migration 014 orders as the indexer takes them (`internaldate DESC, uid DESC`), so a slice reads its candidates and no more. On 60k messages in SQLite directly, the read fell from 150 ms to 2 ms.
+- **Commands during indexing.** A slice checked only its five-second budget, so a command queued meanwhile, such as opening a message the store has no copy of, or an archive, waited up to five seconds for the slice to end. The slice now also ends once the account's thread is woken for a command or a stop, after the message it is on.
 
 ## Reloads after a sync event
 
-The window reloads the shown list whenever sync reports changes. That reload runs on a thread of its own with its own store connections; the frame waits for it at most 2 ms (`LIST_BUDGET` in `state/mod.rs`, a quarter of a 120 Hz frame), so a small mailbox's rows still show in the same frame, and a large one's show when the thread wakes the window. While a reload runs, the next waits for it and then starts once; the rows already loaded are rebuilt meanwhile only when edits changed, since rebuilding a large list costs milliseconds. A view change reads on the window thread, as before, and drops a reload still running; a keystroke in the search field does not (below).
+The window reloads the shown list whenever sync reports changes. That reload runs on a thread of its own with its own store connections; the frame waits for it at most 2 ms (`LIST_BUDGET` in `state/mod.rs`, a quarter of a 120 Hz frame), so a small mailbox's rows still show in the same frame, and a large one's show when the thread wakes the window. While a reload runs, the next waits for it and then starts once; the rows already loaded are rebuilt meanwhile only when edits changed, since rebuilding a large list costs milliseconds. A view change starts the same reload and drops one still running, since that one reads the view it leaves; a keystroke in the search field does not drop it (below). Until a view's first rows are in, its list shows no empty text, so a large folder never says "Inbox zero" while it loads.
 
 An archive, move or delete hides its rows at once and its `ActionDone` arrives after the daemon changed the store. A reload that started before then still holds the old rows, so the edit stays on the rows until a reload that started after it is applied.
 
@@ -118,6 +120,13 @@ The thread list reads the covering index `messages_folder_thread` (migration 009
 | `folder_counts` | 0.06 (0.06–0.22) | 0.17 (0.15–0.39) |
 
 The frame now waits the budget at most for the list, however large the mailbox, and the counts no longer grow with the read mail. `open_window`, which reads the counts too, went from 48 to 28 ms at 100k.
+
+A view change read the list on the window thread before, so choosing All inboxes waited what `all_inboxes` takes; `view_change` is what it waits now. Release build, 100k messages, the same run of each: Linux (CachyOS), median in ms with the range of five runs.
+
+| Phase | 100k |
+| --- | --- |
+| `all_inboxes` | 43 (43–48) |
+| `view_change` | 2.9 (2.8–3.0) |
 
 ## Typing a search
 

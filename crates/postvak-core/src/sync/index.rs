@@ -1,8 +1,11 @@
 //! Indexing message bodies for search in the account's idle time. A slice takes the newest messages the store has
 //! not indexed, fetches each one's structure and only its text parts, and stores the text and the attachment names,
 //! never the raw message. It fetches the structures of a run of messages of one folder in one command, and keeps the
-//! folder selected for the next slice. It stops after `SLICE_BUDGET`, so pushes and commands wait at most that long.
+//! folder selected for the next slice. It stops after `SLICE_BUDGET`, so pushes wait at most that long, or once a
+//! command is queued, so a command waits for one message.
 
+use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
@@ -24,6 +27,8 @@ pub(crate) const FALLBACK_RAW_LIMIT: u32 = 2 * 1024 * 1024;
 const SLICE_CANDIDATES: u32 = 200;
 /// Messages of one folder whose `BODYSTRUCTURE` is fetched in one command.
 const STRUCTURE_BATCH: usize = 50;
+/// The most text, by the sizes the structures give, that one command fetches of a section across messages.
+const PART_BATCH_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexOutcome {
@@ -53,13 +58,15 @@ impl Session {
         self.selected = None;
     }
 
-    /// Runs one slice when the store has a backlog, after checking the search index once.
+    /// Runs one slice when the store has a backlog, after checking the search index once. It ends early once `woken`
+    /// is set, so a queued command or a stop waits for one message rather than the whole budget.
     pub(crate) fn slice(
         &mut self,
         ops: &mut dyn MailOps,
         store: &Store,
         account: &AccountConfig,
         events: &Sender<Event>,
+        woken: &AtomicBool,
     ) -> Result<IndexOutcome, SyncError> {
         if self.broken {
             return Ok(IndexOutcome::Done);
@@ -83,7 +90,11 @@ impl Session {
         }
         let started = Instant::now();
         slice(ops, store, account, events, &mut self.selected, &mut || {
-            started.elapsed()
+            if woken.load(Ordering::Acquire) {
+                SLICE_BUDGET
+            } else {
+                started.elapsed()
+            }
         })
     }
 }
@@ -164,6 +175,10 @@ pub(crate) fn slice(
         } else {
             None
         };
+        let mut texts = match &structures {
+            Some(found) => prefetch_texts(ops, batch, found)?,
+            None => HashMap::new(),
+        };
         for (n, msg) in batch.iter().enumerate() {
             if n > 0 && elapsed() >= SLICE_BUDGET {
                 return finish(events, account, done);
@@ -176,7 +191,7 @@ pub(crate) fn slice(
                         .map(|mut found| found.remove(&msg.uid))
                         .map_err(ActionError::from),
                 };
-                structure.and_then(|structure| index_one(ops, msg, structure))
+                structure.and_then(|structure| index_one(ops, msg, structure, &mut texts))
             } else {
                 Err(ActionError::UnknownFolder(msg.folder.clone()))
             };
@@ -219,6 +234,7 @@ fn index_one(
     ops: &mut dyn MailOps,
     msg: &Message,
     structure: Option<Structure>,
+    texts: &mut Texts,
 ) -> Result<(Option<String>, Option<Structure>), ActionError> {
     if msg.indexed_at.is_some() && msg.body_text.is_some() {
         return Ok((None, structure));
@@ -234,11 +250,86 @@ fn index_one(
     };
     let mut parts = Vec::new();
     for part in wanted_parts(&structure) {
-        if let Some(bytes) = ops.fetch_part(msg.uid, &part.section)? {
+        let bytes = match texts.remove(&(msg.uid, part.section.clone())) {
+            Some(bytes) => Some(bytes),
+            None => ops.fetch_part(msg.uid, &part.section)?,
+        };
+        if let Some(bytes) = bytes {
             parts.push((part.clone(), bytes));
         }
     }
     Ok((Some(message::text_from_parts(&parts)), Some(structure)))
+}
+
+/// Text parts fetched ahead, by uid and section.
+type Texts = HashMap<(u32, String), Vec<u8>>;
+
+/// The text parts `index_one` will want of the messages in `batch`, fetched a section at a time across messages, up to
+/// `PART_BATCH_BYTES` a command. Best effort: what a failed command or a lone message leaves out, `index_one` fetches
+/// by itself, so one message the server cannot serve fails only itself.
+fn prefetch_texts(
+    ops: &mut dyn MailOps,
+    batch: &[Message],
+    structures: &HashMap<u32, Structure>,
+) -> Result<Texts, ActionError> {
+    let mut by_section: BTreeMap<&str, Vec<(u32, u32)>> = BTreeMap::new();
+    for msg in batch {
+        if msg.indexed_at.is_some() && msg.body_text.is_some() {
+            continue;
+        }
+        let Some(structure) = structures.get(&msg.uid) else {
+            continue;
+        };
+        for part in wanted_parts(structure) {
+            by_section
+                .entry(&part.section)
+                .or_default()
+                .push((msg.uid, part.octets));
+        }
+    }
+    let mut texts = Texts::new();
+    for (section, wanting) in by_section {
+        for uids in by_size(&wanting) {
+            if uids.len() < 2 {
+                continue;
+            }
+            match ops.fetch_parts(&uids, section) {
+                Ok(found) => texts.extend(
+                    found
+                        .into_iter()
+                        .map(|(uid, bytes)| ((uid, section.to_string()), bytes)),
+                ),
+                Err(e) => {
+                    let e = ActionError::from(e);
+                    if e.is_lost_connection() {
+                        return Err(e);
+                    }
+                    log::debug!("section {section} of {} messages failed: {e}", uids.len());
+                }
+            }
+        }
+    }
+    Ok(texts)
+}
+
+/// `(uid, octets)` in runs of at most `PART_BATCH_BYTES`, a larger part alone.
+fn by_size(parts: &[(u32, u32)]) -> Vec<Vec<u32>> {
+    let mut runs: Vec<Vec<u32>> = Vec::new();
+    let mut bytes = 0;
+    for &(uid, octets) in parts {
+        let octets = u64::from(octets);
+        match runs.last_mut() {
+            Some(run) if bytes + octets <= PART_BATCH_BYTES => {
+                run.push(uid);
+                bytes += octets;
+            }
+            _ => {
+                runs.push(vec![uid]);
+                bytes = octets;
+            }
+        }
+    }
+    runs
 }
 
 /// The parts worth fetching: every text part outside a `multipart/alternative`, and of each alternative its first
