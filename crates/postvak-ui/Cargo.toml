@@ -13,8 +13,15 @@ include = ["/assets/**", "/build.rs", "/LICENSE-*", "/src/**", "/ui/**"]
 [dependencies]
 slint.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+i-slint-common = { workspace = true, features = ["fontconfig-dlopen"] }  # as in postvak-gui: published alone, this crate would otherwise link fontconfig
+
 [build-dependencies]
 slint-build.workspace = true
+
+[package.metadata.cargo-machete]
+# only sets a feature of Slint's
+ignored = ["i-slint-common"]
 
 [lints]
 workspace = true
