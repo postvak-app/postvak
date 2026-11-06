@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0](https://github.com/postvak-app/postvak/compare/v0.15.0...v0.16.0) - 2026-11-06
+
+### Added
+
+- *(gui)* empty the Junk folder from its menu ([#536](https://github.com/postvak-app/postvak/pull/536))
+- *(gui)* Reply all leads in the reader when it reaches several people ([#542](https://github.com/postvak-app/postvak/pull/542))
+- *(gui)* Send now next to Undo in the sending toast ([#538](https://github.com/postvak-app/postvak/pull/538))
+- *(gui)* verified-sender seal and DMARC warning in the reader; logos only from trusted servers ([#539](https://github.com/postvak-app/postvak/pull/539))
+
+### Fixed
+
+- *(gui)* wrap the rule editor's action choices instead of scrolling the dialog sideways ([#540](https://github.com/postvak-app/postvak/pull/540))
+- *(gui)* draw padded inline badges in HTML mail as boxes ([#541](https://github.com/postvak-app/postvak/pull/541))
+- *(send)* reply to a note to self goes back to us ([#537](https://github.com/postvak-app/postvak/pull/537))
+- *(packaging)* a cask Homebrew accepts, and recommend it on macOS ([#533](https://github.com/postvak-app/postvak/pull/533))
+
+### Other
+
+- *(build)* dev builds keep line tables only ([#554](https://github.com/postvak-app/postvak/pull/554))
+- *(gui)* compile the Slint markup in a crate of its own ([#553](https://github.com/postvak-app/postvak/pull/553))
+- *(imap)* set TCP_NODELAY on the IMAP socket ([#552](https://github.com/postvak-app/postvak/pull/552))
+- *(actions)* fetch delete backups in batches ([#547](https://github.com/postvak-app/postvak/pull/547))
+- *(gui)* a view change loads its list off the window thread ([#551](https://github.com/postvak-app/postvak/pull/551))
+- *(sync)* the indexer fetches a folder's text parts in one command per section ([#550](https://github.com/postvak-app/postvak/pull/550))
+- *(actions)* junk and not-junk in one command per step ([#546](https://github.com/postvak-app/postvak/pull/546))
+- *(gui)* sender logos from the cache at once, four lookups side by side ([#549](https://github.com/postvak-app/postvak/pull/549))
+- *(sync)* a queued command ends the index slice after one message ([#543](https://github.com/postvak-app/postvak/pull/543))
+- wait for the first sync before seeding INBOX in compose fixtures ([#548](https://github.com/postvak-app/postvak/pull/548))
+- *(daemon)* connect to a daemon we started as soon as it listens ([#544](https://github.com/postvak-app/postvak/pull/544))
+- *(gui)* make retry_sends_a_failed_one_again deterministic ([#545](https://github.com/postvak-app/postvak/pull/545))
+- *(gui)* load remote content faster ([#534](https://github.com/postvak-app/postvak/pull/534))
+
 ## [0.15.0](https://github.com/postvak-app/postvak/compare/v0.14.0...v0.15.0) - 2026-11-04
 
 ### Added
