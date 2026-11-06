@@ -108,6 +108,25 @@ fn lists_the_hierarchy_delimiter() {
     );
 }
 
+/// With Nagle's algorithm on the socket, each command after the first waits for the server's delayed ACK, about 40 ms.
+#[test]
+fn single_commands_do_not_wait_for_a_delayed_ack() {
+    let Some(host) = host() else { return };
+    let mut ops = connect(&account(&host, PORT, "nodelay"));
+    ops.append("INBOX", &mail("hello"), &[]).unwrap();
+    ops.select("INBOX").unwrap();
+    let uid = all_envelopes(&mut ops)[0].uid;
+    let started = Instant::now();
+    for _ in 0..10 {
+        ops.add_flags(uid, &["\\Seen"]).unwrap();
+    }
+    assert!(
+        started.elapsed() < Duration::from_millis(200),
+        "10 commands took {:?}",
+        started.elapsed()
+    );
+}
+
 #[test]
 fn append_fetch_and_flags_round_trip() {
     let Some(host) = host() else { return };
