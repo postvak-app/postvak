@@ -719,7 +719,13 @@ fn dependency_rules_from_agents_md_hold() {
     let graph = Graph::from_metadata(&metadata);
     let violations = check_graph(
         &graph,
-        &["postvak", "postvak-core", "postvak-gui", "postvak-mcp"],
+        &[
+            "postvak",
+            "postvak-core",
+            "postvak-gui",
+            "postvak-mcp",
+            "postvak-ui",
+        ],
     );
     assert!(
         violations.is_empty(),

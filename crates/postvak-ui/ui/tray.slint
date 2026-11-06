@@ -5,7 +5,7 @@ export component Tray inherits SystemTrayIcon {
     callback sync();
     callback quit();
 
-    icon: @image-url("../../assets/icon.png");
+    icon: @image-url("../assets/icon.png");
     tooltip: root.hint;
     title: "Postvak";
     clicked => { root.open(); }

@@ -21,6 +21,7 @@ categories = ["command-line-utilities", "email"]
 postvak-core = { version = "=0.15.0", path = "crates/postvak-core" }  # sync, store, rules and the daemon: everything below the front ends
 postvak-gui = { version = "=0.15.0", path = "crates/postvak-gui" }    # the Slint window, behind the `gui` feature
 postvak-mcp = { version = "=0.15.0", path = "crates/postvak-mcp" }    # the MCP server, behind the `mcp` feature
+postvak-ui = { version = "=0.15.0", path = "crates/postvak-ui" }      # the window's Slint markup compiled to Rust, apart so a GUI edit does not compile it again
 
 anyhow = "1"                                         # error context in the binary and sync loop
 anyrender = "=0.14.0"                                # the drawing trait Blitz paints into; pinned to the version blitz-paint uses
