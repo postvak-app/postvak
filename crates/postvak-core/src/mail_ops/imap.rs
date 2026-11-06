@@ -943,6 +943,25 @@ impl MailOps for ImapOps {
         })
     }
 
+    fn fetch_raws(&mut self, uids: &[u32]) -> MailResult<HashMap<u32, Vec<u8>>> {
+        if uids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        self.run(self.bulk_timeout(), async |session| {
+            let fetches: Vec<Fetch> = session
+                .uid_fetch(uid_set(uids), "(UID BODY.PEEK[])")
+                .await
+                .map_err(proto)?
+                .try_collect()
+                .await
+                .map_err(proto)?;
+            Ok(fetches
+                .iter()
+                .filter_map(|f| Some((f.uid?, f.body()?.to_vec())))
+                .collect())
+        })
+    }
+
     fn fetch_structures(&mut self, uids: &[u32]) -> MailResult<HashMap<u32, Structure>> {
         if uids.is_empty() {
             return Ok(HashMap::new());
