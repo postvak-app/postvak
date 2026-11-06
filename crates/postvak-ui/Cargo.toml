@@ -1,0 +1,20 @@
+[package]
+name = "postvak-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Postvak's window markup, compiled from Slint into Rust"
+documentation.workspace = true
+repository.workspace = true
+homepage.workspace = true
+include = ["/assets/**", "/build.rs", "/LICENSE-*", "/src/**", "/ui/**"]
+
+[dependencies]
+slint.workspace = true
+
+[build-dependencies]
+slint-build.workspace = true
+
+[lints]
+workspace = true

@@ -4909,12 +4909,12 @@ dependencies = [
  "percent-encoding",
  "png",
  "postvak-core",
+ "postvak-ui",
  "proptest",
  "rusqlite",
  "serde",
  "serde_json",
  "slint",
- "slint-build",
  "stylo",
  "sys-locale",
  "tempfile",
@@ -4940,6 +4940,14 @@ dependencies = [
  "tempfile",
  "tokio",
  "unicode-normalization",
+]
+
+[[package]]
+name = "postvak-ui"
+version = "0.15.0"
+dependencies = [
+ "slint",
+ "slint-build",
 ]
 
 [[package]]

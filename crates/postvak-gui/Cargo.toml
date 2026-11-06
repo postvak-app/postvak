@@ -10,7 +10,7 @@ documentation.workspace = true
 repository.workspace = true
 homepage.workspace = true
 # Only what the build needs; the tests read fixtures outside this crate.
-include = ["/assets/**", "/build.rs", "/LICENSE-*", "/src/**"]
+include = ["/LICENSE-*", "/src/**"]
 
 [dependencies]
 anyhow.workspace = true
@@ -31,6 +31,7 @@ image.workspace = true
 log.workspace = true
 percent-encoding.workspace = true
 postvak-core.workspace = true
+postvak-ui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 slint.workspace = true
@@ -49,9 +50,6 @@ objc2-foundation.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 fontique = { workspace = true, features = ["fontconfig-dlopen"] }  # load fontconfig at runtime, as the window loads X11 and Wayland, instead of linking it
 i-slint-common = { workspace = true, features = ["fontconfig-dlopen"] }
-
-[build-dependencies]
-slint-build.workspace = true
 
 [dev-dependencies]
 i-slint-backend-testing.workspace = true

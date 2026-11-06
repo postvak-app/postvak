@@ -643,7 +643,7 @@ fn fonts() -> Option<FontContext> {
 fn load_fonts() -> FontContext {
     #[cfg(test)]
     {
-        let font = include_bytes!("../../assets/fonts/HankenGrotesk-Medium.ttf");
+        let font = include_bytes!("../../../postvak-ui/assets/fonts/HankenGrotesk-Medium.ttf");
         blitz_dom::build_single_font_ctx(font)
     }
     #[cfg(not(test))]
@@ -1052,7 +1052,7 @@ mod tests {
             shared: false,
             system_fonts: false,
         });
-        let data = include_bytes!("../../assets/fonts/HankenGrotesk-Medium.ttf");
+        let data = include_bytes!("../../../postvak-ui/assets/fonts/HankenGrotesk-Medium.ttf");
         let registered = collection.register_fonts(Blob::new(Arc::new(data.to_vec()) as _), None);
         let id = registered[0].0;
         let name = collection.family_name(id).unwrap().to_string();
@@ -1190,7 +1190,8 @@ mod tests {
         };
         assert!(FONTS.with_borrow(Option::is_some));
         // What a mail's `@font-face` registers goes into its document's copy, not the cached one.
-        let font = include_bytes!("../../assets/fonts/BricolageGrotesque-SemiBold.ttf");
+        let font =
+            include_bytes!("../../../postvak-ui/assets/fonts/BricolageGrotesque-SemiBold.ttf");
         first
             .collection
             .register_fonts(Blob::new(Arc::new(font.as_slice()) as _), None);
