@@ -449,8 +449,14 @@ pub fn save(
     let folder = drafts_folder(&store.folders()?).ok_or(SaveDraftError::NoDraftsFolder)?;
     let replaces: Vec<String> = replaces.iter().filter_map(|id| bracketed(id)).collect();
     let Some(raw) = raw else {
-        delete_drafts(ops, account, &folder, &replaces)?;
-        return Ok(SavedDraft::default());
+        let (left, lost) = delete_each(ops, account, &folder, &replaces);
+        return match lost {
+            Some(e) => Err(e.into()),
+            None => Ok(SavedDraft {
+                message_id: None,
+                left,
+            }),
+        };
     };
     ops.append(&folder, raw, &["\\Draft", "\\Seen"])?;
     let message_id = crate::message::parse_headers(raw)
@@ -460,18 +466,66 @@ pub fn save(
         "{account}: saved draft {} in {folder}",
         message_id.as_deref().unwrap_or("without a Message-ID")
     );
+    let (left, _) = delete_each(ops, account, &folder, &replaces);
+    Ok(SavedDraft { message_id, left })
+}
+
+/// Deletes each copy in `ids` from `folder`, going on past a failed one: the copies left, and the error that lost the
+/// connection, after which none more was tried.
+fn delete_each(
+    ops: &mut dyn MailOps,
+    account: &str,
+    folder: &str,
+    ids: &[String],
+) -> (Vec<String>, Option<MailError>) {
     let mut left = Vec::new();
-    for (index, replaced) in replaces.iter().enumerate() {
-        if let Err(e) = delete_drafts(ops, account, &folder, std::slice::from_ref(replaced)) {
-            log::warn!("{account}: draft {replaced} was not deleted from {folder}: {e}");
-            left.push(replaced.clone());
+    for (index, id) in ids.iter().enumerate() {
+        if let Err(e) = delete_drafts(ops, account, folder, std::slice::from_ref(id)) {
+            log::warn!("{account}: draft {id} was not deleted from {folder}: {e}");
+            left.push(id.clone());
             if e.is_lost_connection() {
-                left.extend(replaces[index + 1..].iter().cloned());
-                break;
+                left.extend(ids[index + 1..].iter().cloned());
+                return (left, Some(e));
             }
         }
     }
-    Ok(SavedDraft { message_id, left })
+    (left, None)
+}
+
+/// `raw` with its Message-ID header, folded lines included, replaced by `id`, or with `id` added first when it has none.
+pub fn with_message_id(raw: &[u8], id: &str) -> Vec<u8> {
+    let newline: &[u8] = if raw.windows(2).any(|pair| pair == b"\r\n") {
+        b"\r\n"
+    } else {
+        b"\n"
+    };
+    let header = [format!("Message-ID: {id}").as_bytes(), newline].concat();
+    let mut out = Vec::with_capacity(raw.len() + header.len());
+    let (mut replaced, mut skipping) = (false, false);
+    let mut rest = raw;
+    while let Some(end) = rest.iter().position(|&b| b == b'\n') {
+        let (line, after) = rest.split_at(end + 1);
+        if line.iter().all(|b| matches!(b, b'\r' | b'\n')) {
+            break;
+        }
+        let folded = matches!(line.first(), Some(b' ' | b'\t'));
+        if !(folded && skipping) {
+            skipping =
+                !folded && line.len() >= 11 && line[..11].eq_ignore_ascii_case(b"message-id:");
+            if !skipping {
+                out.extend_from_slice(line);
+            } else if !replaced {
+                out.extend_from_slice(&header);
+                replaced = true;
+            }
+        }
+        rest = after;
+    }
+    if !replaced {
+        out.splice(0..0, header);
+    }
+    out.extend_from_slice(rest);
+    out
 }
 
 /// `<id>`, or None for a blank one. `SEARCH HEADER` matches a substring, so only the brackets keep `<d1@x>` from
@@ -1073,6 +1127,20 @@ mod tests {
     }
 
     #[test]
+    fn with_message_id_replaces_the_header_and_keeps_the_rest() {
+        let raw =
+            b"From: a@x\r\nmessage-id:\r\n <old@x>\r\nSubject: s\r\n\r\nMessage-ID: <body@x>\r\n";
+        assert_eq!(
+            with_message_id(raw, "<new@x>"),
+            b"From: a@x\r\nMessage-ID: <new@x>\r\nSubject: s\r\n\r\nMessage-ID: <body@x>\r\n"
+        );
+        assert_eq!(
+            with_message_id(b"Subject: s\n\nbody\n", "<new@x>"),
+            b"Message-ID: <new@x>\nSubject: s\n\nbody\n"
+        );
+    }
+
+    #[test]
     fn drafts_folder_prefers_special_use_then_the_name() {
         let folders = [folder("Drafts", None), folder("Concepten", Some("Drafts"))];
         assert_eq!(drafts_folder(&folders).as_deref(), Some("Concepten"));
@@ -1233,9 +1301,21 @@ mod tests {
         }
 
         #[test]
-        fn a_failed_delete_only_is_an_error() {
+        fn a_failed_delete_only_tries_every_copy_and_reports_what_is_left() {
             let (mut ops, store) = with_drafts();
+            let older = "Message-ID: <d0@x>\r\n\r\n";
+            ops.add_mail("Drafts", 2, 0, older, Some(older));
             ops.fail_next_expunge = Some(MailError::Protocol("NO expunge refused".into()));
+            let replaces = ["<d1@x>".to_string(), "<d0@x>".to_string()];
+            let saved = save(&mut ops, &store, "work", None, &replaces).unwrap();
+            assert_eq!(saved.left, ["<d1@x>"]);
+            assert_eq!(ids(&ops), [Some("d1@x".to_string())]);
+        }
+
+        #[test]
+        fn a_lost_connection_while_only_deleting_is_an_error() {
+            let (mut ops, store) = with_drafts();
+            ops.fail_next_expunge = Some(MailError::Io("reset".into()));
             assert!(save(&mut ops, &store, "work", None, &["<d1@x>".into()]).is_err());
         }
     }

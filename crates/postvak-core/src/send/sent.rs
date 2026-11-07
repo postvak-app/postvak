@@ -124,6 +124,10 @@ pub fn finish(
     }
     if !done.draft_deleted {
         match super::drafts::save(ops, store, account, None, &job.draft) {
+            Ok(saved) if !saved.left.is_empty() => log::warn!(
+                "{account}: draft {} of {id} was not deleted",
+                saved.left.join(", ")
+            ),
             Ok(_) => {}
             Err(SaveDraftError::Mail(e)) if e.is_lost_connection() => return Err((done, e)),
             // Left for the daemon's next `FinishSent`: the store may read again then.
