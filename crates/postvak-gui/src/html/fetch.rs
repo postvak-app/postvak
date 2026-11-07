@@ -3,13 +3,14 @@
 //! them again.
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::Read;
+use std::panic::{self, AssertUnwindSafe};
 #[cfg(test)]
 use std::sync::mpsc::Sender;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Condvar, LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use super::{FetchDone, FetchJob, MAX_REMOTE, Wake};
+use super::{Bytes, Content, FetchDone, FetchJob, MAX_REMOTE, Wake, content};
 use crate::worker::spawn;
 use postvak_core::net::{public, public_agent};
 
@@ -102,7 +103,7 @@ fn fetch_cached(
     mut urls: Vec<String>,
     cache: &Mutex<Cache>,
     get: impl Fn(&str) -> Option<Vec<u8>> + Sync,
-    mut deliver: impl FnMut(BTreeMap<String, Vec<u8>>, bool),
+    mut deliver: impl FnMut(BTreeMap<String, Bytes>, bool),
 ) {
     let now = Instant::now();
     let mut known = BTreeMap::new();
@@ -121,7 +122,7 @@ fn fetch_cached(
     }
     if !urls.is_empty() {
         let keep = |url: &str| {
-            let bytes = get(url)?;
+            let bytes = Bytes::from(get(url)?);
             cache
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -186,7 +187,7 @@ fn host(url: &str) -> String {
 
 /// Whether a download is a stylesheet or font rather than an image: what it asks for in turn should start at once.
 fn urgent(bytes: &[u8]) -> bool {
-    !bytes.is_empty() && image::guess_format(bytes).is_err()
+    content(bytes) == Content::Other
 }
 
 /// Fetches `urls` on a few workers, in their order and at most `PER_HOST` from one host at once, and hands
@@ -194,8 +195,8 @@ fn urgent(bytes: &[u8]) -> bool {
 /// the rest with `last` set. Each URL ends up in one batch, empty when `get` failed or the host is refused.
 fn fetch_all(
     urls: Vec<String>,
-    get: impl Fn(&str) -> Option<Vec<u8>> + Sync,
-    mut deliver: impl FnMut(BTreeMap<String, Vec<u8>>, bool),
+    get: impl Fn(&str) -> Option<Bytes> + Sync,
+    mut deliver: impl FnMut(BTreeMap<String, Bytes>, bool),
 ) {
     let queue = Queue::new(urls.into_iter().take(MAX_REMOTE));
     // Once every answer is in, what is left goes as the last batch.
@@ -221,7 +222,15 @@ fn fetch_all(
                         }
                     };
                     drop(waiting);
-                    let bytes = public(&url).then(|| get(&url)).flatten();
+                    // A panic counts as a failed download, so the host's place is given back and no worker
+                    // waits for it forever.
+                    let bytes = public(&url)
+                        .then(|| {
+                            panic::catch_unwind(AssertUnwindSafe(|| get(&url)))
+                                .ok()
+                                .flatten()
+                        })
+                        .flatten();
                     queue
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
@@ -283,13 +292,13 @@ struct Cache {
 }
 
 struct Cached {
-    bytes: Vec<u8>,
+    bytes: Bytes,
     at: Instant,
     used: u64,
 }
 
 impl Cache {
-    fn get(&mut self, url: &str, now: Instant) -> Option<Vec<u8>> {
+    fn get(&mut self, url: &str, now: Instant) -> Option<Bytes> {
         let fresh = self
             .entries
             .get(url)
@@ -304,7 +313,7 @@ impl Cache {
         Some(entry.bytes.clone())
     }
 
-    fn put(&mut self, url: &str, bytes: &[u8], now: Instant) {
+    fn put(&mut self, url: &str, bytes: &Bytes, now: Instant) {
         self.remove(url);
         let cost = bytes.len() as u64;
         if bytes.is_empty() || cost > CACHE_BYTES {
@@ -326,7 +335,7 @@ impl Cache {
         self.entries.insert(
             url.to_string(),
             Cached {
-                bytes: bytes.to_vec(),
+                bytes: bytes.clone(),
                 at: now,
                 used: self.clock,
             },
@@ -403,13 +412,17 @@ mod tests {
     fn batches(
         urls: Vec<String>,
         get: impl Fn(&str) -> Option<Vec<u8>> + Sync,
-    ) -> Vec<(BTreeMap<String, Vec<u8>>, bool)> {
+    ) -> Vec<(BTreeMap<String, Bytes>, bool)> {
         let mut delivered = Vec::new();
-        fetch_all(urls, get, |fetched, last| delivered.push((fetched, last)));
+        fetch_all(
+            urls,
+            |url| get(url).map(Bytes::from),
+            |fetched, last| delivered.push((fetched, last)),
+        );
         delivered
     }
 
-    fn merged(delivered: Vec<(BTreeMap<String, Vec<u8>>, bool)>) -> BTreeMap<String, Vec<u8>> {
+    fn merged(delivered: Vec<(BTreeMap<String, Bytes>, bool)>) -> BTreeMap<String, Bytes> {
         delivered
             .into_iter()
             .flat_map(|(fetched, _)| fetched)
@@ -433,7 +446,7 @@ mod tests {
         assert!(delivered.last().unwrap().1, "the last batch is marked");
         let fetched = merged(delivered);
         assert_eq!(fetched.len(), 4);
-        assert_eq!(fetched["https://cdn.example.com/a.png"], b"PNG");
+        assert_eq!(fetched["https://cdn.example.com/a.png"], &b"PNG"[..]);
         assert!(fetched["https://cdn.example.com/missing.png"].is_empty());
         assert!(fetched["http://192.168.1.1/reboot"].is_empty());
     }
@@ -479,7 +492,7 @@ mod tests {
                 {
                     std::thread::sleep(Duration::from_millis(5));
                 }
-                Some(url.as_bytes().to_vec())
+                Some(Bytes::from(url.as_bytes().to_vec()))
             },
             |fetched, last| {
                 if fetched.contains_key(fast) {
@@ -639,13 +652,34 @@ mod tests {
     }
 
     #[test]
+    fn a_download_that_panics_fails_and_the_rest_of_its_host_still_runs() {
+        let urls: Vec<String> = (0..2 * PER_HOST)
+            .map(|i| format!("https://cdn.example.com/{i}.png"))
+            .collect();
+        let doomed = urls[0].clone();
+        let fetched = merged(batches(urls.clone(), |url| {
+            if url == doomed {
+                panic!("a bug in the HTTP client");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+            Some(PNG.to_vec())
+        }));
+        assert_eq!(fetched.len(), urls.len());
+        assert!(fetched[&doomed].is_empty());
+        assert_eq!(fetched[&urls[1]], PNG);
+    }
+
+    #[test]
     fn what_the_cache_holds_comes_at_once_and_only_the_rest_is_downloaded() {
         let cache = Mutex::new(Cache::default());
         let (known, new) = (
             "https://cdn.example.com/logo.png",
             "https://cdn.example.com/new.png",
         );
-        cache.lock().unwrap().put(known, b"LOGO", Instant::now());
+        cache
+            .lock()
+            .unwrap()
+            .put(known, &Bytes::from_static(b"LOGO"), Instant::now());
         let asked = Mutex::new(Vec::new());
         let mut delivered = Vec::new();
         fetch_cached(
@@ -658,9 +692,9 @@ mod tests {
             |fetched, last| delivered.push((fetched, last)),
         );
         assert_eq!(*asked.lock().unwrap(), [new]);
-        assert_eq!(delivered[0].0[known], b"LOGO");
+        assert_eq!(delivered[0].0[known], &b"LOGO"[..]);
         assert!(!delivered[0].1);
-        assert_eq!(merged(delivered.clone())[new], b"NEW");
+        assert_eq!(merged(delivered.clone())[new], &b"NEW"[..]);
         assert!(delivered.last().unwrap().1);
 
         let mut all_known = Vec::new();
@@ -684,7 +718,7 @@ mod tests {
     fn the_cache_forgets_the_least_lately_used_first_and_anything_old() {
         let now = Instant::now();
         let mut cache = Cache::default();
-        let half = vec![1; (CACHE_BYTES / 2) as usize];
+        let half = Bytes::from(vec![1; (CACHE_BYTES / 2) as usize]);
         cache.put("a", &half, now);
         cache.put("b", &half, now);
         assert!(cache.get("a", now).is_some());
@@ -694,11 +728,15 @@ mod tests {
         assert!(cache.get("c", now).is_some());
         assert_eq!(cache.size, CACHE_BYTES);
 
-        cache.put("too big", &vec![0; CACHE_BYTES as usize + 1], now);
+        cache.put(
+            "too big",
+            &Bytes::from(vec![0; CACHE_BYTES as usize + 1]),
+            now,
+        );
         assert!(cache.get("too big", now).is_none());
         assert!(cache.get("a", now).is_some(), "nothing made room for it");
 
-        cache.put("failed", &[], now);
+        cache.put("failed", &Bytes::new(), now);
         assert!(cache.get("failed", now).is_none());
 
         assert!(cache.get("a", now + CACHE_AGE).is_none());

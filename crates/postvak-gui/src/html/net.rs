@@ -60,9 +60,8 @@ impl Inline {
     }
 
     /// Answers the requests waiting for `url` with `bytes`, or with nothing when the page cannot afford them.
-    pub fn deliver(&self, url: &str, bytes: &[u8]) {
+    pub fn deliver(&self, url: &str, bytes: Bytes) {
         let answered = self.take_waiting(|waiting| waiting == url);
-        let bytes = Bytes::from(bytes.to_vec());
         self.remote()
             .delivered
             .insert(url.to_string(), bytes.clone());
@@ -98,7 +97,7 @@ impl Inline {
         self.remote.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn resolve(&self, request: &Request) -> Option<Vec<u8>> {
+    fn resolve(&self, request: &Request) -> Option<Bytes> {
         let url = &request.url;
         match url.scheme() {
             "cid" if url.query().is_none() && url.fragment().is_none() => {
@@ -106,11 +105,13 @@ impl Inline {
                 self.parts
                     .iter()
                     .find(|part| part.cid == cid)
-                    .map(|part| part.bytes.clone())
+                    .map(|part| Bytes::from(part.bytes.clone()))
             }
             "data" => {
                 let data = data_url::DataUrl::process(url.as_str()).ok()?;
-                data.decode_to_vec().ok().map(|(bytes, _)| bytes)
+                data.decode_to_vec()
+                    .ok()
+                    .map(|(bytes, _)| Bytes::from(bytes))
             }
             "http" | "https" => self.fetched.get(url.as_str()).cloned(),
             _ => None,
@@ -167,7 +168,7 @@ impl NetProvider for Inline {
             return;
         }
         let bytes = bytes.filter(|bytes| self.afford(bytes)).unwrap_or_default();
-        handler.bytes(url, Bytes::from(bytes));
+        handler.bytes(url, bytes);
     }
 }
 
@@ -211,7 +212,15 @@ mod tests {
             cid: "logo@example.com".into(),
             bytes: b"PNG".to_vec(),
         }];
-        Inline::new(parts, Arc::new(fetched))
+        Inline::new(
+            parts,
+            Arc::new(
+                fetched
+                    .into_iter()
+                    .map(|(u, b)| (u, Bytes::from(b)))
+                    .collect(),
+            ),
+        )
     }
 
     #[test]
@@ -250,7 +259,7 @@ mod tests {
         assert_eq!(inline.take_noted(), [pixel, hero]);
         assert!(inline.take_noted().is_empty(), "taken");
         assert!(inline.waits_for(pixel));
-        inline.deliver(pixel, b"GIF");
+        inline.deliver(pixel, Bytes::from_static(b"GIF"));
         assert_eq!(first.lock().unwrap().as_deref(), Some(&b"GIF"[..]));
         assert_eq!(again.lock().unwrap().as_deref(), Some(&b"GIF"[..]));
         assert!(!inline.waits_for(pixel));
@@ -271,7 +280,7 @@ mod tests {
         let inline = Inline::new(Vec::new(), Arc::default());
         let url = "https://cdn.example.com/huge.png";
         let got = ask(&inline, url);
-        inline.deliver(url, &png_header(5_000));
+        inline.deliver(url, Bytes::from(png_header(5_000)));
         assert_eq!(got.lock().unwrap().as_deref(), Some(&b""[..]));
     }
 

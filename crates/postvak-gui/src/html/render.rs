@@ -15,7 +15,7 @@ use blitz_traits::shell::{ColorScheme, Viewport};
 use fontique::{Blob, Collection, CollectionOptions, FallbackKey, Script, SourceCache};
 use style::values::computed::Display;
 
-use super::{Fetched, Load, Pixels, Reply, Request, STRIP, Wake};
+use super::{Bytes, Content, Fetched, Load, Pixels, Reply, Request, STRIP, Wake, content};
 use super::{dark, depth, net};
 
 /// Layout, style and paint recurse once per element level, and a stack overflow aborts the app: deeper markup shows as
@@ -265,8 +265,10 @@ fn relayout(current: &mut Option<Current>, load: Load) -> Reply {
 }
 
 /// Puts downloaded `urls` into the laid-out page: images by answering the requests that wait for them, then laying
-/// out again as the page is, as a browser does. Anything else (a stylesheet, a font, an image no request waits
-/// for) can change what `layout` decided from the styles, so the page is parsed and laid out again with `fetched`.
+/// out again as the page is, as a browser does. What shows nothing (a failed download, an SVG) answers its requests
+/// empty, or does nothing when none waits, as the page already went without it. Anything else (a stylesheet, a
+/// font, an image no request waits for, as `unblock` gave them all up) can change what `layout` decided from the
+/// styles, so the page is parsed and laid out again with `fetched`.
 fn take_in(
     current: &mut Option<Current>,
     generation: u64,
@@ -276,12 +278,22 @@ fn take_in(
     let Some(page) = current.as_mut() else {
         return Reply::Failed { generation };
     };
-    let bytes = |url: &String| fetched.get(url).map_or(&[][..], Vec::as_slice);
-    let images = urls.iter().all(|url| {
-        let bytes = bytes(url);
-        (bytes.is_empty() || image::guess_format(bytes).is_ok()) && page.provider.waits_for(url)
-    });
-    if !images {
+    let mut answers = Vec::new();
+    let mut again = false;
+    for url in urls {
+        let bytes = fetched.get(url).cloned().unwrap_or_default();
+        let waits = page.provider.waits_for(url);
+        match content(&bytes) {
+            Content::Image if waits => answers.push((url, bytes)),
+            Content::Empty | Content::Svg => {
+                if waits {
+                    answers.push((url, Bytes::new()));
+                }
+            }
+            Content::Image | Content::Other => again = true,
+        }
+    }
+    if again {
         let load = Load {
             dark: page.dark,
             fetched,
@@ -293,21 +305,24 @@ fn take_in(
         };
         return relayout(current, load);
     }
+    page.remote.retain(|url| !urls.contains(url));
+    page.generation = generation;
+    if answers.is_empty() {
+        return laid(page);
+    }
     // Adapted colours go back first, as for a restyle: an image that now shows changes what `dark::adapt` keeps.
     if page.dark {
         dark::restore(&mut page.doc, std::mem::take(&mut page.originals));
     }
-    for url in urls {
-        page.provider.deliver(url, bytes(url));
+    for (url, bytes) in answers {
+        page.provider.deliver(url, bytes);
     }
-    page.remote.retain(|url| !urls.contains(url));
     page.doc.handle_messages();
     page.doc.resolve(0.0);
     page.doc.handle_messages();
     if page.dark {
         page.originals = dark::adapt(&mut page.doc);
     }
-    page.generation = generation;
     laid(page)
 }
 
@@ -2194,7 +2209,7 @@ mod tests {
             fetched: Arc::new(
                 fetched
                     .iter()
-                    .map(|(url, bytes)| (url.to_string(), bytes.clone()))
+                    .map(|(url, bytes)| (url.to_string(), Bytes::from(bytes.clone())))
                     .collect(),
             ),
             urls: fetched.iter().map(|(url, _)| url.to_string()).collect(),
@@ -2279,6 +2294,33 @@ mod tests {
     }
 
     #[test]
+    fn what_shows_nothing_does_not_parse_the_page_again() {
+        let (css, svg) = (
+            "https://cdn.example.com/style.css",
+            "https://cdn.example.com/logo.svg",
+        );
+        let html = format!(
+            "<html><head><link rel=\"stylesheet\" href=\"{css}\"></head><body><img src=\"{svg}\"></body></html>"
+        );
+        let mut current = None;
+        let (_, remote) = answered(handle(&mut current, load(1, &html, 400.0)));
+        assert_eq!(remote, [css, svg]);
+        let provider = current.as_ref().unwrap().provider.clone();
+        let svg_bytes =
+            b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"9\" height=\"9\"/>".to_vec();
+        // The stylesheet failed, which the page, given it empty already, went without; the SVG cannot show.
+        let (_, remote) = answered(handle(
+            &mut current,
+            downloaded(2, &[(css, Vec::new()), (svg, svg_bytes)]),
+        ));
+        assert!(remote.is_empty(), "{remote:?}");
+        let page = current.as_ref().unwrap();
+        assert!(Arc::ptr_eq(&provider, &page.provider), "parsed again");
+        assert!(!page.provider.waits_for(svg));
+        assert_eq!(page.generation, 2);
+    }
+
+    #[test]
     fn downloads_for_a_page_that_failed_fail() {
         let mut current = None;
         assert!(matches!(
@@ -2329,7 +2371,12 @@ mod tests {
         };
         let fetched: std::collections::BTreeMap<_, _> = remote
             .into_iter()
-            .map(|url| (url.clone(), super::super::get(&url).unwrap_or_default()))
+            .map(|url| {
+                (
+                    url.clone(),
+                    Bytes::from(super::super::get(&url).unwrap_or_default()),
+                )
+            })
             .collect();
         let Some(Reply::Laid { height, width, .. }) =
             handle(&mut current, request(Arc::new(fetched)))
