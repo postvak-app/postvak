@@ -230,7 +230,7 @@ impl App {
             .send(job);
     }
 
-    /// Takes downloads for the shown message as they come in and lays it out again with them.
+    /// Takes downloads for the shown message as they come in and hands them to the laid-out page.
     pub(super) fn receive_remote(&mut self) {
         let Some(fetcher) = &self.fetcher else {
             return;
@@ -248,10 +248,19 @@ impl App {
             if done.fetched.is_empty() {
                 continue;
             }
+            let urls: Vec<String> = done.fetched.keys().cloned().collect();
             view.remote.retain(|url| !done.fetched.contains_key(url));
             std::sync::Arc::make_mut(&mut view.fetched).extend(done.fetched);
-            let (scale, width) = view.sent;
-            self.lay_out(scale, width);
+            self.html_generation += 1;
+            view.generation = self.html_generation;
+            let request = html::Request::Remote {
+                generation: view.generation,
+                fetched: view.fetched.clone(),
+                urls,
+            };
+            self.renderer
+                .get_or_insert_with(|| Renderer::start(self.wake.clone()))
+                .send(request);
         }
     }
 

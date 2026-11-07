@@ -137,6 +137,14 @@ pub enum Request {
         generation: u64,
         dark: bool,
     },
+    /// Remote content downloaded since the last layout, `urls` of all that is in `fetched`. Images go into the
+    /// laid-out page as it is; anything else (a stylesheet, a font) can change any style, so the page is parsed and
+    /// laid out again with all of `fetched`. Answered as a layout under `generation`.
+    Remote {
+        generation: u64,
+        fetched: Fetched,
+        urls: Vec<String>,
+    },
 }
 
 impl Request {
@@ -146,7 +154,8 @@ impl Request {
             Request::Paint { generation, .. }
             | Request::Hit { generation, .. }
             | Request::Select { generation, .. }
-            | Request::Restyle { generation, .. } => *generation,
+            | Request::Restyle { generation, .. }
+            | Request::Remote { generation, .. } => *generation,
         }
     }
 }
@@ -155,11 +164,11 @@ pub enum Reply {
     Failed {
         generation: u64,
     },
-    /// The page size in points, and the remote URLs it asked for that `Load::fetched` lacks.
+    /// The page size in points, and the remote URLs it asked for that it has not been given, in the order asked.
     Laid {
         generation: u64,
         height: f32,
-        remote: BTreeSet<String>,
+        remote: Vec<String>,
         width: f32,
     },
     Link {
@@ -214,8 +223,9 @@ pub(crate) struct HtmlState {
     pub slow: bool,
     /// When the window first saw this view waiting for its page, on its clock.
     pub started: Option<f64>,
-    /// Remote URLs the last layout asked for and `fetched` lacks.
-    pub remote: BTreeSet<String>,
+    /// Remote URLs the last layout asked for and `fetched` lacks, in the order asked, so the top of the page loads
+    /// first.
+    pub remote: Vec<String>,
     pub requested: BTreeSet<u32>,
     /// The two points of the last `Select`, so a still drag sends nothing.
     pub selected_at: Option<([f32; 2], [f32; 2])>,
@@ -241,7 +251,7 @@ impl HtmlState {
             fetching: BTreeSet::new(),
             asked: BTreeSet::new(),
             page: None,
-            remote: BTreeSet::new(),
+            remote: Vec::new(),
             requested: BTreeSet::new(),
             selected_at: None,
             selection: None,
@@ -273,7 +283,8 @@ impl HtmlState {
         let room = MAX_REMOTE.saturating_sub(self.asked.len());
         let urls: Vec<String> = self
             .remote
-            .difference(&self.asked)
+            .iter()
+            .filter(|url| !self.asked.contains(*url))
             .take(room)
             .cloned()
             .collect();
@@ -551,6 +562,22 @@ mod view_tests {
         jobs.try_iter()
             .filter_map(|job| match job {
                 Request::Load(load) => Some(load),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The downloads the app handed the render thread since the last call: their generation, everything fetched,
+    /// and the URLs new in each.
+    fn remotes(jobs: &Receiver<Request>) -> Vec<(u64, super::Fetched, Vec<String>)> {
+        jobs.try_iter()
+            .filter_map(|job| match job {
+                Request::Remote {
+                    generation,
+                    fetched,
+                    urls,
+                } => Some((generation, fetched, urls)),
+                Request::Load(_) => panic!("parsed again"),
                 _ => None,
             })
             .collect()
@@ -852,7 +879,7 @@ mod view_tests {
     }
 
     #[test]
-    fn loading_remote_content_fetches_what_the_page_asked_for_and_lays_it_out_again() {
+    fn loading_remote_content_fetches_what_the_page_asked_for_and_hands_it_to_the_page() {
         let fx = Fixture::new(&["work"]);
         add_html(&fx, 1, "<p>x</p>", "text");
         let faked = faked(&fx);
@@ -874,9 +901,10 @@ mod view_tests {
             })
             .unwrap();
         faked.open.tick();
-        let load = loads(&faked.jobs).pop().unwrap();
-        assert_eq!(load.fetched[hero], b"PNG");
-        reply(&faked, laid(load.generation, 300.0, &[]));
+        let (generation, fetched, urls) = remotes(&faked.jobs).pop().unwrap();
+        assert_eq!(fetched[hero], b"PNG");
+        assert_eq!(urls, [hero]);
+        reply(&faked, laid(generation, 300.0, &[]));
         assert!(faked.open.find("Remote content not loaded.").is_empty());
         assert!(faked.open.find("Loading remote content…").is_empty());
     }
@@ -901,9 +929,9 @@ mod view_tests {
             })
             .unwrap();
         faked.open.tick();
-        let load = loads(&faked.jobs).pop().unwrap();
+        let (generation, _, _) = remotes(&faked.jobs).pop().unwrap();
         let background = "https://cdn.example.com/background.png";
-        reply(&faked, laid(load.generation, 300.0, &[background]));
+        reply(&faked, laid(generation, 300.0, &[background]));
         assert_eq!(fetch_jobs.try_recv().unwrap().urls, [background]);
     }
 
@@ -928,12 +956,12 @@ mod view_tests {
             })
             .unwrap();
         faked.open.tick();
-        let load = loads(&faked.jobs)
+        let (generation, given, _) = remotes(&faked.jobs)
             .pop()
-            .expect("laid out with the first batch");
-        assert_eq!(load.fetched.keys().collect::<Vec<_>>(), [css]);
+            .expect("handed over with the first batch");
+        assert_eq!(given.keys().collect::<Vec<_>>(), [css]);
         let background = "https://cdn.example.com/background.png";
-        reply(&faked, laid(load.generation, 300.0, &[pixel, background]));
+        reply(&faked, laid(generation, 300.0, &[pixel, background]));
         assert_eq!(
             fetch_jobs.try_recv().unwrap().urls,
             [background],
@@ -950,7 +978,7 @@ mod view_tests {
         faked.open.tick();
         assert!(
             view(&faked.open, |v| v.fetching.len() == 1
-                && !v.remote.contains(pixel))
+                && !v.remote.iter().any(|url| url == pixel))
             .unwrap()
         );
     }
@@ -1046,7 +1074,7 @@ mod view_tests {
             })
             .unwrap();
         faked.open.tick();
-        assert!(loads(&faked.jobs).is_empty());
+        assert!(remotes(&faked.jobs).is_empty());
         assert!(view(&faked.open, |v| v.fetched.is_empty()).unwrap());
     }
 
