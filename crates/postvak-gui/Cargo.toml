@@ -52,6 +52,7 @@ fontique = { workspace = true, features = ["fontconfig-dlopen"] }  # load fontco
 i-slint-common = { workspace = true, features = ["fontconfig-dlopen"] }
 
 [dev-dependencies]
+flate2.workspace = true
 i-slint-backend-testing.workspace = true
 png.workspace = true
 postvak-core = { workspace = true, features = ["testing"] }

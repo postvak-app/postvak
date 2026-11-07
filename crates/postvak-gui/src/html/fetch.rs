@@ -287,15 +287,22 @@ mod tests {
 
     /// A server on a free local port that answers one request with `response`.
     fn serve_once(response: Vec<u8>) -> String {
+        serve_seen(response).0
+    }
+
+    /// `serve_once`, which also hands back the request it was sent.
+    fn serve_seen(response: Vec<u8>) -> (String, Receiver<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        let (send, seen) = mpsc::channel();
         std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0; 1024];
-            let _ = stream.read(&mut request);
+            let mut request = [0; 4096];
+            let read = stream.read(&mut request).unwrap_or(0);
+            let _ = send.send(String::from_utf8_lossy(&request[..read]).into_owned());
             let _ = stream.write_all(&response);
         });
-        format!("http://127.0.0.1:{port}/image.png")
+        (format!("http://127.0.0.1:{port}/image.png"), seen)
     }
 
     fn response(status: &str, body: &[u8]) -> Vec<u8> {
@@ -304,6 +311,17 @@ mod tests {
             body.len()
         );
         [head.as_bytes(), body].concat()
+    }
+
+    fn gzipped(body: &[u8]) -> Vec<u8> {
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        encoder.write_all(body).unwrap();
+        let body = encoder.finish().unwrap();
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        [head.as_bytes(), &body].concat()
     }
 
     fn plain() -> ureq::Agent {
@@ -322,6 +340,22 @@ mod tests {
         assert_eq!(get_from(&missing, local, &plain()), None);
         let huge = serve_once(response("200 OK", &vec![0; MAX_BYTES as usize + 1]));
         assert_eq!(get_from(&huge, local, &plain()), None);
+    }
+
+    #[test]
+    fn a_gzipped_body_is_asked_for_and_arrives_decoded() {
+        let css = b"body { color: red }";
+        let (url, seen) = serve_seen(gzipped(css));
+        assert_eq!(get_from(&url, local, &plain()), Some(css.to_vec()));
+        let request = seen.recv().unwrap().to_ascii_lowercase();
+        assert!(request.contains("accept-encoding: gzip"), "{request}");
+    }
+
+    #[test]
+    fn the_size_limit_counts_decoded_bytes_so_a_small_gzip_bomb_fails() {
+        let bomb = gzipped(&vec![0; MAX_BYTES as usize + 1]);
+        assert!(bomb.len() < 64 * 1024, "{} bytes on the wire", bomb.len());
+        assert_eq!(get_from(&serve_once(bomb), local, &plain()), None);
     }
 
     #[test]
