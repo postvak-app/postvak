@@ -132,13 +132,26 @@ fn fetch_cached(
     }
 }
 
-/// The URLs waiting, in the order the page asked for them, and the downloads running per host.
+/// The URLs waiting, each with its host, in the order the page asked for them, and the downloads running per host.
 struct Queue {
-    waiting: VecDeque<String>,
+    waiting: VecDeque<(String, String)>,
     running: HashMap<String, usize>,
 }
 
 impl Queue {
+    fn new(urls: impl IntoIterator<Item = String>) -> Queue {
+        Queue {
+            waiting: urls
+                .into_iter()
+                .map(|url| {
+                    let host = host(&url);
+                    (url, host)
+                })
+                .collect(),
+            running: HashMap::new(),
+        }
+    }
+
     /// The first waiting URL whose host has room, counted as running; None once nothing waits, and Some(None) when
     /// every waiting host is full.
     fn next(&mut self) -> Option<Option<(String, String)>> {
@@ -148,10 +161,9 @@ impl Queue {
         let free = self
             .waiting
             .iter()
-            .position(|url| self.running.get(&host(url)).copied().unwrap_or(0) < PER_HOST);
+            .position(|(_, host)| self.running.get(host).copied().unwrap_or(0) < PER_HOST);
         Some(free.and_then(|at| {
-            let url = self.waiting.remove(at)?;
-            let host = host(&url);
+            let (url, host) = self.waiting.remove(at)?;
             *self.running.entry(host.clone()).or_default() += 1;
             Some((url, host))
         }))
@@ -185,13 +197,10 @@ fn fetch_all(
     get: impl Fn(&str) -> Option<Vec<u8>> + Sync,
     mut deliver: impl FnMut(BTreeMap<String, Vec<u8>>, bool),
 ) {
-    let waiting: VecDeque<String> = urls.into_iter().take(MAX_REMOTE).collect();
+    let queue = Queue::new(urls.into_iter().take(MAX_REMOTE));
     // Once every answer is in, what is left goes as the last batch.
-    let mut outstanding = waiting.len();
-    let queue = Mutex::new(Queue {
-        waiting,
-        running: HashMap::new(),
-    });
+    let mut outstanding = queue.waiting.len();
+    let queue = Mutex::new(queue);
     let room = Condvar::new();
     let (send, results) = mpsc::channel();
     std::thread::scope(|scope| {
@@ -226,7 +235,8 @@ fn fetch_all(
         }
         drop(send);
         let mut batch = BTreeMap::new();
-        // None until the first delivery, which goes at once.
+        // None until the first delivery, which goes at once once it holds a download: a refused or failed URL,
+        // which answers at once and empty, does not take the place of the first image.
         let mut flushed: Option<Instant> = None;
         let mut now_please = false;
         loop {
@@ -245,7 +255,10 @@ fn fetch_all(
                 Err(RecvTimeoutError::Disconnected) => break,
                 Err(RecvTimeoutError::Timeout) => {}
             }
-            let due = flushed.is_none_or(|at| at.elapsed() >= BATCH);
+            let due = match flushed {
+                Some(at) => at.elapsed() >= BATCH,
+                None => batch.values().any(|bytes| !bytes.is_empty()),
+            };
             if outstanding == 0 {
                 break;
             }
@@ -487,10 +500,7 @@ mod tests {
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\n";
 
     fn queue(urls: &[&str]) -> Queue {
-        Queue {
-            waiting: urls.iter().map(|url| url.to_string()).collect(),
-            running: HashMap::new(),
-        }
+        Queue::new(urls.iter().map(|url| url.to_string()))
     }
 
     #[test]
@@ -596,6 +606,36 @@ mod tests {
         });
         let sizes: Vec<usize> = delivered.iter().map(|(fetched, _)| fetched.len()).collect();
         assert_eq!(sizes, [1, 3], "the first at once, the rest in one layout");
+    }
+
+    #[test]
+    fn a_failure_answering_first_does_not_take_the_first_images_place() {
+        let (dead, top, later) = (
+            "https://cdn.example.com/missing.png",
+            "https://cdn.example.com/a.png",
+            "https://cdn.example.com/b.png",
+        );
+        let delivered = batches(vec![dead.into(), top.into(), later.into()], |url| {
+            let wait = match url {
+                u if u == dead => 0,
+                u if u == top => 60,
+                _ => 250,
+            };
+            std::thread::sleep(Duration::from_millis(wait));
+            (url != dead).then(|| PNG.to_vec())
+        });
+        let keys: Vec<Vec<String>> = delivered
+            .into_iter()
+            .map(|(fetched, _)| fetched.into_keys().collect())
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                vec![top.to_string(), dead.to_string()],
+                vec![later.to_string()]
+            ],
+            "the image at once, the failure with it"
+        );
     }
 
     #[test]

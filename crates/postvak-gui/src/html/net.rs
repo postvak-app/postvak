@@ -31,6 +31,9 @@ struct Remote {
     /// Every URL noted, so one is noted once.
     seen: std::collections::HashSet<String>,
     waiting: Vec<(String, Box<dyn NetHandler>)>,
+    /// What `deliver` answered each URL with, so a later request for it (a restyle's background image) is answered
+    /// at once rather than waiting for bytes that already came.
+    delivered: std::collections::HashMap<String, Bytes>,
 }
 
 impl Inline {
@@ -59,9 +62,17 @@ impl Inline {
     /// Answers the requests waiting for `url` with `bytes`, or with nothing when the page cannot afford them.
     pub fn deliver(&self, url: &str, bytes: &[u8]) {
         let answered = self.take_waiting(|waiting| waiting == url);
+        let bytes = Bytes::from(bytes.to_vec());
+        self.remote()
+            .delivered
+            .insert(url.to_string(), bytes.clone());
         for (url, handler) in answered {
-            let bytes = if self.afford(bytes) { bytes } else { &[] };
-            handler.bytes(url, Bytes::from(bytes.to_vec()));
+            let bytes = if self.afford(&bytes) {
+                bytes.clone()
+            } else {
+                Bytes::new()
+            };
+            handler.bytes(url, bytes);
         }
     }
 
@@ -139,6 +150,16 @@ impl NetProvider for Inline {
         let bytes = self.resolve(&request);
         if remote && bytes.is_none() {
             let mut waiting = self.remote();
+            if let Some(bytes) = waiting.delivered.get(&url).cloned() {
+                drop(waiting);
+                let bytes = if self.afford(&bytes) {
+                    bytes
+                } else {
+                    Bytes::new()
+                };
+                handler.bytes(url, bytes);
+                return;
+            }
             if waiting.seen.insert(url.clone()) {
                 waiting.noted.push(url.clone());
             }
@@ -234,6 +255,12 @@ mod tests {
         assert_eq!(again.lock().unwrap().as_deref(), Some(&b"GIF"[..]));
         assert!(!inline.waits_for(pixel));
         assert!(other.lock().unwrap().is_none(), "another URL still waits");
+        assert_eq!(
+            fetch(&inline, pixel),
+            b"GIF",
+            "asked again once delivered, answered at once"
+        );
+        assert!(!inline.waits_for(pixel));
         inline.release(|url| url == hero);
         assert_eq!(other.lock().unwrap().as_deref(), Some(&b""[..]));
         assert!(!inline.waits_for(hero));
