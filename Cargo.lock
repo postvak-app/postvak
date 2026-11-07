@@ -4946,6 +4946,7 @@ dependencies = [
 name = "postvak-ui"
 version = "0.16.0"
 dependencies = [
+ "i-slint-common",
  "slint",
  "slint-build",
 ]
