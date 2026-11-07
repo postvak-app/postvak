@@ -1,10 +1,10 @@
 //! The render thread: owns the Blitz document of the shown message, lays it out, paints strips and answers hit tests.
 //! Blitz documents are not `Send`, so every one is made, used and dropped here.
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, LazyLock, Mutex, PoisonError};
+use std::sync::{Arc, LazyLock};
 
 use anyrender::ImageRenderer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
@@ -15,7 +15,7 @@ use blitz_traits::shell::{ColorScheme, Viewport};
 use fontique::{Blob, Collection, CollectionOptions, FallbackKey, Script, SourceCache};
 use style::values::computed::Display;
 
-use super::{Load, Pixels, Reply, Request, STRIP, Wake};
+use super::{Bytes, Content, Fetched, Load, Pixels, Reply, Request, STRIP, Wake, content};
 use super::{dark, depth, net};
 
 /// Layout, style and paint recurse once per element level, and a stack overflow aborts the app: deeper markup shows as
@@ -137,9 +137,13 @@ struct Current {
     /// The styles dark adaptation replaced, to put back before the page is styled again.
     originals: dark::Originals,
     raster: VelloCpuImageRenderer,
-    /// Every remote URL the page asked for, as the net provider noted them.
-    remote: BTreeSet<String>,
-    remote_noted: Arc<Mutex<BTreeSet<String>>>,
+    /// The source, to parse again when downloaded content is more than images (`take_in`).
+    html: String,
+    inline: Vec<postvak_core::message::InlinePart>,
+    /// The document's net provider, which holds its remote requests until their bytes arrive.
+    provider: Arc<net::Inline>,
+    /// The remote URLs the page asked for and was not given, in the order asked.
+    remote: Vec<String>,
     scale: f32,
     width: u32,
     /// The narrowest the page is laid out, in points.
@@ -162,9 +166,12 @@ fn run(
             batch.drain(..last);
         }
         // A drag or a moving pointer asks every frame; of each kind of question only the newest is worth answering.
+        // Downloads are not questions: each brings its own bytes.
         let mut seen = HashSet::new();
         batch.reverse();
-        batch.retain(|request| seen.insert(kind(request)));
+        batch.retain(|request| {
+            matches!(request, Request::Remote { .. }) || seen.insert(kind(request))
+        });
         batch.reverse();
         for request in batch {
             if let Some(reply) = answer(&mut current, request, &mut handle) {
@@ -203,18 +210,18 @@ fn kind(request: &Request) -> (u8, u32) {
         Request::Hit { .. } => (2, 0),
         Request::Select { .. } => (3, 0),
         Request::Restyle { .. } => (4, 0),
+        Request::Remote { .. } => (5, 0),
     }
 }
 
 fn handle(current: &mut Option<Current>, request: Request) -> Option<Reply> {
     match request {
-        Request::Load(load) => {
-            let generation = load.generation;
-            *current = None;
-            let (laid, reply) = layout(load).unzip();
-            *current = laid;
-            Some(reply.unwrap_or(Reply::Failed { generation }))
-        }
+        Request::Load(load) => Some(relayout(current, load)),
+        Request::Remote {
+            generation,
+            fetched,
+            urls,
+        } => Some(take_in(current, generation, fetched, &urls)),
         Request::Restyle { generation, dark } => Some(match current.as_mut() {
             Some(current) => restyle(current, generation, dark),
             None => Reply::Failed { generation },
@@ -248,17 +255,88 @@ fn handle(current: &mut Option<Current>, request: Request) -> Option<Reply> {
     }
 }
 
+/// Drops the current document and lays out `load` in its place.
+fn relayout(current: &mut Option<Current>, load: Load) -> Reply {
+    let generation = load.generation;
+    *current = None;
+    let (laid, reply) = layout(load).unzip();
+    *current = laid;
+    reply.unwrap_or(Reply::Failed { generation })
+}
+
+/// Puts downloaded `urls` into the laid-out page: images by answering the requests that wait for them, then laying
+/// out again as the page is, as a browser does. What shows nothing (a failed download, an SVG) answers its requests
+/// empty, or does nothing when none waits, as the page already went without it. Anything else (a stylesheet, a
+/// font, an image no request waits for, as `unblock` gave them all up) can change what `layout` decided from the
+/// styles, so the page is parsed and laid out again with `fetched`.
+fn take_in(
+    current: &mut Option<Current>,
+    generation: u64,
+    fetched: Fetched,
+    urls: &[String],
+) -> Reply {
+    let Some(page) = current.as_mut() else {
+        return Reply::Failed { generation };
+    };
+    let mut answers = Vec::new();
+    let mut again = false;
+    for url in urls {
+        let bytes = fetched.get(url).cloned().unwrap_or_default();
+        let waits = page.provider.waits_for(url);
+        match content(&bytes) {
+            Content::Image if waits => answers.push((url, bytes)),
+            Content::Empty | Content::Svg => {
+                if waits {
+                    answers.push((url, Bytes::new()));
+                }
+            }
+            Content::Image | Content::Other => again = true,
+        }
+    }
+    if again {
+        let load = Load {
+            dark: page.dark,
+            fetched,
+            generation,
+            html: std::mem::take(&mut page.html),
+            inline: std::mem::take(&mut page.inline),
+            scale: page.scale,
+            width: page.wide,
+        };
+        return relayout(current, load);
+    }
+    page.remote.retain(|url| !urls.contains(url));
+    page.generation = generation;
+    if answers.is_empty() {
+        return laid(page);
+    }
+    // Adapted colours go back first, as for a restyle: an image that now shows changes what `dark::adapt` keeps.
+    if page.dark {
+        dark::restore(&mut page.doc, std::mem::take(&mut page.originals));
+    }
+    for (url, bytes) in answers {
+        page.provider.deliver(url, bytes);
+    }
+    page.doc.handle_messages();
+    page.doc.resolve(0.0);
+    page.doc.handle_messages();
+    if page.dark {
+        page.originals = dark::adapt(&mut page.doc);
+    }
+    laid(page)
+}
+
 /// The laid-out document and its reply; None for markup nested too deep to lay out safely.
 fn layout(load: Load) -> Option<(Current, Reply)> {
     let scale = load.scale.max(0.5);
     // Never narrower than `MIN_WIDTH`: see there. A narrower pane scrolls sideways.
     let wide = load.width.max(MIN_WIDTH);
-    let (mut doc, mut remote) = styled(&load, scale, wide, &[], &[])?;
+    let (mut doc, mut provider) = styled(&load, scale, wide, &[], &[])?;
     let cells = block_cells(&doc);
     let badges = badges(&doc);
     // Blitz does not rebuild a table's grid when a restyle changes a cell's display: style a fresh document.
     if !cells.is_empty() || !badges.is_empty() {
-        (doc, remote) = styled(&load, scale, wide, &cells, &badges)?;
+        (doc, provider) = styled(&load, scale, wide, &cells, &badges)?;
     }
     let originals = if load.dark {
         dark::adapt(&mut doc)
@@ -272,8 +350,10 @@ fn layout(load: Load) -> Option<(Current, Reply)> {
         height: 0,
         originals,
         raster: VelloCpuImageRenderer::new(1, 1),
-        remote: BTreeSet::new(),
-        remote_noted: remote,
+        html: load.html,
+        inline: load.inline,
+        provider,
+        remote: Vec::new(),
         scale,
         width: 0,
         wide,
@@ -283,16 +363,16 @@ fn layout(load: Load) -> Option<(Current, Reply)> {
 }
 
 /// `load` parsed and styled at `wide` points, with the `td` and `th` at the positions `cells` turned back into cells
-/// (`block_cells`) and the elements at the positions `badges` made inline blocks (`badges`), and what its provider
-/// noted of remote content; None for markup nested too deep.
+/// (`block_cells`) and the elements at the positions `badges` made inline blocks (`badges`), and its net provider;
+/// None for markup nested too deep.
 fn styled(
     load: &Load,
     scale: f32,
     wide: f32,
     cells: &[usize],
     badges: &[usize],
-) -> Option<(BaseDocument, Arc<Mutex<BTreeSet<String>>>)> {
-    let (provider, remote) = net::Inline::new(load.inline.clone(), load.fetched.clone());
+) -> Option<(BaseDocument, Arc<net::Inline>)> {
+    let provider = net::Inline::new(load.inline.clone(), load.fetched.clone());
     let config = DocumentConfig {
         viewport: Some(Viewport::new(
             physical(wide, scale).max(1),
@@ -302,7 +382,7 @@ fn styled(
         )),
         base_url: Some(BASE.into()),
         ua_stylesheets: vec![UserAgentStylesheet::default_sheet(), MAIL_SHEET.clone()],
-        net_provider: Some(Arc::new(provider)),
+        net_provider: Some(provider.clone()),
         font_ctx: fonts(),
         ..Default::default()
     };
@@ -314,12 +394,42 @@ fn styled(
     font_colours(&mut doc);
     table_cells(&mut doc, cells);
     inline_blocks(&mut doc, badges);
-    // The provider answered every request synchronously; take its answers before the layout, and the background
-    // images the styles asked for after it, so they paint and `dark::adapt` sees which of them loaded.
+    // The provider answered every local request synchronously; take its answers before the layout, and the
+    // background images the styles asked for after it, so they paint and `dark::adapt` sees which of them loaded.
     doc.handle_messages();
+    unblock(&mut doc, &provider);
     doc.resolve(0.0);
     doc.handle_messages();
-    Some((doc, remote))
+    Some((doc, provider))
+}
+
+/// Blitz lays nothing out while a stylesheet linked from `<head>` loads, as a browser waits for it; a remote one
+/// waits for its download, which may never come. Answer those empty, as before remote content is loaded; once it
+/// is, its arrival lays the page out again (`take_in`). Should anything else still hold the page up, answer
+/// every remote request.
+fn unblock(doc: &mut BaseDocument, provider: &net::Inline) {
+    if !doc.has_pending_critical_resources() {
+        return;
+    }
+    let base = blitz_traits::net::Url::parse(BASE).ok();
+    let sheets: HashSet<String> = doc
+        .query_selector_all("link[rel~=\"stylesheet\" i]")
+        .map(|links| {
+            links
+                .into_iter()
+                .filter_map(|id| {
+                    let href = doc.get_node(id)?.attr(local_name!("href"))?;
+                    Some(base.as_ref()?.join(href.trim()).ok()?.to_string())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    provider.release(|url| sheets.contains(url));
+    doc.handle_messages();
+    if doc.has_pending_critical_resources() {
+        provider.release(|_| true);
+        doc.handle_messages();
+    }
 }
 
 /// Blitz neither lays out nor paints the padding, borders and rounded corners of an inline element, only a rectangle
@@ -448,13 +558,11 @@ fn laid(current: &mut Current) -> Reply {
     current.height = physical(height, current.scale);
     current.width =
         physical(laid_width, current.scale).max(physical(current.wide, current.scale).max(1));
-    let noted = std::mem::take(
-        &mut *current
-            .remote_noted
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner),
-    );
-    current.remote.extend(noted);
+    for url in current.provider.take_noted() {
+        if !current.remote.contains(&url) {
+            current.remote.push(url);
+        }
+    }
     Reply::Laid {
         generation: current.generation,
         height,
@@ -725,6 +833,8 @@ impl Renderer {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::super::Fetched;
     use super::*;
 
@@ -1011,6 +1121,7 @@ mod tests {
                 Request::Paint { strip, .. } => format!("paint {strip}"),
                 Request::Hit { .. } => "hit".to_string(),
                 Request::Restyle { .. } => "restyle".to_string(),
+                Request::Remote { urls, .. } => format!("remote {}", urls.join(" ")),
             });
             None
         });
@@ -2084,6 +2195,143 @@ mod tests {
         assert_eq!(physical(f32::INFINITY, 1.0), u32::MAX);
     }
 
+    /// The layout's height and the remote URLs it still asks for, or a panic for any other reply.
+    fn answered(reply: Option<Reply>) -> (f32, Vec<String>) {
+        match reply {
+            Some(Reply::Laid { height, remote, .. }) => (height, remote),
+            _ => panic!("no layout"),
+        }
+    }
+
+    fn downloaded(generation: u64, fetched: &[(&str, Vec<u8>)]) -> Request {
+        Request::Remote {
+            generation,
+            fetched: Arc::new(
+                fetched
+                    .iter()
+                    .map(|(url, bytes)| (url.to_string(), Bytes::from(bytes.clone())))
+                    .collect(),
+            ),
+            urls: fetched.iter().map(|(url, _)| url.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn remote_urls_are_reported_in_the_order_the_page_asks_for_them() {
+        let html = "<img src=\"https://b.example.com/top.png\"><img src=\"https://a.example.com/below.png\">\
+                    <img src=\"https://b.example.com/top.png\">";
+        let mut current = None;
+        let (_, remote) = answered(handle(&mut current, load(1, html, 400.0)));
+        assert_eq!(
+            remote,
+            [
+                "https://b.example.com/top.png",
+                "https://a.example.com/below.png"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_downloaded_image_goes_into_the_laid_out_page_without_parsing_it_again() {
+        for dark in [false, true] {
+            let (hero, other) = (
+                "https://cdn.example.com/hero.png",
+                "https://cdn.example.com/other.png",
+            );
+            let html = format!("<img src=\"{hero}\"><img src=\"{other}\"><p>text</p>");
+            let mut current = None;
+            let (before, remote) = answered(handle(&mut current, load_as(1, &html, 400.0, dark)));
+            assert_eq!(remote, [hero, other]);
+            let provider = current.as_ref().unwrap().provider.clone();
+            let (after, remote) = answered(handle(
+                &mut current,
+                downloaded(2, &[(hero, solid(300, [0, 0, 255]))]),
+            ));
+            assert!(after >= before + 300.0, "{before} then {after}");
+            assert_eq!(remote, [other], "the other image still waits");
+            let page = current.as_ref().unwrap();
+            assert!(Arc::ptr_eq(&provider, &page.provider), "parsed again");
+            assert_eq!(page.generation, 2);
+            let (_, remote) = answered(handle(&mut current, downloaded(3, &[(other, Vec::new())])));
+            assert!(remote.is_empty(), "a failed download is given up");
+            assert!(Arc::ptr_eq(&provider, &current.as_ref().unwrap().provider));
+        }
+    }
+
+    #[test]
+    fn a_remote_stylesheet_does_not_hold_up_the_page_and_its_arrival_lays_it_out_again() {
+        let (css, image) = (
+            "https://cdn.example.com/style.css",
+            "https://cdn.example.com/a.png",
+        );
+        let html = format!(
+            "<html><head><link rel=\"stylesheet\" href=\"{css}\"></head><body><div class=\"tall\">x</div>\
+             <img src=\"{image}\"></body></html>"
+        );
+        let mut current = None;
+        let (before, remote) = answered(handle(&mut current, load(1, &html, 400.0)));
+        assert_eq!(remote, [css, image]);
+        let waiting = &current.as_ref().unwrap().provider;
+        assert!(
+            !waiting.waits_for(css),
+            "answered empty, so the page lays out"
+        );
+        assert!(waiting.waits_for(image), "only the stylesheet was given up");
+        assert!(before < 500.0, "{before}");
+        let provider = current.as_ref().unwrap().provider.clone();
+        let (after, remote) = answered(handle(
+            &mut current,
+            downloaded(2, &[(css, b".tall { height: 900px }".to_vec())]),
+        ));
+        assert!(after >= 900.0, "{after}");
+        assert_eq!(remote, [image], "still asked for");
+        let page = current.as_ref().unwrap();
+        assert!(
+            !Arc::ptr_eq(&provider, &page.provider),
+            "a stylesheet parses the page again"
+        );
+        assert_eq!(page.generation, 2);
+    }
+
+    #[test]
+    fn what_shows_nothing_does_not_parse_the_page_again() {
+        let (css, svg) = (
+            "https://cdn.example.com/style.css",
+            "https://cdn.example.com/logo.svg",
+        );
+        let html = format!(
+            "<html><head><link rel=\"stylesheet\" href=\"{css}\"></head><body><img src=\"{svg}\"></body></html>"
+        );
+        let mut current = None;
+        let (_, remote) = answered(handle(&mut current, load(1, &html, 400.0)));
+        assert_eq!(remote, [css, svg]);
+        let provider = current.as_ref().unwrap().provider.clone();
+        let svg_bytes =
+            b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"9\" height=\"9\"/>".to_vec();
+        // The stylesheet failed, which the page, given it empty already, went without; the SVG cannot show.
+        let (_, remote) = answered(handle(
+            &mut current,
+            downloaded(2, &[(css, Vec::new()), (svg, svg_bytes)]),
+        ));
+        assert!(remote.is_empty(), "{remote:?}");
+        let page = current.as_ref().unwrap();
+        assert!(Arc::ptr_eq(&provider, &page.provider), "parsed again");
+        assert!(!page.provider.waits_for(svg));
+        assert_eq!(page.generation, 2);
+    }
+
+    #[test]
+    fn downloads_for_a_page_that_failed_fail() {
+        let mut current = None;
+        assert!(matches!(
+            handle(
+                &mut current,
+                downloaded(4, &[("https://cdn.example.com/a.png", Vec::new())])
+            ),
+            Some(Reply::Failed { generation: 4 })
+        ));
+    }
+
     /// Renders `POSTVAK_RENDER_EML` as the reader would, with remote content loaded, to `POSTVAK_RENDER_PNG`, for
     /// comparing with a browser: `POSTVAK_RENDER_EML=a.eml POSTVAK_RENDER_PNG=a.png cargo test -p postvak-gui
     /// render_eml -- --ignored`. `POSTVAK_RENDER_WIDTH` sets the width (default 800).
@@ -2123,7 +2371,12 @@ mod tests {
         };
         let fetched: std::collections::BTreeMap<_, _> = remote
             .into_iter()
-            .map(|url| (url.clone(), super::super::get(&url).unwrap_or_default()))
+            .map(|url| {
+                (
+                    url.clone(),
+                    Bytes::from(super::super::get(&url).unwrap_or_default()),
+                )
+            })
             .collect();
         let Some(Reply::Laid { height, width, .. }) =
             handle(&mut current, request(Arc::new(fetched)))

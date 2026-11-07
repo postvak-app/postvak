@@ -40,6 +40,7 @@ pub const SLOW: f64 = 0.3;
 pub const TOO_LARGE: &str = "Too large to render; showing text.";
 pub const FAILED: &str = "Could not render HTML; showing text.";
 
+pub(crate) use blitz_traits::net::Bytes;
 pub(crate) use fetch::{Fetcher, get};
 pub use render::Renderer;
 
@@ -80,8 +81,39 @@ impl Pixels {
     }
 }
 
-/// Remote content the user chose to load, by URL; a failed download is there with no bytes.
-pub(crate) type Fetched = Arc<BTreeMap<String, Vec<u8>>>;
+/// Remote content the user chose to load, by URL; a failed download is there with no bytes. `Bytes`, so a copy of
+/// the map shares the downloads rather than copying them.
+pub(crate) type Fetched = Arc<BTreeMap<String, Bytes>>;
+
+/// What a download is, for what it changes in a laid-out page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Content {
+    /// Failed, refused or empty.
+    Empty,
+    /// A picture Blitz decodes.
+    Image,
+    /// An SVG image, which shows nothing: Blitz is built without SVG.
+    Svg,
+    /// Anything else, such as a stylesheet or a font, which can change any style.
+    Other,
+}
+
+pub(crate) fn content(bytes: &[u8]) -> Content {
+    if bytes.is_empty() {
+        return Content::Empty;
+    }
+    if image::guess_format(bytes).is_ok() {
+        return Content::Image;
+    }
+    // Markup that starts the file and names `<svg` near its top; a stylesheet never starts with `<`.
+    let head = &bytes[..bytes.len().min(1024)];
+    let text = String::from_utf8_lossy(head);
+    let text = text.trim_start_matches('\u{feff}').trim_start();
+    if text.starts_with('<') && text.to_ascii_lowercase().contains("<svg") {
+        return Content::Svg;
+    }
+    Content::Other
+}
 
 /// A message asking for more remote resources than this gets the first ones only.
 pub(crate) const MAX_REMOTE: usize = 200;
@@ -96,7 +128,7 @@ pub(crate) struct FetchJob {
 /// is in one batch, and the job's last batch says so.
 pub(crate) struct FetchDone {
     pub tag: u64,
-    pub fetched: BTreeMap<String, Vec<u8>>,
+    pub fetched: BTreeMap<String, Bytes>,
     pub last: bool,
 }
 
@@ -137,6 +169,14 @@ pub enum Request {
         generation: u64,
         dark: bool,
     },
+    /// Remote content downloaded since the last layout, `urls` of all that is in `fetched`. Images go into the
+    /// laid-out page as it is; anything else (a stylesheet, a font) can change any style, so the page is parsed and
+    /// laid out again with all of `fetched`. Answered as a layout under `generation`.
+    Remote {
+        generation: u64,
+        fetched: Fetched,
+        urls: Vec<String>,
+    },
 }
 
 impl Request {
@@ -146,7 +186,8 @@ impl Request {
             Request::Paint { generation, .. }
             | Request::Hit { generation, .. }
             | Request::Select { generation, .. }
-            | Request::Restyle { generation, .. } => *generation,
+            | Request::Restyle { generation, .. }
+            | Request::Remote { generation, .. } => *generation,
         }
     }
 }
@@ -155,11 +196,11 @@ pub enum Reply {
     Failed {
         generation: u64,
     },
-    /// The page size in points, and the remote URLs it asked for that `Load::fetched` lacks.
+    /// The page size in points, and the remote URLs it asked for that it has not been given, in the order asked.
     Laid {
         generation: u64,
         height: f32,
-        remote: BTreeSet<String>,
+        remote: Vec<String>,
         width: f32,
     },
     Link {
@@ -214,8 +255,9 @@ pub(crate) struct HtmlState {
     pub slow: bool,
     /// When the window first saw this view waiting for its page, on its clock.
     pub started: Option<f64>,
-    /// Remote URLs the last layout asked for and `fetched` lacks.
-    pub remote: BTreeSet<String>,
+    /// Remote URLs the last layout asked for and `fetched` lacks, in the order asked, so the top of the page loads
+    /// first.
+    pub remote: Vec<String>,
     pub requested: BTreeSet<u32>,
     /// The two points of the last `Select`, so a still drag sends nothing.
     pub selected_at: Option<([f32; 2], [f32; 2])>,
@@ -241,7 +283,7 @@ impl HtmlState {
             fetching: BTreeSet::new(),
             asked: BTreeSet::new(),
             page: None,
-            remote: BTreeSet::new(),
+            remote: Vec::new(),
             requested: BTreeSet::new(),
             selected_at: None,
             selection: None,
@@ -273,7 +315,8 @@ impl HtmlState {
         let room = MAX_REMOTE.saturating_sub(self.asked.len());
         let urls: Vec<String> = self
             .remote
-            .difference(&self.asked)
+            .iter()
+            .filter(|url| !self.asked.contains(*url))
             .take(room)
             .cloned()
             .collect();
@@ -386,6 +429,31 @@ mod tests {
         ] {
             assert_eq!(openable(refused), None, "{refused}");
         }
+    }
+}
+
+#[cfg(test)]
+mod content_tests {
+    use super::{Content, content};
+
+    #[test]
+    fn downloads_are_told_apart_by_what_they_change() {
+        assert_eq!(content(b""), Content::Empty);
+        assert_eq!(content(b"\x89PNG\r\n\x1a\n"), Content::Image);
+        assert_eq!(content(b"GIF89a"), Content::Image);
+        assert_eq!(
+            content(b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>"),
+            Content::Svg
+        );
+        assert_eq!(
+            content(b"\xef\xbb\xbf  <?xml version=\"1.0\"?>\n<!-- logo -->\n<SVG viewBox=\"0 0 1 1\"></SVG>"),
+            Content::Svg
+        );
+        assert_eq!(
+            content(b"body { background: url(\"<svg>\") }"),
+            Content::Other
+        );
+        assert_eq!(content(b"wOF2\0\0"), Content::Other);
     }
 }
 
@@ -551,6 +619,22 @@ mod view_tests {
         jobs.try_iter()
             .filter_map(|job| match job {
                 Request::Load(load) => Some(load),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The downloads the app handed the render thread since the last call: their generation, everything fetched,
+    /// and the URLs new in each.
+    fn remotes(jobs: &Receiver<Request>) -> Vec<(u64, super::Fetched, Vec<String>)> {
+        jobs.try_iter()
+            .filter_map(|job| match job {
+                Request::Remote {
+                    generation,
+                    fetched,
+                    urls,
+                } => Some((generation, fetched, urls)),
+                Request::Load(_) => panic!("parsed again"),
                 _ => None,
             })
             .collect()
@@ -852,7 +936,7 @@ mod view_tests {
     }
 
     #[test]
-    fn loading_remote_content_fetches_what_the_page_asked_for_and_lays_it_out_again() {
+    fn loading_remote_content_fetches_what_the_page_asked_for_and_hands_it_to_the_page() {
         let fx = Fixture::new(&["work"]);
         add_html(&fx, 1, "<p>x</p>", "text");
         let faked = faked(&fx);
@@ -865,7 +949,7 @@ mod view_tests {
         assert_eq!(faked.open.find("Loading remote content…").len(), 1);
         let job = fetch_jobs.try_recv().unwrap();
         assert_eq!(job.urls, [hero]);
-        let bytes = BTreeMap::from([(hero.to_string(), b"PNG".to_vec())]);
+        let bytes = BTreeMap::from([(hero.to_string(), super::Bytes::from_static(b"PNG"))]);
         fetched
             .send(FetchDone {
                 tag: job.tag,
@@ -874,9 +958,10 @@ mod view_tests {
             })
             .unwrap();
         faked.open.tick();
-        let load = loads(&faked.jobs).pop().unwrap();
-        assert_eq!(load.fetched[hero], b"PNG");
-        reply(&faked, laid(load.generation, 300.0, &[]));
+        let (generation, fetched, urls) = remotes(&faked.jobs).pop().unwrap();
+        assert_eq!(fetched[hero], &b"PNG"[..]);
+        assert_eq!(urls, [hero]);
+        reply(&faked, laid(generation, 300.0, &[]));
         assert!(faked.open.find("Remote content not loaded.").is_empty());
         assert!(faked.open.find("Loading remote content…").is_empty());
     }
@@ -892,7 +977,7 @@ mod view_tests {
         appear(&faked, faked.generation, &[css]);
         faked.open.click("Load remote content");
         let job = fetch_jobs.try_recv().unwrap();
-        let bytes = BTreeMap::from([(css.to_string(), b"body{}".to_vec())]);
+        let bytes = BTreeMap::from([(css.to_string(), super::Bytes::from_static(b"body{}"))]);
         fetched
             .send(FetchDone {
                 tag: job.tag,
@@ -901,9 +986,9 @@ mod view_tests {
             })
             .unwrap();
         faked.open.tick();
-        let load = loads(&faked.jobs).pop().unwrap();
+        let (generation, _, _) = remotes(&faked.jobs).pop().unwrap();
         let background = "https://cdn.example.com/background.png";
-        reply(&faked, laid(load.generation, 300.0, &[background]));
+        reply(&faked, laid(generation, 300.0, &[background]));
         assert_eq!(fetch_jobs.try_recv().unwrap().urls, [background]);
     }
 
@@ -919,7 +1004,7 @@ mod view_tests {
         appear(&faked, faked.generation, &[css, pixel]);
         faked.open.click("Load remote content");
         let first = fetch_jobs.try_recv().unwrap();
-        let bytes = BTreeMap::from([(css.to_string(), b"body{}".to_vec())]);
+        let bytes = BTreeMap::from([(css.to_string(), super::Bytes::from_static(b"body{}"))]);
         fetched
             .send(FetchDone {
                 tag: first.tag,
@@ -928,12 +1013,12 @@ mod view_tests {
             })
             .unwrap();
         faked.open.tick();
-        let load = loads(&faked.jobs)
+        let (generation, given, _) = remotes(&faked.jobs)
             .pop()
-            .expect("laid out with the first batch");
-        assert_eq!(load.fetched.keys().collect::<Vec<_>>(), [css]);
+            .expect("handed over with the first batch");
+        assert_eq!(given.keys().collect::<Vec<_>>(), [css]);
         let background = "https://cdn.example.com/background.png";
-        reply(&faked, laid(load.generation, 300.0, &[pixel, background]));
+        reply(&faked, laid(generation, 300.0, &[pixel, background]));
         assert_eq!(
             fetch_jobs.try_recv().unwrap().urls,
             [background],
@@ -943,14 +1028,14 @@ mod view_tests {
         fetched
             .send(FetchDone {
                 tag: first.tag,
-                fetched: BTreeMap::from([(pixel.to_string(), Vec::new())]),
+                fetched: BTreeMap::from([(pixel.to_string(), super::Bytes::new())]),
                 last: true,
             })
             .unwrap();
         faked.open.tick();
         assert!(
             view(&faked.open, |v| v.fetching.len() == 1
-                && !v.remote.contains(pixel))
+                && !v.remote.iter().any(|url| url == pixel))
             .unwrap()
         );
     }
@@ -1046,7 +1131,7 @@ mod view_tests {
             })
             .unwrap();
         faked.open.tick();
-        assert!(loads(&faked.jobs).is_empty());
+        assert!(remotes(&faked.jobs).is_empty());
         assert!(view(&faked.open, |v| v.fetched.is_empty()).unwrap());
     }
 
