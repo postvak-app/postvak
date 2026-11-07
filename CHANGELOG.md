@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.1](https://github.com/postvak-app/postvak/compare/v0.16.0...v0.16.1) - 2026-11-07
+
+### Other
+
+- *(gui)* ask for gzip when downloading remote content in HTML mail ([#557](https://github.com/postvak-app/postvak/pull/557))
+- update Cargo.toml dependencies
+
 ## [0.16.0](https://github.com/postvak-app/postvak/compare/v0.15.0...v0.16.0) - 2026-11-06
 
 ### Added
