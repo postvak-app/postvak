@@ -2,9 +2,10 @@
 //! and taking a send back.
 use postvak_core::daemon::client::LazyClient;
 use postvak_core::message::header_value;
+use postvak_core::send::build::bare_address;
 use postvak_core::send::check::DEFAULT_SIZE_LIMIT;
 use postvak_core::send::compose::{Prefilled, Queued, SendKind, SendRequest};
-use postvak_core::send::drafts::{SavedDraft, unbracketed};
+use postvak_core::send::drafts::{self, SavedDraft, unbracketed};
 use postvak_core::send::mailto::Mailto;
 use postvak_core::send::reply::{ForwardAs, ReplyTo};
 
@@ -46,8 +47,13 @@ impl From<&str> for QueueError {
     }
 }
 /// Saves `request` built as a draft in `account`'s Drafts, or with None only deletes, in place of the copies `replaces`.
-pub(crate) type SaveDraftFn =
-    fn(&Paths, &Config, &str, Option<SendRequest>, Vec<String>) -> Result<SavedDraft, String>;
+pub(crate) type SaveDraftFn = fn(
+    &Paths,
+    &Config,
+    &str,
+    Option<(SendRequest, String)>,
+    Vec<String>,
+) -> Result<SavedDraft, String>;
 /// Saves the message `raw` as it is in `account`'s Drafts, or with None only deletes, in place of the copies `replaces`.
 pub(crate) type SaveRawFn =
     fn(&Paths, &str, Option<Vec<u8>>, Vec<String>) -> Result<SavedDraft, String>;
@@ -162,18 +168,21 @@ pub(crate) fn prefill(
         .map_err(|e| error_text(&e))
 }
 
-/// Builds `request` as a draft, as `queue_send` would build the message, and has the daemon save it; waits for the
-/// answer to this request alone, so no other command's refusal is taken for it.
+/// Builds `request` as a draft with the Message-ID given, as `queue_send` would build the message, and has the daemon
+/// save it; waits for the answer to this request alone, so no other command's refusal is taken for it.
 pub(crate) fn save_draft(
     paths: &Paths,
     config: &Config,
     account: &str,
-    request: Option<SendRequest>,
+    request: Option<(SendRequest, String)>,
     replaces: Vec<String>,
 ) -> Result<SavedDraft, String> {
     let client = LazyClient::new(paths);
     let raw = request
-        .map(|request| postvak_core::send::drafts::build(config, paths, &client, &request))
+        .map(|(request, message_id)| {
+            drafts::build(config, paths, &client, &request)
+                .map(|raw| drafts::with_message_id(&raw, &message_id))
+        })
         .transpose()
         .map_err(|e| error_text(&e))?;
     ask_save(&client, account, raw, replaces)
@@ -196,15 +205,27 @@ fn ask_save(
     replaces: Vec<String>,
 ) -> Result<SavedDraft, String> {
     let command = Command::SaveDraft { raw, replaces };
-    match client
-        .client()
-        .and_then(|client| client.request(account, command))
-    {
+    draft_answer(
+        client
+            .client()
+            .and_then(|client| client.request(account, command)),
+    )
+}
+
+/// The daemon's answer to a save, or why it failed; an unexpected answer is named by its kind alone, as it may hold mail.
+fn draft_answer(answer: anyhow::Result<Event>) -> Result<SavedDraft, String> {
+    match answer {
         Ok(Event::DraftSaved {
             message_id, left, ..
         }) => Ok(SavedDraft { message_id, left }),
         Ok(Event::CommandFailed { message, .. }) => Err(clean(&message, false)),
-        Ok(other) => Err(format!("unexpected answer from the daemon: {other:?}")),
+        Ok(other) => {
+            let kind: String = format!("{other:?}")
+                .chars()
+                .take_while(char::is_ascii_alphanumeric)
+                .collect();
+            Err(format!("unexpected answer from the daemon: {kind}"))
+        }
         Err(e) => Err(error_text(&e)),
     }
 }
@@ -276,6 +297,14 @@ fn compose_from_raw(
     })
 }
 
+/// A delete-only save that left a copy in Drafts did not delete it.
+fn all_deleted(saved: SavedDraft) -> Result<(), String> {
+    match saved.left.is_empty() {
+        true => Ok(()),
+        false => Err("a copy is still in Drafts".into()),
+    }
+}
+
 /// Failed outbox message `outbox_id` of `account` to edit as composer `id`, with every account's addresses for From.
 pub(crate) struct OutboxToEdit {
     pub account: String,
@@ -320,6 +349,8 @@ pub(crate) fn edit_outbox(
         return Err(not_saved("it is not failed any more".into()));
     }
     let raw = (outbox.raw(&outbox_id)).map_err(|e| not_saved(e.to_string()))?;
+    let message_id = postvak_core::send::build::message_id(&entry.envelope.from);
+    let raw = drafts::with_message_id(&raw, &message_id);
     let saved = save(paths, &account, Some(raw.clone()), entry.draft).map_err(not_saved)?;
     if let Err(refused) = cancel(paths, &account, &outbox_id) {
         let mut why = match refused {
@@ -327,7 +358,7 @@ pub(crate) fn edit_outbox(
             CancelError::Failed(why) => format!("Not taken out of the outbox: {why}"),
         };
         let copy = saved.message_id.into_iter().collect();
-        if let Err(e) = save(paths, &account, None, copy) {
+        if let Err(e) = save(paths, &account, None, copy).and_then(all_deleted) {
             log::warn!("[{account}] the draft of outbox message {outbox_id} was not deleted: {e}");
             why.push_str(", and the draft copy could not be removed; it is in Drafts");
         }
@@ -668,6 +699,10 @@ impl App {
     /// Discard on "Discard this message?": the composer goes, and what asked to leave the pane goes on. Discard itself
     /// deletes the composer's draft too; leaving another way keeps it.
     pub(super) fn leave_discard(&mut self, target: ComposeTarget) {
+        // Its save's answer names the copy a discard deletes.
+        if self.composer_ref(target).is_some_and(|c| c.saving) {
+            return;
+        }
         match target {
             ComposeTarget::Pane => {
                 if let Some(leave) = self.leave_compose.take() {
@@ -693,6 +728,9 @@ impl App {
 
     /// Save draft on the leave question: once saved, what asked to leave goes on; a window closes.
     pub(super) fn leave_save(&mut self, target: ComposeTarget) {
+        if !self.composer_ref(target).is_some_and(Composer::can_save) {
+            return;
+        }
         let then = match target {
             ComposeTarget::Pane => self.leave_compose.take().map(|leave| *leave),
             ComposeTarget::Window(id) => {
@@ -718,7 +756,7 @@ impl App {
         let account = composer.account.clone();
         let (paths, save) = (self.paths.clone(), self.save_draft);
         let answer = worker::oneshot("compose-draft-delete", self.wake.clone(), move || {
-            save(&paths, &load_config(&paths)?, &account, None, replaces).map(drop)
+            save(&paths, &load_config(&paths)?, &account, None, replaces).and_then(all_deleted)
         });
         self.compose_deleting.push(answer);
     }
@@ -726,10 +764,7 @@ impl App {
     /// Builds and saves the composer's draft on a worker, in place of the copy saved before; a save asked for while one
     /// is on its way runs once that one is answered. `then` is applied once it is saved.
     fn compose_save_draft(&mut self, target: ComposeTarget, then: Option<UiAction>) {
-        let Some(composer) = self
-            .composer_mut(target)
-            .filter(|composer| !composer.loading && !composer.sending)
-        else {
+        let Some(composer) = self.composer_mut(target).filter(|c| c.can_save()) else {
             return;
         };
         if composer.saving {
@@ -748,14 +783,20 @@ impl App {
         let replaces = (composer.draft.as_ref())
             .map(ComposeDraft::ids)
             .unwrap_or_default();
+        // Known before the APPEND, so a save that fails, times out or dies with the window leaves no copy unnamed.
+        let message_id = postvak_core::send::build::message_id(&bare_address(&composer.from));
+        composer.may_hold(message_id.clone());
         let account = composer.account.clone();
+        let pending = composer.clone();
+        self.keep_recovery(pending);
+        self.leave_cancel(target);
         let (paths, save) = (self.paths.clone(), self.save_draft);
         let answer = worker::oneshot("compose-draft", self.wake.clone(), move || {
             save(
                 &paths,
                 &load_config(&paths)?,
                 &account,
-                Some(request),
+                Some((request, message_id)),
                 replaces,
             )
         });
@@ -1377,8 +1418,7 @@ impl App {
             | UiAction::SearchAccepted
             | UiAction::StartSearch
             | UiAction::Reply(_)
-            | UiAction::Forward
-            | UiAction::EditComposeDraft => true,
+            | UiAction::Forward => true,
             UiAction::ReopenCompose(id) => (self.taken.iter().find(|taken| taken.id == *id))
                 .and_then(|taken| taken.composer.as_ref())
                 .is_some_and(|reopened| reopened.original.is_some()),
@@ -2131,6 +2171,31 @@ mod tests {
         assert!(driver.app.composer.is_none());
         assert_eq!(driver.app.top_dialog(), None);
         assert_eq!(driver.app.list.cursor, cursor + 1);
+    }
+
+    #[test]
+    fn an_unexpected_answer_to_a_save_names_only_its_kind() {
+        let event = Event::Error {
+            account: "work".into(),
+            message: "Subject: lunch".into(),
+        };
+        assert_eq!(
+            draft_answer(Ok(event)),
+            Err("unexpected answer from the daemon: Error".to_string())
+        );
+    }
+
+    #[test]
+    fn enter_on_the_list_outside_drafts_keeps_the_reply() {
+        let Replying { mut driver, .. } = replying(&[1, 2]);
+        open(&mut driver, "r");
+        driver.app.focus = Focus::List;
+        driver.press("enter");
+        assert!(driver.app.composer.is_some(), "an unchanged one too");
+        driver.apply(UiAction::ComposeEdit(PANE, ComposeField::Text, "Hi".into()));
+        driver.press("enter");
+        assert!(driver.app.composer.is_some());
+        assert_eq!(driver.app.top_dialog(), None);
     }
 
     #[test]
@@ -3047,6 +3112,8 @@ mod tests {
     mod outbox_edit {
         use std::path::PathBuf;
 
+        use postvak_core::send::drafts;
+
         use super::*;
 
         const FAILED: &[u8] = b"From: work@example.com\r\nTo: ann@x.org\r\nBcc: boss@x.org\r\nSubject: Lunch\r\nMessage-ID: <o1@example.com>\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nNoon?\r\n";
@@ -3096,7 +3163,7 @@ mod tests {
             (fx, driver, wires, failed.id)
         }
 
-        /// The fake save: records a save of FAILED or a delete, and saves it as `<o1@example.com>`.
+        /// The fake save: records a delete, or a save of FAILED under a new Message-ID as `save <replaces> as <id>`.
         fn saved_as_draft(
             paths: &Paths,
             account: &str,
@@ -3104,19 +3171,33 @@ mod tests {
             replaces: Vec<String>,
         ) -> Result<SavedDraft, String> {
             assert_eq!(account, "work");
-            let what = match raw {
+            let replaces = replaces.join(",");
+            let (what, message_id) = match raw {
                 Some(raw) => {
-                    assert_eq!(raw, FAILED);
-                    "save"
+                    let id = postvak_core::message::parse_headers(&raw)
+                        .message_id
+                        .unwrap();
+                    let id = format!("<{id}>");
+                    assert_ne!(id, "<o1@example.com>", "a new Message-ID");
+                    assert!(id.ends_with("@example.com>"), "{id}");
+                    assert_eq!(raw, drafts::with_message_id(FAILED, &id));
+                    (format!("save {replaces} as {id}"), Some(id))
                 }
-                None => "delete",
+                None => (format!("delete {replaces}"), None),
             };
-            let what = format!("{what} {}", replaces.join(","));
             ASKED.lock().unwrap().push((paths.config_file(), what));
-            Ok(SavedDraft {
-                message_id: Some("<o1@example.com>".into()),
-                left: vec!["<d0@example.com>".into()],
-            })
+            let left = message_id
+                .iter()
+                .map(|_| "<d0@example.com>".into())
+                .collect();
+            Ok(SavedDraft { message_id, left })
+        }
+
+        /// The Message-ID the fake saved FAILED as.
+        fn saved_id(fx: &Fixture) -> String {
+            let asked = asked(fx);
+            let save = asked.iter().find_map(|what| what.split_once(" as "));
+            save.unwrap().1.to_string()
         }
 
         fn edit(driver: &mut Driver, id: &str) {
@@ -3132,9 +3213,13 @@ mod tests {
         fn edit_turns_a_failed_message_into_a_draft_and_opens_it() {
             let (fx, mut driver, _wires, id) = failed_in_the_outbox();
             edit(&mut driver, &id);
+            let saved = saved_id(&fx);
             assert_eq!(
                 asked(&fx),
-                ["save <d0@example.com>".to_string(), format!("cancel {id}")]
+                [
+                    format!("save <d0@example.com> as {saved}"),
+                    format!("cancel {id}")
+                ]
             );
             let window = &driver.app.new_mail[0];
             assert_eq!(
@@ -3144,7 +3229,7 @@ mod tests {
             assert_eq!(window.bcc, "boss@x.org");
             assert!(window.text.contains("Noon?"));
             let draft = window.draft.as_ref().unwrap();
-            assert_eq!(draft.message_id, "<o1@example.com>");
+            assert_eq!(draft.message_id, saved, "it opens from the bytes saved");
             assert_eq!(draft.left, ["<d0@example.com>"]);
             assert!(
                 Outbox::open(&fx.paths, "work")
@@ -3213,9 +3298,13 @@ mod tests {
                 Err(CancelError::TooLate)
             };
             edit(&mut driver, &id);
+            let saved = saved_id(&fx);
             assert_eq!(
                 asked(&fx),
-                ["save <d0@example.com>", "delete <o1@example.com>"]
+                [
+                    format!("save <d0@example.com> as {saved}"),
+                    format!("delete {saved}")
+                ]
             );
             assert!(driver.app.new_mail.is_empty() && driver.app.composer.is_none());
             let rows = crate::status::outbox_rows(&driver.app);
@@ -3229,9 +3318,13 @@ mod tests {
             driver.app.cancel_send =
                 |_, _, _| Err(CancelError::Failed("the daemon is stopping".into()));
             edit(&mut driver, &id);
+            let saved = saved_id(&fx);
             assert_eq!(
                 asked(&fx),
-                ["save <d0@example.com>", "delete <o1@example.com>"]
+                [
+                    format!("save <d0@example.com> as {saved}"),
+                    format!("delete {saved}")
+                ]
             );
             assert!(driver.app.new_mail.is_empty() && driver.app.composer.is_none());
             let rows = crate::status::outbox_rows(&driver.app);
@@ -3280,6 +3373,7 @@ mod tests {
             home: PathBuf,
             account: String,
             text: Option<String>,
+            message_id: Option<String>,
             replaces: Vec<String>,
             answer: Sender<Result<SavedDraft, String>>,
         }
@@ -3291,18 +3385,21 @@ mod tests {
             paths: &Paths,
             _: &Config,
             account: &str,
-            request: Option<SendRequest>,
+            request: Option<(SendRequest, String)>,
             replaces: Vec<String>,
         ) -> Result<SavedDraft, String> {
             let (answer, answered) = channel();
-            let text = request.map(|request| match request.body {
-                Body::Given(text) => text,
-                _ => String::new(),
-            });
+            let (text, message_id) = request
+                .map(|(request, message_id)| match request.body {
+                    Body::Given(text) => (text, message_id),
+                    _ => (String::new(), message_id),
+                })
+                .unzip();
             CALLS.lock().unwrap().push(Call {
                 home: paths.state_dir.clone(),
                 account: account.into(),
                 text,
+                message_id,
                 replaces,
                 answer,
             });
@@ -3458,6 +3555,7 @@ mod tests {
             write(&mut driver, PANE, "Hi");
             driver.apply(UiAction::ComposeSaveDraft(PANE));
             let call = asked(&mut driver, &fx);
+            let pending = call.message_id.clone().unwrap();
             answer(
                 &mut driver,
                 call,
@@ -3465,7 +3563,11 @@ mod tests {
             );
             let composer = composer(&driver);
             assert_eq!(composer.text, "Hi");
-            assert_eq!(composer.draft, None);
+            let draft = ComposeDraft {
+                message_id: pending,
+                left: Vec::new(),
+            };
+            assert_eq!(composer.draft, Some(draft), "it may be on the server");
             assert!(!composer.saving);
             assert!(composer.changed());
             let error = Some((Field::Send, "This account has no Drafts folder".to_string()));
@@ -3644,6 +3746,117 @@ mod tests {
                 (None, &["<d2@draft>".to_string()][..])
             );
             answer(&mut driver, call, Ok(SavedDraft::default()));
+        }
+
+        #[test]
+        fn each_save_names_a_new_message_id_on_the_from_domain() {
+            let Replying { mut driver, fx, .. } = drafting(&[1]);
+            open(&mut driver, "r");
+            write(&mut driver, PANE, "Hi");
+            driver.apply(UiAction::ComposeSaveDraft(PANE));
+            let first = asked(&mut driver, &fx);
+            let id = first.message_id.clone().unwrap();
+            assert!(id.starts_with('<') && id.ends_with("@example.com>"), "{id}");
+            answer(&mut driver, first, saved(&id, &[]));
+            driver.apply(UiAction::ComposeSaveDraft(PANE));
+            let second = asked(&mut driver, &fx);
+            assert_ne!(second.message_id, Some(id));
+            answer(&mut driver, second, saved("<d2@draft>", &[]));
+        }
+
+        #[test]
+        fn a_failed_save_leaves_its_copy_for_the_next_save_to_replace() {
+            let Replying { mut driver, fx, .. } = drafting(&[1]);
+            open(&mut driver, "r");
+            save(&mut driver, &fx, PANE, "Hi", "<d1@draft>", &[]);
+            write(&mut driver, PANE, "Hi again");
+            driver.apply(UiAction::ComposeSaveDraft(PANE));
+            let call = asked(&mut driver, &fx);
+            assert_eq!(call.replaces, ["<d1@draft>"]);
+            let pending = call.message_id.clone().unwrap();
+            answer(&mut driver, call, Err("the daemon did not answer".into()));
+            driver.apply(UiAction::ComposeSaveDraft(PANE));
+            let call = asked(&mut driver, &fx);
+            assert_eq!(call.replaces, ["<d1@draft>".to_string(), pending]);
+            answer(&mut driver, call, saved("<d3@draft>", &[]));
+        }
+
+        #[test]
+        fn a_save_in_flight_names_its_copy_in_the_recovery_file() {
+            let Replying { mut driver, fx, .. } = drafting(&[1]);
+            open(&mut driver, "r");
+            save(&mut driver, &fx, PANE, "Hi", "<d1@draft>", &[]);
+            write(&mut driver, PANE, "Hi again");
+            driver.apply(UiAction::ComposeSaveDraft(PANE));
+            let call = asked(&mut driver, &fx);
+            let pending = call.message_id.clone().unwrap();
+            drop(driver);
+            drop(call);
+
+            let (restarted, _wires) = fx.driver();
+            let pane = restarted.app.composer.as_ref().unwrap();
+            assert_eq!(pane.text, "Hi again");
+            assert_eq!(
+                pane.draft.as_ref().map(ComposeDraft::ids),
+                Some(vec!["<d1@draft>".to_string(), pending])
+            );
+        }
+
+        #[test]
+        fn a_save_closes_the_leave_question_and_discard_waits_for_it() {
+            let Replying { mut driver, fx, .. } = drafting(&[1, 2]);
+            open(&mut driver, "r");
+            write(&mut driver, PANE, "Hi");
+            driver.press("j");
+            assert!(driver.app.leave_question(PANE).is_some());
+            driver.apply(UiAction::ComposeSaveDraft(PANE));
+            assert_eq!(driver.app.leave_question(PANE), None);
+            driver.apply(UiAction::LeaveComposeDiscard(PANE));
+            assert!(driver.app.composer.is_some(), "kept until the save answers");
+            let call = asked(&mut driver, &fx);
+            answer(&mut driver, call, saved("<d1@draft>", &[]));
+
+            let window = new_mail(&mut driver);
+            driver.apply(UiAction::ComposeDiscard(window));
+            assert!(driver.app.leave_question(window).is_some());
+            driver.apply(UiAction::ComposeSaveDraft(window));
+            assert_eq!(driver.app.leave_question(window), None);
+            driver.apply(UiAction::LeaveComposeDiscard(window));
+            assert_eq!(driver.app.new_mail.len(), 1, "kept until the save answers");
+            let call = asked(&mut driver, &fx);
+            answer(&mut driver, call, saved("<d2@draft>", &[]));
+        }
+
+        #[test]
+        fn save_draft_on_the_leave_question_keeps_it_when_no_save_starts() {
+            let Replying { mut driver, fx, .. } = drafting(&[1, 2]);
+            open(&mut driver, "r");
+            write(&mut driver, PANE, "Hi");
+            driver.press("j");
+            driver.app.composer.as_mut().unwrap().loading = true;
+            driver.apply(UiAction::LeaveComposeSave(PANE));
+            assert!(driver.app.leave_question(PANE).is_some());
+            driver.tick();
+            assert!(take_call(&fx).is_none());
+        }
+
+        #[test]
+        fn a_copy_a_discard_left_in_drafts_is_noted() {
+            let Replying { mut driver, fx, .. } = drafting(&[1]);
+            open(&mut driver, "r");
+            save(&mut driver, &fx, PANE, "Hi", "<d1@draft>", &[]);
+            driver.apply(UiAction::ComposeDiscard(PANE));
+            driver.apply(UiAction::LeaveComposeDiscard(PANE));
+            let call = asked(&mut driver, &fx);
+            let left = SavedDraft {
+                message_id: None,
+                left: vec!["<d1@draft>".into()],
+            };
+            answer(&mut driver, call, Ok(left));
+            assert_eq!(
+                driver.app.error.as_deref(),
+                Some("could not delete the draft: a copy is still in Drafts")
+            );
         }
 
         #[test]

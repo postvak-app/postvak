@@ -477,6 +477,24 @@ impl Composer {
         self.opened_as = saved.snapshot();
     }
 
+    /// Whether Save draft can start: not while it loads or is sent.
+    pub(crate) fn can_save(&self) -> bool {
+        !self.loading && !self.sending
+    }
+
+    /// Counts `message_id` among its copies in Drafts, for a save that may reach the server without answering.
+    pub(crate) fn may_hold(&mut self, message_id: String) {
+        match &mut self.draft {
+            Some(draft) => draft.left.push(message_id),
+            None => {
+                self.draft = Some(ComposeDraft {
+                    message_id,
+                    left: Vec::new(),
+                })
+            }
+        }
+    }
+
     pub(crate) fn split_addresses(field: &str) -> Vec<String> {
         split_recipients(field)
     }
