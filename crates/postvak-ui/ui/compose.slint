@@ -499,7 +499,7 @@ export component ComposeWindow inherits Window {
     init => { StdPalette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light; }
     changed dark => { StdPalette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light; }
 
-    title: "New message";
+    title: root.compose.subject.is-empty ? "New message" : root.compose.subject;
     preferred-width: 720px;
     preferred-height: 640px;
     background: Theme.pane.background;
