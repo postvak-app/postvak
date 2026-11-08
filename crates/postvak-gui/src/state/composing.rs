@@ -459,13 +459,14 @@ impl App {
         let dir = recovery_dir(&self.paths);
         let written = (self.recovery_written.iter()).position(|w| w.id == composer.id);
         match written {
-            Some(index) if !composer.changed() => {
+            Some(index) if !composer.changed() && !composer.saving => {
                 // The open composer still lists its draft files.
                 remove_recovery_file(&dir, composer.id);
                 self.recovery_written.remove(index);
             }
             Some(index) if self.recovery_written[index] == composer => {}
-            _ if !composer.changed() => {}
+            // A save on its way has named a copy only this file remembers after a crash.
+            _ if !composer.changed() && !composer.saving => {}
             _ => match save_recovery(&dir, &composer) {
                 Ok(()) => {
                     self.recovery_written.retain(|w| w.id != composer.id);
@@ -728,7 +729,9 @@ impl App {
 
     /// Save draft on the leave question: once saved, what asked to leave goes on; a window closes.
     pub(super) fn leave_save(&mut self, target: ComposeTarget) {
-        if !self.composer_ref(target).is_some_and(Composer::can_save) {
+        if !self.composer_ref(target).is_some_and(Composer::can_save)
+            || self.refuse_without_drafts(target)
+        {
             return;
         }
         let then = match target {
@@ -742,6 +745,22 @@ impl App {
         if then.is_some() {
             self.compose_save_draft(target, then);
         }
+    }
+
+    /// Says so on the composer at `target` when its account has no Drafts folder, before any copy is named.
+    fn refuse_without_drafts(&mut self, target: ComposeTarget) -> bool {
+        let Some(account) = self.composer_ref(target).map(|c| c.account.clone()) else {
+            return false;
+        };
+        let index = self.accounts.iter().position(|a| a.name == account);
+        let has_drafts = index.is_some_and(|index| {
+            (self.accounts[index].folders.iter()).any(|f| self.is_drafts(index, &f.name))
+        });
+        if !has_drafts && let Some(composer) = self.composer_mut(target) {
+            let why = postvak_core::send::drafts::SaveDraftError::NoDraftsFolder.to_string();
+            composer.error = Some((Field::Send, why));
+        }
+        !has_drafts
     }
 
     /// Deletes every copy in Drafts of the composer at `target`, on a worker; a failure is noted.
@@ -764,6 +783,11 @@ impl App {
     /// Builds and saves the composer's draft on a worker, in place of the copy saved before; a save asked for while one
     /// is on its way runs once that one is answered. `then` is applied once it is saved.
     fn compose_save_draft(&mut self, target: ComposeTarget, then: Option<UiAction>) {
+        // A save under the leave question answers it, so no Discard waits on a save it cannot see.
+        self.leave_cancel(target);
+        if self.refuse_without_drafts(target) {
+            return;
+        }
         let Some(composer) = self.composer_mut(target).filter(|c| c.can_save()) else {
             return;
         };
@@ -789,7 +813,6 @@ impl App {
         let account = composer.account.clone();
         let pending = composer.clone();
         self.keep_recovery(pending);
-        self.leave_cancel(target);
         let (paths, save) = (self.paths.clone(), self.save_draft);
         let answer = worker::oneshot("compose-draft", self.wake.clone(), move || {
             save(
@@ -1682,7 +1705,14 @@ mod tests {
 
     /// A window over `uids` in work's INBOX, with the daemon's sending faked.
     fn replying(uids: &[u32]) -> Replying {
+        replying_with(uids, None)
+    }
+
+    fn replying_with(uids: &[u32], folder: Option<&str>) -> Replying {
         let fx = Fixture::new(&["work"]);
+        if let Some(folder) = folder {
+            fx.folder("work", folder, Some(folder));
+        }
         for &uid in uids {
             fx.add("work", message("INBOX", uid, &format!("subject {uid}")));
         }
@@ -3440,7 +3470,7 @@ mod tests {
         }
 
         fn drafting(uids: &[u32]) -> Replying {
-            let mut replying = replying(uids);
+            let mut replying = replying_with(uids, Some("Drafts"));
             replying.driver.app.save_draft = held;
             replying
         }
@@ -3504,6 +3534,38 @@ mod tests {
             assert!(!composer.saving);
             assert!(!composer.changed(), "saved, so leaving asks nothing");
             assert_eq!(toast(&driver), Some(("Draft saved", false)));
+        }
+
+        #[test]
+        fn without_a_drafts_folder_save_says_so_and_names_no_copy() {
+            let Replying { mut driver, fx, .. } = replying(&[1]);
+            driver.app.save_draft = held;
+            open(&mut driver, "r");
+            write(&mut driver, PANE, "Hi");
+            driver.apply(UiAction::ComposeSaveDraft(PANE));
+            driver.tick();
+            assert!(take_call(&fx).is_none());
+            let composer = composer(&driver);
+            assert_eq!(composer.draft, None, "Discard asks nothing about a draft");
+            let error = composer.error.as_ref().map(|e| e.1.as_str());
+            assert_eq!(error, Some("This account has no Drafts folder"));
+        }
+
+        #[test]
+        fn an_unchanged_composer_saving_keeps_its_file_until_saved() {
+            let Replying { mut driver, fx, .. } = drafting(&[1]);
+            open(&mut driver, "r");
+            driver.apply(UiAction::ComposeSaveDraft(PANE));
+            let call = asked(&mut driver, &fx);
+            let kept = load_recoveries(&recovery_dir(&fx.paths));
+            let pending = kept.first().and_then(|c| c.draft.clone());
+            assert!(
+                pending.is_some(),
+                "a crash now still knows the copy's Message-ID"
+            );
+
+            answer(&mut driver, call, saved("<d1@draft>", &[]));
+            assert!(load_recoveries(&recovery_dir(&fx.paths)).is_empty());
         }
 
         #[test]
@@ -3876,6 +3938,7 @@ mod tests {
             use slint::platform::{Key, WindowEvent};
             let fx = Fixture::new(&["work"]);
             fx.add("work", message("INBOX", 1, "subject 1"));
+            fx.folder("work", "Drafts", Some("Drafts"));
             let (open, _wires) = fx.window();
             open.with(|live| {
                 live.app.prefill = filled;
