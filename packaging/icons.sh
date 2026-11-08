@@ -8,6 +8,7 @@
 #
 # Writes:
 #   assets/icon.png                     512x512 window icon, transparent background
+#   assets/tray-{light,dark}.png        the macOS menu bar glyph from assets/tray.svg, black and white
 #   assets/hicolor/<s>x<s>/apps/<id>.png  Linux icon theme sizes 16..512
 #   assets/hicolor/scalable/apps/<id>.svg a copy of icon.svg
 #   assets/macos.iconset/icon_*.png     Apple's icon grid: the tile is 824/1024 of
@@ -32,6 +33,10 @@ render() { # render <svg> <size> <out.png>
 }
 
 render "$svg" 512 "$assets/icon.png"
+
+# The macOS menu bar's glyph, black for a light bar and white for a dark one.
+resvg --height 72 "$assets/tray.svg" "$assets/tray-light.png"
+sed 's/fill="#000"/fill="#fff"/' "$assets/tray.svg" | resvg --height 72 - "$assets/tray-dark.png"
 
 rm -rf "$assets/hicolor"
 for s in 16 24 32 48 64 128 256 512; do

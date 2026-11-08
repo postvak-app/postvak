@@ -413,6 +413,7 @@ export component MailWindow inherits Window {
             }
             MenuItem {
                 title: "Preferences…";
+                role: MenuItemRole.preferences;
                 shortcut: @keys(Control + ",");
                 activated => { root.menu-item(MenuAction.preferences); }
             }
@@ -424,6 +425,7 @@ export component MailWindow inherits Window {
             }
             MenuItem {
                 title: "Quit";
+                role: MenuItemRole.quit;
                 shortcut: @keys(Control + Q);
                 activated => { root.quit(); }
             }
@@ -559,6 +561,7 @@ export component MailWindow inherits Window {
             }
             MenuItem {
                 title: "About Postvak";
+                role: MenuItemRole.about;
                 activated => { root.menu-item(MenuAction.about); }
             }
         }

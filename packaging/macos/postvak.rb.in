@@ -14,16 +14,16 @@ cask "postvak" do
     strategy :github_latest
   end
 
-  depends_on macos: ">= :big_sur"
+  depends_on :macos
 
   app "Postvak.app"
   binary "#{appdir}/Postvak.app/Contents/MacOS/postvak"
 
 @ADHOC@  # Signed ad hoc, not notarized: without clearing the quarantine flag Homebrew sets, Gatekeeper refuses the app.
-@ADHOC@  postflight do
-@ADHOC@    system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{appdir}/Postvak.app"]
+@ADHOC@  postflight_steps do
+@ADHOC@    run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{appdir}}/Postvak.app"]
 @ADHOC@  end
-
+@ADHOC@
   # Paths from postvak-core's paths.rs (directories::ProjectDirs on macOS) and daemon/service.rs (the launchd agent).
   # Passwords stay in the login Keychain; remove them with Keychain Access.
   zap launchctl: "io.github.postvak_app.postvak",
