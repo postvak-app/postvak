@@ -331,7 +331,7 @@ impl Live {
             let weak = live.window.as_weak();
             tray.on_open(move || {
                 if let Some(window) = weak.upgrade() {
-                    raise(&window);
+                    raise(&window, true);
                 }
             });
             tray.on_sync(|| {
@@ -473,10 +473,16 @@ impl Live {
 /// Shows the window in front of other apps: `show` alone neither activates the app (macOS) nor restores a minimized
 /// window. The focus waits a turn of the event loop, for the native window `show` creates.
 ///
-/// Wayland lets no app restore, focus or raise its own window: a window that was hidden comes back as a new one,
-/// which the compositor usually puts in front, and one that is open asks for attention, which Plasma shows on its
-/// task bar entry and GNOME as "Postvak is ready".
-fn raise(window: &ui::MailWindow) {
+/// Wayland lets no app restore, focus or raise its own window: a window that was hidden comes back as a new one. A
+/// click on the tray icon comes with an activation token that Slint gives the next new window, which lets it come to
+/// the front, so `from_tray` shows an open window again as a new one. Otherwise an open window asks for attention,
+/// which Plasma shows on its task bar entry and GNOME as "Postvak is ready".
+fn raise(window: &ui::MailWindow, from_tray: bool) {
+    let wayland = window.window().with_winit_window(on_wayland);
+    let recreated = recreate(from_tray, wayland);
+    if recreated && let Err(e) = window.hide() {
+        log::warn!("could not hide the window to show it again: {e}");
+    }
     if let Err(e) = window.show() {
         log::warn!("could not show the window: {e}");
         return;
@@ -487,7 +493,7 @@ fn raise(window: &ui::MailWindow) {
         if let Some(window) = weak.upgrade() {
             window.window().with_winit_window(|native| {
                 native.focus_window();
-                if on_wayland(native) {
+                if on_wayland(native) && !recreated {
                     native.request_user_attention(Some(
                         slint::winit_030::winit::window::UserAttentionType::Informational,
                     ));
@@ -495,6 +501,12 @@ fn raise(window: &ui::MailWindow) {
             });
         }
     });
+}
+
+/// Whether `raise` hides the window first, so that it comes back as a new one: only for a tray click, and only for an
+/// open window on Wayland (`wayland` is `None` when there is no native window, as when the window is hidden).
+fn recreate(from_tray: bool, wayland: Option<bool>) -> bool {
+    from_tray && wayland == Some(true)
 }
 
 fn on_wayland(native: &slint::winit_030::winit::window::Window) -> bool {
@@ -520,7 +532,7 @@ fn hand_over(request: instance::Request) {
     }
     let window = with_live(|live| live.window.as_weak()).and_then(|weak| weak.upgrade());
     if let Some(window) = window {
-        raise(&window);
+        raise(&window, false);
     }
 }
 
@@ -729,6 +741,23 @@ fn await_save(window: &ui::StartupWindow, pending: Pending) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_a_tray_click_shows_an_open_wayland_window_again_as_a_new_one() {
+        assert!(super::recreate(true, Some(true)));
+        assert!(
+            !super::recreate(false, Some(true)),
+            "another start has no token for it"
+        );
+        assert!(
+            !super::recreate(true, Some(false)),
+            "X11 raises the window itself"
+        );
+        assert!(
+            !super::recreate(true, None),
+            "a hidden window is new when shown"
+        );
+    }
+
     /// The window and tray icon (`window.slint`, `tray.slint`): `assets/icon.svg` rendered to PNG by
     /// `packaging/icons.sh`.
     const ICON: &[u8] = include_bytes!("../../postvak-ui/assets/icon.png");
