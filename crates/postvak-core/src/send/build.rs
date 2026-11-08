@@ -3,7 +3,7 @@
 
 use std::time::{Duration, SystemTime};
 
-use lettre::message::header::{ContentTransferEncoding, ContentType};
+use lettre::message::header::{ContentTransferEncoding, ContentType, HeaderName, HeaderValue};
 use lettre::message::{Attachment, Mailbox, MultiPart, SinglePart};
 
 /// The width plain text is wrapped at.
@@ -29,6 +29,8 @@ pub struct Draft {
     pub references: Vec<String>,
     /// A whole message enclosed as a `message/rfc822` part, byte for byte.
     pub enclosed: Option<Vec<u8>>,
+    /// Written as the `X-Postvak-Draft` header: what kind of draft this is, for opening it again.
+    pub postvak_draft: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,6 +240,20 @@ pub fn build(draft: &Draft, now: i64) -> Result<Vec<u8>, BuildError> {
     }
     if !draft.references.is_empty() {
         builder = builder.references(draft.references.join(" "));
+    }
+    if let Some(value) = &draft.postvak_draft {
+        builder = builder.raw_header(HeaderValue::new(
+            HeaderName::new_from_ascii_str("X-Postvak-Draft"),
+            value.clone(),
+        ));
+    }
+    if draft.to.is_empty() && draft.cc.is_empty() && draft.bcc.is_empty() {
+        // lettre wants an envelope recipient even for a message only formatted, as a draft without one yet is.
+        let from: lettre::Address =
+            (draft.from.trim().parse()).map_err(|_| BuildError::Address(draft.from.clone()))?;
+        let envelope = lettre::address::Envelope::new(Some(from.clone()), vec![from])
+            .map_err(|e| BuildError::Message(e.to_string()))?;
+        builder = builder.envelope(envelope);
     }
 
     let text = text_part(&draft.text)?;

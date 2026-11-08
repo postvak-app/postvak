@@ -439,6 +439,15 @@ pub fn reply(
     })
 }
 
+/// The attachments of `raw` as files, in the reader's order: every part but the body text and the images its HTML
+/// names by `cid:`, an enclosed message counting as one.
+pub(crate) fn attached_files(raw: &[u8]) -> Vec<FileAttachment> {
+    MessageParser::default()
+        .parse(raw)
+        .map(|msg| parts(&msg, true).2)
+        .unwrap_or_default()
+}
+
 /// The attachments an inline forward of `original` can take along, as (file name, size) in the order `Only` indexes.
 pub fn forward_attachments(original: &[u8]) -> Vec<(String, u64)> {
     read(original, true)
@@ -523,11 +532,11 @@ pub fn forward(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::config::{AccountConfig, PasswordSource};
 
-    fn identity() -> Identity {
+    pub(crate) fn identity() -> Identity {
         let mut account = AccountConfig::new(
             "work",
             "imap.example.com",
@@ -539,7 +548,7 @@ mod tests {
         account.identity().unwrap()
     }
 
-    fn original(headers: &str, body: &str) -> Vec<u8> {
+    pub(crate) fn original(headers: &str, body: &str) -> Vec<u8> {
         format!(
             "From: Linus Example <linus@x.org>\r\nTo: me@example.com\r\nSubject: Plans\r\nDate: Mon, 2 Nov 2026 10:00:00 +0100\r\nMessage-ID: <m1@x.org>\r\n{headers}\r\n{body}"
         )
@@ -734,7 +743,7 @@ mod tests {
         );
     }
 
-    const MIXED: &str =
+    pub(crate) const MIXED: &str =
         "MIME-Version: 1.0\r\nCc: c@x.org\r\nContent-Type: multipart/mixed; boundary=b\r\n";
     const MIXED_BODY: &str = "--b\r\nContent-Type: text/plain\r\n\r\nthe text\r\n--b\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=a.pdf\r\nContent-Transfer-Encoding: base64\r\n\r\nJVBERg==\r\n--b--\r\n";
 
@@ -769,7 +778,7 @@ mod tests {
         );
     }
 
-    const TWO: &str = "--b\r\nContent-Type: text/plain\r\n\r\nthe text\r\n--b\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=a.pdf\r\nContent-Transfer-Encoding: base64\r\n\r\nJVBERg==\r\n--b\r\nContent-Type: text/csv\r\nContent-Disposition: attachment; filename=b.csv\r\n\r\n1,2,3\r\n--b--\r\n";
+    pub(crate) const TWO: &str = "--b\r\nContent-Type: text/plain\r\n\r\nthe text\r\n--b\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=a.pdf\r\nContent-Transfer-Encoding: base64\r\n\r\nJVBERg==\r\n--b\r\nContent-Type: text/csv\r\nContent-Disposition: attachment; filename=b.csv\r\n\r\n1,2,3\r\n--b--\r\n";
 
     #[test]
     fn only_the_listed_attachments_go_along() {

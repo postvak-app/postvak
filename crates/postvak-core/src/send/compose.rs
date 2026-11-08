@@ -79,6 +79,8 @@ pub struct SendRequest {
     pub headers: Option<HeaderEdits>,
     /// Applies only to an inline forward: the attachments to take along, by index into [`reply::forward_attachments`]; unset, all.
     pub forward_parts: Option<Vec<usize>>,
+    /// The copies in Drafts to delete once it is sent, by Message-ID; normally the one draft it was opened from.
+    pub draft: Vec<String>,
 }
 
 /// What a composer opens with.
@@ -205,7 +207,7 @@ fn original_for(
 }
 
 /// The draft for `kind` with `body`, answering `original` when it is a reply or forward.
-fn draft_for(
+pub(super) fn draft_for(
     identity: &Identity,
     kind: &SendKind,
     original: &[u8],
@@ -315,6 +317,7 @@ fn sending_server(
 }
 
 /// Puts a checked message in the daemon's outbox, due at `due`.
+#[allow(clippy::too_many_arguments)]
 fn queue(
     client: &LazyClient,
     account: &AccountConfig,
@@ -322,13 +325,17 @@ fn queue(
     due: i64,
     save_sent: bool,
     original: Option<Original>,
+    draft: Vec<String>,
     first_recipient: String,
 ) -> anyhow::Result<Queued> {
     let envelope = Envelope {
         from: checked.from.clone(),
         to: checked.recipients.clone(),
     };
-    let entry = Entry::new(envelope, due, save_sent, original);
+    let entry = Entry {
+        draft,
+        ..Entry::new(envelope, due, save_sent, original)
+    };
     let (id, due) = client
         .client()?
         .queue_send(&account.name, &checked.keep, &entry)?;
@@ -339,6 +346,61 @@ fn queue(
         first_recipient,
         more: checked.recipients.len().saturating_sub(1),
     })
+}
+
+/// The raw original a reply or forward answers, and the flag it gets once the answer went.
+type Answered = (Vec<u8>, OriginalFlag);
+
+/// What `request` describes, before it is built: the draft, and the original it answers with the flag that gets; what a
+/// sent message and a saved draft share. `edit` opens the editor on a text and returns it edited.
+pub(super) fn message_draft(
+    paths: &Paths,
+    client: &LazyClient,
+    account: &AccountConfig,
+    identity: &Identity,
+    request: &SendRequest,
+    edit: impl FnOnce(&str) -> anyhow::Result<String>,
+) -> anyhow::Result<(Draft, Option<Answered>)> {
+    let given = match &request.body {
+        Body::Given(text) => text.clone(),
+        Body::Edit => String::new(),
+    };
+    let original = match request.original.clone() {
+        Some(raw) => flag_for(&request.kind).map(|flag| (raw, flag)),
+        None => original_for(paths, client, account, &request.kind)?,
+    };
+    let forward_parts = request.forward_parts.as_deref();
+    let raw = original.as_ref().map_or(&[][..], |(raw, _)| raw.as_slice());
+    let mut draft = draft_for(identity, &request.kind, raw, &given, forward_parts)?;
+    if request.body == Body::Edit {
+        let template = super::edit::template(&draft);
+        let edited = edit(&template)?;
+        let Some(mut written) = super::edit::read_back(&template, &edited, draft.clone())? else {
+            bail!("the message was left empty or unchanged, so nothing was sent");
+        };
+        // The user's text above an untouched quote keeps the HTML of an HTML original; answers written into the quote
+        // send as plain text only.
+        if draft.html.is_some() {
+            let quote = draft.text.trim_start_matches('\n').trim_end();
+            written.html = match written.text.trim_end().strip_suffix(quote) {
+                Some(user) => {
+                    draft_for(identity, &request.kind, raw, user.trim_end(), forward_parts)?.html
+                }
+                None => None,
+            };
+        }
+        draft = written;
+    }
+    if let Some(edits) = &request.headers {
+        apply_headers(&mut draft, edits, identity)?;
+    }
+    if let Some(from) = &request.from {
+        set_from(&mut draft, from, identity)?;
+    }
+    draft
+        .attachments
+        .extend(read_attachments(&request.attachments)?);
+    Ok((draft, original))
 }
 
 /// Builds, checks and queues the message `request` describes; `edit` opens the editor on a text and returns it edited.
@@ -352,52 +414,7 @@ pub fn compose(
     let account = config::single(&config.accounts, request.account.as_deref())?;
     let identity = account.identity()?;
     let (state, server) = sending_server(paths, account)?;
-    let given = match &request.body {
-        Body::Given(text) => text.clone(),
-        Body::Edit => String::new(),
-    };
-    let original = match request.original.clone() {
-        Some(raw) => flag_for(&request.kind).map(|flag| (raw, flag)),
-        None => original_for(paths, client, account, &request.kind)?,
-    };
-    let forward_parts = request.forward_parts.as_deref();
-    let raw = original.as_ref().map_or(&[][..], |(raw, _)| raw.as_slice());
-    let mut draft = draft_for(&identity, &request.kind, raw, &given, forward_parts)?;
-    if request.body == Body::Edit {
-        let template = super::edit::template(&draft);
-        let edited = edit(&template)?;
-        let Some(mut written) = super::edit::read_back(&template, &edited, draft.clone())? else {
-            bail!("the message was left empty or unchanged, so nothing was sent");
-        };
-        // The user's text above an untouched quote keeps the HTML of an HTML original; answers written into the quote
-        // send as plain text only.
-        if draft.html.is_some() {
-            let quote = draft.text.trim_start_matches('\n').trim_end();
-            written.html = match written.text.trim_end().strip_suffix(quote) {
-                Some(user) => {
-                    draft_for(
-                        &identity,
-                        &request.kind,
-                        raw,
-                        user.trim_end(),
-                        forward_parts,
-                    )?
-                    .html
-                }
-                None => None,
-            };
-        }
-        draft = written;
-    }
-    if let Some(edits) = &request.headers {
-        apply_headers(&mut draft, edits, &identity)?;
-    }
-    if let Some(from) = &request.from {
-        set_from(&mut draft, from, &identity)?;
-    }
-    draft
-        .attachments
-        .extend(read_attachments(&request.attachments)?);
+    let (draft, original) = message_draft(paths, client, account, &identity, &request, edit)?;
     let now = crate::time::now();
     let keep = build::build(&draft, now)?;
     let args = CheckRecipients {
@@ -436,6 +453,7 @@ pub fn compose(
         now + delay,
         save_sent,
         original,
+        request.draft,
         first,
     )
 }
@@ -474,6 +492,7 @@ pub fn compose_raw(
         crate::time::now(),
         save_sent,
         None,
+        Vec::new(),
         first,
     )
 }
@@ -493,7 +512,7 @@ pub fn compose_raw_and_wait(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::daemon::Client;
     use crate::daemon::test_support::{TestDaemon, options, recording_connector, recording_smtp};
@@ -501,16 +520,16 @@ mod tests {
     use crate::store::Message;
     use std::time::{Duration, Instant};
 
-    struct Home {
-        daemon: TestDaemon,
+    pub(crate) struct Home {
+        pub(crate) daemon: TestDaemon,
         smtp: SharedSmtp,
-        config: Config,
-        client: LazyClient,
+        pub(crate) config: Config,
+        pub(crate) client: LazyClient,
     }
 
-    const ORIGINAL: &[u8] = b"From: Linus Example <linus@x.org>\r\nTo: me@example.com\r\nSubject: Plans\r\nDate: Mon, 2 Nov 2026 10:00:00 +0000\r\nMessage-ID: <m1@x.org>\r\n\r\nShall we?\r\n";
+    pub(crate) const ORIGINAL: &[u8] = b"From: Linus Example <linus@x.org>\r\nTo: me@example.com\r\nSubject: Plans\r\nDate: Mon, 2 Nov 2026 10:00:00 +0000\r\nMessage-ID: <m1@x.org>\r\n\r\nShall we?\r\n";
 
-    fn home() -> Home {
+    pub(crate) fn home() -> Home {
         let smtp = SharedSmtp::default();
         let daemon = TestDaemon::start_with(crate::daemon::Options {
             smtp: recording_smtp(smtp.clone()),
@@ -559,7 +578,7 @@ mod tests {
         }
     }
 
-    fn request(kind: SendKind) -> SendRequest {
+    pub(crate) fn request(kind: SendKind) -> SendRequest {
         SendRequest {
             account: Some("work".into()),
             kind,
@@ -571,6 +590,7 @@ mod tests {
             original: None,
             headers: None,
             forward_parts: None,
+            draft: Vec::new(),
         }
     }
 
@@ -621,6 +641,17 @@ mod tests {
         assert!(header("From").unwrap().contains("me@example.com"));
         assert_eq!(header("In-Reply-To").as_deref(), Some("<m1@x.org>"));
         assert!(String::from_utf8_lossy(&raw).contains("> Shall we?"));
+    }
+
+    #[test]
+    fn a_sent_draft_is_named_in_its_outbox_entry() {
+        let h = home();
+        let mut drafted = request(reply_kind(7));
+        drafted.draft = vec!["<d1@x>".into()];
+        compose(&h.config, &h.daemon.paths, &h.client, drafted, no_editor).unwrap();
+        let entry = h.client.client().unwrap().outbox().unwrap().remove(0).1;
+        assert_eq!(entry.draft, ["<d1@x>"]);
+        assert!(!entry.draft_deleted);
     }
 
     #[test]
@@ -797,6 +828,24 @@ mod tests {
             subject: "s".into(),
         });
         assert!(compose(&h.config, &h.daemon.paths, &h.client, none, no_editor).is_err());
+        assert!(h.client.client().unwrap().outbox().unwrap().is_empty());
+    }
+
+    #[test]
+    fn compose_without_recipients_fails_the_check() {
+        let h = home();
+        let nobody = request(SendKind::New {
+            to: vec![],
+            cc: vec![],
+            bcc: vec![],
+            subject: "s".into(),
+        });
+        let error = compose(&h.config, &h.daemon.paths, &h.client, nobody, no_editor).unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<check::CheckError>(),
+            Some(&check::CheckError::NoRecipients),
+            "{error:#}"
+        );
         assert!(h.client.client().unwrap().outbox().unwrap().is_empty());
     }
 

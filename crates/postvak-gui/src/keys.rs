@@ -11,6 +11,7 @@ pub(crate) enum Named {
     Backspace,
     Delete,
     Down,
+    Enter,
     Escape,
     Left,
     Right,
@@ -126,6 +127,7 @@ pub(crate) fn action(press: &Press, focus: Focus, typing: bool) -> Option<UiActi
             let action = match &press.key {
                 Key::Named(Named::Right) => UiAction::Expand,
                 Key::Named(Named::Left) => UiAction::Collapse,
+                Key::Named(Named::Enter) if focus == Focus::List => UiAction::EditComposeDraft,
                 Key::Text(t) if t == "x" => UiAction::ToggleMark,
                 Key::Text(t) if t == "e" => UiAction::Act(Action::Archive),
                 Key::Text(t) if t == "!" => UiAction::Act(Action::Junk),
@@ -145,7 +147,7 @@ pub(crate) fn action(press: &Press, focus: Focus, typing: bool) -> Option<UiActi
 }
 
 /// The `?` window. Keys are spelled out, so every glyph is in the bundled fonts.
-pub(crate) const HELP: [(&str, &str); 22] = [
+pub(crate) const HELP: [(&str, &str); 24] = [
     ("j / k, Down / Up", "next or previous row"),
     ("Right / Left", "expand or collapse a thread"),
     ("x", "add the row to the selection, or take it out"),
@@ -166,11 +168,13 @@ pub(crate) const HELP: [(&str, &str); 22] = [
     ("r / Shift+R", "reply, or reply to everyone"),
     ("l", "reply to the mailing list"),
     ("f", "forward"),
+    ("Enter", "in Drafts, edit the draft"),
     (
         "Ctrl+N (Cmd+N on macOS)",
         "write new mail, in a window of its own",
     ),
     ("Ctrl+Enter (Cmd+Enter on macOS)", "send the message"),
+    ("Ctrl+S (Cmd+S on macOS)", "save the message as a draft"),
     (
         "z, Ctrl+Z (Cmd+Z on macOS)",
         "undo the last action taken in this window",
@@ -234,6 +238,19 @@ mod tests {
         assert_eq!(on_list(Press::named(Named::Right)), Some(UiAction::Expand));
         assert_eq!(on_list(Press::named(Named::Left)), Some(UiAction::Collapse));
         assert_eq!(on_list(Press::named(Named::Tab)), Some(UiAction::NextFocus));
+    }
+
+    #[test]
+    fn enter_in_the_list_edits_a_draft() {
+        assert_eq!(
+            on_list(Press::named(Named::Enter)),
+            Some(UiAction::EditComposeDraft)
+        );
+        assert_eq!(
+            action(&Press::named(Named::Enter), Focus::Folders, false),
+            None
+        );
+        assert_eq!(action(&Press::named(Named::Enter), Focus::List, true), None);
     }
 
     #[test]

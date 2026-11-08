@@ -25,6 +25,8 @@ export struct ComposeData {
     // Filled from the original yet, and not on its way: Send is off meanwhile.
     loading: bool,
     sending: bool,
+    // On its way to Drafts: Send waits for it.
+    saving: bool,
     from: string,
     // Which of the From choices `from` is; -1 when it was typed, so it shows as a field.
     from-index: int,
@@ -112,7 +114,8 @@ component AddressField inherits Field {
     }
 }
 
-export component Composer inherits Rectangle {
+// The composer's state and callbacks; each window has its own, as a global is per window.
+export global ComposeState {
     in property <ComposeData> data;
     // From's choices as they read, and the files and the original's parts as they are listed.
     in property <[string]> from-choices;
@@ -120,8 +123,15 @@ export component Composer inherits Rectangle {
     in property <[ComposePart]> parts;
     // The addresses offered under the field being typed in, as `Name <address>`.
     in property <[string]> completions;
-    in property <string> remove-icon;
     in property <string> send-hint;
+    in property <string> save-hint;
+    // "Discard this message?" while it asks, and whether Save draft is one of its answers.
+    in property <string> leave-question;
+    in property <bool> leave-can-save;
+    // Typing waits for the original's fields, and stops once the message is on its way.
+    out property <bool> fixed: root.data.loading || root.data.sending;
+    out property <bool> can-save: !root.fixed;
+    out property <bool> can-send: !root.fixed && !root.data.saving;
     callback edited(ComposeField, string);
     callback completion-step(int);
     callback completion-pick(int);
@@ -133,18 +143,23 @@ export component Composer inherits Rectangle {
     callback toggle-part(int);
     callback as-attachment(bool);
     callback send();
+    callback save-draft();
     callback close();
     callback discard();
+    callback leave-discard();
+    callback leave-cancel();
+    callback leave-save();
+}
 
-    property <bool> can-send: !root.data.loading && !root.data.sending;
-    // Typing waits for the original's fields, and stops once the message is on its way.
-    property <bool> fixed: !root.can-send;
+export component Composer inherits Rectangle {
+    in property <string> remove-icon;
+
     // Under the field being completed, relative to the composer.
     property <length> completion-x;
     property <length> completion-y;
     property <length> completion-width;
     // Like `Field`, the text is put right by hand when it changes from outside, such as a composer opened again.
-    property <string> text: root.data.text;
+    property <string> text: ComposeState.data.text;
     changed text => {
         if (body.text != root.text) {
             body.text = root.text;
@@ -154,7 +169,7 @@ export component Composer inherits Rectangle {
     accessible-label: "Message";
     // A reply starts at the text; a forward, or new mail without a recipient, at To. A reply's To is empty while it loads.
     init => {
-        if (root.data.forward || (!root.data.loading && root.data.to == "")) {
+        if (ComposeState.data.forward || (!ComposeState.data.loading && ComposeState.data.to == "")) {
             to.focus();
         } else {
             body.focus();
@@ -164,8 +179,13 @@ export component Composer inherits Rectangle {
     FocusScope {
         KeyBinding {
             keys: @keys(Control + Return);
-            enabled: root.can-send;
-            activated => { root.send(); }
+            enabled: ComposeState.can-send;
+            activated => { ComposeState.send(); }
+        }
+        KeyBinding {
+            keys: @keys(Control + S);
+            enabled: ComposeState.can-save;
+            activated => { ComposeState.save-draft(); }
         }
 
         VerticalLayout {
@@ -179,99 +199,107 @@ export component Composer inherits Rectangle {
                     text: "Send";
                     primary: true;
                     palette: Theme.pane;
-                    enabled: root.can-send;
-                    hint: root.send-hint;
-                    disabled-hint: root.data.sending ? "Sending…" : "Loading the message…";
-                    clicked => { root.send(); }
+                    enabled: ComposeState.can-send;
+                    hint: ComposeState.send-hint;
+                    disabled-hint: ComposeState.data.sending ? "Sending…" : ComposeState.data.saving ? "Saving the draft…" : "Loading the message…";
+                    clicked => { ComposeState.send(); }
+                }
+                TextButton {
+                    text: "Save draft";
+                    framed: true;
+                    palette: Theme.pane;
+                    enabled: ComposeState.can-save;
+                    hint: ComposeState.save-hint;
+                    clicked => { ComposeState.save-draft(); }
                 }
                 TextButton {
                     text: "Close";
                     framed: true;
                     palette: Theme.pane;
-                    enabled: !root.data.sending;
-                    clicked => { root.close(); }
+                    enabled: !ComposeState.data.sending;
+                    clicked => { ComposeState.close(); }
                 }
                 VerticalLayout {
                     alignment: center;
                     TextButton {
                         text: "Discard";
                         palette: Theme.pane;
-                        enabled: !root.data.sending;
-                        clicked => { root.discard(); }
+                        enabled: !ComposeState.data.sending;
+                        clicked => { ComposeState.discard(); }
                     }
                 }
                 Rectangle { horizontal-stretch: 1; }
-                if root.data.loading: Note {
+                if ComposeState.data.loading: Note {
                     text: "Loading the message…";
                     vertical-alignment: center;
                 }
             }
-            if root.data.error-at == ComposeSpot.send: Error { text: root.data.error; }
-            if root.data.error-at == ComposeSpot.note: Note { text: root.data.error; }
+            if ComposeState.data.error-at == ComposeSpot.send: Error { text: ComposeState.data.error; }
+            if ComposeState.data.error-at == ComposeSpot.note: Note { text: ComposeState.data.error; }
 
             Row {
                 label: "From";
-                failed: root.data.error-at == ComposeSpot.from;
-                error: root.data.error;
-                if root.data.from-index >= 0: Choice {
+                failed: ComposeState.data.error-at == ComposeSpot.from;
+                error: ComposeState.data.error;
+                if ComposeState.data.from-index >= 0: Choice {
                     horizontal-stretch: 1;
                     accessible-label: "From";
-                    model: root.from-choices;
-                    index: root.data.from-index;
-                    enabled: !root.fixed;
-                    index-chosen(i) => { root.from-chosen(i); }
+                    model: ComposeState.from-choices;
+                    index: ComposeState.data.from-index;
+                    enabled: !ComposeState.fixed;
+                    index-chosen(i) => { ComposeState.from-chosen(i); }
                 }
-                if root.data.from-index < 0: Field {
+                if ComposeState.data.from-index < 0: Field {
                     horizontal-stretch: 1;
                     accessible-label: "From";
-                    read-only: root.fixed;
-                    value: root.data.from;
-                    value-edited(text) => { root.edited(ComposeField.from, text); }
+                    read-only: ComposeState.fixed;
+                    value: ComposeState.data.from;
+                    value-edited(text) => { ComposeState.edited(ComposeField.from, text); }
                 }
             }
             Row {
                 label: "To";
-                failed: root.data.error-at == ComposeSpot.to;
-                error: root.data.error;
+                failed: ComposeState.data.error-at == ComposeSpot.to;
+                error: ComposeState.data.error;
                 to := AddressField {
                     horizontal-stretch: 1;
                     accessible-label: "To";
-                    read-only: root.fixed;
-                    value: root.data.to;
-                    value-edited(text) => { root.edited(ComposeField.to, text); }
-                    completing: root.data.completing == ComposeSpot.to && root.completions.length > 0;
-                    chosen: root.data.completion-index;
-                    step(by) => { root.completion-step(by); }
-                    pick(i) => { root.completion-pick(i); }
-                    dismiss => { root.completion-close(); }
+                    read-only: ComposeState.fixed;
+                    value: ComposeState.data.to;
+                    value-edited(text) => { ComposeState.edited(ComposeField.to, text); }
+                    completing: ComposeState.data.completing == ComposeSpot.to && ComposeState.completions.length > 0;
+                    chosen: ComposeState.data.completion-index;
+                    step(by) => { ComposeState.completion-step(by); }
+                    pick(i) => { ComposeState.completion-pick(i); }
+                    dismiss => { ComposeState.completion-close(); }
                     placed(x, bottom, width) => {
                         root.completion-x = x - root.absolute-position.x;
                         root.completion-y = bottom - root.absolute-position.y;
                         root.completion-width = width;
                     }
                 }
-                if !root.data.show-cc-bcc: TextButton {
+                if !ComposeState.data.show-cc-bcc: TextButton {
                     text: "Cc Bcc";
                     palette: Theme.pane;
                     hint: "Add Cc and Bcc";
-                    clicked => { root.show-cc-bcc(); }
+                    clicked => { ComposeState.show-cc-bcc(); }
                 }
             }
-            if root.data.show-cc-bcc: Row {
+            if ComposeState.data.show-cc-bcc: Row {
                 label: "Cc";
-                failed: root.data.error-at == ComposeSpot.cc;
-                error: root.data.error;
+                failed: ComposeState.data.error-at == ComposeSpot.cc;
+                error: ComposeState.data.error;
                 AddressField {
                     horizontal-stretch: 1;
                     accessible-label: "Cc";
-                    read-only: root.fixed;
-                    value: root.data.cc;
-                    value-edited(text) => { root.edited(ComposeField.cc, text); }
-                    completing: root.data.completing == ComposeSpot.cc && root.completions.length > 0;
-                    chosen: root.data.completion-index;
-                    step(by) => { root.completion-step(by); }
-                    pick(i) => { root.completion-pick(i); }
-                    dismiss => { root.completion-close(); }
+                    read-only: ComposeState.fixed;
+                    value: ComposeState.data.cc;
+                    value-edited(text) => { ComposeState.edited(ComposeField.cc, text); }
+                    completing: ComposeState.data.completing == ComposeSpot.cc && ComposeState.completions.length > 0;
+                    chosen: ComposeState.data.completion-index;
+                    step(by) => { ComposeState.completion-step(by); }
+                    pick(i) => { ComposeState.completion-pick(i); }
+                    dismiss => { ComposeState.completion-close(); }
                     placed(x, bottom, width) => {
                         root.completion-x = x - root.absolute-position.x;
                         root.completion-y = bottom - root.absolute-position.y;
@@ -279,21 +307,21 @@ export component Composer inherits Rectangle {
                     }
                 }
             }
-            if root.data.show-cc-bcc: Row {
+            if ComposeState.data.show-cc-bcc: Row {
                 label: "Bcc";
-                failed: root.data.error-at == ComposeSpot.bcc;
-                error: root.data.error;
+                failed: ComposeState.data.error-at == ComposeSpot.bcc;
+                error: ComposeState.data.error;
                 AddressField {
                     horizontal-stretch: 1;
                     accessible-label: "Bcc";
-                    read-only: root.fixed;
-                    value: root.data.bcc;
-                    value-edited(text) => { root.edited(ComposeField.bcc, text); }
-                    completing: root.data.completing == ComposeSpot.bcc && root.completions.length > 0;
-                    chosen: root.data.completion-index;
-                    step(by) => { root.completion-step(by); }
-                    pick(i) => { root.completion-pick(i); }
-                    dismiss => { root.completion-close(); }
+                    read-only: ComposeState.fixed;
+                    value: ComposeState.data.bcc;
+                    value-edited(text) => { ComposeState.edited(ComposeField.bcc, text); }
+                    completing: ComposeState.data.completing == ComposeSpot.bcc && ComposeState.completions.length > 0;
+                    chosen: ComposeState.data.completion-index;
+                    step(by) => { ComposeState.completion-step(by); }
+                    pick(i) => { ComposeState.completion-pick(i); }
+                    dismiss => { ComposeState.completion-close(); }
                     placed(x, bottom, width) => {
                         root.completion-x = x - root.absolute-position.x;
                         root.completion-y = bottom - root.absolute-position.y;
@@ -303,14 +331,14 @@ export component Composer inherits Rectangle {
             }
             Row {
                 label: "Subject";
-                failed: root.data.error-at == ComposeSpot.subject;
-                error: root.data.error;
+                failed: ComposeState.data.error-at == ComposeSpot.subject;
+                error: ComposeState.data.error;
                 Field {
                     horizontal-stretch: 1;
                     accessible-label: "Subject";
-                    read-only: root.fixed;
-                    value: root.data.subject;
-                    value-edited(text) => { root.edited(ComposeField.subject, text); }
+                    read-only: ComposeState.fixed;
+                    value: ComposeState.data.subject;
+                    value-edited(text) => { ComposeState.edited(ComposeField.subject, text); }
                 }
             }
 
@@ -319,9 +347,9 @@ export component Composer inherits Rectangle {
                 min-height: 3 * Theme.row;
                 wrap: word-wrap;
                 accessible-label: "Your text";
-                read-only: root.fixed;
+                read-only: ComposeState.fixed;
                 text: root.text;
-                edited(text) => { root.edited(ComposeField.text, text); }
+                edited(text) => { ComposeState.edited(ComposeField.text, text); }
             }
 
             HorizontalLayout {
@@ -330,10 +358,10 @@ export component Composer inherits Rectangle {
                     text: "Attach…";
                     framed: true;
                     palette: Theme.pane;
-                    enabled: !root.data.sending;
-                    clicked => { root.attach(); }
+                    enabled: !ComposeState.data.sending;
+                    clicked => { ComposeState.attach(); }
                 }
-                for file[i] in root.files: HorizontalLayout {
+                for file[i] in ComposeState.files: HorizontalLayout {
                     spacing: Theme.pad / 2;
                     Text {
                         text: file.name + " (" + file.size + ")";
@@ -346,33 +374,33 @@ export component Composer inherits Rectangle {
                         name: "Remove " + file.name;
                         hint: "Remove this file";
                         palette: Theme.pane;
-                        clicked => { root.remove-file(i); }
+                        clicked => { ComposeState.remove-file(i); }
                     }
                 }
-                if root.data.size != "": Text {
-                    text: root.data.size;
+                if ComposeState.data.size != "": Text {
+                    text: ComposeState.data.size;
                     color: Theme.pane.muted;
                     vertical-alignment: center;
                 }
                 Rectangle { horizontal-stretch: 1; }
             }
-            if root.data.error-at == ComposeSpot.attachments: Error { text: root.data.error; }
+            if ComposeState.data.error-at == ComposeSpot.attachments: Error { text: ComposeState.data.error; }
 
-            if root.data.forward: HorizontalLayout {
+            if ComposeState.data.forward: HorizontalLayout {
                 spacing: Theme.inset;
-                for part[i] in root.parts: CheckBox {
+                for part[i] in ComposeState.parts: CheckBox {
                     text: part.name + " (" + part.size + ")";
                     checked: part.kept;
-                    enabled: !root.data.as-attachment;
-                    toggled => { root.toggle-part(i); }
+                    enabled: !ComposeState.data.as-attachment;
+                    toggled => { ComposeState.toggle-part(i); }
                 }
                 Rectangle { horizontal-stretch: 1; }
                 VerticalLayout {
                     alignment: center;
                     Switch {
                         name: "Send as attachment";
-                        checked: root.data.as-attachment;
-                        toggled(on) => { root.as-attachment(on); }
+                        checked: ComposeState.data.as-attachment;
+                        toggled(on) => { ComposeState.as-attachment(on); }
                     }
                 }
                 Text {
@@ -389,7 +417,7 @@ export component Composer inherits Rectangle {
     }
 
     // Over the fields below, so it comes last.
-    if root.data.completing != ComposeSpot.none && root.completions.length > 0: Rectangle {
+    if ComposeState.data.completing != ComposeSpot.none && ComposeState.completions.length > 0: Rectangle {
         x: root.completion-x;
         y: root.completion-y + Theme.pad / 4;
         width: root.completion-width;
@@ -407,22 +435,22 @@ export component Composer inherits Rectangle {
         TouchArea { }
         choices := VerticalLayout {
             padding: Theme.pad / 2;
-            for choice[i] in root.completions: Rectangle {
+            for choice[i] in ComposeState.completions: Rectangle {
                 height: Theme.row;
                 border-radius: Theme.pad / 2;
-                background: i == root.data.completion-index ? Theme.pane.selected : touch.has-hover ? Theme.pane.hover : transparent;
+                background: i == ComposeState.data.completion-index ? Theme.pane.selected : touch.has-hover ? Theme.pane.hover : transparent;
                 accessible-role: list-item;
                 accessible-label: choice;
-                accessible-item-selected: i == root.data.completion-index;
+                accessible-item-selected: i == ComposeState.data.completion-index;
                 touch := TouchArea {
-                    clicked => { root.completion-pick(i); }
+                    clicked => { ComposeState.completion-pick(i); }
                 }
                 Text {
                     accessible-role: none;
                     x: Theme.pad;
                     width: parent.width - 2 * Theme.pad;
                     text: choice;
-                    color: i == root.data.completion-index ? Theme.pane.on-accent : Theme.pane.text;
+                    color: i == ComposeState.data.completion-index ? Theme.pane.on-accent : Theme.pane.text;
                     vertical-alignment: center;
                     overflow: elide;
                 }
@@ -431,12 +459,15 @@ export component Composer inherits Rectangle {
     }
 }
 
-// "Discard this message?" before something takes the reader pane from a changed composer.
+// "Discard this message?" before something takes the reader pane from a changed composer, with Save draft when
+// leaving rather than discarding.
 export component LeaveComposeDialog {
     in property <string> question;
+    in property <bool> can-save;
     in property <string> close-icon;
     callback discard();
     callback cancel();
+    callback save();
     width: Theme.dialog-small;
     Dialog {
         title: "Unsent message";
@@ -462,44 +493,27 @@ export component LeaveComposeDialog {
                 danger: true;
                 clicked => { root.discard(); }
             }
+            if root.can-save: TextButton {
+                text: "Save draft";
+                palette: Theme.pane;
+                primary: true;
+                clicked => { root.save(); }
+            }
         }
     }
 }
 
-// New mail in a window of its own, with the names `MailWindow` gives its reader pane's composer. Esc closes it, or
+// New mail in a window of its own, with its own `ComposeState`. Esc closes it, or
 // answers its question with Cancel; Ctrl+N (Cmd+N) opens another.
 export component ComposeWindow inherits Window {
-    in property <ComposeData> compose;
-    in property <[string]> compose-from-choices;
-    in property <[AttachmentData]> compose-files;
-    in property <[ComposePart]> compose-parts;
-    in property <[string]> compose-completions;
-    in property <string> compose-send-hint;
     in property <string> close-icon;
-    callback compose-edited(ComposeField, string);
-    callback compose-completion-step(int);
-    callback compose-completion-pick(int);
-    callback compose-completion-close();
-    callback compose-from-chosen(int);
-    callback compose-show-cc-bcc();
-    callback compose-attach();
-    callback compose-remove-file(int);
-    callback compose-toggle-part(int);
-    callback compose-as-attachment(bool);
-    callback compose-send();
-    callback compose-close();
-    callback compose-discard();
-    // "Discard this message?" while it asks.
-    in property <string> leave-compose;
-    callback leave-compose-discard();
-    callback leave-compose-cancel();
     callback new-mail();
 
     property <bool> dark: Theme.dark;
     init => { StdPalette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light; }
     changed dark => { StdPalette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light; }
 
-    title: root.compose.subject.is-empty ? "New message" : root.compose.subject;
+    title: ComposeState.data.subject.is-empty ? "New message" : ComposeState.data.subject;
     preferred-width: 720px;
     preferred-height: 640px;
     background: Theme.pane.background;
@@ -516,46 +530,29 @@ export component ComposeWindow inherits Window {
             if (event.text != Key.Escape) {
                 return reject;
             }
-            if (root.leave-compose != "") {
-                root.leave-compose-cancel();
+            if (ComposeState.leave-question != "") {
+                ComposeState.leave-cancel();
             } else {
-                root.compose-close();
+                ComposeState.close();
             }
             return accept;
         }
         Composer {
-            data: root.compose;
-            from-choices: root.compose-from-choices;
-            files: root.compose-files;
-            parts: root.compose-parts;
-            completions: root.compose-completions;
             remove-icon: root.close-icon;
-            send-hint: root.compose-send-hint;
-            edited(field, text) => { root.compose-edited(field, text); }
-            completion-step(by) => { root.compose-completion-step(by); }
-            completion-pick(i) => { root.compose-completion-pick(i); }
-            completion-close => { root.compose-completion-close(); }
-            from-chosen(i) => { root.compose-from-chosen(i); }
-            show-cc-bcc => { root.compose-show-cc-bcc(); }
-            attach => { root.compose-attach(); }
-            remove-file(i) => { root.compose-remove-file(i); }
-            toggle-part(i) => { root.compose-toggle-part(i); }
-            as-attachment(on) => { root.compose-as-attachment(on); }
-            send => { root.compose-send(); }
-            close => { root.compose-close(); }
-            discard => { root.compose-discard(); }
         }
     }
 
-    if root.leave-compose != "": Scrim {
-        close => { root.leave-compose-cancel(); }
+    if ComposeState.leave-question != "": Scrim {
+        close => { ComposeState.leave-cancel(); }
     }
-    if root.leave-compose != "": LeaveComposeDialog {
+    if ComposeState.leave-question != "": LeaveComposeDialog {
         x: (root.width - self.width) / 2;
         y: Theme.inset;
-        question: root.leave-compose;
+        question: ComposeState.leave-question;
+        can-save: ComposeState.leave-can-save;
         close-icon: root.close-icon;
-        discard => { root.leave-compose-discard(); }
-        cancel => { root.leave-compose-cancel(); }
+        discard => { ComposeState.leave-discard(); }
+        cancel => { ComposeState.leave-cancel(); }
+        save => { ComposeState.leave-save(); }
     }
 }

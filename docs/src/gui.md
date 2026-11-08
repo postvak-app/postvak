@@ -94,7 +94,13 @@ While a reply or forward waits, a small clock shows beside the subject of the or
 
 The status line says "Sending 1 message" while the outbox holds mail, and "Not sent" with how many failed when one could not go. Click it for the outbox: what waits and what failed in every account, with when each goes or why it failed, and **Retry** for one that failed for good. `postvak outbox` shows the same list.
 
-**Close** (or Esc) closes a message you did not change at once. **Discard**, closing a changed one, and anything that takes the reading pane from your reply (another message, another folder, a search, moving the original away, another reply) ask "Discard this message?" first. Saving a message as a draft comes later.
+**Close** (or Esc) closes a message you did not change at once. **Discard**, closing a changed one, and anything that takes the reading pane from your reply (another message, another folder, a search, moving the original away, another reply) ask "Discard this message?" first; Discard on a saved draft asks "Delete this draft?" instead (see Save draft below).
+
+**Save draft** (Ctrl+S, Cmd+S on macOS) saves the message as a draft in the account's Drafts folder on the server (the folder the server marks as Drafts, else one named Drafts), so other clients see it too. The toast says "Draft saved"; saving again replaces the earlier copy. An account without a Drafts folder says "This account has no Drafts folder". Closing a changed message, or anything that takes the reading pane from it, asks to **Save draft**, **Discard** or **Cancel**. Discard there drops what you changed since the last save and keeps a draft you saved before. The **Discard** button on a message that has a saved draft asks "Delete this draft?" and deletes it; **Close** leaves it. On a server without UIDPLUS, a draft copy can stay in Drafts when another client left deleted mail there.
+
+**Edit draft** in the reader (only in Drafts), or Enter on a draft's row, opens the draft in the composer: a reply or forward over the message it answers, new mail in a window. A draft from another client opens with its whole text, quote included, and its attachments; it shows over the message it answers when that is stored, and is sent as written. A draft that had only HTML opens as text, with a note. A draft without a Message-ID says that saving or sending it leaves the old copy in Drafts. A draft you send leaves Drafts once its message has gone; Undo, or a failure, leaves it there.
+
+In the outbox, a message that failed has **Edit**: it saves the message as a draft and opens it. If the message cannot be taken out of the outbox, the draft copy is removed again and the row says why, so a message is always in exactly one place.
 
 ### Not losing what you wrote
 

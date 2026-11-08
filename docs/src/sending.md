@@ -5,6 +5,8 @@ Postvak sends new mail, replies and forwards from the command line with `postvak
 so you can still take it back, then goes out over SMTP, and a copy is saved in your Sent folder. Agents over MCP get no
 tool to send.
 
+Drafts live in the account's Drafts folder on the server, not in Postvak: the window saves them there and opens them from there (see [Writing mail](gui.md#writing-mail)).
+
 ## The SMTP server
 
 Most accounts need no setup. When you add an account, and once for every account without SMTP settings when the daemon

@@ -246,6 +246,32 @@ fn reader_attachments() {
     snapshot(&open, "gui_reader_attachments");
 }
 
+/// A draft open in work's Drafts, where the reader offers Edit draft.
+#[test]
+fn reader_draft_edit_button() {
+    let fx = Fixture::mailbox("light");
+    fx.folder("work", "Drafts", Some("Drafts"));
+    let mut draft = mail(
+        98,
+        "Robin Example <robin@example.com>",
+        "Lunch on Friday?",
+        "\\Seen \\Draft",
+        "Noon at the usual place?",
+    );
+    draft.folder = "Drafts".into();
+    draft.to_addr = Some("Ann <ann@example.org>".into());
+    fx.add("work", draft);
+    let (open, _wires) = open(&fx);
+    open.with(|live| {
+        live.app.select_view(View::Folder {
+            account: 1,
+            folder: "Drafts".into(),
+        })
+    });
+    open.tick_until(|open| open.window().get_body_info().edit_draft);
+    snapshot(&open, "gui_reader_draft_edit_button");
+}
+
 /// A message the rule `travel` moved from INBOX to Travel, open in Travel, with the rule in rules.toml.
 fn filed(theme: &str) -> (Fixture, Open, Wires) {
     let fx = Fixture::mailbox(theme);
@@ -1101,6 +1127,18 @@ fn compose_reply_html_dark() {
     snapshot(&open, "gui_compose_reply_html_dark");
 }
 
+/// Close on a changed reply: the question offers Save draft beside Discard and Cancel.
+#[test]
+fn compose_leave_question_with_save_draft() {
+    let (_fx, open, _wires) = compose_reply_html("light");
+    open.with(|live| {
+        live.app
+            .apply(UiAction::ComposeClose(crate::state::ComposeTarget::Pane))
+    });
+    wait_painted(&open);
+    snapshot(&open, "gui_compose_leave_question_with_save_draft");
+}
+
 /// A forward of the e-ticket, its attachments listed with check boxes, one left out.
 #[test]
 fn compose_forward_attachments() {
@@ -1150,7 +1188,9 @@ fn compose_completion() {
         .window()
         .set_size(slint::LogicalSize::new(720.0, 640.0));
     open.tick();
-    window.invoke_compose_edited(super::ui::ComposeField::To, "a".into());
+    window
+        .global::<crate::ui::ComposeState>()
+        .invoke_edited(super::ui::ComposeField::To, "a".into());
     open.tick_until(|open| open.with(|live| live.app.completion.is_some()));
     open.tick();
     i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_secs(2));

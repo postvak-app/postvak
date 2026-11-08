@@ -632,6 +632,12 @@ fn backlog_sql() -> String {
 }
 
 impl Store {
+    /// Runs `sql` as is, so a test can break the store under the code it tests.
+    #[cfg(test)]
+    pub(crate) fn execute_for_tests(&self, sql: &str) {
+        self.conn.execute_batch(sql).unwrap();
+    }
+
     pub fn migrations() -> Migrations<'static> {
         Migrations::new(migration_list())
     }

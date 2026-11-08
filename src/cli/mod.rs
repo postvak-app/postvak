@@ -2497,6 +2497,7 @@ fn cmd_send(config: &Config, paths: &Paths, args: SendArgs) -> Result<()> {
         original: None,
         headers: None,
         forward_parts: None,
+        draft: Vec::new(),
     };
     let dir = paths.cache_dir.clone();
     let queued = compose::compose(config, paths, &client, request, |text| {

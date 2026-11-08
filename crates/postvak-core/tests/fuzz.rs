@@ -1221,6 +1221,15 @@ proptest! {
     }
 }
 
+/// `X-Postvak-Draft` lines put before a seed message, so the drafts reader takes its own path too.
+const DRAFT_MARKERS: &[&[u8]] = &[
+    b"",
+    b"X-Postvak-Draft: new\r\n",
+    b"X-Postvak-Draft: reply-all; original=\"<m1@x.org>\"\r\n",
+    b"X-Postvak-Draft: forward; original=\"<m1@x.org>\"; parts=\"0,2\"\r\n",
+    b"X-Postvak-Draft: forward-attachment; original=\"<m1@x.org>\"\r\n",
+];
+
 fn exercise_send(raw: &[u8]) {
     use postvak_core::config::{AccountConfig, PasswordSource};
     use postvak_core::send::{check, reply};
@@ -1282,6 +1291,17 @@ proptest! {
     fn send_mutated_message(seed in 0..MESSAGES.len(), donor in 0..MESSAGES.len(), ms in mutations()) {
         let raw = mutate(MESSAGES[seed].to_vec(), MESSAGES[donor], &ms);
         exercise_send(&raw);
+    }
+
+    #[test]
+    fn drafts_read_mutated_message(seed in 0..MESSAGES.len(), donor in 0..MESSAGES.len(), marker in 0..DRAFT_MARKERS.len(), ms in mutations()) {
+        let draft = [DRAFT_MARKERS[marker], MESSAGES[seed]].concat();
+        let raw = mutate(draft, MESSAGES[donor], &ms);
+        tolerating_known_upstream_panics(|| {
+            // The draft is its own original: hostile bytes on both sides of the quote comparison.
+            let _ = postvak_core::send::drafts::read(&raw, |_| Some(raw.clone()));
+            let _ = postvak_core::send::drafts::read(&raw, |_| None);
+        });
     }
 }
 

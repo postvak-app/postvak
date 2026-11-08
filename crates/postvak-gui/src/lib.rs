@@ -456,6 +456,11 @@ impl Live {
             shown.set_reduce_motion(theme.get_reduce_motion());
             bind::present_new_mail(&self.app, *id, window);
         }
+        if let Some(id) = self.app.raise_compose.take()
+            && let Some((_, window)) = self.compose_windows.iter().find(|(shown, _)| *shown == id)
+        {
+            raise(window, false);
+        }
     }
 
     /// Starts the timer for the tick the app asked for.
@@ -477,7 +482,7 @@ impl Live {
 /// click on the tray icon comes with an activation token that Slint gives the next new window, which lets it come to
 /// the front, so `from_tray` shows an open window again as a new one. Otherwise an open window asks for attention,
 /// which Plasma shows on its task bar entry and GNOME as "Postvak is ready".
-fn raise(window: &ui::MailWindow, from_tray: bool) {
+fn raise<W: slint::ComponentHandle + 'static>(window: &W, from_tray: bool) {
     let wayland = window.window().with_winit_window(on_wayland);
     let recreated = recreate(from_tray, wayland);
     if recreated && let Err(e) = window.hide() {

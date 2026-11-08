@@ -26,7 +26,8 @@ use postvak_core::trash::Trash;
 use postvak_core::unsubscribe::{self, Method};
 
 pub(crate) use self::composing::{
-    CancelError, CancelFn, Completion, ComposeTarget, PrefillFn, QueueFn, RetryFn,
+    CancelError, CancelFn, Completion, ComposeTarget, PrefillFn, QueueFn, RetryFn, SaveDraftFn,
+    SaveRawFn,
 };
 use super::account::{self, AccountForm};
 use super::body;
@@ -609,19 +610,26 @@ pub(crate) enum UiAction {
     ComposeToggleForwardPart(ComposeTarget, usize),
     ComposeForwardAsAttachment(ComposeTarget, bool),
     ComposeSend(ComposeTarget),
+    /// Save the composer's message in its account's Drafts, replacing the copy saved before.
+    ComposeSaveDraft(ComposeTarget),
     ComposeClose(ComposeTarget),
     ComposeDiscard(ComposeTarget),
     /// Put the composer of sent gesture `id`, taken back from the outbox, in the reader pane again.
     ReopenCompose(u64),
+    /// Open the shown message, a draft in its account's Drafts, in a composer.
+    EditComposeDraft,
     /// List what waits in every account's outbox and what failed.
     OpenOutbox,
     /// Send failed outbox message `id` of account `index` again.
     RetrySend(usize, String),
     /// Send the message the toast counts down for at once.
     SendNow,
+    /// Save failed outbox message `id` of account `index` as a draft, take it out of the outbox and open it.
+    EditOutbox(usize, String),
     /// The answers to "Discard this message?" about the pane's composer or a new-mail window's.
     LeaveComposeCancel(ComposeTarget),
     LeaveComposeDiscard(ComposeTarget),
+    LeaveComposeSave(ComposeTarget),
     /// Put back logged action `id` of an account, as the Activity view offers it.
     UndoAction(usize, i64),
     /// The pointer is over the toast, which keeps it.
@@ -887,8 +895,8 @@ pub struct App {
     pub(crate) leave_compose: Option<Box<UiAction>>,
     /// New mail, one composer per open window.
     pub(crate) new_mail: Vec<Composer>,
-    /// The new-mail windows asking "Discard this message?", by their composer's id.
-    pub(crate) leave_new_mail: Vec<u64>,
+    /// The new-mail windows asking "Discard this message?", by their composer's id, and whether Discard asked.
+    pub(crate) leave_new_mail: Vec<(u64, bool)>,
     /// Each composer as its recovery file last held it, by id.
     pub(crate) recovery_written: Vec<Composer>,
     /// When the changed composers' recovery files are written next, on the window's clock.
@@ -898,7 +906,15 @@ pub struct App {
         u64,
         Receiver<Result<postvak_core::send::compose::Prefilled, String>>,
     )>,
+    /// The draft being read on a worker into a composer, by its Message-ID.
+    pub(crate) compose_opening: Option<composing::OpeningDraft>,
+    /// The new-mail window to bring to the front, by its composer's id, until the window does.
+    pub(crate) raise_compose: Option<u64>,
     pub(crate) compose_sending: Vec<composing::Sending>,
+    /// Composers being saved to Drafts, oldest first; one at a time per composer.
+    pub(crate) compose_saves: Vec<composing::ComposeSave>,
+    /// Deletes of discarded composers' drafts, until each answers.
+    pub(crate) compose_deleting: Vec<Receiver<Result<(), String>>>,
     /// The open dialog of Attach…, one at a time, for the composer it attaches to: its place and id.
     pub(crate) compose_attaching: Option<(ComposeTarget, u64, Receiver<open_files::Chosen>)>,
     /// Undos of sent messages asked of the daemon, by gesture id.
@@ -906,12 +922,19 @@ pub struct App {
     /// Fill, queue and take back a message through the daemon; tests swap them so no daemon starts.
     pub(crate) prefill: PrefillFn,
     pub(crate) queue_send: QueueFn,
+    pub(crate) save_draft: SaveDraftFn,
+    pub(crate) save_raw_draft: SaveRawFn,
     pub(crate) cancel_send: CancelFn,
     pub(crate) retry_send: RetryFn,
     /// Retries of failed outbox messages asked of the daemon, until each answers.
     pub(crate) retrying: Vec<Receiver<Result<(), String>>>,
     /// The outbox messages Retry was clicked for, by account and id, until the outbox is read again.
     pub(crate) retried: Vec<(usize, String)>,
+    /// Failed outbox messages being turned into drafts, by account and id, until each answers.
+    pub(crate) outbox_editing: Vec<composing::EditingOutbox>,
+    /// Why each outbox message Edit was clicked for stayed in the outbox, by account and id, with its state then.
+    pub(crate) outbox_refused:
+        HashMap<(usize, String), (postvak_core::send::outbox::State, String)>,
     /// The address completions shown under the field being typed in.
     pub(crate) completion: Option<composing::Completion>,
     /// The completions asked for last: the query's number, and the field they are for.
@@ -1099,15 +1122,23 @@ impl App {
             recovery_written: Vec::new(),
             recovery_due: 0.0,
             compose_prefill: None,
+            compose_opening: None,
+            raise_compose: None,
             compose_sending: Vec::new(),
+            compose_saves: Vec::new(),
+            compose_deleting: Vec::new(),
             compose_attaching: None,
             compose_cancelling: Vec::new(),
             prefill: composing::prefill,
             queue_send: composing::queue_send,
+            save_draft: composing::save_draft,
+            save_raw_draft: composing::save_raw_draft,
             cancel_send: composing::cancel_send,
             retry_send: composing::retry_send,
             retrying: Vec::new(),
             retried: Vec::new(),
+            outbox_editing: Vec::new(),
+            outbox_refused: HashMap::new(),
             completion: None,
             completing: None,
             next_completion: 0,
@@ -1412,6 +1443,7 @@ impl App {
             | Event::BodyReady { account, .. }
             | Event::CommandFailed { account, .. }
             | Event::Connected { account, .. }
+            | Event::DraftSaved { account, .. }
             | Event::Error { account, .. }
             | Event::ForwardPaused { account, .. }
             | Event::ForwardWaiting { account, .. }
@@ -1695,6 +1727,7 @@ impl App {
             }
             // A sent message's copy went to Sent, or its original got a flag.
             Event::SentFinished { .. } => self.refresh(index),
+            Event::DraftSaved { .. } => self.refresh(index),
         }
     }
 
@@ -2121,10 +2154,16 @@ impl App {
             UiAction::NewMailFailed(id, why) => self.new_mail_failed(id, &why),
             UiAction::LeaveComposeCancel(target) => self.leave_cancel(target),
             UiAction::LeaveComposeDiscard(target) => self.leave_discard(target),
+            UiAction::LeaveComposeSave(target) => self.leave_save(target),
             UiAction::ReopenCompose(id) => self.reopen_compose(id),
+            action @ UiAction::EditComposeDraft if !self.body_follows_cursor() => {
+                self.after_body = Some(action);
+            }
+            UiAction::EditComposeDraft => self.edit_compose_draft(),
             UiAction::OpenOutbox => self.outbox_open = true,
             UiAction::RetrySend(account, id) => self.retry_outbox(account, id),
             UiAction::SendNow => self.send_now(),
+            UiAction::EditOutbox(account, id) => self.edit_outbox(account, id),
             compose @ (UiAction::ComposeEdit(..)
             | UiAction::ComposeCompletionStep(..)
             | UiAction::ComposeCompletionPick(..)
@@ -2135,6 +2174,7 @@ impl App {
             | UiAction::ComposeToggleForwardPart(..)
             | UiAction::ComposeForwardAsAttachment(..)
             | UiAction::ComposeSend(_)
+            | UiAction::ComposeSaveDraft(_)
             | UiAction::ComposeClose(_)
             | UiAction::ComposeDiscard(_)) => self.compose(compose),
             UiAction::UndoAction(account, action) => {
@@ -2405,6 +2445,22 @@ impl App {
     /// Whether the shown folder is a Junk folder, where the junk action means not junk.
     pub(crate) fn shows_junk(&self) -> bool {
         matches!(&self.view, View::Folder { account, folder } if self.is_junk(*account, folder))
+    }
+
+    /// Whether `folder` is the account's Drafts: the one marked `\Drafts`, else one named `Drafts`, as core's
+    /// `drafts_folder` picks it.
+    pub(crate) fn is_drafts(&self, account: usize, folder: &str) -> bool {
+        let folders = &self.accounts[account].folders;
+        match folders
+            .iter()
+            .find(|f| f.special_use.as_deref() == Some("Drafts"))
+        {
+            Some(marked) => marked.name == folder,
+            None => {
+                postvak_core::folder_name::same(folder, "Drafts")
+                    && folders.iter().any(|f| f.name == folder)
+            }
+        }
     }
 
     fn has_role(&self, account: usize, folder: &str, role: &str) -> bool {
@@ -2703,6 +2759,10 @@ impl App {
                     .map(|entry| (index, entry)),
             );
         }
+        let outbox = &self.outbox;
+        self.outbox_refused.retain(|(account, id), (state, _)| {
+            (outbox.iter()).any(|(a, e)| a == account && &e.id == id && &e.state == state)
+        });
         self.drop_sent_composers(&kept);
         if marks_changed {
             self.rebuild_rows();

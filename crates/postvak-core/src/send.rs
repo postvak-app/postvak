@@ -10,6 +10,7 @@ use crate::store::SmtpState;
 pub mod build;
 pub mod check;
 pub mod compose;
+pub mod drafts;
 pub mod edit;
 pub mod guess;
 pub mod mailto;

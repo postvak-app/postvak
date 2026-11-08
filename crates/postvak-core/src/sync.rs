@@ -196,6 +196,15 @@ pub enum Event {
         id: String,
         copied: bool,
         flagged: bool,
+        draft_deleted: bool,
+        request: RequestId,
+    },
+    /// What `SaveDraft` did: `message_id` is the new copy's, None when it only deleted; `left` the replaced copies it
+    /// could not delete, by Message-ID, for the next save to replace.
+    DraftSaved {
+        account: String,
+        message_id: Option<String>,
+        left: Vec<String>,
         request: RequestId,
     },
     RuleApplied {
@@ -223,6 +232,7 @@ impl Event {
             | Event::AttachmentFetched { request, .. }
             | Event::BodyReady { request, .. }
             | Event::CommandFailed { request, .. }
+            | Event::DraftSaved { request, .. }
             | Event::FolderCreated { request, .. }
             | Event::FolderDeleted { request, .. }
             | Event::FolderNotEmpty { request, .. }
@@ -428,8 +438,8 @@ pub enum Command {
         folder: Option<String>,
         query: String,
     },
-    /// After the server took outbox message `id`: its copy in Sent and the flag on the message it answers, each
-    /// unless already done. The daemon sends it again until `SentFinished` says both are.
+    /// After the server took outbox message `id`: its copy in Sent, the flag on the message it answers and the delete
+    /// of its draft, each unless already done. The daemon sends it again until `SentFinished` says all are.
     FinishSent {
         id: String,
         #[serde(with = "crate::message::base64_bytes")]
@@ -438,6 +448,14 @@ pub enum Command {
         copied: bool,
         original: Option<crate::send::outbox::Original>,
         flagged: bool,
+        draft: Vec<String>,
+        draft_deleted: bool,
+    },
+    /// APPENDs `raw` to Drafts, then deletes every copy whose Message-ID is in `replaces`; without `raw`, only deletes.
+    SaveDraft {
+        #[serde(with = "crate::message::base64_bytes_opt")]
+        raw: Option<Vec<u8>>,
+        replaces: Vec<String>,
     },
     SyncNow,
 }
@@ -1657,6 +1675,8 @@ fn run_command(
             copied,
             original,
             flagged,
+            draft,
+            draft_deleted,
         } => {
             run.used_connection = true;
             let job = crate::send::sent::Finish {
@@ -1665,16 +1685,55 @@ fn run_command(
                 copied,
                 original,
                 flagged,
+                draft,
+                draft_deleted,
             };
-            crate::send::sent::finish(ops, store, &account.name, &id, &job)
-                .map(|(copied, flagged)| Event::SentFinished {
-                    account: name(),
-                    id,
-                    copied,
-                    flagged,
-                    request,
-                })
-                .map_err(SyncError::from)
+            let (done, lost) = match crate::send::sent::finish(ops, store, &account.name, &id, &job)
+            {
+                Ok(done) => (done, None),
+                Err((done, e)) => (done, Some(e)),
+            };
+            if done.draft_deleted && !job.draft_deleted && !job.draft.is_empty() {
+                let folders = store.folders().unwrap_or_default();
+                if let Some(drafts) = crate::send::drafts::drafts_folder(&folders) {
+                    sync_now(ops, store, &drafts);
+                }
+            }
+            let finished = Event::SentFinished {
+                account: name(),
+                id,
+                copied: done.copied,
+                flagged: done.flagged,
+                draft_deleted: done.draft_deleted,
+                request,
+            };
+            match lost {
+                None => Ok(finished),
+                // What was done before the connection went is kept, so the retry does not copy to Sent twice.
+                Some(e) => {
+                    let _ = events.send(finished);
+                    Err(SyncError::from(e))
+                }
+            }
+        }
+        Command::SaveDraft { raw, replaces } => {
+            run.used_connection = true;
+            match crate::send::drafts::save(ops, store, &account.name, raw.as_deref(), &replaces) {
+                Ok(saved) => {
+                    let folders = store.folders().unwrap_or_default();
+                    if let Some(drafts) = crate::send::drafts::drafts_folder(&folders) {
+                        sync_now(ops, store, &drafts);
+                    }
+                    Ok(Event::DraftSaved {
+                        account: name(),
+                        message_id: saved.message_id,
+                        left: saved.left,
+                        request,
+                    })
+                }
+                Err(crate::send::drafts::SaveDraftError::Mail(e)) => Err(SyncError::from(e)),
+                Err(e) => Ok(failed(request, e.to_string())),
+            }
         }
         Command::Restore { file } => {
             run.used_connection = true;

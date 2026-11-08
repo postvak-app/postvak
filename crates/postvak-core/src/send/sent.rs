@@ -1,6 +1,7 @@
 //! After the server took a message: the copy in Sent and the flag on the original, done by the account's IMAP thread.
 
 use super::SmtpServer;
+use super::drafts::SaveDraftError;
 use super::outbox::Original;
 use crate::mail_ops::{MailError, MailOps};
 use crate::store::{Folder, Store};
@@ -43,20 +44,35 @@ pub struct Finish {
     pub copied: bool,
     pub original: Option<Original>,
     pub flagged: bool,
+    /// The copies in Drafts to delete, each `<message-id>`.
+    pub draft: Vec<String>,
+    pub draft_deleted: bool,
 }
 
-/// Saves the Sent copy and flags the original, each unless done; returns (copied, flagged). A copy or flag the server
-/// refuses is given up, logged and, for the copy, recorded for the status; only a lost connection is an error, to try
-/// again after reconnecting.
+/// Which of [`finish`]'s steps are done (or not wanted).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Done {
+    pub copied: bool,
+    pub flagged: bool,
+    pub draft_deleted: bool,
+}
+
+/// Saves the Sent copy, flags the original and deletes the draft, each unless done. A step the server refuses is given
+/// up, logged and, for the copy, recorded for the status; only a lost connection is an error, to try again after
+/// reconnecting, and it comes with the steps done before it, so the retry does not do them twice.
 pub fn finish(
     ops: &mut dyn MailOps,
     store: &Store,
     account: &str,
     id: &str,
     job: &Finish,
-) -> Result<(bool, bool), MailError> {
-    let mut copied = job.copied || !job.save_sent;
-    if !copied {
+) -> Result<Done, (Done, MailError)> {
+    let mut done = Done {
+        copied: job.copied || !job.save_sent,
+        flagged: job.flagged,
+        draft_deleted: job.draft_deleted || job.draft.is_empty(),
+    };
+    if !done.copied {
         let folders = store.folders().unwrap_or_default();
         match sent_folder(&folders) {
             Some(folder) => match ops.append(&folder, &job.raw, &["\\Seen"]) {
@@ -64,7 +80,7 @@ pub fn finish(
                     log::info!("{account}: saved {id} in {folder}");
                     let _ = store.set_sent_copy_problem(None);
                 }
-                Err(e) if e.is_lost_connection() => return Err(e),
+                Err(e) if e.is_lost_connection() => return Err((done, e)),
                 Err(e) => {
                     log::warn!("{account}: the copy of {id} in {folder} failed: {e}");
                     let _ = store
@@ -76,10 +92,9 @@ pub fn finish(
                 let _ = store.set_sent_copy_problem(Some("no Sent folder"));
             }
         }
-        copied = true;
+        done.copied = true;
     }
-    let mut flagged = job.flagged;
-    if !flagged {
+    if !done.flagged {
         if let Some(original) = &job.original {
             let message_id = original
                 .message_id
@@ -90,12 +105,12 @@ pub fn finish(
             match store.latest_by_message_id(message_id) {
                 Ok(Some(message)) => {
                     let flag = original.flag.flag();
-                    let done = ops
+                    let flagging = ops
                         .select(&message.folder)
                         .and_then(|_| ops.add_flags(message.uid, &[flag]));
-                    match done {
+                    match flagging {
                         Ok(()) => log::info!("{account}: flagged the original of {id}"),
-                        Err(e) if e.is_lost_connection() => return Err(e),
+                        Err(e) if e.is_lost_connection() => return Err((done, e)),
                         // A server that keeps no keywords refuses `$Forwarded`; nothing to tell.
                         Err(e) => {
                             log::info!("{account}: the original of {id} was not flagged: {e}")
@@ -105,9 +120,29 @@ pub fn finish(
                 _ => log::info!("{account}: the original of {id} is gone; not flagged"),
             }
         }
-        flagged = true;
+        done.flagged = true;
     }
-    Ok((copied, flagged))
+    if !done.draft_deleted {
+        match super::drafts::save(ops, store, account, None, &job.draft) {
+            Ok(saved) if !saved.left.is_empty() => log::warn!(
+                "{account}: draft {} of {id} was not deleted",
+                saved.left.join(", ")
+            ),
+            Ok(_) => {}
+            Err(SaveDraftError::Mail(e)) if e.is_lost_connection() => return Err((done, e)),
+            // Left for the daemon's next `FinishSent`: the store may read again then.
+            Err(SaveDraftError::Store(e)) => {
+                log::warn!("{account}: the draft of {id} waits; the store failed: {e}");
+                return Ok(done);
+            }
+            Err(e) => log::warn!(
+                "{account}: draft {} of {id} was not deleted: {e}",
+                job.draft.join(", ")
+            ),
+        }
+    }
+    done.draft_deleted = true;
+    Ok(done)
 }
 
 #[cfg(test)]

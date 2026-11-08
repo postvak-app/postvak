@@ -163,6 +163,7 @@ pub fn report(event: &Event) {
         | Event::AttachmentFetched { .. }
         | Event::BodyPreview { .. }
         | Event::BodyReady { .. }
+        | Event::DraftSaved { .. }
         | Event::FolderCreated { .. }
         | Event::FolderDeleted { .. }
         | Event::FolderNotEmpty { .. }
@@ -856,11 +857,12 @@ fn route_events(
                 id,
                 copied,
                 flagged,
+                draft_deleted,
                 request,
             } => {
                 lock(&shared.finishing).remove(request);
                 if let Some(senders) = lock(&shared.senders).as_ref() {
-                    senders.finished(account, id, *copied, *flagged);
+                    senders.finished(account, id, *copied, *flagged, *draft_deleted);
                 }
             }
             Event::CommandFailed { request, .. } => {
@@ -1337,6 +1339,8 @@ fn finish_sent(shared: &Shared, account: &str, id: &str) {
             copied: entry.copied,
             original: entry.original,
             flagged: entry.flagged,
+            draft: entry.draft,
+            draft_deleted: entry.draft_deleted,
         }
     };
     let request = {

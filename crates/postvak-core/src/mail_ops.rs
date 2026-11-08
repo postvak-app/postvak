@@ -186,6 +186,8 @@ pub trait MailOps {
     fn search_uids(&mut self, from_uid: u32) -> MailResult<Vec<u32>>;
     /// Uids in the selected folder whose headers or body contain every word, ignoring case, ascending.
     fn search_text(&mut self, words: &[String]) -> MailResult<Vec<u32>>;
+    /// Uids in the selected folder with a `header` field containing `value`, ignoring case, ascending.
+    fn search_header(&mut self, header: &str, value: &str) -> MailResult<Vec<u32>>;
     /// Envelopes with `first <= uid <= last` in the selected folder.
     fn fetch_envelopes(&mut self, first: u32, last: u32) -> MailResult<Vec<Envelope>>;
     /// Current flags for uids <= `upto_uid` in the selected folder; with `changed_since`, only those whose modseq is above it.
@@ -628,6 +630,37 @@ mod recording {
                 .into_iter()
                 .flatten()
                 .filter(|e| words.iter().all(|w| text(e).contains(&w.to_lowercase())))
+                .map(|e| e.uid)
+                .collect();
+            uids.sort_unstable();
+            Ok(uids)
+        }
+
+        fn search_header(&mut self, header: &str, value: &str) -> MailResult<Vec<u32>> {
+            self.calls
+                .push(format!("search_header {} {header} {value}", self.selected));
+            let folder = self.selected.clone();
+            // As IMAP SEARCH HEADER: a case-insensitive substring of the field.
+            let wanted = value.to_lowercase();
+            let name_wanted = header.to_lowercase();
+            let has_header = |e: &Envelope| {
+                let raw = self.raw.get(&(folder.clone(), e.uid)).unwrap_or(&e.headers);
+                String::from_utf8_lossy(raw)
+                    .lines()
+                    .take_while(|line| !line.is_empty())
+                    .any(|line| {
+                        line.split_once(':').is_some_and(|(name, field)| {
+                            name.to_lowercase() == name_wanted
+                                && field.to_lowercase().contains(&wanted)
+                        })
+                    })
+            };
+            let mut uids: Vec<u32> = self
+                .mail
+                .get(&folder)
+                .into_iter()
+                .flatten()
+                .filter(|e| has_header(e))
                 .map(|e| e.uid)
                 .collect();
             uids.sort_unstable();
@@ -1103,6 +1136,45 @@ mod tests {
         assert_eq!(ops.mail["Archive/Work/Clients"].len(), 1);
         assert!(ops.mail.contains_key("Workshop") && !ops.mail.contains_key("Work"));
         assert!(ops.folders.iter().any(|f| f.name == "Archive/Work/Clients"));
+    }
+
+    #[test]
+    fn recording_ops_finds_a_message_by_its_message_id() {
+        let mut ops = RecordingOps::default().with_folder("Drafts", None);
+        ops.add_mail(
+            "Drafts",
+            1,
+            10,
+            "Message-ID: <One@Example.com>\r\n\r\n",
+            None,
+        );
+        ops.add_mail(
+            "Drafts",
+            2,
+            20,
+            "Subject: x\r\n\r\n",
+            Some("Subject: x\r\nMessage-Id: <two@example.com>\r\n\r\nbody"),
+        );
+        ops.select("Drafts").unwrap();
+        assert_eq!(
+            ops.search_header("Message-ID", "<one@example.com>")
+                .unwrap(),
+            [1]
+        );
+        assert_eq!(
+            ops.search_header("message-id", "two@example.com").unwrap(),
+            [2]
+        );
+        assert!(
+            ops.search_header("Message-ID", "<three@example.com>")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            ops.search_header("Subject", "two@example.com")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

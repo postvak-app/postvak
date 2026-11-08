@@ -62,6 +62,12 @@ pub struct Entry {
     /// Whether the original is flagged (or there is none).
     #[serde(default)]
     pub flagged: bool,
+    /// The copies in Drafts to delete once it went, each `<message-id>`.
+    #[serde(default)]
+    pub draft: Vec<String>,
+    /// Whether those are deleted.
+    #[serde(default)]
+    pub draft_deleted: bool,
 }
 
 impl Entry {
@@ -78,12 +84,16 @@ impl Entry {
             first_try: None,
             copied: false,
             flagged: false,
+            draft: Vec::new(),
+            draft_deleted: false,
         }
     }
 
     /// Whether the IMAP side has nothing left to do for it.
     pub fn finished(&self) -> bool {
-        (self.copied || !self.save_sent) && (self.flagged || self.original.is_none())
+        (self.copied || !self.save_sent)
+            && (self.flagged || self.original.is_none())
+            && (self.draft_deleted || self.draft.is_empty())
     }
 }
 
@@ -405,5 +415,21 @@ mod tests {
             ..entry(0)
         };
         assert!(bare.finished());
+        let mut drafted = Entry {
+            draft: vec!["<d1@x>".into()],
+            ..bare
+        };
+        assert!(!drafted.finished());
+        drafted.draft_deleted = true;
+        assert!(drafted.finished());
+    }
+
+    #[test]
+    fn an_old_outbox_entry_without_draft_fields_reads() {
+        let json = r#"{"id":"abcd1234","envelope":{"from":"me@example.com","to":["a@x.org"]},"due":0,"state":"sent","save_sent":false,"copied":true,"flagged":true}"#;
+        let entry: Entry = serde_json::from_str(json).unwrap();
+        assert!(entry.draft.is_empty());
+        assert!(!entry.draft_deleted);
+        assert!(entry.finished());
     }
 }

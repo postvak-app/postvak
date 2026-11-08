@@ -65,6 +65,8 @@ pub(crate) struct Pane {
     pub reply_all: bool,
     /// The message came through a mailing list that takes posts: the More menu offers Reply to list.
     pub reply_list: bool,
+    /// The message is in its account's Drafts: Edit draft shows.
+    pub edit_draft: bool,
     /// What rules did to the message, when they did anything; whether the strip lists every action; and Why?'s
     /// conditions with whether the message meets each, while open.
     pub provenance: Option<Provenance>,
@@ -171,6 +173,7 @@ pub(crate) fn pane(app: &App) -> Pane {
             .and_then(|identity| reply(&message.headers, ReplyTo::All, identity, "").ok())
             .is_some_and(|draft| draft.to.len() + draft.cc.len() > 1),
         reply_list: header_value(&message.headers, "List-Post").is_some(),
+        edit_draft: app.is_drafts(body.account, &body.key.0),
         provenance: provenance(
             &body.provenance,
             &app.rules.file.rules,
@@ -751,6 +754,41 @@ mod tests {
         open.click("Reply all");
         let kind = open.with(|live| Some(live.app.composer.as_ref()?.kind));
         assert_eq!(kind, Some(crate::compose::ComposeKind::Reply(ReplyTo::All)));
+    }
+
+    #[test]
+    fn edit_draft_shows_only_in_drafts() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Drafts", Some("Drafts"));
+        fx.add("work", message("INBOX", 1, "lunch"));
+        fx.add("work", message("Drafts", 2, "plans"));
+        let (open, _wires) = fx.window();
+        assert!(!open.with(|live| pane(&live.app).edit_draft));
+        assert!(open.find("Edit draft").is_empty());
+        open.click("Drafts");
+        assert!(open.with(|live| pane(&live.app).edit_draft));
+        open.click("Edit draft");
+        assert!(
+            open.with(|live| live.app.compose_opening.is_some() || !live.app.new_mail.is_empty())
+        );
+    }
+
+    #[test]
+    fn a_folder_named_drafts_counts_without_a_marked_one() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Drafts", None);
+        fx.folder("work", "drafts", None);
+        let (driver, _wires) = fx.driver();
+        assert!(driver.app.is_drafts(0, "Drafts"));
+        assert!(
+            !driver.app.is_drafts(0, "drafts"),
+            "names count case, as core's do"
+        );
+        assert!(!driver.app.is_drafts(0, "INBOX"));
+        fx.folder("work", "Concepts", Some("Drafts"));
+        let (driver, _wires) = fx.driver();
+        assert!(driver.app.is_drafts(0, "Concepts"));
+        assert!(!driver.app.is_drafts(0, "Drafts"), "the marked one wins");
     }
 
     const WITH_ATTACHMENT: &str = "From: a@example.com\r\nSubject: report\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nSee attached\r\n--b\r\nContent-Type: text/plain\r\nContent-Disposition: attachment; filename=\"report.txt\"\r\n\r\nquarterly numbers\r\n--b--\r\n";

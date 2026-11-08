@@ -875,7 +875,11 @@ impl MailOps for ImapOps {
     }
 
     fn search_text(&mut self, words: &[String]) -> MailResult<Vec<u32>> {
-        self.uid_search_sorted(text_query(words))
+        self.uid_search_sorted(text_query(words)?)
+    }
+
+    fn search_header(&mut self, header: &str, value: &str) -> MailResult<Vec<u32>> {
+        self.uid_search_sorted(header_query(header, value)?)
     }
 
     fn fetch_envelopes(&mut self, first: u32, last: u32) -> MailResult<Vec<Envelope>> {
@@ -1291,27 +1295,66 @@ fn store_flags(ops: &mut ImapOps, uids: &[u32], sign: char, flags: &[&str]) -> M
 ///
 /// ponytail: non-ASCII goes in a quoted string, which Dovecot, Gmail and Fastmail accept; a strict RFC 3501 server wants a
 /// literal, which async-imap's `uid_search` cannot send.
-fn text_query(words: &[String]) -> String {
-    let criteria: Vec<String> = words
+fn text_query(words: &[String]) -> MailResult<String> {
+    let criteria = words
         .iter()
-        .map(|word| {
-            format!(
-                "TEXT \"{}\"",
-                word.replace('\\', "\\\\").replace('"', "\\\"")
-            )
-        })
-        .collect();
-    format!("CHARSET UTF-8 {}", criteria.join(" "))
+        .map(|word| quoted(word).map(|word| format!("TEXT {word}")))
+        .collect::<MailResult<Vec<_>>>()?;
+    Ok(format!("CHARSET UTF-8 {}", criteria.join(" ")))
+}
+
+fn header_query(header: &str, value: &str) -> MailResult<String> {
+    Ok(format!(
+        "CHARSET UTF-8 HEADER {} {}",
+        quoted(header)?,
+        quoted(value)?
+    ))
+}
+
+/// A quoted string for a search command; `uid_search` sends its query as is, so a line break or NUL would end the command.
+fn quoted(text: &str) -> MailResult<String> {
+    if text.contains(['\r', '\n', '\0']) {
+        return Err(MailError::Protocol(
+            "a search term holds a line break or NUL".into(),
+        ));
+    }
+    Ok(format!(
+        "\"{}\"",
+        text.replace('\\', "\\\\").replace('"', "\\\"")
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn header_query_quotes_both_arguments() {
+        assert_eq!(
+            header_query("Message-ID", r#"<a"b@x>"#).unwrap(),
+            r#"CHARSET UTF-8 HEADER "Message-ID" "<a\"b@x>""#
+        );
+        assert_eq!(quoted(r"a\b").unwrap(), r#""a\\b""#);
+        assert_eq!(quoted("café").unwrap(), "\"café\"");
+    }
+
     fn learned(wire: &[&str]) -> (FolderNames, Vec<String>) {
         let mut names = FolderNames::default();
         let local = names.learn(wire.iter().map(|n| n.to_string()).collect());
         (names, local)
+    }
+
+    #[test]
+    fn a_search_term_with_a_line_break_or_nul_is_refused() {
+        for (header, value) in [
+            ("Message-ID", "<a>\r\nA1 DELETE INBOX"),
+            ("Message-ID", "<a>\nx"),
+            ("Message\r-ID", "<a>"),
+            ("Message-ID", "<a\0>"),
+        ] {
+            assert!(header_query(header, value).is_err(), "{header:?} {value:?}");
+        }
+        assert!(text_query(&["ok".into(), "a\nb".into()]).is_err());
     }
 
     #[test]
@@ -1622,7 +1665,7 @@ mod tests {
             "café".to_string(),
         ];
         assert_eq!(
-            text_query(&words),
+            text_query(&words).unwrap(),
             r#"CHARSET UTF-8 TEXT "plain" TEXT "a\"b\\c" TEXT "café""#
         );
     }

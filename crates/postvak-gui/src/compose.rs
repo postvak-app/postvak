@@ -8,9 +8,10 @@ use postvak_core::paths::{Paths, write_atomic};
 use postvak_core::send::build::{bare_address, mailbox_text};
 use postvak_core::send::check::{CheckError, DEFAULT_SIZE_LIMIT, check_from, valid_address};
 use postvak_core::send::compose::{Body, HeaderEdits, Prefilled, SendKind, SendRequest};
+use postvak_core::send::drafts::{DraftKind, OpenedDraft, bracketed};
 use postvak_core::send::edit::split_recipients;
 use postvak_core::send::mailto::Mailto;
-use postvak_core::send::reply::{ForwardAs, ReplyTo};
+use postvak_core::send::reply::{self, ForwardAs, ReplyTo};
 use postvak_core::store::KnownAddress;
 use serde::{Deserialize, Serialize};
 
@@ -20,6 +21,15 @@ pub(crate) fn send_hint() -> &'static str {
         "Send · Cmd+Enter"
     } else {
         "Send · Ctrl+Enter"
+    }
+}
+
+/// Save draft's hover hint, with its key.
+pub(crate) fn save_hint() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Save draft · Cmd+S"
+    } else {
+        "Save draft · Ctrl+S"
     }
 }
 
@@ -50,6 +60,22 @@ pub(crate) struct OriginalRef {
     pub uid: u32,
     #[serde(skip)]
     pub raw: Vec<u8>,
+}
+
+/// The composer's copy in the account's Drafts: its Message-ID, and earlier copies a save could not delete, each `<id>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ComposeDraft {
+    pub message_id: String,
+    pub left: Vec<String>,
+}
+
+impl ComposeDraft {
+    /// Every copy in Drafts, which the next save, a send or a discard deletes.
+    pub(crate) fn ids(&self) -> Vec<String> {
+        std::iter::once(self.message_id.clone())
+            .chain(self.left.iter().cloned())
+            .collect()
+    }
 }
 
 /// The fields as the composer opened, to tell whether the user changed anything.
@@ -109,6 +135,10 @@ pub(crate) struct Composer {
     pub may_have_gone: bool,
     #[serde(skip)]
     pub error: Option<(Field, String)>,
+    #[serde(default)]
+    pub draft: Option<ComposeDraft>,
+    #[serde(skip)]
+    pub saving: bool,
     /// The largest message the account's server takes, in bytes.
     pub size_limit: u64,
     opened_as: Snapshot,
@@ -168,6 +198,8 @@ impl Composer {
             sending: false,
             may_have_gone: false,
             error: None,
+            draft: None,
+            saving: false,
             size_limit: DEFAULT_SIZE_LIMIT as u64,
             opened_as: Snapshot::default(),
         }
@@ -223,6 +255,75 @@ impl Composer {
         }
         composer.opened_as = composer.snapshot();
         composer
+    }
+
+    /// A draft read back from Drafts: a Postvak reply or forward over its original at `original_at`, other drafts as
+    /// new mail, over the message they answer when `original_at` names one. Its own files are written to `files_dir`.
+    pub(crate) fn from_draft(
+        id: u64,
+        account: &str,
+        identities: &[(String, Identity)],
+        opened: OpenedDraft,
+        original_at: Option<(String, u32)>,
+        files_dir: &Path,
+    ) -> io::Result<Self> {
+        let kind = match opened.kind {
+            DraftKind::New => ComposeKind::New,
+            DraftKind::Reply(to) => ComposeKind::Reply(to),
+            DraftKind::Forward(_) => ComposeKind::Forward,
+        };
+        let mut composer = Self::empty(id, account, kind);
+        composer.original = original_at.map(|(folder, uid)| OriginalRef {
+            folder,
+            uid,
+            raw: opened.original.clone().unwrap_or_default(),
+        });
+        if kind == ComposeKind::Forward {
+            let raw = opened.original.as_deref().unwrap_or_default();
+            composer.forward_parts = reply::forward_attachments(raw)
+                .into_iter()
+                .enumerate()
+                .map(|(index, (name, size))| {
+                    let kept = opened
+                        .forward_parts
+                        .as_ref()
+                        .is_none_or(|parts| parts.contains(&index));
+                    (name, size, kept)
+                })
+                .collect();
+        }
+        composer.forward_as_attachment = opened.kind == DraftKind::Forward(ForwardAs::Attachment);
+        composer.from = opened.from;
+        composer.from_choices = (identities.iter())
+            .find(|(name, _)| name == account)
+            .map(|(_, identity)| choices_of(identity))
+            .unwrap_or_default();
+        composer.show_cc_bcc = !opened.cc.is_empty() || !opened.bcc.is_empty();
+        composer.to = join_addresses(&opened.to);
+        composer.cc = join_addresses(&opened.cc);
+        composer.bcc = join_addresses(&opened.bcc);
+        composer.subject = opened.subject;
+        composer.text = opened.text;
+        composer.in_reply_to = opened.in_reply_to;
+        composer.references = opened.references;
+        composer.draft = bracketed(&opened.message_id).map(|message_id| ComposeDraft {
+            message_id,
+            left: Vec::new(),
+        });
+        let notes: Vec<&str> = (opened.note.iter().copied())
+            .chain(composer.draft.is_none().then_some(NO_MESSAGE_ID))
+            .collect();
+        composer.error = (!notes.is_empty()).then(|| (Field::Note, notes.join(" ")));
+        // A folder per file, so two files of one name both keep it.
+        for (index, (name, bytes)) in opened.files.into_iter().enumerate() {
+            let dir = files_dir.join(index.to_string());
+            std::fs::create_dir_all(&dir)?;
+            let path = dir.join(safe_name(&name));
+            std::fs::write(&path, &bytes)?;
+            composer.files.push((path, bytes.len() as u64));
+        }
+        composer.opened_as = composer.snapshot();
+        Ok(composer)
     }
 
     /// Takes the prefill's fields but not its text: that holds the quote, which `compose` adds under the user's text.
@@ -360,8 +461,38 @@ impl Composer {
         self.snapshot() != self.opened_as
     }
 
-    pub(crate) fn leave_question(&self) -> Option<&'static str> {
+    /// What leaving asks, or Discard when `discarding`: Discard of a saved draft always asks, as it deletes the draft.
+    pub(crate) fn leave_question(&self, discarding: bool) -> Option<&'static str> {
+        if discarding && self.draft.is_some() {
+            return Some("Delete this draft?");
+        }
         self.changed().then_some("Discard this message?")
+    }
+
+    /// `saved`, this composer as it was when saved, is in Drafts now as `draft`; what was typed since still counts as
+    /// a change.
+    pub(crate) fn saved_as(&mut self, saved: &Composer, draft: ComposeDraft) {
+        self.draft = Some(draft);
+        self.saving = false;
+        self.opened_as = saved.snapshot();
+    }
+
+    /// Whether Save draft can start: not while it loads or is sent.
+    pub(crate) fn can_save(&self) -> bool {
+        !self.loading && !self.sending
+    }
+
+    /// Counts `message_id` among its copies in Drafts, for a save that may reach the server without answering.
+    pub(crate) fn may_hold(&mut self, message_id: String) {
+        match &mut self.draft {
+            Some(draft) => draft.left.push(message_id),
+            None => {
+                self.draft = Some(ComposeDraft {
+                    message_id,
+                    left: Vec::new(),
+                })
+            }
+        }
     }
 
     pub(crate) fn split_addresses(field: &str) -> Vec<String> {
@@ -523,6 +654,11 @@ impl Composer {
                 references: self.references.clone(),
             }),
             forward_parts,
+            draft: self
+                .draft
+                .as_ref()
+                .map(ComposeDraft::ids)
+                .unwrap_or_default(),
         }
     }
 }
@@ -539,6 +675,67 @@ fn recovery_file(dir: &Path, id: u64) -> PathBuf {
 pub(crate) fn save_recovery(dir: &Path, composer: &Composer) -> io::Result<()> {
     let json = serde_json::to_vec(composer).map_err(io::Error::other)?;
     write_atomic(&recovery_file(dir, composer.id), &json)
+}
+
+/// Where a composer opened from a draft keeps the draft's own files: `<state>/compose/<id>/files`.
+pub(crate) fn files_dir(dir: &Path, id: u64) -> PathBuf {
+    dir.join(id.to_string()).join("files")
+}
+
+/// The line of an opened draft without a Message-ID, which no save or send can find to replace.
+pub(crate) const NO_MESSAGE_ID: &str =
+    "This draft has no Message-ID, so saving or sending it leaves the old copy in Drafts.";
+
+/// The longest file name a draft's attachment is written under, in bytes.
+const NAME_MAX: usize = 100;
+
+/// A file name from a stranger as one that stays in its directory: no path, no leading dot, no control characters,
+/// and short enough for any file system.
+fn safe_name(name: &str) -> String {
+    let last = name.rsplit(['/', '\\']).next().unwrap_or_default();
+    let clean: String = last.chars().filter(|c| !c.is_control()).collect();
+    let clean = clean.trim().trim_start_matches('.').trim();
+    if clean.is_empty() {
+        return "attachment".to_string();
+    }
+    if clean.len() <= NAME_MAX {
+        return clean.to_string();
+    }
+    let (stem, extension) = split_extension(clean);
+    let room = NAME_MAX.saturating_sub(extension.len());
+    let mut cut = room.min(stem.len());
+    while !stem.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}{extension}", &stem[..cut])
+}
+
+/// `name` as stem and extension, the dot with the extension; a name with a dot only in front has none.
+fn split_extension(name: &str) -> (&str, &str) {
+    match name.rfind('.') {
+        Some(dot) if dot > 0 && name.len() - dot <= 10 => name.split_at(dot),
+        _ => (name, ""),
+    }
+}
+
+/// Removes the draft files of composers without a recovery file, as one sent before a quit leaves them.
+pub(crate) fn sweep_files(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let ids = entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<u64>().ok());
+    for id in ids.collect::<Vec<_>>() {
+        remove_unkept_files(dir, id);
+    }
+}
+
+/// Removes composer `id`'s draft files unless its recovery file still names them; those wait for the next start.
+pub(crate) fn remove_unkept_files(dir: &Path, id: u64) {
+    if !recovery_file(dir, id).exists() {
+        remove_files(dir, id);
+    }
 }
 
 /// The composers left in `dir`, oldest first; a file that cannot be read stays there and is skipped.
@@ -565,10 +762,27 @@ pub(crate) fn load_recoveries(dir: &Path) -> Vec<Composer> {
     composers
 }
 
+/// Removes composer `id`'s recovery file and the draft files it held.
 pub(crate) fn remove_recovery(dir: &Path, id: u64) {
+    remove_recovery_file(dir, id);
+    remove_files(dir, id);
+}
+
+/// Removes composer `id`'s recovery file only, keeping its draft files for an undo that reopens it.
+pub(crate) fn remove_recovery_file(dir: &Path, id: u64) {
     match std::fs::remove_file(recovery_file(dir, id)) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => {
             log::warn!("could not remove the unsent message {id}.json: {e}");
+        }
+        _ => {}
+    }
+}
+
+/// Removes the draft files composer `id` held.
+pub(crate) fn remove_files(dir: &Path, id: u64) {
+    match std::fs::remove_dir_all(dir.join(id.to_string())) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => {
+            log::warn!("could not remove the files of the unsent message {id}: {e}");
         }
         _ => {}
     }
@@ -777,10 +991,16 @@ mod tests {
         composer.forward_parts[0].2 = false;
         composer.error = Some((Field::Send, "not sent".into()));
         composer.sending = true;
+        composer.saving = true;
+        composer.draft = Some(ComposeDraft {
+            message_id: "<d1@x>".into(),
+            left: vec!["<d0@x>".into()],
+        });
         save_recovery(dir.path(), &composer).unwrap_or_else(|e| panic!("{e}"));
 
         let restored = load_recoveries(dir.path());
         composer.error = None;
+        composer.saving = false;
         if let Some(original) = composer.original.as_mut() {
             original.raw.clear();
         }
@@ -866,14 +1086,17 @@ mod tests {
 
     #[test]
     fn nothing_typed_leaves_without_asking() {
-        assert_eq!(new_mail().leave_question(), None);
+        assert_eq!(new_mail().leave_question(false), None);
     }
 
     #[test]
     fn a_typed_word_asks_before_leaving() {
         let mut composer = new_mail();
         composer.text.push_str("hi");
-        assert_eq!(composer.leave_question(), Some("Discard this message?"));
+        assert_eq!(
+            composer.leave_question(false),
+            Some("Discard this message?")
+        );
     }
 
     #[test]
@@ -1122,5 +1345,205 @@ mod tests {
             composer.from_choices,
             vec!["me@example.com", "alias@example.com"]
         );
+    }
+}
+
+#[cfg(test)]
+mod drafts_opened {
+    use super::*;
+    use postvak_core::config::{AccountConfig, PasswordSource};
+    use postvak_core::send::drafts::{DraftKind, OpenedDraft};
+
+    fn identities() -> Vec<(String, Identity)> {
+        let account = AccountConfig::new(
+            "work",
+            "imap.example.com",
+            "me@example.com",
+            PasswordSource::Keyring { keyring: true },
+        );
+        vec![("work".to_string(), account.identity().unwrap())]
+    }
+
+    fn foreign() -> OpenedDraft {
+        OpenedDraft {
+            kind: DraftKind::New,
+            original: None,
+            shown_original: None,
+            from: "me@example.com".into(),
+            to: vec!["Ann <ann@x.org>".into()],
+            cc: vec!["bob@x.org".into()],
+            bcc: Vec::new(),
+            subject: "Re: Plans".into(),
+            text: "Sure.\n\n> Shall we?".into(),
+            files: vec![
+                ("../../etc/passwd".into(), b"root".to_vec()),
+                (".hidden".into(), b"h".to_vec()),
+                ("notes.txt".into(), b"one".to_vec()),
+                ("notes.txt".into(), b"two!".to_vec()),
+                (format!("{}.pdf", "x".repeat(300)), Vec::new()),
+                ("..".into(), b"dots".to_vec()),
+            ],
+            forward_parts: None,
+            in_reply_to: Some("<m1@x.org>".into()),
+            references: vec!["<m0@x.org>".into(), "<m1@x.org>".into()],
+            note: Some("This draft had only HTML; it opens as text."),
+            message_id: "d1@x.org".into(),
+        }
+    }
+
+    #[test]
+    fn a_foreign_draft_opens_whole_with_its_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = files_dir(dir.path(), 4);
+        let composer =
+            Composer::from_draft(4, "work", &identities(), foreign(), None, &files).unwrap();
+        assert_eq!(composer.kind, ComposeKind::New);
+        assert!(composer.original.is_none());
+        assert_eq!(composer.to, "Ann <ann@x.org>");
+        assert_eq!(composer.cc, "bob@x.org");
+        assert!(composer.show_cc_bcc);
+        assert_eq!(composer.text, "Sure.\n\n> Shall we?");
+        assert_eq!(composer.in_reply_to.as_deref(), Some("<m1@x.org>"));
+        assert_eq!(composer.references, ["<m0@x.org>", "<m1@x.org>"]);
+        assert_eq!(
+            composer.error,
+            Some((
+                Field::Note,
+                "This draft had only HTML; it opens as text.".into()
+            ))
+        );
+        assert_eq!(
+            composer.draft,
+            Some(ComposeDraft {
+                message_id: "<d1@x.org>".into(),
+                left: Vec::new()
+            })
+        );
+        let names: Vec<String> = composer
+            .file_rows()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(names[..4], ["passwd", "hidden", "notes.txt", "notes.txt"]);
+        assert!(
+            names[4].ends_with(".pdf") && names[4].len() <= 100,
+            "{}",
+            names[4]
+        );
+        assert_eq!(names[5], "attachment");
+        for (index, (path, size)) in composer.files.iter().enumerate() {
+            assert_eq!(path.parent(), Some(files.join(index.to_string()).as_path()));
+            assert_eq!(std::fs::metadata(path).unwrap().len(), *size);
+        }
+        assert_eq!(std::fs::read(&composer.files[3].0).unwrap(), b"two!");
+        assert!(!composer.changed(), "nothing typed yet");
+    }
+
+    #[test]
+    fn a_forward_draft_keeps_the_parts_it_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = b"From: a@x.org\r\nMessage-ID: <m1@x.org>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nhi\r\n--b\r\nContent-Type: text/plain\r\nContent-Disposition: attachment; filename=\"a.txt\"\r\n\r\naaa\r\n--b\r\nContent-Type: text/plain\r\nContent-Disposition: attachment; filename=\"b.txt\"\r\n\r\nbb\r\n--b--\r\n".to_vec();
+        let opened = OpenedDraft {
+            kind: DraftKind::Forward(postvak_core::send::reply::ForwardAs::Inline),
+            original: Some(original.clone()),
+            forward_parts: Some(vec![1]),
+            note: None,
+            files: Vec::new(),
+            ..foreign()
+        };
+        let at = Some(("INBOX".to_string(), 7));
+        let composer = Composer::from_draft(
+            5,
+            "work",
+            &identities(),
+            opened,
+            at,
+            &files_dir(dir.path(), 5),
+        )
+        .unwrap();
+        assert_eq!(composer.kind, ComposeKind::Forward);
+        assert!(!composer.forward_as_attachment);
+        let original_ref = composer.original.as_ref().unwrap();
+        assert_eq!(
+            (original_ref.folder.as_str(), original_ref.uid),
+            ("INBOX", 7)
+        );
+        assert_eq!(original_ref.raw, original);
+        let kept: Vec<(&str, bool)> = composer
+            .part_rows()
+            .iter()
+            .map(|(n, _, k)| (*n, *k))
+            .collect();
+        assert_eq!(kept, [("a.txt", false), ("b.txt", true)]);
+        assert_eq!(composer.error, None);
+    }
+
+    #[test]
+    fn a_draft_without_a_message_id_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let opened = OpenedDraft {
+            message_id: String::new(),
+            note: None,
+            ..foreign()
+        };
+        let composer = Composer::from_draft(
+            4,
+            "work",
+            &identities(),
+            opened,
+            None,
+            &files_dir(dir.path(), 4),
+        )
+        .unwrap();
+        assert_eq!(composer.draft, None);
+        assert_eq!(composer.error, Some((Field::Note, NO_MESSAGE_ID.into())));
+    }
+
+    #[test]
+    fn files_without_a_recovery_file_are_swept() {
+        let dir = tempfile::tempdir().unwrap();
+        let kept = Composer::from_draft(
+            4,
+            "work",
+            &identities(),
+            foreign(),
+            None,
+            &files_dir(dir.path(), 4),
+        )
+        .unwrap();
+        save_recovery(dir.path(), &kept).unwrap();
+        let left = Composer::from_draft(
+            5,
+            "work",
+            &identities(),
+            foreign(),
+            None,
+            &files_dir(dir.path(), 5),
+        )
+        .unwrap();
+        sweep_files(dir.path());
+        assert!(kept.files[0].0.exists());
+        assert!(!left.files[0].0.exists());
+        assert!(!dir.path().join("5").exists());
+    }
+
+    #[test]
+    fn the_draft_files_go_with_the_composer() {
+        let dir = tempfile::tempdir().unwrap();
+        let composer = Composer::from_draft(
+            4,
+            "work",
+            &identities(),
+            foreign(),
+            None,
+            &files_dir(dir.path(), 4),
+        )
+        .unwrap();
+        save_recovery(dir.path(), &composer).unwrap();
+        assert!(composer.files[0].0.exists());
+        remove_recovery(dir.path(), 4);
+        assert!(!composer.files[0].0.exists());
+        assert!(!dir.path().join("4").exists());
+        assert!(load_recoveries(dir.path()).is_empty());
     }
 }

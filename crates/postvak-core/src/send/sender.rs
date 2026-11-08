@@ -363,8 +363,15 @@ impl Senders {
             })
     }
 
-    /// The IMAP side's report for a sent message: removes it once both its copy and its flag are done.
-    pub fn finished(&self, account: &str, id: &str, copied: bool, flagged: bool) {
+    /// The IMAP side's report for a sent message: removes it once its copy, its flag and its draft's delete are done.
+    pub fn finished(
+        &self,
+        account: &str,
+        id: &str,
+        copied: bool,
+        flagged: bool,
+        draft_deleted: bool,
+    ) {
         let Ok(shared) = self.shared(account) else {
             return;
         };
@@ -374,6 +381,7 @@ impl Senders {
         };
         entry.copied |= copied;
         entry.flagged |= flagged;
+        entry.draft_deleted |= draft_deleted;
         let result = if entry.finished() {
             shared.remove_sent(id)
         } else {
@@ -971,11 +979,53 @@ mod tests {
             h.senders().cancel("work", &entry.id),
             Err(CancelError::TooLate(_))
         ));
-        h.senders().finished("work", &entry.id, true, false);
+        h.senders().finished("work", &entry.id, true, false, false);
         assert!(h.senders().busy());
-        h.senders().finished("work", &entry.id, false, true);
+        h.senders().finished("work", &entry.id, false, true, false);
         assert_eq!(h.state(&entry.id), None);
         assert!(!h.senders().busy());
+    }
+
+    fn queue_draft(h: &Harness, due: i64) -> Entry {
+        let entry = Entry {
+            draft: vec!["<d1@x>".into()],
+            ..new_entry(due, false)
+        };
+        h.senders().queue("work", MESSAGE, &entry).unwrap();
+        entry
+    }
+
+    #[test]
+    fn a_sent_draft_waits_for_its_delete() {
+        let h = Harness::new(true);
+        let entry = queue_draft(&h, h.now());
+        let (_, id) = h.finish.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(id, entry.id);
+        h.senders().finished("work", &entry.id, true, true, false);
+        assert_eq!(h.state(&entry.id), Some(State::Sent));
+        h.senders().finished("work", &entry.id, false, false, true);
+        assert_eq!(h.state(&entry.id), None);
+    }
+
+    #[test]
+    fn a_cancelled_or_failed_message_leaves_its_draft() {
+        let h = Harness::new(true);
+        let cancelled = queue_draft(&h, h.now() + 10);
+        h.senders().cancel("work", &cancelled.id).unwrap();
+        h.smtp.with(|s| {
+            s.script
+                .push_back(Err(SmtpError::Permanent("550 no such user".into())))
+        });
+        let failed = queue_draft(&h, h.now());
+        until("the failure", || {
+            matches!(h.state(&failed.id), Some(State::Failed { .. }))
+        });
+        h.advance(FINISH_EVERY_SECS);
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            h.finish.try_recv().is_err(),
+            "nothing is handed to the IMAP side"
+        );
     }
 
     #[test]

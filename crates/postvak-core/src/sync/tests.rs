@@ -2940,6 +2940,13 @@ impl MailOps for QueuesCommandsOnSelect {
     fn search_uids(&mut self, from_uid: u32) -> crate::mail_ops::MailResult<Vec<u32>> {
         self.inner.search_uids(from_uid)
     }
+    fn search_header(
+        &mut self,
+        header: &str,
+        value: &str,
+    ) -> crate::mail_ops::MailResult<Vec<u32>> {
+        self.inner.search_header(header, value)
+    }
     fn fetch_envelopes(
         &mut self,
         first: u32,
@@ -5246,6 +5253,13 @@ impl MailOps for Returning {
     fn search_uids(&mut self, from_uid: u32) -> crate::mail_ops::MailResult<Vec<u32>> {
         self.ops.search_uids(from_uid)
     }
+    fn search_header(
+        &mut self,
+        header: &str,
+        value: &str,
+    ) -> crate::mail_ops::MailResult<Vec<u32>> {
+        self.ops.search_header(header, value)
+    }
     fn search_text(&mut self, words: &[String]) -> crate::mail_ops::MailResult<Vec<u32>> {
         self.ops.search_text(words)
     }
@@ -6478,16 +6492,171 @@ fn finish_sent(flag: crate::send::reply::OriginalFlag) -> Command {
             flag,
         }),
         flagged: false,
+        draft: Vec::new(),
+        draft_deleted: false,
     }
 }
 
 fn finished(events: &[Event]) -> Option<(bool, bool)> {
+    finished_all(events).map(|(copied, flagged, _)| (copied, flagged))
+}
+
+fn finished_all(events: &[Event]) -> Option<(bool, bool, bool)> {
     events.iter().find_map(|e| match e {
         Event::SentFinished {
-            copied, flagged, ..
-        } => Some((*copied, *flagged)),
+            copied,
+            flagged,
+            draft_deleted,
+            ..
+        } => Some((*copied, *flagged, *draft_deleted)),
         _ => None,
     })
+}
+
+/// A synced account with a Sent folder and draft `<d1@x>` in Drafts, and a `FinishSent` whose copy and flag are done.
+fn finishing_a_draft() -> (RecordingOps, Store, Trash, tempfile::TempDir, Command) {
+    let (mut ops, store, dir) = synced();
+    ops = ops
+        .with_folder("Sent", Some("Sent"))
+        .with_folder("Drafts", Some("Drafts"));
+    ops.add_mail(
+        "Drafts",
+        1,
+        20 * H,
+        &headers("pieter@example.com", "draft", "d1@x"),
+        None,
+    );
+    sync_all(&mut ops, &store).unwrap();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let mut command = finish_sent(crate::send::reply::OriginalFlag::Answered);
+    if let Command::FinishSent {
+        copied,
+        flagged,
+        draft,
+        ..
+    } = &mut command
+    {
+        *copied = true;
+        *flagged = true;
+        *draft = vec!["<d1@x>".into()];
+    }
+    (ops, store, trash, dir, command)
+}
+
+#[test]
+fn a_sent_draft_is_deleted_from_drafts() {
+    let (mut ops, store, trash, _dir, command) = finishing_a_draft();
+    let (run, events) = drain(&mut ops, &store, &trash, vec![command]);
+    run.unwrap();
+    assert_eq!(
+        finished_all(&events),
+        Some((true, true, true)),
+        "{events:?}"
+    );
+    assert!(ops.mail["Drafts"].is_empty());
+    assert!(ops.mail["Sent"].is_empty(), "the copy was done before");
+    assert_eq!(store.latest_by_message_id("d1@x").unwrap(), None);
+}
+
+#[test]
+fn a_store_error_while_deleting_the_draft_waits_for_the_next_try() {
+    let (mut ops, store, trash, _dir, command) = finishing_a_draft();
+    store.execute_for_tests("DROP TABLE folders");
+    let (run, events) = drain(&mut ops, &store, &trash, vec![command]);
+    run.unwrap();
+    assert_eq!(finished_all(&events), Some((true, true, false)));
+    assert_eq!(ops.mail["Drafts"].len(), 1);
+}
+
+#[test]
+fn a_lost_connection_while_deleting_the_draft_tries_again() {
+    let (mut ops, store, trash, _dir, command) = finishing_a_draft();
+    ops.fail_next_expunge = Some(MailError::Io("reset".into()));
+    let (run, events) = drain(&mut ops, &store, &trash, vec![command.clone()]);
+    assert!(run.is_err());
+    assert_eq!(finished_all(&events), Some((true, true, false)));
+    assert_eq!(ops.mail["Drafts"].len(), 1);
+    let (run, events) = drain(&mut ops, &store, &trash, vec![command]);
+    run.unwrap();
+    assert_eq!(finished_all(&events), Some((true, true, true)));
+    assert!(ops.mail["Drafts"].is_empty());
+}
+
+/// The command the daemon sends next, after `events` reported what the first one did.
+fn finish_sent_again(mut command: Command, events: &[Event]) -> Command {
+    let (done_copied, done_flagged, done_draft) = finished_all(events).unwrap();
+    if let Command::FinishSent {
+        copied,
+        flagged,
+        draft_deleted,
+        ..
+    } = &mut command
+    {
+        *copied |= done_copied;
+        *flagged |= done_flagged;
+        *draft_deleted |= done_draft;
+    }
+    command
+}
+
+#[test]
+fn a_lost_connection_while_deleting_the_draft_does_not_copy_to_sent_again() {
+    let (mut ops, store, trash, _dir, mut command) = finishing_a_draft();
+    if let Command::FinishSent { copied, .. } = &mut command {
+        *copied = false;
+    }
+    ops.fail_next_expunge = Some(MailError::Io("reset".into()));
+    let (run, events) = drain(&mut ops, &store, &trash, vec![command.clone()]);
+    assert!(run.is_err());
+    assert_eq!(finished_all(&events), Some((true, true, false)));
+    let (run, events) = drain(
+        &mut ops,
+        &store,
+        &trash,
+        vec![finish_sent_again(command, &events)],
+    );
+    run.unwrap();
+    assert_eq!(finished_all(&events), Some((true, true, true)));
+    assert_eq!(ops.mail["Sent"].len(), 1);
+    assert!(ops.mail["Drafts"].is_empty());
+}
+
+#[test]
+fn a_lost_connection_while_flagging_does_not_copy_to_sent_again() {
+    let (mut ops, store, dir) = synced();
+    ops = ops.with_folder("Sent", Some("Sent"));
+    sync_all(&mut ops, &store).unwrap();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let command = finish_sent(crate::send::reply::OriginalFlag::Answered);
+    ops.fail_add_flags_after = Some(0);
+    let (run, events) = drain(&mut ops, &store, &trash, vec![command.clone()]);
+    assert!(run.is_err());
+    assert_eq!(finished(&events), Some((true, false)));
+    ops.fail_add_flags_after = None;
+    let (run, events) = drain(
+        &mut ops,
+        &store,
+        &trash,
+        vec![finish_sent_again(command, &events)],
+    );
+    run.unwrap();
+    assert_eq!(finished(&events), Some((true, true)));
+    assert_eq!(ops.mail["Sent"].len(), 1);
+    assert!(
+        ops.calls
+            .contains(&"add_flags INBOX 1 \\Answered".to_string()),
+        "{:?}",
+        ops.calls
+    );
+}
+
+#[test]
+fn a_refused_draft_delete_is_given_up() {
+    let (mut ops, store, trash, _dir, command) = finishing_a_draft();
+    ops.fail_next_expunge = Some(MailError::Protocol("NO not allowed".into()));
+    let (run, events) = drain(&mut ops, &store, &trash, vec![command]);
+    run.unwrap();
+    assert_eq!(finished_all(&events), Some((true, true, true)));
 }
 
 #[test]
@@ -6628,7 +6797,7 @@ fn finish_sent_after_a_lost_connection_is_tried_again() {
         vec![finish_sent(crate::send::reply::OriginalFlag::Answered)],
     );
     assert!(run.is_err());
-    assert_eq!(finished(&events), None);
+    assert_eq!(finished(&events), Some((false, false)));
     assert!(
         events
             .iter()
@@ -7152,4 +7321,65 @@ fn a_forward_acts_only_on_mail_from_its_approval_on() {
     sync_all(&mut f.ops, &f.store).unwrap();
     f.run(Mode::Normal, 13 * H);
     assert_eq!(f.queue.taken().len(), 1);
+}
+
+fn draft_saved(events: &[Event]) -> Option<(Option<String>, Vec<String>)> {
+    events.iter().find_map(|e| match e {
+        Event::DraftSaved {
+            message_id, left, ..
+        } => Some((message_id.clone(), left.clone())),
+        _ => None,
+    })
+}
+
+#[test]
+fn draft_save_answers_with_the_new_message_id_and_syncs_drafts() {
+    let (mut ops, store, dir) = synced();
+    ops = ops.with_folder("Drafts", Some("Drafts"));
+    sync_all(&mut ops, &store).unwrap();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let command = Command::SaveDraft {
+        raw: Some(b"Message-ID: <d1@x>\r\nSubject: s\r\n\r\nbody\r\n".to_vec()),
+        replaces: Vec::new(),
+    };
+    let (run, events) = drain(&mut ops, &store, &trash, vec![command]);
+    run.unwrap();
+    assert_eq!(
+        draft_saved(&events),
+        Some((Some("<d1@x>".into()), Vec::new())),
+        "{events:?}"
+    );
+    assert_eq!(ops.mail["Drafts"][0].flags, ["\\Draft", "\\Seen"]);
+    assert!(store.latest_by_message_id("d1@x").unwrap().is_some());
+}
+
+#[test]
+fn draft_save_without_a_drafts_folder_fails_the_command() {
+    let (mut ops, store, dir) = synced();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let command = Command::SaveDraft {
+        raw: None,
+        replaces: vec!["<d1@x>".into()],
+    };
+    let (run, events) = drain(&mut ops, &store, &trash, vec![command]);
+    run.unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::CommandFailed { message, .. }
+            if message == "This account has no Drafts folder")),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn draft_save_round_trips_on_the_wire() {
+    for raw in [Some(b"Message-ID: <d1@x>\r\n\r\n".to_vec()), None] {
+        let command = Command::SaveDraft {
+            raw,
+            replaces: vec!["<d0@x>".into()],
+        };
+        let json = serde_json::to_string(&command).unwrap();
+        assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), command);
+    }
 }

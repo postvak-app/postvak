@@ -345,6 +345,31 @@ pub(crate) mod base64_bytes {
     }
 }
 
+/// `base64_bytes` for an optional field.
+pub(crate) mod base64_bytes_opt {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(
+        bytes: &Option<Vec<u8>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match bytes {
+            Some(bytes) => super::base64_bytes::serialize(bytes, serializer),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Vec<u8>>, D::Error> {
+        use base64::Engine as _;
+        Option::<String>::deserialize(deserializer)?
+            .map(|text| base64::engine::general_purpose::STANDARD.decode(text))
+            .transpose()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 /// `attachments`, and the first `text/html` part with every `Content-ID` part (`None` when there is no HTML part), from
 /// one parse, for a reader that shows both.
 pub fn attachments_and_html(raw: &[u8]) -> (Vec<Attachment>, Option<HtmlBody>) {

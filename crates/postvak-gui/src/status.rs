@@ -61,7 +61,7 @@ pub(crate) fn outbox_text(counts: &[postvak_core::send::sender::OutboxCounts]) -
 }
 
 /// One message of the outbox dialog: its account and recipient count, then when it goes or why it failed, and the
-/// account and outbox id Retry sends again.
+/// account and outbox id Retry sends again and Edit turns into a draft.
 #[derive(Debug, PartialEq)]
 pub(crate) struct OutboxRow {
     pub title: String,
@@ -80,6 +80,7 @@ pub(crate) fn outbox_rows(app: &App) -> Vec<OutboxRow> {
             app.accounts.get(*account)?.name,
             super::numbers::counted(recipients, "recipient", "recipients")
         );
+        let key = (*account, entry.id.clone());
         let (state, retry) = match &entry.state {
             State::Waiting => (
                 format!("Goes at {}", postvak_core::time::clock(entry.due)),
@@ -94,10 +95,17 @@ pub(crate) fn outbox_rows(app: &App) -> Vec<OutboxRow> {
                 reason,
                 retrying: false,
             } => {
-                let key = (*account, entry.id.clone());
-                let retry = (!app.retried.contains(&key)).then_some(key);
+                let editing = app
+                    .outbox_editing
+                    .iter()
+                    .any(|(editing, _)| *editing == key);
+                let retry = (!editing && !app.retried.contains(&key)).then(|| key.clone());
                 (format!("Failed: {reason}"), retry)
             }
+        };
+        let state = match app.outbox_refused.get(&key) {
+            Some((_, why)) => format!("{state} · {why}"),
+            None => state,
         };
         Some(OutboxRow {
             title,

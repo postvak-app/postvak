@@ -613,6 +613,7 @@ impl Driver {
                 "escape" => Press::named(Named::Escape),
                 "delete" => Press::named(Named::Delete),
                 "backspace" => Press::named(Named::Backspace),
+                "enter" => Press::named(Named::Enter),
                 "ctrl+r" => Press {
                     command: true,
                     ..Press::text("r")
