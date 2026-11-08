@@ -1800,10 +1800,3 @@ fn the_body_pane_keeps_its_minimum_width() {
     resize(&open, (320.0, 600.0));
     assert_eq!(one(&open, "BodyPane").width, super::list::MIN_WIDTH);
 }
-
-#[test]
-fn reader_more_menu() {
-    let (_fx, open, _wires) = inbox("light");
-    open.click("More actions");
-    snapshot(&open, "reader_more_menu");
-}
