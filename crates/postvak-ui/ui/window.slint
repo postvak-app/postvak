@@ -361,6 +361,12 @@ export component MailWindow inherits Window {
             keys.focus();
         }
     }
+    property <bool> composing: root.compose.open;
+    changed composing => {
+        if (!root.composing) {
+            keys.focus();
+        }
+    }
     property <bool> preferences-open: Preferences.open;
     changed preferences-open => {
         if (!root.preferences-open) {

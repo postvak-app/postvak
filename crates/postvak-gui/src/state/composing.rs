@@ -1164,6 +1164,18 @@ mod tests {
     }
 
     #[test]
+    fn a_reply_takes_the_keyboard_to_its_text() {
+        let (_fx, open) = replying_in_the_window();
+        open.press("Q");
+        assert!(open.with(|live| {
+            live.app
+                .composer
+                .as_ref()
+                .is_some_and(|composer| composer.text.contains('Q'))
+        }));
+    }
+
+    #[test]
     fn leaving_a_changed_composer_asks_in_the_window() {
         let (_fx, open) = replying_in_the_window();
         open.window()
@@ -1172,18 +1184,26 @@ mod tests {
             open.with(|live| live.app.composer.as_ref().map(|c| c.text.clone())),
             Some("Hi".into())
         );
-        open.press("j");
+        // The reply has the keyboard, so Esc is how the keys leave it.
+        open.press("escape");
         assert_eq!(open.find("Discard this message?").len(), 1);
         open.click("Cancel");
         assert!(open.find("Discard this message?").is_empty());
         assert!(open.with(|live| live.app.composer.is_some()));
-        open.press("j");
+        open.press("escape");
         let discard = open.find("Discard");
         assert_eq!(discard.len(), 2, "the composer's and the question's");
         discard[1].invoke_accessible_default_action();
         open.tick();
         assert!(open.with(|live| live.app.composer.is_none()));
         assert!(open.find("Your text").is_empty());
+        let cursor = open.with(|live| live.app.list.cursor);
+        open.press("j");
+        assert_ne!(
+            open.with(|live| live.app.list.cursor),
+            cursor,
+            "the list has the keyboard again"
+        );
     }
 
     #[test]
