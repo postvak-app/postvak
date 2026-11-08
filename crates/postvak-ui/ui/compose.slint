@@ -152,6 +152,14 @@ export component Composer inherits Rectangle {
     }
     accessible-role: groupbox;
     accessible-label: "Message";
+    // A reply starts at the text; a forward, or new mail without a recipient, at To. A reply's To is empty while it loads.
+    init => {
+        if (root.data.forward || (!root.data.loading && root.data.to == "")) {
+            to.focus();
+        } else {
+            body.focus();
+        }
+    }
 
     FocusScope {
         KeyBinding {
@@ -225,7 +233,7 @@ export component Composer inherits Rectangle {
                 label: "To";
                 failed: root.data.error-at == ComposeSpot.to;
                 error: root.data.error;
-                AddressField {
+                to := AddressField {
                     horizontal-stretch: 1;
                     accessible-label: "To";
                     read-only: root.fixed;
