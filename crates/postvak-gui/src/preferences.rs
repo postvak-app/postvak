@@ -175,7 +175,12 @@ pub(crate) fn signature_rows(config: &Config) -> Vec<Signature> {
 /// Where `account` sends through, in words, and whether the guess may be saved to config.toml.
 pub(crate) fn smtp_line(account: &AccountConfig, state: Option<&SmtpState>) -> (String, bool) {
     let Some(server) = send::server_for(account, state) else {
-        return ("Not set up: no server answered".into(), false);
+        let why = if state.is_some() {
+            "Not set up: no server answered"
+        } else {
+            "Not set up yet"
+        };
+        return (why.into(), false);
     };
     let tls = match server.tls {
         SmtpTls::Implicit => "TLS",
@@ -311,9 +316,24 @@ mod tests {
         let mut account = Config::parse(CONFIG).unwrap().accounts.remove(0);
         assert_eq!(
             smtp_line(&account, None),
+            ("Not set up yet".to_string(), false)
+        );
+        let mut state = SmtpState {
+            host: None,
+            port: None,
+            tls: None,
+            guessed_for_host: account.host.clone(),
+            guessed_for_user: account.username.clone(),
+            tried_at: 0,
+            size: None,
+            eight_bit_mime: false,
+            sent_copy_problem: None,
+        };
+        assert_eq!(
+            smtp_line(&account, Some(&state)),
             ("Not set up: no server answered".to_string(), false)
         );
-        let state = SmtpState {
+        state = SmtpState {
             host: Some("smtp.x.org".into()),
             port: Some(587),
             tls: Some(SmtpTls::Starttls),
