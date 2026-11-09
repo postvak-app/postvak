@@ -1099,15 +1099,23 @@ fn composing(open: &Open, action: UiAction) {
 
 fn compose_reply_html(theme: &str) -> (Fixture, Open, Wires) {
     let (fx, open, wires) = newsletter(theme, 1280.0);
+    open.with(|live| {
+        live.app.sending.signatures = vec![postvak_core::config::Signature {
+            address: "*@example.com".into(),
+            text: "Pieter\nPostvak".into(),
+            on_replies: true,
+        }]
+    });
     composing(
         &open,
         UiAction::Reply(postvak_core::send::reply::ReplyTo::Sender),
     );
     open.with(|live| {
+        let signed = (live.app.composer.as_ref()).map_or(String::new(), |c| c.text.clone());
         live.app.apply(UiAction::ComposeEdit(
             crate::state::ComposeTarget::Pane,
             crate::compose::ComposeField::Text,
-            "Thanks, the roundup was a good read.".into(),
+            format!("Thanks, the roundup was a good read.{signed}"),
         ))
     });
     wait_painted(&open);

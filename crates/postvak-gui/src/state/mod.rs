@@ -770,6 +770,8 @@ pub struct App {
     pub(crate) toast: Option<Toast>,
     /// Each account's trash retention in days, from config.toml as the window opened, added the account or last purged.
     pub(crate) retention: BTreeMap<String, u64>,
+    /// config.toml's `[sending]` as the window opened or last saved it; the composers sign from it.
+    pub(crate) sending: config::SendingConfig,
     pub(crate) events: Receiver<Event>,
     pub(crate) fetch_release: fn() -> anyhow::Result<String>,
     pub(crate) open_at_login: OpenAtLogin,
@@ -1168,6 +1170,7 @@ impl App {
             },
             view_dirty: false,
             retention,
+            sending: config.sending.clone(),
             notice: None,
             taken: Vec::new(),
             next_taken: 0,
@@ -2980,6 +2983,7 @@ impl App {
 
     /// What the window shows of config.toml, made to match `config` as this window saved it.
     fn follow_config(&mut self, config: &Config) {
+        self.sending = config.sending.clone();
         if self.html_colours != config.ui.html_colours {
             self.html_colours = config.ui.html_colours;
             self.restyle_html();

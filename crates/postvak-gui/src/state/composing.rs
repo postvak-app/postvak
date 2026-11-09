@@ -525,6 +525,7 @@ impl App {
         if composer.original.is_some() && !self.original_stored(&composer) {
             composer.without_original();
         }
+        composer.sign(&self.sending);
         let target = match &composer.original {
             Some(original) => {
                 self.open_message(postvak_core::notify::Open {
@@ -637,8 +638,9 @@ impl App {
             .collect();
         let id = self.next_compose;
         self.next_compose += 1;
-        self.new_mail
-            .push(Composer::new_mail(id, &account, &identities, mailto));
+        let mut composer = Composer::new_mail(id, &account, &identities, mailto);
+        composer.sign(&self.sending);
+        self.new_mail.push(composer);
         self.check_size(ComposeTarget::Window(id));
     }
 
@@ -1088,6 +1090,12 @@ impl App {
             UiAction::ComposeForwardAsAttachment(_, on) => composer.forward_as_attachment = on,
             _ => {}
         }
+        if edited == Some(ComposeField::From) {
+            let sending = self.sending.clone();
+            if let Some(composer) = self.composer_mut(target) {
+                composer.sign(&sending);
+            }
+        }
         if resized {
             self.check_size(target);
         }
@@ -1530,6 +1538,7 @@ impl App {
         ) {
             (Ok(prefilled), Some(identity)) => {
                 composer.fill(prefilled, &identity);
+                composer.sign(&self.sending);
                 composer.check_size();
             }
             (Ok(_), None) => composer.error = Some((Field::Send, NO_IDENTITY.into())),
@@ -4250,6 +4259,41 @@ mod tests {
         }
 
         #[test]
+        fn a_restored_composer_sends_one_signature() {
+            static SENT: Mutex<Vec<SendRequest>> = Mutex::new(Vec::new());
+            let fx = Fixture::new(&["work"]);
+            fx.add("work", message("INBOX", 1, "subject 1"));
+            fx.append_config(
+                "\n[sending]\n[[sending.signatures]]\naddress = \"work@example.com\"\ntext = \"Pieter\"\n",
+            );
+            let (mut driver, _wires) = fx.driver();
+            driver.app.prefill = filled;
+            open(&mut driver, "r");
+            let signed = driver.app.composer.as_ref().unwrap().text.clone();
+            assert_eq!(signed, "\n\n-- \nPieter");
+            write(
+                &mut driver,
+                PANE,
+                ComposeField::Text,
+                &format!("Thanks{signed}"),
+            );
+            driver.at(6.0);
+            drop(driver);
+
+            let (mut restarted, _wires) = fx.driver();
+            restarted.app.queue_send = |paths, config, request| {
+                SENT.lock().unwrap().push(request.clone());
+                queued(paths, config, request)
+            };
+            restarted.apply(UiAction::ComposeSend(PANE));
+            restarted.tick_until(|app| app.composer.is_none() && app.compose_sending.is_empty());
+            let sent = SENT.lock().unwrap().clone();
+            assert_eq!(sent.len(), 1);
+            assert_eq!(sent[0].body, Body::Given("Thanks\n\n-- \nPieter".into()));
+            assert!(!sent[0].signature);
+        }
+
+        #[test]
         fn a_second_left_reply_waits_with_a_notice() {
             let Replying { mut driver, fx, .. } = replying(&[1]);
             open(&mut driver, "r");
@@ -4783,7 +4827,9 @@ mod tests {
         ) -> Queued {
             let identity = config.accounts[0].identity().unwrap();
             composer.fill(prefill(paths, config, "work", kind).unwrap(), &identity);
-            let typed = format!("{}{}", sign(TEXT, SIGNATURE), composer.text);
+            composer.sign(&config.sending);
+            assert_eq!(composer.text, sign("", SIGNATURE));
+            let typed = format!("{}{}", TEXT.trim_end(), composer.text);
             composer.set(ComposeField::Text, typed);
             if let Some(to) = to {
                 composer.set(ComposeField::To, to.into());
@@ -4848,9 +4894,14 @@ mod tests {
                 .map(|account| (account.name.clone(), account.identity().unwrap()))
                 .collect();
             let mut composer = Composer::new_mail(1, "work", &accounts, None);
+            composer.sign(&config.sending);
+            assert_eq!(composer.text, sign("", SIGNATURE));
             composer.set(ComposeField::To, "bob@x.org".into());
             composer.set(ComposeField::Subject, "Lunch".into());
-            composer.set(ComposeField::Text, sign(TEXT, SIGNATURE));
+            composer.set(
+                ComposeField::Text,
+                format!("{}{}", TEXT.trim_end(), composer.text),
+            );
             let by_gui = queue_send(paths, &config, composer.request()).unwrap();
             assert!(queued_bytes(paths, &by_cli).contains("Pieter"));
             assert_eq!(queued_bytes(paths, &by_gui), queued_bytes(paths, &by_cli));
