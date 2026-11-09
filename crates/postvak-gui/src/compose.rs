@@ -400,6 +400,16 @@ impl Composer {
         }
     }
 
+    /// Takes From's signature as the one at the end of a reopened or restored text, adding nothing: if the text no
+    /// longer ends with it, the user edited it, and a From change leaves it alone.
+    pub(crate) fn adopt_signature(&mut self, sending: &SendingConfig) {
+        if self.signature.is_none() {
+            let answering = self.kind != ComposeKind::New;
+            self.signature =
+                (sending.signature_for(&bare_address(&self.from), answering)).map(str::to_string);
+        }
+    }
+
     fn snapshot(&self) -> Snapshot {
         Snapshot {
             bcc: self.bcc.clone(),
@@ -1474,9 +1484,8 @@ mod tests {
         assert_eq!(deleted.text, "Hi");
     }
 
-    #[test]
-    fn a_reopened_draft_keeps_one_signature() {
-        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    /// A draft from Drafts holding `text`, from me, placed in the window as it would be.
+    fn reopened(dir: &tempfile::TempDir, text: &str) -> Composer {
         let opened = OpenedDraft {
             kind: DraftKind::New,
             original: None,
@@ -1486,7 +1495,7 @@ mod tests {
             cc: Vec::new(),
             bcc: Vec::new(),
             subject: String::new(),
-            text: sign("Hi", "Pieter"),
+            text: text.into(),
             files: Vec::new(),
             forward_parts: None,
             in_reply_to: None,
@@ -1496,12 +1505,54 @@ mod tests {
         };
         let mut composer = Composer::from_draft(4, "work", &accounts(), opened, None, dir.path())
             .unwrap_or_else(|e| panic!("{e}"));
-        composer.sign(&sending(true));
-        assert_eq!(composer.text, sign("Hi", "Pieter"));
-        assert!(!composer.changed());
+        composer.adopt_signature(&sending(true));
+        composer
+    }
+
+    /// Changes a draft's From as its drop-down does: a draft's choices are its account's bare addresses.
+    fn draft_from_alias(composer: &mut Composer) {
         composer.set(ComposeField::From, "alias@example.com".into());
         composer.sign(&sending(true));
+    }
+
+    #[test]
+    fn a_reopened_draft_keeps_one_signature() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let mut composer = reopened(&dir, &sign("Hi", "Pieter"));
+        assert_eq!(composer.text, sign("Hi", "Pieter"));
+        assert!(!composer.changed());
+        draft_from_alias(&mut composer);
         assert_eq!(composer.text, sign("Hi", "Alias"));
+    }
+
+    #[test]
+    fn a_reopened_draft_with_an_edited_or_deleted_signature_gains_none() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        for text in ["Hi\n\n-- \nPieteR", "Hi"] {
+            let mut composer = reopened(&dir, text);
+            assert_eq!(composer.text, text, "placed");
+            assert!(!composer.changed());
+            draft_from_alias(&mut composer);
+            assert_eq!(composer.text, text, "after a From change");
+        }
+    }
+
+    #[test]
+    fn an_old_recovery_file_without_the_signature_field_still_swaps() {
+        let mut composer = new_mail();
+        composer.sign(&sending(true));
+        composer.set(ComposeField::Text, format!("Hi{}", composer.text));
+        let mut json = serde_json::to_value(&composer).unwrap_or_else(|e| panic!("{e}"));
+        if let Some(fields) = json.as_object_mut() {
+            fields.remove("signature");
+        }
+        let mut restored: Composer = serde_json::from_value(json).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(restored.signature, None);
+        restored.adopt_signature(&sending(true));
+        assert_eq!(restored.text, "Hi\n\n-- \nPieter");
+        restored.set(ComposeField::From, "work\talias@example.com".into());
+        restored.sign(&sending(true));
+        assert_eq!(restored.text, "Hi\n\n-- \nAlias");
     }
 }
 

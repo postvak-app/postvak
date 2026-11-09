@@ -525,7 +525,7 @@ impl App {
         if composer.original.is_some() && !self.original_stored(&composer) {
             composer.without_original();
         }
-        composer.sign(&self.sending);
+        composer.adopt_signature(&self.sending);
         let target = match &composer.original {
             Some(original) => {
                 self.open_message(postvak_core::notify::Open {
