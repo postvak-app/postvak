@@ -734,7 +734,9 @@ pub(crate) enum Focus {
 pub(crate) enum DaemonLink {
     Connected,
     /// The event stream ended; `last_attempt` is when, or when the last failed attempt started.
-    Lost { last_attempt: f64 },
+    Lost {
+        last_attempt: f64,
+    },
     /// An attempt runs, started at `started`; at most one runs.
     Reconnecting {
         started: f64,
@@ -3726,7 +3728,11 @@ mod tests {
             "work has not answered: {}",
             list::results(&driver.app)
         );
-        assert_eq!(driver.app.list.server_hits.len(), 1, "the copy adds nothing");
+        assert_eq!(
+            driver.app.list.server_hits.len(),
+            1,
+            "the copy adds nothing"
+        );
         driver.receive(&wires, [found("work")]);
         assert!(!list::results(&driver.app).contains("searching the server"));
     }

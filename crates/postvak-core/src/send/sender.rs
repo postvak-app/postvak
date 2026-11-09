@@ -632,7 +632,13 @@ impl Worker {
 
     /// Records a failed attempt: tried again later while temporary and within the hour, else failed for good. `_held`
     /// is the lock the caller read `entry` under, or took while it was Sending.
-    fn record_failure(&self, _held: &MutexGuard<'_, ()>, mut entry: Entry, failure: Failure, now: i64) {
+    fn record_failure(
+        &self,
+        _held: &MutexGuard<'_, ()>,
+        mut entry: Entry,
+        failure: Failure,
+        now: i64,
+    ) {
         let name = &self.account.name;
         let first = *entry.first_try.get_or_insert(now);
         let retry = failure.temporary && now.saturating_sub(first) < RETRY_FOR_SECS;
