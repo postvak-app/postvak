@@ -97,6 +97,7 @@ impl SendingConfig {
         exact
             .or_else(matching)
             .filter(|signature| signature.on_replies || !answering)
+            .filter(|signature| !signature.text.trim().is_empty())
             .map(|signature| signature.text.as_str())
     }
 }
@@ -1500,6 +1501,32 @@ host = "smtp.x.test"
             signed("pieter@example.com", "Pieter", false),
         ]);
         assert_eq!(sending.signature_for("pieter@example.com", true), None);
+    }
+
+    #[test]
+    fn a_blank_signature_counts_as_none() {
+        for text in ["", "  \n\t"] {
+            let sending = sending_with(vec![signed("a@example.com", text, true)]);
+            assert_eq!(sending.signature_for("a@example.com", false), None);
+        }
+    }
+
+    #[test]
+    fn update_sending_keeps_the_signatures_it_does_not_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, SAMPLE).unwrap();
+        update_sending(&path, |s| {
+            s.signatures = vec![signed("a@example.com", "Hi", false)]
+        })
+        .unwrap();
+        update_sending(&path, |s| s.undo_secs = 30).unwrap();
+        let sending = Config::load(&path).unwrap().sending;
+        assert_eq!(sending.undo_secs, 30);
+        assert_eq!(
+            sending.signatures,
+            vec![signed("a@example.com", "Hi", false)]
+        );
     }
 
     #[test]
