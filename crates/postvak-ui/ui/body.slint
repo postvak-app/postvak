@@ -586,8 +586,8 @@ component ReplyAndMore inherits HorizontalLayout {
                 palette: Theme.pane;
                 size: parent.width;
                 glyph-size: Theme.large-icon;
-                // Right-aligned under the button, as wide as the menu is.
-                clicked => { more.show({ x: self.width - 30 * Theme.pad, y: self.height + Theme.pad / 2 }); }
+                // Slint cannot tell the menu's width: macOS opens it from the button's left edge and keeps it on screen, Slint's own menu is pushed back inside the window.
+                clicked => { more.show({ x: 0, y: self.height + Theme.pad / 2 }); }
             }
         }
     }
