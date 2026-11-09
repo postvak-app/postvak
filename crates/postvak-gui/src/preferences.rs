@@ -494,6 +494,11 @@ mod tests {
             let server = shown.get_smtp().row_data(0).unwrap();
             assert_eq!(server.error, "Not saved: no SMTP server answered");
             assert_eq!(std::fs::read(fx.paths.config_file()).unwrap(), before);
+            open.with(|live| {
+                live.app
+                    .apply(UiAction::PreferencesSection(Section::Accounts));
+                assert_eq!(live.app.preferences.as_ref().unwrap().smtp_error, None);
+            });
         }
 
         #[test]

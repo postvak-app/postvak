@@ -2174,6 +2174,7 @@ impl App {
                 if let Some(prefs) = self.preferences.as_mut() {
                     prefs.section = section;
                     prefs.smtp = smtp;
+                    prefs.smtp_error = None;
                 }
             }
             UiAction::PreferencesAccount(index) => {
