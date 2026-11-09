@@ -496,7 +496,7 @@ pub struct Job {
     pub command: Command,
 }
 
-/// The pass a command needs after it; when several ask, the larger wins.
+/// The pass a command needs after it, and the pass the run loop runs next; when several ask, the larger wins.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum NextPass {
     #[default]
@@ -2507,16 +2507,18 @@ fn run_session(
     let mut state = AccountSync::open(account, paths, queue)?;
     let interval = Duration::from_secs(account.sync_interval_secs.max(10));
     let mut last_purge = 0i64;
-    let mut full = true;
-    let mut pass = true;
-    let mut next = NextPass::None;
+    // The pass to run at the top of the loop: none (only commands, then wait), INBOX, or every folder.
+    let mut due = NextPass::Full;
+    // What commands run during the last pass asked for after it.
+    let mut after = NextPass::None;
     // When the next full pass is due; the long IDLE's timeout is that pass, the short ones between index slices check.
     let mut next_full = now();
     let mut indexer = index::Session::default();
 
     while !shutdown.load(Ordering::Acquire) {
-        if pass {
-            next = state.pass(ops.as_mut(), full, carried, events, commands, shutdown)?;
+        if due != NextPass::None {
+            let full = due == NextPass::Full;
+            after = state.pass(ops.as_mut(), full, carried, events, commands, shutdown)?;
             indexer.forget_selection();
             if full {
                 next_full = now() + interval.as_secs() as i64;
@@ -2544,9 +2546,8 @@ fn run_session(
         if drained.used_connection {
             indexer.forget_selection();
         }
-        let wanted = drained.next.max(std::mem::take(&mut next));
-        if wanted != NextPass::None {
-            (full, pass) = (wanted == NextPass::Full, true);
+        due = drained.next.max(std::mem::take(&mut after));
+        if due != NextPass::None {
             continue;
         }
         if account.index_bodies
@@ -2566,20 +2567,18 @@ fn run_session(
             };
             if arrived {
                 indexer.forget_selection();
-                (full, pass) = (false, true);
+                due = NextPass::Inbox;
                 continue;
             }
-            (full, pass) = match ops.idle(index::INTER_SLICE_IDLE, wake)? {
+            due = match ops.idle(index::INTER_SLICE_IDLE, wake)? {
                 // The wait is in the backlog folder; INBOX is the next check's to find.
-                IdleOutcome::NewMail if in_inbox => (false, true),
-                IdleOutcome::NewMail | IdleOutcome::Timeout => {
-                    let due = now() >= next_full;
-                    (due, due)
-                }
+                IdleOutcome::NewMail if in_inbox => NextPass::Inbox,
+                IdleOutcome::NewMail | IdleOutcome::Timeout if now() >= next_full => NextPass::Full,
+                IdleOutcome::NewMail | IdleOutcome::Timeout => NextPass::None,
                 IdleOutcome::Interrupted if shutdown.load(Ordering::Acquire) => return Ok(()),
                 IdleOutcome::Interrupted => {
                     wake.swap(false, Ordering::AcqRel);
-                    (full, false)
+                    NextPass::None
                 }
             };
             continue;
@@ -2591,14 +2590,14 @@ fn run_session(
         ops.select("INBOX")?;
         indexer.forget_selection();
         let outcome = ops.idle(interval, wake)?;
-        (full, pass) = match outcome {
-            IdleOutcome::NewMail => (false, true),
-            IdleOutcome::Timeout => (true, true),
+        due = match outcome {
+            IdleOutcome::NewMail => NextPass::Inbox,
+            IdleOutcome::Timeout => NextPass::Full,
             IdleOutcome::Interrupted if shutdown.load(Ordering::Acquire) => return Ok(()),
             // Woken for queued commands: run them, then wait again.
             IdleOutcome::Interrupted => {
                 wake.swap(false, Ordering::AcqRel);
-                (full, false)
+                NextPass::None
             }
         };
     }

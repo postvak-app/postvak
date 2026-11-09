@@ -943,6 +943,8 @@ pub fn forward_first(
                 msg.uid,
                 skip.log_text()
             );
+            // A skip releases a message an earlier pass held, so its failure no longer says the rule waits.
+            store.clear_forward_failure(rule, &key)?;
             continue;
         }
         let since = store.forwards_since(rule, now - 3600)?;
@@ -963,6 +965,7 @@ pub fn forward_first(
                     msg.uid,
                     skip.log_text()
                 );
+                store.clear_forward_failure(rule, &key)?;
             }
             Ok(None) => {
                 store.record_forwarded(rule, &key, now)?;

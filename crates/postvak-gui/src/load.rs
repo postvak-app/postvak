@@ -162,10 +162,12 @@ pub(crate) type LoadAccount = (usize, String, Option<Identity>);
 /// How a load opens its own connections and reads; tests swap it to hold a load back.
 pub(crate) type LoadFn = fn(&Paths, &[LoadAccount], &ListQuery) -> Loaded;
 
-/// A load running on its own thread, numbered so a result that a later load overtook is dropped.
+/// A load running on its own thread, numbered so a result that a later load overtook is dropped. While one runs the
+/// list is `Some(Loading)`, idle `None`; `again` is the view changing meanwhile, so another reload follows this one.
 pub(crate) struct Loading {
     pub generation: u64,
     pub answer: Receiver<Loaded>,
+    pub again: bool,
 }
 
 /// Starts `load_fn` on a thread of its own; SQLite's write-ahead log lets it read while the daemon writes. The window is
