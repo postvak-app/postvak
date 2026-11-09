@@ -9,7 +9,7 @@ use super::build::{self, Draft, FileAttachment};
 use super::check::{self, Recipients as CheckRecipients};
 use super::outbox::{Entry, Original};
 use super::reply::{self, ForwardAs, ForwardOptions, OriginalFlag, ReplyTo};
-use super::signature::sign;
+use super::signature::{sign, signed_by};
 use super::{Envelope, sendmail, sent, server_for};
 use crate::config::{self, AccountConfig, Config, Identity, SendingConfig};
 use crate::daemon::client::LazyClient;
@@ -371,11 +371,12 @@ pub(super) fn message_draft(
     };
     let forward_parts = request.forward_parts.as_deref();
     let raw = original.as_ref().map_or(&[][..], |(raw, _)| raw.as_slice());
-    let signature = signature_for(sending, identity, request, raw)?;
     let text = match &request.body {
         Body::Given(text) => text.as_str(),
         Body::Edit => "",
     };
+    let signature = signature_for(sending, identity, request, raw)?
+        .filter(|signature| !signed_by(text, signature));
     let given = signature.map_or_else(|| text.to_string(), |signature| sign(text, signature));
     let mut draft = draft_for(identity, &request.kind, raw, &given, forward_parts)?;
     if request.body == Body::Edit {
@@ -956,6 +957,15 @@ pub(crate) mod tests {
         let mut given = request(new_mail());
         given.body = Body::Given("Hi".into());
         assert_eq!(drafted(&h, &given).text, "Hi\n\n-- \nPieter");
+    }
+
+    #[test]
+    fn a_given_text_already_signed_is_not_signed_again() {
+        let mut h = home();
+        add_signature(&mut h, "me@example.com", "Pieter", true);
+        let mut given = request(new_mail());
+        given.body = Body::Given("Hi\n\n-- \nPieter\n".into());
+        assert_eq!(drafted(&h, &given).text, "Hi\n\n-- \nPieter\n");
     }
 
     #[test]
