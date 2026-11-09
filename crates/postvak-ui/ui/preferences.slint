@@ -398,6 +398,7 @@ component Sending inherits VerticalLayout {
                 framed: true;
                 palette: Theme.pane;
                 enabled: !Preferences.smtp-busy;
+                accessible-label: "Save guess for " + server.address;
                 hint: "Write it to config.toml, after logging in to it";
                 clicked => { Preferences.save-guess(i); }
             }
@@ -407,6 +408,7 @@ component Sending inherits VerticalLayout {
                 framed: true;
                 palette: Theme.pane;
                 enabled: !Preferences.smtp-busy;
+                accessible-label: "Guess again for " + server.address;
                 hint: "Look for the server again and write what answers to config.toml";
                 clicked => { Preferences.guess-again(i); }
             }

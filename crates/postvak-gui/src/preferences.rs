@@ -506,7 +506,7 @@ mod tests {
             open.with(|live| live.app.set_smtp = |_, _, _| Err("no SMTP server answered".into()));
             open.window().invoke_menu_item(MenuAction::Preferences);
             open.click("Sending");
-            open.click("Guess again");
+            open.click("Guess again for work@example.com");
             open.tick_until(|open| open.with(|live| live.app.setting_smtp.is_none()));
             let window = open.window();
             let shown = window.global::<Preferences>();
