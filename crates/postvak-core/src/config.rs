@@ -84,20 +84,19 @@ impl SendingConfig {
     /// The signature text for mail from `from`; `answering` is a reply or forward.
     pub fn signature_for(&self, from: &str, answering: bool) -> Option<&str> {
         let from = from.trim();
-        let usable = |signature: &&Signature| signature.on_replies || !answering;
         let exact = self
             .signatures
             .iter()
-            .filter(usable)
             .find(|signature| signature.address.trim().eq_ignore_ascii_case(from));
         let matching = || {
-            self.signatures.iter().filter(usable).find(|signature| {
+            self.signatures.iter().find(|signature| {
                 regex::Regex::new(&alias_regex(signature.address.trim()))
                     .is_ok_and(|pattern| pattern.is_match(from))
             })
         };
         exact
             .or_else(matching)
+            .filter(|signature| signature.on_replies || !answering)
             .map(|signature| signature.text.as_str())
     }
 }
@@ -1496,6 +1495,11 @@ host = "smtp.x.test"
         let sending = sending_with(vec![signed("a@example.com", "Hi", false)]);
         assert_eq!(sending.signature_for("a@example.com", true), None);
         assert_eq!(sending.signature_for("a@example.com", false), Some("Hi"));
+        let sending = sending_with(vec![
+            signed("*@example.com", "Shop", true),
+            signed("pieter@example.com", "Pieter", false),
+        ]);
+        assert_eq!(sending.signature_for("pieter@example.com", true), None);
     }
 
     #[test]
