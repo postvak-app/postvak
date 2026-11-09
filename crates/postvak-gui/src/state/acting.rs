@@ -23,7 +23,7 @@ impl App {
                 *account == body.account && *folder == body.key.0 && uids.contains(&body.key.1)
             })
         {
-            body.read_sent = true;
+            body.read = ReadMark::Settled;
         }
         self.pending_arm |= optimistic == Optimistic::Hidden;
         let count = targets.iter().map(|(_, _, uids)| uids.len()).sum();

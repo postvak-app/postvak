@@ -125,8 +125,9 @@ pub(crate) struct ListState {
     pub marked: HashSet<(usize, RowKey)>,
     /// What the servers found for the current query, by account; the rows come from the store.
     pub server_hits: Vec<(usize, RowKey)>,
-    /// How many accounts' servers were asked for the current query and have not answered.
-    pub server_searching: usize,
+    /// The accounts whose server was asked for the current query and has not answered; each answers once, so a copy of
+    /// another client's answer or a second failure cannot end another account's search.
+    pub server_searching: HashSet<usize>,
     /// Whether the servers were asked for the current query.
     pub server_asked: bool,
     /// The accounts whose server could not search for the current query; their local results stand.
@@ -278,7 +279,7 @@ pub(crate) fn search_hint(view: &View) -> &'static str {
 
 /// The line under the search field.
 pub(crate) fn results(app: &App) -> String {
-    let note = if app.list.server_searching > 0 {
+    let note = if !app.list.server_searching.is_empty() {
         "searching the server…".to_string()
     } else if let [account] = app.list.server_failed.as_slice() {
         format!("the server search failed for {account}")

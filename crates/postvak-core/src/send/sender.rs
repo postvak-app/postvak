@@ -513,8 +513,8 @@ impl Worker {
         self.shared.outbox.list().unwrap_or_default()
     }
 
-    /// The entry `id` while it is still due, read under the lock.
-    fn due_entry(&self, id: &str, now: i64) -> Option<Entry> {
+    /// The entry `id` while it is still due; `_held` is the lock, so what the caller writes back is what it read.
+    fn due_entry(&self, _held: &MutexGuard<'_, ()>, id: &str, now: i64) -> Option<Entry> {
         self.shared
             .outbox
             .get(id)
@@ -531,19 +531,17 @@ impl Worker {
         let ready = match self.prepare(id) {
             Ok(ready) => ready,
             Err(failure) => {
-                let entry = {
-                    let _lock = self.shared.lock();
-                    self.due_entry(id, now)
-                };
-                if let Some(entry) = entry {
-                    self.failed(entry, failure, now);
+                // Read and written under one lock: a cancel or retry in between would otherwise be overwritten.
+                let lock = self.shared.lock();
+                if let Some(entry) = self.due_entry(&lock, id, now) {
+                    self.record_failure(&lock, entry, failure, now);
                 }
                 return;
             }
         };
         let marked = {
-            let _lock = self.shared.lock();
-            let Some(mut entry) = self.due_entry(id, now) else {
+            let lock = self.shared.lock();
+            let Some(mut entry) = self.due_entry(&lock, id, now) else {
                 return;
             };
             entry.state = State::Sending;
@@ -551,19 +549,19 @@ impl Worker {
             entry.first_try.get_or_insert(now);
             // Synced before the server sees a byte: after a crash, this message is never sent again.
             match self.shared.outbox.write(&entry) {
-                Ok(()) => Ok(entry),
-                Err(e) => Err((
-                    entry,
-                    Failure {
+                Ok(()) => Some(entry),
+                Err(e) => {
+                    let failure = Failure {
                         reason: format!("the outbox cannot be written: {e}"),
                         temporary: true,
-                    },
-                )),
+                    };
+                    self.record_failure(&lock, entry, failure, now);
+                    None
+                }
             }
         };
-        let mut entry = match marked {
-            Ok(entry) => entry,
-            Err((entry, failure)) => return self.failed(entry, failure, now),
+        let Some(mut entry) = marked else {
+            return;
         };
         log::info!("{name}: sending {id}");
         let result = (self.smtp)().send(
@@ -576,7 +574,11 @@ impl Worker {
         let now = (self.clock)();
         let caps = match result {
             Ok(caps) => caps,
-            Err(error) => return self.failed(entry, error.into(), now),
+            Err(error) => {
+                // The entry is Sending on disk, which cancel and retry leave alone, so nothing changed it since.
+                let lock = self.shared.lock();
+                return self.record_failure(&lock, entry, error.into(), now);
+            }
         };
         log::info!("{name}: sent {id}");
         if let Some(store) = &ready.store
@@ -628,8 +630,9 @@ impl Worker {
         })
     }
 
-    /// Records a failed attempt: tried again later while temporary and within the hour, else failed for good.
-    fn failed(&self, mut entry: Entry, failure: Failure, now: i64) {
+    /// Records a failed attempt: tried again later while temporary and within the hour, else failed for good. `_held`
+    /// is the lock the caller read `entry` under, or took while it was Sending.
+    fn record_failure(&self, _held: &MutexGuard<'_, ()>, mut entry: Entry, failure: Failure, now: i64) {
         let name = &self.account.name;
         let first = *entry.first_try.get_or_insert(now);
         let retry = failure.temporary && now.saturating_sub(first) < RETRY_FOR_SECS;
@@ -648,7 +651,6 @@ impl Worker {
         } else {
             log::warn!("{name}: {} failed", entry.id);
         }
-        let _lock = self.shared.lock();
         if let Err(e) = self.shared.outbox.write(&entry) {
             log::error!("{name}: outbox {}: {e}", entry.id);
         }

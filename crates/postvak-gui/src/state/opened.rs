@@ -11,7 +11,7 @@ impl App {
             && body.account == account
             && body.key == key
         {
-            body.armed = true;
+            body.read.arm();
         }
     }
 
@@ -222,7 +222,7 @@ impl App {
             return;
         }
         let Some(body) = &mut self.body else { return };
-        if !body.armed {
+        if body.read != ReadMark::Armed {
             return;
         }
         // The delay counts from when the text appears (`reload_body`), not from "Loading…".
@@ -237,7 +237,7 @@ impl App {
             })
         });
         let seen = last_edit.unwrap_or_else(|| body.message.as_ref().is_none_or(Message::is_seen));
-        if seen || body.read_sent {
+        if seen {
             return;
         }
         let waited = now - body.shown_at;
@@ -248,7 +248,7 @@ impl App {
         }
         let (index, (folder, uid)) = (body.account, body.key.clone());
         if let Some(body) = &mut self.body {
-            body.read_sent = true;
+            body.read = ReadMark::Settled;
         }
         self.send_apply(
             index,
