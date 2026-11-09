@@ -766,9 +766,12 @@ struct SendArgs {
     /// Save no copy in Sent
     #[arg(long)]
     no_save_sent: bool,
+    /// Leave the signature off
+    #[arg(long)]
+    no_signature: bool,
     #[arg(long)]
     json: bool,
-    #[arg(long, help = postvak_core::help::SEND_RAW, conflicts_with_all = ["to", "cc", "bcc", "subject", "body_file", "attach", "answer", "edit", "from"])]
+    #[arg(long, help = postvak_core::help::SEND_RAW, conflicts_with_all = ["to", "cc", "bcc", "subject", "body_file", "attach", "answer", "edit", "from", "no_signature"])]
     raw: bool,
     /// For --raw: sendmail's arguments (-i, -oi, -t, -f <address>) and the recipients
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, requires = "raw")]
@@ -2498,6 +2501,7 @@ fn cmd_send(config: &Config, paths: &Paths, args: SendArgs) -> Result<()> {
         headers: None,
         forward_parts: None,
         draft: Vec::new(),
+        signature: !args.no_signature,
     };
     let dir = paths.cache_dir.clone();
     let queued = compose::compose(config, paths, &client, request, |text| {

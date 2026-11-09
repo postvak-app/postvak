@@ -4377,6 +4377,7 @@ mod tests {
                 headers: None,
                 forward_parts: None,
                 draft: Vec::new(),
+                signature: false,
             }
         }
 
@@ -4685,11 +4686,13 @@ mod tests {
     mod equal_to_the_cli {
         use super::*;
         use postvak_core::daemon::test_support::{TestDaemon, options, recording_connector};
+        use postvak_core::send::signature::sign;
         use postvak_core::store::{Message, Store};
         use std::time::{Duration, Instant};
 
         const ORIGINAL: &[u8] = b"From: Linus Example <linus@x.org>\r\nTo: me@example.com\r\nCc: Ann <ann@x.org>\r\nList-Post: <mailto:list@x.org>\r\nSubject: Plans\r\nDate: Mon, 2 Nov 2026 10:00:00 +0000\r\nMessage-ID: <m1@x.org>\r\n\r\nShall we?\r\n";
         const TEXT: &str = "Yes!\n";
+        const SIGNATURE: &str = "Pieter\nPostvak";
 
         /// A daemon whose work account can send, holding ORIGINAL as INBOX/7.
         fn daemon() -> (TestDaemon, Config) {
@@ -4721,7 +4724,15 @@ mod tests {
                 })
                 .unwrap();
             store.set_raw("INBOX", 7, ORIGINAL, "Shall we?").unwrap();
-            let config = Config::load(&daemon.paths.config_file()).unwrap();
+            let mut config = Config::load(&daemon.paths.config_file()).unwrap();
+            config
+                .sending
+                .signatures
+                .push(postvak_core::config::Signature {
+                    address: "me@example.com".into(),
+                    text: SIGNATURE.into(),
+                    on_replies: true,
+                });
             (daemon, config)
         }
 
@@ -4758,6 +4769,7 @@ mod tests {
                 headers: None,
                 forward_parts: None,
                 draft: Vec::new(),
+                signature: true,
             }
         }
 
@@ -4771,7 +4783,7 @@ mod tests {
         ) -> Queued {
             let identity = config.accounts[0].identity().unwrap();
             composer.fill(prefill(paths, config, "work", kind).unwrap(), &identity);
-            let typed = format!("{TEXT}{}", composer.text);
+            let typed = format!("{}{}", sign(TEXT, SIGNATURE), composer.text);
             composer.set(ComposeField::Text, typed);
             if let Some(to) = to {
                 composer.set(ComposeField::To, to.into());
@@ -4791,6 +4803,7 @@ mod tests {
             let paths = &daemon.paths;
             let by_cli = queue_send(paths, &config, cli(kind.clone())).unwrap();
             let by_gui = through_the_composer(paths, &config, composer, &kind, to);
+            assert!(queued_bytes(paths, &by_cli).contains("Pieter"), "{kind:?}");
             assert_eq!(
                 queued_bytes(paths, &by_gui),
                 queued_bytes(paths, &by_cli),
@@ -4837,8 +4850,9 @@ mod tests {
             let mut composer = Composer::new_mail(1, "work", &accounts, None);
             composer.set(ComposeField::To, "bob@x.org".into());
             composer.set(ComposeField::Subject, "Lunch".into());
-            composer.set(ComposeField::Text, TEXT.into());
+            composer.set(ComposeField::Text, sign(TEXT, SIGNATURE));
             let by_gui = queue_send(paths, &config, composer.request()).unwrap();
+            assert!(queued_bytes(paths, &by_cli).contains("Pieter"));
             assert_eq!(queued_bytes(paths, &by_gui), queued_bytes(paths, &by_cli));
         }
 

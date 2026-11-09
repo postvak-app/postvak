@@ -996,6 +996,7 @@ Send a new message, a reply or a forward; it waits in the outbox for the undo de
 * `--now` — Send at once, without the undo delay
 * `--save-sent` — Save a copy in Sent even where the provider files one, or for --raw
 * `--no-save-sent` — Save no copy in Sent
+* `--no-signature` — Leave the signature off
 * `--json`
 * `--raw` — Read a whole RFC 5322 message from stdin and send it at once, as sendmail does for mutt, aerc and git send-email; exits 0 when sent, 75 when it will be tried again, 69 when refused
 

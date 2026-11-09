@@ -61,6 +61,25 @@ aliases = ["*@shop.example.com", { address = "info@example.com", name = "Example
 Mail from the account goes out as `Pieter Willekens <pieter@example.com>`. An alias written as a table may carry a name
 of its own; a wildcard alias, or one without a name, uses `display_name`. Without one, From is the bare address.
 
+## Signatures
+
+```toml
+[[sending.signatures]]
+address = "pieter@example.com"
+text = "Pieter Willekens\nExample B.V."
+
+[[sending.signatures]]
+address = "*@shop.example.com"
+text = "The Example Shop"
+on_replies = false
+```
+
+`postvak send` puts the signature for the From address under your text, after a line `-- `, and above the quote of a
+reply or forward. `address` is an address or a pattern with `*`, as an alias; an exact address wins over a pattern.
+`on_replies = false` keeps a signature off replies and forwards; it defaults to `true`. In the editor the signature is
+already there, so you can change it or delete it for this one message. `--no-signature` leaves it off. `--raw` sends
+the message as given, without one, and so do rule forwards; MCP has no tool that sends.
+
 ## postvak send
 
 ```sh

@@ -659,6 +659,7 @@ impl Composer {
                 .as_ref()
                 .map(ComposeDraft::ids)
                 .unwrap_or_default(),
+            signature: false,
         }
     }
 }

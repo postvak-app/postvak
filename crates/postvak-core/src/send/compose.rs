@@ -9,8 +9,9 @@ use super::build::{self, Draft, FileAttachment};
 use super::check::{self, Recipients as CheckRecipients};
 use super::outbox::{Entry, Original};
 use super::reply::{self, ForwardAs, ForwardOptions, OriginalFlag, ReplyTo};
+use super::signature::sign;
 use super::{Envelope, sendmail, sent, server_for};
-use crate::config::{self, AccountConfig, Config, Identity};
+use crate::config::{self, AccountConfig, Config, Identity, SendingConfig};
 use crate::daemon::client::LazyClient;
 use crate::daemon::wire::SendOutcome;
 use crate::paths::Paths;
@@ -81,6 +82,8 @@ pub struct SendRequest {
     pub forward_parts: Option<Vec<usize>>,
     /// The copies in Drafts to delete once it is sent, by Message-ID; normally the one draft it was opened from.
     pub draft: Vec<String>,
+    /// Sign the text with From's signature.
+    pub signature: bool,
 }
 
 /// What a composer opens with.
@@ -358,19 +361,22 @@ pub(super) fn message_draft(
     client: &LazyClient,
     account: &AccountConfig,
     identity: &Identity,
+    sending: &SendingConfig,
     request: &SendRequest,
     edit: impl FnOnce(&str) -> anyhow::Result<String>,
 ) -> anyhow::Result<(Draft, Option<Answered>)> {
-    let given = match &request.body {
-        Body::Given(text) => text.clone(),
-        Body::Edit => String::new(),
-    };
     let original = match request.original.clone() {
         Some(raw) => flag_for(&request.kind).map(|flag| (raw, flag)),
         None => original_for(paths, client, account, &request.kind)?,
     };
     let forward_parts = request.forward_parts.as_deref();
     let raw = original.as_ref().map_or(&[][..], |(raw, _)| raw.as_slice());
+    let signature = signature_for(sending, identity, request, raw)?;
+    let text = match &request.body {
+        Body::Given(text) => text.as_str(),
+        Body::Edit => "",
+    };
+    let given = signature.map_or_else(|| text.to_string(), |signature| sign(text, signature));
     let mut draft = draft_for(identity, &request.kind, raw, &given, forward_parts)?;
     if request.body == Body::Edit {
         let template = super::edit::template(&draft);
@@ -381,7 +387,11 @@ pub(super) fn message_draft(
         // The user's text above an untouched quote keeps the HTML of an HTML original; answers written into the quote
         // send as plain text only.
         if draft.html.is_some() {
-            let quote = draft.text.trim_start_matches('\n').trim_end();
+            let unsigned = match signature {
+                Some(_) => draft_for(identity, &request.kind, raw, "", forward_parts)?.text,
+                None => draft.text.clone(),
+            };
+            let quote = unsigned.trim_start_matches('\n').trim_end();
             written.html = match written.text.trim_end().strip_suffix(quote) {
                 Some(user) => {
                     draft_for(identity, &request.kind, raw, user.trim_end(), forward_parts)?.html
@@ -403,6 +413,33 @@ pub(super) fn message_draft(
     Ok((draft, original))
 }
 
+/// From's signature for `request`, when it asks for one: `--from`, else the address the draft picks.
+fn signature_for<'a>(
+    sending: &'a SendingConfig,
+    identity: &Identity,
+    request: &SendRequest,
+    raw: &[u8],
+) -> anyhow::Result<Option<&'a str>> {
+    if !request.signature || sending.signatures.is_empty() {
+        return Ok(None);
+    }
+    let from = match &request.from {
+        Some(from) => from.clone(),
+        None => {
+            draft_for(
+                identity,
+                &request.kind,
+                raw,
+                "",
+                request.forward_parts.as_deref(),
+            )?
+            .from
+        }
+    };
+    let answering = !matches!(request.kind, SendKind::New { .. });
+    Ok(sending.signature_for(&from, answering))
+}
+
 /// Builds, checks and queues the message `request` describes; `edit` opens the editor on a text and returns it edited.
 pub fn compose(
     config: &Config,
@@ -414,7 +451,15 @@ pub fn compose(
     let account = config::single(&config.accounts, request.account.as_deref())?;
     let identity = account.identity()?;
     let (state, server) = sending_server(paths, account)?;
-    let (draft, original) = message_draft(paths, client, account, &identity, &request, edit)?;
+    let (draft, original) = message_draft(
+        paths,
+        client,
+        account,
+        &identity,
+        &config.sending,
+        &request,
+        edit,
+    )?;
     let now = crate::time::now();
     let keep = build::build(&draft, now)?;
     let args = CheckRecipients {
@@ -591,6 +636,7 @@ pub(crate) mod tests {
             headers: None,
             forward_parts: None,
             draft: Vec::new(),
+            signature: true,
         }
     }
 
@@ -868,6 +914,130 @@ pub(crate) mod tests {
         })
         .unwrap();
         assert_eq!(queued.first_recipient, "Linus Example");
+    }
+
+    fn add_signature(h: &mut Home, address: &str, text: &str, on_replies: bool) {
+        h.config.sending.signatures.push(config::Signature {
+            address: address.into(),
+            text: text.into(),
+            on_replies,
+        });
+    }
+
+    fn new_mail() -> SendKind {
+        SendKind::New {
+            to: vec!["a@x.org".into()],
+            cc: vec![],
+            bcc: vec![],
+            subject: "s".into(),
+        }
+    }
+
+    fn drafted(h: &Home, request: &SendRequest) -> Draft {
+        let account = &h.config.accounts[0];
+        let identity = account.identity().unwrap();
+        message_draft(
+            &h.daemon.paths,
+            &h.client,
+            account,
+            &identity,
+            &h.config.sending,
+            request,
+            no_editor,
+        )
+        .unwrap()
+        .0
+    }
+
+    #[test]
+    fn a_given_text_is_signed_with_from_s_signature() {
+        let mut h = home();
+        add_signature(&mut h, "me@example.com", "Pieter\n", true);
+        let mut given = request(new_mail());
+        given.body = Body::Given("Hi".into());
+        assert_eq!(drafted(&h, &given).text, "Hi\n\n-- \nPieter");
+    }
+
+    #[test]
+    fn a_reply_signs_above_the_quote() {
+        let mut h = home();
+        add_signature(&mut h, "me@example.com", "Pieter", true);
+        let text = drafted(&h, &request(reply_kind(7))).text;
+        let signature = text.find("\n\n-- \nPieter").unwrap();
+        let attribution = text.find("On ").unwrap();
+        assert!(signature < attribution, "{text}");
+        assert!(text.starts_with("Yes!\n\n-- \nPieter\n\n"), "{text}");
+    }
+
+    #[test]
+    fn no_signature_and_on_replies_false_leave_it_off() {
+        let mut h = home();
+        add_signature(&mut h, "me@example.com", "Pieter", false);
+        assert!(!drafted(&h, &request(reply_kind(7))).text.contains("-- \n"));
+        assert!(
+            drafted(&h, &request(new_mail()))
+                .text
+                .contains("-- \nPieter")
+        );
+        let mut unsigned = request(new_mail());
+        unsigned.signature = false;
+        assert!(!drafted(&h, &unsigned).text.contains("-- \n"));
+    }
+
+    #[test]
+    fn the_editor_opens_with_the_signature() {
+        let mut h = home();
+        add_signature(&mut h, "me@example.com", "Pieter", true);
+        let mut edited = request(reply_kind(7));
+        edited.body = Body::Edit;
+        let mut opened = String::new();
+        let error = compose(&h.config, &h.daemon.paths, &h.client, edited, |template| {
+            opened = template.to_string();
+            Ok(template.to_string())
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("left empty or unchanged"));
+        let signature = opened.find("\n\n-- \nPieter").unwrap();
+        assert!(signature < opened.find("On ").unwrap(), "{opened}");
+    }
+
+    #[test]
+    fn an_edited_reply_to_html_keeps_the_signature_in_its_html() {
+        let mut h = home();
+        add_signature(&mut h, "me@example.com", "Pieter", true);
+        let mut edited = request(reply_kind(7));
+        edited.body = Body::Edit;
+        edited.original = Some(
+            b"From: linus@x.org\r\nTo: me@example.com\r\nSubject: Plans\r\nMessage-ID: <h1@x.org>\r\nContent-Type: text/html\r\n\r\n<p>Shall we?</p>\r\n"
+                .to_vec(),
+        );
+        let account = &h.config.accounts[0];
+        let identity = account.identity().unwrap();
+        let (draft, _) = message_draft(
+            &h.daemon.paths,
+            &h.client,
+            account,
+            &identity,
+            &h.config.sending,
+            &edited,
+            |template| Ok(template.replacen("\n\n", "\n\nSure.", 1)),
+        )
+        .unwrap();
+        let html = draft.html.unwrap().html;
+        assert!(html.contains("Sure.") && html.contains("Pieter"), "{html}");
+    }
+
+    #[test]
+    fn the_signature_follows_from() {
+        let mut h = home();
+        h.config.accounts[0]
+            .aliases
+            .push(config::AliasEntry::Pattern("me+*@example.com".into()));
+        add_signature(&mut h, "me@example.com", "Pieter", true);
+        add_signature(&mut h, "me+*@example.com", "Lists", true);
+        let mut aliased = request(new_mail());
+        aliased.from = Some("me+rust@example.com".into());
+        assert!(drafted(&h, &aliased).text.ends_with("-- \nLists"));
     }
 
     #[test]
