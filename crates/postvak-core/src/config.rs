@@ -43,6 +43,21 @@ pub struct SendingConfig {
     /// How long a sent message waits in the outbox, where it can still be cancelled: one of [`UNDO_SECS`].
     #[serde(default = "default_undo_secs")]
     pub undo_secs: u64,
+    /// Text appended to mail sent from an address; the exact address wins over a `*` pattern.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signatures: Vec<Signature>,
+}
+
+/// One `[[sending.signatures]]` entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Signature {
+    /// A From address, or a pattern with `*` for anything, as an alias.
+    pub address: String,
+    pub text: String,
+    /// Whether replies and forwards carry it too.
+    #[serde(default = "default_true")]
+    pub on_replies: bool,
 }
 
 /// The undo delays offered, in seconds.
@@ -56,6 +71,7 @@ impl Default for SendingConfig {
     fn default() -> Self {
         SendingConfig {
             undo_secs: default_undo_secs(),
+            signatures: Vec::new(),
         }
     }
 }
@@ -63,6 +79,26 @@ impl Default for SendingConfig {
 impl SendingConfig {
     fn is_default(&self) -> bool {
         *self == SendingConfig::default()
+    }
+
+    /// The signature text for mail from `from`; `answering` is a reply or forward.
+    pub fn signature_for(&self, from: &str, answering: bool) -> Option<&str> {
+        let from = from.trim();
+        let usable = |signature: &&Signature| signature.on_replies || !answering;
+        let exact = self
+            .signatures
+            .iter()
+            .filter(usable)
+            .find(|signature| signature.address.trim().eq_ignore_ascii_case(from));
+        let matching = || {
+            self.signatures.iter().filter(usable).find(|signature| {
+                regex::Regex::new(&alias_regex(signature.address.trim()))
+                    .is_ok_and(|pattern| pattern.is_match(from))
+            })
+        };
+        exact
+            .or_else(matching)
+            .map(|signature| signature.text.as_str())
     }
 }
 
@@ -342,6 +378,15 @@ impl Config {
                 self.sending.undo_secs
             )));
         }
+        let mut signed = std::collections::HashSet::new();
+        for signature in &self.sending.signatures {
+            let address = signature.address.trim();
+            if !address.contains('@') || !signed.insert(address.to_ascii_lowercase()) {
+                return Err(ConfigError::Invalid(format!(
+                    "sending.signatures: `address` '{address}' must contain '@' and appear once"
+                )));
+            }
+        }
         let mut seen = std::collections::HashSet::new();
         for account in &self.accounts {
             let name = &account.name;
@@ -495,6 +540,45 @@ pub fn update_ui(path: &Path, change: impl FnOnce(&mut UiConfig)) -> Result<Conf
             .as_table_mut()
             .ok_or_else(|| ConfigError::Invalid("`ui` must be a table".into()))?;
         merge_table(table, &new, &defaults);
+        Config::parse(&doc.to_string())
+    })
+}
+
+/// Changes `[sending]` as config.toml reads now, keeping the rest of the file's text and comments; signatures are
+/// written as `[[sending.signatures]]` with line breaks as `\n`. Nothing is written unless the whole file validates.
+pub fn update_sending(
+    path: &Path,
+    change: impl FnOnce(&mut SendingConfig),
+) -> Result<Config, ConfigError> {
+    let defaults = to_table(&SendingConfig::default())?;
+    edit_toml(path, LOCK, |doc| {
+        let mut sending = Config::parse(&doc.to_string())?.sending;
+        change(&mut sending);
+        for signature in &mut sending.signatures {
+            signature.text = signature.text.replace("\r\n", "\n");
+        }
+        let mut new = to_table(&sending)?;
+        let signatures = new.remove("signatures");
+        let item = doc.entry("sending").or_insert_with(|| {
+            let mut table = toml_edit::Table::new();
+            table.set_implicit(true);
+            toml_edit::Item::Table(table)
+        });
+        if item.is_inline_table() {
+            let inline = std::mem::take(item);
+            *item = toml_edit::Item::Table(
+                inline
+                    .into_table()
+                    .map_err(|_| ConfigError::Invalid("`sending` must be a table".into()))?,
+            );
+        }
+        let table = item
+            .as_table_mut()
+            .ok_or_else(|| ConfigError::Invalid("`sending` must be a table".into()))?;
+        merge_table(table, &new, &defaults);
+        if let Some(signatures) = signatures {
+            table.insert("signatures", signatures);
+        }
         Config::parse(&doc.to_string())
     })
 }
@@ -1347,6 +1431,96 @@ host = "smtp.x.test"
     fn smtp_tls_none_is_refused() {
         assert!(Config::parse(&format!("{SMTP}tls = \"none\"\n")).is_err());
         assert!(Config::parse(&format!("{SMTP}password = {{ keyring = false }}\n")).is_err());
+    }
+
+    fn signed(address: &str, text: &str, on_replies: bool) -> Signature {
+        Signature {
+            address: address.into(),
+            text: text.into(),
+            on_replies,
+        }
+    }
+
+    fn sending_with(signatures: Vec<Signature>) -> SendingConfig {
+        SendingConfig {
+            signatures,
+            ..SendingConfig::default()
+        }
+    }
+
+    #[test]
+    fn a_signature_round_trips_through_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, format!("# mine\n{SAMPLE}\n[ui]\ntheme = \"dark\"\n")).unwrap();
+        let text = "Pieter \"P\" W.\n\"\"\"\nExample BV  ";
+        update_sending(&path, |s| {
+            s.signatures = vec![signed("a@example.com", text, false)]
+        })
+        .unwrap();
+        let config = Config::load(&path).unwrap();
+        assert_eq!(
+            config.sending.signatures,
+            vec![signed("a@example.com", text, false)]
+        );
+        assert_eq!(config.ui.theme, Theme::Dark);
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.contains("# mine"), "{written}");
+        assert!(written.contains("[[sending.signatures]]"), "{written}");
+        update_sending(&path, |s| s.signatures[0].text = "a\r\nb".into()).unwrap();
+        assert_eq!(
+            Config::load(&path).unwrap().sending.signatures[0].text,
+            "a\nb"
+        );
+    }
+
+    #[test]
+    fn signature_for_prefers_the_exact_address_to_a_pattern() {
+        let sending = sending_with(vec![
+            signed("*@example.com", "Shop", true),
+            signed("pieter@example.com", "Pieter", true),
+        ]);
+        assert_eq!(
+            sending.signature_for("Pieter@Example.com", false),
+            Some("Pieter")
+        );
+        assert_eq!(
+            sending.signature_for("info@example.com", false),
+            Some("Shop")
+        );
+        assert_eq!(sending.signature_for("x@other.org", false), None);
+    }
+
+    #[test]
+    fn on_replies_false_leaves_answers_unsigned() {
+        let sending = sending_with(vec![signed("a@example.com", "Hi", false)]);
+        assert_eq!(sending.signature_for("a@example.com", true), None);
+        assert_eq!(sending.signature_for("a@example.com", false), Some("Hi"));
+    }
+
+    #[test]
+    fn validate_refuses_a_signature_without_an_address_or_twice_for_one() {
+        for signatures in [
+            vec![signed("", "x", true)],
+            vec![signed("nobody", "x", true)],
+            vec![signed("a@b.nl", "x", true), signed("A@B.nl", "y", true)],
+        ] {
+            let mut config = Config::parse(SAMPLE).unwrap();
+            config.sending.signatures = signatures;
+            let error = config.validate().unwrap_err();
+            assert!(matches!(error, ConfigError::Invalid(_)));
+            assert!(error.to_string().contains("sending.signatures"), "{error}");
+        }
+    }
+
+    #[test]
+    fn update_sending_sets_undo_secs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, SAMPLE).unwrap();
+        update_sending(&path, |s| s.undo_secs = 30).unwrap();
+        assert_eq!(Config::load(&path).unwrap().sending.undo_secs, 30);
+        assert!(update_sending(&path, |s| s.undo_secs = 7).is_err());
     }
 
     #[test]
