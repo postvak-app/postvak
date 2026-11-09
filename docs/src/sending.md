@@ -86,8 +86,9 @@ already there, so you can change it or delete it for this one message. `--no-sig
 the message as given, without one, and so do rule forwards; MCP has no tool that sends.
 
 In the window, File ▸ Preferences… › Sending has a signature per address: each account's address, then its aliases.
-Write it, choose whether replies and forwards carry it, and press Save; an empty one removes it. A new message window
-signs with it from then on, below the text you write, and you can change or delete it there for that message.
+Write it, choose whether replies and forwards carry it, and press Save; an empty one removes it. The composer signs
+with it from then on, for new mail, replies and forwards, below the text you write, and you can change or delete it
+there for that message.
 
 ## postvak send
 
