@@ -375,8 +375,8 @@ mod tests {
     }
 
     mod window {
-        use postvak_core::config::Config;
-        use slint::ComponentHandle;
+        use postvak_core::config::{self, Config, SmtpConfig, SmtpTls};
+        use slint::{ComponentHandle, Model};
 
         use crate::state::{Dialog, UiAction, UpdateCheck};
         use crate::test_support::Fixture;
@@ -487,12 +487,38 @@ mod tests {
             open.window().invoke_menu_item(MenuAction::Preferences);
             open.click("Sending");
             open.click("Guess again");
-            open.tick_until(|open| {
-                open.with(|live| live.app.preferences.as_ref().unwrap().error.is_some())
-            });
-            let error = open.with(|live| live.app.preferences.as_ref().unwrap().error.clone());
-            assert_eq!(error.as_deref(), Some("Not saved: no SMTP server answered"));
+            open.tick_until(|open| open.with(|live| live.app.setting_smtp.is_none()));
+            let window = open.window();
+            let shown = window.global::<Preferences>();
+            assert_eq!(shown.get_error(), "");
+            let server = shown.get_smtp().row_data(0).unwrap();
+            assert_eq!(server.error, "Not saved: no SMTP server answered");
             assert_eq!(std::fs::read(fx.paths.config_file()).unwrap(), before);
+        }
+
+        #[test]
+        fn a_saved_guess_shows_the_new_config_and_ends_the_change() {
+            let fx = Fixture::new(&["work"]);
+            let (mut driver, _wires) = fx.driver();
+            driver.app.set_smtp = |paths, name, _| {
+                config::update_account(&paths.config_file(), name, |a| {
+                    a.smtp = Some(SmtpConfig::new("smtp.example.com", SmtpTls::Implicit));
+                })
+                .map_err(|e| e.to_string())
+            };
+            driver.apply(UiAction::TogglePreferences);
+            let sending = driver.app.sending.clone();
+            driver.apply(UiAction::SmtpGuessAgain("work".into()));
+            driver.tick_until(|app| app.setting_smtp.is_none());
+            let prefs = driver.app.preferences.as_ref().unwrap();
+            let account = &prefs.config.accounts[0];
+            assert_eq!(
+                super::super::smtp_line(account, prefs.smtp.get("work")).0,
+                "smtp.example.com:465 (TLS), from config.toml"
+            );
+            assert_eq!((&prefs.error, &prefs.smtp_error), (&None, &None));
+            assert_eq!(driver.app.sending, sending);
+            assert!(!driver.app.config_changed);
         }
     }
 }

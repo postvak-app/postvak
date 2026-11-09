@@ -32,6 +32,8 @@ export struct SmtpPreferences {
     // Where the account sends through, in words.
     server: string,
     can-save-guess: bool,
+    // Why the last change of this account's server was not saved.
+    error: string,
 }
 
 export global Preferences {
@@ -384,6 +386,11 @@ component Sending inherits VerticalLayout {
                     overflow: elide;
                 }
                 OneLine { text: server.server; }
+                if server.error != "": Text {
+                    text: server.error;
+                    color: Theme.pane.error;
+                    wrap: word-wrap;
+                }
             }
             if server.can-save-guess: TextButton {
                 y: (parent.height - self.height) / 2;

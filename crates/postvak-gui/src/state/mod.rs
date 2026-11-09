@@ -768,6 +768,9 @@ pub(crate) struct PreferencesState {
     pub(crate) error: Option<String>,
     /// Each account's stored SMTP guess, read as Preferences opened, changed section or set a server.
     pub(crate) smtp: HashMap<String, postvak_core::store::SmtpState>,
+    /// The account whose last SMTP change was refused, and why; shown with its server, as
+    /// `error` sits at the top of the page, out of sight of the buttons.
+    pub(crate) smtp_error: Option<(String, String)>,
 }
 
 pub struct App {
@@ -804,8 +807,8 @@ pub struct App {
     /// Changes an account's SMTP server through the daemon; tests swap it so no daemon starts.
     pub(crate) set_smtp:
         fn(&Paths, &str, postvak_core::account::SmtpChange) -> Result<Config, String>,
-    /// The SMTP change Preferences asked for, until it is answered.
-    pub(crate) setting_smtp: Option<Receiver<Result<Config, String>>>,
+    /// The account whose SMTP change Preferences asked for, and its answer, until it arrives.
+    pub(crate) setting_smtp: Option<(String, Receiver<Result<Config, String>>)>,
     /// Tests an account's login before the form saves it; tests swap it so no daemon starts.
     pub(crate) check_login: account::Check,
     /// Sends a one-click unsubscribe; tests swap it so nothing leaves the machine.
@@ -2144,6 +2147,7 @@ impl App {
                         config,
                         error: None,
                         smtp: self.smtp_states(),
+                        smtp_error: None,
                     })
                 }
                 Err(e) => self.note_error(None, format!("could not read config.toml: {e}")),
@@ -3031,24 +3035,37 @@ impl App {
         if self.preferences.is_none() || self.setting_smtp.is_some() {
             return;
         }
-        let (paths, set) = (self.paths.clone(), self.set_smtp);
-        self.setting_smtp = Some(worker::oneshot("smtp", self.wake.clone(), move || {
+        if let Some(prefs) = self.preferences.as_mut() {
+            prefs.smtp_error = None;
+        }
+        let (paths, set, account) = (self.paths.clone(), self.set_smtp, name.clone());
+        let answer = worker::oneshot("smtp", self.wake.clone(), move || {
             set(&paths, &name, change)
-        }));
+        });
+        self.setting_smtp = Some((account, answer));
     }
 
     fn receive_smtp_change(&mut self) {
-        let Some(answer) = self.setting_smtp.as_ref() else {
+        let Some((_, answer)) = self.setting_smtp.as_ref() else {
             return;
         };
         let Some(answered) = worker::poll(answer) else {
             return;
         };
-        self.setting_smtp = None;
-        self.preference_saved(answered.unwrap_or_else(|Stopped| Err("the check stopped".into())));
+        let Some((account, _)) = self.setting_smtp.take() else {
+            return;
+        };
+        let refused = match answered.unwrap_or_else(|Stopped| Err("the check stopped".into())) {
+            Ok(config) => {
+                self.preference_saved(Ok(config));
+                None
+            }
+            Err(why) => Some((account, format!("Not saved: {why}"))),
+        };
         let smtp = self.smtp_states();
         if let Some(prefs) = self.preferences.as_mut() {
             prefs.smtp = smtp;
+            prefs.smtp_error = refused;
         }
     }
 

@@ -1141,8 +1141,13 @@ fn present_sending(app: &App, prefs: &state::PreferencesState, shown: &Preferenc
         .map(|account| {
             let (line, can_save_guess) =
                 preferences::smtp_line(account, prefs.smtp.get(&account.name));
+            let error = match &prefs.smtp_error {
+                Some((name, why)) if *name == account.name => why.as_str(),
+                _ => "",
+            };
             SmtpPreferences {
                 address: clean(account.address(), false).into(),
+                error: error.into(),
                 server: clean(&line, false).into(),
                 can_save_guess,
             }
