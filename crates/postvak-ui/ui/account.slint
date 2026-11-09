@@ -57,7 +57,7 @@ component Field inherits HorizontalLayout {
 export component AccountForm inherits VerticalLayout {
     in property <string> error;
     in property <bool> saving;
-    // What the form says while a save runs: saving, then testing the login.
+    // What the form says while a save runs: testing the login, finding the SMTP server, then saving.
     in property <string> progress;
     // The account was added without an SMTP server: the form says so, and Done closes it.
     in property <bool> unsent;
