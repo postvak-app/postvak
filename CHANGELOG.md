@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0](https://github.com/postvak-app/postvak/compare/v0.16.0...v0.17.0) - 2026-11-09
+
+### Added
+
+- *(gui)* drafts in the IMAP Drafts folder ([#568](https://github.com/postvak-app/postvak/pull/568))
+- *(gui)* title a new-message window with its subject ([#561](https://github.com/postvak-app/postvak/pull/561))
+- *(gui)* focus the composer when replying ([#565](https://github.com/postvak-app/postvak/pull/565))
+- *(gui)* put About, Preferences and Quit in the macOS app menu ([#566](https://github.com/postvak-app/postvak/pull/566))
+- *(gui)* show only a monochrome glyph in the macOS menu bar ([#564](https://github.com/postvak-app/postvak/pull/564))
+
+### Fixed
+
+- *(gui)* open the reader's More menu under its button ([#562](https://github.com/postvak-app/postvak/pull/562))
+- *(gui)* bring the window to the front from the tray on Wayland ([#567](https://github.com/postvak-app/postvak/pull/567))
+- *(ui)* widen the rule editor's condition drop-downs ([#563](https://github.com/postvak-app/postvak/pull/563))
+- *(packaging)* replace deprecated cask stanzas in the Homebrew cask ([#560](https://github.com/postvak-app/postvak/pull/560))
+
+### Other
+
+- make implicit state machines explicit ([#569](https://github.com/postvak-app/postvak/pull/569))
+- *(gui)* load remote content in HTML mail faster ([#559](https://github.com/postvak-app/postvak/pull/559))
+- *(gui)* ask for gzip when downloading remote content in HTML mail ([#557](https://github.com/postvak-app/postvak/pull/557))
+
 ## [0.16.0](https://github.com/postvak-app/postvak/compare/v0.15.0...v0.16.0) - 2026-11-06
 
 ### Added
