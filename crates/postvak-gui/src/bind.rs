@@ -20,8 +20,8 @@ use super::ui::{
     ComposePart, ComposeSpot, ComposeState, ComposeWindow, ConditionData, Dialog, Dot, FolderItem,
     FolderKind, ForwardData, ForwardLineData, KeyHelp, MailWindow, MenuAction, MenuChoice,
     MenuState, OutboxEntry, PageInfo, Pane, Preferences, ProposalData, ProvenanceData, Remote,
-    RuleData, RuleEditor, RunData, SampleData, SelectedData, Sheet, StatusLine, Theme,
-    ThemePreference, ToolButton, WhyLine,
+    RuleData, RuleEditor, RunData, SampleData, SelectedData, Sheet, SignaturePreferences,
+    SmtpPreferences, StatusLine, Theme, ThemePreference, ToolButton, WhyLine,
 };
 use super::{account, body, icons, list, menu, rules, status, theme, toolbar};
 use postvak_core::message::clean;
@@ -1059,7 +1059,11 @@ fn present_preferences(app: &App, window: &MailWindow) {
         return;
     };
     shown.set_open(true);
-    shown.set_section(i32::from(prefs.section == Section::Accounts));
+    shown.set_section(match prefs.section {
+        Section::General => 0,
+        Section::Accounts => 1,
+        Section::Sending => 2,
+    });
     shown.set_theme(index_of(&THEMES, &app.theme));
     shown.set_opens_at_login(app.open_at_login.checked());
     shown.set_open_at_login_enabled(matches!(app.open_at_login, OpenAtLogin::Known(_)));
@@ -1107,7 +1111,45 @@ fn present_preferences(app: &App, window: &MailWindow) {
             ),
         });
     }
+    present_sending(app, prefs, &shown);
     shown.set_error(prefs.error.as_deref().unwrap_or_default().into());
+}
+
+fn present_sending(app: &App, prefs: &state::PreferencesState, shown: &Preferences) {
+    let undo_choices = preferences::undo_choices();
+    let labels = undo_choices.iter().map(|(_, w)| w.into()).collect();
+    sync(shown.get_undo_choices(), labels, |m| {
+        shown.set_undo_choices(m)
+    });
+    let undo_secs: Vec<u64> = undo_choices.iter().map(|(secs, _)| *secs).collect();
+    shown.set_undo(index_of(&undo_secs, &prefs.config.sending.undo_secs));
+    let signatures = preferences::signature_rows(&prefs.config)
+        .into_iter()
+        .map(|s| SignaturePreferences {
+            address: clean(&s.address, false).into(),
+            text: s.text.into(),
+            on_replies: s.on_replies,
+        })
+        .collect();
+    sync(shown.get_signatures(), signatures, |m| {
+        shown.set_signatures(m)
+    });
+    let servers = prefs
+        .config
+        .accounts
+        .iter()
+        .map(|account| {
+            let (line, can_save_guess) =
+                preferences::smtp_line(account, prefs.smtp.get(&account.name));
+            SmtpPreferences {
+                address: clean(account.address(), false).into(),
+                server: clean(&line, false).into(),
+                can_save_guess,
+            }
+        })
+        .collect();
+    sync(shown.get_smtp(), servers, |m| shown.set_smtp(m));
+    shown.set_smtp_busy(app.setting_smtp.is_some());
 }
 
 /// An `Ask` for a change to the account Preferences shows.
@@ -1125,10 +1167,10 @@ fn connect_preferences(window: &MailWindow, on: fn(Ask) -> bool) {
     let act = move |action: Option<UiAction>| on(Box::new(move |_| action.into_iter().collect()));
     let set = move |setting: Setting| act(Some(UiAction::SetPreference(setting)));
     prefs.on_section_chosen(move |i| {
-        let section = if i == 1 {
-            Section::Accounts
-        } else {
-            Section::General
+        let section = match i {
+            1 => Section::Accounts,
+            2 => Section::Sending,
+            _ => Section::General,
         };
         act(Some(UiAction::PreferencesSection(section)));
     });
@@ -1185,6 +1227,35 @@ fn connect_preferences(window: &MailWindow, on: fn(Ask) -> bool) {
                 usize::try_from(i).ok()?,
             ))
         }));
+    });
+    prefs.on_undo_chosen(move |i| {
+        act(nth(preferences::undo_choices(), i)
+            .map(|(secs, _)| UiAction::SetPreference(Setting::UndoSecs(secs))));
+    });
+    prefs.on_save_signature(move |i, text, on_replies| {
+        let text = text.to_string();
+        on(one(move |app| {
+            let prefs = app.preferences.as_ref()?;
+            let row = nth(preferences::signature_rows(&prefs.config), i)?;
+            Some(UiAction::SetPreference(Setting::Signature {
+                address: row.address,
+                text,
+                on_replies,
+            }))
+        }));
+    });
+    let account_name = |i: i32, action: fn(String) -> UiAction| {
+        one(move |app| {
+            let prefs = app.preferences.as_ref()?;
+            let account = prefs.config.accounts.get(usize::try_from(i).ok()?)?;
+            Some(action(account.name.clone()))
+        })
+    };
+    prefs.on_save_guess(move |i| {
+        on(account_name(i, UiAction::SmtpSaveGuess));
+    });
+    prefs.on_guess_again(move |i| {
+        on(account_name(i, UiAction::SmtpGuessAgain));
     });
     prefs.on_remove_authserv_id(move |i| {
         on(account_setting(move |a| {

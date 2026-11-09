@@ -120,6 +120,22 @@ pub(crate) fn test_login(
         .map_err(|e| clean(&format!("{e:#}"), false))
 }
 
+/// Changes account `name`'s SMTP server through a connection of its own, as `postvak account smtp` does: Preferences ›
+/// Sending's Save guess and Guess again. Returns the config config.toml then holds.
+pub(crate) fn set_smtp(
+    paths: &Paths,
+    name: &str,
+    change: postvak_core::account::SmtpChange,
+) -> Result<Config, String> {
+    let run = || -> anyhow::Result<Config> {
+        let mut config = Config::load(&paths.config_file())?;
+        let client = Client::connect_or_start(paths)?;
+        postvak_core::account::set_smtp(&mut config, paths, &client, name, change)?;
+        Ok(config)
+    };
+    run().map_err(|e| clean(&format!("{e:#}"), false))
+}
+
 /// Subscribes before asking for the states, so no event between the two is lost.
 pub(crate) fn session(client: Client, wake: Waker) -> anyhow::Result<Connection> {
     let events = client.subscribe_waking(wake)?;
@@ -575,6 +591,10 @@ pub(crate) enum UiAction {
     /// The account Preferences shows, by its index in config.toml.
     PreferencesAccount(usize),
     SetPreference(Setting),
+    /// Preferences › Sending: write the account's guessed SMTP server to config.toml, after logging in to it.
+    SmtpSaveGuess(String),
+    /// Preferences › Sending: guess the account's SMTP server again and write what answers to config.toml.
+    SmtpGuessAgain(String),
     StartSearch,
     StepFolder(isize),
     /// Count what the open rule would do to the cached mail.
@@ -746,6 +766,8 @@ pub(crate) struct PreferencesState {
     pub(crate) config: Config,
     /// Why the last change was not saved.
     pub(crate) error: Option<String>,
+    /// Each account's stored SMTP guess, read as Preferences opened, changed section or set a server.
+    pub(crate) smtp: HashMap<String, postvak_core::store::SmtpState>,
 }
 
 pub struct App {
@@ -779,6 +801,11 @@ pub struct App {
     pub(crate) read_open_at_login: fn(&Paths) -> anyhow::Result<bool>,
     pub(crate) set_open_at_login:
         fn(&Paths, bool) -> anyhow::Result<postvak_core::autostart::Changed>,
+    /// Changes an account's SMTP server through the daemon; tests swap it so no daemon starts.
+    pub(crate) set_smtp:
+        fn(&Paths, &str, postvak_core::account::SmtpChange) -> Result<Config, String>,
+    /// The SMTP change Preferences asked for, until it is answered.
+    pub(crate) setting_smtp: Option<Receiver<Result<Config, String>>>,
     /// Tests an account's login before the form saves it; tests swap it so no daemon starts.
     pub(crate) check_login: account::Check,
     /// Sends a one-click unsubscribe; tests swap it so nothing leaves the machine.
@@ -1054,6 +1081,8 @@ impl App {
             open_at_login: OpenAtLogin::Unknown,
             read_open_at_login: postvak_core::autostart::is_on,
             set_open_at_login: postvak_core::autostart::set,
+            set_smtp,
+            setting_smtp: None,
             check_login: test_login,
             post_unsubscribe: |url| unsubscribe::one_click(url).map_err(|e| e.to_string()),
             unsubscribing: None,
@@ -1195,6 +1224,7 @@ impl App {
         self.keep_daemon(now);
         self.check_release();
         self.receive_open_at_login();
+        self.receive_smtp_change();
         self.receive_unsubscribe();
         self.receive_hits();
         self.receive_dry_runs();
@@ -2113,13 +2143,16 @@ impl App {
                         account: 0,
                         config,
                         error: None,
+                        smtp: self.smtp_states(),
                     })
                 }
                 Err(e) => self.note_error(None, format!("could not read config.toml: {e}")),
             },
             UiAction::PreferencesSection(section) => {
+                let smtp = self.smtp_states();
                 if let Some(prefs) = self.preferences.as_mut() {
                     prefs.section = section;
+                    prefs.smtp = smtp;
                 }
             }
             UiAction::PreferencesAccount(index) => {
@@ -2130,6 +2163,12 @@ impl App {
                 }
             }
             UiAction::SetPreference(setting) => self.set_preference(&setting),
+            UiAction::SmtpSaveGuess(name) => {
+                self.change_smtp(name, postvak_core::account::SmtpChange::SaveGuess)
+            }
+            UiAction::SmtpGuessAgain(name) => {
+                self.change_smtp(name, postvak_core::account::SmtpChange::Guess)
+            }
             UiAction::StartSearch => {
                 if self.view.lists_mail() {
                     // The field takes the keyboard as it appears.
@@ -2723,10 +2762,11 @@ impl App {
                 &self.paths.config_file(),
             );
         }
-        let saving = self
-            .account_form
-            .as_ref()
-            .is_some_and(|form| form.saving.is_some());
+        let saving = self.setting_smtp.is_some()
+            || self
+                .account_form
+                .as_ref()
+                .is_some_and(|form| form.saving.is_some());
         if !saving && self.config_watch.changed() {
             self.config_changed = true;
         }
@@ -2965,6 +3005,11 @@ impl App {
             return;
         }
         let saved = preferences::save(&self.paths.config_file(), setting);
+        self.preference_saved(saved.map_err(|e| e.to_string()));
+    }
+
+    /// Shows a change Preferences saved, or why it was not.
+    fn preference_saved(&mut self, saved: Result<Config, String>) {
         if let Ok(config) = &saved {
             // Absorbs this write, so the poll does not take it for an outside edit.
             self.config_watch.changed();
@@ -2979,6 +3024,43 @@ impl App {
                 Err(e) => prefs.error = Some(format!("Not saved: {e}")),
             }
         }
+    }
+
+    /// Asks the daemon to change account `name`'s SMTP server, unless a change is under way.
+    fn change_smtp(&mut self, name: String, change: postvak_core::account::SmtpChange) {
+        if self.preferences.is_none() || self.setting_smtp.is_some() {
+            return;
+        }
+        let (paths, set) = (self.paths.clone(), self.set_smtp);
+        self.setting_smtp = Some(worker::oneshot("smtp", self.wake.clone(), move || {
+            set(&paths, &name, change)
+        }));
+    }
+
+    fn receive_smtp_change(&mut self) {
+        let Some(answer) = self.setting_smtp.as_ref() else {
+            return;
+        };
+        let Some(answered) = worker::poll(answer) else {
+            return;
+        };
+        self.setting_smtp = None;
+        self.preference_saved(answered.unwrap_or_else(|Stopped| Err("the check stopped".into())));
+        let smtp = self.smtp_states();
+        if let Some(prefs) = self.preferences.as_mut() {
+            prefs.smtp = smtp;
+        }
+    }
+
+    /// Each account's stored SMTP guess, by name; an account whose store cannot say has none.
+    fn smtp_states(&self) -> HashMap<String, postvak_core::store::SmtpState> {
+        self.accounts
+            .iter()
+            .filter_map(|account| {
+                let state = account.store.as_ref().ok()?.smtp_state().ok()??;
+                Some((account.name.clone(), state))
+            })
+            .collect()
     }
 
     /// What the window shows of config.toml, made to match `config` as this window saved it.

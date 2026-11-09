@@ -877,13 +877,21 @@ fn add_account_dark() {
     add_account("dark", "gui_add_account_dark");
 }
 
-/// Preferences over the inbox, at `section`; the work account has an alias and a trusted authserv-id.
+/// Preferences over the inbox, at `section`; the work account has an alias with a signature and a trusted authserv-id.
 fn preferences(theme: &str, section: super::preferences::Section, name: &str) {
     let (fx, open, _wires) = inbox(theme);
     let path = fx.paths.config_file();
     postvak_core::config::update_account(&path, "work", |a| {
         a.aliases = vec!["*@shop.example.com".into()];
         a.trusted_authserv_ids = Some(vec!["mx.example.com".into()]);
+    })
+    .unwrap();
+    postvak_core::config::update_sending(&path, |sending| {
+        sending.signatures = vec![postvak_core::config::Signature {
+            address: "*@shop.example.com".into(),
+            text: "Ada\nThe shop".into(),
+            on_replies: false,
+        }];
     })
     .unwrap();
     open.window()
@@ -914,6 +922,24 @@ fn preferences_accounts_dark() {
         "dark",
         super::preferences::Section::Accounts,
         "gui_preferences_accounts_dark",
+    );
+}
+
+#[test]
+fn preferences_sending_light() {
+    preferences(
+        "light",
+        super::preferences::Section::Sending,
+        "gui_preferences_sending_light",
+    );
+}
+
+#[test]
+fn preferences_sending_dark() {
+    preferences(
+        "dark",
+        super::preferences::Section::Sending,
+        "gui_preferences_sending_dark",
     );
 }
 
