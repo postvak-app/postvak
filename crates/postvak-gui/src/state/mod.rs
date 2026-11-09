@@ -3708,6 +3708,7 @@ mod tests {
         let fx = Fixture::new(&["home", "work"]);
         inbox(&fx, &[1]);
         let (mut driver, wires) = fx.driver();
+        driver.app.select_view(View::AllInboxes);
         driver.press("/ zebra");
         driver.press("enter");
         assert_eq!(wires.sent().len(), 2);
