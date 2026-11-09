@@ -120,6 +120,20 @@ pub(crate) fn test_login(
         .map_err(|e| clean(&format!("{e:#}"), false))
 }
 
+/// The SMTP server for an account about to be added, as `postvak account add` finds it: the one given, else a guess.
+pub(crate) fn find_smtp(
+    paths: &Paths,
+    account: &AccountConfig,
+    given: Option<config::SmtpConfig>,
+    secret: &Secret,
+) -> Result<Option<config::SmtpConfig>, String> {
+    Client::connect_or_start(paths)
+        .and_then(|client| {
+            postvak_core::account::smtp_for_new(&client, account, given, Some(secret))
+        })
+        .map_err(|e| clean(&format!("{e:#}"), false))
+}
+
 /// Changes account `name`'s SMTP server through a connection of its own, as `postvak account smtp` does: Preferences ›
 /// Sending's Save guess and Guess again. Returns the config config.toml then holds.
 pub(crate) fn set_smtp(
@@ -811,6 +825,8 @@ pub struct App {
     pub(crate) setting_smtp: Option<(String, Receiver<Result<Config, String>>)>,
     /// Tests an account's login before the form saves it; tests swap it so no daemon starts.
     pub(crate) check_login: account::Check,
+    /// Finds the SMTP server before the form saves an account; tests swap it so no daemon starts.
+    pub(crate) find_smtp: account::FindSmtp,
     /// Sends a one-click unsubscribe; tests swap it so nothing leaves the machine.
     pub(crate) post_unsubscribe: fn(&str) -> Result<(), String>,
     pub(crate) unsubscribing: Option<Unsubscribing>,
@@ -1087,6 +1103,7 @@ impl App {
             set_smtp,
             setting_smtp: None,
             check_login: test_login,
+            find_smtp,
             post_unsubscribe: |url| unsubscribe::one_click(url).map_err(|e| e.to_string()),
             unsubscribing: None,
             rule_hits: HashMap::new(),
@@ -2818,20 +2835,20 @@ impl App {
 
     /// Starts the save; a form that cannot make an account says why at once.
     fn save_account(&mut self, fields: &account::Fields) {
-        let (wake, check) = (self.wake.clone(), self.check_login);
+        let (wake, check, find_smtp) = (self.wake.clone(), self.check_login, self.find_smtp);
         let paths = self.paths.clone();
         let Some(form) = self
             .account_form
             .as_mut()
-            .filter(|form| form.saving.is_none())
+            .filter(|form| form.saving.is_none() && !form.unsent)
         else {
             return;
         };
-        match account::save(paths, fields, wake, check) {
+        match account::save(paths, fields, wake, check, find_smtp) {
             Ok(answer) => {
                 form.error = None;
                 form.saving = Some(answer);
-                form.testing = true;
+                form.phase = account::Phase::Testing;
             }
             Err(message) => form.error = Some(message),
         }
@@ -2851,11 +2868,12 @@ impl App {
             let step =
                 step.unwrap_or_else(|Stopped| account::Step::Refused(account::STOPPED.into()));
             match step {
-                account::Step::Tested => form.testing = false,
+                account::Step::Found => form.phase = account::Phase::Saving,
+                account::Step::Tested => form.phase = account::Phase::Finding,
                 account::Step::Saved(account) => return self.account_added(*account),
                 account::Step::Refused(why) => {
                     form.saving = None;
-                    form.testing = false;
+                    form.phase = account::Phase::Testing;
                     form.error = Some(why);
                 }
             }
@@ -2863,9 +2881,20 @@ impl App {
     }
 
     /// A new account joins the list and a replaced one keeps its place; the daemon starts it from config.toml and its
-    /// events arrive by name, so its first sync shows on its line.
+    /// events arrive by name, so its first sync shows on its line. Without an SMTP server the form stays to say so.
     fn account_added(&mut self, account: AccountConfig) {
-        self.account_form = None;
+        match account::added(&account) {
+            Some(text) => {
+                self.account_form = None;
+                self.toast = Some(Toast::new(text, false));
+            }
+            None => {
+                self.account_form = Some(AccountForm {
+                    unsent: true,
+                    ..AccountForm::default()
+                })
+            }
+        }
         // Absorbs this window's own write, so the poll does not take it for an outside edit.
         self.config_watch.changed();
         self.retention
@@ -2967,13 +2996,11 @@ impl App {
             Dialog::Rule => self.open_draft(None),
             Dialog::Folder => self.folder_dialog = None,
             Dialog::Account => {
-                // During the login test nothing is saved yet and the save gives up; once it writes, it finishes
+                // Before the save writes, closing gives it up and nothing is saved; once it writes, it finishes
                 // first, so its account joins the window.
-                if self
-                    .account_form
-                    .as_ref()
-                    .is_some_and(|form| form.saving.is_none() || form.testing)
-                {
+                if self.account_form.as_ref().is_some_and(|form| {
+                    form.saving.is_none() || form.phase != account::Phase::Saving
+                }) {
                     self.account_form = None;
                 }
             }

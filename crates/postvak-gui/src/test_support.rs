@@ -100,6 +100,10 @@ impl Fixture {
             answer
         };
         app.check_login = |_, _, _, _| Ok(());
+        app.find_smtp = |_, _, given, _| {
+            use postvak_core::config::{SmtpConfig, SmtpTls};
+            Ok(given.or_else(|| Some(SmtpConfig::new("smtp.example.com", SmtpTls::Implicit))))
+        };
         app.prefill = |_, _, _, _| Err("no daemon in tests".into());
         app.queue_send = |_, _, _| Err("no daemon in tests".into());
         app.cancel_send = |_, _, _| {

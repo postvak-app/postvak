@@ -45,6 +45,9 @@ pub(crate) fn account_fields(fields: AccountFields) -> account::Fields {
         password: fields.password.into(),
         address: fields.address.into(),
         starttls: fields.starttls,
+        smtp_host: fields.smtp_host.into(),
+        smtp_port: fields.smtp_port.into(),
+        smtp_starttls: fields.smtp_starttls,
     }
 }
 
@@ -163,8 +166,9 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
         .unwrap_or_default();
     window.set_account_error(error.into());
     window.set_account_saving(form.is_some_and(|form| form.saving.is_some()));
-    let testing = form.is_some_and(|form| form.testing);
-    window.set_account_progress(account::progress(testing).into());
+    let phase = form.map(|form| form.phase).unwrap_or_default();
+    window.set_account_progress(account::progress(phase).into());
+    window.set_account_unsent(form.is_some_and(|form| form.unsent));
 
     present_folder_dialog(app, window);
     window.set_help_open(app.help_open);
@@ -1865,6 +1869,9 @@ pub(crate) fn connect(window: &MailWindow, on: fn(Ask) -> bool) {
     });
     window.on_save_account(move |fields| {
         act(UiAction::SaveAccount(account_fields(fields)));
+    });
+    window.on_account_smtp_help(move || {
+        act(UiAction::OpenUrl(account::SMTP_DOCS.into()));
     });
     window.on_menu_item(move |action| {
         on(one(move |app| menu::action(action, app)));

@@ -17,12 +17,14 @@ export component StartupWindow inherits Window {
     in property <string> account-error;
     in property <bool> account-saving;
     in property <string> account-progress;
+    in property <bool> account-unsent;
     callback save-account(AccountFields);
+    callback account-smtp-help();
 
     title: "Postvak";
     icon: @image-url("../assets/icon.png");
     preferred-width: 520px;
-    preferred-height: root.form ? 460px : 260px;
+    preferred-height: root.form ? 500px : 260px;
     background: Theme.pane.background;
     default-font-family: Theme.text-font;
     default-font-size: Theme.text-size;
@@ -43,7 +45,10 @@ export component StartupWindow inherits Window {
             error: root.account-error;
             saving: root.account-saving;
             progress: root.account-progress;
+            unsent: root.account-unsent;
             save(fields) => { root.save-account(fields); }
+            smtp-help => { root.account-smtp-help(); }
+            done => { root.close-clicked(); }
         }
         if root.link-url != "": Link {
             text: root.link-label;

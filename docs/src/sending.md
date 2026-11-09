@@ -18,7 +18,7 @@ starts, Postvak tries the likely servers and keeps the first that logs in:
 each on port 465 with TLS, then on port 587 with STARTTLS, logging in with the account's IMAP username and password. A
 guess never logs in without TLS, and never tries a host outside your IMAP host's own domain. It sends nothing.
 
-For a new account, `postvak account add` saves what it found to `config.toml`. For an account you already had, the daemon
+For a new account, `postvak account add` and the window's Add account… save what they found to `config.toml`. For an account you already had, the daemon
 keeps the guess to itself and never writes `config.toml`; save it there with:
 
 ```sh
