@@ -221,9 +221,8 @@ pub(crate) struct BodyState {
     pub account: usize,
     /// The sender's logo record, when sender images are on and the message passed DMARC.
     pub brand: Option<Brand>,
-    /// Set when the user chose this message, not when a view change or reload put it on screen; only then does it
-    /// become read.
-    pub armed: bool,
+    /// Whether this message becomes read on its own.
+    pub read: ReadMark,
     pub attachments: Vec<Attachment>,
     /// The attachments are listed from the message's structure and cannot be saved until the whole message is here.
     pub attachments_pending: bool,
@@ -238,8 +237,6 @@ pub(crate) struct BodyState {
     pub html_view: Option<HtmlState>,
     pub key: RowKey,
     pub message: Option<Message>,
-    /// Set once mark-read was sent, or the user marked read or unread by hand, so the delay does not act again.
-    pub read_sent: bool,
     pub saved: Option<String>,
     /// The sender accepted this message's one-click unsubscribe, so the note offers to delete it.
     pub unsubscribed: bool,
@@ -265,13 +262,38 @@ pub(crate) struct BodyState {
     pub why: Option<Vec<(String, bool)>>,
 }
 
+/// Whether the opened message becomes read on its own: `Passive` until the user chooses it, then `Armed` until
+/// `mark_read_after_delay` sends mark-read; `Settled` from then on, or as soon as the user marks it read or unread by hand.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum ReadMark {
+    /// A view change or reload put it on screen; it stays as it is.
+    Passive,
+    /// The user chose it; it becomes read once its text has been on screen for `READ_DELAY`.
+    Armed,
+    /// Mark-read was sent, or the user marked it by hand; the delay does not act again.
+    Settled,
+}
+
+impl ReadMark {
+    /// The user chose the message; one already settled stays so.
+    pub(crate) fn arm(&mut self) {
+        if *self == ReadMark::Passive {
+            *self = ReadMark::Armed;
+        }
+    }
+}
+
 impl BodyState {
     /// The message chosen, empty until `read_body` reads it.
     fn chosen(account: usize, key: RowKey, now: f64, armed: bool) -> BodyState {
         BodyState {
             account,
             brand: None,
-            armed,
+            read: if armed {
+                ReadMark::Armed
+            } else {
+                ReadMark::Passive
+            },
             attachments: Vec::new(),
             attachments_pending: false,
             on_demand: false,
@@ -281,7 +303,6 @@ impl BodyState {
             html_view: None,
             key,
             message: None,
-            read_sent: false,
             reading: None,
             saved: None,
             unsubscribed: false,
@@ -742,6 +763,37 @@ pub(crate) enum Focus {
     List,
 }
 
+/// The window's link to the daemon. Losing the event stream moves it to `Lost`; from there an attempt starts every
+/// `RECONNECT` seconds, on a thread of its own, and only a successful one brings it back to `Connected`.
+pub(crate) enum DaemonLink {
+    Connected,
+    /// The event stream ended; `last_attempt` is when, or when the last failed attempt started.
+    Lost {
+        last_attempt: f64,
+    },
+    /// An attempt runs, started at `started`; at most one runs.
+    Reconnecting {
+        started: f64,
+        attempt: Receiver<anyhow::Result<Connection>>,
+    },
+}
+
+impl DaemonLink {
+    /// True from the loss until a reconnect succeeds.
+    pub(crate) fn is_lost(&self) -> bool {
+        !matches!(self, DaemonLink::Connected)
+    }
+
+    /// When the last attempt started, or the loss happened; `None` while connected.
+    fn last_attempt(&self) -> Option<f64> {
+        match self {
+            DaemonLink::Connected => None,
+            DaemonLink::Lost { last_attempt } => Some(*last_attempt),
+            DaemonLink::Reconnecting { started, .. } => Some(*started),
+        }
+    }
+}
+
 /// The release check: waiting for the first frame, running on its thread, or done with the version to announce; a
 /// check that config turns off starts done.
 pub(crate) enum UpdateCheck {
@@ -796,8 +848,8 @@ pub struct App {
     pub(crate) collapsed: HashSet<(usize, String)>,
     pub(crate) config_changed: bool,
     pub(crate) config_watch: FileWatch,
-    /// Set when the event stream ended; cleared once a reconnect succeeds.
-    pub(crate) daemon_lost: bool,
+    /// Whether the window hears the daemon, or is trying to again.
+    pub(crate) daemon: DaemonLink,
     pub(crate) downloads: PathBuf,
     pub(crate) error: Option<String>,
     /// The outcome of the last purge or rule run, shown in the status row until the next sync or the history opens.
@@ -871,7 +923,6 @@ pub struct App {
     /// When an open search last reloaded for `Event::Indexed`.
     pub(crate) last_index_reload: f64,
     pub(crate) last_poll: f64,
-    pub(crate) last_reconnect: f64,
     pub(crate) list: ListState,
     /// Sender logos, with `[ui] sender_images = true`.
     pub(crate) logos: Logos,
@@ -883,10 +934,8 @@ pub struct App {
     /// Numbers list loads; the last one started, and the last one whose rows are shown.
     pub(crate) list_generation: u64,
     pub(crate) list_applied: u64,
-    /// The reload running on its own thread; at most one runs.
+    /// The reload running on its own thread, and whether another follows it; at most one runs.
     pub(crate) list_loading: Option<Loading>,
-    /// Set when the view changed again while `list_loading` ran, so another reload follows it.
-    pub(crate) list_again: bool,
     /// The first load that reads the query typed last; its hits show from the top, not at the row the cursor was on.
     pub(crate) search_reset: Option<u64>,
     /// Set when edits went or settled since the rows were built, so a reload that runs on rebuilds them from the
@@ -914,8 +963,6 @@ pub struct App {
     /// Numbers the reads of the opened message, so an answer that a later read overtook is dropped.
     pub(crate) body_generation: u64,
     pub(crate) reconnect: fn(&Paths, Waker) -> anyhow::Result<Connection>,
-    /// The result of the reconnect attempt in flight; at most one runs.
-    pub(crate) reconnecting: Option<Receiver<anyhow::Result<Connection>>>,
     pub(crate) requested: HashSet<(usize, RowKey)>,
     /// The one preview fetch each account runs at a time, so stepping fast does not queue a download per row passed.
     pub(crate) fetching_body: HashMap<usize, RowKey>,
@@ -1092,7 +1139,7 @@ impl App {
             collapsed: HashSet::new(),
             config_changed: false,
             config_watch: FileWatch::new(paths.config_file()),
-            daemon_lost: false,
+            daemon: DaemonLink::Connected,
             downloads: downloads_dir(),
             error: None,
             events,
@@ -1129,7 +1176,6 @@ impl App {
             launch: crate::opener::open,
             last_index_reload: 0.0,
             last_poll: 0.0,
-            last_reconnect: 0.0,
             list: ListState::default(),
             logos: Logos::new(config.ui.sender_images, paths.cache_dir.clone()),
             remote_content: config.ui.remote_content.clone(),
@@ -1137,7 +1183,6 @@ impl App {
             list_generation: 0,
             list_applied: 0,
             list_loading: None,
-            list_again: false,
             search_reset: None,
             edits_changed: false,
             load_list: load::load_from_paths,
@@ -1153,7 +1198,6 @@ impl App {
             read_body: reader::read,
             body_budget: BODY_BUDGET,
             body_generation: 0,
-            reconnecting: None,
             requested: HashSet::new(),
             fetching_body: HashMap::new(),
             waiting_bodies: Vec::new(),
@@ -1277,8 +1321,8 @@ impl App {
         self.mark_read_after_delay(now);
         self.expire_toast(now);
         self.request_tick(self.last_poll + POLL);
-        if self.daemon_lost {
-            self.request_tick(self.last_reconnect + RECONNECT);
+        if let Some(last) = self.daemon.last_attempt() {
+            self.request_tick(last + RECONNECT);
         }
     }
 
@@ -1334,13 +1378,12 @@ impl App {
     }
 
     fn receive(&mut self, now: f64) {
-        while !self.daemon_lost {
+        while !self.daemon.is_lost() {
             match worker::poll(&self.events) {
                 Some(Ok(event)) => self.handle(event, now),
                 None => break,
                 Some(Err(Stopped)) => {
-                    self.daemon_lost = true;
-                    self.last_reconnect = now;
+                    self.daemon = DaemonLink::Lost { last_attempt: now };
                     self.note_error(None, DAEMON_LOST.into());
                 }
             }
@@ -1349,22 +1392,31 @@ impl App {
 
     /// While the daemon is gone: takes the result of the attempt in flight, or starts one every 5 s.
     fn keep_daemon(&mut self, now: f64) {
-        if !self.daemon_lost {
-            return;
-        }
-        let Some(attempt) = &self.reconnecting else {
-            if now - self.last_reconnect >= RECONNECT {
-                self.last_reconnect = now;
-                self.reconnecting = Some(self.start_reconnect());
+        let (started, answer) = match &self.daemon {
+            DaemonLink::Connected => return,
+            DaemonLink::Lost { last_attempt } => {
+                if now - last_attempt >= RECONNECT {
+                    let attempt = self.start_reconnect();
+                    self.daemon = DaemonLink::Reconnecting {
+                        started: now,
+                        attempt,
+                    };
+                }
+                return;
             }
-            return;
+            DaemonLink::Reconnecting { started, attempt } => match worker::poll(attempt) {
+                None => return,
+                Some(answer) => (*started, answer),
+            },
         };
-        match worker::poll(attempt) {
-            None => {}
-            Some(Err(Stopped)) => self.reconnecting = None,
-            Some(Ok(Err(e))) => {
+        // Whatever the attempt answered, the next one counts from when this one started.
+        self.daemon = DaemonLink::Lost {
+            last_attempt: started,
+        };
+        match answer {
+            Err(Stopped) => {}
+            Ok(Err(e)) => {
                 log::warn!("could not reach the daemon: {e:#}");
-                self.reconnecting = None;
                 if let Some(newer) = e.downcast_ref::<NewerDaemon>() {
                     let text = newer.to_string();
                     if self.error.as_deref() != Some(text.as_str()) {
@@ -1372,10 +1424,7 @@ impl App {
                     }
                 }
             }
-            Some(Ok(Ok(connection))) => {
-                self.reconnecting = None;
-                self.reconnected(connection);
-            }
+            Ok(Ok(connection)) => self.reconnected(connection),
         }
     }
 
@@ -1458,7 +1507,7 @@ impl App {
     fn reconnected(&mut self, (client, events, states): Connection) {
         self.client = client;
         self.events = events;
-        self.daemon_lost = false;
+        self.daemon = DaemonLink::Connected;
         if self
             .error
             .as_deref()
@@ -1564,8 +1613,10 @@ impl App {
             Event::CommandFailed { request, .. } if request != 0 => {}
             Event::ActionDone { request, .. } if request != 0 => self.refresh(index),
             Event::ServerSearchDone { query, hits, .. } => {
-                if self.search.as_deref() == Some(query.as_str()) {
-                    self.list.server_searching = self.list.server_searching.saturating_sub(1);
+                // Another client's search for the same text is broadcast too; each account's first answer counts.
+                if self.search.as_deref() == Some(query.as_str())
+                    && self.list.server_searching.remove(&index)
+                {
                     self.list
                         .server_hits
                         .extend(hits.into_iter().map(|hit| (index, hit)));
@@ -1577,17 +1628,16 @@ impl App {
                 let message = clean(&message, false);
                 self.push_history(format!("{account}: server search failed: {message}"));
                 // Another client's search for the same text is broadcast too; only a round this window runs counts.
-                if self.list.server_searching > 0
-                    && self.search.as_deref() == Some(query.as_str())
-                    && !self.list.server_failed.contains(&account)
+                if self.search.as_deref() == Some(query.as_str())
+                    && self.list.server_searching.remove(&index)
                 {
-                    self.list.server_searching -= 1;
                     self.list.server_failed.push(account);
                 }
             }
             Event::CommandFailed { message, .. } => {
-                // The refusal does not say of what; a search that failed must not say it is still running.
-                self.list.server_searching = self.list.server_searching.saturating_sub(1);
+                // The refusal does not say of what; a search that failed must not say it is still running. Only this
+                // account's search can be the one refused.
+                self.list.server_searching.remove(&index);
                 // A refusal carries no uids, so every edit of the account goes and the store shows what is true.
                 let account = &mut self.accounts[index];
                 account.pending.clear();
@@ -2430,7 +2480,6 @@ impl App {
     pub(crate) fn select_view(&mut self, view: View) {
         self.enter_view(view);
         self.list_loading = None;
-        self.list_again = false;
         self.refresh_view();
     }
 
@@ -2540,7 +2589,6 @@ impl App {
         self.list_generation += 1;
         let generation = self.list_generation;
         self.list_loading = None;
-        self.list_again = false;
         let Some(query) = self.list_query() else {
             match self.view {
                 View::Activity => self.activity_log = rules::activity_log(&self.accounts),
@@ -2579,8 +2627,8 @@ impl App {
             self.reload_view();
             return;
         };
-        if self.list_loading.is_some() {
-            self.list_again = true;
+        if let Some(loading) = &mut self.list_loading {
+            loading.again = true;
             self.show_changed_edits();
             return;
         }
@@ -2605,7 +2653,11 @@ impl App {
         match answer.recv_timeout(self.list_budget) {
             Ok(loaded) => self.apply_loaded(generation, loaded),
             Err(RecvTimeoutError::Timeout) => {
-                self.list_loading = Some(Loading { generation, answer });
+                self.list_loading = Some(Loading {
+                    generation,
+                    answer,
+                    again: false,
+                });
                 self.show_changed_edits();
             }
             Err(RecvTimeoutError::Disconnected) => {
@@ -2634,12 +2686,12 @@ impl App {
                 None
             }
         };
-        let generation = loading.generation;
+        let (generation, again) = (loading.generation, loading.again);
         self.list_loading = None;
         if let Some(loaded) = loaded {
             self.apply_loaded(generation, loaded);
         }
-        if std::mem::take(&mut self.list_again) {
+        if again {
             self.view_dirty = true;
         }
     }
@@ -2742,7 +2794,7 @@ impl App {
     /// Asks the server of each account the search covers for the current query; the hits arrive as `ServerSearchDone`.
     fn search_server(&mut self) {
         // A new query resets the count, so a running round is for this query; a second one would only add duplicates.
-        if self.list.server_searching > 0 {
+        if !self.list.server_searching.is_empty() {
             return;
         }
         let Some(query) = self.search.clone().filter(|query| !query.trim().is_empty()) else {
@@ -2751,7 +2803,7 @@ impl App {
         let covered = self.covered_accounts();
         self.list.server_hits.clear();
         self.list.server_failed.clear();
-        self.list.server_searching = 0;
+        self.list.server_searching.clear();
         self.list.server_asked = true;
         for account in covered {
             let command = Command::SearchServer {
@@ -2759,7 +2811,7 @@ impl App {
                 query: query.clone(),
             };
             if self.send(account, command) {
-                self.list.server_searching += 1;
+                self.list.server_searching.insert(account);
             }
         }
     }
@@ -3780,6 +3832,43 @@ mod tests {
         assert!(list::results(&driver.app).contains("searching the server"));
     }
 
+    /// Answers are broadcast to every client and a refusal does not say of what: a second answer for one account (another
+    /// client searching the same text), or a failed command of another account, ended a running account's search early.
+    #[test]
+    fn a_server_search_ends_only_when_each_asked_account_answered_once() {
+        let fx = Fixture::new(&["home", "work"]);
+        inbox(&fx, &[1]);
+        let (mut driver, wires) = fx.driver();
+        driver.app.select_view(View::AllInboxes);
+        driver.press("/ zebra");
+        driver.press("enter");
+        assert_eq!(wires.sent().len(), 2);
+        let found = |account: &str| Event::ServerSearchDone {
+            account: account.into(),
+            request: 9,
+            query: "zebra".into(),
+            hits: vec![("INBOX".into(), 1)],
+        };
+        let refused = Event::CommandFailed {
+            account: "home".into(),
+            request: 0,
+            message: "the body could not be fetched".into(),
+        };
+        driver.receive(&wires, [found("home"), found("home"), refused]);
+        assert!(
+            list::results(&driver.app).contains("searching the server"),
+            "work has not answered: {}",
+            list::results(&driver.app)
+        );
+        assert_eq!(
+            driver.app.list.server_hits.len(),
+            1,
+            "the copy adds nothing"
+        );
+        driver.receive(&wires, [found("work")]);
+        assert!(!list::results(&driver.app).contains("searching the server"));
+    }
+
     #[test]
     fn a_failed_action_puts_the_row_back_and_says_why() {
         let fx = Fixture::new(&["work"]);
@@ -3950,7 +4039,10 @@ mod tests {
         first.wait_read();
         fx.add("work", message("INBOX", 3, "subject 3"));
         driver.receive(&wires, [synced("work", 0)]);
-        assert!(driver.app.list_again, "the second waits for the first");
+        assert!(
+            driver.app.list_loading.as_ref().is_some_and(|l| l.again),
+            "the second waits for the first"
+        );
         first.release();
         driver.at(0.0);
         driver.tick_until(|app| app.list_applied == started);
@@ -4106,13 +4198,13 @@ mod tests {
         first.wait_read();
         driver.apply(UiAction::SearchFor("subject 2".into()));
         assert!(
-            driver.app.list_again,
+            driver.app.list_loading.as_ref().is_some_and(|l| l.again),
             "the next keystroke waits for the search running"
         );
         first.release();
         second.release();
         driver.at(0.0);
-        driver.tick_until(|app| app.list_loading.is_none() && !app.view_dirty && !app.list_again);
+        driver.tick_until(|app| app.list_loading.is_none() && !app.view_dirty);
         assert_eq!(driver.uids(), [2]);
     }
 
@@ -4352,7 +4444,7 @@ mod tests {
         let (mut driver, wires) = fx.driver();
         drop(wires.events);
         driver.tick();
-        assert!(driver.app.daemon_lost);
+        assert!(driver.app.daemon.is_lost());
         assert_eq!(driver.status().last().unwrap(), DAEMON_LOST);
     }
 
@@ -4391,7 +4483,7 @@ mod tests {
         assert_eq!(driver.status()[0], format!("work: {DAEMON_LOST}"));
         fx.add("work", unread("INBOX", 2, "while away"));
         driver.at(10.0);
-        driver.tick_until(|app| !app.daemon_lost);
+        driver.tick_until(|app| !app.daemon.is_lost());
         driver.tick();
         assert!(
             driver
@@ -4433,10 +4525,10 @@ mod tests {
             "the daemon is version 9.0.0, newer than this postvak (0.1.0); restart this program";
         driver.at(10.0);
         driver.tick_until(|app| app.error.as_deref() == Some(newer));
-        assert!(driver.app.daemon_lost);
+        assert!(driver.app.daemon.is_lost());
         driver.at(20.0);
         assert!(
-            driver.app.reconnecting.is_some(),
+            matches!(driver.app.daemon, DaemonLink::Reconnecting { .. }),
             "it tries again 5 s later"
         );
     }

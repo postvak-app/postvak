@@ -7177,6 +7177,28 @@ fn max_size_skip_runs_the_other_actions() {
     );
 }
 
+/// A message held by a failed fetch and skipped on the next pass kept its failure, so the rule's warning said its actions
+/// still waited on it.
+#[test]
+fn a_skip_after_a_hold_clears_the_failure() {
+    let toml = FORWARD_ARCHIVE.replace(
+        "to = \"books@example.org\"",
+        "to = \"books@example.org\", max_size = \"10\"",
+    );
+    let mut f = Forwarding::new(invoices(), &toml);
+    f.ops.fail_next = Some(MailError::Protocol("NO try later".into()));
+    f.run(Mode::Normal, 12 * H);
+    assert_eq!(f.inbox(), [1], "held");
+    assert_eq!(f.store.forward_failures("inv").unwrap().len(), 1);
+    f.run(Mode::Normal, 13 * H);
+    assert!(f.queue.taken().is_empty());
+    assert!(f.inbox().is_empty(), "archived once skipped");
+    assert!(
+        f.store.forward_failures("inv").unwrap().is_empty(),
+        "the skip released the hold"
+    );
+}
+
 #[test]
 fn max_size_strip_forwards_without_attachments() {
     let toml = FORWARD_ARCHIVE.replace(
