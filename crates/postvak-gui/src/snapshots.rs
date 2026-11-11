@@ -877,13 +877,70 @@ fn add_account_dark() {
     add_account("dark", "gui_add_account_dark");
 }
 
-/// Preferences over the inbox, at `section`; the work account has an alias and a trusted authserv-id.
+/// The first-run window at its own size, its SMTP fields shown and the account saved without a server: the tallest the
+/// form gets.
+#[test]
+fn first_run_unsent() {
+    use slint::ComponentHandle;
+    super::test_support::headless();
+    let dir = tempfile::tempdir().unwrap();
+    let problem =
+        super::startup::Problem::of(&anyhow::Error::new(super::startup::NoAccounts), None);
+    let window = super::startup_window(
+        &problem,
+        |_| {},
+        Some(postvak_core::paths::Paths::under(dir.path())),
+        super::Pending::default(),
+        |_, _, _, _| Ok(()),
+        |_, _, _, _| Ok(None),
+    )
+    .unwrap();
+    window.show().unwrap();
+    let change: Vec<_> =
+        i_slint_backend_testing::ElementHandle::find_by_accessible_label(&window, "Change")
+            .collect();
+    change[0].invoke_accessible_default_action();
+    window.set_account_unsent(true);
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_secs(2));
+    compare(
+        &super::test_support::png(window.window()),
+        "gui_first_run_unsent",
+    );
+}
+
+/// The add-account dialog over the inbox in the same state as `first_run_unsent`.
+#[test]
+fn add_account_unsent() {
+    let (_fx, open, _wires) = inbox("light");
+    open.window()
+        .invoke_menu_item(super::ui::MenuAction::AddAccount);
+    open.tick();
+    open.click("Change");
+    open.with(|live| {
+        if let Some(form) = live.app.account_form.as_mut() {
+            form.unsent = true;
+        }
+    });
+    slint::ComponentHandle::window(&open.window())
+        .dispatch_event(slint::platform::WindowEvent::WindowActiveChanged(false));
+    snapshot(&open, "gui_add_account_unsent");
+}
+
+/// Preferences over the inbox, at `section`; the work account has an alias with a signature and a trusted authserv-id.
 fn preferences(theme: &str, section: super::preferences::Section, name: &str) {
     let (fx, open, _wires) = inbox(theme);
     let path = fx.paths.config_file();
     postvak_core::config::update_account(&path, "work", |a| {
         a.aliases = vec!["*@shop.example.com".into()];
         a.trusted_authserv_ids = Some(vec!["mx.example.com".into()]);
+    })
+    .unwrap();
+    postvak_core::config::update_sending(&path, |sending| {
+        sending.signatures = vec![postvak_core::config::Signature {
+            address: "*@shop.example.com".into(),
+            text: "Ada\nThe shop".into(),
+            on_replies: false,
+        }];
     })
     .unwrap();
     open.window()
@@ -914,6 +971,24 @@ fn preferences_accounts_dark() {
         "dark",
         super::preferences::Section::Accounts,
         "gui_preferences_accounts_dark",
+    );
+}
+
+#[test]
+fn preferences_sending_light() {
+    preferences(
+        "light",
+        super::preferences::Section::Sending,
+        "gui_preferences_sending_light",
+    );
+}
+
+#[test]
+fn preferences_sending_dark() {
+    preferences(
+        "dark",
+        super::preferences::Section::Sending,
+        "gui_preferences_sending_dark",
     );
 }
 
@@ -1099,15 +1174,23 @@ fn composing(open: &Open, action: UiAction) {
 
 fn compose_reply_html(theme: &str) -> (Fixture, Open, Wires) {
     let (fx, open, wires) = newsletter(theme, 1280.0);
+    open.with(|live| {
+        live.app.sending.signatures = vec![postvak_core::config::Signature {
+            address: "*@example.com".into(),
+            text: "Pieter\nPostvak".into(),
+            on_replies: true,
+        }]
+    });
     composing(
         &open,
         UiAction::Reply(postvak_core::send::reply::ReplyTo::Sender),
     );
     open.with(|live| {
+        let signed = (live.app.composer.as_ref()).map_or(String::new(), |c| c.text.clone());
         live.app.apply(UiAction::ComposeEdit(
             crate::state::ComposeTarget::Pane,
             crate::compose::ComposeField::Text,
-            "Thanks, the roundup was a good read.".into(),
+            format!("Thanks, the roundup was a good read.{signed}"),
         ))
     });
     wait_painted(&open);

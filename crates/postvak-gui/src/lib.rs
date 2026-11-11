@@ -625,6 +625,7 @@ fn explain(
         form.clone(),
         pending.clone(),
         state::test_login,
+        state::find_smtp,
     )?;
     launch::watch(window.window(), marker.cloned());
     opener::attach(&window);
@@ -639,24 +640,26 @@ fn has_crashes(dir: &std::path::Path) -> bool {
 /// The first-run form's save in flight, if any.
 type Pending = Rc<RefCell<Option<Save>>>;
 
-/// A save's steps, and whether its login test passed already.
+/// A save's steps, and whether it is past the login test and the SMTP server, so it writes.
 struct Save {
     answer: account::Saving,
-    tested: bool,
+    writing: bool,
 }
 
-/// Whether config.toml holds an account once the window closed. A save still testing the login gives up, as its steps
-/// are dropped and nothing is saved yet; one past the test is waited for, since closing the window does not stop it.
+/// Whether config.toml holds an account once the window closed. A save still testing the login or finding the SMTP
+/// server gives up, as its steps are dropped and nothing is saved yet; one past those is waited for, since closing the
+/// window does not stop it.
 fn saved(paths: &Paths, pending: &Pending) -> bool {
     if let Some(mut save) = pending.take() {
         let finished = loop {
             match worker::poll(&save.answer) {
-                Some(Ok(account::Step::Tested)) => save.tested = true,
+                Some(Ok(account::Step::Tested)) => {}
+                Some(Ok(account::Step::Found)) => save.writing = true,
                 Some(_) => break true,
                 None => break false,
             }
         };
-        if !finished && save.tested {
+        if !finished && save.writing {
             let _ = save.answer.recv();
         }
     }
@@ -664,13 +667,14 @@ fn saved(paths: &Paths, pending: &Pending) -> bool {
 }
 
 /// The window that says what went wrong. With `form`, the paths to save under, it holds the add-account form, and
-/// `pending` holds its save while it runs; `check` tests the login before it saves.
+/// `pending` holds its save while it runs; `check` tests the login and `find_smtp` finds the SMTP server before it saves.
 fn startup_window(
     problem: &startup::Problem,
     open_docs: impl Fn(&str) + 'static,
     form: Option<Paths>,
     pending: Pending,
     check: account::Check,
+    find_smtp: account::FindSmtp,
 ) -> Result<ui::StartupWindow, slint::PlatformError> {
     let window = ui::StartupWindow::new()?;
     window.set_summary(problem.summary.as_str().into());
@@ -679,7 +683,10 @@ fn startup_window(
     let (label, url) = problem.link.unwrap_or_default();
     window.set_link_label(label.into());
     window.set_link_url(url.into());
+    let open_docs = Rc::new(open_docs);
+    let open_smtp_docs = open_docs.clone();
     window.on_open_url(move |url| open_docs(&url));
+    window.on_account_smtp_help(move || open_smtp_docs(account::SMTP_DOCS));
     let weak = window.as_weak();
     window.on_close_clicked(move || {
         if let Some(window) = weak.upgrade() {
@@ -692,14 +699,15 @@ fn startup_window(
         window.on_save_account(move |fields| {
             let Some(window) = weak.upgrade() else { return };
             let fields = bind::account_fields(fields);
-            match account::save(paths.clone(), &fields, Arc::new(|| {}), check) {
+            match account::save(paths.clone(), &fields, Arc::new(|| {}), check, find_smtp) {
                 Ok(answer) => {
                     window.set_account_error(SharedString::new());
                     window.set_account_saving(true);
-                    window.set_account_progress(account::progress(true).into());
+                    let progress = account::progress(account::Phase::Testing);
+                    window.set_account_progress(progress.into());
                     pending.replace(Some(Save {
                         answer,
-                        tested: false,
+                        writing: false,
                     }));
                     await_save(&window, pending.clone());
                 }
@@ -713,7 +721,8 @@ fn startup_window(
 /// How often the first-run window looks for the save's answer.
 const SAVE_POLL: Duration = Duration::from_millis(100);
 
-/// Looks for the save's steps every `SAVE_POLL`: a saved account closes the window, a refusal shows why.
+/// Looks for the save's steps every `SAVE_POLL`: a saved account closes the window, or says first that it has no SMTP
+/// server; a refusal shows why.
 fn await_save(window: &ui::StartupWindow, pending: Pending) {
     let weak = window.as_weak();
     slint::Timer::single_shot(SAVE_POLL, move || {
@@ -728,8 +737,18 @@ fn await_save(window: &ui::StartupWindow, pending: Pending) {
                     return await_save(&window, pending);
                 }
                 Some(Ok(account::Step::Tested)) => {
-                    save.tested = true;
-                    window.set_account_progress(account::progress(false).into());
+                    let progress = account::progress(account::Phase::Finding);
+                    window.set_account_progress(progress.into());
+                }
+                Some(Ok(account::Step::Found)) => {
+                    save.writing = true;
+                    let progress = account::progress(account::Phase::Saving);
+                    window.set_account_progress(progress.into());
+                }
+                Some(Ok(account::Step::Saved(account))) if account.smtp.is_none() => {
+                    window.set_account_saving(false);
+                    window.set_account_unsent(true);
+                    return;
                 }
                 Some(Ok(account::Step::Saved(_))) => {
                     let _ = window.hide();
@@ -833,6 +852,7 @@ mod tests {
             None,
             Rc::default(),
             |_, _, _, _| Ok(()),
+            |_, _, _, _| Ok(None),
         )
         .unwrap();
         window.show().unwrap();
@@ -849,6 +869,21 @@ mod tests {
         paths: &Paths,
         check: crate::account::Check,
     ) -> (super::ui::StartupWindow, Pending) {
+        first_run_with(paths, check, |_, _, _, _| {
+            let smtp = postvak_core::config::SmtpConfig::new(
+                "smtp.example.com",
+                postvak_core::config::SmtpTls::Implicit,
+            );
+            Ok(Some(smtp))
+        })
+    }
+
+    /// As `first_run_checked`, with `find_smtp` as what finds the SMTP server.
+    fn first_run_with(
+        paths: &Paths,
+        check: crate::account::Check,
+        find_smtp: crate::account::FindSmtp,
+    ) -> (super::ui::StartupWindow, Pending) {
         headless();
         let pending = Pending::default();
         let problem = Problem::of(&anyhow::Error::new(NoAccounts), None);
@@ -858,6 +893,7 @@ mod tests {
             Some(paths.clone()),
             pending.clone(),
             check,
+            find_smtp,
         )
         .unwrap();
         window.show().unwrap();
@@ -923,6 +959,22 @@ mod tests {
         assert!(saved(&paths, &pending));
         let config = Config::load(&paths.config_file()).unwrap();
         assert_eq!(config.accounts[0].name, "work");
+    }
+
+    #[test]
+    fn a_first_run_account_without_an_smtp_server_says_so_before_done_goes_on() {
+        let (_dir, paths) = home();
+        let (window, pending) = first_run_with(&paths, |_, _, _, _| Ok(()), |_, _, _, _| Ok(None));
+        fill(&window, "work");
+        labelled(&window, "Save account")[0].invoke_accessible_default_action();
+        let note = "Sending is not set up: no SMTP server answered.";
+        wait_for(|| !labelled(&window, note).is_empty());
+        assert!(window.window().is_visible());
+        labelled(&window, "Done")[0].invoke_accessible_default_action();
+        assert!(!window.window().is_visible());
+        assert!(saved(&paths, &pending));
+        let config = Config::load(&paths.config_file()).unwrap();
+        assert_eq!(config.accounts[0].smtp, None);
     }
 
     #[test]

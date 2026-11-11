@@ -129,12 +129,19 @@ pub fn build(
 ) -> anyhow::Result<Vec<u8>> {
     let account = config::single(&config.accounts, request.account.as_deref())?;
     let identity = account.identity()?;
-    let (mut draft, original) =
-        compose::message_draft(paths, client, account, &identity, request, |_| {
+    let (mut draft, original) = compose::message_draft(
+        paths,
+        client,
+        account,
+        &identity,
+        &config.sending,
+        request,
+        |_| {
             Err(anyhow!(
                 "a draft takes its text as given, not from the editor"
             ))
-        })?;
+        },
+    )?;
     draft.postvak_draft = Some(marker_value(
         DraftKind::of(&request.kind),
         original.as_ref().map(|(raw, _)| raw.as_slice()),
@@ -611,6 +618,7 @@ mod tests {
             headers: None,
             forward_parts: None,
             draft: Vec::new(),
+            signature: false,
         }
     }
 

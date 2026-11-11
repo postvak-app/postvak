@@ -18,7 +18,7 @@ starts, Postvak tries the likely servers and keeps the first that logs in:
 each on port 465 with TLS, then on port 587 with STARTTLS, logging in with the account's IMAP username and password. A
 guess never logs in without TLS, and never tries a host outside your IMAP host's own domain. It sends nothing.
 
-For a new account, `postvak account add` saves what it found to `config.toml`. For an account you already had, the daemon
+For a new account, `postvak account add` and the window's Add account… save what they found to `config.toml`. For an account you already had, the daemon
 keeps the guess to itself and never writes `config.toml`; save it there with:
 
 ```sh
@@ -32,6 +32,11 @@ logging in before it is saved:
 postvak account smtp work --smtp-host smtp.example.com --smtp-tls starttls
 postvak account smtp work --guess      # try the guess again
 ```
+
+In the window, File ▸ Preferences… › Sending shows, per account, the server it sends through and whether it comes from
+`config.toml` or the guess, or "Not set up: no server answered". Save guess writes a guessed server to `config.toml`, as
+`--save` does, and Guess again tries the guess again, as `--guess` does; both log in first, and save nothing when that
+fails, saying why. A server of your own is given on the command line or in `config.toml`.
 
 `postvak account add` takes the same `--smtp-host`, `--smtp-port` and `--smtp-tls` to skip the guess. In `config.toml`
 the settings are a table per account:
@@ -60,6 +65,30 @@ aliases = ["*@shop.example.com", { address = "info@example.com", name = "Example
 
 Mail from the account goes out as `Pieter Willekens <pieter@example.com>`. An alias written as a table may carry a name
 of its own; a wildcard alias, or one without a name, uses `display_name`. Without one, From is the bare address.
+
+## Signatures
+
+```toml
+[[sending.signatures]]
+address = "pieter@example.com"
+text = "Pieter Willekens\nExample B.V."
+
+[[sending.signatures]]
+address = "*@shop.example.com"
+text = "The Example Shop"
+on_replies = false
+```
+
+`postvak send` puts the signature for the From address under your text, after a line `-- `, and above the quote of a
+reply or forward. `address` is an address or a pattern with `*`, as an alias; an exact address wins over a pattern.
+`on_replies = false` keeps a signature off replies and forwards; it defaults to `true`. In the editor the signature is
+already there, so you can change it or delete it for this one message. `--no-signature` leaves it off. `--raw` sends
+the message as given, without one, and so do rule forwards; MCP has no tool that sends.
+
+In the window, File ▸ Preferences… › Sending has a signature per address: each account's address, then its aliases.
+Write it, choose whether replies and forwards carry it, and press Save; an empty one removes it. The composer signs
+with it from then on, for new mail, replies and forwards, below the text you write, and you can change or delete it
+there for that message.
 
 ## postvak send
 
@@ -113,7 +142,8 @@ postvak outbox retry 3f2a9c1b     # send a waiting or failed one now
 
 In the window, the toast after Send counts down with Undo (`z`) and Send now.
 
-Set the delay in `config.toml` to 0, 5, 10 (the default), 20 or 30 seconds, or skip it for one message with `--now`:
+Set the delay in `config.toml`, or with Undo send in File ▸ Preferences… › Sending, to 0, 5, 10 (the default), 20 or 30
+seconds, or skip it for one message with `--now`:
 
 ```toml
 [sending]

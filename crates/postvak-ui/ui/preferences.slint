@@ -1,6 +1,6 @@
 // Preferences: the settings config.toml holds, each saved as it changes. `bind.rs` fills `Preferences` from
 // `App.preferences` and turns its callbacks into `UiAction::SetPreference`.
-import { LineEdit, ScrollView } from "std-widgets.slint";
+import { LineEdit, ScrollView, TextEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Hairline, IconButton, Note, Switch, TextButton } from "common.slint";
 import { Dialog } from "dialogs.slint";
@@ -21,9 +21,24 @@ export struct AccountPreferences {
     authserv-ids: [string],
 }
 
+export struct SignaturePreferences {
+    address: string,
+    text: string,
+    on-replies: bool,
+}
+
+export struct SmtpPreferences {
+    address: string,
+    // Where the account sends through, in words.
+    server: string,
+    can-save-guess: bool,
+    // Why the last change of this account's server was not saved.
+    error: string,
+}
+
 export global Preferences {
     in property <bool> open;
-    // 0 General, 1 Accounts.
+    // 0 General, 1 Accounts, 2 Sending.
     in property <int> section;
     // 0 System, 1 Light, 2 Dark.
     in property <int> theme;
@@ -38,6 +53,14 @@ export global Preferences {
     // Index into `accounts`.
     in property <int> account;
     in property <AccountPreferences> current;
+    in property <[string]> undo-choices;
+    // Index into `undo-choices`.
+    in property <int> undo;
+    in property <[SignaturePreferences]> signatures;
+    // One per account, in config.toml's order.
+    in property <[SmtpPreferences]> smtp;
+    // An SMTP change is under way.
+    in property <bool> smtp-busy;
     // Why the last change was not saved.
     in property <string> error;
     callback section-chosen(int);
@@ -54,6 +77,12 @@ export global Preferences {
     callback add-alias(string);
     callback remove-alias(int);
     callback remove-authserv-id(int);
+    callback undo-chosen(int);
+    // By index into `signatures`: the text and whether replies carry it.
+    callback save-signature(int, string, bool);
+    // By index into `smtp`.
+    callback save-guess(int);
+    callback guess-again(int);
 }
 
 /* One setting: its name with its control on the right, and what it does under both.
@@ -271,6 +300,122 @@ component Accounts inherits VerticalLayout {
     }
 }
 
+// One address's signature, saved by its button rather than per keystroke, which would rewrite config.toml each letter.
+component SignatureEditor inherits VerticalLayout {
+    in property <SignaturePreferences> signature;
+    in property <int> index;
+    property <bool> on-replies: root.signature.on-replies;
+    spacing: Theme.pad / 2;
+    Text {
+        text: root.signature.address;
+        color: Theme.pane.strong;
+        font-weight: 600;
+        overflow: elide;
+    }
+    text := TextEdit {
+        height: 3 * Theme.row;
+        text: root.signature.text;
+        wrap: word-wrap;
+        accessible-label: "Signature for " + root.signature.address;
+    }
+    HorizontalLayout {
+        spacing: Theme.inset;
+        Text {
+            horizontal-stretch: 1;
+            text: "Also on replies and forwards";
+            color: Theme.pane.text;
+            vertical-alignment: center;
+            overflow: elide;
+            accessible-role: none;
+        }
+        Switch {
+            y: (parent.height - self.height) / 2;
+            name: "Also on replies and forwards for " + root.signature.address;
+            checked: root.on-replies;
+            toggled(on) => { root.on-replies = on; }
+        }
+        TextButton {
+            text: "Save";
+            framed: true;
+            palette: Theme.pane;
+            enabled: text.text != root.signature.text || root.on-replies != root.signature.on-replies;
+            accessible-label: "Save signature for " + root.signature.address;
+            clicked => { Preferences.save-signature(root.index, text.text, root.on-replies); }
+        }
+    }
+}
+
+component Sending inherits VerticalLayout {
+    alignment: start;
+    spacing: 3 * Theme.pad;
+    ChoiceSetting {
+        label: "Undo send";
+        note: "How long sent mail waits in the outbox, where it can be cancelled.";
+        model: Preferences.undo-choices;
+        index: Preferences.undo;
+        index-chosen(i) => { Preferences.undo-chosen(i); }
+    }
+    Hairline { }
+    VerticalLayout {
+        spacing: Theme.pad;
+        VerticalLayout {
+            Label { text: "Signatures"; }
+            OneLine { text: "Added under mail sent from the address; empty, none."; }
+        }
+        if Preferences.signatures.length == 0: Note { text: "No accounts yet: File ▸ Add account…"; }
+        for signature[i] in Preferences.signatures: SignatureEditor {
+            signature: signature;
+            index: i;
+        }
+    }
+    Hairline { }
+    VerticalLayout {
+        spacing: Theme.pad;
+        VerticalLayout {
+            Label { text: "Outgoing server"; }
+            OneLine { text: "The SMTP server each account sends through."; }
+        }
+        for server[i] in Preferences.smtp: HorizontalLayout {
+            spacing: Theme.pad;
+            VerticalLayout {
+                horizontal-stretch: 1;
+                Text {
+                    text: server.address;
+                    color: Theme.pane.strong;
+                    font-weight: 600;
+                    overflow: elide;
+                }
+                OneLine { text: server.server; }
+                if server.error != "": Text {
+                    text: server.error;
+                    color: Theme.pane.error;
+                    wrap: word-wrap;
+                }
+            }
+            if server.can-save-guess: TextButton {
+                y: (parent.height - self.height) / 2;
+                text: "Save guess";
+                framed: true;
+                palette: Theme.pane;
+                enabled: !Preferences.smtp-busy;
+                accessible-label: "Save guess for " + server.address;
+                hint: "Write it to config.toml, after logging in to it";
+                clicked => { Preferences.save-guess(i); }
+            }
+            TextButton {
+                y: (parent.height - self.height) / 2;
+                text: "Guess again";
+                framed: true;
+                palette: Theme.pane;
+                enabled: !Preferences.smtp-busy;
+                accessible-label: "Guess again for " + server.address;
+                hint: "Look for the server again and write what answers to config.toml";
+                clicked => { Preferences.guess-again(i); }
+            }
+        }
+    }
+}
+
 export component PreferencesDialog {
     in property <string> close-icon;
     in property <string> remove-icon;
@@ -303,6 +448,13 @@ export component PreferencesDialog {
                     palette: Theme.pane;
                     clicked => { Preferences.section-chosen(1); }
                 }
+                TextButton {
+                    text: "Sending";
+                    selected: Preferences.section == 2;
+                    flush: true;
+                    palette: Theme.pane;
+                    clicked => { Preferences.section-chosen(2); }
+                }
             }
             scroll := ScrollView {
                 horizontal-stretch: 1;
@@ -322,6 +474,7 @@ export component PreferencesDialog {
                     }
                     if Preferences.section == 0: General { }
                     if Preferences.section == 1: Accounts { remove-icon: root.remove-icon; }
+                    if Preferences.section == 2: Sending { }
                 }
             }
         }

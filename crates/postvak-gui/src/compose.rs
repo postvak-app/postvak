@@ -3,7 +3,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use postvak_core::config::Identity;
+use postvak_core::config::{Identity, SendingConfig};
 use postvak_core::paths::{Paths, write_atomic};
 use postvak_core::send::build::{bare_address, mailbox_text};
 use postvak_core::send::check::{CheckError, DEFAULT_SIZE_LIMIT, check_from, valid_address};
@@ -12,6 +12,7 @@ use postvak_core::send::drafts::{DraftKind, OpenedDraft, bracketed};
 use postvak_core::send::edit::split_recipients;
 use postvak_core::send::mailto::Mailto;
 use postvak_core::send::reply::{self, ForwardAs, ReplyTo};
+use postvak_core::send::signature::{sign, signed_by};
 use postvak_core::store::KnownAddress;
 use serde::{Deserialize, Serialize};
 
@@ -141,6 +142,9 @@ pub(crate) struct Composer {
     pub saving: bool,
     /// The largest message the account's server takes, in bytes.
     pub size_limit: u64,
+    /// The signature this composer put at the end of its text, swapped while the text still ends with it.
+    #[serde(default)]
+    pub signature: Option<String>,
     opened_as: Snapshot,
 }
 
@@ -201,6 +205,7 @@ impl Composer {
             draft: None,
             saving: false,
             size_limit: DEFAULT_SIZE_LIMIT as u64,
+            signature: None,
             opened_as: Snapshot::default(),
         }
     }
@@ -357,6 +362,52 @@ impl Composer {
         keep_typed(&mut self.bcc, &opened.bcc, typed.bcc);
         keep_typed(&mut self.subject, &opened.subject, typed.subject);
         keep_typed(&mut self.text, &opened.text, typed.text);
+    }
+
+    /// Makes the text end with From's signature, unless the user changed the one this composer put there. A text that
+    /// already ends with From's signature, as a reopened draft's does, keeps it as this composer's own.
+    pub(crate) fn sign(&mut self, sending: &SendingConfig) {
+        if self.loading {
+            return;
+        }
+        let wanted =
+            sending.signature_for(&bare_address(&self.from), self.kind != ComposeKind::New);
+        if self.signature.is_none()
+            && let Some(wanted) = wanted
+            && signed_by(&self.text, wanted)
+        {
+            self.signature = Some(wanted.to_string());
+        }
+        if self.signature.as_deref() == wanted {
+            return;
+        }
+        let body = self.text.trim_end_matches(['\n', '\r']);
+        let body = match &self.signature {
+            Some(old) => match body.strip_suffix(&sign("", old)) {
+                Some(body) => body,
+                None => return,
+            },
+            None => body,
+        };
+        let untouched = !self.changed();
+        self.text = match wanted {
+            Some(wanted) => sign(body, wanted),
+            None => body.to_string(),
+        };
+        self.signature = wanted.map(str::to_string);
+        if untouched {
+            self.opened_as = self.snapshot();
+        }
+    }
+
+    /// Takes From's signature as the one at the end of a reopened or restored text, adding nothing: if the text no
+    /// longer ends with it, the user edited it, and a From change leaves it alone.
+    pub(crate) fn adopt_signature(&mut self, sending: &SendingConfig) {
+        if self.signature.is_none() {
+            let answering = self.kind != ComposeKind::New;
+            self.signature =
+                (sending.signature_for(&bare_address(&self.from), answering)).map(str::to_string);
+        }
     }
 
     fn snapshot(&self) -> Snapshot {
@@ -659,6 +710,7 @@ impl Composer {
                 .as_ref()
                 .map(ComposeDraft::ids)
                 .unwrap_or_default(),
+            signature: false,
         }
     }
 }
@@ -847,7 +899,9 @@ mod tests {
     use super::*;
     use postvak_core::config::{AccountConfig, AliasEntry, PasswordSource};
     use postvak_core::send::build::Draft;
+    use postvak_core::send::drafts::{DraftKind, OpenedDraft};
     use postvak_core::send::mailto::Mailto;
+    use postvak_core::send::signature::sign;
 
     #[test]
     fn the_typed_part_starts_after_the_last_comma_outside_a_name() {
@@ -1345,6 +1399,160 @@ mod tests {
             composer.from_choices,
             vec!["me@example.com", "alias@example.com"]
         );
+    }
+
+    fn sending(on_replies: bool) -> SendingConfig {
+        let signed = |address: &str, text: &str| postvak_core::config::Signature {
+            address: address.into(),
+            text: text.into(),
+            on_replies,
+        };
+        SendingConfig {
+            signatures: vec![
+                signed("alias@example.com", "Alias"),
+                signed("me@example.com", "Pieter"),
+            ],
+            ..SendingConfig::default()
+        }
+    }
+
+    fn filled_reply(on_replies: bool) -> Composer {
+        let mut composer = Composer::reply(3, "work", "INBOX", 7, ReplyTo::Sender);
+        let draft = Draft {
+            from: "Me <me@example.com>".into(),
+            ..Draft::default()
+        };
+        composer.fill(prefilled(draft, vec![]), &identity());
+        composer.sign(&sending(on_replies));
+        composer
+    }
+
+    #[test]
+    fn new_mail_opens_signed_and_unchanged() {
+        let mut composer = new_mail();
+        composer.sign(&sending(true));
+        assert_eq!(composer.text, "\n\n-- \nPieter");
+        assert!(!composer.changed());
+    }
+
+    #[test]
+    fn a_filled_reply_is_signed_unless_on_replies_is_false() {
+        let signed = filled_reply(true);
+        assert_eq!(signed.text, "\n\n-- \nPieter");
+        assert!(!signed.changed());
+        assert_eq!(filled_reply(false).text, "");
+    }
+
+    #[test]
+    fn a_loading_composer_is_not_signed() {
+        let mut composer = Composer::reply(3, "work", "INBOX", 7, ReplyTo::Sender);
+        composer.from = "me@example.com".into();
+        composer.sign(&sending(true));
+        assert_eq!(composer.text, "");
+    }
+
+    #[test]
+    fn changing_from_swaps_an_untouched_signature() {
+        let mut composer = new_mail();
+        composer.sign(&sending(true));
+        composer.set(ComposeField::Text, format!("Hi{}", composer.text));
+        composer.set(ComposeField::From, "work\talias@example.com".into());
+        composer.sign(&sending(true));
+        assert_eq!(composer.text, "Hi\n\n-- \nAlias");
+        composer.set(ComposeField::From, "work\tother@shop.example.com".into());
+        composer.sign(&sending(true));
+        assert_eq!(composer.text, "Hi", "no signature for this address");
+        composer.set(ComposeField::From, "work\tme@example.com".into());
+        composer.sign(&sending(true));
+        assert_eq!(composer.text, "Hi\n\n-- \nPieter");
+    }
+
+    #[test]
+    fn an_edited_or_deleted_signature_stays_as_written() {
+        let mut edited = new_mail();
+        edited.sign(&sending(true));
+        edited.set(ComposeField::Text, "Hi\n\n-- \nPieteR".into());
+        edited.set(ComposeField::From, "work\talias@example.com".into());
+        edited.sign(&sending(true));
+        assert_eq!(edited.text, "Hi\n\n-- \nPieteR");
+
+        let mut deleted = new_mail();
+        deleted.sign(&sending(true));
+        deleted.set(ComposeField::Text, "Hi".into());
+        deleted.set(ComposeField::From, "work\talias@example.com".into());
+        deleted.sign(&sending(true));
+        assert_eq!(deleted.text, "Hi");
+    }
+
+    /// A draft from Drafts holding `text`, from me, placed in the window as it would be.
+    fn reopened(dir: &tempfile::TempDir, text: &str) -> Composer {
+        let opened = OpenedDraft {
+            kind: DraftKind::New,
+            original: None,
+            shown_original: None,
+            from: "me@example.com".into(),
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: String::new(),
+            text: text.into(),
+            files: Vec::new(),
+            forward_parts: None,
+            in_reply_to: None,
+            references: Vec::new(),
+            note: None,
+            message_id: "d1@x.org".into(),
+        };
+        let mut composer = Composer::from_draft(4, "work", &accounts(), opened, None, dir.path())
+            .unwrap_or_else(|e| panic!("{e}"));
+        composer.adopt_signature(&sending(true));
+        composer
+    }
+
+    /// Changes a draft's From as its drop-down does: a draft's choices are its account's bare addresses.
+    fn draft_from_alias(composer: &mut Composer) {
+        composer.set(ComposeField::From, "alias@example.com".into());
+        composer.sign(&sending(true));
+    }
+
+    #[test]
+    fn a_reopened_draft_keeps_one_signature() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let mut composer = reopened(&dir, &sign("Hi", "Pieter"));
+        assert_eq!(composer.text, sign("Hi", "Pieter"));
+        assert!(!composer.changed());
+        draft_from_alias(&mut composer);
+        assert_eq!(composer.text, sign("Hi", "Alias"));
+    }
+
+    #[test]
+    fn a_reopened_draft_with_an_edited_or_deleted_signature_gains_none() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        for text in ["Hi\n\n-- \nPieteR", "Hi"] {
+            let mut composer = reopened(&dir, text);
+            assert_eq!(composer.text, text, "placed");
+            assert!(!composer.changed());
+            draft_from_alias(&mut composer);
+            assert_eq!(composer.text, text, "after a From change");
+        }
+    }
+
+    #[test]
+    fn an_old_recovery_file_without_the_signature_field_still_swaps() {
+        let mut composer = new_mail();
+        composer.sign(&sending(true));
+        composer.set(ComposeField::Text, format!("Hi{}", composer.text));
+        let mut json = serde_json::to_value(&composer).unwrap_or_else(|e| panic!("{e}"));
+        if let Some(fields) = json.as_object_mut() {
+            fields.remove("signature");
+        }
+        let mut restored: Composer = serde_json::from_value(json).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(restored.signature, None);
+        restored.adopt_signature(&sending(true));
+        assert_eq!(restored.text, "Hi\n\n-- \nPieter");
+        restored.set(ComposeField::From, "work\talias@example.com".into());
+        restored.sign(&sending(true));
+        assert_eq!(restored.text, "Hi\n\n-- \nAlias");
     }
 }
 

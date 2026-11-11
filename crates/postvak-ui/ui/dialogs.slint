@@ -309,8 +309,10 @@ export component AccountDialog {
     in property <string> error;
     in property <bool> saving;
     in property <string> progress;
+    in property <bool> unsent;
     in property <string> close-icon;
     callback save(AccountFields);
+    callback smtp-help();
     callback close();
     width: Theme.dialog;
     Dialog {
@@ -321,7 +323,10 @@ export component AccountDialog {
             error: root.error;
             saving: root.saving;
             progress: root.progress;
+            unsent: root.unsent;
             save(fields) => { root.save(fields); }
+            smtp-help => { root.smtp-help(); }
+            done => { root.close(); }
         }
     }
 }

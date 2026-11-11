@@ -4,7 +4,7 @@
 use std::fmt;
 use std::sync::mpsc::{self, Receiver};
 
-use postvak_core::config::{AccountConfig, Config, PasswordSource, Tls};
+use postvak_core::config::{AccountConfig, Config, PasswordSource, SmtpConfig, SmtpTls, Tls};
 use postvak_core::credentials::Secret;
 use postvak_core::message::clean;
 use postvak_core::paths::Paths;
@@ -13,6 +13,9 @@ use super::html::Wake;
 
 /// Why a save gave no answer: its thread ended without one.
 pub(crate) const STOPPED: &str = "the save stopped before it finished";
+
+/// Where the form's "How to set one up" leads when no SMTP server answered.
+pub(crate) const SMTP_DOCS: &str = "https://postvak.pataar.nl/docs/sending.html#the-smtp-server";
 
 /// The form's text as typed; `Fields::account` says what it means.
 #[derive(Clone, Default, PartialEq)]
@@ -27,6 +30,11 @@ pub(crate) struct Fields {
     pub address: String,
     /// STARTTLS rather than implicit TLS.
     pub starttls: bool,
+    /// Empty means guessed after the login test.
+    pub smtp_host: String,
+    /// Empty means 465, or 587 with `smtp_starttls`.
+    pub smtp_port: String,
+    pub smtp_starttls: bool,
 }
 
 impl fmt::Debug for Fields {
@@ -39,6 +47,9 @@ impl fmt::Debug for Fields {
             .field("password", &"<redacted>")
             .field("address", &self.address)
             .field("starttls", &self.starttls)
+            .field("smtp_host", &self.smtp_host)
+            .field("smtp_port", &self.smtp_port)
+            .field("smtp_starttls", &self.smtp_starttls)
             .finish()
     }
 }
@@ -86,15 +97,51 @@ impl Fields {
         }
         Ok((account, Secret::new(self.password.clone())))
     }
+
+    /// The SMTP server typed, to be checked by logging in; None leaves it to the guess.
+    pub(crate) fn smtp_given(&self) -> Result<Option<SmtpConfig>, String> {
+        let host = self.smtp_host.trim();
+        if host.is_empty() {
+            return Ok(None);
+        }
+        let port = match self.smtp_port.trim() {
+            "" => None,
+            text => Some(text.parse().map_err(|_| {
+                format!(
+                    "the SMTP port must be a number, not '{}'",
+                    clean(text, false)
+                )
+            })?),
+        };
+        let tls = match self.smtp_starttls {
+            true => SmtpTls::Starttls,
+            false => SmtpTls::Implicit,
+        };
+        Ok(Some(SmtpConfig {
+            port,
+            ..SmtpConfig::new(host, tls)
+        }))
+    }
 }
 
-/// What a save in flight reports, in order: `Tested` once the login passed, then `Saved` once config.toml holds the
-/// account; or `Refused` with why, when nothing was saved.
+/// What a save in flight reports, in order: `Tested` once the login passed, `Found` once the SMTP server is known or
+/// known to be missing, then `Saved` once config.toml holds the account, with its SMTP server if one was found; or
+/// `Refused` with why, when nothing was saved.
 #[derive(Debug)]
 pub(crate) enum Step {
+    Found,
     Refused(String),
     Tested,
     Saved(Box<AccountConfig>),
+}
+
+/// Where a save in flight is; until `Saving` nothing is written, so closing the form gives it up.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) enum Phase {
+    Finding,
+    Saving,
+    #[default]
+    Testing,
 }
 
 /// The steps of a save in flight.
@@ -104,34 +151,54 @@ pub(crate) type Saving = Receiver<Step>;
 /// daemon starts.
 pub(crate) type Check = fn(&Paths, &Config, &AccountConfig, &Secret) -> Result<(), String>;
 
+/// The SMTP server for the account about to be added, through the daemon: the one given, checked by logging in, else a
+/// guess, None when it finds nothing; tests swap it so no daemon starts.
+pub(crate) type FindSmtp =
+    fn(&Paths, &AccountConfig, Option<SmtpConfig>, &Secret) -> Result<Option<SmtpConfig>, String>;
+
 /// The mail window's form while it is open.
 #[derive(Default)]
 pub(crate) struct AccountForm {
     /// Why the last save was refused, shown under the fields.
     pub error: Option<String>,
     pub saving: Option<Saving>,
-    /// The save in flight tests the login and has saved nothing yet, so Esc may close the form.
-    pub testing: bool,
+    pub phase: Phase,
+    /// The account was added without an SMTP server; the form says so until Done.
+    pub unsent: bool,
 }
 
 /// What the form says while a save runs.
-pub(crate) fn progress(testing: bool) -> &'static str {
-    match testing {
-        true => "Testing the login…",
-        false => "Saving…",
+pub(crate) fn progress(phase: Phase) -> &'static str {
+    match phase {
+        Phase::Finding => "Finding the SMTP server…",
+        Phase::Saving => "Saving…",
+        Phase::Testing => "Testing the login…",
     }
 }
 
-/// Checks the fields, then on a thread runs `check`, the login test, and saves only once it passed, as
-/// `postvak account add` does; `wake` runs after each step. A form closed during the test saves nothing. The daemon
-/// notices config.toml and starts the account itself.
+/// What the toast says once an account with an SMTP server was added.
+pub(crate) fn added(account: &AccountConfig) -> Option<String> {
+    let smtp = account.smtp.as_ref()?;
+    Some(format!(
+        "Added '{}'; it sends through {}:{}",
+        account.name,
+        clean(&smtp.host, false),
+        smtp.port()
+    ))
+}
+
+/// Checks the fields, then on a thread runs `check`, the login test, then `find_smtp`, and saves only once both
+/// passed, as `postvak account add` does; `wake` runs after each step. A form closed before the save writes saves
+/// nothing. The daemon notices config.toml and starts the account itself.
 pub(crate) fn save(
     paths: Paths,
     fields: &Fields,
     wake: Wake,
     check: Check,
+    find_smtp: FindSmtp,
 ) -> Result<Saving, String> {
-    let (account, secret) = fields.account()?;
+    let (mut account, secret) = fields.account()?;
+    let given = fields.smtp_given()?;
     let (done, answer) = mpsc::channel();
     crate::worker::spawn("account-save", move || {
         let tested = Config::load(&paths.config_file())
@@ -147,6 +214,18 @@ pub(crate) fn save(
         }
         // Nobody waits once the form closed, so the account the user gave up on stays unsaved.
         if done.send(Step::Tested).is_err() {
+            return;
+        }
+        wake();
+        match find_smtp(&paths, &account, given, &secret) {
+            Ok(smtp) => account.smtp = smtp,
+            Err(why) => {
+                let why = format!("the SMTP login failed, so nothing was saved: {why}");
+                let _ = done.send(Step::Refused(clean(&why, false)));
+                return wake();
+            }
+        }
+        if done.send(Step::Found).is_err() {
             return;
         }
         wake();
@@ -243,6 +322,90 @@ mod tests {
             open.labels_containing("reopen the window").is_empty(),
             "the window's own save is no outside edit"
         );
+    }
+
+    fn toast(open: &Open) -> Option<String> {
+        open.with(|live| live.app.toast.as_ref().map(|toast| toast.text.clone()))
+    }
+
+    #[test]
+    fn the_guess_is_saved_with_the_account() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        open.with(|live| {
+            live.app.find_smtp = |_, _, given, _| {
+                assert_eq!(given, None, "nothing typed, so the server is guessed");
+                Ok(Some(SmtpConfig::new("smtp.example.com", SmtpTls::Implicit)))
+            }
+        });
+        open.window().invoke_menu_item(MenuAction::AddAccount);
+        assert_eq!(
+            open.find("Outgoing server: found after the login test")
+                .len(),
+            1
+        );
+        fill_window(&open, "home", "imap.example.com");
+        save_in(&open);
+        assert!(open.find("Add account").is_empty());
+        let config = Config::load(&fx.paths.config_file()).unwrap();
+        let smtp = config.account("home").unwrap().smtp.clone().unwrap();
+        assert_eq!((smtp.host.as_str(), smtp.port()), ("smtp.example.com", 465));
+        assert_eq!(
+            toast(&open).as_deref(),
+            Some("Added 'home'; it sends through smtp.example.com:465")
+        );
+    }
+
+    #[test]
+    fn no_guess_still_adds_and_says_sending_is_not_set_up() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        open.with(|live| live.app.find_smtp = |_, _, _, _| Ok(None));
+        open.window().invoke_menu_item(MenuAction::AddAccount);
+        fill_window(&open, "home", "imap.example.com");
+        save_in(&open);
+        assert_eq!(names(&open), ["work", "home"]);
+        let config = Config::load(&fx.paths.config_file()).unwrap();
+        assert_eq!(config.account("home").unwrap().smtp, None);
+        assert_eq!(
+            open.find("Sending is not set up: no SMTP server answered.")
+                .len(),
+            1
+        );
+        open.click("How to set one up");
+        assert_eq!(
+            crate::test_support::launched(),
+            [SMTP_DOCS],
+            "the link opens the docs"
+        );
+        open.click("Done");
+        assert!(open.find("Add account").is_empty());
+    }
+
+    #[test]
+    fn a_typed_server_that_fails_refuses_the_save() {
+        let fx = Fixture::new(&["work"]);
+        let (open, _wires) = fx.window();
+        open.with(|live| {
+            live.app.find_smtp = |_, _, given, _| match given {
+                Some(smtp) if smtp.host == "smtp.example.org" && smtp.port == Some(2525) => {
+                    Err("smtp.example.org: login failed".into())
+                }
+                other => Err(format!("unexpected {other:?}")),
+            }
+        });
+        open.window().invoke_menu_item(MenuAction::AddAccount);
+        fill_window(&open, "home", "imap.example.com");
+        open.click("Change");
+        open.get("SMTP host")
+            .set_accessible_value("smtp.example.org");
+        open.get("SMTP port").set_accessible_value("2525");
+        save_in(&open);
+        let why = "the SMTP login failed, so nothing was saved: smtp.example.org: login failed";
+        assert_eq!(open.find(why).len(), 1);
+        assert_eq!(names(&open), ["work"]);
+        let config = Config::load(&fx.paths.config_file()).unwrap();
+        assert!(!config.accounts.iter().any(|a| a.name == "home"));
     }
 
     #[test]
@@ -402,6 +565,7 @@ mod tests {
             password: "hunter2".into(),
             address: String::new(),
             starttls: false,
+            ..Fields::default()
         }
     }
 
@@ -414,9 +578,37 @@ mod tests {
 
     #[test]
     fn debug_never_shows_the_password() {
-        let text = format!("{:?}", filled("work"));
+        let fields = Fields {
+            smtp_host: "smtp.example.com".into(),
+            ..filled("work")
+        };
+        let text = format!("{fields:?}");
         assert!(!text.contains("hunter2"), "{text}");
         assert!(text.contains("work"));
+        assert!(
+            text.contains("smtp.example.com"),
+            "the SMTP server is no secret"
+        );
+    }
+
+    #[test]
+    fn an_empty_smtp_host_leaves_the_server_to_the_guess() {
+        let mut fields = filled("work");
+        assert_eq!(fields.smtp_given(), Ok(None));
+        fields.smtp_host = " smtp.example.com ".into();
+        fields.smtp_starttls = true;
+        let smtp = fields.smtp_given().unwrap().unwrap();
+        assert_eq!(
+            (smtp.host.as_str(), smtp.port, smtp.tls),
+            ("smtp.example.com", None, SmtpTls::Starttls)
+        );
+        fields.smtp_port = "2525".into();
+        assert_eq!(fields.smtp_given().unwrap().unwrap().port, Some(2525));
+        fields.smtp_port = "x".into();
+        assert_eq!(
+            fields.smtp_given(),
+            Err("the SMTP port must be a number, not 'x'".into())
+        );
     }
 
     #[test]
@@ -483,9 +675,15 @@ mod tests {
                 assert_eq!(account.name, "work");
                 Ok(())
             },
+            |paths, _, _, secret| {
+                assert!(!paths.config_file().exists());
+                assert_eq!(secret.expose(), "hunter2");
+                Ok(None)
+            },
         )
         .unwrap();
         assert!(matches!(step(&answer), Step::Tested));
+        assert!(matches!(step(&answer), Step::Found));
         let Step::Saved(saved) = step(&answer) else {
             panic!("the account is saved after the test");
         };
@@ -502,6 +700,7 @@ mod tests {
             &filled("work"),
             Arc::new(|| {}),
             |_, _, _, _| Err("imap.example.com: login failed".into()),
+            |_, _, _, _| panic!("no SMTP server is looked for after a failed login"),
         )
         .unwrap();
         let Step::Refused(why) = step(&answer) else {
@@ -522,6 +721,7 @@ mod tests {
             &filled("my work"),
             Arc::new(|| {}),
             |_, _, _, _| panic!("an invalid account is refused before the login test"),
+            |_, _, _, _| panic!("an invalid account is refused before the SMTP server is found"),
         )
         .unwrap();
         let Step::Refused(why) = step(&answer) else {

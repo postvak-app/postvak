@@ -165,6 +165,7 @@ export component MailWindow inherits Window {
     in property <string> account-error;
     in property <bool> account-saving;
     in property <string> account-progress;
+    in property <bool> account-unsent;
     in property <string> apply-confirm;
     in property <bool> folder-open;
     in property <string> folder-title;
@@ -243,6 +244,7 @@ export component MailWindow inherits Window {
     callback move-accepted();
     callback move-chosen(int);
     callback save-account(AccountFields);
+    callback account-smtp-help();
     callback escape();
     callback close-dialog(Dialog);
     callback toggle-html();
@@ -863,8 +865,10 @@ export component MailWindow inherits Window {
         error: root.account-error;
         saving: root.account-saving;
         progress: root.account-progress;
+        unsent: root.account-unsent;
         close-icon: root.close-icon;
         save(fields) => { root.save-account(fields); }
+        smtp-help => { root.account-smtp-help(); }
         close => { root.close-dialog(Dialog.account); }
     }
 

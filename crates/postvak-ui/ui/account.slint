@@ -2,7 +2,7 @@
 // `save` sends.
 import { ComboBox, LineEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { TextButton } from "common.slint";
+import { Link, TextButton } from "common.slint";
 
 export struct AccountFields {
     name: string,
@@ -12,6 +12,9 @@ export struct AccountFields {
     password: string,
     address: string,
     starttls: bool,
+    smtp-host: string,
+    smtp-port: string,
+    smtp-starttls: bool,
 }
 
 // A label and its field on one row; the label names the field for screen readers and tests.
@@ -54,9 +57,20 @@ component Field inherits HorizontalLayout {
 export component AccountForm inherits VerticalLayout {
     in property <string> error;
     in property <bool> saving;
-    // What the form says while a save runs: saving, then testing the login.
+    // What the form says while a save runs: testing the login, finding the SMTP server, then saving.
     in property <string> progress;
+    // The account was added without an SMTP server: the form says so, and Done closes it.
+    in property <bool> unsent;
     callback save(AccountFields);
+    callback smtp-help();
+    callback done();
+
+    property <bool> locked: root.saving || root.unsent;
+    // Kept here, as the SMTP fields exist only once Change showed them.
+    property <bool> changing-smtp;
+    property <string> smtp-host;
+    property <string> smtp-port;
+    property <int> smtp-encryption;
 
     // Enter in any field saves, as the button does.
     function submit() {
@@ -67,7 +81,10 @@ export component AccountForm inherits VerticalLayout {
             username: username-field.text,
             password: password-field.text,
             address: address-field.text,
-            starttls: encryption.current-index == 1
+            starttls: encryption.current-index == 1,
+            smtp-host: root.smtp-host,
+            smtp-port: root.smtp-port,
+            smtp-starttls: root.smtp-encryption == 1
         });
     }
 
@@ -76,20 +93,20 @@ export component AccountForm inherits VerticalLayout {
         label: "Account name";
         hint: "letters, digits, - and _";
         first: true;
-        enabled: !root.saving;
+        enabled: !root.locked;
         accepted => { root.submit(); }
     }
     host-field := Field {
         label: "IMAP host";
         hint: "imap.example.com";
-        enabled: !root.saving;
+        enabled: !root.locked;
         accepted => { root.submit(); }
     }
     // The usual ports pick their encryption; another port keeps the choice made.
     port-field := Field {
         label: "Port";
         hint: encryption.current-index == 1 ? "143" : "993";
-        enabled: !root.saving;
+        enabled: !root.locked;
         accepted => { root.submit(); }
         edited(text) => {
             if (text == "143") {
@@ -112,7 +129,7 @@ export component AccountForm inherits VerticalLayout {
         encryption := ComboBox {
             height: Theme.control;
             horizontal-stretch: 1;
-            enabled: !root.saving;
+            enabled: !root.locked;
             model: ["TLS", "STARTTLS"];
             accessible-label: "Encryption";
         }
@@ -120,35 +137,109 @@ export component AccountForm inherits VerticalLayout {
     username-field := Field {
         label: "Username";
         hint: "the IMAP login";
-        enabled: !root.saving;
+        enabled: !root.locked;
         accepted => { root.submit(); }
     }
     password-field := Field {
         label: "Password";
         hint: "kept in the OS keyring";
         input-type: InputType.password;
-        enabled: !root.saving;
+        enabled: !root.locked;
         accepted => { root.submit(); }
     }
     address-field := Field {
         label: "Email address";
         hint: "only when the username is not one";
-        enabled: !root.saving;
+        enabled: !root.locked;
         accepted => { root.submit(); }
+    }
+    if !root.changing-smtp: HorizontalLayout {
+        spacing: Theme.pad;
+        Text {
+            text: "Outgoing server: found after the login test";
+            color: Theme.pane.muted;
+            vertical-alignment: center;
+        }
+        Text {
+            accessible-role: none;
+            text: "·";
+            color: Theme.pane.muted;
+            vertical-alignment: center;
+        }
+        Link {
+            text: "Change";
+            enabled: !root.locked;
+            clicked => { root.changing-smtp = true; }
+        }
+        Rectangle { horizontal-stretch: 1; }
+    }
+    if root.changing-smtp: Field {
+        label: "SMTP host";
+        hint: "empty: guessed after the login test";
+        enabled: !root.locked;
+        accepted => { root.submit(); }
+        edited(text) => { root.smtp-host = text; }
+    }
+    if root.changing-smtp: Field {
+        label: "SMTP port";
+        hint: root.smtp-encryption == 1 ? "587" : "465";
+        enabled: !root.locked;
+        accepted => { root.submit(); }
+        edited(text) => {
+            root.smtp-port = text;
+            if (text == "587") {
+                root.smtp-encryption = 1;
+            } else if (text == "465") {
+                root.smtp-encryption = 0;
+            }
+        }
+    }
+    if root.changing-smtp: HorizontalLayout {
+        spacing: Theme.pad;
+        Text {
+            accessible-role: none;
+            width: 15 * Theme.pad;
+            text: "SMTP encryption";
+            color: Theme.pane.text;
+            vertical-alignment: center;
+        }
+        ComboBox {
+            height: Theme.control;
+            horizontal-stretch: 1;
+            enabled: !root.locked;
+            model: ["TLS", "STARTTLS"];
+            current-index <=> root.smtp-encryption;
+            accessible-label: "SMTP encryption";
+        }
     }
     if root.error != "": Text {
         text: root.error;
         color: Theme.pane.error;
         wrap: word-wrap;
     }
+    if root.unsent: Text {
+        text: "Sending is not set up: no SMTP server answered.";
+        color: Theme.pane.text;
+        wrap: word-wrap;
+    }
+    if root.unsent: Link {
+        text: "How to set one up";
+        clicked => { root.smtp-help(); }
+    }
     HorizontalLayout {
         spacing: Theme.pad;
-        TextButton {
+        if !root.unsent: TextButton {
             text: "Save account";
             primary: true;
             palette: Theme.pane;
             enabled: !root.saving;
             clicked => { root.submit(); }
+        }
+        if root.unsent: TextButton {
+            text: "Done";
+            primary: true;
+            palette: Theme.pane;
+            clicked => { root.done(); }
         }
         if root.saving: Text {
             text: root.progress;
