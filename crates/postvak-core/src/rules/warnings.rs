@@ -539,23 +539,28 @@ fn role_of(target: &str) -> Option<&'static str> {
     })
 }
 
-/// A line per account the rule is for where `target` is not a folder yet and its name is a special folder's, while
-/// the account keeps that role in another folder: only once that account has synced all its folders.
+/// A line per account the rule is for where `target` is that account's junk folder, which a move fills without the
+/// $Junk tag, or where `target` is not a folder yet and its name is a special folder's, while the account keeps that
+/// role in another folder: only once that account has synced all its folders.
 fn role_by_name(rule: &Rule, target: &str, accounts: &[AccountFolders]) -> Vec<String> {
-    let Some(role) = role_of(target) else {
-        return Vec::new();
-    };
     accounts
         .iter()
         .filter(|a| rule.account.as_deref().is_none_or(|name| name == a.name))
         .filter_map(|account| {
             let synced = account.synced.as_ref()?;
-            if synced
+            if let Some(existing) = synced
                 .iter()
-                .any(|f| same_folder(&f.name, target) || folder_name::rule_names(target, &f.name))
+                .find(|f| same_folder(&f.name, target) || folder_name::rule_names(target, &f.name))
             {
-                return None;
+                return (existing.special_use.as_deref() == Some("Junk")).then(|| {
+                    format!(
+                        "rule '{}' moves mail to '{target}', the junk folder of account '{}', without training the \
+                         spam filter; use the junk action instead",
+                        rule.name, account.name
+                    )
+                });
             }
+            let role = role_of(target)?;
             let special = synced
                 .iter()
                 .find(|f| f.special_use.as_deref() == Some(role))?;
@@ -1047,6 +1052,31 @@ mod tests {
         assert!(
             watched_folder_warnings(&rules, &[first_sync]).is_empty(),
             "before a complete pass, the target may exist"
+        );
+    }
+
+    #[test]
+    fn a_move_to_the_junk_folder_by_name_names_the_junk_action() {
+        let rules = parse(
+            "[[rules]]\nname = \"spam\"\nmatch.read = true\nactions.move = \"Spam\"\n\n\
+             [[rules]]\nname = \"keep\"\nmatch.read = true\nactions.move = \"Archive\"\n",
+        )
+        .unwrap()
+        .rules;
+        let own = with_roles(
+            "own",
+            &[
+                ("INBOX", None),
+                ("Spam", Some("Junk")),
+                ("Archive", Some("Archive")),
+            ],
+        );
+        assert_eq!(
+            watched_folder_warnings(&rules, &[own]),
+            [
+                "rule 'spam' moves mail to 'Spam', the junk folder of account 'own', without training the spam \
+                 filter; use the junk action instead"
+            ]
         );
     }
 
