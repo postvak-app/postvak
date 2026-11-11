@@ -1,5 +1,3 @@
-import { Palette as StdPalette } from "std-widgets.slint";
-
 // The tray icon: it keeps Postvak running with the window closed, while the desktop shows it.
 export component Tray inherits SystemTrayIcon {
     in property <string> hint;
@@ -7,10 +5,9 @@ export component Tray inherits SystemTrayIcon {
     callback sync();
     callback quit();
 
-    // macOS draws the title beside the icon in the menu bar, so there it shows only a glyph in the desktop's ink.
-    icon: Platform.os != OperatingSystemType.macos ? @image-url("../assets/icon.png")
-        : StdPalette.color-scheme == ColorScheme.dark ? @image-url("../assets/tray-dark.png")
-        : @image-url("../assets/tray-light.png");
+    // macOS draws the title beside the icon in the menu bar, so there it shows only a glyph the menu bar tints.
+    icon: Platform.os != OperatingSystemType.macos ? @image-url("../assets/icon.png") : @image-url("../assets/tray.png");
+    icon-is-template: Platform.os == OperatingSystemType.macos;
     tooltip: root.hint;
     title: Platform.os == OperatingSystemType.macos ? "" : "Postvak";
     clicked => { root.open(); }
