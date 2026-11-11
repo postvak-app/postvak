@@ -3231,7 +3231,8 @@ mod tests {
         }
 
         fn edit(driver: &mut Driver, id: &str) {
-            driver.apply(UiAction::EditOutbox(0, id.into()));
+            // Without a tick, so a fast worker's answer cannot end the edit before the check.
+            driver.app.apply(UiAction::EditOutbox(0, id.into()));
             assert!(
                 crate::status::outbox_rows(&driver.app)[0].retry.is_none(),
                 "Retry and Edit go while it is saved"
