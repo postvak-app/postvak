@@ -15,13 +15,14 @@
 #   APPLE_PASSWORD       app-specific password of that Apple ID
 #   APPLE_TEAM_ID        team id of the Developer ID certificate
 #
-# Writes dist/macos/Postvak.app and dist/macos/postvak-<version>-macos-<arch>.dmg, and prints the DMG's sha256.
+# Writes dist/macos/Postvak.app, dist/macos/postvak-<version>-macos-<arch>.dmg and, beside it, the binary's debug symbols
+# as postvak-<version>-macos-<arch>.dSYM.zip, and prints the DMG's sha256.
 set -euo pipefail
 
 # Keep equal to LSMinimumSystemVersion in Info.plist.in, the cask's depends_on macos and the env of macos-app.yml.
 export MACOSX_DEPLOYMENT_TARGET=11.0
-# Writes target/<triple>/release/postvak.dSYM, the line tables crash reports need for file:line; macos-app.yml sets it
-# too. Set here, not in Cargo.toml, because on Linux it would move the line tables out of the binary.
+# Writes target/<triple>/release/postvak.dSYM, the line tables that turn a crash's addresses into file:line; macos-app.yml
+# sets it too. Set here, not in Cargo.toml, because on Linux it would move the line tables out of the binary.
 export CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO=packed
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -86,8 +87,9 @@ else
     cp "${bins[0]}" "$app/Contents/MacOS/postvak"
 fi
 lipo -info "$app/Contents/MacOS/postvak"
-# Next to the binary is where std's backtrace looks for a dSYM.
-dsym=$app/Contents/MacOS/postvak.dSYM
+# Kept out of the app, where it would make the DMG three times larger; `atos` or a crash log's symbolication reads it.
+dsym=$out/postvak.dSYM
+rm -rf "$dsym"
 mkdir -p "$dsym/Contents/Resources/DWARF"
 cp "${bins[0]}.dSYM/Contents/Info.plist" "$dsym/Contents/"
 lipo -create "${dwarfs[@]}" -output "$dsym/Contents/Resources/DWARF/postvak"
@@ -172,7 +174,7 @@ hdiutil convert "$raw" -format UDRW -o "$rw"
 hdiutil attach -nobrowse -noverify -mountpoint "$mnt" "$rw"
 xattr -cr "$mnt/Postvak.app"
 hdiutil detach "$mnt"
-# ULMO (LZMA, macOS 10.15+) instead of UDZO (zlib): a third smaller, the most of it on the bundled dSYM.
+# ULMO (LZMA, macOS 10.15+) instead of UDZO (zlib): smaller, and every supported macOS opens it.
 hdiutil convert "$rw" -format ULMO -o "$dmg"
 
 if [ "$identity" != - ]; then
@@ -185,6 +187,10 @@ if [ "$notarize" = true ]; then
     xcrun stapler validate "$dmg"
     spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
 fi
+
+dsym_zip=$out/postvak-$version-macos-$arch.dSYM.zip
+rm -f "$dsym_zip"
+ditto -c -k --keepParent "$dsym" "$dsym_zip"
 
 echo "$dmg"
 shasum -a 256 "$dmg"
