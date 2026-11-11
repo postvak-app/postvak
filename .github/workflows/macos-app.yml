@@ -29,7 +29,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   # The same as packaging/macos/package.sh exports, for the builds that run before it with --skip-build: the oldest
-  # macOS the app supports, and the .dSYM it bundles for crash reports.
+  # macOS the app supports, and the .dSYM attached to the release for crash reports.
   MACOSX_DEPLOYMENT_TARGET: '11.0'
   CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: packed
 
@@ -143,7 +143,7 @@ jobs:
             sleep 30
           done
           (cd "$(dirname "$DMG")" && shasum -a 256 "$(basename "$DMG")" >"$(basename "$DMG").sha256")
-          gh release upload "$TAG" "$DMG" "$DMG.sha256" --repo "$GITHUB_REPOSITORY" --clobber
+          gh release upload "$TAG" "$DMG" "$DMG.sha256" "${DMG%.dmg}.dSYM.zip" --repo "$GITHUB_REPOSITORY" --clobber
       - name: Check whether to update the cask
         id: cask
         env:
