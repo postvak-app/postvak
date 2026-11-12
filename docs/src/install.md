@@ -94,7 +94,7 @@ sudo packaging/linux/install.sh --prefix /usr/local/share # for everyone
 packaging/linux/install.sh --uninstall                    # add the same --prefix if you used one
 ```
 
-The entry runs `postvak gui`, so `postvak` must be on your `PATH`. The window's Wayland app id, `io.github.postvak_app.postvak`, matches the entry, so docks and task switchers show the right name and icon.
+The entry runs `postvak gui`, so `postvak` must be on your `PATH`, and offers Postvak for `mailto:` links (see [Postvak as your mail app](gui.md#postvak-as-your-mail-app)). The window's Wayland app id, `io.github.postvak_app.postvak`, matches the entry, so docks and task switchers show the right name and icon.
 
 ## Hyprland, Sway and other compositors
 

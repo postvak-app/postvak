@@ -22,7 +22,7 @@ const RULES_WRITE_EXCEPTIONS: [(&str, &str, &str); 1] = [(
 )];
 
 /// The only files that may allow `unsafe_code`, which the workspace denies, as `(file, reason)`.
-const UNSAFE_EXCEPTIONS: [(&str, &str); 3] = [
+const UNSAFE_EXCEPTIONS: [(&str, &str); 4] = [
     (
         "crates/postvak-core/src/autostart/login_item.rs",
         "objc2 marks every SMAppService call unsafe, since the class exists only from macOS 13",
@@ -30,6 +30,10 @@ const UNSAFE_EXCEPTIONS: [(&str, &str); 3] = [
     (
         "crates/postvak-core/src/notify/user_notifications.rs",
         "the notification center's delegate is an Objective-C class, which objc2 declares only in unsafe code",
+    ),
+    (
+        "crates/postvak-gui/src/url_event.rs",
+        "the Apple Event handler for mailto: links is an Objective-C class, which objc2 declares only in unsafe code",
     ),
     (
         "crates/postvak-ui/src/lib.rs",

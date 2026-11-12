@@ -14,7 +14,6 @@ Postvak can send from the command line (part 1, `2026-11-02-sending-design.md`) 
 
 - Writing HTML or rich text. The user writes plain text, as in part 1; an HTML composer is a later part.
 - Drafts or sending over MCP (part 4; MCP never sends).
-- Registering Postvak as the desktop's `mailto:` handler. A follow-up, since it is a desktop integration that has to ship on every platform and package at once.
 - Spell checking, address-book completion beyond the addresses in the user's own mail (below), templates, scheduled send.
 
 ## Anti-goals
