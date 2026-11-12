@@ -122,7 +122,7 @@ enum Command {
         #[arg(long, conflicts_with_all = ["open", "background"])]
         rules: bool,
     },
-    /// Open the window at login, hidden in the tray: a launch agent on macOS, an autostart entry on Linux
+    /// Open the window at login, hidden in the tray: a login item or launch agent on macOS, an autostart entry on Linux
     Autostart {
         #[command(subcommand)]
         command: AutostartCommand,

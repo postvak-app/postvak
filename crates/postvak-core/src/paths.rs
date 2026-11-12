@@ -237,10 +237,25 @@ pub fn stable_exe() -> io::Result<PathBuf> {
     if let Some(image) = appimage_path(&exe, appimage.as_deref(), appdir.as_deref()) {
         return Ok(image);
     }
+    // The cask's `postvak` is a link into Postvak.app; run through it, a process is not the app (`runs_as_app`).
+    if let Ok(real) = fs::canonicalize(&exe)
+        && app_bundle(&real).is_some()
+    {
+        return Ok(real);
+    }
     Ok(match homebrew_opt_path(&exe) {
         Some(opt) if same_file(&opt, &exe) => opt,
         _ => exe,
     })
+}
+
+/// Whether this process is Postvak.app to macOS, which login items and the notification center need: its binary
+/// started from the bundle itself, not through a link such as the cask's `postvak` command.
+#[cfg(target_os = "macos")]
+pub fn runs_as_app() -> bool {
+    objc2_foundation::NSBundle::mainBundle()
+        .bundleIdentifier()
+        .is_some_and(|id| id.to_string() == APP_ID)
 }
 
 /// The app id when this process runs in a Flatpak sandbox, which sets `FLATPAK_ID`. The binary and config folders
@@ -287,18 +302,23 @@ fn same_file(a: &Path, b: &Path) -> bool {
 /// and stdin is not a terminal. Then the app opens the mail window instead of printing help; a terminal run of the
 /// same binary (the cask links it as the `postvak` command) still prints help. `args` excludes argv\[0\].
 pub fn launched_as_app(exe: &Path, args: &[OsString], stdin_is_terminal: bool) -> bool {
-    let in_bundle = exe
-        .parent()
-        .is_some_and(|dir| dir.ends_with("Contents/MacOS"))
-        && exe.ancestors().nth(3).is_some_and(|bundle| {
-            bundle
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("app"))
-        });
+    let in_bundle = app_bundle(exe).is_some();
     let no_args = args
         .iter()
         .all(|a| a.to_str().is_some_and(|a| a.starts_with("-psn_")));
     in_bundle && no_args && !stdin_is_terminal
+}
+
+/// The macOS app `exe` is the binary of: the `.app` whose `Contents/MacOS` holds it.
+fn app_bundle(exe: &Path) -> Option<&Path> {
+    let bundle = exe.ancestors().nth(3)?;
+    let in_macos = exe
+        .parent()
+        .is_some_and(|dir| dir.ends_with("Contents/MacOS"));
+    let is_app = bundle
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("app"));
+    (in_macos && is_app).then_some(bundle)
 }
 
 fn write_file_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {

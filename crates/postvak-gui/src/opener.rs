@@ -1,24 +1,30 @@
-//! Opening a file or URL with the desktop's default app. On Linux the window first asks the compositor (Wayland) or the
-//! X server for an activation token and hands it to the opener: an app that is already running, such as the browser,
-//! may only come to the front with one, and focus stealing prevention keeps it behind Postvak's window without.
+//! Opening a file or URL with the desktop's default app: on macOS through `NSWorkspace`, on Linux with `xdg-open` or the
+//! Flatpak's portal. On Linux the window first asks the compositor (Wayland) or the X server for an activation token
+//! and hands it to the opener: an app that is already running, such as the browser, may only come to the front with
+//! one, and focus stealing prevention keeps it behind Postvak's window without.
 use std::ffi::OsStr;
 #[cfg(any(target_os = "linux", test))]
 use std::ffi::OsString;
+#[cfg(any(target_os = "linux", test))]
 use std::process::Command;
 
 use slint::ComponentHandle;
 use slint::winit_030::winit::event::WindowEvent;
 
-use crate::worker;
-
 /// Opens `target` with the desktop's default app; `text` asks for the text editor where the platform can. On Linux
 /// the app starts once the window's token arrives, so an error there is logged rather than returned.
 pub(crate) fn open(target: &OsStr, text: bool) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    return mac::open(target, text);
     #[cfg(target_os = "linux")]
-    if linux::defer(target, text) {
-        return Ok(());
+    {
+        let _ = text;
+        if linux::defer(target) {
+            return Ok(());
+        }
     }
-    start(target, text, None)
+    #[cfg(not(target_os = "macos"))]
+    start(target, None)
 }
 
 /// Makes `component`'s window the one that asks for tokens; the window a click came from, since a compositor gives one
@@ -40,25 +46,26 @@ pub(crate) fn on_event(event: &WindowEvent) {
     let _ = event;
 }
 
-fn start(target: &OsStr, text: bool, token: Option<&str>) -> std::io::Result<()> {
+#[cfg(not(target_os = "macos"))]
+fn start(target: &OsStr, token: Option<&str>) -> std::io::Result<()> {
     // The Flatpak's xdg-open asks the portal without the token, so a link would open behind the window.
     #[cfg(target_os = "linux")]
     if postvak_core::paths::flatpak_id().is_some()
         && let Some(uri) = uri(target)
     {
         let (uri, token) = (uri.to_owned(), token.map(str::to_owned));
-        worker::spawn("opener-portal", move || {
+        crate::worker::spawn("opener-portal", move || {
             if let Err(e) = postvak_core::portal::open_uri(&uri, token.as_deref()) {
                 log::warn!("could not open a link: {e:#}");
             }
         });
         return Ok(());
     }
-    let mut command = command(target, text, token);
+    let mut command = command(target, token);
     let opener = command.get_program().to_string_lossy().into_owned();
     let mut child = command.spawn()?;
     // The target is not logged: a link from a message can carry a token.
-    worker::spawn("opener-wait", move || match child.wait() {
+    crate::worker::spawn("opener-wait", move || match child.wait() {
         Ok(status) if !status.success() => log::warn!("{opener}: {status}"),
         Ok(_) => {}
         Err(e) => log::warn!("{opener}: {e}"),
@@ -75,15 +82,10 @@ fn uri(target: &OsStr) -> Option<&str> {
 }
 
 /// The opener for `target`, handed `token` under both names a launched app looks for it by.
-fn command(target: &OsStr, text: bool, token: Option<&str>) -> Command {
-    // `open -t` uses the default text editor, so a missing `.toml` association still opens one.
-    let (opener, flags): (&str, &[&str]) = match (cfg!(target_os = "macos"), text) {
-        (true, true) => ("open", &["-t"]),
-        (true, false) => ("open", &[]),
-        (false, _) => ("xdg-open", &[]),
-    };
-    let mut command = Command::new(opener);
-    command.args(flags).arg(target);
+#[cfg(any(target_os = "linux", test))]
+fn command(target: &OsStr, token: Option<&str>) -> Command {
+    let mut command = Command::new("xdg-open");
+    command.arg(target);
     if let Some(token) = token {
         command.envs(postvak_core::paths::ACTIVATION_TOKEN_VARS.map(|var| (var, token)));
     }
@@ -94,7 +96,6 @@ fn command(target: &OsStr, text: bool, token: Option<&str>) -> Command {
 #[cfg(any(target_os = "linux", test))]
 struct Open {
     target: OsString,
-    text: bool,
 }
 
 /// The opens waiting for a token, by the request that asked for it.
@@ -122,6 +123,87 @@ impl<K: PartialEq> Pending<K> {
             .iter()
             .position(|(waiting, _)| waiting == key)?;
         Some(self.waiting.remove(index).1)
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod mac {
+    use std::ffi::OsStr;
+    use std::io;
+    use std::path::Path;
+
+    use block2::RcBlock;
+    use objc2::rc::Retained;
+    use objc2_app_kit::{NSRunningApplication, NSWorkspace, NSWorkspaceOpenConfiguration};
+    use objc2_foundation::{NSArray, NSError, NSString, NSURL};
+    use objc2_uniform_type_identifiers::UTType;
+
+    /// Opens `target` with its default app; `text` with the default text editor, as `open -t` does, so a file type
+    /// without an app of its own, such as `.toml`, still opens.
+    pub(super) fn open(target: &OsStr, text: bool) -> io::Result<()> {
+        let url = url(target).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "neither a URL nor an absolute path",
+            )
+        })?;
+        let workspace = NSWorkspace::sharedWorkspace();
+        let configuration = NSWorkspaceOpenConfiguration::configuration();
+        // The target is not logged: a link from a message can carry a token.
+        let done = RcBlock::new(|_: *mut NSRunningApplication, error: *mut NSError| {
+            if !error.is_null() {
+                log::warn!("macOS could not open a link or file");
+            }
+        });
+        match text.then(|| text_editor(&workspace)).flatten() {
+            Some(editor) => workspace
+                .openURLs_withApplicationAtURL_configuration_completionHandler(
+                    &NSArray::from_retained_slice(&[url]),
+                    &editor,
+                    &configuration,
+                    Some(&done),
+                ),
+            None => {
+                workspace.openURL_configuration_completionHandler(&url, &configuration, Some(&done))
+            }
+        }
+        Ok(())
+    }
+
+    fn url(target: &OsStr) -> Option<Retained<NSURL>> {
+        let target = NSString::from_str(target.to_str()?);
+        if Path::new(&target.to_string()).is_absolute() {
+            Some(NSURL::fileURLWithPath(&target))
+        } else {
+            NSURL::URLWithString(&target)
+        }
+    }
+
+    fn text_editor(workspace: &NSWorkspace) -> Option<Retained<NSURL>> {
+        let plain_text = UTType::typeWithIdentifier(&NSString::from_str("public.plain-text"))?;
+        workspace.URLForApplicationToOpenContentType(&plain_text)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::ffi::OsStr;
+
+        use objc2_app_kit::NSWorkspace;
+
+        use super::{text_editor, url};
+
+        #[test]
+        fn an_absolute_path_is_a_file_and_a_link_keeps_its_scheme() {
+            let file = url(OsStr::new("/tmp/rules.toml")).map(|url| url.isFileURL());
+            assert_eq!(file, Some(true));
+            let link = url(OsStr::new("https://example.org")).and_then(|url| url.scheme());
+            assert_eq!(link.map(|scheme| scheme.to_string()), Some("https".into()));
+        }
+
+        #[test]
+        fn macos_names_a_text_editor() {
+            assert!(text_editor(&NSWorkspace::sharedWorkspace()).is_some());
+        }
     }
 }
 
@@ -160,14 +242,13 @@ mod linux {
 
     /// Asks the attached window for a token and waits for it to open `target`; false when no window can ask, off the
     /// window thread or without one attached.
-    pub(super) fn defer(target: &OsStr, text: bool) -> bool {
+    pub(super) fn defer(target: &OsStr) -> bool {
         let Some(serial) = REQUEST.with_borrow(|request| request.as_ref().and_then(|ask| ask()))
         else {
             return false;
         };
         let open = Open {
             target: target.to_owned(),
-            text,
         };
         PENDING.with_borrow_mut(|pending| pending.add(serial, open));
         slint::Timer::single_shot(TOKEN_WAIT, move || {
@@ -186,7 +267,7 @@ mod linux {
     }
 
     fn launch(open: &Open, token: Option<&str>) {
-        if let Err(e) = start(&open.target, open.text, token) {
+        if let Err(e) = start(&open.target, token) {
             log::warn!("could not open a link or file: {e}");
         }
     }
@@ -214,13 +295,12 @@ mod tests {
     fn open(target: &str) -> Open {
         Open {
             target: target.into(),
-            text: false,
         }
     }
 
     #[test]
     fn the_opener_gets_the_token_under_the_wayland_and_the_x11_name() {
-        let with = command(OsStr::new("https://example.org"), false, Some("tok"));
+        let with = command(OsStr::new("https://example.org"), Some("tok"));
         let envs: Vec<_> = with.get_envs().collect();
         assert!(envs.contains(&("XDG_ACTIVATION_TOKEN".as_ref(), Some("tok".as_ref()))));
         assert!(envs.contains(&("DESKTOP_STARTUP_ID".as_ref(), Some("tok".as_ref()))));
@@ -228,7 +308,7 @@ mod tests {
             with.get_args().last(),
             Some(OsStr::new("https://example.org"))
         );
-        let without = command(OsStr::new("https://example.org"), false, None);
+        let without = command(OsStr::new("https://example.org"), None);
         assert_eq!(without.get_envs().count(), 0);
     }
 

@@ -4,6 +4,8 @@
 mod dbus;
 #[cfg(target_os = "macos")]
 mod mac;
+#[cfg(target_os = "macos")]
+mod user_notifications;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -323,6 +325,12 @@ impl Drop for Slot {
 /// notification server's activation token, which lets the window come to the front.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn open_in_window(notice: &Notice, token: Option<&str>) {
+    run_window(&notice.show.gui_args(), token);
+}
+
+/// Runs `postvak` with `args`, the `gui` arguments of a notice.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn run_window(args: &[String], token: Option<&str>) {
     let exe = match crate::paths::stable_exe() {
         Ok(exe) => exe,
         Err(e) => {
@@ -330,7 +338,7 @@ fn open_in_window(notice: &Notice, token: Option<&str>) {
             return;
         }
     };
-    match window_command(&exe, &notice.show, token).spawn() {
+    match window_command(&exe, args, token).spawn() {
         // Waited for, so it does not linger as a zombie of a daemon that runs for days.
         Ok(child) => crate::daemon::client::reap(child),
         Err(e) => log::warn!("could not open the message: {e}"),
@@ -342,13 +350,13 @@ fn open_in_window(notice: &Notice, token: Option<&str>) {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn window_command(
     exe: &std::path::Path,
-    show: &Show,
+    args: &[String],
     token: Option<&str>,
 ) -> std::process::Command {
     use std::process::{Command, Stdio};
     let mut command = Command::new(exe);
     command
-        .args(show.gui_args())
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -500,7 +508,11 @@ mod tests {
             uid: 42,
         };
         let show = Show::Message(open);
-        let command = window_command(std::path::Path::new("/usr/bin/postvak"), &show, Some("tok"));
+        let command = window_command(
+            std::path::Path::new("/usr/bin/postvak"),
+            &show.gui_args(),
+            Some("tok"),
+        );
         let args: Vec<_> = command.get_args().collect();
         assert_eq!(
             args,
@@ -519,7 +531,11 @@ mod tests {
         assert!(envs.contains(&("DESKTOP_STARTUP_ID".as_ref(), Some("tok".as_ref()))));
 
         // Without one, a stale token the daemon inherited is not passed on.
-        let command = window_command(std::path::Path::new("/usr/bin/postvak"), &show, None);
+        let command = window_command(
+            std::path::Path::new("/usr/bin/postvak"),
+            &show.gui_args(),
+            None,
+        );
         let envs: Vec<_> = command.get_envs().collect();
         assert!(envs.contains(&("XDG_ACTIVATION_TOKEN".as_ref(), None)));
     }

@@ -1,6 +1,8 @@
 //! Opening the window at login (`postvak gui --background`): a launchd agent on macOS, an XDG autostart entry on Linux,
 //! and in a Flatpak the desktop's Background portal, since the sandbox cannot write the host's autostart folder. The
 //! only code that turns it on or off.
+#[cfg(target_os = "macos")]
+mod login_item;
 #[cfg(target_os = "linux")]
 mod portal;
 
@@ -16,19 +18,29 @@ pub const GUI_ARGS: [&str; 2] = ["gui", "--background"];
 /// Apart from the daemon's own agent (`daemon::service`), which syncs without a window.
 const LAUNCHD_LABEL: &str = "io.github.postvak_app.postvak.gui";
 
+/// The agent Postvak.app carries for its login item (`packaging/macos/login-item.plist`); not [`LAUNCHD_LABEL`], so
+/// the two never clash in launchd while one replaces the other.
+pub const LOGIN_ITEM_LABEL: &str = "io.github.postvak_app.postvak.login";
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Target {
+    /// Postvak.app's login item, on macOS 13 and later.
+    LoginItem,
     Launchd,
     Xdg,
     Portal,
 }
 
 impl Target {
-    fn current() -> Result<Target> {
+    fn current(paths: &Paths) -> Result<Target> {
         if paths::flatpak_id().is_some() {
             Ok(Target::Portal)
         } else if cfg!(target_os = "macos") {
-            Ok(Target::Launchd)
+            Ok(if login_item_fits(paths) {
+                Target::LoginItem
+            } else {
+                Target::Launchd
+            })
         } else if cfg!(target_os = "linux") {
             Ok(Target::Xdg)
         } else {
@@ -41,7 +53,7 @@ impl Target {
     fn file(self, paths: &Paths) -> Result<PathBuf> {
         let dirs = directories::BaseDirs::new().context("no home directory found")?;
         Ok(match self {
-            Target::Launchd => dirs
+            Target::LoginItem | Target::Launchd => dirs
                 .home_dir()
                 .join("Library/LaunchAgents")
                 .join(format!("{LAUNCHD_LABEL}.plist")),
@@ -49,6 +61,19 @@ impl Target {
             Target::Portal => paths.state_dir.join("open-at-login"),
         })
     }
+}
+
+/// Whether this process is Postvak.app on a macOS with login items, and keeps no `POSTVAK_HOME`, which the app's own
+/// agent cannot carry. Elsewhere, such as the formula's binary or the cask's `postvak` command, a launchd agent opens
+/// the window instead, which turning the login item on later replaces.
+#[cfg(target_os = "macos")]
+fn login_item_fits(paths: &Paths) -> bool {
+    paths.home.is_none() && paths::runs_as_app() && login_item::available()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn login_item_fits(_paths: &Paths) -> bool {
+    false
 }
 
 fn xdg_file(config_dir: &Path) -> PathBuf {
@@ -59,14 +84,26 @@ fn xdg_file(config_dir: &Path) -> PathBuf {
 
 /// Whether the window opens at login.
 pub fn is_on(paths: &Paths) -> Result<bool> {
-    let target = Target::current()?;
+    let target = Target::current(paths)?;
     let file = target.file(paths)?;
     let text =
         paths::read_or_empty(&file).with_context(|| format!("reading {}", file.display()))?;
     Ok(match target {
         Target::Xdg => xdg_enabled(&text),
+        // The launchd agent an older Postvak or the formula wrote still opens the window too.
+        Target::LoginItem => login_item_on() || !text.is_empty(),
         Target::Launchd | Target::Portal => !text.is_empty(),
     })
+}
+
+#[cfg(target_os = "macos")]
+fn login_item_on() -> bool {
+    login_item::state() != login_item::State::Off
+}
+
+#[cfg(not(target_os = "macos"))]
+fn login_item_on() -> bool {
+    false
 }
 
 /// What [`set`] did, and what keeps it from working in this session, if anything.
@@ -80,11 +117,12 @@ pub struct Changed {
 
 /// Turns opening at login on or off. In a Flatpak the desktop may ask the user first.
 pub fn set(paths: &Paths, on: bool) -> Result<Changed> {
-    let target = Target::current()?;
+    let target = Target::current(paths)?;
     let file = target.file(paths)?;
     let done = set_in(target, &file, paths, on)?;
     let warning = match (target, on) {
         (Target::Xdg, true) => xdg_warning(&file, paths),
+        (Target::LoginItem, true) => login_item_warning(true),
         _ => None,
     };
     Ok(Changed { done, warning })
@@ -93,12 +131,35 @@ pub fn set(paths: &Paths, on: bool) -> Result<Changed> {
 /// Why an autostart entry that is on may not open the window at login in this session: a compositor or window manager
 /// that starts nothing from the autostart folder itself, where no session manager does it either.
 pub fn warning(paths: &Paths) -> Result<Option<String>> {
-    let target = Target::current()?;
+    let target = Target::current(paths)?;
     Ok(match target {
         Target::Xdg if is_on(paths)? => xdg_warning(&target.file(paths)?, paths),
+        Target::LoginItem => login_item_warning(false),
         _ => None,
     })
 }
+
+/// Why the login item may not open the window: the user has yet to allow it, or turned it off, in System Settings;
+/// `open_settings` opens that page, as right after turning it on.
+#[cfg(target_os = "macos")]
+fn login_item_warning(open_settings: bool) -> Option<String> {
+    if login_item::state() != login_item::State::NeedsApproval {
+        return None;
+    }
+    if open_settings {
+        login_item::open_settings();
+    }
+    Some(LOGIN_ITEM_APPROVAL.to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn login_item_warning(_open_settings: bool) -> Option<String> {
+    None
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const LOGIN_ITEM_APPROVAL: &str =
+    "macOS opens Postvak at login once you allow it under System Settings › General › Login Items";
 
 fn xdg_warning(file: &Path, paths: &Paths) -> Option<String> {
     let compositor = compositor(|name| std::env::var(name).ok())?;
@@ -233,6 +294,25 @@ fn no_background_portal(compositor: Option<&str>) -> String {
 
 fn set_in(target: Target, file: &Path, paths: &Paths, on: bool) -> Result<String> {
     match (target, on) {
+        (Target::LoginItem, _) => {
+            #[cfg(target_os = "macos")]
+            {
+                if on {
+                    login_item::register()?;
+                } else {
+                    login_item::unregister()?;
+                }
+                // The launchd agent, from before the app had a login item, would open a second window.
+                remove(file)?;
+                Ok(if on {
+                    "added Postvak to the login items".to_string()
+                } else {
+                    "removed Postvak from the login items".to_string()
+                })
+            }
+            #[cfg(not(target_os = "macos"))]
+            bail!("login items are macOS only")
+        }
         (Target::Portal, _) => {
             #[cfg(target_os = "linux")]
             {

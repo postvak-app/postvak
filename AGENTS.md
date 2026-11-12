@@ -7,7 +7,7 @@ Five crates in one workspace. `crates/postvak-core` holds every module below exc
 
 - `account` adding an account (validate, test the login through the daemon, store the keyring secret, save config.toml) and waiting for the daemon to start it; the only code that adds one; trusting an authserv-id for one (`trust_authserv_id`)
 - `actions` direct actions on chosen messages (mark, move, archive, delete); same `apply` as rules; putting back what one logged action did (`undo.rs`: moves back, flags reversed, deletes restored from their backups, mail changed since left alone); downloading a message for the reader, a large one's text, HTML and `cid:` images first (`fetch_body`), and one attachment on its own (`fetch_attachment`)
-- `autostart` opening the window at login (`gui --background`): a launch agent on macOS, an XDG autostart entry on Linux, the Background portal in a Flatpak (`autostart/portal.rs`); the only code that turns it on or off
+- `autostart` opening the window at login (`gui --background`): on macOS Postvak.app's login item (`autostart/login_item.rs`, `SMAppService`, macOS 13 and later) or else a launch agent, an XDG autostart entry on Linux, the Background portal in a Flatpak (`autostart/portal.rs`); the only code that turns it on or off
 - `badge` the unread count on the Linux task bar or dock entry (the Unity LauncherEntry signal over D-Bus) or the macOS Dock icon; the GUI keeps it current while open
 - `config` accounts and identity (address + aliases); the only writer of config.toml (`save_account`, `save_theme`, `update_sending`)
 - `credentials` keyring or password command; `Secret` has no Debug
@@ -22,7 +22,7 @@ Five crates in one workspace. `crates/postvak-core` holds every module below exc
 - `mcp` the MCP server (`postvak-mcp`, feature `mcp`, on by default): `tools` defines the tools and their scopes, `backend` is the only code touching store, rules or the daemon, `install` registers hosts
 - `message` header parsing, thread id, body text, the HTML part and its `cid:` images
 - `motion` whether the desktop asks for less motion: Reduce motion on macOS, the Settings portal on Linux (its `reduced-motion`, GNOME's and Plasma's own settings); the GUI's `motion` keeps `Theme.reduce-motion` equal to it, which makes every fade instant
-- `notify` desktop notifications for new mail, where a click opens the message with `postvak gui --open`; on Linux over D-Bus (`notify/dbus.rs`), on macOS through `mac-notification-sys` (`notify/mac.rs`), whose clicks arrive on the run loop the daemon's main thread runs while it waits for clients
+- `notify` desktop notifications for new mail, where a click opens the message with `postvak gui --open`; on Linux over D-Bus (`notify/dbus.rs`), on macOS from Postvak.app through `UNUserNotificationCenter` (`notify/user_notifications.rs`) and from a binary that is no app through `mac-notification-sys` (`notify/mac.rs`), whose clicks arrive on the run loop the daemon's main thread runs while it waits for clients
 - `output` JSON rows shared by `--json` and MCP results
 - `page` pages of `list` and `search` over several accounts: one newest-first order, the keyset cursor both front ends share, and the counts
 - `paths` platform dirs, atomic writes, `stable_exe` (the binary path that survives `brew upgrade` and AppImage mounts), whether this is the macOS app opened from Finder (`launched_as_app`)
