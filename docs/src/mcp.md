@@ -1,6 +1,6 @@
 # Agents over MCP
 
-`postvak mcp` lets an agent host such as Claude Desktop, Claude Code, Codex or Cursor read your mail, propose rules and, when you allow it, act on mail. It speaks MCP on stdin and stdout, and the host starts it. It can do nothing you did not grant: each capability is a scope, and the host's config sets the scopes.
+`postvak mcp` lets an agent host such as Claude Desktop, Claude Code, Codex, Cursor, Hermes Agent or OpenClaw read your mail, propose rules and, when you allow it, act on mail. It speaks MCP on stdin and stdout, and the host starts it. It can do nothing you did not grant: each capability is a scope, and the host's config sets the scopes.
 
 The defaults are privacy-friendly. An agent sees folders and headers but no message bodies, cannot change or delete mail, and can only propose rules, which stay off until you approve them. Bodies, acting on mail and approving rules are each a separate scope you add on purpose, and `--account` hides every other account from the agent.
 
@@ -53,6 +53,35 @@ For any other host, `postvak mcp install json` prints a snippet for its config:
 ```
 
 The `command` is the absolute path of the `postvak` you ran, because hosts started from the Dock do not see your shell's `PATH`: for Homebrew the `opt/` link, which survives `brew upgrade`, and for an AppImage the `.AppImage` file, so run the install again after moving it. The install command fills it in; the path above is an example.
+
+### Hermes Agent and OpenClaw
+
+Personal agents such as [Hermes Agent](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp) and [OpenClaw](https://docs.openclaw.ai/tools/mcp) start Postvak like any other host, so they must run on the machine that holds your mail store. On a server, that means Postvak runs there too, as described under [On a server](daemon.md#on-a-server). Take the `command` and `args` from `postvak mcp install json`, with the scopes and `--account` you want; the examples below use the default scopes.
+
+Both hosts start their servers with a trimmed environment. Run `postvak service install` first, so the daemon starts from launchd or systemd with your full session, and the keyring, rather than from the agent.
+
+Hermes Agent reads its servers from `mcp_servers` in `~/.hermes/config.yaml`:
+
+```yaml
+mcp_servers:
+  postvak:
+    command: "/opt/homebrew/bin/postvak"
+    args: ["mcp", "--scopes", "read,rules:propose"]
+```
+
+Run `/reload-mcp` in a chat to load it. Hermes can narrow the tools further with `tools.include` or `tools.exclude`, but the scopes are what Postvak enforces; a tool left out of the scopes is never offered.
+
+OpenClaw keeps its servers under `mcp.servers` and sets one from JSON. Stop the gateway first, since OpenClaw refuses to change a running one's servers:
+
+```sh
+openclaw gateway stop
+openclaw mcp set postvak '{"command":"/opt/homebrew/bin/postvak","args":["mcp","--scopes","read,rules:propose"]}'
+openclaw mcp doctor postvak --probe
+```
+
+Start the gateway again afterwards. `openclaw mcp unset postvak` removes it.
+
+These agents often read mail on their own, from a chat app or a schedule, with nobody watching each call. Keep `mail:modify` and `rules:write` off unless you want the agent to act without asking: unlike a desktop host, a chat bridge may not show you the confirmation that destructive tools ask for.
 
 Options for `postvak mcp install`:
 
