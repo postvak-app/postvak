@@ -1,8 +1,13 @@
 /*! The `mailto:` links macOS hands Postvak.app once it is the mail app.
 
 They come as a Get URL Apple Event, never as an argument, also to an app already running; winit does not pass them on. */
-// The handler is an Objective-C class, which objc2 declares only in unsafe code, and the Apple Event calls are untyped.
-#![allow(unsafe_code)]
+#![cfg_attr(
+    target_os = "macos",
+    expect(
+        unsafe_code,
+        reason = "the handler is an Objective-C class, which objc2 declares only in unsafe code, and the Apple Event calls are untyped"
+    )
+)]
 
 /// Opens new mail for each `mailto:` link macOS sends from now on; call on the main thread before the event loop runs.
 #[cfg(target_os = "macos")]
