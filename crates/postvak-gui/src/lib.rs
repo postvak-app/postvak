@@ -39,6 +39,7 @@ mod status;
 mod test_support;
 mod theme;
 mod toolbar;
+mod tray;
 mod undo;
 mod update;
 mod worker;
@@ -203,6 +204,9 @@ impl Start<'_> {
         let tray = ui::Tray::new()
             .inspect_err(|e| log::debug!("no tray icon: {e}"))
             .ok();
+        if tray.is_some() {
+            tray::mark_template();
+        }
         match launch::showing(self.background, tray.is_some(), cfg!(target_os = "macos")) {
             launch::Showing::Front => window.show().context("could not show the window")?,
             launch::Showing::Minimized => {

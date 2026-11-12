@@ -7,7 +7,6 @@ export component Tray inherits SystemTrayIcon {
 
     // macOS draws the title beside the icon in the menu bar, so there it shows only a glyph the menu bar tints.
     icon: Platform.os != OperatingSystemType.macos ? @image-url("../assets/icon.png") : @image-url("../assets/tray.png");
-    icon-is-template: Platform.os == OperatingSystemType.macos;
     tooltip: root.hint;
     title: Platform.os == OperatingSystemType.macos ? "" : "Postvak";
     clicked => { root.open(); }
