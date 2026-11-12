@@ -1,5 +1,7 @@
-// Test code: unwrap, expect and panic are how a test fails.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::unwrap_used,
+    reason = "test helpers: an unwrap is how a test fails"
+)]
 //! Property tests: hostile input must never panic the parsers. Every property only asserts "no panic"; Ok and Err
 //! are both fine. Inputs are arbitrary bytes and mutations of made-up messages, the rules.toml examples from the docs
 //! and valid wire lines.

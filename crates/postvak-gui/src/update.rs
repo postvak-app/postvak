@@ -30,7 +30,7 @@ struct Release {
 
 /// `X.Y.Z` with or without a leading `v`; anything else, prereleases included, is None.
 pub fn parse_version(text: &str) -> Option<[u64; 3]> {
-    let text = text.strip_prefix('v').unwrap_or(text);
+    let text = text.trim_prefix('v');
     let mut parts = text.split('.').map(|part| part.parse::<u64>().ok());
     let version = [parts.next()??, parts.next()??, parts.next()??];
     parts.next().is_none().then_some(version)

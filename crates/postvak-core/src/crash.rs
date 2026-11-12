@@ -149,7 +149,7 @@ mod tests {
     #[test]
     fn a_noted_action_keeps_its_variant_name_only() {
         #[derive(Debug)]
-        #[allow(dead_code)]
+        #[expect(dead_code, reason = "only its Debug output is read")]
         enum Action {
             Move(String),
         }

@@ -1,6 +1,3 @@
-// Test code: unwrap, expect and panic are how a test fails.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 use postvak_core::config::Config;
 use postvak_core::rules::{Rule, compile, compile_with, parse};
 

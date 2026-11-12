@@ -236,6 +236,13 @@ fn keyring_entry(account_name: &str) -> Result<keyring_core::Entry, CredentialEr
     keyring_core::Entry::new(SERVICE, account_name).map_err(|e| map_keyring_error(e, account_name))
 }
 
+// Tests use the mock store below, but a feature cannot drop a dependency, so the platform's store stays linked; this
+// tells `cargo::unused_dependencies` that is meant.
+#[cfg(all(target_os = "macos", any(test, feature = "testing")))]
+use apple_native_keyring_store as _;
+#[cfg(all(target_os = "linux", any(test, feature = "testing")))]
+use zbus_secret_service_keyring_store as _;
+
 #[cfg(all(target_os = "macos", not(any(test, feature = "testing"))))]
 fn platform_store() -> Result<std::sync::Arc<keyring_core::CredentialStore>, String> {
     apple_native_keyring_store::keychain::Store::new()

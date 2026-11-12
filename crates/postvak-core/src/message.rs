@@ -134,7 +134,7 @@ fn has_markup(text: &str) -> bool {
             return false;
         }
         let rest = &rest[1..];
-        let rest = rest.strip_prefix(b"/").unwrap_or(rest);
+        let rest = rest.trim_prefix(b"/");
         if rest.first() == Some(&b'!') {
             return true;
         }
@@ -506,7 +506,7 @@ pub(crate) fn mailboxes(field: &str) -> Vec<&str> {
         match c {
             _ if escaped => escaped = false,
             '\\' if quoted => escaped = true,
-            '"' => quoted = !quoted,
+            '"' => quoted.toggle(),
             '<' if !quoted => angle = true,
             '>' if !quoted => angle = false,
             ',' if !quoted && !angle => {

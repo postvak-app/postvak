@@ -217,7 +217,7 @@ fn unflowed(text: &str, delsp: bool) -> String {
     let lines: Vec<&str> = text.split('\n').collect();
     let mut out = String::with_capacity(text.len());
     for (index, line) in lines.iter().enumerate() {
-        let line = line.strip_prefix(' ').unwrap_or(line);
+        let line = line.trim_prefix(' ');
         let last = index + 1 == lines.len();
         let soft = !last && line.ends_with(' ') && line != "-- ";
         match line.strip_suffix(' ') {

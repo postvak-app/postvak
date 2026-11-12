@@ -204,7 +204,10 @@ impl Backend {
     /// `bodies` lets stored body text decide a match; without it only the header columns do.
     /// `server` asks the mail server as well, which searches bodies, so it needs `bodies`; it returns one page and
     /// takes no cursor, and an account whose server fails keeps its local results and is named in the errors.
-    #[allow(clippy::too_many_arguments)] // the tool's own arguments, one per flag of `postvak search`
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the tool's own arguments, one per flag of `postvak search`"
+    )]
     pub fn search(
         &self,
         query: &str,
@@ -735,7 +738,7 @@ impl Backend {
 
     /// Rules coverage of `folder` in the visible accounts as of `now`, with `arrived_at` as if every message arrived
     /// then, one row per account.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the tool's own arguments")]
     pub fn rules_coverage(
         &self,
         account: Option<&str>,

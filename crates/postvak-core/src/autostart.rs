@@ -157,7 +157,10 @@ fn login_item_warning(_open_settings: bool) -> Option<String> {
     None
 }
 
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(
+    not(target_os = "macos"),
+    expect(dead_code, reason = "used only by the macOS code")
+)]
 const LOGIN_ITEM_APPROVAL: &str =
     "macOS opens Postvak at login once you allow it under System Settings › General › Login Items";
 

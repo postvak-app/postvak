@@ -1,5 +1,3 @@
-// Test code: unwrap, expect and panic are how a test fails.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Panics found by `tests/fuzz.rs` that are not fixed yet, one minimal reproduction each. Run them with
 //! `cargo test --test known_bugs -- --ignored`; a fixed bug's test passes and moves to its module's tests.
 //!

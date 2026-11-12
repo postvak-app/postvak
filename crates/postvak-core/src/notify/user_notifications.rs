@@ -4,8 +4,10 @@ System Settings › Notifications › Postvak.
 Each notification carries the `postvak gui …` arguments that show what it is about, so a click opens it even after the
 daemon that posted it restarted. Clicks reach the [`Delegate`] on the main thread's run loop, which the daemon runs while
 it waits for clients (`daemon::wait_for_client`). */
-// objc2 declares an Objective-C class, as the delegate must be, only in unsafe code; `setUserInfo` is unsafe too.
-#![allow(unsafe_code)]
+#![expect(
+    unsafe_code,
+    reason = "objc2 declares an Objective-C class, as the delegate must be, only in unsafe code; `setUserInfo` is unsafe too"
+)]
 
 use block2::{DynBlock, RcBlock};
 use objc2::rc::Retained;

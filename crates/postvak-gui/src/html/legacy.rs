@@ -45,7 +45,7 @@ pub fn parse(value: &str) -> Option<String> {
         })
         .take(128)
         .collect();
-    let digits = digits.strip_prefix(&['#']).unwrap_or(&digits);
+    let digits = digits.trim_prefix(&['#']);
     let mut digits: Vec<char> = digits
         .iter()
         .map(|&c| if c.is_ascii_hexdigit() { c } else { '0' })

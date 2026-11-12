@@ -1490,7 +1490,7 @@ impl Store {
     /// expression matches every message, for a query of predicates alone. With `snippets`, a hit whose body matched
     /// carries the text around the match. The plan's predicates follow the FTS match; their `?` parameters count on
     /// from the fixed ones, so the later placeholders are numbered after them.
-    #[allow(clippy::too_many_arguments)] // one per part of the query
+    #[expect(clippy::too_many_arguments, reason = "one per part of the query")]
     fn search_tier(
         &self,
         expression: &str,
