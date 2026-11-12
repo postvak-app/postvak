@@ -98,6 +98,9 @@ sed -e "s/@VERSION@/$version/g" -e "s/@SHORT_VERSION@/$short_version/g" -e "s/@B
     "$here/Info.plist.in" >"$app/Contents/Info.plist"
 plutil -lint "$app/Contents/Info.plist"
 printf 'APPL????' >"$app/Contents/PkgInfo"
+# The login item's agent, which SMAppService finds by its file name.
+mkdir -p "$app/Contents/Library/LaunchAgents"
+cp "$here/login-item.plist" "$app/Contents/Library/LaunchAgents/io.github.postvak_app.postvak.login.plist"
 
 # --- signing ---------------------------------------------------------------------------------------------------
 identity=${MACOS_SIGN_IDENTITY:--}

@@ -21,6 +21,22 @@ const RULES_WRITE_EXCEPTIONS: [(&str, &str, &str); 1] = [(
     "creates an empty rules.toml when there is none, so the editor has a file to open; never changes an existing one",
 )];
 
+/// The only files that may allow `unsafe_code`, which the workspace denies, as `(file, reason)`.
+const UNSAFE_EXCEPTIONS: [(&str, &str); 3] = [
+    (
+        "crates/postvak-core/src/autostart/login_item.rs",
+        "objc2 marks every SMAppService call unsafe, since the class exists only from macOS 13",
+    ),
+    (
+        "crates/postvak-core/src/notify/user_notifications.rs",
+        "the notification center's delegate is an Objective-C class, which objc2 declares only in unsafe code",
+    ),
+    (
+        "crates/postvak-ui/src/lib.rs",
+        "Slint's generated code for the window",
+    ),
+];
+
 /// A source file with comments and `#[cfg(test)]` items blanked; `code` also blanks string contents.
 /// Both keep every character's line, so positions map back to the file.
 struct Source {
@@ -494,8 +510,22 @@ fn check_search_expressions(source: &Source) -> Vec<String> {
         .collect()
 }
 
+fn check_unsafe(source: &Source) -> Vec<String> {
+    let allowed = UNSAFE_EXCEPTIONS
+        .iter()
+        .any(|(file, _)| *file == source.path);
+    if allowed || find_tokens(&source.code, "unsafe_code").is_empty() {
+        return Vec::new();
+    }
+    vec![format!(
+        "{}: allows unsafe_code; only the files in UNSAFE_EXCEPTIONS may",
+        source.path
+    )]
+}
+
 fn check(source: &Source) -> Vec<String> {
     let mut out = check_mcp(source);
+    out.extend(check_unsafe(source));
     for owned in &OWNED_FILES {
         out.extend(check_owned_writes(source, owned));
     }

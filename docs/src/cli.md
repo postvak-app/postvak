@@ -82,7 +82,7 @@ Your inbox, organized by rules you write
 * `run` — Run the daemon in the foreground: sync all accounts continuously and apply rules; fails when a daemon already runs; Ctrl-C stops
 * `daemon` — Inspect or stop the daemon that syncs your accounts; other commands start it when needed
 * `gui` — Open the mail window; starts the daemon when needed
-* `autostart` — Open the window at login, hidden in the tray: a launch agent on macOS, an autostart entry on Linux
+* `autostart` — Open the window at login, hidden in the tray: a login item or launch agent on macOS, an autostart entry on Linux
 * `service` — Start the daemon at login: a launchd agent on macOS, a systemd user unit on Linux
 * `sync` — Ask the daemon to sync now and apply rules; reports new messages and actions per account, or why one could not sync
 * `attachment` — List or save a message's attachments
@@ -174,7 +174,7 @@ Open the mail window; starts the daemon when needed
 
 ## `postvak autostart`
 
-Open the window at login, hidden in the tray: a launch agent on macOS, an autostart entry on Linux
+Open the window at login, hidden in the tray: a login item or launch agent on macOS, an autostart entry on Linux
 
 **Usage:** `postvak autostart <COMMAND>`
 

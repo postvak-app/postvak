@@ -34,6 +34,7 @@ blitz-dom = { version = "=0.3.0-beta.4", default-features = false, features = ["
 blitz-html = "=0.3.0-beta.4"                         # HTML mail: html5ever parsing into a Blitz document
 blitz-paint = "=0.3.0-beta.4"                        # HTML mail: a laid-out document to draw commands
 blitz-traits = "=0.3.0-beta.4"                       # HTML mail: the net provider and viewport types
+block2 = { version = "0.6", default-features = false, features = ["alloc"] }  # the completion handler NSWorkspace calls once a link or file has opened; already in the tree through muda
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }         # INTERNALDATE comes back as chrono; also list output
 clap = { version = "4", features = ["derive"] }      # CLI
 clap-markdown = "0.1"                                # docs/src/cli.md generated from the clap definitions
@@ -55,9 +56,12 @@ mail-parser = "1.0"                                 # RFC 5322 header and body p
 mac-notification-sys = "0.6"                         # desktop notifications on macOS, posted as Postvak once the app is installed, and their clicks; Linux speaks D-Bus through zbus
 image = { version = "0.25", default-features = false }  # HTML mail: read an image's size from its header to refuse decompression bombs; the decoders Blitz enables; already in the tree through Blitz
 objc2 = { version = "0.6", default-features = false, features = ["std"] }  # MainThreadMarker for the Dock badge; already in the tree through Slint's menus (muda)
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSAccessibility", "NSApplication", "NSButton", "NSControl", "NSDockTile", "NSImage", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSStatusBarButton", "NSView", "NSWindow", "NSWorkspace"] }  # the unread count on the Dock icon, the Save as… and Attach… panels, the Reduce motion setting and the menu bar glyph as a template image; already in the tree through muda
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-uniform-type-identifiers", "NSAccessibility", "NSApplication", "NSButton", "NSControl", "NSDockTile", "NSImage", "NSOpenPanel", "NSPanel", "NSResponder", "NSRunningApplication", "NSSavePanel", "NSStatusBarButton", "NSView", "NSWindow", "NSWorkspace"] }  # the unread count on the Dock icon, the Save as… and Attach… panels, the Reduce motion setting, the menu bar glyph as a template image and opening links and files; already in the tree through muda
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFDate", "CFRunLoop", "CFString"] }  # the daemon runs its main run loop on macOS, where notification clicks arrive; already in the tree
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSEnumerator", "NSString", "NSURL"] }  # the Dock badge's label and the Save as… and Attach… panels' paths; already in the tree through muda
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSDictionary", "NSEnumerator", "NSError", "NSString", "NSURL"] }  # the Dock badge's label, the Save as… and Attach… panels' paths, the links and files NSWorkspace opens, and what a notification carries; already in the tree through muda
+objc2-service-management = { version = "0.3", default-features = false, features = ["std", "objc2", "objc2-foundation", "SMAppService"] }  # opening at login as Postvak.app's own login item on macOS 13 and later, which System Settings names and lets the user turn off
+objc2-uniform-type-identifiers = { version = "0.3", default-features = false, features = ["std", "UTType"] }  # asks macOS for the default text editor, as `open -t` does
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSound", "UNNotificationTrigger", "UNUserNotificationCenter"] }  # notifications from Postvak.app through UNUserNotificationCenter, and their clicks
 percent-encoding = "2"                               # decode cid: URLs in HTML mail and the fields of mailto: links; already in the tree through url
 png = "0.18"                                         # decodes the icons and reads and writes the GUI snapshots
 psl = "2"                                            # the registrable domain of a sender (mail.example.co.uk → example.co.uk) for sender statistics; the public suffix list compiled in, re-released as the list changes
@@ -95,7 +99,7 @@ zbus-secret-service-keyring-store = { version = "1", features = ["rt-tokio-crypt
 zeroize = "1"                                        # wipe secrets on drop
 
 [workspace.lints.rust]
-unsafe_code = "deny"                                 # no unsafe in Postvak; only Slint's generated `ui` module allows it
+unsafe_code = "deny"                                 # no unsafe in Postvak; the few files that allow it are UNSAFE_EXCEPTIONS in tests/architecture.rs
 
 [workspace.lints.clippy]
 unwrap_used = "deny"                                 # shipped code returns errors instead of panicking

@@ -1,30 +1,55 @@
-//! Notifications on macOS through `NSUserNotificationCenter` (`mac-notification-sys`), posted as Postvak when the app
-//! is installed where Launch Services finds it. A click arrives on the main thread's run loop, which the daemon runs
-//! while it waits for clients (`daemon::wait_for_client`), and wakes the thread that waits on that notification.
+/*! Notifications on macOS: Postvak.app posts them through `UNUserNotificationCenter` (`user_notifications`); the
+Homebrew formula's binary, which is no app, through the older `NSUserNotificationCenter` (`mac-notification-sys`).
+
+The older center posts as Postvak when the app is installed where Launch Services finds it. A click arrives on the main
+thread's run loop, which the daemon runs while it waits for clients (`daemon::wait_for_client`), and wakes the thread
+that waits on that notification. */
 use std::sync::Arc;
 
 use mac_notification_sys::{Notification, NotificationResponse, Sound};
 
-use super::{Notice, Show, Waiting, open_in_window};
+use super::{Notice, Show, Waiting, open_in_window, user_notifications};
 use crate::paths::APP_ID;
 
-pub(super) struct Center {
-    waiting: Arc<Waiting>,
+pub(super) enum Center {
+    App(user_notifications::Center),
+    Legacy(Legacy),
 }
 
 impl Center {
     pub(super) fn new() -> Center {
+        if user_notifications::available() {
+            Center::App(user_notifications::Center::new())
+        } else {
+            Center::Legacy(Legacy::new())
+        }
+    }
+
+    pub(super) fn notify(&self, notice: &Notice) {
+        match self {
+            Center::App(center) => center.notify(notice),
+            Center::Legacy(center) => center.notify(notice),
+        }
+    }
+}
+
+pub(super) struct Legacy {
+    waiting: Arc<Waiting>,
+}
+
+impl Legacy {
+    fn new() -> Legacy {
         // Without the app installed, macOS posts them under its default sender.
         if let Err(e) = mac_notification_sys::set_application(APP_ID) {
             log::debug!("notifications not posted as Postvak: {e}");
         }
-        Center {
+        Legacy {
             waiting: Arc::new(Waiting::default()),
         }
     }
 
     /// Posts `notice`; a click opens its message, unless too many already wait for one.
-    pub(super) fn notify(&self, notice: &Notice) {
+    fn notify(&self, notice: &Notice) {
         let Some(slot) = Waiting::take(&self.waiting) else {
             post(notice, false);
             return;
