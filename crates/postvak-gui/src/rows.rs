@@ -299,10 +299,7 @@ impl PageModel {
     }
 }
 
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "strip sizes are far below f32's exact range"
-)]
+/// Strip sizes are far below f32's exact range, so the casts to it lose nothing.
 fn strip_data(strip: u32, pixels: &Pixels, scale: f32) -> StripData {
     let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
         pixels.rgba(),

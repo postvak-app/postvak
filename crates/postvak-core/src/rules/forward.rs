@@ -67,7 +67,7 @@ pub struct Forward {
 // Mirrors `ForwardAs` for the schema, which lives in `send`.
 #[derive(JsonSchema)]
 #[serde(rename_all = "lowercase")]
-#[allow(dead_code)]
+#[expect(dead_code, reason = "only describes the field for the schema")]
 enum ForwardAsSchema {
     Inline,
     Attachment,

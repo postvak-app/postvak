@@ -42,7 +42,7 @@ pub fn parse(text: &str, now: i64) -> Query {
     for c in text.chars() {
         match c {
             '"' => {
-                in_quote = !in_quote;
+                in_quote.toggle();
                 quoted = true;
             }
             c if (c.is_whitespace() || c.is_control()) && !in_quote => {

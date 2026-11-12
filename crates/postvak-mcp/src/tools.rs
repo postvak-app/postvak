@@ -215,7 +215,7 @@ struct CoverageArgs {
 /// The input schema of `rules_propose`: one rule's fields, or `rules`. Hosts refuse a top-level `anyOf`, so the two
 /// forms share one object; `rules::edit::read_proposals` reads it and refuses a mix.
 #[derive(JsonSchema)]
-#[allow(
+#[expect(
     dead_code,
     reason = "only describes the arguments; read_proposals parses them"
 )]
@@ -1037,8 +1037,10 @@ pub(super) fn wrap_body(text: &str) -> (String, bool) {
 
 /// `text` with every spelling of the wrapper's name, look-alike letters included, renamed to `untrusted-mail-content`.
 fn rename_wrapper(text: &str) -> String {
-    // A constant pattern that every test of the wrappers compiles, so it cannot fail at runtime.
-    #[allow(clippy::expect_used)]
+    #[expect(
+        clippy::expect_used,
+        reason = "a constant pattern that every test of the wrappers compiles, so it cannot fail at runtime"
+    )]
     static NAME: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"(?i)untrusted_mail_content").expect("a valid regex"));
     // One folded char per char of `text`, so a match's char positions are the same in both.

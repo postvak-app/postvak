@@ -187,7 +187,10 @@ fn leave_if_unchanged(ops: &mut dyn MailOps, name: &str, kept: &[u32]) -> Result
 
 /// Moves every message of `name` to Trash, or backs every one up before DELETE takes them; refuses when the folder
 /// does not hold exactly the `count` messages the user confirmed. Returns the messages left in the folder.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the connection, store and trash, then the folder and the delete the user confirmed"
+)]
 fn empty(
     ops: &mut dyn MailOps,
     store: &Store,

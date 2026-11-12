@@ -759,9 +759,7 @@ fn load_fonts() -> FontContext {
 }
 
 /// The system fonts as Blitz would load them, plus symbol fonts for glyphs like `⟶` that the mail's fonts and the
-/// script's fallback both lack.
-// Tests render with the one bundled font instead.
-#[cfg_attr(test, allow(dead_code))]
+/// script's fallback both lack. Tests render with the one bundled font instead.
 fn system_fonts() -> FontContext {
     let mut ctx = FontContext {
         source_cache: SourceCache::new_shared(),
@@ -778,7 +776,6 @@ fn system_fonts() -> FontContext {
 }
 
 /// Fonts with arrows, dingbats and maths symbols on macOS and Linux; whichever are installed are used.
-#[cfg_attr(test, allow(dead_code))]
 const SYMBOL_FONTS: &[&str] = &[
     "Apple Symbols",
     "DejaVu Sans",

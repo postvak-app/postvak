@@ -1968,7 +1968,7 @@ impl App {
             UiAction::Expand => self.expand(),
             UiAction::ToggleProvenance => {
                 if let Some(body) = &mut self.body {
-                    body.provenance_open = !body.provenance_open;
+                    body.provenance_open.toggle();
                 }
             }
             UiAction::ToggleWhy => self.toggle_why(),
@@ -2340,14 +2340,14 @@ impl App {
             UiAction::SaveAccount(fields) => self.save_account(&fields),
             UiAction::ToggleHtml => {
                 if let Some(body) = self.body.as_mut().filter(|b| b.html.is_some()) {
-                    body.show_text = !body.show_text;
+                    body.show_text.toggle();
                 }
             }
             UiAction::ToggleOriginalColours => {
                 if self.offers_original_colours()
                     && let Some(body) = self.body.as_mut()
                 {
-                    body.original_colours = !body.original_colours;
+                    body.original_colours.toggle();
                     self.restyle_html();
                 }
             }

@@ -1,5 +1,3 @@
-// Test code: unwrap, expect and panic are how a test fails.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Crash reports. Its own test binary, since the panic hook is process-wide.
 
 use postvak_core::crash;

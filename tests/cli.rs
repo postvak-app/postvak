@@ -1,6 +1,3 @@
-// Test code: unwrap, expect and panic are how a test fails.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 use std::process::Command;
 use std::time::Duration;
 

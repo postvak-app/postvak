@@ -850,7 +850,7 @@ pub(crate) fn typed_part(field: &str) -> (&str, &str) {
         match c {
             _ if escaped => escaped = false,
             '\\' if quoted => escaped = true,
-            '"' => quoted = !quoted,
+            '"' => quoted.toggle(),
             '<' if !quoted => angle = true,
             '>' if !quoted => angle = false,
             ',' if !quoted && !angle => cut = Some(i),

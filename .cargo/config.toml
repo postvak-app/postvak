@@ -1,0 +1,5 @@
+# The same 3-day cooldown Dependabot keeps (.github/dependabot.yml), for `cargo update` and `cargo add` here: a crate
+# version younger than that is passed over unless Cargo.lock already has it. A security fix that cannot wait:
+# `cargo update -p <crate> --precise <version> --config 'resolver.incompatible-publish-age="allow"'`.
+[registry]
+global-min-publish-age = "3 days"

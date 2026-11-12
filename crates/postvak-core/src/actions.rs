@@ -93,7 +93,10 @@ pub(crate) fn select_synced(
 
 /// Runs `action` on each uid in `folder`, logged under `rule_name`, as one server command per batch where it can. One
 /// result per uid, so a missing message does not stop the others.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the connection, store and trash, then the action and the messages it applies to"
+)]
 pub fn run(
     ops: &mut dyn MailOps,
     store: &Store,
