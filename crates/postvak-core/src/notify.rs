@@ -53,6 +53,8 @@ pub enum Show {
     Message(Open),
     /// The Rules view, where proposals wait for approval.
     Rules,
+    /// New mail filled from this `mailto:` link, which the desktop hands Postvak as its mail app.
+    NewMail(String),
 }
 
 impl Show {
@@ -61,6 +63,7 @@ impl Show {
         match self {
             Show::Message(open) => open.gui_args(),
             Show::Rules => vec!["gui".into(), "--rules".into()],
+            Show::NewMail(url) => vec!["gui".into(), url.clone()],
         }
     }
 }
@@ -482,6 +485,10 @@ mod tests {
         assert_eq!(five.title, "5 rules wait for your approval");
         assert_eq!(five.body, "r1, r2, r3 and 2 others");
         assert_eq!(Show::Rules.gui_args(), ["gui", "--rules"]);
+        assert_eq!(
+            Show::NewMail("mailto:ann@example.org".into()).gui_args(),
+            ["gui", "mailto:ann@example.org"]
+        );
         let list = [Proposed::List("kids".into())];
         assert_eq!(
             proposals_notice(&list).map(|n| (n.title, n.body)),

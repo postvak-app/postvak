@@ -157,7 +157,11 @@ Stop the daemon; it starts again when a command needs it
 
 Open the mail window; starts the daemon when needed
 
-**Usage:** `postvak gui [OPTIONS]`
+**Usage:** `postvak gui [OPTIONS] [MAILTO]`
+
+###### **Arguments:**
+
+* `<MAILTO>` — Write new mail filled from this `mailto:` link; how the desktop opens one when Postvak is its mail app
 
 ###### **Options:**
 

@@ -121,6 +121,9 @@ enum Command {
         /// Show the Rules view, where proposals wait for approval; with a window already open, that window shows it
         #[arg(long, conflicts_with_all = ["open", "background"])]
         rules: bool,
+        /// Write new mail filled from this `mailto:` link; how the desktop opens one when Postvak is its mail app
+        #[arg(value_name = "MAILTO", value_parser = mailto_link, conflicts_with_all = ["open", "background", "rules"])]
+        mailto: Option<String>,
     },
     /// Open the window at login, hidden in the tray: a login item or launch agent on macOS, an autostart entry on Linux
     Autostart {
@@ -806,6 +809,7 @@ pub fn run() -> Result<()> {
                 folder: "INBOX".into(),
                 background: false,
                 rules: false,
+                mailto: None,
             },
         }
     } else {
@@ -826,9 +830,12 @@ pub fn run() -> Result<()> {
         folder,
         background,
         rules,
+        mailto,
     } = cli.command
     {
-        let show = if rules {
+        let show = if let Some(url) = mailto {
+            Some(postvak_core::notify::Show::NewMail(url))
+        } else if rules {
             Some(postvak_core::notify::Show::Rules)
         } else {
             open.map(|uid| {
@@ -1747,6 +1754,13 @@ fn opened_as_mac_app() -> bool {
             let args: Vec<_> = std::env::args_os().skip(1).collect();
             postvak_core::paths::launched_as_app(&exe, &args, io::stdin().is_terminal())
         })
+}
+
+fn mailto_link(url: &str) -> Result<String, String> {
+    match postvak_core::send::mailto::parse(url) {
+        Some(_) => Ok(url.to_owned()),
+        None => Err("not a mailto: link".into()),
+    }
 }
 
 #[cfg(feature = "gui")]
@@ -2679,6 +2693,19 @@ fn prompt(label: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gui_takes_only_a_mailto_link() {
+        let cli =
+            Cli::try_parse_from(["postvak", "gui", "MAILTO:ann@example.org?subject=Hi"]).unwrap();
+        assert!(
+            matches!(cli.command, Command::Gui { mailto: Some(url), .. } if url == "MAILTO:ann@example.org?subject=Hi")
+        );
+        assert!(Cli::try_parse_from(["postvak", "gui", "https://example.org"]).is_err());
+        assert!(
+            Cli::try_parse_from(["postvak", "gui", "--rules", "mailto:ann@example.org"]).is_err()
+        );
+    }
 
     #[test]
     fn cli_reference_is_current() {

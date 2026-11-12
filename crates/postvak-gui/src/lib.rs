@@ -42,6 +42,7 @@ mod toolbar;
 mod tray;
 mod undo;
 mod update;
+mod url_event;
 mod worker;
 
 use postvak_ui as ui;
@@ -239,6 +240,7 @@ impl Start<'_> {
         {
             log::warn!("a second start will open a second window: {e}");
         }
+        url_event::listen();
         let ran = slint::run_event_loop();
         if let Some(mut live) = LIVE.with_borrow_mut(Option::take) {
             // Quitting asks nothing: the next start reopens what was being written.
@@ -525,11 +527,12 @@ fn on_wayland(native: &slint::winit_030::winit::window::Window) -> bool {
         .is_ok_and(|handle| matches!(handle.as_raw(), RawWindowHandle::Wayland(_)))
 }
 
-/// Shows the message, or the Rules view, in the window.
+/// Shows the message or the Rules view in the window, or opens new mail from a `mailto:` link.
 fn show_in_window(show: Show) {
     let action = match show {
         Show::Message(open) => state::UiAction::OpenMessage(open),
         Show::Rules => state::UiAction::SelectView(state::View::Rules),
+        Show::NewMail(url) => state::UiAction::NewMail(postvak_core::send::mailto::parse(&url)),
     };
     on(Box::new(move |_| vec![action]));
 }
@@ -1223,6 +1226,13 @@ mod tests {
         let entry = include_str!("../../../packaging/linux/io.github.postvak_app.postvak.desktop");
         for key in ["Icon", "StartupWMClass"] {
             let line = format!("{key}={}", super::APP_ID);
+            assert!(
+                entry.lines().any(|l| l == line),
+                "the desktop entry lacks {line}"
+            );
+        }
+        // The desktop hands a `mailto:` link to `postvak gui <link>` only when the entry claims the scheme.
+        for line in ["Exec=postvak gui %u", "MimeType=x-scheme-handler/mailto;"] {
             assert!(
                 entry.lines().any(|l| l == line),
                 "the desktop entry lacks {line}"
