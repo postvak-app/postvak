@@ -55,7 +55,7 @@ mail-parser = "1.0"                                 # RFC 5322 header and body p
 mac-notification-sys = "0.6"                         # desktop notifications on macOS, posted as Postvak once the app is installed, and their clicks; Linux speaks D-Bus through zbus
 image = { version = "0.25", default-features = false }  # HTML mail: read an image's size from its header to refuse decompression bombs; the decoders Blitz enables; already in the tree through Blitz
 objc2 = { version = "0.6", default-features = false, features = ["std"] }  # MainThreadMarker for the Dock badge; already in the tree through Slint's menus (muda)
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSAccessibility", "NSApplication", "NSDockTile", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSWindow", "NSWorkspace"] }  # the unread count on the Dock icon, the Save as… and Attach… panels and the Reduce motion setting; already in the tree through muda
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSAccessibility", "NSApplication", "NSButton", "NSControl", "NSDockTile", "NSImage", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSStatusBarButton", "NSView", "NSWindow", "NSWorkspace"] }  # the unread count on the Dock icon, the Save as… and Attach… panels, the Reduce motion setting and the menu bar glyph as a template image; already in the tree through muda
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFDate", "CFRunLoop", "CFString"] }  # the daemon runs its main run loop on macOS, where notification clicks arrive; already in the tree
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSEnumerator", "NSString", "NSURL"] }  # the Dock badge's label and the Save as… and Attach… panels' paths; already in the tree through muda
 percent-encoding = "2"                               # decode cid: URLs in HTML mail and the fields of mailto: links; already in the tree through url
@@ -181,9 +181,9 @@ inherits = "release"
 # equal, so the idle window does not draw again on every tick (https://github.com/slint-ui/slint/pull/13669, #416), and
 # with no Wayland window for a component not yet shown, so the tray and the scheme probe add no entries to Plasma's task
 # bar (https://github.com/slint-ui/slint/pull/14613), and with a tray click's activation token
-# given to the next window, so the window comes to the front on Wayland (https://github.com/slint-ui/slint/pull/14822), and
-# with the tray's `icon-is-template`, so the macOS menu bar tints the glyph itself (fork only; upstream wants it as an
-# image hint: https://github.com/slint-ui/slint/issues/12330).
+# given to the next window, so the window comes to the front on Wayland (https://github.com/slint-ui/slint/pull/14822).
+# The fork fixes behaviour only: what we publish builds against crates.io's Slint, so our code and markup never use the
+# fork's own API (such as its tray's `icon-is-template`).
 # Every Slint crate comes from the fork, or two copies of i-slint-core meet. Removing it once a Slint release has the fix:
 # https://github.com/postvak-app/postvak/issues/233.
 [patch.crates-io]
