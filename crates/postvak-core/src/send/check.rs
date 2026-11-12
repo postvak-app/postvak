@@ -87,7 +87,7 @@ pub fn check(
     let keep = crlf(raw);
     let header_end = header_end(&keep);
     for (number, line) in keep.split(|b| *b == b'\n').enumerate() {
-        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let line = line.trim_suffix(b"\r");
         if line.len() > MAX_LINE {
             return Err(CheckError::LongLine(number + 1));
         }

@@ -1,8 +1,5 @@
 //! Packaging files that must agree with the code.
 
-// Test code: unwrap, expect and panic are how a test fails.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 #[test]
 fn the_apps_login_item_opens_the_window_in_the_background() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));

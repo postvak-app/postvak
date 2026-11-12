@@ -987,7 +987,10 @@ pub fn load_rules_for(
     Ok(compiled)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the connection, store and trash an account thread owns, then what this step needs: the rules and where they log"
+)]
 pub fn run_rules(
     ops: &mut dyn MailOps,
     store: &Store,
@@ -1012,7 +1015,10 @@ pub fn run_rules(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the connection, store and trash an account thread owns, then what this step needs: the rules and where they log"
+)]
 pub fn run_rules_with(
     ops: &mut dyn MailOps,
     store: &Store,
@@ -1101,7 +1107,10 @@ pub fn run_rules_with(
 }
 
 /// The rules pass over each of `folders`; `run_rules_with` numbers the actions it logged, also when it ends early.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the connection, store and trash an account thread owns, then what this step needs: the rules and where they log"
+)]
 fn run_rules_in(
     ops: &mut dyn MailOps,
     store: &Store,
@@ -1341,7 +1350,10 @@ fn account_error(account: &AccountConfig, message: String) -> Event {
 /// Runs every queued command in arrival order. A failed command is reported and the next one runs; a lost
 /// connection ends the drain with the error, so the session reconnects. `SyncNow` requests go onto
 /// `carried.sync_requests` for the next full pass to answer.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the connection, store and trash an account thread owns, then what this step needs: the commands and where their answers go"
+)]
 fn run_commands(
     ops: &mut dyn MailOps,
     store: &Store,
@@ -1415,7 +1427,10 @@ fn stamp_actions(store: &Store, before: i64) -> Option<i64> {
 }
 
 /// Runs one command other than `SyncNow` and sends its answer; `Err` only for a lost connection.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the connection, store and trash an account thread owns, then what this step needs: the commands and where their answers go"
+)]
 fn run_command(
     ops: &mut dyn MailOps,
     store: &Store,
@@ -2005,7 +2020,10 @@ impl LoadedRules {
     }
 
     /// Runs the last good rules. With none it only notifies, leaving the mail unseen so the rules catch up on it.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the connection, store and trash an account thread owns, then what this step needs: the rules and where they log"
+    )]
     fn run(
         &self,
         ops: &mut dyn MailOps,
@@ -2125,7 +2143,10 @@ impl<'a> AccountSync<'a> {
         result
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one pass's inputs and the channels the loop hands down"
+    )]
     fn sync_and_run_rules(
         &self,
         ops: &mut dyn MailOps,
@@ -2234,7 +2255,10 @@ pub fn run_once(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "what the engine hands an account thread, with the connection injected for tests"
+)]
 pub fn run_loop(
     account: AccountConfig,
     paths: Paths,
@@ -2293,7 +2317,10 @@ pub(crate) fn random_u64() -> u64 {
 
 /// The loop body, with connection and back-off sleeping injected so tests can drive it with the fake; the delays
 /// are exact, and a connection counts as healthy once it has stayed up `HEALTHY_AFTER`.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "what the engine hands an account thread, with the connection injected for tests"
+)]
 pub fn run_loop_with(
     account: AccountConfig,
     paths: Paths,
@@ -2320,7 +2347,10 @@ pub fn run_loop_with(
 }
 
 /// `run_loop_with` with the uptime that counts as healthy and the jitter on each back-off delay as parameters.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "what the engine hands an account thread, with the connection injected for tests"
+)]
 fn run_loop_paced(
     account: AccountConfig,
     paths: Paths,
@@ -2480,7 +2510,10 @@ fn failure(account: &str, request: RequestId, searched: Option<String>, message:
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "what the engine hands an account thread, with the connection injected for tests"
+)]
 fn run_session(
     account: &AccountConfig,
     paths: &Paths,

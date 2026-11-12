@@ -1,9 +1,6 @@
 //! Live sending tests against the Mailpit SMTP servers and Dovecot in tests/dovecot/compose.yml, skipped unless
 //! POSTVAK_TEST_IMAP_HOST is set.
 
-// Test code: unwrap, expect and panic are how a test fails.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};

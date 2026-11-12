@@ -1,6 +1,10 @@
 //! An in-process daemon on a temp home and a raw line client, shared by the daemon, client and MCP tests.
-// Test harness, built for tests and the `testing` feature: unwrap, expect and panic are how a test fails.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "test harness, built for tests and the `testing` feature: unwrap, expect and panic are how a test fails"
+)]
 use std::io::{BufRead, BufReader, Lines};
 use std::os::unix::net::UnixStream;
 use std::path::Path;

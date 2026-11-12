@@ -320,7 +320,10 @@ fn sending_server(
 }
 
 /// Puts a checked message in the daemon's outbox, due at `due`.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the parts of one queued message, each from a different step of sending"
+)]
 fn queue(
     client: &LazyClient,
     account: &AccountConfig,

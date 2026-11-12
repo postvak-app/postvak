@@ -1,8 +1,10 @@
 /*! Postvak.app's own login item on macOS 13 and later (`SMAppService`), which System Settings › General › Login Items
 names after the app and lets the user turn off. It registers the agent the app carries in
 `Contents/Library/LaunchAgents/` (`packaging/macos/login-item.plist`). */
-// objc2 marks every SMAppService call unsafe because the class exists only from macOS 13; `available` checks that.
-#![allow(unsafe_code)]
+#![expect(
+    unsafe_code,
+    reason = "objc2 marks every SMAppService call unsafe because the class exists only from macOS 13; `available` checks that"
+)]
 
 use anyhow::{Result, anyhow};
 use objc2::rc::Retained;

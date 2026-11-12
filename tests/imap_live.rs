@@ -1,8 +1,5 @@
 //! Live IMAP tests against tests/dovecot/compose.yml, skipped unless POSTVAK_TEST_IMAP_HOST is set.
 
-// Test code: unwrap, expect and panic are how a test fails.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};

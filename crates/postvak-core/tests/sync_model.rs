@@ -17,8 +17,12 @@
 //! PROPTEST_CASES=2000 cargo test --features testing --test sync_model
 //! ```
 
-// Test code: unwrap, expect and panic are how a test fails.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "test code: unwrap, expect and panic are how a test fails"
+)]
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;

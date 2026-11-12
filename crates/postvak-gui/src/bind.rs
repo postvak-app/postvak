@@ -526,10 +526,7 @@ fn present_body(app: &App, window: &MailWindow) {
             .into_iter()
             .flat_map(|s| s.rows.iter().map(|r| s.text[r.clone()].chars().count()))
             .max();
-        #[allow(
-            clippy::cast_precision_loss,
-            reason = "a row is at most SOURCE_ROW characters"
-        )]
+        // A row is at most SOURCE_ROW characters, so the cast loses nothing.
         window.set_source_widest(widest.unwrap_or(0) as f32 * 8.5);
     }
 }

@@ -75,7 +75,10 @@ fn dock(unread: u32) {
 }
 
 /// The Dock badge's text: the count, or none at 0.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "macos", test)),
+    expect(dead_code, reason = "used only by the macOS code and tests")
+)]
 fn dock_label(unread: u32) -> Option<String> {
     (unread > 0).then(|| unread.to_string())
 }

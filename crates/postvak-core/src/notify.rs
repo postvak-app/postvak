@@ -291,17 +291,29 @@ pub fn escape_markup(text: &str) -> String {
 /// in Notification Center until the user clears it, so only `MAX_WAITING` wait; later ones still show, and a click on
 /// one brings Postvak to the front without opening its message.
 #[derive(Default)]
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "macos", test)),
+    expect(dead_code, reason = "used only by the macOS code and tests")
+)]
 struct Waiting(AtomicUsize);
 
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "macos", test)),
+    expect(dead_code, reason = "used only by the macOS code and tests")
+)]
 const MAX_WAITING: usize = 64;
 
 /// One waiting notification, counted until it drops.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "macos", test)),
+    expect(dead_code, reason = "used only by the macOS code and tests")
+)]
 struct Slot(Arc<Waiting>);
 
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "macos", test)),
+    expect(dead_code, reason = "used only by the macOS code and tests")
+)]
 impl Waiting {
     /// A slot, or None when `MAX_WAITING` are taken.
     fn take(waiting: &Arc<Waiting>) -> Option<Slot> {
