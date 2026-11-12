@@ -4860,7 +4860,7 @@ dependencies = [
 
 [[package]]
 name = "postvak"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4878,7 +4878,7 @@ dependencies = [
 
 [[package]]
 name = "postvak-core"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "apple-native-keyring-store",
@@ -4933,7 +4933,7 @@ dependencies = [
 
 [[package]]
 name = "postvak-gui"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "anyrender",
@@ -4979,7 +4979,7 @@ dependencies = [
 
 [[package]]
 name = "postvak-mcp"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "directories",
@@ -4997,7 +4997,7 @@ dependencies = [
 
 [[package]]
 name = "postvak-ui"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "i-slint-common",
  "slint",

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0](https://github.com/postvak-app/postvak/compare/v0.17.0...v0.18.0) - 2026-11-12
+
+### Added
+
+- *(macos)* open links, notify and start at login through macOS's own APIs ([#580](https://github.com/postvak-app/postvak/pull/580))
+- signatures, Preferences › Sending and the SMTP server when adding an account ([#570](https://github.com/postvak-app/postvak/pull/570))
+- *(rules)* warn when a move targets the account's junk folder ([#575](https://github.com/postvak-app/postvak/pull/575))
+
+### Fixed
+
+- *(gui)* mark the macOS tray glyph a template from AppKit, not the Slint fork's markup ([#579](https://github.com/postvak-app/postvak/pull/579))
+- *(macos)* attach the dSYM to the release instead of bundling it in the app ([#576](https://github.com/postvak-app/postvak/pull/576))
+- *(gui)* size the macOS menu bar glyph like the system's and let the menu bar tint it ([#577](https://github.com/postvak-app/postvak/pull/577))
+
+### Other
+
+- *(mcp)* set up Postvak with Hermes Agent and OpenClaw ([#578](https://github.com/postvak-app/postvak/pull/578))
+- *(deps)* bump the actions group with 2 updates ([#571](https://github.com/postvak-app/postvak/pull/571))
+- *(deps)* bump the cargo group with 4 updates ([#572](https://github.com/postvak-app/postvak/pull/572))
+
 ## [0.17.0](https://github.com/postvak-app/postvak/compare/v0.16.0...v0.17.0) - 2026-11-09
 
 ### Added
