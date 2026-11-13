@@ -752,8 +752,8 @@ mod view_tests {
     #[test]
     fn the_next_message_starts_from_the_part_of_the_view_on_screen() {
         let fx = Fixture::new(&["work"]);
-        add_html(&fx, 1, "<p>one</p>", "one");
-        add_html(&fx, 2, "<p>two</p>", "two");
+        add_html(&fx, 1, "<p>one</p>", "one as text");
+        add_html(&fx, 2, "<p>two</p>", "two as text");
         let faked = faked(&fx);
         appear(&faked, faked.generation, &[]);
         let shown = view(&faked.open, |v| v.visible).unwrap();
@@ -1113,8 +1113,8 @@ mod view_tests {
     #[test]
     fn a_download_for_a_message_no_longer_shown_is_dropped() {
         let fx = Fixture::new(&["work"]);
-        add_html(&fx, 1, "<p>one</p>", "one");
-        add_html(&fx, 2, "<p>two</p>", "two");
+        add_html(&fx, 1, "<p>one</p>", "one as text");
+        add_html(&fx, 2, "<p>two</p>", "two as text");
         let faked = faked(&fx);
         let (fetcher, fetch_jobs, fetched) = Fetcher::fake();
         faked.open.with(|live| live.app.fetcher = Some(fetcher));
@@ -1209,8 +1209,8 @@ mod view_tests {
     fn original_colours_last_for_the_open_message_only() {
         let fx = Fixture::new(&["work"]);
         fx.append_config("[ui]\ntheme = \"dark\"\n");
-        add_html(&fx, 1, "<p>older</p>", "older");
-        add_html(&fx, 2, "<p>newer</p>", "newer");
+        add_html(&fx, 1, "<p>older</p>", "older as text");
+        add_html(&fx, 2, "<p>newer</p>", "newer as text");
         let faked = faked(&fx);
         reply(&faked, laid(faked.generation, 300.0, &[]));
         faked.open.window().invoke_toggle_original_colours();
