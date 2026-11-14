@@ -142,6 +142,12 @@ impl App {
         if !same_page {
             body.text_note = too_large(html.as_ref());
             body.html_view = None;
+            body.show_text = html
+                .as_ref()
+                .zip(message.as_ref().and_then(|m| m.body_text.as_deref()))
+                .is_some_and(|(html, text)| {
+                    postvak_core::message::html_adds_nothing(&html.html, text)
+                });
         }
         body.html = html;
         // An indexed message has its text but not its raw bytes, which the HTML view and the attachments need.

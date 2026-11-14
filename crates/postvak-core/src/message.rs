@@ -150,6 +150,78 @@ fn has_markup(text: &str) -> bool {
     })
 }
 
+/// Tags that only lay text out; HTML made of nothing else, with the text's words, may open as text.
+const LAYOUT_TAGS: [&str; 10] = [
+    "body", "br", "div", "head", "html", "meta", "p", "span", "style", "title",
+];
+
+/// Whether `html` says no more than `text`, the message's text: only `LAYOUT_TAGS`, no class or inline style on an
+/// element holding words, and the same words in the same order. A stylesheet that styles the page as a whole is lost.
+pub fn html_adds_nothing(html: &str, text: &str) -> bool {
+    layout_tags_only(html)
+        && mail_parser::decoders::html::html_to_text(html)
+            .split_whitespace()
+            .eq(text.split_whitespace())
+}
+
+fn layout_tags_only(html: &str) -> bool {
+    // Each open span, and whether it carries a class or style.
+    let mut spans: Vec<bool> = Vec::new();
+    let mut rest = html;
+    loop {
+        let (words, tag) = rest.split_at(rest.find('<').unwrap_or(rest.len()));
+        if spans.contains(&true) && words.contains(|c: char| !c.is_whitespace()) {
+            return false;
+        }
+        if tag.is_empty() {
+            return true;
+        }
+        if let Some(comment) = tag.strip_prefix("<!--") {
+            let Some(end) = comment.find("-->") else {
+                return false;
+            };
+            rest = &comment[end + 3..];
+            continue;
+        }
+        let Some(end) = tag.find('>') else {
+            return false;
+        };
+        let inner = tag[1..end].to_ascii_lowercase();
+        rest = &tag[end + 1..];
+        if inner.starts_with('!') {
+            continue;
+        }
+        let (closing, inner) = match inner.strip_prefix('/') {
+            Some(inner) => (true, inner),
+            None => (false, inner.as_str()),
+        };
+        let name_len = inner
+            .find(|c: char| !c.is_ascii_alphanumeric())
+            .unwrap_or(inner.len());
+        let (name, attributes) = inner.split_at(name_len);
+        if !LAYOUT_TAGS.contains(&name) {
+            return false;
+        }
+        let styled = attributes
+            .split(|c: char| c.is_whitespace() || c == '/')
+            .any(|attribute| matches!(attribute.split('=').next(), Some("class" | "style")));
+        match (name, closing) {
+            ("style" | "title", false) => {
+                let Some(end) = rest.to_ascii_lowercase().find(&format!("</{name}")) else {
+                    return false;
+                };
+                rest = &rest[end..];
+            }
+            ("span", false) => spans.push(styled),
+            ("span", true) => {
+                spans.pop();
+            }
+            ("body" | "div" | "p", false) if styled => return false,
+            _ => {}
+        }
+    }
+}
+
 /// The length of the bare line break tag `has_markup` allows at the start of `bytes`, any case.
 fn line_break_len(bytes: &[u8]) -> Option<usize> {
     ["<br>", "<br/>", "<br />", "</br>"].iter().find_map(|tag| {
@@ -1194,6 +1266,47 @@ List-Id: Dev <dev.lists.example.com>\r\n\
         let plain = b"From: a@b\r\nContent-Type: text/plain\r\n\r\n<p>not html</p>\r\n";
         assert_eq!(attachments_and_html(plain).1, None);
         assert_eq!(attachments_and_html(b"").1, None);
+    }
+
+    /// An appointment notice as practice software writes it: a stylesheet, paragraphs, and a styled span holding only a
+    /// line break.
+    const TEMPLATE_HTML: &str = "<!DOCTYPE html PUBLIC \"-//W3C//DTD HTML 4.01 Transitional//EN\">\n\
+        <html><head><title>Appointment</title><meta http-equiv=\"Content-Style-Type\" content=\"text/css\">\n\
+        <style type=\"text/css\"><!-- body { color: #000000; } span.x6 { font-weight: bold; } --></style></head>\n\
+        <BODY><p>Dear Ms Example,</p><p><br></p><p>Your next appointment:</p><p><br></p>\n\
+        <p>14-05-2027 at 11:30 &amp; with A. Hygienist</p><p><span class=x6><br></span></p><p><br></p></body></html>";
+    const TEMPLATE_TEXT: &str = "Dear Ms Example,\n\nYour next appointment:\n\n14-05-2027 at 11:30 & with A. Hygienist\n\n\n\n";
+
+    #[test]
+    fn html_of_layout_tags_with_the_texts_words_adds_nothing() {
+        assert!(html_adds_nothing(TEMPLATE_HTML, TEMPLATE_TEXT));
+        assert!(html_adds_nothing(
+            "<div>a <span>b</span></div><!-- c > d -->",
+            "a b"
+        ));
+    }
+
+    #[test]
+    fn html_with_other_words_or_formatting_adds_something() {
+        assert!(!html_adds_nothing(
+            TEMPLATE_HTML,
+            "View this mail in your browser"
+        ));
+        assert!(!html_adds_nothing(TEMPLATE_HTML, ""));
+        for html in [
+            "<p>see <a href=\"https://example.com\">here</a></p>",
+            "<p>see <b>here</b></p>",
+            "<p>see <img src=\"cid:x\"> here</p>",
+            "<table><tr><td>see here</td></tr></table>",
+            "<p>see <span class=red>here</span></p>",
+            "<p>see <span style=\"color: red\">here</span></p>",
+            "<p style=\"color: red\">see here</p>",
+            "<div class=\"warning\">see here</div>",
+            "<head><link rel=stylesheet href=x.css></head><p>see here</p>",
+            "see < here",
+        ] {
+            assert!(!html_adds_nothing(html, "see here"), "{html}");
+        }
     }
 
     #[test]

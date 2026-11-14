@@ -1947,6 +1947,18 @@ mod tests {
     }
 
     #[test]
+    fn html_that_adds_nothing_to_the_text_opens_as_text_and_v_shows_it() {
+        use crate::test_support::add_html;
+        let fx = Fixture::new(&["work"]);
+        add_html(&fx, 1, "<p>plain words</p><p><br></p>", "plain words");
+        let (open, _wires) = fx.window();
+        assert!(!shows_html(&open));
+        assert_eq!(open.window().get_body_text(), "plain words");
+        open.choose_more("Show as HTML");
+        assert!(shows_html(&open));
+    }
+
+    #[test]
     fn html_too_large_to_render_disables_the_html_side() {
         use crate::html::MAX_HTML;
         use crate::test_support::add_html;
