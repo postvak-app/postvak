@@ -81,9 +81,10 @@ export global Theme {
     out property <length> dialog-large: 520px;
     out property <length> dialog-x-large: 560px;
     out property <length> dialog-wide: 720px;
-    // The shadow under a dialog, and the dimmed window behind it.
+    // The shadow under a dialog, and the dimmed and blurred window behind it.
     out property <color> shadow: #0006;
     out property <color> scrim: #0005;
+    out property <length> scrim-blur: 12px;
     // The one action a screen leads with, in both modes: the website's vermilion, darkened so white text passes AA.
     out property <color> brand: #c4441f;
     out property <color> brand-hover: #a93a1a;
@@ -102,7 +103,8 @@ export global Theme {
     out property <duration> hover-fade: reduce-motion ? 0ms : 90ms;
     // How long a message turning read or unread, or an account's status dot, takes to fade.
     out property <duration> state-fade: reduce-motion ? 0ms : 120ms;
-    // How long a dialog and the dim behind it take to fade in; closing is at once. Keys reach the dialog meanwhile.
+    // How long a dialog and the dim behind it take to fade in or out. Keys reach a dialog fading in, and the window
+    // as soon as one closes.
     out property <duration> dialog-fade: reduce-motion ? 0ms : 120ms;
     // How long a message that arrives while the window is open takes to fade in.
     out property <duration> arrive-fade: reduce-motion ? 0ms : 150ms;

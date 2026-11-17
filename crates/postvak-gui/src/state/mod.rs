@@ -1303,6 +1303,9 @@ impl App {
         }
         self.show_row_logos();
         self.list.logos_changed = false;
+        let row_in = self.list.cursor < self.list.rows.len();
+        self.list.show_row =
+            (row_in && std::mem::take(&mut self.list.follow_cursor)).then_some(self.list.cursor);
         self.poll_files(now);
         let typing_search = self.search_focused;
         self.sync_body(now, typing_search);
@@ -1883,7 +1886,7 @@ impl App {
         postvak_core::crash::note(&action);
         let cursor = self.list.cursor;
         self.apply_action(action);
-        if self.list.cursor != cursor && !self.list.cursor_shown(self.search.is_some()) {
+        if self.list.cursor != cursor {
             self.list.follow_cursor = true;
         }
     }
@@ -1976,10 +1979,6 @@ impl App {
             UiAction::ListViewport { offset, height } => {
                 self.list.viewport = (offset, height);
                 self.list.logos_changed = self.show_row_logos();
-                // The list can stop short of the cursor while it still estimates its rows; then it is asked again.
-                if self.list.cursor_shown(self.search.is_some()) {
-                    self.list.follow_cursor = false;
-                }
             }
             UiAction::MarkFolderRead(account, folder) => self.mark_folder_read(account, folder),
             UiAction::MoveCursor(delta) => {
@@ -2503,10 +2502,10 @@ impl App {
         self.search_focused = focused;
         // The window keeps its scroll offset across lists, so the new list scrolls to its cursor from there.
         self.list = ListState {
+            follow_cursor: true,
             viewport: self.list.viewport,
             ..ListState::default()
         };
-        self.list.follow_cursor = !self.list.cursor_shown(self.search.is_some());
     }
 
     pub(crate) fn view_account(&self) -> Option<usize> {

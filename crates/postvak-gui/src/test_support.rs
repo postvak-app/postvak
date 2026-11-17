@@ -334,6 +334,12 @@ impl Open {
         i_slint_backend_testing::mock_elapsed_time(Duration::from_secs_f64(seconds));
     }
 
+    /// Lets a closed dialog's fade out end: Slint's timers and animations move on, the app's clock does not.
+    pub fn fade(&self) {
+        i_slint_backend_testing::mock_elapsed_time(Duration::from_secs(1));
+        self.tick();
+    }
+
     /// The window drawn by the software renderer, as a PNG.
     pub fn png(&self) -> Vec<u8> {
         png(self.window().window())

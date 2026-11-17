@@ -1885,6 +1885,7 @@ mod tests {
             "From: a@example.com\nSubject: ]0;pwnedreport\n\nline one\n"
         );
         open.press("escape");
+        open.fade();
         assert!(open.find("Subject: ]0;pwnedreport").is_empty());
     }
 
@@ -1924,6 +1925,7 @@ mod tests {
         assert_eq!(open.find("Subject: ]0;pwnedreport").len(), 1);
         open.press("j");
         assert!(open.with(|live| live.app.body.as_ref().is_some_and(|b| b.source.is_none())));
+        open.fade();
         assert!(open.find("Subject: ]0;pwnedreport").is_empty());
     }
 

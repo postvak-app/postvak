@@ -119,7 +119,7 @@ pub(crate) struct ListState {
     pub cursor: usize,
     /// Expanded threads by account and thread id: mail sent to two accounts shares its thread id.
     pub expanded: HashMap<(usize, String), Vec<MessageSummary>>,
-    /// Set when the cursor moved, so the list scrolls it into view; cleared once the list reports where it scrolled.
+    /// Set when the cursor moved, so the list scrolls it into view; cleared once its row has come in.
     pub follow_cursor: bool,
     pub hits: Vec<Row>,
     pub marked: HashSet<(usize, RowKey)>,
@@ -140,33 +140,14 @@ pub(crate) struct ListState {
     pub threads: Vec<(usize, ThreadSummary)>,
     /// Scroll offset and height of the list from the last frame.
     pub viewport: (f32, f32),
+    /// The row the list scrolls into view on this frame: the cursor's, once it moved and its row came in.
+    pub show_row: Option<usize>,
     /// The brand of each row that came into view, None for one without; read once, as each needs a store query.
     pub brands: HashMap<(usize, RowKey), Option<Brand>>,
     /// Set when a scroll brought a logo into view, so the window draws the rows again.
     pub logos_changed: bool,
     /// Whether rows of this list have come in, so an empty list says it is empty only once it is.
     pub loaded: bool,
-}
-
-impl ListState {
-    /// Whether the cursor's row is in view, or as much of it as a list lower than a row shows; not before the list
-    /// has reported its height.
-    pub fn cursor_shown(&self, search: bool) -> bool {
-        let (offset, height) = self.viewport;
-        let (above, own) = self.strips(search);
-        height > 0.0
-            && (height < LIST_ROW
-                || offset_showing(self.cursor, LIST_ROW, above, own, offset, height) == offset)
-    }
-
-    /// The heading strips the cursor's row needs room for: those of the rows above it, and its own.
-    pub fn strips(&self, search: bool) -> (f32, f32) {
-        let now = chrono::Local::now();
-        let all = strips_above(&self.rows, self.cursor, search, &now);
-        let own = usize::from(section(&self.rows, self.cursor, search, &now).is_some());
-        let strip = super::theme::SECTION;
-        ((all - own) as f32 * strip, own as f32 * strip)
-    }
 }
 
 /// One row per thread describing its latest message, followed by its members when expanded.
@@ -602,28 +583,6 @@ pub fn row_text(row: &Row, columns: &Columns) -> String {
     text
 }
 
-/// The scroll offset that shows the cursor row, moving the view as little as possible. `above` is what sits above
-/// the row besides whole rows, the heading strips of the rows before it; `own` is the row's own heading strip, which
-/// shows with it.
-pub fn offset_showing(
-    cursor: usize,
-    row_height: f32,
-    above: f32,
-    own: f32,
-    offset: f32,
-    height: f32,
-) -> f32 {
-    let top = cursor as f32 * row_height + above;
-    let bottom = top + own + row_height;
-    if top < offset {
-        top
-    } else if bottom > offset + height {
-        bottom - height
-    } else {
-        offset
-    }
-}
-
 /// The rows the list shows at `viewport` (offset and height): each is `LIST_ROW` high, below its heading strip if it
 /// has one.
 pub fn visible<Tz: TimeZone>(
@@ -708,21 +667,6 @@ where
         Some(above) if date_section(above.date, now) == group => None,
         _ => Some(group),
     }
-}
-
-/// How many heading strips sit above the bottom of row `cursor`, its own included, for the scroll offset.
-pub fn strips_above<Tz: TimeZone>(
-    rows: &[Row],
-    cursor: usize,
-    search: bool,
-    now: &DateTime<Tz>,
-) -> usize
-where
-    Tz::Offset: std::fmt::Display,
-{
-    (0..=cursor.min(rows.len().saturating_sub(1)))
-        .filter(|&index| section(rows, index, search, now).is_some())
-        .count()
 }
 
 /// The row the "Close matches" strip sits on: the first close hit.
@@ -953,8 +897,6 @@ mod tests {
             Some("Yesterday".into()),
         ];
         assert_eq!(headings, expected);
-        assert_eq!(strips_above(&rows, 0, false, &now), 1);
-        assert_eq!(strips_above(&rows, 3, false, &now), 2);
         rows[3].close = true;
         let headings: Vec<Option<String>> = (0..rows.len())
             .map(|i| section(&rows, i, true, &now))
@@ -963,7 +905,6 @@ mod tests {
             headings,
             [None, None, None, Some(CLOSE_MATCHES.to_string())]
         );
-        assert_eq!(strips_above(&rows, 2, true, &now), 0);
     }
 
     #[test]
@@ -1002,25 +943,6 @@ mod tests {
             Some("work")
         );
         assert_eq!(columns(&row, None, false, false, &now).account, None);
-    }
-
-    #[test]
-    fn offset_showing_scrolls_only_as_far_as_needed() {
-        assert_eq!(offset_showing(0, 20.0, 0.0, 0.0, 0.0, 100.0), 0.0);
-        assert_eq!(offset_showing(4, 20.0, 0.0, 0.0, 0.0, 100.0), 0.0);
-        assert_eq!(offset_showing(5, 20.0, 0.0, 0.0, 0.0, 100.0), 20.0);
-        assert_eq!(offset_showing(1, 20.0, 0.0, 0.0, 60.0, 100.0), 20.0);
-        assert_eq!(
-            offset_showing(4, 20.0, 8.0, 0.0, 0.0, 100.0),
-            8.0,
-            "the strip pushes the row down"
-        );
-        assert_eq!(
-            offset_showing(0, 20.0, 0.0, 8.0, 50.0, 100.0),
-            0.0,
-            "the row's own heading shows with it"
-        );
-        assert_eq!(offset_showing(4, 20.0, 0.0, 8.0, 0.0, 100.0), 8.0);
     }
 
     #[test]
@@ -1477,6 +1399,36 @@ mod tests {
             top <= row && row + crate::theme::LIST_ROW <= bottom,
             "{top}..{bottom} hides row 30"
         );
+    }
+
+    #[test]
+    fn the_list_scrolls_past_heading_strips_to_the_cursor_and_no_further() {
+        let fx = Fixture::new(&["work"]);
+        // A month apart, so every row has a heading strip of its own above it.
+        for uid in 1..=40 {
+            let mut m = message("INBOX", uid, "hi");
+            let at = crate::fixture::AT - i64::from(uid) * 31 * 86_400;
+            (m.date, m.internaldate) = (Some(at), at);
+            fx.add("work", m);
+        }
+        let (open, _wires) = fx.window();
+        open.tick();
+        let shown = |open: &crate::test_support::Open| {
+            let top = -open.window().get_list_y();
+            (top, top + open.with(|live| live.app.list.viewport.1))
+        };
+        let step = crate::theme::LIST_ROW + crate::theme::SECTION;
+        open.with(|live| live.app.apply(crate::state::UiAction::SelectRow(30)));
+        open.tick();
+        let (top, bottom) = shown(&open);
+        let (strip, row_bottom) = (30.0 * step, 31.0 * step);
+        assert!(
+            top <= strip && row_bottom <= bottom,
+            "{top}..{bottom} hides row 30 at {strip}..{row_bottom}"
+        );
+        open.with(|live| live.app.apply(crate::state::UiAction::SelectRow(29)));
+        open.tick();
+        assert_eq!(shown(&open).0, top, "row 29 was in view already");
     }
 
     #[test]

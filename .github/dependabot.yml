@@ -6,6 +6,8 @@ updates:
       interval: weekly
     cooldown:
       default-days: 3
+      # Slint releases carry fixes Postvak waits for; all its crates move as one.
+      exclude: ["const-field-offset*", "i-slint-*", "slint*", "vtable*"]
     commit-message:
       prefix: chore
       include: scope

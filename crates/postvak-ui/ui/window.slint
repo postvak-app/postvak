@@ -3,7 +3,7 @@ import { Palette as StdPalette } from "std-widgets.slint";
 import { Theme, ThemePreference } from "theme.slint";
 import { FolderItem, FolderPane, MenuChoice } from "folders.slint";
 import { StatusBar, StatusLine } from "status.slint";
-import { AccountDialog, ApplyConfirmDialog, FolderDialog, HistoryDialog, KeyHelp, KeysDialog, MoveDialog, OutboxDialog, OutboxEntry, Scrim, SourceDialog } from "dialogs.slint";
+import { AccountDialog, ApplyConfirmDialog, Backdrop, FolderDialog, HistoryDialog, KeyHelp, KeysDialog, Linger, MoveDialog, OutboxDialog, OutboxEntry, Scrim, SourceDialog } from "dialogs.slint";
 import { AccountFields } from "account.slint";
 import { AttachmentData, BodyInfo, BodyPane, PageInfo, SelectedData, StripData, ToolButton } from "body.slint";
 import { ForwardLineData, ProposalData, RuleData, RulesPane, Sheet } from "rules.slint";
@@ -158,6 +158,9 @@ export component MailWindow inherits Window {
     in property <[RowData]> rows;
     in property <int> marked-count;
     in-out property <length> list-y;
+    // Each new `list-show-serial` scrolls the list to row `list-show-row`.
+    in property <int> list-show-row;
+    in-out property <int> list-show-serial;
 
     in property <bool> move-open;
     in property <[string]> move-targets;
@@ -166,6 +169,7 @@ export component MailWindow inherits Window {
     in property <bool> account-saving;
     in property <string> account-progress;
     in property <bool> account-unsent;
+    in property <bool> apply-confirm-open;
     in property <string> apply-confirm;
     in property <bool> folder-open;
     in property <string> folder-title;
@@ -400,6 +404,7 @@ export component MailWindow inherits Window {
             }
             MenuItem {
                 title: "Preferences…";
+                role: MenuItemRole.preferences;
                 shortcut: @keys(Control + ",");
                 activated => { root.menu-item(MenuAction.preferences); }
             }
@@ -411,6 +416,7 @@ export component MailWindow inherits Window {
             }
             MenuItem {
                 title: "Quit";
+                role: MenuItemRole.quit;
                 shortcut: @keys(Control + Q);
                 activated => { root.quit(); }
             }
@@ -546,6 +552,7 @@ export component MailWindow inherits Window {
             }
             MenuItem {
                 title: "About Postvak";
+                role: MenuItemRole.about;
                 activated => { root.menu-item(MenuAction.about); }
             }
         }
@@ -637,6 +644,8 @@ export component MailWindow inherits Window {
                         empty: root.list-empty;
                         rows: root.rows;
                         list-y <=> root.list-y;
+                        show-row: root.list-show-row;
+                        show-serial: root.list-show-serial;
                         row-clicked(i, extend, toggle) => { root.row-clicked(i, extend, toggle); }
                         row-menu(i, group, j) => { root.row-menu(i, group, j); }
                         drag-data(i) => { root.drag-data(i) }
@@ -815,10 +824,29 @@ export component MailWindow inherits Window {
         close => { root.close-dialog(Dialog.move); }
     }
 
+    // Each dialog stays for its fade out once it closes.
+    source-linger := Linger { open: root.source-open; }
+    about-linger := Linger { open: root.about-open; }
+    preferences-linger := Linger { open: Preferences.open; }
+    account-linger := Linger { open: root.account-open; }
+    folder-linger := Linger { open: root.folder-open; }
+    rule-linger := Linger { open: RuleEditor.open; }
+    apply-confirm-linger := Linger { open: root.apply-confirm-open; }
+    unsaved-linger := Linger { open: RuleEditor.unsaved; }
+    leave-linger := Linger { open: ComposeState.leave-open; }
+    help-linger := Linger { open: root.help-open; }
+
+    Backdrop {
+        shown: root.source-open || root.about-open || Preferences.open || root.account-open || root.folder-open
+            || RuleEditor.open || root.apply-confirm-open || RuleEditor.unsaved || ComposeState.leave-open
+            || root.help-open;
+    }
+
     if root.source-open: Scrim {
         close => { root.close-dialog(Dialog.source); }
     }
-    if root.source-open: SourceDialog {
+    if source-linger.shown: SourceDialog {
+        opacity: source-linger.level;
         x: (root.width - self.width) / 2;
         y: (root.height - self.height) / 2;
         rows: root.source-rows;
@@ -831,7 +859,8 @@ export component MailWindow inherits Window {
     if root.about-open: Scrim {
         close => { root.close-dialog(Dialog.about); }
     }
-    if root.about-open: AboutDialog {
+    if about-linger.shown: AboutDialog {
+        opacity: about-linger.level;
         x: (root.width - self.width) / 2;
         y: Theme.top-bar + Theme.inset;
         version: root.version;
@@ -847,7 +876,8 @@ export component MailWindow inherits Window {
     if Preferences.open: Scrim {
         close => { root.close-dialog(Dialog.preferences); }
     }
-    if Preferences.open: PreferencesDialog {
+    if preferences-linger.shown: PreferencesDialog {
+        opacity: preferences-linger.level;
         x: (root.width - self.width) / 2;
         y: Theme.top-bar + Theme.inset;
         room: root.height - 2 * (Theme.top-bar + Theme.inset);
@@ -859,7 +889,8 @@ export component MailWindow inherits Window {
     if root.account-open: Scrim {
         close => { root.close-dialog(Dialog.account); }
     }
-    if root.account-open: AccountDialog {
+    if account-linger.shown: AccountDialog {
+        opacity: account-linger.level;
         x: (root.width - self.width) / 2;
         y: Theme.top-bar + Theme.inset;
         error: root.account-error;
@@ -875,7 +906,8 @@ export component MailWindow inherits Window {
     if root.folder-open: Scrim {
         close => { root.close-dialog(Dialog.folder); }
     }
-    if root.folder-open: FolderDialog {
+    if folder-linger.shown: FolderDialog {
+        opacity: folder-linger.level;
         x: (root.width - self.width) / 2;
         y: Theme.top-bar + Theme.inset;
         title: root.folder-title;
@@ -895,7 +927,8 @@ export component MailWindow inherits Window {
     if RuleEditor.open: Scrim {
         close => { root.close-dialog(Dialog.rule); }
     }
-    if RuleEditor.open: RuleDialog {
+    if rule-linger.shown: RuleDialog {
+        opacity: rule-linger.level;
         x: (root.width - self.width) / 2;
         y: Theme.top-bar + Theme.inset;
         room: root.height - 2 * (Theme.top-bar + Theme.inset);
@@ -903,10 +936,12 @@ export component MailWindow inherits Window {
         close => { root.close-dialog(Dialog.rule); }
     }
 
-    if root.apply-confirm != "": Scrim {
+    if root.apply-confirm-open: Scrim {
+        dim: RuleEditor.open;
         close => { root.close-dialog(Dialog.apply-confirm); }
     }
-    if root.apply-confirm != "": ApplyConfirmDialog {
+    if apply-confirm-linger.shown: ApplyConfirmDialog {
+        opacity: apply-confirm-linger.level;
         x: (root.width - self.width) / 2;
         y: Theme.top-bar + Theme.inset;
         warning: root.apply-confirm;
@@ -916,18 +951,21 @@ export component MailWindow inherits Window {
     }
 
     if RuleEditor.unsaved: Scrim {
+        dim: true;
         close => { root.close-dialog(Dialog.unsaved); }
     }
-    if RuleEditor.unsaved: UnsavedDialog {
+    if unsaved-linger.shown: UnsavedDialog {
+        opacity: unsaved-linger.level;
         x: (root.width - self.width) / 2;
         y: Theme.top-bar + Theme.inset;
         close-icon: root.close-icon;
     }
 
-    if ComposeState.leave-question != "": Scrim {
+    if ComposeState.leave-open: Scrim {
         close => { ComposeState.leave-cancel(); }
     }
-    if ComposeState.leave-question != "": LeaveComposeDialog {
+    if leave-linger.shown: LeaveComposeDialog {
+        opacity: leave-linger.level;
         x: (root.width - self.width) / 2;
         y: Theme.top-bar + Theme.inset;
         question: ComposeState.leave-question;
@@ -941,7 +979,8 @@ export component MailWindow inherits Window {
     if root.help-open: Scrim {
         close => { root.close-dialog(Dialog.help); }
     }
-    if root.help-open: KeysDialog {
+    if help-linger.shown: KeysDialog {
+        opacity: help-linger.level;
         x: (root.width - self.width) / 2;
         y: Theme.top-bar + Theme.inset;
         room: root.height - 2 * (Theme.top-bar + Theme.inset);

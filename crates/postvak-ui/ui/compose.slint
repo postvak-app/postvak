@@ -5,7 +5,7 @@ import { Theme } from "theme.slint";
 import { Hairline, IconButton, Note, Switch, TextButton } from "common.slint";
 import { AttachmentData } from "body.slint";
 import { Choice, Field } from "rule_editor.slint";
-import { Dialog, Scrim } from "dialogs.slint";
+import { Backdrop, Dialog, Linger, Scrim } from "dialogs.slint";
 
 // The field an error is about, under which it shows; the same names as `compose::Field`.
 export enum ComposeSpot { none, attachments, bcc, cc, from, note, send, subject, to }
@@ -126,6 +126,8 @@ export global ComposeState {
     in property <string> send-hint;
     in property <string> save-hint;
     // "Discard this message?" while it asks, and whether Save draft is one of its answers.
+    // Whether the leave question shows; `leave-question` and `leave-can-save` keep the last one for its fade out.
+    in property <bool> leave-open;
     in property <string> leave-question;
     in property <bool> leave-can-save;
     // Typing waits for the original's fields, and stops once the message is on its way.
@@ -530,7 +532,7 @@ export component ComposeWindow inherits Window {
             if (event.text != Key.Escape) {
                 return reject;
             }
-            if (ComposeState.leave-question != "") {
+            if (ComposeState.leave-open) {
                 ComposeState.leave-cancel();
             } else {
                 ComposeState.close();
@@ -542,10 +544,15 @@ export component ComposeWindow inherits Window {
         }
     }
 
-    if ComposeState.leave-question != "": Scrim {
+    leave-linger := Linger { open: ComposeState.leave-open; }
+    Backdrop {
+        shown: ComposeState.leave-open;
+    }
+    if ComposeState.leave-open: Scrim {
         close => { ComposeState.leave-cancel(); }
     }
-    if ComposeState.leave-question != "": LeaveComposeDialog {
+    if leave-linger.shown: LeaveComposeDialog {
+        opacity: leave-linger.level;
         x: (root.width - self.width) / 2;
         y: Theme.inset;
         question: ComposeState.leave-question;
