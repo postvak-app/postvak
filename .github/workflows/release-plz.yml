@@ -32,6 +32,8 @@ jobs:
         env:
           # A tag pushed with the default GITHUB_TOKEN would not start release.yml.
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          # Each crate's `cargo publish` resolves its siblings from crates.io, where the one just published is minutes old.
+          CARGO_RESOLVER_INCOMPATIBLE_PUBLISH_AGE: allow
 
   release-pr:
     name: Release PR
