@@ -422,7 +422,7 @@ export component PreferencesDialog {
     // The most height there is room for; the settings scroll beyond it.
     in property <length> room;
     callback close();
-    width: Theme.dialog-x-large;
+    width: Theme.dialog-wide;
     Dialog {
         title: "Preferences";
         close-icon: root.close-icon;
@@ -431,7 +431,7 @@ export component PreferencesDialog {
             spacing: 2 * Theme.inset;
             padding-top: Theme.pad;
             VerticalLayout {
-                width: 4 * Theme.control;
+                width: 6 * Theme.control;
                 alignment: start;
                 spacing: Theme.pad / 2;
                 TextButton {
