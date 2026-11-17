@@ -41,7 +41,7 @@ Many AI mail clients hand every message to a model and let it decide what happen
 
 See how Postvak [compares to imapfilter, Sieve, mail client filters and AI sorters](https://postvak.pataar.nl/docs/compare.html).
 
-Postvak is licensed under MIT or Apache-2.0, at your option. The mail window's HTML view includes Stylo, the CSS engine from Servo and Firefox, which is under MPL-2.0. The mail window is made with [Slint](https://slint.dev/) under its royalty-free licence; Help ▸ About Postvak shows its attribution.
+Postvak is licensed under MIT or Apache-2.0, at your option. The mail window's HTML view includes Stylo, the CSS engine from Servo and Firefox, which is under MPL-2.0. The mail window is made with [Slint](https://slint.dev/) under its royalty-free licence; Help ▸ About Postvak (Postvak ▸ About Postvak on macOS) shows its attribution.
 
 ## More
 
