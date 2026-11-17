@@ -437,21 +437,18 @@ export component PreferencesDialog {
                 TextButton {
                     text: "General";
                     selected: Preferences.section == 0;
-                    flush: true;
                     palette: Theme.pane;
                     clicked => { Preferences.section-chosen(0); }
                 }
                 TextButton {
                     text: "Accounts";
                     selected: Preferences.section == 1;
-                    flush: true;
                     palette: Theme.pane;
                     clicked => { Preferences.section-chosen(1); }
                 }
                 TextButton {
                     text: "Sending";
                     selected: Preferences.section == 2;
-                    flush: true;
                     palette: Theme.pane;
                     clicked => { Preferences.section-chosen(2); }
                 }
