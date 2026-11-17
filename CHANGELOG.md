@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0](https://github.com/postvak-app/postvak/compare/v0.18.0...v0.19.0) - 2026-11-17
+
+### Added
+
+- *(gui)* open HTML that adds nothing to the text as text ([#584](https://github.com/postvak-app/postvak/pull/584))
+- open mailto: links from the desktop in Postvak ([#583](https://github.com/postvak-app/postvak/pull/583))
+
+### Other
+
+- *(deps)* this week's Dependabot updates, minus fontique and zbus ([#592](https://github.com/postvak-app/postvak/pull/592))
+- *(deps)* upgrade Slint to 1.19.0 and drop the patched fork ([#585](https://github.com/postvak-app/postvak/pull/585))
+- replace `#[allow]` with `#[expect]` and upgrade MSRV to 1.100 ([#582](https://github.com/postvak-app/postvak/pull/582))
+
 ## [0.18.0](https://github.com/postvak-app/postvak/compare/v0.17.0...v0.18.0) - 2026-11-12
 
 ### Added
