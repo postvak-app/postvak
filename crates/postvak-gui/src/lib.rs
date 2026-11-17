@@ -485,9 +485,10 @@ impl Live {
 /// window. The focus waits a turn of the event loop, for the native window `show` creates.
 ///
 /// Wayland lets no app restore, focus or raise its own window: a window that was hidden comes back as a new one. A
-/// click on the tray icon comes with an activation token that Slint gives the next new window, which lets it come to
-/// the front, so `from_tray` shows an open window again as a new one. Otherwise an open window asks for attention,
-/// which Plasma shows on its task bar entry and GNOME as "Postvak is ready".
+/// click on the tray icon comes with an activation token, which lets the next new window come to the front once Slint
+/// hands it over (slint-ui/slint#14822; until then only where the compositor lets a new window take the focus without
+/// one), so `from_tray` shows an open window again as a new one. Otherwise an open window asks for attention, which
+/// Plasma shows on its task bar entry and GNOME as "Postvak is ready".
 fn raise<W: slint::ComponentHandle + 'static>(window: &W, from_tray: bool) {
     let wayland = window.window().with_winit_window(on_wayland);
     let recreated = recreate(from_tray, wayland);
