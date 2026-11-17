@@ -55,3 +55,7 @@ jobs:
         env:
           # PRs opened with the default GITHUB_TOKEN would not run CI.
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          # cargo-semver-checks resolves each crate in a throwaway project without Cargo.lock, under our
+          # .cargo/config.toml, so a dependency younger than its 3-day publish age (a new Slint) failed to resolve.
+          # That lockfile is never shipped; Cargo.lock keeps the age rule.
+          CARGO_RESOLVER_INCOMPATIBLE_PUBLISH_AGE: allow

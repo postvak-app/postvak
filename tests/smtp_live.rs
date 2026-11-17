@@ -120,12 +120,13 @@ fn check_login_reads_size_and_8bitmime() {
                 Some(&ca_file()),
             )
             .unwrap_or_else(|e| panic!("{port}: {e}"));
-        // Mailpit says `SIZE 0` (no limit) and offers SMTPUTF8 but not 8BITMIME.
+        // Mailpit v1.33 says `SIZE 52428800`, its default 50 MiB limit, and offers 8BITMIME. `SIZE 0`, no
+        // limit, is covered by the unit tests in send/smtp.rs.
         assert_eq!(
             caps,
             Capabilities {
-                size: None,
-                eight_bit_mime: false
+                size: Some(52_428_800),
+                eight_bit_mime: true
             },
             "{port}"
         );

@@ -8,6 +8,15 @@ updates:
       default-days: 3
       # Slint releases carry fixes Postvak waits for; all its crates move as one.
       exclude: ["const-field-offset*", "i-slint-*", "slint*", "vtable*"]
+    ignore:
+      # Postvak's fontique Collection goes to Blitz's Parley, so it must stay on Parley's version; bump it by hand
+      # together with blitz-*. 0.x minor releases break, which Dependabot counts as minor.
+      - dependency-name: fontique
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # Slint, AccessKit, ksni and the Secret Service keyring store all use zbus; a major bump here alone would build
+      # a second zbus. Bump it by hand once they have moved.
+      - dependency-name: zbus
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: chore
       include: scope
