@@ -34,7 +34,7 @@ services:
   # SMTP for the live sending tests (tests/smtp_live.rs): Mailpit takes any login, refuses recipients outside
   # example.com and example.org, and shows what arrived on its API. One requires STARTTLS, one implicit TLS.
   mailpit-starttls:
-    image: axllent/mailpit:v1.27
+    image: axllent/mailpit:v1.33
     environment:
       MP_SMTP_TLS_CERT: /etc/postvak-test/tls.crt
       MP_SMTP_TLS_KEY: /etc/postvak-test/tls.key
@@ -47,7 +47,7 @@ services:
     volumes:
       - ./certs:/etc/postvak-test:ro
   mailpit-implicit:
-    image: axllent/mailpit:v1.27
+    image: axllent/mailpit:v1.33
     environment:
       MP_SMTP_TLS_CERT: /etc/postvak-test/tls.crt
       MP_SMTP_TLS_KEY: /etc/postvak-test/tls.key
