@@ -313,6 +313,12 @@ export component ListPane inherits Rectangle {
     callback search-accepted();
     callback search-focus(bool);
     callback scrolled();
+    // Each new `show-serial` scrolls row `show-row` into view.
+    in property <int> show-row;
+    in property <int> show-serial;
+    changed show-serial => {
+        list.ensure-row-visible(root.show-row, ScrollBehavior.instant);
+    }
 
     VerticalLayout {
         VerticalLayout {

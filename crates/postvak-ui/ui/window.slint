@@ -158,6 +158,9 @@ export component MailWindow inherits Window {
     in property <[RowData]> rows;
     in property <int> marked-count;
     in-out property <length> list-y;
+    // Each new `list-show-serial` scrolls the list to row `list-show-row`.
+    in property <int> list-show-row;
+    in-out property <int> list-show-serial;
 
     in property <bool> move-open;
     in property <[string]> move-targets;
@@ -640,6 +643,8 @@ export component MailWindow inherits Window {
                         empty: root.list-empty;
                         rows: root.rows;
                         list-y <=> root.list-y;
+                        show-row: root.list-show-row;
+                        show-serial: root.list-show-serial;
                         row-clicked(i, extend, toggle) => { root.row-clicked(i, extend, toggle); }
                         row-menu(i, group, j) => { root.row-menu(i, group, j); }
                         drag-data(i) => { root.drag-data(i) }

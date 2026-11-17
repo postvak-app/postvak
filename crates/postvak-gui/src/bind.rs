@@ -23,7 +23,7 @@ use super::ui::{
     RuleData, RuleEditor, RunData, SampleData, SelectedData, Sheet, SignaturePreferences,
     SmtpPreferences, StatusLine, Theme, ThemePreference, ToolButton, WhyLine,
 };
-use super::{account, body, icons, list, menu, rules, status, theme, toolbar};
+use super::{account, body, icons, list, menu, rules, status, toolbar};
 use postvak_core::message::clean;
 use postvak_core::send::reply::ReplyTo;
 
@@ -248,13 +248,9 @@ fn present_list(app: &App, window: &MailWindow) {
             window.set_rows(ModelRc::new(model));
         }
     }
-    // Until the list has reported its height there is nothing to scroll within.
-    if app.list.follow_cursor && app.list.viewport.1 > 0.0 {
-        let (offset, height) = app.list.viewport;
-        let (above, own) = app.list.strips(app.search.is_some());
-        let offset =
-            list::offset_showing(app.list.cursor, theme::LIST_ROW, above, own, offset, height);
-        window.set_list_y(-offset);
+    if let Some(row) = app.list.show_row {
+        window.set_list_show_row(i32::try_from(row).unwrap_or(i32::MAX));
+        window.set_list_show_serial(window.get_list_show_serial().wrapping_add(1));
     }
     window.set_move_open(app.move_picker.is_some());
     let targets = app
