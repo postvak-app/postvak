@@ -5,6 +5,7 @@ all-features = true
 # Every entry needs a reason: { id = "RUSTSEC-…", reason = "…" }
 ignore = [
     { id = "RUSTSEC-2026-0459", reason = "needs a crafted -wal file, and Postvak opens only the stores it writes in its own data dir; rusqlite 0.41 has the fix, but rusqlite_migration 2.6 still requires 0.40" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained, not a vulnerability; async-imap, Slint, rmcp and schemars use it too, so leaving it for jiff takes them as well" },
 ]
 # Unmaintained transitive crates (zbus internals, ttf-parser) are their parents' call; fail only on our direct dependencies.
 unmaintained = "workspace"
