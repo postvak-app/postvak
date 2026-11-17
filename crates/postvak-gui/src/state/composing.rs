@@ -1819,6 +1819,7 @@ mod tests {
         open.press("escape");
         assert_eq!(open.find("Discard this message?").len(), 1);
         open.click("Cancel");
+        open.fade();
         assert!(open.find("Discard this message?").is_empty());
         assert!(open.with(|live| live.app.composer.is_some()));
         open.press("escape");
@@ -2572,6 +2573,7 @@ mod tests {
             open.tick();
         };
         escape(&window);
+        open.fade();
         assert_eq!(asks(&window), 0, "Esc answers Cancel");
         assert_eq!(new_mail_subjects(&open).len(), 1);
         escape(&window);

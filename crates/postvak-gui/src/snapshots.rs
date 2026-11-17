@@ -627,6 +627,34 @@ fn a_dialog_fades_in_unless_the_desktop_asks_for_less_motion() {
     }
 }
 
+/// A dialog fades out: just after it closes it is still drawn, and it goes once the fade is over. When the desktop asks
+/// for less motion it goes at once.
+#[test]
+fn a_dialog_fades_out_unless_the_desktop_asks_for_less_motion() {
+    use slint::ComponentHandle;
+    for reduced in [false, true] {
+        let (_fx, open, _wires) = inbox("light");
+        open.window()
+            .global::<super::ui::Theme>()
+            .set_reduce_motion(reduced);
+        open.press("?");
+        open.advance(2.0);
+        open.tick();
+        assert!(!open.find("Keys").is_empty(), "the dialog opened");
+        open.press("escape");
+        open.tick();
+        assert!(!open.with(|live| live.app.help_open));
+        assert_eq!(
+            open.find("Keys").is_empty(),
+            reduced,
+            "reduced motion {reduced}"
+        );
+        open.advance(2.0);
+        open.tick();
+        assert!(open.find("Keys").is_empty(), "the fade ended");
+    }
+}
+
 #[test]
 fn rules() {
     let fx = Fixture::mailbox("light");

@@ -1272,13 +1272,13 @@ mod tests {
         assert!(wires.sent().is_empty(), "sent before confirming");
         assert_eq!(open.find(warning).len(), 1);
         open.click("Cancel");
-        open.tick();
+        open.fade();
         assert!(open.find(warning).is_empty());
         assert!(wires.sent().is_empty(), "cancel sent it");
         open.apply_to_existing();
         open.tick();
         open.click("Delete and apply");
-        open.tick();
+        open.fade();
         assert!(open.find(warning).is_empty());
         assert_eq!(
             wires.sent(),
@@ -2419,6 +2419,7 @@ mod editor_tests {
         assert_eq!(open.find("This rule has unsaved changes.").len(), 1);
         assert_eq!(open.with(|live| live.app.view.clone()), View::Rules);
         open.tap("Backups");
+        open.fade();
         assert!(
             open.find("This rule has unsaved changes.").is_empty(),
             "the click cancels the question"
@@ -2520,6 +2521,7 @@ mod editor_tests {
             Some("newsletters"),
             "Esc cancels the question only"
         );
+        open.fade();
         open.click("Close");
         open.click("Discard");
         assert!(draft_name(&open).is_none());
@@ -2884,6 +2886,7 @@ mod editor_tests {
         let fx = Fixture::new(&["work"]);
         let (open, _wires) = leave_edited_newsletters(&fx);
         open.click("Cancel");
+        open.fade();
         assert!(open.find("This rule has unsaved changes.").is_empty());
         let opened = open.with(|live| live.app.rule_draft.as_ref()?.original.clone());
         assert_eq!(opened.as_deref(), Some("newsletters"));
@@ -2923,6 +2926,7 @@ mod editor_tests {
         editor(&open, |e| e.invoke_unsaved_save());
         let opened = open.with(|live| live.app.rule_draft.as_ref()?.original.clone());
         assert_eq!(opened.as_deref(), Some("newsletters"));
+        open.fade();
         assert!(open.find("This rule has unsaved changes.").is_empty());
         assert_eq!(open.labels_containing("no such rule").len(), 1);
         assert_eq!(file(&fx), "# emptied\n");

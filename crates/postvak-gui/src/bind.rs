@@ -157,18 +157,19 @@ pub(crate) fn present(app: &App, window: &MailWindow) {
         opens_at_login: app.open_at_login.checked(),
     });
     window.set_about_open(app.about_open);
-    let apply_confirm = app.apply_confirm.as_ref().map(|c| c.warning.as_str());
-    window.set_apply_confirm(apply_confirm.unwrap_or_default().into());
-    let form = app.account_form.as_ref();
-    window.set_account_open(form.is_some());
-    let error = form
-        .and_then(|form| form.error.as_deref())
-        .unwrap_or_default();
-    window.set_account_error(error.into());
-    window.set_account_saving(form.is_some_and(|form| form.saving.is_some()));
-    let phase = form.map(|form| form.phase).unwrap_or_default();
-    window.set_account_progress(account::progress(phase).into());
-    window.set_account_unsent(form.is_some_and(|form| form.unsent));
+    // The last warning stays for the dialog's fade out.
+    window.set_apply_confirm_open(app.apply_confirm.is_some());
+    if let Some(confirm) = &app.apply_confirm {
+        window.set_apply_confirm(confirm.warning.as_str().into());
+    }
+    window.set_account_open(app.account_form.is_some());
+    // The last form stays for the dialog's fade out; a fresh one would take the keyboard back.
+    if let Some(form) = &app.account_form {
+        window.set_account_error(form.error.as_deref().unwrap_or_default().into());
+        window.set_account_saving(form.saving.is_some());
+        window.set_account_progress(account::progress(form.phase).into());
+        window.set_account_unsent(form.unsent);
+    }
 
     present_folder_dialog(app, window);
     window.set_help_open(app.help_open);
@@ -508,19 +509,21 @@ fn present_body(app: &App, window: &MailWindow) {
     present_page(app, window);
     let source = app.body.as_ref().and_then(|b| b.source.as_ref());
     window.set_source_open(source.is_some());
-    let source_text = source.map_or("", |s| s.text.as_str());
-    if window.get_source_text() != source_text {
-        window.set_source_text(source_text.into());
-        let rows = source.map(|s| {
-            s.rows
-                .iter()
-                .map(|r| SharedString::from(&s.text[r.clone()]))
-        });
-        window.set_source_rows(model(rows.into_iter().flatten()));
+    // The last source stays for the dialog's fade out, until another is shown.
+    if let Some(source) = source
+        && window.get_source_text() != source.text
+    {
+        window.set_source_text(source.text.as_str().into());
+        let rows = source
+            .rows
+            .iter()
+            .map(|r| SharedString::from(&source.text[r.clone()]));
+        window.set_source_rows(model(rows));
         // Monospace: a row is as wide as its characters, at about 0.6 em each.
         let widest = source
-            .into_iter()
-            .flat_map(|s| s.rows.iter().map(|r| s.text[r.clone()].chars().count()))
+            .rows
+            .iter()
+            .map(|r| source.text[r.clone()].chars().count())
             .max();
         // A row is at most SOURCE_ROW characters, so the cast loses nothing.
         window.set_source_widest(widest.unwrap_or(0) as f32 * 8.5);
@@ -634,9 +637,12 @@ fn show_composer(
     sync(state.get_completions(), completions, |m| {
         state.set_completions(m)
     });
-    let (question, can_save) = question.unwrap_or_default();
-    state.set_leave_question(question.into());
-    state.set_leave_can_save(can_save);
+    // The last question stays for the dialog's fade out.
+    state.set_leave_open(question.is_some());
+    if let Some((question, can_save)) = question {
+        state.set_leave_question(question.into());
+        state.set_leave_can_save(can_save);
+    }
 }
 
 /// Turns the callbacks in a window's `ComposeState` into actions on the composer at `target`; see `show_composer`.

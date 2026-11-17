@@ -1147,6 +1147,7 @@ mod tests {
         assert_eq!(open.find("Keys").len(), 1);
         assert_eq!(open.find("next pane: folders, list, body").len(), 1);
         open.press("escape");
+        open.fade();
         assert!(open.find("Keys").is_empty());
     }
 

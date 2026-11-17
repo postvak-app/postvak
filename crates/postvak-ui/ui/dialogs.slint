@@ -10,9 +10,37 @@ export struct KeyHelp {
     what: string,
 }
 
-// Dims the window under a dialog and keeps clicks and scrolls from reaching it; a click closes the dialog, as Esc does.
+/* Dims and blurs the window while a dialog is open, fading in and out with it; one under the dialogs serves them all.
+The software renderer does not blur, so there it only dims. */
+export component Backdrop inherits Rectangle {
+    in property <bool> shown;
+    background: Theme.scrim;
+    backdrop-blur: Theme.scrim-blur;
+    opacity: root.shown ? 1 : 0;
+    animate opacity {
+        duration: Theme.dialog-fade;
+        easing: ease-out;
+    }
+}
+
+/* Keeps a closed dialog for its fade out: `level`, the dialog's opacity, fades to 0 once `open` goes false, and `shown`
+holds until it gets there. Opening is at once: `Dialog` fades in by itself. */
+export component Linger {
+    in property <bool> open;
+    out property <float> level: root.open ? 1 : 0;
+    animate level {
+        duration: root.open ? 0ms : Theme.dialog-fade;
+        easing: ease-in;
+    }
+    // `level` first: read while the dialog is open, it has a value to animate from once it closes.
+    out property <bool> shown: root.level > 0 || root.open;
+}
+
+// Keeps clicks and scrolls from reaching the window under a dialog; a click closes the dialog, as Esc does. `Backdrop`
+// dims the window; `dim` dims another dialog under this one.
 export component Scrim inherits TouchArea {
     callback close();
+    in property <bool> dim;
     // 0 as it opens, then fades to 1.
     out property <float> shown: 0;
     animate shown {
@@ -22,13 +50,13 @@ export component Scrim inherits TouchArea {
     init => { root.shown = 1; }
     clicked => { root.close(); }
     scroll-event(event) => { accept }
-    Rectangle {
+    if root.dim: Rectangle {
         background: Theme.scrim;
         opacity: root.shown;
     }
 }
 
-// A titled box with a close button, which fades in as it opens; its content goes under the title.
+// A titled box with a close button, which fades in as it opens (`Linger` fades it out); its content goes under the title.
 export component Dialog inherits Rectangle {
     in property <string> title;
     in property <string> close-icon;

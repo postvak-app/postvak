@@ -426,6 +426,7 @@ mod tests {
             assert!(!Config::load(&fx.paths.config_file()).unwrap().accounts[0].notify);
 
             open.press("escape");
+            open.fade();
             assert!(open.find("Preferences").is_empty());
         }
 

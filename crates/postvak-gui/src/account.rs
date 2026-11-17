@@ -299,6 +299,7 @@ mod tests {
         assert_eq!(open.find("Add account").len(), 1);
         fill_window(&open, "home", "imap.example.com");
         save_in(&open);
+        open.fade();
         assert!(open.find("Add account").is_empty());
         assert_eq!(names(&open), ["work", "home"]);
         assert_eq!(
@@ -346,6 +347,7 @@ mod tests {
         );
         fill_window(&open, "home", "imap.example.com");
         save_in(&open);
+        open.fade();
         assert!(open.find("Add account").is_empty());
         let config = Config::load(&fx.paths.config_file()).unwrap();
         let smtp = config.account("home").unwrap().smtp.clone().unwrap();
@@ -379,6 +381,7 @@ mod tests {
             "the link opens the docs"
         );
         open.click("Done");
+        open.fade();
         assert!(open.find("Add account").is_empty());
     }
 
@@ -461,6 +464,7 @@ mod tests {
         open.click("Save account");
         assert_eq!(open.find("Testing the login…").len(), 1);
         open.press("escape");
+        open.fade();
         assert!(open.find("Add account").is_empty());
         std::thread::sleep(Duration::from_millis(600));
         open.tick();
@@ -519,6 +523,7 @@ mod tests {
             "e is text in the form, not archive"
         );
         open.press("escape");
+        open.fade();
         assert!(open.find("Add account").is_empty());
     }
 
@@ -538,6 +543,8 @@ mod tests {
         let fx = two_messages();
         let (open, _wires) = fx.window();
         open.window().invoke_menu_item(MenuAction::AddAccount);
+        // Draws the form, so its first field takes the keyboard before Esc.
+        open.tick();
         open.press("escape");
         open.press("j");
         assert_eq!(cursor(&open), 1);

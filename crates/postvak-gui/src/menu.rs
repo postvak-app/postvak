@@ -226,9 +226,11 @@ mod tests {
         open.click("Project");
         assert_eq!(launched(), [env!("CARGO_PKG_REPOSITORY")]);
         open.press("escape");
+        open.fade();
         assert!(open.find("About Postvak").is_empty());
         open.window().invoke_menu_item(MenuAction::About);
         open.click("Close");
+        open.fade();
         assert!(open.find("About Postvak").is_empty());
     }
 
@@ -238,6 +240,7 @@ mod tests {
         let (open, _wires) = fx.window();
         open.window().invoke_menu_item(MenuAction::About);
         open.tap("Backups");
+        open.fade();
         assert!(open.find("About Postvak").is_empty());
         assert!(
             open.with(|live| live.app.view != crate::state::View::Trash),
