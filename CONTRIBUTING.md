@@ -4,11 +4,7 @@ Thanks for helping out. Bug reports, rule ideas and pull requests are all welcom
 
 ## Setup
 
-The toolchain is pinned in `rust-toolchain.toml`. With [mise](https://mise.jdx.dev), `mise install` brings the pinned Rust plus cargo-nextest, kache and actionlint. You also need `cargo-machete` and `cargo-deny`:
-
-```sh
-cargo install cargo-machete cargo-deny
-```
+The toolchain is pinned in `rust-toolchain.toml`. With [mise](https://mise.jdx.dev), `mise install` brings the pinned Rust plus the tools the checks, docs and packaging use, at the versions `.mise.toml` pins: actionlint, cargo-deny, cargo-dist, cargo-machete, cargo-nextest, codegraph, kache, mdbook and resvg.
 
 Fast edit loop: `cargo check` and `cargo nextest run`.
 
