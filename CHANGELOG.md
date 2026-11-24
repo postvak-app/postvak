@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.1](https://github.com/postvak-app/postvak/compare/v0.19.0...v0.19.1) - 2026-11-24
+
+### Other
+
+- *(deps)* bump mise tools, cargo-dist 0.34.0 and Cargo.lock ([#597](https://github.com/postvak-app/postvak/pull/597))
+
 ## [0.19.0](https://github.com/postvak-app/postvak/compare/v0.18.0...v0.19.0) - 2026-11-17
 
 ### Added
