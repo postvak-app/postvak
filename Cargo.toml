@@ -24,7 +24,7 @@ postvak-mcp = { version = "=0.19.0", path = "crates/postvak-mcp" }    # the MCP 
 postvak-ui = { version = "=0.19.0", path = "crates/postvak-ui" }      # the window's Slint markup compiled to Rust, apart so a GUI edit does not compile it again
 
 anyhow = "1"                                         # error context in the binary and sync loop
-anyrender = "=0.14.0"                                # the drawing trait Blitz paints into; pinned to the version blitz-paint uses
+anyrender = "=0.15.0"                                # the drawing trait Blitz paints into; pinned to the version blitz-paint uses
 anyrender_vello_cpu = "=0.18.0"                      # CPU raster for Blitz, so HTML mail becomes an image in the window without a GPU path
 apple-native-keyring-store = { version = "1", features = ["keychain"] }  # macOS Keychain backend for keyring-core
 async-channel = "2"                                  # the untagged replies to CAPABILITY before login, to check for STARTTLS; already in the tree through async-imap
