@@ -25,7 +25,7 @@ postvak-ui = { version = "=0.19.0", path = "crates/postvak-ui" }      # the wind
 
 anyhow = "1"                                         # error context in the binary and sync loop
 anyrender = "=0.14.0"                                # the drawing trait Blitz paints into; pinned to the version blitz-paint uses
-anyrender_vello_cpu = "=0.18.0"                      # CPU raster for Blitz, so HTML mail becomes an image in the window without a GPU path
+anyrender_vello_cpu = "=0.19.0"                      # CPU raster for Blitz, so HTML mail becomes an image in the window without a GPU path
 apple-native-keyring-store = { version = "1", features = ["keychain"] }  # macOS Keychain backend for keyring-core
 async-channel = "2"                                  # the untagged replies to CAPABILITY before login, to check for STARTTLS; already in the tree through async-imap
 async-imap = { version = "0.12", default-features = false, features = ["runtime-tokio"] }  # IMAP client, maintained, IDLE support
